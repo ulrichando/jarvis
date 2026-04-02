@@ -674,27 +674,38 @@ async def main():
                     _writeln(f"  {RED}Voice error: {e}{RESET}")
                     continue
 
-            # ═══ ? SHORTCUT HELP ═══
+            # ═══ ? SHORTCUT HELP (Claude Code style) ═══
             if user_input == "?":
                 _writeln()
-                _writeln(f"  {BOLD}Keyboard Shortcuts{RESET}")
-                _writeln(f"  {'─' * 50}")
-                shortcuts = [
-                    ("v", "Voice input — speak to JARVIS"),
-                    ("!", "Shell mode — run command directly"),
-                    ("!!", "Shell + analyze — run and pipe to JARVIS"),
-                    ("/", "Commands — 100+ slash commands"),
-                    ("/help", "Show all commands"),
-                    ("/voice", "Voice input (same as v)"),
-                    ("/doctor", "Check installation health"),
-                    ("/context", "Show token usage"),
-                    ("/status", "Model, mode, session info"),
-                    ("Ctrl+C", "Cancel current operation"),
-                    ("Ctrl+D", "Exit JARVIS"),
+                sections = [
+                    ("Input", [
+                        ("v", "Voice input"),
+                        ("!cmd", "Run shell command"),
+                        ("!!cmd", "Run + analyze output"),
+                        ("/cmd", "Slash command"),
+                    ]),
+                    ("Navigation", [
+                        ("Ctrl+D", "Exit (press twice)"),
+                        ("Ctrl+C", "Cancel current operation"),
+                    ]),
+                    ("Quick Commands", [
+                        ("/help", "All 123 commands"),
+                        ("/status", "Model, mode, session"),
+                        ("/context", "Token usage"),
+                        ("/doctor", "Health check"),
+                        ("/model", "Switch AI model"),
+                        ("/effort", "Set response depth"),
+                        ("/compact", "Compress context"),
+                        ("/new", "Fresh conversation"),
+                        ("/rewind", "Undo last exchange"),
+                        ("/export", "Save conversation"),
+                    ]),
                 ]
-                for key, desc in shortcuts:
-                    _writeln(f"  {CYAN}{key:<14s}{RESET}  {DIM}{desc}{RESET}")
-                _writeln()
+                for section, items in sections:
+                    _writeln(f"  {BOLD}{section}{RESET}")
+                    for key, desc in items:
+                        _writeln(f"    {CYAN}{key:<14s}{RESET} {DIM}{desc}{RESET}")
+                    _writeln()
                 continue
 
             # ═══ SLASH COMMANDS ═══
