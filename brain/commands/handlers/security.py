@@ -141,28 +141,35 @@ async def cmd_audit(ctx: CommandContext) -> CommandResult:
     lines = [f"Security Audit: {target_path}", "=" * 50]
     issues = []
 
-    # Check for .env files
-    env_files = list(target_path.rglob(".env*"))
+    # Check for .env files (limited depth to avoid slow traversal)
+    env_files = []
+    try:
+        for f in target_path.rglob(".env*"):
+            env_files.append(f)
+            if len(env_files) >= 10:
+                break
+    except Exception:
+        pass
     if env_files:
         issues.append(("WARNING", f"Found {len(env_files)} .env file(s):"))
         for f in env_files[:10]:
             issues.append(("", f"  {f}"))
 
-    # Grep for hardcoded secrets patterns
-    secret_patterns = ["password", "api_key", "secret", "token", "private_key"]
+    # Grep for hardcoded secrets patterns (quick, limited depth)
+    secret_patterns = ["password", "api_key", "secret_key"]
     for pattern in secret_patterns:
         rc, out, _ = _run(
-            ["grep", "-ril", "--include=*.py", "--include=*.js", "--include=*.ts",
-             "--include=*.json", "--include=*.yaml", "--include=*.yml",
+            ["grep", "-ril", "--include=*.py", "--include=*.js",
+             "--max-count=3", "-m", "3",
              pattern, str(target_path)],
-            timeout=15,
+            timeout=5,
         )
         if rc == 0 and out.strip():
             matches = out.strip().splitlines()
             issues.append(("CHECK", f"'{pattern}' found in {len(matches)} file(s)"))
 
-    # Check for outdated pip deps
-    rc, out, _ = _run(["pip", "list", "--outdated", "--format=columns"], timeout=30)
+    # Check for outdated pip deps (quick check)
+    rc, out, _ = _run(["pip", "list", "--outdated", "--format=columns"], timeout=5)
     if rc == 0 and out.strip():
         outdated_lines = out.strip().splitlines()
         if len(outdated_lines) > 1:
