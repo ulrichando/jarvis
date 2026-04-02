@@ -164,24 +164,40 @@ class Companion:
         """Render the companion card (shown on /buddy)."""
         d = self.data
         W = 38
+
+        def _pad(text, visible_len, width):
+            """Pad text to width based on visible character count."""
+            return text + " " * max(0, width - visible_len)
+
         lines = []
         lines.append(f"╭{'─' * W}╮")
         lines.append(f"│{' ' * W}│")
-        lines.append(f"│  {'★ ' + d['type']:^{W-4}s}  │")
+        # Type header centered
+        type_text = f"★ {d['type']}"
+        type_pad = (W - len(type_text)) // 2
+        lines.append(f"│{' ' * type_pad}{type_text}{' ' * (W - type_pad - len(type_text))}│")
+        lines.append(f"│{' ' * W}│")
         lines.append(f"│{' ' * W}│")
         for art_line in d["art"]:
-            lines.append(f"│  {art_line:<{W-4}s}  │")
+            visible = len(art_line)
+            lines.append(f"│  {art_line}{' ' * (W - 2 - visible)}│")
         lines.append(f"│{' ' * W}│")
-        lines.append(f"│  {BOLD}{d['name']}{RESET:<{W-4+len(BOLD)+len(RESET)}s}  │")
+        # Name (bold)
+        name_text = d['name']
+        lines.append(f"│  {BOLD}{name_text}{RESET}{' ' * (W - 2 - len(name_text))}│")
         lines.append(f"│{' ' * W}│")
+        # Description
         for desc_line in d["desc"].strip('"').split("\n"):
-            lines.append(f"│  {DIM}\"{desc_line}\"{RESET:<{W-4+len(DIM)+len(RESET)+2}s}│")
+            quoted = f'"{desc_line}"'
+            lines.append(f"│  {DIM}{quoted}{RESET}{' ' * (W - 2 - len(quoted))}│")
         lines.append(f"│{' ' * W}│")
+        # Stats
         for stat_name, stat_val in d["stats"].items():
             filled = stat_val // 10
             empty = 10 - filled
             bar = "█" * filled + "░" * empty
-            lines.append(f"│  {stat_name:<10s} {bar}  {stat_val:>3d}     │")
+            stat_text = f"{stat_name:<10s} {bar}  {stat_val:>3d}"
+            lines.append(f"│  {stat_text}{' ' * (W - 2 - len(stat_text))}│")
         lines.append(f"│{' ' * W}│")
         lines.append(f"╰{'─' * W}╯")
         return "\n".join(lines)
