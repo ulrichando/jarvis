@@ -31,7 +31,7 @@ def _generate_fix(issue: dict) -> dict | None:
     try:
         with open(filepath, "r") as f:
             lines = f.readlines()
-    except Exception:
+    except Exception as e:
         return None
 
     # For unused imports, line_no might be 0 — we search the file
@@ -167,7 +167,7 @@ def _apply_fix(fix: dict) -> bool:
         with open(filepath, "w") as f:
             f.writelines(lines)
         return True
-    except Exception:
+    except Exception as e:
         return False
 
 

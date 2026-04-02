@@ -57,7 +57,7 @@ def _scan_project(root: str) -> dict:
                     lines = size // 40  # Estimate
                 else:
                     lines = len(open(fpath, errors="replace").readlines())
-            except Exception:
+            except Exception as e:
                 lines = 0
 
             categories[category].append({"path": rel, "ext": ext, "lines": lines})
@@ -173,7 +173,7 @@ def _analyze_file(filepath: str) -> list[dict]:
         # ── Python-specific checks ──
         if ext == ".py":
             # Bare except (swallows all errors silently)
-            if stripped in ("except:", "except Exception:", "except Exception as e:"):
+            if stripped == "except:":
                 # Check if next line is just pass
                 if i < len(lines) and lines[i].strip() in ("pass", "pass  # noqa"):
                     issues.append({

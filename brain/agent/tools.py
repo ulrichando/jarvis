@@ -433,45 +433,111 @@ def _exec_view_screen(args: dict) -> str:
         return f"Screen capture failed: {e}"
 
 
-def _is_gui_app(command: str) -> bool:
-    """Detect if a command launches a GUI application that should run detached."""
-    gui_apps = [
-        "google-chrome", "chromium", "firefox", "brave",
-        "code", "code-oss", "vscodium",
-        "nautilus", "thunar", "dolphin", "nemo",
-        "gimp", "inkscape", "blender",
-        "vlc", "mpv", "totem",
-        "libreoffice", "evince", "okular",
-        "xdg-open", "open", "sensible-browser",
-        "gedit", "kate", "mousepad",
-        "terminal", "x-terminal-emulator", "gnome-terminal", "konsole",
-        "burpsuite", "wireshark", "zenmap",
+_GUI_APPS = {
+    "google-chrome", "chromium", "firefox", "brave",
+    "code", "code-oss", "vscodium",
+    "nautilus", "thunar", "dolphin", "nemo",
+    "gimp", "inkscape", "blender",
+    "vlc", "mpv", "totem",
+    "libreoffice", "evince", "okular",
+    "xdg-open", "open", "sensible-browser",
+    "gedit", "kate", "mousepad",
+    "burpsuite", "wireshark", "zenmap",
+}
+
+_TERMINAL_APPS = {
+    "terminal", "x-terminal-emulator", "gnome-terminal", "konsole",
+    "xfce4-terminal", "alacritty", "kitty", "wezterm", "tilix",
+}
+
+
+def _get_display_env() -> dict:
+    """Get environment variables needed for GUI/terminal apps."""
+    return {
+        **os.environ,
+        "DISPLAY": os.environ.get("DISPLAY", ":0.0"),
+        "XAUTHORITY": os.environ.get("XAUTHORITY", os.path.expanduser("~/.Xauthority")),
+        "DBUS_SESSION_BUS_ADDRESS": os.environ.get("DBUS_SESSION_BUS_ADDRESS", ""),
+    }
+
+
+def _launch_in_terminal(command: str) -> str:
+    """Open a terminal window and run a command inside it.
+
+    The terminal stays open after the command finishes so user can see output.
+    Handles sudo password prompts interactively.
+    """
+    # Build the inner command: run it, then wait for keypress
+    inner = f'bash -c \'{command}; echo; echo "[Done] Press Enter to close"; read\''
+
+    # Try various terminal emulators
+    terminals = [
+        ("x-terminal-emulator", ["-e"]),
+        ("gnome-terminal", ["--"]),
+        ("konsole", ["-e"]),
+        ("xfce4-terminal", ["-e"]),
+        ("alacritty", ["-e"]),
+        ("kitty", ["-e"]),
+        ("xterm", ["-e"]),
     ]
-    cmd_first = command.strip().split()[0].split("/")[-1] if command.strip() else ""
-    return cmd_first in gui_apps
+
+    import shutil
+    for term, flag in terminals:
+        if shutil.which(term):
+            try:
+                cmd = [term] + flag + ["bash", "-c", f'{command}; echo; echo "[Done] Press Enter to close"; read']
+                subprocess.Popen(
+                    cmd,
+                    start_new_session=True,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    env=_get_display_env(),
+                )
+                return f"Opened terminal running: {command}"
+            except Exception:
+                continue
+
+    return f"No terminal emulator found. Run manually: {command}"
 
 
 def _exec_bash(args: dict) -> str:
     command = args.get("command", "")
-    timeout = min(args.get("timeout", 60), 600)  # Up to 10 minutes
+    timeout = min(args.get("timeout", 60), 600)
     if not command:
         return "No command provided."
 
-    # GUI apps: launch detached so they don't block JARVIS
-    if _is_gui_app(command):
+    cmd_first = command.strip().split()[0].split("/")[-1] if command.strip() else ""
+
+    # Terminal commands: open a terminal and run the command INSIDE it
+    if cmd_first in _TERMINAL_APPS:
+        # Extract the command to run inside the terminal
+        # e.g., "x-terminal-emulator -e sudo apt update" → "sudo apt update"
+        parts = command.strip().split()
+        inner_cmd = ""
+        for i, p in enumerate(parts):
+            if p in ("-e", "--"):
+                inner_cmd = " ".join(parts[i+1:])
+                break
+        if not inner_cmd:
+            inner_cmd = "bash"  # Just open a shell
+        return _launch_in_terminal(inner_cmd)
+
+    # Commands that need an interactive terminal (sudo, apt, etc.)
+    interactive_cmds = ["sudo apt", "apt update", "apt upgrade", "apt install",
+                        "apt remove", "dpkg", "systemctl"]
+    if any(command.strip().startswith(ic) or command.strip().startswith(f"echo 'toor' | {ic}")
+           for ic in interactive_cmds):
+        return _launch_in_terminal(command)
+
+    # GUI apps: launch detached
+    if cmd_first in _GUI_APPS:
         try:
             subprocess.Popen(
                 command, shell=True,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 start_new_session=True,
-                env={**os.environ,
-                     "DISPLAY": os.environ.get("DISPLAY", ":0.0"),
-                     "XAUTHORITY": os.environ.get("XAUTHORITY", os.path.expanduser("~/.Xauthority")),
-                     "DBUS_SESSION_BUS_ADDRESS": os.environ.get("DBUS_SESSION_BUS_ADDRESS", ""),
-                     },
+                env=_get_display_env(),
             )
-            app_name = command.strip().split()[0].split("/")[-1]
-            return f"Launched {app_name} in background."
+            return f"Launched {cmd_first} in background."
         except Exception as e:
             return f"Failed to launch: {e}"
 
