@@ -894,6 +894,8 @@ async def main():
                             continue
                         if not _streaming_text:
                             _stop_spinner()
+                            time.sleep(0.05)  # Let spinner thread fully die
+                            _write("\r\033[K")  # Ensure clean line
                             _streaming_text = True
                             _writeln()  # Blank line before response
                         full_text += chunk
