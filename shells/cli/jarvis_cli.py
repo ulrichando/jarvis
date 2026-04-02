@@ -606,25 +606,30 @@ async def main():
             text = "".join(buf)
             _write(f"\r{mode_prefix}{CYAN}❯{RESET} {text}\033[K")
 
+        MAX_VISIBLE = 10
+
         def _show_menu(matches):
-            """Show autocomplete menu below the input frame."""
+            """Show scrollable autocomplete menu below the input frame."""
             nonlocal menu_visible, menu_lines
             _hide_menu()
             if not matches:
                 return
-            # Save cursor, move below the frame (2 lines down: bottom bar + hint)
+            # Calculate visible window that follows selection
+            total = len(matches)
+            start = max(0, min(selected - MAX_VISIBLE // 2, total - MAX_VISIBLE))
+            end = min(total, start + MAX_VISIBLE)
+
             _write("\033[s\033[2B\r\n")
-            show = matches[:10]  # Max 10 items
-            for i, cmd in enumerate(show):
+            if start > 0:
+                _writeln(f"    {DIM}↑ {start} more above{RESET}")
+            for i in range(start, end):
+                cmd = matches[i]
                 prefix = f"  {CYAN}❯{RESET} " if i == selected else "    "
                 desc = cmd.description[:tw - 45] if cmd.description else ""
                 _writeln(f"{prefix}{CYAN}/{cmd.name:<25s}{RESET} {DIM}{desc}{RESET}")
-            if len(matches) > 10:
-                _writeln(f"    {DIM}... {len(matches) - 10} more{RESET}")
-                menu_lines = len(show) + 1
-            else:
-                menu_lines = len(show)
-            # Restore cursor to input line
+            if end < total:
+                _writeln(f"    {DIM}↓ {total - end} more below{RESET}")
+            menu_lines = (end - start) + (1 if start > 0 else 0) + (1 if end < total else 0)
             _write("\033[u")
             menu_visible = True
 
