@@ -660,7 +660,12 @@ async def main():
                 ch = os.read(fd, 1).decode("utf-8", errors="replace")
 
                 if ch == "\n" or ch == "\r":
-                    # Enter: submit
+                    # Enter: if menu is visible, accept selected command first
+                    if menu_visible:
+                        matches = _get_matches()
+                        if matches and selected < len(matches):
+                            buf.clear()
+                            buf.extend(f"/{matches[selected].name}")
                     _hide_menu()
                     _write("\n")
                     return "".join(buf).strip()
