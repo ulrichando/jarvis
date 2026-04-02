@@ -48,6 +48,52 @@ async def cmd_buddy(ctx: CommandContext) -> CommandResult:
         return CommandResult(text=card + footer)
 
 
+@command("reload", description="Hot-reload JARVIS modules without restarting",
+         usage="/reload [module]", category="core", permission=PermLevel.STANDARD)
+async def cmd_reload(ctx: CommandContext) -> CommandResult:
+    import importlib
+    target = ctx.args.strip()
+
+    if target:
+        # Reload specific module
+        try:
+            mod = importlib.import_module(target)
+            importlib.reload(mod)
+            return CommandResult(text=f"Reloaded: {target}")
+        except Exception as e:
+            return CommandResult(text=f"Failed to reload {target}: {e}", success=False)
+
+    # Reload all brain modules
+    import sys
+    reloaded = 0
+    errors = []
+    brain_modules = sorted([name for name in sys.modules if name.startswith("brain.")])
+    for name in brain_modules:
+        try:
+            mod = sys.modules[name]
+            if hasattr(mod, '__file__') and mod.__file__:
+                importlib.reload(mod)
+                reloaded += 1
+        except Exception as e:
+            errors.append(f"{name}: {e}")
+
+    # Re-discover plugins and skills
+    brain = ctx.brain
+    if brain:
+        brain.plugins.discover()
+        brain.skills.discover()
+
+    lines = [f"Hot-reloaded {reloaded} brain modules."]
+    if brain:
+        lines.append(f"  Plugins: {len(brain.plugins.list_plugins())}")
+        lines.append(f"  Skills: {len(brain.skills.list_skills())}")
+    if errors:
+        lines.append(f"\n  {len(errors)} errors:")
+        for e in errors[:5]:
+            lines.append(f"    {e}")
+    return CommandResult(text="\n".join(lines))
+
+
 @command("desktop", description="Launch JARVIS desktop app (transparent window)",
          usage="/desktop", category="core", permission=PermLevel.STANDARD)
 async def cmd_desktop(ctx: CommandContext) -> CommandResult:
