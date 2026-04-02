@@ -5,6 +5,49 @@ import subprocess
 from brain.commands.registry import command, CommandContext, CommandResult, PermLevel
 
 
+# ── Companion (/buddy) ──────────────────────────────────────────────
+
+@command("buddy", description="Show or interact with your AI companion",
+         usage="/buddy [pet|off|on|switch <name>]", category="core", permission=PermLevel.READ_ONLY)
+async def cmd_buddy(ctx: CommandContext) -> CommandResult:
+    from shells.cli.companion import Companion, COMPANIONS
+    args = ctx.args.strip().lower()
+
+    # Get or create companion on brain
+    brain = ctx.brain
+    if brain and not hasattr(brain, '_companion'):
+        brain._companion = Companion()
+
+    companion = brain._companion if brain else Companion()
+
+    if args == "pet":
+        comment = companion.get_comment("pet")
+        return CommandResult(text=companion.render_comment(comment))
+    elif args == "off":
+        companion.enabled = False
+        return CommandResult(text=f"{companion.name} goes quiet. (/buddy on to bring back)")
+    elif args == "on":
+        companion.enabled = True
+        return CommandResult(text=f"{companion.name} is back. Watching.")
+    elif args.startswith("switch"):
+        name = args.replace("switch", "").strip()
+        if name in COMPANIONS:
+            if brain:
+                brain._companion = Companion(name)
+            return CommandResult(text=Companion(name).render_card())
+        available = ", ".join(COMPANIONS.keys())
+        return CommandResult(text=f"Unknown companion. Available: {available}")
+    else:
+        # Show companion card
+        card = companion.render_card()
+        footer = (
+            f"\n{companion.name} is here \u00b7 it'll chime in as you code\n"
+            f"your buddy won't count toward your usage\n"
+            f"say its name to get its take \u00b7 /buddy pet \u00b7 /buddy off"
+        )
+        return CommandResult(text=card + footer)
+
+
 @command("desktop", description="Launch JARVIS desktop app (transparent window)",
          usage="/desktop", category="core", permission=PermLevel.STANDARD)
 async def cmd_desktop(ctx: CommandContext) -> CommandResult:
