@@ -579,6 +579,161 @@ async def main():
     except (AttributeError, ValueError):
         pass
 
+    # ── Input reader with slash command autocomplete ──
+    def _read_input_with_autocomplete(mode_prefix, tw):
+        """Read input char by char. Shows autocomplete menu when / is typed.
+
+        Returns the input string, or None on EOF.
+        """
+        import tty, termios, select
+
+        # Load command list for autocomplete
+        try:
+            from brain.commands import registry as _reg
+            all_cmds = sorted(_reg.list_commands(include_hidden=False), key=lambda c: c.name)
+        except Exception:
+            all_cmds = []
+
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        buf = []
+        menu_visible = False
+        menu_lines = 0
+        selected = 0
+
+        def _redraw_input():
+            """Redraw the input line with current buffer."""
+            text = "".join(buf)
+            _write(f"\r{mode_prefix}{CYAN}❯{RESET} {text}\033[K")
+
+        def _show_menu(matches):
+            """Show autocomplete menu below the input frame."""
+            nonlocal menu_visible, menu_lines
+            _hide_menu()
+            if not matches:
+                return
+            # Save cursor, move below the frame (2 lines down: bottom bar + hint)
+            _write("\033[s\033[2B\r\n")
+            show = matches[:10]  # Max 10 items
+            for i, cmd in enumerate(show):
+                prefix = f"  {CYAN}❯{RESET} " if i == selected else "    "
+                desc = cmd.description[:tw - 45] if cmd.description else ""
+                _writeln(f"{prefix}{CYAN}/{cmd.name:<25s}{RESET} {DIM}{desc}{RESET}")
+            if len(matches) > 10:
+                _writeln(f"    {DIM}... {len(matches) - 10} more{RESET}")
+                menu_lines = len(show) + 1
+            else:
+                menu_lines = len(show)
+            # Restore cursor to input line
+            _write("\033[u")
+            menu_visible = True
+
+        def _hide_menu():
+            """Erase the autocomplete menu."""
+            nonlocal menu_visible, menu_lines
+            if not menu_visible:
+                return
+            _write("\033[s\033[2B\r\n")
+            for _ in range(menu_lines + 1):
+                _write("\033[K\n")
+            _write("\033[u")
+            menu_visible = False
+            menu_lines = 0
+
+        def _get_matches():
+            """Get matching commands for current buffer."""
+            text = "".join(buf)
+            if not text.startswith("/"):
+                return []
+            prefix = text[1:].lower()
+            return [c for c in all_cmds if c.name.startswith(prefix)]
+
+        try:
+            tty.setcbreak(fd)
+
+            while True:
+                ch = os.read(fd, 1).decode("utf-8", errors="replace")
+
+                if ch == "\n" or ch == "\r":
+                    # Enter: submit
+                    _hide_menu()
+                    _write("\n")
+                    return "".join(buf).strip()
+
+                elif ch == "\x04":
+                    # Ctrl+D
+                    _hide_menu()
+                    return None
+
+                elif ch == "\x03":
+                    # Ctrl+C
+                    _hide_menu()
+                    buf.clear()
+                    _redraw_input()
+                    return ""
+
+                elif ch == "\x7f" or ch == "\x08":
+                    # Backspace
+                    if buf:
+                        buf.pop()
+                        _redraw_input()
+                        if "".join(buf).startswith("/"):
+                            matches = _get_matches()
+                            selected = 0
+                            _show_menu(matches)
+                        else:
+                            _hide_menu()
+
+                elif ch == "\x09":
+                    # Tab: accept selected autocomplete
+                    if menu_visible:
+                        matches = _get_matches()
+                        if matches and selected < len(matches):
+                            buf.clear()
+                            buf.extend(f"/{matches[selected].name} ")
+                            _redraw_input()
+                            _hide_menu()
+
+                elif ch == "\x1b":
+                    # Escape sequence (arrows, etc.)
+                    if select.select([sys.stdin], [], [], 0.05)[0]:
+                        seq = os.read(fd, 2).decode("utf-8", errors="replace")
+                        if seq == "[A" and menu_visible:
+                            # Up arrow
+                            matches = _get_matches()
+                            selected = max(0, selected - 1)
+                            _show_menu(matches)
+                        elif seq == "[B" and menu_visible:
+                            # Down arrow
+                            matches = _get_matches()
+                            selected = min(len(matches) - 1, selected + 1)
+                            _show_menu(matches)
+                    else:
+                        # Just Escape: close menu
+                        _hide_menu()
+
+                elif ch >= " ":
+                    # Regular character
+                    buf.append(ch)
+                    _redraw_input()
+
+                    # Show autocomplete if starts with /
+                    if "".join(buf).startswith("/"):
+                        matches = _get_matches()
+                        selected = 0
+                        if matches:
+                            _show_menu(matches)
+                        else:
+                            _hide_menu()
+                    else:
+                        _hide_menu()
+
+        except Exception:
+            _hide_menu()
+            return "".join(buf).strip()
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
     # ── Main REPL Loop ──
     while True:
         try:
@@ -610,11 +765,10 @@ async def main():
                     sys.stdout.flush()
 
                     _in_input = True
-                    raw = sys.stdin.readline()
+                    user_input = _read_input_with_autocomplete(mode_prefix, tw)
                     _in_input = False
-                    if not raw:
+                    if user_input is None:
                         raise EOFError
-                    user_input = raw.strip()
 
                     # Move cursor down past the frame
                     _write(f"\033[2B\r\n")
@@ -731,8 +885,8 @@ async def main():
                         _writeln()
                         _writeln(f"  {DIM}{len(cmds)} commands available. Type /command to run.{RESET}")
                         _writeln()
-                    except Exception:
-                        _writeln(f"  {DIM}Type /help for all commands.{RESET}")
+                    except Exception as e:
+                        _writeln(f"  {DIM}Type /help for all commands. ({e}){RESET}")
                     continue
 
                 # CLI-only shortcuts
