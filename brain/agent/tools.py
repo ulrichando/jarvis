@@ -228,6 +228,41 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "web_api",
+            "description": "Make authenticated HTTP API calls to web services (GitHub, Slack, Discord, Jira, etc.). Uses stored tokens from the vault. If no token is stored, prompts user to add one.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Full API endpoint URL (e.g. https://api.github.com/user/repos)",
+                    },
+                    "method": {
+                        "type": "string",
+                        "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+                        "description": "HTTP method",
+                        "default": "GET",
+                    },
+                    "platform": {
+                        "type": "string",
+                        "description": "Platform name for token lookup (github, slack, discord, jira, etc.)",
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "JSON request body (for POST/PUT/PATCH)",
+                    },
+                    "headers": {
+                        "type": "string",
+                        "description": "Additional headers as JSON object",
+                    },
+                },
+                "required": ["url", "platform"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "view_screen",
             "description": "Capture and analyze what's currently on the user's screen. Returns the active window, application name, and visible text via OCR. Use when the user asks what's on their screen, what they're looking at, or what app they're using.",
             "parameters": {
@@ -337,6 +372,8 @@ def execute_tool(name: str, args: dict, readonly: bool = False) -> str:
             return _exec_web_search(args)
         elif name == "web_fetch":
             return _exec_web_fetch(args)
+        elif name == "web_api":
+            return _exec_web_api(args)
         elif name == "view_screen":
             return _exec_view_screen(args)
         elif name == "think":
@@ -396,11 +433,47 @@ def _exec_view_screen(args: dict) -> str:
         return f"Screen capture failed: {e}"
 
 
+def _is_gui_app(command: str) -> bool:
+    """Detect if a command launches a GUI application that should run detached."""
+    gui_apps = [
+        "google-chrome", "chromium", "firefox", "brave",
+        "code", "code-oss", "vscodium",
+        "nautilus", "thunar", "dolphin", "nemo",
+        "gimp", "inkscape", "blender",
+        "vlc", "mpv", "totem",
+        "libreoffice", "evince", "okular",
+        "xdg-open", "open", "sensible-browser",
+        "gedit", "kate", "mousepad",
+        "terminal", "x-terminal-emulator", "gnome-terminal", "konsole",
+        "burpsuite", "wireshark", "zenmap",
+    ]
+    cmd_first = command.strip().split()[0].split("/")[-1] if command.strip() else ""
+    return cmd_first in gui_apps
+
+
 def _exec_bash(args: dict) -> str:
     command = args.get("command", "")
     timeout = min(args.get("timeout", 60), 600)  # Up to 10 minutes
     if not command:
         return "No command provided."
+
+    # GUI apps: launch detached so they don't block JARVIS
+    if _is_gui_app(command):
+        try:
+            subprocess.Popen(
+                command, shell=True,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                env={**os.environ,
+                     "DISPLAY": os.environ.get("DISPLAY", ":0.0"),
+                     "XAUTHORITY": os.environ.get("XAUTHORITY", os.path.expanduser("~/.Xauthority")),
+                     "DBUS_SESSION_BUS_ADDRESS": os.environ.get("DBUS_SESSION_BUS_ADDRESS", ""),
+                     },
+            )
+            app_name = command.strip().split()[0].split("/")[-1]
+            return f"Launched {app_name} in background."
+        except Exception as e:
+            return f"Failed to launch: {e}"
 
     # Check if sandbox requested
     use_sandbox = not args.get("dangerouslyDisableSandbox", False)
@@ -623,6 +696,101 @@ def _exec_web_search(args: dict) -> str:
         return "\n".join(lines)
     except Exception as e:
         return f"Search error: {e}"
+
+
+def _exec_web_api(args: dict) -> str:
+    """Make authenticated HTTP API calls using stored tokens."""
+    import urllib.request
+    import urllib.error
+
+    url = args.get("url", "")
+    method = args.get("method", "GET").upper()
+    platform = args.get("platform", "").lower()
+    body = args.get("body", "")
+    extra_headers = args.get("headers", "")
+
+    if not url:
+        return "No URL provided."
+    if not platform:
+        return "No platform specified. Use: github, slack, discord, jira, etc."
+
+    # Get token from vault
+    try:
+        from brain.vault.tokens import TokenVault
+        vault = TokenVault()
+        token_data = vault.get_with_extra(platform)
+    except Exception:
+        token_data = None
+
+    if not token_data:
+        return (f"No token stored for '{platform}'. "
+                f"Ask the user to provide one, then store it with:\n"
+                f"  /config vault store {platform} <token>\n"
+                f"Or tell the user to add it to ~/.jarvis/vault.json")
+
+    token = token_data.get("token", "")
+    extra = token_data.get("extra", {})
+
+    # Build auth header based on platform conventions
+    auth_headers = {}
+    if platform == "github":
+        auth_headers["Authorization"] = f"Bearer {token}"
+        auth_headers["Accept"] = "application/vnd.github+json"
+        auth_headers["X-GitHub-Api-Version"] = "2022-11-28"
+    elif platform in ("slack", "discord"):
+        auth_headers["Authorization"] = f"Bearer {token}"
+    elif platform == "jira":
+        # Jira uses email:token as basic auth
+        email = extra.get("email", "")
+        if email:
+            import base64
+            creds = base64.b64encode(f"{email}:{token}".encode()).decode()
+            auth_headers["Authorization"] = f"Basic {creds}"
+        else:
+            auth_headers["Authorization"] = f"Bearer {token}"
+    elif platform == "openai":
+        auth_headers["Authorization"] = f"Bearer {token}"
+    else:
+        # Default: Bearer token
+        auth_headers["Authorization"] = f"Bearer {token}"
+
+    auth_headers["Content-Type"] = "application/json"
+    auth_headers["User-Agent"] = "JARVIS/2.0"
+
+    # Merge extra headers
+    if extra_headers:
+        try:
+            auth_headers.update(json.loads(extra_headers))
+        except Exception:
+            pass
+
+    # Make the request
+    try:
+        data = body.encode() if body else None
+        req = urllib.request.Request(url, data=data, headers=auth_headers, method=method)
+        resp = urllib.request.urlopen(req, timeout=30)
+        result = resp.read().decode()
+
+        # Try to pretty-print JSON
+        try:
+            parsed = json.loads(result)
+            result = json.dumps(parsed, indent=2)
+        except Exception:
+            pass
+
+        if len(result) > 10000:
+            result = result[:10000] + "\n... (truncated)"
+
+        return f"HTTP {resp.status}\n{result}"
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode()[:500]
+        except Exception:
+            pass
+        return f"HTTP {e.code}: {e.reason}\n{body}"
+    except Exception as e:
+        return f"API error: {e}"
 
 
 def _exec_web_fetch(args: dict) -> str:

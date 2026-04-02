@@ -465,6 +465,156 @@ async def cmd_cost(ctx: CommandContext) -> CommandResult:
     return CommandResult(text="\n".join(lines))
 
 
+# ── Claude Code-style commands ──────────────────────────────────────
+
+@command("btw", description="Send an inline side note to the user during a task",
+         usage="/btw <message>", category="core", permission=PermLevel.READ_ONLY)
+async def cmd_btw(ctx: CommandContext) -> CommandResult:
+    msg = ctx.args.strip()
+    if not msg:
+        return CommandResult(text="Usage: /btw <message>", success=False)
+    return CommandResult(text=f"BTW: {msg}")
+
+
+@command("effort", description="Set response effort level",
+         usage="/effort [low|medium|high]", category="core", permission=PermLevel.STANDARD)
+async def cmd_effort(ctx: CommandContext) -> CommandResult:
+    level = ctx.args.strip().lower()
+    brain = ctx.brain
+    if not brain:
+        return CommandResult(text="Brain not available", success=False)
+    if level in ("low", "medium", "high"):
+        brain._effort_level = level
+        hints = {
+            "low": "Quick answers, minimal detail. Good for simple questions.",
+            "medium": "Balanced — default level. Thorough but not exhaustive.",
+            "high": "Deep analysis, comprehensive answers. More tokens, more time.",
+        }
+        return CommandResult(text=f"Effort: {level}\n  {hints[level]}")
+    current = getattr(brain, '_effort_level', 'medium')
+    return CommandResult(text=f"Current effort: {current}\nUsage: /effort [low|medium|high]")
+
+
+@command("statusline", description="Configure the bottom status bar",
+         usage="/statusline [on|off|default]", category="core", permission=PermLevel.STANDARD)
+async def cmd_statusline(ctx: CommandContext) -> CommandResult:
+    arg = ctx.args.strip().lower()
+    if arg == "off":
+        return CommandResult(text="Status line disabled. (Restart to apply)")
+    elif arg == "on" or arg == "default":
+        return CommandResult(text="Status line enabled (default).")
+    return CommandResult(
+        text="Status Line Config\n"
+             "  /statusline on      Show status bar\n"
+             "  /statusline off     Hide status bar\n"
+             "  /statusline default Reset to defaults\n\n"
+             "Status bar shows: model · tokens · mode"
+    )
+
+
+@command("allowed-tools", description="Show which tools the agent can use",
+         usage="/allowed-tools", category="core", permission=PermLevel.READ_ONLY)
+async def cmd_allowed_tools(ctx: CommandContext) -> CommandResult:
+    from brain.agent.tools import TOOL_SCHEMAS
+    lines = ["Available Tools", "=" * 40]
+    for tool in TOOL_SCHEMAS:
+        func = tool.get("function", {})
+        name = func.get("name", "?")
+        desc = func.get("description", "")[:60]
+        lines.append(f"  {name:<15s} {desc}")
+    lines.append(f"\n  Total: {len(TOOL_SCHEMAS)} tools")
+    brain = ctx.brain
+    if brain:
+        mcp_tools = brain.mcp.list_tools()
+        if mcp_tools:
+            lines.append(f"  MCP tools: {len(mcp_tools)}")
+    return CommandResult(text="\n".join(lines))
+
+
+@command("terminal-setup", description="Configure terminal for optimal JARVIS display",
+         usage="/terminal-setup", category="core", permission=PermLevel.READ_ONLY)
+async def cmd_terminal_setup(ctx: CommandContext) -> CommandResult:
+    return CommandResult(
+        text="Terminal Setup\n"
+             "=" * 40 + "\n"
+             "  Recommended: 120+ columns, 30+ rows\n"
+             "  Font: Any monospace (Fira Code, JetBrains Mono)\n"
+             "  Theme: Dark background\n"
+             "  Unicode: Required (UTF-8)\n\n"
+             "  Your terminal:\n"
+             f"    Size: {os.get_terminal_size().columns}x{os.get_terminal_size().lines}\n"
+             f"    TERM: {os.environ.get('TERM', 'unknown')}\n"
+             f"    LANG: {os.environ.get('LANG', 'unknown')}"
+    )
+
+
+@command("intro", description="Show the welcome screen again",
+         usage="/intro", category="core", permission=PermLevel.READ_ONLY)
+async def cmd_intro(ctx: CommandContext) -> CommandResult:
+    return CommandResult(
+        text="  \033[36m╔═▓▓▓▓═╗\033[0m   \033[1mJARVIS v2.0\033[0m\n"
+             "  \033[36m║ \033[1mJ.A.R.V.I.S\033[0m\033[36m ║\033[0m  Autonomous AI Agent\n"
+             "  \033[36m╚═▓▓▓▓═╝\033[0m   Built by Ulrich\n\n"
+             "  /help         All commands\n"
+             "  /doctor       Check health\n"
+             "  /status       Current state\n"
+             "  /model        Switch AI model\n"
+             "  /effort       Set response depth\n"
+             "  ?             Keyboard shortcuts"
+    )
+
+
+@command("new", aliases=["reset"], description="Start a fresh conversation",
+         usage="/new", category="session", permission=PermLevel.STANDARD)
+async def cmd_new(ctx: CommandContext) -> CommandResult:
+    brain = ctx.brain
+    mgr = ctx.session_mgr
+    if mgr:
+        mgr.save_current()
+        mgr.new()
+    if brain:
+        # Clear conversation memory for fresh start
+        try:
+            import sqlite3
+            from brain.config import DATA_DIR
+            db_path = DATA_DIR / "jarvis.db"
+            if db_path.exists():
+                conn = sqlite3.connect(str(db_path))
+                conn.execute("DELETE FROM conversations")
+                conn.commit()
+                conn.close()
+        except Exception:
+            pass
+    return CommandResult(text="Fresh conversation started.", action="clear")
+
+
+@command("rewind", description="Undo the last exchange (remove last user+assistant turn)",
+         usage="/rewind [N]", category="session", permission=PermLevel.STANDARD)
+async def cmd_rewind(ctx: CommandContext) -> CommandResult:
+    brain = ctx.brain
+    if not brain:
+        return CommandResult(text="Brain not available", success=False)
+    n = 1
+    if ctx.args.strip().isdigit():
+        n = int(ctx.args.strip())
+    try:
+        import sqlite3
+        from brain.config import DATA_DIR
+        db_path = DATA_DIR / "jarvis.db"
+        if db_path.exists():
+            conn = sqlite3.connect(str(db_path))
+            # Delete last N*2 rows (user + jarvis pairs)
+            count = n * 2
+            conn.execute(f"DELETE FROM conversations WHERE id IN "
+                         f"(SELECT id FROM conversations ORDER BY id DESC LIMIT {count})")
+            conn.commit()
+            conn.close()
+            return CommandResult(text=f"Rewound {n} exchange{'s' if n > 1 else ''}.")
+    except Exception as e:
+        return CommandResult(text=f"Rewind failed: {e}", success=False)
+    return CommandResult(text="Nothing to rewind.")
+
+
 @command("export", description="Export conversation to a file",
          usage="/export [format] [path]", category="session", permission=PermLevel.STANDARD)
 async def cmd_export(ctx: CommandContext) -> CommandResult:

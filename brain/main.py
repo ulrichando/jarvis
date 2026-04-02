@@ -114,7 +114,8 @@ STEP 4 — VERIFY AFTER APPLYING:
 When creating files, write COMPLETE working code — not placeholders or TODO stubs.
 When reviewing code, read the actual files — don't guess.
 
-SYSTEM: Kali Linux | Owner: Ulrich | CWD: {cwd} | JARVIS source: {jarvis_root}
+SYSTEM: Kali Linux | Owner: Ulrich | CWD: {cwd}
+YOUR SOURCE CODE: {jarvis_root} — this is YOUR codebase. When asked to "review your code" or "review your codebase", use read_file and search_files on this directory. You ARE JARVIS and this IS your code.
 """
 
 
@@ -874,39 +875,11 @@ PROJECT CREATION RULES — follow these when building something:
     # ═══ CLASSIFICATION ═════════════════════════════════════════════
 
     def _needs_agent_loop(self, user_input: str) -> bool:
-        """Decide if this input needs the agent loop (tool calling) or just conversation.
+        """Like Claude Code: ALWAYS use agent loop. Claude decides whether to use tools.
 
-        Like Claude Code: default to agent loop for most things.
-        Only use standard response for clearly conversational inputs (greetings, opinions, chat).
+        The agent loop has tools available but Claude won't use them for simple chat.
+        This ensures tool access is always available for follow-ups.
         """
-        q = user_input.lower().strip()
-
-        # Always use agent loop in agent/plan mode
-        if self.mode in ("agent", "plan"):
-            return True
-
-        # Short greetings and small talk → standard response (no tools needed)
-        chat_only = [
-            "hello", "hi", "hey", "yo", "sup", "good morning", "good evening",
-            "good night", "good afternoon", "thanks", "thank you", "bye",
-            "how are you", "what's up", "whats up", "what are you",
-            "who are you", "tell me about yourself", "what can you do",
-            "lol", "haha", "nice", "cool", "ok", "okay", "sure", "yes", "no",
-            "good job", "well done", "my bad", "sorry", "never mind",
-        ]
-        if q.rstrip("?!. ") in chat_only:
-            return False
-
-        # Very short inputs that are just chat
-        if len(q) < 15 and not any(c in q for c in "/~."):
-            # Short and no file indicators → probably chat
-            action_words = ["run", "fix", "read", "write", "edit", "create", "build",
-                           "scan", "find", "search", "check", "review", "update",
-                           "install", "delete", "show", "list", "open", "make"]
-            if not any(q.startswith(w) for w in action_words):
-                return False
-
-        # Everything else → agent loop (let Claude decide whether to use tools)
         return True
 
     # ═══ MODE SWITCHING ═════════════════════════════════════════════

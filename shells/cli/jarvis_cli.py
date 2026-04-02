@@ -624,7 +624,21 @@ async def main():
                         _write(f"\033[4A\033[J")
                         continue
                 except EOFError:
-                    break
+                    # First Ctrl+D: show confirmation (like Claude Code)
+                    _writeln()
+                    _writeln(f"  {DIM}Press Ctrl+D again to exit, or keep typing.{RESET}")
+                    try:
+                        raw = sys.stdin.readline()
+                        if not raw:
+                            # Second Ctrl+D: actually exit
+                            raise EOFError
+                        user_input = raw.strip()
+                        if user_input:
+                            pass  # Fall through to process input
+                        else:
+                            continue
+                    except EOFError:
+                        break
 
             if not user_input:
                 continue
