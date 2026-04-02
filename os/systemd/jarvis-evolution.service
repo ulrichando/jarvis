@@ -1,0 +1,25 @@
+[Unit]
+Description=JARVIS Evolution Engine
+Documentation=https://github.com/ulrich/jarvis
+After=jarvis-brain.service jarvis-memory.service
+Requires=jarvis-brain.service jarvis-memory.service
+
+[Service]
+Type=simple
+User=jarvis
+Group=jarvis
+WorkingDirectory=/opt/jarvis
+EnvironmentFile=/opt/jarvis/.env.os
+ExecStart=/opt/jarvis/.venv/bin/python -m brain.evolution.service
+Restart=always
+RestartSec=30
+TimeoutStartSec=30
+
+# Hardening
+ProtectSystem=strict
+ReadWritePaths=/var/lib/jarvis /opt/jarvis
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=jarvis.target

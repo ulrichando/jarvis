@@ -1,0 +1,20 @@
+# ============================================================
+# JARVIS Evolution — self-improvement through AST mutation
+#
+# The grow pathway inspects Jarvis's own CogScript AST,
+# runs genetic evolution on it, and rewrites itself with
+# improved pathways.
+# ============================================================
+
+# ── EVOLVE: Rewrite own pathways to get better ──
+pathway grow:
+    let my_code = inspect self
+
+    let evolved = evolve dna:
+        source my_code
+        fitness 0.6
+        mutate "pathway"
+        generations 3
+
+    rewrite self, evolved
+    episode history, action="evolved", data=evolved

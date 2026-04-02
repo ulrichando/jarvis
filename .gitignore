@@ -1,0 +1,53 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Build artifacts
+target/
+*.egg-info/
+jarvis_brain.egg-info/
+__pycache__/
+*.pyc
+*.pyo
+dist/
+build/
+
+# Node modules
+node_modules/
+
+# Rust/Tauri build cache
+shells/desktop/src-tauri/target/
+
+# Runtime data
+*.db
+*.db-journal
+*.snap
+*.bak
+*.log
+*.msgpack
+data/
+screenshots/
+
+# User config (created at runtime)
+.env
+providers.json
+
+# OS/IDE
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Packer/VM outputs
+os/packer/output*/
+os/*.iso
+os/*.img
+os/*.vmdk
+os/*.ova
+
+# Frontend dist (built at runtime)
+shells/web/frontend/dist/
+
+# Backup files
+*.py.bak

@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>J.A.R.V.I.S.</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Share+Tech+Mono&display=swap" media="print" onload="this.media='all'">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- The Arc Reactor -->
+        <div id="reactor">
+            <div class="mech-ring outer-mech">
+                <svg viewBox="0 0 500 500">
+                    <circle cx="250" cy="250" r="245" class="ring-stroke thin" />
+                    <circle cx="250" cy="250" r="238" class="ring-stroke medium" stroke-dasharray="4 8" />
+                    <g class="ticks-major" id="ticks-outer"></g>
+                    <rect x="248" y="2" width="4" height="12" fill="#ff3333" opacity="0.8" rx="1"/>
+                    <rect x="248" y="486" width="4" height="12" fill="#ff3333" opacity="0.6" rx="1"/>
+                    <rect x="2" y="248" width="12" height="4" fill="#ff3333" opacity="0.6" rx="1"/>
+                    <rect x="486" y="248" width="12" height="4" fill="#ff3333" opacity="0.6" rx="1"/>
+                </svg>
+            </div>
+            <div class="mech-ring ring-layer-2">
+                <svg viewBox="0 0 420 420">
+                    <circle cx="210" cy="210" r="205" class="ring-stroke medium" />
+                    <circle cx="210" cy="210" r="195" class="ring-stroke thin" stroke-dasharray="2 12" />
+                    <g class="ticks-minor" id="ticks-mid"></g>
+                    <circle cx="210" cy="8" r="3" fill="#ff8800" opacity="0.7"/>
+                    <circle cx="410" cy="210" r="2.5" fill="#ff8800" opacity="0.5"/>
+                </svg>
+            </div>
+            <canvas id="waveform-canvas" width="360" height="360"></canvas>
+            <div class="mech-ring ring-layer-3">
+                <svg viewBox="0 0 280 280">
+                    <circle cx="140" cy="140" r="136" class="ring-stroke bright" />
+                    <circle cx="140" cy="140" r="128" class="ring-stroke medium" stroke-dasharray="6 6" />
+                    <circle cx="140" cy="140" r="120" class="ring-stroke thin" />
+                </svg>
+            </div>
+            <div class="mech-ring ring-layer-4">
+                <svg viewBox="0 0 200 200">
+                    <circle cx="100" cy="100" r="96" class="ring-stroke bright" />
+                    <circle cx="100" cy="100" r="88" class="ring-stroke medium" stroke-dasharray="3 9" />
+                </svg>
+            </div>
+            <div class="core-center">
+                <div class="core-glow"></div>
+                <div class="core-inner"></div>
+            </div>
+        </div>
+
+        <!-- HUD Panels — info displays around the reactor -->
+        <div id="hud-top" class="hud-panel hud-top"></div>
+        <div id="hud-left" class="hud-panel hud-left"></div>
+        <div id="hud-right" class="hud-panel hud-right"></div>
+        <div id="hud-bottom" class="hud-panel hud-bottom"></div>
+
+        <!-- Media overlay — for images, video, text displays -->
+        <div id="media-overlay" class="hidden">
+            <div id="media-content"></div>
+            <div id="media-close" class="media-close">&times;</div>
+        </div>
+
+        <!-- Settings Panel — add AI providers -->
+        <div id="settings-panel" class="settings-panel hidden">
+            <div class="settings-header">
+                <span>AI PROVIDERS</span>
+                <div id="settings-close" class="settings-close">&times;</div>
+            </div>
+            <div id="provider-list" class="provider-list"></div>
+            <div class="settings-form">
+                <select id="provider-name">
+                    <option value="">Select provider...</option>
+                    <option value="claude">Claude (Anthropic)</option>
+                    <option value="openai">OpenAI</option>
+                    <option value="groq">Groq</option>
+                    <option value="together">Together AI</option>
+                    <option value="openrouter">OpenRouter</option>
+                    <option value="ollama">Ollama (Local)</option>
+                    <option value="custom">Custom API...</option>
+                </select>
+                <textarea id="provider-key" placeholder="Paste your API key or token here..." rows="3"></textarea>
+                <input id="provider-url" type="text" placeholder="Base URL (auto-detected)" style="display:none;">
+                <input id="provider-model" type="text" placeholder="Model (auto-detected)" style="display:none;">
+                <button id="provider-add-btn">ADD PROVIDER</button>
+            </div>
+        </div>
+
+        <!-- Ambient status (integrated into reactor — no separate button) -->
+        <div id="mic-btn" style="display:none;"></div>
+        <span id="mic-status" style="display:none;"></span>
+
+        <!-- Webcam (hidden, used for face recognition) -->
+        <video id="webcam" autoplay playsinline muted style="display:none;"></video>
+
+        <!-- Fullscreen exit button -->
+        <div id="exit-fs" class="exit-fs hidden" title="Exit fullscreen">&#x2715;</div>
+
+        <!-- Chat Panel — interactive conversation with JARVIS -->
+        <div id="chat-panel" class="chat-panel hidden">
+            <svg id="neural-link" class="neural-link">
+                <line id="neural-line" class="neural-line-path" x1="0" y1="0" x2="0" y2="0"/>
+                <circle class="neural-pulse" r="3" cx="0" cy="0"/>
+            </svg>
+            <div class="chat-header">
+                <span class="chat-title">◆ JARVIS INTERFACE</span>
+                <div class="chat-controls">
+                    <span id="chat-minimize" class="chat-btn" title="Minimize">─</span>
+                    <span id="chat-close" class="chat-btn" title="Close">✕</span>
+                </div>
+            </div>
+            <div id="chat-messages" class="chat-messages">
+                <div class="chat-msg jarvis">
+                    <span class="msg-label">JARVIS</span>
+                    <span class="msg-text">Online. How can I assist you, Ulrich?</span>
+                </div>
+            </div>
+            <div class="chat-input-area">
+                <div class="chat-input-border">
+                    <input id="chat-input" type="text" placeholder="Type a message..." autocomplete="off"/>
+                    <button id="chat-send" class="chat-send-btn">▶</button>
+                    <button id="chat-voice" class="chat-voice-btn" title="Voice input">🎤</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Chat toggle button (attached to reactor) -->
+        <div id="chat-toggle" class="chat-toggle" title="Open Chat (C)">
+            <span>◈</span>
+        </div>
+
+        <!-- Power Menu (JARVIS OS) -->
+        <div id="power-btn" class="power-btn hidden" title="Power Menu">&#x23FB;</div>
+        <div id="power-menu" class="power-menu hidden">
+            <div class="power-header">SYSTEM</div>
+            <button class="power-option" data-action="reboot">
+                <span class="power-icon">&#x21BB;</span>
+                <span>Reboot</span>
+            </button>
+            <button class="power-option" data-action="sleep">
+                <span class="power-icon">&#x263D;</span>
+                <span>Sleep</span>
+            </button>
+            <button class="power-option power-danger" data-action="shutdown">
+                <span class="power-icon">&#x23FB;</span>
+                <span>Shutdown</span>
+            </button>
+        </div>
+    </div>
+
+    <script>
+    // Detect desktop mode from URL param
+    if (new URLSearchParams(window.location.search).has('desktop')) {
+        document.body.classList.add('desktop-mode');
+        document.documentElement.classList.add('desktop-mode');
+    } else {
+        document.body.classList.add('web-mode');
+    }
+    </script>
+    <script src="app.js"></script>
+</body>
+</html>

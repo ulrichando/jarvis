@@ -1,0 +1,31 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicerockets/tauri/dev/crates/tauri-config-schema/schema.json",
+  "productName": "JARVIS",
+  "version": "0.1.0",
+  "identifier": "com.jarvis.app",
+  "build": {
+    "frontendDist": "../src",
+    "devUrl": "http://localhost:8765"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "security": {
+      "csp": null
+    },
+    "windows": [
+      {
+        "label": "main",
+        "title": "J.A.R.V.I.S.",
+        "width": 900,
+        "height": 900,
+        "resizable": true,
+        "fullscreen": false,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "center": true,
+        "url": "http://localhost:8765?desktop=1"
+      }
+    ]
+  }
+}

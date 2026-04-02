@@ -1,0 +1,32 @@
+# ============================================================
+# JARVIS Perception — see and hear the world
+#
+# Pathways for camera vision and microphone listening.
+# Uses CogScript pipeline operators: detect, track, describe,
+# transcribe, sentiment.
+#
+# Bridged mode: uses Jarvis's local CV (face detection,
+# color analysis, brightness, scene complexity) and Whisper STT.
+# Standalone: uses CogScript's built-in mock backends.
+# ============================================================
+
+# ── SEE: Camera -> detect -> track -> describe -> store ──
+pathway see:
+    let frame = perceive eyes
+    if frame.confidence > 0.7:
+        let objects = frame >> detect("objects") >> track()
+        let scene_desc = objects >> describe()
+        remember focus, scene_desc, key="scene"
+        remember knowledge, scene_desc, tags="visual"
+        episode history, action="saw", data=scene_desc
+
+# ── HEAR: Mic -> transcribe -> sentiment -> store ──
+pathway hear:
+    let audio = perceive ears
+    if audio.confidence > 0.7:
+        let words = audio >> transcribe()
+        let mood = words >> sentiment()
+        remember focus, words, key="heard"
+        remember focus, mood, key="mood"
+        remember knowledge, words, tags="heard"
+        episode history, action="heard", data=words

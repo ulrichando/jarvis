@@ -1,0 +1,31 @@
+# ============================================================
+# JARVIS Learning — absorb, consolidate, and grow curious
+#
+# Pathways for extracting knowledge from conversations,
+# consolidating memories, and identifying knowledge gaps.
+# ============================================================
+
+# ── ABSORB: Extract knowledge from every conversation ──
+pathway absorb:
+    let input_data = recall focus, query="user_input"
+    let answer = recall focus, query="answer"
+
+    remember knowledge, input_data, tags="conversation"
+    remember knowledge, answer, tags="response_template"
+
+    episode history, action="absorbed", data=input_data
+
+# ── CURIOSITY: Find knowledge gaps and flag them ──
+pathway wonder:
+    let everything = recall knowledge, top_k=20
+    let gaps = ask everything
+
+    if gaps.confidence < 0.5:
+        remember focus, gaps, key="gaps"
+        episode history, action="curious", data=gaps
+
+# ── CONSOLIDATE: Merge, deduplicate, strengthen memories ──
+pathway tidy:
+    let all_mem = recall knowledge, top_k=30
+    let cleaned = all_mem >> consolidate("merge") >> deduplicate()
+    remember knowledge, cleaned, tags="consolidated"

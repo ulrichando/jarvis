@@ -1,0 +1,24 @@
+[project]
+name = "jarvis-brain"
+version = "0.1.0"
+description = "JARVIS AI Brain — self-evolving intelligence engine"
+requires-python = ">=3.10"
+dependencies = [
+    "groq",
+    "faster-whisper",
+    "piper-tts",
+    "sounddevice",
+    "numpy",
+    "grpcio",
+    "grpcio-tools",
+    "rich",
+    "aiohttp",
+    "msgpack",
+]
+
+[project.scripts]
+jarvis = "shells.cli.jarvis_cli:run"
+jarvis-web = "shells.web.server:main"
+
+[tool.setuptools.packages.find]
+include = ["brain*", "shells*"]

@@ -1,0 +1,61 @@
+{
+    "layer": "top",
+    "position": "bottom",
+    "height": 32,
+    "spacing": 8,
+
+    "modules-left": ["custom/jarvis-logo", "custom/jarvis-status"],
+    "modules-center": ["clock"],
+    "modules-right": ["pulseaudio", "network", "cpu", "memory", "custom/power"],
+
+    "custom/jarvis-logo": {
+        "format": "  J.A.R.V.I.S.",
+        "tooltip": "JARVIS Autonomous Intelligence OS"
+    },
+
+    "custom/jarvis-status": {
+        "exec": "jarvis-status",
+        "interval": 5,
+        "format": "{}",
+        "tooltip": "JARVIS subsystem status"
+    },
+
+    "clock": {
+        "format": "{:%H:%M}",
+        "format-alt": "{:%A, %B %d, %Y — %H:%M:%S}",
+        "tooltip-format": "{:%A, %B %d, %Y}"
+    },
+
+    "cpu": {
+        "format": "  {usage}%",
+        "interval": 3,
+        "tooltip": true
+    },
+
+    "memory": {
+        "format": "  {percentage}%",
+        "interval": 5,
+        "tooltip-format": "{used:0.1f}G / {total:0.1f}G"
+    },
+
+    "pulseaudio": {
+        "format": "{icon} {volume}%",
+        "format-muted": "  muted",
+        "format-icons": {
+            "default": ["", "", ""]
+        },
+        "on-click": "pavucontrol"
+    },
+
+    "network": {
+        "format-ethernet": "  {ipaddr}",
+        "format-disconnected": "  offline",
+        "tooltip-format": "{ifname}: {ipaddr}/{cidr}"
+    },
+
+    "custom/power": {
+        "format": " ",
+        "on-click": "swaynag -t warning -m 'Power' -B 'Shutdown' 'systemctl poweroff' -B 'Reboot' 'systemctl reboot'",
+        "tooltip": "Power menu"
+    }
+}

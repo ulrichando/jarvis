@@ -1,0 +1,316 @@
+#!/usr/bin/env bash
+#
+# JARVIS Installer — one command to install JARVIS on any Linux system
+#
+# Usage:
+#   curl -fsSL https://raw.githubusercontent.com/ulrichando/jarvis/main/install.sh | bash
+#
+# Or locally:
+#   bash install.sh
+#
+
+set -e
+
+CYAN='\033[36m'
+GREEN='\033[32m'
+RED='\033[31m'
+DIM='\033[2m'
+BOLD='\033[1m'
+RESET='\033[0m'
+
+JARVIS_REPO="https://github.com/ulrichando/jarvis.git"
+JARVIS_DIR="$HOME/.jarvis-src"
+JARVIS_BIN="$HOME/.local/bin/jarvis"
+
+echo ""
+echo -e "  ${CYAN}╔═▓▓▓▓═╗${RESET}"
+echo -e "  ${CYAN}║ ${BOLD}J.A.R.V.I.S${RESET}${CYAN} ║${RESET}"
+echo -e "  ${CYAN}╚═▓▓▓▓═╝${RESET}"
+echo ""
+echo -e "  ${DIM}Installing JARVIS — your personal AI agent${RESET}"
+echo ""
+
+# ── Check dependencies ──
+check_cmd() {
+    if command -v "$1" &>/dev/null; then
+        echo -e "  ${GREEN}✓${RESET} $1"
+        return 0
+    else
+        echo -e "  ${RED}✗${RESET} $1 ${DIM}(missing)${RESET}"
+        return 1
+    fi
+}
+
+echo -e "  ${DIM}Checking dependencies...${RESET}"
+MISSING=0
+check_cmd python3 || MISSING=1
+check_cmd pip3 || check_cmd pip || MISSING=1
+check_cmd git || MISSING=1
+echo ""
+
+if [ "$MISSING" -eq 1 ]; then
+    echo -e "  ${RED}Missing dependencies. Installing...${RESET}"
+    if command -v apt &>/dev/null; then
+        sudo apt update -qq && sudo apt install -y -qq python3 python3-pip git
+    elif command -v dnf &>/dev/null; then
+        sudo dnf install -y python3 python3-pip git
+    elif command -v pacman &>/dev/null; then
+        sudo pacman -S --noconfirm python python-pip git
+    elif command -v brew &>/dev/null; then
+        brew install python git
+    else
+        echo -e "  ${RED}Cannot auto-install. Please install python3, pip, and git manually.${RESET}"
+        exit 1
+    fi
+    echo ""
+fi
+
+# ── Clone or update repo ──
+if [ -d "$JARVIS_DIR" ]; then
+    echo -e "  ${DIM}Updating JARVIS...${RESET}"
+    cd "$JARVIS_DIR" && git pull --quiet 2>/dev/null || true
+else
+    echo -e "  ${DIM}Downloading JARVIS...${RESET}"
+    git clone --quiet --depth 1 "$JARVIS_REPO" "$JARVIS_DIR" 2>/dev/null || {
+        # If repo doesn't exist yet, use local copy
+        if [ -d "$(dirname "$0")/brain" ]; then
+            echo -e "  ${DIM}Using local source...${RESET}"
+            JARVIS_DIR="$(cd "$(dirname "$0")" && pwd)"
+        else
+            echo -e "  ${RED}Failed to clone repo. Using local install.${RESET}"
+            JARVIS_DIR="$(pwd)"
+        fi
+    }
+fi
+
+# ── Install Python dependencies ──
+echo -e "  ${DIM}Installing Python packages...${RESET}"
+cd "$JARVIS_DIR"
+if [ -f "requirements.lock" ]; then
+    pip3 install --quiet --break-system-packages -r requirements.lock 2>/dev/null || \
+    pip3 install --quiet -r requirements.lock 2>/dev/null || \
+    pip install --quiet --break-system-packages -r requirements.lock 2>/dev/null || true
+fi
+
+# Install JARVIS itself
+pip3 install --quiet --break-system-packages -e . 2>/dev/null || \
+pip3 install --quiet -e . 2>/dev/null || \
+pip install --quiet --break-system-packages -e . 2>/dev/null || true
+
+# ── Create launcher script ──
+mkdir -p "$HOME/.local/bin"
+cat > "$JARVIS_BIN" << 'LAUNCHER'
+#!/usr/bin/env bash
+# JARVIS launcher
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+JARVIS_HOME="${JARVIS_HOME:-$HOME/.jarvis}"
+mkdir -p "$JARVIS_HOME"
+
+# Find jarvis source
+if [ -d "$HOME/.jarvis-src" ]; then
+    JARVIS_SRC="$HOME/.jarvis-src"
+elif [ -d "$(dirname "$SCRIPT_DIR")/brain" ]; then
+    JARVIS_SRC="$(dirname "$SCRIPT_DIR")"
+else
+    JARVIS_SRC="$HOME/.jarvis-src"
+fi
+
+cd "$JARVIS_SRC" 2>/dev/null || true
+exec python3 -m shells.cli.jarvis_cli "$@"
+LAUNCHER
+chmod +x "$JARVIS_BIN"
+
+# ── Create web launcher ──
+cat > "$HOME/.local/bin/jarvis-web" << 'WEBLAUNCH'
+#!/usr/bin/env bash
+JARVIS_SRC="${HOME}/.jarvis-src"
+[ -d "$JARVIS_SRC" ] || JARVIS_SRC="$(pwd)"
+cd "$JARVIS_SRC" 2>/dev/null || true
+exec python3 -m shells.web.server "$@"
+WEBLAUNCH
+chmod +x "$HOME/.local/bin/jarvis-web"
+
+# ── Ensure ~/.local/bin is in PATH ──
+if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
+    SHELL_RC=""
+    if [ -f "$HOME/.zshrc" ]; then
+        SHELL_RC="$HOME/.zshrc"
+    elif [ -f "$HOME/.bashrc" ]; then
+        SHELL_RC="$HOME/.bashrc"
+    fi
+    if [ -n "$SHELL_RC" ]; then
+        if ! grep -q '.local/bin' "$SHELL_RC" 2>/dev/null; then
+            echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_RC"
+            echo -e "  ${DIM}Added ~/.local/bin to PATH in $(basename "$SHELL_RC")${RESET}"
+        fi
+    fi
+fi
+
+# ── AI Provider Setup (interactive) ──
+echo ""
+echo -e "  ${BOLD}Choose your AI providers ${DIM}(select multiple with commas: 1,3,5)${RESET}"
+echo ""
+echo -e "  ${CYAN}1${RESET}  Anthropic  ${DIM}(Claude — best quality)${RESET}"
+echo -e "  ${CYAN}2${RESET}  OpenAI     ${DIM}(GPT-4o, GPT-4o-mini)${RESET}"
+echo -e "  ${CYAN}3${RESET}  DeepSeek   ${DIM}(V3/R1 — cheapest cloud, great for code)${RESET}"
+echo -e "  ${CYAN}4${RESET}  xAI        ${DIM}(Grok-3)${RESET}"
+echo -e "  ${CYAN}5${RESET}  OpenRouter  ${DIM}(access all models via one key)${RESET}"
+echo -e "  ${CYAN}6${RESET}  Ollama     ${DIM}(local — free, private, no API key needed)${RESET}"
+echo -e "  ${CYAN}7${RESET}  Custom     ${DIM}(any OpenAI-compatible server, local GGUF, LM Studio, vLLM, etc.)${RESET}"
+echo -e "  ${CYAN}8${RESET}  Skip       ${DIM}(configure later)${RESET}"
+echo ""
+read -p "  Choice (e.g. 1,6 — default 1,6): " AI_CHOICES
+AI_CHOICES="${AI_CHOICES:-1,6}"
+
+mkdir -p "$HOME/.jarvis/data"
+
+# Parse choices
+PROVIDERS="{"
+PRIORITY=0
+INSTALL_OLLAMA=false
+OLLAMA_MODEL="qwen2.5:7b"
+
+add_provider() {
+    local name="$1" type="$2" key="$3" url="$4" model="$5" models="$6"
+    if [ -n "$key" ]; then
+        PROVIDERS="$PROVIDERS
+  \"$name\": {
+    \"name\": \"$name\",
+    \"type\": \"$type\",
+    \"api_key\": \"$key\",
+    \"base_url\": \"$url\",
+    \"model\": \"$model\",
+    \"models\": [$models],
+    \"priority\": $PRIORITY,
+    \"enabled\": true
+  },"
+        PRIORITY=$((PRIORITY + 1))
+        echo -e "  ${GREEN}✓${RESET} $name configured"
+    fi
+}
+
+for choice in $(echo "$AI_CHOICES" | tr ',' ' '); do
+    case "$choice" in
+        1)
+            echo ""
+            read -p "  Anthropic API key (sk-ant-...): " KEY
+            add_provider "claude" "anthropic" "$KEY" "https://api.anthropic.com" \
+                "claude-haiku-4-5-20251001" '"claude-haiku-4-5-20251001", "claude-sonnet-4-20250514"'
+            ;;
+        2)
+            echo ""
+            read -p "  OpenAI API key (sk-...): " KEY
+            add_provider "openai" "openai" "$KEY" "https://api.openai.com/v1" \
+                "gpt-4o-mini" '"gpt-4o", "gpt-4o-mini"'
+            ;;
+        3)
+            echo ""
+            read -p "  DeepSeek API key: " KEY
+            add_provider "deepseek" "openai" "$KEY" "https://api.deepseek.com" \
+                "deepseek-chat" '"deepseek-chat", "deepseek-reasoner"'
+            ;;
+        4)
+            echo ""
+            read -p "  xAI API key: " KEY
+            add_provider "xai" "openai" "$KEY" "https://api.x.ai/v1" \
+                "grok-3-mini" '"grok-3", "grok-3-mini"'
+            ;;
+        5)
+            echo ""
+            read -p "  OpenRouter API key: " KEY
+            add_provider "openrouter" "openai" "$KEY" "https://openrouter.ai/api/v1" \
+                "anthropic/claude-3.5-sonnet" '"anthropic/claude-3.5-sonnet", "openai/gpt-4o"'
+            ;;
+        6)
+            INSTALL_OLLAMA=true
+            echo ""
+            echo -e "  ${DIM}Local models:${RESET}"
+            echo -e "    ${CYAN}a${RESET}  qwen2.5:7b      ${DIM}(4.7GB — fast, good for chat)${RESET}"
+            echo -e "    ${CYAN}b${RESET}  llama3.2:3b     ${DIM}(2.0GB — tiny, very fast)${RESET}"
+            echo -e "    ${CYAN}c${RESET}  deepseek-r1:14b  ${DIM}(8.9GB — reasoning)${RESET}"
+            echo -e "    ${CYAN}d${RESET}  qwen2.5:72b     ${DIM}(47GB — best local, needs 64GB RAM)${RESET}"
+            read -p "  Model (a-d, default a): " MC
+            case "${MC:-a}" in
+                b) OLLAMA_MODEL="llama3.2:3b" ;;
+                c) OLLAMA_MODEL="deepseek-r1:14b" ;;
+                d) OLLAMA_MODEL="qwen2.5:72b" ;;
+                *) OLLAMA_MODEL="qwen2.5:7b" ;;
+            esac
+            PROVIDERS="$PROVIDERS
+  \"ollama-fast\": {
+    \"name\": \"ollama-fast\",
+    \"type\": \"openai\",
+    \"api_key\": \"ollama\",
+    \"base_url\": \"http://localhost:11434/v1\",
+    \"model\": \"$OLLAMA_MODEL\",
+    \"models\": [\"$OLLAMA_MODEL\"],
+    \"priority\": $PRIORITY,
+    \"enabled\": true
+  },"
+            PRIORITY=$((PRIORITY + 1))
+            echo -e "  ${GREEN}✓${RESET} Ollama ($OLLAMA_MODEL) configured"
+            ;;
+        7)
+            echo ""
+            echo -e "  ${DIM}Custom OpenAI-compatible endpoint${RESET}"
+            echo -e "  ${DIM}Works with: LM Studio, vLLM, llama.cpp, text-generation-webui, LocalAI, etc.${RESET}"
+            echo ""
+            read -p "  Provider name (e.g. lmstudio): " CUSTOM_NAME
+            CUSTOM_NAME="${CUSTOM_NAME:-custom}"
+            read -p "  Base URL (e.g. http://localhost:1234/v1): " CUSTOM_URL
+            CUSTOM_URL="${CUSTOM_URL:-http://localhost:1234/v1}"
+            read -p "  Model name (e.g. local-model): " CUSTOM_MODEL
+            CUSTOM_MODEL="${CUSTOM_MODEL:-local-model}"
+            read -p "  API key (Enter for none): " CUSTOM_KEY
+            CUSTOM_KEY="${CUSTOM_KEY:-no-key}"
+            add_provider "$CUSTOM_NAME" "openai" "$CUSTOM_KEY" "$CUSTOM_URL" \
+                "$CUSTOM_MODEL" "\"$CUSTOM_MODEL\""
+            ;;
+        8)
+            echo -e "  ${DIM}Skipped. Edit ~/.jarvis/providers.json later.${RESET}"
+            ;;
+    esac
+done
+
+# Remove trailing comma and close JSON
+PROVIDERS=$(echo "$PROVIDERS" | sed 's/,$//')
+PROVIDERS="$PROVIDERS
+}"
+
+if [ ! -f "$HOME/.jarvis/providers.json" ]; then
+    echo "$PROVIDERS" > "$HOME/.jarvis/providers.json"
+    echo -e "  ${GREEN}✓${RESET} Provider config saved to ~/.jarvis/providers.json"
+fi
+
+# ── Install Ollama if selected ──
+if [ "$INSTALL_OLLAMA" = true ]; then
+    if ! command -v ollama &>/dev/null; then
+        echo ""
+        echo -e "  ${DIM}Installing Ollama (local AI runtime)...${RESET}"
+        curl -fsSL https://ollama.ai/install.sh | sh 2>/dev/null || {
+            echo -e "  ${YELLOW}Ollama install failed. Install manually: https://ollama.ai${RESET}"
+        }
+    fi
+    if command -v ollama &>/dev/null; then
+        echo -e "  ${DIM}Pulling $OLLAMA_MODEL (this may take a few minutes)...${RESET}"
+        ollama pull "$OLLAMA_MODEL" 2>/dev/null || true
+        echo -e "  ${GREEN}✓${RESET} Local model ready"
+    fi
+fi
+
+# ── Done ──
+echo ""
+echo -e "  ${GREEN}${BOLD}JARVIS installed successfully!${RESET}"
+echo ""
+echo -e "  ${DIM}Commands:${RESET}"
+echo -e "    ${CYAN}jarvis${RESET}              Start interactive session"
+echo -e "    ${CYAN}jarvis-web${RESET}          Start web server"
+echo -e "    ${CYAN}jarvis -p 'hello'${RESET}   One-shot query"
+echo ""
+if [ -z "$CLAUDE_KEY" ] && [ "$AI_CHOICE" != "2" ]; then
+    echo -e "  ${DIM}To add Claude API:${RESET}"
+    echo -e "    Edit ${CYAN}~/.jarvis/providers.json${RESET} and add your Anthropic API key"
+    echo ""
+fi
+echo -e "  ${DIM}Restart your shell or run:${RESET}  ${CYAN}source ~/.zshrc${RESET}"
+echo ""

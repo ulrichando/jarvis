@@ -1,0 +1,45 @@
+# JARVIS OS — GRUB Theme
+
+title-text: ""
+desktop-color: "#0a0a1a"
+terminal-font: "Fira Code Regular 14"
+terminal-left: "0"
+terminal-top: "0"
+terminal-width: "100%"
+terminal-height: "100%"
+
++ boot_menu {
+    left = 30%
+    top = 40%
+    width = 40%
+    height = 30%
+    item_color = "#8aaaca"
+    selected_item_color = "#4a8aba"
+    item_height = 30
+    item_padding = 10
+    item_spacing = 5
+    icon_width = 0
+    icon_height = 0
+    item_font = "Fira Code Regular 14"
+    selected_item_font = "Fira Code Bold 14"
+}
+
++ label {
+    left = 30%
+    top = 30%
+    width = 40%
+    text = "J.A.R.V.I.S. OS"
+    color = "#4a8aba"
+    font = "Fira Code Bold 24"
+    align = "center"
+}
+
++ label {
+    left = 30%
+    top = 95%
+    width = 40%
+    text = "Autonomous Intelligence Operating System"
+    color = "#5a6a7a"
+    font = "Fira Code Regular 11"
+    align = "center"
+}

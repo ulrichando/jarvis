@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>J.A.R.V.I.S.</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- The Arc Reactor -->
+        <div id="reactor">
+            <div class="mech-ring outer-mech">
+                <svg viewBox="0 0 500 500">
+                    <circle cx="250" cy="250" r="245" class="ring-stroke thin" />
+                    <circle cx="250" cy="250" r="238" class="ring-stroke medium" stroke-dasharray="4 8" />
+                    <g class="ticks-major" id="ticks-outer"></g>
+                    <rect x="248" y="2" width="4" height="12" fill="#ff3333" opacity="0.8" rx="1"/>
+                    <rect x="248" y="486" width="4" height="12" fill="#ff3333" opacity="0.6" rx="1"/>
+                    <rect x="2" y="248" width="12" height="4" fill="#ff3333" opacity="0.6" rx="1"/>
+                    <rect x="486" y="248" width="12" height="4" fill="#ff3333" opacity="0.6" rx="1"/>
+                </svg>
+            </div>
+            <div class="mech-ring ring-layer-2">
+                <svg viewBox="0 0 420 420">
+                    <circle cx="210" cy="210" r="205" class="ring-stroke medium" />
+                    <circle cx="210" cy="210" r="195" class="ring-stroke thin" stroke-dasharray="2 12" />
+                    <g class="ticks-minor" id="ticks-mid"></g>
+                    <circle cx="210" cy="8" r="3" fill="#ff8800" opacity="0.7"/>
+                    <circle cx="410" cy="210" r="2.5" fill="#ff8800" opacity="0.5"/>
+                </svg>
+            </div>
+            <canvas id="waveform-canvas" width="360" height="360"></canvas>
+            <div class="mech-ring ring-layer-3">
+                <svg viewBox="0 0 280 280">
+                    <circle cx="140" cy="140" r="136" class="ring-stroke bright" />
+                    <circle cx="140" cy="140" r="128" class="ring-stroke medium" stroke-dasharray="6 6" />
+                    <circle cx="140" cy="140" r="120" class="ring-stroke thin" />
+                </svg>
+            </div>
+            <div class="mech-ring ring-layer-4">
+                <svg viewBox="0 0 200 200">
+                    <circle cx="100" cy="100" r="96" class="ring-stroke bright" />
+                    <circle cx="100" cy="100" r="88" class="ring-stroke medium" stroke-dasharray="3 9" />
+                </svg>
+            </div>
+            <div class="core-center">
+                <div class="core-glow"></div>
+                <div class="core-inner"></div>
+            </div>
+        </div>
+
+        <!-- HUD Panels — info displays around the reactor -->
+        <div id="hud-top" class="hud-panel hud-top"></div>
+        <div id="hud-left" class="hud-panel hud-left"></div>
+        <div id="hud-right" class="hud-panel hud-right"></div>
+        <div id="hud-bottom" class="hud-panel hud-bottom"></div>
+
+        <!-- Media overlay — for images, video, text displays -->
+        <div id="media-overlay" class="hidden">
+            <div id="media-content"></div>
+            <div id="media-close" class="media-close">&times;</div>
+        </div>
+
+        <!-- Ambient listening indicator (no button — just a subtle dot) -->
+        <div id="mic-control" class="mic-control">
+            <div id="mic-btn" class="ambient-dot" title="JARVIS is listening"></div>
+            <span id="mic-status" class="mic-status"></span>
+        </div>
+
+        <!-- Webcam (hidden, used for face recognition) -->
+        <video id="webcam" autoplay playsinline style="display:none;"></video>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
