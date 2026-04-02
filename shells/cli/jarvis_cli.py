@@ -714,6 +714,32 @@ async def main():
                 cmd_name = parts[0] if parts else ""
                 cmd_args = parts[1] if len(parts) > 1 else ""
 
+                # Just "/" alone — show command menu (like Claude Code)
+                if not cmd_name:
+                    try:
+                        from brain.commands import registry as _reg
+                        from brain.commands.registry import CATEGORIES
+                        _writeln()
+                        for cat_slug, cat_name in CATEGORIES:
+                            cmds = _reg.list_commands(category=cat_slug)
+                            if not cmds:
+                                continue
+                            _writeln(f"  {BOLD}{cat_name}{RESET}")
+                            row = []
+                            for cmd in cmds:
+                                row.append(f"{CYAN}/{cmd.name}{RESET}")
+                                if len(row) >= 5:
+                                    _writeln(f"    {'  '.join(row)}")
+                                    row = []
+                            if row:
+                                _writeln(f"    {'  '.join(row)}")
+                            _writeln()
+                        _writeln(f"  {DIM}Type /command to run. /help for details.{RESET}")
+                        _writeln()
+                    except Exception:
+                        _writeln(f"  {DIM}Type /help for all commands.{RESET}")
+                    continue
+
                 # CLI-only shortcuts
                 if cmd_name == "visual" and cmd_args:
                     subprocess.Popen(
