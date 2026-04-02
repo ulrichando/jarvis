@@ -714,27 +714,22 @@ async def main():
                 cmd_name = parts[0] if parts else ""
                 cmd_args = parts[1] if len(parts) > 1 else ""
 
-                # Just "/" alone — show command menu (like Claude Code)
+                # Just "/" alone — show command menu with descriptions (Claude Code style)
                 if not cmd_name:
                     try:
                         from brain.commands import registry as _reg
-                        from brain.commands.registry import CATEGORIES
+                        tw = _tw()
+                        cmds = _reg.list_commands(include_hidden=False)
+                        cmds.sort(key=lambda c: c.name)
                         _writeln()
-                        for cat_slug, cat_name in CATEGORIES:
-                            cmds = _reg.list_commands(category=cat_slug)
-                            if not cmds:
-                                continue
-                            _writeln(f"  {BOLD}{cat_name}{RESET}")
-                            row = []
-                            for cmd in cmds:
-                                row.append(f"{CYAN}/{cmd.name}{RESET}")
-                                if len(row) >= 5:
-                                    _writeln(f"    {'  '.join(row)}")
-                                    row = []
-                            if row:
-                                _writeln(f"    {'  '.join(row)}")
-                            _writeln()
-                        _writeln(f"  {DIM}Type /command to run. /help for details.{RESET}")
+                        for cmd in cmds:
+                            name_col = f"  {CYAN}/{cmd.name}{RESET}"
+                            # Pad name to 40 chars for alignment
+                            pad = max(1, 42 - len(cmd.name) - 3)
+                            desc = cmd.description[:tw - 46] if cmd.description else ""
+                            _writeln(f"{name_col}{' ' * pad}{DIM}{desc}{RESET}")
+                        _writeln()
+                        _writeln(f"  {DIM}{len(cmds)} commands available. Type /command to run.{RESET}")
                         _writeln()
                     except Exception:
                         _writeln(f"  {DIM}Type /help for all commands.{RESET}")
