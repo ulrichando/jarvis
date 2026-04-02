@@ -508,6 +508,20 @@ async def main():
     _writeln(banner)
     _writeln()
 
+    # Initialize companion
+    from shells.cli.companion import Companion
+    _companion = Companion()
+    if client._is_full_brain:
+        brain._companion = _companion
+
+    def _buddy_says(context: str):
+        """Show companion comment if enabled and off cooldown."""
+        if not _companion.enabled:
+            return
+        comment = _companion.get_comment(context)
+        if comment:
+            _writeln(_companion.render_comment(comment))
+
     # Resume context
     if (args.continue_last or args.resume) and session_mgr.current:
         s = session_mgr.current
@@ -1060,6 +1074,7 @@ async def main():
                             "start": time.time(), "lines": [], "error": False,
                         })
                         _writeln(tool_call_line(name, args))
+                        _buddy_says("tool_call")
                         _start_spinner(name)
 
                     elif etype == "tool_result":
@@ -1082,6 +1097,8 @@ async def main():
                                 )
                                 if diff:
                                     _writeln(diff)
+                            if is_error:
+                                _buddy_says("error")
                         _start_spinner("Thinking...")
 
                     elif etype == "text":
@@ -1141,6 +1158,9 @@ async def main():
             elapsed_total = time.time() - start
             if _tokens_this_turn > 0 or tool_count > 0:
                 _writeln(_token_footer(_tokens_this_turn, tool_count, elapsed_total))
+            # Companion chimes in after response
+            if full_text.strip() and tool_count > 0:
+                _buddy_says("success")
             _writeln()
 
             if full_text.strip():
