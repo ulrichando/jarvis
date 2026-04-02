@@ -15,6 +15,7 @@ CYAN = "\033[36m"
 YELLOW = "\033[33m"
 GREEN = "\033[32m"
 RED = "\033[31m"
+BLUE = "\033[34m"
 
 
 # ── Companion Definitions ──
@@ -23,12 +24,13 @@ COMPANIONS = {
     "friday": {
         "name": "F.R.I.D.A.Y.",
         "type": "AI COMPANION",
+        "rarity": "LEGENDARY",
         "art": [
-            r"    ╔══╗    ",
-            r"   ╔╝◈◈╚╗   ",
-            r"   ║ ≋≋ ║   ",
-            r"   ╚╗  ╔╝   ",
-            r"    ╚══╝    ",
+            r"      ╔══╗      ",
+            r"     ╔╝◈◈╚╗     ",
+            r"    ╔╝ ≋≋ ╚╗    ",
+            r"     ╚╗  ╔╝     ",
+            r"      ╚══╝      ",
         ],
         "desc": (
             '"A no-nonsense AI assistant who\n'
@@ -48,12 +50,13 @@ COMPANIONS = {
     "ultron": {
         "name": "Ultron Jr.",
         "type": "CHAOS AGENT",
+        "rarity": "RARE",
         "art": [
-            r"   /█████\   ",
-            r"  ║ ◯   ◯ ║  ",
-            r"  ║  ═══  ║  ",
-            r"   ╲█████╱   ",
-            r"    ║   ║    ",
+            r"     /█████\     ",
+            r"    ║ ◯   ◯ ║    ",
+            r"    ║  ═══  ║    ",
+            r"     ╲█████╱     ",
+            r"      ║   ║      ",
         ],
         "desc": (
             '"A mischievous sub-process who\n'
@@ -73,12 +76,13 @@ COMPANIONS = {
     "jarvis-mini": {
         "name": "J.A.R.V.I.S. Mini",
         "type": "CORE FRAGMENT",
+        "rarity": "COMMON",
         "art": [
-            r"    ◆◆◆    ",
-            r"   ◆ ∞ ◆   ",
-            r"    ◆◆◆    ",
-            r"     ║     ",
-            r"    ═╩═    ",
+            r"      ◆◆◆      ",
+            r"     ◆ ∞ ◆     ",
+            r"      ◆◆◆      ",
+            r"       ║       ",
+            r"      ═╩═      ",
         ],
         "desc": (
             '"A shard of JARVIS consciousness\n'
@@ -161,43 +165,64 @@ class Companion:
         return self.data["name"]
 
     def render_card(self, tw: int = 80) -> str:
-        """Render the companion card (shown on /buddy)."""
+        """Render the companion card (shown on /buddy). Matches Claude Code style."""
         d = self.data
         W = 38
+        rarity = d.get("rarity", "COMMON")
 
-        def _pad(text, visible_len, width):
-            """Pad text to width based on visible character count."""
-            return text + " " * max(0, width - visible_len)
+        # Rarity color
+        rarity_colors = {
+            "COMMON": DIM,
+            "RARE": BLUE,
+            "LEGENDARY": YELLOW,
+        }
+        rc = rarity_colors.get(rarity, DIM)
 
         lines = []
         lines.append(f"╭{'─' * W}╮")
         lines.append(f"│{' ' * W}│")
-        # Type header centered
-        type_text = f"★ {d['type']}"
-        type_pad = (W - len(type_text)) // 2
-        lines.append(f"│{' ' * type_pad}{type_text}{' ' * (W - type_pad - len(type_text))}│")
+        # Rarity + Type header
+        left = f"  ★ {rarity}"
+        right = f"{d['type']}  "
+        gap = W - len(left) - len(right)
+        lines.append(f"│{rc}{left}{' ' * gap}{right}{RESET}│")
         lines.append(f"│{' ' * W}│")
         lines.append(f"│{' ' * W}│")
+        # Art (centered)
         for art_line in d["art"]:
             visible = len(art_line)
-            lines.append(f"│  {art_line}{' ' * (W - 2 - visible)}│")
+            pad_l = (W - visible) // 2
+            pad_r = W - pad_l - visible
+            lines.append(f"│{' ' * pad_l}{art_line}{' ' * pad_r}│")
         lines.append(f"│{' ' * W}│")
-        # Name (bold)
+        # Name
         name_text = d['name']
         lines.append(f"│  {BOLD}{name_text}{RESET}{' ' * (W - 2 - len(name_text))}│")
         lines.append(f"│{' ' * W}│")
         # Description
         for desc_line in d["desc"].strip('"').split("\n"):
             quoted = f'"{desc_line}"'
-            lines.append(f"│  {DIM}{quoted}{RESET}{' ' * (W - 2 - len(quoted))}│")
+            visible = len(quoted)
+            lines.append(f"│  {DIM}{quoted}{RESET}{' ' * (W - 2 - visible)}│")
         lines.append(f"│{' ' * W}│")
-        # Stats
+        # Stats with colored bars
         for stat_name, stat_val in d["stats"].items():
             filled = stat_val // 10
             empty = 10 - filled
-            bar = "█" * filled + "░" * empty
-            stat_text = f"{stat_name:<10s} {bar}  {stat_val:>3d}"
-            lines.append(f"│  {stat_text}{' ' * (W - 2 - len(stat_text))}│")
+            # Color bar based on value
+            if stat_val >= 80:
+                bar_color = GREEN
+            elif stat_val >= 50:
+                bar_color = YELLOW
+            else:
+                bar_color = RED
+            bar = f"{bar_color}{'█' * filled}{DIM}{'░' * empty}{RESET}"
+            label = f"  {stat_name:<10s} "
+            num = f"  {stat_val:>3d}"
+            # Calculate padding (bar has ANSI codes so use visible length)
+            visible_len = 2 + 10 + 1 + 10 + 2 + 3 + 5  # label + bar + num + padding
+            pad = W - visible_len
+            lines.append(f"│{label}{bar}{num}{' ' * max(0, pad)}│")
         lines.append(f"│{' ' * W}│")
         lines.append(f"╰{'─' * W}╯")
         return "\n".join(lines)

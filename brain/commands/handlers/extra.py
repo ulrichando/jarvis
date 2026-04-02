@@ -37,13 +37,16 @@ async def cmd_buddy(ctx: CommandContext) -> CommandResult:
             return CommandResult(text=Companion(name).render_card())
         available = ", ".join(COMPANIONS.keys())
         return CommandResult(text=f"Unknown companion. Available: {available}")
+    elif args == "rename":
+        return CommandResult(text=f"{companion.name} doesn't want a new name. Deal with it.")
     else:
-        # Show companion card
+        # Show companion card with interactive footer
         card = companion.render_card()
         footer = (
             f"\n{companion.name} is here \u00b7 it'll chime in as you code\n"
             f"your buddy won't count toward your usage\n"
-            f"say its name to get its take \u00b7 /buddy pet \u00b7 /buddy off"
+            f"say its name to get its take \u00b7 /buddy pet \u00b7 /buddy off\n"
+            f"\npress any key"
         )
         return CommandResult(text=card + footer)
 
