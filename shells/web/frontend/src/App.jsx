@@ -103,22 +103,54 @@ function App() {
       setReactorState('thinking')
     }
 
-    // Play TTS when JARVIS responds with spoken content
+    // Play TTS when JARVIS responds — use browser speechSynthesis (instant, no network)
     if (last.type === 'message' && last.spoken && last.spoken.length > 3) {
-      stopSpeaking() // Stop previous TTS if still playing
+      stopSpeaking()
       setReactorState('speaking')
-      const ttsUrl = `http://localhost:8765/api/tts?text=${encodeURIComponent(last.spoken.substring(0, 300))}`
-      const audio = new Audio(ttsUrl)
-      setCurrentAudio(audio)
-      audio.play().then(() => {
-        audio.onended = () => {
+
+      if ('speechSynthesis' in window) {
+        // Browser TTS — instant, no network round-trip
+        window.speechSynthesis.cancel() // Stop any previous
+        const utterance = new SpeechSynthesisUtterance(last.spoken.substring(0, 500))
+        utterance.rate = 1.05
+        utterance.pitch = 0.95
+
+        // Try to pick a good voice
+        const voices = window.speechSynthesis.getVoices()
+        const preferred = voices.find(v =>
+          v.name.includes('Andrew') || v.name.includes('David') ||
+          v.name.includes('Daniel') || v.name.includes('Male') ||
+          v.name.includes('Google UK English Male')
+        ) || voices.find(v => v.lang.startsWith('en')) || voices[0]
+        if (preferred) utterance.voice = preferred
+
+        utterance.onend = () => {
           setCurrentAudio(null)
           setReactorState('idle')
         }
-      }).catch(() => {
-        setCurrentAudio(null)
-        setReactorState('idle')
-      })
+        utterance.onerror = () => {
+          setCurrentAudio(null)
+          setReactorState('idle')
+        }
+
+        // Store reference for interrupt
+        setCurrentAudio({ pause: () => window.speechSynthesis.cancel(), currentTime: 0 })
+        window.speechSynthesis.speak(utterance)
+      } else {
+        // Fallback: Edge TTS via server (slower, 1s network)
+        const ttsUrl = `http://localhost:8765/api/tts?text=${encodeURIComponent(last.spoken.substring(0, 300))}`
+        const audio = new Audio(ttsUrl)
+        setCurrentAudio(audio)
+        audio.play().then(() => {
+          audio.onended = () => {
+            setCurrentAudio(null)
+            setReactorState('idle')
+          }
+        }).catch(() => {
+          setCurrentAudio(null)
+          setReactorState('idle')
+        })
+      }
     }
 
     // Final message without spoken — just update state
