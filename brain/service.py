@@ -1,6 +1,6 @@
-"""JARVIS Brain Service — standalone daemon for the CogScript brain.
+"""JARVIS Brain Service — standalone daemon.
 
-Wraps CogScriptBrain and exposes it over HTTP on 127.0.0.1:8700.
+Wraps the full Brain and exposes it over HTTP on 127.0.0.1:8700.
 In OS mode, the web server connects to this service instead of
 instantiating the brain directly.
 
@@ -21,12 +21,10 @@ from pathlib import Path
 from aiohttp import web
 
 _jarvis_root = Path(__file__).resolve().parent.parent
-_cogscript_root = _jarvis_root.parent / "CogScript"
-for p in [str(_jarvis_root), str(_cogscript_root)]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
+if str(_jarvis_root) not in sys.path:
+    sys.path.insert(0, str(_jarvis_root))
 
-from brain.cogscript.brain_adapter import CogScriptBrain
+from brain.main import Brain
 
 HOST = "127.0.0.1"
 PORT = 8700
@@ -34,12 +32,11 @@ PORT = 8700
 
 class BrainService:
     def __init__(self):
-        self.brain: CogScriptBrain | None = None
+        self.brain: Brain | None = None
         self._ready = False
 
     async def start(self):
-        self.brain = CogScriptBrain()
-        await self.brain.start()
+        self.brain = Brain(quiet=True)
         self._ready = True
         print(f"[JARVIS Brain] Online — {self.brain.brain_stats()}")
 

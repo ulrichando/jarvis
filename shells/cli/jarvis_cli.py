@@ -220,7 +220,7 @@ def format_tool_result(name: str, result: str) -> str:
 class StandaloneBrain:
     def __init__(self):
         self.brain = None
-        self._is_full_brain = False
+        self._is_full_brain = True  # Always full brain (CogScript fallback removed)
 
     async def connect(self) -> bool:
         # Suppress ALL library logging during brain init (prevents terminal noise)
@@ -235,17 +235,6 @@ class StandaloneBrain:
             self.brain = Brain(quiet=True)
             self._is_full_brain = True
             logging.disable(logging.NOTSET)  # Restore after init
-            logging.root.setLevel(prev_level)
-            return True
-        except Exception as e:
-            pass  # Silent fallback
-
-        # Fallback to lightweight CogScript brain
-        try:
-            from brain.cogscript.brain_adapter import CogScriptBrain
-            self.brain = CogScriptBrain()
-            await self.brain.start()
-            logging.disable(logging.NOTSET)
             logging.root.setLevel(prev_level)
             return True
         except Exception as e:

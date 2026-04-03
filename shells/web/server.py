@@ -1117,31 +1117,18 @@ class JarvisWebServer:
         import importlib
         reloaded = []
         try:
-            # Reload core brain modules
-            import brain.cogscript.brain_adapter
-            importlib.reload(brain.cogscript.brain_adapter)
-            reloaded.append("brain_adapter")
+            # Reload brain modules
+            import sys
+            brain_modules = [name for name in sys.modules if name.startswith("brain.")]
+            for name in brain_modules:
+                mod = sys.modules[name]
+                if hasattr(mod, '__file__') and mod.__file__:
+                    importlib.reload(mod)
+                    reloaded.append(name.split(".")[-1])
 
-            import brain.agent.system_agents
-            importlib.reload(brain.agent.system_agents)
-            reloaded.append("system_agents")
-
-            import brain.agent.dispatcher
-            importlib.reload(brain.agent.dispatcher)
-            reloaded.append("dispatcher")
-
-            import brain.memory.sqlite_memory
-            importlib.reload(brain.memory.sqlite_memory)
-            reloaded.append("sqlite_memory")
-
-            import brain.speech.stt
-            importlib.reload(brain.speech.stt)
-            reloaded.append("stt")
-
-            # Rebuild brain with reloaded modules
-            from brain.cogscript.brain_adapter import CogScriptBrain
-            self.brain = CogScriptBrain()
-            await self.brain.start()
+            # Rebuild brain
+            from brain.main import Brain
+            self.brain = Brain(quiet=True)
             reloaded.append("brain_restarted")
 
             print(f"[JARVIS] Hot reload: {', '.join(reloaded)}")
