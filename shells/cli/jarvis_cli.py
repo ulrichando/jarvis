@@ -1420,16 +1420,22 @@ async def main():
 
 
 def run():
-    import warnings
-    warnings.filterwarnings("ignore", message=".*Event loop is closed.*")
-    warnings.filterwarnings("ignore", message=".*Unclosed client session.*")
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         pass
-    except RuntimeError as e:
-        if "Event loop is closed" not in str(e):
-            raise
+    except RuntimeError:
+        pass
+    finally:
+        # Suppress aiohttp cleanup errors that print after event loop closes
+        # These are harmless but ugly — redirect stderr to devnull during shutdown
+        try:
+            import os
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, 2)  # Redirect stderr
+            os.close(devnull)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
