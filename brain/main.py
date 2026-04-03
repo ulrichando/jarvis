@@ -391,10 +391,8 @@ class Brain:
         # Disabled: RL should never force standard when agent loop is needed
         # The classifier is authoritative — RL can only ADD agent, not remove it
 
-        if needs_agent:
-            response = await self._run_agent_loop(user_input, memory_context, start)
-        else:
-            response = await self._standard_response(user_input, memory_context, start)
+        # Always use agent loop — JARVIS personality is in AGENT_SYSTEM_PROMPT
+        response = await self._run_agent_loop(user_input, memory_context, start)
 
         # ═══ POST-PROCESSING ═══
         self.memory.add_turn("jarvis", response)

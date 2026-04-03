@@ -1218,7 +1218,13 @@ class JarvisWebServer:
                 query = data.get("query", data.get("text", ""))
                 if not query:
                     return web.json_response({"error": "No query"}, status=400)
-                response = await self.brain.think(query)
+                # Use think_stream to get JARVIS personality (has casual chat detection)
+                response = ""
+                async for event in self.brain.think_stream(query):
+                    if event.get("type") == "text":
+                        response += event.get("content", "")
+                    elif event.get("type") == "done":
+                        break
                 return web.json_response({"response": response})
             except Exception as e:
                 return web.json_response({"response": f"Error: {e}"}, status=500)
