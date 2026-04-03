@@ -1,20 +1,23 @@
 [project]
 name = "jarvis-brain"
-version = "0.1.0"
-description = "JARVIS AI Brain — self-evolving intelligence engine"
+version = "2.0.0"
+description = "J.A.R.V.I.S. — Autonomous AI Agent"
 requires-python = ">=3.10"
 dependencies = [
-    "groq",
-    "faster-whisper",
-    "piper-tts",
-    "sounddevice",
-    "numpy",
-    "grpcio",
-    "grpcio-tools",
-    "rich",
+    "anthropic",
+    "openai",
     "aiohttp",
+    "numpy",
     "msgpack",
+    "edge-tts",
+    "faster-whisper",
+    "sounddevice",
 ]
+
+[project.optional-dependencies]
+vision = ["Pillow", "mss", "pytesseract"]
+tts = ["piper-tts"]
+all = ["jarvis-brain[vision,tts]"]
 
 [project.scripts]
 jarvis = "shells.cli.jarvis_cli:run"

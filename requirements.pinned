@@ -1,10 +1,8 @@
-aiohttp==3.13.3
-aiohttp_socks==0.10.1
 anthropic==0.88.0
-faster-whisper==1.2.1
-groq==1.1.2
-msgpack==1.1.2
-numpy==2.4.4
 openai==2.30.0
-piper-tts==1.4.1
-u-msgpack-python==2.8.0
+aiohttp==3.13.3
+numpy==2.4.4
+msgpack==1.1.2
+edge-tts==6.1.12
+faster-whisper==1.2.1
+sounddevice==0.5.1
