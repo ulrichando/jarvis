@@ -73,6 +73,31 @@ function App() {
     }
   }, [])
 
+  // Handle incoming WebSocket messages — play TTS for voice responses
+  useEffect(() => {
+    if (wsMessages.length === 0) return
+    const last = wsMessages[wsMessages.length - 1]
+
+    if (last.type === 'status' && last.status === 'thinking') {
+      setReactorState('thinking')
+    }
+
+    // Play TTS when JARVIS responds with spoken content
+    if (last.type === 'message' && last.spoken && last.spoken.length > 3) {
+      setReactorState('speaking')
+      const ttsUrl = `http://localhost:8765/api/tts?text=${encodeURIComponent(last.spoken.substring(0, 300))}`
+      const audio = new Audio(ttsUrl)
+      audio.play().then(() => {
+        audio.onended = () => setReactorState('idle')
+      }).catch(() => setReactorState('idle'))
+    }
+
+    // Final message without spoken — just update state
+    if (last.type === 'message' && last.final && !last.spoken) {
+      setTimeout(() => setReactorState('idle'), 1000)
+    }
+  }, [wsMessages])
+
   // Mic audio level for reactor pulse + voice capture for STT
   useEffect(() => {
     let animFrame
@@ -132,47 +157,25 @@ function App() {
         }
         mediaRecorder.onstop = async () => {
           const blob = new Blob(audioChunks, { type: 'audio/webm' })
-          if (blob.size < 5000) return // Too short, ignore
+          if (blob.size < 3000) return // Too short, ignore
 
-          // Send to server via WebSocket as binary
-          const wsUrl = window.location.hostname === 'localhost'
-            ? 'ws://localhost:8765/ws'
-            : `ws://${window.location.host}/ws`
-
+          // Send audio as binary through a quick fetch to the transcribe endpoint
           try {
-            // Convert to raw PCM and send
-            const arrayBuf = await blob.arrayBuffer()
-            const tempWs = new WebSocket(wsUrl)
-            tempWs.onopen = () => {
-              tempWs.send(arrayBuf)
-              setTimeout(() => tempWs.close(), 5000)
-            }
-            tempWs.onmessage = (evt) => {
-              try {
-                const data = JSON.parse(evt.data)
-                if (data.type === 'stt_result' && data.text) {
-                  // Got transcription — send as query via main WS
-                  sendMessage({ type: 'query', text: data.text })
-                  setReactorState('thinking')
-                }
-                if (data.type === 'message' && !data.partial) {
-                  setReactorState('speaking')
-                  // Play TTS
-                  const spoken = data.spoken || data.content
-                  if (spoken) {
-                    const ttsUrl = `http://${window.location.hostname}:8765/api/tts?text=${encodeURIComponent(spoken.substring(0, 300))}`
-                    const audio = new Audio(ttsUrl)
-                    audio.play().then(() => {
-                      audio.onended = () => setReactorState('idle')
-                    }).catch(() => setReactorState('idle'))
-                  } else {
-                    setTimeout(() => setReactorState('idle'), 2000)
-                  }
-                }
-              } catch {}
+            setReactorState('thinking')
+            const formData = new FormData()
+            formData.append('audio', blob, 'speech.webm')
+            const resp = await fetch('http://localhost:8765/api/transcribe', {
+              method: 'POST', body: formData,
+            })
+            const data = await resp.json()
+            if (data.text && data.text.trim()) {
+              // Got transcription — send as query via existing WebSocket
+              sendMessage({ type: 'query', text: data.text })
+            } else {
+              setReactorState('idle')
             }
           } catch (e) {
-            console.log('Voice send failed:', e)
+            setReactorState('idle')
           }
         }
 

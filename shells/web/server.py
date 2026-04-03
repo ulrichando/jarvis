@@ -32,6 +32,12 @@ class JarvisWebServer:
     def __init__(self):
         self.brain = Brain(quiet=True)
         self.clients: set[web.WebSocketResponse] = set()
+        # Pre-load Whisper model at startup so first voice request is fast
+        try:
+            from brain.speech.stt import _get_model
+            _get_model()
+        except Exception:
+            pass
 
     async def tts_handler(self, request: web.Request) -> web.StreamResponse:
         """Generate neural TTS audio from text. Streams MP3 chunks as they arrive.
@@ -289,10 +295,10 @@ class JarvisWebServer:
                             "type": "stream", "content": chunk,
                         })
                         # Send first sentence early for TTS (speak while still generating)
-                        if not first_sent and len(buffer) > 15:
-                            for delim in ['. ', '! ', '? ', '.\n', '!\n', '?\n']:
+                        if not first_sent and len(buffer) > 8:
+                            for delim in ['. ', '! ', '? ', '.\n', '!\n', '?\n', ', ', '— ', ': ']:
                                 idx = buffer.find(delim)
-                                if idx > 10:
+                                if idx > 5:
                                     first_sentence = buffer[:idx + 1].strip()
                                     spoken = self._clean_for_speech(first_sentence)
                                     if spoken and len(spoken) > 5:
