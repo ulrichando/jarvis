@@ -218,23 +218,42 @@ def format_tool_result(name: str, result: str) -> str:
 # ── Standalone Brain ─────────────────────────────────────────────────
 
 class StandaloneBrain:
+    """Connects to JARVIS server (shared Brain) or falls back to local Brain."""
+
     def __init__(self):
         self.brain = None
-        self._is_full_brain = True  # Always full brain (CogScript fallback removed)
+        self._is_full_brain = True
+        self._server_mode = False
+        self._server_url = "http://localhost:8765"
+        self._ws_url = "ws://localhost:8765/ws"
+        self._ws = None
 
     async def connect(self) -> bool:
-        # Suppress ALL library logging during brain init (prevents terminal noise)
+        # Try connecting to running JARVIS server first (shared Brain)
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{self._server_url}/api/mesh/ping", timeout=aiohttp.ClientTimeout(total=2)) as resp:
+                    if resp.status == 200:
+                        self._server_mode = True
+                        # Connect WebSocket for streaming
+                        self._session = aiohttp.ClientSession()
+                        self._ws = await self._session.ws_connect(self._ws_url)
+                        return True
+        except Exception:
+            pass
+
+        # Server not running — start local Brain
         prev_level = logging.root.level
         logging.disable(logging.WARNING)
         import warnings
         warnings.filterwarnings("ignore")
 
-        # Try full Brain first (91 commands, MCP, agents, etc.)
         try:
             from brain.main import Brain
             self.brain = Brain(quiet=True)
             self._is_full_brain = True
-            logging.disable(logging.NOTSET)  # Restore after init
+            logging.disable(logging.NOTSET)
             logging.root.setLevel(prev_level)
             return True
         except Exception as e:
@@ -244,26 +263,68 @@ class StandaloneBrain:
             return False
 
     async def query(self, text: str) -> str:
+        if self._server_mode:
+            import aiohttp, json
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self._server_url}/api/think",
+                    json={"query": text},
+                    timeout=aiohttp.ClientTimeout(total=60),
+                ) as resp:
+                    data = await resp.json()
+                    return data.get("response", "No response")
         return await self.brain.think(text)
 
     async def query_stream(self, text: str):
-        if self._is_full_brain and hasattr(self.brain, "think_stream"):
-            async for event in self.brain.think_stream(text):
-                yield event
-        else:
-            response = await self.brain.think(text)
-            yield {"type": "text", "content": response}
-            yield {"type": "done", "content": response}
+        if self._server_mode and self._ws:
+            import json
+            # Send query via WebSocket
+            await self._ws.send_json({"type": "query", "text": text})
+            # Read streamed events
+            async for msg in self._ws:
+                if msg.type == 1:  # TEXT
+                    try:
+                        data = json.loads(msg.data)
+                        msg_type = data.get("type", "")
+                        if msg_type == "stream":
+                            yield {"type": "text", "content": data.get("content", "")}
+                        elif msg_type == "message":
+                            content = data.get("content", "")
+                            yield {"type": "text", "content": content}
+                            if not data.get("partial"):
+                                yield {"type": "done", "content": content}
+                                return
+                        elif msg_type == "tool_call":
+                            yield {"type": "tool_call", "name": data.get("name", ""), "args": data.get("args", {})}
+                        elif msg_type == "tool_result":
+                            yield {"type": "tool_result", "name": data.get("name", ""), "content": data.get("content", "")}
+                        elif msg_type == "status":
+                            pass  # Thinking indicator
+                        elif msg_type == "error":
+                            yield {"type": "error", "content": data.get("error", "Unknown error")}
+                            return
+                    except Exception:
+                        continue
+                elif msg.type in (8, 256):  # CLOSE, ERROR
+                    break
+            yield {"type": "done", "content": ""}
+            return
+
+        # Local Brain streaming
+        async for event in self.brain.think_stream(text):
+            yield event
 
     async def close(self):
-        if self.brain:
-            if self._is_full_brain:
-                if hasattr(self.brain, "mcp"):
-                    self.brain.mcp.stop_all()
-                if hasattr(self.brain, "memory"):
-                    self.brain.memory.save()
-            elif hasattr(self.brain, "shutdown"):
-                await self.brain.shutdown()
+        if self._server_mode:
+            if self._ws:
+                await self._ws.close()
+            if hasattr(self, '_session'):
+                await self._session.close()
+        elif self.brain:
+            if hasattr(self.brain, "mcp"):
+                self.brain.mcp.stop_all()
+            if hasattr(self.brain, "memory"):
+                self.brain.memory.save()
 
 
 # ── CLI Entry ────────────────────────────────────────────────────────
@@ -405,10 +466,24 @@ async def main():
     else:
         session_name = "new session"
 
-    # Get model/provider from registry (not active_model which is "none" before first query)
+    # Get model/provider info
     model_name = "local"
     provider_name = "local"
-    if client._is_full_brain and hasattr(brain, "reasoner"):
+    if client._server_mode:
+        model_name = "server"
+        provider_name = "localhost:8765"
+        # Try to get actual model from server
+        try:
+            import urllib.request, json as _j
+            resp = urllib.request.urlopen(f"{client._server_url}/api/providers", timeout=2)
+            data = _j.loads(resp.read())
+            provs = data.get("providers", [])
+            if provs:
+                model_name = provs[0].get("model", "server")
+                provider_name = provs[0].get("name", "server")
+        except Exception:
+            pass
+    elif brain and hasattr(brain, "reasoner"):
         try:
             providers = brain.reasoner.providers.get_active_providers()
             if providers:
