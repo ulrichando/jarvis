@@ -321,16 +321,22 @@ class StandaloneBrain:
             yield event
 
     async def close(self):
-        if self._server_mode:
-            if self._ws:
-                await self._ws.close()
-            if hasattr(self, '_session'):
-                await self._session.close()
-        elif self.brain:
-            if hasattr(self.brain, "mcp"):
-                self.brain.mcp.stop_all()
-            if hasattr(self.brain, "memory"):
-                self.brain.memory.save()
+        try:
+            if self._server_mode:
+                if self._ws and not self._ws.closed:
+                    await self._ws.close()
+                if hasattr(self, '_session') and not self._session.closed:
+                    await self._session.close()
+                # Give aiohttp time to clean up
+                import asyncio
+                await asyncio.sleep(0.1)
+            elif self.brain:
+                if hasattr(self.brain, "mcp"):
+                    self.brain.mcp.stop_all()
+                if hasattr(self.brain, "memory"):
+                    self.brain.memory.save()
+        except Exception:
+            pass  # Suppress cleanup errors on exit
 
 
 # ── CLI Entry ────────────────────────────────────────────────────────
@@ -1414,12 +1420,16 @@ async def main():
 
 
 def run():
+    import warnings
+    warnings.filterwarnings("ignore", message=".*Event loop is closed.*")
+    warnings.filterwarnings("ignore", message=".*Unclosed client session.*")
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         pass
-    finally:
-        pass
+    except RuntimeError as e:
+        if "Event loop is closed" not in str(e):
+            raise
 
 
 if __name__ == "__main__":
