@@ -187,7 +187,7 @@ function App() {
             silenceTimer = setTimeout(() => {
               try { mediaRecorder.stop() } catch {}
               recording = false
-            }, 500)
+            }, 250)
           }
           setTimeout(checkVoice, 100)
         }
