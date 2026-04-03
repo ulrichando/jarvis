@@ -84,22 +84,101 @@ async def cmd_cost(ctx: CommandContext) -> CommandResult:
 
 
 @command("model", aliases=["m"], description="Show or switch active LLM model",
-         usage="/model [model_name]", category="core", permission=PermLevel.STANDARD)
+         usage="/model [name] | /model list", category="core", permission=PermLevel.STANDARD)
 async def cmd_model(ctx: CommandContext) -> CommandResult:
     brain = ctx.brain
-    args = ctx.args.strip()
+    args = ctx.args.strip().lower()
     if not brain:
         return CommandResult(text="Brain not available", success=False)
 
+    providers = brain.reasoner.providers
+
+    # No args: show current model
     if not args:
         model = getattr(brain.reasoner, 'active_model_name', 'unknown')
-        return CommandResult(text=f"Current model: {model}")
+        current_provider = providers.get_active_providers()[0] if providers.get_active_providers() else None
+        lines = [f"Current: {model}"]
+        if current_provider:
+            lines.append(f"Provider: {current_provider.name} ({current_provider.type})")
+            lines.append(f"All models: {', '.join(current_provider.models)}")
+        lines.append(f"\nUse /model list to see all options")
+        return CommandResult(text="\n".join(lines))
 
-    # Switch model
-    if hasattr(brain.reasoner, 'set_model'):
-        brain.reasoner.set_model(args)
-        return CommandResult(text=f"Switched to model: {args}")
-    return CommandResult(text="Model switching not supported by current reasoner", success=False)
+    # List all available models
+    if args == "list":
+        lines = ["Available Models", "=" * 50]
+
+        # Cloud providers
+        for p in providers.get_active_providers():
+            is_local = "localhost" in p.base_url or "127.0.0.1" in p.base_url
+            source = "local" if is_local else "cloud"
+            active = " (active)" if p.model == getattr(brain.reasoner, '_active_model', '') else ""
+            lines.append(f"\n  {p.name} [{source}]{active}")
+            for m in p.models:
+                marker = " *" if m == p.model else ""
+                lines.append(f"    {m}{marker}")
+
+        # Check Ollama models
+        try:
+            import urllib.request, json
+            resp = urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2)
+            data = json.loads(resp.read())
+            ollama_models = [m["name"] for m in data.get("models", [])]
+            if ollama_models:
+                lines.append(f"\n  Ollama [local] — {len(ollama_models)} models")
+                for m in ollama_models:
+                    lines.append(f"    {m}")
+        except Exception:
+            pass
+
+        lines.append(f"\nSwitch: /model <name>")
+        lines.append(f"Shortcuts: /model haiku | /model sonnet | /model opus")
+        return CommandResult(text="\n".join(lines))
+
+    # Shortcuts for common models
+    shortcuts = {
+        "haiku": "claude-haiku-4-5-20251001",
+        "sonnet": "claude-sonnet-4-20250514",
+        "opus": "claude-opus-4-6-20250514",
+        "gpt4": "gpt-4o",
+        "gpt4mini": "gpt-4o-mini",
+        "deepseek": "deepseek-chat",
+        "deepseek-r1": "deepseek-reasoner",
+    }
+    target_model = shortcuts.get(args, args)
+
+    # Try to switch within existing providers
+    for p in providers.get_active_providers():
+        if target_model in p.models or target_model == p.model:
+            p.model = target_model
+            providers._save()
+            return CommandResult(text=f"Switched to: {target_model} ({p.name})")
+
+    # Try Ollama
+    try:
+        import urllib.request, json
+        resp = urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2)
+        data = json.loads(resp.read())
+        ollama_models = [m["name"] for m in data.get("models", [])]
+        if target_model in ollama_models or any(target_model in m for m in ollama_models):
+            # Find or create Ollama provider
+            matched = next((m for m in ollama_models if target_model in m), target_model)
+            existing = None
+            for p in providers.get_active_providers():
+                if "localhost:11434" in p.base_url:
+                    existing = p
+                    break
+            if existing:
+                existing.model = matched
+                existing.models = [matched]
+                providers._save()
+            else:
+                providers.add_provider("ollama", "ollama", base_url="http://localhost:11434/v1", model=matched)
+            return CommandResult(text=f"Switched to local: {matched} (Ollama)")
+    except Exception:
+        pass
+
+    return CommandResult(text=f"Model not found: {args}\nUse /model list to see available models.", success=False)
 
 
 @command("permissions", aliases=["perms"], description="Show or change permission level",
