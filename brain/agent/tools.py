@@ -263,6 +263,33 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "database",
+            "description": "Execute SQL queries on SQLite, PostgreSQL, or MySQL databases. Can create, read, update, delete data. Use for any database operation.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "SQL query to execute (SELECT, INSERT, CREATE TABLE, etc.)",
+                    },
+                    "database": {
+                        "type": "string",
+                        "description": "Database path (for SQLite: /path/to/file.db) or connection string (for PostgreSQL: postgresql://user:pass@host/db)",
+                    },
+                    "db_type": {
+                        "type": "string",
+                        "enum": ["sqlite", "postgresql", "mysql"],
+                        "description": "Database type",
+                        "default": "sqlite",
+                    },
+                },
+                "required": ["query", "database"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "view_screen",
             "description": "Capture and analyze what's currently on the user's screen. Returns the active window, application name, and visible text via OCR. Use when the user asks what's on their screen, what they're looking at, or what app they're using.",
             "parameters": {
@@ -371,6 +398,8 @@ def execute_tool(name: str, args: dict, readonly: bool = False) -> str:
             return _exec_web_search(args)
         elif name == "web_fetch":
             return _exec_web_fetch(args)
+        elif name == "database":
+            return _exec_database(args)
         elif name == "web_api":
             return _exec_web_api(args)
         elif name == "view_screen":
@@ -761,6 +790,109 @@ def _exec_web_search(args: dict) -> str:
         return "\n".join(lines)
     except Exception as e:
         return f"Search error: {e}"
+
+
+def _exec_database(args: dict) -> str:
+    """Execute SQL queries on databases."""
+    query = args.get("query", "").strip()
+    database = args.get("database", "").strip()
+    db_type = args.get("db_type", "sqlite").lower()
+
+    if not query:
+        return "No SQL query provided."
+    if not database:
+        return "No database path/connection string provided."
+
+    # Block destructive operations on system databases
+    db_lower = database.lower()
+    if any(p in db_lower for p in ["/etc/", "/var/lib/", "/usr/", "system"]):
+        return "BLOCKED: Cannot modify system databases."
+
+    try:
+        if db_type == "sqlite":
+            import sqlite3
+            db_path = os.path.expanduser(database)
+            conn = sqlite3.connect(db_path, timeout=10)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(query)
+
+            # SELECT queries return results
+            if query.strip().upper().startswith("SELECT") or query.strip().upper().startswith("PRAGMA"):
+                rows = cursor.fetchmany(100)  # Cap at 100 rows
+                if not rows:
+                    conn.close()
+                    return "Query returned 0 rows."
+                # Format as table
+                columns = [d[0] for d in cursor.description]
+                lines = [" | ".join(columns)]
+                lines.append("-" * len(lines[0]))
+                for row in rows:
+                    lines.append(" | ".join(str(v) for v in row))
+                total = cursor.execute(f"SELECT COUNT(*) FROM ({query})").fetchone()[0] if len(rows) >= 100 else len(rows)
+                conn.close()
+                result = "\n".join(lines)
+                if len(rows) >= 100:
+                    result += f"\n... showing 100 of {total} rows"
+                return result
+            else:
+                # INSERT/UPDATE/DELETE/CREATE
+                conn.commit()
+                affected = cursor.rowcount
+                conn.close()
+                return f"OK. {affected} row(s) affected."
+
+        elif db_type == "postgresql":
+            try:
+                import psycopg2
+                conn = psycopg2.connect(database)
+                cursor = conn.cursor()
+                cursor.execute(query)
+                if cursor.description:
+                    columns = [d[0] for d in cursor.description]
+                    rows = cursor.fetchmany(100)
+                    lines = [" | ".join(columns)]
+                    lines.append("-" * len(lines[0]))
+                    for row in rows:
+                        lines.append(" | ".join(str(v) for v in row))
+                    conn.close()
+                    return "\n".join(lines)
+                else:
+                    conn.commit()
+                    affected = cursor.rowcount
+                    conn.close()
+                    return f"OK. {affected} row(s) affected."
+            except ImportError:
+                return "PostgreSQL support requires: pip install psycopg2-binary"
+
+        elif db_type == "mysql":
+            try:
+                import mysql.connector
+                # Parse connection string or use as host
+                conn = mysql.connector.connect(host=database)
+                cursor = conn.cursor()
+                cursor.execute(query)
+                if cursor.description:
+                    columns = [d[0] for d in cursor.description]
+                    rows = cursor.fetchmany(100)
+                    lines = [" | ".join(columns)]
+                    lines.append("-" * len(lines[0]))
+                    for row in rows:
+                        lines.append(" | ".join(str(v) for v in row))
+                    conn.close()
+                    return "\n".join(lines)
+                else:
+                    conn.commit()
+                    affected = cursor.rowcount
+                    conn.close()
+                    return f"OK. {affected} row(s) affected."
+            except ImportError:
+                return "MySQL support requires: pip install mysql-connector-python"
+        else:
+            return f"Unknown db_type: {db_type}. Use sqlite, postgresql, or mysql."
+
+    except Exception as e:
+        return f"Database error: {e}"
 
 
 def _exec_web_api(args: dict) -> str:
