@@ -73,30 +73,59 @@ function App() {
     }
   }, [])
 
+  // TTS playback with interrupt support
+  const [currentAudio, setCurrentAudio] = useState(null)
+
+  // Stop TTS when user starts speaking (interrupt)
+  const stopSpeaking = useCallback(() => {
+    if (currentAudio) {
+      currentAudio.pause()
+      currentAudio.currentTime = 0
+      setCurrentAudio(null)
+      setReactorState('idle')
+    }
+  }, [currentAudio])
+
+  // Listen for user-speaking event from voice detection
+  useEffect(() => {
+    const handler = () => stopSpeaking()
+    document.addEventListener('user-speaking', handler)
+    return () => document.removeEventListener('user-speaking', handler)
+  }, [stopSpeaking])
+
   // Handle incoming WebSocket messages — play TTS for voice responses
   useEffect(() => {
     if (wsMessages.length === 0) return
     const last = wsMessages[wsMessages.length - 1]
 
     if (last.type === 'status' && last.status === 'thinking') {
+      stopSpeaking() // Stop any current TTS
       setReactorState('thinking')
     }
 
     // Play TTS when JARVIS responds with spoken content
     if (last.type === 'message' && last.spoken && last.spoken.length > 3) {
+      stopSpeaking() // Stop previous TTS if still playing
       setReactorState('speaking')
       const ttsUrl = `http://localhost:8765/api/tts?text=${encodeURIComponent(last.spoken.substring(0, 300))}`
       const audio = new Audio(ttsUrl)
+      setCurrentAudio(audio)
       audio.play().then(() => {
-        audio.onended = () => setReactorState('idle')
-      }).catch(() => setReactorState('idle'))
+        audio.onended = () => {
+          setCurrentAudio(null)
+          setReactorState('idle')
+        }
+      }).catch(() => {
+        setCurrentAudio(null)
+        setReactorState('idle')
+      })
     }
 
     // Final message without spoken — just update state
     if (last.type === 'message' && last.final && !last.spoken) {
       setTimeout(() => setReactorState('idle'), 1000)
     }
-  }, [wsMessages])
+  }, [wsMessages, stopSpeaking])
 
   // Voice: SpeechRecognition (Chrome) or MediaRecorder+Whisper (WebKit/desktop)
   useEffect(() => {
@@ -129,6 +158,8 @@ function App() {
           recognition.interimResults = false
           recognition.lang = 'en-US'
           recognition.onresult = (event) => {
+            // User is speaking — interrupt JARVIS if talking
+            document.dispatchEvent(new CustomEvent('user-speaking'))
             const last = event.results[event.results.length - 1]
             if (last.isFinal) {
               const text = last[0].transcript.trim()
@@ -171,12 +202,14 @@ function App() {
           } catch { setReactorState('idle') }
         }
 
-        // VAD: start/stop recording based on audio level
+        // VAD: start/stop recording based on audio level + interrupt TTS
         function checkVoice() {
           if (!analyser) return
           analyser.getByteFrequencyData(dataArray)
           const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length / 255
           if (avg > 0.06 && !recording) {
+            // User started speaking — interrupt JARVIS if he's talking
+            document.dispatchEvent(new CustomEvent('user-speaking'))
             chunks = []
             try { mediaRecorder.start() } catch {}
             recording = true
