@@ -428,6 +428,25 @@ class AgentDispatcher:
             return {"agent": "system", "action": "cancel_shutdown", "result": r,
                     "summary": "Shutdown cancelled."}
 
+        # Wake-on-LAN
+        if any(p in q for p in ["wake up", "wake the", "send wake", "wake on lan",
+                                 "wol", "magic packet", "bring it back online"]):
+            # Try to extract a device name or MAC from the query
+            import re
+            mac_match = re.search(r'([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}', q)
+            if mac_match:
+                r = SystemAgent.wake(mac_match.group())
+                return {"agent": "system", "action": "wake", "result": r,
+                        "summary": "Magic packet sent." if r.get("success") else r.get("output", "Failed.")}
+            # Check for known device names
+            from brain.agent.system_agents import NetworkAgent
+            for name, info in NetworkAgent.DEVICES.items():
+                if name in q and info.get("mac"):
+                    r = SystemAgent.wake(info["mac"], info.get("ip", "255.255.255.255"))
+                    return {"agent": "system", "action": "wake", "result": r,
+                            "summary": f"Waking {info.get('name', name)}." if r.get("success")
+                            else r.get("output", "Failed.")}
+
         return None
 
     # ── Input Agent ────────────────────────────────────────────────

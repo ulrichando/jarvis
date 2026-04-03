@@ -337,11 +337,62 @@ class SystemAgent:
 
     @staticmethod
     def hibernate() -> dict:
+        """Hibernate to disk with WoL enabled for remote wake."""
+        # Enable Wake-on-LAN before hibernating so the machine can be woken remotely
+        SystemAgent._enable_wol()
         return _run("sudo systemctl hibernate")
 
     @staticmethod
     def hybrid_sleep() -> dict:
+        """Hybrid sleep (RAM + disk) with WoL enabled."""
+        SystemAgent._enable_wol()
         return _run("sudo systemctl hybrid-sleep")
+
+    @staticmethod
+    def _enable_wol() -> None:
+        """Enable Wake-on-LAN on all ethernet interfaces."""
+        import glob
+        # Find all physical ethernet interfaces (not virtual/loopback)
+        for path in glob.glob("/sys/class/net/*/device"):
+            iface = path.split("/")[-2]
+            if iface.startswith(("lo", "vir", "br-", "docker", "veth")):
+                continue
+            _run(f"sudo ethtool -s {iface} wol g", timeout=5)
+
+    @staticmethod
+    def get_wol_info() -> dict:
+        """Get MAC addresses and WoL status for remote wake."""
+        import glob
+        info = {}
+        for path in glob.glob("/sys/class/net/*/device"):
+            iface = path.split("/")[-2]
+            if iface.startswith(("lo", "vir", "br-", "docker", "veth")):
+                continue
+            mac = TerminalAgent.get_output(f"cat /sys/class/net/{iface}/address").strip()
+            wol_status = TerminalAgent.get_output(f"sudo ethtool {iface} | grep Wake-on")
+            info[iface] = {"mac": mac, "wol": wol_status.strip()}
+        ip = TerminalAgent.get_output("hostname -I").strip().split()[0] if \
+            TerminalAgent.get_output("hostname -I").strip() else "unknown"
+        info["ip"] = ip
+        return info
+
+    @staticmethod
+    def wake(mac: str, ip: str = "255.255.255.255", port: int = 9) -> dict:
+        """Send Wake-on-LAN magic packet to wake a remote machine."""
+        # Build magic packet: 6x 0xFF + 16x target MAC
+        mac_clean = mac.replace(":", "").replace("-", "")
+        if len(mac_clean) != 12:
+            return {"success": False, "output": f"Invalid MAC: {mac}"}
+        magic = b'\xff' * 6 + bytes.fromhex(mac_clean) * 16
+        try:
+            import socket
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            sock.sendto(magic, (ip, port))
+            sock.close()
+            return {"success": True, "output": f"WoL packet sent to {mac}"}
+        except Exception as e:
+            return {"success": False, "output": f"WoL failed: {e}"}
 
     @staticmethod
     def lock() -> dict:

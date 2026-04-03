@@ -79,7 +79,7 @@ def main():
     # ── Window ──
     window = Gtk.Window()
     window.set_title("J.A.R.V.I.S.")
-    window.set_default_size(500, 500)
+    window.set_default_size(700, 700)
     window.set_decorated(False)
     window.set_app_paintable(True)
     window.set_resizable(False)
@@ -337,7 +337,7 @@ def main():
     window.connect("map-event", _enable_click_through_on_map)
 
     # ── Show ──
-    _size = {"w": 500, "h": 500}
+    _size = {"w": 700, "h": 700}
     window.show_all()
     print("JARVIS desktop running.")
     print("  Tray icon in system tray")
