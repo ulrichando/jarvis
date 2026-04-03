@@ -1,4 +1,0 @@
-[workspace]
-members = ["core"]
-exclude = ["shells/desktop/src-tauri", "os/kernel", "os/boot"]
-resolver = "2"
