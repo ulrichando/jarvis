@@ -641,12 +641,20 @@ PROJECT CREATION RULES — follow these when building something:
                         yield {"type": "text", "content": f"\nAgent error: {e}"}
 
         else:
-            # Simple conversation — stream LLM response token by token
+            # Fast chat — direct LLM query, no reasoning layer, no tools
             full_response = ""
-            async for event in self._standard_response_stream(user_input, memory_context, start):
-                if event["type"] == "text":
-                    full_response += event["content"]
-                yield event
+            from brain.reasoning.persona import SYSTEM_PROMPT
+            history = self.memory.get_history(limit=10)
+            try:
+                async for chunk in self.reasoner.query_stream(
+                    user_input, system_prompt=SYSTEM_PROMPT, history=history
+                ):
+                    full_response += chunk
+                    yield {"type": "text", "content": chunk}
+            except Exception:
+                full_response = "Something went wrong."
+                yield {"type": "text", "content": full_response}
+            yield {"type": "done", "content": full_response}
 
         if full_response:
             self.memory.add_turn("jarvis", full_response)
@@ -876,11 +884,26 @@ PROJECT CREATION RULES — follow these when building something:
     # ═══ CLASSIFICATION ═════════════════════════════════════════════
 
     def _needs_agent_loop(self, user_input: str) -> bool:
-        """Like Claude Code: ALWAYS use agent loop. Claude decides whether to use tools.
+        """Like Claude Code: agent loop for tasks, fast path for chat.
 
-        The agent loop has tools available but Claude won't use them for simple chat.
-        This ensures tool access is always available for follow-ups.
+        Short greetings and small talk skip the agent loop (no tool schemas sent)
+        for faster response. Everything else gets full tool access.
         """
+        q = user_input.lower().strip().rstrip("?!. ")
+
+        # Quick chat — no tools needed, respond fast
+        fast_chat = {
+            "hello", "hi", "hey", "yo", "sup", "good morning", "good evening",
+            "good night", "good afternoon", "thanks", "thank you", "bye",
+            "how are you", "whats up", "what's up", "who are you",
+            "lol", "haha", "nice", "cool", "ok", "okay", "yes", "no",
+            "good job", "well done", "my bad", "sorry", "never mind",
+            "hello there", "hi there", "hey there",
+        }
+        if q in fast_chat:
+            return False
+
+        # Everything else → agent loop with tools
         return True
 
     # ═══ MODE SWITCHING ═════════════════════════════════════════════
