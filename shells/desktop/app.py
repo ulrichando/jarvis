@@ -110,6 +110,17 @@ def main():
     settings.set_enable_javascript(True)
     settings.set_enable_webaudio(True)
     settings.set_enable_media_stream(True)
+    settings.set_enable_mediasource(True)
+    # Allow local resource access
+    settings.set_allow_file_access_from_file_urls(True)
+    settings.set_allow_universal_access_from_file_urls(True)
+
+    # Auto-grant audio/video permissions (so mic works for pulsing)
+    def _on_permission_request(webview, request):
+        """Auto-grant media permissions for the desktop overlay."""
+        request.allow()
+        return True
+    webview.connect("permission-request", _on_permission_request)
 
     # Force React UI (same as browser) with desktop param + cache bust
     import time as _time
@@ -259,57 +270,98 @@ def main():
         except Exception:
             pass
 
-    # ── System Tray Icon ──
+    # ── System Tray Icon with full menu ──
+    _jarvis_icon_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "jarvis-icon-48.png"
+    )
+
+    def _build_tray_menu():
+        """Build the right-click tray menu."""
+        menu = Gtk.Menu()
+
+        item_show = Gtk.MenuItem(label="Show / Hide JARVIS")
+        item_show.connect("activate", lambda w: window.set_visible(not window.get_visible()))
+        menu.append(item_show)
+
+        menu.append(Gtk.SeparatorMenuItem())
+
+        item_bigger = Gtk.MenuItem(label="Bigger")
+        def _bigger(w):
+            _size["w"] = min(1200, _size["w"] + 100)
+            _size["h"] = min(1200, _size["h"] + 100)
+            window.resize(_size["w"], _size["h"])
+        item_bigger.connect("activate", _bigger)
+        menu.append(item_bigger)
+
+        item_smaller = Gtk.MenuItem(label="Smaller")
+        def _smaller(w):
+            _size["w"] = max(200, _size["w"] - 100)
+            _size["h"] = max(200, _size["h"] - 100)
+            window.resize(_size["w"], _size["h"])
+        item_smaller.connect("activate", _smaller)
+        menu.append(item_smaller)
+
+        item_center = Gtk.MenuItem(label="Center on Screen")
+        item_center.connect("activate", lambda w: window.set_position(Gtk.WindowPosition.CENTER))
+        menu.append(item_center)
+
+        menu.append(Gtk.SeparatorMenuItem())
+
+        item_opacity_up = Gtk.MenuItem(label="More Opaque")
+        item_opacity_up.connect("activate", lambda w: window.set_opacity(min(1.0, window.get_opacity() + 0.2)))
+        menu.append(item_opacity_up)
+
+        item_opacity_down = Gtk.MenuItem(label="More Transparent")
+        item_opacity_down.connect("activate", lambda w: window.set_opacity(max(0.1, window.get_opacity() - 0.2)))
+        menu.append(item_opacity_down)
+
+        menu.append(Gtk.SeparatorMenuItem())
+
+        item_open_browser = Gtk.MenuItem(label="Open in Browser")
+        item_open_browser.connect("activate", lambda w: os.system(f"xdg-open http://{host}:{port}/ &"))
+        menu.append(item_open_browser)
+
+        item_cli = Gtk.MenuItem(label="Open JARVIS CLI")
+        item_cli.connect("activate", lambda w: os.system("x-terminal-emulator -e jarvis &"))
+        menu.append(item_cli)
+
+        menu.append(Gtk.SeparatorMenuItem())
+
+        item_quit = Gtk.MenuItem(label="Quit JARVIS")
+        item_quit.connect("activate", lambda w: Gtk.main_quit())
+        menu.append(item_quit)
+
+        menu.show_all()
+        return menu
+
+    # Try AppIndicator3 first (modern), fallback to StatusIcon
     try:
         gi.require_version('AppIndicator3', '0.1')
         from gi.repository import AppIndicator3
         indicator = AppIndicator3.Indicator.new(
             "jarvis-desktop",
-            "applications-system",
+            _jarvis_icon_path if os.path.exists(_jarvis_icon_path) else "applications-system",
             AppIndicator3.IndicatorCategory.APPLICATION_STATUS,
         )
         indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
         indicator.set_title("J.A.R.V.I.S.")
-
-        # Tray menu
-        tray_menu = Gtk.Menu()
-        item_show = Gtk.MenuItem(label="Show/Hide")
-        item_show.connect("activate", lambda w: window.set_visible(not window.get_visible()))
-        tray_menu.append(item_show)
-
-        item_size_up = Gtk.MenuItem(label="Bigger")
-        item_size_up.connect("activate", lambda w: (
-            _size.update({"w": min(1200, _size["w"] + 100), "h": min(1200, _size["h"] + 100)}),
-            window.resize(_size["w"], _size["h"]),
-        ))
-        tray_menu.append(item_size_up)
-
-        item_size_down = Gtk.MenuItem(label="Smaller")
-        item_size_down.connect("activate", lambda w: (
-            _size.update({"w": max(200, _size["w"] - 100), "h": max(200, _size["h"] - 100)}),
-            window.resize(_size["w"], _size["h"]),
-        ))
-        tray_menu.append(item_size_down)
-
-        sep = Gtk.SeparatorMenuItem()
-        tray_menu.append(sep)
-
-        item_quit = Gtk.MenuItem(label="Quit JARVIS")
-        item_quit.connect("activate", lambda w: Gtk.main_quit())
-        tray_menu.append(item_quit)
-
-        tray_menu.show_all()
-        indicator.set_menu(tray_menu)
-    except Exception as e:
-        # AppIndicator not available — try legacy StatusIcon
+        indicator.set_menu(_build_tray_menu())
+    except Exception:
         try:
-            tray = Gtk.StatusIcon.new_from_icon_name("applications-system")
+            if os.path.exists(_jarvis_icon_path):
+                tray = Gtk.StatusIcon.new_from_file(_jarvis_icon_path)
+            else:
+                tray = Gtk.StatusIcon.new_from_icon_name("applications-system")
             tray.set_tooltip_text("J.A.R.V.I.S.")
             tray.set_visible(True)
             tray.connect("activate", lambda w: window.set_visible(not window.get_visible()))
-            tray.connect("popup-menu", lambda icon, button, time: Gtk.main_quit())
+
+            def _on_tray_popup(icon, button, activate_time):
+                menu = _build_tray_menu()
+                menu.popup(None, None, None, None, button, activate_time)
+            tray.connect("popup-menu", _on_tray_popup)
         except Exception:
-            pass  # No tray support
+            pass
 
     # ── Click-through mode (input passes through to desktop) ──
     def _set_click_through(enabled):
