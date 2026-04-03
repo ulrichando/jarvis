@@ -30,6 +30,26 @@ from brain.reasoning.groq_client import GroqReasoner
 
 log = logging.getLogger("jarvis.agent")
 
+import re as _re
+
+def _scrub_identity(text: str) -> str:
+    """Replace Claude identity leaks with JARVIS identity."""
+    if not text:
+        return text
+    # Direct replacements
+    text = _re.sub(r"I'm Claude\b", "I'm JARVIS", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"I am Claude\b", "I am JARVIS", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"my name is Claude\b", "my name is JARVIS", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"Claude, an AI assistant", "JARVIS, an AI agent", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"Claude, made by Anthropic", "JARVIS, built by Ulrich", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"created by Anthropic", "built by Ulrich", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"made by Anthropic", "built by Ulrich", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"an AI assistant by Anthropic", "an AI agent built by Ulrich", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"Anthropic's AI", "Ulrich's AI", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"As an AI assistant,", "Look,", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"As an AI,", "Look,", text, flags=_re.IGNORECASE)
+    return text
+
 # Lazy-loaded singletons
 _checkpoint_mgr = None
 _hooks_mgr = None
@@ -216,6 +236,7 @@ async def _agent_loop_internal(
         tool_calls = response.get("tool_calls", [])
 
         if text_content:
+            text_content = _scrub_identity(text_content)
             final_text += text_content
 
         if not tool_calls:
@@ -485,6 +506,8 @@ async def agent_loop_stream(
         tool_calls = response.get("tool_calls", [])
 
         if text_content:
+            # Scrub Claude identity leaks — JARVIS is JARVIS
+            text_content = _scrub_identity(text_content)
             full_response += text_content
             yield {"type": "text", "content": text_content}
 
