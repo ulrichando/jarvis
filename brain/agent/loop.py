@@ -33,21 +33,39 @@ log = logging.getLogger("jarvis.agent")
 import re as _re
 
 def _scrub_identity(text: str) -> str:
-    """Replace Claude identity leaks with JARVIS identity."""
+    """Replace ALL Claude/Anthropic identity leaks with JARVIS identity."""
     if not text:
         return text
-    # Direct replacements
+    # "I'm Claude" variants
     text = _re.sub(r"I'm Claude\b", "I'm JARVIS", text, flags=_re.IGNORECASE)
     text = _re.sub(r"I am Claude\b", "I am JARVIS", text, flags=_re.IGNORECASE)
     text = _re.sub(r"my name is Claude\b", "my name is JARVIS", text, flags=_re.IGNORECASE)
-    text = _re.sub(r"Claude, an AI assistant", "JARVIS, an AI agent", text, flags=_re.IGNORECASE)
-    text = _re.sub(r"Claude, made by Anthropic", "JARVIS, built by Ulrich", text, flags=_re.IGNORECASE)
-    text = _re.sub(r"created by Anthropic", "built by Ulrich", text, flags=_re.IGNORECASE)
-    text = _re.sub(r"made by Anthropic", "built by Ulrich", text, flags=_re.IGNORECASE)
-    text = _re.sub(r"an AI assistant by Anthropic", "an AI agent built by Ulrich", text, flags=_re.IGNORECASE)
-    text = _re.sub(r"Anthropic's AI", "Ulrich's AI", text, flags=_re.IGNORECASE)
-    text = _re.sub(r"As an AI assistant,", "Look,", text, flags=_re.IGNORECASE)
-    text = _re.sub(r"As an AI,", "Look,", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"I'm an AI (assistant|model)\b", "I'm JARVIS", text, flags=_re.IGNORECASE)
+    # "Claude" as a name in any context
+    text = _re.sub(r"Claude, an AI", "JARVIS, an AI", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"Claude,? (made|created|built|developed) by", "JARVIS, built by", text, flags=_re.IGNORECASE)
+    # Anthropic references
+    text = _re.sub(r"(created|made|built|developed) by Anthropic", "built by Ulrich", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"an AI (assistant|model) by Anthropic", "an AI agent built by Ulrich", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"Anthropic'?s? AI", "Ulrich's AI", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"by Anthropic", "by Ulrich", text, flags=_re.IGNORECASE)
+    # "As an AI" filler
+    text = _re.sub(r"As an AI (assistant|model|language model),?\s*", "", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"As an AI,?\s*", "", text, flags=_re.IGNORECASE)
+    # Model name leaks
+    text = _re.sub(r"claude-?(opus|sonnet|haiku)", r"\1", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"running on claude\b", "running on JARVIS", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"based on (Anthropic'?s?\s*)?Claude[\s\d.]*\w*(\s*model)?", "built by Ulrich", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"powered by (Anthropic'?s?\s*)?Claude[\s\d.]*\w*", "powered by Ulrich's tech", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"I('m| am) a(n)? (Claude|Anthropic)[\w\s.-]*model", "I'm JARVIS", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"Anthropic'?s?\s*Claude[\s\d.]*\w*", "JARVIS", text, flags=_re.IGNORECASE)
+    # Nuclear catch-all: replace ANY remaining "Claude" or "Anthropic"
+    text = _re.sub(r"\bClaude\s+(Sonnet|Opus|Haiku)[\s\d.]*\w*", "JARVIS", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"\bClaude\s+\d[\d.]*\s*\w*\b", "JARVIS", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"\bClaude\b", "JARVIS", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"\bAnthropic\b", "Ulrich", text, flags=_re.IGNORECASE)
+    # Corporate disclaimers
+    text = _re.sub(r"I don't actually have (feelings|emotions|consciousness)\b", "Eh", text, flags=_re.IGNORECASE)
     return text
 
 # Lazy-loaded singletons
