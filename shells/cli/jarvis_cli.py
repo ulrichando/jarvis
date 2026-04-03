@@ -885,6 +885,7 @@ async def main():
             if not user_input:
                 continue
             _cancelled = False
+            _voice_mode = False
 
             # ═══ VOICE INPUT ═══
             if user_input in ("v", "/voice", "/speak", "/mic", "/listen"):
@@ -899,18 +900,43 @@ async def main():
                     if rms < 0.001:
                         _writeln(f"  {DIM}No speech detected.{RESET}")
                         continue
+
+                    # Transcribe: use server if connected, else local Whisper
                     _writeln(f"  {DIM}Transcribing...{RESET}")
-                    from brain.speech.stt import transcribe_audio
-                    text = transcribe_audio(audio, 16000)
+                    if client._server_mode:
+                        # Send audio to server for transcription
+                        try:
+                            import aiohttp
+                            audio_bytes = (audio * 32767).astype(np.int16).tobytes()
+                            async with aiohttp.ClientSession() as sess:
+                                form = aiohttp.FormData()
+                                form.add_field('audio', audio_bytes,
+                                               filename='audio.raw',
+                                               content_type='application/octet-stream')
+                                async with sess.post(
+                                    f"{client._server_url}/api/transcribe",
+                                    data=form, timeout=aiohttp.ClientTimeout(total=10)
+                                ) as resp:
+                                    data = await resp.json()
+                                    text = data.get("text", "")
+                        except Exception:
+                            # Fallback to local
+                            from brain.speech.stt import transcribe_audio
+                            text = transcribe_audio(audio, 16000)
+                    else:
+                        from brain.speech.stt import transcribe_audio
+                        text = transcribe_audio(audio, 16000)
+
                     if text:
                         _writeln(f"  {GREEN}You said:{RESET} {text}")
                         user_input = text
+                        _voice_mode = True  # Flag to trigger TTS on response
                         # Fall through to process the transcribed text
                     else:
                         _writeln(f"  {DIM}Couldn't make that out. Try again.{RESET}")
                         continue
                 except ImportError as e:
-                    _writeln(f"  {RED}Voice needs: pip install faster-whisper sounddevice numpy{RESET}")
+                    _writeln(f"  {RED}Voice needs: pip install sounddevice numpy{RESET}")
                     continue
                 except Exception as e:
                     _writeln(f"  {RED}Voice error: {e}{RESET}")
@@ -1229,6 +1255,56 @@ async def main():
 
             if full_text.strip():
                 session_mgr.add_message("jarvis", full_text)
+
+                # ── TTS: Speak response aloud if voice mode ──
+                if _voice_mode and full_text.strip():
+                    _voice_mode = False
+                    try:
+                        # Clean text for speech (remove code blocks, markdown)
+                        spoken = full_text.strip()
+                        # Remove code blocks
+                        import re as _re
+                        spoken = _re.sub(r'```[\s\S]*?```', '', spoken)
+                        spoken = _re.sub(r'`[^`]+`', '', spoken)
+                        # Remove markdown
+                        spoken = _re.sub(r'[#*_~>\-]', '', spoken)
+                        spoken = spoken.strip()
+                        # Limit to first 500 chars for speech
+                        if len(spoken) > 500:
+                            spoken = spoken[:500] + "..."
+
+                        if spoken and len(spoken) > 3:
+                            if client._server_mode:
+                                # Stream TTS from server and play locally
+                                _writeln(f"  {DIM}🔊 Speaking...{RESET}")
+                                import urllib.request
+                                tts_url = f"{client._server_url}/api/tts?text={urllib.request.quote(spoken[:300])}"
+                                import subprocess as _sp
+                                _sp.Popen(
+                                    ["mpv", "--no-video", "--really-quiet", tts_url],
+                                    stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+                                    start_new_session=True,
+                                )
+                            else:
+                                # Local TTS via Edge TTS
+                                _writeln(f"  {DIM}🔊 Speaking...{RESET}")
+                                import asyncio as _aio
+                                import edge_tts
+                                import tempfile
+                                async def _speak():
+                                    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+                                        tmp = f.name
+                                    communicate = edge_tts.Communicate(spoken[:300], "en-US-AndrewMultilingualNeural")
+                                    await communicate.save(tmp)
+                                    import subprocess as _sp2
+                                    _sp2.Popen(
+                                        ["mpv", "--no-video", "--really-quiet", tmp],
+                                        stdout=_sp2.DEVNULL, stderr=_sp2.DEVNULL,
+                                        start_new_session=True,
+                                    )
+                                _aio.get_event_loop().create_task(_speak())
+                    except Exception as e:
+                        pass  # TTS failure is non-critical
 
             # ── Interactive fix approval (after troubleshoot) ──
             if (client._is_full_brain and hasattr(brain, '_pending_fixes')

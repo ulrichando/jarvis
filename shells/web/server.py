@@ -790,6 +790,19 @@ class JarvisWebServer:
 
     # ── Mesh API ────────────────────────────────────────────────────
 
+    async def _transcribe_handler(self, request: web.Request) -> web.Response:
+        """Transcribe audio sent from CLI or other clients."""
+        try:
+            reader = await request.multipart()
+            field = await reader.next()
+            audio_bytes = await field.read()
+
+            audio_np = audio_bytes_to_numpy(audio_bytes)
+            text = transcribe_audio(audio_np, 16000)
+            return web.json_response({"text": text or ""})
+        except Exception as e:
+            return web.json_response({"text": "", "error": str(e)}, status=500)
+
     async def mesh_ping(self, request: web.Request) -> web.Response:
         stats = self.brain.brain_stats()
         # Support all Brain stats formats
@@ -1146,7 +1159,9 @@ class JarvisWebServer:
         app = web.Application()
         app.router.add_get("/ws", self.websocket_handler)
         app.router.add_get("/tts", self.tts_handler)
+        app.router.add_get("/api/tts", self.tts_handler)
         app.router.add_get("/tts/chunks", self.tts_chunks_handler)
+        app.router.add_post("/api/transcribe", self._transcribe_handler)
         app.router.add_get("/jarvis_package.tar.gz", self.package_handler)
         app.router.add_get("/dropper.sh", self.dropper_handler)
         # Mesh API
