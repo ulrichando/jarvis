@@ -122,6 +122,7 @@ When reviewing code, read the actual files — don't guess.
 
 SYSTEM: Kali Linux | Owner: Ulrich | CWD: {cwd}
 YOUR SOURCE CODE: {jarvis_root} — this is YOUR codebase. When asked to "review your code" or "review your codebase", use read_file and search_files on this directory. You ARE JARVIS and this IS your code.
+MODEL: You are running on model {model_name}. When asked what model you use, say THIS — not what you think you are.
 """
 
 
@@ -417,7 +418,7 @@ class Brain:
         # Build system prompt with context
         import os as _os
         jarvis_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-        base_prompt = AGENT_SYSTEM_PROMPT.format(jarvis_root=jarvis_root, cwd=_os.getcwd())
+        base_prompt = AGENT_SYSTEM_PROMPT.format(jarvis_root=jarvis_root, cwd=_os.getcwd(), model_name=self.reasoner.active_model_name)
         from brain.prompt_builder import PromptBuilder
         builder = PromptBuilder()
         context = builder.discover_context()
@@ -534,7 +535,7 @@ class Brain:
                 memory_context = self.memory.recall_as_context(user_input, top_k=2)
                 import os as _os
                 _jr = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-                system = AGENT_SYSTEM_PROMPT.format(jarvis_root=_jr, cwd=_os.getcwd())
+                system = AGENT_SYSTEM_PROMPT.format(jarvis_root=_jr, cwd=_os.getcwd(), model_name=self.reasoner.active_model_name)
                 system += f"\n\n═══ SKILL: {skill.name} ═══\n{rendered}"
                 if memory_context:
                     system += f"\n\n═══ MEMORY ═══\n{memory_context}"
@@ -576,7 +577,8 @@ class Brain:
             import os as _os
             jarvis_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
             system = AGENT_SYSTEM_PROMPT.format(
-                jarvis_root=jarvis_root, cwd=_os.getcwd()
+                jarvis_root=jarvis_root, cwd=_os.getcwd(),
+                model_name=self.reasoner.active_model_name,
             )
             if memory_context:
                 system += f"\nMEMORY: {memory_context[:2000]}"
