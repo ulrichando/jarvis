@@ -333,28 +333,66 @@ def _append_tool_result(messages: list[dict], tool_id: str, result: str):
 
 async def _execute_tools(messages: list[dict], tool_calls: list[dict],
                          executor, on_call=None, on_result=None, readonly=False):
-    """Execute a list of tool calls with permissions, hooks, and checkpoints."""
+    """Execute tool calls — parallel for read-only, sequential for writes."""
     hooks = _get_hooks()
     checkpoints = _get_checkpoints()
     perms = _get_permissions()
 
-    for tc in tool_calls:
+    # Separate read-only tools (can run in parallel) from write tools (must be sequential)
+    _read_only_tools = {"read_file", "search_files", "web_search", "web_fetch",
+                        "view_screen", "think", "database"}
+    parallel_calls = [tc for tc in tool_calls if tc["name"] in _read_only_tools]
+    sequential_calls = [tc for tc in tool_calls if tc["name"] not in _read_only_tools]
+
+    # Run read-only tools in parallel
+    if len(parallel_calls) > 1:
+        async def _run_one(tc):
+            name, args, tid = tc["name"], tc["args"], tc["id"]
+            if perms:
+                allowed, reason = perms.check(name, args)
+                if not allowed:
+                    return tid, f"BLOCKED by permissions: {reason}"
+            if hooks:
+                hr = hooks.run_pre_tool_use(name, args)
+                if not hr.allowed:
+                    return tid, f"BLOCKED by hook: {hr.message}"
+                if hr.modified_args is not None:
+                    args = hr.modified_args
+            if on_call:
+                on_call(name, args)
+            try:
+                result = await asyncio.to_thread(executor, name, args)
+            except Exception as exc:
+                result = f"ERROR: {exc}"
+            if hooks:
+                post = hooks.run_post_tool_use(name, args, result)
+                if post.message:
+                    result += f"\n[Hook: {post.message}]"
+            if on_result:
+                on_result(name, result)
+            return tid, result
+
+        results = await asyncio.gather(*[_run_one(tc) for tc in parallel_calls])
+        for tid, result in results:
+            _append_tool_result(messages, tid, result)
+    elif parallel_calls:
+        # Single read-only tool — run normally
+        sequential_calls = parallel_calls + sequential_calls
+        parallel_calls = []
+
+    # Run write/destructive tools sequentially
+    for tc in sequential_calls:
         tool_name = tc["name"]
         tool_args = tc["args"]
         tool_id = tc["id"]
 
-        # Permission check
         if perms:
             allowed, reason = perms.check(tool_name, tool_args)
             if not allowed:
                 log.warning("Permission denied: %s — %s", tool_name, reason)
-                # PermissionDenied hook
-                if hooks:
-                    hooks.run_permission_denied(tool_name, tool_args, reason)
                 _append_tool_result(messages, tool_id, f"BLOCKED by permissions: {reason}")
                 continue
 
-        # PreToolUse hook
         if hooks:
             hr = hooks.run_pre_tool_use(tool_name, tool_args)
             if not hr.allowed:
@@ -363,7 +401,6 @@ async def _execute_tools(messages: list[dict], tool_calls: list[dict],
             if hr.modified_args is not None:
                 tool_args = hr.modified_args
 
-        # Checkpoint before file writes
         if checkpoints and tool_name in ("write_file", "edit_file"):
             path = tool_args.get("path", "")
             if path:

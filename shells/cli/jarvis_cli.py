@@ -606,7 +606,7 @@ async def main():
             return
         comment = _companion.get_comment(context)
         if comment:
-            _writeln(_companion.render_comment(comment))
+            _outputln(_companion.render_comment(comment))
 
     # Resume context
     if (args.continue_last or args.resume) and session_mgr.current:
@@ -629,6 +629,69 @@ async def main():
 
     spinner = Spinner()
     _cancelled = False
+    _active_task: asyncio.Task | None = None
+    _input_queue: asyncio.Queue = asyncio.Queue()
+
+    # ── Scroll Region Management ──
+    # Split terminal: output scrolls in top zone, input stays pinned at bottom.
+    INPUT_ZONE_HEIGHT = 4  # top bar, input line, bottom bar, hints
+
+    def _term_rows():
+        try:
+            return os.get_terminal_size().lines
+        except OSError:
+            return 24
+
+    def _setup_zones():
+        """Set scroll region to exclude bottom input zone."""
+        rows = _term_rows()
+        output_bottom = rows - INPUT_ZONE_HEIGHT
+        if output_bottom < 2:
+            output_bottom = 2
+        _write(f"\033[1;{output_bottom}r")  # Set scroll region
+        _write(f"\033[{output_bottom};1H")  # Move to bottom of output zone
+
+    def _teardown_zones():
+        """Reset scroll region to full terminal."""
+        _write("\033[r")
+
+    def _draw_input_frame(mode_prefix="", buf_text=""):
+        """Draw input frame in the pinned bottom zone."""
+        rows = _term_rows()
+        tw = _tw()
+        input_top = rows - INPUT_ZONE_HEIGHT + 1
+        mode_str = brain.mode if client._is_full_brain else "normal"
+        status_right = f"◐ {mode_str}" if mode_str != "normal" else ""
+
+        # Move to fixed input zone (below scroll region)
+        _write(f"\033[{input_top};1H")
+        _write(f"\033[K{DIM}{'─' * tw}{RESET}\n")
+        _write(f"\033[K{mode_prefix}{CYAN}❯{RESET} {buf_text}\n")
+        _write(f"\033[K{DIM}{'─' * tw}{RESET}\n")
+        hint = f"  {DIM}? for shortcuts{RESET}"
+        if status_right:
+            pad = max(1, tw - 16 - len(status_right) - 2)
+            hint += " " * pad + f"{DIM}{status_right}{RESET}"
+        _write(f"\033[K{hint}")
+        # Position cursor on input line
+        prompt_vis_len = len(mode_prefix.replace(YELLOW, "").replace(RESET, "")) + 2  # "❯ "
+        cursor_col = prompt_vis_len + len(buf_text) + 1
+        _write(f"\033[{input_top + 1};{cursor_col}H")
+        sys.stdout.flush()
+
+    def _output(text: str):
+        """Write to the output zone (scroll region), then restore cursor to input."""
+        _write(f"\033[s")  # Save cursor position
+        rows = _term_rows()
+        output_bottom = rows - INPUT_ZONE_HEIGHT
+        _write(f"\033[{output_bottom};1H")  # Move to bottom of scroll region
+        _write(text)
+        _write(f"\033[u")  # Restore cursor
+        sys.stdout.flush()
+
+    def _outputln(text: str = ""):
+        """Write line to the output zone."""
+        _output(text + "\n")
 
     # Helper to full redraw (used by /clear and resize)
     def _redraw():
@@ -656,36 +719,22 @@ async def main():
 
     def _handle_resize(signum, frame):
         _redraw()
+        _setup_zones()
         if _in_input:
-            # Redraw the input frame at new width
-            tw = _tw()
-            mode_str = brain.mode if client._is_full_brain else "normal"
-            mode_prefix = f"{YELLOW}{mode_str}{RESET} " if mode_str != "normal" else ""
-            status_right = f"◐ {mode_str}" if mode_str != "normal" else ""
-
-            _writeln(f"{DIM}{'─' * tw}{RESET}")
-            _writeln()
-            _writeln(f"{DIM}{'─' * tw}{RESET}")
-            hint = f"  {DIM}? for shortcuts{RESET}"
-            if status_right:
-                pad = max(1, tw - 16 - len(status_right) - 2)
-                hint += " " * pad + f"{DIM}{status_right}{RESET}"
-            _write(hint)
-            _write(f"\033[2A\r{mode_prefix}{CYAN}❯{RESET} ")
-            sys.stdout.flush()
+            _draw_input_frame(_get_mode_prefix())
 
     try:
         signal.signal(signal.SIGWINCH, _handle_resize)
     except (AttributeError, ValueError):
         pass
 
-    # ── Input reader with slash command autocomplete ──
-    def _read_input_with_autocomplete(mode_prefix, tw):
-        """Read input char by char. Shows autocomplete menu when / is typed.
+    # ── Async input reader with slash command autocomplete ──
+    async def _async_read_input(mode_prefix, tw):
+        """Async input reader. Non-blocking so queries can stream concurrently.
 
         Returns the input string, or None on EOF.
         """
-        import tty, termios, select
+        import tty, termios
 
         # Load command list for autocomplete
         try:
@@ -700,220 +749,423 @@ async def main():
         menu_visible = False
         menu_lines = 0
         selected = 0
+        loop = asyncio.get_event_loop()
+        result_future = loop.create_future()
 
-        def _prompt_len():
-            """Visible character length of the prompt prefix (❯ + space)."""
-            # mode_prefix has ANSI codes; strip them for width calc
-            import re
-            plain = re.sub(r'\x1b\[[0-9;]*m', '', mode_prefix)
-            return len(plain) + 2  # "❯ "
+        # Escape sequence state
+        _esc_buf = []
+        _esc_timer = None
 
-        def _redraw_input():
-            """Redraw the input line with current buffer, handling line wrap."""
+        def _redraw():
+            """Redraw input line in the fixed zone."""
             text = "".join(buf)
-            # Calculate how many visual lines the old content spans
-            total_chars = _prompt_len() + len(text)
-            # How many wrapped lines the cursor is below the start
-            lines_down = total_chars // tw if tw > 0 else 0
-            # Move cursor up to the start of the input, then clear to end of screen
-            if lines_down > 0:
-                _write(f"\033[{lines_down}A")
-            _write(f"\r\033[J{mode_prefix}{CYAN}❯{RESET} {text}")
+            _draw_input_frame(mode_prefix, text)
 
         MAX_VISIBLE = 10
 
         def _show_menu(matches):
-            """Show scrollable autocomplete menu below the input frame."""
+            """Show autocomplete menu above the input frame."""
             nonlocal menu_visible, menu_lines
             _hide_menu()
             if not matches:
                 return
-            # Calculate visible window that follows selection
             total = len(matches)
             start = max(0, min(selected - MAX_VISIBLE // 2, total - MAX_VISIBLE))
             end = min(total, start + MAX_VISIBLE)
 
-            _write("\033[s\033[2B\r\n")
+            rows = _term_rows()
+            # Draw menu just above input zone, in the output area
+            menu_top = rows - INPUT_ZONE_HEIGHT - (end - start) - (1 if start > 0 else 0) - (1 if end < total else 0)
+            if menu_top < 1:
+                menu_top = 1
+            _write(f"\033[s")  # save cursor
+            line = menu_top
             if start > 0:
-                _writeln(f"    {DIM}↑ {start} more above{RESET}")
+                _write(f"\033[{line};1H\033[K    {DIM}↑ {start} more above{RESET}")
+                line += 1
             for i in range(start, end):
                 cmd = matches[i]
                 prefix = f"  {CYAN}❯{RESET} " if i == selected else "    "
                 desc = cmd.description[:tw - 45] if cmd.description else ""
-                _writeln(f"{prefix}{CYAN}/{cmd.name:<25s}{RESET} {DIM}{desc}{RESET}")
+                _write(f"\033[{line};1H\033[K{prefix}{CYAN}/{cmd.name:<25s}{RESET} {DIM}{desc}{RESET}")
+                line += 1
             if end < total:
-                _writeln(f"    {DIM}↓ {total - end} more below{RESET}")
-            menu_lines = (end - start) + (1 if start > 0 else 0) + (1 if end < total else 0)
-            _write("\033[u")
+                _write(f"\033[{line};1H\033[K    {DIM}↓ {total - end} more below{RESET}")
+                line += 1
+            menu_lines = line - menu_top
+            _write(f"\033[u")  # restore cursor
             menu_visible = True
+            sys.stdout.flush()
 
         def _hide_menu():
             """Erase the autocomplete menu."""
             nonlocal menu_visible, menu_lines
             if not menu_visible:
                 return
-            _write("\033[s\033[2B\r\n")
-            for _ in range(menu_lines + 1):
-                _write("\033[K\n")
-            _write("\033[u")
+            rows = _term_rows()
+            menu_top = rows - INPUT_ZONE_HEIGHT - menu_lines
+            if menu_top < 1:
+                menu_top = 1
+            _write(f"\033[s")
+            for i in range(menu_lines):
+                _write(f"\033[{menu_top + i};1H\033[K")
+            _write(f"\033[u")
             menu_visible = False
             menu_lines = 0
+            sys.stdout.flush()
 
         def _get_matches():
-            """Get matching commands for current buffer."""
             text = "".join(buf)
             if not text.startswith("/"):
                 return []
             prefix = text[1:].lower()
             return [c for c in all_cmds if c.name.startswith(prefix)]
 
-        try:
-            tty.setcbreak(fd)
+        def _process_char(ch):
+            nonlocal selected, _esc_buf, _esc_timer
+            if result_future.done():
+                return
 
-            while True:
-                ch = os.read(fd, 1).decode("utf-8", errors="replace")
-
-                if ch == "\n" or ch == "\r":
-                    # Enter: if menu is visible, accept selected command first
-                    if menu_visible:
-                        matches = _get_matches()
-                        if matches and selected < len(matches):
-                            buf.clear()
-                            buf.extend(f"/{matches[selected].name}")
-                    _hide_menu()
-                    _write("\n")
-                    return "".join(buf).strip()
-
-                elif ch == "\x04":
-                    # Ctrl+D
-                    _hide_menu()
-                    return None
-
-                elif ch == "\x03":
-                    # Ctrl+C
-                    _hide_menu()
-                    buf.clear()
-                    _redraw_input()
-                    return ""
-
-                elif ch == "\x7f" or ch == "\x08":
-                    # Backspace
-                    if buf:
-                        buf.pop()
-                        _redraw_input()
-                        if "".join(buf).startswith("/"):
-                            matches = _get_matches()
-                            selected = 0
-                            _show_menu(matches)
-                        else:
-                            _hide_menu()
-
-                elif ch == "\x09":
-                    # Tab: accept selected autocomplete
-                    if menu_visible:
-                        matches = _get_matches()
-                        if matches and selected < len(matches):
-                            buf.clear()
-                            buf.extend(f"/{matches[selected].name} ")
-                            _redraw_input()
-                            _hide_menu()
-
-                elif ch == "\x1b":
-                    # Escape sequence (arrows, etc.)
-                    if select.select([sys.stdin], [], [], 0.05)[0]:
-                        seq = os.read(fd, 2).decode("utf-8", errors="replace")
-                        if seq == "[A" and menu_visible:
-                            # Up arrow
-                            matches = _get_matches()
-                            selected = max(0, selected - 1)
-                            _show_menu(matches)
-                        elif seq == "[B" and menu_visible:
-                            # Down arrow
-                            matches = _get_matches()
-                            selected = min(len(matches) - 1, selected + 1)
-                            _show_menu(matches)
-                    else:
-                        # Just Escape: close menu
-                        _hide_menu()
-
-                elif ch >= " ":
-                    # Regular character
-                    buf.append(ch)
-                    _redraw_input()
-
-                    # Show autocomplete if starts with /
+            if ch == "\n" or ch == "\r":
+                if menu_visible:
+                    matches = _get_matches()
+                    if matches and selected < len(matches):
+                        buf.clear()
+                        buf.extend(f"/{matches[selected].name}")
+                _hide_menu()
+                result_future.set_result("".join(buf).strip())
+            elif ch == "\x04":
+                _hide_menu()
+                result_future.set_result(None)
+            elif ch == "\x03":
+                _hide_menu()
+                # Ctrl+C: cancel active task if running, else clear input
+                if _active_task and not _active_task.done():
+                    _active_task.cancel()
+                    _outputln(f"\n  {DIM}Cancelled.{RESET}")
+                buf.clear()
+                _redraw()
+                result_future.set_result("")
+            elif ch == "\x7f" or ch == "\x08":
+                if buf:
+                    buf.pop()
+                    _redraw()
                     if "".join(buf).startswith("/"):
                         matches = _get_matches()
                         selected = 0
-                        if matches:
-                            _show_menu(matches)
-                        else:
-                            _hide_menu()
+                        _show_menu(matches)
                     else:
                         _hide_menu()
+            elif ch == "\x09":
+                if menu_visible:
+                    matches = _get_matches()
+                    if matches and selected < len(matches):
+                        buf.clear()
+                        buf.extend(f"/{matches[selected].name} ")
+                        _redraw()
+                        _hide_menu()
+            elif ch >= " ":
+                buf.append(ch)
+                _redraw()
+                if "".join(buf).startswith("/"):
+                    matches = _get_matches()
+                    selected = 0
+                    if matches:
+                        _show_menu(matches)
+                    else:
+                        _hide_menu()
+                else:
+                    _hide_menu()
 
+        def _handle_escape_seq():
+            """Process buffered escape sequence after timeout."""
+            nonlocal selected, _esc_buf, _esc_timer
+            _esc_timer = None
+            seq = "".join(_esc_buf)  # e.g. "[A" for up arrow
+            _esc_buf.clear()
+
+            if seq == "[A" and menu_visible:
+                matches = _get_matches()
+                selected = max(0, selected - 1)
+                _show_menu(matches)
+            elif seq == "[B" and menu_visible:
+                matches = _get_matches()
+                selected = min(len(matches) - 1, selected + 1)
+                _show_menu(matches)
+            else:
+                # Just Escape — close menu
+                _hide_menu()
+
+        def _on_stdin():
+            nonlocal _esc_buf, _esc_timer
+            if result_future.done():
+                return
+            try:
+                data = os.read(fd, 32).decode("utf-8", errors="replace")
+            except OSError:
+                return
+
+            for ch in data:
+                if len(_esc_buf) > 0:
+                    # We're in an escape sequence (after \x1b)
+                    _esc_buf.append(ch)
+                    if len(_esc_buf) >= 2:
+                        # Got full sequence like "[A", "[B"
+                        if _esc_timer:
+                            _esc_timer.cancel()
+                            _esc_timer = None
+                        _handle_escape_seq()
+                elif ch == "\x1b":
+                    _esc_buf.clear()  # Start fresh — don't include \x1b itself
+                    # Wait briefly for rest of sequence
+                    _esc_timer = loop.call_later(0.05, _handle_escape_seq)
+                else:
+                    _process_char(ch)
+
+        try:
+            tty.setcbreak(fd)
+            loop.add_reader(fd, _on_stdin)
+            result = await result_future
+            return result
         except Exception:
             _hide_menu()
             return "".join(buf).strip()
         finally:
+            try:
+                loop.remove_reader(fd)
+            except Exception:
+                pass
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
+    # ── Background Query Runner ──
+    async def _run_query(user_input, voice_mode=False):
+        """Run a query as a background task, outputting to the scroll region."""
+        nonlocal _active_task
+
+        from shells.cli.display import (
+            tool_call_line, tool_result_line, tool_result_preview,
+            diff_display, token_footer as _token_footer,
+        )
+
+        start = time.time()
+        session_mgr.add_message("user", user_input)
+
+        full_text = ""
+        tool_count = 0
+        _streaming_text = False
+        _tool_states = []
+        _tokens_this_turn = 0
+
+        # Async spinner (no threads — writes to output zone)
+        _spin_task = None
+        _spin_label = ["Thinking..."]
+
+        async def _spin_loop():
+            i = 0
+            t0 = time.time()
+            while True:
+                frame = SPINNER_FRAMES[i % len(SPINNER_FRAMES)]
+                elapsed = time.time() - t0
+                _output(f"\r  {DIM}{frame} {_spin_label[0]} ({elapsed:.1f}s){RESET}\033[K")
+                i += 1
+                await asyncio.sleep(0.12)
+
+        def _start_spin(label="Thinking..."):
+            nonlocal _spin_task
+            _stop_spin()
+            _spin_label[0] = label
+            _spin_task = asyncio.get_event_loop().create_task(_spin_loop())
+
+        def _stop_spin():
+            nonlocal _spin_task
+            if _spin_task and not _spin_task.done():
+                _spin_task.cancel()
+                _spin_task = None
+                _output("\r\033[K")
+
+        _start_spin()
+
+        try:
+            async for event in client.query_stream(user_input):
+                etype = event.get("type", "")
+
+                if etype == "tool_call":
+                    _stop_spin()
+                    if _streaming_text:
+                        _outputln()
+                    tool_count += 1
+                    name = event.get("name", "")
+                    args = event.get("args", {})
+                    _tool_states.append({
+                        "name": name, "args": args,
+                        "start": time.time(), "lines": [], "error": False,
+                    })
+                    _outputln(tool_call_line(name, args))
+                    _start_spin(name)
+
+                elif etype == "tool_result":
+                    _stop_spin()
+                    result_text = event.get("content", event.get("result", ""))
+                    name = event.get("name", "")
+                    if _tool_states:
+                        ts = _tool_states[-1]
+                        elapsed_tool = time.time() - ts["start"]
+                        is_error = (result_text.startswith("Error") or
+                                    result_text.startswith("BLOCKED"))
+                        ts["error"] = is_error
+                        ts["lines"] = result_text.strip().split("\n") if result_text.strip() else []
+                        _outputln(tool_result_line(name, result_text, not is_error, elapsed_tool))
+                        if name == "edit_file" and ts["args"].get("old_string"):
+                            diff = diff_display(
+                                ts["args"]["old_string"],
+                                ts["args"].get("new_string", ""),
+                                ts["args"].get("path", ""),
+                            )
+                            if diff:
+                                _outputln(diff)
+                        if is_error:
+                            _buddy_says("error")
+                    _start_spin("Thinking...")
+
+                elif etype == "text":
+                    chunk = event.get("content", "")
+                    if not chunk:
+                        continue
+                    if not _streaming_text:
+                        _stop_spin()
+                        _streaming_text = True
+                        _outputln()
+                    full_text += chunk
+                    _output(chunk)
+
+                elif etype == "usage":
+                    _tokens_this_turn += event.get("input_tokens", 0) + event.get("output_tokens", 0)
+
+                elif etype == "error":
+                    err = event.get("content", "Error")
+                    if "rate_limit" in err or "413" in err or "too large" in err:
+                        full_text = "Give me a moment — rate limited. Try again."
+                    elif "No provider" in err:
+                        full_text = "No AI provider available. Check /doctor."
+
+                elif etype == "done":
+                    pass
+
+        except asyncio.CancelledError:
+            full_text = ""
+            _outputln(f"\n  {DIM}Cancelled.{RESET}")
+        except Exception as e:
+            full_text = f"Error: {str(e)[:80]}"
+        finally:
+            _stop_spin()
+
+        if _streaming_text:
+            _outputln()
+            _outputln()
+        else:
+            _output("\r\033[K")
+
+        # Filter garbage
+        if full_text:
+            garbage_markers = ["<｜begin", "<|begin", "\\boxed{", "\\frac{", "\\sqrt{",
+                               "begin▁of▁sentence", "Question: How do you solve"]
+            if any(m in full_text for m in garbage_markers):
+                full_text = "Sorry, I got confused there. Could you rephrase that?"
+
+        if full_text.strip() and not _streaming_text:
+            _outputln(f"{CYAN}●{RESET} {render_markdown(full_text.strip())}")
+            _outputln()
+
+        # Token footer
+        elapsed_total = time.time() - start
+        if _tokens_this_turn > 0 or tool_count > 0:
+            _outputln(_token_footer(_tokens_this_turn, tool_count, elapsed_total))
+        if full_text.strip() and tool_count > 0:
+            _buddy_says("success")
+        _outputln()
+
+        if full_text.strip():
+            session_mgr.add_message("jarvis", full_text)
+
+            # TTS if voice mode
+            if voice_mode and full_text.strip():
+                try:
+                    spoken = full_text.strip()
+                    import re as _re
+                    spoken = _re.sub(r'```[\s\S]*?```', '', spoken)
+                    spoken = _re.sub(r'`[^`]+`', '', spoken)
+                    spoken = _re.sub(r'[#*_~>\-]', '', spoken)
+                    spoken = spoken.strip()
+                    if len(spoken) > 500:
+                        spoken = spoken[:500] + "..."
+                    if spoken and len(spoken) > 3:
+                        if client._server_mode:
+                            import urllib.request
+                            tts_url = f"{client._server_url}/api/tts?text={urllib.request.quote(spoken[:300])}"
+                            import subprocess as _sp
+                            _sp.Popen(
+                                ["mpv", "--no-video", "--really-quiet", tts_url],
+                                stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+                                start_new_session=True,
+                            )
+                        else:
+                            import edge_tts, tempfile
+                            async def _speak():
+                                with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+                                    tmp = f.name
+                                communicate = edge_tts.Communicate(spoken[:300], "en-US-AndrewMultilingualNeural")
+                                await communicate.save(tmp)
+                                import subprocess as _sp2
+                                _sp2.Popen(
+                                    ["mpv", "--no-video", "--really-quiet", tmp],
+                                    stdout=_sp2.DEVNULL, stderr=_sp2.DEVNULL,
+                                    start_new_session=True,
+                                )
+                            asyncio.get_event_loop().create_task(_speak())
+                except Exception:
+                    pass
+
+        # Redraw input frame after query completes
+        _draw_input_frame(_get_mode_prefix())
+        _active_task = None
+
+    def _get_mode_prefix():
+        if client._is_full_brain and brain.mode != "normal":
+            return f"{YELLOW}{brain.mode}{RESET} "
+        return ""
+
     # ── Main REPL Loop ──
+    _setup_zones()
+
     while True:
         try:
             if initial_query:
                 user_input = initial_query
                 initial_query = ""
             else:
-                mode_prefix = ""
-                if client._is_full_brain and brain.mode != "normal":
-                    mode_prefix = f"{YELLOW}{brain.mode}{RESET} "
+                mode_prefix = _get_mode_prefix()
+                tw = _tw()
+
                 try:
-                    # Claude Code-style bordered input with status bar
-                    tw = _tw()
-                    mode_str = brain.mode if client._is_full_brain else "normal"
-                    status_right = f"◐ {mode_str}" if mode_str != "normal" else ""
-
-                    # Print all 4 lines: top bar, input line, bottom bar, hint+status
-                    _writeln(f"{DIM}{'─' * tw}{RESET}")
-                    _writeln()  # Empty line for input
-                    _writeln(f"{DIM}{'─' * tw}{RESET}")
-                    hint = f"  {DIM}? for shortcuts{RESET}"
-                    if status_right:
-                        pad = max(1, tw - 16 - len(status_right) - 2)
-                        hint += " " * pad + f"{DIM}{status_right}{RESET}"
-                    _write(hint)
-
-                    # Move cursor back up to the input line (line 2)
-                    _write(f"\033[2A\r{mode_prefix}{CYAN}❯{RESET} ")
-                    sys.stdout.flush()
+                    _draw_input_frame(mode_prefix)
 
                     _in_input = True
-                    user_input = _read_input_with_autocomplete(mode_prefix, tw)
+                    user_input = await _async_read_input(mode_prefix, tw)
                     _in_input = False
                     if user_input is None:
                         raise EOFError
 
-                    # Move cursor down past the frame
-                    _write(f"\033[2B\r\n")
-
                     if not user_input:
-                        # Clear the prompt frame on empty input
-                        _write(f"\033[4A\033[J")
                         continue
                 except EOFError:
-                    # First Ctrl+D: show confirmation (like Claude Code)
-                    _writeln()
-                    _writeln(f"  {DIM}Press Ctrl+D again to exit, or keep typing.{RESET}")
+                    _outputln()
+                    _outputln(f"  {DIM}Press Ctrl+D again to exit, or keep typing.{RESET}")
+                    _draw_input_frame(mode_prefix)
                     try:
-                        raw = sys.stdin.readline()
-                        if not raw:
-                            # Second Ctrl+D: actually exit
-                            raise EOFError
-                        user_input = raw.strip()
-                        if user_input:
-                            pass  # Fall through to process input
-                        else:
+                        user_input = await _async_read_input(mode_prefix, tw)
+                        if user_input is None:
+                            break  # Second Ctrl+D
+                        if not user_input:
                             continue
                     except EOFError:
                         break
@@ -923,24 +1175,27 @@ async def main():
             _cancelled = False
             _voice_mode = False
 
+            # Show the submitted command in the output zone
+            _outputln(f"{DIM}{'─' * _tw()}{RESET}")
+            _outputln(f"{_get_mode_prefix()}{CYAN}❯{RESET} {user_input}")
+            _outputln()
+
             # ═══ VOICE INPUT ═══
             if user_input in ("v", "/voice", "/speak", "/mic", "/listen"):
                 try:
                     import sounddevice as sd
                     import numpy as np
-                    _writeln(f"  {CYAN}🎤 Listening...{RESET} (speak now, 5 seconds)")
+                    _outputln(f"  {CYAN}🎤 Listening...{RESET} (speak now, 5 seconds)")
                     audio = sd.rec(int(5 * 16000), samplerate=16000, channels=1, dtype='float32')
                     sd.wait()
                     audio = audio.flatten()
                     rms = float(np.sqrt(np.mean(audio ** 2)))
                     if rms < 0.001:
-                        _writeln(f"  {DIM}No speech detected.{RESET}")
+                        _outputln(f"  {DIM}No speech detected.{RESET}")
                         continue
 
-                    # Transcribe: use server if connected, else local Whisper
-                    _writeln(f"  {DIM}Transcribing...{RESET}")
+                    _outputln(f"  {DIM}Transcribing...{RESET}")
                     if client._server_mode:
-                        # Send audio to server for transcription
                         try:
                             import aiohttp
                             audio_bytes = (audio * 32767).astype(np.int16).tobytes()
@@ -956,7 +1211,6 @@ async def main():
                                     data = await resp.json()
                                     text = data.get("text", "")
                         except Exception:
-                            # Fallback to local
                             from brain.speech.stt import transcribe_audio
                             text = transcribe_audio(audio, 16000)
                     else:
@@ -964,23 +1218,22 @@ async def main():
                         text = transcribe_audio(audio, 16000)
 
                     if text:
-                        _writeln(f"  {GREEN}You said:{RESET} {text}")
+                        _outputln(f"  {GREEN}You said:{RESET} {text}")
                         user_input = text
-                        _voice_mode = True  # Flag to trigger TTS on response
-                        # Fall through to process the transcribed text
+                        _voice_mode = True
                     else:
-                        _writeln(f"  {DIM}Couldn't make that out. Try again.{RESET}")
+                        _outputln(f"  {DIM}Couldn't make that out. Try again.{RESET}")
                         continue
-                except ImportError as e:
-                    _writeln(f"  {RED}Voice needs: pip install sounddevice numpy{RESET}")
+                except ImportError:
+                    _outputln(f"  {RED}Voice needs: pip install sounddevice numpy{RESET}")
                     continue
                 except Exception as e:
-                    _writeln(f"  {RED}Voice error: {e}{RESET}")
+                    _outputln(f"  {RED}Voice error: {e}{RESET}")
                     continue
 
             # ═══ ? SHORTCUT HELP (Claude Code style) ═══
             if user_input == "?":
-                _writeln()
+                _outputln()
                 sections = [
                     ("Input", [
                         ("v", "Voice input"),
@@ -1006,10 +1259,10 @@ async def main():
                     ]),
                 ]
                 for section, items in sections:
-                    _writeln(f"  {BOLD}{section}{RESET}")
+                    _outputln(f"  {BOLD}{section}{RESET}")
                     for key, desc in items:
-                        _writeln(f"    {CYAN}{key:<14s}{RESET} {DIM}{desc}{RESET}")
-                    _writeln()
+                        _outputln(f"    {CYAN}{key:<14s}{RESET} {DIM}{desc}{RESET}")
+                    _outputln()
                 continue
 
             # ═══ SLASH COMMANDS ═══
@@ -1025,18 +1278,17 @@ async def main():
                         tw = _tw()
                         cmds = _reg.list_commands(include_hidden=False)
                         cmds.sort(key=lambda c: c.name)
-                        _writeln()
+                        _outputln()
                         for cmd in cmds:
                             name_col = f"  {CYAN}/{cmd.name}{RESET}"
-                            # Pad name to 40 chars for alignment
                             pad = max(1, 42 - len(cmd.name) - 3)
                             desc = cmd.description[:tw - 46] if cmd.description else ""
-                            _writeln(f"{name_col}{' ' * pad}{DIM}{desc}{RESET}")
-                        _writeln()
-                        _writeln(f"  {DIM}{len(cmds)} commands available. Type /command to run.{RESET}")
-                        _writeln()
+                            _outputln(f"{name_col}{' ' * pad}{DIM}{desc}{RESET}")
+                        _outputln()
+                        _outputln(f"  {DIM}{len(cmds)} commands available. Type /command to run.{RESET}")
+                        _outputln()
                     except Exception as e:
-                        _writeln(f"  {DIM}Type /help for all commands. ({e}){RESET}")
+                        _outputln(f"  {DIM}Type /help for all commands. ({e}){RESET}")
                     continue
 
                 # CLI-only shortcuts
@@ -1067,6 +1319,7 @@ async def main():
 
                     if result is not None:
                         if result.action == "exit":
+                            _teardown_zones()
                             session_mgr.save_current()
                             await client.close()
                             session_mgr.close()
@@ -1075,10 +1328,11 @@ async def main():
                             return
                         elif result.action == "clear":
                             _redraw()
+                            _setup_zones()
                         elif result.text:
-                            _writeln()
-                            _writeln(result.text)
-                            _writeln()
+                            _outputln()
+                            _outputln(result.text)
+                            _outputln()
                     else:
                         # Unknown command — try fuzzy suggestion
                         try:
@@ -1086,11 +1340,11 @@ async def main():
                             suggestions = cmd_registry.suggest(cmd_name, limit=3)
                             if suggestions:
                                 names = ", ".join(f"/{s.name}" for s in suggestions)
-                                _writeln(f"  {DIM}Unknown command: /{cmd_name}. Did you mean: {names}?{RESET}")
+                                _outputln(f"  {DIM}Unknown command: /{cmd_name}. Did you mean: {names}?{RESET}")
                             else:
-                                _writeln(f"  {DIM}Unknown command: /{cmd_name}. Type /help for commands.{RESET}")
+                                _outputln(f"  {DIM}Unknown command: /{cmd_name}. Type /help for commands.{RESET}")
                         except Exception:
-                            _writeln(f"  {DIM}Unknown command: /{cmd_name}{RESET}")
+                            _outputln(f"  {DIM}Unknown command: /{cmd_name}{RESET}")
                     continue
 
             # ═══ SHELL SHORTCUT: !command ═══
@@ -1102,7 +1356,7 @@ async def main():
                 if analyze:
                     cmd = cmd[1:].strip()
 
-                _writeln(f"  {DIM}$ {cmd}{RESET}")
+                _outputln(f"  {DIM}$ {cmd}{RESET}")
                 try:
                     proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60)
                     output = proc.stdout or proc.stderr or "(no output)"
@@ -1114,311 +1368,35 @@ async def main():
                 if output.strip():
                     rendered = format_tool_result("bash", output)
                     if rendered:
-                        _writeln(render_markdown(rendered))
+                        _outputln(render_markdown(rendered))
 
                 session_mgr.add_message("user", f"!{cmd}")
                 session_mgr.add_message("jarvis", output[:500])
 
                 if analyze and output.strip():
-                    spinner.tick("Analyzing output...")
+                    _outputln(f"  {DIM}Analyzing...{RESET}")
                     analysis = await client.query(f"Analyze this output:\n{output[:2000]}")
-                    spinner.done("Analysis complete")
-                    _writeln(render_markdown(analysis))
+                    _outputln(render_markdown(analysis))
                     session_mgr.add_message("jarvis", analysis)
                 continue
 
-            # ═══ MAIN QUERY ═══
-            start = time.time()
-            session_mgr.add_message("user", user_input)
-
-            full_text = ""
-            tool_count = 0
-            thinking_lines = 0
-
-            # ── Event-driven display (Claude Code style — clean, minimal) ──
-            from shells.cli.display import (
-                tool_call_line, tool_result_line, tool_result_preview,
-                diff_display, token_footer as _token_footer,
+            # ═══ MAIN QUERY — launch as background task ═══
+            _active_task = asyncio.get_event_loop().create_task(
+                _run_query(user_input, voice_mode=_voice_mode)
             )
 
-            _spinner_stop = threading.Event()
-            _spinner_label = "Thinking..."
-            _spinner_start = time.time()
-            _streaming_text = False
-            _tool_states = []
-            _tokens_this_turn = 0
-            _auto_allow = set()
-
-            def _spin():
-                frames = SPINNER_FRAMES
-                i = 0
-                wrote_anything = False
-                while not _spinner_stop.is_set():
-                    frame = frames[i % len(frames)]
-                    elapsed = time.time() - _spinner_start
-                    if wrote_anything:
-                        _write(f"\r  {DIM}{frame} {_spinner_label} ({elapsed:.1f}s){RESET}\033[K")
-                    else:
-                        _write(f"  {DIM}{frame} {_spinner_label} ({elapsed:.1f}s){RESET}")
-                        wrote_anything = True
-                    i += 1
-                    _spinner_stop.wait(0.12)
-                # Clean up: erase the spinner line completely
-                _write("\r\033[K")
-
-            def _stop_spinner():
-                """Stop spinner and wait for thread to fully exit."""
-                _spinner_stop.set()
-                spinner_thread.join(timeout=1.0)
-
-            def _start_spinner(label="Thinking..."):
-                """Start a new spinner with given label."""
-                nonlocal spinner_thread, _spinner_stop, _spinner_label, _spinner_start
-                _spinner_stop = threading.Event()
-                _spinner_label = label
-                _spinner_start = time.time()
-                spinner_thread = threading.Thread(target=_spin, daemon=True)
-                spinner_thread.start()
-
-            spinner_thread = threading.Thread(target=_spin, daemon=True)
-            spinner_thread.start()
-
-            try:
-                async for event in client.query_stream(user_input):
-                    if _cancelled:
-                        break
-
-                    etype = event.get("type", "")
-
-                    if etype == "tool_call":
-                        _stop_spinner()
-                        if _streaming_text:
-                            _writeln()  # End the text line before showing tool
-                        tool_count += 1
-                        name = event.get("name", "")
-                        args = event.get("args", {})
-                        _tool_states.append({
-                            "name": name, "args": args,
-                            "start": time.time(), "lines": [], "error": False,
-                        })
-                        _writeln(tool_call_line(name, args))
-                        _buddy_says("tool_call")
-                        _start_spinner(name)
-
-                    elif etype == "tool_result":
-                        _stop_spinner()
-                        result_text = event.get("content", event.get("result", ""))
-                        name = event.get("name", "")
-                        if _tool_states:
-                            ts = _tool_states[-1]
-                            elapsed_tool = time.time() - ts["start"]
-                            is_error = (result_text.startswith("Error") or
-                                        result_text.startswith("BLOCKED"))
-                            ts["error"] = is_error
-                            ts["lines"] = result_text.strip().split("\n") if result_text.strip() else []
-                            _writeln(tool_result_line(name, result_text, not is_error, elapsed_tool))
-                            if name == "edit_file" and ts["args"].get("old_string"):
-                                diff = diff_display(
-                                    ts["args"]["old_string"],
-                                    ts["args"].get("new_string", ""),
-                                    ts["args"].get("path", ""),
-                                )
-                                if diff:
-                                    _writeln(diff)
-                            if is_error:
-                                _buddy_says("error")
-                        _start_spinner("Thinking...")
-
-                    elif etype == "text":
-                        chunk = event.get("content", "")
-                        if not chunk:
-                            continue
-                        if not _streaming_text:
-                            _stop_spinner()
-                            time.sleep(0.05)  # Let spinner thread fully die
-                            _write("\r\033[K")  # Ensure clean line
-                            _streaming_text = True
-                            _writeln()  # Blank line before response
-                        full_text += chunk
-                        _write(chunk)
-
-                    elif etype == "usage":
-                        _tokens_this_turn += event.get("input_tokens", 0) + event.get("output_tokens", 0)
-
-                    elif etype == "error":
-                        err = event.get("content", "Error")
-                        if "rate_limit" in err or "413" in err or "too large" in err:
-                            full_text = "Give me a moment — rate limited. Try again."
-                        elif "No provider" in err:
-                            full_text = "No AI provider available. Check /doctor."
-
-                    elif etype == "done":
-                        pass  # Handled after loop
-
-            except asyncio.CancelledError:
-                full_text = ""
-            except Exception as e:
-                full_text = f"Error: {str(e)[:80]}"
-            finally:
-                _stop_spinner()
-
-            # If we were streaming text, add newline after streamed content
-            if _streaming_text:
-                _writeln()
-                _writeln()
-            else:
-                # Erase spinner line if no text was streamed
-                _clear_line()
-
-            # Filter out training data leaks and garbage
-            if full_text:
-                garbage_markers = ["<｜begin", "<|begin", "\\boxed{", "\\frac{", "\\sqrt{",
-                                   "begin▁of▁sentence", "Question: How do you solve"]
-                if any(m in full_text for m in garbage_markers):
-                    full_text = "Sorry, I got confused there. Could you rephrase that?"
-
-            # Show rendered response (if not already streamed, render markdown)
-            if full_text.strip() and not _streaming_text:
-                _writeln(f"{CYAN}●{RESET} {render_markdown(full_text.strip())}")
-                _writeln()
-
-            # Token footer (clean, dimmed — like Claude Code)
-            elapsed_total = time.time() - start
-            if _tokens_this_turn > 0 or tool_count > 0:
-                _writeln(_token_footer(_tokens_this_turn, tool_count, elapsed_total))
-            # Companion chimes in after response
-            if full_text.strip() and tool_count > 0:
-                _buddy_says("success")
-            _writeln()
-
-            if full_text.strip():
-                session_mgr.add_message("jarvis", full_text)
-
-                # ── TTS: Speak response aloud if voice mode ──
-                if _voice_mode and full_text.strip():
-                    _voice_mode = False
-                    try:
-                        # Clean text for speech (remove code blocks, markdown)
-                        spoken = full_text.strip()
-                        # Remove code blocks
-                        import re as _re
-                        spoken = _re.sub(r'```[\s\S]*?```', '', spoken)
-                        spoken = _re.sub(r'`[^`]+`', '', spoken)
-                        # Remove markdown
-                        spoken = _re.sub(r'[#*_~>\-]', '', spoken)
-                        spoken = spoken.strip()
-                        # Limit to first 500 chars for speech
-                        if len(spoken) > 500:
-                            spoken = spoken[:500] + "..."
-
-                        if spoken and len(spoken) > 3:
-                            if client._server_mode:
-                                # Stream TTS from server and play locally
-                                _writeln(f"  {DIM}🔊 Speaking...{RESET}")
-                                import urllib.request
-                                tts_url = f"{client._server_url}/api/tts?text={urllib.request.quote(spoken[:300])}"
-                                import subprocess as _sp
-                                _sp.Popen(
-                                    ["mpv", "--no-video", "--really-quiet", tts_url],
-                                    stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
-                                    start_new_session=True,
-                                )
-                            else:
-                                # Local TTS via Edge TTS
-                                _writeln(f"  {DIM}🔊 Speaking...{RESET}")
-                                import asyncio as _aio
-                                import edge_tts
-                                import tempfile
-                                async def _speak():
-                                    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-                                        tmp = f.name
-                                    communicate = edge_tts.Communicate(spoken[:300], "en-US-AndrewMultilingualNeural")
-                                    await communicate.save(tmp)
-                                    import subprocess as _sp2
-                                    _sp2.Popen(
-                                        ["mpv", "--no-video", "--really-quiet", tmp],
-                                        stdout=_sp2.DEVNULL, stderr=_sp2.DEVNULL,
-                                        start_new_session=True,
-                                    )
-                                _aio.get_event_loop().create_task(_speak())
-                    except Exception as e:
-                        pass  # TTS failure is non-critical
-
-            # ── Interactive fix approval (after troubleshoot) ──
-            if (client._is_full_brain and hasattr(brain, '_pending_fixes')
-                    and brain._pending_fixes):
-                fixes = brain._pending_fixes
-                _writeln(f"  {CYAN}Found {len(fixes)} auto-fixable issues.{RESET}")
-                _writeln(f"  {DIM}Review each fix: (y)es / (n)o / (a)ll / (q)uit{RESET}")
-                _writeln()
-
-                applied = 0
-                skipped = 0
-                accept_all = False
-
-                for i, fix in enumerate(fixes, 1):
-                    rel = os.path.relpath(fix["file"], os.getcwd())
-                    _writeln(f"  {BOLD}Fix {i}/{len(fixes)}{RESET}: {rel}:{fix['line']}")
-                    _writeln(f"    {fix['description']}")
-                    if fix.get("old"):
-                        _writeln(f"    {RED}- {fix['old'].strip()}{RESET}")
-                    if fix.get("new") is not None and not fix.get("delete_line"):
-                        _writeln(f"    {GREEN}+ {fix['new'].strip()}{RESET}")
-                    elif fix.get("delete_line"):
-                        _writeln(f"    {DIM}(delete line){RESET}")
-
-                    if accept_all:
-                        choice = "y"
-                    else:
-                        try:
-                            choice = input(f"    {CYAN}Apply? (y/n/a/q):{RESET} ").strip().lower()
-                        except (EOFError, KeyboardInterrupt):
-                            choice = "q"
-
-                    if choice == "q":
-                        _writeln(f"  {DIM}Stopped. {applied} applied, {len(fixes)-i+1-skipped} remaining.{RESET}")
-                        break
-                    elif choice == "a":
-                        accept_all = True
-                        choice = "y"
-
-                    if choice == "y":
-                        from brain.commands.handlers.troubleshoot import _apply_fix
-                        if _apply_fix(fix):
-                            # Verify the fix was applied by checking the file
-                            try:
-                                with open(fix["file"], "r") as _f:
-                                    content = _f.read()
-                                old_text = fix.get("old", "").strip()
-                                if fix.get("delete_line") and old_text not in content:
-                                    _writeln(f"    {GREEN}✔ Applied & verified{RESET}")
-                                elif fix.get("new") and fix["new"].strip() in content:
-                                    _writeln(f"    {GREEN}✔ Applied & verified{RESET}")
-                                else:
-                                    _writeln(f"    {GREEN}✔ Applied{RESET}")
-                            except Exception:
-                                _writeln(f"    {GREEN}✔ Applied{RESET}")
-                            applied += 1
-                        else:
-                            _writeln(f"    {RED}✘ Failed — line may have already been changed{RESET}")
-                    else:
-                        _writeln(f"    {DIM}Skipped{RESET}")
-                        skipped += 1
-                    _writeln()
-
-                brain._pending_fixes = []
-                _writeln(f"  {CYAN}Done:{RESET} {applied} applied, {skipped} skipped.")
-                if applied > 0:
-                    _writeln(f"  {DIM}Run tests with: python -m pytest test/ -q{RESET}")
-
         except KeyboardInterrupt:
-            _writeln()
-            spinner.clear()
+            _outputln()
             _cancelled = True
+            # Cancel active query if running
+            if _active_task and not _active_task.done():
+                _active_task.cancel()
+                _outputln(f"  {DIM}Cancelled.{RESET}")
             try:
-                _writeln(f"  {DIM}Ctrl+C again to quit, or keep typing.{RESET}")
-                time.sleep(1.5)
-            except KeyboardInterrupt:
+                _outputln(f"  {DIM}Ctrl+C again to quit, or keep typing.{RESET}")
+                await asyncio.sleep(1.5)
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                _teardown_zones()
                 session_mgr.save_current()
                 await client.close()
                 session_mgr.close()
@@ -1426,6 +1404,7 @@ async def main():
                 print("Session saved. JARVIS offline.")
                 return
         except EOFError:
+            _teardown_zones()
             session_mgr.save_current()
             await client.close()
             session_mgr.close()
@@ -1433,7 +1412,7 @@ async def main():
             print("Session saved. JARVIS offline.")
             return
         except Exception as e:
-            _writeln(f"  {RED}✘ {e}{RESET}\n")
+            _outputln(f"  {RED}✘ {e}{RESET}\n")
 
 
 def run():

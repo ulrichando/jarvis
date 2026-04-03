@@ -561,9 +561,12 @@ class ProviderRegistry:
                     if claude_tools:
                         kwargs["tools"] = claude_tools
 
-                    # Extended thinking for complex tasks (Opus/Sonnet 4.x)
+                    # Extended thinking with budget (Opus/Sonnet 4.x)
                     if any(m in model for m in ["opus-4", "sonnet-4"]):
-                        kwargs["thinking"] = {"type": "adaptive"}
+                        # Adaptive thinking auto-scales based on complexity
+                        # Budget prevents runaway thinking costs
+                        kwargs["thinking"] = {"type": "enabled", "budget_tokens": 8000}
+                        kwargs["max_tokens"] = 16000  # Must be > budget_tokens
 
                     r = client.messages.create(**kwargs)
                     provider.model = model
@@ -678,9 +681,24 @@ class ProviderRegistry:
             i += 1
 
         # Ensure messages alternate user/assistant (Anthropic requirement)
-        # and don't start with assistant
         if result and result[0].get("role") == "assistant":
             result.insert(0, {"role": "user", "content": "Continue."})
+
+        # Cache the second-to-last message (conversation history prefix)
+        # This means only the latest turn is uncached — huge savings on multi-turn
+        if len(result) >= 3:
+            cache_target = result[-2]  # Last message before current user turn
+            content = cache_target.get("content")
+            if isinstance(content, str):
+                cache_target["content"] = [{
+                    "type": "text", "text": content,
+                    "cache_control": {"type": "ephemeral"},
+                }]
+            elif isinstance(content, list) and content:
+                # Add cache_control to last block
+                last_block = content[-1]
+                if isinstance(last_block, dict):
+                    last_block["cache_control"] = {"type": "ephemeral"}
 
         return result
 
