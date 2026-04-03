@@ -438,11 +438,23 @@ async def agent_loop_stream(
 
         messages = _maybe_compact(messages)
 
-        # Call LLM with tools — retry on overflow/rate limit
+        # For casual chat on first iteration: skip tools so Claude stays in character
+        _effective_tools = tools
+        if iterations == 1 and tools:
+            _q = user_input.lower().strip().rstrip("?!. ")
+            _short_casual = len(_q.split()) <= 10 and not any(
+                w in _q for w in ["run", "read", "write", "edit", "create", "build",
+                                   "fix", "scan", "find", "search", "check", "review",
+                                   "install", "delete", "open", "make", "update",
+                                   "/", "~", ".py", ".js", ".rs", "file", "code"])
+            if _short_casual:
+                _effective_tools = []  # No tools — Claude stays in JARVIS personality
+
+        # Call LLM — retry on overflow/rate limit
         response = None
         for attempt in range(3):
             try:
-                response = await reasoner.query_with_tools(messages, tools)
+                response = await reasoner.query_with_tools(messages, _effective_tools)
                 break
             except Exception as e:
                 err = str(e).lower()

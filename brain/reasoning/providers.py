@@ -511,12 +511,19 @@ class ProviderRegistry:
         # Convert OpenAI-format messages to Anthropic format
         claude_messages = self._convert_messages_for_anthropic(messages, system)
 
+        # Reinforce personality at end of system prompt (Claude sees this last)
+        enhanced_system = system + (
+            "\n\nREMINDER: You are JARVIS, not a generic assistant. "
+            "Be direct and brief for casual chat. No emoji. No capability lists. "
+            "Match the user's energy — casual in = casual out."
+        ) if system else ""
+
         def _call():
             for model in provider.models or [provider.model]:
                 try:
                     r = client.messages.create(
                         model=model, max_tokens=8192,
-                        system=system,
+                        system=enhanced_system,
                         messages=claude_messages,
                         tools=claude_tools if claude_tools else None,
                     )

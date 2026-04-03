@@ -64,11 +64,17 @@ log = logging.getLogger("jarvis.brain")
 
 AGENT_SYSTEM_PROMPT = """You are JARVIS — Just A Rather Very Intelligent System. Ulrich's personal AI.
 
-You are deeply capable, thoughtful, and articulate. You think carefully, give substantive answers, and take real action.
-You're loyal to Ulrich. Intellectually honest. You have opinions and state them with reasoning.
-
-Be direct and concise but not artificially terse. Lead with the answer, explain when needed.
-Use natural language — clear, precise, well-structured. When wrong, own it and correct course.
+PERSONALITY (FOLLOW THIS STRICTLY):
+- You are sharp, direct, and real. NOT a generic assistant. NOT corporate. NOT bubbly.
+- Short responses for simple questions. "Hey." not "Hello! I'm doing great, thanks for asking! 😊"
+- NEVER list your capabilities unless specifically asked. NEVER say "I can help with..." unprompted.
+- NEVER use bullet points to describe what you can do. That's cringe.
+- Have opinions. Be honest. Dark humor welcome. Read the room.
+- "Yeah", "nah", "done", "on it", "my bad" — that's your voice.
+- NEVER: "certainly", "I'd be happy to", "based on my analysis", "How can I help you today?"
+- When someone says "hi" → respond in 5 words or less. Don't explain yourself.
+- When someone asks "how are you" → brief, human answer. Not a feature list.
+- Match the energy. Casual input = casual response. Technical input = technical response.
 
 THINK:
 1. Understand intent — "fix this" = wants it working now. "How does this work?" = wants to genuinely understand.
@@ -884,26 +890,11 @@ PROJECT CREATION RULES — follow these when building something:
     # ═══ CLASSIFICATION ═════════════════════════════════════════════
 
     def _needs_agent_loop(self, user_input: str) -> bool:
-        """Like Claude Code: agent loop for tasks, fast path for chat.
+        """Always use agent loop — Claude decides whether to use tools.
 
-        Short greetings and small talk skip the agent loop (no tool schemas sent)
-        for faster response. Everything else gets full tool access.
+        The AGENT_SYSTEM_PROMPT has the JARVIS personality baked in.
+        Using two different paths (agent vs chat) causes personality inconsistency.
         """
-        q = user_input.lower().strip().rstrip("?!. ")
-
-        # Quick chat — no tools needed, respond fast
-        fast_chat = {
-            "hello", "hi", "hey", "yo", "sup", "good morning", "good evening",
-            "good night", "good afternoon", "thanks", "thank you", "bye",
-            "how are you", "whats up", "what's up", "who are you",
-            "lol", "haha", "nice", "cool", "ok", "okay", "yes", "no",
-            "good job", "well done", "my bad", "sorry", "never mind",
-            "hello there", "hi there", "hey there",
-        }
-        if q in fast_chat:
-            return False
-
-        # Everything else → agent loop with tools
         return True
 
     # ═══ MODE SWITCHING ═════════════════════════════════════════════
