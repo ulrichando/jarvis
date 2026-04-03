@@ -395,6 +395,15 @@ async def main():
 
     brain = client.brain
 
+    # In server mode, brain is None — create a lightweight proxy for .mode etc.
+    class _BrainProxy:
+        mode = "normal"
+        _pending_fixes = []
+        _companion = None
+        def dispatch_command(self, *a, **kw): return None
+    if brain is None:
+        brain = _BrainProxy()
+
     # Session management
     if args.continue_last:
         session = session_mgr.get_latest()
@@ -575,7 +584,7 @@ async def main():
     # Initialize companion
     from shells.cli.companion import Companion
     _companion = Companion()
-    if client._is_full_brain:
+    if brain is not None:
         brain._companion = _companion
 
     def _buddy_says(context: str):
