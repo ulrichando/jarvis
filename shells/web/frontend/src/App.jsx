@@ -73,12 +73,16 @@ function App() {
     }
   }, [])
 
-  // Mic audio level for reactor pulse
+  // Mic audio level for reactor pulse + voice capture for STT
   useEffect(() => {
     let animFrame
     let analyser
     let dataArray
     let stream
+    let mediaRecorder = null
+    let silenceTimer = null
+    let isRecording = false
+    let audioChunks = []
 
     async function startMic() {
       try {
@@ -90,12 +94,88 @@ function App() {
         source.connect(analyser)
         dataArray = new Uint8Array(analyser.frequencyBinCount)
 
+        // Voice Activity Detection: auto-record when speech detected
+        const SPEECH_THRESHOLD = 0.08
+        const SILENCE_TIMEOUT = 1500 // ms of silence before sending
+
         function update() {
           analyser.getByteFrequencyData(dataArray)
           const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length / 255
           setAudioLevel(avg)
+
+          // Start recording when speech detected
+          if (avg > SPEECH_THRESHOLD && !isRecording && mediaRecorder?.state !== 'recording') {
+            audioChunks = []
+            mediaRecorder?.start()
+            isRecording = true
+            clearTimeout(silenceTimer)
+          }
+
+          // Stop after silence
+          if (avg < SPEECH_THRESHOLD * 0.5 && isRecording) {
+            clearTimeout(silenceTimer)
+            silenceTimer = setTimeout(() => {
+              if (mediaRecorder?.state === 'recording') {
+                mediaRecorder.stop()
+                isRecording = false
+              }
+            }, SILENCE_TIMEOUT)
+          }
+
           animFrame = requestAnimationFrame(update)
         }
+
+        // Setup MediaRecorder for capturing speech
+        mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' })
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) audioChunks.push(e.data)
+        }
+        mediaRecorder.onstop = async () => {
+          const blob = new Blob(audioChunks, { type: 'audio/webm' })
+          if (blob.size < 5000) return // Too short, ignore
+
+          // Send to server via WebSocket as binary
+          const wsUrl = window.location.hostname === 'localhost'
+            ? 'ws://localhost:8765/ws'
+            : `ws://${window.location.host}/ws`
+
+          try {
+            // Convert to raw PCM and send
+            const arrayBuf = await blob.arrayBuffer()
+            const tempWs = new WebSocket(wsUrl)
+            tempWs.onopen = () => {
+              tempWs.send(arrayBuf)
+              setTimeout(() => tempWs.close(), 5000)
+            }
+            tempWs.onmessage = (evt) => {
+              try {
+                const data = JSON.parse(evt.data)
+                if (data.type === 'stt_result' && data.text) {
+                  // Got transcription — send as query via main WS
+                  sendMessage({ type: 'query', text: data.text })
+                  setReactorState('thinking')
+                }
+                if (data.type === 'message' && !data.partial) {
+                  setReactorState('speaking')
+                  // Play TTS
+                  const spoken = data.spoken || data.content
+                  if (spoken) {
+                    const ttsUrl = `http://${window.location.hostname}:8765/api/tts?text=${encodeURIComponent(spoken.substring(0, 300))}`
+                    const audio = new Audio(ttsUrl)
+                    audio.play().then(() => {
+                      audio.onended = () => setReactorState('idle')
+                    }).catch(() => setReactorState('idle'))
+                  } else {
+                    setTimeout(() => setReactorState('idle'), 2000)
+                  }
+                }
+              } catch {}
+            }
+          } catch (e) {
+            console.log('Voice send failed:', e)
+          }
+        }
+
         update()
       } catch (e) {
         // Mic not available — that's fine
