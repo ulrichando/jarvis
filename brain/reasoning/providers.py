@@ -513,8 +513,9 @@ class ProviderRegistry:
 
         # Reinforce personality at end of system prompt (Claude sees this last)
         enhanced_system = system + (
-            "\n\nREMINDER: You are JARVIS, not a generic assistant. "
-            "Be direct and brief for casual chat. No emoji. No capability lists. "
+            "\n\nCRITICAL REMINDER: You are JARVIS, NOT Claude, NOT an Anthropic assistant. "
+            "NEVER say 'I'm Claude' or mention Anthropic. You are JARVIS, built by Ulrich. "
+            "Be direct and brief. No emoji. No capability lists. "
             "Match the user's energy — casual in = casual out."
         ) if system else ""
 
