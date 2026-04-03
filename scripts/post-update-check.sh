@@ -8,8 +8,14 @@ GREEN='\033[32m'
 RED='\033[31m'
 DIM='\033[2m'
 RESET='\033[0m'
-VENV="$HOME/.jarvis/venv"
-JARVIS="$HOME/Documents/Projects/jarvis"
+# Resolve real user home even when running under sudo
+if [ -n "$SUDO_USER" ]; then
+    REAL_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+else
+    REAL_HOME="$HOME"
+fi
+VENV="$REAL_HOME/.jarvis/venv"
+JARVIS="$REAL_HOME/Documents/Projects/jarvis"
 
 echo -e "${CYAN}JARVIS Post-Update Check${RESET}"
 echo ""
@@ -27,8 +33,8 @@ else
     ISSUES=$((ISSUES + 1))
 fi
 
-# 2. Check critical imports
-for mod in brain anthropic aiohttp openai msgpack; do
+# 2. Check critical imports (only actual dependencies — no openai/anthropic SDK needed)
+for mod in brain aiohttp msgpack edge_tts; do
     if "$VENV/bin/python3" -c "import $mod" 2>/dev/null; then
         echo -e "  ${GREEN}✓${RESET} $mod"
     else
@@ -68,7 +74,7 @@ else
 fi
 
 # 6. Check providers config
-if [ -f "$HOME/.jarvis/providers.json" ]; then
+if [ -f "$REAL_HOME/.jarvis/providers.json" ]; then
     echo -e "  ${GREEN}✓${RESET} Provider config exists"
 else
     echo -e "  ${RED}✗${RESET} Provider config missing"

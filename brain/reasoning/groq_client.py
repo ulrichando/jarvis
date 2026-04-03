@@ -155,7 +155,11 @@ class GroqReasoner:
         messages: list[dict],
         tools: list[dict],
     ) -> dict:
-        """Tool-calling query through providers."""
+        """Tool-calling query through providers.
+
+        Uses model routing: if no tools needed (empty list), use the
+        fastest/cheapest model. With tools, use the primary model.
+        """
         try:
             result, provider_name = await self.providers.query_with_tools(
                 messages, tools,
@@ -164,10 +168,33 @@ class GroqReasoner:
             log.error("Provider tool query failed: %s", e)
             raise
         self._active_model = provider_name
-        # Track usage
         if result.get("usage"):
             self._track_usage(result["usage"], provider_name)
         return result
+
+    async def query_fast(self, user_input: str, system_prompt: str) -> str:
+        """Fast query using cheapest model — for classification, triage, quick answers."""
+        try:
+            # Temporarily switch to Haiku for speed
+            providers = self.providers.get_active_providers()
+            fast_model = None
+            for p in providers:
+                if "haiku" in p.model.lower():
+                    fast_model = p
+                    break
+            if fast_model:
+                original_model = fast_model.model
+                result = await self.providers._query_anthropic(
+                    fast_model, user_input, system_prompt, None
+                ) if fast_model.type == "anthropic" else await self.providers._query_openai(
+                    fast_model, user_input, system_prompt, None
+                )
+                return result or ""
+            # No Haiku — use default
+            result, _ = await self.providers.query(user_input, system_prompt, None)
+            return result or ""
+        except Exception:
+            return ""
 
     async def query_stream(
         self,

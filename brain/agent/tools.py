@@ -290,6 +290,30 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "computer_use",
+            "description": "Control the desktop — click, type, scroll, take screenshots. Use to automate GUI apps, fill forms, click buttons, navigate menus. Take a screenshot first to see what's on screen.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["screenshot", "click", "type", "key", "scroll", "move"],
+                        "description": "Action to perform",
+                    },
+                    "x": {"type": "integer", "description": "X coordinate (for click/scroll/move)"},
+                    "y": {"type": "integer", "description": "Y coordinate (for click/scroll/move)"},
+                    "text": {"type": "string", "description": "Text to type (for type action)"},
+                    "key": {"type": "string", "description": "Key to press (for key action, e.g. 'Return', 'ctrl+c', 'alt+Tab')"},
+                    "button": {"type": "string", "description": "Mouse button (left/middle/right)"},
+                    "direction": {"type": "string", "description": "Scroll direction (up/down)"},
+                },
+                "required": ["action"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "view_screen",
             "description": "Capture and analyze what's currently on the user's screen. Returns the active window, application name, and visible text via OCR. Use when the user asks what's on their screen, what they're looking at, or what app they're using.",
             "parameters": {
@@ -398,6 +422,16 @@ def execute_tool(name: str, args: dict, readonly: bool = False) -> str:
             return _exec_web_search(args)
         elif name == "web_fetch":
             return _exec_web_fetch(args)
+        elif name == "computer_use":
+            from brain.agent.computer_use import execute_computer_action
+            return execute_computer_action(
+                args.get("action", "screenshot"),
+                x=args.get("x", 0), y=args.get("y", 0),
+                text=args.get("text", ""), key=args.get("key", ""),
+                button=args.get("button", "left"),
+                direction=args.get("direction", "down"),
+                amount=args.get("amount", 3),
+            )
         elif name == "database":
             return _exec_database(args)
         elif name == "web_api":

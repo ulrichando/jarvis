@@ -14,21 +14,23 @@ CHARS_PER_TOKEN = 4
 
 # Model limits (conservative to leave room for response + tools)
 MODEL_LIMITS = {
-    "llama-3.1-8b-instant": 6000,
-    "llama-3.3-70b-versatile": 28000,
-    "llama-3.1-70b-versatile": 28000,
+    # Claude models
+    "claude-opus-4-6-20250514": 900000,    # 1M context
+    "claude-sonnet-4-6-20250514": 900000,  # 1M context
+    "claude-sonnet-4-20250514": 180000,    # 200K context
+    "claude-haiku-4-5-20251001": 180000,   # 200K context
+    # Local models
     "llama3.3:70b": 120000,
     "qwen2.5:72b": 120000,
     "qwen2.5:7b": 28000,
     "deepseek-coder-v2:16b": 28000,
-    "qwen2.5:14b": 12000,
-    "qwen2.5:32b": 24000,
-    "claude-sonnet-4-20250514": 180000,
-    "claude-3-5-sonnet-latest": 180000,
-    "claude-3-haiku-20240307": 180000,
+    # Cloud models
+    "deepseek-chat": 60000,
+    "gpt-4o": 120000,
+    "gpt-4o-mini": 120000,
 }
 
-DEFAULT_MAX_TOKENS = 24000  # Safe default
+DEFAULT_MAX_TOKENS = 180000  # Safe default for Claude
 
 
 def estimate_tokens(messages: list[dict]) -> int:
