@@ -51,3 +51,6 @@ shells/web/frontend/dist/
 
 # Backup files
 *.py.bak
+
+# Export dumps
+jarvis-export-*.json
