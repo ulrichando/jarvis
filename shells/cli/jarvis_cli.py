@@ -280,26 +280,32 @@ class StandaloneBrain:
             import json
             # Send query via WebSocket
             await self._ws.send_json({"type": "query", "text": text})
-            # Read streamed events
+            # Track what we've already shown to prevent duplicates
+            _streamed = False
             async for msg in self._ws:
                 if msg.type == 1:  # TEXT
                     try:
                         data = json.loads(msg.data)
                         msg_type = data.get("type", "")
                         if msg_type == "stream":
+                            # Real-time text chunks — display these
                             yield {"type": "text", "content": data.get("content", "")}
+                            _streamed = True
                         elif msg_type == "message":
-                            content = data.get("content", "")
-                            yield {"type": "text", "content": content}
+                            # Full/partial message from server
+                            if not _streamed:
+                                # No stream chunks received — show message content
+                                yield {"type": "text", "content": data.get("content", "")}
+                            # If partial, keep listening. If final, we're done.
                             if not data.get("partial"):
-                                yield {"type": "done", "content": content}
+                                yield {"type": "done", "content": data.get("content", "")}
                                 return
                         elif msg_type == "tool_call":
                             yield {"type": "tool_call", "name": data.get("name", ""), "args": data.get("args", {})}
                         elif msg_type == "tool_result":
                             yield {"type": "tool_result", "name": data.get("name", ""), "content": data.get("content", "")}
                         elif msg_type == "status":
-                            pass  # Thinking indicator
+                            pass
                         elif msg_type == "error":
                             yield {"type": "error", "content": data.get("error", "Unknown error")}
                             return
