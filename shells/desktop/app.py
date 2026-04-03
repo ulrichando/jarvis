@@ -79,21 +79,16 @@ def main():
     # ── Window ──
     window = Gtk.Window()
     window.set_title("J.A.R.V.I.S.")
-    window.set_default_size(350, 350)
+    window.set_default_size(500, 500)
     window.set_decorated(False)
     window.set_app_paintable(True)
     window.set_resizable(False)
     window.set_keep_above(True)
-    window.set_skip_taskbar_hint(True)
-    window.set_skip_pager_hint(True)
     window.set_type_hint(Gdk.WindowTypeHint.UTILITY)
 
-    # Position bottom-right
+    # Position center of screen
+    window.set_position(Gtk.WindowPosition.CENTER)
     screen = Gdk.Screen.get_default()
-    if screen:
-        sw = screen.get_width()
-        sh = screen.get_height()
-        window.move(sw - 380, sh - 420)
 
     # Transparency
     visual = screen.get_rgba_visual() if screen else None
@@ -264,13 +259,92 @@ def main():
         except Exception:
             pass
 
+    # ── System Tray Icon ──
+    try:
+        gi.require_version('AppIndicator3', '0.1')
+        from gi.repository import AppIndicator3
+        indicator = AppIndicator3.Indicator.new(
+            "jarvis-desktop",
+            "applications-system",
+            AppIndicator3.IndicatorCategory.APPLICATION_STATUS,
+        )
+        indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
+        indicator.set_title("J.A.R.V.I.S.")
+
+        # Tray menu
+        tray_menu = Gtk.Menu()
+        item_show = Gtk.MenuItem(label="Show/Hide")
+        item_show.connect("activate", lambda w: window.set_visible(not window.get_visible()))
+        tray_menu.append(item_show)
+
+        item_size_up = Gtk.MenuItem(label="Bigger")
+        item_size_up.connect("activate", lambda w: (
+            _size.update({"w": min(1200, _size["w"] + 100), "h": min(1200, _size["h"] + 100)}),
+            window.resize(_size["w"], _size["h"]),
+        ))
+        tray_menu.append(item_size_up)
+
+        item_size_down = Gtk.MenuItem(label="Smaller")
+        item_size_down.connect("activate", lambda w: (
+            _size.update({"w": max(200, _size["w"] - 100), "h": max(200, _size["h"] - 100)}),
+            window.resize(_size["w"], _size["h"]),
+        ))
+        tray_menu.append(item_size_down)
+
+        sep = Gtk.SeparatorMenuItem()
+        tray_menu.append(sep)
+
+        item_quit = Gtk.MenuItem(label="Quit JARVIS")
+        item_quit.connect("activate", lambda w: Gtk.main_quit())
+        tray_menu.append(item_quit)
+
+        tray_menu.show_all()
+        indicator.set_menu(tray_menu)
+    except Exception as e:
+        # AppIndicator not available — try legacy StatusIcon
+        try:
+            tray = Gtk.StatusIcon.new_from_icon_name("applications-system")
+            tray.set_tooltip_text("J.A.R.V.I.S.")
+            tray.set_visible(True)
+            tray.connect("activate", lambda w: window.set_visible(not window.get_visible()))
+            tray.connect("popup-menu", lambda icon, button, time: Gtk.main_quit())
+        except Exception:
+            pass  # No tray support
+
+    # ── Click-through mode (input passes through to desktop) ──
+    def _set_click_through(enabled):
+        """Make window click-through so clicks pass to apps below."""
+        if enabled:
+            from ctypes import cdll, c_ulong, c_int
+            try:
+                xlib = cdll.LoadLibrary("libX11.so.6")
+                display = xlib.XOpenDisplay(None)
+                if display:
+                    xid = window.get_window().get_xid()
+                    # Set input region to empty rectangle (click-through)
+                    xfixes = cdll.LoadLibrary("libXfixes.so.3")
+                    region = xfixes.XFixesCreateRegion(display, None, 0)
+                    xfixes.XFixesSetWindowShapeRegion(display, xid, 2, 0, 0, region)  # ShapeInput=2
+                    xfixes.XFixesDestroyRegion(display, region)
+                    xlib.XFlush(display)
+                    xlib.XCloseDisplay(display)
+            except Exception:
+                pass
+
+    # Enable click-through by default
+    def _enable_click_through_on_map(widget, event=None):
+        GLib.timeout_add(500, lambda: _set_click_through(True) or False)
+    window.connect("map-event", _enable_click_through_on_map)
+
     # ── Show ──
+    _size = {"w": 500, "h": 500}
     window.show_all()
     print("JARVIS desktop running.")
-    print("  Drag reactor to move")
+    print("  Tray icon in system tray")
     print("  Scroll to resize")
     print("  Ctrl+H hide/show")
     print("  Ctrl+Q quit")
+    print("  Click-through enabled (clicks pass to apps below)")
     Gtk.main()
 
 

@@ -476,6 +476,24 @@ function handleMessage(data) {
         // Use server-cleaned 'spoken' field — no code, no paths, no scripts
         const spoken = data.spoken || '';
         if (checkMediaCommand(content)) return;
+
+        // Partial message = first sentence from streaming response — speak immediately
+        if (data.partial) {
+            if (!serverMicActive && spoken.length > 0) {
+                speakResponse(spoken, voiceStyle);
+            }
+            return;  // Wait for final message with full content
+        }
+
+        // Final message after a partial — update display, queue remaining speech
+        if (data.final && !ttsOnly) {
+            const model = data.model || '';
+            const modelTag = model ? `<div style="font-size:0.55rem;color:var(--text-dim);margin-top:4px;">${escapeHtml(model)} · ${data.latency_ms || 0}ms</div>` : '';
+            addCard('info', escapeHtml(content) + modelTag);
+            // Don't re-speak — partial already started TTS
+            return;
+        }
+
         // Show text only if ttsOnly is off
         if (!ttsOnly) {
             const model = data.model || '';
@@ -483,8 +501,6 @@ function handleMessage(data) {
             addCard('info', escapeHtml(content) + modelTag);
         }
         // Only use browser TTS if server isn't handling audio via ffplay.
-        // When server-side mic is active, server plays TTS through system audio
-        // and sends 'speaking'/''/status events to drive the reactor animation.
         if (!serverMicActive) {
             if (currentMode === 'cli' || currentMode === 'berbon') {
                 if (spoken.length > 0 && spoken.length < 100) speakResponse(spoken, voiceStyle);
@@ -582,8 +598,8 @@ function startAmbientListening() {
         ambientProcessor = audioContext.createScriptProcessor(bufferSize, 1, 1);
 
         ambientProcessor.onaudioprocess = (event) => {
-            // Suppress mic while JARVIS speaks + 1.5s after (prevents echo)
-            if (isSpeaking || (speechEndTime && Date.now() - speechEndTime < 1500)) return;
+            // Suppress mic while JARVIS speaks + 0.8s after (prevents echo)
+            if (isSpeaking || (speechEndTime && Date.now() - speechEndTime < 800)) return;
             if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
             const input = event.inputBuffer.getChannelData(0);
@@ -652,20 +668,18 @@ setInterval(() => {
 //
 // JARVIS speaks in chunks — like a human taking breaths between thoughts.
 // Each chunk is a sentence or phrase. Between chunks, silence.
-// This makes speech feel alive, not robotic.
+// Prefetches next chunk while playing current one for zero-gap transitions.
 
 let currentAudio = null;
 let speechQueue = [];        // Queue of chunks waiting to be spoken
 let speakingChunk = false;   // Currently playing a chunk
 let speechAborted = false;   // User interrupted
 let currentVoiceStyle = 'default';
+let _prefetchedAudio = null; // Pre-loaded next chunk for instant playback
+let _prefetchedChunk = null; // Which chunk was prefetched
 
-function speakResponse(text, voiceStyle) {
-    // Reset abort flag — new speech request clears any previous interrupt
-    speechAborted = false;
-
-    // Aggressive cleaning — remove ANYTHING that isn't natural speech
-    let cleanText = text
+function _cleanForSpeech(text) {
+    return text
         .replace(/\[show:\w+\]/gi, '')
         .replace(/\[\/show\]/gi, '')
         .replace(/\[run:.*?\]/gi, '')
@@ -675,7 +689,6 @@ function speakResponse(text, voiceStyle) {
         .replace(/https?:\/\/\S+/g, '')
         .replace(/\/[\w\/\.\-]+/g, ' ')
         .replace(/\s*-{2,}\w[\w-]*/g, '')
-        // Terminal output patterns
         .replace(/^[\s]*[\$#>].*$/gm, '')
         .replace(/drwx.*$/gm, '')
         .replace(/-rw[r-].*$/gm, '')
@@ -684,21 +697,25 @@ function speakResponse(text, voiceStyle) {
         .replace(/Traceback.*$/gm, '')
         .replace(/File ".*$/gm, '')
         .replace(/^\s*\d+\.\d+\.\d+\.\d+.*$/gm, '')
-        // Code patterns
         .replace(/[{}()\[\];=<>|\\]/g, '')
         .replace(/^\s*(import|from|def |class |if |for |while |return |print)\b.*$/gm, '')
-        .replace(/\w+\.\w+\.\w+/g, '')  // dotted.module.paths
-        // Cleanup
+        .replace(/\w+\.\w+\.\w+/g, '')
         .replace(/\n+/g, ' ')
         .replace(/\s{2,}/g, ' ')
         .trim();
+}
+
+function speakResponse(text, voiceStyle) {
+    speechAborted = false;
+
+    let cleanText = _cleanForSpeech(text);
     if (!cleanText || cleanText.length < 2) return;
 
     stopSpeaking();
     currentVoiceStyle = voiceStyle || 'default';
     speechAborted = false;
 
-    // Immediately suppress mic — don't wait for audio to start playing
+    // Immediately suppress mic
     isSpeaking = true;
     notifyTTSState(true);
 
@@ -710,13 +727,11 @@ function speakResponse(text, voiceStyle) {
             const chunks = data.chunks || [];
             if (chunks.length === 0) return;
 
-            // If only one short chunk, speak directly (no chunking overhead)
             if (chunks.length === 1) {
                 _speakSingle(cleanText);
                 return;
             }
 
-            // Queue up chunks and start playing
             speechQueue = chunks.map(c => ({
                 text: c.text,
                 pauseAfter: c.pause_after_ms || 0,
@@ -725,36 +740,53 @@ function speakResponse(text, voiceStyle) {
             _playNextChunk();
         })
         .catch(() => {
-            // Chunking failed — fall back to single-shot speech
             _speakSingle(cleanText);
         });
 }
 
+function _prefetchNext() {
+    // Prefetch the next chunk's audio while current one plays
+    if (speechQueue.length === 0 || speechAborted) return;
+
+    const next = speechQueue[0];
+    if (_prefetchedChunk === next) return; // Already prefetching this one
+
+    _prefetchedChunk = next;
+    const url = `/tts?text=${encodeURIComponent(next.text)}&style=${currentVoiceStyle}`;
+    const audio = new Audio();
+    audio.preload = 'auto';
+    audio.src = url;
+    _prefetchedAudio = audio;
+}
+
 function _playNextChunk() {
     if (speechAborted || speechQueue.length === 0) {
-        // All chunks done — wrap up
-        isSpeaking = false;
-        speechEndTime = Date.now();
-        notifyTTSState(false);
-        speakingChunk = false;
-        stopTTSPulse();
-        setReactorState('');
-        currentAudio = null;
+        _finishSpeaking();
         return;
     }
 
     const chunk = speechQueue.shift();
     speakingChunk = true;
 
-    // Build TTS URL with SSML style
-    const url = `/tts?text=${encodeURIComponent(chunk.text)}&style=${currentVoiceStyle}`;
-    currentAudio = new Audio(url);
+    // Use prefetched audio if available, otherwise create new
+    let audio;
+    if (_prefetchedAudio && _prefetchedChunk === chunk) {
+        audio = _prefetchedAudio;
+        _prefetchedAudio = null;
+        _prefetchedChunk = null;
+    } else {
+        const url = `/tts?text=${encodeURIComponent(chunk.text)}&style=${currentVoiceStyle}`;
+        audio = new Audio(url);
+    }
+    currentAudio = audio;
 
     currentAudio.onplay = () => {
         isSpeaking = true;
         notifyTTSState(true);
         setReactorState('speaking');
         startTTSPulse();
+        // Start prefetching next chunk immediately when playback begins
+        _prefetchNext();
     };
 
     currentAudio.onended = () => {
@@ -766,9 +798,8 @@ function _playNextChunk() {
             return;
         }
 
-        // Natural pause between chunks — this is where JARVIS "breathes"
+        // Natural pause between chunks — JARVIS "breathes"
         if (chunk.pauseAfter > 0 && speechQueue.length > 0) {
-            // During the pause, reduce the TTS pulse to simulate silence
             stopTTSPulse();
             setTimeout(() => {
                 if (!speechAborted) {
@@ -785,7 +816,6 @@ function _playNextChunk() {
     currentAudio.onerror = () => {
         speakingChunk = false;
         currentAudio = null;
-        // Skip this chunk, try next
         if (!speechAborted && speechQueue.length > 0) {
             _playNextChunk();
         } else {
@@ -838,9 +868,10 @@ function _finishSpeaking() {
 function stopSpeaking() {
     speechAborted = true;
     speechQueue = [];
+    _prefetchedAudio = null;
+    _prefetchedChunk = null;
     _stopRealTimePulse();
     if (currentAudio) {
-        // AudioBufferSourceNode uses .stop(), Audio element uses .pause()
         try { currentAudio.stop(); } catch(e) {}
         try { currentAudio.pause(); currentAudio.currentTime = 0; } catch(e) {}
         currentAudio = null;

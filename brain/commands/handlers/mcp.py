@@ -288,37 +288,98 @@ async def cmd_rpc(ctx: CommandContext) -> CommandResult:
         return CommandResult(text=f"RPC call to '{tool_name}' failed: {e}", success=False)
 
 
-@command("hooks", description="List active hooks",
-         usage="/hooks", category="mcp", permission=PermLevel.READ_ONLY)
+@command("hooks", description="List active hooks and hook events",
+         usage="/hooks [event]", category="mcp", permission=PermLevel.READ_ONLY)
 async def cmd_hooks(ctx: CommandContext) -> CommandResult:
     brain = ctx.brain
-    if not brain:
-        return CommandResult(text="Brain not available", success=False)
+    if not brain or not hasattr(brain, 'hooks'):
+        return CommandResult(text="Hook system not available.", success=False)
 
-    if not hasattr(brain, 'hooks'):
-        return CommandResult(text="Hook system not available.")
+    from brain.hooks import HOOK_EVENTS
 
-    hooks = brain.hooks.list_hooks() if hasattr(brain.hooks, 'list_hooks') else []
+    hooks = brain.hooks.list_hooks()
+    summary = brain.hooks.summary()
+
+    lines = ["╭─ Hooks ─────────────────────────────────────────────╮"]
+    lines.append(f"│  {summary['total']} hook(s) configured" + " " * (39 - len(str(summary['total']))) + "│")
+    lines.append("├────────────────────────────────────────────────────┤")
+
     if not hooks:
-        return CommandResult(text="No active hooks.")
+        lines.append("│  No hooks configured.                              │")
+        lines.append("│                                                    │")
+        lines.append("│  Add one with:                                     │")
+        lines.append("│    /hook add PreToolUse 'scripts/check.sh'         │")
+        lines.append("│                                                    │")
+        lines.append("│  Or create ~/.jarvis/hooks.yaml:                   │")
+        lines.append("│    hooks:                                          │")
+        lines.append("│      PreToolUse:                                   │")
+        lines.append("│        - matcher: bash                             │")
+        lines.append("│          type: command                             │")
+        lines.append("│          command: scripts/audit.sh                 │")
+    else:
+        # Group by event
+        by_event: dict[str, list] = {}
+        for h in hooks:
+            by_event.setdefault(h["event"], []).append(h)
 
-    lines = [f"Active Hooks ({len(hooks)})", "=" * 40]
-    for h in hooks:
-        event = h.get("event", "unknown")
-        action = h.get("command", h.get("action", "N/A"))
-        enabled = "on" if h.get("enabled", True) else "off"
-        lines.append(f"  [{enabled}] {event:<25s} -> {action}")
+        for event in HOOK_EVENTS:
+            if event not in by_event:
+                continue
+            event_hooks = by_event[event]
+            lines.append(f"│  {event:<20s}  ({len(event_hooks)} hook{'s' if len(event_hooks) != 1 else ''}){'':>15s}│")
+            for h in event_hooks:
+                icon = "●" if h["enabled"] else "○"
+                htype = h["type"]
+                cmd = h["command"]
+                if len(cmd) > 38:
+                    cmd = cmd[:35] + "..."
+                matcher_str = f" [{h['matcher']}]" if h["matcher"] else ""
+                if_str = f" if={h['if']}" if h.get("if") else ""
+                src = h.get("source", "")
+                src_tag = f" ({src})" if src and src != "config" else ""
+
+                detail = f"{icon} {htype}: {cmd}{matcher_str}{if_str}{src_tag}"
+                # Pad to box width
+                pad = 50 - len(detail)
+                if pad < 0:
+                    detail = detail[:47] + "..."
+                    pad = 0
+                lines.append(f"│  {detail}{' ' * pad}│")
+            lines.append("│                                                    │")
+
+    lines.append("├────────────────────────────────────────────────────┤")
+    events_str = ", ".join(HOOK_EVENTS)
+    lines.append(f"│  Events: {events_str[:41]:<41s} │")
+    if len(events_str) > 41:
+        lines.append(f"│          {events_str[41:82]:<41s} │")
+    lines.append("╰────────────────────────────────────────────────────╯")
+
     return CommandResult(text="\n".join(lines))
 
 
-@command("hook", description="Add or remove a hook",
-         usage="/hook <add|remove> <event> <command>", category="mcp", permission=PermLevel.FULL)
+@command("hook", description="Add, remove, or save hooks",
+         usage="/hook add <event> <command> [--matcher <pattern>]\n"
+               "       /hook remove <event> [command]\n"
+               "       /hook save [path]",
+         category="mcp", permission=PermLevel.FULL)
 async def cmd_hook(ctx: CommandContext) -> CommandResult:
+    from brain.hooks import HOOK_EVENTS
+
     args = ctx.args.strip()
     if not args:
+        events_list = ", ".join(HOOK_EVENTS)
         return CommandResult(
-            text="Usage: /hook add <event> <command>\n       /hook remove <event>\n"
-                 "Events: pre_command, post_command, on_error, on_startup, on_shutdown",
+            text=f"Usage:\n"
+                 f"  /hook add <event> <command> [--matcher <pattern>]\n"
+                 f"  /hook remove <event> [command]\n"
+                 f"  /hook save [path]\n\n"
+                 f"Events: {events_list}\n\n"
+                 f"Examples:\n"
+                 f"  /hook add PreToolUse 'scripts/audit.sh' --matcher bash\n"
+                 f"  /hook add PostToolUse 'python -m py_compile' --matcher 'edit_file|write_file'\n"
+                 f"  /hook add Stop 'scripts/final-check.sh'\n"
+                 f"  /hook remove PreToolUse\n"
+                 f"  /hook save",
             success=False,
         )
 
@@ -331,17 +392,46 @@ async def cmd_hook(ctx: CommandContext) -> CommandResult:
 
     if action == "add":
         if len(parts) < 3:
-            return CommandResult(text="Usage: /hook add <event> <command>", success=False)
-        event, cmd = parts[1], parts[2]
-        brain.hooks.add_hook(event=event, command=cmd)
-        return CommandResult(text=f"Hook added: {event} -> {cmd}")
+            return CommandResult(text="Usage: /hook add <event> <command> [--matcher <pattern>]", success=False)
+        event = parts[1]
+        rest = parts[2]
+
+        # Parse --matcher flag
+        matcher = ""
+        if "--matcher" in rest:
+            idx = rest.index("--matcher")
+            cmd_part = rest[:idx].strip().strip("'\"")
+            matcher_part = rest[idx + len("--matcher"):].strip().strip("'\"")
+            matcher = matcher_part.split()[0] if matcher_part else ""
+        else:
+            cmd_part = rest.strip().strip("'\"")
+
+        ok = brain.hooks.add_hook(event=event, command=cmd_part, matcher=matcher)
+        if not ok:
+            return CommandResult(
+                text=f"Unknown event: {event}\nValid events: {', '.join(HOOK_EVENTS)}",
+                success=False,
+            )
+        matcher_info = f" (matcher: {matcher})" if matcher else ""
+        return CommandResult(text=f"Hook added: {event} → {cmd_part}{matcher_info}")
 
     elif action == "remove":
         if len(parts) < 2:
-            return CommandResult(text="Usage: /hook remove <event>", success=False)
+            return CommandResult(text="Usage: /hook remove <event> [command]", success=False)
         event = parts[1]
-        brain.hooks.remove_hook(event=event)
-        return CommandResult(text=f"Hook removed for event: {event}")
+        cmd = parts[2] if len(parts) > 2 else ""
+        ok = brain.hooks.remove_hook(event=event, command=cmd)
+        if ok:
+            return CommandResult(text=f"Hook(s) removed for: {event}")
+        else:
+            return CommandResult(text=f"No hooks found for event: {event}", success=False)
+
+    elif action == "save":
+        path = parts[1] if len(parts) > 1 else None
+        from pathlib import Path
+        brain.hooks.save_to_yaml(Path(path) if path else None)
+        target = path or ".jarvis/hooks.yaml"
+        return CommandResult(text=f"Hooks saved to {target}")
 
     else:
-        return CommandResult(text=f"Unknown action: {action}. Use add or remove.", success=False)
+        return CommandResult(text=f"Unknown action: {action}. Use add, remove, or save.", success=False)

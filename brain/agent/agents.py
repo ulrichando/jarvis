@@ -1,12 +1,18 @@
-"""JARVIS Sub-Agent Definitions — Scout, Worker, Planner.
+"""JARVIS Sub-Agent Definitions — Scout, Worker, Planner, + Custom Agents.
 
 Sub-agents are isolated agent_loop() calls with restricted tool sets
 and focused system prompts. The main brain dispatches them for parallel,
 context-clean task execution.
+
+Built-in agents: scout, worker, planner
+Custom agents: loaded from ~/.jarvis/agents/ and .jarvis/agents/ via AgentRegistry
 """
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+
+log = logging.getLogger("jarvis.agent")
 
 
 # ── Agent Configurations ──────────────────────────────────────────────
@@ -18,6 +24,7 @@ class AgentConfig:
     system_prompt: str
     allowed_tools: list[str]
     max_iterations: int
+    bash_readonly: bool = False
 
 
 SCOUT_PROMPT = """You are a JARVIS Scout agent — a fast, read-only explorer.
@@ -147,3 +154,95 @@ def build_sub_agent_prompt(config: AgentConfig, task: str, context: str = "") ->
     prompt += f"\n\n═══ YOUR TASK ═══\n{task}"
 
     return prompt
+
+
+# ── Dynamic Agent Resolution ─────────────────────────────────────────
+
+# Lazy-loaded registry singleton
+_registry = None
+
+
+def _get_registry():
+    """Get or create the global AgentRegistry."""
+    global _registry
+    if _registry is None:
+        try:
+            from brain.agent.registry import AgentRegistry
+            _registry = AgentRegistry()
+            _registry.discover()
+        except Exception as e:
+            log.warning("Failed to load agent registry: %s", e)
+    return _registry
+
+
+def resolve_agent(agent_type: str) -> AgentConfig | None:
+    """Resolve an agent type to an AgentConfig.
+
+    Checks built-in agents first, then custom agents from the registry.
+    Returns None if not found.
+    """
+    # Built-in agents
+    config = AGENT_CONFIGS.get(agent_type)
+    if config:
+        return config
+
+    # Custom agents from registry
+    registry = _get_registry()
+    if registry:
+        custom = registry.get(agent_type)
+        if custom:
+            return custom.to_agent_config()
+
+    return None
+
+
+def list_all_agents() -> list[dict]:
+    """List all available agents (built-in + custom)."""
+    agents = []
+
+    # Built-in
+    for name, config in AGENT_CONFIGS.items():
+        agents.append({
+            "name": name,
+            "description": config.description,
+            "type": "built-in",
+            "tools": config.allowed_tools,
+            "max_iterations": config.max_iterations,
+        })
+
+    # Custom
+    registry = _get_registry()
+    if registry:
+        for custom in registry:
+            agents.append({
+                "name": custom.name,
+                "description": custom.description,
+                "type": "custom",
+                "scope": custom.scope,
+                "tools": custom.allowed_tools,
+                "max_iterations": custom.max_iterations,
+                "model": custom.model,
+                "path": str(custom.path) if custom.path else None,
+            })
+
+    return agents
+
+
+def get_all_agent_names() -> list[str]:
+    """Get all available agent type names (for dispatch enum)."""
+    names = list(AGENT_CONFIGS.keys())
+    registry = _get_registry()
+    if registry:
+        for custom in registry:
+            name = custom.name.lower()
+            if name not in names:
+                names.append(name)
+    return names
+
+
+def reload_registry() -> int:
+    """Reload the agent registry from disk. Returns count of agents found."""
+    global _registry
+    _registry = None
+    registry = _get_registry()
+    return len(registry) if registry else 0

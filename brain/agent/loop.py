@@ -91,24 +91,31 @@ async def _run_sub_agent(
     context: str = "",
     iteration_budget: dict | None = None,
 ) -> str:
-    """Spawn an isolated sub-agent with its own agent loop."""
-    from brain.agent.agents import AGENT_CONFIGS, get_agent_tools, build_sub_agent_prompt
+    """Spawn an isolated sub-agent with its own agent loop.
 
-    config = AGENT_CONFIGS.get(agent_type)
+    Supports built-in agents (scout, worker, planner) and custom agents
+    loaded from ~/.jarvis/agents/ and .jarvis/agents/.
+    """
+    from brain.agent.agents import resolve_agent, get_agent_tools, build_sub_agent_prompt
+
+    config = resolve_agent(agent_type)
     if not config:
-        return f"Unknown agent type: {agent_type}. Use 'scout', 'worker', or 'planner'."
+        from brain.agent.agents import get_all_agent_names
+        available = ", ".join(get_all_agent_names())
+        return f"Unknown agent type: {agent_type}. Available: {available}"
 
     tools = get_agent_tools(config)
     prompt = build_sub_agent_prompt(config, task, context)
 
     tool_executor = execute_tool
-    if agent_type == "scout":
+    # Enforce read-only bash for scout or any agent with bash_readonly
+    if agent_type == "scout" or getattr(config, 'bash_readonly', False):
         from brain.agent.agents import is_bash_readonly
         def safe_execute(name, args):
             if name == "bash":
                 cmd = args.get("command", "")
                 if not is_bash_readonly(cmd):
-                    return f"BLOCKED: Scout agents cannot run destructive commands. Attempted: {cmd}"
+                    return f"BLOCKED: This agent cannot run destructive commands. Attempted: {cmd}"
             return execute_tool(name, args)
         tool_executor = safe_execute
 
@@ -302,6 +309,9 @@ async def _execute_tools(messages: list[dict], tool_calls: list[dict],
             allowed, reason = perms.check(tool_name, tool_args)
             if not allowed:
                 log.warning("Permission denied: %s — %s", tool_name, reason)
+                # PermissionDenied hook
+                if hooks:
+                    hooks.run_permission_denied(tool_name, tool_args, reason)
                 _append_tool_result(messages, tool_id, f"BLOCKED by permissions: {reason}")
                 continue
 
@@ -323,7 +333,19 @@ async def _execute_tools(messages: list[dict], tool_calls: list[dict],
         if on_call:
             on_call(tool_name, tool_args)
 
-        result = await asyncio.to_thread(executor, tool_name, tool_args)
+        try:
+            result = await asyncio.to_thread(executor, tool_name, tool_args)
+        except Exception as exc:
+            result = f"ERROR: {exc}"
+            # PostToolUseFailure hook
+            if hooks:
+                fail_hr = hooks.run_post_tool_use_failure(tool_name, tool_args, str(exc))
+                if fail_hr.message:
+                    result += f"\n[Hook: {fail_hr.message}]"
+            if on_result:
+                on_result(tool_name, result)
+            _append_tool_result(messages, tool_id, result)
+            continue
 
         # PostToolUse hook
         if hooks:
@@ -478,6 +500,9 @@ async def agent_loop_stream(
                 allowed, reason = perms.check(tool_name, tool_args)
                 if not allowed:
                     yield {"type": "tool_call", "name": tool_name, "args": tool_args}
+                    # PermissionDenied hook
+                    if hooks:
+                        hooks.run_permission_denied(tool_name, tool_args, reason)
                     result = f"BLOCKED by permissions: {reason}"
                     yield {"type": "tool_result", "name": tool_name, "content": result}
                     _append_tool_result(messages, tool_id, result)
@@ -500,7 +525,18 @@ async def agent_loop_stream(
                     checkpoints.snapshot(path, tool_name)
 
             yield {"type": "tool_call", "name": tool_name, "args": tool_args}
-            result = await asyncio.to_thread(execute_tool, tool_name, tool_args, readonly)
+
+            try:
+                result = await asyncio.to_thread(execute_tool, tool_name, tool_args, readonly)
+            except Exception as exc:
+                result = f"ERROR: {exc}"
+                if hooks:
+                    fail_hr = hooks.run_post_tool_use_failure(tool_name, tool_args, str(exc))
+                    if fail_hr.message:
+                        result += f"\n[Hook: {fail_hr.message}]"
+                yield {"type": "tool_result", "name": tool_name, "content": result}
+                _append_tool_result(messages, tool_id, result)
+                continue
 
             if hooks:
                 post = hooks.run_post_tool_use(tool_name, tool_args, result)

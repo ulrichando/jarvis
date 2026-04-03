@@ -47,12 +47,21 @@ async def _spawn_shortcut(ctx: CommandContext, agent_type: str) -> CommandResult
 async def cmd_agent(ctx: CommandContext) -> CommandResult:
     args = ctx.args.strip()
     if not args:
-        return CommandResult(text="Usage: /agent <scout|worker|planner> <task description>", success=False)
+        from brain.agent.agents import get_all_agent_names
+        available = ", ".join(get_all_agent_names())
+        return CommandResult(text=f"Usage: /agent <type> <task>\nAvailable: {available}", success=False)
     parts = args.split(None, 1)
     agent_type = parts[0].lower()
     task = parts[1] if len(parts) > 1 else ""
     if not task:
         return CommandResult(text="Please provide a task for the agent.", success=False)
+
+    # Validate agent type exists
+    from brain.agent.agents import resolve_agent
+    if not resolve_agent(agent_type):
+        from brain.agent.agents import get_all_agent_names
+        available = ", ".join(get_all_agent_names())
+        return CommandResult(text=f"Unknown agent: {agent_type}\nAvailable: {available}", success=False)
 
     brain = ctx.brain
     if not brain:
@@ -69,36 +78,321 @@ async def cmd_agent(ctx: CommandContext) -> CommandResult:
     return CommandResult(text=result)
 
 
-@command("agents", description="List all available agent types",
-         usage="/agents", category="agent", permission=PermLevel.READ_ONLY)
+@command("agents", description="List, create, and manage agents",
+         usage="/agents [list|create|generate|info|delete|reload] [args]",
+         category="agent", permission=PermLevel.STANDARD)
 async def cmd_agents(ctx: CommandContext) -> CommandResult:
-    lines = [
-        "Available Agent Types",
-        "=" * 40,
-        "  scout     Read-only exploration — find files, read code, search",
-        "  worker    Full access execution — edit, install, build, run",
-        "  planner   Analysis only — research, plan, no execution",
-        "",
-        "System Agents (via /delegate):",
-        "  terminal   Raw shell access",
-        "  network    Network operations & scanning",
-        "  security   Pentesting & vulnerability analysis",
-        "  file       File system operations",
-        "  desktop    GUI & desktop control",
-        "  app        Application management",
-        "  system     Package & service management",
-        "  vision     Screenshot analysis",
-        "  research   Web research & information gathering",
-    ]
+    args = ctx.args.strip().split(None, 1)
+    subcommand = args[0].lower() if args else "list"
+    sub_args = args[1].strip() if len(args) > 1 else ""
+
     brain = ctx.brain
+
+    if subcommand == "list":
+        return await _agents_list(brain)
+    elif subcommand in ("create", "new", "add"):
+        return await _agents_create(brain, sub_args)
+    elif subcommand in ("generate", "gen"):
+        return await _agents_generate(brain, sub_args)
+    elif subcommand == "info":
+        return await _agents_info(sub_args)
+    elif subcommand in ("delete", "rm", "remove"):
+        return await _agents_delete(sub_args)
+    elif subcommand == "reload":
+        return await _agents_reload()
+    else:
+        # Treat unknown subcommand as "info <name>"
+        return await _agents_info(subcommand)
+
+
+async def _agents_list(brain) -> CommandResult:
+    """List all available agents (built-in + custom)."""
+    from brain.agent.agents import list_all_agents
+
+    agents = list_all_agents()
+    lines = ["╔══════════════════════════════════════════════════╗"]
+    lines.append("║            Available Agents                     ║")
+    lines.append("╚══════════════════════════════════════════════════╝")
+
+    # Built-in
+    builtin = [a for a in agents if a["type"] == "built-in"]
+    if builtin:
+        lines.append("\n  Built-in:")
+        for a in builtin:
+            lines.append(f"    {a['name']:<12s} {a['description']}")
+
+    # Custom
+    custom = [a for a in agents if a["type"] == "custom"]
+    if custom:
+        lines.append("\n  Custom:")
+        for a in custom:
+            scope_tag = f"[{a['scope']}]" if a.get("scope") else ""
+            model_tag = f" ({a['model']})" if a.get("model") else ""
+            lines.append(f"    {a['name']:<12s} {a['description']}{model_tag} {scope_tag}")
+
+    # System delegates
+    lines.append("\n  System (via /delegate):")
+    for name in ["terminal", "network", "security", "file", "desktop",
+                 "app", "system", "vision", "research"]:
+        lines.append(f"    {name}")
+
+    # Running agents
     coordinator = _get_coordinator(brain)
     if coordinator:
         running = coordinator.list_running()
         if running:
-            lines.append(f"\nRunning Agents ({len(running)}):")
+            lines.append(f"\n  Running ({len(running)}):")
             for a in running:
-                lines.append(f"  [{a['id'][:8]}] {a['type']} — {a['task'][:50]}")
+                lines.append(f"    [{a['id'][:8]}] {a['type']} — {a['task'][:50]}")
+
+    lines.append("")
+    lines.append("  Commands: /agents create | /agents generate <desc>")
+    lines.append("            /agents info <name> | /agents delete <name>")
+    lines.append("            /agents reload")
+
     return CommandResult(text="\n".join(lines))
+
+
+async def _agents_create(brain, args: str) -> CommandResult:
+    """Create an agent manually via arguments.
+
+    Format: /agents create <name> [--scope user|project] [--tools tool1,tool2]
+            [--model modelname] [--readonly] [--max-iters N]
+    Then prompts for system prompt via the next message.
+    """
+    if not args:
+        return CommandResult(text=(
+            "Usage: /agents create <name> [options]\n\n"
+            "Options:\n"
+            "  --scope user|project    Where to save (default: user)\n"
+            "  --tools t1,t2,...       Allowed tools (default: full access)\n"
+            "  --model <model>         Model preference\n"
+            "  --readonly              Enforce read-only bash\n"
+            "  --max-iters <N>         Max iterations (default: 15)\n"
+            "  --desc <description>    One-line description\n"
+            "  --prompt <text>         System prompt (or provide on next line)\n\n"
+            "Or use: /agents generate <description> — to have the LLM create one for you"
+        ), success=False)
+
+    import shlex
+    try:
+        tokens = shlex.split(args)
+    except ValueError:
+        return CommandResult(text="Could not parse arguments.", success=False)
+
+    name = tokens[0]
+    scope = "user"
+    tools = None
+    model = ""
+    readonly = False
+    max_iters = 15
+    description = ""
+    prompt = ""
+
+    i = 1
+    while i < len(tokens):
+        if tokens[i] == "--scope" and i + 1 < len(tokens):
+            scope = tokens[i + 1]
+            i += 2
+        elif tokens[i] == "--tools" and i + 1 < len(tokens):
+            tools = [t.strip() for t in tokens[i + 1].split(",")]
+            i += 2
+        elif tokens[i] == "--model" and i + 1 < len(tokens):
+            model = tokens[i + 1]
+            i += 2
+        elif tokens[i] == "--readonly":
+            readonly = True
+            i += 1
+        elif tokens[i] == "--max-iters" and i + 1 < len(tokens):
+            max_iters = int(tokens[i + 1])
+            i += 2
+        elif tokens[i] == "--desc" and i + 1 < len(tokens):
+            description = tokens[i + 1]
+            i += 2
+        elif tokens[i] == "--prompt" and i + 1 < len(tokens):
+            prompt = tokens[i + 1]
+            i += 2
+        else:
+            i += 1
+
+    if not description:
+        description = f"Custom {name} agent"
+    if not prompt:
+        prompt = f"You are a JARVIS {name} agent.\n\nYour job is to assist with tasks related to: {description}\n\nBe thorough, precise, and efficient."
+
+    from brain.agent.registry import AgentRegistry
+    registry = AgentRegistry()
+    registry.discover()
+
+    if registry.exists(name):
+        return CommandResult(text=f"Agent '{name}' already exists. Delete it first or choose a different name.", success=False)
+
+    agent = registry.create_agent(
+        name=name,
+        description=description,
+        system_prompt=prompt,
+        allowed_tools=tools,
+        max_iterations=max_iters,
+        model=model,
+        scope=scope,
+        bash_readonly=readonly,
+    )
+
+    # Reload the global registry
+    from brain.agent.agents import reload_registry
+    reload_registry()
+
+    tools_str = ", ".join(agent.allowed_tools) if agent.allowed_tools else "full access"
+    return CommandResult(
+        text=(
+            f"Agent created: {agent.name}\n"
+            f"  Description: {agent.description}\n"
+            f"  Scope:       {agent.scope} ({agent.path})\n"
+            f"  Tools:       {tools_str}\n"
+            f"  Iterations:  {agent.max_iterations}\n"
+            f"  Bash R/O:    {agent.bash_readonly}\n\n"
+            f"Use it: /agent {agent.name.lower()} <task>"
+        ),
+    )
+
+
+async def _agents_generate(brain, description: str) -> CommandResult:
+    """Generate a new agent using the LLM based on a description."""
+    if not description:
+        return CommandResult(
+            text="Usage: /agents generate <description of what the agent should do>",
+            success=False,
+        )
+
+    if not brain or not hasattr(brain, 'reasoner'):
+        return CommandResult(text="Brain/reasoner not available for generation.", success=False)
+
+    from brain.agent.registry import AgentRegistry
+    registry = AgentRegistry()
+    registry.discover()
+
+    # Build generation prompt and query LLM
+    gen_prompt = registry.build_generation_prompt(description)
+
+    try:
+        response = await brain.reasoner.query(gen_prompt)
+        if not response:
+            return CommandResult(text="LLM returned empty response.", success=False)
+    except Exception as e:
+        return CommandResult(text=f"LLM query failed: {e}", success=False)
+
+    # Parse the generated config
+    parsed = registry.parse_generated_agent(response)
+    if not parsed:
+        return CommandResult(
+            text=f"Failed to parse LLM output. Raw response:\n{response[:500]}",
+            success=False,
+        )
+
+    # Check for duplicates
+    if registry.exists(parsed["name"]):
+        return CommandResult(
+            text=f"Agent '{parsed['name']}' already exists. Delete it first.",
+            success=False,
+        )
+
+    # Create the agent
+    agent = registry.create_agent(
+        name=parsed["name"],
+        description=parsed.get("description", description),
+        system_prompt=parsed["prompt"],
+        allowed_tools=parsed.get("tools"),
+        max_iterations=parsed.get("max_iterations", 15),
+        model=parsed.get("model", ""),
+        scope="user",
+        bash_readonly=parsed.get("bash_readonly", False),
+    )
+
+    # Reload the global registry
+    from brain.agent.agents import reload_registry
+    reload_registry()
+
+    tools_str = ", ".join(agent.allowed_tools) if agent.allowed_tools else "full access"
+    return CommandResult(
+        text=(
+            f"Agent generated and saved!\n\n"
+            f"  Name:        {agent.name}\n"
+            f"  Description: {agent.description}\n"
+            f"  Tools:       {tools_str}\n"
+            f"  Iterations:  {agent.max_iterations}\n"
+            f"  Saved to:    {agent.path}\n\n"
+            f"Use it: /agent {agent.name.lower()} <task>\n"
+            f"Edit:   {agent.path}"
+        ),
+    )
+
+
+async def _agents_info(name: str) -> CommandResult:
+    """Show detailed info about a specific agent."""
+    if not name:
+        return CommandResult(text="Usage: /agents info <agent_name>", success=False)
+
+    from brain.agent.agents import AGENT_CONFIGS, resolve_agent
+    from brain.agent.registry import AgentRegistry
+
+    # Check built-in
+    builtin = AGENT_CONFIGS.get(name.lower())
+    if builtin:
+        return CommandResult(text=(
+            f"Agent: {builtin.name}\n"
+            f"Type:  built-in\n"
+            f"Desc:  {builtin.description}\n"
+            f"Tools: {', '.join(builtin.allowed_tools)}\n"
+            f"Iters: {builtin.max_iterations}\n\n"
+            f"System Prompt:\n{builtin.system_prompt[:500]}"
+        ))
+
+    # Check custom
+    registry = AgentRegistry()
+    registry.discover()
+    custom = registry.get(name)
+    if custom:
+        return CommandResult(text=(
+            f"Agent: {custom.name}\n"
+            f"Type:  custom ({custom.scope})\n"
+            f"Desc:  {custom.description}\n"
+            f"Tools: {', '.join(custom.allowed_tools) if custom.allowed_tools else 'full access'}\n"
+            f"Model: {custom.model or 'default'}\n"
+            f"Iters: {custom.max_iterations}\n"
+            f"Bash:  {'read-only' if custom.bash_readonly else 'full'}\n"
+            f"Path:  {custom.path}\n\n"
+            f"System Prompt:\n{custom.system_prompt[:800]}"
+        ))
+
+    return CommandResult(text=f"Agent '{name}' not found. Use /agents list to see available agents.", success=False)
+
+
+async def _agents_delete(name: str) -> CommandResult:
+    """Delete a custom agent."""
+    if not name:
+        return CommandResult(text="Usage: /agents delete <agent_name>", success=False)
+
+    from brain.agent.agents import AGENT_CONFIGS
+    if name.lower() in AGENT_CONFIGS:
+        return CommandResult(text=f"Cannot delete built-in agent '{name}'.", success=False)
+
+    from brain.agent.registry import AgentRegistry
+    registry = AgentRegistry()
+    registry.discover()
+
+    if registry.delete_agent(name):
+        from brain.agent.agents import reload_registry
+        reload_registry()
+        return CommandResult(text=f"Agent '{name}' deleted.")
+
+    return CommandResult(text=f"Agent '{name}' not found or could not be deleted.", success=False)
+
+
+async def _agents_reload() -> CommandResult:
+    """Reload agent registry from disk."""
+    from brain.agent.agents import reload_registry
+    count = reload_registry()
+    return CommandResult(text=f"Agent registry reloaded. Found {count} custom agent(s).")
 
 
 @command("team", description="Create a team of agents for a complex task",

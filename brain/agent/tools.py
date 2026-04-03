@@ -299,14 +299,13 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "dispatch",
-            "description": "Spawn a sub-agent to handle a task independently. Use 'scout' for read-only exploration (find files, read code). Use 'worker' for tasks that modify state (edit files, run commands, install things). Use 'planner' for analysis and creating structured plans. Sub-agents run in isolation and return a summary.",
+            "description": "Spawn a sub-agent to handle a task independently. Built-in: 'scout' (read-only exploration), 'worker' (full access execution), 'planner' (analysis only). Custom agents from ~/.jarvis/agents/ and .jarvis/agents/ are also available. Sub-agents run in isolation and return a summary.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "agent_type": {
                         "type": "string",
-                        "enum": ["scout", "worker", "planner"],
-                        "description": "Type of sub-agent: scout (read-only), worker (full access), planner (analysis only)",
+                        "description": "Type of sub-agent. Built-in: scout, worker, planner. Custom agents by name.",
                     },
                     "task": {
                         "type": "string",

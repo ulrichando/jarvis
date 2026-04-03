@@ -397,15 +397,36 @@ class AgentDispatcher:
             return {"agent": "system", "action": "update", "result": r,
                     "summary": "System packages updated." if r["success"] else "Update failed."}
 
-        # Shutdown / reboot
-        if any(p in q for p in ["shutdown", "shut down", "power off"]):
+        # Shutdown / reboot / sleep / lock / hibernate
+        if any(p in q for p in ["shutdown", "shut down", "power off", "turn off the computer",
+                                 "goodnight jarvis", "good night jarvis"]):
             r = SystemAgent.shutdown()
             return {"agent": "system", "action": "shutdown", "result": r,
-                    "summary": "Shutting down."}
-        if any(p in q for p in ["reboot", "restart the computer", "restart system"]):
+                    "summary": "Shutting down. Goodbye, Ulrich."}
+        if any(p in q for p in ["reboot", "restart the computer", "restart system",
+                                 "restart the machine"]):
             r = SystemAgent.reboot()
             return {"agent": "system", "action": "reboot", "result": r,
-                    "summary": "Rebooting."}
+                    "summary": "Rebooting. I'll be right back."}
+        if any(p in q for p in ["go to sleep", "sleep mode", "suspend", "nap time",
+                                 "take a nap", "put the computer to sleep",
+                                 "put it to sleep"]):
+            r = SystemAgent.hybrid_sleep()
+            return {"agent": "system", "action": "sleep", "result": r,
+                    "summary": "Going to sleep. Wake me when you need me."}
+        if any(p in q for p in ["hibernate", "deep sleep"]):
+            r = SystemAgent.hibernate()
+            return {"agent": "system", "action": "hibernate", "result": r,
+                    "summary": "Hibernating. Wake me when you need me."}
+        if any(p in q for p in ["lock the screen", "lock screen", "lock the computer",
+                                 "lock it", "lock my screen", "lock my computer"]):
+            r = SystemAgent.lock()
+            return {"agent": "system", "action": "lock", "result": r,
+                    "summary": "Screen locked."}
+        if "cancel shutdown" in q or "cancel the shutdown" in q:
+            r = SystemAgent.cancel_shutdown()
+            return {"agent": "system", "action": "cancel_shutdown", "result": r,
+                    "summary": "Shutdown cancelled."}
 
         return None
 

@@ -33,9 +33,8 @@ class JarvisWebServer:
         self.clients: set[web.WebSocketResponse] = set()
 
     async def tts_handler(self, request: web.Request) -> web.StreamResponse:
-        """Generate neural TTS audio from text. Returns MP3 stream.
+        """Generate neural TTS audio from text. Streams MP3 chunks as they arrive.
 
-        Supports SSML for natural pauses and emphasis.
         Query params:
             text: raw text to speak
             voice: edge-tts voice name
@@ -52,25 +51,28 @@ class JarvisWebServer:
 
         voice = request.query.get("voice", TTS_VOICE)
 
-        # edge-tts 7.x does NOT support SSML — pass plain text only
+        # Stream MP3 chunks directly to client as they arrive from edge-tts
         try:
+            response = web.StreamResponse(
+                status=200,
+                headers={
+                    "Content-Type": "audio/mpeg",
+                    "Cache-Control": "no-cache",
+                    "Transfer-Encoding": "chunked",
+                },
+            )
+            await response.prepare(request)
+
             communicate = edge_tts.Communicate(text, voice)
-            audio_data = io.BytesIO()
-
             async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    audio_data.write(chunk["data"])
+                if chunk["type"] == "audio" and chunk["data"]:
+                    await response.write(chunk["data"])
 
-            audio_data.seek(0)
+            await response.write_eof()
+            return response
         except Exception as e:
             print(f"[JARVIS] TTS error: {e}")
             return web.Response(status=500, text="TTS generation failed")
-
-        return web.Response(
-            body=audio_data.read(),
-            content_type="audio/mpeg",
-            headers={"Cache-Control": "no-cache"},
-        )
 
     async def tts_chunks_handler(self, request: web.Request) -> web.Response:
         """Return speech chunks with pause metadata for the frontend.
@@ -218,27 +220,20 @@ class JarvisWebServer:
                                 "model": "", "latency_ms": 0, "voice_style": "default"})
             return
 
-        # Power management voice commands
-        if text_lower in ("shutdown", "shut down", "power off", "turn off",
-                          "goodnight jarvis", "good night jarvis"):
-            await ws.send_json({"type": "power", "action": "shutdown"})
-            await self._broadcast_power("Shutting down. Goodbye, Ulrich.")
-            import subprocess
-            asyncio.get_event_loop().call_later(3, lambda: subprocess.Popen(["sudo", "shutdown", "-h", "now"]))
-            return
-        if text_lower in ("reboot", "restart", "reboot jarvis", "restart jarvis"):
-            await ws.send_json({"type": "power", "action": "reboot"})
-            await self._broadcast_power("Rebooting. I'll be right back.")
-            import subprocess
-            asyncio.get_event_loop().call_later(3, lambda: subprocess.Popen(["sudo", "reboot"]))
-            return
-        if text_lower in ("sleep", "go to sleep", "hibernate", "hybrid sleep",
-                          "nap time", "take a nap"):
-            await ws.send_json({"type": "power", "action": "sleep"})
-            await self._broadcast_power("Going to sleep. Wake me when you need me.")
-            import subprocess
-            asyncio.get_event_loop().call_later(3, lambda: subprocess.Popen(["sudo", "systemctl", "hybrid-sleep"]))
-            return
+        # Power management — routed through brain (dispatcher handles all triggers)
+        # These are caught here only for the power UI event broadcast
+        power_actions = {
+            "shutdown": ("shutdown", "shut down", "power off", "turn off",
+                         "goodnight jarvis", "good night jarvis"),
+            "reboot": ("reboot", "restart", "reboot jarvis", "restart jarvis"),
+            "sleep": ("sleep", "go to sleep", "hibernate", "hybrid sleep",
+                      "nap time", "take a nap", "suspend"),
+            "lock": ("lock", "lock screen", "lock the screen", "lock the computer"),
+        }
+        for action, triggers in power_actions.items():
+            if text_lower in triggers:
+                await ws.send_json({"type": "power", "action": action})
+                break
 
         # Inject vision awareness if available
         if hasattr(ws, '_viewer'):
@@ -275,37 +270,70 @@ class JarvisWebServer:
 
         await ws.send_json({"type": "status", "status": "thinking"})
         start = time.time()
-        response = await self.brain.think(text)
+
+        # Try streaming: send first sentence early so TTS starts immediately
+        first_sent = False
+        full_response = ""
+
+        if hasattr(self.brain, 'think_stream'):
+            try:
+                buffer = ""
+                async for token in self.brain.think_stream(text):
+                    buffer += token
+                    # Check if we have a complete first sentence to speak early
+                    if not first_sent and len(buffer) > 15:
+                        # Find first sentence boundary
+                        for delim in ['. ', '! ', '? ', '.\n', '!\n', '?\n']:
+                            idx = buffer.find(delim)
+                            if idx > 10:
+                                first_sentence = buffer[:idx + 1].strip()
+                                spoken = self._clean_for_speech(first_sentence)
+                                if spoken and len(spoken) > 5:
+                                    latency = int((time.time() - start) * 1000)
+                                    await ws.send_json({
+                                        "type": "message", "role": "jarvis",
+                                        "content": first_sentence,
+                                        "spoken": spoken,
+                                        "model": self.brain.reasoner.model,
+                                        "latency_ms": latency,
+                                        "voice_style": self._get_voice_style(),
+                                        "partial": True,
+                                    })
+                                    first_sent = True
+                                break
+                full_response = buffer
+            except Exception:
+                # Fallback to non-streaming
+                full_response = await self.brain.think(text)
+        else:
+            full_response = await self.brain.think(text)
+
         latency = int((time.time() - start) * 1000)
+        voice_style = self._get_voice_style()
 
-        # Get voice style from awareness (how JARVIS should sound)
-        voice_style = "default"
-        if hasattr(self.brain, "reasoning") and hasattr(self.brain.reasoning, "_last_reasoning"):
-            # Use the tone from the most recent reasoning
-            awareness = self.brain.awareness
-            if awareness.user_energy == "frustrated":
-                voice_style = "focused"
-            elif awareness.user_energy == "excited":
-                voice_style = "matching"
-            elif awareness.user_energy == "low":
-                voice_style = "gentle"
-            elif awareness.user_intent == "exploring":
-                voice_style = "thoughtful"
-
-        # Don't send empty responses, but DO send special commands
-        if response and response.strip():
-            # Clean response — separate spoken text from display content
-            spoken = self._clean_for_speech(response)
-            await ws.send_json({
-                "type": "message", "role": "jarvis",
-                "content": response,  # Full response for display/cards
-                "spoken": spoken,     # Clean version for TTS only
-                "model": self.brain.reasoner.model,  # Which AI answered
-                "latency_ms": latency,
-                "voice_style": voice_style,
-            })
-        elif response == "":
-            pass  # Truly silent
+        # Don't send empty responses
+        if full_response and full_response.strip():
+            spoken = self._clean_for_speech(full_response)
+            if first_sent:
+                # Send the remaining text (frontend will queue it after first chunk)
+                await ws.send_json({
+                    "type": "message", "role": "jarvis",
+                    "content": full_response,
+                    "spoken": spoken,
+                    "model": self.brain.reasoner.model,
+                    "latency_ms": latency,
+                    "voice_style": voice_style,
+                    "final": True,
+                })
+            else:
+                await ws.send_json({
+                    "type": "message", "role": "jarvis",
+                    "content": full_response,
+                    "spoken": spoken,
+                    "model": self.brain.reasoner.model,
+                    "latency_ms": latency,
+                    "voice_style": voice_style,
+                })
 
     async def _handle_audio(self, ws: web.WebSocketResponse, data: bytes):
         """Handle audio — either push-to-talk blob or ambient stream chunk.
@@ -368,6 +396,21 @@ class JarvisWebServer:
         except Exception as e:
             print(f"[JARVIS] STT error: {e}")
             await ws.send_json({"type": "stt_error", "error": str(e)})
+
+    def _get_voice_style(self) -> str:
+        """Determine voice style from awareness context."""
+        voice_style = "default"
+        if hasattr(self.brain, "reasoning") and hasattr(self.brain.reasoning, "_last_reasoning"):
+            awareness = self.brain.awareness
+            if awareness.user_energy == "frustrated":
+                voice_style = "focused"
+            elif awareness.user_energy == "excited":
+                voice_style = "matching"
+            elif awareness.user_energy == "low":
+                voice_style = "gentle"
+            elif awareness.user_intent == "exploring":
+                voice_style = "thoughtful"
+        return voice_style
 
     @staticmethod
     def _clean_for_speech(text: str) -> str:
@@ -1011,20 +1054,28 @@ class JarvisWebServer:
         data = await request.json()
         action = data.get("action", "")
 
-        if action == "shutdown":
-            await self._broadcast_power("Shutting down. Goodbye, Ulrich.")
-            asyncio.get_event_loop().call_later(2, lambda: subprocess.Popen(["sudo", "shutdown", "-h", "now"]))
-            return web.json_response({"status": "shutting_down"})
-        elif action == "reboot":
-            await self._broadcast_power("Rebooting. I'll be right back.")
-            asyncio.get_event_loop().call_later(2, lambda: subprocess.Popen(["sudo", "reboot"]))
-            return web.json_response({"status": "rebooting"})
-        elif action == "sleep":
-            await self._broadcast_power("Going to sleep. Wake me when you need me.")
-            asyncio.get_event_loop().call_later(2, lambda: subprocess.Popen(["sudo", "systemctl", "hybrid-sleep"]))
-            return web.json_response({"status": "sleeping"})
+        from brain.agent.system_agents import SystemAgent
+
+        actions = {
+            "shutdown":  ("Shutting down. Goodbye, Ulrich.", SystemAgent.shutdown),
+            "reboot":    ("Rebooting. I'll be right back.", SystemAgent.reboot),
+            "sleep":     ("Going to sleep. Wake me when you need me.", SystemAgent.hybrid_sleep),
+            "hibernate": ("Hibernating. Wake me when you need me.", SystemAgent.hibernate),
+            "suspend":   ("Suspending. Wake me when you need me.", SystemAgent.suspend),
+            "lock":      ("Screen locked.", SystemAgent.lock),
+        }
+
+        if action not in actions:
+            return web.json_response({"error": f"Unknown action: {action}"}, status=400)
+
+        message, fn = actions[action]
+        await self._broadcast_power(message)
+        # Delay destructive actions so TTS can play the farewell
+        if action in ("shutdown", "reboot", "sleep", "hibernate", "suspend"):
+            asyncio.get_event_loop().call_later(2, fn)
         else:
-            return web.json_response({"error": "unknown action"}, status=400)
+            fn()
+        return web.json_response({"status": action})
 
     async def _broadcast_power(self, message: str):
         """Notify all connected clients about a power event."""

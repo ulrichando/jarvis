@@ -335,6 +335,32 @@ class SystemAgent:
     def suspend() -> dict:
         return _run("sudo systemctl suspend")
 
+    @staticmethod
+    def hibernate() -> dict:
+        return _run("sudo systemctl hibernate")
+
+    @staticmethod
+    def hybrid_sleep() -> dict:
+        return _run("sudo systemctl hybrid-sleep")
+
+    @staticmethod
+    def lock() -> dict:
+        # Try common lock commands in order
+        for cmd in ["loginctl lock-session", "xdg-screensaver lock",
+                     f"DISPLAY={DISPLAY} xflock4", "gnome-screensaver-command -l"]:
+            result = _run(cmd)
+            if result.get("exit_code", 1) == 0:
+                return result
+        return {"exit_code": 1, "output": "No lock method available"}
+
+    @staticmethod
+    def scheduled_shutdown(minutes: int = 1) -> dict:
+        return _run(f"sudo shutdown -h +{minutes}")
+
+    @staticmethod
+    def cancel_shutdown() -> dict:
+        return _run("sudo shutdown -c")
+
 
 # ══════════════════════════════════════════════════════════════════════
 # NETWORK AGENT — connections, scanning, firewall
