@@ -82,17 +82,26 @@ class GroqReasoner:
         self.session_calls = 0
 
     def _track_usage(self, usage: dict, model: str = ""):
-        """Track token usage and calculate cost."""
+        """Track token usage and calculate cost with cache savings."""
         inp = usage.get("input", 0)
         out = usage.get("output", 0)
+        cache_read = usage.get("cache_read", 0)
+        cache_creation = usage.get("cache_creation", 0)
         self.session_input_tokens += inp
         self.session_output_tokens += out
         self.session_calls += 1
 
-        # Calculate cost
+        # Calculate cost — cached reads are 90% cheaper
         model_key = model.split(":")[0] if ":" in model else model
         costs = self.MODEL_COSTS.get(model_key, {"input": 1.0, "output": 5.0})
-        cost = (inp * costs["input"] + out * costs["output"]) / 1_000_000
+        # Non-cached input + cache reads at 10% + cache creation at 125% + output
+        uncached_input = max(0, inp - cache_read - cache_creation)
+        cost = (
+            uncached_input * costs["input"] +
+            cache_read * costs["input"] * 0.1 +
+            cache_creation * costs["input"] * 1.25 +
+            out * costs["output"]
+        ) / 1_000_000
         self.session_cost_usd += cost
 
     @property

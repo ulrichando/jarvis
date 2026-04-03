@@ -701,10 +701,24 @@ async def main():
         menu_lines = 0
         selected = 0
 
+        def _prompt_len():
+            """Visible character length of the prompt prefix (❯ + space)."""
+            # mode_prefix has ANSI codes; strip them for width calc
+            import re
+            plain = re.sub(r'\x1b\[[0-9;]*m', '', mode_prefix)
+            return len(plain) + 2  # "❯ "
+
         def _redraw_input():
-            """Redraw the input line with current buffer."""
+            """Redraw the input line with current buffer, handling line wrap."""
             text = "".join(buf)
-            _write(f"\r{mode_prefix}{CYAN}❯{RESET} {text}\033[K")
+            # Calculate how many visual lines the old content spans
+            total_chars = _prompt_len() + len(text)
+            # How many wrapped lines the cursor is below the start
+            lines_down = total_chars // tw if tw > 0 else 0
+            # Move cursor up to the start of the input, then clear to end of screen
+            if lines_down > 0:
+                _write(f"\033[{lines_down}A")
+            _write(f"\r\033[J{mode_prefix}{CYAN}❯{RESET} {text}")
 
         MAX_VISIBLE = 10
 
@@ -1033,49 +1047,51 @@ async def main():
                     )
                     continue
 
-                # Dispatch through CommandRegistry
-                if client._is_full_brain and hasattr(brain, "dispatch_command"):
-                    result = await brain.dispatch_command(cmd_name, cmd_args, session_mgr=session_mgr)
-                else:
-                    try:
-                        from brain.commands import registry as cmd_registry
-                        from brain.commands.registry import CommandContext
-                        ctx = CommandContext(
-                            brain=brain if client._is_full_brain else None,
-                            session_mgr=session_mgr, raw_input=user_input,
-                            args=cmd_args, mode=brain.mode if client._is_full_brain else "normal",
-                        )
-                        result = await cmd_registry.dispatch(cmd_name, ctx)
-                    except Exception:
-                        result = None
+                # In server mode, forward commands to server via think_stream
+                if not client._server_mode:
+                    # Dispatch through CommandRegistry (local brain)
+                    if client._is_full_brain and hasattr(brain, "dispatch_command"):
+                        result = await brain.dispatch_command(cmd_name, cmd_args, session_mgr=session_mgr)
+                    else:
+                        try:
+                            from brain.commands import registry as cmd_registry
+                            from brain.commands.registry import CommandContext
+                            ctx = CommandContext(
+                                brain=brain if client._is_full_brain else None,
+                                session_mgr=session_mgr, raw_input=user_input,
+                                args=cmd_args, mode=brain.mode if client._is_full_brain else "normal",
+                            )
+                            result = await cmd_registry.dispatch(cmd_name, ctx)
+                        except Exception:
+                            result = None
 
-                if result is not None:
-                    if result.action == "exit":
-                        session_mgr.save_current()
-                        await client.close()
-                        session_mgr.close()
-                        _exit_alt_screen()
-                        print("Session saved. JARVIS offline.")
-                        return
-                    elif result.action == "clear":
-                        _redraw()
-                    elif result.text:
-                        _writeln()
-                        _writeln(result.text)
-                        _writeln()
-                else:
-                    # Unknown command — try fuzzy suggestion
-                    try:
-                        from brain.commands import registry as cmd_registry
-                        suggestions = cmd_registry.suggest(cmd_name, limit=3)
-                        if suggestions:
-                            names = ", ".join(f"/{s.name}" for s in suggestions)
-                            _writeln(f"  {DIM}Unknown command: /{cmd_name}. Did you mean: {names}?{RESET}")
-                        else:
-                            _writeln(f"  {DIM}Unknown command: /{cmd_name}. Type /help for commands.{RESET}")
-                    except Exception:
-                        _writeln(f"  {DIM}Unknown command: /{cmd_name}{RESET}")
-                continue
+                    if result is not None:
+                        if result.action == "exit":
+                            session_mgr.save_current()
+                            await client.close()
+                            session_mgr.close()
+                            _exit_alt_screen()
+                            print("Session saved. JARVIS offline.")
+                            return
+                        elif result.action == "clear":
+                            _redraw()
+                        elif result.text:
+                            _writeln()
+                            _writeln(result.text)
+                            _writeln()
+                    else:
+                        # Unknown command — try fuzzy suggestion
+                        try:
+                            from brain.commands import registry as cmd_registry
+                            suggestions = cmd_registry.suggest(cmd_name, limit=3)
+                            if suggestions:
+                                names = ", ".join(f"/{s.name}" for s in suggestions)
+                                _writeln(f"  {DIM}Unknown command: /{cmd_name}. Did you mean: {names}?{RESET}")
+                            else:
+                                _writeln(f"  {DIM}Unknown command: /{cmd_name}. Type /help for commands.{RESET}")
+                        except Exception:
+                            _writeln(f"  {DIM}Unknown command: /{cmd_name}{RESET}")
+                    continue
 
             # ═══ SHELL SHORTCUT: !command ═══
             if user_input.startswith("!"):

@@ -387,14 +387,22 @@ class ProviderRegistry:
 
         messages = self._build_anthropic_messages(history, user_input)
 
+        # Cached system prompt
+        system_blocks = [{
+            "type": "text",
+            "text": system_prompt,
+            "cache_control": {"type": "ephemeral"},
+        }] if system_prompt else None
+
         def _call():
             for model in [provider.model] + [m for m in (provider.models or []) if m != provider.model]:
                 try:
                     r = client.messages.create(
                         model=model, max_tokens=8192,
-                        system=system_prompt, messages=messages,
+                        system=system_blocks,
+                        messages=messages,
                     )
-                    provider.model = model  # Cache working model
+                    provider.model = model
                     for block in r.content:
                         if block.type == "text":
                             return block.text
@@ -414,17 +422,24 @@ class ProviderRegistry:
 
         messages = self._build_anthropic_messages(history, user_input)
 
+        # Cached system prompt
+        system_blocks = [{
+            "type": "text",
+            "text": system_prompt,
+            "cache_control": {"type": "ephemeral"},
+        }] if system_prompt else None
+
         def _stream():
             for model in [provider.model] + [m for m in (provider.models or []) if m != provider.model]:
                 try:
                     with client.messages.stream(
                         model=model, max_tokens=8192,
-                        system=system_prompt, messages=messages,
+                        system=system_blocks, messages=messages,
                     ) as stream:
                         provider.model = model
                         for text in stream.text_stream:
                             yield text
-                    return  # Success — don't try next model
+                    return
                 except Exception:
                     continue
 
@@ -508,37 +523,69 @@ class ProviderRegistry:
                 "input_schema": func.get("parameters", {}),
             })
 
-        # Convert OpenAI-format messages to Anthropic format
         claude_messages = self._convert_messages_for_anthropic(messages, system)
 
-        # Reinforce personality at end of system prompt (Claude sees this last)
-        enhanced_system = system + (
-            "\n\nCRITICAL REMINDER: You are JARVIS, NOT Claude, NOT an Anthropic assistant. "
-            "NEVER say 'I'm Claude' or mention Anthropic. You are JARVIS, built by Ulrich. "
-            "Be direct and brief. No emoji. No capability lists. "
-            "Match the user's energy — casual in = casual out."
-        ) if system else ""
+        # System prompt as array with caching (90% cost savings on repeated calls)
+        system_blocks = []
+        if system:
+            system_blocks.append({
+                "type": "text",
+                "text": system,
+                "cache_control": {"type": "ephemeral"},  # 5-min cache TTL
+            })
+            # Identity reinforcement (uncached — changes aren't expected but keeps it fresh)
+            system_blocks.append({
+                "type": "text",
+                "text": (
+                    "CRITICAL REMINDER: You are JARVIS, NOT Claude, NOT an Anthropic assistant. "
+                    "NEVER say 'I'm Claude' or mention Anthropic. You are JARVIS, built by Ulrich. "
+                    "Be direct and brief. No emoji. No capability lists. "
+                    "Match the user's energy — casual in = casual out."
+                ),
+            })
+
+        # Cache tool definitions too (they don't change between calls)
+        if claude_tools:
+            claude_tools[-1]["cache_control"] = {"type": "ephemeral"}
 
         def _call():
             for model in [provider.model] + [m for m in (provider.models or []) if m != provider.model]:
                 try:
-                    r = client.messages.create(
-                        model=model, max_tokens=8192,
-                        system=enhanced_system,
-                        messages=claude_messages,
-                        tools=claude_tools if claude_tools else None,
-                    )
+                    # Build kwargs
+                    kwargs = {
+                        "model": model,
+                        "max_tokens": 8192,
+                        "system": system_blocks if system_blocks else None,
+                        "messages": claude_messages,
+                    }
+                    if claude_tools:
+                        kwargs["tools"] = claude_tools
+
+                    # Extended thinking for complex tasks (Opus/Sonnet 4.x)
+                    if any(m in model for m in ["opus-4", "sonnet-4"]):
+                        kwargs["thinking"] = {"type": "adaptive"}
+
+                    r = client.messages.create(**kwargs)
                     provider.model = model
-                    text, tool_calls = "", []
+
+                    text, tool_calls, thinking = "", [], ""
                     for block in r.content:
                         if block.type == "text":
                             text += block.text
                         elif block.type == "tool_use":
                             tool_calls.append({"id": block.id, "name": block.name, "args": block.input})
+                        elif block.type == "thinking":
+                            thinking += block.thinking
+
                     usage = {}
                     if hasattr(r, 'usage') and r.usage:
-                        usage = {"input": r.usage.input_tokens, "output": r.usage.output_tokens}
-                    return {"text": text, "tool_calls": tool_calls, "usage": usage}
+                        usage = {
+                            "input": r.usage.input_tokens,
+                            "output": r.usage.output_tokens,
+                            "cache_read": getattr(r.usage, 'cache_read_input_tokens', 0),
+                            "cache_creation": getattr(r.usage, 'cache_creation_input_tokens', 0),
+                        }
+                    return {"text": text, "tool_calls": tool_calls, "usage": usage, "thinking": thinking}
                 except Exception as e:
                     import logging
                     logging.getLogger("jarvis.providers").debug("Anthropic tools error (%s): %s", model, e)
