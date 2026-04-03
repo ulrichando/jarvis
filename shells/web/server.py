@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import time
 import io
 from pathlib import Path
@@ -10,8 +11,8 @@ import numpy as np
 import edge_tts
 from aiohttp import web
 
-# CogScript autonomous brain — no LLM dependency
-from brain.cogscript.brain_adapter import CogScriptBrain as Brain
+# Full JARVIS Brain with Claude API, agent loop, tools
+from brain.main import Brain
 from brain.speech.composer import compose_chunks
 from brain.speech.stt import transcribe_audio, audio_bytes_to_numpy
 
@@ -29,7 +30,7 @@ TTS_VOICE = "en-US-AndrewMultilingualNeural"
 class JarvisWebServer:
 
     def __init__(self):
-        self.brain = Brain()
+        self.brain = Brain(quiet=True)
         self.clients: set[web.WebSocketResponse] = set()
 
     async def tts_handler(self, request: web.Request) -> web.StreamResponse:
@@ -434,7 +435,6 @@ class JarvisWebServer:
     @staticmethod
     def _clean_for_speech(text: str) -> str:
         """Strip everything that shouldn't be spoken aloud."""
-        import re
         t = text
         # Remove display/command tags
         t = re.sub(r'\[show:\w+\]', '', t)
