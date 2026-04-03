@@ -64,6 +64,26 @@ def _wait_for_server(host="127.0.0.1", port=8765, timeout=15):
     return False
 
 
+import json as _json
+
+DESKTOP_CONFIG = os.path.expanduser("~/.jarvis/desktop.json")
+
+def _load_desktop_config():
+    try:
+        if os.path.exists(DESKTOP_CONFIG):
+            return _json.loads(open(DESKTOP_CONFIG).read())
+    except Exception:
+        pass
+    return {"width": 700, "height": 700, "x": -1, "y": -1, "opacity": 1.0}
+
+def _save_desktop_config(config):
+    try:
+        os.makedirs(os.path.dirname(DESKTOP_CONFIG), exist_ok=True)
+        open(DESKTOP_CONFIG, "w").write(_json.dumps(config, indent=2))
+    except Exception:
+        pass
+
+
 def main():
     host = "127.0.0.1"
     port = 8765
@@ -76,18 +96,22 @@ def main():
             print("Failed to start server.")
             sys.exit(1)
 
-    # ── Window ──
+    # ── Window (load saved size/position) ──
+    _cfg = _load_desktop_config()
+
     window = Gtk.Window()
     window.set_title("J.A.R.V.I.S.")
-    window.set_default_size(700, 700)
+    window.set_default_size(_cfg.get("width", 700), _cfg.get("height", 700))
     window.set_decorated(False)
     window.set_app_paintable(True)
     window.set_resizable(False)
     window.set_keep_above(True)
     window.set_type_hint(Gdk.WindowTypeHint.UTILITY)
 
-    # Position center of screen
-    window.set_position(Gtk.WindowPosition.CENTER)
+    if _cfg.get("x", -1) >= 0 and _cfg.get("y", -1) >= 0:
+        window.move(_cfg["x"], _cfg["y"])
+    else:
+        window.set_position(Gtk.WindowPosition.CENTER)
     screen = Gdk.Screen.get_default()
 
     # Transparency
@@ -182,6 +206,10 @@ def main():
 
     def on_button_release(widget, event):
         _drag["active"] = False
+        # Save position after drag
+        x, y = window.get_position()
+        _cfg.update({"x": x, "y": y})
+        _save_desktop_config(_cfg)
 
     def on_motion(widget, event):
         if _drag["active"]:
@@ -285,11 +313,19 @@ def main():
 
         menu.append(Gtk.SeparatorMenuItem())
 
+        def _save_state():
+            """Save current window state to config."""
+            x, y = window.get_position()
+            _cfg.update({"width": _size["w"], "height": _size["h"], "x": x, "y": y,
+                         "opacity": window.get_opacity()})
+            _save_desktop_config(_cfg)
+
         item_bigger = Gtk.MenuItem(label="Bigger")
         def _bigger(w):
             _size["w"] = min(1200, _size["w"] + 100)
             _size["h"] = min(1200, _size["h"] + 100)
             window.resize(_size["w"], _size["h"])
+            _save_state()
         item_bigger.connect("activate", _bigger)
         menu.append(item_bigger)
 
@@ -298,21 +334,31 @@ def main():
             _size["w"] = max(200, _size["w"] - 100)
             _size["h"] = max(200, _size["h"] - 100)
             window.resize(_size["w"], _size["h"])
+            _save_state()
         item_smaller.connect("activate", _smaller)
         menu.append(item_smaller)
 
         item_center = Gtk.MenuItem(label="Center on Screen")
-        item_center.connect("activate", lambda w: window.set_position(Gtk.WindowPosition.CENTER))
+        def _center(w):
+            window.set_position(Gtk.WindowPosition.CENTER)
+            GLib.timeout_add(200, _save_state)  # Save after GTK repositions
+        item_center.connect("activate", _center)
         menu.append(item_center)
 
         menu.append(Gtk.SeparatorMenuItem())
 
         item_opacity_up = Gtk.MenuItem(label="More Opaque")
-        item_opacity_up.connect("activate", lambda w: window.set_opacity(min(1.0, window.get_opacity() + 0.2)))
+        def _more_opaque(w):
+            window.set_opacity(min(1.0, window.get_opacity() + 0.2))
+            _save_state()
+        item_opacity_up.connect("activate", _more_opaque)
         menu.append(item_opacity_up)
 
         item_opacity_down = Gtk.MenuItem(label="More Transparent")
-        item_opacity_down.connect("activate", lambda w: window.set_opacity(max(0.1, window.get_opacity() - 0.2)))
+        def _more_transparent(w):
+            window.set_opacity(max(0.1, window.get_opacity() - 0.2))
+            _save_state()
+        item_opacity_down.connect("activate", _more_transparent)
         menu.append(item_opacity_down)
 
         menu.append(Gtk.SeparatorMenuItem())
@@ -389,7 +435,11 @@ def main():
     window.connect("map-event", _enable_click_through_on_map)
 
     # ── Show ──
-    _size = {"w": 700, "h": 700}
+    _size = {"w": _cfg.get("width", 700), "h": _cfg.get("height", 700)}
+
+    # Apply saved opacity
+    if _cfg.get("opacity", 1.0) < 1.0:
+        window.set_opacity(_cfg["opacity"])
     window.show_all()
     print("JARVIS desktop running.")
     print("  Tray icon in system tray")
