@@ -278,9 +278,5 @@ def load_common_sense_to_reasoning(reasoning_engine) -> int:
 
     This enables inference: "is a dog a pet?" → dog is_a pet (via common sense)
     """
-    from cogscript.subsystems.reasoning_engine import Fact
-    loaded = 0
-    for subject, relation, obj in COMMON_SENSE:
-        reasoning_engine.kb.assert_fact(Fact(subject, relation, obj, confidence=0.85))
-        loaded += 1
-    return loaded
+    # Legacy CogScript integration removed — common sense now loaded via holographic memory
+    return 0
