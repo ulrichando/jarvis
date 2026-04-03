@@ -103,8 +103,8 @@ function App() {
       setReactorState('thinking')
     }
 
-    // Play TTS when JARVIS responds
-    if (last.type === 'message' && last.spoken && last.spoken.length > 3) {
+    // Play TTS — only for the FINAL message (skip partial to avoid double voice)
+    if (last.type === 'message' && last.spoken && last.spoken.length > 3 && !last.partial) {
       stopSpeaking()
       setReactorState('speaking')
 
