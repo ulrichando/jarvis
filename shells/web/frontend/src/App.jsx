@@ -98,18 +98,15 @@ function App() {
     }
   }, [wsMessages])
 
-  // Mic audio level for reactor pulse + voice capture for STT
+  // Voice: Browser SpeechRecognition (instant) + mic level for reactor pulse
   useEffect(() => {
     let animFrame
     let analyser
     let dataArray
     let stream
-    let mediaRecorder = null
-    let silenceTimer = null
-    let isRecording = false
-    let audioChunks = []
 
-    async function startMic() {
+    // 1. Mic level for reactor visual
+    async function startMicLevel() {
       try {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true })
         const ctx = new AudioContext()
@@ -119,72 +116,52 @@ function App() {
         source.connect(analyser)
         dataArray = new Uint8Array(analyser.frequencyBinCount)
 
-        // Voice Activity Detection: auto-record when speech detected
-        const SPEECH_THRESHOLD = 0.06
-        const SILENCE_TIMEOUT = 600 // ms of silence before sending
-
         function update() {
           analyser.getByteFrequencyData(dataArray)
           const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length / 255
           setAudioLevel(avg)
-
-          // Start recording when speech detected
-          if (avg > SPEECH_THRESHOLD && !isRecording && mediaRecorder?.state !== 'recording') {
-            audioChunks = []
-            mediaRecorder?.start()
-            isRecording = true
-            clearTimeout(silenceTimer)
-          }
-
-          // Stop after silence
-          if (avg < SPEECH_THRESHOLD * 0.5 && isRecording) {
-            clearTimeout(silenceTimer)
-            silenceTimer = setTimeout(() => {
-              if (mediaRecorder?.state === 'recording') {
-                mediaRecorder.stop()
-                isRecording = false
-              }
-            }, SILENCE_TIMEOUT)
-          }
-
           animFrame = requestAnimationFrame(update)
         }
+        update()
+      } catch (e) {}
+    }
 
-        // Setup MediaRecorder for capturing speech
-        mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' })
-        mediaRecorder.ondataavailable = (e) => {
-          if (e.data.size > 0) audioChunks.push(e.data)
-        }
-        mediaRecorder.onstop = async () => {
-          const blob = new Blob(audioChunks, { type: 'audio/webm' })
-          if (blob.size < 3000) return // Too short, ignore
+    // 2. Browser Speech Recognition (instant, no server round-trip)
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+    let recognition = null
 
-          // Send audio as binary through a quick fetch to the transcribe endpoint
-          try {
+    if (SpeechRecognition) {
+      recognition = new SpeechRecognition()
+      recognition.continuous = true
+      recognition.interimResults = false
+      recognition.lang = 'en-US'
+
+      recognition.onresult = (event) => {
+        const last = event.results[event.results.length - 1]
+        if (last.isFinal) {
+          const text = last[0].transcript.trim()
+          if (text && text.length > 1) {
             setReactorState('thinking')
-            const formData = new FormData()
-            formData.append('audio', blob, 'speech.webm')
-            const resp = await fetch('http://localhost:8765/api/transcribe', {
-              method: 'POST', body: formData,
-            })
-            const data = await resp.json()
-            if (data.text && data.text.trim()) {
-              // Got transcription — send as query via existing WebSocket
-              sendMessage({ type: 'query', text: data.text })
-            } else {
-              setReactorState('idle')
-            }
-          } catch (e) {
-            setReactorState('idle')
+            sendMessage({ type: 'query', text: text })
           }
         }
-
-        update()
-      } catch (e) {
-        // Mic not available — that's fine
       }
+
+      recognition.onerror = (e) => {
+        if (e.error !== 'no-speech') {
+          console.log('Speech error:', e.error)
+        }
+      }
+
+      recognition.onend = () => {
+        // Auto-restart — always listening
+        try { recognition.start() } catch {}
+      }
+
+      try { recognition.start() } catch {}
     }
-    startMic()
+
+    startMicLevel()
 
     return () => {
       if (animFrame) cancelAnimationFrame(animFrame)
