@@ -107,6 +107,7 @@ function App() {
     if (last.type === 'message' && last.spoken && last.spoken.length > 3 && !last.partial) {
       stopSpeaking()
       setReactorState('speaking')
+      document.dispatchEvent(new CustomEvent('jarvis-tts-start'))
 
       if ('speechSynthesis' in window) {
         const utterance = new SpeechSynthesisUtterance(last.spoken.substring(0, 500))
@@ -118,16 +119,16 @@ function App() {
           v.name.includes('Daniel') || v.name.includes('Google UK English Male')
         ) || voices.find(v => v.lang.startsWith('en')) || voices[0]
         if (preferred) utterance.voice = preferred
-        utterance.onend = () => setReactorState('idle')
-        utterance.onerror = () => setReactorState('idle')
+        utterance.onend = () => { setReactorState('idle'); document.dispatchEvent(new CustomEvent('jarvis-tts-end')) }
+        utterance.onerror = () => { setReactorState('idle'); document.dispatchEvent(new CustomEvent('jarvis-tts-end')) }
         window.speechSynthesis.speak(utterance)
       } else {
         const ttsUrl = `http://localhost:8765/api/tts?text=${encodeURIComponent(last.spoken.substring(0, 300))}`
         const audio = new Audio(ttsUrl)
         audioRef.current = audio
         audio.play().then(() => {
-          audio.onended = () => { audioRef.current = null; setReactorState('idle') }
-        }).catch(() => { audioRef.current = null; setReactorState('idle') })
+          audio.onended = () => { audioRef.current = null; setReactorState('idle'); document.dispatchEvent(new CustomEvent('jarvis-tts-end')) }
+        }).catch(() => { audioRef.current = null; setReactorState('idle'); document.dispatchEvent(new CustomEvent('jarvis-tts-end')) })
       }
     }
 
@@ -212,20 +213,30 @@ function App() {
           } catch { setReactorState('idle') }
         }
 
-        // VAD: start/stop recording based on audio level + interrupt TTS
+        // VAD: start/stop recording + interrupt TTS when user speaks
+        let isSpeakingTTS = false
+        document.addEventListener('jarvis-tts-start', () => { isSpeakingTTS = true })
+        document.addEventListener('jarvis-tts-end', () => { isSpeakingTTS = false })
+
         function checkVoice() {
           if (!analyser) return
           analyser.getByteFrequencyData(dataArray)
           const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length / 255
-          if (avg > 0.06 && !recording) {
-            // User started speaking — interrupt JARVIS if he's talking
+
+          // Higher threshold when TTS is playing (ignore JARVIS's own voice from speakers)
+          const threshold = isSpeakingTTS ? 0.15 : 0.06
+          const silenceThreshold = isSpeakingTTS ? 0.08 : 0.03
+
+          if (avg > threshold && !recording) {
+            // User started speaking — STOP JARVIS immediately
+            if ('speechSynthesis' in window) window.speechSynthesis.cancel()
             document.dispatchEvent(new CustomEvent('user-speaking'))
             chunks = []
             try { mediaRecorder.start() } catch {}
             recording = true
             clearTimeout(silenceTimer)
           }
-          if (avg < 0.03 && recording) {
+          if (avg < silenceThreshold && recording) {
             clearTimeout(silenceTimer)
             silenceTimer = setTimeout(() => {
               try { mediaRecorder.stop() } catch {}
