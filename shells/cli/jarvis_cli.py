@@ -236,6 +236,7 @@ class StandaloneBrain:
                 async with session.get(f"{self._server_url}/api/mesh/ping", timeout=aiohttp.ClientTimeout(total=2)) as resp:
                     if resp.status == 200:
                         self._server_mode = True
+                        self._is_full_brain = False
                         # Connect WebSocket for streaming
                         self._session = aiohttp.ClientSession()
                         self._ws = await self._session.ws_connect(self._ws_url)

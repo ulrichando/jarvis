@@ -337,9 +337,20 @@ class Brain:
             self._log(user_input, r, start, "terminal")
             return r
 
-        # 4. Slash command skills (/scan, /recon, /explain, etc.)
+        # 4. Slash commands: registry first, then skills
         if user_input.startswith("/"):
-            skill_name = user_input.split()[0].lstrip("/")
+            parts = user_input[1:].split(None, 1)
+            cmd_name = parts[0] if parts else ""
+            cmd_args = parts[1] if len(parts) > 1 else ""
+
+            # Try registry commands (/model, /status, /help, etc.)
+            result = await self.dispatch_command(cmd_name, cmd_args)
+            if result is not None:
+                self._log(user_input, result.text, start, "command")
+                return result.text
+
+            # Try skill commands (/scan, /recon, /explain, etc.)
+            skill_name = cmd_name
             skill = self.skills.get(skill_name)
             if skill and skill.user_invocable:
                 args = user_input[len(skill_name) + 1:].strip()
@@ -535,9 +546,22 @@ class Brain:
             yield {"type": "done", "content": r}
             return
 
-        # Skill slash commands
+        # Slash commands: registry first, then skills
         if user_input.startswith("/"):
-            skill_name = user_input.split()[0].lstrip("/")
+            parts = user_input[1:].split(None, 1)
+            cmd_name = parts[0] if parts else ""
+            cmd_args = parts[1] if len(parts) > 1 else ""
+
+            # Try registry commands (/model, /status, /help, etc.)
+            result = await self.dispatch_command(cmd_name, cmd_args)
+            if result is not None:
+                self._log(user_input, result.text, start, "command")
+                yield {"type": "text", "content": result.text}
+                yield {"type": "done", "content": result.text}
+                return
+
+            # Try skill commands (/scan, /recon, /explain, etc.)
+            skill_name = cmd_name
             skill = self.skills.get(skill_name)
             if skill and skill.user_invocable:
                 args = user_input[len(skill_name) + 1:].strip()

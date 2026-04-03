@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import useWebSocket from './hooks/useWebSocket'
 import ArcReactor from './components/ArcReactor'
 import HudPanel from './components/HudPanel'
@@ -73,24 +73,24 @@ function App() {
     }
   }, [])
 
-  // TTS playback with interrupt support
-  const [currentAudio, setCurrentAudio] = useState(null)
+  // TTS playback with interrupt — global stop function
+  const audioRef = React.useRef(null)
 
-  // Stop TTS when user starts speaking (interrupt)
   const stopSpeaking = useCallback(() => {
-    if (currentAudio) {
-      currentAudio.pause()
-      currentAudio.currentTime = 0
-      setCurrentAudio(null)
-      setReactorState('idle')
+    // Stop browser TTS
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel()
+    // Stop audio element
+    if (audioRef.current) {
+      try { audioRef.current.pause() } catch {}
+      audioRef.current = null
     }
-  }, [currentAudio])
+    setReactorState('idle')
+  }, [])
 
   // Listen for user-speaking event from voice detection
   useEffect(() => {
-    const handler = () => stopSpeaking()
-    document.addEventListener('user-speaking', handler)
-    return () => document.removeEventListener('user-speaking', handler)
+    document.addEventListener('user-speaking', stopSpeaking)
+    return () => document.removeEventListener('user-speaking', stopSpeaking)
   }, [stopSpeaking])
 
   // Handle incoming WebSocket messages — play TTS for voice responses
@@ -99,57 +99,35 @@ function App() {
     const last = wsMessages[wsMessages.length - 1]
 
     if (last.type === 'status' && last.status === 'thinking') {
-      stopSpeaking() // Stop any current TTS
+      stopSpeaking()
       setReactorState('thinking')
     }
 
-    // Play TTS when JARVIS responds — use browser speechSynthesis (instant, no network)
+    // Play TTS when JARVIS responds
     if (last.type === 'message' && last.spoken && last.spoken.length > 3) {
       stopSpeaking()
       setReactorState('speaking')
 
       if ('speechSynthesis' in window) {
-        // Browser TTS — instant, no network round-trip
-        window.speechSynthesis.cancel() // Stop any previous
         const utterance = new SpeechSynthesisUtterance(last.spoken.substring(0, 500))
         utterance.rate = 1.05
         utterance.pitch = 0.95
-
-        // Try to pick a good voice
         const voices = window.speechSynthesis.getVoices()
         const preferred = voices.find(v =>
           v.name.includes('Andrew') || v.name.includes('David') ||
-          v.name.includes('Daniel') || v.name.includes('Male') ||
-          v.name.includes('Google UK English Male')
+          v.name.includes('Daniel') || v.name.includes('Google UK English Male')
         ) || voices.find(v => v.lang.startsWith('en')) || voices[0]
         if (preferred) utterance.voice = preferred
-
-        utterance.onend = () => {
-          setCurrentAudio(null)
-          setReactorState('idle')
-        }
-        utterance.onerror = () => {
-          setCurrentAudio(null)
-          setReactorState('idle')
-        }
-
-        // Store reference for interrupt
-        setCurrentAudio({ pause: () => window.speechSynthesis.cancel(), currentTime: 0 })
+        utterance.onend = () => setReactorState('idle')
+        utterance.onerror = () => setReactorState('idle')
         window.speechSynthesis.speak(utterance)
       } else {
-        // Fallback: Edge TTS via server (slower, 1s network)
         const ttsUrl = `http://localhost:8765/api/tts?text=${encodeURIComponent(last.spoken.substring(0, 300))}`
         const audio = new Audio(ttsUrl)
-        setCurrentAudio(audio)
+        audioRef.current = audio
         audio.play().then(() => {
-          audio.onended = () => {
-            setCurrentAudio(null)
-            setReactorState('idle')
-          }
-        }).catch(() => {
-          setCurrentAudio(null)
-          setReactorState('idle')
-        })
+          audio.onended = () => { audioRef.current = null; setReactorState('idle') }
+        }).catch(() => { audioRef.current = null; setReactorState('idle') })
       }
     }
 
