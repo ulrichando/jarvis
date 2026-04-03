@@ -583,9 +583,13 @@ class Brain:
             if memory_context:
                 system += f"\nMEMORY: {memory_context[:2000]}"
             # Inject screen context so JARVIS knows what user is looking at
-            screen_ctx = self.screen.get_context_for_llm()
-            if screen_ctx:
-                system += f"\nSCREEN: {screen_ctx[:1000]}"
+            # Only inject screen context when the user is asking about something visual/screen-related
+            _screen_words = ["screen", "see", "looking at", "what app", "window", "display",
+                             "show me", "what's open", "monitor", "watching", "visible"]
+            if any(w in user_input.lower() for w in _screen_words):
+                screen_ctx = self.screen.get_context_for_llm()
+                if screen_ctx:
+                    system += f"\nSCREEN: {screen_ctx[:1000]}"
             # Inject learned skills and reflections from past tasks
             skill_ctx = self.skill_library.get_context_for_task(user_input, max_skills=2)
             if skill_ctx:
