@@ -535,7 +535,27 @@ async def cmd_init(ctx: CommandContext) -> CommandResult:
     )
 
 
-@command("cost", description="Show real-time API cost tracking for this session",
+def _load_billing():
+    """Load persistent billing data."""
+    import json
+    billing_path = os.path.expanduser("~/.jarvis/billing.json")
+    if os.path.exists(billing_path):
+        try:
+            return json.loads(open(billing_path).read())
+        except Exception:
+            pass
+    return {"total_credit": 20.00, "total_used": 0, "remaining": 20.00}
+
+
+def _save_billing(data):
+    """Save billing data."""
+    import json
+    billing_path = os.path.expanduser("~/.jarvis/billing.json")
+    os.makedirs(os.path.dirname(billing_path), exist_ok=True)
+    open(billing_path, "w").write(json.dumps(data, indent=2))
+
+
+@command("cost", description="Show API cost — this session + total account usage",
          usage="/cost", category="core", permission=PermLevel.READ_ONLY)
 async def cmd_cost(ctx: CommandContext) -> CommandResult:
     brain = ctx.brain
@@ -545,53 +565,124 @@ async def cmd_cost(ctx: CommandContext) -> CommandResult:
     inp = stats.get("input_tokens", 0)
     out = stats.get("output_tokens", 0)
     total = inp + out
-    cost = stats.get("cost_usd", 0)
+    session_cost = stats.get("cost_usd", 0)
     calls = stats.get("calls", 0)
     model = stats.get("model", "unknown")
-    budget = getattr(brain, '_cost_budget', None)
+
+    # Load persistent billing
+    billing = _load_billing()
+    account_used = billing.get("total_used", 0)
+    account_credit = billing.get("total_credit", 20.00)
+    account_remaining = billing.get("remaining", account_credit - account_used)
+
+    # Update billing with session cost
+    total_used = account_used + session_cost
+    remaining = account_credit - total_used
+    pct = min(100, int(total_used / account_credit * 100)) if account_credit > 0 else 0
+    bar_filled = pct // 5
+    bar_empty = 20 - bar_filled
+    bar = "\u2588" * bar_filled + "\u2591" * bar_empty
 
     lines = [
-        "Session Cost",
-        "=" * 35,
+        "JARVIS Cost Dashboard",
+        "=" * 40,
+        "",
+        "  This Session",
+        "  " + "-" * 30,
         f"  Model:          {model}",
         f"  API calls:      {calls}",
         f"  Input tokens:   {inp:,}",
         f"  Output tokens:  {out:,}",
-        f"  Total tokens:   {total:,}",
-        f"  Cost:           ${cost:.4f}",
+        f"  Session cost:   ${session_cost:.4f}",
+        "",
+        "  Account",
+        "  " + "-" * 30,
+        f"  Total credit:   ${account_credit:.2f}",
+        f"  Total used:     ${total_used:.4f}",
+        f"  Remaining:      ${remaining:.4f}",
+        f"  Usage:          {bar} {pct}%",
     ]
+
+    if remaining < 1.0:
+        lines.append(f"  \u26a0 LOW BALANCE — consider adding credits")
+    if remaining <= 0:
+        lines.append(f"  \u26a0 BALANCE DEPLETED — JARVIS will stop making API calls")
+
+    budget = getattr(brain, '_cost_budget', None)
     if budget:
-        remaining = budget - cost
-        pct = min(100, int(cost / budget * 100)) if budget > 0 else 0
-        bar_filled = pct // 5
-        bar_empty = 20 - bar_filled
-        bar = "\u2588" * bar_filled + "\u2591" * bar_empty
-        lines.append(f"  Budget:         ${budget:.2f}")
-        lines.append(f"  Remaining:      ${remaining:.4f}")
-        lines.append(f"  Usage:          {bar} {pct}%")
-        if remaining <= 0:
-            lines.append(f"  \u26a0 BUDGET EXCEEDED")
-    else:
-        lines.append(f"  Budget:         none set (/budget <amount> to set)")
+        budget_remaining = budget - session_cost
+        lines.append(f"")
+        lines.append(f"  Session budget:  ${budget:.2f} (${budget_remaining:.4f} left)")
+
     return CommandResult(text="\n".join(lines))
 
 
-@command("budget", description="Set a cost budget limit for this session",
-         usage="/budget <amount_usd>", category="core", permission=PermLevel.STANDARD)
+@command("budget", description="Set session spending limit or update account balance",
+         usage="/budget <amount> | /budget credit <total> | /budget used <amount>",
+         category="core", permission=PermLevel.STANDARD)
 async def cmd_budget(ctx: CommandContext) -> CommandResult:
     brain = ctx.brain
     if not brain:
         return CommandResult(text="Brain not available", success=False)
-    arg = ctx.args.strip()
-    if not arg:
+    args = ctx.args.strip().split()
+
+    if not args:
+        billing = _load_billing()
         budget = getattr(brain, '_cost_budget', None)
+        lines = [f"Account: ${billing.get('remaining', 0):.2f} remaining of ${billing.get('total_credit', 0):.2f}"]
         if budget:
-            return CommandResult(text=f"Current budget: ${budget:.2f}\nUsed: ${brain.reasoner.usage_stats.get('cost_usd', 0):.4f}")
-        return CommandResult(text="No budget set. Usage: /budget 5.00")
+            lines.append(f"Session budget: ${budget:.2f}")
+        lines.append("")
+        lines.append("Usage:")
+        lines.append("  /budget 5.00          Set session spending limit")
+        lines.append("  /budget credit 20.00  Set total account credit")
+        lines.append("  /budget used 2.44     Set total amount already used")
+        lines.append("  /budget sync          Sync session cost to account")
+        return CommandResult(text="\n".join(lines))
+
+    if args[0] == "credit" and len(args) > 1:
+        try:
+            amount = float(args[1].replace("$", ""))
+            billing = _load_billing()
+            billing["total_credit"] = amount
+            billing["remaining"] = amount - billing.get("total_used", 0)
+            _save_billing(billing)
+            return CommandResult(text=f"Account credit set to ${amount:.2f}")
+        except ValueError:
+            return CommandResult(text="Usage: /budget credit 20.00", success=False)
+
+    if args[0] == "used" and len(args) > 1:
+        try:
+            amount = float(args[1].replace("$", ""))
+            billing = _load_billing()
+            billing["total_used"] = amount
+            billing["remaining"] = billing.get("total_credit", 20.0) - amount
+            import time as _t
+            billing["last_updated"] = _t.strftime("%Y-%m-%d")
+            _save_billing(billing)
+            return CommandResult(text=f"Account usage set to ${amount:.2f}\nRemaining: ${billing['remaining']:.2f}")
+        except ValueError:
+            return CommandResult(text="Usage: /budget used 2.44", success=False)
+
+    if args[0] == "sync":
+        billing = _load_billing()
+        session_cost = brain.reasoner.usage_stats.get("cost_usd", 0) if hasattr(brain, 'reasoner') else 0
+        billing["total_used"] = billing.get("total_used", 0) + session_cost
+        billing["remaining"] = billing.get("total_credit", 20.0) - billing["total_used"]
+        import time as _t
+        billing["last_updated"] = _t.strftime("%Y-%m-%d")
+        _save_billing(billing)
+        brain.reasoner.session_cost_usd = 0  # Reset session counter
+        brain.reasoner.session_input_tokens = 0
+        brain.reasoner.session_output_tokens = 0
+        brain.reasoner.session_calls = 0
+        return CommandResult(text=f"Synced. Total used: ${billing['total_used']:.4f}, Remaining: ${billing['remaining']:.4f}")
+
+    # Default: set session budget
     try:
-        amount = float(arg.replace("$", ""))
+        amount = float(args[0].replace("$", ""))
         brain._cost_budget = amount
-        return CommandResult(text=f"Budget set: ${amount:.2f}\nJARVIS will warn when approaching limit.")
+        return CommandResult(text=f"Session budget: ${amount:.2f}\nJARVIS stops when this session exceeds it.")
     except ValueError:
         return CommandResult(text="Usage: /budget 5.00", success=False)
 
