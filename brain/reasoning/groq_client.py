@@ -60,10 +60,51 @@ def _local_answer(user_input: str) -> str | None:
 class GroqReasoner:
     """Unified reasoner backed by ProviderRegistry."""
 
+    # Cost per million tokens by model (USD)
+    MODEL_COSTS = {
+        "claude-opus-4-6-20250514": {"input": 15.0, "output": 75.0},
+        "claude-sonnet-4-20250514": {"input": 3.0, "output": 15.0},
+        "claude-haiku-4-5-20251001": {"input": 0.80, "output": 4.0},
+        "gpt-4o": {"input": 2.50, "output": 10.0},
+        "gpt-4o-mini": {"input": 0.15, "output": 0.60},
+        "deepseek-chat": {"input": 0.27, "output": 1.10},
+        "deepseek-reasoner": {"input": 0.55, "output": 2.19},
+    }
+
     def __init__(self):
         self.providers = ProviderRegistry()
         self._active_model = "none"
         self._last_latency_ms = 0
+        # Session cost tracking
+        self.session_input_tokens = 0
+        self.session_output_tokens = 0
+        self.session_cost_usd = 0.0
+        self.session_calls = 0
+
+    def _track_usage(self, usage: dict, model: str = ""):
+        """Track token usage and calculate cost."""
+        inp = usage.get("input", 0)
+        out = usage.get("output", 0)
+        self.session_input_tokens += inp
+        self.session_output_tokens += out
+        self.session_calls += 1
+
+        # Calculate cost
+        model_key = model.split(":")[0] if ":" in model else model
+        costs = self.MODEL_COSTS.get(model_key, {"input": 1.0, "output": 5.0})
+        cost = (inp * costs["input"] + out * costs["output"]) / 1_000_000
+        self.session_cost_usd += cost
+
+    @property
+    def usage_stats(self) -> dict:
+        return {
+            "input_tokens": self.session_input_tokens,
+            "output_tokens": self.session_output_tokens,
+            "total_tokens": self.session_input_tokens + self.session_output_tokens,
+            "cost_usd": round(self.session_cost_usd, 6),
+            "calls": self.session_calls,
+            "model": self._active_model,
+        }
 
     @property
     def model(self) -> str:
@@ -114,6 +155,9 @@ class GroqReasoner:
             log.error("Provider tool query failed: %s", e)
             raise
         self._active_model = provider_name
+        # Track usage
+        if result.get("usage"):
+            self._track_usage(result["usage"], provider_name)
         return result
 
     async def query_stream(

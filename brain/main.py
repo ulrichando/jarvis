@@ -559,6 +559,13 @@ class Brain:
         # Slash commands (/review, /troubleshoot, /deepsearch, /swarm) are still available
         # but natural language always goes to the agent loop or standard response
 
+        # Budget check — stop if over limit
+        budget = getattr(self, '_cost_budget', None)
+        if budget and self.reasoner.usage_stats.get("cost_usd", 0) >= budget:
+            yield {"type": "text", "content": "Budget limit reached. Use /budget to increase or /cost to check usage."}
+            yield {"type": "done", "content": ""}
+            return
+
         memory_context = self.memory.recall_as_context(user_input, top_k=1)
 
         # Check if this needs tools or is just conversation

@@ -535,26 +535,65 @@ async def cmd_init(ctx: CommandContext) -> CommandResult:
     )
 
 
-@command("cost", description="Show estimated token cost for this session",
+@command("cost", description="Show real-time API cost tracking for this session",
          usage="/cost", category="core", permission=PermLevel.READ_ONLY)
 async def cmd_cost(ctx: CommandContext) -> CommandResult:
     brain = ctx.brain
     if not brain:
         return CommandResult(text="Brain not available", success=False)
-    stats = {}
-    if hasattr(brain, 'reasoner') and hasattr(brain.reasoner, 'usage_stats'):
-        stats = brain.reasoner.usage_stats
-    input_tokens = stats.get("input_tokens", 0)
-    output_tokens = stats.get("output_tokens", 0)
-    # Rough cost estimate (varies by model)
-    cost = (input_tokens * 0.25 + output_tokens * 1.25) / 1_000_000
+    stats = brain.reasoner.usage_stats if hasattr(brain, 'reasoner') else {}
+    inp = stats.get("input_tokens", 0)
+    out = stats.get("output_tokens", 0)
+    total = inp + out
+    cost = stats.get("cost_usd", 0)
+    calls = stats.get("calls", 0)
+    model = stats.get("model", "unknown")
+    budget = getattr(brain, '_cost_budget', None)
+
     lines = [
-        "Session Cost Estimate",
-        f"  Input tokens:  {input_tokens:,}",
-        f"  Output tokens: {output_tokens:,}",
-        f"  Est. cost:     ${cost:.4f}",
+        "Session Cost",
+        "=" * 35,
+        f"  Model:          {model}",
+        f"  API calls:      {calls}",
+        f"  Input tokens:   {inp:,}",
+        f"  Output tokens:  {out:,}",
+        f"  Total tokens:   {total:,}",
+        f"  Cost:           ${cost:.4f}",
     ]
+    if budget:
+        remaining = budget - cost
+        pct = min(100, int(cost / budget * 100)) if budget > 0 else 0
+        bar_filled = pct // 5
+        bar_empty = 20 - bar_filled
+        bar = "\u2588" * bar_filled + "\u2591" * bar_empty
+        lines.append(f"  Budget:         ${budget:.2f}")
+        lines.append(f"  Remaining:      ${remaining:.4f}")
+        lines.append(f"  Usage:          {bar} {pct}%")
+        if remaining <= 0:
+            lines.append(f"  \u26a0 BUDGET EXCEEDED")
+    else:
+        lines.append(f"  Budget:         none set (/budget <amount> to set)")
     return CommandResult(text="\n".join(lines))
+
+
+@command("budget", description="Set a cost budget limit for this session",
+         usage="/budget <amount_usd>", category="core", permission=PermLevel.STANDARD)
+async def cmd_budget(ctx: CommandContext) -> CommandResult:
+    brain = ctx.brain
+    if not brain:
+        return CommandResult(text="Brain not available", success=False)
+    arg = ctx.args.strip()
+    if not arg:
+        budget = getattr(brain, '_cost_budget', None)
+        if budget:
+            return CommandResult(text=f"Current budget: ${budget:.2f}\nUsed: ${brain.reasoner.usage_stats.get('cost_usd', 0):.4f}")
+        return CommandResult(text="No budget set. Usage: /budget 5.00")
+    try:
+        amount = float(arg.replace("$", ""))
+        brain._cost_budget = amount
+        return CommandResult(text=f"Budget set: ${amount:.2f}\nJARVIS will warn when approaching limit.")
+    except ValueError:
+        return CommandResult(text="Usage: /budget 5.00", success=False)
 
 
 # ── Claude Code-style commands ──────────────────────────────────────
