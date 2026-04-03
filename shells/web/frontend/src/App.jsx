@@ -95,8 +95,8 @@ function App() {
         dataArray = new Uint8Array(analyser.frequencyBinCount)
 
         // Voice Activity Detection: auto-record when speech detected
-        const SPEECH_THRESHOLD = 0.08
-        const SILENCE_TIMEOUT = 1500 // ms of silence before sending
+        const SPEECH_THRESHOLD = 0.06
+        const SILENCE_TIMEOUT = 600 // ms of silence before sending
 
         function update() {
           analyser.getByteFrequencyData(dataArray)
