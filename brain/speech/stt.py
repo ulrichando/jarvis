@@ -13,14 +13,19 @@ _whisper_model = None
 
 
 def _get_model():
-    """Lazy-load the Whisper model."""
+    """Lazy-load the Whisper model.
+
+    Force CPU to avoid CUDA OOM (GPU reserved for Ollama models).
+    CPU is fast enough for Whisper distil-medium with int8.
+    """
     global _whisper_model
     if _whisper_model is None:
         from faster_whisper import WhisperModel
         _whisper_model = WhisperModel(
             STT_MODEL,
-            device="auto",  # CUDA if available, else CPU
+            device="cpu",  # CPU — GPU reserved for Ollama
             compute_type="int8",
+            num_workers=2,
         )
     return _whisper_model
 

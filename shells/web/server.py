@@ -278,32 +278,51 @@ class JarvisWebServer:
         if hasattr(self.brain, 'think_stream'):
             try:
                 buffer = ""
-                async for token in self.brain.think_stream(text):
-                    buffer += token
-                    # Check if we have a complete first sentence to speak early
-                    if not first_sent and len(buffer) > 15:
-                        # Find first sentence boundary
-                        for delim in ['. ', '! ', '? ', '.\n', '!\n', '?\n']:
-                            idx = buffer.find(delim)
-                            if idx > 10:
-                                first_sentence = buffer[:idx + 1].strip()
-                                spoken = self._clean_for_speech(first_sentence)
-                                if spoken and len(spoken) > 5:
-                                    latency = int((time.time() - start) * 1000)
-                                    await ws.send_json({
-                                        "type": "message", "role": "jarvis",
-                                        "content": first_sentence,
-                                        "spoken": spoken,
-                                        "model": self.brain.reasoner.model,
-                                        "latency_ms": latency,
-                                        "voice_style": self._get_voice_style(),
-                                        "partial": True,
-                                    })
-                                    first_sent = True
-                                break
+                async for event in self.brain.think_stream(text):
+                    etype = event.get("type", "") if isinstance(event, dict) else ""
+                    if etype == "text":
+                        chunk = event.get("content", "")
+                        buffer += chunk
+                        # Send chunk to frontend immediately for display
+                        await ws.send_json({
+                            "type": "stream", "content": chunk,
+                        })
+                        # Send first sentence early for TTS (speak while still generating)
+                        if not first_sent and len(buffer) > 15:
+                            for delim in ['. ', '! ', '? ', '.\n', '!\n', '?\n']:
+                                idx = buffer.find(delim)
+                                if idx > 10:
+                                    first_sentence = buffer[:idx + 1].strip()
+                                    spoken = self._clean_for_speech(first_sentence)
+                                    if spoken and len(spoken) > 5:
+                                        latency = int((time.time() - start) * 1000)
+                                        await ws.send_json({
+                                            "type": "message", "role": "jarvis",
+                                            "content": first_sentence,
+                                            "spoken": spoken,
+                                            "model": self.brain.reasoner.model,
+                                            "latency_ms": latency,
+                                            "voice_style": self._get_voice_style(),
+                                            "partial": True,
+                                        })
+                                        first_sent = True
+                                    break
+                    elif etype == "tool_call":
+                        await ws.send_json({
+                            "type": "tool_call",
+                            "name": event.get("name", ""),
+                            "args": event.get("args", {}),
+                        })
+                    elif etype == "tool_result":
+                        await ws.send_json({
+                            "type": "tool_result",
+                            "name": event.get("name", ""),
+                            "content": str(event.get("content", event.get("result", "")))[:500],
+                        })
+                    elif etype == "done":
+                        break
                 full_response = buffer
-            except Exception:
-                # Fallback to non-streaming
+            except Exception as e:
                 full_response = await self.brain.think(text)
         else:
             full_response = await self.brain.think(text)
