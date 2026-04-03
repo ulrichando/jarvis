@@ -341,7 +341,7 @@ class ProviderRegistry:
             {"type": "text", "text": prompt},
         ]}]
         def _call():
-            for model in provider.models or [provider.model]:
+            for model in [provider.model] + [m for m in (provider.models or []) if m != provider.model]:
                 try:
                     r = client.messages.create(
                         model=model, max_tokens=1024,
@@ -388,7 +388,7 @@ class ProviderRegistry:
         messages = self._build_anthropic_messages(history, user_input)
 
         def _call():
-            for model in provider.models or [provider.model]:
+            for model in [provider.model] + [m for m in (provider.models or []) if m != provider.model]:
                 try:
                     r = client.messages.create(
                         model=model, max_tokens=8192,
@@ -415,7 +415,7 @@ class ProviderRegistry:
         messages = self._build_anthropic_messages(history, user_input)
 
         def _stream():
-            for model in provider.models or [provider.model]:
+            for model in [provider.model] + [m for m in (provider.models or []) if m != provider.model]:
                 try:
                     with client.messages.stream(
                         model=model, max_tokens=8192,
@@ -519,7 +519,7 @@ class ProviderRegistry:
         ) if system else ""
 
         def _call():
-            for model in provider.models or [provider.model]:
+            for model in [provider.model] + [m for m in (provider.models or []) if m != provider.model]:
                 try:
                     r = client.messages.create(
                         model=model, max_tokens=8192,
