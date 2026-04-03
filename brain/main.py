@@ -127,6 +127,7 @@ class Brain:
         log.info("JARVIS Brain initializing...")
 
         self.memory = MemoryStore()
+        self.memory.mark_session_start()  # Only return history from this session
         self.reasoner = GroqReasoner()
         self.executor = CommandExecutor(safety_mode=False)
         self.telemetry = Telemetry()

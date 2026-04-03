@@ -108,12 +108,18 @@ class MemoryStore:
         )
         self.conn.commit()
 
+    def mark_session_start(self):
+        """Mark the start of a new CLI session. History only returns turns after this."""
+        self._session_start = time.time()
+
     def get_history(self, limit: int = 20) -> list[dict]:
-        """Get recent conversation history."""
+        """Get conversation history from the current session only."""
+        session_start = getattr(self, '_session_start', 0)
         rows = self.conn.execute(
             "SELECT role, content, timestamp FROM conversations "
+            "WHERE timestamp >= ? "
             "ORDER BY timestamp DESC LIMIT ?",
-            (limit,),
+            (session_start, limit),
         ).fetchall()
         return [dict(row) for row in reversed(rows)]
 
