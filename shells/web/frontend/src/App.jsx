@@ -98,15 +98,11 @@ function App() {
     }
   }, [wsMessages])
 
-  // Voice: Browser SpeechRecognition (instant) + mic level for reactor pulse
+  // Voice: SpeechRecognition (Chrome) or MediaRecorder+Whisper (WebKit/desktop)
   useEffect(() => {
-    let animFrame
-    let analyser
-    let dataArray
-    let stream
+    let animFrame, analyser, dataArray, stream
 
-    // 1. Mic level for reactor visual
-    async function startMicLevel() {
+    async function startVoice() {
       try {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true })
         const ctx = new AudioContext()
@@ -116,52 +112,91 @@ function App() {
         source.connect(analyser)
         dataArray = new Uint8Array(analyser.frequencyBinCount)
 
-        function update() {
+        // Mic level for reactor pulse
+        function updateLevel() {
           analyser.getByteFrequencyData(dataArray)
           const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length / 255
           setAudioLevel(avg)
-          animFrame = requestAnimationFrame(update)
+          animFrame = requestAnimationFrame(updateLevel)
         }
-        update()
-      } catch (e) {}
-    }
+        updateLevel()
 
-    // 2. Browser Speech Recognition (instant, no server round-trip)
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
-    let recognition = null
-
-    if (SpeechRecognition) {
-      recognition = new SpeechRecognition()
-      recognition.continuous = true
-      recognition.interimResults = false
-      recognition.lang = 'en-US'
-
-      recognition.onresult = (event) => {
-        const last = event.results[event.results.length - 1]
-        if (last.isFinal) {
-          const text = last[0].transcript.trim()
-          if (text && text.length > 1) {
-            setReactorState('thinking')
-            sendMessage({ type: 'query', text: text })
+        // Method 1: Browser SpeechRecognition (Chrome — instant)
+        const SR = window.SpeechRecognition || window.webkitSpeechRecognition
+        if (SR) {
+          const recognition = new SR()
+          recognition.continuous = true
+          recognition.interimResults = false
+          recognition.lang = 'en-US'
+          recognition.onresult = (event) => {
+            const last = event.results[event.results.length - 1]
+            if (last.isFinal) {
+              const text = last[0].transcript.trim()
+              if (text && text.length > 1) {
+                setReactorState('thinking')
+                sendMessage({ type: 'query', text: text })
+              }
+            }
           }
+          recognition.onend = () => { try { recognition.start() } catch {} }
+          recognition.onerror = () => {}
+          try { recognition.start() } catch {}
+          return // Using browser STT — done
         }
-      }
 
-      recognition.onerror = (e) => {
-        if (e.error !== 'no-speech') {
-          console.log('Speech error:', e.error)
+        // Method 2: MediaRecorder + server Whisper (WebKit/desktop fallback)
+        let mediaRecorder = new MediaRecorder(stream, {
+          mimeType: MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg'
+        })
+        let chunks = []
+        let recording = false
+        let silenceTimer = null
+
+        mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data) }
+        mediaRecorder.onstop = async () => {
+          const blob = new Blob(chunks, { type: mediaRecorder.mimeType })
+          chunks = []
+          if (blob.size < 2000) return
+          setReactorState('thinking')
+          try {
+            const form = new FormData()
+            form.append('audio', blob, 'speech.webm')
+            const resp = await fetch('/api/transcribe', { method: 'POST', body: form })
+            const data = await resp.json()
+            if (data.text && data.text.trim().length > 1) {
+              sendMessage({ type: 'query', text: data.text })
+            } else {
+              setReactorState('idle')
+            }
+          } catch { setReactorState('idle') }
         }
-      }
 
-      recognition.onend = () => {
-        // Auto-restart — always listening
-        try { recognition.start() } catch {}
-      }
+        // VAD: start/stop recording based on audio level
+        function checkVoice() {
+          if (!analyser) return
+          analyser.getByteFrequencyData(dataArray)
+          const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length / 255
+          if (avg > 0.06 && !recording) {
+            chunks = []
+            try { mediaRecorder.start() } catch {}
+            recording = true
+            clearTimeout(silenceTimer)
+          }
+          if (avg < 0.03 && recording) {
+            clearTimeout(silenceTimer)
+            silenceTimer = setTimeout(() => {
+              try { mediaRecorder.stop() } catch {}
+              recording = false
+            }, 500)
+          }
+          setTimeout(checkVoice, 100)
+        }
+        checkVoice()
 
-      try { recognition.start() } catch {}
+      } catch (e) { /* Mic not available */ }
     }
 
-    startMicLevel()
+    startVoice()
 
     return () => {
       if (animFrame) cancelAnimationFrame(animFrame)
