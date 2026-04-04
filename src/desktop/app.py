@@ -148,6 +148,15 @@ def main():
         return True
     webview.connect("permission-request", _on_permission_request)
 
+    # Log JS console messages for debugging
+    def _on_console_message(webview, message, line, source_id=None):
+        # WebKit2 4.1 console-message signal: (message_level, message_text, line, source_id)
+        print(f"[WebView JS] {message}")
+    try:
+        webview.get_settings().set_enable_write_console_messages_to_stdout(True)
+    except Exception:
+        pass
+
     # Force React UI (same as browser) with desktop param + cache bust
     import time as _time
     webview.load_uri(f"http://{host}:{port}/?desktop=1&_t={int(_time.time())}")
@@ -157,32 +166,7 @@ def main():
     ctx.get_website_data_manager().clear(WebKit2.WebsiteDataTypes.ALL, 0, None, None, None)
     window.add(webview)
 
-    # ── Server coordination — hide reactor when browser takes over ──
-    _reactor_visible = [True]
-
-    def _poll_client_status():
-        """Check if browser is active — if so, hide desktop reactor."""
-        try:
-            import urllib.request, json as _json
-            req = urllib.request.Request(
-                f"http://{host}:{port}/api/client/status",
-                headers={"Content-Type": "application/json"}
-            )
-            resp = urllib.request.urlopen(req, timeout=2)
-            data = _json.loads(resp.read())
-            browser_active = data.get("browser", False)
-
-            if browser_active and _reactor_visible[0]:
-                _reactor_visible[0] = False
-                GLib.idle_add(lambda: window.hide() or False)
-            elif not browser_active and not _reactor_visible[0]:
-                _reactor_visible[0] = True
-                GLib.idle_add(lambda: window.show_all() or False)
-        except Exception:
-            pass
-        return True  # Keep polling
-
-    # Register desktop with server
+    # ── Register desktop with server (exclusive mode — blocks browser) ──
     try:
         import urllib.request, json as _json
         data = _json.dumps({"type": "desktop"}).encode()
@@ -190,12 +174,14 @@ def main():
             f"http://{host}:{port}/api/client/register",
             data=data, headers={"Content-Type": "application/json"}
         )
-        urllib.request.urlopen(req, timeout=2)
+        resp = urllib.request.urlopen(req, timeout=2)
+        reg = _json.loads(resp.read())
+        if reg.get("blocked"):
+            print(f"JARVIS desktop blocked: {reg.get('reason', 'browser is active')}")
+            print("Close the browser tab first, then retry.")
+            sys.exit(0)
     except Exception:
         pass
-
-    # Poll every 2 seconds
-    GLib.timeout_add_seconds(2, _poll_client_status)
 
     # ── Dragging ──
     _drag = {"active": False, "x": 0, "y": 0}

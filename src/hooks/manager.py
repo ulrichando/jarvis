@@ -1,762 +1,338 @@
-"""JARVIS Hooks System — deterministic quality gates around tool execution.
+"""HooksManager — lifecycle hooks for tool execution, sessions, and events."""
 
-JARVIS hooks architecture with full event lifecycle:
+from __future__ import annotations
 
-Events:
-  PreToolUse         — Validate/block/modify tool calls before execution
-  PostToolUse        — Run quality checks after tool execution
-  PostToolUseFailure — React to tool execution failures
-  PermissionDenied   — Respond when a tool call is blocked by permissions
-  Notification       — React to system notifications
-  Stop               — Final verification before JARVIS considers task complete
-  SessionStart       — Run on session startup
-  SessionEnd         — Run on session teardown
-  SubagentStart      — When a sub-agent is spawned (blocking)
-  SubagentStop       — When a sub-agent finishes (blocking)
-  CwdChanged         — When working directory changes
-  FileChanged        — When a file is modified (post write/edit/delete)
-  ContextCompacted   — When context window is compacted
-
-Hooks are defined in:
-  ~/.jarvis/hooks.yaml        (user-level)
-  .jarvis/hooks.yaml          (project-level)
-  .jarvis/settings.json       (project-level, "hooks" key)
-  Skill frontmatter           (skill-scoped, temporary)
-
-Hook types:
-  command  — Run a shell command (exit 0=allow, 2=block, other=warn)
-  http     — POST event data to an HTTP endpoint
-  prompt   — Ask the LLM to evaluate (returns ok/not-ok)
-  agent    — Run as a sub-agent task (scout/worker/planner)
-
-Hook options:
-  async_       — Fire-and-forget, don't block execution
-  async_rewake — If async and exit code 2, wake the model
-  once         — Only run this hook once, then auto-disable
-"""
-
-import os
-import re
 import json
 import logging
+import os
+import re
 import subprocess
-import yaml
-from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Any
-from src.config import JARVIS_HOME
+from pathlib import Path
+from typing import Any, Optional
 
-log = logging.getLogger(__name__)
+log = logging.getLogger("jarvis.hooks")
 
-# All supported lifecycle events
 HOOK_EVENTS = (
-    "PreToolUse",
-    "PostToolUse",
-    "PostToolUseFailure",
-    "PermissionDenied",
-    "Notification",
-    "Stop",
-    "SessionStart",
-    "SessionEnd",
-    "SubagentStart",
-    "SubagentStop",
-    "CwdChanged",
-    "FileChanged",
-    "ContextCompacted",
+    "PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionDenied",
+    "Notification", "Stop", "SessionStart", "SessionEnd",
+    "SubagentStart", "SubagentStop", "CwdChanged", "FileChanged", "ContextCompacted",
 )
 
-# Events that can block the action
 BLOCKING_EVENTS = {"PreToolUse", "PermissionDenied", "Stop", "SubagentStart", "SubagentStop"}
 
-
-@dataclass
-class Hook:
-    """A single hook definition."""
-    type: str = "command"          # "command", "http", "prompt", or "agent"
-    command: str = ""              # Shell command to run
-    url: str = ""                  # HTTP endpoint (type=http)
-    prompt: str = ""               # LLM prompt for type=prompt
-    timeout: int = 30              # Timeout in seconds
-    matcher: str = ""              # Tool name regex (e.g. "Bash", "Edit|Write", "mcp__.*")
-    if_filter: str = ""            # Fine-grained filter: "Bash(git *)"
-    status_message: str = ""       # Status shown to user while hook runs
-    enabled: bool = True           # Toggle without removing
-    async_: bool = False           # If True, hook runs in background (fire-and-forget)
-    async_rewake: bool = False     # If True AND exit code is 2, wake the model
-    once: bool = False             # If True, only run this hook once then disable it
+_EVENT_ALIASES = {
+    "pre_tool_use": "PreToolUse", "pre_command": "PreToolUse",
+    "post_tool_use": "PostToolUse", "post_command": "PostToolUse",
+    "on_error": "PostToolUseFailure", "post_tool_use_failure": "PostToolUseFailure",
+    "permission_denied": "PermissionDenied", "notification": "Notification",
+    "stop": "Stop", "session_start": "SessionStart", "session_end": "SessionEnd",
+    "on_startup": "SessionStart", "on_shutdown": "SessionEnd",
+    "subagent_start": "SubagentStart", "subagent_stop": "SubagentStop",
+    "cwd_changed": "CwdChanged", "file_changed": "FileChanged",
+    "context_compacted": "ContextCompacted",
+}
 
 
 @dataclass
 class HookResult:
-    """Result of running a hook."""
     allowed: bool = True
     message: str = ""
-    modified_args: dict | None = None
-    additional_context: str = ""   # Extra context injected into LLM conversation
-    decision: str = ""             # "allow", "deny", "ask", "block"
-
-
-@dataclass
-class AggregatedHookResult:
-    """Aggregated result from running multiple hooks."""
-    results: list[HookResult] = field(default_factory=list)
-    final_allowed: bool = True           # Most restrictive wins
-    final_message: str = ""              # Combined messages
-    any_modified: bool = False           # Whether any hook modified args
-    modified_args: dict | None = None    # Last modification wins
+    modified_args: Optional[dict] = None
+    additional_context: str = ""
+    decision: str = ""
 
 
 @dataclass
 class HookConfig:
-    """All hooks for every lifecycle event."""
-    events: dict[str, list[dict]] = field(default_factory=lambda: {e: [] for e in HOOK_EVENTS})
+    events: dict[str, list[dict]] = field(
+        default_factory=lambda: {e: [] for e in HOOK_EVENTS}
+    )
 
 
 class HooksManager:
-    """Manages and executes hooks around tool calls and lifecycle events."""
 
     def __init__(self):
         self._config = HookConfig()
-        self._active_skill_hooks: dict = {}
-        self._runtime_hooks: list[dict] = []  # Added via /hook add
+        self._active_skill_hooks: dict[str, list[dict]] = {}
+        self._runtime_hooks: list[dict] = []
+        self.rules: list = []
 
-    def load(self):
-        """Load hooks from user config, project config, and settings.json."""
-        # User-level hooks.yaml
-        user_hooks = JARVIS_HOME / "hooks.yaml"
-        if user_hooks.exists():
-            self._merge_yaml(user_hooks)
-
-        # Project-level hooks.yaml
-        project_hooks = Path.cwd() / ".jarvis" / "hooks.yaml"
-        if project_hooks.exists():
-            self._merge_yaml(project_hooks)
-
-        # Project-level settings.json (hooks key)
-        settings = Path.cwd() / ".jarvis" / "settings.json"
+    def load(self) -> None:
+        for path in [Path.home() / ".jarvis" / "hooks.yaml", Path(".jarvis") / "hooks.yaml"]:
+            if path.exists():
+                self._load_yaml(path)
+        settings = Path(".jarvis") / "settings.json"
         if settings.exists():
-            self._merge_settings_json(settings)
+            try:
+                data = json.loads(settings.read_text())
+                for event in HOOK_EVENTS:
+                    entries = data.get("hooks", {}).get(event, [])
+                    if isinstance(entries, list):
+                        self._config.events[event].extend(entries)
+            except Exception:
+                pass
 
-    def _merge_yaml(self, path: Path):
-        """Load and merge hooks from a YAML file."""
+    def _load_yaml(self, path: Path) -> None:
         try:
+            import yaml
             data = yaml.safe_load(path.read_text()) or {}
-        except Exception as e:
-            log.warning("Failed to load hooks from %s: %s", path, e)
-            return
-
-        hooks = data.get("hooks", data)  # Support both {hooks: {...}} and flat
-        self._merge_events(hooks, source=str(path))
-
-    def _merge_settings_json(self, path: Path):
-        """Load hooks from a settings.json file."""
-        try:
-            data = json.loads(path.read_text())
-            hooks = data.get("hooks", {})
-            if hooks:
-                self._merge_events(hooks, source=str(path))
-        except Exception as e:
-            log.warning("Failed to load hooks from %s: %s", path, e)
-
-    def _merge_events(self, hooks: dict, source: str = ""):
-        """Merge hook definitions into the config."""
-        for event in HOOK_EVENTS:
-            if event in hooks:
-                entries = hooks[event]
+            hooks_data = data.get("hooks", data) if isinstance(data, dict) else {}
+            if not isinstance(hooks_data, dict):
+                return
+            for event in HOOK_EVENTS:
+                entries = hooks_data.get(event, [])
                 if isinstance(entries, list):
-                    for entry in entries:
-                        entry.setdefault("_source", source)
                     self._config.events[event].extend(entries)
+        except Exception as e:
+            log.warning("Failed to load hooks from %s: %s", path, e)
 
-    # ── Skill-scoped hooks ──────────────────────────────────────────
+    def set_skill_hooks(self, hooks: dict) -> None:
+        self._active_skill_hooks = hooks or {}
 
-    def set_skill_hooks(self, hooks: dict):
-        """Temporarily activate skill-scoped hooks."""
-        self._active_skill_hooks = hooks
-
-    def clear_skill_hooks(self):
-        """Deactivate skill-scoped hooks."""
+    def clear_skill_hooks(self) -> None:
         self._active_skill_hooks = {}
 
-    # ── Runtime hooks (via /hook add) ───────────────────────────────
+    def _normalize_event(self, event: str) -> str:
+        if event in HOOK_EVENTS:
+            return event
+        return _EVENT_ALIASES.get(event.lower().replace("-", "_"), event)
 
     def add_hook(self, event: str, command: str, matcher: str = "",
                  hook_type: str = "command", timeout: int = 30) -> bool:
-        """Add a runtime hook. Returns True on success."""
-        # Normalize event name
         event = self._normalize_event(event)
         if event not in HOOK_EVENTS:
             return False
-
-        entry = {
-            "type": hook_type,
-            "command": command,
-            "matcher": matcher,
-            "timeout": timeout,
-            "_source": "runtime",
-        }
+        entry = {"type": hook_type, "command": command if isinstance(command, str) else str(command),
+                 "matcher": matcher, "timeout": timeout, "_source": "runtime"}
         self._config.events[event].append(entry)
         self._runtime_hooks.append({"event": event, **entry})
         return True
 
     def remove_hook(self, event: str, command: str = "") -> bool:
-        """Remove hook(s) for an event. If command given, remove only that one."""
         event = self._normalize_event(event)
         if event not in HOOK_EVENTS:
             return False
-
-        before = len(self._config.events[event])
-        if command:
-            self._config.events[event] = [
-                h for h in self._config.events[event]
-                if h.get("command", "") != command
-            ]
-            self._runtime_hooks = [
-                h for h in self._runtime_hooks
-                if not (h["event"] == event and h.get("command", "") == command)
-            ]
-        else:
+        hooks = self._config.events.get(event, [])
+        if not hooks:
+            return False
+        if not command:
             self._config.events[event] = []
-            self._runtime_hooks = [h for h in self._runtime_hooks if h["event"] != event]
-
+            return True
+        before = len(hooks)
+        self._config.events[event] = [h for h in hooks if h.get("command") != command]
         return len(self._config.events[event]) < before
 
-    def _normalize_event(self, event: str) -> str:
-        """Normalize event name: pre_tool_use -> PreToolUse, etc."""
-        # Already correct
-        if event in HOOK_EVENTS:
-            return event
-        # Snake_case conversion
-        mapping = {
-            "pre_tool_use": "PreToolUse",
-            "pre_command": "PreToolUse",
-            "post_tool_use": "PostToolUse",
-            "post_command": "PostToolUse",
-            "post_tool_use_failure": "PostToolUseFailure",
-            "on_error": "PostToolUseFailure",
-            "permission_denied": "PermissionDenied",
-            "notification": "Notification",
-            "stop": "Stop",
-            "on_startup": "SessionStart",
-            "session_start": "SessionStart",
-            "on_shutdown": "SessionEnd",
-            "session_end": "SessionEnd",
-            "subagent_start": "SubagentStart",
-            "subagent_stop": "SubagentStop",
-            "cwd_changed": "CwdChanged",
-            "file_changed": "FileChanged",
-            "context_compacted": "ContextCompacted",
-        }
-        return mapping.get(event.lower(), event)
-
-    # ── Hook Execution ──────────────────────────────────────────────
-
-    def run_pre_tool_use(self, tool_name: str, tool_args: dict) -> HookResult:
-        """Run PreToolUse hooks. Can block or modify tool args."""
-        all_hooks = self._get_hooks_for("PreToolUse")
-        return self._run_hooks(all_hooks, tool_name, tool_args, event="PreToolUse")
-
-    def run_post_tool_use(self, tool_name: str, tool_args: dict, result: str) -> HookResult:
-        """Run PostToolUse hooks after successful execution."""
-        all_hooks = self._get_hooks_for("PostToolUse")
-        return self._run_hooks(all_hooks, tool_name, tool_args, event="PostToolUse", result=result)
-
-    def run_post_tool_use_failure(self, tool_name: str, tool_args: dict, error: str) -> HookResult:
-        """Run PostToolUseFailure hooks after tool errors."""
-        all_hooks = self._get_hooks_for("PostToolUseFailure")
-        return self._run_hooks(all_hooks, tool_name, tool_args, event="PostToolUseFailure", result=error)
-
-    def run_permission_denied(self, tool_name: str, tool_args: dict, reason: str) -> HookResult:
-        """Run PermissionDenied hooks when a tool is blocked by permissions."""
-        all_hooks = self._get_hooks_for("PermissionDenied")
-        return self._run_hooks(all_hooks, tool_name, tool_args, event="PermissionDenied", result=reason)
-
-    def run_notification(self, message: str, notification_type: str = "") -> HookResult:
-        """Run Notification hooks."""
-        all_hooks = self._get_hooks_for("Notification")
-        return self._run_hooks(
-            all_hooks, notification_type, {},
-            event="Notification", result=message,
-        )
-
-    def run_stop(self) -> HookResult:
-        """Run Stop hooks before JARVIS finishes a task."""
-        all_hooks = self._get_hooks_for("Stop")
-        if not all_hooks:
-            return HookResult(allowed=True)
-        return self._run_hooks(all_hooks, "", {}, event="Stop")
-
-    def run_session_start(self) -> HookResult:
-        """Run SessionStart hooks."""
-        all_hooks = self._get_hooks_for("SessionStart")
-        if not all_hooks:
-            return HookResult(allowed=True)
-        return self._run_hooks(all_hooks, "", {}, event="SessionStart")
-
-    def run_session_end(self) -> HookResult:
-        """Run SessionEnd hooks."""
-        all_hooks = self._get_hooks_for("SessionEnd")
-        if not all_hooks:
-            return HookResult(allowed=True)
-        return self._run_hooks(all_hooks, "", {}, event="SessionEnd")
-
-    def _get_hooks_for(self, event: str) -> list[dict]:
-        """Get all hooks for an event (config + skill-scoped)."""
-        return self._config.events.get(event, []) + self._active_skill_hooks.get(event, [])
-
-    def _run_hooks(
-        self, hooks: list[dict], tool_name: str,
-        tool_args: dict, event: str, result: str = "",
-    ) -> HookResult:
-        """Execute a list of hook definitions. Most restrictive result wins."""
-        combined = HookResult(allowed=True)
-
-        for hook_def in hooks:
-            # Skip disabled hooks
-            if not hook_def.get("enabled", True):
-                continue
-
-            # Skip once-hooks that already ran
-            if hook_def.get("once", False) and hook_def.get("_ran_once", False):
-                continue
-
-            # Check matcher (regex-based)
-            matcher = hook_def.get("matcher", "")
-            if matcher and not self._matches(matcher, tool_name):
-                continue
-
-            # Check if-filter for fine-grained matching
-            if_filter = hook_def.get("if", hook_def.get("if_filter", ""))
-            if if_filter and not self._matches_if(if_filter, tool_name, tool_args):
-                continue
-
-            # Get the actual hook entries (support nested "hooks" key)
-            hook_entries = hook_def.get("hooks", [hook_def])
-            if not isinstance(hook_entries, list):
-                hook_entries = [hook_entries]
-
-            for entry in hook_entries:
-                if not entry.get("enabled", True):
-                    continue
-
-                # Skip once-entries that already ran
-                if entry.get("once", False) and entry.get("_ran_once", False):
-                    continue
-
-                # Handle async hooks: log and skip (caller wires actual async execution)
-                if entry.get("async", entry.get("async_", False)):
-                    log.info(
-                        "Async hook queued for %s (type=%s, rewake=%s): %s",
-                        event, entry.get("type", "command"),
-                        entry.get("async_rewake", False),
-                        entry.get("command", entry.get("task", entry.get("url", ""))),
-                    )
-                    # Mark once-hooks as ran even for async
-                    if entry.get("once", False):
-                        entry["_ran_once"] = True
-                    continue
-
-                hook_type = entry.get("type", "command")
-                hr = HookResult(allowed=True)
-
-                if hook_type == "command":
-                    hr = self._run_command_hook(entry, tool_name, tool_args, event, result)
-                elif hook_type == "http":
-                    hr = self._run_http_hook(entry, tool_name, tool_args, event, result)
-                elif hook_type == "agent":
-                    hr = self._run_agent_hook(entry, tool_name, tool_args, event, result)
-                # prompt type requires brain reference — handled externally
-
-                # Mark once-hooks as ran
-                if entry.get("once", False):
-                    entry["_ran_once"] = True
-                if hook_def.get("once", False):
-                    hook_def["_ran_once"] = True
-
-                # Most restrictive wins
-                if not hr.allowed and event in BLOCKING_EVENTS:
-                    return hr
-                if hr.modified_args is not None:
-                    tool_args = hr.modified_args
-                    combined.modified_args = hr.modified_args
-                if hr.message:
-                    combined.message = (combined.message + "\n" + hr.message).strip()
-                if hr.additional_context:
-                    combined.additional_context = hr.additional_context
-                if hr.decision:
-                    combined.decision = hr.decision
-
-        return combined
-
-    def _run_agent_hook(
-        self, entry: dict, tool_name: str,
-        tool_args: dict, event: str, result: str,
-    ) -> HookResult:
-        """Run an agent-type hook (sub-agent task).
-
-        Returns a placeholder result. The brain can wire up actual agent
-        execution by replacing or extending this method.
-        """
-        agent_type = entry.get("agent_type", "scout")
-        task_template = entry.get("task", "")
-
-        # Variable substitution
-        task = task_template.replace("$TOOL_NAME", tool_name or "")
-        task = task.replace("$EVENT", event)
-        task = task.replace("$RESULT", result[:2000] if result else "")
-
-        log.info("Agent hook (%s): %s", agent_type, task)
-        return HookResult(
-            allowed=True,
-            message=f"Agent hook: {task}",
-            additional_context=f"[agent-hook:{agent_type}] {task}",
-        )
-
-    # ── Aggregated Hook Execution ──────────────────────────────────
-
-    def run_hooks_aggregated(
-        self, event: str, tool_name: str = "",
-        tool_args: dict | None = None, result: str = "",
-    ) -> AggregatedHookResult:
-        """Run all hooks for an event and return aggregated results."""
-        if tool_args is None:
-            tool_args = {}
-
-        all_hooks = self._get_hooks_for(event)
-        agg = AggregatedHookResult()
-
-        for hook_def in all_hooks:
-            if not hook_def.get("enabled", True):
-                continue
-            if hook_def.get("once", False) and hook_def.get("_ran_once", False):
-                continue
-
-            matcher = hook_def.get("matcher", "")
-            if matcher and not self._matches(matcher, tool_name):
-                continue
-
-            if_filter = hook_def.get("if", hook_def.get("if_filter", ""))
-            if if_filter and not self._matches_if(if_filter, tool_name, tool_args):
-                continue
-
-            # Run this single hook definition through _run_hooks
-            hr = self._run_hooks([hook_def], tool_name, tool_args, event, result)
-            agg.results.append(hr)
-
-            if not hr.allowed:
-                agg.final_allowed = False
-            if hr.message:
-                agg.final_message = (agg.final_message + "\n" + hr.message).strip()
-            if hr.modified_args is not None:
-                agg.any_modified = True
-                agg.modified_args = hr.modified_args
-                tool_args = hr.modified_args  # Chain modifications
-
-        return agg
-
-    # ── Convenience Runners for New Events ─────────────────────────
-
-    def run_subagent_start(self, agent_type: str, task: str) -> HookResult:
-        """Run SubagentStart hooks when a sub-agent is spawned."""
-        all_hooks = self._get_hooks_for("SubagentStart")
-        if not all_hooks:
-            return HookResult(allowed=True)
-        return self._run_hooks(
-            all_hooks, agent_type,
-            {"agent_type": agent_type, "task": task},
-            event="SubagentStart", result=task,
-        )
-
-    def run_subagent_stop(self, agent_type: str, task: str, result: str) -> HookResult:
-        """Run SubagentStop hooks when a sub-agent finishes."""
-        all_hooks = self._get_hooks_for("SubagentStop")
-        if not all_hooks:
-            return HookResult(allowed=True)
-        return self._run_hooks(
-            all_hooks, agent_type,
-            {"agent_type": agent_type, "task": task},
-            event="SubagentStop", result=result,
-        )
-
-    def run_cwd_changed(self, old_cwd: str, new_cwd: str) -> HookResult:
-        """Run CwdChanged hooks when working directory changes."""
-        all_hooks = self._get_hooks_for("CwdChanged")
-        if not all_hooks:
-            return HookResult(allowed=True)
-        return self._run_hooks(
-            all_hooks, "cwd",
-            {"old_cwd": old_cwd, "new_cwd": new_cwd},
-            event="CwdChanged", result=new_cwd,
-        )
-
-    def run_file_changed(self, path: str, change_type: str) -> HookResult:
-        """Run FileChanged hooks when a file is modified.
-
-        Args:
-            path: File path that changed.
-            change_type: One of "write", "edit", "delete".
-        """
-        all_hooks = self._get_hooks_for("FileChanged")
-        if not all_hooks:
-            return HookResult(allowed=True)
-        return self._run_hooks(
-            all_hooks, change_type,
-            {"path": path, "change_type": change_type},
-            event="FileChanged", result=path,
-        )
-
-    def run_context_compacted(self, before_tokens: int, after_tokens: int) -> HookResult:
-        """Run ContextCompacted hooks when context window is compacted."""
-        all_hooks = self._get_hooks_for("ContextCompacted")
-        if not all_hooks:
-            return HookResult(allowed=True)
-        return self._run_hooks(
-            all_hooks, "context",
-            {"before_tokens": before_tokens, "after_tokens": after_tokens},
-            event="ContextCompacted",
-            result=f"{before_tokens} -> {after_tokens}",
-        )
+    def _get_hooks(self, event: str) -> list[dict]:
+        raw = list(self._config.events.get(event, []))
+        raw.extend(self._active_skill_hooks.get(event, []))
+        # Expand nested hooks format: {matcher: "...", hooks: [{...}, {...}]}
+        hooks = []
+        for entry in raw:
+            if "hooks" in entry and isinstance(entry["hooks"], list):
+                matcher = entry.get("matcher", "")
+                for sub in entry["hooks"]:
+                    expanded = {**sub, "matcher": sub.get("matcher", matcher)}
+                    hooks.append(expanded)
+            else:
+                hooks.append(entry)
+        return [h for h in hooks if h.get("enabled", True)]
 
     def _matches(self, matcher: str, tool_name: str) -> bool:
-        """Check if a matcher pattern matches the tool name (regex-based)."""
-        if not tool_name:
-            return True  # Empty tool_name matches all (for Stop, Session events)
+        if not matcher or not tool_name:
+            return True
         try:
-            return bool(re.fullmatch(matcher, tool_name))
+            return bool(re.search(matcher, tool_name))
         except re.error:
-            # Fallback to simple pipe-separated or wildcard matching
-            patterns = [p.strip() for p in matcher.split("|")]
-            return any(
-                tool_name == p or
-                (p.endswith("*") and tool_name.startswith(p[:-1]))
-                for p in patterns
-            )
+            return matcher in tool_name
 
     def _matches_if(self, if_filter: str, tool_name: str, tool_args: dict) -> bool:
-        """Check fine-grained if-filter like 'Bash(git *)' or 'Edit(*.py)'."""
-        m = re.match(r"(\w+)\((.+)\)", if_filter)
-        if not m:
+        """Fine-grained if-filter: 'bash(git *)' matches bash with git commands."""
+        if not if_filter:
             return True
-
+        m = re.match(r'^(\w+)\((.+)\)$', if_filter)
+        if not m:
+            return self._matches(if_filter, tool_name)
         filter_tool, pattern = m.group(1), m.group(2)
         if filter_tool != tool_name:
             return False
+        # Match pattern against common arg fields
+        for key in ("command", "path", "file_path", "query", "task", "text"):
+            val = tool_args.get(key, "")
+            if val:
+                glob_re = pattern.replace("*", ".*")
+                try:
+                    if re.search(glob_re, str(val)):
+                        return True
+                except re.error:
+                    if pattern in str(val):
+                        return True
+        return False
 
-        # Match pattern against the primary argument
-        primary = ""
-        if tool_name == "bash":
-            primary = tool_args.get("command", "")
-        elif tool_name in ("edit_file", "write_file", "read_file"):
-            primary = tool_args.get("path", tool_args.get("file_path", ""))
-        elif tool_name == "search_files":
-            primary = tool_args.get("pattern", "")
-        else:
-            # Try common arg names
-            primary = tool_args.get("command", tool_args.get("path", ""))
-
-        # Convert glob pattern to regex
-        regex = pattern.replace(".", r"\.").replace("*", ".*")
-        try:
-            return bool(re.search(regex, primary))
-        except re.error:
-            return pattern in primary
-
-    def _run_command_hook(
-        self, entry: dict, tool_name: str,
-        tool_args: dict, event: str, result: str,
-    ) -> HookResult:
-        """Run a command-type hook."""
+    def _run_command_hook(self, entry: dict, tool_name: str, tool_args: dict,
+                          event: str, result: str) -> HookResult:
         command = entry.get("command", "")
-        timeout = entry.get("timeout", 30)
-
         if not command:
-            return HookResult(allowed=True)
-
-        # Expand environment variables
-        command = os.path.expandvars(command)
-
-        # Build stdin payload (JSON)
-        payload = json.dumps({
-            "hook_event_name": event,
-            "tool_name": tool_name,
-            "tool_input": tool_args,
-            "tool_result": result[:2000] if result else "",
-            "cwd": os.getcwd(),
-        })
-
+            return HookResult()
+        payload = json.dumps({"hook_event_name": event, "tool_name": tool_name,
+                              "tool_input": tool_args, "tool_result": result, "cwd": os.getcwd()})
         try:
-            proc = subprocess.run(
-                command, shell=True,
-                input=payload, capture_output=True, text=True,
-                timeout=timeout, cwd=os.getcwd(),
-            )
-
+            proc = subprocess.run(command, shell=True, input=payload,
+                                  capture_output=True, text=True, timeout=entry.get("timeout", 30))
             if proc.returncode == 0:
-                return self._parse_hook_output(proc.stdout.strip(), event)
-
+                return self._parse_output(proc.stdout, event)
             elif proc.returncode == 2:
-                msg = proc.stderr.strip() or f"Hook blocked {tool_name}"
-                return HookResult(allowed=False, message=msg, decision="deny")
-
-            else:
-                # Non-blocking error
-                return HookResult(allowed=True, message=f"Hook warning: {proc.stderr.strip()}")
-
+                return HookResult(allowed=False, message=proc.stdout.strip() or "Blocked by hook", decision="block")
+            return HookResult()
         except subprocess.TimeoutExpired:
-            return HookResult(allowed=True, message=f"Hook timed out after {timeout}s")
+            log.warning("Hook timed out: %s", command)
+            return HookResult(message=f"Hook timed out: {command}")
         except Exception as e:
-            return HookResult(allowed=True, message=f"Hook error: {e}")
+            log.warning("Hook error: %s", e)
+            return HookResult()
 
-    def _run_http_hook(
-        self, entry: dict, tool_name: str,
-        tool_args: dict, event: str, result: str,
-    ) -> HookResult:
-        """Run an HTTP hook by POSTing event data to the endpoint."""
-        url = entry.get("url", "")
-        timeout = entry.get("timeout", 30)
-        headers = entry.get("headers", {})
-
-        if not url:
-            return HookResult(allowed=True)
-
-        # Expand env vars in URL and headers
-        url = os.path.expandvars(url)
-        headers = {k: os.path.expandvars(v) for k, v in headers.items()}
-        headers.setdefault("Content-Type", "application/json")
-
-        payload = {
-            "hook_event_name": event,
-            "tool_name": tool_name,
-            "tool_input": tool_args,
-            "tool_result": result[:2000] if result else "",
-            "cwd": os.getcwd(),
-        }
-
-        try:
-            import urllib.request
-            req = urllib.request.Request(
-                url, data=json.dumps(payload).encode(),
-                headers=headers, method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                body = resp.read().decode()
-                if resp.status < 300:
-                    return self._parse_hook_output(body.strip(), event)
-                else:
-                    return HookResult(allowed=True, message=f"HTTP hook returned {resp.status}")
-        except Exception as e:
-            return HookResult(allowed=True, message=f"HTTP hook error: {e}")
-
-    def _parse_hook_output(self, output: str, event: str) -> HookResult:
-        """Parse structured JSON output from a hook (command or http)."""
-        if not output:
-            return HookResult(allowed=True)
-
+    def _parse_output(self, output: str, event: str) -> HookResult:
+        if not output.strip():
+            return HookResult()
         try:
             data = json.loads(output)
+            r = HookResult()
+            if "tool_input" in data:
+                r.modified_args = data["tool_input"]
+            if "additionalContext" in data:
+                r.additional_context = data["additionalContext"]
+            if "systemMessage" in data:
+                r.message = data["systemMessage"]
+            if data.get("continue") is False:
+                r.allowed = False
+                r.decision = "block"
+            hso = data.get("hookSpecificOutput", {})
+            if hso.get("permissionDecision") == "deny":
+                r.allowed = False
+                r.decision = "deny"
+                reason = hso.get("permissionDecisionReason", "")
+                if reason:
+                    r.message = reason
+            if "updatedInput" in hso:
+                r.modified_args = hso["updatedInput"]
+            return r
         except json.JSONDecodeError:
-            return HookResult(allowed=True, message=output)
+            return HookResult(message=output.strip())
 
-        hr = HookResult(allowed=True)
+    def _run_event(self, event: str, tool_name: str = "",
+                   tool_args: dict | None = None, result: str = "") -> HookResult:
+        hooks = self._get_hooks(event)
+        if not hooks:
+            return HookResult()
+        args = tool_args or {}
+        combined = HookResult()
+        for entry in hooks:
+            if not self._matches(entry.get("matcher", ""), tool_name):
+                continue
+            if_filter = entry.get("if", "")
+            if if_filter and not self._matches_if(if_filter, tool_name, args):
+                continue
+            hook_type = entry.get("type", "command")
+            if hook_type == "command":
+                hr = self._run_command_hook(entry, tool_name, args, event, result)
+            else:
+                continue
+            if not hr.allowed:
+                return hr
+            if hr.modified_args:
+                args = hr.modified_args
+                combined.modified_args = args
+            if hr.message:
+                combined.message = hr.message
+            if hr.additional_context:
+                combined.additional_context = hr.additional_context
+            if entry.get("once"):
+                entry["enabled"] = False
+        return combined
 
-        # Legacy: direct tool_input modification
-        if "tool_input" in data:
-            hr.modified_args = data["tool_input"]
+    # ── Public event runners ──
 
-        # additionalContext injection
-        if "additionalContext" in data:
-            hr.additional_context = data["additionalContext"]
+    def run_pre_tool_use(self, tool_name: str, tool_args: dict) -> HookResult:
+        return self._run_event("PreToolUse", tool_name, tool_args)
 
-        # systemMessage becomes the hook message
-        if "systemMessage" in data:
-            hr.message = data["systemMessage"]
+    def run_post_tool_use(self, tool_name: str, tool_args: dict, result: str) -> HookResult:
+        return self._run_event("PostToolUse", tool_name, tool_args, result)
 
-        # hookSpecificOutput
-        specific = data.get("hookSpecificOutput", {})
-        if specific:
-            decision = specific.get("permissionDecision", specific.get("decision", ""))
-            hr.decision = decision
+    def run_post_tool_use_failure(self, tool_name: str, tool_args: dict, error: str) -> HookResult:
+        return self._run_event("PostToolUseFailure", tool_name, tool_args, error)
 
-            if decision == "deny" or decision == "block":
-                reason = specific.get("permissionDecisionReason", specific.get("reason", "Blocked by hook"))
-                hr.allowed = False
-                hr.message = reason
+    def run_permission_denied(self, tool_name: str, tool_args: dict, reason: str) -> HookResult:
+        return self._run_event("PermissionDenied", tool_name, tool_args, reason)
 
-            if "updatedInput" in specific:
-                hr.modified_args = specific["updatedInput"]
+    def run_notification(self, message: str, notification_type: str = "") -> HookResult:
+        return self._run_event("Notification", notification_type, {"message": message})
 
-        # continue: false stops everything
-        if data.get("continue") is False:
-            hr.allowed = False
-            hr.message = data.get("stopReason", "Hook requested stop")
+    def run_stop(self) -> HookResult:
+        return self._run_event("Stop")
 
-        return hr
+    def run_session_start(self) -> HookResult:
+        return self._run_event("SessionStart")
 
-    # ── Listing & Status ────────────────────────────────────────────
+    def run_session_end(self) -> HookResult:
+        return self._run_event("SessionEnd")
+
+    def run_subagent_start(self, agent_type: str, task: str) -> HookResult:
+        return self._run_event("SubagentStart", agent_type, {"task": task})
+
+    def run_subagent_stop(self, agent_type: str, task: str, result: str) -> HookResult:
+        return self._run_event("SubagentStop", agent_type, {"task": task}, result)
+
+    def run_cwd_changed(self, old_cwd: str, new_cwd: str) -> HookResult:
+        return self._run_event("CwdChanged", "", {"old_cwd": old_cwd, "new_cwd": new_cwd})
+
+    def run_file_changed(self, path: str, change_type: str) -> HookResult:
+        return self._run_event("FileChanged", change_type, {"path": path})
+
+    def run_context_compacted(self, before_tokens: int, after_tokens: int) -> HookResult:
+        return self._run_event("ContextCompacted", "", {"before_tokens": before_tokens, "after_tokens": after_tokens})
+
+    async def run_pre_hooks(self, tool_name: str, tool_input: dict) -> dict:
+        hr = self.run_pre_tool_use(tool_name, tool_input)
+        return hr.modified_args if hr.modified_args else tool_input
+
+    async def run_post_hooks(self, tool_name: str, result: str) -> str:
+        self.run_post_tool_use(tool_name, {}, result)
+        return result
+
+    # ── Introspection ──
 
     def list_hooks(self) -> list[dict]:
-        """List all configured hooks with event, command, matcher, status."""
-        hooks = []
+        result = []
         for event in HOOK_EVENTS:
-            for h in self._config.events.get(event, []):
-                entries = h.get("hooks", [h])
-                if not isinstance(entries, list):
-                    entries = [entries]
-                for entry in entries:
-                    hooks.append({
-                        "event": event,
-                        "type": entry.get("type", "command"),
-                        "command": entry.get("command", entry.get("url", "")),
-                        "matcher": h.get("matcher", entry.get("matcher", "")),
-                        "if": h.get("if", entry.get("if_filter", "")),
-                        "timeout": entry.get("timeout", 30),
-                        "enabled": entry.get("enabled", True),
-                        "source": h.get("_source", "config"),
-                        "status_message": entry.get("statusMessage", entry.get("status_message", "")),
-                    })
-        # Include skill hooks
-        for event, entries in self._active_skill_hooks.items():
-            for entry in entries:
-                hooks.append({
-                    "event": event,
-                    "type": entry.get("type", "command"),
-                    "command": entry.get("command", ""),
-                    "matcher": entry.get("matcher", ""),
-                    "enabled": True,
-                    "source": "skill",
-                })
-        return hooks
+            for entry in self._config.events.get(event, []):
+                result.append({"event": event, "type": entry.get("type", "command"),
+                               "command": entry.get("command", ""), "matcher": entry.get("matcher", ""),
+                               "timeout": entry.get("timeout", 30), "enabled": entry.get("enabled", True),
+                               "source": entry.get("_source", "config")})
+        return result
 
     @property
     def has_hooks(self) -> bool:
         return any(self._config.events.get(e) for e in HOOK_EVENTS) or bool(self._active_skill_hooks)
 
     def summary(self) -> dict:
-        """Summary of hook counts per event."""
-        result = {e: len(self._config.events.get(e, [])) for e in HOOK_EVENTS}
-        result["skill_hooks_active"] = bool(self._active_skill_hooks)
-        result["total"] = sum(v for k, v in result.items() if k != "skill_hooks_active")
-        return result
+        r = {e: len(self._config.events.get(e, [])) for e in HOOK_EVENTS}
+        r["total"] = sum(r.values())
+        r["skill_hooks_active"] = bool(self._active_skill_hooks)
+        return r
 
-    # ── Persistence ─────────────────────────────────────────────────
-
-    def save_to_yaml(self, path: Path | None = None):
-        """Save current hooks config to a YAML file."""
+    def save_to_yaml(self, path: Path | None = None) -> None:
         if path is None:
-            path = Path.cwd() / ".jarvis" / "hooks.yaml"
-
-        data = {}
-        for event in HOOK_EVENTS:
-            entries = self._config.events.get(event, [])
-            if entries:
-                # Strip internal metadata
-                clean = []
-                for h in entries:
-                    entry = {k: v for k, v in h.items() if not k.startswith("_")}
-                    clean.append(entry)
-                data[event] = clean
-
-        if data:
+            path = Path(".jarvis") / "hooks.yaml"
+        try:
+            import yaml
+            data: dict[str, Any] = {}
+            for event in HOOK_EVENTS:
+                cleaned = [{k: v for k, v in h.items() if not k.startswith("_")}
+                           for h in self._config.events.get(event, [])]
+                if cleaned:
+                    data[event] = cleaned
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(yaml.dump({"hooks": data}, default_flow_style=False, sort_keys=False))
-            log.info("Hooks saved to %s", path)
+            path.write_text(yaml.dump({"hooks": data}, default_flow_style=False))
+        except Exception as e:
+            log.error("Failed to save hooks: %s", e)
