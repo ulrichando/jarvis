@@ -223,7 +223,7 @@ function App() {
           return // Using browser STT + VAD
         }
 
-        // Method 2: MediaRecorder + server Whisper (WebKit/desktop fallback)
+        // Method 2: MediaRecorder + server Whisper (WebKit/desktop)
         let mediaRecorder = new MediaRecorder(stream, {
           mimeType: MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg'
         })
@@ -250,7 +250,7 @@ function App() {
           } catch { setReactorState('idle') }
         }
 
-        // VAD: start/stop recording + interrupt TTS when user speaks
+        // VAD: detect speech, record, interrupt TTS on barge-in
         let isSpeakingTTS = false
         document.addEventListener('jarvis-tts-start', () => { isSpeakingTTS = true })
         document.addEventListener('jarvis-tts-end', () => { isSpeakingTTS = false })
@@ -260,8 +260,7 @@ function App() {
           analyser.getByteFrequencyData(dataArray)
           const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length / 255
 
-          // During TTS: use a much higher threshold so only loud user speech
-          // (not speaker echo) triggers an interrupt. This lets users barge in.
+          // During TTS: higher threshold for barge-in (filter speaker echo)
           const threshold = isSpeakingTTS ? 0.18 : 0.06
           const silenceThreshold = 0.03
 
@@ -277,7 +276,7 @@ function App() {
             silenceTimer = setTimeout(() => {
               try { mediaRecorder.stop() } catch { /* ignore */ }
               recording = false
-            }, 250)
+            }, 200)
           }
           setTimeout(checkVoice, 50)
         }
