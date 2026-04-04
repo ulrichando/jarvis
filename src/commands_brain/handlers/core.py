@@ -84,7 +84,7 @@ async def cmd_help(ctx: CommandContext) -> CommandResult:
     return CommandResult(text="\n".join(lines))
 
 
-@command("status", aliases=["stat"], description="Show model, mode, session, MCP status",
+@command("status", aliases=["stat"], description="Show JARVIS status including model, mode, session, MCP, and tool statuses",
          usage="/status", category="core", permission=PermLevel.READ_ONLY)
 async def cmd_status(ctx: CommandContext) -> CommandResult:
     brain = ctx.brain
@@ -343,7 +343,7 @@ async def cmd_model(ctx: CommandContext) -> CommandResult:
     return CommandResult(text=f"Model not found: {args}\nUse /model list to see available models.", success=False)
 
 
-@command("permissions", aliases=["perms"], description="Show or change permission level",
+@command("permissions", aliases=["perms"], description="Manage allow & deny tool permission rules and levels",
          usage="/permissions [read_only|standard|full|dangerous]", category="core", permission=PermLevel.STANDARD)
 async def cmd_permissions(ctx: CommandContext) -> CommandResult:
     brain = ctx.brain

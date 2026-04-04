@@ -349,7 +349,7 @@ async def cmd_worktree(ctx: CommandContext) -> CommandResult:
 
 # ── /diff ──────────────────────────────────────────────────────────────
 
-@command("diff", aliases=["d"], description="Show git diff with color annotations",
+@command("diff", aliases=["d"], description="View uncommitted changes and per-turn diffs with color annotations",
          usage="/diff [--staged] [--branch <name>] [path]", category="git", permission=PermLevel.READ_ONLY)
 async def cmd_diff(ctx: CommandContext) -> CommandResult:
     args = ctx.args.strip()

@@ -14,6 +14,11 @@ import shutil
 import glob as _glob
 
 from src.sandbox import SandboxConfig, execute_sandboxed, detect_sandbox_capabilities
+from src.tools.BashTool.bashSecurity import (
+    BLOCKED_PATTERNS as BASH_BLOCKED_PATTERNS,
+    DANGEROUS_RM_PATHS,
+    validate_bash_command as validate_bash_security,
+)
 
 # ── File read tracking (for edit staleness detection) ─────────────────
 
@@ -89,7 +94,52 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "bash",
-            "description": "Execute a shell command on Kali Linux with full root access via sudo. Use for ANY system operation: installing packages, running security tools (nmap, metasploit, nikto, etc.), managing services, network config, file operations, opening GUI apps, and more. Use 'sudo' for privileged operations.",
+            "description": (
+                "Executes a given bash command and returns its output.\n"
+                "\n"
+                "The working directory persists between commands, but shell state does not. "
+                "The shell environment is initialized from the user's profile (bash or zsh).\n"
+                "\n"
+                "IMPORTANT: Avoid using this tool to run `find`, `grep`, `cat`, `head`, `tail`, `sed`, `awk`, or `echo` commands, "
+                "unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. "
+                "Instead, use the appropriate dedicated tool as this will provide a much better experience for the user:\n"
+                "\n"
+                "- File search: Use search_files with mode='glob' (NOT find or ls)\n"
+                "- Content search: Use search_files with mode='grep' (NOT grep or rg)\n"
+                "- Read files: Use read_file (NOT cat/head/tail)\n"
+                "- Edit files: Use edit_file (NOT sed/awk)\n"
+                "- Write files: Use write_file (NOT echo >/cat <<EOF)\n"
+                "- Communication: Output text directly (NOT echo/printf)\n"
+                "While the bash tool can do similar things, it's better to use the built-in tools as they provide "
+                "a better user experience and make it easier to review tool calls and give permission.\n"
+                "\n"
+                "# Instructions\n"
+                "- If your command will create new directories or files, first use this tool to run `ls` to verify "
+                "the parent directory exists and is the correct location.\n"
+                '- Always quote file paths that contain spaces with double quotes in your command '
+                '(e.g., cd "path with spaces/file.txt")\n'
+                "- Try to maintain your current working directory throughout the session by using absolute paths "
+                "and avoiding usage of `cd`. You may use `cd` if the User explicitly requests it.\n"
+                "- You may specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). By default, "
+                "your command will timeout after 120000ms (2 minutes).\n"
+                "- You can use the `run_in_background` parameter to run the command in the background. Only use "
+                "this if you don't need the result immediately and are OK being notified when the command completes later.\n"
+                "- When issuing multiple commands:\n"
+                "  - If the commands are independent and can run in parallel, make multiple bash tool calls in a single message.\n"
+                "  - If the commands depend on each other and must run sequentially, use a single bash call with '&&' to chain them together.\n"
+                "  - Use ';' only when you need to run commands sequentially but don't care if earlier commands fail.\n"
+                "  - DO NOT use newlines to separate commands (newlines are ok in quoted strings).\n"
+                "- For git commands:\n"
+                "  - Prefer to create a new commit rather than amending an existing commit.\n"
+                "  - Before running destructive operations (e.g., git reset --hard, git push --force, git checkout --), "
+                "consider whether there is a safer alternative. Only use destructive operations when truly the best approach.\n"
+                "  - Never skip hooks (--no-verify) or bypass signing unless the user has explicitly asked for it.\n"
+                "- Avoid unnecessary `sleep` commands:\n"
+                "  - Do not sleep between commands that can run immediately -- just run them.\n"
+                "  - Do not retry failing commands in a sleep loop -- diagnose the root cause.\n"
+                "  - If you must sleep, keep the duration short (1-5 seconds) to avoid blocking the user.\n"
+                "- Use 'sudo' for privileged operations on this Kali Linux system."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -111,7 +161,33 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read the contents of a file. Use to examine source code, configs, logs, or any text file before making changes.",
+            "description": (
+                "Reads a file from the local filesystem. You can access any file directly by using this tool.\n"
+                "Assume this tool is able to read all files on the machine. If the User provides a path to "
+                "a file assume that path is valid. It is okay to read a file that does not exist; an error "
+                "will be returned.\n"
+                "\n"
+                "Usage:\n"
+                "- The file_path parameter must be an absolute path, not a relative path\n"
+                "- By default, it reads up to 2000 lines starting from the beginning of the file\n"
+                "- When you already know which part of the file you need, only read that part. "
+                "This can be important for larger files.\n"
+                "- Results are returned using cat -n format, with line numbers starting at 1\n"
+                "- This tool allows JARVIS to read images (eg PNG, JPG, etc). When reading an image "
+                "file the contents are presented visually as JARVIS is a multimodal LLM.\n"
+                "- This tool can read PDF files (.pdf). For large PDFs (more than 10 pages), "
+                'you MUST provide the pages parameter to read specific page ranges (e.g., pages: "1-5"). '
+                "Reading a large PDF without the pages parameter will fail. Maximum 20 pages per request.\n"
+                "- This tool can read Jupyter notebooks (.ipynb files) and returns all cells with their "
+                "outputs, combining code, text, and visualizations.\n"
+                "- This tool can only read files, not directories. To read a directory, use an ls command "
+                "via the bash tool.\n"
+                "- You will regularly be asked to read screenshots. If the user provides a path to a "
+                "screenshot, ALWAYS use this tool to view the file at the path. This tool will work with "
+                "all temporary file paths.\n"
+                "- If you read a file that exists but has empty contents you will receive a system reminder "
+                "warning in place of file contents."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -137,7 +213,20 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "Write content to a file, creating it if needed. Use for creating new files or completely rewriting existing ones.",
+            "description": (
+                "Writes a file to the local filesystem.\n"
+                "\n"
+                "Usage:\n"
+                "- This tool will overwrite the existing file if there is one at the provided path.\n"
+                "- If this is an existing file, you MUST use the read_file tool first to read the file's contents. "
+                "This tool will fail if you did not read the file first.\n"
+                "- Prefer the edit_file tool for modifying existing files -- it only sends the diff. "
+                "Only use this tool to create new files or for complete rewrites.\n"
+                "- NEVER create documentation files (*.md) or README files unless explicitly "
+                "requested by the User.\n"
+                "- Only use emojis if the user explicitly requests it. Avoid writing emojis to "
+                "files unless asked."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -158,7 +247,24 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "edit_file",
-            "description": "Make a targeted edit to a file by replacing specific text. Use for modifying existing files without rewriting the whole thing. The old_string must match exactly.",
+            "description": (
+                "Performs exact string replacements in files.\n"
+                "\n"
+                "Usage:\n"
+                "- You must use your read_file tool at least once in the conversation before editing. "
+                "This tool will error if you attempt an edit without reading the file.\n"
+                "- When editing text from read_file output, ensure you preserve the exact indentation "
+                "(tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: "
+                "line number + tab. Everything after that is the actual file content to match. "
+                "Never include any part of the line number prefix in the old_string or new_string.\n"
+                "- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless "
+                "explicitly required.\n"
+                "- Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.\n"
+                "- The edit will FAIL if `old_string` is not unique in the file. Either provide a larger string "
+                "with more surrounding context to make it unique or use `replace_all` to change every instance.\n"
+                "- Use `replace_all` for replacing and renaming strings across the file. This parameter is useful "
+                "if you want to rename a variable for instance."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -183,7 +289,28 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "search_files",
-            "description": "Search for files by name pattern (glob) or search file contents by regex (ripgrep). Use mode='grep' with output_mode to control result format.",
+            "description": (
+                "Search for files by name pattern (glob) or search file contents by regex (ripgrep).\n"
+                "\n"
+                "## Glob mode (mode='glob') -- File pattern matching\n"
+                "- Fast file pattern matching tool that works with any codebase size\n"
+                '- Supports glob patterns like "**/*.js" or "src/**/*.ts"\n'
+                "- Returns matching file paths sorted by modification time\n"
+                "- Use this mode when you need to find files by name patterns\n"
+                "- When you are doing an open ended search that may require multiple rounds "
+                "of globbing and grepping, use the dispatch tool instead\n"
+                "\n"
+                "## Grep mode (mode='grep') -- Content search powered by ripgrep\n"
+                "- ALWAYS use grep mode for content search tasks. NEVER invoke `grep` or `rg` as a bash command. "
+                "This tool has been optimized for correct permissions and access.\n"
+                '- Supports full regex syntax (e.g., "log.*Error", "function\\\\s+\\\\w+")\n'
+                '- Filter files with file_glob parameter (e.g., "*.js", "**/*.tsx") or file_type parameter '
+                '(e.g., "js", "py", "rust")\n'
+                '- Output modes: "content" shows matching lines, "files_with_matches" shows only file paths (default), '
+                '"count" shows match counts\n'
+                "- Use dispatch tool for open-ended searches requiring multiple rounds\n"
+                "- Pattern syntax: Uses ripgrep (not grep) -- literal braces need escaping\n"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -239,7 +366,26 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "Search the internet using DuckDuckGo. Use when you need current information, documentation, or answers not in your training data.",
+            "description": (
+                "Search the web and use the results to inform responses.\n"
+                "\n"
+                "- Provides up-to-date information for current events and recent data\n"
+                "- Returns search result information formatted as search result blocks, "
+                "including links as markdown hyperlinks\n"
+                "- Use this tool for accessing information beyond JARVIS's knowledge cutoff\n"
+                "- Searches are performed via DuckDuckGo\n"
+                "\n"
+                "CRITICAL REQUIREMENT - You MUST follow this:\n"
+                "  - After answering the user's question, you MUST include a 'Sources:' section "
+                "at the end of your response\n"
+                "  - In the Sources section, list all relevant URLs from the search results as "
+                "markdown hyperlinks: [Title](URL)\n"
+                "  - This is MANDATORY - never skip including sources in your response\n"
+                "\n"
+                "IMPORTANT - Use the correct year in search queries:\n"
+                "  - You MUST use the current year when searching for recent information, "
+                "documentation, or current events."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -261,7 +407,26 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "web_fetch",
-            "description": "Fetch and extract text content from a URL. Use to read documentation, articles, or web pages.",
+            "description": (
+                "Fetches content from a specified URL and processes it.\n"
+                "\n"
+                "- Fetches the URL content, converts HTML to markdown\n"
+                "- Returns the extracted text content from the page\n"
+                "- Use this tool when you need to retrieve and analyze web content\n"
+                "\n"
+                "Usage notes:\n"
+                "  - The URL must be a fully-formed valid URL\n"
+                "  - HTTP URLs will be automatically upgraded to HTTPS\n"
+                "  - This tool is read-only and does not modify any files\n"
+                "  - Results may be summarized if the content is very large\n"
+                "  - Includes a self-cleaning 15-minute cache for faster responses when "
+                "repeatedly accessing the same URL\n"
+                "  - When a URL redirects to a different host, the tool will inform you and "
+                "provide the redirect URL. You should then make a new web_fetch request with "
+                "the redirect URL to fetch the content.\n"
+                "  - For GitHub URLs, prefer using the gh CLI via bash instead "
+                "(e.g., gh pr view, gh issue view, gh api)."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -421,7 +586,36 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "dispatch",
-            "description": "Spawn a sub-agent to handle a task independently. Built-in: 'scout' (read-only exploration), 'worker' (full access execution), 'planner' (analysis only). Custom agents from ~/.jarvis/agents/ and .jarvis/agents/ are also available. Sub-agents run in isolation and return a summary.",
+            "description": (
+                "Launch a new agent to handle complex, multi-step tasks autonomously.\n"
+                "\n"
+                "The dispatch tool launches specialized agents (subprocesses) that autonomously handle "
+                "complex tasks. Each agent type has specific capabilities and tools available to it.\n"
+                "\n"
+                "Available agent types:\n"
+                "- scout: Read-only exploration -- searches, reads files, analyzes code (Tools: read_file, search_files, web_search, web_fetch, think)\n"
+                "- worker: Full access execution -- can read, write, edit, run commands (Tools: All tools)\n"
+                "- planner: Analysis and planning only -- produces plans without executing (Tools: read_file, search_files, think)\n"
+                "- Custom agents from ~/.jarvis/agents/ and .jarvis/agents/ are also available.\n"
+                "\n"
+                "When NOT to use the dispatch tool:\n"
+                "- If you want to read a specific file path, use read_file or search_files instead, to find the match more quickly\n"
+                "- If you are searching for a specific class definition, use search_files instead\n"
+                "- If you are searching for code within a specific file or set of 2-3 files, use read_file instead\n"
+                "- Other tasks that are not related to the agent descriptions above\n"
+                "\n"
+                "Usage notes:\n"
+                "- Always include a short description (3-5 words) summarizing what the agent will do\n"
+                "- When the agent is done, it will return a single message back to you. The result returned "
+                "by the agent is not visible to the user. To show the user the result, you should send a text "
+                "message back with a concise summary.\n"
+                "- Each dispatch invocation starts fresh -- provide a complete task description.\n"
+                "- The agent's outputs should generally be trusted.\n"
+                "- Clearly tell the agent whether you expect it to write code or just do research "
+                "(search, file reads, web fetches, etc.), since it is not aware of the user's intent.\n"
+                "- If the user specifies they want agents to run 'in parallel', you MUST send a single "
+                "message with multiple dispatch tool use content blocks."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -442,13 +636,172 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "todo_write",
+            "description": (
+                "Update the todo list for the current session. Use this tool proactively to track progress "
+                "and pending tasks.\n"
+                "\n"
+                "## When to Use This Tool\n"
+                "Use this tool proactively in these scenarios:\n"
+                "1. Complex multi-step tasks - When a task requires 3 or more distinct steps or actions\n"
+                "2. Non-trivial and complex tasks - Tasks that require careful planning or multiple operations\n"
+                "3. User explicitly requests todo list - When the user directly asks you to use the todo list\n"
+                "4. User provides multiple tasks - When users provide a list of things to be done\n"
+                "5. After receiving new instructions - Immediately capture user requirements as todos\n"
+                "6. When you start working on a task - Mark it as in_progress BEFORE beginning work. "
+                "Ideally you should only have one todo as in_progress at a time\n"
+                "7. After completing a task - Mark it as completed and add any new follow-up tasks\n"
+                "\n"
+                "## When NOT to Use This Tool\n"
+                "Skip when: single straightforward task, trivial task, less than 3 steps, purely conversational.\n"
+                "\n"
+                "## Task States\n"
+                "- pending: Task not yet started\n"
+                "- in_progress: Currently working on (limit to ONE task at a time)\n"
+                "- completed: Task finished successfully\n"
+                "\n"
+                "## Task Management\n"
+                "- Update task status in real-time as you work\n"
+                "- Mark tasks complete IMMEDIATELY after finishing (don't batch completions)\n"
+                "- ONLY mark a task as completed when you have FULLY accomplished it\n"
+                "- If you encounter errors or blockers, keep the task as in_progress\n"
+                "- Create specific, actionable items with clear descriptions"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "todos": {
+                        "type": "array",
+                        "description": "The complete todo list. Each item has id, content, status, and optional activeForm.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {
+                                    "type": "string",
+                                    "description": "Unique identifier for the todo item",
+                                },
+                                "content": {
+                                    "type": "string",
+                                    "description": "Imperative form describing what needs to be done (e.g., 'Run tests')",
+                                },
+                                "status": {
+                                    "type": "string",
+                                    "enum": ["pending", "in_progress", "completed"],
+                                    "description": "Current status of the task",
+                                },
+                                "activeForm": {
+                                    "type": "string",
+                                    "description": "Present continuous form shown during execution (e.g., 'Running tests')",
+                                },
+                            },
+                            "required": ["id", "content", "status"],
+                        },
+                    },
+                },
+                "required": ["todos"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ask_user",
+            "description": (
+                "Asks the user a question to gather information, clarify ambiguity, "
+                "understand preferences, make decisions, or offer them choices.\n"
+                "\n"
+                "Use this tool when you need to:\n"
+                "1. Gather user preferences or requirements\n"
+                "2. Clarify ambiguous instructions\n"
+                "3. Get decisions on implementation choices as you work\n"
+                "4. Offer choices to the user about what direction to take\n"
+                "\n"
+                "Usage notes:\n"
+                "- Provide clear, concise questions\n"
+                "- When offering choices, list them in the options array\n"
+                "- If you recommend a specific option, make that the first option and "
+                'add "(Recommended)" at the end of the label\n'
+                "- Users can always provide free-form text even when options are given"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "The question to ask the user",
+                    },
+                    "options": {
+                        "type": "array",
+                        "description": "Optional list of choices to present to the user",
+                        "items": {
+                            "type": "string",
+                        },
+                    },
+                },
+                "required": ["question"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "notebook_edit",
+            "description": (
+                "Edit Jupyter notebook (.ipynb) cells. Use this tool to modify cells in a notebook.\n"
+                "\n"
+                "## Usage\n"
+                "- **edit_cell**: Modify the source of an existing cell\n"
+                "- **add_cell**: Add a new cell at a specific position\n"
+                "- **delete_cell**: Remove a cell at a specific position\n"
+                "\n"
+                "## Parameters\n"
+                "- notebook_path: Path to the .ipynb file\n"
+                "- cell_index: Zero-based index of the cell to edit (for edit_cell and delete_cell)\n"
+                "- action: 'edit_cell', 'add_cell', or 'delete_cell'\n"
+                "- new_source: The new cell content (for edit_cell and add_cell)\n"
+                "- cell_type: 'code' or 'markdown' (for add_cell, defaults to 'code')"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "notebook_path": {
+                        "type": "string",
+                        "description": "Path to the .ipynb file",
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": ["edit_cell", "add_cell", "delete_cell"],
+                        "description": "Action to perform on the notebook cell",
+                    },
+                    "cell_index": {
+                        "type": "integer",
+                        "description": "Zero-based index of the cell (for edit_cell and delete_cell)",
+                    },
+                    "new_source": {
+                        "type": "string",
+                        "description": "The new cell content (for edit_cell and add_cell)",
+                    },
+                    "cell_type": {
+                        "type": "string",
+                        "enum": ["code", "markdown"],
+                        "description": "Cell type for add_cell (defaults to 'code')",
+                        "default": "code",
+                    },
+                },
+                "required": ["notebook_path", "action"],
+            },
+        },
+    },
 ]
 
 
 # ── Tool Execution ──────────────────────────────────────────────────
 
 # Tools allowed in plan/read-only mode
-READONLY_TOOLS = {"read_file", "search_files", "web_search", "web_fetch", "think", "dispatch", "view_screen", "tool_search"}
+READONLY_TOOLS = {"read_file", "search_files", "web_search", "web_fetch", "think", "dispatch", "view_screen", "tool_search", "ask_user", "todo_write"}
 
 # Bash commands considered safe for read-only mode
 READONLY_BASH_PREFIXES = (
@@ -513,6 +866,12 @@ def execute_tool(name: str, args: dict, readonly: bool = False) -> str:
             return _exec_tool_search(args)
         elif name == "think":
             return args.get("thought", "")
+        elif name == "todo_write":
+            return _exec_todo_write(args)
+        elif name == "ask_user":
+            return "__ASK_USER__"  # Handled by agent loop (needs async user input)
+        elif name == "notebook_edit":
+            return _exec_notebook_edit(args)
         elif name == "dispatch":
             return "__DISPATCH__"  # Handled async by agent loop
         elif name.startswith("mcp_"):
@@ -681,6 +1040,11 @@ def _exec_bash(args: dict) -> str:
     timeout = min(args.get("timeout", 60), 600)
     if not command:
         return "No command provided."
+
+    # Security check from src/tools/BashTool/bashSecurity.py
+    security_error = validate_bash_security(command)
+    if security_error:
+        return f"BLOCKED: {security_error}"
 
     cmd_first = command.strip().split()[0].split("/")[-1] if command.strip() else ""
 
@@ -1413,3 +1777,116 @@ def _exec_web_fetch(args: dict) -> str:
         return "No content extracted."
     except Exception as e:
         return f"Fetch error: {e}"
+
+
+# ── Todo List state (session-scoped) ─────────────────────────────────
+
+_todo_list: list[dict] = []
+
+
+def _exec_todo_write(args: dict) -> str:
+    """Update the session todo list."""
+    global _todo_list
+    todos = args.get("todos", [])
+    if not isinstance(todos, list):
+        return "Invalid todos format. Expected a list of todo items."
+
+    _todo_list = todos
+
+    # Format summary
+    pending = sum(1 for t in todos if t.get("status") == "pending")
+    in_progress = sum(1 for t in todos if t.get("status") == "in_progress")
+    completed = sum(1 for t in todos if t.get("status") == "completed")
+
+    lines = [f"Todo list updated: {pending} pending, {in_progress} in progress, {completed} completed\n"]
+    for t in todos:
+        status_icon = {"pending": "[ ]", "in_progress": "[>]", "completed": "[x]"}.get(t.get("status", ""), "[?]")
+        content = t.get("content", "(no description)")
+        lines.append(f"  {status_icon} {content}")
+
+    return "\n".join(lines)
+
+
+def get_todo_list() -> list[dict]:
+    """Return the current session todo list (for use by agent loop / UI)."""
+    return _todo_list
+
+
+def _exec_notebook_edit(args: dict) -> str:
+    """Edit a Jupyter notebook cell."""
+    notebook_path = os.path.expanduser(args.get("notebook_path", ""))
+    action = args.get("action", "")
+    cell_index = args.get("cell_index", None)
+    new_source = args.get("new_source", "")
+    cell_type = args.get("cell_type", "code")
+
+    if not notebook_path:
+        return "No notebook_path provided."
+    if not action:
+        return "No action provided."
+
+    valid, err = _validate_path(notebook_path, write=True)
+    if not valid:
+        return err
+
+    if not os.path.exists(notebook_path):
+        return f"File not found: {notebook_path}"
+
+    try:
+        with open(notebook_path, "r", encoding="utf-8") as f:
+            nb = json.load(f)
+
+        cells = nb.get("cells", [])
+
+        if action == "edit_cell":
+            if cell_index is None:
+                return "cell_index is required for edit_cell."
+            if cell_index < 0 or cell_index >= len(cells):
+                return f"cell_index {cell_index} out of range (notebook has {len(cells)} cells)."
+            cells[cell_index]["source"] = new_source.split("\n") if new_source else []
+            # Normalize source to list of lines with newlines
+            lines = new_source.split("\n")
+            cells[cell_index]["source"] = [l + "\n" for l in lines[:-1]] + [lines[-1]] if lines else []
+
+        elif action == "add_cell":
+            insert_at = cell_index if cell_index is not None else len(cells)
+            insert_at = max(0, min(insert_at, len(cells)))
+            lines = new_source.split("\n") if new_source else []
+            source = [l + "\n" for l in lines[:-1]] + [lines[-1]] if lines else []
+            new_cell = {
+                "cell_type": cell_type,
+                "metadata": {},
+                "source": source,
+            }
+            if cell_type == "code":
+                new_cell["execution_count"] = None
+                new_cell["outputs"] = []
+            cells.insert(insert_at, new_cell)
+
+        elif action == "delete_cell":
+            if cell_index is None:
+                return "cell_index is required for delete_cell."
+            if cell_index < 0 or cell_index >= len(cells):
+                return f"cell_index {cell_index} out of range (notebook has {len(cells)} cells)."
+            deleted = cells.pop(cell_index)
+            deleted_type = deleted.get("cell_type", "unknown")
+
+        else:
+            return f"Unknown action: {action}. Use edit_cell, add_cell, or delete_cell."
+
+        nb["cells"] = cells
+        with open(notebook_path, "w", encoding="utf-8") as f:
+            json.dump(nb, f, indent=1, ensure_ascii=False)
+            f.write("\n")
+
+        if action == "edit_cell":
+            return f"Edited cell {cell_index} in {notebook_path}."
+        elif action == "add_cell":
+            return f"Added {cell_type} cell at index {insert_at} in {notebook_path}."
+        elif action == "delete_cell":
+            return f"Deleted {deleted_type} cell at index {cell_index} from {notebook_path}."
+
+    except json.JSONDecodeError as e:
+        return f"Invalid notebook JSON: {e}"
+    except Exception as e:
+        return f"Error editing notebook: {e}"

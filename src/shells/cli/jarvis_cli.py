@@ -769,6 +769,25 @@ async def main():
         query = args.print_mode
         if stdin_data:
             query = f"{query}\n\n{stdin_data}"
+
+        # Intercept slash commands in print mode — always use local brain
+        if query.startswith("/"):
+            cmd_parts = query[1:].split(None, 1)
+            cmd_name = cmd_parts[0] if cmd_parts else ""
+            cmd_args = cmd_parts[1] if len(cmd_parts) > 1 else ""
+            # Ensure we have a local brain for command dispatch
+            if brain is None:
+                from src.brain import Brain as _Brain
+                brain = _Brain()
+            result = await brain.dispatch_command(cmd_name, cmd_args, session_mgr=session_mgr)
+            if result and result.text:
+                print(result.text)
+            elif result and not result.success:
+                print(f"Command error: {result.text or 'unknown error'}")
+            await client.close()
+            session_mgr.close()
+            return
+
         session_mgr.add_message("user", query)
         output_fmt = getattr(args, "output_format", "text")
         full_response = ""
@@ -1183,10 +1202,11 @@ async def main():
         _esc_buf = []
         _esc_timer = None
 
-        def _redraw():
+        def _redraw(hide_menu=True):
             """Redraw input line in the fixed zone."""
             text = "".join(buf)
-            _hide_menu()
+            if hide_menu:
+                _hide_menu()
             _erase_frame()
             _draw_input_frame(mode_prefix, text)
 
@@ -1215,9 +1235,17 @@ async def main():
                 _write(f"\033[K    {DIM}↑ {start} more above{RESET}\n")
             for i in range(start, end):
                 cmd = matches[i]
-                prefix = f"  {CYAN}❯{RESET} " if i == selected else "    "
-                desc = cmd.description[:tw - 45] if cmd.description else ""
-                _write(f"\033[K{prefix}{CYAN}/{cmd.name:<25s}{RESET} {DIM}{desc}{RESET}\n")
+                pfx = f"  {CYAN}❯{RESET} " if i == selected else "    "
+                # Show alias hint if match was via alias
+                input_prefix = "".join(buf)[1:].lower()
+                alias_hint = ""
+                if input_prefix and not cmd.name.startswith(input_prefix):
+                    for alias in (cmd.aliases or []):
+                        if alias.lstrip("/").lower().startswith(input_prefix):
+                            alias_hint = f" {DIM}(/{alias.lstrip('/')}){RESET}"
+                            break
+                desc = cmd.description[:tw - 50] if cmd.description else ""
+                _write(f"\033[K{pfx}{CYAN}/{cmd.name:<25s}{RESET}{alias_hint} {DIM}{desc}{RESET}\n")
             if end < total:
                 _write(f"\033[K    {DIM}↓ {total - end} more below{RESET}\n")
             menu_lines = total_menu_lines
@@ -1241,11 +1269,37 @@ async def main():
             sys.stdout.flush()
 
         def _get_matches():
+            nonlocal all_cmds
             text = "".join(buf)
             if not text.startswith("/"):
                 return []
+            # Reload if commands weren't available at init (e.g., lazy registration)
+            if not all_cmds:
+                try:
+                    from src.commands_brain import registry as _reg2
+                    all_cmds = sorted(_reg2.list_commands(include_hidden=False), key=lambda c: c.name)
+                except Exception:
+                    pass
             prefix = text[1:].lower()
-            return [c for c in all_cmds if c.name.startswith(prefix)]
+            if not prefix:
+                return list(all_cmds)
+            # Match command names AND aliases
+            seen = set()
+            matches = []
+            for c in all_cmds:
+                if c.name.startswith(prefix):
+                    if c.name not in seen:
+                        seen.add(c.name)
+                        matches.append(c)
+                    continue
+                # Check aliases
+                for alias in (c.aliases or []):
+                    if alias.lstrip("/").lower().startswith(prefix):
+                        if c.name not in seen:
+                            seen.add(c.name)
+                            matches.append(c)
+                        break
+            return matches
 
         def _draw_search_prompt():
             """Draw the Ctrl+R search prompt in the input zone."""
@@ -1422,8 +1476,9 @@ async def main():
             elif ch == "\x7f" or ch == "\x08":
                 if buf:
                     buf.pop()
-                    _redraw()
-                    if "".join(buf).startswith("/"):
+                    will_show_menu = "".join(buf).startswith("/")
+                    _redraw(hide_menu=not will_show_menu)
+                    if will_show_menu:
                         matches = _get_matches()
                         selected = 0
                         _show_menu(matches)
@@ -1439,8 +1494,9 @@ async def main():
                         _hide_menu()
             elif ch >= " ":
                 buf.append(ch)
-                _redraw()
-                if "".join(buf).startswith("/"):
+                will_show_menu = "".join(buf).startswith("/")
+                _redraw(hide_menu=not will_show_menu)
+                if will_show_menu:
                     matches = _get_matches()
                     selected = 0
                     if matches:

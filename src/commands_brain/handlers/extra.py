@@ -115,36 +115,7 @@ async def cmd_desktop(ctx: CommandContext) -> CommandResult:
     return CommandResult(text="JARVIS desktop launching...")
 
 
-@command("add-dir", description="Add a working directory to the session",
-         usage="/add-dir <path>", category="core", permission=PermLevel.STANDARD)
-async def cmd_add_dir(ctx: CommandContext) -> CommandResult:
-    path = ctx.args.strip()
-    if not path:
-        # Show current working directories
-        brain = ctx.brain
-        dirs = getattr(brain, '_working_dirs', [os.getcwd()]) if brain else [os.getcwd()]
-        lines = ["Working Directories", "=" * 40]
-        for i, d in enumerate(dirs):
-            marker = " (active)" if d == os.getcwd() else ""
-            lines.append(f"  {i + 1}. {d}{marker}")
-        lines.append("\nUsage: /add-dir <path>")
-        return CommandResult(text="\n".join(lines))
-    expanded = os.path.realpath(os.path.expanduser(path))
-    if not os.path.isdir(expanded):
-        return CommandResult(text=f"Not a directory: {expanded}", success=False)
-    brain = ctx.brain
-    if brain:
-        if not hasattr(brain, '_working_dirs'):
-            brain._working_dirs = [os.getcwd()]
-        if expanded not in brain._working_dirs:
-            brain._working_dirs.append(expanded)
-        # Update permissions to include new directory
-        if hasattr(brain, 'permissions') and hasattr(brain.permissions, 'allowed_dirs'):
-            if expanded not in brain.permissions.allowed_dirs:
-                brain.permissions.allowed_dirs.append(expanded)
-    os.chdir(expanded)
-    count = len(brain._working_dirs) if brain and hasattr(brain, '_working_dirs') else 1
-    return CommandResult(text=f"Added and switched to: {expanded}\n  Total working dirs: {count}")
+# NOTE: /add-dir command is in remote.py (uses state manager)
 
 
 # NOTE: /context command moved to core.py with enhanced breakdown display
@@ -182,7 +153,7 @@ def _copy_to_clipboard(content: str) -> tuple[bool, str]:
         return False, "none"
 
 
-@command("copy", description="Copy code blocks or last response to clipboard",
+@command("copy", description="Copy last response to clipboard (or /copy N for the Nth-latest)",
          usage="/copy [N] [--code]", category="core", permission=PermLevel.READ_ONLY)
 async def cmd_copy(ctx: CommandContext) -> CommandResult:
     brain = ctx.brain
@@ -410,32 +381,7 @@ async def cmd_rename(ctx: CommandContext) -> CommandResult:
     return CommandResult(text="No active session.", success=False)
 
 
-@command("login", description="Authenticate with an API provider",
-         usage="/login [provider]", category="core", permission=PermLevel.STANDARD)
-async def cmd_login(ctx: CommandContext) -> CommandResult:
-    provider = ctx.args.strip() or "groq"
-    return CommandResult(
-        text=f"To add a {provider} API key:\n"
-             f"  1. Set the env var (e.g., GROQ_API_KEY=...)\n"
-             f"  2. Or add to ~/.jarvis/.env\n"
-             f"  3. Or use: /config to view current providers\n\n"
-             f"Run /doctor to verify."
-    )
-
-
-@command("logout", description="Clear saved credentials for a provider",
-         usage="/logout [provider]", category="core", permission=PermLevel.STANDARD)
-async def cmd_logout(ctx: CommandContext) -> CommandResult:
-    provider = ctx.args.strip()
-    if not provider:
-        return CommandResult(text="Usage: /logout <provider>", success=False)
-    brain = ctx.brain
-    if brain:
-        brain.vault.delete(provider)
-        from src.oauth import clear_credentials
-        clear_credentials(provider)
-        return CommandResult(text=f"Credentials cleared for: {provider}")
-    return CommandResult(text="Brain not available", success=False)
+# NOTE: /login and /logout commands are in remote.py
 
 
 @command("verbose", description="Toggle verbose output mode",
@@ -729,109 +675,35 @@ def _colorize_diff(diff_text: str) -> str:
     return '\n'.join(lines)
 
 
-@command("diff", description="Show git diff with colored output",
-         usage="/diff [--staged] [branch] [file]", category="git", permission=PermLevel.READ_ONLY)
-async def cmd_diff(ctx: CommandContext) -> CommandResult:
-    from src.agent.git_utils import get_staged_diff, get_unstaged_diff, get_diff_from_branch
-    target = ctx.args.strip()
-
-    try:
-        if target == "--staged" or target == "staged":
-            diff_text = get_staged_diff()
-            label = "Staged changes"
-        elif target and not target.startswith('-'):
-            # Could be a branch name or file path
-            if os.path.exists(target):
-                # File diff
-                result = subprocess.run(["git", "diff", "--", target],
-                                        capture_output=True, text=True, timeout=10)
-                diff_text = result.stdout.strip()
-                label = f"Changes in {target}"
-            else:
-                # Branch diff
-                diff_text = get_diff_from_branch(base=target)
-                label = f"Diff against {target}"
-        else:
-            diff_text = get_unstaged_diff()
-            label = "Unstaged changes"
-
-        if not diff_text:
-            # Show stat summary as fallback
-            cmd = ["git", "diff", "--stat"]
-            if target and target != "--staged":
-                cmd.append(target)
-            elif target == "--staged":
-                cmd.insert(2, "--staged")
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-            stat = result.stdout.strip()
-            if stat:
-                return CommandResult(text=f"{label} (stat only):\n{stat}")
-            return CommandResult(text="No changes detected.")
-
-        # Truncate large diffs
-        if len(diff_text) > 6000:
-            diff_text = diff_text[:6000] + "\n\n... (truncated, use `git diff` for full output)"
-
-        colored = _colorize_diff(diff_text)
-        return CommandResult(text=f"{label}\n{'=' * 40}\n{colored}")
-    except FileNotFoundError:
-        return CommandResult(text="git not found.", success=False)
-    except Exception as e:
-        return CommandResult(text=f"Diff failed: {e}", success=False)
-
-
-# NOTE: /compact command moved to core.py with before/after token counts and compaction type
-
-
-@command("review", description="Review recent changes or code",
-         usage="/review [file|commit]", category="git", permission=PermLevel.READ_ONLY)
-async def cmd_review(ctx: CommandContext) -> CommandResult:
-    import subprocess
-    target = ctx.args.strip()
-    if target:
-        cmd = ["git", "diff", target]
-    else:
-        cmd = ["git", "diff", "HEAD~1"]
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-        diff = result.stdout.strip()
-        if not diff:
-            return CommandResult(text="No diff to review.")
-        # Truncate if very large
-        if len(diff) > 4000:
-            diff = diff[:4000] + "\n\n... (truncated, use git diff directly for full output)"
-        return CommandResult(text=f"Code Review\n{'=' * 40}\n{diff}")
-    except FileNotFoundError:
-        return CommandResult(text="git not found.", success=False)
-    except subprocess.TimeoutExpired:
-        return CommandResult(text="git diff timed out.", success=False)
-
-
-@command("init", description="Initialize JARVIS in current directory",
-         usage="/init", category="core", permission=PermLevel.STANDARD)
-async def cmd_init(ctx: CommandContext) -> CommandResult:
-    import os
-    jarvis_dir = os.path.join(os.getcwd(), ".jarvis")
-    if os.path.exists(jarvis_dir):
-        return CommandResult(text=f"Already initialized: {jarvis_dir}")
-    os.makedirs(jarvis_dir, exist_ok=True)
-    # Create default config
-    config_path = os.path.join(jarvis_dir, "config.json")
-    import json
-    config = {
-        "project": os.path.basename(os.getcwd()),
-        "created": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "settings": {},
-    }
-    with open(config_path, "w") as f:
-        json.dump(config, f, indent=2)
-    return CommandResult(
-        text=f"Initialized JARVIS project in: {jarvis_dir}\n"
-             f"  Created: {config_path}"
-    )
+# NOTE: /diff, /review, /init commands are in git.py (richer implementations)
 
 
 # NOTE: /cost command moved to core.py with per-model breakdown and cache token counts
+
+
+# ── Billing helpers ────────────────────────────────────────────────
+
+def _load_billing() -> dict:
+    """Load billing data from ~/.jarvis/billing.json."""
+    try:
+        from src.config import JARVIS_HOME
+        billing_path = JARVIS_HOME / "billing.json"
+        if billing_path.exists():
+            return json.loads(billing_path.read_text())
+    except Exception:
+        pass
+    return {"total_credit": 20.0, "total_used": 0.0, "remaining": 20.0}
+
+
+def _save_billing(data: dict):
+    """Save billing data to ~/.jarvis/billing.json."""
+    try:
+        from src.config import JARVIS_HOME
+        billing_path = JARVIS_HOME / "billing.json"
+        billing_path.parent.mkdir(parents=True, exist_ok=True)
+        billing_path.write_text(json.dumps(data, indent=2) + "\n")
+    except Exception:
+        pass
 
 
 @command("budget", description="Set session spending limit or update account balance",
@@ -1052,21 +924,7 @@ async def cmd_allowed_tools(ctx: CommandContext) -> CommandResult:
     return CommandResult(text="\n".join(lines))
 
 
-@command("terminal-setup", description="Configure terminal for optimal JARVIS display",
-         usage="/terminal-setup", category="core", permission=PermLevel.READ_ONLY)
-async def cmd_terminal_setup(ctx: CommandContext) -> CommandResult:
-    return CommandResult(
-        text="Terminal Setup\n"
-             "=" * 40 + "\n"
-             "  Recommended: 120+ columns, 30+ rows\n"
-             "  Font: Any monospace (Fira Code, JetBrains Mono)\n"
-             "  Theme: Dark background\n"
-             "  Unicode: Required (UTF-8)\n\n"
-             "  Your terminal:\n"
-             f"    Size: {os.get_terminal_size().columns}x{os.get_terminal_size().lines}\n"
-             f"    TERM: {os.environ.get('TERM', 'unknown')}\n"
-             f"    LANG: {os.environ.get('LANG', 'unknown')}"
-    )
+# NOTE: /terminal-setup command is in remote.py
 
 
 @command("intro", description="Show the welcome screen again",
@@ -1136,28 +994,7 @@ async def cmd_rewind(ctx: CommandContext) -> CommandResult:
     return CommandResult(text="Nothing to rewind.")
 
 
-@command("export", description="Export conversation to a file",
-         usage="/export [format] [path]", category="session", permission=PermLevel.STANDARD)
-async def cmd_export(ctx: CommandContext) -> CommandResult:
-    import json as _json
-    brain = ctx.brain
-    if not brain:
-        return CommandResult(text="Brain not available", success=False)
-    parts = ctx.args.strip().split()
-    fmt = parts[0] if parts else "json"
-    path = parts[1] if len(parts) > 1 else f"jarvis-export-{int(time.time())}.{fmt}"
-    history = brain.memory.get_history(limit=500)
-    if fmt == "json":
-        with open(path, "w") as f:
-            _json.dump(history, f, indent=2, default=str)
-    elif fmt == "md":
-        with open(path, "w") as f:
-            for h in history:
-                role = h.get("role", "unknown")
-                f.write(f"## {role}\n\n{h.get('content', '')}\n\n---\n\n")
-    else:
-        return CommandResult(text=f"Unknown format: {fmt}. Use 'json' or 'md'.", success=False)
-    return CommandResult(text=f"Exported {len(history)} messages to: {path}")
+# NOTE: /export command is in session.py (supports md, JSON, txt)
 
 
 # ── New commands (Claude Code-inspired) ────────────────────────────
