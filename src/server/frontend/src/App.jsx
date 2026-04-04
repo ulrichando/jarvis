@@ -26,42 +26,33 @@ function App() {
 
     const clientType = isDesktop ? 'desktop' : 'browser'
 
-    // Register with server — exclusive mode: only one UI type at a time
+    // Register with server — seamless handoff between desktop and browser
     fetch('/api/client/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ type: clientType }),
     })
       .then((r) => r.json())
-      .then((data) => {
-        if (data.blocked) {
-          // Other UI is active — show nothing, this instance is rejected
-          setShowReactor(false)
-          return
-        }
-        setShowReactor(data.show_reactor)
-      })
+      .then((data) => setShowReactor(data.show_reactor))
       .catch(() => {})
 
-    // Poll: if we were blocked, check if the other client disconnected so we can take over
+    // Poll for handoff: only one UI shows the reactor at a time
+    // Browser takes priority over desktop. When browser closes, desktop resumes.
     const poll = setInterval(() => {
       fetch('/api/client/status')
         .then((r) => r.json())
         .then((data) => {
-          const other = isDesktop ? data.browser : data.desktop
-          if (!other && !showReactor) {
-            // Other client left — re-register to claim the UI
-            fetch('/api/client/register', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ type: clientType }),
-            }).then(r => r.json()).then(d => {
-              if (!d.blocked) setShowReactor(true)
-            }).catch(() => {})
+          if (isDesktop) {
+            // Desktop hides when browser is active, shows when browser leaves
+            setShowReactor(!data.browser)
+          } else {
+            // Browser hides when desktop is active AND browser just lost focus
+            // (This shouldn't normally happen — browser is always priority)
+            setShowReactor(true)
           }
         })
         .catch(() => {})
-    }, 3000)
+    }, 2000)
 
     // Unregister on close
     const unregister = () => {
@@ -102,10 +93,25 @@ function App() {
     return () => document.removeEventListener('user-speaking', stopSpeaking)
   }, [stopSpeaking])
 
-  // Handle incoming WebSocket messages — play TTS for voice responses
+  // Handle incoming WebSocket messages — handoff and status only
+  // (TTS is triggered by ChatPanel via onSpoken callback)
   useEffect(() => {
     if (wsMessages.length === 0) return
     const last = wsMessages[wsMessages.length - 1]
+
+    // Handle handoff: switch between desktop and browser
+    if (last.type === 'handoff') {
+      if (last.target === 'desktop' && !isDesktop) {
+        stopSpeaking()
+        navigator.sendBeacon('/api/client/unregister', JSON.stringify({ type: 'browser' }))
+        window.close()
+        document.title = 'JARVIS — Moved to Desktop'
+        setShowReactor(false)
+      }
+      if (last.target === 'browser' && isDesktop) {
+        setShowReactor(false)
+      }
+    }
 
     if (last.type === 'status' && last.status === 'thinking') {
       queueMicrotask(() => {
@@ -113,46 +119,41 @@ function App() {
         setReactorState('thinking')
       })
     }
-
-    // Play TTS — only for NON-partial messages.
-    // Only the PRIMARY client speaks to avoid double voice:
-    //   - Browser always speaks (it's the priority client)
-    //   - Desktop only speaks when browser is NOT connected (showReactor=true means desktop is primary)
-    const isTtsOwner = !isDesktop || showReactor
-    if (isTtsOwner && last.type === 'message' && last.spoken && last.spoken.length > 3 && !last.partial) {
-      queueMicrotask(() => {
-        // Stop any current playback before starting new speech
-        stopSpeaking()
-        setReactorState('speaking')
-        document.dispatchEvent(new CustomEvent('jarvis-tts-start'))
-        // Tell server to mute ambient listener (echo prevention)
-        sendMessage({ type: 'tts_state', speaking: true })
-
-        // Always use Edge TTS neural voice (same voice everywhere)
-        const text = last.spoken.substring(0, 500)
-        const ttsUrl = `/api/tts?text=${encodeURIComponent(text)}`
-        const audio = new Audio(ttsUrl)
-        audioRef.current = audio
-
-        const onDone = () => {
-          if (audioRef.current === audio) audioRef.current = null
-          setReactorState('idle')
-          document.dispatchEvent(new CustomEvent('jarvis-tts-end'))
-          // Tell server to unmute ambient listener
-          sendMessage({ type: 'tts_state', speaking: false })
-        }
-
-        audio.onended = onDone
-        audio.onerror = onDone
-        audio.play().catch(onDone)
-      })
-    }
-
-    // Final message without spoken — just update state
-    if (last.type === 'message' && last.final && (!last.spoken || last.spoken.length <= 3)) {
-      setTimeout(() => setReactorState('idle'), 1000)
-    }
   }, [wsMessages, stopSpeaking])
+
+  // TTS playback callback — called by ChatPanel when a message with spoken text arrives
+  const playSpoken = useCallback((data) => {
+    if (!data.spoken || data.spoken.length <= 3 || data.partial) {
+      if (!data.spoken && data.final) setTimeout(() => setReactorState('idle'), 1000)
+      return
+    }
+    // Only the primary client speaks (browser always, desktop only when browser absent)
+    const isTtsOwner = !isDesktop || showReactor
+    if (!isTtsOwner) return
+
+    queueMicrotask(() => {
+      stopSpeaking()
+      setReactorState('speaking')
+      document.dispatchEvent(new CustomEvent('jarvis-tts-start'))
+      sendMessage({ type: 'tts_state', speaking: true })
+
+      const text = data.spoken.substring(0, 500)
+      const ttsUrl = `/api/tts?text=${encodeURIComponent(text)}`
+      const audio = new Audio(ttsUrl)
+      audioRef.current = audio
+
+      const onDone = () => {
+        if (audioRef.current === audio) audioRef.current = null
+        setReactorState('idle')
+        document.dispatchEvent(new CustomEvent('jarvis-tts-end'))
+        sendMessage({ type: 'tts_state', speaking: false })
+      }
+
+      audio.onended = onDone
+      audio.onerror = onDone
+      audio.play().catch(onDone)
+    })
+  }, [isDesktop, showReactor, stopSpeaking, sendMessage])
 
   // Voice: SpeechRecognition (Chrome) or MediaRecorder+Whisper (WebKit/desktop)
   useEffect(() => {
@@ -354,6 +355,7 @@ function App() {
         onMinimize={closeChat}
         setReactorState={setReactorState}
         isDesktop={isDesktop && showReactor}
+        onSpoken={playSpoken}
       />
 
       {/* Settings */}

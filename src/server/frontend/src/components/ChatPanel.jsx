@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import ToolProgress from './ToolProgress'
 import ContextBar from './ContextBar'
 
-export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState }) {
+export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState, onSpoken }) {
   const [messages, setMessages] = useState([
     { role: 'jarvis', text: 'Online. How can I assist you, Ulrich?' },
   ])
@@ -101,20 +101,20 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
     }
 
     if (type === 'message') {
-      // Final message from JARVIS
+      // Trigger TTS via parent callback
+      if (onSpoken) onSpoken(data)
+
       const content = data.content || ''
       if (content && !content.startsWith('__')) {
-        // Capture tool executions that happened during this response
         const tools = { ...currentToolsRef.current }
         const hasTools = Object.keys(tools).length > 0
 
         if (data.partial) {
-          // Partial TTS message -- don't add to chat, handled by App for TTS
+          // Partial TTS message -- don't add to chat
           return
         }
 
         setMessages((prev) => {
-          // Remove any thinking placeholder
           const filtered = prev.filter((m) => !m.thinking)
           return [...filtered, {
             role: 'jarvis',
@@ -139,7 +139,7 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
         }
       }
     }
-  }, [setReactorState])
+  }, [setReactorState, onSpoken])
 
   // WebSocket connection
   useEffect(() => {
