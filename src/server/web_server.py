@@ -177,6 +177,15 @@ class JarvisWebServer:
                         continue
                     msg_type = data.get("type", "query")
 
+                    # Guard: Brain still loading (MCP init ~25s)
+                    if self.brain is None and msg_type in ("query", "learn", "recall", "stats", "passive_analysis"):
+                        await ws.send_json({
+                            "type": "message", "role": "jarvis",
+                            "content": "Still initializing... give me a moment.",
+                            "spoken": "Still initializing, give me a moment.",
+                        })
+                        continue
+
                     if msg_type == "query":
                         await self._handle_query(ws, data)
                     elif msg_type == "passive_analysis":

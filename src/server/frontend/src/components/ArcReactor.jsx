@@ -507,7 +507,7 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
       renderer.dispose()
       if (el.contains(renderer.domElement)) el.removeChild(renderer.domElement)
     }
-  }, [isDesktop])
+  }, [isDesktop, theme])
 
   return (
     <div ref={mountRef} style={{
