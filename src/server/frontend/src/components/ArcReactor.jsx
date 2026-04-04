@@ -10,17 +10,30 @@ import * as THREE from 'three'
  * Audio-reactive glow and expansion.
  */
 
-export default function ArcReactor({ state = 'idle', isDesktop = false, audioLevel = 0 }) {
+export default function ArcReactor({ state = 'idle', isDesktop = false, audioLevel = 0, theme }) {
   const mountRef = useRef(null)
   const audioRef = useRef(0)
   const stateRef = useRef(state)
+  const themeRef = useRef(theme)
 
   useEffect(() => { audioRef.current = audioLevel }, [audioLevel])
   useEffect(() => { stateRef.current = state }, [state])
+  useEffect(() => { themeRef.current = theme }, [theme])
 
   useEffect(() => {
     if (!mountRef.current) return
     const el = mountRef.current
+
+    // ── Theme color helpers ──
+    const hexToInt = (hex) => parseInt(hex.replace('#', ''), 16)
+    const t = themeRef.current || { primary: '#00b8d4', glow: '#00e5ff' }
+    const primaryInt = hexToInt(t.primary)
+    const glowInt = hexToInt(t.glow)
+    // Derive a dimmer variant for structure lines
+    const pr = (primaryInt >> 16) & 0xff, pg = (primaryInt >> 8) & 0xff, pb = primaryInt & 0xff
+    const structInt = ((Math.min(255, pr + 60) << 16) | (Math.min(255, pg + 60) << 8) | Math.min(255, pb + 60))
+    // All theme-colored materials tracked for live updates
+    const themedMaterials = []
 
     const scene = new THREE.Scene()
     const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100)
@@ -37,14 +50,18 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
     scene.add(globe)
     const R = 1.3
 
-    const lineMat = (opacity) => new THREE.LineBasicMaterial({
-      color: 0xffaa33,
-      transparent: true,
-      opacity,
-      blending: THREE.NormalBlending,
-      depthWrite: false,
-      linewidth: 1.5,
-    })
+    const lineMat = (opacity) => {
+      const m = new THREE.LineBasicMaterial({
+        color: structInt,
+        transparent: true,
+        opacity,
+        blending: THREE.NormalBlending,
+        depthWrite: false,
+        linewidth: 1.5,
+      })
+      themedMaterials.push({ mat: m, role: 'struct' })
+      return m
+    }
 
     // ── 1–3. Grid lines removed — puzzle pieces define the structure now ──
 
@@ -148,13 +165,13 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
         const edgeLine = new THREE.Line(
           new THREE.BufferGeometry().setFromPoints(edgePts),
           new THREE.LineBasicMaterial({
-            color: 0xffcc55, transparent: true, opacity: 0.45,
+            color: glowInt, transparent: true, opacity: 0.45,
             blending: THREE.AdditiveBlending,
           })
         )
 
         const mat = new THREE.MeshBasicMaterial({
-          color: 0xffaa33,
+          color: primaryInt,
           transparent: true,
           opacity: 0.08,
           side: THREE.DoubleSide,
@@ -295,7 +312,7 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
     sparkGeo.setAttribute('position', new THREE.BufferAttribute(sparkPos, 3))
     const sparkMat = new THREE.PointsMaterial({
       size: 0.012,
-      color: 0xffaa22,
+      color: primaryInt,
       transparent: true,
       opacity: 0.5,
       blending: THREE.AdditiveBlending, depthWrite: false,
@@ -321,7 +338,7 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
 
       const brightness = 0.15 + Math.random() * 0.35
       const mat = new THREE.LineBasicMaterial({
-        color: i % 5 === 0 ? 0xaaccff : i % 3 === 0 ? 0x4488ff : 0x2266ee,
+        color: i % 5 === 0 ? glowInt : i % 3 === 0 ? primaryInt : structInt,
         transparent: true,
         opacity: brightness,
         blending: THREE.AdditiveBlending,
@@ -344,10 +361,11 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
       c.width = size; c.height = size
       const ctx = c.getContext('2d')
       const grad = ctx.createRadialGradient(size/2, size/2, 0, size/2, size/2, size/2)
-      grad.addColorStop(0, 'rgba(255, 200, 80, 1)')
-      grad.addColorStop(0.15, 'rgba(255, 150, 30, 0.8)')
-      grad.addColorStop(0.4, 'rgba(255, 100, 10, 0.3)')
-      grad.addColorStop(1, 'rgba(255, 80, 0, 0)')
+      const gr = (glowInt >> 16) & 0xff, gg = (glowInt >> 8) & 0xff, gb = glowInt & 0xff
+      grad.addColorStop(0, `rgba(${gr}, ${gg}, ${gb}, 1)`)
+      grad.addColorStop(0.15, `rgba(${pr}, ${pg}, ${pb}, 0.8)`)
+      grad.addColorStop(0.4, `rgba(${pr}, ${pg}, ${pb}, 0.3)`)
+      grad.addColorStop(1, `rgba(${pr}, ${pg}, ${pb}, 0)`)
       ctx.fillStyle = grad
       ctx.fillRect(0, 0, size, size)
       const tex = new THREE.CanvasTexture(c)
@@ -356,7 +374,7 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
 
     const glowMat = new THREE.SpriteMaterial({
       map: glowTex,
-      color: 0xff8800,
+      color: primaryInt,
       transparent: true,
       opacity: 0.7,
       blending: THREE.AdditiveBlending,

@@ -101,18 +101,66 @@ async def cmd_reload(ctx: CommandContext) -> CommandResult:
     return CommandResult(text="\n".join(lines))
 
 
-@command("desktop", description="Launch JARVIS desktop app (transparent window)",
-         usage="/desktop", category="core", permission=PermLevel.STANDARD)
+@command("launch-desktop", aliases=["start-desktop"],
+         description="Launch JARVIS desktop overlay (GTK+WebKit)",
+         usage="/launch-desktop", category="core", permission=PermLevel.STANDARD)
 async def cmd_desktop(ctx: CommandContext) -> CommandResult:
+    from src.commands.desktop.desktop import _is_desktop_running
+
+    if _is_desktop_running():
+        return CommandResult(text="JARVIS desktop is already running.")
+
     jarvis_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-    subprocess.Popen(
-        ["python3", "-m", "src.desktop"],
-        cwd=jarvis_root,
-        start_new_session=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    return CommandResult(text="JARVIS desktop launching...")
+    log_path = "/tmp/jarvis-desktop.log"
+
+    with open(log_path, "w") as log_file:
+        subprocess.Popen(
+            ["python3", "-c", "from src.desktop.app import main; main()"],
+            cwd=jarvis_root,
+            start_new_session=True,
+            stdout=log_file,
+            stderr=log_file,
+            env={**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0.0")},
+        )
+    return CommandResult(text=f"JARVIS desktop launching... (log: {log_path})")
+
+
+# ---------------------------------------------------------------------------
+# /color -- Change JARVIS theme color globally
+# ---------------------------------------------------------------------------
+
+@command("color", aliases=["theme"], description="Change JARVIS theme color",
+         usage="/color <preset|#hex>  (presets: arc-reactor, iron-man, ultron, stealth, emerald, frost, solar, hotrod, ghost)",
+         category="core", permission=PermLevel.STANDARD)
+async def cmd_color(ctx: CommandContext) -> CommandResult:
+    from src.desktop.colors import PRESETS, get_theme, get_colors, set_theme, set_custom_color, generate_icon
+
+    args = ctx.args.strip().lower()
+    if not args or args in ("list", "help"):
+        current = get_theme()
+        primary, glow = get_colors()
+        lines = [f"Current theme: {current} ({primary})", "", "Available presets:"]
+        for pid, (phex, _, label) in PRESETS.items():
+            marker = " \u2022" if pid == current else "  "
+            lines.append(f"{marker} {pid:14s}  {phex}  {label}")
+        lines.append("")
+        lines.append("Usage: /color <preset>  or  /color #hex")
+        return CommandResult(text="\n".join(lines))
+
+    if args.startswith("#") and len(args) in (4, 7):
+        if len(args) == 4:
+            args = f"#{args[1]*2}{args[2]*2}{args[3]*2}"
+        primary, glow = set_custom_color(args)
+        generate_icon(primary)
+        return CommandResult(text=f"Theme set to custom color: {primary} (glow: {glow})")
+
+    if args in PRESETS:
+        primary, glow = set_theme(args)
+        generate_icon(primary)
+        _, _, label = PRESETS[args]
+        return CommandResult(text=f"Theme set to {label}: {primary}")
+
+    return CommandResult(text=f"Unknown theme '{args}'. Use /color list to see options.", success=False)
 
 
 # NOTE: /add-dir command is in remote.py (uses state manager)

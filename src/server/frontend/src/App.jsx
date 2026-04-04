@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import useWebSocket from './hooks/useWebSocket'
+import useTheme from './hooks/useTheme'
 import ArcReactor from './components/ArcReactor'
 import HudPanel from './components/HudPanel'
 import ChatPanel from './components/ChatPanel'
@@ -15,6 +16,7 @@ function App() {
   const [audioLevel, setAudioLevel] = useState(0)
 
   const { messages: wsMessages, sendMessage } = useWebSocket('ws://localhost:8765/ws')
+  const theme = useTheme()
 
   // Detect mode and register with server
   useEffect(() => {
@@ -74,13 +76,13 @@ function App() {
   const audioRef = useRef(null)
 
   const stopSpeaking = useCallback(() => {
-    // Stop browser TTS
-    if ('speechSynthesis' in window) window.speechSynthesis.cancel()
-    // Stop audio element
+    // Stop Edge TTS audio playback
     if (audioRef.current) {
       try { audioRef.current.pause() } catch { /* ignore */ }
       audioRef.current = null
     }
+    // Also cancel browser TTS in case it was triggered externally
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel()
     setReactorState('idle')
   }, [])
 
@@ -96,60 +98,40 @@ function App() {
     const last = wsMessages[wsMessages.length - 1]
 
     if (last.type === 'status' && last.status === 'thinking') {
-      // Defer to avoid synchronous setState in effect
       queueMicrotask(() => {
         stopSpeaking()
         setReactorState('thinking')
       })
     }
 
-    // Play TTS — only for the FINAL message (skip partial to avoid double voice)
-    if (last.type === 'message' && last.spoken && last.spoken.length > 3 && !last.partial) {
-      // If final message comes while partial is still speaking, wait for it to finish
-      // then speak the remaining text. Server already strips the first sentence.
-      const speakText = (text) => {
+    // Play TTS — only for NON-partial messages.
+    // Only the PRIMARY client speaks to avoid double voice:
+    //   - Browser always speaks (it's the priority client)
+    //   - Desktop only speaks when browser is NOT connected (showReactor=true means desktop is primary)
+    const isTtsOwner = !isDesktop || showReactor
+    if (isTtsOwner && last.type === 'message' && last.spoken && last.spoken.length > 3 && !last.partial) {
+      queueMicrotask(() => {
+        // Stop any current playback before starting new speech
+        stopSpeaking()
         setReactorState('speaking')
         document.dispatchEvent(new CustomEvent('jarvis-tts-start'))
 
-        if ('speechSynthesis' in window) {
-          const utterance = new SpeechSynthesisUtterance(text.substring(0, 500))
-          utterance.rate = 1.05
-          utterance.pitch = 0.95
-          const voices = window.speechSynthesis.getVoices()
-          const preferred = voices.find(v =>
-            v.name.includes('Andrew') || v.name.includes('David') ||
-            v.name.includes('Daniel') || v.name.includes('Google UK English Male')
-          ) || voices.find(v => v.lang.startsWith('en')) || voices[0]
-          if (preferred) utterance.voice = preferred
-          utterance.onend = () => { setReactorState('idle'); document.dispatchEvent(new CustomEvent('jarvis-tts-end')) }
-          utterance.onerror = () => { setReactorState('idle'); document.dispatchEvent(new CustomEvent('jarvis-tts-end')) }
-          window.speechSynthesis.speak(utterance)
-        } else {
-          const ttsUrl = `http://localhost:8765/api/tts?text=${encodeURIComponent(text.substring(0, 300))}`
-          const audio = new Audio(ttsUrl)
-          audioRef.current = audio
-          audio.play().then(() => {
-            audio.onended = () => { audioRef.current = null; setReactorState('idle'); document.dispatchEvent(new CustomEvent('jarvis-tts-end')) }
-          }).catch(() => { audioRef.current = null; setReactorState('idle'); document.dispatchEvent(new CustomEvent('jarvis-tts-end')) })
-        }
-      }
+        // Always use Edge TTS neural voice (same voice everywhere)
+        const text = last.spoken.substring(0, 500)
+        const ttsUrl = `/api/tts?text=${encodeURIComponent(text)}`
+        const audio = new Audio(ttsUrl)
+        audioRef.current = audio
 
-      if (last.final && window.speechSynthesis?.speaking) {
-        // Partial TTS still playing — queue the rest after it finishes
-        const checkDone = setInterval(() => {
-          if (!window.speechSynthesis.speaking) {
-            clearInterval(checkDone)
-            if (last.spoken.length > 3) speakText(last.spoken)
-          }
-        }, 100)
-        // Safety: clear after 15s
-        setTimeout(() => clearInterval(checkDone), 15000)
-      } else {
-        queueMicrotask(() => {
-          stopSpeaking()
-          speakText(last.spoken)
-        })
-      }
+        const onDone = () => {
+          if (audioRef.current === audio) audioRef.current = null
+          setReactorState('idle')
+          document.dispatchEvent(new CustomEvent('jarvis-tts-end'))
+        }
+
+        audio.onended = onDone
+        audio.onerror = onDone
+        audio.play().catch(onDone)
+      })
     }
 
     // Final message without spoken — just update state
@@ -270,7 +252,6 @@ function App() {
 
           if (avg > threshold && !recording) {
             // User started speaking — STOP JARVIS immediately
-            if ('speechSynthesis' in window) window.speechSynthesis.cancel()
             document.dispatchEvent(new CustomEvent('user-speaking'))
             chunks = []
             try { mediaRecorder.start() } catch { /* ignore */ }
@@ -339,7 +320,7 @@ function App() {
 
       {/* Arc Reactor — fullscreen Three.js canvas behind everything */}
       {showReactor && (
-        <ArcReactor state={reactorState} isDesktop={isDesktop} audioLevel={audioLevel} />
+        <ArcReactor state={reactorState} isDesktop={isDesktop} audioLevel={audioLevel} theme={theme} />
       )}
 
       {/* HUD Panels removed — clean sphere only */}
