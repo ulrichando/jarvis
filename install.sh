@@ -116,7 +116,7 @@ else
 fi
 
 cd "$JARVIS_SRC" 2>/dev/null || true
-exec python3 -m src.shells.cli.jarvis_cli "$@"
+exec python3 -m src.cli.jarvis_cli "$@"
 LAUNCHER
 chmod +x "$JARVIS_BIN"
 
@@ -126,7 +126,7 @@ cat > "$HOME/.local/bin/jarvis-web" << 'WEBLAUNCH'
 JARVIS_SRC="${HOME}/.jarvis-src"
 [ -d "$JARVIS_SRC" ] || JARVIS_SRC="$(pwd)"
 cd "$JARVIS_SRC" 2>/dev/null || true
-exec python3 -m src.shells.web.server "$@"
+exec python3 -m src.server.web_server "$@"
 WEBLAUNCH
 chmod +x "$HOME/.local/bin/jarvis-web"
 

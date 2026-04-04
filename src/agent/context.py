@@ -8,7 +8,6 @@ Inspired by Claude Code's compaction strategy:
 """
 
 import copy
-import json as _json
 import re
 from dataclasses import dataclass, field
 

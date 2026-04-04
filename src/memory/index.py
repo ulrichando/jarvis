@@ -68,7 +68,7 @@ DOMAIN_KEYWORDS = {
     "personal": {"ulrich", "prefer", "like", "hate", "favorite", "birthday", "work",
                  "home", "friend", "family", "hobby", "want", "need", "feel",
                  "habit", "routine", "always", "never", "morning", "night"},
-    "project": {"jarvis", "brain", "plugin", "evolve", "deploy", "build", "feature",
+    "project": {"jarvis", "src", "plugin", "evolve", "deploy", "build", "feature",
                 "bug", "fix", "improve", "upgrade", "module", "shell", "web",
                 "mobile", "desktop", "architecture", "design", "plan"},
 }

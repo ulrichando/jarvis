@@ -163,19 +163,17 @@ class TestTips:
             assert callable(tip.content)
             assert tip.cooldown_sessions > 0
 
-    @pytest.mark.asyncio
-    async def test_get_relevant_tips(self):
+    def test_get_relevant_tips(self):
         from src.services.tips.tipRegistry import get_relevant_tips
 
-        tips = await get_relevant_tips()
+        tips = asyncio.get_event_loop().run_until_complete(get_relevant_tips())
         # All tips should be relevant on first run (no history)
         assert len(tips) > 0
 
-    @pytest.mark.asyncio
-    async def test_tip_scheduler(self):
+    def test_tip_scheduler(self):
         from src.services.tips.tipScheduler import get_tip_to_show_on_spinner
 
-        tip = await get_tip_to_show_on_spinner()
+        tip = asyncio.get_event_loop().run_until_complete(get_tip_to_show_on_spinner())
         # Should return a tip since none have been shown
         assert tip is not None
         assert tip.id
@@ -237,12 +235,11 @@ class TestSessionMemoryUtils:
         assert mgr is not None
         assert mgr._tool_calls_since_last_update == 0
 
-    @pytest.mark.asyncio
-    async def test_get_session_memory_content(self):
+    def test_get_session_memory_content(self):
         from src.services.SessionMemory.sessionMemoryUtils import get_session_memory_content
 
         # Should return None or string, not raise
-        content = await get_session_memory_content()
+        content = asyncio.get_event_loop().run_until_complete(get_session_memory_content())
         assert content is None or isinstance(content, str)
 
 

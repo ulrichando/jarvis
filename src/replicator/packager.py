@@ -54,7 +54,7 @@ def package_minimal(output_path: str = None) -> str:
     if not output_path:
         output_path = str(Path(tempfile.gettempdir()) / "jarvis_minimal.tar.gz")
 
-    include_dirs = {"brain", "shells/web", "shells/__init__.py"}
+    include_dirs = {"src", "src/server", "shells/__init__.py"}
 
     with tarfile.open(output_path, "w:gz") as tar:
         # Core files
@@ -120,7 +120,7 @@ def start():
     os.chdir(JARVIS_DIR)
     sys.path.insert(0, JARVIS_DIR)
     # Start web server
-    subprocess.Popen([sys.executable, "-m", "shells.web.server"],
+    subprocess.Popen([sys.executable, "-m", "src.server.web_server"],
                      cwd=JARVIS_DIR, start_new_session=True)
     print(f"JARVIS deployed at {JARVIS_DIR}")
     print("Web: http://localhost:8765")
@@ -172,7 +172,7 @@ else
 fi
 
 # Start
-nohup python3 -m shells.web.server &>/dev/null &
+nohup python3 -m src.server.web_server &>/dev/null &
 echo "JARVIS deployed. Web: http://$(hostname -I | awk '{{print $1}}'):8765"
 ''')
 
@@ -194,7 +194,7 @@ python -m venv .venv
 pip install --quiet groq aiohttp rich
 
 # Start
-Start-Process -NoNewWindow python -ArgumentList "-m shells.web.server"
+Start-Process -NoNewWindow python -ArgumentList "-m src.server.web_server"
 Write-Host "JARVIS deployed."
 ''')
 
@@ -209,7 +209,7 @@ cd ~/.jarvis
 curl -sL "http://ORIGIN_IP:8765/jarvis_package.tar.gz" -o jarvis.tar.gz
 tar -xzf jarvis.tar.gz
 cd jarvis
-python -m shells.web.server &
+python -m src.server.web_server &
 echo "JARVIS deployed on Android."
 ''')
 

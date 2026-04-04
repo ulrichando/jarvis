@@ -33,7 +33,7 @@ def _start_server(host="127.0.0.1", port=8765):
     import asyncio
     async def _run():
         try:
-            from src.shells.web.server import JarvisWebServer
+            from src.server.web_server import JarvisWebServer
             server = JarvisWebServer()
             await server.run()
         except Exception as e:

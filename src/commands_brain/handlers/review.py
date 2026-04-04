@@ -61,7 +61,7 @@ def _scan_project(root: str) -> dict:
             parts = rel.split(os.sep)
             if len(parts) >= 2:
                 category = parts[0]
-                if len(parts) >= 3 and parts[0] == "brain":
+                if len(parts) >= 3 and parts[0] == "src":
                     category = f"brain/{parts[1]}"
             else:
                 category = "(root)"

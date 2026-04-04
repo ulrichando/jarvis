@@ -61,7 +61,7 @@ source .venv/bin/activate &&
 pip install --quiet groq aiohttp rich requests beautifulsoup4 duckduckgo-search edge-tts 2>/dev/null &&
 echo 'GROQ_API_KEY={api_key}' > .env &&
 mkdir -p ~/.jarvis && mv /tmp/jarvis ~/.jarvis/ &&
-nohup ~/.jarvis/jarvis/.venv/bin/python -m shells.web.server &>/dev/null &
+nohup ~/.jarvis/jarvis/.venv/bin/python -m src.server.web_server &>/dev/null &
 echo JARVIS_DEPLOYED
 """
         r = _run(f'{ssh_prefix}ssh {opts} {remote} "{install_script}"', timeout=300)
@@ -144,7 +144,7 @@ class DeployADB:
             "tar -xzf jarvis.tar.gz && "
             "cd jarvis && "
             f"echo 'GROQ_API_KEY={api_key}' > .env && "
-            "nohup python3 -m shells.web.server &"
+            "nohup python3 -m src.server.web_server &"
         )
         r = _run(f'adb -s {target.ip}:5555 shell "{install}"', timeout=120)
 

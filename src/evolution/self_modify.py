@@ -25,7 +25,7 @@ from pathlib import Path
 log = logging.getLogger("jarvis.evolution.self_modify")
 
 JARVIS_ROOT = Path(__file__).resolve().parent.parent.parent
-PLUGIN_DIR = JARVIS_ROOT / "brain" / "plugins"
+PLUGIN_DIR = JARVIS_ROOT / "src" / "plugins"
 SKILL_DIR = Path(os.environ.get("JARVIS_HOME", Path.home() / ".jarvis")) / "skills"
 
 # ── Dangerous AST nodes that generated code must NOT contain ──
@@ -574,7 +574,7 @@ Output the COMPLETE updated file. Not just the changes — the FULL file."""
 sleep 2
 cd {JARVIS_ROOT}
 source .venv/bin/activate
-PYTHONUNBUFFERED=1 python3 -m shells.web.server &
+PYTHONUNBUFFERED=1 python3 -m src.server.web_server &
 """)
         try:
             restart_script.chmod(0o755)

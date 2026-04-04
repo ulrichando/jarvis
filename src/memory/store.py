@@ -11,6 +11,7 @@ import time
 from src.config import DATA_DIR
 from src.memory.lattice import NeuralLattice, MemoryNode, NodeType
 from src.memory.lattice.persistence import LatticePersistence
+from src.memdir import find_relevant_memories as memdir_search, list_memories as memdir_list
 
 log = logging.getLogger("jarvis.memory")
 
@@ -248,7 +249,8 @@ class MemoryStore:
 
     def recall_as_context(self, query: str, top_k: int = 5) -> str:
         """Recall KNOWLEDGE (not conversation history) related to a query.
-        Only returns FACTS, SKILLS, CONCEPTS — never episodic/conversation memories."""
+        Only returns FACTS, SKILLS, CONCEPTS — never episodic/conversation memories.
+        Also includes relevant entries from the memdir file-based memory."""
         all_memories = self.lattice.recall(query, top_k * 2)  # Fetch more, then filter
 
         # Filter: only knowledge, not conversation echoes
@@ -258,13 +260,24 @@ class MemoryStore:
             and m.strength > 0.3
         ][:top_k]
 
-        if not memories:
-            return ""
+        lines = []
+        if memories:
+            lines.append("[Known facts:]")
+            for mem in memories:
+                lines.append(f"  - {mem.content}")
 
-        lines = ["[Known facts:]"]
-        for mem in memories:
-            lines.append(f"  - {mem.content}")
-        return "\n".join(lines)
+        # Also search memdir for file-based memories
+        try:
+            memdir_results = memdir_search(query, max_results=min(3, top_k))
+            if memdir_results:
+                lines.append("[Memory files:]")
+                for entry in memdir_results:
+                    preview = entry.content[:150].replace("\n", " ")
+                    lines.append(f"  - [{entry.id}] {preview}")
+        except Exception:
+            pass
+
+        return "\n".join(lines) if lines else ""
 
     # ── Fast recall methods (powered by inverted index) ───────────────
 

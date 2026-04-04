@@ -30,6 +30,60 @@ logging.getLogger("numexpr").setLevel(logging.ERROR)
 logging.getLogger("numexpr.utils").setLevel(logging.ERROR)
 warnings.filterwarnings("ignore", module="numexpr")
 
+# ── Keybinding System (src/keybindings) ─────────────────────────────
+from src.keybindings import KeybindingResolver, ParsedKeystroke, DEFAULT_BINDINGS
+_keybinding_resolver = KeybindingResolver()
+
+
+def _char_to_keystroke(ch: str) -> ParsedKeystroke:
+    """Convert a raw terminal character to a ParsedKeystroke for keybinding resolution."""
+    ks = ParsedKeystroke()
+    if len(ch) == 1 and ord(ch) < 32:
+        # Control character: Ctrl+letter
+        ks.ctrl = True
+        ks.key = chr(ord(ch) + 96)  # e.g. \x03 -> 'c', \x0c -> 'l'
+    elif ch == "\x1b":
+        ks.key = "escape"
+    elif ch == "\n" or ch == "\r":
+        ks.key = "enter"
+    elif ch == "\t":
+        ks.key = "tab"
+    elif ch == "\x7f" or ch == "\x08":
+        ks.key = "backspace"
+    else:
+        ks.key = ch
+    return ks
+
+
+def resolve_keybinding(context: str, ch: str) -> str | None:
+    """Resolve a raw character to a keybinding action. Returns action name or None."""
+    ks = _char_to_keystroke(ch)
+    return _keybinding_resolver.resolve(context, ks)
+
+# ── Vim Mode System (src/vim) ───────────────────────────────────────
+from src.vim.types import (
+    VimState, InsertState, NormalState, IdleCommand,
+    create_initial_vim_state, create_initial_persistent_state,
+    PersistentState, OPERATORS, SIMPLE_MOTIONS,
+)
+from src.vim.transitions import enter_insert, enter_normal
+from src.vim.motions import resolve_motion, is_inclusive_motion
+from src.vim.operators import delete_range, yank_range, change_range, TextRange
+from src.vim.textObjects import inner_word, a_word
+
+# ── State Manager (src/state) ──────────────────────────────────────
+from src.state import get_state_manager as _get_state_manager
+
+# ── Theme Detection (src/utils/theme) ──────────────────────────────
+from src.utils.theme import (
+    get_theme as _get_src_theme, theme_color_to_ansi,
+    ThemeName, THEME_NAMES,
+)
+from src.utils.effort import (
+    EffortLevel, get_effort_level_description, get_effort_suffix,
+    convert_effort_value_to_level, parse_effort_value,
+)
+
 # ── Theme System ─────────────────────────────────────────────────────
 
 RESET = "\033[0m"
@@ -594,7 +648,7 @@ async def main():
     # Suppress startup logs in CLI mode
     import logging
     logging.getLogger("jarvis").setLevel(logging.WARNING)
-    logging.getLogger("brain").setLevel(logging.WARNING)
+    logging.getLogger("src").setLevel(logging.WARNING)
     logging.getLogger("groq").setLevel(logging.WARNING)
 
     # Session manager
@@ -678,7 +732,7 @@ async def main():
 
     if args.debug:
         logging.getLogger("jarvis").setLevel(logging.DEBUG)
-        logging.getLogger("brain").setLevel(logging.DEBUG)
+        logging.getLogger("src").setLevel(logging.DEBUG)
         if args.debug != "all":
             for filt in args.debug.split(","):
                 logging.getLogger(f"brain.{filt.strip()}").setLevel(logging.DEBUG)
@@ -1030,7 +1084,7 @@ async def main():
     _writeln()
 
     # Initialize companion
-    from src.shells.cli.companion import Companion
+    from src.cli.companion import Companion
     _companion = Companion()
     if brain is not None:
         brain._companion = _companion
@@ -1067,6 +1121,63 @@ async def main():
     _active_task: asyncio.Task | None = None
     _input_queue: asyncio.Queue = asyncio.Queue()
 
+    # ── Vim Mode State (src/vim) ──
+    _vim_state: VimState = create_initial_vim_state()
+    _vim_persistent: PersistentState = create_initial_persistent_state()
+    _vim_enabled = False  # Enable with /vim command or --vim flag
+
+    def _vim_handle_normal_key(key: str, buf: list) -> bool:
+        """Handle a keypress in vim NORMAL mode. Returns True if handled."""
+        nonlocal _vim_state, _vim_persistent
+        if not isinstance(_vim_state, NormalState):
+            return False
+        text = "".join(buf)
+
+        # Simple motions
+        if key in SIMPLE_MOTIONS:
+            # Just move cursor conceptually (in single-line input, h/l are most useful)
+            return True
+
+        # Mode transitions
+        if key == "i":
+            _vim_state = enter_insert(_vim_state)
+            return True
+        if key == "a":
+            _vim_state = enter_insert(_vim_state)
+            return True
+        if key == "A":
+            _vim_state = enter_insert(_vim_state)
+            return True
+        if key == "I":
+            _vim_state = enter_insert(_vim_state)
+            return True
+
+        # Delete line: dd
+        if key == "d" and hasattr(_vim_state.command, 'op') and _vim_state.command.type == "operator" and _vim_state.command.op == "delete":
+            deleted = text
+            buf.clear()
+            _vim_persistent.register = deleted
+            _vim_state = NormalState(command=IdleCommand())
+            return True
+
+        # Operators
+        if key in OPERATORS:
+            from src.vim.types import OperatorCommand
+            _vim_state = NormalState(command=OperatorCommand(op=OPERATORS[key], count=1))
+            return True
+
+        # Paste from register
+        if key == "p" and _vim_persistent.register:
+            buf.extend(_vim_persistent.register)
+            return True
+
+        # Undo (u) - clear buffer
+        if key == "u":
+            buf.clear()
+            return True
+
+        return False
+
     # ── Simple Terminal Layout (no scroll regions, no absolute positioning) ──
     # Banner at top. Output flows down. Input drawn inline. Like JARVIS.
     INPUT_ZONE_HEIGHT = 4
@@ -1095,15 +1206,36 @@ async def main():
         tw = _tw()
         mode_str = brain.mode if client._is_full_brain else "normal"
 
-        # Right side: effort + companion name
+        # Right side: model · effort · cost · companion
         right_parts = []
+        # Model name
+        if model_name and model_name != "local":
+            right_parts.append(model_name)
+        # Mode (if not normal)
+        if mode_str and mode_str != "normal":
+            right_parts.append(mode_str)
+        # Effort level (using src/utils/effort)
         try:
-            effort = getattr(brain, 'reasoner', None)
-            effort_val = getattr(effort, 'effort', 'high') if effort else 'high'
-            if effort_val and effort_val != 'high':
-                right_parts.append(f"● {effort_val}")
+            _sm = _get_state_manager()
+            effort_val = _sm.get("effort_level", "high")
+            if effort_val and effort_val != "high":
+                from src.constants.figures import EFFORT_LOW, EFFORT_MEDIUM, EFFORT_MAX
+                _eicon = {
+                    "low": EFFORT_LOW, "medium": EFFORT_MEDIUM, "max": EFFORT_MAX,
+                }.get(effort_val, "")
+                right_parts.append(f"{_eicon} {effort_val}")
         except Exception:
             pass
+        # Session cost
+        try:
+            from src.agent.cost_tracker import get_tracker
+            tracker = get_tracker()
+            cost = tracker.get_session_cost()
+            if cost > 0.001:
+                right_parts.append(f"${cost:.2f}")
+        except Exception:
+            pass
+        # Companion name
         if _companion and _companion.enabled and hasattr(_companion, 'data') and _companion.data:
             cname = _companion.data.get("name", "")
             if cname:
@@ -1111,12 +1243,22 @@ async def main():
         right_str = " · ".join(right_parts)
 
         sep = f"{DIM}{'─' * tw}{RESET}"
-        prompt = f"{YELLOW}{mode_str}{RESET} ❯ " if mode_str != "normal" else "❯ "
+        # Show vim mode in prompt if vim is enabled
+        vim_indicator = ""
+        if _vim_enabled:
+            if isinstance(_vim_state, NormalState):
+                vim_indicator = f"{BLUE}[N]{RESET} "
+            else:
+                vim_indicator = f"{GREEN}[I]{RESET} "
+        prompt = f"{vim_indicator}{YELLOW}{mode_str}{RESET} ❯ " if mode_str != "normal" else f"{vim_indicator}❯ "
 
-        # Footer
+        # Footer: shortcuts left, status right
         left = f"  {DIM}? for shortcuts{RESET}"
         if right_str:
-            pad = max(1, tw - 16 - len(right_str) - 2)
+            # Calculate visible length (strip ANSI) for padding
+            visible_left_len = 16  # "  ? for shortcuts"
+            visible_right_len = len(right_str)
+            pad = max(1, tw - visible_left_len - visible_right_len - 2)
             footer = f"{left}{' ' * pad}{DIM}{right_str}{RESET}"
         else:
             footer = left
@@ -1422,6 +1564,41 @@ async def main():
                 return
 
             # ── Normal input mode ──
+            # Try keybinding resolver first (src/keybindings)
+            _kb_action = resolve_keybinding("Chat", ch)
+            if _kb_action == "app:interrupt":
+                _hide_menu()
+                if _active_task and not _active_task.done():
+                    _active_task.cancel()
+                    _outputln(f"\n  {DIM}Cancelled.{RESET}")
+                buf.clear()
+                _history_idx = len(_history_entries)
+                _redraw()
+                result_future.set_result("")
+                return
+            elif _kb_action == "app:exit":
+                _hide_menu()
+                result_future.set_result(None)
+                return
+            elif _kb_action == "app:redraw":
+                _hide_menu()
+                _erase_frame()
+                os.system("clear" if os.name != "nt" else "cls")
+                _frame_drawn = False
+                _writeln(render_banner(model_name, provider_name, cwd_display, session_name, cmd_count))
+                _writeln()
+                _setup_zones()
+                _draw_input_frame(mode_prefix, "".join(buf))
+                return
+            elif _kb_action == "history:search":
+                _hide_menu()
+                _search_mode = True
+                _search_buf.clear()
+                _search_match_idx = 0
+                _draw_search_prompt()
+                return
+            # Fall through to legacy hardcoded handling (keybindings supplement, don't replace)
+
             if ch == "\n" or ch == "\r":
                 if menu_visible:
                     matches = _get_matches()
@@ -1528,6 +1705,13 @@ async def main():
                         _redraw()
                         _hide_menu()
             elif ch >= " ":
+                # Vim NORMAL mode: intercept keys
+                if _vim_enabled and isinstance(_vim_state, NormalState):
+                    handled = _vim_handle_normal_key(ch, buf)
+                    if handled:
+                        _redraw()
+                        return
+                # INSERT mode or vim disabled: normal input
                 buf.append(ch)
                 will_show_menu = "".join(buf).startswith("/")
                 _redraw(hide_menu=not will_show_menu)
@@ -1585,6 +1769,11 @@ async def main():
                     else:
                         buf.extend(_history_entries[_history_idx])
                     _redraw()
+            elif seq == "" and _vim_enabled:
+                # Just Escape with vim enabled — switch to NORMAL mode
+                if isinstance(_vim_state, InsertState):
+                    _vim_state = enter_normal(_vim_state)
+                _hide_menu()
             else:
                 # Just Escape — close menu
                 _hide_menu()
@@ -1647,9 +1836,10 @@ async def main():
         """Run a query as a background task, outputting to the scroll region."""
         nonlocal _active_task
 
-        from src.shells.cli.display import (
+        from src.cli.display import (
             tool_call_line, tool_result_line, tool_result_preview,
             diff_display, token_footer as _token_footer,
+            collapsed_tool_group, permission_prompt,
         )
 
         start = time.time()
@@ -1670,11 +1860,11 @@ async def main():
             t0 = time.time()
             while True:
                 elapsed = time.time() - t0
-                # Blink: alternate between visible and dim ●
-                dot = f"{CYAN}●{RESET}" if i % 2 == 0 else f"{DIM}●{RESET}"
-                _output(f"\r  {dot} {DIM}{_spin_label[0]}{RESET}\033[K")
+                frame = SPINNER_FRAMES[i % len(SPINNER_FRAMES)]
+                elapsed_str = f" {DIM}{elapsed:.0f}s{RESET}" if elapsed >= 2 else ""
+                _output(f"\r  {BLUE}{frame}{RESET} {DIM}{_spin_label[0]}{RESET}{elapsed_str}\033[K")
                 i += 1
-                await asyncio.sleep(0.4)
+                await asyncio.sleep(0.08)
 
         def _start_spin(label="Thinking..."):
             nonlocal _spin_task
@@ -1783,30 +1973,17 @@ async def main():
             _outputln(render_markdown(full_text.strip()))
             _outputln()
 
-        # Token footer with cost
+        # Token footer with cost (uses display.py)
         elapsed_total = time.time() - start
-        parts = []
-        if _tokens_this_turn > 0:
-            if _tokens_this_turn >= 1000:
-                parts.append(f"{_tokens_this_turn / 1000:.1f}K tokens")
-            else:
-                parts.append(f"{_tokens_this_turn} tokens")
-        if tool_count > 0:
-            parts.append(f"{tool_count} tool{'s' if tool_count > 1 else ''}")
-        parts.append(f"{elapsed_total:.1f}s")
-
-        # Add cost
+        _turn_cost = 0.0
         try:
             from src.agent.cost_tracker import get_tracker
-            tracker = get_tracker()
-            cost = tracker.get_session_cost()
-            if cost > 0.001:
-                parts.append(f"${cost:.2f}")
+            _turn_cost = get_tracker().get_session_cost()
         except Exception:
             pass
-
-        if parts:
-            _outputln(f"  {DIM}{' · '.join(parts)}{RESET}")
+        footer_line = _token_footer(_tokens_this_turn, tool_count, elapsed_total, _turn_cost)
+        if footer_line.strip():
+            _outputln(footer_line)
         if full_text.strip() and tool_count > 0:
             _buddy_says("success")
         _outputln()

@@ -89,7 +89,7 @@ COMMON_SENSE: list[tuple[str, str, str]] = [
     ("doctor", "capable_of", "treating patients"),
     ("eyes", "used_for", "seeing"),
     ("ears", "used_for", "hearing"),
-    ("brain", "used_for", "thinking"),
+    ("src", "used_for", "thinking"),
     ("heart", "used_for", "pumping blood"),
     ("hand", "used_for", "holding things"),
     ("legs", "used_for", "walking"),

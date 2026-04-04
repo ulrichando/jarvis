@@ -32,7 +32,7 @@ async def main(
     In the TypeScript version (main.tsx), this is a 2000+ line function
     that handles Commander.js argument parsing, React rendering, and
     extensive feature-gated logic. The Python version delegates to
-    JARVIS's own CLI (shells/cli/jarvis_cli.py).
+    JARVIS's own CLI (src/cli/jarvis_cli.py).
     """
     from .setup import setup
 

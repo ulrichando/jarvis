@@ -1060,11 +1060,11 @@ class SelfRepairAgent:
     @classmethod
     def restart_server(cls) -> dict:
         """Restart the JARVIS web server."""
-        _run("pkill -f 'shells.web.server'")
+        _run("pkill -f 'src.server.web_server'")
         import time
         time.sleep(2)
         r = _run(
-            f"cd {cls.JARVIS_ROOT} && PYTHONUNBUFFERED=1 python3 -m shells.web.server > /tmp/jarvis-web.log 2>&1 &"
+            f"cd {cls.JARVIS_ROOT} && PYTHONUNBUFFERED=1 python3 -m src.server.web_server > /tmp/jarvis-web.log 2>&1 &"
         )
         time.sleep(5)
         check = _run("curl -s http://localhost:8765/api/mesh/ping", timeout=5)
@@ -1402,7 +1402,7 @@ class OrchestratorAgent:
     3. Runs them in sequence or parallel
     4. Collects and returns combined output
 
-    This is the "brain" agent — it coordinates all other agents.
+    This is the "src" agent — it coordinates all other agents.
     """
 
     name = "orchestrator"

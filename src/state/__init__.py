@@ -468,3 +468,9 @@ def get_state() -> SessionState:
 def get_session_id() -> str:
     """Shortcut to the current session id."""
     return get_state_manager().state.session_id
+
+
+# Re-export the generic Store and AppState from sub-modules
+# so other code can do: from src.state import Store, AppState
+from .store import Store, create_store
+from .AppStateStore import AppState, AppStateStore, get_default_app_state

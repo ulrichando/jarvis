@@ -76,10 +76,10 @@ class JARVISApp:
         try:
             from src.brain import Brain  # type: ignore[import-untyped]
             self.brain = Brain()
-            self._subsystems["brain"] = True
+            self._subsystems["src"] = True
         except Exception as exc:
             log.error("Failed to init Brain: %s", exc)
-            self._subsystems["brain"] = False
+            self._subsystems["src"] = False
 
         # 4. Discover agents
         try:

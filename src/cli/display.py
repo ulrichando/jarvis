@@ -9,6 +9,14 @@ Footer shows tokens + cost + elapsed time.
 import difflib
 import os
 
+from src.constants.figures import (
+    LIGHTNING_BOLT, PLAY_ICON, PAUSE_ICON,
+    BLACK_CIRCLE, BLOCKQUOTE_BAR, HEAVY_HORIZONTAL,
+    DIAMOND_OPEN, DIAMOND_FILLED, REFERENCE_MARK, FLAG_ICON,
+    EFFORT_LOW, EFFORT_MEDIUM, EFFORT_HIGH, EFFORT_MAX,
+    REFRESH_ARROW, FORK_GLYPH,
+)
+
 # ── ANSI Codes ──
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -23,22 +31,30 @@ CYAN = "\033[36m"
 GREY = "\033[90m"
 WHITE = "\033[97m"
 
-# Tool icons by category
+# Tool icons by category -- uses unicode figures from src/constants/figures
 TOOL_ICONS = {
-    "bash": "⚡",
-    "read_file": "📄",
-    "write_file": "✏️",
-    "edit_file": "✏️",
-    "search_files": "🔍",
-    "web_search": "🌐",
-    "web_fetch": "🌐",
-    "web_api": "🌐",
-    "think": "💭",
-    "dispatch": "🤖",
-    "tool_search": "🔧",
-    "computer_use": "🖥️",
-    "view_screen": "👁️",
-    "database": "🗄️",
+    "bash": LIGHTNING_BOLT,         # ↯
+    "read_file": DIAMOND_OPEN,      # ◇
+    "write_file": DIAMOND_FILLED,   # ◆
+    "edit_file": DIAMOND_FILLED,    # ◆
+    "search_files": REFERENCE_MARK, # ※
+    "web_search": REFRESH_ARROW,    # ↻
+    "web_fetch": REFRESH_ARROW,     # ↻
+    "web_api": REFRESH_ARROW,       # ↻
+    "think": BLACK_CIRCLE,          # ●
+    "dispatch": FORK_GLYPH,         # ⑂
+    "tool_search": REFERENCE_MARK,  # ※
+    "computer_use": PLAY_ICON,      # ▶
+    "view_screen": PLAY_ICON,       # ▶
+    "database": FLAG_ICON,          # ⚑
+}
+
+# Effort level display icons (exported for CLI use)
+EFFORT_ICONS = {
+    "low": EFFORT_LOW,
+    "medium": EFFORT_MEDIUM,
+    "high": EFFORT_HIGH,
+    "max": EFFORT_MAX,
 }
 
 

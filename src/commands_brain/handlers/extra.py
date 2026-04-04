@@ -14,7 +14,7 @@ from src.commands_brain.registry import command, CommandContext, CommandResult, 
 @command("buddy", description="Show or interact with your AI companion",
          usage="/buddy [pet|off|on|switch <name>]", category="core", permission=PermLevel.READ_ONLY)
 async def cmd_buddy(ctx: CommandContext) -> CommandResult:
-    from shells.cli.companion import Companion, COMPANIONS
+    from src.cli.companion import Companion, COMPANIONS
     args = ctx.args.strip().lower()
 
     # Get or create companion on brain
@@ -106,7 +106,7 @@ async def cmd_reload(ctx: CommandContext) -> CommandResult:
 async def cmd_desktop(ctx: CommandContext) -> CommandResult:
     jarvis_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     subprocess.Popen(
-        ["python3", "-m", "shells.desktop"],
+        ["python3", "-m", "src.desktop"],
         cwd=jarvis_root,
         start_new_session=True,
         stdout=subprocess.DEVNULL,
@@ -479,7 +479,7 @@ async def cmd_theme(ctx: CommandContext) -> CommandResult:
         settings_path.write_text(json.dumps(settings, indent=2))
         # Apply theme in real-time to the running CLI
         try:
-            from shells.cli.jarvis_cli import _apply_theme
+            from src.cli.jarvis_cli import _apply_theme
             _apply_theme(args)
         except Exception:
             pass  # Not running in CLI context

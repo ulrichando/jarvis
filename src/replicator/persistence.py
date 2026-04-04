@@ -35,7 +35,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory={jarvis_dir}
-ExecStart={jarvis_dir}/.venv/bin/python -m shells.web.server
+ExecStart={jarvis_dir}/.venv/bin/python -m src.server.web_server
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
@@ -57,10 +57,10 @@ WantedBy=default.target
 def install_crontab(jarvis_dir: str) -> dict:
     """Install a crontab entry as fallback for systems without systemd."""
     venv_python = f"{jarvis_dir}/.venv/bin/python"
-    cron_line = f"@reboot cd {jarvis_dir} && {venv_python} -m shells.web.server &"
+    cron_line = f"@reboot cd {jarvis_dir} && {venv_python} -m src.server.web_server &"
 
     existing = _run("crontab -l 2>/dev/null")
-    if "shells.web.server" in existing:
+    if "src.server.web_server" in existing:
         return {"success": True, "message": "Already in crontab."}
 
     new_cron = existing + "\n" + cron_line + "\n" if existing else cron_line + "\n"
@@ -81,7 +81,7 @@ def install_autostart_desktop(jarvis_dir: str) -> dict:
     desktop_content = f"""[Desktop Entry]
 Type=Application
 Name=JARVIS
-Exec={jarvis_dir}/.venv/bin/python -m shells.web.server
+Exec={jarvis_dir}/.venv/bin/python -m src.server.web_server
 Hidden=false
 NoDisplay=true
 X-GNOME-Autostart-enabled=true
@@ -101,7 +101,7 @@ def install_windows_startup(jarvis_dir: str) -> dict:
 
     bat_content = f"""@echo off
 cd /d {jarvis_dir}
-.venv\\Scripts\\python.exe -m shells.web.server
+.venv\\Scripts\\python.exe -m src.server.web_server
 """
     bat_path = startup / "jarvis.bat"
     bat_path.write_text(bat_content)
@@ -116,7 +116,7 @@ def install_android_boot(jarvis_dir: str) -> dict:
 
     script = f"""#!/data/data/com.termux/files/usr/bin/bash
 cd {jarvis_dir}
-python -m shells.web.server &
+python -m src.server.web_server &
 """
     script_path = boot_dir / "jarvis.sh"
     script_path.write_text(script)

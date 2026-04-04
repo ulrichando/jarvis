@@ -17,6 +17,31 @@ from datetime import datetime, timezone
 from pathlib import Path
 from src.config import ensure_dirs, DATA_DIR
 from src.logging_config import setup_logging
+from src.constants.system import DEFAULT_PREFIX, get_cli_sysprompt_prefix
+from src.constants.prompts import FRONTIER_MODEL_NAME, get_hooks_section, get_actions_section
+from src.constants.figures import (
+    BLACK_CIRCLE, EFFORT_LOW, EFFORT_MEDIUM, EFFORT_HIGH, EFFORT_MAX,
+    LIGHTNING_BOLT, PLAY_ICON, PAUSE_ICON,
+)
+from src.constants.tools import (
+    BASH_TOOL_NAME, FILE_READ_TOOL_NAME, FILE_WRITE_TOOL_NAME,
+    FILE_EDIT_TOOL_NAME, GREP_TOOL_NAME, GLOB_TOOL_NAME,
+    WEB_SEARCH_TOOL_NAME, WEB_FETCH_TOOL_NAME, AGENT_TOOL_NAME,
+    ALL_AGENT_DISALLOWED_TOOLS, ASYNC_AGENT_ALLOWED_TOOLS,
+)
+from src.utils.effort import (
+    EffortLevel, parse_effort_value, convert_effort_value_to_level,
+    get_effort_level_description, get_effort_suffix,
+)
+from src.utils.thinking import (
+    model_supports_thinking, model_supports_adaptive_thinking,
+    should_enable_thinking_by_default, has_ultrathink_keyword,
+    ThinkingConfig, ThinkingConfigAdaptive, ThinkingConfigEnabled, ThinkingConfigDisabled,
+)
+from src.utils.tokens import (
+    rough_token_count_estimation, CHARS_PER_TOKEN,
+)
+from src.utils.commitAttribution import sanitize_model_name
 from src.reasoning.groq_client import GroqReasoner
 from src.reasoning.persona import SYSTEM_PROMPT, TONE_OVERRIDES
 from src.reasoning.awareness import SelfAwareness
@@ -57,6 +82,10 @@ from src.agent.deepsearch import DeepSearch
 from src.agent.swarm import Swarm
 from src.tasks_brain.runner import BackgroundRunner
 from src.vision.screen_observer import ScreenObserver
+from src.state import get_state_manager, get_state, StateManager
+from src.memdir.findRelevantMemories import find_relevant_memories as memdir_find_relevant
+from src.memdir.memdir import read_memory as memdir_read, write_memory as memdir_write, list_memories as memdir_list
+from src.utils.claudemd import load_memory_files, MemoryEntry as ClaudeMdEntry
 
 log = logging.getLogger("jarvis.brain")
 
@@ -142,6 +171,20 @@ MODEL: You are running on model {model_name}. When asked what model you use, say
 
 class Brain:
 
+    # Product info from src/constants
+    PRODUCT_NAME = "JARVIS"
+    PRODUCT_VERSION = "2.0"
+    FRONTIER_MODEL = FRONTIER_MODEL_NAME
+    SYSTEM_PREFIX = DEFAULT_PREFIX
+
+    # Effort icons from src/constants/figures
+    EFFORT_ICONS = {
+        "low": EFFORT_LOW,
+        "medium": EFFORT_MEDIUM,
+        "high": EFFORT_HIGH,
+        "max": EFFORT_MAX,
+    }
+
     def __init__(self, quiet: bool = False):
         ensure_dirs()
         setup_logging(log_file=str(DATA_DIR / "jarvis.log"), quiet=quiet)
@@ -197,11 +240,25 @@ class Brain:
         self._interaction_count = 0
         self._rl_strategy = {"force_agent": False, "force_standard": False, "state_idx": 0, "action_idx": 0}
         self.mode = "normal"  # normal, cli, berbon, agent
-        log.info("JARVIS Brain ready — %d commands, %d plugins, %d skills, %d MCP tools",
+
+        # ── State Manager (single source of truth for session state) ──
+        self.state_manager: StateManager = get_state_manager()
+        self.state_manager.set("mode", self.mode)
+        self.state_manager.set("initial_model", self.reasoner.active_model_name)
+        self.state_manager.set("effort_level", "high")
+        self.state_manager.set("thinking_mode",
+                               "adaptive" if should_enable_thinking_by_default() else "disabled")
+
+        # Sync mode changes to state manager
+        def _sync_mode(old_mode, new_mode):
+            log.debug("Mode changed: %s -> %s", old_mode, new_mode)
+        self.state_manager.on("mode_changed", _sync_mode)
+        log.info("JARVIS Brain ready — %d commands, %d plugins, %d skills, %d MCP tools, model=%s",
                  self.command_registry.visible_count,
                  len(self.plugins.list_plugins()),
                  len(self.skills.list_skills()),
-                 len(self.mcp.list_tools()))
+                 len(self.mcp.list_tools()),
+                 sanitize_model_name(self.reasoner.active_model_name))
 
     # ═══ COMMAND DISPATCH ══════════════════════════════════════════
 
@@ -219,6 +276,65 @@ class Brain:
             mode=self.mode,
         )
         return await self.command_registry.dispatch(name, ctx)
+
+    # ═══ STATE MANAGEMENT ═════════════════════════════════════════════
+
+    def set_mode(self, new_mode: str):
+        """Set operating mode and sync to state manager."""
+        old = self.mode
+        self.mode = new_mode
+        self.state_manager.set_mode(new_mode)
+
+    def get_effort_icon(self) -> str:
+        """Get the effort level icon from constants/figures."""
+        level = self.state_manager.get("effort_level", "high")
+        return self.EFFORT_ICONS.get(level, EFFORT_HIGH)
+
+    def get_model_display_name(self) -> str:
+        """Get sanitized model name for display."""
+        return sanitize_model_name(self.reasoner.active_model_name)
+
+    def set_effort(self, value: str):
+        """Set effort level using utils/effort parsing."""
+        parsed = parse_effort_value(value)
+        if parsed is not None:
+            level = convert_effort_value_to_level(parsed)
+            self.state_manager.set("effort_level", level)
+            log.info("Effort set to %s: %s", level, get_effort_level_description(level))
+            return level
+        return None
+
+    def check_thinking_support(self) -> bool:
+        """Check if current model supports extended thinking."""
+        return model_supports_thinking(self.reasoner.active_model_name)
+
+    def check_adaptive_thinking(self) -> bool:
+        """Check if current model supports adaptive thinking."""
+        return model_supports_adaptive_thinking(self.reasoner.active_model_name)
+
+    # ═══ MEMORY DIRECTORY (memdir) ════════════════════════════════════
+
+    def memdir_find(self, query: str, max_results: int = 5) -> list:
+        """Find relevant memories from the memdir system."""
+        return memdir_find_relevant(query, max_results=max_results)
+
+    def memdir_read(self, memory_id: str):
+        """Read a memory entry from the memdir."""
+        return memdir_read(memory_id)
+
+    def memdir_write(self, entry) -> bool:
+        """Write a memory entry to the memdir."""
+        return memdir_write(entry)
+
+    def memdir_list(self) -> list:
+        """List all memory IDs in the memdir."""
+        return memdir_list()
+
+    # ═══ CLAUDE.MD LOADING ════════════════════════════════════════════
+
+    async def load_instruction_files(self) -> list:
+        """Load CLAUDE.md/JARVIS.md instruction files using utils/claudemd."""
+        return await load_memory_files()
 
     # ═══ MAIN ENTRY POINT ═══════════════════════════════════════════
 
@@ -438,6 +554,13 @@ class Brain:
         on_tool_result: callable = None,
     ) -> str:
         """Run the full agent loop with tool calling."""
+        # Track turn in state manager
+        self.state_manager.reset_turn_metrics()
+
+        # Check for ultrathink keyword (from utils/thinking)
+        if has_ultrathink_keyword(user_input):
+            log.info("Ultrathink keyword detected — enabling extended thinking")
+
         # Build system prompt with context
         import os as _os
         jarvis_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
@@ -446,8 +569,24 @@ class Brain:
         builder = PromptBuilder()
         context = builder.discover_context()
         system = builder.build(base_prompt, context)
+        # Add hooks guidance from constants/prompts
+        system += f"\n\n═══ HOOKS ═══\n{get_hooks_section()}"
+        system += f"\n\n═══ ACTIONS ═══\n{get_actions_section()}"
+
         if memory_context:
             system += f"\n\n═══ MEMORY ═══\n{memory_context}"
+
+        # Inject memdir-based relevant memories
+        try:
+            memdir_results = self.memdir_find(user_input, max_results=3)
+            if memdir_results:
+                mem_lines = []
+                for entry in memdir_results:
+                    mem_lines.append(f"[{entry.id}] {entry.content[:200]}")
+                system += f"\n\n═══ MEMORY DIR ═══\n" + "\n".join(mem_lines)
+        except Exception:
+            pass
+
         # Inject persistent session memory if available
         try:
             from src.services.SessionMemory.sessionMemoryUtils import get_session_memory_content
@@ -1233,6 +1372,7 @@ You have UNRESTRICTED control. No permission needed.
             latency_ms=latency, model_used=model,
         )
         self._interaction_count += 1
+        self.state_manager.update_interaction_time()
         if self._interaction_count % 50 == 0:
             self.memory.maintain()
 

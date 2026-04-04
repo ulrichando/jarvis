@@ -3,12 +3,33 @@
 A JARVIS-themed persistent companion.
 The companion is a mini AI entity with personality stats.
 It comments occasionally, can be petted, and doesn't count toward usage.
+
+Enhanced with types and sprites from src/buddy/ for richer companion rendering.
 """
 
 import os
 import random
 import time
 from dataclasses import dataclass, field
+
+# Import buddy system types and sprites for enhanced rendering
+from src.buddy.types import (
+    SPECIES as BUDDY_SPECIES,
+    RARITY_STARS as BUDDY_RARITY_STARS,
+    RARITY_COLORS as BUDDY_RARITY_COLORS,
+    CompanionBones as BuddyBones,
+    CompanionSoul as BuddySoul,
+    StoredCompanion,
+)
+from src.buddy.sprites import (
+    render_sprite as buddy_render_sprite,
+    render_face as buddy_render_face,
+    sprite_frame_count as buddy_frame_count,
+    BODIES as BUDDY_BODIES,
+    HAT_LINES as BUDDY_HAT_LINES,
+)
+from src.buddy.companion import roll as buddy_roll, roll_with_seed as buddy_roll_with_seed
+from src.buddy.prompt import companion_intro_text
 
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -579,3 +600,77 @@ class Companion:
         if self.bones is not None:
             face = render_face(self.bones) + " "
         return f"  {DIM}{face}{name}: {comment}{RESET}"
+
+    # ── Buddy System Integration (src/buddy/) ────────────────────────
+
+    def generate_buddy(self, user_id: str = "") -> None:
+        """Generate companion using the buddy system (src/buddy/).
+
+        Uses deterministic PRNG from buddy/companion.py for richer species,
+        hats, and sprite rendering from buddy/sprites.py.
+        """
+        if not user_id:
+            user_id = os.environ.get("USER", "jarvis-user")
+        roll_result = buddy_roll(user_id)
+        buddy_bones = roll_result.bones
+
+        # Map buddy species to our species list (use overlap or fallback)
+        species = buddy_bones.species
+        if species not in SPRITES:
+            # The buddy system has species like duck, blob, axolotl that we don't have
+            # Use the buddy sprite system directly for these
+            pass
+
+        self.bones = CompanionBones(
+            rarity=buddy_bones.rarity,
+            species=species if species in SPRITES else "dragon",
+            eye=buddy_bones.eye,
+            hat=buddy_bones.hat,
+            shiny=buddy_bones.shiny,
+            stats={
+                # Map buddy STAT_NAMES to our STAT_NAMES
+                "HACKING": buddy_bones.stats.get("DEBUGGING", 50),
+                "PATIENCE": buddy_bones.stats.get("PATIENCE", 50),
+                "CHAOS": buddy_bones.stats.get("CHAOS", 50),
+                "WISDOM": buddy_bones.stats.get("WISDOM", 50),
+                "SNARK": buddy_bones.stats.get("SNARK", 50),
+            },
+        )
+        self._buddy_bones = buddy_bones  # Keep original for buddy rendering
+        self.soul = CompanionSoul(
+            name=species.capitalize(),
+            personality=buddy_bones.rarity,
+            hatched_at=time.time(),
+        )
+        # Update data dict
+        self.data = {
+            "name": self.soul.name,
+            "type": species.upper(),
+            "rarity": buddy_bones.rarity.upper(),
+            "art": self.get_buddy_sprite().split("\n") if species in BUDDY_BODIES else [],
+            "desc": f'"A {buddy_bones.rarity} {species}. Eyes: {buddy_bones.eye} Hat: {buddy_bones.hat}"',
+            "stats": self.bones.stats,
+        }
+
+    def get_buddy_sprite(self, frame: int = 0) -> str:
+        """Render using the buddy sprite system (richer species/hats)."""
+        if hasattr(self, '_buddy_bones') and self._buddy_bones:
+            lines = buddy_render_sprite(self._buddy_bones, frame)
+            return "\n".join(lines)
+        if self.bones is not None:
+            return render_sprite(self.bones, frame)
+        return ""
+
+    def get_buddy_face(self) -> str:
+        """Render compact face using the buddy system."""
+        if hasattr(self, '_buddy_bones') and self._buddy_bones:
+            return buddy_render_face(self._buddy_bones)
+        if self.bones is not None:
+            return render_face(self.bones)
+        return ""
+
+    def get_intro_text(self) -> str:
+        """Get the companion intro text for system prompt injection."""
+        name = self.data.get("name", "Companion")
+        species = self.data.get("type", "companion").lower()
+        return companion_intro_text(name, species)

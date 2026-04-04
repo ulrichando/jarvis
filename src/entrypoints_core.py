@@ -110,7 +110,7 @@ class CLIEntrypoint(Entrypoint):
 
         # Defer to the existing CLI runner
         try:
-            from src.shells.cli.jarvis_cli import main as cli_main  # type: ignore[import-untyped]
+            from src.cli.jarvis_cli import main as cli_main  # type: ignore[import-untyped]
             await cli_main()
         except (KeyboardInterrupt, EOFError):
             pass
@@ -149,7 +149,7 @@ class WebEntrypoint(Entrypoint):
     async def run(self) -> None:
         self._running = True
         try:
-            from src.shells.web.server import create_app, run_server  # type: ignore[import-untyped]
+            from src.server.web_server import create_app, run_server  # type: ignore[import-untyped]
             app = await create_app(brain=self.brain)
             await run_server(app, host=self.host, port=self.port)
         except Exception:
@@ -182,7 +182,7 @@ class DesktopEntrypoint(Entrypoint):
     async def run(self) -> None:
         self._running = True
         try:
-            from src.shells.desktop.app import main as desktop_main  # type: ignore[import-untyped]
+            from src.desktop.app import main as desktop_main  # type: ignore[import-untyped]
             desktop_main()
         except Exception:
             log.exception("Desktop app error")
@@ -224,7 +224,7 @@ class APIEntrypoint(Entrypoint):
 
             app = web.Application()
             # Minimal health endpoint; the real API surface is added by
-            # shells.web.server or a dedicated API module.
+            # src.server.web_server or a dedicated API module.
             app.router.add_get("/health", self._health_handler)
             runner = web.AppRunner(app)
             await runner.setup()

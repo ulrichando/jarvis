@@ -6,7 +6,7 @@ import json
 import sys
 from typing import Any, Callable, Optional
 
-from .ndjsonSafeStringify import ndjson_safe_stringify
+from .ndjson import ndjson_safe_stringify
 
 
 class StructuredIO:

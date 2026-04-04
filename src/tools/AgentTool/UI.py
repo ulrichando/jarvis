@@ -1,5 +1,5 @@
 """UI rendering stub. Original was a React component (.tsx).
-JARVIS renders tool output via shells/cli/ and shells/web/ instead.
+JARVIS renders tool output via src/cli/ and src/server/ instead.
 """
 from __future__ import annotations
 from typing import Any

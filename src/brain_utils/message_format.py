@@ -12,7 +12,7 @@ import textwrap
 from datetime import datetime
 from typing import Optional
 
-# ── ANSI codes (matching shells/cli/display.py) ──────────────────────
+# ── ANSI codes (matching src/cli/display.py) ─────────────────────────
 RESET = "\033[0m"
 BOLD = "\033[1m"
 DIM = "\033[2m"

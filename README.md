@@ -173,7 +173,7 @@ Response → streamed to terminal / web / desktop
 
 | Shell | Description |
 |-------|-------------|
-| **CLI** (`shells/cli/`) | Terminal interface — Claude Code-style UX |
+| **CLI** (`src/cli/`) | Terminal interface — Claude Code-style UX |
 | **Web** (`shells/web/`) | React + Tailwind frontend with Three.js holographic sphere |
 | **Desktop** (`shells/desktop/`) | Transparent GTK overlay with arc reactor |
 | **Chrome** (`shells/chrome-extension-jarvis/`) | Browser extension with popup chat |

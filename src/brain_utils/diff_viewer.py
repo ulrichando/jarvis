@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import List, Optional, Tuple
 
-# ── ANSI codes (matching shells/cli/display.py) ──────────────────────
+# ── ANSI codes (matching src/cli/display.py) ─────────────────────────
 RESET = "\033[0m"
 BOLD = "\033[1m"
 DIM = "\033[2m"

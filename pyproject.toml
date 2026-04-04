@@ -20,8 +20,8 @@ tts = ["piper-tts"]
 all = ["jarvis[vision,tts]"]
 
 [project.scripts]
-jarvis = "src.shells.cli.jarvis_cli:run"
-jarvis-web = "src.shells.web.server:main"
+jarvis = "src.cli.jarvis_cli:run"
+jarvis-web = "src.server.web_server:main"
 
 [tool.setuptools.packages.find]
 include = ["src*"]

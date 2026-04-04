@@ -9,13 +9,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 pip install -e .
 
 # Run CLI
-jarvis                          # or: python -m src.shells.cli.jarvis_cli
+jarvis                          # or: python -m src.cli.jarvis_cli
 
 # Run web server (port 8765)
-jarvis-web                      # or: python -m src.shells.web.server
+jarvis-web                      # or: python -m src.server.server
 
 # Run desktop overlay (starts server if needed, then GTK+WebKit window)
-python -c "from src.shells.desktop.app import main; main()"
+python -c "from src.desktop.app import main; main()"
 
 # Full stack (fixes audio, starts Ollama, web server, desktop)
 ./scripts/start-jarvis.sh
@@ -74,9 +74,9 @@ Three layers: SQLite conversation log (append-only WAL), Neural Lattice (knowled
 PreToolUse/PostToolUse/Stop lifecycle hooks. Configured in `~/.jarvis/hooks.yaml` or `.jarvis/hooks.yaml`. Types: command (shell, exit code controls allow/block) or prompt (LLM evaluation).
 
 ### Shells
-- **CLI** (`src/shells/cli/jarvis_cli.py`): ANSI terminal with braille spinner, markdown rendering, tool call visualization.
-- **Web** (`src/shells/web/server.py`): aiohttp HTTP+WebSocket server. React frontend at `shells/web/frontend/`. TTS via Edge TTS. Audio transcription via Whisper.
-- **Desktop** (`src/shells/desktop/app.py`): GTK3+WebKit2 transparent overlay. Loads React UI with `?desktop=1`. Client coordination API prevents dual reactor display.
+- **CLI** (`src/cli/jarvis_cli.py`): ANSI terminal with braille spinner, markdown rendering, tool call visualization.
+- **Web** (`src/server/web_server.py`): aiohttp HTTP+WebSocket server. React frontend at `shells/web/frontend/`. TTS via Edge TTS. Audio transcription via Whisper.
+- **Desktop** (`src/desktop/app.py`): GTK3+WebKit2 transparent overlay. Loads React UI with `?desktop=1`. Client coordination API prevents dual reactor display.
 
 ### Extensibility
 - **Plugins**: Python files in `~/.jarvis/plugins/` exporting `handle(query) → str|None`. Run before LLM.

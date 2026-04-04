@@ -15,11 +15,11 @@ if echo "$RESULT" | grep -q '"reloaded"'; then
     echo "$RESULT" | python3 -m json.tool 2>/dev/null || echo "$RESULT"
 else
     echo "[JARVIS] Hot reload failed — doing full restart..."
-    pkill -f "shells.web.server" 2>/dev/null
+    pkill -f "src.server.web_server" 2>/dev/null
     sleep 2
     cd /home/ulrich/Documents/Projects/jarvis
     bash scripts/fix-audio.sh 2>&1 | tail -1
-    PYTHONUNBUFFERED=1 python3 -m shells.web.server > /tmp/jarvis-web.log 2>&1 &
+    PYTHONUNBUFFERED=1 python3 -m src.server.web_server > /tmp/jarvis-web.log 2>&1 &
     sleep 10
     if curl -s http://localhost:8765/api/mesh/ping > /dev/null 2>&1; then
         echo "[JARVIS] Full restart successful"
