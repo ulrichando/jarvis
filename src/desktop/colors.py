@@ -107,8 +107,13 @@ def _brighten(hex_color: str, factor: float = 1.4) -> str:
 
 
 def generate_icon(primary: str | None = None, size: int = 48) -> str:
-    """Generate a tray icon PNG with the given color. Returns the file path."""
+    """Generate a tray icon PNG with the given color. Returns the file path.
+
+    Uses a color-stamped filename so AppIndicator detects the change
+    (it caches by path and ignores writes to the same file).
+    """
     from PIL import Image, ImageDraw
+    import glob as _glob
 
     if primary is None:
         primary, _ = get_colors()
@@ -129,8 +134,22 @@ def generate_icon(primary: str | None = None, size: int = 48) -> str:
     # Center bright dot
     draw.ellipse([20, 20, size - 21, size - 21], fill=(255, 255, 255, 230))
 
-    icon_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "jarvis-icon-48.png"
-    )
+    # Unique filename per color so AppIndicator picks up the change
+    icon_dir = os.path.dirname(os.path.abspath(__file__))
+    color_tag = primary.lstrip("#")
+    icon_path = os.path.join(icon_dir, f"jarvis-icon-{color_tag}.png")
     img.save(icon_path)
+
+    # Also save as the default name (for first boot / fallback)
+    default_path = os.path.join(icon_dir, "jarvis-icon-48.png")
+    img.save(default_path)
+
+    # Clean up old color-tagged icons
+    for old in _glob.glob(os.path.join(icon_dir, "jarvis-icon-??????.png")):
+        if old != icon_path:
+            try:
+                os.unlink(old)
+            except OSError:
+                pass
+
     return icon_path
