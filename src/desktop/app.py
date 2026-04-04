@@ -127,7 +127,9 @@ def main():
     window.connect("draw", on_draw)
 
     # ── WebKit ──
-    webview = WebKit2.WebView()
+    # Allow autoplay so Edge TTS audio plays without user gesture
+    policies = WebKit2.WebsitePolicies(autoplay=WebKit2.AutoplayPolicy.ALLOW)
+    webview = WebKit2.WebView(website_policies=policies)
     webview.set_background_color(Gdk.RGBA(0, 0, 0, 0))
 
     settings = webview.get_settings()
