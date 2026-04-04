@@ -105,35 +105,53 @@ function App() {
 
     // Play TTS — only for the FINAL message (skip partial to avoid double voice)
     if (last.type === 'message' && last.spoken && last.spoken.length > 3 && !last.partial) {
-      stopSpeaking()
-      setReactorState('speaking')
-      document.dispatchEvent(new CustomEvent('jarvis-tts-start'))
+      // If final message comes while partial is still speaking, wait for it to finish
+      // then speak the remaining text. Server already strips the first sentence.
+      const speakText = (text) => {
+        setReactorState('speaking')
+        document.dispatchEvent(new CustomEvent('jarvis-tts-start'))
 
-      if ('speechSynthesis' in window) {
-        const utterance = new SpeechSynthesisUtterance(last.spoken.substring(0, 500))
-        utterance.rate = 1.05
-        utterance.pitch = 0.95
-        const voices = window.speechSynthesis.getVoices()
-        const preferred = voices.find(v =>
-          v.name.includes('Andrew') || v.name.includes('David') ||
-          v.name.includes('Daniel') || v.name.includes('Google UK English Male')
-        ) || voices.find(v => v.lang.startsWith('en')) || voices[0]
-        if (preferred) utterance.voice = preferred
-        utterance.onend = () => { setReactorState('idle'); document.dispatchEvent(new CustomEvent('jarvis-tts-end')) }
-        utterance.onerror = () => { setReactorState('idle'); document.dispatchEvent(new CustomEvent('jarvis-tts-end')) }
-        window.speechSynthesis.speak(utterance)
+        if ('speechSynthesis' in window) {
+          const utterance = new SpeechSynthesisUtterance(text.substring(0, 500))
+          utterance.rate = 1.05
+          utterance.pitch = 0.95
+          const voices = window.speechSynthesis.getVoices()
+          const preferred = voices.find(v =>
+            v.name.includes('Andrew') || v.name.includes('David') ||
+            v.name.includes('Daniel') || v.name.includes('Google UK English Male')
+          ) || voices.find(v => v.lang.startsWith('en')) || voices[0]
+          if (preferred) utterance.voice = preferred
+          utterance.onend = () => { setReactorState('idle'); document.dispatchEvent(new CustomEvent('jarvis-tts-end')) }
+          utterance.onerror = () => { setReactorState('idle'); document.dispatchEvent(new CustomEvent('jarvis-tts-end')) }
+          window.speechSynthesis.speak(utterance)
+        } else {
+          const ttsUrl = `http://localhost:8765/api/tts?text=${encodeURIComponent(text.substring(0, 300))}`
+          const audio = new Audio(ttsUrl)
+          audioRef.current = audio
+          audio.play().then(() => {
+            audio.onended = () => { audioRef.current = null; setReactorState('idle'); document.dispatchEvent(new CustomEvent('jarvis-tts-end')) }
+          }).catch(() => { audioRef.current = null; setReactorState('idle'); document.dispatchEvent(new CustomEvent('jarvis-tts-end')) })
+        }
+      }
+
+      if (last.final && window.speechSynthesis?.speaking) {
+        // Partial TTS still playing — queue the rest after it finishes
+        const checkDone = setInterval(() => {
+          if (!window.speechSynthesis.speaking) {
+            clearInterval(checkDone)
+            if (last.spoken.length > 3) speakText(last.spoken)
+          }
+        }, 100)
+        // Safety: clear after 15s
+        setTimeout(() => clearInterval(checkDone), 15000)
       } else {
-        const ttsUrl = `http://localhost:8765/api/tts?text=${encodeURIComponent(last.spoken.substring(0, 300))}`
-        const audio = new Audio(ttsUrl)
-        audioRef.current = audio
-        audio.play().then(() => {
-          audio.onended = () => { audioRef.current = null; setReactorState('idle'); document.dispatchEvent(new CustomEvent('jarvis-tts-end')) }
-        }).catch(() => { audioRef.current = null; setReactorState('idle'); document.dispatchEvent(new CustomEvent('jarvis-tts-end')) })
+        stopSpeaking()
+        speakText(last.spoken)
       }
     }
 
     // Final message without spoken — just update state
-    if (last.type === 'message' && last.final && !last.spoken) {
+    if (last.type === 'message' && last.final && (!last.spoken || last.spoken.length <= 3)) {
       setTimeout(() => setReactorState('idle'), 1000)
     }
   }, [wsMessages, stopSpeaking])
@@ -166,13 +184,18 @@ function App() {
         if (SR) {
           const recognition = new SR()
           recognition.continuous = true
-          recognition.interimResults = false
+          recognition.interimResults = true
           recognition.lang = 'en-US'
+          let interrupted = false
           recognition.onresult = (event) => {
-            // User is speaking — interrupt JARVIS if talking
-            document.dispatchEvent(new CustomEvent('user-speaking'))
             const last = event.results[event.results.length - 1]
+            // Interrupt JARVIS immediately on ANY speech (interim or final)
+            if (!interrupted) {
+              interrupted = true
+              document.dispatchEvent(new CustomEvent('user-speaking'))
+            }
             if (last.isFinal) {
+              interrupted = false
               const text = last[0].transcript.trim()
               if (text && text.length > 1) {
                 setReactorState('thinking')
@@ -183,7 +206,23 @@ function App() {
           recognition.onend = () => { try { recognition.start() } catch {} }
           recognition.onerror = () => {}
           try { recognition.start() } catch {}
-          return // Using browser STT — done
+
+          // Still run VAD for energy-based interrupt (catches speech before recognition fires)
+          let isSpeakingTTS = false
+          document.addEventListener('jarvis-tts-start', () => { isSpeakingTTS = true })
+          document.addEventListener('jarvis-tts-end', () => { isSpeakingTTS = false })
+          function checkVoiceChrome() {
+            if (!analyser) return
+            analyser.getByteFrequencyData(dataArray)
+            const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length / 255
+            // Only interrupt during TTS — if JARVIS is speaking and user talks over
+            if (isSpeakingTTS && avg > 0.10) {
+              document.dispatchEvent(new CustomEvent('user-speaking'))
+            }
+            setTimeout(checkVoiceChrome, 50)
+          }
+          checkVoiceChrome()
+          return // Using browser STT + VAD
         }
 
         // Method 2: MediaRecorder + server Whisper (WebKit/desktop fallback)
@@ -224,8 +263,8 @@ function App() {
           const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length / 255
 
           // Higher threshold when TTS is playing (ignore JARVIS's own voice from speakers)
-          const threshold = isSpeakingTTS ? 0.15 : 0.06
-          const silenceThreshold = isSpeakingTTS ? 0.08 : 0.03
+          const threshold = isSpeakingTTS ? 0.10 : 0.06
+          const silenceThreshold = isSpeakingTTS ? 0.06 : 0.03
 
           if (avg > threshold && !recording) {
             // User started speaking — STOP JARVIS immediately
@@ -243,7 +282,7 @@ function App() {
               recording = false
             }, 250)
           }
-          setTimeout(checkVoice, 100)
+          setTimeout(checkVoice, 50)
         }
         checkVoice()
 

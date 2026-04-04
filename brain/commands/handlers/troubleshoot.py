@@ -1,4 +1,4 @@
-"""JARVIS Troubleshooter — find and fix real bugs in code.
+"""JARVIS Troubleshooter -- find and fix real bugs in code.
 
 Multi-strategy approach:
 1. Static analysis (pattern-based, instant)
@@ -34,7 +34,7 @@ def _generate_fix(issue: dict) -> dict | None:
     except Exception as e:
         return None
 
-    # For unused imports, line_no might be 0 — we search the file
+    # For unused imports, line_no might be 0 -- we search the file
     if issue_type == "unused_import" and line_no == 0:
         line_no = 1  # Will be overridden by the import search below
         line = ""
@@ -43,7 +43,7 @@ def _generate_fix(issue: dict) -> dict | None:
     else:
         line = lines[line_no - 1]
 
-    # ── Bare except → except Exception ──
+    # -- Bare except -> except Exception --
     if issue_type == "bare_except":
         old = line
         new = line.replace("except:", "except Exception:")
@@ -51,7 +51,7 @@ def _generate_fix(issue: dict) -> dict | None:
             return {"file": filepath, "line": line_no, "old": old.rstrip(), "new": new.rstrip(),
                     "description": "Replace bare except with except Exception"}
 
-    # ── None comparison == → is ──
+    # -- None comparison == -> is --
     if issue_type == "none_comparison":
         old = line
         new = line.replace("== None", "is None").replace("!= None", "is not None")
@@ -59,14 +59,14 @@ def _generate_fix(issue: dict) -> dict | None:
             return {"file": filepath, "line": line_no, "old": old.rstrip(), "new": new.rstrip(),
                     "description": "Use 'is None' instead of '== None'"}
 
-    # ── Mutable default argument ──
+    # -- Mutable default argument --
     if issue_type == "mutable_default":
-        # This needs AST-level fix — too complex for simple replacement
+        # This needs AST-level fix -- too complex for simple replacement
         return {"file": filepath, "line": line_no, "old": line.rstrip(), "new": None,
-                "description": "Mutable default argument — change [] to None and add 'if arg is None: arg = []' inside function",
+                "description": "Mutable default argument -- change [] to None and add 'if arg is None: arg = []' inside function",
                 "manual": True}
 
-    # ── os.system → subprocess.run ──
+    # -- os.system -> subprocess.run --
     if "os.system" in issue.get("msg", ""):
         old = line
         match = re.search(r'os\.system\((.+)\)', line)
@@ -77,7 +77,7 @@ def _generate_fix(issue: dict) -> dict | None:
             return {"file": filepath, "line": line_no, "old": old.rstrip(), "new": new.rstrip(),
                     "description": "Replace os.system() with subprocess.run()"}
 
-    # ── print() → logging ──
+    # -- print() -> logging --
     if issue_type == "print_in_prod" or "print() in production" in issue.get("msg", ""):
         old = line
         match = re.search(r'print\((.+)\)', line)
@@ -88,7 +88,7 @@ def _generate_fix(issue: dict) -> dict | None:
             return {"file": filepath, "line": line_no, "old": old.rstrip(), "new": new.rstrip(),
                     "description": "Replace print() with log.info()"}
 
-    # ── Unused import ──
+    # -- Unused import --
     if issue_type == "unused_import":
         name = issue.get("msg", "").replace("Unused import: ", "")
         for i, l in enumerate(lines):
@@ -108,7 +108,7 @@ def _generate_fix(issue: dict) -> dict | None:
                     return {"file": filepath, "line": i + 1, "old": l.rstrip(), "new": "",
                             "description": f"Remove unused import: {name}",
                             "delete_line": True}
-                # Multiple imports — remove just this name from the list
+                # Multiple imports -- remove just this name from the list
                 if f", {name}" in stripped:
                     new_line = l.replace(f", {name}", "")
                     return {"file": filepath, "line": i + 1, "old": l.rstrip(),
@@ -120,7 +120,7 @@ def _generate_fix(issue: dict) -> dict | None:
                             "new": new_line.rstrip(),
                             "description": f"Remove unused '{name}' from import"}
                 elif f" {name}" in stripped:
-                    # Name at end or middle — try comma-aware removal
+                    # Name at end or middle -- try comma-aware removal
                     new_line = re.sub(r',\s*' + re.escape(name), '', l)
                     if new_line != l:
                         return {"file": filepath, "line": i + 1, "old": l.rstrip(),
@@ -189,7 +189,7 @@ def _check_python_syntax(filepath: str) -> list[dict]:
 
 
 def _check_python_ast(filepath: str) -> list[dict]:
-    """Deep AST analysis — find undefined names, unused imports, bad patterns."""
+    """Deep AST analysis -- find undefined names, unused imports, bad patterns."""
     issues = []
     try:
         with open(filepath, "r", errors="replace") as f:
@@ -230,7 +230,7 @@ def _check_python_ast(filepath: str) -> list[dict]:
                 imported.add(name)
                 defined.add(name)
 
-        # Track usage — includes regular references AND type annotations
+        # Track usage -- includes regular references AND type annotations
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
             used_names.add(node.id)
         # Type annotations: def foo(x: SomeType) or x: SomeType = ...
@@ -348,7 +348,7 @@ def _check_imports(filepath: str, project_root: str) -> list[dict]:
                     issues.append({
                         "file": filepath, "line": node.lineno, "severity": "critical",
                         "type": "broken_import",
-                        "msg": f"Import '{module}' — module not found",
+                        "msg": f"Import '{module}' -- module not found",
                         "fix": f"Check if {module} exists or fix the import path"
                     })
 
@@ -395,7 +395,7 @@ def _run_pytest_check(project_root: str) -> list[dict]:
 def _analyze_traceback(traceback_text: str) -> dict:
     """Parse a Python traceback and suggest fixes."""
     lines = traceback_text.strip().split("\n")
-    result = {"error": "", "file": "", "line": 0, "suggestion": ""}
+    result = {"error": "", "file": "", "line": 0, "suggestion": "", "error_type": ""}
 
     # Find the error line (last line)
     for line in reversed(lines):
@@ -403,56 +403,161 @@ def _analyze_traceback(traceback_text: str) -> dict:
             result["error"] = line.strip()
             break
 
-    # Find the file/line
+    # Find the file/line (take the last one -- closest to the error)
     for line in lines:
         match = re.search(r'File "(.+?)", line (\d+)', line)
         if match:
             result["file"] = match.group(1)
             result["line"] = int(match.group(2))
 
-    # Suggest fixes based on error type
+    # Determine error type
     err = result["error"]
+    if ":" in err:
+        result["error_type"] = err.split(":")[0].strip()
+
+    # Suggest fixes based on error type
     if "ModuleNotFoundError" in err:
         module = re.search(r"No module named '(.+?)'", err)
         if module:
-            result["suggestion"] = f"Install: pip install {module.group(1).split('.')[0]}"
+            mod_name = module.group(1).split('.')[0]
+            result["suggestion"] = f"Install: pip install {mod_name}"
+            # Common renames
+            renames = {"cv2": "opencv-python", "PIL": "Pillow", "yaml": "PyYAML",
+                       "sklearn": "scikit-learn", "bs4": "beautifulsoup4",
+                       "gi": "PyGObject", "dbus": "dbus-python",
+                       "magic": "python-magic", "Crypto": "pycryptodome"}
+            if mod_name in renames:
+                result["suggestion"] = f"Install: pip install {renames[mod_name]}"
     elif "ImportError" in err:
-        result["suggestion"] = "Check import path — module exists but name doesn't"
+        if "cannot import name" in err:
+            name_match = re.search(r"cannot import name '(.+?)'", err)
+            if name_match:
+                result["suggestion"] = (
+                    f"'{name_match.group(1)}' not found in the module. "
+                    "Check spelling, version compatibility, or if it was renamed/removed."
+                )
+        else:
+            result["suggestion"] = "Check import path -- module exists but name doesn't"
     elif "AttributeError" in err:
         attr = re.search(r"has no attribute '(.+?)'", err)
         if attr:
-            result["suggestion"] = f"'{attr.group(1)}' doesn't exist on that object — check spelling or add the method/property"
+            result["suggestion"] = f"'{attr.group(1)}' doesn't exist on that object -- check spelling or add the method/property"
     elif "TypeError" in err:
         if "argument" in err:
-            result["suggestion"] = "Wrong number/type of arguments — check function signature"
+            result["suggestion"] = "Wrong number/type of arguments -- check function signature"
         elif "unexpected keyword" in err:
             kw = re.search(r"keyword argument '(.+?)'", err)
-            result["suggestion"] = f"Parameter '{kw.group(1) if kw else '?'}' doesn't exist — check the function definition"
+            result["suggestion"] = f"Parameter '{kw.group(1) if kw else '?'}' doesn't exist -- check the function definition"
+        elif "not callable" in err:
+            result["suggestion"] = "Trying to call something that isn't a function -- check variable types"
+        elif "not iterable" in err:
+            result["suggestion"] = "Trying to iterate over a non-iterable -- check if the value is None or wrong type"
+        elif "not subscriptable" in err:
+            result["suggestion"] = "Trying to index into something that doesn't support it (e.g., None)"
+        else:
+            result["suggestion"] = "Type mismatch -- check argument types and return values"
     elif "NameError" in err:
         name = re.search(r"name '(.+?)' is not defined", err)
         if name:
-            result["suggestion"] = f"'{name.group(1)}' not defined — check spelling, imports, or scope"
+            result["suggestion"] = f"'{name.group(1)}' not defined -- check spelling, imports, or scope"
     elif "KeyError" in err:
-        result["suggestion"] = "Key doesn't exist in dict — use .get() with a default"
+        key = re.search(r"KeyError:\s*['\"]?(.+?)['\"]?\s*$", err)
+        result["suggestion"] = f"Key {key.group(1) if key else '?'} doesn't exist in dict -- use .get() with a default"
     elif "IndexError" in err:
-        result["suggestion"] = "List index out of range — check list length before accessing"
+        result["suggestion"] = "List index out of range -- check list length before accessing"
     elif "FileNotFoundError" in err:
-        result["suggestion"] = "File doesn't exist — check path and create if needed"
+        path_match = re.search(r"No such file or directory:\s*['\"]?(.+?)['\"]?\s*$", err)
+        if path_match:
+            result["suggestion"] = f"File not found: {path_match.group(1)} -- check path exists and spelling"
+        else:
+            result["suggestion"] = "File doesn't exist -- check path and create if needed"
     elif "PermissionError" in err:
-        result["suggestion"] = "No permission — check file ownership or run with sudo"
+        result["suggestion"] = "No permission -- check file ownership or run with sudo"
     elif "ValueError" in err:
-        result["suggestion"] = "Invalid value — check input data types and ranges"
+        if "invalid literal" in err:
+            result["suggestion"] = "String can't be converted to number -- validate input before converting"
+        elif "too many values to unpack" in err:
+            result["suggestion"] = "Unpacking mismatch -- check the number of variables matches the iterable"
+        else:
+            result["suggestion"] = "Invalid value -- check input data types and ranges"
     elif "SyntaxError" in err:
-        result["suggestion"] = "Fix the syntax — check for missing colons, brackets, quotes"
+        result["suggestion"] = "Fix the syntax -- check for missing colons, brackets, quotes"
+    elif "RecursionError" in err:
+        result["suggestion"] = "Infinite recursion -- add base case or increase sys.setrecursionlimit()"
+    elif "ConnectionError" in err or "ConnectionRefusedError" in err:
+        result["suggestion"] = "Connection failed -- check if the service is running and the address is correct"
+    elif "TimeoutError" in err:
+        result["suggestion"] = "Operation timed out -- increase timeout or check network/service"
+    elif "JSONDecodeError" in err:
+        result["suggestion"] = "Invalid JSON -- check the response/file content is valid JSON"
+    elif "UnicodeDecodeError" in err:
+        result["suggestion"] = "Encoding issue -- try open(file, encoding='utf-8', errors='replace')"
+    elif "OSError" in err:
+        result["suggestion"] = "OS-level error -- check file/network/resource availability"
+
+    # npm errors
+    if "npm ERR!" in traceback_text:
+        result["error_type"] = "npm"
+        if "ENOENT" in traceback_text:
+            result["suggestion"] = "Missing file or package.json -- run npm install first"
+        elif "EACCES" in traceback_text:
+            result["suggestion"] = "Permission denied -- try with sudo or fix node_modules ownership"
+        elif "peer dep" in traceback_text.lower():
+            result["suggestion"] = "Peer dependency conflict -- try npm install --legacy-peer-deps"
+        elif "ERESOLVE" in traceback_text:
+            result["suggestion"] = "Dependency resolution failed -- try npm install --force or --legacy-peer-deps"
+        else:
+            result["suggestion"] = "npm error -- try: rm -rf node_modules && npm install"
+
+    # git errors
+    if "fatal:" in traceback_text and ("git" in traceback_text.lower() or "merge" in traceback_text.lower()):
+        result["error_type"] = "git"
+        if "CONFLICT" in traceback_text or "conflict" in traceback_text:
+            result["suggestion"] = "Merge conflict -- edit the conflicting files, then git add and git commit"
+        elif "not a git repository" in traceback_text:
+            result["suggestion"] = "Not in a git repo -- run git init or cd to the right directory"
+        elif "detached HEAD" in traceback_text:
+            result["suggestion"] = "Detached HEAD -- create a branch: git checkout -b new-branch"
 
     return result
 
 
+def _parse_common_errors(text: str) -> list[dict]:
+    """Parse multiple error patterns from a block of text."""
+    results = []
+
+    # Python tracebacks
+    tb_pattern = re.compile(
+        r'Traceback \(most recent call last\):.*?(?=\n\S|\Z)',
+        re.DOTALL
+    )
+    for match in tb_pattern.finditer(text):
+        results.append(_analyze_traceback(match.group()))
+
+    # Single-line Python errors
+    for line in text.splitlines():
+        stripped = line.strip()
+        for err_type in ("ModuleNotFoundError", "ImportError", "AttributeError",
+                         "TypeError", "NameError", "KeyError", "ValueError",
+                         "FileNotFoundError", "SyntaxError"):
+            if stripped.startswith(err_type + ":"):
+                results.append(_analyze_traceback(stripped))
+
+    return results
+
+
 @command("troubleshoot", aliases=["ts", "debug-code", "check"],
-         description="Deep code analysis — find bugs, errors, and suggest fixes",
-         usage="/troubleshoot [file_or_dir]", category="git", permission=PermLevel.READ_ONLY)
+         description="Deep code analysis -- find bugs, errors, and suggest fixes",
+         usage="/troubleshoot [file_or_dir_or_error]", category="git", permission=PermLevel.READ_ONLY)
 async def cmd_troubleshoot(ctx: CommandContext) -> CommandResult:
-    """Comprehensive code troubleshooting with real bug detection."""
+    """Comprehensive code troubleshooting with real bug detection.
+
+    Accepts:
+    - A file path: analyzes the file for bugs
+    - A directory: scans all Python files
+    - An error message or traceback: parses and suggests fixes
+    - No args: scans current directory
+    """
     target = ctx.args.strip() or os.getcwd()
     target = os.path.expanduser(target)
     project_root = os.getcwd()
@@ -494,16 +599,60 @@ async def cmd_troubleshoot(ctx: CommandContext) -> CommandResult:
             test_issues = _run_pytest_check(project_root)
             all_issues.extend(test_issues)
     else:
-        # Maybe it's a traceback?
-        if "Traceback" in target or "Error" in target:
-            analysis = _analyze_traceback(target)
-            report.append(f"  Traceback Analysis")
+        # Maybe it's a traceback or error message?
+        if "Traceback" in target or "Error" in target or "error" in target.lower():
+            parsed_errors = _parse_common_errors(target)
+            if not parsed_errors:
+                # Fallback to single analysis
+                parsed_errors = [_analyze_traceback(target)]
+
+            report.append(f"  Error Analysis ({len(parsed_errors)} error(s) found)")
             report.append(f"  {'=' * 50}")
-            report.append(f"  Error: {analysis['error']}")
-            if analysis['file']:
-                report.append(f"  File:  {analysis['file']}:{analysis['line']}")
-            if analysis['suggestion']:
-                report.append(f"  Fix:   {analysis['suggestion']}")
+
+            for i, analysis in enumerate(parsed_errors):
+                if len(parsed_errors) > 1:
+                    report.append(f"\n  Error {i + 1}:")
+                report.append(f"  Type:   {analysis.get('error_type', 'Unknown')}")
+                report.append(f"  Error:  {analysis['error']}")
+                if analysis['file']:
+                    report.append(f"  File:   {analysis['file']}:{analysis['line']}")
+                if analysis['suggestion']:
+                    report.append(f"  Fix:    {analysis['suggestion']}")
+
+                # Show file context if available
+                if analysis["file"] and os.path.exists(analysis["file"]) and analysis["line"]:
+                    try:
+                        with open(analysis["file"], "r") as f:
+                            file_lines = f.readlines()
+                        start = max(0, analysis["line"] - 3)
+                        end = min(len(file_lines), analysis["line"] + 3)
+                        report.append(f"\n  Context ({os.path.basename(analysis['file'])}):")
+                        for idx in range(start, end):
+                            marker = " >> " if idx + 1 == analysis["line"] else "    "
+                            report.append(f"  {marker}{idx+1:4d} | {file_lines[idx].rstrip()}")
+                    except Exception:
+                        pass
+
+            # Use AI for deeper analysis if available
+            brain = ctx.brain
+            if brain and hasattr(brain, "think") and parsed_errors:
+                try:
+                    error_text = target[:3000]
+                    prompt = (
+                        f"Analyze this error and provide a detailed fix:\n\n"
+                        f"```\n{error_text}\n```\n\n"
+                        "Provide:\n"
+                        "1. Root cause explanation\n"
+                        "2. Step-by-step fix\n"
+                        "3. How to prevent this in the future"
+                    )
+                    ai_analysis = await brain.think(prompt)
+                    report.append(f"\n  AI Analysis")
+                    report.append(f"  {'=' * 50}")
+                    report.append(ai_analysis)
+                except Exception:
+                    pass
+
             return CommandResult(text="\n".join(report))
         else:
             return CommandResult(text=f"Not found: {target}", success=False)
@@ -527,7 +676,7 @@ async def cmd_troubleshoot(ctx: CommandContext) -> CommandResult:
             elif itype == "broken_import":
                 issue["fix"] = "Create the missing module or fix the import path"
             elif itype == "syntax_error":
-                issue["fix"] = "Fix the syntax — check for missing colons, brackets, quotes"
+                issue["fix"] = "Fix the syntax -- check for missing colons, brackets, quotes"
             elif itype == "mutable_default":
                 issue["fix"] = "Use None as default, then: if arg is None: arg = []"
             elif itype == "bare_except":
@@ -539,7 +688,7 @@ async def cmd_troubleshoot(ctx: CommandContext) -> CommandResult:
 
     if critical:
         report.append(f"  CRITICAL ISSUES ({len(critical)})")
-        report.append(f"  {'─' * 50}")
+        report.append(f"  {'---' * 15}")
         for issue in critical:
             rel = os.path.relpath(issue["file"], project_root)
             line = f":{issue['line']}" if issue["line"] else ""
@@ -550,7 +699,7 @@ async def cmd_troubleshoot(ctx: CommandContext) -> CommandResult:
 
     if warnings:
         report.append(f"  WARNINGS ({len(warnings)})")
-        report.append(f"  {'─' * 50}")
+        report.append(f"  {'---' * 15}")
         for issue in warnings[:25]:
             rel = os.path.relpath(issue["file"], project_root)
             line = f":{issue['line']}" if issue["line"] else ""
@@ -562,7 +711,7 @@ async def cmd_troubleshoot(ctx: CommandContext) -> CommandResult:
 
     if infos:
         report.append(f"  INFO ({len(infos)})")
-        report.append(f"  {'─' * 50}")
+        report.append(f"  {'---' * 15}")
         for issue in infos[:20]:
             rel = os.path.relpath(issue["file"], project_root)
             report.append(f"    {rel}: {issue['msg']}")
@@ -574,7 +723,7 @@ async def cmd_troubleshoot(ctx: CommandContext) -> CommandResult:
         report.append(f"  No issues found! Code looks clean.")
         return CommandResult(text="\n".join(report))
 
-    # ── Generate auto-fixes ──
+    # -- Generate auto-fixes --
     fixes = []
     for issue in all_issues:
         fix = _generate_fix(issue)
@@ -583,10 +732,10 @@ async def cmd_troubleshoot(ctx: CommandContext) -> CommandResult:
 
     if fixes:
         report.append(f"\n  AVAILABLE FIXES ({len(fixes)})")
-        report.append(f"  {'─' * 50}")
+        report.append(f"  {'---' * 15}")
         for i, fix in enumerate(fixes, 1):
             rel = os.path.relpath(fix["file"], project_root)
-            report.append(f"    {i}. {rel}:{fix['line']} — {fix['description']}")
+            report.append(f"    {i}. {rel}:{fix['line']} -- {fix['description']}")
             if fix.get("old"):
                 report.append(f"       - {fix['old'].strip()}")
             if fix.get("new") is not None and not fix.get("delete_line"):
@@ -623,13 +772,27 @@ async def cmd_apply_fixes(ctx: CommandContext) -> CommandResult:
     for fix in fixes:
         rel = os.path.relpath(fix["file"], os.getcwd())
         if _apply_fix(fix):
-            report.append(f"    ✔ {rel}:{fix['line']} — {fix['description']}")
+            report.append(f"    OK {rel}:{fix['line']} -- {fix['description']}")
             applied += 1
         else:
-            report.append(f"    ✘ {rel}:{fix['line']} — FAILED")
+            report.append(f"    FAIL {rel}:{fix['line']} -- could not apply")
             failed += 1
 
     report.append(f"\n  Applied: {applied}, Failed: {failed}")
+
+    # Run syntax check on modified files to verify fixes didn't break anything
+    modified_files = set(fix["file"] for fix in fixes)
+    broken = []
+    for fpath in modified_files:
+        if fpath.endswith(".py") and os.path.exists(fpath):
+            syntax_issues = _check_python_syntax(fpath)
+            if syntax_issues:
+                broken.append(fpath)
+    if broken:
+        report.append(f"\n  WARNING: {len(broken)} file(s) have syntax errors after fix:")
+        for f in broken:
+            report.append(f"    {os.path.relpath(f, os.getcwd())}")
+
     brain._pending_fixes = []
     return CommandResult(text="\n".join(report))
 
@@ -655,44 +818,104 @@ async def cmd_apply_fix(ctx: CommandContext) -> CommandResult:
     rel = os.path.relpath(fix["file"], os.getcwd())
 
     if _apply_fix(fix):
+        # Verify the fix didn't break syntax
+        warning = ""
+        if fix["file"].endswith(".py") and os.path.exists(fix["file"]):
+            syntax_issues = _check_python_syntax(fix["file"])
+            if syntax_issues:
+                warning = "\n  WARNING: File has syntax errors after fix -- please verify manually."
+
         fixes.pop(num - 1)
-        return CommandResult(text=f"  ✔ Applied: {rel}:{fix['line']} — {fix['description']}\n  {len(fixes)} fixes remaining.")
+        return CommandResult(text=f"  Applied: {rel}:{fix['line']} -- {fix['description']}\n  {len(fixes)} fixes remaining.{warning}")
     else:
-        return CommandResult(text=f"  ✘ Failed to apply fix at {rel}:{fix['line']}", success=False)
+        return CommandResult(text=f"  Failed to apply fix at {rel}:{fix['line']}", success=False)
 
 
 @command("fix-error", aliases=["fix", "diagnose"],
          description="Analyze a traceback/error and suggest fixes",
-         usage="/fix-error <paste traceback>", category="git", permission=PermLevel.READ_ONLY)
+         usage="/fix-error [paste traceback or leave empty for last error]",
+         category="git", permission=PermLevel.READ_ONLY)
 async def cmd_fix_error(ctx: CommandContext) -> CommandResult:
-    """Analyze a traceback and suggest fixes."""
+    """Analyze a traceback and suggest fixes.
+
+    If no text is provided, attempts to read the last error from session history.
+    """
     text = ctx.args.strip()
+
+    # If no text provided, try to find the last error in session history
     if not text:
-        return CommandResult(text="Paste a traceback or error message after the command:\n  /fix-error Traceback (most recent call last)...", success=False)
+        brain = ctx.brain
+        if brain and hasattr(brain, 'memory'):
+            try:
+                history = brain.memory.get_history(limit=20)
+                for entry in reversed(history):
+                    content = entry.get("content", "") if isinstance(entry, dict) else str(entry)
+                    if any(err in content for err in ("Traceback", "Error:", "error:", "FAILED", "fatal:")):
+                        text = content
+                        break
+            except Exception:
+                pass
 
-    analysis = _analyze_traceback(text)
+        if not text:
+            return CommandResult(
+                text="No error found. Either:\n"
+                     "  1. Paste a traceback: /fix-error Traceback (most recent call last)...\n"
+                     "  2. Run a command that fails first, then /fix-error will find it in history",
+                success=False
+            )
+
+    # Parse multiple errors if present
+    parsed = _parse_common_errors(text)
+    if not parsed:
+        parsed = [_analyze_traceback(text)]
+
     lines = ["  Error Analysis", "  " + "=" * 40]
-    lines.append(f"  Error:      {analysis['error']}")
-    if analysis["file"]:
-        lines.append(f"  File:       {analysis['file']}")
-    if analysis["line"]:
-        lines.append(f"  Line:       {analysis['line']}")
-    if analysis["suggestion"]:
-        lines.append(f"  Suggestion: {analysis['suggestion']}")
-    else:
-        lines.append(f"  Suggestion: Check the error message and surrounding code")
 
-    # Try to read the file and show context
-    if analysis["file"] and os.path.exists(analysis["file"]) and analysis["line"]:
+    for i, analysis in enumerate(parsed):
+        if len(parsed) > 1:
+            lines.append(f"\n  --- Error {i + 1} ---")
+
+        lines.append(f"  Type:       {analysis.get('error_type', 'Unknown')}")
+        lines.append(f"  Error:      {analysis['error']}")
+        if analysis["file"]:
+            lines.append(f"  File:       {analysis['file']}")
+        if analysis["line"]:
+            lines.append(f"  Line:       {analysis['line']}")
+        if analysis["suggestion"]:
+            lines.append(f"  Suggestion: {analysis['suggestion']}")
+        else:
+            lines.append(f"  Suggestion: Check the error message and surrounding code")
+
+        # Try to read the file and show context
+        if analysis["file"] and os.path.exists(analysis["file"]) and analysis["line"]:
+            try:
+                with open(analysis["file"], "r") as f:
+                    file_lines = f.readlines()
+                start = max(0, analysis["line"] - 3)
+                end = min(len(file_lines), analysis["line"] + 3)
+                lines.append(f"\n  Context ({os.path.basename(analysis['file'])}):")
+                for idx in range(start, end):
+                    marker = " >> " if idx + 1 == analysis["line"] else "    "
+                    lines.append(f"  {marker}{idx+1:4d} | {file_lines[idx].rstrip()}")
+            except Exception:
+                pass
+
+    # Use AI for more detailed analysis if available
+    brain = ctx.brain
+    if brain and hasattr(brain, "think") and len(text) > 20:
         try:
-            with open(analysis["file"], "r") as f:
-                file_lines = f.readlines()
-            start = max(0, analysis["line"] - 3)
-            end = min(len(file_lines), analysis["line"] + 3)
-            lines.append(f"\n  Context ({os.path.basename(analysis['file'])}):")
-            for i in range(start, end):
-                marker = " >> " if i + 1 == analysis["line"] else "    "
-                lines.append(f"  {marker}{i+1:4d} | {file_lines[i].rstrip()}")
+            prompt = (
+                f"Analyze this error and provide a concise fix:\n\n"
+                f"```\n{text[:3000]}\n```\n\n"
+                "Provide:\n"
+                "1. What went wrong (1 sentence)\n"
+                "2. How to fix it (specific steps)\n"
+                "3. Prevention tip (1 sentence)"
+            )
+            ai_result = await brain.think(prompt)
+            lines.append(f"\n  AI Diagnosis")
+            lines.append(f"  {'=' * 40}")
+            lines.append(ai_result)
         except Exception:
             pass
 

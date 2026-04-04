@@ -5,8 +5,10 @@ The companion is a mini AI entity with personality stats.
 It comments occasionally, can be petted, and doesn't count toward usage.
 """
 
+import os
 import random
 import time
+from dataclasses import dataclass, field
 
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -16,9 +18,253 @@ YELLOW = "\033[33m"
 GREEN = "\033[32m"
 RED = "\033[31m"
 BLUE = "\033[34m"
+MAGENTA = "\033[35m"
 
 
-# ── Companion Definitions ──
+# ── Seeded PRNG for deterministic companion generation ──
+
+def _mulberry32(seed: int):
+    """Mulberry32 PRNG -- deterministic per-seed."""
+    a = seed & 0xffffffff
+    def rng():
+        nonlocal a
+        a = (a + 0x6d2b79f5) & 0xffffffff
+        t = (a ^ (a >> 15)) * (1 | a) & 0xffffffff
+        t = (t + ((t ^ (t >> 7)) * (61 | t))) & 0xffffffff
+        return ((t ^ (t >> 14)) & 0xffffffff) / 0x100000000
+    return rng
+
+def _fnv1a_hash(s: str) -> int:
+    """FNV-1a hash for string -> int."""
+    h = 2166136261
+    for c in s:
+        h ^= ord(c)
+        h = (h * 16777619) & 0xffffffff
+    return h
+
+
+# ── Species, rarities, and customization constants ──
+
+SPECIES = [
+    "dragon", "cat", "owl", "penguin", "ghost", "robot", "octopus",
+    "turtle", "fox", "wolf", "phoenix", "golem", "sprite", "raven",
+    "serpent", "bear", "hawk", "panther",
+]
+
+RARITIES = ["common", "uncommon", "rare", "epic", "legendary"]
+RARITY_WEIGHTS = [60, 25, 10, 4, 1]
+RARITY_STARS = {"common": "★", "uncommon": "★★", "rare": "★★★", "epic": "★★★★", "legendary": "★★★★★"}
+RARITY_STAT_FLOORS = {"common": 5, "uncommon": 15, "rare": 25, "epic": 35, "legendary": 50}
+
+EYES = ["·", "✦", "×", "◉", "@", "°"]
+HATS = ["none", "crown", "tophat", "halo", "wizard", "beanie", "horns", "antenna"]
+
+STAT_NAMES = ["HACKING", "PATIENCE", "CHAOS", "WISDOM", "SNARK"]
+
+
+# ── Dataclasses ──
+
+@dataclass
+class CompanionBones:
+    """Deterministic visual/stat attributes -- regenerated from user hash."""
+    rarity: str = "common"
+    species: str = "dragon"
+    eye: str = "·"
+    hat: str = "none"
+    shiny: bool = False
+    stats: dict = field(default_factory=dict)
+
+@dataclass
+class CompanionSoul:
+    """Persistent personality -- stored in config."""
+    name: str = ""
+    personality: str = ""
+    hatched_at: float = 0.0
+
+
+# ── Generation functions ──
+
+def _pick(rng, arr):
+    return arr[int(rng() * len(arr))]
+
+def _roll_rarity(rng):
+    total = sum(RARITY_WEIGHTS)
+    roll = rng() * total
+    for i, r in enumerate(RARITIES):
+        roll -= RARITY_WEIGHTS[i]
+        if roll < 0:
+            return r
+    return RARITIES[-1]
+
+def _roll_stats(rng, rarity):
+    floor = RARITY_STAT_FLOORS[rarity]
+    stats = {}
+    indices = list(range(len(STAT_NAMES)))
+    peak = int(rng() * len(indices))
+    dump = (peak + 1 + int(rng() * (len(indices) - 1))) % len(indices)
+    for i, name in enumerate(STAT_NAMES):
+        if i == peak:
+            stats[name] = floor + 50 + int(rng() * 30)
+        elif i == dump:
+            stats[name] = max(1, floor - 10 + int(rng() * 15))
+        else:
+            stats[name] = floor + int(rng() * 40)
+    return stats
+
+def generate_companion(user_id: str = "") -> tuple[CompanionBones, int]:
+    """Generate deterministic companion from user ID."""
+    if not user_id:
+        user_id = os.environ.get("USER", "jarvis-user")
+    seed = _fnv1a_hash(user_id + "jarvis-companion-2026")
+    rng = _mulberry32(seed)
+
+    rarity = _roll_rarity(rng)
+    bones = CompanionBones(
+        rarity=rarity,
+        species=_pick(rng, SPECIES),
+        eye=_pick(rng, EYES),
+        hat=_pick(rng, HATS),
+        shiny=rng() < 0.01,
+        stats=_roll_stats(rng, rarity),
+    )
+    return bones, seed
+
+
+# ── ASCII Sprite Database ──
+# Each species has 3 frames: idle, sway, blink. {E} = eye placeholder.
+
+SPRITES = {
+    "dragon": [
+        "  /\\_/\\  \n ({E}  {E}) \n / >  < \\\n|  ~~   |\n \\____/ ",
+        "  /\\_/\\  \n ({E}  {E}) \n / >  < \\\n|  ~    |\n \\____/ ",
+        "  /\\_/\\  \n (-  -) \n / >  < \\\n|  ~~   |\n \\____/ ",
+    ],
+    "cat": [
+        " /\\_/\\  \n( {E} {E} ) \n > ^ <  \n  / \\   \n _| |_  ",
+        " /\\_/\\  \n( {E} {E} ) \n > ^ <  \n  | |   \n _| |_  ",
+        " /\\_/\\  \n( - - ) \n > ^ <  \n  / \\   \n _| |_  ",
+    ],
+    "owl": [
+        " {{\\_/}} \n(( {E} {E} ))\n  ( > ) \n  /| |\\\n _| |_ ",
+        " {{\\_/}} \n(( {E} {E} ))\n  ( > ) \n  \\| |/\n _| |_ ",
+        " {{\\_/}} \n(( - - ))\n  ( > ) \n  /| |\\\n _| |_ ",
+    ],
+    "penguin": [
+        "  (^^)  \n /({E}{E})\\\n( >  < )\n \\    / \n  |  |  ",
+        "  (^^)  \n /({E}{E})\\\n( >  < )\n  \\  /  \n  |  |  ",
+        "  (^^)  \n /(--)\\\n( >  < )\n \\    / \n  |  |  ",
+    ],
+    "ghost": [
+        "  .---.  \n / {E} {E} \\\n|  o  |\n|     |\n ^^^^\\ ",
+        "  .---.  \n / {E} {E} \\\n|  o  |\n|     |\n /^^^^ ",
+        "  .---.  \n / - - \\\n|  o  |\n|     |\n ^^^^\\ ",
+    ],
+    "robot": [
+        " [====] \n |{E}  {E}| \n |_[]_| \n  /||\\\\\n _|  |_ ",
+        " [====] \n |{E}  {E}| \n |_[]_| \n  \\\\||/\n _|  |_ ",
+        " [====] \n |_  _| \n |_[]_| \n  /||\\\\\n _|  |_ ",
+    ],
+    "octopus": [
+        "  .~~~.  \n ( {E} {E} ) \n  \\_^_/ \n /|/|\\|\\\n~ ~ ~ ~ ",
+        "  .~~~.  \n ( {E} {E} ) \n  \\_^_/ \n\\|\\|/|/\n ~ ~ ~ ~",
+        "  .~~~.  \n ( - - ) \n  \\_^_/ \n /|/|\\|\\\n~ ~ ~ ~ ",
+    ],
+    "turtle": [
+        "  _____  \n /({E} {E})\\\n| /_\\ |\n|_____|\n  U   U ",
+        "  _____  \n /({E} {E})\\\n| /_\\ |\n|_____|\n U   U  ",
+        "  _____  \n /(- -)\\\n| /_\\ |\n|_____|\n  U   U ",
+    ],
+    "fox": [
+        " /\\ /\\  \n( {E} {E} ) \n  \\ w / \n  | | | \n _| |_  ",
+        " /\\ /\\  \n( {E} {E} ) \n  \\ w / \n  || |  \n _| |_  ",
+        " /\\ /\\  \n( - - ) \n  \\ w / \n  | | | \n _| |_  ",
+    ],
+    "wolf": [
+        " /\\_/\\  \n({E}   {E}) \n  \\V/   \n  /|\\   \n_/ | \\_ ",
+        " /\\_/\\  \n({E}   {E}) \n  \\V/   \n  \\|/   \n_/ | \\_ ",
+        " /\\_/\\  \n(-   -) \n  \\V/   \n  /|\\   \n_/ | \\_ ",
+    ],
+    "phoenix": [
+        " ~\\ /~  \n ({E} {E}) \n  \\|/   \n  /|\\   \n~/ | \\~ ",
+        " ~/\\~   \n ({E} {E}) \n  \\|/   \n  /|\\   \n~/ | \\~ ",
+        " ~\\ /~  \n (- -) \n  \\|/   \n  /|\\   \n~/ | \\~ ",
+    ],
+    "golem": [
+        " [###]  \n [{E} {E}] \n [___]  \n /[ ]\\ \n_|   |_ ",
+        " [###]  \n [{E} {E}] \n [___]  \n\\[ ] / \n_|   |_ ",
+        " [###]  \n [_ _] \n [___]  \n /[ ]\\ \n_|   |_ ",
+    ],
+    "sprite": [
+        "  *  *  \n * {E}{E} * \n  \\  /  \n   \\/   \n  ~  ~  ",
+        " *  *   \n  *{E}{E}*  \n  \\  /  \n   \\/   \n ~  ~   ",
+        "  *  *  \n * -- * \n  \\  /  \n   \\/   \n  ~  ~  ",
+    ],
+    "raven": [
+        "  ___   \n ({E} {E})> \n /__\\  \n /  \\  \n_|  |_ ",
+        "  ___   \n ({E} {E})> \n /__\\  \n  /\\   \n_|  |_ ",
+        "  ___   \n (- -)> \n /__\\  \n /  \\  \n_|  |_ ",
+    ],
+    "serpent": [
+        "  /{E}{E}\\  \n /    \\ \n(  ~~  )\n \\    / \n  ~~~~  ",
+        "  /{E}{E}\\  \n /    \\ \n(  ~   )\n \\    / \n  ~~~~  ",
+        "  /--\\  \n /    \\ \n(  ~~  )\n \\    / \n  ~~~~  ",
+    ],
+    "bear": [
+        " (\\__/) \n ({E} {E}) \n  > < \n / | \\ \n_|   |_ ",
+        " (\\__/) \n ({E} {E}) \n  > < \n  \\|/  \n_|   |_ ",
+        " (\\__/) \n (- -) \n  > < \n / | \\ \n_|   |_ ",
+    ],
+    "hawk": [
+        "  \\ /   \n ({E}V{E}) \n  /_\\  \n  / \\   \n_/   \\_ ",
+        "  \\ /   \n ({E}V{E}) \n  /_\\  \n  \\ /   \n_/   \\_ ",
+        "  \\ /   \n (-V-) \n  /_\\  \n  / \\   \n_/   \\_ ",
+    ],
+    "panther": [
+        "  ___   \n ({E} {E}) \n  \\_/  \n  /|\\   \n_/ | \\_ ",
+        "  ___   \n ({E} {E}) \n  \\_/  \n  \\|/   \n_/ | \\_ ",
+        "  ___   \n (- -) \n  \\_/  \n  /|\\   \n_/ | \\_ ",
+    ],
+}
+
+
+# ── Render functions ──
+
+def render_sprite(bones: CompanionBones, frame: int = 0) -> str:
+    """Render the companion sprite with eye substitution."""
+    species = bones.species
+    if species not in SPRITES:
+        species = "dragon"  # fallback
+    frames = SPRITES[species]
+    sprite = frames[frame % len(frames)]
+    return sprite.replace("{E}", bones.eye)
+
+def render_face(bones: CompanionBones) -> str:
+    """Compact one-line face for narrow terminals."""
+    e = bones.eye
+    faces = {
+        "dragon": f"({e}>{e})",
+        "cat": f"={e}^{e}=",
+        "owl": f"({e}v{e})",
+        "penguin": f"({e}_{e})",
+        "ghost": f"~{e}o{e}~",
+        "robot": f"[{e}_{e}]",
+        "octopus": f"({e}~{e})",
+        "turtle": f"({e}.{e})",
+        "fox": f"({e}w{e})",
+        "wolf": f"({e}V{e})",
+        "phoenix": f"~{e}^{e}~",
+        "golem": f"[{e}#{e}]",
+        "sprite": f"*{e}*{e}*",
+        "raven": f"({e}>{e})",
+        "serpent": f"~{e}~{e}~",
+        "bear": f"({e}<{e})",
+        "hawk": f"({e}V{e})",
+        "panther": f"({e}_{e})",
+    }
+    return faces.get(bones.species, f"({e}.{e})")
+
+
+# ── Companion Definitions (static, original) ──
 
 COMPANIONS = {
     "friday": {
@@ -160,9 +406,94 @@ class Companion:
         self.last_comment_time = 0
         self.comment_cooldown = 30  # seconds between unsolicited comments
 
+        # Buddy system attributes
+        self.bones: CompanionBones | None = None
+        self.soul: CompanionSoul | None = None
+        self._frame: int = 0
+        self._idle_sequence = [0, 0, 0, 0, 1, 0, 0, 0, -1, 0, 0, 2, 0, 0, 0]
+
     @property
     def name(self):
         return self.data["name"]
+
+    def generate(self, user_id: str = ""):
+        """Generate deterministic bones from user ID, set species/name."""
+        bones, seed = generate_companion(user_id)
+        self.bones = bones
+        self.soul = CompanionSoul(
+            name=bones.species.capitalize(),
+            personality=bones.rarity,
+            hatched_at=time.time(),
+        )
+        # Update the data dict so render_card and name stay consistent
+        species_type_map = {
+            "dragon": "FIRE WYRM", "cat": "SHADOW CAT", "owl": "NIGHT OWL",
+            "penguin": "ICE SCOUT", "ghost": "PHANTOM", "robot": "MECH UNIT",
+            "octopus": "DEEP LURKER", "turtle": "SHELL SAGE", "fox": "SLY TRICKSTER",
+            "wolf": "PACK LEADER", "phoenix": "REBORN FLAME", "golem": "STONE WARD",
+            "sprite": "PIXIE SPARK", "raven": "DARK HERALD", "serpent": "COIL VIPER",
+            "bear": "IRON BEAR", "hawk": "SKY RAZOR", "panther": "VOID STALKER",
+        }
+        rarity_upper = bones.rarity.upper()
+        type_label = species_type_map.get(bones.species, "COMPANION")
+        # Build sprite art lines from frame 0
+        sprite_text = render_sprite(bones, 0)
+        art_lines = sprite_text.split("\n")
+
+        self.data = {
+            "name": self.soul.name,
+            "type": type_label,
+            "rarity": rarity_upper,
+            "art": art_lines,
+            "desc": (
+                f'"A {bones.rarity} {bones.species} companion\n'
+                f'born from seed #{seed:08x}.\n'
+                f'Eyes: {bones.eye}  Hat: {bones.hat}\n'
+                f'{"SHINY! Gleams in the terminal light." if bones.shiny else "Loyal and ever-watchful."}"'
+            ),
+            "stats": bones.stats,
+        }
+
+    def get_animated_sprite(self) -> str:
+        """Return current animation frame, advance counter."""
+        if self.bones is None:
+            return ""
+        idx = self._idle_sequence[self._frame % len(self._idle_sequence)]
+        # idx: 0=idle, 1=sway, 2=blink, -1=idle (reverse treated as 0)
+        frame_num = max(0, idx)
+        self._frame += 1
+        return render_sprite(self.bones, frame_num)
+
+    def get_stat_card(self) -> str:
+        """Render stats as a formatted card with rarity stars."""
+        if self.bones is None:
+            return "No companion generated yet. Use generate() first."
+        bones = self.bones
+        stars = RARITY_STARS.get(bones.rarity, "★")
+        rarity_colors = {
+            "common": DIM, "uncommon": GREEN, "rare": BLUE,
+            "epic": MAGENTA, "legendary": YELLOW,
+        }
+        rc = rarity_colors.get(bones.rarity, DIM)
+
+        lines = []
+        lines.append(f"{rc}{stars} {bones.rarity.upper()}{RESET}  {BOLD}{bones.species.upper()}{RESET}")
+        if bones.shiny:
+            lines.append(f"  {YELLOW}~ SHINY ~{RESET}")
+        lines.append(f"  Eyes: {bones.eye}  Hat: {bones.hat}")
+        lines.append("")
+        for stat_name, stat_val in bones.stats.items():
+            filled = stat_val // 10
+            empty = 10 - filled
+            if stat_val >= 80:
+                bar_color = GREEN
+            elif stat_val >= 50:
+                bar_color = YELLOW
+            else:
+                bar_color = RED
+            bar = f"{bar_color}{'█' * filled}{DIM}{'░' * empty}{RESET}"
+            lines.append(f"  {stat_name:<10s} {bar} {stat_val:>3d}")
+        return "\n".join(lines)
 
     def render_card(self, tw: int = 80) -> str:
         """Render the companion card (shown on /buddy). Matches Claude Code style."""
@@ -173,7 +504,9 @@ class Companion:
         # Rarity color
         rarity_colors = {
             "COMMON": DIM,
+            "UNCOMMON": GREEN,
             "RARE": BLUE,
+            "EPIC": MAGENTA,
             "LEGENDARY": YELLOW,
         }
         rc = rarity_colors.get(rarity, DIM)
@@ -240,6 +573,9 @@ class Companion:
         return random.choice(pool)
 
     def render_comment(self, comment: str) -> str:
-        """Render a speech bubble with the companion's comment."""
+        """Render a speech bubble with the companion's comment, with inline face."""
         name = self.data["name"].split(".")[0] if "." in self.data["name"] else self.data["name"]
-        return f"  {DIM}{name}: {comment}{RESET}"
+        face = ""
+        if self.bones is not None:
+            face = render_face(self.bones) + " "
+        return f"  {DIM}{face}{name}: {comment}{RESET}"

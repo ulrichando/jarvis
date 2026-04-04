@@ -15,3 +15,5 @@ from brain.commands.handlers import extra     # noqa: F401  (extra Claude Code c
 from brain.commands.handlers import review       # noqa: F401  (structured codebase review)
 from brain.commands.handlers import troubleshoot # noqa: F401  (code troubleshooting)
 from brain.commands.handlers import power        # noqa: F401  (shutdown, reboot, sleep, lock)
+from brain.commands.handlers import insights     # noqa: F401  (insights, security-review, pr-comments)
+from brain.commands.handlers import remote       # noqa: F401  (remote, IDE, integration commands)

@@ -1,7 +1,11 @@
 """Extra commands — additional Claude Code-style commands for JARVIS."""
 import os
+import re
+import json
 import time
+import asyncio
 import subprocess
+from pathlib import Path
 from brain.commands.registry import command, CommandContext, CommandResult, PermLevel
 
 
@@ -116,111 +120,279 @@ async def cmd_desktop(ctx: CommandContext) -> CommandResult:
 async def cmd_add_dir(ctx: CommandContext) -> CommandResult:
     path = ctx.args.strip()
     if not path:
-        return CommandResult(text="Usage: /add-dir <path>", success=False)
-    import os
-    expanded = os.path.expanduser(path)
+        # Show current working directories
+        brain = ctx.brain
+        dirs = getattr(brain, '_working_dirs', [os.getcwd()]) if brain else [os.getcwd()]
+        lines = ["Working Directories", "=" * 40]
+        for i, d in enumerate(dirs):
+            marker = " (active)" if d == os.getcwd() else ""
+            lines.append(f"  {i + 1}. {d}{marker}")
+        lines.append("\nUsage: /add-dir <path>")
+        return CommandResult(text="\n".join(lines))
+    expanded = os.path.realpath(os.path.expanduser(path))
     if not os.path.isdir(expanded):
         return CommandResult(text=f"Not a directory: {expanded}", success=False)
-    os.chdir(expanded)
-    return CommandResult(text=f"Working directory changed to: {expanded}")
-
-
-@command("context", description="Show current context window usage",
-         usage="/context", category="core", permission=PermLevel.READ_ONLY)
-async def cmd_context(ctx: CommandContext) -> CommandResult:
     brain = ctx.brain
-    if not brain:
-        return CommandResult(text="Brain not available", success=False)
-    from brain.agent.context import estimate_tokens, MODEL_LIMITS
-    history = brain.memory.get_history(limit=50)
-    msgs = [{"role": "user" if h["role"] == "user" else "assistant",
-             "content": h["content"]} for h in history]
-    total = estimate_tokens(msgs)
-    model = getattr(brain.reasoner, 'active_model_name', '')
-    limit = MODEL_LIMITS.get(model, 24000)
-    pct = min(100, int(total / limit * 100))
-    # Build visual bar
-    filled = pct // 5
-    empty = 20 - filled
-    bar = "\u2588" * filled + "\u2591" * empty
-    lines = [
-        f"Context Usage: {bar} {pct}%",
-        f"  Tokens: ~{total:,} / {limit:,}",
-        f"  Model: {model}",
-        f"  History turns: {len(history)}",
-        f"  Lattice nodes: {brain.memory.stats.get('lattice_nodes', 0)}",
-    ]
-    return CommandResult(text="\n".join(lines))
+    if brain:
+        if not hasattr(brain, '_working_dirs'):
+            brain._working_dirs = [os.getcwd()]
+        if expanded not in brain._working_dirs:
+            brain._working_dirs.append(expanded)
+        # Update permissions to include new directory
+        if hasattr(brain, 'permissions') and hasattr(brain.permissions, 'allowed_dirs'):
+            if expanded not in brain.permissions.allowed_dirs:
+                brain.permissions.allowed_dirs.append(expanded)
+    os.chdir(expanded)
+    count = len(brain._working_dirs) if brain and hasattr(brain, '_working_dirs') else 1
+    return CommandResult(text=f"Added and switched to: {expanded}\n  Total working dirs: {count}")
 
 
-@command("copy", description="Copy last response to clipboard",
-         usage="/copy [N]", category="core", permission=PermLevel.READ_ONLY)
+# NOTE: /context command moved to core.py with enhanced breakdown display
+
+
+def _extract_code_blocks(text: str) -> list[str]:
+    """Extract fenced code blocks from markdown text."""
+    pattern = r'```(?:\w+)?\s*\n(.*?)```'
+    blocks = re.findall(pattern, text, re.DOTALL)
+    return [b.strip() for b in blocks if b.strip()]
+
+
+def _copy_to_clipboard(content: str) -> tuple[bool, str]:
+    """Copy text to clipboard. Returns (success, method_used)."""
+    # Try xclip first (Linux)
+    for cmd, args in [
+        ("xclip", ["xclip", "-selection", "clipboard"]),
+        ("xsel", ["xsel", "--clipboard", "--input"]),
+        ("pbcopy", ["pbcopy"]),
+        ("wl-copy", ["wl-copy"]),
+    ]:
+        try:
+            subprocess.run(args, input=content.encode(), check=True, timeout=5,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True, cmd
+        except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            continue
+    # Fallback: write to temp file
+    fallback = "/tmp/jarvis-clipboard.txt"
+    try:
+        with open(fallback, "w") as f:
+            f.write(content)
+        return True, f"file ({fallback})"
+    except Exception:
+        return False, "none"
+
+
+@command("copy", description="Copy code blocks or last response to clipboard",
+         usage="/copy [N] [--code]", category="core", permission=PermLevel.READ_ONLY)
 async def cmd_copy(ctx: CommandContext) -> CommandResult:
     brain = ctx.brain
     if not brain:
         return CommandResult(text="Brain not available", success=False)
-    n = 1
-    if ctx.args.strip().isdigit():
-        n = int(ctx.args.strip())
+
+    args = ctx.args.strip()
+    want_code = "--code" in args
+    args = args.replace("--code", "").strip()
+    n = int(args) if args.isdigit() else 1
+    lookback = max(n, 5)
+
     history = brain.memory.get_history(limit=50)
     jarvis_msgs = [h for h in history if h["role"] == "jarvis"]
-    if not jarvis_msgs or n > len(jarvis_msgs):
+    if not jarvis_msgs:
         return CommandResult(text="No response to copy.", success=False)
+
+    # Smart code block extraction: scan last N assistant messages
+    if want_code or True:  # always try code blocks first
+        code_blocks = []
+        scan_count = min(lookback, len(jarvis_msgs))
+        for msg in jarvis_msgs[-scan_count:]:
+            blocks = _extract_code_blocks(msg.get("content", ""))
+            code_blocks.extend(blocks)
+
+        if code_blocks:
+            if n <= len(code_blocks):
+                # Copy the Nth most recent code block
+                content = code_blocks[-n]
+                label = f"code block {n} of {len(code_blocks)}"
+            else:
+                # Copy all code blocks joined
+                content = "\n\n".join(code_blocks)
+                label = f"all {len(code_blocks)} code blocks"
+
+            ok, method = _copy_to_clipboard(content)
+            if ok:
+                preview = content[:80].replace('\n', ' ')
+                if len(content) > 80:
+                    preview += "..."
+                return CommandResult(
+                    text=f"Copied {label} ({len(content)} chars) via {method}\n"
+                         f"  Preview: {preview}"
+                )
+            return CommandResult(text="Failed to copy to clipboard.", success=False)
+
+    # No code blocks found: copy full response
+    if n > len(jarvis_msgs):
+        return CommandResult(text=f"Only {len(jarvis_msgs)} responses available.", success=False)
     content = jarvis_msgs[-n]["content"]
-    import subprocess
-    try:
-        subprocess.run(["xclip", "-selection", "clipboard"],
-                       input=content.encode(), check=True, timeout=5)
-        return CommandResult(text=f"Copied {len(content)} chars to clipboard.")
-    except Exception:
-        try:
-            subprocess.run(["xsel", "--clipboard", "--input"],
-                           input=content.encode(), check=True, timeout=5)
-            return CommandResult(text=f"Copied {len(content)} chars to clipboard.")
-        except Exception:
-            return CommandResult(
-                text="Clipboard tools not found. Install xclip or xsel.",
-                success=False,
-            )
+    ok, method = _copy_to_clipboard(content)
+    if ok:
+        return CommandResult(text=f"Copied full response ({len(content)} chars) via {method}")
+    return CommandResult(text="Failed to copy to clipboard.", success=False)
 
 
-@command("doctor", description="Diagnose JARVIS installation and settings",
+@command("doctor", description="Full diagnostic report of JARVIS installation",
          usage="/doctor", category="core", permission=PermLevel.READ_ONLY)
 async def cmd_doctor(ctx: CommandContext) -> CommandResult:
     import shutil
     import platform
     import sys
-    import os
-    lines = ["JARVIS Doctor", "=" * 40]
-    # Python
-    lines.append(f"  Python:     {sys.version.split()[0]} \u2714")
-    lines.append(f"  Platform:   {platform.platform()}")
-    # API keys
-    groq = bool(os.environ.get("GROQ_API_KEY"))
-    anthropic = bool(os.environ.get("ANTHROPIC_API_KEY"))
-    openai = bool(os.environ.get("OPENAI_API_KEY"))
-    lines.append(f"  Groq API:   {'\u2714' if groq else '\u2718 (set GROQ_API_KEY)'}")
-    lines.append(f"  Anthropic:  {'\u2714' if anthropic else '\u2014 (optional)'}")
-    lines.append(f"  OpenAI:     {'\u2714' if openai else '\u2014 (optional)'}")
-    # Ollama
+    import psutil  # soft dependency
+
+    lines = ["JARVIS Doctor", "=" * 44]
+    issues = 0
+
+    # -- Python --
+    py_ver = sys.version.split()[0]
+    py_ok = sys.version_info >= (3, 10)
+    lines.append(f"  Python:       {py_ver} {'\u2714' if py_ok else '\u2718 (3.10+ required)'}")
+    if not py_ok:
+        issues += 1
+    lines.append(f"  Platform:     {platform.platform()}")
+
+    # -- API keys --
+    lines.append("")
+    lines.append("  API Keys")
+    lines.append("  " + "-" * 34)
+    env_file = os.path.expanduser("~/.jarvis/.env")
+    env_exists = os.path.exists(env_file)
+    lines.append(f"  .env file:    {'\u2714' if env_exists else '\u2718 (~/.jarvis/.env)'}")
+    if not env_exists:
+        issues += 1
+    for name, label, required in [
+        ("GROQ_API_KEY", "Groq", True),
+        ("ANTHROPIC_API_KEY", "Anthropic", False),
+        ("OPENAI_API_KEY", "OpenAI", False),
+        ("XAI_API_KEY", "xAI/Grok", False),
+    ]:
+        present = bool(os.environ.get(name))
+        if required and not present:
+            issues += 1
+        icon = '\u2714' if present else ('\u2718' if required else '\u2014')
+        suffix = " (required)" if required and not present else ""
+        lines.append(f"  {label:<12s}   {icon}{suffix}")
+
+    # -- Providers --
+    lines.append("")
+    lines.append("  Providers")
+    lines.append("  " + "-" * 34)
+    providers_path = os.path.expanduser("~/.jarvis/providers.json")
+    if os.path.exists(providers_path):
+        try:
+            pdata = json.loads(open(providers_path).read())
+            pcount = len(pdata) if isinstance(pdata, list) else len(pdata.get("providers", pdata))
+            lines.append(f"  Config:       \u2714 ({pcount} providers)")
+        except Exception:
+            lines.append(f"  Config:       \u26a0 (parse error)")
+            issues += 1
+    else:
+        lines.append(f"  Config:       \u2718 (no providers.json)")
+        issues += 1
+
+    # -- Ollama --
     try:
         import urllib.request
-        urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2)
-        lines.append("  Ollama:     \u2714 (running)")
+        resp = urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2)
+        data = json.loads(resp.read())
+        model_count = len(data.get("models", []))
+        lines.append(f"  Ollama:       \u2714 (running, {model_count} models)")
     except Exception:
-        lines.append("  Ollama:     \u2718 (not running)")
-    # Tools
-    for tool in ["git", "nmap", "xclip", "jq"]:
+        lines.append("  Ollama:       \u2718 (not running)")
+
+    # -- MCP servers --
+    lines.append("")
+    lines.append("  MCP Servers")
+    lines.append("  " + "-" * 34)
+    mcp_path = os.path.expanduser("~/.jarvis/mcp.json")
+    if os.path.exists(mcp_path):
+        try:
+            mcp_data = json.loads(open(mcp_path).read())
+            servers = mcp_data if isinstance(mcp_data, dict) else {}
+            for srv_name in list(servers.keys())[:8]:
+                lines.append(f"    {srv_name}")
+            lines.append(f"  Total:        {len(servers)} servers configured")
+        except Exception:
+            lines.append(f"  Config:       \u26a0 (parse error)")
+    else:
+        lines.append(f"  Config:       \u2014 (no mcp.json)")
+
+    # -- System tools --
+    lines.append("")
+    lines.append("  System Tools")
+    lines.append("  " + "-" * 34)
+    for tool in ["git", "nmap", "xclip", "xsel", "jq", "cargo", "node", "npm"]:
         path = shutil.which(tool)
-        lines.append(f"  {tool:<10s}  {'\u2714' if path else '\u2718'}")
-    # Brain modules
+        lines.append(f"  {tool:<12s}   {'\u2714' if path else '\u2718'}")
+
+    # -- System resources --
+    lines.append("")
+    lines.append("  System Resources")
+    lines.append("  " + "-" * 34)
+    try:
+        disk = shutil.disk_usage("/")
+        disk_free_gb = disk.free / (1024 ** 3)
+        disk_icon = '\u2714' if disk_free_gb > 1.0 else '\u26a0'
+        lines.append(f"  Disk free:    {disk_free_gb:.1f} GB {disk_icon}")
+        if disk_free_gb < 1.0:
+            issues += 1
+    except Exception:
+        pass
+    try:
+        mem = psutil.virtual_memory()
+        mem_free_gb = mem.available / (1024 ** 3)
+        mem_icon = '\u2714' if mem_free_gb > 0.5 else '\u26a0'
+        lines.append(f"  RAM free:     {mem_free_gb:.1f} GB {mem_icon}")
+        lines.append(f"  RAM used:     {mem.percent}%")
+        if mem_free_gb < 0.5:
+            issues += 1
+    except ImportError:
+        lines.append("  RAM:          (install psutil for memory info)")
+    except Exception:
+        pass
+
+    # -- Git status --
+    lines.append("")
+    lines.append("  Git Status")
+    lines.append("  " + "-" * 34)
+    try:
+        result = subprocess.run(["git", "status", "--porcelain", "-u"],
+                                capture_output=True, text=True, timeout=5)
+        changed = len([l for l in result.stdout.strip().split('\n') if l.strip()])
+        branch = subprocess.run(["git", "branch", "--show-current"],
+                                capture_output=True, text=True, timeout=5).stdout.strip()
+        lines.append(f"  Branch:       {branch}")
+        lines.append(f"  Changes:      {changed} file{'s' if changed != 1 else ''}")
+    except Exception:
+        lines.append("  Git:          not available")
+
+    # -- Brain modules --
     brain = ctx.brain
     if brain:
-        lines.append(f"\n  Commands:   {brain.command_registry.visible_count}")
-        lines.append(f"  Plugins:    {len(brain.plugins.list_plugins())}")
-        lines.append(f"  Skills:     {len(brain.skills.list_skills())}")
-        lines.append(f"  MCP:        {len(brain.mcp.list_servers())} servers, {len(brain.mcp.list_tools())} tools")
-        lines.append(f"  Memory:     {brain.memory.stats.get('lattice_nodes', 0)} nodes")
+        lines.append("")
+        lines.append("  Brain")
+        lines.append("  " + "-" * 34)
+        lines.append(f"  Commands:     {brain.command_registry.visible_count}")
+        lines.append(f"  Plugins:      {len(brain.plugins.list_plugins())}")
+        lines.append(f"  Skills:       {len(brain.skills.list_skills())}")
+        lines.append(f"  MCP tools:    {len(brain.mcp.list_tools())}")
+        lines.append(f"  Memory nodes: {brain.memory.stats.get('lattice_nodes', 0)}")
+
+    # -- Summary --
+    lines.append("")
+    lines.append("=" * 44)
+    if issues == 0:
+        lines.append("  All checks passed. JARVIS is healthy.")
+    else:
+        lines.append(f"  {issues} issue{'s' if issues != 1 else ''} found. Review above.")
+
     return CommandResult(text="\n".join(lines))
 
 
@@ -280,22 +452,94 @@ async def cmd_verbose(ctx: CommandContext) -> CommandResult:
 
 
 @command("fast", description="Toggle fast/compact response mode",
-         usage="/fast", category="core", permission=PermLevel.READ_ONLY)
+         usage="/fast [on|off]", category="core", permission=PermLevel.READ_ONLY)
 async def cmd_fast(ctx: CommandContext) -> CommandResult:
     brain = ctx.brain
-    if brain:
+    if not brain:
+        return CommandResult(text="Brain not available", success=False)
+
+    arg = ctx.args.strip().lower()
+    if arg == "on":
+        brain._fast_mode = True
+    elif arg == "off":
+        brain._fast_mode = False
+    else:
         brain._fast_mode = not getattr(brain, '_fast_mode', False)
-        return CommandResult(text=f"Fast mode: {'ON' if brain._fast_mode else 'OFF'}")
-    return CommandResult(text="Brain not available", success=False)
+
+    is_fast = brain._fast_mode
+
+    # Persist preference
+    settings_path = os.path.expanduser("~/.jarvis/settings.json")
+    try:
+        settings = json.loads(open(settings_path).read()) if os.path.exists(settings_path) else {}
+        settings["fast_mode"] = is_fast
+        os.makedirs(os.path.dirname(settings_path), exist_ok=True)
+        with open(settings_path, "w") as f:
+            json.dump(settings, f, indent=2)
+    except Exception:
+        pass
+
+    # Show which model is used in each mode
+    normal_model = getattr(brain.reasoner, 'active_model_name', 'default')
+    fast_model = "unknown"
+    if hasattr(brain.reasoner, 'get_fast_model'):
+        fast_model = brain.reasoner.get_fast_model() or "query_fast provider"
+    elif hasattr(brain, '_providers'):
+        # Check for fast provider
+        fast_model = "fastest available"
+
+    lines = [
+        f"Fast mode: {'ON' if is_fast else 'OFF'}",
+        "",
+        f"  Normal model:  {normal_model}",
+        f"  Fast model:    {fast_model}",
+        "",
+        f"  Fast mode uses shorter prompts, smaller models, and skips",
+        f"  deep reasoning. Good for quick questions and simple tasks.",
+    ]
+    return CommandResult(text="\n".join(lines))
 
 
-@command("theme", description="Show or set color theme",
-         usage="/theme [dark|light|cyber]", category="core", permission=PermLevel.READ_ONLY)
+@command("theme", description="Switch color theme (dark/light/auto)",
+         usage="/theme [dark|light|auto]", category="core")
 async def cmd_theme(ctx: CommandContext) -> CommandResult:
-    return CommandResult(
-        text="Themes: dark (default), light, cyber\n"
-             "Theme switching not yet implemented \u2014 JARVIS uses dark by default."
-    )
+    """Set terminal color theme."""
+    from brain.config import JARVIS_HOME
+
+    args = ctx.args.strip().lower() if ctx.args else ""
+    valid_themes = ["dark", "light", "auto"]
+
+    if not args or args == "status":
+        try:
+            settings_path = JARVIS_HOME / "settings.json"
+            if settings_path.exists():
+                settings = json.loads(settings_path.read_text())
+                current = settings.get("theme", "dark")
+            else:
+                current = "dark"
+        except Exception:
+            current = "dark"
+        return CommandResult(text=f"Current theme: {current}\nAvailable: {', '.join(valid_themes)}")
+
+    if args not in valid_themes:
+        return CommandResult(text=f"Unknown theme: {args}\nAvailable: {', '.join(valid_themes)}")
+
+    try:
+        settings_path = JARVIS_HOME / "settings.json"
+        settings = {}
+        if settings_path.exists():
+            settings = json.loads(settings_path.read_text())
+        settings["theme"] = args
+        settings_path.write_text(json.dumps(settings, indent=2))
+        # Apply theme in real-time to the running CLI
+        try:
+            from shells.cli.jarvis_cli import _apply_theme
+            _apply_theme(args)
+        except Exception:
+            pass  # Not running in CLI context
+        return CommandResult(text=f"Theme set to: {args}\nColors updated — takes effect immediately.")
+    except Exception as e:
+        return CommandResult(text=f"Error saving theme: {e}", success=False)
 
 
 @command("tips", description="Show usage tips",
@@ -340,15 +584,45 @@ async def cmd_keybindings(ctx: CommandContext) -> CommandResult:
     return CommandResult(text="\n".join(lines))
 
 
-@command("feedback", description="Report an issue or give feedback",
-         usage="/feedback", category="core", permission=PermLevel.READ_ONLY)
+@command("feedback", description="Submit feedback (stored locally)",
+         usage="/feedback <your message>", category="core", permission=PermLevel.READ_ONLY)
 async def cmd_feedback(ctx: CommandContext) -> CommandResult:
-    return CommandResult(
-        text="JARVIS Feedback\n"
-             "  GitHub: https://github.com/ulrich/jarvis\n"
-             "  Report bugs, request features, or contribute.\n"
-             "  Or just tell me what's broken \u2014 I'll file it myself."
-    )
+    msg = ctx.args.strip()
+    if not msg:
+        return CommandResult(
+            text="JARVIS Feedback\n"
+                 "  Usage: /feedback <your message>\n\n"
+                 "  Feedback is stored in ~/.jarvis/feedback.jsonl\n"
+                 "  GitHub: https://github.com/ulrich/jarvis"
+        )
+    # Store feedback persistently
+    feedback_path = os.path.expanduser("~/.jarvis/feedback.jsonl")
+    os.makedirs(os.path.dirname(feedback_path), exist_ok=True)
+    entry = {
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "message": msg,
+        "cwd": os.getcwd(),
+        "session": None,
+    }
+    brain = ctx.brain
+    if brain:
+        mgr = ctx.session_mgr
+        if mgr and mgr.current:
+            entry["session"] = mgr.current.display_name
+        entry["model"] = getattr(brain.reasoner, 'active_model_name', '')
+    try:
+        with open(feedback_path, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+        # Count total feedback entries
+        with open(feedback_path, "r") as f:
+            count = sum(1 for _ in f)
+        return CommandResult(
+            text=f"Feedback recorded. Thank you.\n"
+                 f"  Stored in: {feedback_path}\n"
+                 f"  Total entries: {count}"
+        )
+    except Exception as e:
+        return CommandResult(text=f"Failed to store feedback: {e}", success=False)
 
 
 @command("stash", description="Stash current conversation for later",
@@ -403,16 +677,7 @@ async def cmd_whoami(ctx: CommandContext) -> CommandResult:
     return CommandResult(text="\n".join(lines))
 
 
-@command("version", description="Show JARVIS version and build info",
-         usage="/version", category="core", permission=PermLevel.READ_ONLY)
-async def cmd_version(ctx: CommandContext) -> CommandResult:
-    lines = [
-        "JARVIS v2.0",
-        "  Autonomous AI agent CLI",
-        "  Built by Ulrich",
-        "  Python-based \u2022 LLM-independent architecture",
-    ]
-    return CommandResult(text="\n".join(lines))
+# NOTE: /version command moved to core.py with model, provider, and context window info
 
 
 @command("uptime", description="Show session uptime and stats",
@@ -447,44 +712,75 @@ async def cmd_alias(ctx: CommandContext) -> CommandResult:
     )
 
 
-@command("diff", description="Show diff of recent file changes",
-         usage="/diff [file]", category="git", permission=PermLevel.READ_ONLY)
+def _colorize_diff(diff_text: str) -> str:
+    """Add ANSI colors to diff output: green for +, red for -, cyan for @@."""
+    lines = []
+    for line in diff_text.split('\n'):
+        if line.startswith('+') and not line.startswith('+++'):
+            lines.append(f"\033[32m{line}\033[0m")  # green
+        elif line.startswith('-') and not line.startswith('---'):
+            lines.append(f"\033[31m{line}\033[0m")  # red
+        elif line.startswith('@@'):
+            lines.append(f"\033[36m{line}\033[0m")  # cyan
+        elif line.startswith('diff ') or line.startswith('index '):
+            lines.append(f"\033[1m{line}\033[0m")   # bold
+        else:
+            lines.append(line)
+    return '\n'.join(lines)
+
+
+@command("diff", description="Show git diff with colored output",
+         usage="/diff [--staged] [branch] [file]", category="git", permission=PermLevel.READ_ONLY)
 async def cmd_diff(ctx: CommandContext) -> CommandResult:
-    import subprocess
+    from brain.agent.git_utils import get_staged_diff, get_unstaged_diff, get_diff_from_branch
     target = ctx.args.strip()
-    cmd = ["git", "diff", "--stat"]
-    if target:
-        cmd.append(target)
+
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-        output = result.stdout.strip()
-        if not output:
+        if target == "--staged" or target == "staged":
+            diff_text = get_staged_diff()
+            label = "Staged changes"
+        elif target and not target.startswith('-'):
+            # Could be a branch name or file path
+            if os.path.exists(target):
+                # File diff
+                result = subprocess.run(["git", "diff", "--", target],
+                                        capture_output=True, text=True, timeout=10)
+                diff_text = result.stdout.strip()
+                label = f"Changes in {target}"
+            else:
+                # Branch diff
+                diff_text = get_diff_from_branch(base=target)
+                label = f"Diff against {target}"
+        else:
+            diff_text = get_unstaged_diff()
+            label = "Unstaged changes"
+
+        if not diff_text:
+            # Show stat summary as fallback
+            cmd = ["git", "diff", "--stat"]
+            if target and target != "--staged":
+                cmd.append(target)
+            elif target == "--staged":
+                cmd.insert(2, "--staged")
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            stat = result.stdout.strip()
+            if stat:
+                return CommandResult(text=f"{label} (stat only):\n{stat}")
             return CommandResult(text="No changes detected.")
-        return CommandResult(text=output)
+
+        # Truncate large diffs
+        if len(diff_text) > 6000:
+            diff_text = diff_text[:6000] + "\n\n... (truncated, use `git diff` for full output)"
+
+        colored = _colorize_diff(diff_text)
+        return CommandResult(text=f"{label}\n{'=' * 40}\n{colored}")
     except FileNotFoundError:
         return CommandResult(text="git not found.", success=False)
-    except subprocess.TimeoutExpired:
-        return CommandResult(text="git diff timed out.", success=False)
+    except Exception as e:
+        return CommandResult(text=f"Diff failed: {e}", success=False)
 
 
-@command("compact", description="Compact conversation history to save context",
-         usage="/compact [topic]", category="session", permission=PermLevel.STANDARD)
-async def cmd_compact(ctx: CommandContext) -> CommandResult:
-    brain = ctx.brain
-    if not brain:
-        return CommandResult(text="Brain not available", success=False)
-    topic = ctx.args.strip()
-    history = brain.memory.get_history(limit=100)
-    before = len(history)
-    # Summarize and compress
-    if hasattr(brain.memory, 'compact'):
-        summary = brain.memory.compact(topic=topic)
-        after = len(brain.memory.get_history(limit=100))
-        return CommandResult(
-            text=f"Compacted {before} turns -> {after} turns.\n"
-                 f"Summary preserved in memory."
-        )
-    return CommandResult(text="Memory compaction not yet implemented for this backend.")
+# NOTE: /compact command moved to core.py with before/after token counts and compaction type
 
 
 @command("review", description="Review recent changes or code",
@@ -535,86 +831,7 @@ async def cmd_init(ctx: CommandContext) -> CommandResult:
     )
 
 
-def _load_billing():
-    """Load persistent billing data."""
-    import json
-    billing_path = os.path.expanduser("~/.jarvis/billing.json")
-    if os.path.exists(billing_path):
-        try:
-            return json.loads(open(billing_path).read())
-        except Exception:
-            pass
-    return {"total_credit": 20.00, "total_used": 0, "remaining": 20.00}
-
-
-def _save_billing(data):
-    """Save billing data."""
-    import json
-    billing_path = os.path.expanduser("~/.jarvis/billing.json")
-    os.makedirs(os.path.dirname(billing_path), exist_ok=True)
-    open(billing_path, "w").write(json.dumps(data, indent=2))
-
-
-@command("cost", description="Show API cost — this session + total account usage",
-         usage="/cost", category="core", permission=PermLevel.READ_ONLY)
-async def cmd_cost(ctx: CommandContext) -> CommandResult:
-    brain = ctx.brain
-    if not brain:
-        return CommandResult(text="Brain not available", success=False)
-    stats = brain.reasoner.usage_stats if hasattr(brain, 'reasoner') else {}
-    inp = stats.get("input_tokens", 0)
-    out = stats.get("output_tokens", 0)
-    total = inp + out
-    session_cost = stats.get("cost_usd", 0)
-    calls = stats.get("calls", 0)
-    model = stats.get("model", "unknown")
-
-    # Load persistent billing
-    billing = _load_billing()
-    account_used = billing.get("total_used", 0)
-    account_credit = billing.get("total_credit", 20.00)
-    account_remaining = billing.get("remaining", account_credit - account_used)
-
-    # Update billing with session cost
-    total_used = account_used + session_cost
-    remaining = account_credit - total_used
-    pct = min(100, int(total_used / account_credit * 100)) if account_credit > 0 else 0
-    bar_filled = pct // 5
-    bar_empty = 20 - bar_filled
-    bar = "\u2588" * bar_filled + "\u2591" * bar_empty
-
-    lines = [
-        "JARVIS Cost Dashboard",
-        "=" * 40,
-        "",
-        "  This Session",
-        "  " + "-" * 30,
-        f"  Model:          {model}",
-        f"  API calls:      {calls}",
-        f"  Input tokens:   {inp:,}",
-        f"  Output tokens:  {out:,}",
-        f"  Session cost:   ${session_cost:.4f}",
-        "",
-        "  Account",
-        "  " + "-" * 30,
-        f"  Total credit:   ${account_credit:.2f}",
-        f"  Total used:     ${total_used:.4f}",
-        f"  Remaining:      ${remaining:.4f}",
-        f"  Usage:          {bar} {pct}%",
-    ]
-
-    if remaining < 1.0:
-        lines.append(f"  \u26a0 LOW BALANCE — consider adding credits")
-    if remaining <= 0:
-        lines.append(f"  \u26a0 BALANCE DEPLETED — JARVIS will stop making API calls")
-
-    budget = getattr(brain, '_cost_budget', None)
-    if budget:
-        budget_remaining = budget - session_cost
-        lines.append(f"")
-        lines.append(f"  Session budget:  ${budget:.2f} (${budget_remaining:.4f} left)")
-
-    return CommandResult(text="\n".join(lines))
+# NOTE: /cost command moved to core.py with per-model breakdown and cache token counts
 
 
 @command("budget", description="Set session spending limit or update account balance",
@@ -689,32 +906,114 @@ async def cmd_budget(ctx: CommandContext) -> CommandResult:
 
 # ── Claude Code-style commands ──────────────────────────────────────
 
-@command("btw", description="Send an inline side note to the user during a task",
-         usage="/btw <message>", category="core", permission=PermLevel.READ_ONLY)
+@command("btw", description="Ask a side question without interrupting main conversation",
+         usage="/btw <question>", category="core", permission=PermLevel.READ_ONLY)
 async def cmd_btw(ctx: CommandContext) -> CommandResult:
     msg = ctx.args.strip()
     if not msg:
-        return CommandResult(text="Usage: /btw <message>", success=False)
-    return CommandResult(text=f"BTW: {msg}")
+        return CommandResult(text="Usage: /btw <question>\n  Asks a side question without polluting conversation history.", success=False)
+
+    brain = ctx.brain
+    if not brain:
+        return CommandResult(text=f"BTW: {msg}")
+
+    # Run the side query asynchronously without adding to main conversation history
+    try:
+        # Use a minimal context so we don't disturb the main flow
+        side_messages = [
+            {"role": "system", "content": "You are answering a quick side question. Be brief and direct. This is separate from the main conversation."},
+            {"role": "user", "content": msg},
+        ]
+        # Call the reasoner directly, bypassing memory storage
+        if hasattr(brain.reasoner, 'query'):
+            response = await brain.reasoner.query(side_messages)
+        elif hasattr(brain.reasoner, 'chat'):
+            response = await brain.reasoner.chat(side_messages)
+        else:
+            # Fallback: just use brain.think but mark as side query
+            response = await brain.think(msg)
+
+        # Format as a visually distinct side-note
+        separator = "\u2500" * 40
+        result_text = (
+            f"\033[2m{separator}\033[0m\n"
+            f"\033[1m[BTW]\033[0m {msg}\n\n"
+            f"{response}\n"
+            f"\033[2m{separator}\033[0m"
+        )
+        # Return without adding to history (CommandResult doesn't auto-store)
+        return CommandResult(text=result_text)
+    except Exception as e:
+        return CommandResult(text=f"BTW query failed: {e}\n\nOriginal question: {msg}", success=False)
 
 
 @command("effort", description="Set response effort level",
-         usage="/effort [low|medium|high]", category="core", permission=PermLevel.STANDARD)
+         usage="/effort [low|medium|high|max]", category="core", permission=PermLevel.STANDARD)
 async def cmd_effort(ctx: CommandContext) -> CommandResult:
     level = ctx.args.strip().lower()
     brain = ctx.brain
     if not brain:
         return CommandResult(text="Brain not available", success=False)
-    if level in ("low", "medium", "high"):
+
+    effort_info = {
+        "low": {
+            "desc": "Quick answers, minimal detail",
+            "behavior": "Short responses, no exploration, skips examples. Best for yes/no questions, simple lookups, quick commands.",
+            "tokens": "~100-500 output tokens",
+            "thinking": "Minimal",
+        },
+        "medium": {
+            "desc": "Balanced (default)",
+            "behavior": "Thorough but not exhaustive. Explains reasoning, includes relevant examples. Good for most tasks.",
+            "tokens": "~500-2000 output tokens",
+            "thinking": "Standard",
+        },
+        "high": {
+            "desc": "Deep analysis, comprehensive answers",
+            "behavior": "Explores edge cases, provides alternatives, includes code examples and references. Good for complex problems.",
+            "tokens": "~2000-4000 output tokens",
+            "thinking": "Extended",
+        },
+        "max": {
+            "desc": "Exhaustive, leave no stone unturned",
+            "behavior": "Maximum depth analysis, full exploration of options, detailed step-by-step. Research-grade thoroughness. Slow and expensive.",
+            "tokens": "~4000+ output tokens",
+            "thinking": "Maximum budget",
+        },
+    }
+
+    if level in effort_info:
         brain._effort_level = level
-        hints = {
-            "low": "Quick answers, minimal detail. Good for simple questions.",
-            "medium": "Balanced — default level. Thorough but not exhaustive.",
-            "high": "Deep analysis, comprehensive answers. More tokens, more time.",
-        }
-        return CommandResult(text=f"Effort: {level}\n  {hints[level]}")
+        # Persist preference
+        settings_path = os.path.expanduser("~/.jarvis/settings.json")
+        try:
+            settings = json.loads(open(settings_path).read()) if os.path.exists(settings_path) else {}
+            settings["effort_level"] = level
+            os.makedirs(os.path.dirname(settings_path), exist_ok=True)
+            with open(settings_path, "w") as f:
+                json.dump(settings, f, indent=2)
+        except Exception:
+            pass
+        info = effort_info[level]
+        return CommandResult(
+            text=f"Effort: {level} -- {info['desc']}\n"
+                 f"  {info['behavior']}\n"
+                 f"  Typical output: {info['tokens']}\n"
+                 f"  Thinking: {info['thinking']}"
+        )
+
     current = getattr(brain, '_effort_level', 'medium')
-    return CommandResult(text=f"Current effort: {current}\nUsage: /effort [low|medium|high]")
+    lines = [
+        f"Current effort: {current}",
+        "",
+        "Available levels:",
+    ]
+    for lvl, info in effort_info.items():
+        marker = " <-- current" if lvl == current else ""
+        lines.append(f"  {lvl:<8s} {info['desc']}{marker}")
+        lines.append(f"           {info['behavior'][:70]}")
+    lines.append(f"\nUsage: /effort <level>")
+    return CommandResult(text="\n".join(lines))
 
 
 @command("statusline", description="Configure the bottom status bar",
@@ -859,3 +1158,272 @@ async def cmd_export(ctx: CommandContext) -> CommandResult:
     else:
         return CommandResult(text=f"Unknown format: {fmt}. Use 'json' or 'md'.", success=False)
     return CommandResult(text=f"Exported {len(history)} messages to: {path}")
+
+
+# ── New commands (Claude Code-inspired) ────────────────────────────
+
+
+def _load_settings() -> dict:
+    """Load user settings from ~/.jarvis/settings.json."""
+    settings_path = os.path.expanduser("~/.jarvis/settings.json")
+    if os.path.exists(settings_path):
+        try:
+            return json.loads(open(settings_path).read())
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_settings(settings: dict):
+    """Save user settings to ~/.jarvis/settings.json."""
+    settings_path = os.path.expanduser("~/.jarvis/settings.json")
+    os.makedirs(os.path.dirname(settings_path), exist_ok=True)
+    with open(settings_path, "w") as f:
+        json.dump(settings, f, indent=2)
+
+
+@command("voice", description="Toggle voice mode on/off",
+         usage="/voice [on|off|status]", category="core", permission=PermLevel.STANDARD)
+async def cmd_voice(ctx: CommandContext) -> CommandResult:
+    arg = ctx.args.strip().lower()
+    brain = ctx.brain
+    settings = _load_settings()
+
+    if arg == "on":
+        if brain:
+            brain._voice_mode = True
+        settings["voice_mode"] = True
+        _save_settings(settings)
+        return CommandResult(text="Voice mode: ON\n  TTS will read responses aloud.\n  Whisper will transcribe speech input.")
+    elif arg == "off":
+        if brain:
+            brain._voice_mode = False
+        settings["voice_mode"] = False
+        _save_settings(settings)
+        return CommandResult(text="Voice mode: OFF")
+    else:
+        # Status
+        current = settings.get("voice_mode", False)
+        if brain:
+            current = getattr(brain, '_voice_mode', current)
+        tts_available = False
+        stt_available = False
+        try:
+            import edge_tts
+            tts_available = True
+        except ImportError:
+            pass
+        try:
+            import whisper
+            stt_available = True
+        except ImportError:
+            pass
+        lines = [
+            f"Voice mode: {'ON' if current else 'OFF'}",
+            "",
+            f"  TTS (edge-tts):   {'available' if tts_available else 'not installed (pip install edge-tts)'}",
+            f"  STT (whisper):    {'available' if stt_available else 'not installed (pip install openai-whisper)'}",
+            "",
+            "  /voice on     Enable voice",
+            "  /voice off    Disable voice",
+        ]
+        return CommandResult(text="\n".join(lines))
+
+
+@command("vim", description="Toggle vim keybindings mode",
+         usage="/vim [on|off]", category="core", permission=PermLevel.STANDARD)
+async def cmd_vim(ctx: CommandContext) -> CommandResult:
+    arg = ctx.args.strip().lower()
+    brain = ctx.brain
+    settings = _load_settings()
+
+    if arg == "on":
+        if brain:
+            brain._vim_mode = True
+        settings["vim_mode"] = True
+        _save_settings(settings)
+        return CommandResult(text="Vim mode: ON\n  ESC for normal mode, i for insert.\n  (Requires shell support for full vim bindings.)")
+    elif arg == "off":
+        if brain:
+            brain._vim_mode = False
+        settings["vim_mode"] = False
+        _save_settings(settings)
+        return CommandResult(text="Vim mode: OFF")
+    else:
+        current = settings.get("vim_mode", False)
+        if brain:
+            current = getattr(brain, '_vim_mode', current)
+        return CommandResult(text=f"Vim mode: {'ON' if current else 'OFF'}\n  /vim on   Enable vim keybindings\n  /vim off  Disable vim keybindings")
+
+
+@command("privacy", description="Privacy and telemetry settings",
+         usage="/privacy [show|telemetry on|telemetry off]", category="core", permission=PermLevel.STANDARD)
+async def cmd_privacy(ctx: CommandContext) -> CommandResult:
+    arg = ctx.args.strip().lower()
+    settings = _load_settings()
+
+    if arg == "telemetry off":
+        settings["telemetry"] = False
+        _save_settings(settings)
+        return CommandResult(text="Telemetry: OFF\n  No usage data will be collected or sent.")
+    elif arg == "telemetry on":
+        settings["telemetry"] = True
+        _save_settings(settings)
+        return CommandResult(text="Telemetry: ON\n  Anonymous usage stats may be collected.")
+    else:
+        # Show privacy overview
+        telemetry = settings.get("telemetry", False)
+        lines = [
+            "JARVIS Privacy Settings",
+            "=" * 40,
+            "",
+            f"  Telemetry:         {'ON' if telemetry else 'OFF'}",
+            f"  Data storage:      Local only (~/.jarvis/)",
+            f"  Conversation logs: ~/.jarvis/data/jarvis.db",
+            f"  Feedback file:     ~/.jarvis/feedback.jsonl",
+            f"  API calls:         Sent to configured LLM providers",
+            "",
+            "  JARVIS does not phone home. All data stays on your machine.",
+            "  API calls go only to providers you have configured.",
+            "",
+            "  /privacy telemetry off   Disable telemetry",
+            "  /privacy telemetry on    Enable telemetry",
+        ]
+        return CommandResult(text="\n".join(lines))
+
+
+@command("rate-limit", aliases=["ratelimit"], description="Show rate limit status",
+         usage="/rate-limit", category="core", permission=PermLevel.READ_ONLY)
+async def cmd_rate_limit(ctx: CommandContext) -> CommandResult:
+    brain = ctx.brain
+    lines = [
+        "Rate Limit Status",
+        "=" * 40,
+    ]
+
+    if brain and hasattr(brain, 'reasoner'):
+        stats = brain.reasoner.usage_stats if hasattr(brain.reasoner, 'usage_stats') else {}
+        calls = stats.get("calls", 0)
+        model = stats.get("model", getattr(brain.reasoner, 'active_model_name', 'unknown'))
+        inp = stats.get("input_tokens", 0)
+        out = stats.get("output_tokens", 0)
+
+        lines.extend([
+            "",
+            f"  Model:            {model}",
+            f"  Session calls:    {calls}",
+            f"  Input tokens:     {inp:,}",
+            f"  Output tokens:    {out:,}",
+            "",
+            "  Provider Limits (typical)",
+            "  " + "-" * 30,
+            "  Groq:       30 req/min, 15K tokens/min (free)",
+            "  Anthropic:  50 req/min, varies by tier",
+            "  OpenAI:     varies by tier",
+            "  Ollama:     unlimited (local)",
+            "",
+            "  If you hit rate limits, JARVIS will automatically retry",
+            "  with exponential backoff. Use /fast to reduce token usage.",
+        ])
+    else:
+        lines.append("  Brain not available for detailed stats.")
+        lines.append("  Rate limits depend on your provider and tier.")
+
+    return CommandResult(text="\n".join(lines))
+
+
+@command("release-notes", aliases=["changelog"], description="Show recent changes and release notes",
+         usage="/release-notes", category="core", permission=PermLevel.READ_ONLY)
+async def cmd_release_notes(ctx: CommandContext) -> CommandResult:
+    # Try reading CHANGELOG.md if it exists
+    for changelog_path in [
+        os.path.join(os.getcwd(), "CHANGELOG.md"),
+        os.path.expanduser("~/.jarvis/CHANGELOG.md"),
+    ]:
+        if os.path.exists(changelog_path):
+            try:
+                with open(changelog_path, "r") as f:
+                    content = f.read(3000)
+                return CommandResult(text=f"Release Notes (from {changelog_path})\n{'=' * 40}\n{content}")
+            except Exception:
+                pass
+
+    # Fallback: show recent git commits as release notes
+    try:
+        result = subprocess.run(
+            ["git", "log", "--oneline", "--no-decorate", "-20"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.stdout.strip():
+            lines = [
+                "Recent Changes (from git log)",
+                "=" * 40,
+                "",
+            ]
+            for line in result.stdout.strip().split('\n'):
+                parts = line.split(' ', 1)
+                if len(parts) == 2:
+                    sha, msg = parts
+                    lines.append(f"  {sha[:7]}  {msg}")
+            return CommandResult(text="\n".join(lines))
+    except Exception:
+        pass
+
+    # Hardcoded fallback
+    notes = [
+        "JARVIS v2.0 Release Notes",
+        "=" * 40,
+        "",
+        "  Recent highlights:",
+        "  - Desktop overlay with transparent GTK+WebKit window",
+        "  - Computer use (mouse/keyboard control)",
+        "  - Model routing with query_fast for speed",
+        "  - 1M context support (Opus)",
+        "  - Parallel tool execution",
+        "  - Voice mode with Edge TTS + Whisper STT",
+        "  - Persistent billing and cost tracking",
+        "  - MCP server/client integration",
+        "  - Neural Lattice memory with spreading activation",
+        "  - Enhanced /doctor, /copy, /diff, /context commands",
+        "",
+        "  No CHANGELOG.md found. Create one at project root for custom notes.",
+    ]
+    return CommandResult(text="\n".join(notes))
+
+
+@command("color", description="Set prompt bar color for this session",
+         usage="/color [blue|green|yellow|magenta|cyan|red|white|default]", category="core")
+async def cmd_color(ctx: CommandContext) -> CommandResult:
+    """Set session color."""
+    COLORS = ["blue", "green", "yellow", "magenta", "cyan", "red", "white"]
+    RESET_ALIASES = {"default", "reset", "none", "gray", "grey"}
+
+    args = ctx.args.strip().lower() if ctx.args else ""
+
+    if not args or args == "status":
+        current = "default"
+        brain = ctx.brain
+        if brain:
+            current = getattr(brain, '_session_color', 'default')
+        return CommandResult(text=f"Current color: {current}\nAvailable: {', '.join(COLORS + ['default'])}")
+
+    if args in RESET_ALIASES:
+        brain = ctx.brain
+        if brain:
+            brain._session_color = "default"
+        return CommandResult(text="Color reset to default.")
+
+    if args not in COLORS:
+        return CommandResult(text=f"Unknown color: {args}\nAvailable: {', '.join(COLORS + ['default'])}")
+
+    brain = ctx.brain
+    if brain:
+        brain._session_color = args
+    return CommandResult(text=f"Session color set to: {args}")
+
+
+@command("stickers", description="Get JARVIS stickers", usage="/stickers",
+         category="core", hidden=True)
+async def cmd_stickers(ctx: CommandContext) -> CommandResult:
+    """Open sticker store."""
+    return CommandResult(text="JARVIS stickers coming soon! Check https://github.com/ulrich/jarvis for merch.")

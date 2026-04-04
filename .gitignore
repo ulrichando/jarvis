@@ -33,6 +33,10 @@ screenshots/
 .env
 providers.json
 
+# Sandbox
+.sandbox-home/
+.sandbox-tmp/
+
 # OS/IDE
 .DS_Store
 .idea/
@@ -54,3 +58,6 @@ shells/web/frontend/dist/
 
 # Export dumps
 jarvis-export-*.json
+
+# Reference source (Claude Code src — not part of JARVIS)
+resource-info/

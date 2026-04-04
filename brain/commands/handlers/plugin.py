@@ -5,7 +5,7 @@ from pathlib import Path
 from brain.commands.registry import command, CommandContext, CommandResult, PermLevel
 
 
-@command("plugins", aliases=["pl"], description="List installed plugins with status",
+@command("plugins", aliases=["pl"], description="List installed plugins with status, source, and error info",
          usage="/plugins", category="plugin", permission=PermLevel.READ_ONLY)
 async def cmd_plugins(ctx: CommandContext) -> CommandResult:
     brain = ctx.brain
@@ -16,14 +16,39 @@ async def cmd_plugins(ctx: CommandContext) -> CommandResult:
     if not plugins:
         return CommandResult(text="No plugins installed.\nUse /install <path> to add one.")
 
-    lines = ["Installed Plugins", "=" * 40]
+    lines = ["Installed Plugins", "=" * 55]
+    enabled_count = 0
+    disabled_count = 0
+    error_count = 0
+
     for p in plugins:
         name = getattr(p, "name", str(p))
         desc = getattr(p, "description", "")
         enabled = getattr(p, "enabled", True)
+        errors = getattr(p, "error_count", 0) or getattr(p, "errors", 0) or 0
+
+        # Determine source
+        source = "user"
+        p_path = getattr(p, "path", "") or getattr(p, "source_path", "")
+        if isinstance(p_path, str):
+            if ".jarvis/plugins" in p_path and "/.jarvis/" not in p_path.split(str(Path.home()))[-1] if str(Path.home()) in p_path else True:
+                source = "project"
+            if hasattr(p, "inline") and p.inline:
+                source = "inline"
+
         status = "enabled" if enabled else "disabled"
-        lines.append(f"  {name:<24s} [{status}]  {desc}")
-    lines.append(f"\n  {len(plugins)} plugin(s) installed.")
+        if enabled:
+            enabled_count += 1
+        else:
+            disabled_count += 1
+        if errors:
+            error_count += errors
+
+        error_str = f"  ERR:{errors}" if errors else ""
+        lines.append(f"  {name:<22s} [{status:<8s}] ({source:<7s}){error_str}  {desc}")
+
+    lines.append("")
+    lines.append(f"  Total: {len(plugins)}  |  Enabled: {enabled_count}  |  Disabled: {disabled_count}  |  Errors: {error_count}")
     return CommandResult(text="\n".join(lines))
 
 
@@ -82,7 +107,7 @@ async def cmd_plugin(ctx: CommandContext) -> CommandResult:
         )
 
 
-@command("skills", aliases=["sk"], description="List available skills with triggers",
+@command("skills", aliases=["sk"], description="List available skills with invocability, source, and triggers",
          usage="/skills", category="plugin", permission=PermLevel.READ_ONLY)
 async def cmd_skills(ctx: CommandContext) -> CommandResult:
     brain = ctx.brain
@@ -93,14 +118,48 @@ async def cmd_skills(ctx: CommandContext) -> CommandResult:
     if not skills:
         return CommandResult(text="No skills registered.\nUse /install <path> to add one.")
 
-    lines = ["Available Skills", "=" * 40]
+    lines = ["Available Skills", "=" * 55]
+
+    # Count by source and invocability
+    by_source: dict[str, int] = {}
+    model_invocable_count = 0
+    user_invocable_count = 0
+
     for s in skills:
         name = getattr(s, "name", str(s))
         triggers = getattr(s, "triggers", [])
         desc = getattr(s, "description", "")
         trigger_str = ", ".join(triggers) if triggers else "manual"
-        lines.append(f"  {name:<20s} triggers=[{trigger_str}]  {desc}")
-    lines.append(f"\n  {len(skills)} skill(s) available.")
+
+        # Determine invocability
+        model_inv = getattr(s, "model_invocable", False)
+        user_inv = not model_inv  # user-invocable if not model_invocable
+        if model_inv:
+            model_invocable_count += 1
+            inv_tag = "model"
+        else:
+            user_invocable_count += 1
+            inv_tag = "user"
+
+        # Determine source
+        s_path = getattr(s, "path", "") or getattr(s, "source_path", "")
+        source = "user"
+        if isinstance(s_path, str):
+            if ".jarvis/skills" in s_path:
+                # Check if it's under project .jarvis/ or home ~/.jarvis/
+                home_skills = str(Path.home() / ".jarvis" / "skills")
+                if s_path.startswith(home_skills):
+                    source = "user"
+                else:
+                    source = "project"
+        by_source[source] = by_source.get(source, 0) + 1
+
+        lines.append(f"  {name:<18s} [{inv_tag:<5s}] triggers=[{trigger_str}]  {desc}")
+
+    lines.append("")
+    source_str = ", ".join(f"{k}: {v}" for k, v in sorted(by_source.items()))
+    lines.append(f"  Total: {len(skills)}  |  Model-invocable: {model_invocable_count}  |  User-invocable: {user_invocable_count}")
+    lines.append(f"  Sources: {source_str}")
     return CommandResult(text="\n".join(lines))
 
 
@@ -133,7 +192,7 @@ async def cmd_skill(ctx: CommandContext) -> CommandResult:
     return CommandResult(text="\n".join(lines))
 
 
-@command("install", description="Install plugin or skill from file path",
+@command("install", description="Install plugin or skill from file path with manifest validation",
          usage="/install <path>", category="plugin", permission=PermLevel.FULL)
 async def cmd_install(ctx: CommandContext) -> CommandResult:
     args = ctx.args.strip()
@@ -146,10 +205,34 @@ async def cmd_install(ctx: CommandContext) -> CommandResult:
 
     home = Path.home() / ".jarvis"
     # Determine if it is a skill or plugin by naming convention
-    if "skill" in src.name.lower():
+    if "skill" in src.name.lower() or src.suffix == ".md":
         dest_dir = home / "skills"
+        item_type = "skill"
     else:
         dest_dir = home / "plugins"
+        item_type = "plugin"
+
+    # Validate manifest for directories
+    warnings = []
+    if src.is_dir():
+        manifest = src / "manifest.json"
+        if manifest.exists():
+            import json
+            try:
+                data = json.loads(manifest.read_text())
+                required = ["name", "version"]
+                for field in required:
+                    if field not in data:
+                        warnings.append(f"Missing manifest field: {field}")
+            except json.JSONDecodeError as e:
+                warnings.append(f"Invalid manifest JSON: {e}")
+        else:
+            warnings.append("No manifest.json found (optional but recommended)")
+    elif src.suffix == ".py":
+        # Basic Python file validation
+        content = src.read_text(errors="replace")
+        if "def handle(" not in content and "class " not in content:
+            warnings.append("Plugin file missing handle() function or class definition")
 
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / src.name
@@ -170,10 +253,16 @@ async def cmd_install(ctx: CommandContext) -> CommandResult:
         elif dest_dir.name == "skills" and hasattr(brain.skills, "reload"):
             brain.skills.reload()
 
-    return CommandResult(text=f"Installed {src.name} -> {dest}")
+    lines = [f"Installed {item_type}: {src.name} -> {dest}"]
+    if warnings:
+        lines.append("")
+        lines.append("Warnings:")
+        for w in warnings:
+            lines.append(f"  - {w}")
+    return CommandResult(text="\n".join(lines))
 
 
-@command("uninstall", description="Remove a plugin or skill by name",
+@command("uninstall", description="Remove a plugin or skill by name, showing what was removed",
          usage="/uninstall <name>", category="plugin", permission=PermLevel.FULL)
 async def cmd_uninstall(ctx: CommandContext) -> CommandResult:
     name = ctx.args.strip()
@@ -183,24 +272,42 @@ async def cmd_uninstall(ctx: CommandContext) -> CommandResult:
     brain = ctx.brain
     home = Path.home() / ".jarvis"
 
-    # Try plugins first, then skills
-    for sub in ("plugins", "skills"):
-        target_dir = home / sub / name
-        target_file = home / sub / f"{name}.py"
-        removed = False
-        if target_dir.is_dir():
-            shutil.rmtree(target_dir)
-            removed = True
-        elif target_file.is_file():
-            target_file.unlink()
-            removed = True
+    # Try plugins first, then skills; also try .md for skills
+    search_targets = [
+        ("plugins", home / "plugins" / name, "directory"),
+        ("plugins", home / "plugins" / f"{name}.py", "file"),
+        ("skills", home / "skills" / name, "directory"),
+        ("skills", home / "skills" / f"{name}.py", "file"),
+        ("skills", home / "skills" / f"{name}.md", "file"),
+    ]
 
-        if removed:
+    for sub, target, kind in search_targets:
+        removed_path = None
+        removed_size = 0
+
+        if kind == "directory" and target.is_dir():
+            # Calculate size
+            for f in target.rglob("*"):
+                if f.is_file():
+                    removed_size += f.stat().st_size
+            shutil.rmtree(target)
+            removed_path = target
+        elif kind == "file" and target.is_file():
+            removed_size = target.stat().st_size
+            target.unlink()
+            removed_path = target
+
+        if removed_path:
             if brain:
                 mgr = brain.plugins if sub == "plugins" else brain.skills
                 if hasattr(mgr, "reload"):
                     mgr.reload()
-            return CommandResult(text=f"Removed {sub.rstrip('s')} '{name}'.")
+            size_str = f"{removed_size / 1024:.1f}KB" if removed_size > 1024 else f"{removed_size}B"
+            return CommandResult(
+                text=f"Removed {sub.rstrip('s')} '{name}'\n"
+                     f"  Path: {removed_path}\n"
+                     f"  Size: {size_str}"
+            )
 
     return CommandResult(text=f"'{name}' not found in plugins or skills.", success=False)
 

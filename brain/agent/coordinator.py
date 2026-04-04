@@ -5,6 +5,7 @@ Supports:
 - sequential: Each agent builds on previous output
 - pipeline: Scout → Planner → Worker chain
 - swarm: Planner decomposes task → N workers execute in parallel → Merger combines results
+- synthesize: Research → synthesize findings → delegate implementation (Claude Code pattern)
 
 Agents run on OS threads for isolation. Each gets its own event loop.
 """
@@ -13,11 +14,51 @@ import threading
 import asyncio
 import uuid
 import json
+import re
 import time
 import logging
 from dataclasses import dataclass, field
+from enum import Enum
 
 log = logging.getLogger("jarvis.coordinator")
+
+
+# ── Coordinator Modes ──
+
+
+class CoordinatorMode(Enum):
+    """How the coordinator orchestrates agents."""
+    DIRECT = "direct"          # Current behavior: spawn and wait
+    SYNTHESIZE = "synthesize"  # Research → synthesize findings → delegate implementation
+    PARALLEL = "parallel"      # Launch multiple workers simultaneously, collect results
+
+
+# ── Notification & Worker State ──
+
+
+@dataclass
+class TaskNotification:
+    """Notification emitted when a worker task changes state."""
+    task_id: str
+    agent_type: str
+    status: str          # pending, running, completed, failed, cancelled
+    summary: str
+    result: str
+    token_usage: int = 0
+    duration_ms: int = 0
+
+
+@dataclass
+class WorkerState:
+    """Lightweight tracking state for a spawned worker."""
+    agent_id: str
+    agent_type: str
+    task: str
+    status: str           # pending, running, completed, failed, cancelled
+    is_backgrounded: bool = False
+    result: str | None = None
+    started_at: float = field(default_factory=time.time)
+    completed_at: float | None = None
 
 
 @dataclass
@@ -35,9 +76,13 @@ class AgentHandle:
 class AgentCoordinator:
     """Thread-based multi-agent coordinator with swarm decomposition."""
 
-    def __init__(self):
+    def __init__(self, mode: CoordinatorMode = CoordinatorMode.DIRECT):
         self._agents: dict[str, AgentHandle] = {}
         self._lock = threading.Lock()
+        # New coordinator-pattern state
+        self._mode: CoordinatorMode = mode
+        self._workers: dict[str, WorkerState] = {}
+        self._notifications: list[TaskNotification] = []
 
     def spawn_agent(self, reasoner, agent_type: str, task: str, context: str = "") -> AgentHandle:
         """Spawn an agent on a new thread. Returns handle immediately."""
@@ -81,6 +126,148 @@ class AgentCoordinator:
 
         thread.start()
         return handle
+
+    # ── Worker Tracking (Claude Code coordinator pattern) ──
+
+    def spawn_worker(self, agent_type: str, task: str, context: str = "",
+                     background: bool = False) -> str:
+        """Register a new worker and return its agent_id (UUID hex)."""
+        agent_id = uuid.uuid4().hex[:12]
+        ws = WorkerState(
+            agent_id=agent_id,
+            agent_type=agent_type,
+            task=task,
+            status="pending",
+            is_backgrounded=background,
+            started_at=time.time(),
+        )
+        with self._lock:
+            self._workers[agent_id] = ws
+        self._emit_notification(ws, summary=f"Spawned {agent_type} worker")
+        log.info("Worker %s spawned: type=%s bg=%s task=%s",
+                 agent_id, agent_type, background, task[:80])
+        return agent_id
+
+    def update_worker(self, agent_id: str, status: str, result: str = "") -> None:
+        """Update worker state and emit notification on terminal states."""
+        with self._lock:
+            ws = self._workers.get(agent_id)
+        if not ws:
+            log.warning("update_worker: unknown agent_id %s", agent_id)
+            return
+        ws.status = status
+        if result:
+            ws.result = result
+        if status in ("completed", "failed", "cancelled"):
+            ws.completed_at = time.time()
+            duration_ms = int((ws.completed_at - ws.started_at) * 1000)
+            self._emit_notification(
+                ws,
+                summary=f"Worker {ws.agent_type} {status}",
+                duration_ms=duration_ms,
+            )
+        log.debug("Worker %s -> %s", agent_id, status)
+
+    def get_worker(self, agent_id: str) -> WorkerState | None:
+        with self._lock:
+            return self._workers.get(agent_id)
+
+    def get_active_workers(self) -> list[WorkerState]:
+        """Return workers that are still pending or running."""
+        with self._lock:
+            return [w for w in self._workers.values()
+                    if w.status in ("pending", "running")]
+
+    def get_completed_workers(self) -> list[WorkerState]:
+        """Return workers that have finished (completed, failed, cancelled)."""
+        with self._lock:
+            return [w for w in self._workers.values()
+                    if w.status in ("completed", "failed", "cancelled")]
+
+    def cancel_worker(self, agent_id: str) -> bool:
+        """Mark a worker as cancelled. Returns False if not found."""
+        with self._lock:
+            ws = self._workers.get(agent_id)
+        if not ws:
+            return False
+        if ws.status in ("completed", "failed", "cancelled"):
+            return False  # already terminal
+        self.update_worker(agent_id, "cancelled")
+        return True
+
+    def should_continue_or_spawn(self, agent_id: str, new_task: str) -> str:
+        """Decide whether an existing worker should continue or a fresh one should spawn.
+
+        Heuristic: extract file-path-like tokens from both the worker's original
+        task and the new task. If >50% of paths in new_task overlap with the
+        worker's task context, return 'continue'; otherwise 'spawn'.
+        """
+        ws = self.get_worker(agent_id)
+        if not ws:
+            return "spawn"
+        if ws.status not in ("running", "completed"):
+            return "spawn"
+
+        def _extract_paths(text: str) -> set[str]:
+            # Match unix-style paths and dotted module names
+            return set(re.findall(r'[\w./\-]+(?:\.[\w]+)+|/[\w./\-]+', text))
+
+        old_paths = _extract_paths(ws.task)
+        new_paths = _extract_paths(new_task)
+        if not new_paths:
+            return "spawn"
+        overlap = len(old_paths & new_paths) / len(new_paths)
+        return "continue" if overlap > 0.5 else "spawn"
+
+    def format_notification(self, worker: WorkerState) -> str:
+        """Format worker state as an XML task-notification block."""
+        summary = f"Worker {worker.agent_type}: {worker.task[:120]}"
+        result_text = (worker.result or "")[:2000]
+        duration = ""
+        if worker.completed_at and worker.started_at:
+            duration = f"\n  <duration-ms>{int((worker.completed_at - worker.started_at) * 1000)}</duration-ms>"
+        return (
+            f"<task-notification>\n"
+            f"  <task-id>{worker.agent_id}</task-id>\n"
+            f"  <status>{worker.status}</status>\n"
+            f"  <summary>{summary}</summary>\n"
+            f"  <result>{result_text}</result>"
+            f"{duration}\n"
+            f"</task-notification>"
+        )
+
+    def get_status_summary(self) -> str:
+        """Human-readable one-liner: '3 workers: 2 running, 1 completed'."""
+        with self._lock:
+            workers = list(self._workers.values())
+        if not workers:
+            return "0 workers"
+        counts: dict[str, int] = {}
+        for w in workers:
+            counts[w.status] = counts.get(w.status, 0) + 1
+        parts = [f"{c} {s}" for s, c in counts.items()]
+        return f"{len(workers)} workers: {', '.join(parts)}"
+
+    def drain_notifications(self) -> list[TaskNotification]:
+        """Return and clear pending notifications."""
+        with self._lock:
+            notifs = list(self._notifications)
+            self._notifications.clear()
+        return notifs
+
+    def _emit_notification(self, ws: WorkerState, summary: str = "",
+                           token_usage: int = 0, duration_ms: int = 0) -> None:
+        notif = TaskNotification(
+            task_id=ws.agent_id,
+            agent_type=ws.agent_type,
+            status=ws.status,
+            summary=summary or ws.task[:120],
+            result=ws.result or "",
+            token_usage=token_usage,
+            duration_ms=duration_ms,
+        )
+        with self._lock:
+            self._notifications.append(notif)
 
     # ── Swarm Mode: decompose + parallel workers + merge ──
 

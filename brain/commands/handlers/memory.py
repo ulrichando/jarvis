@@ -1,14 +1,94 @@
-"""Memory commands -- lattice inspection, learn, recall, knowledge browsing."""
+"""Memory commands -- lattice inspection, learn, recall, knowledge browsing, auto-memory."""
+import os
+from pathlib import Path
+
 from brain.commands.registry import command, CommandContext, CommandResult, PermLevel
 
 
-@command("memory", aliases=["mem"], description="Show memory stats",
-         usage="/memory", category="memory", permission=PermLevel.READ_ONLY)
+@command("memory", aliases=["mem"], description="Memory management: stats, show, search, edit",
+         usage="/memory [show|search <query>|edit <name>|stats]", category="memory", permission=PermLevel.READ_ONLY)
 async def cmd_memory(ctx: CommandContext) -> CommandResult:
     brain = ctx.brain
     if not brain:
         return CommandResult(text="Brain not available", success=False)
 
+    args = ctx.args.strip()
+    parts = args.split(None, 1)
+    action = parts[0].lower() if parts else "stats"
+    rest = parts[1].strip() if len(parts) > 1 else ""
+
+    # ── /memory show ──
+    if action == "show":
+        try:
+            from brain.memory.auto_memory import get_memory_extractor
+            extractor = get_memory_extractor()
+            memories = extractor.load_existing_memories()
+            if not memories:
+                return CommandResult(text="No memory files found.")
+            lines = ["Memory Files", "=" * 55]
+            for m in memories:
+                name = m.get("name", "?")
+                desc = m.get("description", "")[:50]
+                mtype = m.get("type", "?")
+                mpath = m.get("path", "")
+                size = 0
+                if mpath and os.path.exists(mpath):
+                    size = os.path.getsize(mpath)
+                size_str = f"{size}B" if size < 1024 else f"{size / 1024:.1f}KB"
+                lines.append(f"  [{mtype:<9s}] {name:<25s} {size_str:>8s}  {desc}")
+            lines.append(f"\n  {len(memories)} memory file(s)")
+            return CommandResult(text="\n".join(lines))
+        except ImportError:
+            return CommandResult(text="Auto-memory module not available.", success=False)
+
+    # ── /memory search <query> ──
+    if action == "search":
+        if not rest:
+            return CommandResult(text="Usage: /memory search <query>", success=False)
+        try:
+            from brain.memory.auto_memory import get_memory_extractor
+            extractor = get_memory_extractor()
+            memories = extractor.load_existing_memories()
+            query_lower = rest.lower()
+            matches = [
+                m for m in memories
+                if query_lower in m.get("content", "").lower()
+                or query_lower in m.get("name", "").lower()
+                or query_lower in m.get("description", "").lower()
+            ]
+            if not matches:
+                return CommandResult(text=f"No memories matching '{rest}'.")
+            lines = [f"Memory Search: '{rest}' ({len(matches)} results)", "-" * 40]
+            for m in matches:
+                name = m.get("name", "?")
+                content = m.get("content", "")[:80].replace("\n", " ")
+                lines.append(f"  {name}: {content}")
+            return CommandResult(text="\n".join(lines))
+        except ImportError:
+            return CommandResult(text="Auto-memory module not available.", success=False)
+
+    # ── /memory edit <name> ──
+    if action == "edit":
+        if not rest:
+            return CommandResult(text="Usage: /memory edit <name>", success=False)
+        try:
+            from brain.config import JARVIS_HOME
+            memory_dir = JARVIS_HOME / "memory"
+            # Find matching file
+            matches = list(memory_dir.glob(f"*{rest}*"))
+            if not matches:
+                return CommandResult(text=f"No memory file matching '{rest}'.", success=False)
+            target = matches[0]
+            editor = os.environ.get("EDITOR", "nano")
+            return CommandResult(
+                text=f"Open in editor: {editor} {target}\n"
+                     f"(Run this command in your terminal to edit)",
+                data={"edit_command": f"{editor} {target}", "path": str(target)},
+            )
+        except ImportError:
+            return CommandResult(text="Config module not available.", success=False)
+
+    # ── /memory stats (default) ──
     mem = brain.memory
     stats = mem.stats if hasattr(mem, 'stats') else {}
     nodes = stats.get("lattice_nodes", 0)
@@ -19,6 +99,18 @@ async def cmd_memory(ctx: CommandContext) -> CommandResult:
     lines.append(f"  Nodes:    {nodes}")
     lines.append(f"  Synapses: {synapses}")
     lines.append(f"  Domains:  {', '.join(domains) if domains else 'none'}")
+
+    # Memory file stats
+    try:
+        from brain.config import JARVIS_HOME
+        memory_dir = JARVIS_HOME / "memory"
+        if memory_dir.is_dir():
+            md_files = list(memory_dir.glob("*.md"))
+            total_size = sum(f.stat().st_size for f in md_files if f.is_file())
+            size_str = f"{total_size / 1024:.1f}KB" if total_size > 1024 else f"{total_size}B"
+            lines.append(f"\n  Memory Files: {len(md_files)} ({size_str} total)")
+    except ImportError:
+        pass
 
     # Strength distribution
     if hasattr(mem, 'lattice') and hasattr(mem.lattice, 'strength_distribution'):
@@ -74,7 +166,7 @@ async def cmd_learn(ctx: CommandContext) -> CommandResult:
     return CommandResult(text=f"Learned ({node_type}): {text[:80]}\nNode: {node_id[:8]}")
 
 
-@command("recall", description="Search memories by query",
+@command("recall", description="Search memories by query, showing source and relevance",
          usage="/recall <query> [--top_k N]", category="memory", permission=PermLevel.READ_ONLY)
 async def cmd_recall(ctx: CommandContext) -> CommandResult:
     brain = ctx.brain
@@ -101,21 +193,59 @@ async def cmd_recall(ctx: CommandContext) -> CommandResult:
     query = " ".join(query_parts)
     results = brain.memory.lattice.search(query, top_k=top_k)
 
-    if not results:
+    # Also search auto-memory files for additional context
+    auto_results = []
+    try:
+        from brain.memory.auto_memory import get_memory_extractor
+        extractor = get_memory_extractor()
+        memories = extractor.load_existing_memories()
+        query_lower = query.lower()
+        for m in memories:
+            content = m.get("content", "").lower()
+            name = m.get("name", "").lower()
+            if query_lower in content or query_lower in name:
+                auto_results.append(m)
+    except ImportError:
+        pass
+
+    if not results and not auto_results:
         return CommandResult(text=f"No memories found for: {query}")
 
-    lines = [f"Recall: \"{query}\" ({len(results)} results)", "-" * 40]
-    for r in results:
-        nid = r.get("id", "?")[:8]
-        score = r.get("score", 0.0)
-        content = r.get("content", "")[:100].replace("\n", " ")
-        ntype = r.get("type", "?")
-        lines.append(f"  [{nid}] ({score:.2f}) [{ntype}] {content}")
+    lines = [f"Recall: \"{query}\"", "-" * 50]
+
+    if results:
+        lines.append(f"\n  Lattice Results ({len(results)}):")
+        for r in results:
+            nid = r.get("id", "?")[:8]
+            score = r.get("score", 0.0)
+            content = r.get("content", "")[:100].replace("\n", " ")
+            ntype = r.get("type", "?")
+            source = r.get("domain", r.get("source", "lattice"))
+            # Relevance indicator
+            if score > 0.8:
+                rel = "HIGH"
+            elif score > 0.5:
+                rel = "MED"
+            else:
+                rel = "LOW"
+            lines.append(f"  [{nid}] [{rel:>4s} {score:.2f}] [{ntype}] {content}")
+            if source and source != "lattice":
+                lines.append(f"         source: {source}")
+
+    if auto_results:
+        lines.append(f"\n  Memory Files ({len(auto_results)}):")
+        for m in auto_results[:top_k]:
+            name = m.get("name", "?")
+            content = m.get("content", "")[:80].replace("\n", " ")
+            mpath = m.get("path", "")
+            filename = Path(mpath).name if mpath else "?"
+            lines.append(f"  [{filename}] {name}: {content}")
+
     return CommandResult(text="\n".join(lines))
 
 
-@command("forget", description="Remove a memory by ID or query",
-         usage="/forget <node_id_or_query>", category="memory", permission=PermLevel.FULL)
+@command("forget", description="Remove a memory by ID, query, or memory file name",
+         usage="/forget <node_id_or_query_or_filename>", category="memory", permission=PermLevel.FULL)
 async def cmd_forget(ctx: CommandContext) -> CommandResult:
     brain = ctx.brain
     if not brain:
@@ -123,23 +253,55 @@ async def cmd_forget(ctx: CommandContext) -> CommandResult:
 
     target = ctx.args.strip()
     if not target:
-        return CommandResult(text="Usage: /forget <node_id_or_query>", success=False)
+        return CommandResult(text="Usage: /forget <node_id_or_query_or_filename>", success=False)
+
+    # Try as memory file name first
+    try:
+        from brain.config import JARVIS_HOME
+        memory_dir = JARVIS_HOME / "memory"
+        if memory_dir.is_dir():
+            matches = list(memory_dir.glob(f"*{target}*"))
+            matches = [m for m in matches if m.name != "MEMORY.md"]
+            if matches:
+                removed_file = matches[0]
+                content_preview = removed_file.read_text(errors="replace")[:100].replace("\n", " ")
+                removed_file.unlink()
+                # Update index
+                try:
+                    from brain.memory.auto_memory import get_memory_extractor
+                    get_memory_extractor().update_index()
+                except Exception:
+                    pass
+                return CommandResult(
+                    text=f"Removed memory file: {removed_file.name}\n"
+                         f"  Content: {content_preview}"
+                )
+    except ImportError:
+        pass
 
     lattice = brain.memory.lattice
 
-    # Try as node ID first
+    # Try as node ID
     if lattice.has_node(target):
         lattice.remove_node(target)
         return CommandResult(text=f"Removed node: {target[:8]}")
 
-    # Try as query -- find best match and confirm
+    # Try as query -- find best match and show what was removed
     results = lattice.search(target, top_k=1)
     if results:
         node = results[0]
         nid = node.get("id", "?")
         content = node.get("content", "")[:80]
+        ntype = node.get("type", "?")
+        score = node.get("score", 0.0)
         lattice.remove_node(nid)
-        return CommandResult(text=f"Removed closest match: [{nid[:8]}] {content}")
+        return CommandResult(
+            text=f"Removed closest match:\n"
+                 f"  ID:      {nid[:8]}\n"
+                 f"  Type:    {ntype}\n"
+                 f"  Score:   {score:.2f}\n"
+                 f"  Content: {content}"
+        )
 
     return CommandResult(text=f"No memory found matching: {target}", success=False)
 
@@ -328,3 +490,61 @@ async def cmd_user_profile(ctx: CommandContext) -> CommandResult:
     # Set key
     profile.set(key, value)
     return CommandResult(text=f"Set {key} = {value}")
+
+
+# ── /dream ────────────────────────────────────────────────────────────
+
+@command("dream", description="Consolidate session learnings into memory files",
+         usage="/dream", category="memory", permission=PermLevel.STANDARD)
+async def cmd_dream(ctx: CommandContext) -> CommandResult:
+    """Extract key decisions, patterns, and preferences from recent conversation
+    and save to memory files via auto_memory."""
+    brain = ctx.brain
+    if not brain:
+        return CommandResult(text="Brain not available", success=False)
+
+    try:
+        from brain.memory.auto_memory import get_memory_extractor
+    except ImportError:
+        return CommandResult(text="Auto-memory module not available.", success=False)
+
+    # Gather recent conversation history
+    messages = []
+    if hasattr(brain, 'memory') and hasattr(brain.memory, 'get_history'):
+        try:
+            messages = brain.memory.get_history(limit=50)
+        except Exception:
+            pass
+
+    if not messages and hasattr(brain, 'conversation_history'):
+        messages = brain.conversation_history[-50:] if brain.conversation_history else []
+
+    if not messages:
+        return CommandResult(text="No conversation history available to dream on.", success=False)
+
+    extractor = get_memory_extractor()
+
+    # Extract and save
+    saved = extractor.extract_and_save(messages)
+
+    # Also load what we have now for summary
+    all_memories = extractor.load_existing_memories()
+
+    lines = ["Dream Complete -- Session Consolidation", "=" * 45]
+    lines.append(f"  Messages analyzed: {len(messages)}")
+    lines.append(f"  New memories saved: {saved}")
+    lines.append(f"  Total memory files: {len(all_memories)}")
+
+    if saved > 0:
+        lines.append(f"\n  New Memories:")
+        # Show the most recent ones (they'll be at the end)
+        recent = all_memories[-saved:] if saved <= len(all_memories) else all_memories
+        for m in recent:
+            name = m.get("name", "?")
+            mtype = m.get("type", "?")
+            desc = m.get("description", "")[:60]
+            lines.append(f"    [{mtype}] {name}: {desc}")
+    else:
+        lines.append("\n  No new learnings extracted (existing memories cover this session).")
+
+    return CommandResult(text="\n".join(lines))

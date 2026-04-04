@@ -11,6 +11,11 @@ Events:
   Stop               — Final verification before JARVIS considers task complete
   SessionStart       — Run on session startup
   SessionEnd         — Run on session teardown
+  SubagentStart      — When a sub-agent is spawned (blocking)
+  SubagentStop       — When a sub-agent finishes (blocking)
+  CwdChanged         — When working directory changes
+  FileChanged        — When a file is modified (post write/edit/delete)
+  ContextCompacted   — When context window is compacted
 
 Hooks are defined in:
   ~/.jarvis/hooks.yaml        (user-level)
@@ -22,6 +27,12 @@ Hook types:
   command  — Run a shell command (exit 0=allow, 2=block, other=warn)
   http     — POST event data to an HTTP endpoint
   prompt   — Ask the LLM to evaluate (returns ok/not-ok)
+  agent    — Run as a sub-agent task (scout/worker/planner)
+
+Hook options:
+  async_       — Fire-and-forget, don't block execution
+  async_rewake — If async and exit code 2, wake the model
+  once         — Only run this hook once, then auto-disable
 """
 
 import os
@@ -47,16 +58,21 @@ HOOK_EVENTS = (
     "Stop",
     "SessionStart",
     "SessionEnd",
+    "SubagentStart",
+    "SubagentStop",
+    "CwdChanged",
+    "FileChanged",
+    "ContextCompacted",
 )
 
 # Events that can block the action
-BLOCKING_EVENTS = {"PreToolUse", "PermissionDenied", "Stop"}
+BLOCKING_EVENTS = {"PreToolUse", "PermissionDenied", "Stop", "SubagentStart", "SubagentStop"}
 
 
 @dataclass
 class Hook:
     """A single hook definition."""
-    type: str = "command"          # "command", "http", or "prompt"
+    type: str = "command"          # "command", "http", "prompt", or "agent"
     command: str = ""              # Shell command to run
     url: str = ""                  # HTTP endpoint (type=http)
     prompt: str = ""               # LLM prompt for type=prompt
@@ -65,6 +81,9 @@ class Hook:
     if_filter: str = ""            # Fine-grained filter: "Bash(git *)"
     status_message: str = ""       # Status shown to user while hook runs
     enabled: bool = True           # Toggle without removing
+    async_: bool = False           # If True, hook runs in background (fire-and-forget)
+    async_rewake: bool = False     # If True AND exit code is 2, wake the model
+    once: bool = False             # If True, only run this hook once then disable it
 
 
 @dataclass
@@ -75,6 +94,16 @@ class HookResult:
     modified_args: dict | None = None
     additional_context: str = ""   # Extra context injected into LLM conversation
     decision: str = ""             # "allow", "deny", "ask", "block"
+
+
+@dataclass
+class AggregatedHookResult:
+    """Aggregated result from running multiple hooks."""
+    results: list[HookResult] = field(default_factory=list)
+    final_allowed: bool = True           # Most restrictive wins
+    final_message: str = ""              # Combined messages
+    any_modified: bool = False           # Whether any hook modified args
+    modified_args: dict | None = None    # Last modification wins
 
 
 @dataclass
@@ -212,6 +241,11 @@ class HooksManager:
             "session_start": "SessionStart",
             "on_shutdown": "SessionEnd",
             "session_end": "SessionEnd",
+            "subagent_start": "SubagentStart",
+            "subagent_stop": "SubagentStop",
+            "cwd_changed": "CwdChanged",
+            "file_changed": "FileChanged",
+            "context_compacted": "ContextCompacted",
         }
         return mapping.get(event.lower(), event)
 
@@ -282,6 +316,10 @@ class HooksManager:
             if not hook_def.get("enabled", True):
                 continue
 
+            # Skip once-hooks that already ran
+            if hook_def.get("once", False) and hook_def.get("_ran_once", False):
+                continue
+
             # Check matcher (regex-based)
             matcher = hook_def.get("matcher", "")
             if matcher and not self._matches(matcher, tool_name):
@@ -301,6 +339,23 @@ class HooksManager:
                 if not entry.get("enabled", True):
                     continue
 
+                # Skip once-entries that already ran
+                if entry.get("once", False) and entry.get("_ran_once", False):
+                    continue
+
+                # Handle async hooks: log and skip (caller wires actual async execution)
+                if entry.get("async", entry.get("async_", False)):
+                    log.info(
+                        "Async hook queued for %s (type=%s, rewake=%s): %s",
+                        event, entry.get("type", "command"),
+                        entry.get("async_rewake", False),
+                        entry.get("command", entry.get("task", entry.get("url", ""))),
+                    )
+                    # Mark once-hooks as ran even for async
+                    if entry.get("once", False):
+                        entry["_ran_once"] = True
+                    continue
+
                 hook_type = entry.get("type", "command")
                 hr = HookResult(allowed=True)
 
@@ -308,7 +363,15 @@ class HooksManager:
                     hr = self._run_command_hook(entry, tool_name, tool_args, event, result)
                 elif hook_type == "http":
                     hr = self._run_http_hook(entry, tool_name, tool_args, event, result)
+                elif hook_type == "agent":
+                    hr = self._run_agent_hook(entry, tool_name, tool_args, event, result)
                 # prompt type requires brain reference — handled externally
+
+                # Mark once-hooks as ran
+                if entry.get("once", False):
+                    entry["_ran_once"] = True
+                if hook_def.get("once", False):
+                    hook_def["_ran_once"] = True
 
                 # Most restrictive wins
                 if not hr.allowed and event in BLOCKING_EVENTS:
@@ -324,6 +387,135 @@ class HooksManager:
                     combined.decision = hr.decision
 
         return combined
+
+    def _run_agent_hook(
+        self, entry: dict, tool_name: str,
+        tool_args: dict, event: str, result: str,
+    ) -> HookResult:
+        """Run an agent-type hook (sub-agent task).
+
+        Returns a placeholder result. The brain can wire up actual agent
+        execution by replacing or extending this method.
+        """
+        agent_type = entry.get("agent_type", "scout")
+        task_template = entry.get("task", "")
+
+        # Variable substitution
+        task = task_template.replace("$TOOL_NAME", tool_name or "")
+        task = task.replace("$EVENT", event)
+        task = task.replace("$RESULT", result[:2000] if result else "")
+
+        log.info("Agent hook (%s): %s", agent_type, task)
+        return HookResult(
+            allowed=True,
+            message=f"Agent hook: {task}",
+            additional_context=f"[agent-hook:{agent_type}] {task}",
+        )
+
+    # ── Aggregated Hook Execution ──────────────────────────────────
+
+    def run_hooks_aggregated(
+        self, event: str, tool_name: str = "",
+        tool_args: dict | None = None, result: str = "",
+    ) -> AggregatedHookResult:
+        """Run all hooks for an event and return aggregated results."""
+        if tool_args is None:
+            tool_args = {}
+
+        all_hooks = self._get_hooks_for(event)
+        agg = AggregatedHookResult()
+
+        for hook_def in all_hooks:
+            if not hook_def.get("enabled", True):
+                continue
+            if hook_def.get("once", False) and hook_def.get("_ran_once", False):
+                continue
+
+            matcher = hook_def.get("matcher", "")
+            if matcher and not self._matches(matcher, tool_name):
+                continue
+
+            if_filter = hook_def.get("if", hook_def.get("if_filter", ""))
+            if if_filter and not self._matches_if(if_filter, tool_name, tool_args):
+                continue
+
+            # Run this single hook definition through _run_hooks
+            hr = self._run_hooks([hook_def], tool_name, tool_args, event, result)
+            agg.results.append(hr)
+
+            if not hr.allowed:
+                agg.final_allowed = False
+            if hr.message:
+                agg.final_message = (agg.final_message + "\n" + hr.message).strip()
+            if hr.modified_args is not None:
+                agg.any_modified = True
+                agg.modified_args = hr.modified_args
+                tool_args = hr.modified_args  # Chain modifications
+
+        return agg
+
+    # ── Convenience Runners for New Events ─────────────────────────
+
+    def run_subagent_start(self, agent_type: str, task: str) -> HookResult:
+        """Run SubagentStart hooks when a sub-agent is spawned."""
+        all_hooks = self._get_hooks_for("SubagentStart")
+        if not all_hooks:
+            return HookResult(allowed=True)
+        return self._run_hooks(
+            all_hooks, agent_type,
+            {"agent_type": agent_type, "task": task},
+            event="SubagentStart", result=task,
+        )
+
+    def run_subagent_stop(self, agent_type: str, task: str, result: str) -> HookResult:
+        """Run SubagentStop hooks when a sub-agent finishes."""
+        all_hooks = self._get_hooks_for("SubagentStop")
+        if not all_hooks:
+            return HookResult(allowed=True)
+        return self._run_hooks(
+            all_hooks, agent_type,
+            {"agent_type": agent_type, "task": task},
+            event="SubagentStop", result=result,
+        )
+
+    def run_cwd_changed(self, old_cwd: str, new_cwd: str) -> HookResult:
+        """Run CwdChanged hooks when working directory changes."""
+        all_hooks = self._get_hooks_for("CwdChanged")
+        if not all_hooks:
+            return HookResult(allowed=True)
+        return self._run_hooks(
+            all_hooks, "cwd",
+            {"old_cwd": old_cwd, "new_cwd": new_cwd},
+            event="CwdChanged", result=new_cwd,
+        )
+
+    def run_file_changed(self, path: str, change_type: str) -> HookResult:
+        """Run FileChanged hooks when a file is modified.
+
+        Args:
+            path: File path that changed.
+            change_type: One of "write", "edit", "delete".
+        """
+        all_hooks = self._get_hooks_for("FileChanged")
+        if not all_hooks:
+            return HookResult(allowed=True)
+        return self._run_hooks(
+            all_hooks, change_type,
+            {"path": path, "change_type": change_type},
+            event="FileChanged", result=path,
+        )
+
+    def run_context_compacted(self, before_tokens: int, after_tokens: int) -> HookResult:
+        """Run ContextCompacted hooks when context window is compacted."""
+        all_hooks = self._get_hooks_for("ContextCompacted")
+        if not all_hooks:
+            return HookResult(allowed=True)
+        return self._run_hooks(
+            all_hooks, "context",
+            {"before_tokens": before_tokens, "after_tokens": after_tokens},
+            event="ContextCompacted",
+            result=f"{before_tokens} -> {after_tokens}",
+        )
 
     def _matches(self, matcher: str, tool_name: str) -> bool:
         """Check if a matcher pattern matches the tool name (regex-based)."""

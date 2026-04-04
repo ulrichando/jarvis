@@ -7,10 +7,31 @@ feed results back, and loop until the LLM gives a final text response.
 """
 
 import os
+import json
 import subprocess
+import difflib
+import shutil
 import glob as _glob
 
 from brain.sandbox import SandboxConfig, execute_sandboxed, detect_sandbox_capabilities
+
+# ── File read tracking (for edit staleness detection) ─────────────────
+
+_file_read_times: dict[str, float] = {}
+
+# ── Device paths that must never be read (infinite/blocking) ──────────
+
+BLOCKED_DEVICE_PATHS = {
+    "/dev/zero", "/dev/random", "/dev/urandom", "/dev/full",
+    "/dev/stdin", "/dev/tty", "/dev/console",
+    "/dev/stdout", "/dev/stderr",
+    "/dev/fd/0", "/dev/fd/1", "/dev/fd/2",
+    "/proc/self/fd/0", "/proc/self/fd/1", "/proc/self/fd/2",
+}
+
+# ── Image extensions for read_file support ────────────────────────────
+
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 
 # ── Security: path validation & output limits ─────────────────────────
 
@@ -162,7 +183,7 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "search_files",
-            "description": "Search for files by name pattern (glob) or search file contents by regex. Use to find relevant files in a project.",
+            "description": "Search for files by name pattern (glob) or search file contents by regex (ripgrep). Use mode='grep' with output_mode to control result format.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -178,8 +199,36 @@ TOOL_SCHEMAS = [
                     "mode": {
                         "type": "string",
                         "enum": ["glob", "grep"],
-                        "description": "Search mode: 'glob' for file names, 'grep' for file contents",
+                        "description": "Search mode: 'glob' for file names, 'grep' for file contents (uses ripgrep)",
                         "default": "glob",
+                    },
+                    "output_mode": {
+                        "type": "string",
+                        "enum": ["content", "files_with_matches", "count"],
+                        "description": "For grep mode: 'content' shows matching lines, 'files_with_matches' shows file paths (default), 'count' shows match counts per file",
+                        "default": "files_with_matches",
+                    },
+                    "file_glob": {
+                        "type": "string",
+                        "description": "Filter searched files by glob (e.g. '*.py', '*.{ts,tsx}'). Only applies in grep mode.",
+                    },
+                    "file_type": {
+                        "type": "string",
+                        "description": "Filter by file type (e.g. 'py', 'js', 'rust'). Maps to rg --type. Only applies in grep mode.",
+                    },
+                    "context": {
+                        "type": "integer",
+                        "description": "Lines of context around matches (grep content mode only)",
+                        "default": 0,
+                    },
+                    "case_insensitive": {
+                        "type": "boolean",
+                        "description": "Case insensitive search (grep mode only)",
+                    },
+                    "head_limit": {
+                        "type": "integer",
+                        "description": "Max results to return (default 250, 0 for unlimited)",
+                        "default": 250,
                     },
                 },
                 "required": ["pattern"],
@@ -349,6 +398,28 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "tool_search",
+            "description": "Search for additional tools that may not be loaded yet. Use when you need a capability not in your current toolset, or when the system suggests a deferred tool exists. Returns tool definitions that become available for use.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Keywords to search for (e.g. 'notebook jupyter', 'database sql', 'code intelligence lsp'). Use 'select:tool_name' for exact lookup.",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Max tools to return (default 5)",
+                        "default": 5,
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "dispatch",
             "description": "Spawn a sub-agent to handle a task independently. Built-in: 'scout' (read-only exploration), 'worker' (full access execution), 'planner' (analysis only). Custom agents from ~/.jarvis/agents/ and .jarvis/agents/ are also available. Sub-agents run in isolation and return a summary.",
             "parameters": {
@@ -377,7 +448,7 @@ TOOL_SCHEMAS = [
 # ── Tool Execution ──────────────────────────────────────────────────
 
 # Tools allowed in plan/read-only mode
-READONLY_TOOLS = {"read_file", "search_files", "web_search", "web_fetch", "think", "dispatch", "view_screen"}
+READONLY_TOOLS = {"read_file", "search_files", "web_search", "web_fetch", "think", "dispatch", "view_screen", "tool_search"}
 
 # Bash commands considered safe for read-only mode
 READONLY_BASH_PREFIXES = (
@@ -438,6 +509,8 @@ def execute_tool(name: str, args: dict, readonly: bool = False) -> str:
             return _exec_web_api(args)
         elif name == "view_screen":
             return _exec_view_screen(args)
+        elif name == "tool_search":
+            return _exec_tool_search(args)
         elif name == "think":
             return args.get("thought", "")
         elif name == "dispatch":
@@ -448,6 +521,48 @@ def execute_tool(name: str, args: dict, readonly: bool = False) -> str:
             return f"Unknown tool: {name}"
     except Exception as e:
         return f"Error executing {name}: {e}"
+
+
+def _exec_tool_search(args: dict) -> str:
+    """Search for deferred/additional tools."""
+    query = args.get("query", "")
+    max_results = min(args.get("max_results", 5), 10)
+
+    if not query:
+        return "No query provided."
+
+    try:
+        from brain.agent.tool_registry import search_tools, get_tool_meta
+
+        # Handle "select:name" syntax for exact lookup
+        if query.startswith("select:"):
+            names = [n.strip() for n in query[7:].split(",")]
+            results = []
+            for name in names:
+                meta = get_tool_meta(name)
+                if meta:
+                    results.append(meta)
+            if not results:
+                return f"No tools found matching: {', '.join(names)}"
+        else:
+            results = search_tools(query, max_results)
+
+        if not results:
+            return f"No tools found for query: {query}"
+
+        lines = [f"Found {len(results)} tool(s):\n"]
+        for meta in results:
+            lines.append(f"**{meta.name}** [{meta.category}]")
+            lines.append(f"  {meta.description}")
+            if meta.is_read_only:
+                lines.append(f"  [read-only, safe for parallel]")
+            if meta.is_destructive:
+                lines.append(f"  [destructive — use with caution]")
+            lines.append("")
+
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Tool search error: {e}"
 
 
 def _exec_mcp_tool(name: str, args: dict) -> str:
@@ -659,13 +774,143 @@ def _exec_bash(args: dict) -> str:
         return f"Error: {e}"
 
 
+def _is_blocked_device(path: str) -> bool:
+    """Check if a path is a blocked device/proc path."""
+    resolved = os.path.realpath(path)
+    if resolved in BLOCKED_DEVICE_PATHS:
+        return True
+    # /proc/<pid>/fd/0-2 are aliases for stdio
+    if resolved.startswith("/proc/") and any(
+        resolved.endswith(f"/fd/{n}") for n in ("0", "1", "2")
+    ):
+        return True
+    return False
+
+
+def _detect_binary(path: str) -> bool:
+    """Check if file is binary by looking for null bytes in first 8KB."""
+    try:
+        with open(path, "rb") as f:
+            chunk = f.read(8192)
+        return b"\x00" in chunk
+    except Exception:
+        return False
+
+
+def _read_pdf(path: str, offset: int | None, limit: int | None) -> str:
+    """Extract text from a PDF file with optional page range."""
+    page_start = max(1, offset or 1)
+    page_count = limit or 20
+
+    # Try pdftotext first (fast, widely available)
+    if shutil.which("pdftotext"):
+        try:
+            first = str(page_start)
+            last = str(page_start + page_count - 1)
+            result = subprocess.run(
+                ["pdftotext", "-f", first, "-l", last, "-layout", path, "-"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                text = result.stdout
+                # Add page markers by splitting on form feeds
+                pages = text.split("\f")
+                parts = []
+                for i, page in enumerate(pages):
+                    page_text = page.strip()
+                    if page_text:
+                        parts.append(f"--- Page {page_start + i} ---\n{page_text}")
+                return "\n\n".join(parts) if parts else "(PDF has no extractable text)"
+        except Exception:
+            pass
+
+    # Fallback to pymupdf (fitz)
+    try:
+        import fitz  # pymupdf
+        doc = fitz.open(path)
+        total_pages = len(doc)
+        end_page = min(total_pages, page_start - 1 + page_count)
+        parts = []
+        for i in range(page_start - 1, end_page):
+            page = doc[i]
+            text = page.get_text().strip()
+            if text:
+                parts.append(f"--- Page {i + 1} ---\n{text}")
+        doc.close()
+        result = "\n\n".join(parts) if parts else "(PDF has no extractable text)"
+        if end_page < total_pages:
+            result += f"\n\n... ({total_pages - end_page} more pages)"
+        return result
+    except ImportError:
+        return (
+            f"[PDF file: {path}, {os.path.getsize(path)} bytes] "
+            "Install pdftotext or pymupdf (pip install pymupdf) to extract text."
+        )
+    except Exception as e:
+        return f"Error reading PDF: {e}"
+
+
+def _read_image(path: str) -> str:
+    """Return metadata description for an image file."""
+    size = os.path.getsize(path)
+    dims = ""
+    try:
+        from PIL import Image
+        with Image.open(path) as img:
+            w, h = img.size
+            dims = f"{w}x{h}, "
+    except Exception:
+        pass
+    return f"[Image file: {path}, {dims}{size} bytes]"
+
+
+def _read_notebook(path: str) -> str:
+    """Parse a Jupyter notebook and format cells."""
+    with open(path, "r", encoding="utf-8") as f:
+        nb = json.load(f)
+
+    cells = nb.get("cells", [])
+    parts = []
+    for i, cell in enumerate(cells, 1):
+        cell_type = cell.get("cell_type", "unknown")
+        source = "".join(cell.get("source", []))
+
+        if cell_type == "code":
+            block = f"Cell [{i}] (code):\n```python\n{source}\n```"
+            # Extract outputs
+            outputs = cell.get("outputs", [])
+            out_texts = []
+            for out in outputs:
+                if "text" in out:
+                    out_texts.append("".join(out["text"]))
+                elif "data" in out:
+                    data = out["data"]
+                    if "text/plain" in data:
+                        out_texts.append("".join(data["text/plain"]))
+                    elif "image/png" in data:
+                        out_texts.append("[image output]")
+            if out_texts:
+                block += f"\nOutput: {''.join(out_texts)}"
+            parts.append(block)
+        elif cell_type == "markdown":
+            parts.append(f"Cell [{i}] (markdown):\n{source}")
+        else:
+            parts.append(f"Cell [{i}] ({cell_type}):\n{source}")
+
+    return "\n\n".join(parts) if parts else "(Empty notebook)"
+
+
 def _exec_read(args: dict) -> str:
     path = os.path.expanduser(args.get("path", ""))
-    offset = args.get("offset", 1)
-    limit = args.get("limit", 200)
+    offset = args.get("offset", None)
+    limit = args.get("limit", None)
 
     if not path:
         return "No path provided."
+
+    # Block dangerous device paths
+    if _is_blocked_device(path):
+        return f"BLOCKED: Cannot read device path {path} (would block or produce infinite output)."
 
     # Security: validate path before any I/O
     valid, err = _validate_path(path, write=False)
@@ -675,16 +920,59 @@ def _exec_read(args: dict) -> str:
     if not os.path.exists(path):
         return f"File not found: {_sanitize_error_path(path)}"
     if os.path.isdir(path):
-        # List directory contents
         entries = os.listdir(path)
         return f"Directory listing ({len(entries)} entries):\n" + "\n".join(sorted(entries))
 
+    resolved = os.path.realpath(path)
+    ext = os.path.splitext(resolved)[1].lower()
+
+    # PDF support
+    if ext == ".pdf":
+        result = _read_pdf(resolved, offset, limit)
+        _file_read_times[resolved] = os.path.getmtime(resolved)
+        if len(result) > MAX_OUTPUT_SIZE:
+            half = MAX_OUTPUT_SIZE // 2
+            result = result[:half] + "\n\n... (truncated) ...\n\n" + result[-(half // 2):]
+        return result
+
+    # Image support
+    if ext in IMAGE_EXTENSIONS:
+        _file_read_times[resolved] = os.path.getmtime(resolved)
+        return _read_image(resolved)
+
+    # Jupyter notebook support
+    if ext == ".ipynb":
+        try:
+            result = _read_notebook(resolved)
+            _file_read_times[resolved] = os.path.getmtime(resolved)
+            if len(result) > MAX_OUTPUT_SIZE:
+                half = MAX_OUTPUT_SIZE // 2
+                result = result[:half] + "\n\n... (truncated) ...\n\n" + result[-(half // 2):]
+            return result
+        except Exception as e:
+            return f"Error reading notebook: {e}"
+
+    # Binary file detection
+    if _detect_binary(resolved):
+        size = os.path.getsize(resolved)
+        return f"[Binary file: {path}, {size} bytes]"
+
+    # Text file reading with encoding detection
     try:
-        with open(path, "r", errors="replace") as f:
-            lines = f.readlines()
+        encoding_used = "utf-8"
+        try:
+            with open(resolved, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except UnicodeDecodeError:
+            encoding_used = "latin-1"
+            with open(resolved, "r", encoding="latin-1") as f:
+                lines = f.readlines()
+
+        # Track read time for staleness detection
+        _file_read_times[resolved] = os.path.getmtime(resolved)
 
         total = len(lines)
-        start = max(0, (offset or 1) - 1)
+        start = max(0, ((offset or 1) - 1))
         end = min(total, start + (limit or 200))
         chunk = lines[start:end]
 
@@ -693,6 +981,8 @@ def _exec_read(args: dict) -> str:
         result = "\n".join(numbered)
         if end < total:
             result += f"\n\n... ({total - end} more lines)"
+        if encoding_used != "utf-8":
+            result = f"[Encoding: {encoding_used}]\n{result}"
 
         # Cap output size
         if len(result) > MAX_OUTPUT_SIZE:
@@ -718,12 +1008,46 @@ def _exec_write(args: dict) -> str:
 
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        resolved = os.path.realpath(path)
+        extra_info = ""
+
+        # If file already exists, handle backup and line ending preservation
+        if os.path.exists(resolved):
+            # Create .bak backup
+            bak_path = resolved + ".bak"
+            try:
+                shutil.copy2(resolved, bak_path)
+                extra_info = f" (backup: {bak_path})"
+            except Exception:
+                pass  # Non-fatal if backup fails
+
+            # Detect existing line endings and match them
+            try:
+                with open(resolved, "rb") as f:
+                    raw = f.read(8192)
+                if b"\r\n" in raw:
+                    # File uses CRLF — convert content to match
+                    content = content.replace("\r\n", "\n").replace("\n", "\r\n")
+            except Exception:
+                pass
+
         with open(path, "w") as f:
             f.write(content)
+
+        # Track the write time for staleness detection
+        _file_read_times[resolved] = os.path.getmtime(resolved)
+
         lines = content.count("\n") + 1
-        return f"Wrote {lines} lines to {path}"
+        return f"Wrote {lines} lines to {path}{extra_info}"
     except Exception as e:
         return f"Error writing {_sanitize_error_path(path)}: {e}"
+
+
+def _normalize_curly_quotes(s: str) -> str:
+    """Replace curly/smart quotes with straight ASCII equivalents."""
+    return (s
+            .replace("\u2018", "'").replace("\u2019", "'")   # ' '
+            .replace("\u201c", '"').replace("\u201d", '"'))   # " "
 
 
 def _exec_edit(args: dict) -> str:
@@ -742,19 +1066,71 @@ def _exec_edit(args: dict) -> str:
     if not os.path.exists(path):
         return f"File not found: {_sanitize_error_path(path)}"
 
+    resolved = os.path.realpath(path)
+
+    # Staleness detection: check if file was modified since last read
+    if resolved in _file_read_times:
+        current_mtime = os.path.getmtime(resolved)
+        if current_mtime > _file_read_times[resolved]:
+            return (
+                f"File was modified externally since last read. "
+                f"Read it again first before editing."
+            )
+
     try:
         with open(path, "r") as f:
             content = f.read()
 
+        # Try to find old_string directly
         count = content.count(old_string)
+
+        # If not found, try curly quote normalization
+        actual_old = old_string
+        if count == 0:
+            normalized_content = _normalize_curly_quotes(content)
+            normalized_old = _normalize_curly_quotes(old_string)
+            norm_count = normalized_content.count(normalized_old)
+            if norm_count == 1:
+                # Find the original text that matches after normalization
+                # by scanning through content for the matching region
+                norm_idx = normalized_content.index(normalized_old)
+                actual_old = content[norm_idx:norm_idx + len(normalized_old)]
+                # Verify: the normalized version of actual_old should equal normalized_old
+                if _normalize_curly_quotes(actual_old) == normalized_old:
+                    count = 1
+                else:
+                    count = 0
+            elif norm_count > 1:
+                return f"old_string matches {norm_count} locations (after quote normalization). Provide more context to make it unique."
+
         if count == 0:
             return f"old_string not found in {_sanitize_error_path(path)}. Read the file first to get the exact text."
         if count > 1:
             return f"old_string matches {count} locations. Provide more context to make it unique."
 
-        new_content = content.replace(old_string, new_string, 1)
+        new_content = content.replace(actual_old, new_string, 1)
         with open(path, "w") as f:
             f.write(new_content)
+
+        # Update tracked mtime after successful edit
+        _file_read_times[resolved] = os.path.getmtime(resolved)
+
+        # Generate unified diff snippet for context
+        old_lines = content.splitlines(keepends=True)
+        new_lines = new_content.splitlines(keepends=True)
+        diff = list(difflib.unified_diff(
+            old_lines, new_lines,
+            fromfile=f"a/{os.path.basename(path)}",
+            tofile=f"b/{os.path.basename(path)}",
+            n=3,  # 3 lines of context
+        ))
+        if diff:
+            # Limit diff output to avoid flooding
+            diff_text = "".join(diff[:50])
+            if len(diff) > 50:
+                diff_text += "\n... (diff truncated)"
+            return f"Edited {path} successfully.\n\n{diff_text}"
+
         return f"Edited {path} successfully."
     except Exception as e:
         return f"Error editing {_sanitize_error_path(path)}: {e}"
@@ -780,25 +1156,22 @@ def _exec_search(args: dict) -> str:
 
     elif mode == "grep":
         try:
-            result = subprocess.run(
-                ["grep", "-rn", "--include=*", "-l", pattern, path],
-                capture_output=True, text=True, timeout=15,
+            from brain.agent.ripgrep import RipgrepConfig, search as rg_search
+
+            config = RipgrepConfig(
+                pattern=pattern,
+                path=path,
+                glob=args.get("file_glob", ""),
+                file_type=args.get("file_type", ""),
+                output_mode=args.get("output_mode", "files_with_matches"),
+                context=args.get("context", 0),
+                case_insensitive=args.get("case_insensitive", False),
+                head_limit=args.get("head_limit", 250),
             )
-            files = result.stdout.strip()
-            if not files:
-                # Try with content
-                result = subprocess.run(
-                    ["grep", "-rn", pattern, path],
-                    capture_output=True, text=True, timeout=15,
-                )
-                output = result.stdout.strip()
-                if not output:
-                    return f"No matches for '{pattern}' in {path}"
-                lines = output.split("\n")[:30]
-                return "\n".join(lines)
-            return files
+            result = rg_search(config)
+            return result.output
         except Exception as e:
-            return f"Grep error: {e}"
+            return f"Search error: {e}"
 
     return f"Unknown search mode: {mode}"
 

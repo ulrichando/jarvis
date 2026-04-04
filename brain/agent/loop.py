@@ -25,10 +25,17 @@ import json
 import logging
 from typing import AsyncGenerator
 from brain.agent.tools import TOOL_SCHEMAS, execute_tool
-from brain.agent.context import compact_messages, estimate_tokens
+from brain.agent.context import compact_messages, estimate_tokens, AutoCompactor
+from brain.agent.tool_registry import (
+    get_concurrency_safe_tools, get_result_size_limit, persist_large_result,
+)
+from brain.agent.cost_tracker import get_tracker as get_cost_tracker
 from brain.reasoning.groq_client import GroqReasoner
 
 log = logging.getLogger("jarvis.agent")
+
+# Concurrency-safe tools (from registry)
+_CONCURRENCY_SAFE = get_concurrency_safe_tools()
 
 import re as _re
 
@@ -115,8 +122,28 @@ _groq_semaphore = asyncio.Semaphore(4)
 SUB_AGENT_MAX_RESULT = 8000
 TOOL_RESULT_MAX = 10000
 
+# Session directory for persisted tool results
+_session_dir: str = ""
 
-def _maybe_compact(messages: list[dict]) -> list[dict]:
+
+def _get_session_dir() -> str:
+    global _session_dir
+    if not _session_dir:
+        import tempfile
+        _session_dir = tempfile.mkdtemp(prefix="jarvis-session-")
+    return _session_dir
+
+
+def _maybe_compact(messages: list[dict], compactor: AutoCompactor | None = None) -> list[dict]:
+    """Compact messages using AutoCompactor if available, else legacy threshold."""
+    if compactor:
+        messages, did_compact = compactor.maybe_compact(messages)
+        if did_compact:
+            hooks = _get_hooks()
+            if hooks:
+                budget = compactor.get_budget()
+                hooks.run_context_compacted(budget.used_tokens + 1000, budget.used_tokens)
+        return messages
     if estimate_tokens(messages) > COMPACT_THRESHOLD:
         return compact_messages(messages, max_tokens=COMPACT_THRESHOLD)
     return messages
@@ -297,7 +324,7 @@ async def _agent_loop_internal(
                 *[run_one_dispatch(tc) for tc in dispatch_calls]
             )
             for tool_id, result in dispatch_results:
-                _append_tool_result(messages, tool_id, result)
+                _append_tool_result(messages, tool_id, result, tool_name="dispatch")
 
     return final_text.strip()
 
@@ -320,10 +347,27 @@ def _append_assistant_message(messages: list[dict], text: str, tool_calls: list[
     messages.append(msg)
 
 
-def _append_tool_result(messages: list[dict], tool_id: str, result: str):
-    """Append tool result in OpenAI format."""
-    if len(result) > TOOL_RESULT_MAX:
-        result = result[:TOOL_RESULT_MAX] + "\n... (truncated)"
+def _append_tool_result(messages: list[dict], tool_id: str, result: str,
+                        tool_name: str = ""):
+    """Append tool result in OpenAI format, with persistence for large outputs."""
+    # Try result persistence for large outputs
+    limit = get_result_size_limit(tool_name) if tool_name else TOOL_RESULT_MAX
+    if len(result) > limit and limit > 0:
+        try:
+            tool_result = persist_large_result(
+                tool_name, tool_id, result, _get_session_dir()
+            )
+            if tool_result.persisted_path:
+                result = (
+                    f"Output too large ({len(result):,} chars). "
+                    f"Full output saved to: {tool_result.persisted_path}\n\n"
+                    f"Preview (first 2000 chars):\n{tool_result.content}"
+                )
+            else:
+                result = tool_result.content
+        except Exception:
+            # Fallback to simple truncation
+            result = result[:limit] + "\n... (truncated)"
     messages.append({
         "role": "tool",
         "tool_call_id": tool_id,
@@ -333,16 +377,14 @@ def _append_tool_result(messages: list[dict], tool_id: str, result: str):
 
 async def _execute_tools(messages: list[dict], tool_calls: list[dict],
                          executor, on_call=None, on_result=None, readonly=False):
-    """Execute tool calls — parallel for read-only, sequential for writes."""
+    """Execute tool calls — parallel for concurrency-safe, sequential for others."""
     hooks = _get_hooks()
     checkpoints = _get_checkpoints()
     perms = _get_permissions()
 
-    # Separate read-only tools (can run in parallel) from write tools (must be sequential)
-    _read_only_tools = {"read_file", "search_files", "web_search", "web_fetch",
-                        "view_screen", "think", "database"}
-    parallel_calls = [tc for tc in tool_calls if tc["name"] in _read_only_tools]
-    sequential_calls = [tc for tc in tool_calls if tc["name"] not in _read_only_tools]
+    # Use registry for concurrency classification (falls back to hardcoded set)
+    parallel_calls = [tc for tc in tool_calls if tc["name"] in _CONCURRENCY_SAFE]
+    sequential_calls = [tc for tc in tool_calls if tc["name"] not in _CONCURRENCY_SAFE]
 
     # Run read-only tools in parallel
     if len(parallel_calls) > 1:
@@ -373,8 +415,8 @@ async def _execute_tools(messages: list[dict], tool_calls: list[dict],
             return tid, result
 
         results = await asyncio.gather(*[_run_one(tc) for tc in parallel_calls])
-        for tid, result in results:
-            _append_tool_result(messages, tid, result)
+        for tc_ref, (tid, result) in zip(parallel_calls, results):
+            _append_tool_result(messages, tid, result, tool_name=tc_ref["name"])
     elif parallel_calls:
         # Single read-only tool — run normally
         sequential_calls = parallel_calls + sequential_calls
@@ -420,7 +462,7 @@ async def _execute_tools(messages: list[dict], tool_calls: list[dict],
                     result += f"\n[Hook: {fail_hr.message}]"
             if on_result:
                 on_result(tool_name, result)
-            _append_tool_result(messages, tool_id, result)
+            _append_tool_result(messages, tool_id, result, tool_name=tool_name)
             continue
 
         # PostToolUse hook
@@ -429,10 +471,17 @@ async def _execute_tools(messages: list[dict], tool_calls: list[dict],
             if post.message:
                 result += f"\n[Hook: {post.message}]"
 
+        # FileChanged hook for write operations
+        if hooks and tool_name in ("write_file", "edit_file"):
+            path = tool_args.get("path", "")
+            if path:
+                change_type = "write" if tool_name == "write_file" else "edit"
+                hooks.run_file_changed(path, change_type)
+
         if on_result:
             on_result(tool_name, result)
 
-        _append_tool_result(messages, tool_id, result)
+        _append_tool_result(messages, tool_id, result, tool_name=tool_name)
 
 
 # ── Public API ────────────────────────────────────────────────────────
@@ -505,6 +554,11 @@ async def agent_loop_stream(
     iterations = 0
     iteration_budget = {"count": 0, "max": GLOBAL_ITERATION_MAX}
 
+    # Initialize AutoCompactor for smart context management
+    model_name = getattr(reasoner, 'model', '') or ''
+    compactor = AutoCompactor(model=model_name)
+    cost_tracker = get_cost_tracker()
+
     while iterations < max_iterations:
         iterations += 1
         iteration_budget["count"] += 1
@@ -512,7 +566,7 @@ async def agent_loop_stream(
             yield {"type": "text", "content": "\n[Iteration budget exhausted]"}
             break
 
-        messages = _maybe_compact(messages)
+        messages = _maybe_compact(messages, compactor=compactor)
 
         # For casual chat on first iteration: skip tools so Claude stays in character
         _effective_tools = tools
@@ -546,12 +600,22 @@ async def agent_loop_stream(
                 yield {"type": "error", "content": str(e)}
                 return
 
-        # Emit token usage if available
+        # Emit token usage and track costs
         if response and response.get("usage"):
             usage = response["usage"]
+            in_tok = usage.get("input", 0)
+            out_tok = usage.get("output", 0)
+            cost_tracker.record_usage(
+                model=model_name or response.get("model", ""),
+                input_tokens=in_tok,
+                output_tokens=out_tok,
+                cache_read=usage.get("cache_read", 0),
+                cache_write=usage.get("cache_write", 0),
+            )
             yield {"type": "usage",
-                   "input_tokens": usage.get("input", 0),
-                   "output_tokens": usage.get("output", 0)}
+                   "input_tokens": in_tok,
+                   "output_tokens": out_tok,
+                   "session_cost": cost_tracker.get_status_line()}
 
         if response is None:
             yield {"type": "error", "content": "All retry attempts failed"}
@@ -595,7 +659,7 @@ async def agent_loop_stream(
                         hooks.run_permission_denied(tool_name, tool_args, reason)
                     result = f"BLOCKED by permissions: {reason}"
                     yield {"type": "tool_result", "name": tool_name, "content": result}
-                    _append_tool_result(messages, tool_id, result)
+                    _append_tool_result(messages, tool_id, result, tool_name=tool_name)
                     continue
 
             if hooks:
@@ -604,7 +668,7 @@ async def agent_loop_stream(
                     yield {"type": "tool_call", "name": tool_name, "args": tool_args}
                     result = f"BLOCKED by hook: {hr.message}"
                     yield {"type": "tool_result", "name": tool_name, "content": result}
-                    _append_tool_result(messages, tool_id, result)
+                    _append_tool_result(messages, tool_id, result, tool_name=tool_name)
                     continue
                 if hr.modified_args is not None:
                     tool_args = hr.modified_args
@@ -625,7 +689,7 @@ async def agent_loop_stream(
                     if fail_hr.message:
                         result += f"\n[Hook: {fail_hr.message}]"
                 yield {"type": "tool_result", "name": tool_name, "content": result}
-                _append_tool_result(messages, tool_id, result)
+                _append_tool_result(messages, tool_id, result, tool_name=tool_name)
                 continue
 
             if hooks:
@@ -633,20 +697,30 @@ async def agent_loop_stream(
                 if post.message:
                     result += f"\n[Hook: {post.message}]"
 
-            yield {"type": "tool_result", "name": tool_name, "content": result}
-            _append_tool_result(messages, tool_id, result)
+            # FileChanged hook for write operations
+            if hooks and tool_name in ("write_file", "edit_file"):
+                path = tool_args.get("path", "")
+                if path:
+                    change_type = "write" if tool_name == "write_file" else "edit"
+                    hooks.run_file_changed(path, change_type)
 
-        # Dispatch calls
+            yield {"type": "tool_result", "name": tool_name, "content": result}
+            _append_tool_result(messages, tool_id, result, tool_name=tool_name)
+
+        # Dispatch calls (with SubagentStart/Stop hooks)
         if dispatch_calls:
             for tc in dispatch_calls:
                 args = tc["args"]
                 agent_type = args.get("agent_type", "scout")
                 task = args.get("task", "")
                 yield {"type": "dispatch", "agent_type": agent_type, "task": task}
+                # SubagentStart hook
+                if hooks:
+                    hooks.run_subagent_start(agent_type, task)
 
             async def run_dispatch_stream(tc):
                 a = tc["args"]
-                return tc["id"], await _run_sub_agent(
+                return tc["id"], a.get("agent_type", "scout"), await _run_sub_agent(
                     reasoner=reasoner,
                     agent_type=a.get("agent_type", "scout"),
                     task=a.get("task", ""),
@@ -657,11 +731,13 @@ async def agent_loop_stream(
             results = await asyncio.gather(
                 *[run_dispatch_stream(tc) for tc in dispatch_calls]
             )
-            for tool_id, result in results:
-                agent_type = next(
-                    (tc["args"].get("agent_type", "?") for tc in dispatch_calls if tc["id"] == tool_id), "?"
-                )
+            for tool_id, agent_type, result in results:
+                # SubagentStop hook
+                if hooks:
+                    hooks.run_subagent_stop(agent_type, "", result[:500])
                 yield {"type": "dispatch_result", "agent_type": agent_type, "result": result}
-                _append_tool_result(messages, tool_id, result)
+                _append_tool_result(messages, tool_id, result, tool_name="dispatch")
 
+    # Emit final cost summary
+    yield {"type": "cost", "summary": cost_tracker.get_summary(), "status": cost_tracker.get_status_line()}
     yield {"type": "done", "content": full_response}

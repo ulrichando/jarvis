@@ -31,31 +31,61 @@ def _format_tool(tool: dict, indent: int = 4) -> str:
 # Commands
 # ---------------------------------------------------------------------------
 
-@command("tools", description="List all tools (built-in + MCP), grouped by source",
-         usage="/tools", category="mcp", permission=PermLevel.READ_ONLY)
+@command("tools", description="List all tools (built-in + MCP) with categories and flags",
+         usage="/tools [category]", category="mcp", permission=PermLevel.READ_ONLY)
 async def cmd_tools(ctx: CommandContext) -> CommandResult:
     brain = ctx.brain
     if not brain:
         return CommandResult(text="Brain not available", success=False)
 
+    filter_category = ctx.args.strip().lower() or None
     lines = ["Available Tools", "=" * 50]
 
-    # Built-in tools from agent.tools
+    # Built-in tools with rich metadata from tool_registry
     try:
-        from brain.agent import tools as agent_tools
-        builtin = []
-        if hasattr(agent_tools, 'TOOL_REGISTRY'):
-            builtin = list(agent_tools.TOOL_REGISTRY.keys())
-        elif hasattr(agent_tools, 'get_tools'):
-            builtin = [t['name'] if isinstance(t, dict) else t.name for t in agent_tools.get_tools()]
+        from brain.agent.tool_registry import TOOL_REGISTRY, get_deferred_tools
+        registry = TOOL_REGISTRY
 
-        if builtin:
-            lines.append(f"\n  Built-in ({len(builtin)}):")
-            lines.append("  " + "-" * 20)
-            for name in sorted(builtin):
-                lines.append(f"    {name}")
+        # Group by category
+        by_category: dict[str, list] = {}
+        for name, meta in sorted(registry.items()):
+            by_category.setdefault(meta.category, []).append(meta)
+
+        deferred_names = {m.name for m in get_deferred_tools()}
+
+        for cat, metas in sorted(by_category.items()):
+            if filter_category and cat != filter_category:
+                continue
+            lines.append(f"\n  [{cat.upper()}] ({len(metas)} tools)")
+            lines.append("  " + "-" * 30)
+            for meta in metas:
+                flags = []
+                if meta.is_read_only:
+                    flags.append("RO")
+                if meta.is_destructive:
+                    flags.append("DESTRUCTIVE")
+                if meta.name in deferred_names:
+                    flags.append("deferred")
+                flag_str = f" ({', '.join(flags)})" if flags else ""
+                desc = meta.description[:45] if meta.description else ""
+                lines.append(f"    {meta.name:<22s}{flag_str:<20s} {desc}")
+
     except ImportError:
-        lines.append("\n  Built-in: (module not loaded)")
+        # Fallback to basic listing
+        try:
+            from brain.agent import tools as agent_tools
+            builtin = []
+            if hasattr(agent_tools, 'TOOL_REGISTRY'):
+                builtin = list(agent_tools.TOOL_REGISTRY.keys())
+            elif hasattr(agent_tools, 'get_tools'):
+                builtin = [t['name'] if isinstance(t, dict) else t.name for t in agent_tools.get_tools()]
+            if builtin:
+                lines.append(f"\n  Built-in ({len(builtin)}):")
+                lines.append("  " + "-" * 20)
+                for name in sorted(builtin):
+                    lines.append(f"    {name}")
+        except ImportError:
+            lines.append("\n  Built-in: (module not loaded)")
 
     # MCP tools grouped by server
     mcp = _get_mcp(brain)
@@ -65,7 +95,6 @@ async def cmd_tools(ctx: CommandContext) -> CommandResult:
         if all_tools:
             lines.append(f"\n  MCP Tools ({len(all_tools)}):")
             lines.append("  " + "-" * 20)
-            # Group by server
             by_server = {}
             for tool in all_tools:
                 server = tool.get("server", "unknown")
@@ -125,14 +154,61 @@ async def cmd_tool_search(ctx: CommandContext) -> CommandResult:
     return CommandResult(text="\n".join(lines))
 
 
-@command("mcp", description="Show MCP server status",
-         usage="/mcp", category="mcp", permission=PermLevel.READ_ONLY)
+@command("mcp", description="MCP server management: list, reconnect, health",
+         usage="/mcp [list|reconnect <name>|health]", category="mcp", permission=PermLevel.READ_ONLY)
 async def cmd_mcp(ctx: CommandContext) -> CommandResult:
     brain = ctx.brain
     mcp = _get_mcp(brain)
     if not mcp:
         return CommandResult(text="MCP manager not available", success=False)
 
+    args = ctx.args.strip()
+    parts = args.split(None, 1)
+    action = parts[0].lower() if parts else "list"
+    rest = parts[1].strip() if len(parts) > 1 else ""
+
+    # ── /mcp reconnect <name> ──
+    if action == "reconnect":
+        if not rest:
+            return CommandResult(text="Usage: /mcp reconnect <server_name>", success=False)
+        try:
+            if hasattr(mcp, 'disconnect'):
+                await mcp.disconnect(rest)
+            if hasattr(mcp, 'reconnect'):
+                await mcp.reconnect(rest)
+            elif hasattr(mcp, 'connect'):
+                # Re-read config and reconnect
+                from brain.mcp.enhanced_client import MCPConfigLoader
+                configs = MCPConfigLoader.load_config()
+                target = next((c for c in configs if c.name == rest), None)
+                if target:
+                    await mcp.connect(name=rest, command=target.command)
+                else:
+                    return CommandResult(text=f"Server '{rest}' not found in config.", success=False)
+            tools = [t for t in mcp.list_tools() if t.get("server") == rest]
+            return CommandResult(text=f"Reconnected to '{rest}' ({len(tools)} tools)")
+        except Exception as e:
+            return CommandResult(text=f"Reconnect failed for '{rest}': {e}", success=False)
+
+    # ── /mcp health ──
+    if action == "health":
+        try:
+            from brain.mcp.enhanced_client import MCPConfigLoader, MCPHealthChecker
+            configs = MCPConfigLoader.load_config()
+            if not configs:
+                return CommandResult(text="No MCP servers configured.")
+            results = MCPHealthChecker.check_all(configs)
+            lines = ["MCP Health Check", "=" * 50]
+            for r in results:
+                status_icon = {"ok": "+", "disabled": "~", "error": "!"}
+                icon = status_icon.get(r["status"], "?")
+                err = f"  ({r['error']})" if r.get("error") else ""
+                lines.append(f"  [{icon}] {r['name']:<20s} {r['status']:<10s} {r['tools']} tools{err}")
+            return CommandResult(text="\n".join(lines))
+        except ImportError:
+            return CommandResult(text="Enhanced MCP client not available for health checks.", success=False)
+
+    # ── /mcp list (default) ──
     servers = mcp.list_servers()
     all_tools = mcp.list_tools()
 
@@ -141,12 +217,13 @@ async def cmd_mcp(ctx: CommandContext) -> CommandResult:
     lines.append(f"  Total Tools:       {len(all_tools)}")
 
     if servers:
-        lines.append("\n  Servers:")
+        lines.append(f"\n  {'Server':<20s} {'Status':<14s} {'Tools':>5s}")
+        lines.append("  " + "-" * 42)
         for s in servers:
             name = s if isinstance(s, str) else s.get("name", "unknown")
             tool_count = sum(1 for t in all_tools if t.get("server") == name)
             status = "connected" if not isinstance(s, dict) else s.get("status", "connected")
-            lines.append(f"    {name:<20s} {status:<12s} {tool_count} tools")
+            lines.append(f"  {name:<20s} {status:<14s} {tool_count:>5d}")
 
     return CommandResult(text="\n".join(lines))
 
@@ -288,7 +365,7 @@ async def cmd_rpc(ctx: CommandContext) -> CommandResult:
         return CommandResult(text=f"RPC call to '{tool_name}' failed: {e}", success=False)
 
 
-@command("hooks", description="List active hooks and hook events",
+@command("hooks", description="List active hooks with counts per event and matchers",
          usage="/hooks [event]", category="mcp", permission=PermLevel.READ_ONLY)
 async def cmd_hooks(ctx: CommandContext) -> CommandResult:
     brain = ctx.brain
@@ -297,11 +374,25 @@ async def cmd_hooks(ctx: CommandContext) -> CommandResult:
 
     from brain.hooks import HOOK_EVENTS
 
+    filter_event = ctx.args.strip() or None
     hooks = brain.hooks.list_hooks()
     summary = brain.hooks.summary()
 
     lines = ["╭─ Hooks ─────────────────────────────────────────────╮"]
     lines.append(f"│  {summary['total']} hook(s) configured" + " " * (39 - len(str(summary['total']))) + "│")
+
+    # Show hook count per event in summary bar
+    if hooks:
+        by_event_counts: dict[str, int] = {}
+        for h in hooks:
+            by_event_counts[h["event"]] = by_event_counts.get(h["event"], 0) + 1
+        count_parts = [f"{e}: {c}" for e, c in sorted(by_event_counts.items())]
+        count_line = "  ".join(count_parts)
+        if len(count_line) <= 48:
+            lines.append(f"│  {count_line:<50s}│")
+        else:
+            lines.append(f"│  {count_line[:48]:<50s}│")
+
     lines.append("├────────────────────────────────────────────────────┤")
 
     if not hooks:
@@ -325,6 +416,8 @@ async def cmd_hooks(ctx: CommandContext) -> CommandResult:
         for event in HOOK_EVENTS:
             if event not in by_event:
                 continue
+            if filter_event and event.lower() != filter_event.lower():
+                continue
             event_hooks = by_event[event]
             lines.append(f"│  {event:<20s}  ({len(event_hooks)} hook{'s' if len(event_hooks) != 1 else ''}){'':>15s}│")
             for h in event_hooks:
@@ -333,7 +426,7 @@ async def cmd_hooks(ctx: CommandContext) -> CommandResult:
                 cmd = h["command"]
                 if len(cmd) > 38:
                     cmd = cmd[:35] + "..."
-                matcher_str = f" [{h['matcher']}]" if h["matcher"] else ""
+                matcher_str = f" [{h['matcher']}]" if h["matcher"] else " [*]"
                 if_str = f" if={h['if']}" if h.get("if") else ""
                 src = h.get("source", "")
                 src_tag = f" ({src})" if src and src != "config" else ""

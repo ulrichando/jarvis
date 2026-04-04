@@ -425,14 +425,21 @@ class TestHookConstants(unittest.TestCase):
             "PreToolUse", "PostToolUse", "PostToolUseFailure",
             "PermissionDenied", "Notification", "Stop",
             "SessionStart", "SessionEnd",
+            "SubagentStart", "SubagentStop",
+            "CwdChanged", "FileChanged", "ContextCompacted",
         }
         self.assertEqual(set(HOOK_EVENTS), expected)
 
     def test_blocking_events(self):
         self.assertIn("PreToolUse", BLOCKING_EVENTS)
         self.assertIn("Stop", BLOCKING_EVENTS)
+        self.assertIn("SubagentStart", BLOCKING_EVENTS)
+        self.assertIn("SubagentStop", BLOCKING_EVENTS)
         self.assertNotIn("PostToolUse", BLOCKING_EVENTS)
         self.assertNotIn("Notification", BLOCKING_EVENTS)
+        self.assertNotIn("CwdChanged", BLOCKING_EVENTS)
+        self.assertNotIn("FileChanged", BLOCKING_EVENTS)
+        self.assertNotIn("ContextCompacted", BLOCKING_EVENTS)
 
 
 class TestEventNormalization(unittest.TestCase):

@@ -96,7 +96,7 @@ class TestCommandDispatch(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertTrue(result.success)
         self.assertIn("JARVIS Commands", result.text)
-        self.assertIn("commands available", result.text)
+        self.assertIn("commands across", result.text)
 
     def test_dispatch_version(self):
         from brain.commands import registry, CommandContext

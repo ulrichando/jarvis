@@ -30,22 +30,87 @@ logging.getLogger("numexpr").setLevel(logging.ERROR)
 logging.getLogger("numexpr.utils").setLevel(logging.ERROR)
 warnings.filterwarnings("ignore", module="numexpr")
 
-# ── Minimal terminal output (no Rich dependency for core rendering) ──
+# ── Theme System ─────────────────────────────────────────────────────
 
 RESET = "\033[0m"
 BOLD = "\033[1m"
 DIM = "\033[2m"
 ITALIC = "\033[3m"
 UNDERLINE = "\033[4m"
-CYAN = "\033[36m"
-GREEN = "\033[32m"
-YELLOW = "\033[33m"
-RED = "\033[31m"
-BLUE = "\033[34m"
-MAGENTA = "\033[35m"
-GREY = "\033[90m"
-WHITE = "\033[97m"
-BG_DARK = "\033[48;5;236m"
+
+# Theme definitions — colors adapt to dark/light terminal backgrounds
+THEMES = {
+    "dark": {
+        "primary": "\033[36m",      # Cyan — prompts, highlights
+        "success": "\033[32m",      # Green — completions, confirmations
+        "warning": "\033[33m",      # Yellow — warnings, modes
+        "error": "\033[31m",        # Red — errors
+        "accent": "\033[34m",       # Blue — spinner, info
+        "secondary": "\033[35m",    # Magenta — italic text, links
+        "muted": "\033[90m",        # Grey — dim text, separators
+        "text": "\033[97m",         # White — headings
+        "code_bg": "\033[48;5;236m",  # Dark background for code
+        "code_fg": "\033[38;5;252m",  # Light text in code blocks
+    },
+    "light": {
+        "primary": "\033[34m",      # Blue — prompts, highlights
+        "success": "\033[32m",      # Green — completions
+        "warning": "\033[33m",      # Yellow — warnings
+        "error": "\033[31m",        # Red — errors
+        "accent": "\033[36m",       # Cyan — spinner, info
+        "secondary": "\033[35m",    # Magenta — italic
+        "muted": "\033[37m",        # Light grey — dim text
+        "text": "\033[30m",         # Black — headings
+        "code_bg": "\033[48;5;255m",  # Light background for code
+        "code_fg": "\033[38;5;235m",  # Dark text in code blocks
+    },
+}
+
+# Active theme colors — set once at startup, referenced everywhere
+_active_theme = "dark"
+
+def _load_theme() -> str:
+    """Load theme preference from settings."""
+    try:
+        from pathlib import Path
+        settings_path = Path.home() / ".jarvis" / "settings.json"
+        if settings_path.exists():
+            import json
+            settings = json.loads(settings_path.read_text())
+            t = settings.get("theme", "dark")
+            if t == "auto":
+                # Detect from COLORFGBG env var (format: "fg;bg")
+                colorfgbg = os.environ.get("COLORFGBG", "")
+                if colorfgbg:
+                    parts = colorfgbg.split(";")
+                    if len(parts) >= 2:
+                        bg = int(parts[-1]) if parts[-1].isdigit() else 0
+                        return "light" if bg > 8 else "dark"
+                return "dark"
+            return t if t in THEMES else "dark"
+    except Exception:
+        pass
+    return "dark"
+
+def _apply_theme(theme_name: str = ""):
+    """Apply theme colors to module-level variables."""
+    global _active_theme, CYAN, GREEN, YELLOW, RED, BLUE, MAGENTA, GREY, WHITE, BG_DARK
+    if theme_name:
+        _active_theme = theme_name
+    t = THEMES.get(_active_theme, THEMES["dark"])
+    CYAN = t["primary"]
+    GREEN = t["success"]
+    YELLOW = t["warning"]
+    RED = t["error"]
+    BLUE = t["accent"]
+    MAGENTA = t["secondary"]
+    GREY = t["muted"]
+    WHITE = t["text"]
+    BG_DARK = t["code_bg"]
+
+# Initialize theme on module load
+_active_theme = _load_theme()
+_apply_theme(_active_theme)
 
 # Braille spinner frames (same as Claude Code)
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -99,6 +164,74 @@ class Spinner:
 
 # ── Markdown Rendering (simplified, terminal-safe) ────────────────────
 
+# Language keyword maps for syntax highlighting
+_PYTHON_KEYWORDS = {"def", "class", "if", "elif", "else", "for", "while", "return",
+                    "import", "from", "as", "try", "except", "finally", "with", "yield",
+                    "raise", "pass", "break", "continue", "lambda", "and", "or", "not",
+                    "in", "is", "None", "True", "False", "self", "async", "await"}
+_JS_KEYWORDS = {"function", "const", "let", "var", "if", "else", "for", "while", "return",
+                "import", "export", "from", "class", "new", "this", "async", "await",
+                "try", "catch", "finally", "throw", "typeof", "instanceof", "null",
+                "undefined", "true", "false", "switch", "case", "default", "break"}
+_RUST_KEYWORDS = {"fn", "let", "mut", "if", "else", "for", "while", "loop", "return",
+                  "use", "mod", "pub", "struct", "enum", "impl", "trait", "match",
+                  "self", "Self", "async", "await", "move", "ref", "where", "type"}
+_BASH_KEYWORDS = {"if", "then", "else", "elif", "fi", "for", "do", "done", "while",
+                  "case", "esac", "function", "return", "exit", "echo", "export",
+                  "local", "readonly", "declare", "set", "unset", "source"}
+
+
+def _highlight_line(line: str, keywords: set) -> str:
+    """Highlight keywords and strings in a single line."""
+    import re as _re
+
+    # Highlight strings first (green)
+    line = _re.sub(r'(f?"[^"]*")', f'\033[32m\\1\033[0m', line)
+    line = _re.sub(r"(f?'[^']*')", f'\033[32m\\1\033[0m', line)
+
+    # Highlight numbers (magenta)
+    line = _re.sub(r'\b(\d+\.?\d*)\b', f'\033[35m\\1\033[0m', line)
+
+    # Highlight keywords (yellow bold)
+    for kw in keywords:
+        line = _re.sub(rf'\b({kw})\b', f'\033[1;33m\\1\033[0m', line)
+
+    # Highlight decorators/attributes (cyan) for python
+    line = _re.sub(r'(@\w+)', f'\033[36m\\1\033[0m', line)
+
+    return line
+
+
+def _highlight_code(code: str, lang: str) -> str:
+    """Apply syntax highlighting to a code line based on language."""
+    lang = lang.lower().strip()
+
+    # Select keyword set
+    keywords = set()
+    if lang in ("python", "py"):
+        keywords = _PYTHON_KEYWORDS
+    elif lang in ("javascript", "js", "typescript", "ts", "jsx", "tsx"):
+        keywords = _JS_KEYWORDS
+    elif lang in ("rust", "rs"):
+        keywords = _RUST_KEYWORDS
+    elif lang in ("bash", "sh", "zsh", "shell"):
+        keywords = _BASH_KEYWORDS
+
+    if not keywords:
+        return code  # No highlighting for unknown languages
+
+    # Highlight comments (# for python/bash, // for js/rust)
+    comment_char = "#" if lang in ("python", "py", "bash", "sh", "zsh", "shell") else "//"
+    if comment_char in code:
+        idx = code.index(comment_char)
+        # Make sure it's not inside a string (simple check)
+        before = code[:idx]
+        if before.count('"') % 2 == 0 and before.count("'") % 2 == 0:
+            return _highlight_line(before, keywords) + f"\033[90m{code[idx:]}\033[0m"
+
+    return _highlight_line(code, keywords)
+
+
 def render_markdown(text: str) -> str:
     """Render markdown to ANSI-styled terminal output."""
     lines = text.split("\n")
@@ -120,7 +253,8 @@ def render_markdown(text: str) -> str:
             continue
 
         if in_code:
-            output.append(f"  {BG_DARK}  {line}  {RESET}")
+            highlighted = _highlight_code(line, code_lang)
+            output.append(f"  {BG_DARK}  {highlighted}  {RESET}")
             continue
 
         # Headings
@@ -366,7 +500,74 @@ def parse_args() -> argparse.Namespace:
                         help="Name for the new session")
     parser.add_argument("--serve", action="store_true",
                         help="Start as MCP server (stdio mode)")
+    parser.add_argument("--theme", type=str, choices=["dark", "light", "auto"],
+                        help="Color theme (dark/light/auto)")
     parser.add_argument("query", nargs="*", help="Initial query")
+
+    # ── New flags (ported from Claude Code) ──
+
+    # Model & effort
+    parser.add_argument("--model", type=str, metavar="MODEL",
+                        help="Override model (aliases: opus, sonnet, haiku, or full name)")
+    parser.add_argument("--effort", type=str, choices=["low", "medium", "high", "max"],
+                        help="Response effort level")
+    parser.add_argument("--fallback-model", type=str, metavar="MODEL",
+                        help="Fallback model on overload")
+
+    # Output formatting
+    parser.add_argument("--output-format", type=str, default="text",
+                        choices=["text", "json", "stream-json"],
+                        help="Output format for print mode")
+    parser.add_argument("--json-schema", type=str, metavar="SCHEMA",
+                        help="JSON schema for structured output validation")
+
+    # Limits
+    parser.add_argument("--max-turns", type=int, metavar="N",
+                        help="Max agentic turns in non-interactive mode")
+    parser.add_argument("--max-budget-usd", type=float, metavar="USD",
+                        help="Max spend for this session")
+
+    # System prompt
+    parser.add_argument("--system-prompt", type=str, metavar="PROMPT",
+                        help="Custom system prompt")
+    parser.add_argument("--system-prompt-file", type=str, metavar="FILE",
+                        help="Read system prompt from file")
+    parser.add_argument("--append-system-prompt", type=str, metavar="PROMPT",
+                        help="Append to default system prompt")
+
+    # Advanced
+    parser.add_argument("--bare", action="store_true",
+                        help="Minimal mode: skip hooks, plugins, MCP discovery")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Verbose output (show full tool results)")
+    parser.add_argument("--debug", nargs="?", const="all", metavar="FILTER",
+                        help="Debug mode (filter: api,hooks,tools)")
+    parser.add_argument("--thinking", type=str, choices=["enabled", "adaptive", "disabled"],
+                        help="Thinking mode")
+
+    # Permission
+    parser.add_argument("--permission-mode", type=str,
+                        choices=["default", "bypass", "accept-edits", "plan"],
+                        help="Permission prompting mode")
+    parser.add_argument("--dangerously-skip-permissions", action="store_true",
+                        help="Skip all permission checks")
+
+    # Tools
+    parser.add_argument("--tools", nargs="*", metavar="TOOL",
+                        help="Specify available tools")
+    parser.add_argument("--allowed-tools", nargs="*", metavar="TOOL",
+                        help="Tool allowlist")
+    parser.add_argument("--disallowed-tools", nargs="*", metavar="TOOL",
+                        help="Tool denylist")
+
+    # MCP
+    parser.add_argument("--mcp-config", type=str, metavar="FILE",
+                        help="MCP server config file")
+
+    # Worktree
+    parser.add_argument("-w", "--worktree", nargs="?", const="auto", metavar="NAME",
+                        help="Create git worktree for this session")
+
     return parser.parse_args()
 
 
@@ -417,6 +618,126 @@ async def main():
     if brain is None:
         brain = _BrainProxy()
 
+    # ── Wire up new CLI flags ──
+    _verbose = False
+
+    # Model alias mapping
+    _MODEL_ALIASES = {
+        "opus": "claude-opus-4-6-20250514",
+        "sonnet": "claude-sonnet-4-6-20250514",
+        "haiku": "claude-haiku-4-5-20251001",
+    }
+
+    if args.model and client._is_full_brain:
+        resolved = _MODEL_ALIASES.get(args.model.lower(), args.model)
+        try:
+            providers = brain.reasoner.providers.get_active_providers()
+            if providers:
+                providers[0].model = resolved
+        except Exception:
+            pass
+
+    if args.effort and client._is_full_brain:
+        try:
+            brain.reasoner.effort = args.effort
+        except Exception:
+            pass
+
+    # Apply --theme flag (before any rendering)
+    if args.theme:
+        _apply_theme(args.theme)
+
+    if args.bare and client._is_full_brain:
+        # Skip hooks, plugins, MCP discovery in bare mode
+        try:
+            if hasattr(brain, "hooks"):
+                brain.hooks.rules = []
+            if hasattr(brain, "plugins"):
+                brain.plugins.plugins = []
+            if hasattr(brain, "mcp"):
+                brain.mcp.servers = {}
+        except Exception:
+            pass
+
+    if args.permission_mode and client._is_full_brain:
+        try:
+            if hasattr(brain, "permissions"):
+                brain.permissions.level = args.permission_mode
+        except Exception:
+            pass
+
+    if args.dangerously_skip_permissions and client._is_full_brain:
+        try:
+            if hasattr(brain, "permissions"):
+                brain.permissions.level = "bypass"
+        except Exception:
+            pass
+
+    if args.verbose:
+        _verbose = True
+
+    if args.debug:
+        logging.getLogger("jarvis").setLevel(logging.DEBUG)
+        logging.getLogger("brain").setLevel(logging.DEBUG)
+        if args.debug != "all":
+            for filt in args.debug.split(","):
+                logging.getLogger(f"brain.{filt.strip()}").setLevel(logging.DEBUG)
+
+    # System prompt handling
+    _custom_system_prompt = None
+    if args.system_prompt:
+        _custom_system_prompt = args.system_prompt
+    elif args.system_prompt_file:
+        try:
+            with open(args.system_prompt_file, "r") as f:
+                _custom_system_prompt = f.read()
+        except Exception as e:
+            _writeln(f"  {RED}Failed to read system prompt file: {e}{RESET}")
+
+    if _custom_system_prompt and client._is_full_brain:
+        try:
+            brain.reasoner.system_prompt = _custom_system_prompt
+        except Exception:
+            pass
+
+    if args.append_system_prompt and client._is_full_brain:
+        try:
+            existing = getattr(brain.reasoner, "system_prompt", "") or ""
+            brain.reasoner.system_prompt = existing + "\n" + args.append_system_prompt
+        except Exception:
+            pass
+
+    if args.thinking and client._is_full_brain:
+        try:
+            brain.reasoner.thinking_mode = args.thinking
+        except Exception:
+            pass
+
+    if args.max_turns and client._is_full_brain:
+        try:
+            brain.agent_max_turns = args.max_turns
+        except Exception:
+            pass
+
+    if args.mcp_config and client._is_full_brain:
+        try:
+            if hasattr(brain, "mcp"):
+                brain.mcp.load_config(args.mcp_config)
+        except Exception:
+            pass
+
+    if args.allowed_tools and client._is_full_brain:
+        try:
+            brain.tool_allowlist = set(args.allowed_tools)
+        except Exception:
+            pass
+
+    if args.disallowed_tools and client._is_full_brain:
+        try:
+            brain.tool_denylist = set(args.disallowed_tools)
+        except Exception:
+            pass
+
     # Session management
     if args.continue_last:
         session = session_mgr.get_latest()
@@ -444,40 +765,86 @@ async def main():
 
     # Print mode (one-shot) — uses think_stream for full tool access
     if args.print_mode:
+        import json as _json
         query = args.print_mode
         if stdin_data:
             query = f"{query}\n\n{stdin_data}"
         session_mgr.add_message("user", query)
+        output_fmt = getattr(args, "output_format", "text")
         full_response = ""
+        tool_calls_log = []
+        usage_info = {}
         async for event in client.query_stream(query):
             t = event.get("type", "")
             if t == "text":
                 chunk = event.get("content", "")
                 full_response += chunk
-                sys.stdout.write(chunk)
-                sys.stdout.flush()
+                if output_fmt == "text":
+                    sys.stdout.write(chunk)
+                    sys.stdout.flush()
+                elif output_fmt == "stream-json":
+                    sys.stdout.write(_json.dumps({"type": "text", "content": chunk}) + "\n")
+                    sys.stdout.flush()
             elif t == "tool_call":
                 name = event.get("name", "")
-                sys.stderr.write(f"  {name}\n")
+                tc_entry = {"name": name, "args": event.get("args", {})}
+                tool_calls_log.append(tc_entry)
+                if output_fmt == "text":
+                    sys.stderr.write(f"  {name}\n")
+                elif output_fmt == "stream-json":
+                    sys.stdout.write(_json.dumps({"type": "tool_call", **tc_entry}) + "\n")
+                    sys.stdout.flush()
+            elif t == "tool_result":
+                if output_fmt == "stream-json":
+                    sys.stdout.write(_json.dumps({
+                        "type": "tool_result",
+                        "name": event.get("name", ""),
+                        "result": event.get("result", ""),
+                    }) + "\n")
+                    sys.stdout.flush()
+            elif t == "usage":
+                usage_info = {k: v for k, v in event.items() if k != "type"}
+                if output_fmt == "stream-json":
+                    sys.stdout.write(_json.dumps({"type": "usage", **usage_info}) + "\n")
+                    sys.stdout.flush()
             elif t == "done":
+                if output_fmt == "stream-json":
+                    sys.stdout.write(_json.dumps({"type": "done"}) + "\n")
+                    sys.stdout.flush()
                 break
-        if full_response:
-            print()
+        if output_fmt == "text":
+            if full_response:
+                print()
+        elif output_fmt == "json":
+            result = {"response": full_response, "tool_calls": tool_calls_log, "usage": usage_info}
+            sys.stdout.write(_json.dumps(result, indent=2) + "\n")
+            sys.stdout.flush()
         session_mgr.add_message("jarvis", full_response)
         session_mgr.save_current()
         await client.close()
         session_mgr.close()
         return
 
-    # ── Banner (Claude Code layout with JARVIS branding) ──
+    # ── Banner (Claude Code exact layout) ──
     def render_banner(model, provider, cwd, session_name, cmd_count):
-        """Claude Code-style layout with JARVIS HUD logo."""
-        logo = [
-            f"{CYAN}  ╔═▓▓▓▓═╗{RESET}   {BOLD}JARVIS v2.0{RESET}",
-            f"{CYAN}  ║ {BOLD}J.A.R.V.I.S{RESET}{CYAN} ║{RESET}  {DIM}{model} · {provider}{RESET}",
-            f"{CYAN}  ╚═▓▓▓▓═╝{RESET}   {DIM}{cwd}{RESET}",
+        """Claude Code exact layout — mascot left, info right."""
+        tw = _tw()
+        # JARVIS mascot (like Clawd but JARVIS-themed)
+        mascot = [
+            f"{CYAN} ▐▛███▜▌{RESET}",
+            f"{CYAN}▝▜█████▛▘{RESET}",
+            f"{CYAN}  ▘▘ ▝▝{RESET}",
         ]
-        return "\n".join(logo)
+        # Info lines (right of mascot)
+        info = [
+            f"  {BOLD}JARVIS v2.0{RESET}",
+            f"  {model} · {provider}",
+            f"  {cwd}",
+        ]
+        lines = []
+        for i in range(len(mascot)):
+            lines.append(f"{mascot[i]}  {info[i] if i < len(info) else ''}")
+        return "\n" + "\n".join(lines) + "\n"
 
     # Determine banner values
     # Shorten CWD with ~ for home directory
@@ -578,7 +945,7 @@ async def main():
         _trust_dir(cwd)
         _writeln()
 
-    # Clear screen and draw banner
+    # Clear screen — banner at TOP, input pinned at BOTTOM
     os.system("clear" if os.name != "nt" else "cls")
 
     def _exit_alt_screen():
@@ -592,6 +959,20 @@ async def main():
 
     banner = render_banner(model_name, provider_name, cwd_display, session_name, cmd_count)
     _writeln(banner)
+
+    # Random startup tip
+    import random
+    _tips = [
+        "Type / to see all commands",
+        "Use arrow keys to browse history",
+        "Ctrl+R to search history",
+        "Try /ultraplan for complex tasks",
+        "/copy grabs the last code block",
+        "!cmd runs a shell command inline",
+        "!!cmd runs and analyzes the output",
+        "/doctor checks your setup",
+    ]
+    _writeln(f"  {DIM}tip: {random.choice(_tips)}{RESET}")
     _writeln()
 
     # Initialize companion
@@ -632,9 +1013,9 @@ async def main():
     _active_task: asyncio.Task | None = None
     _input_queue: asyncio.Queue = asyncio.Queue()
 
-    # ── Scroll Region Management ──
-    # Split terminal: output scrolls in top zone, input stays pinned at bottom.
-    INPUT_ZONE_HEIGHT = 4  # top bar, input line, bottom bar, hints
+    # ── Simple Terminal Layout (no scroll regions, no absolute positioning) ──
+    # Banner at top. Output flows down. Input drawn inline. Like Claude Code.
+    INPUT_ZONE_HEIGHT = 4
 
     def _term_rows():
         try:
@@ -643,54 +1024,60 @@ async def main():
             return 24
 
     def _setup_zones():
-        """Set scroll region to exclude bottom input zone."""
-        rows = _term_rows()
-        output_bottom = rows - INPUT_ZONE_HEIGHT
-        if output_bottom < 2:
-            output_bottom = 2
-        _write(f"\033[1;{output_bottom}r")  # Set scroll region
-        _write(f"\033[{output_bottom};1H")  # Move to bottom of output zone
+        pass
 
     def _teardown_zones():
-        """Reset scroll region to full terminal."""
-        _write("\033[r")
+        pass
 
     def _draw_input_frame(mode_prefix="", buf_text=""):
-        """Draw input frame in the pinned bottom zone."""
-        rows = _term_rows()
+        """Draw separator + ❯ prompt + separator + hints inline at cursor."""
         tw = _tw()
-        input_top = rows - INPUT_ZONE_HEIGHT + 1
         mode_str = brain.mode if client._is_full_brain else "normal"
-        status_right = f"◐ {mode_str}" if mode_str != "normal" else ""
 
-        # Move to fixed input zone (below scroll region)
-        _write(f"\033[{input_top};1H")
-        _write(f"\033[K{DIM}{'─' * tw}{RESET}\n")
-        _write(f"\033[K{mode_prefix}{CYAN}❯{RESET} {buf_text}\n")
-        _write(f"\033[K{DIM}{'─' * tw}{RESET}\n")
-        hint = f"  {DIM}? for shortcuts{RESET}"
-        if status_right:
-            pad = max(1, tw - 16 - len(status_right) - 2)
-            hint += " " * pad + f"{DIM}{status_right}{RESET}"
-        _write(f"\033[K{hint}")
-        # Position cursor on input line
-        prompt_vis_len = len(mode_prefix.replace(YELLOW, "").replace(RESET, "")) + 2  # "❯ "
-        cursor_col = prompt_vis_len + len(buf_text) + 1
-        _write(f"\033[{input_top + 1};{cursor_col}H")
+        # Right side: effort + companion name
+        right_parts = []
+        try:
+            effort = getattr(brain, 'reasoner', None)
+            effort_val = getattr(effort, 'effort', 'high') if effort else 'high'
+            if effort_val and effort_val != 'high':
+                right_parts.append(f"● {effort_val}")
+        except Exception:
+            pass
+        if _companion and _companion.enabled and hasattr(_companion, 'data') and _companion.data:
+            cname = _companion.data.get("name", "")
+            if cname:
+                right_parts.append(cname)
+        right_str = " · ".join(right_parts)
+
+        sep = f"{DIM}{'─' * tw}{RESET}"
+        prompt = f"{YELLOW}{mode_str}{RESET} ❯ " if mode_str != "normal" else "❯ "
+
+        # Footer
+        left = f"  {DIM}? for shortcuts{RESET}"
+        if right_str:
+            pad = max(1, tw - 16 - len(right_str) - 2)
+            footer = f"{left}{' ' * pad}{DIM}{right_str}{RESET}"
+        else:
+            footer = left
+
+        # Just print inline — cursor ends on prompt line via save/restore
+        _writeln(sep)
+        _write(f"{prompt}{buf_text}")
+        _write("\033[s")  # save cursor on prompt line
+        _writeln()
+        _writeln(sep)
+        _write(footer)
+        _write("\033[u")  # restore cursor to prompt line
         sys.stdout.flush()
 
     def _output(text: str):
-        """Write to the output zone (scroll region), then restore cursor to input."""
-        _write(f"\033[s")  # Save cursor position
-        rows = _term_rows()
-        output_bottom = rows - INPUT_ZONE_HEIGHT
-        _write(f"\033[{output_bottom};1H")  # Move to bottom of scroll region
+        """Erase the input frame (4 lines up), print text."""
+        # Move up past the input frame and clear everything below
+        _write(f"\033[{INPUT_ZONE_HEIGHT}A\r\033[J")
         _write(text)
-        _write(f"\033[u")  # Restore cursor
         sys.stdout.flush()
 
     def _outputln(text: str = ""):
-        """Write line to the output zone."""
         _output(text + "\n")
 
     # Helper to full redraw (used by /clear and resize)
@@ -708,7 +1095,7 @@ async def main():
         cwd_display = os.getcwd().replace(os.path.expanduser("~"), "~")
         if session_mgr.current:
             session_name = session_mgr.current.name or session_mgr.current.display_name
-        # Clear and redraw from top
+        # Clear and redraw — banner at top
         os.system("clear" if os.name != "nt" else "cls")
         _writeln(render_banner(model_name, provider_name, cwd_display, session_name, cmd_count))
         _writeln()
@@ -752,6 +1139,28 @@ async def main():
         loop = asyncio.get_event_loop()
         result_future = loop.create_future()
 
+        # History browsing state — reload from session each time input is shown
+        _history_entries = []
+        try:
+            if hasattr(session_mgr, 'current') and session_mgr.current:
+                _history_entries = [m["content"] for m in session_mgr.current.messages if m["role"] == "user"]
+        except Exception:
+            pass
+        # Also check a module-level history accumulator for this session
+        if not hasattr(_async_read_input, '_session_history'):
+            _async_read_input._session_history = []
+        # Merge: session messages + any new ones typed this session
+        for h in _async_read_input._session_history:
+            if h not in _history_entries:
+                _history_entries.append(h)
+        _history_idx = len(_history_entries)
+        _saved_buf = []
+
+        # Ctrl+R history search state
+        _search_mode = False
+        _search_buf = []
+        _search_match_idx = 0
+
         # Escape sequence state
         _esc_buf = []
         _esc_timer = None
@@ -759,6 +1168,9 @@ async def main():
         def _redraw():
             """Redraw input line in the fixed zone."""
             text = "".join(buf)
+            # Cursor is on prompt line (line 2 of 4-line frame after restore).
+            # Move up 1 to top separator, clear to end of screen, then redraw.
+            _write("\033[A\r\033[J")
             _draw_input_frame(mode_prefix, text)
 
         MAX_VISIBLE = 10
@@ -821,11 +1233,91 @@ async def main():
             prefix = text[1:].lower()
             return [c for c in all_cmds if c.name.startswith(prefix)]
 
+        def _draw_search_prompt():
+            """Draw the Ctrl+R search prompt in the input zone."""
+            query = "".join(_search_buf)
+            matches = _get_search_matches()
+            match_text = ""
+            if matches and _search_match_idx < len(matches):
+                match_text = matches[_search_match_idx]
+                max_len = _tw() - 4
+                if len(match_text) > max_len:
+                    match_text = match_text[:max_len - 3] + "..."
+                match_text = match_text.replace("\n", " ")
+            rows = _term_rows()
+            input_top = rows - INPUT_ZONE_HEIGHT + 1
+            _write(f"\033[{input_top};1H")
+            _write(f"\033[K{DIM}{'─' * _tw()}{RESET}\n")
+            _write(f"\033[K{YELLOW}(reverse-i-search){RESET}: {query}{DIM} -> {match_text}{RESET}\n")
+            _write(f"\033[K{DIM}{'─' * _tw()}{RESET}\n")
+            _write(f"\033[K  {DIM}Ctrl+R next | Enter accept | Esc cancel{RESET}")
+            cursor_col = len("(reverse-i-search): ") + len(query) + 1
+            _write(f"\033[{input_top + 1};{cursor_col}H")
+            sys.stdout.flush()
+
+        def _get_search_matches():
+            """Get history entries matching the current search query."""
+            query = "".join(_search_buf)
+            if not query:
+                return list(reversed(_history_entries))
+            return [e for e in reversed(_history_entries) if query.lower() in e.lower()]
+
         def _process_char(ch):
             nonlocal selected, _esc_buf, _esc_timer
+            nonlocal _search_mode, _search_buf, _search_match_idx
+            nonlocal _history_idx, _saved_buf
             if result_future.done():
                 return
 
+            # ── Ctrl+R history search mode ──
+            if _search_mode:
+                if ch == "\x12":
+                    # Ctrl+R again: cycle to next match
+                    matches = _get_search_matches()
+                    if matches:
+                        _search_match_idx = (_search_match_idx + 1) % len(matches)
+                    _draw_search_prompt()
+                    return
+                elif ch == "\n" or ch == "\r":
+                    # Accept current match
+                    matches = _get_search_matches()
+                    if matches and _search_match_idx < len(matches):
+                        buf.clear()
+                        buf.extend(matches[_search_match_idx])
+                    _search_mode = False
+                    _search_buf.clear()
+                    _search_match_idx = 0
+                    _redraw()
+                    return
+                elif ch == "\x1b":
+                    # Escape: cancel search
+                    _search_mode = False
+                    _search_buf.clear()
+                    _search_match_idx = 0
+                    _redraw()
+                    return
+                elif ch == "\x7f" or ch == "\x08":
+                    # Backspace in search
+                    if _search_buf:
+                        _search_buf.pop()
+                        _search_match_idx = 0
+                    _draw_search_prompt()
+                    return
+                elif ch == "\x03":
+                    # Ctrl+C: cancel search
+                    _search_mode = False
+                    _search_buf.clear()
+                    _search_match_idx = 0
+                    _redraw()
+                    return
+                elif ch >= " ":
+                    _search_buf.append(ch)
+                    _search_match_idx = 0
+                    _draw_search_prompt()
+                    return
+                return
+
+            # ── Normal input mode ──
             if ch == "\n" or ch == "\r":
                 if menu_visible:
                     matches = _get_matches()
@@ -833,7 +1325,14 @@ async def main():
                         buf.clear()
                         buf.extend(f"/{matches[selected].name}")
                 _hide_menu()
-                result_future.set_result("".join(buf).strip())
+                text = "".join(buf).strip()
+                if text and (not _history_entries or _history_entries[-1] != text):
+                    _history_entries.append(text)
+                    # Persist to session-level accumulator
+                    if hasattr(_async_read_input, '_session_history'):
+                        _async_read_input._session_history.append(text)
+                _history_idx = len(_history_entries)
+                result_future.set_result(text)
             elif ch == "\x04":
                 _hide_menu()
                 result_future.set_result(None)
@@ -844,8 +1343,64 @@ async def main():
                     _active_task.cancel()
                     _outputln(f"\n  {DIM}Cancelled.{RESET}")
                 buf.clear()
+                _history_idx = len(_history_entries)
                 _redraw()
                 result_future.set_result("")
+            elif ch == "\x0c":
+                # Ctrl+L: Clear and redraw screen (full redraw, not just input)
+                _hide_menu()
+                os.system("clear" if os.name != "nt" else "cls")
+                _writeln(render_banner(model_name, provider_name, cwd_display, session_name, cmd_count))
+                _writeln()
+                _setup_zones()
+                _draw_input_frame(mode_prefix, "".join(buf))
+            elif ch == "\x12":
+                # Ctrl+R: Enter history search mode
+                _hide_menu()
+                _search_mode = True
+                _search_buf.clear()
+                _search_match_idx = 0
+                _draw_search_prompt()
+            elif ch == "\x05":
+                # Ctrl+E: Open external editor
+                _hide_menu()
+                import tempfile
+                editor = os.environ.get("EDITOR", "vi")
+                with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as tf:
+                    tf.write("".join(buf))
+                    tf_path = tf.name
+                try:
+                    import termios as _termios
+                    _termios.tcsetattr(fd, _termios.TCSADRAIN, old_settings)
+                    _write("\033[r")  # Reset scroll region for editor
+                    os.system(f"{editor} {tf_path}")
+                    import tty as _tty
+                    _tty.setcbreak(fd)
+                    with open(tf_path, "r") as f:
+                        new_text = f.read().strip()
+                    buf.clear()
+                    buf.extend(new_text)
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        os.unlink(tf_path)
+                    except OSError:
+                        pass
+                _setup_zones()
+                _redraw()
+            elif ch == "\x14":
+                # Ctrl+T: Toggle task/todo summary
+                _hide_menu()
+                _outputln()
+                _outputln(f"  {BOLD}Recent queries{RESET}")
+                if _history_entries:
+                    for i, entry in enumerate(_history_entries[-5:], 1):
+                        preview = entry[:60].replace("\n", " ")
+                        _outputln(f"    {DIM}{i}. {preview}{'...' if len(entry) > 60 else ''}{RESET}")
+                else:
+                    _outputln(f"    {DIM}No history in this session.{RESET}")
+                _outputln()
             elif ch == "\x7f" or ch == "\x08":
                 if buf:
                     buf.pop()
@@ -880,9 +1435,19 @@ async def main():
         def _handle_escape_seq():
             """Process buffered escape sequence after timeout."""
             nonlocal selected, _esc_buf, _esc_timer
+            nonlocal _history_idx, _saved_buf
+            nonlocal _search_mode, _search_buf, _search_match_idx
             _esc_timer = None
             seq = "".join(_esc_buf)  # e.g. "[A" for up arrow
             _esc_buf.clear()
+
+            # In search mode, Escape cancels
+            if _search_mode and seq == "":
+                _search_mode = False
+                _search_buf.clear()
+                _search_match_idx = 0
+                _redraw()
+                return
 
             if seq == "[A" and menu_visible:
                 matches = _get_matches()
@@ -892,6 +1457,25 @@ async def main():
                 matches = _get_matches()
                 selected = min(len(matches) - 1, selected + 1)
                 _show_menu(matches)
+            elif seq == "[A" and not menu_visible:
+                # Up arrow: previous history entry
+                if _history_idx > 0:
+                    if _history_idx == len(_history_entries):
+                        _saved_buf = list(buf)
+                    _history_idx -= 1
+                    buf.clear()
+                    buf.extend(_history_entries[_history_idx])
+                    _redraw()
+            elif seq == "[B" and not menu_visible:
+                # Down arrow: next history entry
+                if _history_idx < len(_history_entries):
+                    _history_idx += 1
+                    buf.clear()
+                    if _history_idx == len(_history_entries):
+                        buf.extend(_saved_buf)
+                    else:
+                        buf.extend(_history_entries[_history_idx])
+                    _redraw()
             else:
                 # Just Escape — close menu
                 _hide_menu()
@@ -909,14 +1493,26 @@ async def main():
                 if len(_esc_buf) > 0:
                     # We're in an escape sequence (after \x1b)
                     _esc_buf.append(ch)
-                    if len(_esc_buf) >= 2:
-                        # Got full sequence like "[A", "[B"
+                    # Arrow keys: \x1b [ A/B/C/D — need exactly "[" + letter
+                    if len(_esc_buf) >= 2 and _esc_buf[0] == "[" and _esc_buf[-1].isalpha():
                         if _esc_timer:
                             _esc_timer.cancel()
                             _esc_timer = None
                         _handle_escape_seq()
+                    elif len(_esc_buf) >= 2 and _esc_buf[0] != "[":
+                        # Not a CSI sequence — flush
+                        if _esc_timer:
+                            _esc_timer.cancel()
+                            _esc_timer = None
+                        _handle_escape_seq()
+                    elif len(_esc_buf) > 6:
+                        # Too long — something went wrong, flush
+                        if _esc_timer:
+                            _esc_timer.cancel()
+                            _esc_timer = None
+                        _esc_buf.clear()
                 elif ch == "\x1b":
-                    _esc_buf.clear()  # Start fresh — don't include \x1b itself
+                    _esc_buf.clear()
                     # Wait briefly for rest of sequence
                     _esc_timer = loop.call_later(0.05, _handle_escape_seq)
                 else:
@@ -956,7 +1552,7 @@ async def main():
         _tool_states = []
         _tokens_this_turn = 0
 
-        # Async spinner (no threads — writes to output zone)
+        # Async status dot — Claude Code style (● blinks while working)
         _spin_task = None
         _spin_label = ["Thinking..."]
 
@@ -964,11 +1560,12 @@ async def main():
             i = 0
             t0 = time.time()
             while True:
-                frame = SPINNER_FRAMES[i % len(SPINNER_FRAMES)]
                 elapsed = time.time() - t0
-                _output(f"\r  {DIM}{frame} {_spin_label[0]} ({elapsed:.1f}s){RESET}\033[K")
+                # Blink: alternate between visible and dim ●
+                dot = f"{CYAN}●{RESET}" if i % 2 == 0 else f"{DIM}●{RESET}"
+                _output(f"\r  {dot} {DIM}{_spin_label[0]}{RESET}\033[K")
                 i += 1
-                await asyncio.sleep(0.12)
+                await asyncio.sleep(0.4)
 
         def _start_spin(label="Thinking..."):
             nonlocal _spin_task
@@ -993,6 +1590,7 @@ async def main():
                     _stop_spin()
                     if _streaming_text:
                         _outputln()
+                        _streaming_text = False
                     tool_count += 1
                     name = event.get("name", "")
                     args = event.get("args", {})
@@ -1001,7 +1599,7 @@ async def main():
                         "start": time.time(), "lines": [], "error": False,
                     })
                     _outputln(tool_call_line(name, args))
-                    _start_spin(name)
+                    _start_spin(f"{name}")
 
                 elif etype == "tool_result":
                     _stop_spin()
@@ -1073,13 +1671,33 @@ async def main():
                 full_text = "Sorry, I got confused there. Could you rephrase that?"
 
         if full_text.strip() and not _streaming_text:
-            _outputln(f"{CYAN}●{RESET} {render_markdown(full_text.strip())}")
+            _outputln(render_markdown(full_text.strip()))
             _outputln()
 
-        # Token footer
+        # Token footer with cost
         elapsed_total = time.time() - start
-        if _tokens_this_turn > 0 or tool_count > 0:
-            _outputln(_token_footer(_tokens_this_turn, tool_count, elapsed_total))
+        parts = []
+        if _tokens_this_turn > 0:
+            if _tokens_this_turn >= 1000:
+                parts.append(f"{_tokens_this_turn / 1000:.1f}K tokens")
+            else:
+                parts.append(f"{_tokens_this_turn} tokens")
+        if tool_count > 0:
+            parts.append(f"{tool_count} tool{'s' if tool_count > 1 else ''}")
+        parts.append(f"{elapsed_total:.1f}s")
+
+        # Add cost
+        try:
+            from brain.agent.cost_tracker import get_tracker
+            tracker = get_tracker()
+            cost = tracker.get_session_cost()
+            if cost > 0.001:
+                parts.append(f"${cost:.2f}")
+        except Exception:
+            pass
+
+        if parts:
+            _outputln(f"  {DIM}{' · '.join(parts)}{RESET}")
         if full_text.strip() and tool_count > 0:
             _buddy_says("success")
         _outputln()
@@ -1175,9 +1793,9 @@ async def main():
             _cancelled = False
             _voice_mode = False
 
-            # Show the submitted command in the output zone
-            _outputln(f"{DIM}{'─' * _tw()}{RESET}")
-            _outputln(f"{_get_mode_prefix()}{CYAN}❯{RESET} {user_input}")
+            # Echo user input in output zone — subtle, like Claude Code
+            _outputln()
+            _outputln(f"  {user_input}")
             _outputln()
 
             # ═══ VOICE INPUT ═══
@@ -1242,8 +1860,15 @@ async def main():
                         ("/cmd", "Slash command"),
                     ]),
                     ("Navigation", [
-                        ("Ctrl+D", "Exit (press twice)"),
                         ("Ctrl+C", "Cancel current operation"),
+                        ("Ctrl+D", "Exit (press twice)"),
+                        ("Ctrl+L", "Clear screen"),
+                        ("Ctrl+R", "Search history"),
+                        ("Ctrl+E", "Open in $EDITOR"),
+                        ("Ctrl+T", "Show recent queries"),
+                        ("Up/Down", "Browse history"),
+                        ("Tab", "Accept autocomplete"),
+                        ("Esc", "Close autocomplete menu"),
                     ]),
                     ("Quick Commands", [
                         ("/help", "All 123 commands"),
@@ -1255,6 +1880,7 @@ async def main():
                         ("/compact", "Compress context"),
                         ("/new", "Fresh conversation"),
                         ("/rewind", "Undo last exchange"),
+                        ("/cost", "Session cost summary"),
                         ("/export", "Save conversation"),
                     ]),
                 ]

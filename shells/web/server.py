@@ -280,22 +280,30 @@ class JarvisWebServer:
 
         # Try streaming: send first sentence early so TTS starts immediately
         first_sent = False
+        first_spoken_end = 0  # track where first spoken chunk ended
         full_response = ""
+        used_tools = False  # track if agent loop used any tools
+        tool_id_counter = 0  # unique IDs for tool call/result pairing
+        current_tool_id = None  # track the current tool's ID
 
         if hasattr(self.brain, 'think_stream'):
             try:
                 buffer = ""
+                # Only accumulate text from the LAST LLM turn for speech
+                # (after all tools finish, the final LLM reply is what matters)
+                speech_buffer = ""
                 async for event in self.brain.think_stream(text):
                     etype = event.get("type", "") if isinstance(event, dict) else ""
                     if etype == "text":
                         chunk = event.get("content", "")
                         buffer += chunk
+                        speech_buffer += chunk
                         # Send chunk to frontend immediately for display
                         await ws.send_json({
                             "type": "stream", "content": chunk,
                         })
                         # Send first sentence early for TTS (speak while still generating)
-                        if not first_sent and len(buffer) > 8:
+                        if not first_sent and not used_tools and len(buffer) > 8:
                             for delim in ['. ', '! ', '? ', '.\n', '!\n', '?\n', ', ', '— ', ': ']:
                                 idx = buffer.find(delim)
                                 if idx > 5:
@@ -313,35 +321,62 @@ class JarvisWebServer:
                                             "partial": True,
                                         })
                                         first_sent = True
+                                        first_spoken_end = idx + 1
                                     break
                     elif etype == "tool_call":
+                        used_tools = True
+                        # Reset speech buffer — only speak the LLM's final reply
+                        speech_buffer = ""
+                        tool_id_counter += 1
+                        current_tool_id = f"tool-{tool_id_counter}"
                         await ws.send_json({
                             "type": "tool_call",
+                            "id": current_tool_id,
                             "name": event.get("name", ""),
                             "args": event.get("args", {}),
                         })
                     elif etype == "tool_result":
                         await ws.send_json({
                             "type": "tool_result",
+                            "id": current_tool_id,
                             "name": event.get("name", ""),
                             "content": str(event.get("content", event.get("result", "")))[:500],
+                        })
+                        current_tool_id = None
+                    elif etype == "usage":
+                        await ws.send_json({
+                            "type": "usage",
+                            "input_tokens": event.get("input_tokens", 0),
+                            "output_tokens": event.get("output_tokens", 0),
+                            "session_cost": event.get("session_cost", ""),
                         })
                     elif etype == "done":
                         break
                 full_response = buffer
             except Exception as e:
                 full_response = await self.brain.think(text)
+                speech_buffer = full_response
         else:
             full_response = await self.brain.think(text)
+            speech_buffer = full_response
 
         latency = int((time.time() - start) * 1000)
         voice_style = self._get_voice_style()
 
         # Don't send empty responses
         if full_response and full_response.strip():
-            spoken = self._clean_for_speech(full_response)
+            # For speech: use only the final LLM turn (after tools),
+            # and exclude the already-spoken first sentence
+            if used_tools:
+                spoken = self._clean_for_speech(speech_buffer)
+            elif first_sent:
+                # Remove the first sentence we already spoke
+                remaining = full_response[first_spoken_end:].strip()
+                spoken = self._clean_for_speech(remaining) if remaining else ""
+            else:
+                spoken = self._clean_for_speech(full_response)
+
             if first_sent:
-                # Send the remaining text (frontend will queue it after first chunk)
                 await ws.send_json({
                     "type": "message", "role": "jarvis",
                     "content": full_response,
@@ -447,26 +482,42 @@ class JarvisWebServer:
         t = re.sub(r'\[/show\]', '', t)
         t = re.sub(r'\[run:.*?\]', '', t)
         t = re.sub(r'\[display:\w+\]', '', t)
-        # Remove code blocks
+        # Remove code blocks (fenced and indented)
         t = re.sub(r'```[\s\S]*?```', '', t)
         t = re.sub(r'`[^`]+`', '', t)
+        t = re.sub(r'^(    |\t).*$', '', t, flags=re.MULTILINE)
+        # Remove markdown headers, bold, italic, links
+        t = re.sub(r'^#{1,6}\s+', '', t, flags=re.MULTILINE)
+        t = re.sub(r'\*{1,2}([^*]+)\*{1,2}', r'\1', t)
+        t = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', t)
         # Remove URLs
         t = re.sub(r'https?://\S+', '', t)
         # Remove file paths
-        t = re.sub(r'(?<!\w)/[\w/.\-]+', '', t)
+        t = re.sub(r'(?<!\w)[~/.]?/[\w/.\-]+', '', t)
         # Remove command flags
         t = re.sub(r'\s--?\w[\w-]*', '', t)
+        # Remove JSON/dict-like blocks
+        t = re.sub(r'\{[^}]{10,}\}', '', t)
+        t = re.sub(r'\[[^\]]{20,}\]', '', t)
         # Remove terminal output patterns
         t = re.sub(r'^[\s]*[\$#>].*$', '', t, flags=re.MULTILINE)
         t = re.sub(r'drwx.*$', '', t, flags=re.MULTILINE)
         t = re.sub(r'-rw-.*$', '', t, flags=re.MULTILINE)
         t = re.sub(r'total \d+', '', t)
+        # Remove stack traces and error dumps
+        t = re.sub(r'^\s*(File|Traceback|at |Error:|Exception:).*$', '', t, flags=re.MULTILINE)
+        # Remove lines that look like code (assignments, imports, function defs)
+        t = re.sub(r'^.*(?:import |from .* import |def |class |return |if __|elif |except ).*$', '', t, flags=re.MULTILINE)
+        t = re.sub(r'^\s*\w+\s*=\s*.+$', '', t, flags=re.MULTILINE)
         # Remove box drawing / table chars
-        t = re.sub(r'[╭╰╮╯│┃┏┓┗┛├┤┬┴┼═─]+', '', t)
+        t = re.sub(r'[╭╰╮╯│┃┏┓┗┛├┤┬┴┼═─|]+', '', t)
+        # Remove bullet list markers
+        t = re.sub(r'^\s*[-*•]\s+', '', t, flags=re.MULTILINE)
         # Remove excess whitespace
         t = re.sub(r'\n{2,}', '. ', t)
         t = re.sub(r'\n', ' ', t)
         t = re.sub(r'\s{2,}', ' ', t)
+        t = re.sub(r'\.\s*\.', '.', t)
         return t.strip()
 
     async def _handle_passive(self, ws: web.WebSocketResponse, data: dict):
