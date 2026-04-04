@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from brain.permissions import (
+from src.permissions import (
     PermissionLevel,
     PermissionMode,
     PermissionRule,

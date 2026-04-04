@@ -46,9 +46,9 @@ echo ""
 
 # Step 3: Kill any old instances, start web server
 echo "[3/4] Starting JARVIS server..."
-pkill -f "shells.web.server" 2>/dev/null
+pkill -f "src.shells.web.server" 2>/dev/null
 sleep 1
-PYTHONUNBUFFERED=1 python3 -m shells.web.server > /tmp/jarvis-web.log 2>&1 &
+PYTHONUNBUFFERED=1 python3 -m src.shells.web.server > /tmp/jarvis-web.log 2>&1 &
 SERVER_PID=$!
 echo "  Server PID: $SERVER_PID"
 
@@ -64,9 +64,9 @@ echo ""
 
 # Step 4: Launch desktop app (single instance)
 echo "[4/4] Launching desktop..."
-pkill -f "target/debug/jarvis" 2>/dev/null
+pkill -f "src.shells.desktop" 2>/dev/null
 sleep 1
-DISPLAY=:0.0 "$JARVIS_ROOT/shells/desktop/src-tauri/target/debug/jarvis" > /tmp/jarvis-desktop.log 2>&1 &
+DISPLAY=:0.0 python3 -c "from src.shells.desktop.app import main; main()" > /tmp/jarvis-desktop.log 2>&1 &
 DESKTOP_PID=$!
 echo "  Desktop PID: $DESKTOP_PID"
 echo ""

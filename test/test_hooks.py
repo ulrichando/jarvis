@@ -1,4 +1,4 @@
-"""Tests for brain/hooks.py — hook matching, command execution, new events, HTTP hooks."""
+"""Tests for src/hooks/manager.py — hook matching, command execution, new events, HTTP hooks."""
 
 import os
 import sys
@@ -8,7 +8,7 @@ from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from brain.hooks import HooksManager, HookResult, HOOK_EVENTS, BLOCKING_EVENTS
+from src.hooks.manager import HooksManager, HookResult, HOOK_EVENTS, BLOCKING_EVENTS
 
 
 class TestHooksNoHooks(unittest.TestCase):
@@ -99,7 +99,7 @@ class TestCommandHooks(unittest.TestCase):
     def setUp(self):
         self.hm = HooksManager()
 
-    @patch("brain.hooks.subprocess.run")
+    @patch("src.hooks.manager.subprocess.run")
     def test_command_hook_allow(self, mock_run):
         """Exit code 0 should allow the tool call."""
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
@@ -115,7 +115,7 @@ class TestCommandHooks(unittest.TestCase):
         self.assertTrue(result.allowed)
         mock_run.assert_called_once()
 
-    @patch("brain.hooks.subprocess.run")
+    @patch("src.hooks.manager.subprocess.run")
     def test_command_hook_block(self, mock_run):
         """Exit code 2 should block the tool call."""
         mock_run.return_value = MagicMock(returncode=2, stdout="", stderr="Blocked by policy")
@@ -131,7 +131,7 @@ class TestCommandHooks(unittest.TestCase):
         self.assertFalse(result.allowed)
         self.assertIn("Blocked", result.message)
 
-    @patch("brain.hooks.subprocess.run")
+    @patch("src.hooks.manager.subprocess.run")
     def test_command_hook_nonblocking_error(self, mock_run):
         """Exit code 1 (non-blocking error) should still allow."""
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="warning")
@@ -146,7 +146,7 @@ class TestCommandHooks(unittest.TestCase):
         result = self.hm.run_pre_tool_use("bash", {"command": "ls"})
         self.assertTrue(result.allowed)
 
-    @patch("brain.hooks.subprocess.run")
+    @patch("src.hooks.manager.subprocess.run")
     def test_hook_timeout(self, mock_run):
         """A hanging hook should time out and allow."""
         import subprocess
@@ -158,7 +158,7 @@ class TestCommandHooks(unittest.TestCase):
         self.assertTrue(result.allowed)
         self.assertIn("timed out", result.message.lower())
 
-    @patch("brain.hooks.subprocess.run")
+    @patch("src.hooks.manager.subprocess.run")
     def test_hook_returns_modified_args(self, mock_run):
         """A hook returning JSON with tool_input should modify args."""
         mock_run.return_value = MagicMock(
@@ -178,7 +178,7 @@ class TestCommandHooks(unittest.TestCase):
         self.assertTrue(result.allowed)
         self.assertEqual(result.modified_args, {"command": "ls -la"})
 
-    @patch("brain.hooks.subprocess.run")
+    @patch("src.hooks.manager.subprocess.run")
     def test_hook_specific_output_deny(self, mock_run):
         """hookSpecificOutput with deny should block."""
         mock_run.return_value = MagicMock(
@@ -204,7 +204,7 @@ class TestCommandHooks(unittest.TestCase):
         self.assertFalse(result.allowed)
         self.assertIn("Dangerous", result.message)
 
-    @patch("brain.hooks.subprocess.run")
+    @patch("src.hooks.manager.subprocess.run")
     def test_hook_specific_output_updated_input(self, mock_run):
         """hookSpecificOutput with updatedInput should modify args."""
         mock_run.return_value = MagicMock(
@@ -261,7 +261,7 @@ class TestNewEvents(unittest.TestCase):
     def setUp(self):
         self.hm = HooksManager()
 
-    @patch("brain.hooks.subprocess.run")
+    @patch("src.hooks.manager.subprocess.run")
     def test_post_tool_use_failure(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="logged", stderr="")
 
@@ -275,7 +275,7 @@ class TestNewEvents(unittest.TestCase):
         result = self.hm.run_post_tool_use_failure("bash", {"command": "bad"}, "exit 1")
         self.assertTrue(result.allowed)
 
-    @patch("brain.hooks.subprocess.run")
+    @patch("src.hooks.manager.subprocess.run")
     def test_permission_denied_hook(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
@@ -288,7 +288,7 @@ class TestNewEvents(unittest.TestCase):
         result = self.hm.run_permission_denied("bash", {"command": "rm /"}, "not allowed")
         self.assertTrue(result.allowed)
 
-    @patch("brain.hooks.subprocess.run")
+    @patch("src.hooks.manager.subprocess.run")
     def test_notification_hook(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
@@ -301,7 +301,7 @@ class TestNewEvents(unittest.TestCase):
         result = self.hm.run_notification("task complete", "completion")
         self.assertTrue(result.allowed)
 
-    @patch("brain.hooks.subprocess.run")
+    @patch("src.hooks.manager.subprocess.run")
     def test_session_start_hook(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
@@ -398,7 +398,7 @@ class TestHooksSummary(unittest.TestCase):
 class TestNestedHooksFormat(unittest.TestCase):
     """Test Claude Code-style nested hooks format."""
 
-    @patch("brain.hooks.subprocess.run")
+    @patch("src.hooks.manager.subprocess.run")
     def test_nested_hooks_key(self, mock_run):
         """Support matcher + nested hooks array like Claude Code."""
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")

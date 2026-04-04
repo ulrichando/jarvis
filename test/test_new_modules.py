@@ -17,19 +17,19 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from brain.sse import SseParser, SseEvent
-from brain.sandbox import (
+from src.sse import SseParser, SseEvent
+from src.sandbox import (
     detect_sandbox_capabilities, build_sandbox_command, execute_sandboxed,
     SandboxConfig, SandboxStatus,
 )
-from brain.oauth import (
+from src.oauth import (
     generate_pkce, build_auth_url, OAuthTokenSet, PkceChallenge,
     save_credentials, load_credentials, CREDENTIALS_PATH,
 )
-from brain.prompt_builder import PromptBuilder, MAX_INSTRUCTION_CHARS
-from brain.agent.coordinator import AgentCoordinator, AgentHandle
-from brain.tasks.runner import BackgroundRunner
-from brain.commands.registry import CommandRegistry, CommandDef, PermLevel, _fuzzy_score
+from src.prompt_builder import PromptBuilder, MAX_INSTRUCTION_CHARS
+from src.agent.coordinator import AgentCoordinator, AgentHandle
+from src.tasks_brain.runner import BackgroundRunner
+from src.commands_brain.registry import CommandRegistry, CommandDef, PermLevel, _fuzzy_score
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
@@ -204,8 +204,8 @@ class TestOAuth(unittest.TestCase):
                 scopes=["read", "write"],
             )
             # Patch CREDENTIALS_PATH and JARVIS_HOME to use temp dir
-            with patch("brain.oauth.CREDENTIALS_PATH", creds_path), \
-                 patch("brain.oauth.JARVIS_HOME", Path(tmpdir)):
+            with patch("src.oauth.CREDENTIALS_PATH", creds_path), \
+                 patch("src.oauth.JARVIS_HOME", Path(tmpdir)):
                 save_credentials("test-provider", token_set)
                 loaded = load_credentials("test-provider")
 

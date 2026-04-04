@@ -8,7 +8,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from brain.sessions import Session, SessionManager, _validate_session_id
+from src.sessions import Session, SessionManager, _validate_session_id
 
 
 class TestSessionCreation(unittest.TestCase):

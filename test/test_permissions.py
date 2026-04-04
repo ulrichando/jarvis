@@ -6,7 +6,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from brain.permissions import PermissionLevel, PermissionManager
+from src.permissions import PermissionLevel, PermissionManager
 
 
 class TestPermissionLevel(unittest.TestCase):

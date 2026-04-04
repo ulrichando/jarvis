@@ -14,17 +14,17 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 _tmpdir = tempfile.mkdtemp(prefix="jarvis_test_vault_")
 os.environ["JARVIS_HOME"] = _tmpdir
 
-# Force reload of brain.config so it picks up the new JARVIS_HOME
+# Force reload of src.config so it picks up the new JARVIS_HOME
 import importlib
-import brain.config
-importlib.reload(brain.config)
+import src.config
+importlib.reload(src.config)
 
 # Now patch vault module paths to use the reloaded config
-import brain.vault.tokens as vault_mod
-vault_mod.VAULT_PATH = brain.config.JARVIS_HOME / "vault.json"
-vault_mod.SALT_PATH = brain.config.JARVIS_HOME / ".vault_salt"
+import src.vault.tokens as vault_mod
+vault_mod.VAULT_PATH = src.config.JARVIS_HOME / "vault.json"
+vault_mod.SALT_PATH = src.config.JARVIS_HOME / ".vault_salt"
 
-from brain.vault.tokens import TokenVault
+from src.vault.tokens import TokenVault
 
 
 class TestTokenVault(unittest.TestCase):
@@ -33,9 +33,9 @@ class TestTokenVault(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp(prefix="jarvis_vault_test_")
         os.environ["JARVIS_HOME"] = self.tmpdir
-        importlib.reload(brain.config)
-        vault_mod.VAULT_PATH = brain.config.JARVIS_HOME / "vault.json"
-        vault_mod.SALT_PATH = brain.config.JARVIS_HOME / ".vault_salt"
+        importlib.reload(src.config)
+        vault_mod.VAULT_PATH = src.config.JARVIS_HOME / "vault.json"
+        vault_mod.SALT_PATH = src.config.JARVIS_HOME / ".vault_salt"
         self.vault = TokenVault()
 
     def tearDown(self):

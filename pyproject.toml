@@ -1,6 +1,6 @@
 [project]
-name = "jarvis-brain"
-version = "2.0.0"
+name = "jarvis"
+version = "3.0.0"
 description = "J.A.R.V.I.S. — Autonomous AI Agent"
 requires-python = ">=3.10"
 dependencies = [
@@ -17,11 +17,11 @@ dependencies = [
 [project.optional-dependencies]
 vision = ["Pillow", "mss", "pytesseract"]
 tts = ["piper-tts"]
-all = ["jarvis-brain[vision,tts]"]
+all = ["jarvis[vision,tts]"]
 
 [project.scripts]
-jarvis = "shells.cli.jarvis_cli:run"
-jarvis-web = "shells.web.server:main"
+jarvis = "src.shells.cli.jarvis_cli:run"
+jarvis-web = "src.shells.web.server:main"
 
 [tool.setuptools.packages.find]
-include = ["brain*", "shells*"]
+include = ["src*"]

@@ -15,13 +15,13 @@ _tmpdir = tempfile.mkdtemp(prefix="jarvis_test_plugins_")
 os.environ["JARVIS_HOME"] = _tmpdir
 
 import importlib
-import brain.config
-importlib.reload(brain.config)
+import src.config
+importlib.reload(src.config)
 
-import brain.plugins as plugins_mod
+import src.plugins as plugins_mod
 importlib.reload(plugins_mod)
 
-from brain.plugins import PluginManager, PLUGIN_DIRS
+from src.plugins import PluginManager, PLUGIN_DIRS
 
 
 class TestPluginDiscovery(unittest.TestCase):
@@ -30,7 +30,7 @@ class TestPluginDiscovery(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp(prefix="jarvis_plugins_test_")
         os.environ["JARVIS_HOME"] = self.tmpdir
-        importlib.reload(brain.config)
+        importlib.reload(src.config)
         # Point plugin dirs to our temp directory
         self.plugin_dir = Path(self.tmpdir) / "plugins"
         # Patch PLUGIN_DIRS temporarily

@@ -1,0 +1,53 @@
+@import "tailwindcss";
+
+/* JARVIS custom theme */
+@theme {
+  --color-jarvis-cyan: #00b8d4;
+  --color-jarvis-bright: #00e5ff;
+  --color-jarvis-dim: rgba(0, 184, 212, 0.1);
+  --color-jarvis-teal: #00bfa5;
+  --color-jarvis-orange: #ff8800;
+  --color-jarvis-red: #ff3333;
+  --color-jarvis-bg: #020406;
+  --color-jarvis-text: #b0c8d4;
+  --color-jarvis-panel: rgba(2, 8, 16, 0.85);
+  --color-jarvis-border: rgba(0, 229, 255, 0.15);
+}
+
+@font-face {
+  font-family: 'Orbitron';
+  src: url('https://fonts.gstatic.com/s/orbitron/v31/yMJMMIlzdpvBhQQL_SC3X9yhF25-T1ny.woff2') format('woff2');
+  font-display: swap;
+}
+
+body {
+  font-family: 'Share Tech Mono', monospace;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  user-select: none;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(0, 229, 255, 0.2); border-radius: 2px; }
+
+/* Ring animations */
+@keyframes spin-slow { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes spin-reverse { from { transform: rotate(360deg); } to { transform: rotate(0deg); } }
+@keyframes pulse-glow { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
+@keyframes msg-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+/* HUD card animations */
+@keyframes card-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.95); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes card-out {
+  to { opacity: 0; transform: scale(0.95); }
+}
+@keyframes hud-boot {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}

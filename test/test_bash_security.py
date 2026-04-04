@@ -1,7 +1,7 @@
 """Tests for brain.agent.bash_security module."""
 
 import pytest
-from brain.agent.bash_security import (
+from src.agent.bash_security import (
     BashSecurityChecker,
     ReadOnlyValidator,
     SecurityViolation,

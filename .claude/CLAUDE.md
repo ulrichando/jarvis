@@ -5,17 +5,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build & Run Commands
 
 ```bash
-# Python brain (install in dev mode)
+# Install in dev mode
 pip install -e .
 
 # Run CLI
-jarvis                          # or: python -m shells.cli.jarvis_cli
+jarvis                          # or: python -m src.shells.cli.jarvis_cli
 
 # Run web server (port 8765)
-jarvis-web                      # or: python -m shells.web.server
+jarvis-web                      # or: python -m src.shells.web.server
 
 # Run desktop overlay (starts server if needed, then GTK+WebKit window)
-python shells/desktop/app.py
+python -c "from src.shells.desktop.app import main; main()"
 
 # Full stack (fixes audio, starts Ollama, web server, desktop)
 ./scripts/start-jarvis.sh
@@ -23,9 +23,6 @@ python shells/desktop/app.py
 # Frontend (React + Vite + Tailwind)
 cd shells/web/frontend && npm install && npm run build   # production
 cd shells/web/frontend && npm run dev                     # dev server
-
-# Rust core (gRPC server, not required for normal operation)
-cargo build --release -p jarvis-core
 
 # Tests
 python -m pytest test/ -q                                 # all tests
@@ -55,31 +52,31 @@ Brain.think() or Brain.think_stream()
 Response → shell renders (markdown→ANSI for CLI, SSE/WS for web)
 ```
 
-### Brain (`brain/main.py`)
+### Brain (`src/brain.py`)
 Central orchestrator. Owns memory, reasoning, agent loop, screen observer, permissions, hooks, plugins, skills, MCP, evolution. All LLM interactions flow through `Brain.think()` or `Brain.think_stream()`. Modes: normal, agent, plan (read-only), berbon (autonomous), cli, mobile.
 
-### Agent Loop (`brain/agent/loop.py`)
+### Agent Loop (`src/agent/loop.py`)
 Iterative tool-calling loop. Sends messages+tools to LLM, executes returned tool_calls, appends results, repeats until LLM returns no tool_calls or hits iteration limit (40 across parent+children). Sub-agents via `dispatch` tool: scout (read-only), worker (full access), planner (analysis).
 
-### Command Registry (`brain/commands/registry.py`)
-Decorator-based: `@command(name, aliases, description, category, permission)`. 91 commands across 9 categories (core, session, memory, agent, task, mcp, plugin, git, security). Handlers in `brain/commands/handlers/*.py`. Each returns `CommandResult(text, success, action, data)`.
+### Command Registry (`src/commands_brain/registry.py`)
+Decorator-based: `@command(name, aliases, description, category, permission)`. 146 commands across 9 categories (core, session, memory, agent, task, mcp, plugin, git, security). Handlers in `src/commands_brain/handlers/*.py`. Each returns `CommandResult(text, success, action, data)`.
 
-### Provider System (`brain/reasoning/providers.py`)
+### Provider System (`src/reasoning/providers.py`)
 Multi-provider LLM backend. Configured via `~/.jarvis/providers.json`. Supports Ollama, Groq, OpenAI, Anthropic, xAI, Together, OpenRouter. Smart routing: `get_active_providers(prefer_code, prefer_tool_calling, prefer_smart)`. Prompt-based tool calling fallback for models without native function calling (parses `CALL: tool_name {"args"}` from text).
 
-### Memory (`brain/memory/`)
+### Memory (`src/memory/`)
 Three layers: SQLite conversation log (append-only WAL), Neural Lattice (knowledge graph with nodes/synapses/spreading activation), and enhanced layers (holographic, associative, ACT-R activation). `store.py` is the unified API: `add_turn()`, `recall_as_context()`, `get_history()`.
 
-### Tools (`brain/agent/tools.py`)
+### Tools (`src/agent/tools.py`)
 11 core tools: bash, read_file, write_file, edit_file, search_files, web_search, web_fetch, think, dispatch, plus dynamic MCP tool proxies. Path validation blocks sensitive paths. Bash has blocked command patterns. Output truncated to 16K (bash) / 3K (other tools).
 
-### Hooks (`brain/hooks.py`)
+### Hooks (`src/hooks/manager.py`)
 PreToolUse/PostToolUse/Stop lifecycle hooks. Configured in `~/.jarvis/hooks.yaml` or `.jarvis/hooks.yaml`. Types: command (shell, exit code controls allow/block) or prompt (LLM evaluation).
 
 ### Shells
-- **CLI** (`shells/cli/jarvis_cli.py`): ANSI terminal with braille spinner, markdown rendering, tool call visualization.
-- **Web** (`shells/web/server.py`): aiohttp HTTP+WebSocket server. React frontend at `shells/web/frontend/`. TTS via Edge TTS. Audio transcription via Whisper.
-- **Desktop** (`shells/desktop/app.py`): GTK3+WebKit2 transparent overlay. Loads React UI with `?desktop=1`. Client coordination API prevents dual reactor display.
+- **CLI** (`src/shells/cli/jarvis_cli.py`): ANSI terminal with braille spinner, markdown rendering, tool call visualization.
+- **Web** (`src/shells/web/server.py`): aiohttp HTTP+WebSocket server. React frontend at `shells/web/frontend/`. TTS via Edge TTS. Audio transcription via Whisper.
+- **Desktop** (`src/shells/desktop/app.py`): GTK3+WebKit2 transparent overlay. Loads React UI with `?desktop=1`. Client coordination API prevents dual reactor display.
 
 ### Extensibility
 - **Plugins**: Python files in `~/.jarvis/plugins/` exporting `handle(query) → str|None`. Run before LLM.
@@ -107,3 +104,4 @@ PreToolUse/PostToolUse/Stop lifecycle hooks. Configured in `~/.jarvis/hooks.yaml
 - JARVIS is both MCP client (consumes external tools) and server (exposes its capabilities)
 - Desktop/browser coordination: server tracks active clients, desktop hides when browser opens
 - Frontend builds to `shells/web/frontend/dist/`, served as static files by aiohttp
+- All source code lives in `src/` — no `brain/` folder

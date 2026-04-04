@@ -1,9 +1,0 @@
-[Unit]
-Description=JARVIS AI Operating System
-Documentation=https://github.com/ulrich/jarvis
-Requires=jarvis-memory.service jarvis-brain.service jarvis-web.service
-After=multi-user.target
-AllowIsolate=yes
-
-[Install]
-WantedBy=graphical.target

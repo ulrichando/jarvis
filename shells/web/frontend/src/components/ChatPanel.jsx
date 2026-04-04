@@ -352,7 +352,7 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
             </span>
             <span className="text-[13px] leading-relaxed text-jarvis-text whitespace-pre-wrap">
               {streamingMessage}
-              <span className="inline-block w-[2px] h-[14px] bg-jarvis-bright/70 ml-[1px] align-middle" style={{ animation: 'cursor-blink 1s step-end infinite' }} />
+              <span className="inline-block w-0.5 h-3.5 bg-jarvis-bright/70 ml-px align-middle" style={{ animation: 'cursor-blink 1s step-end infinite' }} />
             </span>
           </div>
         )}

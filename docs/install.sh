@@ -73,7 +73,7 @@ else
     echo -e "  ${DIM}Downloading JARVIS...${RESET}"
     git clone --quiet --depth 1 "$JARVIS_REPO" "$JARVIS_DIR" 2>/dev/null || {
         # If repo doesn't exist yet, use local copy
-        if [ -d "$(dirname "$0")/brain" ]; then
+        if [ -d "$(dirname "$0")/src" ]; then
             echo -e "  ${DIM}Using local source...${RESET}"
             JARVIS_DIR="$(cd "$(dirname "$0")" && pwd)"
         else
@@ -109,14 +109,14 @@ mkdir -p "$JARVIS_HOME"
 # Find jarvis source
 if [ -d "$HOME/.jarvis-src" ]; then
     JARVIS_SRC="$HOME/.jarvis-src"
-elif [ -d "$(dirname "$SCRIPT_DIR")/brain" ]; then
+elif [ -d "$(dirname "$SCRIPT_DIR")/src" ]; then
     JARVIS_SRC="$(dirname "$SCRIPT_DIR")"
 else
     JARVIS_SRC="$HOME/.jarvis-src"
 fi
 
 cd "$JARVIS_SRC" 2>/dev/null || true
-exec python3 -m shells.cli.jarvis_cli "$@"
+exec python3 -m src.shells.cli.jarvis_cli "$@"
 LAUNCHER
 chmod +x "$JARVIS_BIN"
 
@@ -126,7 +126,7 @@ cat > "$HOME/.local/bin/jarvis-web" << 'WEBLAUNCH'
 JARVIS_SRC="${HOME}/.jarvis-src"
 [ -d "$JARVIS_SRC" ] || JARVIS_SRC="$(pwd)"
 cd "$JARVIS_SRC" 2>/dev/null || true
-exec python3 -m shells.web.server "$@"
+exec python3 -m src.shells.web.server "$@"
 WEBLAUNCH
 chmod +x "$HOME/.local/bin/jarvis-web"
 

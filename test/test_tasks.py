@@ -14,10 +14,10 @@ _tmpdir = tempfile.mkdtemp(prefix="jarvis_test_tasks_")
 os.environ["JARVIS_HOME"] = _tmpdir
 
 import importlib
-import brain.config
-importlib.reload(brain.config)
+import src.config
+importlib.reload(src.config)
 
-from brain.tasks.manager import TaskManager, VALID_STATUSES, VALID_PRIORITIES
+from src.tasks_brain.manager import TaskManager, VALID_STATUSES, VALID_PRIORITIES
 
 
 class TestTaskManager(unittest.TestCase):
@@ -26,7 +26,7 @@ class TestTaskManager(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp(prefix="jarvis_tasks_test_")
         os.environ["JARVIS_HOME"] = self.tmpdir
-        importlib.reload(brain.config)
+        importlib.reload(src.config)
         self.db_path = Path(self.tmpdir) / "tasks.db"
         self.tm = TaskManager(db_path=self.db_path)
 

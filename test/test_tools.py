@@ -9,7 +9,7 @@ import unittest
 # Ensure project root is on sys.path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from brain.agent.tools import _validate_path, execute_tool
+from src.agent.tools import _validate_path, execute_tool
 
 
 class TestValidatePath(unittest.TestCase):

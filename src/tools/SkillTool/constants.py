@@ -1,0 +1,1 @@
+SKILL_TOOL_NAME = "Skill"

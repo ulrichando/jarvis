@@ -1,7 +1,7 @@
 """Tests for brain.mcp.enhanced_client module."""
 import json
 import pytest
-from brain.mcp.enhanced_client import (
+from src.mcp.enhanced_client import (
     MCPToolName,
     MCPServerConfig,
     MCPConnection,
