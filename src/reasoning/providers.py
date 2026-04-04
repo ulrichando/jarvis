@@ -563,11 +563,26 @@ class ProviderRegistry:
                     if claude_tools:
                         kwargs["tools"] = claude_tools
 
-                    # Extended thinking with budget (Opus/Sonnet 4.x)
+                    # Extended thinking — adaptive budget based on query complexity
                     _use_thinking = any(m in model for m in ["opus-4", "sonnet-4"])
                     if _use_thinking:
-                        kwargs["thinking"] = {"type": "enabled", "budget_tokens": 8000}
-                        kwargs["max_tokens"] = 16000  # Must be > budget_tokens
+                        # Check if query is simple (short casual chat) vs complex (code/tools)
+                        _last_user = ""
+                        for _m in reversed(claude_messages):
+                            if _m.get("role") == "user":
+                                _last_user = str(_m.get("content", "")).lower()
+                                break
+                        _has_tools = bool(claude_tools)
+                        _is_complex = _has_tools and any(
+                            w in _last_user for w in [
+                                "fix", "create", "build", "install", "review", "debug",
+                                "write", "edit", "find", "search", "scan", "deploy",
+                                "explain", "analyze", "investigate", "set up",
+                            ]
+                        )
+                        _budget = 8000 if _is_complex else 1024
+                        kwargs["thinking"] = {"type": "enabled", "budget_tokens": _budget}
+                        kwargs["max_tokens"] = _budget + 8192
 
                     # Use streaming for thinking models to avoid SDK timeout
                     if _use_thinking:
