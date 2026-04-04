@@ -264,27 +264,34 @@ class JarvisWebServer:
         if not text:
             return
 
-        # UI control commands — show/hide text display
+        # Normalize for voice-friendly matching (Whisper adds punctuation/filler)
         text_lower = text.lower().strip()
-        if text_lower in ("show text", "display text", "text on", "show responses"):
+        import re as _re_match
+        text_clean = _re_match.sub(r'[^\w\s]', '', text_lower).strip()
+
+        # UI control commands — show/hide text display
+        _show_text = ("show text", "display text", "text on", "show responses")
+        _hide_text = ("hide text", "no text", "text off", "hide responses",
+                      "voice only", "stop showing text", "stop displaying text")
+        if text_clean in _show_text or text_lower in _show_text:
             await ws.send_json({"type": "message", "role": "jarvis",
                                 "content": "__SHOW_TEXT__", "spoken": "Text display is now on.",
                                 "model": "", "latency_ms": 0, "voice_style": "default"})
             return
-        if text_lower in ("hide text", "no text", "text off", "hide responses",
-                          "voice only", "stop showing text", "stop displaying text"):
+        if text_clean in _hide_text or text_lower in _hide_text:
             await ws.send_json({"type": "message", "role": "jarvis",
                                 "content": "__HIDE_TEXT__", "spoken": "Going voice only.",
                                 "model": "", "latency_ms": 0, "voice_style": "default"})
             return
 
-        # UI handoff — "switch to desktop" / "switch to browser" / "go to desktop"
+        # UI handoff — voice-friendly: strip punctuation, match substrings
         switch_to_desktop = ("switch to desktop", "go to desktop", "move to desktop",
                              "desktop mode", "jarvis desktop", "back to desktop")
         switch_to_browser = ("switch to browser", "go to browser", "move to browser",
                              "open in browser", "browser mode", "jarvis browser",
                              "open browser")
-        if text_lower in switch_to_desktop:
+        if text_clean in switch_to_desktop or text_lower in switch_to_desktop \
+                or any(p in text_clean for p in switch_to_desktop):
             clients = getattr(self, '_active_clients', {})
             await self._broadcast({"type": "handoff", "target": "desktop"})
             clients["browser"] = False
@@ -292,7 +299,8 @@ class JarvisWebServer:
                                 "content": "Moving to desktop.", "spoken": "Moving to desktop.",
                                 "model": "", "latency_ms": 0, "voice_style": "default"})
             return
-        if text_lower in switch_to_browser:
+        if text_clean in switch_to_browser or text_lower in switch_to_browser \
+                or any(p in text_clean for p in switch_to_browser):
             import subprocess as _sp
             env = {**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0.0")}
             _sp.Popen(["xdg-open", f"http://127.0.0.1:{PORT}/"], start_new_session=True,
@@ -313,7 +321,8 @@ class JarvisWebServer:
             "lock": ("lock", "lock screen", "lock the screen", "lock the computer"),
         }
         for action, triggers in power_actions.items():
-            if text_lower in triggers:
+            if text_clean in triggers or text_lower in triggers \
+                    or any(t in text_clean for t in triggers):
                 await ws.send_json({"type": "power", "action": action})
                 break
 
@@ -1129,6 +1138,38 @@ class JarvisWebServer:
             self._server_listener.jarvis_speaking = True
 
         try:
+            # Voice command interception — same matching as _handle_query
+            import re as _re_mic
+            text_lower = transcript.lower().strip()
+            text_clean = _re_mic.sub(r'[^\w\s]', '', text_lower).strip()
+
+            switch_to_desktop = ("switch to desktop", "go to desktop", "move to desktop",
+                                 "desktop mode", "jarvis desktop", "back to desktop")
+            switch_to_browser = ("switch to browser", "go to browser", "move to browser",
+                                 "open in browser", "browser mode", "jarvis browser",
+                                 "open browser")
+            if text_clean in switch_to_desktop or any(p in text_clean for p in switch_to_desktop):
+                clients = getattr(self, '_active_clients', {})
+                await self._broadcast({"type": "handoff", "target": "desktop"})
+                clients["browser"] = False
+                await self._broadcast({
+                    "type": "message", "role": "jarvis",
+                    "content": "Moving to desktop.", "spoken": "Moving to desktop.",
+                    "model": "", "latency_ms": 0, "voice_style": "default",
+                })
+                return
+            if text_clean in switch_to_browser or any(p in text_clean for p in switch_to_browser):
+                import subprocess as _sp
+                env = {**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0.0")}
+                _sp.Popen(["xdg-open", f"http://127.0.0.1:{PORT}/"], start_new_session=True,
+                          stdout=_sp.DEVNULL, stderr=_sp.DEVNULL, env=env)
+                await self._broadcast({
+                    "type": "message", "role": "jarvis",
+                    "content": "Opening browser.", "spoken": "Opening browser.",
+                    "model": "", "latency_ms": 0, "voice_style": "default",
+                })
+                return
+
             await self._broadcast({"type": "stt_result", "text": transcript})
             await self._broadcast({"type": "status", "status": "thinking"})
 
