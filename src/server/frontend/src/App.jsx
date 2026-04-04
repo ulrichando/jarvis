@@ -15,7 +15,8 @@ function App() {
   const [reactorState, setReactorState] = useState('idle')
   const [audioLevel, setAudioLevel] = useState(0)
 
-  const { messages: wsMessages, sendMessage } = useWebSocket('ws://localhost:8765/ws')
+  const wsUrl = useMemo(() => `ws://${window.location.host || '127.0.0.1:8765'}/ws`, [])
+  const { messages: wsMessages, sendMessage } = useWebSocket(wsUrl)
   const theme = useTheme()
 
   // Detect mode and register with server

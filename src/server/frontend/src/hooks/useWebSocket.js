@@ -13,10 +13,12 @@ export default function useWebSocket(url) {
       if (wsRef.current?.readyState === WebSocket.OPEN) return
 
       setStatus('connecting')
+      console.log('[JARVIS WS] Connecting to:', url)
       const ws = new WebSocket(url)
       wsRef.current = ws
 
       ws.onopen = () => {
+        console.log('[JARVIS WS] Connected')
         setStatus('connected')
         reconnectDelay.current = 1000
       }
@@ -39,7 +41,8 @@ export default function useWebSocket(url) {
         }, reconnectDelay.current)
       }
 
-      ws.onerror = () => {
+      ws.onerror = (e) => {
+        console.log('[JARVIS WS] Error:', e.message || 'connection failed')
         ws.close()
       }
     }
