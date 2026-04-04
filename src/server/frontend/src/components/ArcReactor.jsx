@@ -393,8 +393,10 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
       const audio = audioRef.current
       const st = stateRef.current
 
-      const raw = THREE.MathUtils.clamp(audio * 4, 0, 1)
-      smoothAudio += (raw - smoothAudio) * 0.08
+      const raw = THREE.MathUtils.clamp(audio * 5, 0, 1)
+      // Fast attack, slow decay — snappy pulse response
+      const smoothFactor = raw > smoothAudio ? 0.3 : 0.08
+      smoothAudio += (raw - smoothAudio) * smoothFactor
 
       // Simulate audio pulse when speaking (TTS doesn't feed audioLevel)
       const speakPulse = st === 'speaking'

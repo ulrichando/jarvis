@@ -328,6 +328,22 @@ class JarvisWebServer:
                                 "model": "", "latency_ms": 0, "voice_style": "default"})
             return
 
+        # Restart command
+        _restart_triggers = ("restart", "restart yourself", "restart jarvis",
+                             "reboot yourself", "jarvis restart", "reload yourself")
+        if text_clean in _restart_triggers or text_lower in _restart_triggers \
+                or any(p in text_clean for p in _restart_triggers):
+            await ws.send_json({"type": "message", "role": "jarvis",
+                                "content": "Restarting...", "spoken": "Restarting. Give me a moment.",
+                                "model": "", "latency_ms": 0, "voice_style": "default"})
+            print("[JARVIS] Restart requested via voice/text")
+            await asyncio.sleep(2)
+            # Kill desktop overlay before restarting
+            import subprocess as _sp_kill
+            _sp_kill.run(["pkill", "-f", "src.desktop.app"], capture_output=True)
+            os._exit(0)
+            return
+
         # UI handoff — voice-friendly: strip punctuation, match substrings
         switch_to_desktop = ("switch to desktop", "go to desktop", "move to desktop",
                              "desktop mode", "jarvis desktop", "back to desktop")
@@ -1825,6 +1841,19 @@ class JarvisWebServer:
         app.router.add_post("/api/power", self.power_handler)
         # Hot reload
         app.router.add_post("/api/reload", self.reload_handler)
+
+        # Full restart — kills the process; systemd/start script relaunches
+        async def _restart_handler(request):
+            await self._broadcast({
+                "type": "message", "role": "jarvis",
+                "content": "Restarting...", "spoken": "",
+            })
+            print("[JARVIS] Restart requested — exiting for relaunch")
+            await asyncio.sleep(1)
+            import subprocess as _sp_k
+            _sp_k.run(["pkill", "-f", "src.desktop.app"], capture_output=True)
+            os._exit(0)
+        app.router.add_post("/api/restart", _restart_handler)
         # Remote session API — makes JARVIS cloud-capable
         app.router.add_post("/api/remote/connect", self.remote_connect_handler)
         app.router.add_post("/api/remote/disconnect", self.remote_disconnect_handler)
