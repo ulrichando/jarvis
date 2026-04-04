@@ -52,7 +52,7 @@ def _server_running(host="127.0.0.1", port=8765):
         return False
 
 
-def _wait_for_server(host="127.0.0.1", port=8765, timeout=15):
+def _wait_for_server(host="127.0.0.1", port=8765, timeout=60):
     import urllib.request
     start = time.time()
     while time.time() - start < timeout:
@@ -91,9 +91,9 @@ def main():
     if not _server_running(host, port):
         server_thread = threading.Thread(target=_start_server, args=(host, port), daemon=True)
         server_thread.start()
-        print("Starting JARVIS server...")
+        print("Starting JARVIS server (MCP init takes ~30s, please wait)...")
         if not _wait_for_server(host, port):
-            print("Failed to start server.")
+            print("Failed to start server. Check /tmp/jarvis-desktop.log")
             sys.exit(1)
 
     # ── Window (load saved size/position) ──
@@ -299,9 +299,39 @@ def main():
             pass
 
     # ── System Tray Icon with full menu ──
-    _jarvis_icon_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "jarvis-icon-48.png"
+    from src.desktop.colors import (
+        PRESETS, get_theme, get_colors, set_theme, set_custom_color, generate_icon,
     )
+
+    # Generate icon with current theme color
+    _jarvis_icon_path = generate_icon()
+
+    # Holder for indicator/tray so color changes can update it
+    _tray_ref = [None]
+
+    def _apply_color_change(theme_name=None, custom_hex=None):
+        """Apply a color change: regenerate icon, reload webview, update tray."""
+        if custom_hex:
+            set_custom_color(custom_hex)
+        elif theme_name:
+            set_theme(theme_name)
+
+        new_icon = generate_icon()
+
+        # Update tray icon
+        tray = _tray_ref[0]
+        if tray is not None:
+            if hasattr(tray, 'set_icon_full'):
+                # AppIndicator — must set by path
+                tray.set_icon_full(new_icon, "JARVIS")
+            elif hasattr(tray, 'set_from_file'):
+                # StatusIcon
+                tray.set_from_file(new_icon)
+
+        # Tell frontend to reload colors
+        primary, glow = get_colors()
+        js = f"window.__jarvisSetTheme && window.__jarvisSetTheme('{primary}', '{glow}')"
+        GLib.idle_add(lambda: webview.run_javascript(js, None, None, None) or False)
 
     def _build_tray_menu():
         """Build the right-click tray menu."""
@@ -341,7 +371,7 @@ def main():
         item_center = Gtk.MenuItem(label="Center on Screen")
         def _center(w):
             window.set_position(Gtk.WindowPosition.CENTER)
-            GLib.timeout_add(200, _save_state)  # Save after GTK repositions
+            GLib.timeout_add(200, _save_state)
         item_center.connect("activate", _center)
         menu.append(item_center)
 
@@ -360,6 +390,40 @@ def main():
             _save_state()
         item_opacity_down.connect("activate", _more_transparent)
         menu.append(item_opacity_down)
+
+        menu.append(Gtk.SeparatorMenuItem())
+
+        # ── Color Theme Submenu ──
+        current_theme = get_theme()
+        color_item = Gtk.MenuItem(label="Theme Color")
+        color_sub = Gtk.Menu()
+
+        for preset_id, (_, _, label) in PRESETS.items():
+            prefix = "\u2022 " if preset_id == current_theme else "  "
+            item = Gtk.MenuItem(label=f"{prefix}{label}")
+            pid = preset_id  # capture
+            item.connect("activate", lambda w, t=pid: _apply_color_change(theme_name=t))
+            color_sub.append(item)
+
+        color_sub.append(Gtk.SeparatorMenuItem())
+
+        item_custom = Gtk.MenuItem(label="  Custom Color...")
+        def _pick_custom(w):
+            dialog = Gtk.ColorChooserDialog(title="JARVIS Color", parent=window)
+            primary, _ = get_colors()
+            from src.desktop.colors import hex_to_rgb
+            r, g, b = hex_to_rgb(primary)
+            dialog.set_rgba(Gdk.RGBA(r / 255, g / 255, b / 255, 1.0))
+            if dialog.run() == Gtk.ResponseType.OK:
+                rgba = dialog.get_rgba()
+                hex_color = f"#{int(rgba.red*255):02x}{int(rgba.green*255):02x}{int(rgba.blue*255):02x}"
+                _apply_color_change(custom_hex=hex_color)
+            dialog.destroy()
+        item_custom.connect("activate", _pick_custom)
+        color_sub.append(item_custom)
+
+        color_item.set_submenu(color_sub)
+        menu.append(color_item)
 
         menu.append(Gtk.SeparatorMenuItem())
 
@@ -397,6 +461,7 @@ def main():
         indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
         indicator.set_title("J.A.R.V.I.S.")
         indicator.set_menu(_build_tray_menu())
+        _tray_ref[0] = indicator
     except Exception:
         try:
             if os.path.exists(_jarvis_icon_path):
@@ -411,6 +476,7 @@ def main():
                 menu = _build_tray_menu()
                 menu.popup(None, None, None, None, button, activate_time)
             tray.connect("popup-menu", _on_tray_popup)
+            _tray_ref[0] = tray
         except Exception:
             pass
 

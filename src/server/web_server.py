@@ -57,7 +57,7 @@ TTS_VOICE = "en-US-AndrewMultilingualNeural"
 class JarvisWebServer:
 
     def __init__(self):
-        self.brain = Brain(quiet=True)
+        self.brain = None  # Deferred — initialized in run() after port binds
         self.clients: set[web.WebSocketResponse] = set()
         # Remote session manager — shared singleton
         remote_config = get_remote_config()
@@ -68,7 +68,11 @@ class JarvisWebServer:
         self.remote_permission_bridge = RemotePermissionBridge()
         # Auth token for remote API (None = no auth required)
         self._remote_auth_token: str | None = remote_config.get("auth_token")
-        # Pre-load Whisper model at startup so first voice request is fast
+
+    def _init_brain(self):
+        """Initialize Brain (heavy — MCP servers take ~25s)."""
+        self.brain = Brain(quiet=True)
+        # Pre-load Whisper model so first voice request is fast
         try:
             from src.speech.stt import _get_model
             _get_model()
@@ -401,15 +405,12 @@ class JarvisWebServer:
 
         # Don't send empty responses
         if full_response and full_response.strip():
-            # For speech: use only the final LLM turn (after tools),
-            # and exclude the already-spoken first sentence
+            # For speech: use only the final LLM turn (after tools)
             if used_tools:
                 spoken = self._clean_for_speech(speech_buffer)
-            elif first_sent:
-                # Remove the first sentence we already spoke
-                remaining = full_response[first_spoken_end:].strip()
-                spoken = self._clean_for_speech(remaining) if remaining else ""
             else:
+                # Always send the full response for speech — the frontend
+                # only speaks the final message (skips partials)
                 spoken = self._clean_for_speech(full_response)
 
             if first_sent:
@@ -511,27 +512,43 @@ class JarvisWebServer:
 
     @staticmethod
     def _clean_for_speech(text: str) -> str:
-        """Strip everything that shouldn't be spoken aloud."""
+        """Strip everything that shouldn't be spoken aloud.
+
+        Aggressively removes code blocks, file paths, terminal output,
+        and anything that sounds unnatural when read by TTS.
+        """
         t = text
         # Remove display/command tags
         t = re.sub(r'\[show:\w+\]', '', t)
         t = re.sub(r'\[/show\]', '', t)
         t = re.sub(r'\[run:.*?\]', '', t)
         t = re.sub(r'\[display:\w+\]', '', t)
-        # Remove code blocks (fenced and indented)
+        # Remove fenced code blocks (greedy — catches nested/multi-line)
+        t = re.sub(r'```[a-z]*\n[\s\S]*?```', '', t)
         t = re.sub(r'```[\s\S]*?```', '', t)
-        t = re.sub(r'`[^`]+`', '', t)
+        # Remove inline code
+        t = re.sub(r'`[^`]*`', '', t)
+        # Remove indented code blocks (4+ spaces or tab at line start)
         t = re.sub(r'^(    |\t).*$', '', t, flags=re.MULTILINE)
+        # Remove lines that look like code
+        t = re.sub(r'^.*(?:import |from .* import |def |class |return |if __|elif |except |async def |await |self\.).*$', '', t, flags=re.MULTILINE)
+        t = re.sub(r'^\s*\w+\s*[=:]\s*.{10,}$', '', t, flags=re.MULTILINE)
+        t = re.sub(r'^\s*(?:const |let |var |function |=>).*$', '', t, flags=re.MULTILINE)
+        # Remove lines with programming syntax
+        t = re.sub(r'^.*[{}\[\]();]+.*$', '', t, flags=re.MULTILINE)
+        t = re.sub(r'^\s*[<>/]+.*$', '', t, flags=re.MULTILINE)
         # Remove markdown headers, bold, italic, links
         t = re.sub(r'^#{1,6}\s+', '', t, flags=re.MULTILINE)
         t = re.sub(r'\*{1,2}([^*]+)\*{1,2}', r'\1', t)
         t = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', t)
         # Remove URLs
         t = re.sub(r'https?://\S+', '', t)
-        # Remove file paths
-        t = re.sub(r'(?<!\w)[~/.]?/[\w/.\-]+', '', t)
-        # Remove command flags
-        t = re.sub(r'\s--?\w[\w-]*', '', t)
+        # Remove file paths (src/foo/bar.py, ./path, ~/path, /abs/path)
+        t = re.sub(r'(?<!\w)[~/.]?/?(?:src|test|lib|node_modules|dist|build|\.?\w+)/[\w/.\-]+', '', t)
+        t = re.sub(r'(?<!\w)/[\w/.\-]{5,}', '', t)
+        # Remove command flags and CLI-like content
+        t = re.sub(r'\s--?\w[\w-]*(?:=\S+)?', '', t)
+        t = re.sub(r'^\s*\$\s+.*$', '', t, flags=re.MULTILINE)
         # Remove JSON/dict-like blocks
         t = re.sub(r'\{[^}]{10,}\}', '', t)
         t = re.sub(r'\[[^\]]{20,}\]', '', t)
@@ -541,19 +558,23 @@ class JarvisWebServer:
         t = re.sub(r'-rw-.*$', '', t, flags=re.MULTILINE)
         t = re.sub(r'total \d+', '', t)
         # Remove stack traces and error dumps
-        t = re.sub(r'^\s*(File|Traceback|at |Error:|Exception:).*$', '', t, flags=re.MULTILINE)
-        # Remove lines that look like code (assignments, imports, function defs)
-        t = re.sub(r'^.*(?:import |from .* import |def |class |return |if __|elif |except ).*$', '', t, flags=re.MULTILINE)
-        t = re.sub(r'^\s*\w+\s*=\s*.+$', '', t, flags=re.MULTILINE)
+        t = re.sub(r'^\s*(File |Traceback|at |Error:|Exception:|TypeError|ValueError|KeyError|ImportError).*$', '', t, flags=re.MULTILINE)
+        # Remove pip/npm output
+        t = re.sub(r'^\s*(Requirement|Successfully|Collecting|Downloading|Installing).*$', '', t, flags=re.MULTILINE)
         # Remove box drawing / table chars
         t = re.sub(r'[╭╰╮╯│┃┏┓┗┛├┤┬┴┼═─|]+', '', t)
         # Remove bullet list markers
         t = re.sub(r'^\s*[-*•]\s+', '', t, flags=re.MULTILINE)
-        # Remove excess whitespace
+        # Remove numbered list markers
+        t = re.sub(r'^\s*\d+\.\s+', '', t, flags=re.MULTILINE)
+        # Limit length — don't speak novels
+        t = t[:600]
+        # Clean up whitespace
         t = re.sub(r'\n{2,}', '. ', t)
         t = re.sub(r'\n', ' ', t)
         t = re.sub(r'\s{2,}', ' ', t)
         t = re.sub(r'\.\s*\.', '.', t)
+        t = re.sub(r'^[\s.,;:]+', '', t)
         return t.strip()
 
     async def _handle_passive(self, ws: web.WebSocketResponse, data: dict):
@@ -1098,10 +1119,15 @@ class JarvisWebServer:
 
             if spoken and len(spoken) > 1:
                 await self._broadcast({"type": "status", "status": "speaking"})
-                try:
-                    await self._speak_system(spoken)
-                except Exception as e:
-                    print(f"[JARVIS] TTS error: {e}")
+                # Only play through OS speakers if no webview/browser client is
+                # connected — those clients play TTS themselves from the broadcast.
+                clients = getattr(self, '_active_clients', {})
+                has_ui_client = clients.get("desktop") or clients.get("browser")
+                if not has_ui_client:
+                    try:
+                        await self._speak_system(spoken)
+                    except Exception as e:
+                        print(f"[JARVIS] TTS error: {e}")
 
             await self._broadcast({"type": "status", "status": ""})
 
@@ -1624,11 +1650,6 @@ class JarvisWebServer:
             return web.json_response({"status": "error", "error": str(e)}, status=500)
 
     async def run(self):
-        await self.brain.start()
-
-        # Start server-side mic capture as fallback
-        await self._start_server_mic()
-
         app = web.Application()
         app.router.add_get("/ws", self.websocket_handler)
         app.router.add_get("/tts", self.tts_handler)
@@ -1665,6 +1686,7 @@ class JarvisWebServer:
 
         # ── Client coordination — only one reactor visible at a time ──
         active_clients = {"desktop": False, "browser": False}
+        self._active_clients = active_clients  # Expose for _speak_system check
 
         async def client_register(request):
             """Register a client (desktop or browser). Returns who should show the reactor."""
@@ -1752,6 +1774,38 @@ class JarvisWebServer:
         app.router.add_post("/api/providers", providers_add_handler)
         app.router.add_post("/api/providers/remove", providers_remove_handler)
 
+        # ── Theme color API ──
+        async def theme_get_handler(request):
+            from src.desktop.colors import get_theme, get_colors, PRESETS
+            theme = get_theme()
+            primary, glow = get_colors()
+            return web.json_response({
+                "theme": theme,
+                "primary": primary,
+                "glow": glow,
+                "presets": {k: {"primary": v[0], "glow": v[1], "label": v[2]}
+                            for k, v in PRESETS.items()},
+            })
+
+        async def theme_set_handler(request):
+            from src.desktop.colors import (
+                PRESETS, set_theme, set_custom_color, get_colors, generate_icon,
+            )
+            data = await request.json()
+            theme = data.get("theme")
+            custom = data.get("custom")
+            if custom:
+                primary, glow = set_custom_color(custom, data.get("glow"))
+            elif theme and theme in PRESETS:
+                primary, glow = set_theme(theme)
+            else:
+                return web.json_response({"error": "Invalid theme"}, status=400)
+            generate_icon(primary)
+            return web.json_response({"theme": theme or "custom", "primary": primary, "glow": glow})
+
+        app.router.add_get("/api/theme", theme_get_handler)
+        app.router.add_post("/api/theme", theme_set_handler)
+
         # Serve index.html for root and SPA fallback
         async def index_handler(request):
             return web.FileResponse(STATIC_DIR / "index.html")
@@ -1772,6 +1826,17 @@ class JarvisWebServer:
         await runner.setup()
         site = web.TCPSite(runner, HOST, PORT)
         await site.start()
+
+        # Port is bound — now initialize the heavy Brain (MCP servers etc.)
+        # This allows the desktop health check to pass while Brain loads.
+        if self.brain is None:
+            print("[JARVIS] Initializing Brain (MCP servers loading)...")
+            await asyncio.get_event_loop().run_in_executor(None, self._init_brain)
+            await self.brain.start()
+            print("[JARVIS] Brain ready.")
+
+        # Start server-side mic capture as fallback
+        await self._start_server_mic()
 
         print(f"[JARVIS] Web shell:  http://localhost:{PORT}")
         print(f"[JARVIS] WebSocket:  ws://localhost:{PORT}/ws")
