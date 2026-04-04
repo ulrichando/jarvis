@@ -382,8 +382,13 @@ def main():
 
     # Try AppIndicator3 first (modern), fallback to StatusIcon
     try:
-        gi.require_version('AppIndicator3', '0.1')
-        from gi.repository import AppIndicator3
+        # Ayatana is the actively maintained fork on modern distros
+        try:
+            gi.require_version('AyatanaAppIndicator3', '0.1')
+            from gi.repository import AyatanaAppIndicator3 as AppIndicator3
+        except (ValueError, ImportError):
+            gi.require_version('AppIndicator3', '0.1')
+            from gi.repository import AppIndicator3
         indicator = AppIndicator3.Indicator.new(
             "jarvis-desktop",
             _jarvis_icon_path if os.path.exists(_jarvis_icon_path) else "applications-system",

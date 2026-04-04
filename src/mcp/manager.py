@@ -1,11 +1,44 @@
 """MCP Manager — discovers and manages MCP server connections."""
 import json
 import logging
+import os
+import re
 from pathlib import Path
 from src.config import JARVIS_HOME
 from src.mcp.client import MCPClient, MCPTool
 
 log = logging.getLogger("jarvis.mcp")
+
+
+def _load_env_file(path: Path) -> dict[str, str]:
+    """Load KEY=VALUE pairs from an env file into a dict.
+
+    Skips comments and blank lines. Does not modify os.environ.
+    """
+    result = {}
+    if not path.exists():
+        return result
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key and value:
+            result[key] = value
+    return result
+
+
+def _expand_env(value: str, extra_env: dict[str, str]) -> str:
+    """Expand ${VAR} and $VAR references using extra_env then os.environ."""
+    def _replace(m):
+        var = m.group(1) or m.group(2)
+        return extra_env.get(var, os.environ.get(var, m.group(0)))
+    return re.sub(r"\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)", _replace, value)
+
 
 class MCPManager:
     """Manages multiple MCP server connections."""
@@ -18,9 +51,19 @@ class MCPManager:
         """Load MCP server configs from settings files.
 
         Reads from:
+        - ~/.jarvis/.env.mcp (credentials, loaded into env context)
         - ~/.jarvis/mcp.json
-        - .jarvis/mcp.json (project-level)
+        - .jarvis/mcp.json (project-level, overrides user-level)
         """
+        # Load MCP credentials env file
+        mcp_env = _load_env_file(JARVIS_HOME / ".env.mcp")
+        if mcp_env:
+            # Inject into os.environ so child processes inherit them
+            for k, v in mcp_env.items():
+                if k not in os.environ:
+                    os.environ[k] = v
+            log.info("Loaded %d env vars from .env.mcp", len(mcp_env))
+
         for config_path in [
             JARVIS_HOME / "mcp.json",
             Path.cwd() / ".jarvis" / "mcp.json",
@@ -30,11 +73,16 @@ class MCPManager:
                     data = json.loads(config_path.read_text())
                     servers = data.get("mcpServers", data.get("servers", {}))
                     for name, cfg in servers.items():
+                        if not cfg.get("enabled", True):
+                            log.info("MCP '%s' is disabled, skipping", name)
+                            continue
                         command = cfg.get("command", [])
                         if isinstance(command, str):
                             command = command.split()
                         args = cfg.get("args", [])
-                        env = cfg.get("env", {})
+                        env = {}
+                        for ek, ev in cfg.get("env", {}).items():
+                            env[ek] = _expand_env(str(ev), mcp_env)
                         full_command = [command] if isinstance(command, str) else command
                         if args:
                             full_command.extend(args)

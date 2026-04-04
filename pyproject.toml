@@ -7,21 +7,30 @@ dependencies = [
     "anthropic",
     "openai",
     "aiohttp",
+    "aiohttp-socks",
     "numpy",
     "msgpack",
     "edge-tts",
     "faster-whisper",
     "sounddevice",
+    "duckduckgo-search",
+    "beautifulsoup4",
+    "requests",
+    "pyyaml",
+    "pydantic",
+    "Pillow",
 ]
 
 [project.optional-dependencies]
-vision = ["Pillow", "mss", "pytesseract"]
+vision = ["opencv-python", "mss", "pytesseract"]
 tts = ["piper-tts"]
-all = ["jarvis[vision,tts]"]
+desktop = ["PyGObject"]
+all = ["jarvis[vision,tts,desktop]"]
 
 [project.scripts]
 jarvis = "src.cli.jarvis_cli:run"
 jarvis-web = "src.server.web_server:main"
+jarvis-desktop = "src.desktop.app:main"
 
 [tool.setuptools.packages.find]
 include = ["src*"]

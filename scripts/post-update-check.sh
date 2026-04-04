@@ -34,7 +34,7 @@ else
 fi
 
 # 2. Check critical imports (only actual dependencies — no openai/anthropic SDK needed)
-for mod in src aiohttp msgpack edge_tts; do
+for mod in src aiohttp msgpack edge_tts numpy pydantic yaml bs4 requests PIL; do
     if "$VENV/bin/python3" -c "import $mod" 2>/dev/null; then
         echo -e "  ${GREEN}✓${RESET} $mod"
     else
@@ -44,7 +44,15 @@ for mod in src aiohttp msgpack edge_tts; do
     fi
 done
 
-# 3. Check Ollama
+# 3. Check desktop dependencies (GTK, WebKit)
+if "$VENV/bin/python3" -c "import gi; gi.require_version('Gtk','3.0'); gi.require_version('WebKit2','4.1')" 2>/dev/null; then
+    echo -e "  ${GREEN}✓${RESET} GTK3 + WebKit2"
+else
+    echo -e "  ${RED}✗${RESET} GTK/WebKit missing — install: sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-webkit2-4.1"
+    ISSUES=$((ISSUES + 1))
+fi
+
+# 4. Check Ollama
 if command -v ollama &>/dev/null; then
     if curl -s http://localhost:11434/api/tags &>/dev/null; then
         echo -e "  ${GREEN}✓${RESET} Ollama running"
@@ -57,7 +65,7 @@ else
     echo -e "  ${DIM}-${RESET} Ollama not installed (optional)"
 fi
 
-# 4. Check JARVIS source
+# 5. Check JARVIS source
 if [ -f "$JARVIS/src/brain.py" ]; then
     echo -e "  ${GREEN}✓${RESET} JARVIS source intact"
 else
@@ -65,7 +73,7 @@ else
     ISSUES=$((ISSUES + 1))
 fi
 
-# 5. Run quick test
+# 6. Run quick test
 if "$VENV/bin/python3" -m pytest "$JARVIS/test/" -q --tb=no 2>/dev/null | tail -1 | grep -q "passed"; then
     echo -e "  ${GREEN}✓${RESET} Tests passing"
 else
@@ -73,7 +81,7 @@ else
     ISSUES=$((ISSUES + 1))
 fi
 
-# 6. Check providers config
+# 7. Check providers config
 if [ -f "$REAL_HOME/.jarvis/providers.json" ]; then
     echo -e "  ${GREEN}✓${RESET} Provider config exists"
 else

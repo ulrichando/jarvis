@@ -65,6 +65,32 @@ if [ "$MISSING" -eq 1 ]; then
     echo ""
 fi
 
+# ── Install system dependencies for desktop overlay ──
+echo -e "  ${DIM}Installing system packages (desktop, audio, vision)...${RESET}"
+if command -v apt &>/dev/null; then
+    sudo apt install -y -qq \
+        python3-gi gir1.2-gtk-3.0 gir1.2-webkit2-4.1 \
+        gir1.2-ayatanaappindicator3-0.1 \
+        libcairo2-dev libgirepository1.0-dev \
+        portaudio19-dev tesseract-ocr \
+        ffmpeg 2>/dev/null || true
+elif command -v dnf &>/dev/null; then
+    sudo dnf install -y \
+        python3-gobject gtk3 webkit2gtk4.1 \
+        libayatana-appindicator-gtk3 \
+        cairo-devel gobject-introspection-devel \
+        portaudio-devel tesseract \
+        ffmpeg 2>/dev/null || true
+elif command -v pacman &>/dev/null; then
+    sudo pacman -S --noconfirm \
+        python-gobject gtk3 webkit2gtk-4.1 \
+        libappindicator-gtk3 \
+        cairo gobject-introspection \
+        portaudio tesseract \
+        ffmpeg 2>/dev/null || true
+fi
+echo ""
+
 # ── Clone or update repo ──
 if [ -d "$JARVIS_DIR" ]; then
     echo -e "  ${DIM}Updating JARVIS...${RESET}"
@@ -129,6 +155,17 @@ cd "$JARVIS_SRC" 2>/dev/null || true
 exec python3 -m src.server.web_server "$@"
 WEBLAUNCH
 chmod +x "$HOME/.local/bin/jarvis-web"
+
+# ── Create desktop launcher ──
+cat > "$HOME/.local/bin/jarvis-desktop" << 'DESKLAUNCH'
+#!/usr/bin/env bash
+JARVIS_SRC="${HOME}/.jarvis-src"
+[ -d "$JARVIS_SRC" ] || JARVIS_SRC="$(pwd)"
+cd "$JARVIS_SRC" 2>/dev/null || true
+export DISPLAY="${DISPLAY:-:0.0}"
+exec python3 -c "from src.desktop.app import main; main()" "$@"
+DESKLAUNCH
+chmod +x "$HOME/.local/bin/jarvis-desktop"
 
 # ── Ensure ~/.local/bin is in PATH ──
 if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
@@ -305,6 +342,7 @@ echo ""
 echo -e "  ${DIM}Commands:${RESET}"
 echo -e "    ${CYAN}jarvis${RESET}              Start interactive session"
 echo -e "    ${CYAN}jarvis-web${RESET}          Start web server"
+echo -e "    ${CYAN}jarvis-desktop${RESET}      Start desktop overlay"
 echo -e "    ${CYAN}jarvis -p 'hello'${RESET}   One-shot query"
 echo ""
 if [ "$AI_CHOICES" = "8" ]; then

@@ -1478,6 +1478,50 @@ async def main():
                         break
             return matches
 
+        def _show_shortcut_help():
+            """Show instant shortcut overlay above the input frame (like Claude Code ?).
+
+            Displays shortcuts in the output area, then redraws the input frame.
+            """
+            _erase_frame()
+            sections = [
+                ("Input", [
+                    ("v", "Voice input"),
+                    ("!cmd", "Run shell command"),
+                    ("!!cmd", "Run + analyze output"),
+                    ("/cmd", "Slash command"),
+                ]),
+                ("Navigation", [
+                    ("Ctrl+C", "Cancel / clear input"),
+                    ("Ctrl+D", "Exit (press twice)"),
+                    ("Ctrl+L", "Clear screen"),
+                    ("Ctrl+R", "Search history"),
+                    ("Ctrl+E", "Open in $EDITOR"),
+                    ("Ctrl+T", "Show recent queries"),
+                    ("Up/Down", "Browse history"),
+                    ("Tab", "Accept autocomplete"),
+                    ("Esc", "Close menu / cancel"),
+                ]),
+                ("Quick Commands", [
+                    ("/help", "All commands"),
+                    ("/status", "Model, mode, session"),
+                    ("/context", "Token usage"),
+                    ("/doctor", "Health check"),
+                    ("/model", "Switch AI model"),
+                    ("/effort", "Set response depth"),
+                    ("/compact", "Compress context"),
+                    ("/new", "Fresh conversation"),
+                    ("/cost", "Session cost summary"),
+                ]),
+            ]
+            _write("\n")
+            for section, items in sections:
+                _write(f"  {BOLD}{section}{RESET}\n")
+                for key, desc in items:
+                    _write(f"    {CYAN}{key:<14s}{RESET} {DIM}{desc}{RESET}\n")
+                _write("\n")
+            sys.stdout.flush()
+
         def _draw_search_prompt():
             """Draw the Ctrl+R search prompt in the input zone."""
             query = "".join(_search_buf)
@@ -1716,6 +1760,12 @@ async def main():
                     if handled:
                         _redraw()
                         return
+                # ? on empty buffer: instant shortcut overlay (no Enter needed)
+                if ch == "?" and not buf:
+                    _hide_menu()
+                    _show_shortcut_help()
+                    _draw_input_frame(mode_prefix, "")
+                    return
                 # INSERT mode or vim disabled: normal input
                 buf.append(ch)
                 will_show_menu = "".join(buf).startswith("/")
