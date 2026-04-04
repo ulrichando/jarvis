@@ -9,5 +9,5 @@ auth and its transitive dependency tree.
 VERSION = "0.1.0"
 
 
-def get_claude_code_user_agent() -> str:
-    return f"claude-code/{VERSION}"
+def get_jarvis_user_agent() -> str:
+    return f"jarvis/{VERSION}"

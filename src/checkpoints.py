@@ -1,6 +1,6 @@
 """JARVIS Checkpoint System — snapshot files before editing for real undo.
 
-Inspired by Claude Code's automatic checkpoint system:
+Inspired by automatic checkpoint system:
 - Every file edit creates a snapshot of the previous contents
 - /undo reverts to the last checkpoint
 - Checkpoints stored in ~/.jarvis/checkpoints/ with timestamps

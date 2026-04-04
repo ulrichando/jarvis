@@ -1,6 +1,6 @@
 """JARVIS Hooks System — deterministic quality gates around tool execution.
 
-Modeled after Claude Code's hooks architecture with full event lifecycle:
+JARVIS hooks architecture with full event lifecycle:
 
 Events:
   PreToolUse         — Validate/block/modify tool calls before execution
@@ -330,7 +330,7 @@ class HooksManager:
             if if_filter and not self._matches_if(if_filter, tool_name, tool_args):
                 continue
 
-            # Get the actual hook entries (support nested "hooks" key like Claude Code)
+            # Get the actual hook entries (support nested "hooks" key)
             hook_entries = hook_def.get("hooks", [hook_def])
             if not isinstance(hook_entries, list):
                 hook_entries = [hook_entries]
@@ -671,7 +671,7 @@ class HooksManager:
         if "systemMessage" in data:
             hr.message = data["systemMessage"]
 
-        # Claude Code style hookSpecificOutput
+        # hookSpecificOutput
         specific = data.get("hookSpecificOutput", {})
         if specific:
             decision = specific.get("permissionDecision", specific.get("decision", ""))

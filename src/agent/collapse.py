@@ -1,7 +1,7 @@
 """
 Collapse consecutive read/search tool calls into compact summaries.
 
-Ported from Claude Code's collapseReadSearch.ts — adapted for JARVIS's
+JARVIS's
 tool naming conventions and Python dataclasses.
 """
 

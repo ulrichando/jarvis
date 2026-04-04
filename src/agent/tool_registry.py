@@ -4,7 +4,7 @@ Provides structured metadata for each tool beyond the raw JSON schema,
 enabling smarter concurrency decisions, output management, and deferred
 tool loading. Works alongside tools.py -- does not replace it.
 
-Inspired by Claude Code's tool architecture.
+JARVIS tool architecture.
 """
 
 from __future__ import annotations
@@ -60,10 +60,52 @@ def _build_registry() -> None:
 
     # Per-tool overrides keyed by function name.
     overrides: dict[str, dict] = {
+        # ── System tools ──────────────────────────────────────────────
         "bash": dict(
             category="system",
             activity_description=lambda args: f"Running: {args.get('command', '???')[:60]}",
         ),
+        "database": dict(
+            category="system",
+            activity_description=lambda args: f"Query on {os.path.basename(args.get('database', '?'))}",
+        ),
+        "computer_use": dict(
+            category="system",
+            is_destructive=True,
+            activity_description=lambda args: f"Computer: {args.get('action', '?')}",
+        ),
+        "view_screen": dict(
+            is_read_only=True,
+            is_concurrency_safe=True,
+            category="system",
+            activity_description=lambda _: "Viewing screen",
+        ),
+        "Sleep": dict(
+            is_read_only=True,
+            category="system",
+            activity_description=lambda args: f"Sleeping {args.get('duration_ms', '?')}ms",
+        ),
+        "ConfigTool": dict(
+            is_read_only=True,
+            is_concurrency_safe=True,
+            category="system",
+            activity_description=lambda args: f"Config: {args.get('mode', 'get')} {args.get('key', '?')}",
+        ),
+        "ListMcpResources": dict(
+            is_read_only=True,
+            is_concurrency_safe=True,
+            category="system",
+            activity_description=lambda _: "Listing MCP resources",
+        ),
+        "ScheduleCron": dict(
+            category="system",
+            activity_description=lambda args: f"Cron: {args.get('action', '?')}",
+        ),
+        "RemoteTrigger": dict(
+            category="system",
+            activity_description=lambda args: f"Remote: {args.get('action', '?')}",
+        ),
+        # ── File tools ────────────────────────────────────────────────
         "read_file": dict(
             is_read_only=True,
             is_concurrency_safe=True,
@@ -78,12 +120,30 @@ def _build_registry() -> None:
             category="file",
             activity_description=lambda args: f"Editing {os.path.basename(args.get('path', '?'))}",
         ),
+        "notebook_edit": dict(
+            category="file",
+            activity_description=lambda args: f"Notebook: {args.get('action', 'edit')} cell {args.get('cell_index', '?')}",
+        ),
+        # ── Search tools ──────────────────────────────────────────────
         "search_files": dict(
             is_read_only=True,
             is_concurrency_safe=True,
             category="search",
             activity_description=lambda args: f"Searching: {args.get('pattern', '?')}",
         ),
+        "Glob": dict(
+            is_read_only=True,
+            is_concurrency_safe=True,
+            category="search",
+            activity_description=lambda args: f"Glob: {args.get('pattern', '?')}",
+        ),
+        "Grep": dict(
+            is_read_only=True,
+            is_concurrency_safe=True,
+            category="search",
+            activity_description=lambda args: f"Grep: {args.get('pattern', '?')[:40]}",
+        ),
+        # ── Web tools ─────────────────────────────────────────────────
         "web_search": dict(
             is_read_only=True,
             is_concurrency_safe=True,
@@ -102,20 +162,7 @@ def _build_registry() -> None:
                 f"{args.get('method', 'GET')} {args.get('url', '?')[:50]}"
             ),
         ),
-        "database": dict(
-            category="system",
-            activity_description=lambda args: f"Query on {os.path.basename(args.get('database', '?'))}",
-        ),
-        "computer_use": dict(
-            category="system",
-            activity_description=lambda args: f"Computer: {args.get('action', '?')}",
-        ),
-        "view_screen": dict(
-            is_read_only=True,
-            is_concurrency_safe=True,
-            category="system",
-            activity_description=lambda _: "Viewing screen",
-        ),
+        # ── Agent tools ───────────────────────────────────────────────
         "think": dict(
             is_read_only=True,
             is_concurrency_safe=True,
@@ -135,6 +182,93 @@ def _build_registry() -> None:
                 f"Dispatching {args.get('agent_type', '?')}: "
                 f"{args.get('task', '?')[:40]}"
             ),
+        ),
+        "ask_user": dict(
+            is_read_only=True,
+            category="agent",
+            activity_description=lambda args: "Asking user...",
+        ),
+        "Skill": dict(
+            category="agent",
+            activity_description=lambda args: f"Skill: {args.get('skill', '?')}",
+        ),
+        "LSP": dict(
+            is_read_only=True,
+            category="agent",
+            activity_description=lambda args: f"LSP: {args.get('action', '?')}",
+        ),
+        "BriefTool": dict(
+            is_read_only=True,
+            category="agent",
+            activity_description=lambda args: "Sending message",
+        ),
+        # ── Mode tools ────────────────────────────────────────────────
+        "EnterPlanMode": dict(
+            is_read_only=True,
+            category="mode",
+            activity_description=lambda _: "Entering plan mode",
+        ),
+        "ExitPlanMode": dict(
+            is_read_only=True,
+            category="mode",
+            activity_description=lambda _: "Exiting plan mode",
+        ),
+        "EnterWorktree": dict(
+            category="mode",
+            activity_description=lambda _: "Entering worktree",
+        ),
+        "ExitWorktree": dict(
+            category="mode",
+            activity_description=lambda _: "Exiting worktree",
+        ),
+        # ── Task tools ────────────────────────────────────────────────
+        "todo_write": dict(
+            category="task",
+            activity_description=lambda _: "Updating todos",
+        ),
+        "TaskCreate": dict(
+            category="task",
+            activity_description=lambda args: f"Creating task: {args.get('subject', '?')[:40]}",
+        ),
+        "TaskGet": dict(
+            is_read_only=True,
+            is_concurrency_safe=True,
+            category="task",
+            activity_description=lambda args: f"Getting task {args.get('id', '?')}",
+        ),
+        "TaskList": dict(
+            is_read_only=True,
+            is_concurrency_safe=True,
+            category="task",
+            activity_description=lambda _: "Listing tasks",
+        ),
+        "TaskStop": dict(
+            category="task",
+            activity_description=lambda args: f"Stopping task {args.get('id', '?')}",
+        ),
+        "TaskUpdate": dict(
+            category="task",
+            activity_description=lambda args: f"Updating task {args.get('id', '?')}",
+        ),
+        "TaskOutput": dict(
+            is_read_only=True,
+            is_concurrency_safe=True,
+            category="task",
+            activity_description=lambda args: f"Task output: {args.get('id', '?')}",
+        ),
+        # ── Multi-agent / Team tools ──────────────────────────────────
+        "SendMessage": dict(
+            category="multi-agent",
+            activity_description=lambda args: f"Message to {args.get('to', '?')}",
+        ),
+        "TeamCreate": dict(
+            category="team",
+            activity_description=lambda args: f"Creating team: {args.get('name', '?')}",
+        ),
+        "TeamDelete": dict(
+            category="team",
+            is_destructive=True,
+            activity_description=lambda args: f"Deleting team: {args.get('name', '?')}",
         ),
     }
 

@@ -15,10 +15,10 @@ def _detect_shell() -> Optional[dict]:
     """Detect the current shell and return configuration info."""
     shell = os.environ.get("SHELL", "")
     home = str(Path.home())
-    claude_dir = os.path.join(home, ".claude")
+    jarvis_dir = os.path.join(home, ".jarvis")
 
     if shell.endswith("/zsh") or shell.endswith("/zsh.exe"):
-        cache_file = os.path.join(claude_dir, "completion.zsh")
+        cache_file = os.path.join(jarvis_dir, "completion.zsh")
         return {
             "name": "zsh",
             "rc_file": os.path.join(home, ".zshrc"),
@@ -27,7 +27,7 @@ def _detect_shell() -> Optional[dict]:
             "shell_flag": "zsh",
         }
     elif shell.endswith("/bash") or shell.endswith("/bash.exe"):
-        cache_file = os.path.join(claude_dir, "completion.bash")
+        cache_file = os.path.join(jarvis_dir, "completion.bash")
         return {
             "name": "bash",
             "rc_file": os.path.join(home, ".bashrc"),
@@ -37,7 +37,7 @@ def _detect_shell() -> Optional[dict]:
         }
     elif shell.endswith("/fish") or shell.endswith("/fish.exe"):
         xdg = os.environ.get("XDG_CONFIG_HOME", os.path.join(home, ".config"))
-        cache_file = os.path.join(claude_dir, "completion.fish")
+        cache_file = os.path.join(jarvis_dir, "completion.fish")
         return {
             "name": "fish",
             "rc_file": os.path.join(xdg, "fish", "config.fish"),
@@ -62,7 +62,7 @@ async def setup_shell_completion() -> str:
     # Try to generate completions
     try:
         result = subprocess.run(
-            ["claude", "completion", shell["shell_flag"]],
+            ["jarvis", "completion", shell["shell_flag"]],
             capture_output=True,
             text=True,
         )
@@ -78,7 +78,7 @@ async def setup_shell_completion() -> str:
     try:
         with open(shell["rc_file"]) as f:
             existing = f.read()
-        if "claude completion" in existing or shell["cache_file"] in existing:
+        if "jarvis completion" in existing or shell["cache_file"] in existing:
             return f"\nShell completions updated for {shell['name']}\n"
     except FileNotFoundError:
         existing = ""
@@ -105,7 +105,7 @@ async def regenerate_completion_cache() -> None:
 
     try:
         result = subprocess.run(
-            ["claude", "completion", shell["shell_flag"]],
+            ["jarvis", "completion", shell["shell_flag"]],
             capture_output=True,
             text=True,
         )

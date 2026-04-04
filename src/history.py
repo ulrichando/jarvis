@@ -219,9 +219,9 @@ def add_to_history(command: Union[HistoryEntry, str]) -> None:
     """Add a command to the prompt history."""
     global _last_added_entry, _cleanup_registered
 
-    if os.environ.get("CLAUDE_CODE_SKIP_PROMPT_HISTORY", "").lower() in (
-        "1", "true", "yes",
-    ):
+    skip = os.environ.get("JARVIS_SKIP_PROMPT_HISTORY",
+                          os.environ.get("CLAUDE_CODE_SKIP_PROMPT_HISTORY", ""))
+    if skip.lower() in ("1", "true", "yes"):
         return
 
     if isinstance(command, str):

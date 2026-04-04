@@ -1,13 +1,14 @@
 """
-Loads markdown files from .claude/output-styles directories throughout the project
-and from ~/.claude/output-styles directory and converts them to output styles.
+Loads markdown files from .jarvis/output-styles (and .claude/output-styles for
+compatibility) directories throughout the project and from ~/.jarvis/output-styles
+directory and converts them to output styles.
 
 Each filename becomes a style name, and the file content becomes the style prompt.
 The frontmatter provides name and description.
 
 Structure:
-- Project .claude/output-styles/*.md -> project styles
-- User ~/.claude/output-styles/*.md -> user styles (overridden by project styles)
+- Project .jarvis/output-styles/*.md -> project styles
+- User ~/.jarvis/output-styles/*.md -> user styles (overridden by project styles)
 """
 
 from __future__ import annotations
@@ -53,7 +54,7 @@ def _load_markdown_files_for_subdir(
     subdir: str, cwd: str
 ) -> list[dict]:
     """
-    Load markdown files from .claude/<subdir> directories.
+    Load markdown files from .jarvis/<subdir> directories (also .claude/ for compat).
 
     Searches project directories and user home directory.
     Returns list of dicts with filePath, frontmatter, content, source.
@@ -63,14 +64,17 @@ def _load_markdown_files_for_subdir(
     results: list[dict] = []
     search_dirs: list[tuple[str, str]] = []
 
-    # Project directory
-    project_dir = os.path.join(cwd, ".claude", subdir)
-    if os.path.isdir(project_dir):
-        search_dirs.append((project_dir, "project"))
+    # Project directories (.jarvis preferred, .claude for compatibility)
+    for folder in (".jarvis", ".claude"):
+        project_dir = os.path.join(cwd, folder, subdir)
+        if os.path.isdir(project_dir):
+            search_dirs.append((project_dir, "project"))
+            break  # prefer .jarvis
 
     # User home directory
     home = os.path.expanduser("~")
-    user_dir = os.path.join(home, ".claude", subdir)
+    jarvis_home = os.environ.get("JARVIS_HOME", os.path.join(home, ".jarvis"))
+    user_dir = os.path.join(jarvis_home, subdir)
     if os.path.isdir(user_dir):
         search_dirs.append((user_dir, "user"))
 
@@ -119,7 +123,7 @@ _output_style_cache: Optional[list[OutputStyleConfig]] = None
 
 async def get_output_style_dir_styles(cwd: str) -> list[OutputStyleConfig]:
     """
-    Load output styles from .claude/output-styles directories.
+    Load output styles from .jarvis/output-styles directories.
 
     Memoized: call clear_output_style_caches() to reset.
     """

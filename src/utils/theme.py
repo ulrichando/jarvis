@@ -34,8 +34,8 @@ def _make_light_theme() -> Theme:
     return {
         "autoAccept": "rgb(135,0,255)",
         "bashBorder": "rgb(255,0,135)",
-        "claude": "rgb(215,119,87)",
-        "claudeShimmer": "rgb(245,149,117)",
+        "jarvis": "rgb(215,119,87)",
+        "jarvisShimmer": "rgb(245,149,117)",
         "permission": "rgb(87,105,247)",
         "permissionShimmer": "rgb(137,155,255)",
         "planMode": "rgb(0,102,102)",
@@ -58,8 +58,8 @@ def _make_dark_theme() -> Theme:
     return {
         "autoAccept": "rgb(175,135,255)",
         "bashBorder": "rgb(253,93,177)",
-        "claude": "rgb(215,119,87)",
-        "claudeShimmer": "rgb(235,159,127)",
+        "jarvis": "rgb(215,119,87)",
+        "jarvisShimmer": "rgb(235,159,127)",
         "permission": "rgb(177,185,249)",
         "permissionShimmer": "rgb(207,215,255)",
         "planMode": "rgb(72,150,140)",
@@ -82,7 +82,7 @@ def _make_dark_ansi_theme() -> Theme:
     return {
         "autoAccept": "ansi:magentaBright",
         "bashBorder": "ansi:magentaBright",
-        "claude": "ansi:redBright",
+        "jarvis": "ansi:redBright",
         "permission": "ansi:blueBright",
         "planMode": "ansi:cyanBright",
         "text": "ansi:whiteBright",
@@ -104,7 +104,7 @@ def _make_light_ansi_theme() -> Theme:
     return {
         "autoAccept": "ansi:magenta",
         "bashBorder": "ansi:magenta",
-        "claude": "ansi:redBright",
+        "jarvis": "ansi:redBright",
         "permission": "ansi:blue",
         "planMode": "ansi:cyan",
         "text": "ansi:black",

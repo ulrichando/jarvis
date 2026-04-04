@@ -1,6 +1,6 @@
 """JARVIS Session Manager — persistent, resumable conversations.
 
-Inspired by Claude Code's session system:
+Inspired by session system:
 - Sessions are auto-saved with unique IDs
 - Resume with name or ID (jarvis-cli -c to continue last, -r <name> to resume)
 - Each session stores full message history + metadata

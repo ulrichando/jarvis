@@ -44,8 +44,8 @@ def get_anthropic_api_key() -> Optional[str]:
     return os.environ.get("ANTHROPIC_API_KEY")
 
 
-def is_claude_ai_subscriber() -> bool:
-    """Check if the user is a Claude AI subscriber."""
+def is_api_subscriber() -> bool:
+    """Check if the user is an API subscriber."""
     return bool(os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"))
 
 

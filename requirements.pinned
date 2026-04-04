@@ -1,6 +1,6 @@
 aiohttp==3.13.3
 numpy==2.4.4
 msgpack==1.1.2
-edge-tts==6.1.12
+edge-tts==7.2.8
 faster-whisper==1.2.1
-sounddevice==0.5.1
+sounddevice==0.5.5

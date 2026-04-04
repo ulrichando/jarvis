@@ -193,7 +193,7 @@ class ProjectState:
             "types": [],
             "config_files": [],
             "has_jarvis": (root / ".jarvis").is_dir(),
-            "has_claude_md": (root / "CLAUDE.md").is_file(),
+            "has_claude_md": (root / "JARVIS.md").is_file() or (root / "CLAUDE.md").is_file(),
             "is_empty": _is_dir_empty(root),
         }
 
@@ -268,7 +268,7 @@ class ProjectState:
     def get_onboarding_steps(cwd: str) -> list[dict[str, Any]]:
         """Return onboarding checklist steps for the project."""
         root = Path(cwd)
-        has_claude_md = (root / "CLAUDE.md").is_file()
+        has_claude_md = (root / "JARVIS.md").is_file() or (root / "CLAUDE.md").is_file()
         is_empty = _is_dir_empty(root)
 
         return [
@@ -281,7 +281,7 @@ class ProjectState:
             },
             {
                 "key": "claudemd",
-                "text": "Run /init to create a CLAUDE.md file with instructions",
+                "text": "Run /init to create a JARVIS.md file with project instructions",
                 "is_complete": has_claude_md,
                 "is_completable": True,
                 "is_enabled": not is_empty,

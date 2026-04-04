@@ -957,7 +957,7 @@ async def main():
 
     cmd_count = 91
     try:
-        from src.commands_brain import registry as cmd_registry
+        from src.commands import registry as cmd_registry
         cmd_count = cmd_registry.visible_count
     except Exception:
         pass
@@ -1339,7 +1339,7 @@ async def main():
 
         # Load command list for autocomplete
         try:
-            from src.commands_brain import registry as _reg
+            from src.commands import registry as _reg
             all_cmds = sorted(_reg.list_commands(include_hidden=False), key=lambda c: c.name)
         except Exception:
             all_cmds = []
@@ -1453,7 +1453,7 @@ async def main():
             # Reload if commands weren't available at init (e.g., lazy registration)
             if not all_cmds:
                 try:
-                    from src.commands_brain import registry as _reg2
+                    from src.commands import registry as _reg2
                     all_cmds = sorted(_reg2.list_commands(include_hidden=False), key=lambda c: c.name)
                 except Exception:
                     pass
@@ -1606,10 +1606,15 @@ async def main():
                         buf.clear()
                         buf.extend(f"/{matches[selected].name}")
                 _hide_menu()
-                text = "".join(buf).strip()
+                text = "".join(buf)
+                # Multi-line: if text ends with \, continue on next line
+                if text.endswith("\\"):
+                    buf[-1] = "\n"  # replace trailing \ with newline
+                    _redraw()
+                    return
+                text = text.strip()
                 if text and (not _history_entries or _history_entries[-1] != text):
                     _history_entries.append(text)
-                    # Persist to session-level accumulator
                     if hasattr(_async_read_input, '_session_history'):
                         _async_read_input._session_history.append(text)
                 _history_idx = len(_history_entries)
@@ -2186,7 +2191,7 @@ async def main():
                 # Just "/" alone — show command menu with descriptions (JARVIS style)
                 if not cmd_name:
                     try:
-                        from src.commands_brain import registry as _reg
+                        from src.commands import registry as _reg
                         tw = _tw()
                         cmds = _reg.list_commands(include_hidden=False)
                         cmds.sort(key=lambda c: c.name)
@@ -2218,8 +2223,8 @@ async def main():
                         result = await brain.dispatch_command(cmd_name, cmd_args, session_mgr=session_mgr)
                     else:
                         try:
-                            from src.commands_brain import registry as cmd_registry
-                            from src.commands_brain.registry import CommandContext
+                            from src.commands import registry as cmd_registry
+                            from src.commands.registry import CommandContext
                             ctx = CommandContext(
                                 brain=brain if client._is_full_brain else None,
                                 session_mgr=session_mgr, raw_input=user_input,
@@ -2248,7 +2253,7 @@ async def main():
                     else:
                         # Unknown command — try fuzzy suggestion
                         try:
-                            from src.commands_brain import registry as cmd_registry
+                            from src.commands import registry as cmd_registry
                             suggestions = cmd_registry.suggest(cmd_name, limit=3)
                             if suggestions:
                                 names = ", ".join(f"/{s.name}" for s in suggestions)

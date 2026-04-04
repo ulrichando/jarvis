@@ -48,7 +48,8 @@ from src.reasoning.awareness import SelfAwareness
 from src.reasoning.reason import ReasoningEngine
 from src.memory.store import MemoryStore
 from src.memory.lattice.node import NodeType
-from src.commands_brain.executor import CommandExecutor
+from src.services.autoDream.autoDream import AutoDreamManager, init_auto_dream
+from src.commands.executor import CommandExecutor
 from src.evolution.telemetry import Telemetry
 from src.evolution.engine import EvolutionEngine
 from src.agent.planner import AgentPlanner
@@ -75,9 +76,10 @@ from src.checkpoints import CheckpointManager
 from src.permissions import PermissionManager, PermissionLevel
 from src.mcp import MCPManager
 from src.lsp import LspManager
-from src.commands_brain import registry as command_registry
-from src.commands_brain.registry import CommandContext, CommandResult
+from src.commands import registry as command_registry
+from src.commands.registry import CommandContext, CommandResult
 from src.agent.coordinator import AgentCoordinator
+from src.agent.coordinator_enhanced import CoordinatorAgent
 from src.agent.deepsearch import DeepSearch
 from src.agent.swarm import Swarm
 from src.tasks_brain.runner import BackgroundRunner
@@ -227,12 +229,15 @@ class Brain:
         set_mcp_manager(self.mcp)  # Wire MCP into tool executor
         self.lsp = LspManager()
         self._coordinator = AgentCoordinator()
+        self._coordinator_enhanced = CoordinatorAgent(base_coordinator=self._coordinator)
+        self._coordinator_enhanced.set_reasoner(self.reasoner)
         self._runner = BackgroundRunner()
         self.deepsearch = DeepSearch(reasoner=self.reasoner)
         self.swarm = Swarm(reasoner=self.reasoner)
         self.screen = ScreenObserver(interval=10)
         self.screen.set_provider_registry(self.reasoner.providers)
         self.screen.start()
+        self.auto_dream: AutoDreamManager = init_auto_dream()
         self._background_tasks = {}  # For tracking bg tasks
         self._scheduled_tasks = {}   # For tracking scheduled tasks
         self.command_registry = command_registry
@@ -259,6 +264,59 @@ class Brain:
                  len(self.skills.list_skills()),
                  len(self.mcp.list_tools()),
                  sanitize_model_name(self.reasoner.active_model_name))
+
+    # ═══ REMOTE BRIDGE ════════════════════════════════════════════
+
+    @property
+    def remote_session_active(self) -> bool:
+        """True if a remote bridge session is currently active."""
+        try:
+            from src.remote.session_manager import get_remote_session_manager
+            mgr = get_remote_session_manager()
+            return mgr.is_connected()
+        except Exception:
+            return False
+
+    async def start_remote_bridge(self, config: dict | None = None) -> bool:
+        """Initialize the remote bridge for accepting remote connections.
+
+        Args:
+            config: Optional override config dict with keys:
+                - server_url: JARVIS server URL
+                - auth_token: auth token
+                - max_sessions: max concurrent sessions
+
+        Returns:
+            True if bridge was started successfully.
+        """
+        try:
+            from src.bridge.bridgeConfig import get_remote_config
+            from src.bridge.bridgeEnabled import is_bridge_enabled
+            from src.remote.session_manager import get_remote_session_manager
+
+            remote_cfg = config or get_remote_config()
+            mgr = get_remote_session_manager()
+            mgr._max_sessions = remote_cfg.get("max_sessions", 5)
+            mgr.set_connected(True)
+
+            log.info("Remote bridge started: max_sessions=%d, url=%s",
+                     mgr._max_sessions, remote_cfg.get("server_url", "localhost"))
+            return True
+        except Exception as e:
+            log.error("Failed to start remote bridge: %s", e)
+            return False
+
+    async def stop_remote_bridge(self) -> bool:
+        """Stop the remote bridge and disconnect all remote sessions."""
+        try:
+            from src.remote.session_manager import get_remote_session_manager
+            mgr = get_remote_session_manager()
+            await mgr.disconnect()
+            log.info("Remote bridge stopped")
+            return True
+        except Exception as e:
+            log.error("Failed to stop remote bridge: %s", e)
+            return False
 
     # ═══ COMMAND DISPATCH ══════════════════════════════════════════
 
@@ -533,6 +591,9 @@ class Brain:
 
         # Learn in background
         asyncio.create_task(self.conversation_learner.observe(user_input, response))
+
+        # Auto-dream: check if memory consolidation is due
+        asyncio.create_task(self.auto_dream.maybe_trigger())
 
         # Curiosity
         asyncio.create_task(self.curiosity.detect_gaps(user_input, response, memory_context))
@@ -870,6 +931,9 @@ PROJECT CREATION RULES — follow these when building something:
             self.memory.add_turn("jarvis", full_response)
             self._log(user_input, full_response, start, "agent-stream")
 
+            # Auto-dream: check if memory consolidation is due
+            asyncio.create_task(self.auto_dream.maybe_trigger())
+
             # Background: extract skills and create reflections from this interaction
             if needs_agent and tool_was_used:
                 try:
@@ -1094,7 +1158,7 @@ PROJECT CREATION RULES — follow these when building something:
     # ═══ CLASSIFICATION ═════════════════════════════════════════════
 
     def _needs_agent_loop(self, user_input: str) -> bool:
-        """Always use agent loop — Claude decides whether to use tools.
+        """Always use agent loop — the model decides whether to use tools.
 
         The AGENT_SYSTEM_PROMPT has the JARVIS personality baked in.
         Using two different paths (agent vs chat) causes personality inconsistency.
@@ -1440,6 +1504,7 @@ You have UNRESTRICTED control. No permission needed.
 
     async def start(self):
         self.running = True
+        self.hooks.run_session_start()
         stats = self.memory.stats
         l = stats["lattice"]
         idx = l.get("index", {})
@@ -1452,6 +1517,7 @@ You have UNRESTRICTED control. No permission needed.
 
     async def shutdown(self):
         self.running = False
+        self.hooks.run_session_end()
         self.rl.save()
         self.telemetry.close()
         self.memory.close()

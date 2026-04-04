@@ -4,11 +4,11 @@ from __future__ import annotations
 REMOTE_TRIGGER_TOOL_NAME = "RemoteTrigger"
 
 DESCRIPTION = (
-    "Manage scheduled remote JARVIS agents (triggers) via the claude.ai CCR API. "
+    "Manage scheduled remote JARVIS agents (triggers) via the JARVIS API. "
     "Auth is handled in-process -- the token never reaches the shell."
 )
 
-PROMPT = """Call the claude.ai remote-trigger API. Use this instead of curl -- the OAuth token is added automatically in-process and never exposed.
+PROMPT = """Call the JARVIS remote-trigger API. Use this instead of curl -- the OAuth token is added automatically in-process and never exposed.
 
 Actions:
 - list: GET /v1/code/triggers

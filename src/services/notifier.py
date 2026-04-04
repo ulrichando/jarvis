@@ -31,6 +31,16 @@ async def send_notification(notif: NotificationOptions) -> str:
 
     Returns the method used to send the notification.
     """
+    # Fire Notification hooks
+    try:
+        from src.hooks import HooksManager
+        if not hasattr(send_notification, "_hooks"):
+            send_notification._hooks = HooksManager()
+            send_notification._hooks.load()
+        send_notification._hooks.run_notification(notif.message, notif.notification_type)
+    except Exception:
+        pass  # Hooks are best-effort
+
     channel = os.environ.get("JARVIS_NOTIFICATION_CHANNEL", "auto")
     return await _send_to_channel(channel, notif)
 

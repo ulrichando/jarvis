@@ -16,7 +16,7 @@ TMUX_SESSION = "panel"
 def get_terminal_panel_socket() -> str:
     """Get the tmux socket name for the terminal panel."""
     session_id = os.environ.get("JARVIS_SESSION_ID", "default")
-    return f"claude-panel-{session_id[:8]}"
+    return f"jarvis-panel-{session_id[:8]}"
 
 
 class TerminalPanel:

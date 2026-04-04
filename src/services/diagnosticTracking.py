@@ -87,7 +87,7 @@ class DiagnosticTrackingService:
 
     def _normalize_file_uri(self, file_uri: str) -> str:
         """Normalize a file URI for consistent comparisons."""
-        protocol_prefixes = ["file://", "_claude_fs_right:", "_claude_fs_left:"]
+        protocol_prefixes = ["file://", "_jarvis_fs_right:", "_jarvis_fs_left:"]
         normalized = file_uri
         for prefix in protocol_prefixes:
             if file_uri.startswith(prefix):

@@ -1,0 +1,1 @@
+"""WebFetchPermissionRequest package."""

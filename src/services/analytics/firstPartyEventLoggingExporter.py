@@ -36,7 +36,7 @@ def _get_storage_dir() -> Path:
 @dataclass
 class FirstPartyEventLoggingEvent:
     """API envelope for event logging."""
-    event_type: str  # 'ClaudeCodeInternalEvent' | 'GrowthbookExperimentEvent'
+    event_type: str  # 'JarvisInternalEvent' | 'GrowthbookExperimentEvent'
     event_data: Any = None
 
 

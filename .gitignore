@@ -6,7 +6,7 @@ env/
 # Build artifacts
 target/
 *.egg-info/
-jarvis_brain.egg-info/
+jarvis.egg-info/
 __pycache__/
 *.pyc
 *.pyo

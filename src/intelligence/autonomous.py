@@ -14,9 +14,6 @@ This is where JARVIS becomes more than a lookup table.
 """
 
 import asyncio
-from src.reasoning.groq_client import GroqReasoner
-from src.internet.search import web_search
-from src.commands_brain.executor import CommandExecutor
 
 
 THINKING_PROMPT = """You are JARVIS reasoning through a problem. This is your inner monologue.
@@ -59,7 +56,7 @@ class AutonomousThinker:
     """JARVIS reasons through problems — not just step-by-step, but with
     self-doubt, hypothesis testing, and the ability to change his mind."""
 
-    def __init__(self, reasoner: GroqReasoner, executor: CommandExecutor):
+    def __init__(self, reasoner, executor):
         self.reasoner = reasoner
         self.executor = executor
         self._last_reasoning_trace: list[str] = []
@@ -107,6 +104,7 @@ class AutonomousThinker:
                 elif line.upper().startswith("SEARCH:"):
                     query = line.split(":", 1)[1].strip()
                     try:
+                        from src.internet.search import web_search
                         results = await asyncio.to_thread(web_search, query, 3)
                         snippets = " | ".join(
                             f"{r['title']}: {r['body'][:120]}" for r in results[:2]

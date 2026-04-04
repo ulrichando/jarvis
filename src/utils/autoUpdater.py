@@ -51,7 +51,7 @@ def should_skip_version(target_version: str) -> bool:
 def get_lock_file_path() -> str:
     """Get the path to the update lock file."""
     home = str(Path.home())
-    config_dir = os.environ.get("JARVIS_HOME", os.path.join(home, ".claude"))
+    config_dir = os.environ.get("JARVIS_HOME", os.path.join(home, ".jarvis"))
     return os.path.join(config_dir, ".update.lock")
 
 

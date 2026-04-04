@@ -1,20 +1,47 @@
-"""JARVIS Web Shell — HTTP + WebSocket + Neural TTS server."""
+"""JARVIS Web Shell — HTTP + WebSocket + Neural TTS server.
+
+Serves the local React frontend, handles local WebSocket clients,
+and provides remote session management via the bridge/remote subsystems
+so JARVIS can operate as a cloud-capable service.
+"""
 
 import asyncio
 import json
+import logging
+import os
 import re
+import secrets
 import time
 import io
+import uuid
 from pathlib import Path
 
 import numpy as np
 import edge_tts
 from aiohttp import web
 
-# Full JARVIS Brain with Claude API, agent loop, tools
+# Full JARVIS Brain with agent loop, tools
 from src.brain import Brain
 from src.speech.composer import compose_chunks
 from src.speech.stt import transcribe_audio, audio_bytes_to_numpy
+
+# Remote session management
+from src.remote.RemoteSessionManager import RemoteSessionManager
+from src.remote.session_manager import get_remote_session_manager, set_remote_session_manager
+from src.remote.remotePermissionBridge import RemotePermissionBridge
+from src.remote.sdkMessageAdapter import to_sdk_message, from_sdk_message
+
+# Bridge config and types
+from src.bridge.bridgeConfig import get_bridge_access_token, get_bridge_base_url, get_remote_config
+from src.bridge.types import BridgeConfig
+from src.bridge.bridgeEnabled import is_bridge_enabled
+from src.bridge.bridgeMessaging import (
+    BoundedUUIDSet,
+    handle_ingress_message,
+    is_eligible_bridge_message,
+)
+
+logger = logging.getLogger(__name__)
 
 # Use React build if available, fall back to vanilla static
 _react_dir = Path(__file__).parent / "static-react"
@@ -32,6 +59,15 @@ class JarvisWebServer:
     def __init__(self):
         self.brain = Brain(quiet=True)
         self.clients: set[web.WebSocketResponse] = set()
+        # Remote session manager — shared singleton
+        remote_config = get_remote_config()
+        self.remote_manager = RemoteSessionManager(
+            max_sessions=remote_config.get("max_sessions", 5),
+        )
+        set_remote_session_manager(self.remote_manager)
+        self.remote_permission_bridge = RemotePermissionBridge()
+        # Auth token for remote API (None = no auth required)
+        self._remote_auth_token: str | None = remote_config.get("auth_token")
         # Pre-load Whisper model at startup so first voice request is fast
         try:
             from src.speech.stt import _get_model
@@ -1131,6 +1167,386 @@ class JarvisWebServer:
             print(f'[JARVIS] TTS error: {e}')
             self._current_ffplay = None
 
+    # ── Remote Session API ──────────────────────────────────────────
+
+    def _check_remote_auth(self, request: web.Request) -> bool:
+        """Validate the remote auth token from the request.
+
+        Returns True if auth is valid or no auth is configured.
+        """
+        if not self._remote_auth_token:
+            return True  # No auth configured
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+            return token == self._remote_auth_token
+        # Also accept token as query param for WebSocket upgrades
+        token = request.query.get("token", "")
+        return token == self._remote_auth_token
+
+    async def remote_connect_handler(self, request: web.Request) -> web.Response:
+        """POST /api/remote/connect — create a remote session.
+
+        Request body:
+            { "cwd": "/path/to/work", "session_id": "optional-id" }
+
+        Returns:
+            { "session_id": "...", "ws_url": "ws://host:port/ws/remote?session=..." }
+        """
+        if not self._check_remote_auth(request):
+            return web.json_response({"error": "Authentication required"}, status=401)
+
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+
+        cwd = data.get("cwd", os.getcwd() if hasattr(os, "getcwd") else "/")
+        requested_id = data.get("session_id")
+
+        session = await self.remote_manager.create_session(
+            config={"cwd": cwd, "created_by": request.remote},
+            session_id=requested_id,
+        )
+
+        # Build WebSocket URL
+        scheme = "wss" if request.secure else "ws"
+        host = request.host
+        ws_url = f"{scheme}://{host}/ws/remote?session={session.session_id}"
+
+        logger.info("[remote] New session %s from %s", session.session_id, request.remote)
+
+        return web.json_response({
+            "session_id": session.session_id,
+            "ws_url": ws_url,
+            "status": "connected",
+        })
+
+    async def remote_disconnect_handler(self, request: web.Request) -> web.Response:
+        """POST /api/remote/disconnect — end a remote session.
+
+        Request body:
+            { "session_id": "..." }
+        """
+        if not self._check_remote_auth(request):
+            return web.json_response({"error": "Authentication required"}, status=401)
+
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid request body"}, status=400)
+
+        session_id = data.get("session_id", "")
+        if not session_id:
+            return web.json_response({"error": "session_id required"}, status=400)
+
+        stopped = await self.remote_manager.stop_session(session_id)
+        if stopped:
+            return web.json_response({"status": "disconnected", "session_id": session_id})
+        return web.json_response({"error": "Session not found"}, status=404)
+
+    async def remote_status_handler(self, request: web.Request) -> web.Response:
+        """GET /api/remote/status — check remote session status.
+
+        Returns bridge status and all active sessions.
+        """
+        if not self._check_remote_auth(request):
+            return web.json_response({"error": "Authentication required"}, status=401)
+
+        sessions = self.remote_manager.list_session_info()
+        bridge_enabled = is_bridge_enabled()
+        return web.json_response({
+            "bridge_enabled": bridge_enabled,
+            "connected": self.remote_manager.is_connected(),
+            "active_sessions": self.remote_manager.active_count,
+            "max_sessions": self.remote_manager._max_sessions,
+            "sessions": sessions,
+        })
+
+    async def remote_websocket_handler(self, request: web.Request) -> web.WebSocketResponse:
+        """WS /ws/remote — WebSocket endpoint for remote clients.
+
+        Remote clients connect here to send queries and receive responses,
+        mirroring the local /ws endpoint but with session tracking and auth.
+
+        Query params:
+            session: session_id (from /api/remote/connect)
+            token: auth token (alternative to Authorization header)
+        """
+        if not self._check_remote_auth(request):
+            ws = web.WebSocketResponse()
+            await ws.prepare(request)
+            await ws.send_json({"type": "error", "error": "Authentication required"})
+            await ws.close()
+            return ws
+
+        session_id = request.query.get("session", "")
+
+        ws = web.WebSocketResponse(heartbeat=30.0)
+        await ws.prepare(request)
+
+        # If no session exists yet, create one on-the-fly
+        session = self.remote_manager.get_session(session_id) if session_id else None
+        if session is None:
+            session = await self.remote_manager.create_session(
+                config={"cwd": os.getcwd(), "created_by": request.remote, "auto": True},
+                ws=ws,
+                session_id=session_id or None,
+            )
+        else:
+            session.ws = ws
+            session.status = "connected"
+
+        # Also track as a regular client for broadcasts
+        self.clients.add(ws)
+        peer = request.remote
+        logger.info("[remote] WebSocket client connected: %s session=%s", peer, session.session_id)
+
+        # Send welcome message
+        await ws.send_json({
+            "type": "remote_connected",
+            "session_id": session.session_id,
+            "message": "JARVIS remote session active.",
+        })
+
+        # UUID dedup sets for bridge message handling
+        recent_posted = BoundedUUIDSet(500)
+        recent_inbound = BoundedUUIDSet(500)
+
+        try:
+            async for msg in ws:
+                if msg.type == web.WSMsgType.BINARY:
+                    await self._handle_audio(ws, msg.data)
+                elif msg.type == web.WSMsgType.TEXT:
+                    session.touch()
+                    try:
+                        data = json.loads(msg.data)
+                    except json.JSONDecodeError:
+                        continue
+
+                    msg_type = data.get("type", "query")
+
+                    # Handle bridge protocol messages
+                    if msg_type in ("user", "assistant", "system", "control_response", "control_request"):
+                        handle_ingress_message(
+                            msg.data,
+                            recent_posted,
+                            recent_inbound,
+                            on_inbound_message=lambda parsed: asyncio.ensure_future(
+                                self._handle_remote_inbound(ws, session, parsed)
+                            ),
+                            on_permission_response=lambda parsed: (
+                                self.remote_permission_bridge.handle_permission_response(
+                                    parsed.get("response", {}).get("request_id", ""),
+                                    parsed.get("response", {}),
+                                )
+                            ),
+                        )
+                        continue
+
+                    # Standard JARVIS message types (same as local /ws)
+                    if msg_type == "query":
+                        await self._handle_query(ws, data)
+                    elif msg_type == "stats":
+                        await ws.send_json({"type": "stats", "stats": self.brain.brain_stats()})
+                    elif msg_type == "learn":
+                        r = self.brain.learn(data.get("text", ""))
+                        await ws.send_json({"type": "message", "role": "jarvis", "content": r})
+                    elif msg_type == "recall":
+                        m = self.brain.remember(data.get("text", ""))
+                        await ws.send_json({"type": "memories", "memories": m})
+                    elif msg_type == "list_providers":
+                        providers = self.brain.reasoner.providers.list_providers()
+                        await ws.send_json({"type": "providers", "providers": providers})
+                    elif msg_type == "ping":
+                        await ws.send_json({"type": "pong", "session_id": session.session_id})
+
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self.clients.discard(ws)
+            session.status = "disconnected"
+            if not ws.closed:
+                await ws.close()
+            logger.info("[remote] WebSocket client disconnected: %s session=%s", peer, session.session_id)
+
+        return ws
+
+    # ── Bridge protocol endpoints (/v1/environments/*) ─────────────────
+    # These let bridgeApi.py (standalone bridge mode) work against
+    # JARVIS's own server — register, poll, ack, heartbeat, deregister.
+
+    async def bridge_register_handler(self, request: web.Request) -> web.Response:
+        """POST /v1/environments/bridge — register a bridge environment."""
+        if not self._check_remote_auth(request):
+            return web.json_response(
+                {"error": {"type": "auth_error", "message": "Authentication required"}},
+                status=401,
+            )
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+
+        import uuid as _uuid
+
+        env_id = data.get("environment_id") or str(_uuid.uuid4())
+        env_secret = secrets.token_urlsafe(32)
+
+        # Store environment metadata on the remote manager
+        if not hasattr(self.remote_manager, "_bridge_envs"):
+            self.remote_manager._bridge_envs = {}
+        self.remote_manager._bridge_envs[env_id] = {
+            "secret": env_secret,
+            "machine_name": data.get("machine_name", ""),
+            "directory": data.get("directory", ""),
+            "branch": data.get("branch", ""),
+            "max_sessions": data.get("max_sessions", 5),
+            "work_queue": asyncio.Queue(),
+        }
+        self.remote_manager.set_connected(True)
+
+        logger.info("[bridge] Environment registered: %s (%s)", env_id, data.get("machine_name", ""))
+        return web.json_response({
+            "environment_id": env_id,
+            "environment_secret": env_secret,
+        })
+
+    async def bridge_poll_handler(self, request: web.Request) -> web.Response:
+        """GET /v1/environments/{env_id}/work/poll — poll for pending work."""
+        env_id = request.match_info["env_id"]
+        if not self._check_remote_auth(request):
+            return web.json_response(
+                {"error": {"type": "auth_error", "message": "Authentication required"}},
+                status=401,
+            )
+
+        envs = getattr(self.remote_manager, "_bridge_envs", {})
+        env = envs.get(env_id)
+        if not env:
+            return web.json_response(
+                {"error": {"type": "not_found", "message": "Environment not found"}},
+                status=404,
+            )
+
+        # Non-blocking check for work in the queue
+        queue: asyncio.Queue = env["work_queue"]
+        try:
+            work = queue.get_nowait()
+            return web.json_response(work)
+        except asyncio.QueueEmpty:
+            return web.json_response(None, status=204)
+
+    async def bridge_ack_handler(self, request: web.Request) -> web.Response:
+        """POST /v1/environments/{env_id}/work/{work_id}/ack — acknowledge work."""
+        if not self._check_remote_auth(request):
+            return web.json_response(
+                {"error": {"type": "auth_error", "message": "Authentication required"}},
+                status=401,
+            )
+        return web.json_response({"status": "acknowledged"})
+
+    async def bridge_heartbeat_handler(self, request: web.Request) -> web.Response:
+        """POST /v1/environments/{env_id}/work/{work_id}/heartbeat — session heartbeat."""
+        if not self._check_remote_auth(request):
+            return web.json_response(
+                {"error": {"type": "auth_error", "message": "Authentication required"}},
+                status=401,
+            )
+        return web.json_response({"status": "alive", "actions": []})
+
+    async def bridge_stop_work_handler(self, request: web.Request) -> web.Response:
+        """POST /v1/environments/{env_id}/work/{work_id}/stop — stop work."""
+        if not self._check_remote_auth(request):
+            return web.json_response(
+                {"error": {"type": "auth_error", "message": "Authentication required"}},
+                status=401,
+            )
+        work_id = request.match_info["work_id"]
+        stopped = await self.remote_manager.stop_session(work_id)
+        return web.json_response({"status": "stopped" if stopped else "not_found"})
+
+    async def bridge_deregister_handler(self, request: web.Request) -> web.Response:
+        """DELETE /v1/environments/bridge/{env_id} — deregister environment."""
+        if not self._check_remote_auth(request):
+            return web.json_response(
+                {"error": {"type": "auth_error", "message": "Authentication required"}},
+                status=401,
+            )
+        env_id = request.match_info["env_id"]
+        envs = getattr(self.remote_manager, "_bridge_envs", {})
+        envs.pop(env_id, None)
+        logger.info("[bridge] Environment deregistered: %s", env_id)
+        return web.json_response({"status": "deregistered"})
+
+    async def bridge_session_events_handler(self, request: web.Request) -> web.Response:
+        """POST /v1/sessions/{session_id}/events — send events to a session."""
+        if not self._check_remote_auth(request):
+            return web.json_response(
+                {"error": {"type": "auth_error", "message": "Authentication required"}},
+                status=401,
+            )
+        session_id = request.match_info["session_id"]
+        session = self.remote_manager.get_session(session_id)
+        if session and session.is_alive:
+            try:
+                data = await request.json()
+                events = data.get("events", [])
+                for event in events:
+                    await session.ws.send_json(event)
+            except Exception:
+                pass
+        return web.json_response({"status": "sent"})
+
+    async def bridge_session_archive_handler(self, request: web.Request) -> web.Response:
+        """POST /v1/sessions/{session_id}/archive — archive a session."""
+        if not self._check_remote_auth(request):
+            return web.json_response(
+                {"error": {"type": "auth_error", "message": "Authentication required"}},
+                status=401,
+            )
+        session_id = request.match_info["session_id"]
+        await self.remote_manager.stop_session(session_id)
+        return web.json_response({"status": "archived"})
+
+    async def bridge_reconnect_handler(self, request: web.Request) -> web.Response:
+        """POST /v1/environments/{env_id}/bridge/reconnect — reconnect a session."""
+        if not self._check_remote_auth(request):
+            return web.json_response(
+                {"error": {"type": "auth_error", "message": "Authentication required"}},
+                status=401,
+            )
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        session_id = data.get("session_id", "")
+        session = self.remote_manager.get_session(session_id)
+        if session:
+            session.status = "connected"
+            return web.json_response({"status": "reconnected"})
+        return web.json_response(
+            {"error": {"type": "not_found", "message": "Session not found"}},
+            status=404,
+        )
+
+    async def _handle_remote_inbound(
+        self, ws: web.WebSocketResponse, session, parsed: dict
+    ) -> None:
+        """Handle an inbound user message from a remote bridge client."""
+        content = ""
+        message = parsed.get("message", {})
+        if isinstance(message, dict):
+            content = message.get("content", "")
+        if isinstance(content, list):
+            # Extract text from content blocks
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    content = block.get("text", "")
+                    break
+        if isinstance(content, str) and content.strip():
+            await self._handle_query(ws, {"text": content.strip()})
+
     async def os_info_handler(self, request: web.Request) -> web.Response:
         """Returns OS mode info. Power menu only shows when is_os is true."""
         import os
@@ -1231,6 +1647,21 @@ class JarvisWebServer:
         app.router.add_post("/api/power", self.power_handler)
         # Hot reload
         app.router.add_post("/api/reload", self.reload_handler)
+        # Remote session API — makes JARVIS cloud-capable
+        app.router.add_post("/api/remote/connect", self.remote_connect_handler)
+        app.router.add_post("/api/remote/disconnect", self.remote_disconnect_handler)
+        app.router.add_get("/api/remote/status", self.remote_status_handler)
+        app.router.add_get("/ws/remote", self.remote_websocket_handler)
+        # Bridge protocol API — standalone bridge mode (bridgeApi.py compatible)
+        app.router.add_post("/v1/environments/bridge", self.bridge_register_handler)
+        app.router.add_get("/v1/environments/{env_id}/work/poll", self.bridge_poll_handler)
+        app.router.add_post("/v1/environments/{env_id}/work/{work_id}/ack", self.bridge_ack_handler)
+        app.router.add_post("/v1/environments/{env_id}/work/{work_id}/heartbeat", self.bridge_heartbeat_handler)
+        app.router.add_post("/v1/environments/{env_id}/work/{work_id}/stop", self.bridge_stop_work_handler)
+        app.router.add_delete("/v1/environments/bridge/{env_id}", self.bridge_deregister_handler)
+        app.router.add_post("/v1/sessions/{session_id}/events", self.bridge_session_events_handler)
+        app.router.add_post("/v1/sessions/{session_id}/archive", self.bridge_session_archive_handler)
+        app.router.add_post("/v1/environments/{env_id}/bridge/reconnect", self.bridge_reconnect_handler)
 
         # ── Client coordination — only one reactor visible at a time ──
         active_clients = {"desktop": False, "browser": False}
@@ -1342,9 +1773,24 @@ class JarvisWebServer:
         site = web.TCPSite(runner, HOST, PORT)
         await site.start()
 
-        print(f"[JARVIS] Web shell: http://localhost:{PORT}")
+        print(f"[JARVIS] Web shell:  http://localhost:{PORT}")
         print(f"[JARVIS] WebSocket:  ws://localhost:{PORT}/ws")
+        print(f"[JARVIS] Remote WS:  ws://localhost:{PORT}/ws/remote")
+        print(f"[JARVIS] Remote API: http://localhost:{PORT}/api/remote/status")
         print(f"[JARVIS] TTS:        http://localhost:{PORT}/tts?text=hello")
+
+        # Auto-start bridge if configured
+        if is_bridge_enabled():
+            self.remote_manager.set_connected(True)
+            remote_cfg = get_remote_config()
+            print(f"[JARVIS] Remote bridge: ENABLED (max {self.remote_manager._max_sessions} sessions)")
+            print(f"[JARVIS] Bridge API:   http://localhost:{PORT}/v1/environments/bridge")
+            if remote_cfg.get("auth_token"):
+                token_preview = remote_cfg["auth_token"][:8] + "..."
+                print(f"[JARVIS] Bridge auth:  Bearer {token_preview}")
+            else:
+                print(f"[JARVIS] Bridge auth:  NONE (open access)")
+
 
         await asyncio.Future()
 

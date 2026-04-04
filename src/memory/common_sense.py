@@ -278,5 +278,5 @@ def load_common_sense_to_reasoning(reasoning_engine) -> int:
 
     This enables inference: "is a dog a pet?" → dog is_a pet (via common sense)
     """
-    # Legacy CogScript integration removed — common sense now loaded via holographic memory
+    # Common sense loaded via holographic memory
     return 0

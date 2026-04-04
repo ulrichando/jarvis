@@ -10,12 +10,10 @@ from __future__ import annotations
 
 
 PREAPPROVED_HOSTS: frozenset[str] = frozenset([
-    # Anthropic
-    "platform.claude.com",
-    "code.claude.com",
+    # JARVIS / AI reference
     "modelcontextprotocol.io",
-    "github.com/anthropics",
-    "agentskills.io",
+    "docs.anthropic.com",
+    "huggingface.co",
 
     # Top Programming Languages
     "docs.python.org",

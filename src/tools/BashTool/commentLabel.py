@@ -12,7 +12,7 @@ def extract_bash_comment_label(command: str) -> Optional[str]:
     return the comment text stripped of the `#` prefix. Otherwise None.
 
     Under fullscreen mode this is the non-verbose tool-use label AND the
-    collapse-group hint -- it's what Claude wrote for the human to read.
+    collapse-group hint -- it's what JARVIS wrote for the human to read.
     """
     nl = command.find("\n")
     first_line = (command[:nl] if nl != -1 else command).strip()

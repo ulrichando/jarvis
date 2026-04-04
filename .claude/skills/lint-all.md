@@ -8,7 +8,7 @@ Run linters across the entire JARVIS codebase:
 
 1. **Python** — Check all .py files compile:
    ```
-   cd /home/ulrich/Documents/Projects/jarvis && find brain/ shells/ test/ -name "*.py" -exec python -m py_compile {} \; 2>&1 | head -20
+   cd /home/ulrich/Documents/Projects/jarvis && find src/ test/ -name "*.py" -exec python -m py_compile {} \; 2>&1 | head -20
    ```
    If py_compile shows no output, all files are syntactically valid.
 

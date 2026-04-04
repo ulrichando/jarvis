@@ -1,6 +1,6 @@
 """JARVIS Context Manager — prevents context overflow in the agent loop.
 
-Inspired by Claude Code's compaction strategy:
+JARVIS compaction strategy:
 - Adaptive compaction based on model context limits
 - Three-phase approach: truncate tool results → summarize → drop
 - Preserves critical recent context and system prompt
@@ -39,7 +39,7 @@ MODEL_LIMITS = {
     "gpt-4o-mini": 120000,
 }
 
-DEFAULT_MAX_TOKENS = 180000  # Safe default for Claude
+DEFAULT_MAX_TOKENS = 180000  # Safe default for 200K context models
 
 
 def estimate_tokens(messages: list[dict]) -> int:
@@ -72,7 +72,7 @@ def compact_messages(
 ) -> list[dict]:
     """Compact messages to fit within token budget.
 
-    Three-phase strategy (inspired by Claude Code):
+    Three-phase strategy (inspired by JARVIS design):
     1. Truncate old tool results (biggest token consumers)
     2. Summarize old conversation turns
     3. Drop oldest messages entirely if still over budget
@@ -378,7 +378,7 @@ class AutoCompactor:
 
 
 # ---------------------------------------------------------------------------
-# LLM-Based Compaction (ported from Claude Code's compact service)
+# LLM-Based Compaction (JARVIS compact service)
 # ---------------------------------------------------------------------------
 
 

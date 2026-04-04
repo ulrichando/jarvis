@@ -8,7 +8,7 @@ class TestCommandRegistry(unittest.TestCase):
     """Test command registration and resolution."""
 
     def setUp(self):
-        from src.commands_brain import registry
+        from src.commands import registry
         self.registry = registry
 
     def test_total_commands(self):
@@ -88,7 +88,7 @@ class TestCommandDispatch(unittest.TestCase):
     """Test async command dispatching."""
 
     def test_dispatch_help(self):
-        from src.commands_brain import registry, CommandContext
+        from src.commands import registry, CommandContext
         ctx = CommandContext(args="")
         result = asyncio.get_event_loop().run_until_complete(
             registry.dispatch("help", ctx)
@@ -99,7 +99,7 @@ class TestCommandDispatch(unittest.TestCase):
         self.assertIn("commands across", result.text)
 
     def test_dispatch_version(self):
-        from src.commands_brain import registry, CommandContext
+        from src.commands import registry, CommandContext
         ctx = CommandContext(args="")
         result = asyncio.get_event_loop().run_until_complete(
             registry.dispatch("version", ctx)
@@ -109,7 +109,7 @@ class TestCommandDispatch(unittest.TestCase):
         self.assertIn("Python", result.text)
 
     def test_dispatch_unknown(self):
-        from src.commands_brain import registry, CommandContext
+        from src.commands import registry, CommandContext
         ctx = CommandContext(args="")
         result = asyncio.get_event_loop().run_until_complete(
             registry.dispatch("nonexistent_command", ctx)
@@ -117,7 +117,7 @@ class TestCommandDispatch(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_dispatch_clear_action(self):
-        from src.commands_brain import registry, CommandContext
+        from src.commands import registry, CommandContext
         ctx = CommandContext(args="")
         result = asyncio.get_event_loop().run_until_complete(
             registry.dispatch("clear", ctx)
@@ -126,7 +126,7 @@ class TestCommandDispatch(unittest.TestCase):
         self.assertEqual(result.action, "clear")
 
     def test_dispatch_exit_action(self):
-        from src.commands_brain import registry, CommandContext
+        from src.commands import registry, CommandContext
         ctx = CommandContext(args="")
         result = asyncio.get_event_loop().run_until_complete(
             registry.dispatch("exit", ctx)
@@ -135,7 +135,7 @@ class TestCommandDispatch(unittest.TestCase):
         self.assertEqual(result.action, "exit")
 
     def test_dispatch_help_all(self):
-        from src.commands_brain import registry, CommandContext
+        from src.commands import registry, CommandContext
         ctx = CommandContext(args="--all")
         result = asyncio.get_event_loop().run_until_complete(
             registry.dispatch("help", ctx)
@@ -149,7 +149,7 @@ class TestCommandAliases(unittest.TestCase):
     """Test that all important aliases resolve correctly."""
 
     def setUp(self):
-        from src.commands_brain import registry
+        from src.commands import registry
         self.registry = registry
 
     def test_alias_pairs(self):

@@ -152,7 +152,7 @@ def meets_availability_requirement(cmd: Command) -> bool:
         return True
     for a in cmd.availability:
         if a == CommandAvailability.CLAUDE_AI:
-            # Would check is_claude_ai_subscriber()
+            # Would check is_api_subscriber()
             pass
         elif a == CommandAvailability.CONSOLE:
             # Would check console API key status

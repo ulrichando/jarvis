@@ -1,7 +1,7 @@
 """
 Ripgrep wrapper with pagination and output modes.
 
-Ported from Claude Code's GrepTool. Provides a standalone, pure-Python
+Provides a standalone, pure-Python
 interface to ripgrep (rg) with automatic fallback to Python's re module
 when rg is not installed.
 
@@ -78,7 +78,7 @@ MAX_COLUMNS = 500
 DEFAULT_TIMEOUT = 20   # seconds
 MAX_OUTPUT_BYTES = 10 * 1024 * 1024  # 10 MB
 
-# Default head_limit when unspecified (mirrors Claude Code's 250)
+# Default head_limit when unspecified (default 250)
 DEFAULT_HEAD_LIMIT = 250
 
 

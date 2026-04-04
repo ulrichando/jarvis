@@ -15,7 +15,10 @@ def _is_env_truthy(value: Optional[str]) -> bool:
 
 def is_coordinator_mode() -> bool:
     """Check if coordinator mode is enabled."""
-    return _is_env_truthy(os.environ.get("CLAUDE_CODE_COORDINATOR_MODE"))
+    return _is_env_truthy(
+        os.environ.get("JARVIS_COORDINATOR_MODE",
+                        os.environ.get("CLAUDE_CODE_COORDINATOR_MODE"))
+    )
 
 
 def match_session_mode(session_mode: Optional[str]) -> Optional[str]:
@@ -33,8 +36,9 @@ def match_session_mode(session_mode: Optional[str]) -> Optional[str]:
         return None
 
     if session_is_coordinator:
-        os.environ["CLAUDE_CODE_COORDINATOR_MODE"] = "1"
+        os.environ["JARVIS_COORDINATOR_MODE"] = "1"
     else:
+        os.environ.pop("JARVIS_COORDINATOR_MODE", None)
         os.environ.pop("CLAUDE_CODE_COORDINATOR_MODE", None)
 
     return (
@@ -52,7 +56,9 @@ def get_coordinator_user_context(
     if not is_coordinator_mode():
         return {}
 
-    is_simple = _is_env_truthy(os.environ.get("CLAUDE_CODE_SIMPLE"))
+    is_simple = _is_env_truthy(
+        os.environ.get("JARVIS_SIMPLE", os.environ.get("CLAUDE_CODE_SIMPLE"))
+    )
 
     if is_simple:
         worker_tools = ", ".join(sorted(["Bash", "Read", "Edit"]))
@@ -80,7 +86,9 @@ def get_coordinator_user_context(
 
 def get_coordinator_system_prompt() -> str:
     """Get the coordinator system prompt."""
-    is_simple = _is_env_truthy(os.environ.get("CLAUDE_CODE_SIMPLE"))
+    is_simple = _is_env_truthy(
+        os.environ.get("JARVIS_SIMPLE", os.environ.get("CLAUDE_CODE_SIMPLE"))
+    )
 
     worker_capabilities = (
         "Workers have access to Bash, Read, and Edit tools, plus MCP tools from configured MCP servers."

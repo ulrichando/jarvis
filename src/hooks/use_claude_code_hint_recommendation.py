@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import Any, Callable, Optional
 
 
-class ClaudeCodeHintRecommendation:
+class JarvisHintRecommendation:
     """Manages JARVIS hint/recommendation notifications.
 
-    Equivalent to useClaudeCodeHintRecommendation React hook.
+    Equivalent to useJarvisHintRecommendation hook.
     """
 
     def __init__(

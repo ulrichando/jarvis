@@ -8,7 +8,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-CCR_TOKEN_DIR = "/home/claude/.claude/remote"
+CCR_TOKEN_DIR = "/home/jarvis/.jarvis/remote"
 CCR_OAUTH_TOKEN_PATH = f"{CCR_TOKEN_DIR}/.oauth_token"
 CCR_API_KEY_PATH = f"{CCR_TOKEN_DIR}/.api_key"
 CCR_SESSION_INGRESS_TOKEN_PATH = f"{CCR_TOKEN_DIR}/.session_ingress_token"

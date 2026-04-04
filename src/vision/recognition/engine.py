@@ -98,8 +98,8 @@ class RecognitionEngine:
                          frame: np.ndarray = None) -> str:
         """Send the current frame to an AI vision model for deep understanding.
 
-        This is the equivalent of how Claude reads images — sends the raw frame
-        to a multimodal AI model that can understand everything in the image.
+        Sends the raw frame to a multimodal AI model that can understand
+        everything in the image.
         """
         if frame is not None:
             self.capture_frame_b64(frame)

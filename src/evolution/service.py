@@ -36,7 +36,9 @@ class EvolutionService:
     async def start(self):
         try:
             from src.evolution.engine import EvolutionEngine
-            self._engine = EvolutionEngine()
+            from src.evolution.telemetry import Telemetry
+            telemetry = Telemetry()
+            self._engine = EvolutionEngine(telemetry)
             print("[JARVIS Evolution] Engine initialized")
         except Exception as e:
             print(f"[JARVIS Evolution] Engine init failed: {e}")
@@ -65,7 +67,7 @@ class EvolutionService:
 
         self._running = True
         try:
-            report = await self._engine.run_cycle()
+            report = await self._engine.evolve()
             self._last_run = time.time()
             self._last_report = report if isinstance(report, dict) else {"result": str(report)}
             return web.json_response(self._last_report)
@@ -81,7 +83,7 @@ class EvolutionService:
             if self._engine and not self._running:
                 self._running = True
                 try:
-                    report = await self._engine.run_cycle()
+                    report = await self._engine.evolve()
                     self._last_run = time.time()
                     self._last_report = report if isinstance(report, dict) else {"result": str(report)}
                     print(f"[JARVIS Evolution] Cycle complete: {self._last_report}")

@@ -42,8 +42,8 @@ def _get_cache_base() -> str:
     """Get the base cache directory."""
     xdg_cache = os.environ.get("XDG_CACHE_HOME")
     if xdg_cache:
-        return os.path.join(xdg_cache, "claude-cli")
-    return os.path.join(str(Path.home()), ".cache", "claude-cli")
+        return os.path.join(xdg_cache, "jarvis-cli")
+    return os.path.join(str(Path.home()), ".cache", "jarvis-cli")
 
 
 def _get_project_dir() -> str:

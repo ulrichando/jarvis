@@ -41,10 +41,10 @@ def _get_project_root() -> Optional[str]:
 def _get_local_agent_memory_dir(dir_name: str) -> str:
     """
     Returns the local agent memory directory.
-    When CLAUDE_CODE_REMOTE_MEMORY_DIR is set, persists to the mount with project namespacing.
-    Otherwise, uses <cwd>/.claude/agent-memory-local/<agentType>/.
+    When JARVIS_REMOTE_MEMORY_DIR is set, persists to the mount with project namespacing.
+    Otherwise, uses <cwd>/.jarvis/agent-memory-local/<agentType>/.
     """
-    remote_dir = os.environ.get("CLAUDE_CODE_REMOTE_MEMORY_DIR")
+    remote_dir = os.environ.get("JARVIS_REMOTE_MEMORY_DIR")
     if remote_dir:
         project_root = _get_project_root() or _get_cwd()
         return os.path.join(
@@ -54,19 +54,19 @@ def _get_local_agent_memory_dir(dir_name: str) -> str:
             "agent-memory-local",
             dir_name,
         ) + os.sep
-    return os.path.join(_get_cwd(), ".claude", "agent-memory-local", dir_name) + os.sep
+    return os.path.join(_get_cwd(), ".jarvis", "agent-memory-local", dir_name) + os.sep
 
 
 def get_agent_memory_dir(agent_type: str, scope: AgentMemoryScope) -> str:
     """
     Returns the agent memory directory for a given agent type and scope.
     - 'user' scope: <memoryBase>/agent-memory/<agentType>/
-    - 'project' scope: <cwd>/.claude/agent-memory/<agentType>/
+    - 'project' scope: <cwd>/.jarvis/agent-memory/<agentType>/
     - 'local' scope: see _get_local_agent_memory_dir()
     """
     dir_name = _sanitize_agent_type_for_path(agent_type)
     if scope == "project":
-        return os.path.join(_get_cwd(), ".claude", "agent-memory", dir_name) + os.sep
+        return os.path.join(_get_cwd(), ".jarvis", "agent-memory", dir_name) + os.sep
     elif scope == "local":
         return _get_local_agent_memory_dir(dir_name)
     else:  # user
@@ -86,12 +86,12 @@ def is_agent_memory_path(absolute_path: str) -> bool:
 
     # Project scope
     if normalized_path.startswith(
-        os.path.join(cwd, ".claude", "agent-memory") + sep
+        os.path.join(cwd, ".jarvis", "agent-memory") + sep
     ):
         return True
 
     # Local scope
-    remote_dir = os.environ.get("CLAUDE_CODE_REMOTE_MEMORY_DIR")
+    remote_dir = os.environ.get("JARVIS_REMOTE_MEMORY_DIR")
     if remote_dir:
         if (
             (sep + "agent-memory-local" + sep) in normalized_path
@@ -101,7 +101,7 @@ def is_agent_memory_path(absolute_path: str) -> bool:
         ):
             return True
     elif normalized_path.startswith(
-        os.path.join(cwd, ".claude", "agent-memory-local") + sep
+        os.path.join(cwd, ".jarvis", "agent-memory-local") + sep
     ):
         return True
 
@@ -117,7 +117,7 @@ def get_memory_scope_display(memory: Optional[AgentMemoryScope]) -> str:
     if memory == "user":
         return f"User ({os.path.join(_get_memory_base_dir(), 'agent-memory')}/)"
     elif memory == "project":
-        return "Project (.claude/agent-memory/)"
+        return "Project (.jarvis/agent-memory/)"
     elif memory == "local":
         return f"Local ({_get_local_agent_memory_dir('...')})"
     else:

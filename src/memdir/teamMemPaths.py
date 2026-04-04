@@ -8,7 +8,7 @@ from typing import Optional
 
 def get_team_mem_dir(team_name: str, config_dir: Optional[str] = None) -> str:
     """Get team memory directory path."""
-    home = config_dir or os.environ.get("CLAUDE_CONFIG_HOME", os.path.expanduser("~/.claude"))
+    home = config_dir or os.environ.get("JARVIS_HOME", os.path.expanduser("~/.jarvis"))
     return os.path.join(home, "teams", team_name, "memory")
 
 

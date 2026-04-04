@@ -25,8 +25,8 @@ Create a new team to coordinate multiple agents working on a project. Teams have
 ```
 
 This creates:
-- A team file at `~/.claude/teams/{team-name}/config.json`
-- A corresponding task list directory at `~/.claude/tasks/{team-name}/`
+- A team file at `~/.jarvis/teams/{team-name}/config.json`
+- A corresponding task list directory at `~/.jarvis/tasks/{team-name}/`
 
 ## Team Workflow
 

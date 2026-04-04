@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 async def setup_chrome_extension(browser: str = "chrome") -> bool:
-    """Set up the Claude Chrome extension for a browser.
+    """Set up the JARVIS Chrome extension for a browser.
 
     Returns True if setup was successful.
     """

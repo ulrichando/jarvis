@@ -15,21 +15,21 @@ from typing import Callable, Literal, Optional
 
 logger = logging.getLogger(__name__)
 
-ClaudeCodeHintType = Literal["plugin"]
+JarvisHintType = Literal["plugin"]
 
 SUPPORTED_VERSIONS = {1}
 SUPPORTED_TYPES = {"plugin"}
 
 HINT_TAG_RE = re.compile(
-    r"^[ \t]*<claude-code-hint\s+([^>]*?)\s*/>[ \t]*$", re.MULTILINE
+    r"^[ \t]*<jarvis-hint\s+([^>]*?)\s*/>[ \t]*$", re.MULTILINE
 )
 ATTR_RE = re.compile(r'(\w+)=(?:"([^"]*)"|([^\s/>]+))')
 
 
 @dataclass
-class ClaudeCodeHint:
+class JarvisHint:
     v: int
-    type: ClaudeCodeHintType
+    type: JarvisHintType
     value: str
     source_command: str
 
@@ -51,18 +51,18 @@ def _first_command_token(command: str) -> str:
     return trimmed if space_idx == -1 else trimmed[:space_idx]
 
 
-def extract_claude_code_hints(
+def extract_jarvis_hints(
     output: str, command: str
-) -> tuple[list[ClaudeCodeHint], str]:
+) -> tuple[list[JarvisHint], str]:
     """Scan shell tool output for hint tags.
 
     Returns (hints, stripped_output).
     """
-    if "<claude-code-hint" not in output:
+    if "<jarvis-hint" not in output:
         return [], output
 
     source_command = _first_command_token(command)
-    hints: list[ClaudeCodeHint] = []
+    hints: list[JarvisHint] = []
 
     def replacer(m: re.Match) -> str:
         raw_line = m.group(0)
@@ -75,19 +75,19 @@ def extract_claude_code_hints(
         value = attrs.get("value", "")
 
         if v not in SUPPORTED_VERSIONS:
-            logger.debug(f"[claudeCodeHints] dropped hint with unsupported v={v}")
+            logger.debug(f"[jarvisHints] dropped hint with unsupported v={v}")
             return ""
         if not hint_type or hint_type not in SUPPORTED_TYPES:
             logger.debug(
-                f"[claudeCodeHints] dropped hint with unsupported type={hint_type}"
+                f"[jarvisHints] dropped hint with unsupported type={hint_type}"
             )
             return ""
         if not value:
-            logger.debug("[claudeCodeHints] dropped hint with empty value")
+            logger.debug("[jarvisHints] dropped hint with empty value")
             return ""
 
         hints.append(
-            ClaudeCodeHint(
+            JarvisHint(
                 v=v,
                 type=hint_type,  # type: ignore[arg-type]
                 value=value,
@@ -105,7 +105,7 @@ def extract_claude_code_hints(
 
 
 # Pending hint store
-_pending_hint: Optional[ClaudeCodeHint] = None
+_pending_hint: Optional[JarvisHint] = None
 _shown_this_session = False
 _pending_hint_subscribers: list[Callable[[], None]] = []
 
@@ -115,7 +115,7 @@ def _notify() -> None:
         cb()
 
 
-def set_pending_hint(hint: ClaudeCodeHint) -> None:
+def set_pending_hint(hint: JarvisHint) -> None:
     global _pending_hint
     if _shown_this_session:
         return
@@ -145,7 +145,7 @@ def subscribe_to_pending_hint(callback: Callable[[], None]) -> Callable[[], None
     return unsubscribe
 
 
-def get_pending_hint_snapshot() -> Optional[ClaudeCodeHint]:
+def get_pending_hint_snapshot() -> Optional[JarvisHint]:
     return _pending_hint
 
 
@@ -153,7 +153,7 @@ def has_shown_hint_this_session() -> bool:
     return _shown_this_session
 
 
-def reset_claude_code_hint_store() -> None:
+def reset_jarvis_hint_store() -> None:
     """Test-only reset."""
     global _pending_hint, _shown_this_session
     _pending_hint = None

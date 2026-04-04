@@ -1,4 +1,4 @@
-"""Claude API client -- converted from TypeScript."""
+"""Anthropic API client -- converted from TypeScript."""
 
 from __future__ import annotations
 

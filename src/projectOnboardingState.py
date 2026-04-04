@@ -20,7 +20,8 @@ class Step:
 def get_steps() -> List[Step]:
     """Get the current onboarding steps and their status."""
     cwd = os.getcwd()
-    has_claude_md = os.path.exists(os.path.join(cwd, "CLAUDE.md"))
+    has_claude_md = (os.path.exists(os.path.join(cwd, "JARVIS.md")) or
+                     os.path.exists(os.path.join(cwd, "CLAUDE.md")))
     is_workspace_dir_empty = not os.listdir(cwd) if os.path.isdir(cwd) else True
 
     return [
@@ -33,7 +34,7 @@ def get_steps() -> List[Step]:
         ),
         Step(
             key="claudemd",
-            text="Run /init to create a CLAUDE.md file with instructions for JARVIS",
+            text="Run /init to create a JARVIS.md file with project instructions",
             is_complete=has_claude_md,
             is_completable=True,
             is_enabled=not is_workspace_dir_empty,

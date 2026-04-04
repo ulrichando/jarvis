@@ -22,7 +22,7 @@ from typing import (
     Sequence,
 )
 
-from .Tool import (
+from src.tools.Tool import (
     Tool,
     ToolPermissionContext,
     ToolUseContext,

@@ -10,11 +10,11 @@ import time
 def after_first_render() -> None:
     """Execute post-initialization logic.
 
-    If USER_TYPE is 'ant' and CLAUDE_CODE_EXIT_AFTER_FIRST_RENDER is truthy,
+    If USER_TYPE is 'ant' and JARVIS_EXIT_AFTER_FIRST_RENDER is truthy,
     prints startup time to stderr and exits.
     """
     user_type = os.environ.get("USER_TYPE", "")
-    exit_flag = os.environ.get("CLAUDE_CODE_EXIT_AFTER_FIRST_RENDER", "")
+    exit_flag = os.environ.get("JARVIS_EXIT_AFTER_FIRST_RENDER", "")
 
     if user_type == "ant" and exit_flag.lower() in ("1", "true", "yes"):
         startup_ms = int(time.process_time() * 1000)

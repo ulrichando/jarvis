@@ -1,4 +1,4 @@
-"""Main bridge loop for standalone Remote Control (claude remote-control)."""
+"""Main bridge loop for standalone Remote Control."""
 
 from __future__ import annotations
 

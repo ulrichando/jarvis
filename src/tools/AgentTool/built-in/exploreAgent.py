@@ -7,5 +7,5 @@ EXPLORE_AGENT = AgentDefinition(
     when_to_use="Read-only exploration agent. Use for searching, reading files, and understanding code without making changes.",
     source="built-in",
     tools=["read_file", "search_files", "web_search", "web_fetch", "think"],
-    omit_claude_md=True,
+    omit_jarvis_md=True,
 )

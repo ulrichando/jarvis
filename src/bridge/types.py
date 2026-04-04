@@ -8,12 +8,12 @@ from typing import Any, Callable, Coroutine, Literal, Optional, Protocol
 DEFAULT_SESSION_TIMEOUT_MS = 24 * 60 * 60 * 1000
 
 BRIDGE_LOGIN_INSTRUCTION = (
-    "Remote Control is only available with claude.ai subscriptions. "
-    "Please use `/login` to sign in with your claude.ai account."
+    "Remote access requires a valid JARVIS auth token. "
+    "Use `/login` or configure a token in ~/.jarvis/settings.json."
 )
 
 BRIDGE_LOGIN_ERROR = (
-    "Error: You must be logged in to use Remote Control.\n\n"
+    "Error: Authentication required for remote access.\n\n"
     + BRIDGE_LOGIN_INSTRUCTION
 )
 

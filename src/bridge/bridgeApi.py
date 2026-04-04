@@ -90,7 +90,7 @@ def _handle_error_status(status: int, data: Any, context: str) -> None:
     elif status == 403:
         if is_expired_error_type(error_type):
             raise BridgeFatalError(
-                "Remote Control session has expired. Please restart with `claude remote-control` or /remote-control.",
+                "Remote session expired. Restart with /bridge start.",
                 403, error_type,
             )
         msg = f"{context}: Access denied (403)"
@@ -105,7 +105,7 @@ def _handle_error_status(status: int, data: Any, context: str) -> None:
         )
     elif status == 410:
         raise BridgeFatalError(
-            detail or "Remote Control session has expired. Please restart with `claude remote-control` or /remote-control.",
+            detail or "Remote session expired. Restart with /bridge start.",
             410, error_type or "environment_expired",
         )
     elif status == 429:

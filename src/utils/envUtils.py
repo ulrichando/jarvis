@@ -12,17 +12,17 @@ from typing import Optional, Union
 
 
 @lru_cache(maxsize=1)
-def get_claude_config_home_dir() -> str:
-    """Get the Claude configuration home directory."""
-    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+def get_config_home_dir() -> str:
+    """Get the JARVIS configuration home directory."""
+    config_dir = os.environ.get("JARVIS_CONFIG_DIR")
     if config_dir:
         return os.path.normpath(config_dir)
-    return str(Path.home() / ".claude")
+    return str(Path.home() / ".jarvis")
 
 
 def get_teams_dir() -> str:
     """Get the teams directory path."""
-    return os.path.join(get_claude_config_home_dir(), "teams")
+    return os.path.join(get_config_home_dir(), "teams")
 
 
 def is_env_truthy(env_var: Union[str, bool, None]) -> bool:

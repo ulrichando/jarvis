@@ -5,7 +5,7 @@ Single source of truth for all session-scoped state. Every subsystem
 (brain, agent loop, shells, hooks, plugins) reads and writes state
 through this module instead of maintaining its own globals.
 
-Ported from Claude Code's bootstrap/state.ts architecture.
+JARVIS state management.
 
 Usage:
     from src.state_brain import get_state_manager, get_state, get_session_id
@@ -139,7 +139,7 @@ class SessionState:
     session_persistence_disabled: bool = False
 
     # ── Cache State ──────────────────────────────────────────────────────
-    cached_claudemd_content: str = ""
+    cached_memory_content: str = ""  # JARVIS.md / CLAUDE.md cached content
     additional_dirs: list = field(default_factory=list)     # --add-dir
 
 

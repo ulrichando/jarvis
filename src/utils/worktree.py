@@ -76,7 +76,7 @@ async def create_worktree(
         branch_name = worktree_name
 
     worktree_path = os.path.join(
-        repo_root, ".claude", "worktrees", worktree_name
+        repo_root, ".jarvis", "worktrees", worktree_name
     )
 
     os.makedirs(os.path.dirname(worktree_path), exist_ok=True)

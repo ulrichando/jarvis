@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-CLAUDE_ALIAS_REGEX = re.compile(r"^\s*alias\s+claude\s*=")
+JARVIS_ALIAS_REGEX = re.compile(r"^\s*alias\s+jarvis\s*=")
 
 
 def get_shell_config_paths(
@@ -40,10 +40,10 @@ def get_shell_config_paths(
     }
 
 
-def filter_claude_aliases(lines: List[str]) -> Tuple[List[str], bool]:
+def filter_jarvis_aliases(lines: List[str]) -> Tuple[List[str], bool]:
     """
-    Filter out installer-created claude aliases from an array of lines.
-    Only removes aliases pointing to $HOME/.claude/local/claude.
+    Filter out installer-created jarvis aliases from an array of lines.
+    Only removes aliases pointing to $HOME/.jarvis/local/jarvis.
     Preserves custom user aliases that point to other locations.
 
     Args:
@@ -53,15 +53,15 @@ def filter_claude_aliases(lines: List[str]) -> Tuple[List[str], bool]:
         Tuple of (filtered_lines, had_alias).
     """
     had_alias = False
-    local_path = os.path.join(str(Path.home()), ".claude", "local", "claude")
+    local_path = os.path.join(str(Path.home()), ".jarvis", "local", "jarvis")
     filtered = []
 
     for line in lines:
-        if CLAUDE_ALIAS_REGEX.search(line):
+        if JARVIS_ALIAS_REGEX.search(line):
             # Extract the alias target
-            match = re.search(r"""alias\s+claude\s*=\s*["']([^"']+)["']""", line)
+            match = re.search(r"""alias\s+jarvis\s*=\s*["']([^"']+)["']""", line)
             if not match:
-                match = re.search(r"alias\s+claude\s*=\s*([^#\n]+)", line)
+                match = re.search(r"alias\s+jarvis\s*=\s*([^#\n]+)", line)
 
             if match:
                 target = match.group(1).strip()
@@ -94,13 +94,13 @@ async def write_file_lines(file_path: str, lines: List[str]) -> None:
         os.fsync(f.fileno())
 
 
-async def find_claude_alias(
+async def find_jarvis_alias(
     *,
     env: Optional[Dict[str, Optional[str]]] = None,
     homedir: Optional[str] = None,
 ) -> Optional[str]:
     """
-    Check if a claude alias exists in any shell config file.
+    Check if a jarvis alias exists in any shell config file.
     Returns the alias target if found, None otherwise.
     """
     configs = get_shell_config_paths(env=env, homedir=homedir)
@@ -111,24 +111,24 @@ async def find_claude_alias(
             continue
 
         for line in lines:
-            if CLAUDE_ALIAS_REGEX.search(line):
-                match = re.search(r"""alias\s+claude=["']?([^"'\s]+)""", line)
+            if JARVIS_ALIAS_REGEX.search(line):
+                match = re.search(r"""alias\s+jarvis=["']?([^"'\s]+)""", line)
                 if match:
                     return match.group(1)
 
     return None
 
 
-async def find_valid_claude_alias(
+async def find_valid_jarvis_alias(
     *,
     env: Optional[Dict[str, Optional[str]]] = None,
     homedir: Optional[str] = None,
 ) -> Optional[str]:
     """
-    Check if a claude alias exists and points to a valid executable.
+    Check if a jarvis alias exists and points to a valid executable.
     Returns the alias target if valid, None otherwise.
     """
-    alias_target = await find_claude_alias(env=env, homedir=homedir)
+    alias_target = await find_jarvis_alias(env=env, homedir=homedir)
     if alias_target is None:
         return None
 

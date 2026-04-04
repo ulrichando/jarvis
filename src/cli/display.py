@@ -17,6 +17,31 @@ from src.constants.figures import (
     REFRESH_ARROW, FORK_GLYPH,
 )
 
+# Import real component implementations
+from src.components.Markdown import render_markdown, hasMarkdownSyntax
+from src.components.MarkdownTable import render_table as render_markdown_table
+from src.components.StructuredDiff import getSyntaxTheme
+from src.components.StructuredDiff import (
+    renderColorDiff as render_color_diff_raw,
+    render_edit_diff,
+    render_file_diff,
+)
+from src.components.Spinner import (
+    Spinner, BriefSpinner, SpinnerWithVerb,
+    BRAILLE_FRAMES, DOTS_FRAMES,
+)
+from src.components.Stats import (
+    renderStatsToAnsi as render_stats,
+    StatsResult, ModelUsage,
+)
+from src.components.shell.OutputLine import (
+    OutputLine as format_output_line,
+    tryFormatJson, linkifyUrlsInText,
+)
+from src.components.FileEditToolDiff import (
+    FileEditToolDiff as render_file_edit_diff,
+)
+
 # ── ANSI Codes ──
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -305,6 +330,10 @@ def permission_prompt(tool_name: str, args: dict) -> str:
         if total > 3:
             out.append(f"  {DIM}  ... {total - 3} more lines{RESET}")
 
+    # Action options — Claude Code style
+    out.append("")
+    out.append(f"  {BOLD}Allow?{RESET} {GREEN}[y]{RESET}es / {RED}[n]{RESET}o / {CYAN}[a]{RESET}lways allow / {YELLOW}[N]{RESET}ever allow")
+
     return "\n".join(out)
 
 
@@ -380,3 +409,53 @@ def collapsed_tool_group(tool_calls: list[dict], verbose: bool = False) -> str:
 
     summary = ", ".join(parts)
     return f"  {DIM}🔍 {summary} ({len(tool_calls)} calls){RESET}"
+
+
+# ── Component Wrappers ──
+
+def render_md(text: str, width: int = 0) -> str:
+    """Render markdown to ANSI terminal output using the Markdown component."""
+    return render_markdown(text, width=width)
+
+
+def render_diff(old_string: str, new_string: str, path: str = "",
+                context_lines: int = 3) -> str:
+    """Render an edit diff using the StructuredDiff component."""
+    return render_edit_diff(old_string, new_string, path, context_lines)
+
+
+def render_bash_output(text: str, exit_code: int = None,
+                       elapsed: float = None, max_lines: int = 50) -> str:
+    """Format bash output using the OutputLine component."""
+    return format_output_line(text, exit_code=exit_code, elapsed=elapsed,
+                              max_lines=max_lines)
+
+
+def render_file_edit(file_path: str, old_string: str, new_string: str,
+                     file_content: str = "", framed: bool = False) -> str:
+    """Render a file edit diff using the FileEditToolDiff component."""
+    return render_file_edit_diff(
+        file_path=file_path, old_string=old_string,
+        new_string=new_string, file_content=file_content,
+        framed=framed,
+    )
+
+
+def render_usage_stats(stats: StatsResult, tab: str = "overview") -> str:
+    """Render usage statistics using the Stats component."""
+    return render_stats(stats, tab=tab)
+
+
+def create_spinner(text: str = "", style: str = "braille") -> Spinner:
+    """Create a terminal spinner.
+
+    Args:
+        text: Action text to display.
+        style: 'braille' or 'dots'.
+
+    Returns:
+        Spinner instance (call .start() to begin animation).
+    """
+    if style == "dots":
+        return BriefSpinner(text)
+    return Spinner(text)

@@ -10,7 +10,7 @@ async def maybe_remove_api_key_from_macos_keychain_throws() -> None:
     """Remove API key from macOS keychain. Raises on failure."""
     if platform.system() == "Darwin":
         result = subprocess.run(
-            ["security", "delete-generic-password", "-a", "$USER", "-s", "claude-code"],
+            ["security", "delete-generic-password", "-a", "$USER", "-s", "jarvis"],
             capture_output=True,
             text=True,
         )

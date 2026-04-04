@@ -1,10 +1,9 @@
-"""Memory file (CLAUDE.md) loading and management.
+"""Memory file (JARVIS.md / CLAUDE.md) loading and management.
 
 Files loaded in order (lowest to highest priority):
-1. Managed memory (/etc/claude-code/CLAUDE.md)
-2. User memory (~/.claude/CLAUDE.md)
-3. Project memory (CLAUDE.md, .claude/CLAUDE.md, .claude/rules/*.md)
-4. Local memory (CLAUDE.local.md)
+1. User memory (~/.jarvis/JARVIS.md or ~/.jarvis/CLAUDE.md)
+2. Project memory (JARVIS.md, CLAUDE.md, .jarvis/CLAUDE.md, .jarvis/rules/*.md)
+3. Local memory (CLAUDE.local.md)
 """
 
 from __future__ import annotations
@@ -54,25 +53,33 @@ async def load_memory_files(cwd: Optional[str] = None) -> list[MemoryEntry]:
     entries: list[MemoryEntry] = []
     home = str(Path.home())
 
-    # User memory
-    user_claude_md = os.path.join(home, ".claude", "CLAUDE.md")
-    if os.path.exists(user_claude_md):
-        try:
-            with open(user_claude_md) as f:
-                content = f.read()
-            entries.append(MemoryEntry(
-                content=content,
-                source="user",
-                memory_type="user",
-                file_path=user_claude_md,
-            ))
-        except Exception as e:
-            logger.debug(f"Failed to read user CLAUDE.md: {e}")
+    # User memory (~/.jarvis/JARVIS.md preferred, ~/.claude/CLAUDE.md for compat)
+    jarvis_home = os.environ.get("JARVIS_HOME", os.path.join(home, ".jarvis"))
+    for user_md_path in [
+        os.path.join(jarvis_home, "JARVIS.md"),
+        os.path.join(jarvis_home, "CLAUDE.md"),
+        os.path.join(home, ".claude", "CLAUDE.md"),
+    ]:
+        if os.path.exists(user_md_path):
+            try:
+                with open(user_md_path) as f:
+                    content = f.read()
+                entries.append(MemoryEntry(
+                    content=content,
+                    source="user",
+                    memory_type="user",
+                    file_path=user_md_path,
+                ))
+            except Exception as e:
+                logger.debug(f"Failed to read user memory: {e}")
+            break  # Only load the first found
 
     # Project memory - traverse from cwd to root
     current = cwd
     while True:
-        for name in ["CLAUDE.md", os.path.join(".claude", "CLAUDE.md")]:
+        for name in ["JARVIS.md", "CLAUDE.md",
+                     os.path.join(".jarvis", "CLAUDE.md"),
+                     os.path.join(".claude", "CLAUDE.md")]:
             path = os.path.join(current, name)
             if os.path.exists(path):
                 try:
@@ -87,8 +94,13 @@ async def load_memory_files(cwd: Optional[str] = None) -> list[MemoryEntry]:
                 except Exception as e:
                     logger.debug(f"Failed to read {path}: {e}")
 
-        # Check .claude/rules/*.md
-        rules_dir = os.path.join(current, ".claude", "rules")
+        # Check .jarvis/rules/*.md and .claude/rules/*.md
+        for rules_folder in (".jarvis", ".claude"):
+            rules_dir = os.path.join(current, rules_folder, "rules")
+            if os.path.isdir(rules_dir):
+                break
+        else:
+            rules_dir = os.path.join(current, ".jarvis", "rules")
         if os.path.isdir(rules_dir):
             for fname in sorted(os.listdir(rules_dir)):
                 if fname.endswith(".md"):

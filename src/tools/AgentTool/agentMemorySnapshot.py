@@ -25,7 +25,7 @@ SYNCED_JSON = ".snapshot-synced.json"
 def get_snapshot_dir_for_agent(agent_type: str, cwd: Optional[str] = None) -> str:
     """Returns the path to the snapshot directory for an agent in the current project."""
     base = cwd or os.getcwd()
-    return os.path.join(base, ".claude", SNAPSHOT_BASE, agent_type)
+    return os.path.join(base, ".jarvis", SNAPSHOT_BASE, agent_type)
 
 
 def _get_snapshot_json_path(agent_type: str) -> str:

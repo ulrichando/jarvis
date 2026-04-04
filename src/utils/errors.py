@@ -8,8 +8,8 @@ import errno
 from typing import Any, Optional
 
 
-class ClaudeError(Exception):
-    """Base error class for Claude errors."""
+class JarvisError(Exception):
+    """Base error class for JARVIS errors."""
     pass
 
 

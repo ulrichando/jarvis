@@ -1,4 +1,4 @@
-"""Enhanced MCP Client — inspired by Claude Code's MCP implementation.
+"""Enhanced MCP Client — inspired by MCP implementation.
 
 Provides robust tool name normalization, multi-transport config,
 JSON-RPC 2.0 stdio communication, config loading with merging and

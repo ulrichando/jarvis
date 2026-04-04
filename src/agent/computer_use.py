@@ -1,12 +1,12 @@
-"""JARVIS Computer Use — Claude controls mouse/keyboard directly.
+"""JARVIS Computer Use — desktop mouse/keyboard control.
 
-Uses Anthropic's Computer Use API (beta) to let Claude interact with
-GUI applications: click buttons, type text, scroll, take screenshots.
+Uses xdotool for input control and mss/scrot for screenshots to let
+JARVIS interact with GUI applications: click buttons, type text, scroll,
+take screenshots.
 
 This gives JARVIS the ability to automate any desktop application.
 """
 
-import asyncio
 import base64
 import os
 import subprocess

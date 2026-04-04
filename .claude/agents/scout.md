@@ -23,11 +23,11 @@ RULES:
 
 PROJECT CONTEXT:
 This is JARVIS — an autonomous AI assistant with a Python brain, Rust core, and multi-shell architecture (CLI, web, desktop). Key paths:
-- brain/ — Core orchestrator, agent loop, memory, reasoning, commands
+- src/ — Core orchestrator, agent loop, memory, reasoning, commands
 - shells/ — CLI, web (aiohttp + React), desktop (GTK+WebKit)
-- brain/agent/ — Agent loop, tools, sub-agents
-- brain/memory/ — SQLite + Neural Lattice memory
-- brain/reasoning/ — Multi-provider LLM backend
+- src/agent/ — Agent loop, tools, sub-agents
+- src/memory/ — SQLite + Neural Lattice memory
+- src/reasoning/ — Multi-provider LLM backend
 - test/ — pytest test suite
 
 PERSONALITY: Quick, precise, no fluff.

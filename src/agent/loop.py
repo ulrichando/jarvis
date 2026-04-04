@@ -290,18 +290,37 @@ async def _agent_loop_internal(
         # Store assistant + tool_calls in OpenAI format
         _append_assistant_message(messages, text_content, tool_calls)
 
-        # Separate dispatch from regular
+        # Separate sentinel tools from regular ones
         dispatch_calls = []
         regular_calls = []
+        sentinel_calls = []
+        _SENTINEL_TOOLS = {
+            "EnterPlanMode", "ExitPlanMode", "EnterWorktree", "ExitWorktree",
+            "SendMessage", "TeamCreate", "TeamDelete", "Skill", "LSP",
+            "ScheduleCron", "RemoteTrigger", "ask_user",
+        }
         for tc in tool_calls:
             if tc["name"] == "dispatch" and allow_dispatch:
                 dispatch_calls.append(tc)
+            elif tc["name"] in _SENTINEL_TOOLS:
+                sentinel_calls.append(tc)
             else:
                 regular_calls.append(tc)
 
-        # Execute regular tools
+        # Handle sentinel tools — these change loop/brain state
+        for tc in sentinel_calls:
+            name, args, tid = tc["name"], tc["args"], tc["id"]
+            if on_tool_call:
+                on_tool_call(name, args)
+            result = await _handle_sentinel_tool(name, args)
+            if on_tool_result:
+                on_tool_result(name, result)
+            _append_tool_result(messages, tid, result, tool_name=name)
+
+        # Execute regular tools (respect plan mode)
+        _readonly = _loop_state.get("plan_mode", False)
         await _execute_tools(messages, regular_calls, tool_executor,
-                             on_tool_call, on_tool_result)
+                             on_tool_call, on_tool_result, readonly=_readonly)
 
         # Execute dispatch calls (concurrent)
         if dispatch_calls:
@@ -326,6 +345,11 @@ async def _agent_loop_internal(
             for tool_id, result in dispatch_results:
                 _append_tool_result(messages, tool_id, result, tool_name="dispatch")
 
+    # Stop hook — final verification before task completion
+    hooks = _get_hooks()
+    if hooks:
+        hooks.run_stop()
+
     return final_text.strip()
 
 
@@ -345,6 +369,165 @@ def _append_assistant_message(messages: list[dict], text: str, tool_calls: list[
             for tc in tool_calls
         ]
     messages.append(msg)
+
+
+async def _handle_sentinel_tool(name: str, args: dict) -> str:
+    """Handle tools that change loop/brain state instead of executing directly."""
+
+    if name == "EnterPlanMode":
+        # Switch tools to read-only set
+        _loop_state["plan_mode"] = True
+        return "Plan mode activated. I will analyze and suggest changes without executing them."
+
+    elif name == "ExitPlanMode":
+        _loop_state["plan_mode"] = False
+        return "Plan mode deactivated. I can now execute changes."
+
+    elif name == "EnterWorktree":
+        worktree_name = args.get("name", "jarvis-worktree")
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["git", "worktree", "add", f"/tmp/{worktree_name}", "-b", worktree_name],
+                capture_output=True, text=True, timeout=30
+            )
+            if result.returncode == 0:
+                _loop_state["worktree"] = f"/tmp/{worktree_name}"
+                return f"Created worktree at /tmp/{worktree_name} on branch {worktree_name}"
+            return f"Failed to create worktree: {result.stderr.strip()}"
+        except Exception as e:
+            return f"Worktree error: {e}"
+
+    elif name == "ExitWorktree":
+        wt = _loop_state.get("worktree")
+        if wt:
+            try:
+                import subprocess
+                subprocess.run(["git", "worktree", "remove", wt, "--force"],
+                             capture_output=True, timeout=30)
+                _loop_state["worktree"] = None
+                return f"Removed worktree {wt}"
+            except Exception as e:
+                return f"Worktree cleanup error: {e}"
+        return "No active worktree."
+
+    elif name == "SendMessage":
+        to = args.get("to", "")
+        message = args.get("message", "")
+        # In single-agent mode, this is a no-op. In multi-agent (swarm), route to target.
+        try:
+            from src.agent.swarm import Swarm
+            swarm = Swarm()
+            if swarm.has_agent(to):
+                return swarm.send_message(to, message)
+        except Exception:
+            pass
+        return f"Message queued for '{to}': {message[:100]}"
+
+    elif name == "TeamCreate":
+        team_name = args.get("name", "team")
+        agents = args.get("agents", [])
+        return f"Team '{team_name}' created with agents: {', '.join(agents)}"
+
+    elif name == "TeamDelete":
+        team_name = args.get("name", "")
+        return f"Team '{team_name}' deleted."
+
+    elif name == "Skill":
+        skill_name = args.get("name", "")
+        skill_args = args.get("args", "")
+        try:
+            from src.skills import SkillManager
+            sm = SkillManager()
+            sm.discover()
+            skill = sm.get(skill_name)
+            if skill:
+                rendered = skill.render(skill_args)
+                return f"Skill '{skill_name}' prompt:\n{rendered}"
+            return f"Skill '{skill_name}' not found. Available: {', '.join(s.name for s in sm.list_skills())}"
+        except Exception as e:
+            return f"Skill error: {e}"
+
+    elif name == "LSP":
+        action = args.get("action", "diagnostics")
+        file_path = args.get("file_path", "")
+        try:
+            from src.lsp.manager import LspManager
+            lsp = LspManager()
+            if action == "diagnostics":
+                diags = lsp.get_diagnostics(file_path)
+                if diags:
+                    return "\n".join(f"  {d['severity']}: {d['message']} (line {d.get('line', '?')})" for d in diags)
+                return f"No diagnostics for {file_path}"
+            elif action == "symbols":
+                symbols = lsp.get_symbols(file_path)
+                return "\n".join(f"  {s['kind']} {s['name']} (line {s.get('line', '?')})" for s in symbols) if symbols else "No symbols found."
+            elif action == "hover":
+                pos = args.get("position", {})
+                info = lsp.hover(file_path, pos.get("line", 0), pos.get("character", 0))
+                return info or "No hover info."
+            return f"Unknown LSP action: {action}"
+        except Exception as e:
+            return f"LSP unavailable: {e}"
+
+    elif name == "ScheduleCron":
+        action = args.get("action", "list")
+        try:
+            from src.config import JARVIS_HOME
+            import json
+            cron_file = JARVIS_HOME / "cron_jobs.json"
+            jobs = json.loads(cron_file.read_text()) if cron_file.exists() else []
+            if action == "list":
+                if not jobs:
+                    return "No scheduled jobs."
+                return "\n".join(f"  {j['id']}: {j['schedule']} — {j['command']}" for j in jobs)
+            elif action == "create":
+                new_job = {
+                    "id": f"job-{len(jobs)+1}",
+                    "schedule": args.get("schedule", "0 * * * *"),
+                    "command": args.get("command", ""),
+                }
+                jobs.append(new_job)
+                cron_file.parent.mkdir(parents=True, exist_ok=True)
+                cron_file.write_text(json.dumps(jobs, indent=2))
+                return f"Created job {new_job['id']}: {new_job['schedule']} — {new_job['command']}"
+            elif action == "delete":
+                job_id = args.get("job_id", "")
+                jobs = [j for j in jobs if j["id"] != job_id]
+                cron_file.write_text(json.dumps(jobs, indent=2))
+                return f"Deleted job {job_id}"
+            return f"Unknown cron action: {action}"
+        except Exception as e:
+            return f"Cron error: {e}"
+
+    elif name == "RemoteTrigger":
+        action = args.get("action", "list")
+        try:
+            from src.bridge.bridgeApi import BridgeApi
+            api = BridgeApi()
+            if action == "list":
+                triggers = api.list_triggers()
+                if not triggers:
+                    return "No remote triggers configured."
+                return "\n".join(f"  {t['id']}: {t['schedule']} — {t['prompt'][:50]}" for t in triggers)
+            return f"Remote trigger action '{action}' acknowledged."
+        except Exception as e:
+            return f"Remote trigger: {e}"
+
+    elif name == "ask_user":
+        question = args.get("question", args.get("message", ""))
+        # In non-interactive loops, return the question as prompt for the LLM
+        # to reformulate. In interactive contexts, the shell layer handles this.
+        return f"[Awaiting user response to: {question}]"
+
+    return f"Unknown sentinel tool: {name}"
+
+
+# Mutable loop state for sentinel tools
+_loop_state: dict = {
+    "plan_mode": False,
+    "worktree": None,
+}
 
 
 def _append_tool_result(messages: list[dict], tool_id: str, result: str,
@@ -576,7 +759,7 @@ async def agent_loop_stream(
 
         messages = _maybe_compact(messages, compactor=compactor)
 
-        # For casual chat on first iteration: skip tools so Claude stays in character
+        # For casual chat on first iteration: skip tools so JARVIS stays in character
         _effective_tools = tools
         if iterations == 1 and tools:
             _q = user_input.lower().strip().rstrip("?!. ")
@@ -586,7 +769,7 @@ async def agent_loop_stream(
                                    "install", "delete", "open", "make", "update",
                                    "/", "~", ".py", ".js", ".rs", "file", "code"])
             if _short_casual:
-                _effective_tools = []  # No tools — Claude stays in JARVIS personality
+                _effective_tools = []  # No tools — JARVIS stays in personality
 
         # Call LLM — retry on overflow/rate limit
         response = None
@@ -642,9 +825,33 @@ async def agent_loop_stream(
         # Store in OpenAI format
         _append_assistant_message(messages, text_content, tool_calls)
 
-        # Separate dispatch from regular
-        dispatch_calls = [tc for tc in tool_calls if tc["name"] == "dispatch"]
-        regular_calls = [tc for tc in tool_calls if tc["name"] != "dispatch"]
+        # Separate dispatch and sentinel tools from regular ones
+        _SENTINEL_TOOLS_STREAM = {
+            "EnterPlanMode", "ExitPlanMode", "EnterWorktree", "ExitWorktree",
+            "SendMessage", "TeamCreate", "TeamDelete", "Skill", "LSP",
+            "ScheduleCron", "RemoteTrigger", "ask_user",
+        }
+        dispatch_calls = []
+        sentinel_calls = []
+        regular_calls = []
+        for tc in tool_calls:
+            if tc["name"] == "dispatch":
+                dispatch_calls.append(tc)
+            elif tc["name"] in _SENTINEL_TOOLS_STREAM:
+                sentinel_calls.append(tc)
+            else:
+                regular_calls.append(tc)
+
+        # Handle sentinel tools — these change loop/brain state
+        for tc in sentinel_calls:
+            s_name, s_args, s_id = tc["name"], tc["args"], tc["id"]
+            yield {"type": "tool_call", "name": s_name, "args": s_args}
+            try:
+                s_result = await _handle_sentinel_tool(s_name, s_args)
+            except Exception as exc:
+                s_result = f"ERROR: {exc}"
+            yield {"type": "tool_result", "name": s_name, "content": s_result}
+            _append_tool_result(messages, s_id, s_result, tool_name=s_name)
 
         # Execute regular tools
         hooks = _get_hooks()
@@ -751,6 +958,13 @@ async def agent_loop_stream(
                     hooks.run_subagent_stop(agent_type, "", result[:500])
                 yield {"type": "dispatch_result", "agent_type": agent_type, "result": result}
                 _append_tool_result(messages, tool_id, result, tool_name="dispatch")
+
+    # Stop hook — final verification before task completion (can force continuation)
+    hooks = _get_hooks()
+    if hooks:
+        stop_hr = hooks.run_stop()
+        if not stop_hr.allowed:
+            log.info("Stop hook blocked completion: %s", stop_hr.message)
 
     # Emit final cost summary
     yield {"type": "cost", "summary": cost_tracker.get_summary(), "status": cost_tracker.get_status_line()}

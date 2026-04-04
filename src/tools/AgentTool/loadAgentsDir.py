@@ -11,9 +11,10 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Literal, Optional
 
+from src.tools.AgentTool.agentMemory import AgentMemoryScope
+
 logger = logging.getLogger(__name__)
 
-AgentMemoryScope = Literal["user", "project", "local"]
 SettingSource = Literal[
     "built-in", "plugin", "userSettings", "projectSettings",
     "policySettings", "flagSettings",
@@ -42,7 +43,7 @@ class AgentDefinition:
     color: Optional[str] = None
     hooks: Optional[dict[str, Any]] = None
     mcp_servers: Optional[list[Any]] = None
-    omit_claude_md: Optional[bool] = None
+    omit_jarvis_md: Optional[bool] = None
     get_system_prompt: Optional[Any] = None  # Callable
 
     def is_built_in(self) -> bool:

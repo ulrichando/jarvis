@@ -25,7 +25,7 @@ statusline = {
     "content_length": 0,
     "aliases": [],
     "progress_message": "setting up statusLine",
-    "allowed_tools": [AGENT_TOOL_NAME, "Read(~/**)", "Edit(~/.claude/settings.json)"],
+    "allowed_tools": [AGENT_TOOL_NAME, "Read(~/**)", "Edit(~/.jarvis/settings.json)"],
     "source": "builtin",
     "disable_non_interactive": True,
     "get_prompt_for_command": get_prompt_for_command,

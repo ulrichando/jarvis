@@ -1,6 +1,6 @@
 """JARVIS Tool Definitions — structured tools the LLM can call.
 
-Inspired by Claude Code / Gemini CLI / Codex CLI tool systems.
+JARVIS tool system.
 Each tool has a JSON schema definition + an execute() function.
 The agent loop calls the LLM, which returns tool_calls, we execute them,
 feed results back, and loop until the LLM gives a final text response.
@@ -144,8 +144,8 @@ TOOL_SCHEMAS = [
                 "unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. "
                 "Instead, use the appropriate dedicated tool as this will provide a much better experience for the user:\n"
                 "\n"
-                "- File search: Use search_files with mode='glob' (NOT find or ls)\n"
-                "- Content search: Use search_files with mode='grep' (NOT grep or rg)\n"
+                "- File search: Use Glob (NOT find or ls)\n"
+                "- Content search: Use Grep (NOT grep or rg)\n"
                 "- Read files: Use read_file (NOT cat/head/tail)\n"
                 "- Edit files: Use edit_file (NOT sed/awk)\n"
                 "- Write files: Use write_file (NOT echo >/cat <<EOF)\n"
@@ -328,74 +328,91 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "search_files",
+            "name": "Glob",
             "description": (
-                "Search for files by name pattern (glob) or search file contents by regex (ripgrep).\n"
-                "\n"
-                "## Glob mode (mode='glob') -- File pattern matching\n"
-                "- Fast file pattern matching tool that works with any codebase size\n"
-                '- Supports glob patterns like "**/*.js" or "src/**/*.ts"\n'
-                "- Returns matching file paths sorted by modification time\n"
-                "- Use this mode when you need to find files by name patterns\n"
-                "- When you are doing an open ended search that may require multiple rounds "
-                "of globbing and grepping, use the dispatch tool instead\n"
-                "\n"
-                "## Grep mode (mode='grep') -- Content search powered by ripgrep\n"
-                "- ALWAYS use grep mode for content search tasks. NEVER invoke `grep` or `rg` as a bash command. "
-                "This tool has been optimized for correct permissions and access.\n"
-                '- Supports full regex syntax (e.g., "log.*Error", "function\\\\s+\\\\w+")\n'
-                '- Filter files with file_glob parameter (e.g., "*.js", "**/*.tsx") or file_type parameter '
-                '(e.g., "js", "py", "rust")\n'
-                '- Output modes: "content" shows matching lines, "files_with_matches" shows only file paths (default), '
-                '"count" shows match counts\n'
-                "- Use dispatch tool for open-ended searches requiring multiple rounds\n"
-                "- Pattern syntax: Uses ripgrep (not grep) -- literal braces need escaping\n"
+                "Fast file pattern matching tool that works with any codebase size.\n"
+                "Supports glob patterns like '**/*.js' or 'src/**/*.ts'.\n"
+                "Returns matching file paths sorted by modification time.\n"
+                "Use this when you need to find files by name patterns.\n"
+                "When you are doing an open ended search that may require multiple rounds "
+                "of globbing and grepping, use the dispatch tool instead."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "pattern": {
                         "type": "string",
-                        "description": "Glob pattern for file names (e.g. '**/*.py') OR regex pattern for content search",
+                        "description": "The glob pattern to match files against (e.g. '**/*.py', 'src/**/*.ts')",
                     },
                     "path": {
                         "type": "string",
-                        "description": "Directory to search in (default: current directory)",
-                        "default": ".",
+                        "description": "Directory to search in. Defaults to current directory.",
                     },
-                    "mode": {
+                },
+                "required": ["pattern"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "Grep",
+            "description": (
+                "A powerful content search tool built on ripgrep.\n"
+                "\n"
+                "ALWAYS use Grep for content search tasks. NEVER invoke `grep` or `rg` as a bash command. "
+                "This tool has been optimized for correct permissions and access.\n"
+                "Supports full regex syntax (e.g., 'log.*Error', 'function\\s+\\w+').\n"
+                "Filter files with glob parameter (e.g., '*.js', '**/*.tsx') or type parameter "
+                "(e.g., 'js', 'py', 'rust').\n"
+                "Output modes: 'content' shows matching lines, 'files_with_matches' shows only file paths (default), "
+                "'count' shows match counts.\n"
+                "Use dispatch tool for open-ended searches requiring multiple rounds.\n"
+                "Pattern syntax: Uses ripgrep (not grep) -- literal braces need escaping.\n"
+                "Multiline matching: By default patterns match within single lines only. "
+                "For cross-line patterns, use multiline: true."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
                         "type": "string",
-                        "enum": ["glob", "grep"],
-                        "description": "Search mode: 'glob' for file names, 'grep' for file contents (uses ripgrep)",
-                        "default": "glob",
+                        "description": "Regex pattern to search for in file contents",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "File or directory to search in (default: current directory)",
                     },
                     "output_mode": {
                         "type": "string",
                         "enum": ["content", "files_with_matches", "count"],
-                        "description": "For grep mode: 'content' shows matching lines, 'files_with_matches' shows file paths (default), 'count' shows match counts per file",
+                        "description": "Output mode: 'content' shows matching lines, 'files_with_matches' shows file paths (default), 'count' shows match counts",
                         "default": "files_with_matches",
                     },
-                    "file_glob": {
+                    "glob": {
                         "type": "string",
-                        "description": "Filter searched files by glob (e.g. '*.py', '*.{ts,tsx}'). Only applies in grep mode.",
+                        "description": "Filter files by glob pattern (e.g. '*.py', '*.{ts,tsx}')",
                     },
-                    "file_type": {
+                    "type": {
                         "type": "string",
-                        "description": "Filter by file type (e.g. 'py', 'js', 'rust'). Maps to rg --type. Only applies in grep mode.",
+                        "description": "File type filter (e.g. 'py', 'js', 'rust'). Maps to rg --type.",
+                    },
+                    "-i": {
+                        "type": "boolean",
+                        "description": "Case insensitive search",
                     },
                     "context": {
                         "type": "integer",
-                        "description": "Lines of context around matches (grep content mode only)",
-                        "default": 0,
-                    },
-                    "case_insensitive": {
-                        "type": "boolean",
-                        "description": "Case insensitive search (grep mode only)",
+                        "description": "Lines of context around matches",
                     },
                     "head_limit": {
                         "type": "integer",
                         "description": "Max results to return (default 250, 0 for unlimited)",
                         "default": 250,
+                    },
+                    "multiline": {
+                        "type": "boolean",
+                        "description": "Enable multiline matching where . matches newlines",
                     },
                 },
                 "required": ["pattern"],
@@ -835,13 +852,573 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    # ── Plan Mode Tools ────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "EnterPlanMode",
+            "description": (
+                "Switch to plan mode for non-trivial implementation tasks. "
+                "In plan mode you can explore the codebase and design an approach for user approval "
+                "before writing code. Use when the task involves new features, multiple approaches, "
+                "architectural decisions, or multi-file changes. Requires user approval to enter."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ExitPlanMode",
+            "description": (
+                "Exit plan mode after writing your plan. Signals that you are done planning "
+                "and ready for the user to review and approve your implementation plan. "
+                "Only use when you have finished writing your plan and are ready for approval."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
+    # ── Worktree Tools ─────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "EnterWorktree",
+            "description": (
+                "Create an isolated git worktree and switch the session into it. "
+                "Use ONLY when the user explicitly asks to work in a worktree. "
+                "Creates a new worktree inside .jarvis/worktrees/ with a new branch based on HEAD."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Optional name for the worktree. If not provided, a random name is generated.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ExitWorktree",
+            "description": (
+                "Exit a worktree session created by EnterWorktree and return to the original directory. "
+                "Only operates on worktrees created by EnterWorktree in this session."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["keep", "remove"],
+                        "description": "'keep' leaves worktree on disk, 'remove' deletes it and its branch",
+                    },
+                    "discard_changes": {
+                        "type": "boolean",
+                        "description": "If true, force removal even with uncommitted changes (only with action='remove')",
+                        "default": False,
+                    },
+                },
+                "required": ["action"],
+            },
+        },
+    },
+    # ── Multi-Agent Communication ──────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "SendMessage",
+            "description": (
+                "Send a message to another agent. Your plain text output is NOT visible to other agents -- "
+                "to communicate, you MUST call this tool. Refer to teammates by name, never by UUID."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "to": {
+                        "type": "string",
+                        "description": "Teammate name or '*' for broadcast to all",
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "Short summary of the message purpose",
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "The message content to send",
+                    },
+                },
+                "required": ["to", "message"],
+            },
+        },
+    },
+    # ── Task Management Tools ──────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "TaskCreate",
+            "description": (
+                "Create a new structured task for the current session. Use for complex multi-step tasks, "
+                "plan mode tracking, or when the user provides multiple tasks. "
+                "Each task has a subject, description, and optional activeForm for spinner display. "
+                "All tasks are created with status 'pending'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "subject": {
+                        "type": "string",
+                        "description": "Brief actionable title in imperative form (e.g. 'Fix auth bug in login flow')",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Detailed description of what needs to be done",
+                    },
+                    "activeForm": {
+                        "type": "string",
+                        "description": "Present continuous form for spinner (e.g. 'Fixing auth bug')",
+                    },
+                },
+                "required": ["subject", "description"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "TaskGet",
+            "description": (
+                "Get a task by its ID from the task list. Returns full details including subject, "
+                "description, status, and dependency information (blocks/blockedBy)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {
+                        "type": "string",
+                        "description": "The task ID to retrieve",
+                    },
+                },
+                "required": ["task_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "TaskList",
+            "description": (
+                "List all tasks in the task list. Shows id, subject, status, owner, and blockedBy "
+                "for each task. Use to find available work or check overall progress."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "TaskStop",
+            "description": (
+                "Stop a running background task by its ID. Returns success or failure status. "
+                "Use when you need to terminate a long-running task."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {
+                        "type": "string",
+                        "description": "The task ID to stop",
+                    },
+                },
+                "required": ["task_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "TaskUpdate",
+            "description": (
+                "Update a task in the task list. Can change status (pending -> in_progress -> completed), "
+                "subject, description, owner, or dependencies. "
+                "ONLY mark completed when FULLY accomplished -- keep as in_progress if blocked or errored."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {
+                        "type": "string",
+                        "description": "The task ID to update",
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": ["pending", "in_progress", "completed", "deleted"],
+                        "description": "New task status",
+                    },
+                    "subject": {
+                        "type": "string",
+                        "description": "New task title",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "New task description",
+                    },
+                    "activeForm": {
+                        "type": "string",
+                        "description": "Present continuous form for spinner display",
+                    },
+                    "owner": {
+                        "type": "string",
+                        "description": "Agent name to assign the task to",
+                    },
+                    "addBlocks": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Task IDs that cannot start until this one completes",
+                    },
+                    "addBlockedBy": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Task IDs that must complete before this one can start",
+                    },
+                },
+                "required": ["task_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "TaskOutput",
+            "description": "Get the output of a completed or running task by its ID.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {
+                        "type": "string",
+                        "description": "The task ID to get output for",
+                    },
+                },
+                "required": ["task_id"],
+            },
+        },
+    },
+    # ── Team Tools ─────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "TeamCreate",
+            "description": (
+                "Create a new team to coordinate multiple agents working on a project. "
+                "Teams have a 1:1 correspondence with task lists. Creates a team config and task directory. "
+                "Use when the user asks for a team, swarm, or group of agents to work together."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "team_name": {
+                        "type": "string",
+                        "description": "Name for the team (used in directory paths)",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Description of what the team is working on",
+                    },
+                },
+                "required": ["team_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "TeamDelete",
+            "description": (
+                "Remove team and task directories when the swarm work is complete. "
+                "Will fail if the team still has active members -- terminate teammates first."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "team_name": {
+                        "type": "string",
+                        "description": "Name of the team to delete",
+                    },
+                },
+                "required": ["team_name"],
+            },
+        },
+    },
+    # ── Skill Tool ─────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "Skill",
+            "description": (
+                "Execute a user-defined skill within the main conversation. "
+                "Skills provide specialized capabilities and domain knowledge. "
+                "When users reference a 'slash command' or '/<something>' (e.g. /commit, /review-pr), "
+                "they are referring to a skill. Use this tool to invoke it. "
+                "BLOCKING REQUIREMENT: when a skill matches, invoke it BEFORE generating any other response."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {
+                        "type": "string",
+                        "description": "The skill name to invoke (e.g. 'pdf', 'commit', 'review-pr')",
+                    },
+                    "args": {
+                        "type": "string",
+                        "description": "Optional arguments to pass to the skill",
+                    },
+                },
+                "required": ["skill"],
+            },
+        },
+    },
+    # ── Config Tool ────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "ConfigTool",
+            "description": (
+                "Get or set JARVIS configuration settings. "
+                "Use when the user requests configuration changes or asks about current settings.\n"
+                "\n"
+                "Usage:\n"
+                "- Get current value: omit the 'value' parameter\n"
+                "- Set new value: include the 'value' parameter\n"
+                "\n"
+                "Available settings:\n"
+                "- theme: 'dark', 'light', 'light-daltonized', 'dark-daltonized'\n"
+                "- verbose: true/false\n"
+                "- editorMode: 'normal', 'vim', 'emacs'\n"
+                "- model: Override default model (sonnet, opus, haiku, best, or full model ID)"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "setting": {
+                        "type": "string",
+                        "description": "The setting name to get or set",
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "The new value to set (omit to read current value)",
+                    },
+                },
+                "required": ["setting"],
+            },
+        },
+    },
+    # ── LSP Tool ───────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "LSP",
+            "description": (
+                "Interact with Language Server Protocol servers for code intelligence. "
+                "Supported actions: diagnostics (errors/warnings for a file), definition (go-to-definition), "
+                "references (find all references), hover (symbol info), completion (code completions)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["diagnostics", "definition", "references", "hover", "completion"],
+                        "description": "LSP action to perform",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "File path for the LSP operation",
+                    },
+                    "line": {
+                        "type": "integer",
+                        "description": "Line number (0-based) for position-based actions",
+                    },
+                    "character": {
+                        "type": "integer",
+                        "description": "Column number (0-based) for position-based actions",
+                    },
+                },
+                "required": ["action", "path"],
+            },
+        },
+    },
+    # ── Sleep Tool ─────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "Sleep",
+            "description": (
+                "Wait for a specified duration. The user can interrupt the sleep at any time. "
+                "Use when the user tells you to sleep or rest, when you have nothing to do, "
+                "or when you're waiting for something. Prefer this over Bash(sleep ...) -- "
+                "it doesn't hold a shell process."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "duration_ms": {
+                        "type": "integer",
+                        "description": "Duration to sleep in milliseconds",
+                    },
+                },
+                "required": ["duration_ms"],
+            },
+        },
+    },
+    # ── Schedule/Cron Tool ─────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "ScheduleCron",
+            "description": (
+                "Schedule a prompt to run at a future time -- either recurring on a cron schedule, "
+                "or once at a specific time. Uses standard 5-field cron in the user's local timezone. "
+                "Actions: create (schedule new job), delete (cancel by ID), list (show all scheduled jobs)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["create", "delete", "list"],
+                        "description": "Cron action to perform",
+                    },
+                    "cron_expression": {
+                        "type": "string",
+                        "description": "5-field cron expression (for create). E.g. '0 9 * * *' for 9am daily.",
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "The prompt to run at the scheduled time (for create)",
+                    },
+                    "recurring": {
+                        "type": "boolean",
+                        "description": "If true (default), job recurs. If false, fires once then auto-deletes.",
+                        "default": True,
+                    },
+                    "job_id": {
+                        "type": "string",
+                        "description": "Job ID to delete (for delete action)",
+                    },
+                },
+                "required": ["action"],
+            },
+        },
+    },
+    # ── Brief/SendUserMessage Tool ─────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "BriefTool",
+            "description": (
+                "Send a message the user will read. Text outside this tool is visible in the detail view, "
+                "but most won't open it -- the answer lives here. Supports markdown. "
+                "Use status 'normal' when replying to what they asked, 'proactive' when initiating."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "The message to send to the user (markdown supported)",
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": ["normal", "proactive"],
+                        "description": "'normal' for replies, 'proactive' for agent-initiated messages",
+                        "default": "normal",
+                    },
+                    "attachments": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "File paths for attachments (images, diffs, logs)",
+                    },
+                },
+                "required": ["message"],
+            },
+        },
+    },
+    # ── MCP Resource Tool ──────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "ListMcpResources",
+            "description": (
+                "List available resources from configured MCP servers. "
+                "Each resource includes a 'server' field indicating which server it belongs to."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "server": {
+                        "type": "string",
+                        "description": "Optional: specific MCP server name to list resources from. If omitted, lists all.",
+                    },
+                },
+            },
+        },
+    },
+    # ── Remote Trigger Tool ────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "RemoteTrigger",
+            "description": (
+                "Manage scheduled remote JARVIS agents (triggers) via the JARVIS API. "
+                "Auth is handled in-process -- the token never reaches the shell. "
+                "Actions: list, get, create, update, run."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "get", "create", "update", "run"],
+                        "description": "Trigger API action to perform",
+                    },
+                    "trigger_id": {
+                        "type": "string",
+                        "description": "Trigger ID (for get, update, run actions)",
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "JSON request body (for create, update actions)",
+                    },
+                },
+                "required": ["action"],
+            },
+        },
+    },
 ]
 
 
 # ── Tool Execution ──────────────────────────────────────────────────
 
 # Tools allowed in plan/read-only mode
-READONLY_TOOLS = {"read_file", "search_files", "web_search", "web_fetch", "think", "dispatch", "view_screen", "tool_search", "ask_user", "todo_write"}
+READONLY_TOOLS = {
+    "read_file", "Glob", "Grep", "web_search", "web_fetch", "think", "dispatch",
+    "view_screen", "tool_search", "ask_user", "todo_write",
+    "TaskList", "TaskGet", "TaskOutput", "ListMcpResources", "LSP",
+    "ConfigTool", "BriefTool", "EnterPlanMode", "ExitPlanMode",
+    # Legacy alias
+    "search_files",
+}
 
 # Bash commands considered safe for read-only mode
 READONLY_BASH_PREFIXES = (
@@ -886,6 +1463,10 @@ def execute_tool(name: str, args: dict, readonly: bool = False) -> str:
             return _exec_edit(args)
         elif name == "search_files":
             return _exec_search(args)
+        elif name == "Glob":
+            return _exec_glob(args)
+        elif name == "Grep":
+            return _exec_grep(args)
         elif name == "web_search":
             return _exec_web_search(args)
         elif name == "web_fetch":
@@ -918,6 +1499,61 @@ def execute_tool(name: str, args: dict, readonly: bool = False) -> str:
             return _exec_notebook_edit(args)
         elif name == "dispatch":
             return "__DISPATCH__"  # Handled async by agent loop
+        # ── Plan Mode ──────────────────────────────────────────────────
+        elif name == "EnterPlanMode":
+            return "__PLAN_MODE_ENTER__"  # Handled by agent loop
+        elif name == "ExitPlanMode":
+            return "__PLAN_MODE_EXIT__"  # Handled by agent loop
+        # ── Worktree ───────────────────────────────────────────────────
+        elif name == "EnterWorktree":
+            return "__WORKTREE_ENTER__"  # Handled by agent loop
+        elif name == "ExitWorktree":
+            return "__WORKTREE_EXIT__"  # Handled by agent loop
+        # ── Multi-Agent ────────────────────────────────────────────────
+        elif name == "SendMessage":
+            return "__SEND_MESSAGE__"  # Handled by agent loop
+        # ── Task Management ────────────────────────────────────────────
+        elif name == "TaskCreate":
+            return _exec_task_create(args)
+        elif name == "TaskGet":
+            return _exec_task_get(args)
+        elif name == "TaskList":
+            return _exec_task_list(args)
+        elif name == "TaskStop":
+            return _exec_task_stop(args)
+        elif name == "TaskUpdate":
+            return _exec_task_update(args)
+        elif name == "TaskOutput":
+            return _exec_task_output(args)
+        # ── Team Tools ─────────────────────────────────────────────────
+        elif name == "TeamCreate":
+            return "__TEAM_CREATE__"  # Handled by agent loop
+        elif name == "TeamDelete":
+            return "__TEAM_DELETE__"  # Handled by agent loop
+        # ── Skill ──────────────────────────────────────────────────────
+        elif name == "Skill":
+            return "__SKILL__"  # Handled by agent loop
+        # ── Config ─────────────────────────────────────────────────────
+        elif name == "ConfigTool":
+            return _exec_config(args)
+        # ── LSP ────────────────────────────────────────────────────────
+        elif name == "LSP":
+            return "__LSP__"  # Handled by agent loop (requires LSP server)
+        # ── Sleep ──────────────────────────────────────────────────────
+        elif name == "Sleep":
+            return _exec_sleep(args)
+        # ── Cron/Schedule ──────────────────────────────────────────────
+        elif name == "ScheduleCron":
+            return "__CRON__"  # Handled by agent loop
+        # ── BriefTool (SendUserMessage) ────────────────────────────────
+        elif name == "BriefTool":
+            return args.get("message", "")
+        # ── MCP Resources ─────────────────────────────────────────────
+        elif name == "ListMcpResources":
+            return _exec_list_mcp_resources(args)
+        # ── Remote Trigger ─────────────────────────────────────────────
+        elif name == "RemoteTrigger":
+            return "__REMOTE_TRIGGER__"  # Handled by agent loop
         elif name.startswith("mcp_"):
             return _exec_mcp_tool(name, args)
         else:
@@ -1975,3 +2611,250 @@ def _exec_notebook_edit(args: dict) -> str:
         return f"Invalid notebook JSON: {e}"
     except Exception as e:
         return f"Error editing notebook: {e}"
+
+
+# ── New Tool Implementations ────────────────────────────────────────────
+
+
+def _exec_glob(args: dict) -> str:
+    """Fast file pattern matching using Python glob."""
+    pattern = args.get("pattern", "")
+    path = os.path.expanduser(args.get("path", "."))
+
+    if not pattern:
+        return "No pattern provided."
+
+    try:
+        full_pattern = os.path.join(path, pattern)
+        matches = _glob.glob(full_pattern, recursive=True)
+        # Sort by modification time (newest first)
+        matches.sort(key=lambda f: os.path.getmtime(f) if os.path.exists(f) else 0, reverse=True)
+        matches = matches[:250]  # Cap results
+        if not matches:
+            return f"No files matching '{pattern}' in {path}"
+        return f"Found {len(matches)} files:\n" + "\n".join(matches)
+    except Exception as e:
+        return f"Glob error: {e}"
+
+
+def _exec_grep(args: dict) -> str:
+    """Content search using ripgrep."""
+    pattern = args.get("pattern", "")
+    path = os.path.expanduser(args.get("path", "."))
+
+    if not pattern:
+        return "No pattern provided."
+
+    try:
+        from src.agent.ripgrep import RipgrepConfig, search as rg_search
+
+        config = RipgrepConfig(
+            pattern=pattern,
+            path=path,
+            glob=args.get("glob", ""),
+            file_type=args.get("type", ""),
+            output_mode=args.get("output_mode", "files_with_matches"),
+            context=args.get("context", 0),
+            case_insensitive=args.get("-i", False),
+            multiline=args.get("multiline", False),
+            head_limit=args.get("head_limit", 250),
+        )
+        result = rg_search(config)
+        return result.output
+    except Exception as e:
+        return f"Grep error: {e}"
+
+
+# ── Task Management ────────────────────────────────────────────────────
+
+_task_list: list[dict] = []
+_task_counter: int = 0
+
+
+def _exec_task_create(args: dict) -> str:
+    """Create a new task."""
+    global _task_counter
+    subject = args.get("subject", "")
+    description = args.get("description", "")
+    if not subject:
+        return "No subject provided."
+
+    _task_counter += 1
+    task_id = f"task-{_task_counter}"
+    task = {
+        "id": task_id,
+        "subject": subject,
+        "description": description,
+        "status": "pending",
+        "owner": "",
+        "activeForm": args.get("activeForm", ""),
+        "blocks": [],
+        "blockedBy": [],
+        "output": "",
+    }
+    _task_list.append(task)
+    return f"Created task {task_id}: {subject}"
+
+
+def _exec_task_get(args: dict) -> str:
+    """Get task by ID."""
+    task_id = args.get("task_id", "")
+    if not task_id:
+        return "No task_id provided."
+    for task in _task_list:
+        if task["id"] == task_id:
+            return json.dumps(task, indent=2)
+    return f"Task not found: {task_id}"
+
+
+def _exec_task_list(args: dict) -> str:
+    """List all tasks."""
+    if not _task_list:
+        return "No tasks."
+    lines = []
+    for t in _task_list:
+        status_icon = {"pending": "[ ]", "in_progress": "[>]", "completed": "[x]", "deleted": "[-]"}.get(t.get("status", ""), "[?]")
+        owner = f" ({t['owner']})" if t.get("owner") else ""
+        blocked = f" blocked by: {', '.join(t['blockedBy'])}" if t.get("blockedBy") else ""
+        lines.append(f"{status_icon} {t['id']}: {t['subject']}{owner}{blocked}")
+    return "\n".join(lines)
+
+
+def _exec_task_stop(args: dict) -> str:
+    """Stop a running task."""
+    task_id = args.get("task_id", "")
+    if not task_id:
+        return "No task_id provided."
+    for task in _task_list:
+        if task["id"] == task_id:
+            if task["status"] == "in_progress":
+                task["status"] = "pending"
+                return f"Stopped task {task_id}"
+            return f"Task {task_id} is not in_progress (status: {task['status']})"
+    return f"Task not found: {task_id}"
+
+
+def _exec_task_update(args: dict) -> str:
+    """Update a task."""
+    task_id = args.get("task_id", "")
+    if not task_id:
+        return "No task_id provided."
+    for task in _task_list:
+        if task["id"] == task_id:
+            updated = []
+            if "status" in args:
+                new_status = args["status"]
+                if new_status == "deleted":
+                    _task_list.remove(task)
+                    return f"Deleted task {task_id}"
+                task["status"] = new_status
+                updated.append(f"status={new_status}")
+            if "subject" in args:
+                task["subject"] = args["subject"]
+                updated.append("subject")
+            if "description" in args:
+                task["description"] = args["description"]
+                updated.append("description")
+            if "activeForm" in args:
+                task["activeForm"] = args["activeForm"]
+                updated.append("activeForm")
+            if "owner" in args:
+                task["owner"] = args["owner"]
+                updated.append(f"owner={args['owner']}")
+            if "addBlocks" in args:
+                task["blocks"].extend(args["addBlocks"])
+                updated.append("blocks")
+            if "addBlockedBy" in args:
+                task["blockedBy"].extend(args["addBlockedBy"])
+                updated.append("blockedBy")
+            return f"Updated task {task_id}: {', '.join(updated)}" if updated else f"No changes to task {task_id}"
+    return f"Task not found: {task_id}"
+
+
+def _exec_task_output(args: dict) -> str:
+    """Get task output."""
+    task_id = args.get("task_id", "")
+    if not task_id:
+        return "No task_id provided."
+    for task in _task_list:
+        if task["id"] == task_id:
+            output = task.get("output", "")
+            return output if output else f"No output for task {task_id}"
+    return f"Task not found: {task_id}"
+
+
+# ── Config Tool ────────────────────────────────────────────────────────
+
+
+def _exec_config(args: dict) -> str:
+    """Get or set JARVIS configuration settings."""
+    setting = args.get("setting", "")
+    value = args.get("value", None)
+
+    if not setting:
+        return "No setting name provided."
+
+    jarvis_home = os.path.expanduser(os.environ.get("JARVIS_HOME", "~/.jarvis"))
+    settings_path = os.path.join(jarvis_home, "settings.json")
+
+    # Load existing settings
+    settings = {}
+    if os.path.exists(settings_path):
+        try:
+            with open(settings_path, "r") as f:
+                settings = json.load(f)
+        except Exception:
+            settings = {}
+
+    if value is None:
+        # GET mode
+        current = settings.get(setting, "(not set)")
+        return f"{setting} = {current}"
+    else:
+        # SET mode
+        settings[setting] = value
+        try:
+            os.makedirs(jarvis_home, exist_ok=True)
+            with open(settings_path, "w") as f:
+                json.dump(settings, f, indent=2)
+            return f"Set {setting} = {value}"
+        except Exception as e:
+            return f"Error saving setting: {e}"
+
+
+# ── Sleep Tool ─────────────────────────────────────────────────────────
+
+
+def _exec_sleep(args: dict) -> str:
+    """Sleep for a specified duration."""
+    import time
+    duration_ms = args.get("duration_ms", 1000)
+    duration_s = min(duration_ms / 1000.0, 300)  # Cap at 5 minutes
+    time.sleep(duration_s)
+    return f"Slept for {duration_s:.1f}s"
+
+
+# ── MCP Resources ─────────────────────────────────────────────────────
+
+
+def _exec_list_mcp_resources(args: dict) -> str:
+    """List available MCP server resources."""
+    try:
+        manager = _mcp_manager
+        if manager is None:
+            return "MCP not initialized."
+        server = args.get("server", None)
+        if hasattr(manager, "list_resources"):
+            resources = manager.list_resources(server=server)
+            if not resources:
+                return "No MCP resources available."
+            lines = []
+            for r in resources:
+                name = r.get("name", r.get("uri", "unknown"))
+                srv = r.get("server", "")
+                desc = r.get("description", "")
+                lines.append(f"- {name} [{srv}] {desc}")
+            return "\n".join(lines)
+        return "MCP manager does not support resource listing."
+    except Exception as e:
+        return f"MCP resource listing error: {e}"

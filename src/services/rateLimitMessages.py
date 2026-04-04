@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from .claudeAiLimits import ClaudeAILimits
+from .claudeAiLimits import JarvisAPILimits
 
 
 RATE_LIMIT_ERROR_PREFIXES = (
@@ -33,7 +33,7 @@ class RateLimitMessage:
 
 
 def get_rate_limit_message(
-    limits: ClaudeAILimits, model: str
+    limits: JarvisAPILimits, model: str
 ) -> Optional[RateLimitMessage]:
     """Get the appropriate rate limit message based on limit state.
 
@@ -62,7 +62,7 @@ def get_rate_limit_message(
 
 
 def get_rate_limit_error_message(
-    limits: ClaudeAILimits, model: str
+    limits: JarvisAPILimits, model: str
 ) -> Optional[str]:
     """Get error message for API errors."""
     message = get_rate_limit_message(limits, model)
@@ -72,7 +72,7 @@ def get_rate_limit_error_message(
 
 
 def get_rate_limit_warning(
-    limits: ClaudeAILimits, model: str
+    limits: JarvisAPILimits, model: str
 ) -> Optional[str]:
     """Get warning message for UI footer."""
     message = get_rate_limit_message(limits, model)
@@ -97,7 +97,7 @@ def _format_reset_time(resets_at: float, short: bool = True) -> str:
     return f"in {days}d"
 
 
-def _get_limit_reached_text(limits: ClaudeAILimits, model: str) -> str:
+def _get_limit_reached_text(limits: JarvisAPILimits, model: str) -> str:
     """Generate text for when a limit is reached."""
     resets_at = limits.resets_at
     reset_time = _format_reset_time(resets_at) if resets_at else None
@@ -118,7 +118,7 @@ def _get_limit_reached_text(limits: ClaudeAILimits, model: str) -> str:
     return _format_limit_reached(limit_name, reset_message, model)
 
 
-def _get_early_warning_text(limits: ClaudeAILimits) -> Optional[str]:
+def _get_early_warning_text(limits: JarvisAPILimits) -> Optional[str]:
     """Generate early warning text."""
     limit_names = {
         "seven_day": "weekly limit",
@@ -149,7 +149,7 @@ def _format_limit_reached(limit: str, reset_message: str, model: str) -> str:
     return f"You've hit your {limit}{reset_message}"
 
 
-def get_using_overage_text(limits: ClaudeAILimits) -> str:
+def get_using_overage_text(limits: JarvisAPILimits) -> str:
     """Get notification text for overage mode transitions."""
     reset_time = _format_reset_time(limits.resets_at) if limits.resets_at else ""
 

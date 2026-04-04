@@ -32,7 +32,7 @@ def _get_extra_certs_path_from_config() -> Optional[str]:
     """Read extra CA certs path from config as a fallback."""
     try:
         home = os.path.expanduser("~")
-        config_dir = os.path.join(home, ".claude")
+        config_dir = os.path.join(home, ".jarvis")
 
         # Try reading from global config
         import json

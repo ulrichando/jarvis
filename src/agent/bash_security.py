@@ -1,7 +1,7 @@
 """Bash command security validation system.
 
 Comprehensive security checks for bash commands before execution.
-Inspired by Claude Code's BashTool security validation.
+JARVIS BashTool security validation.
 
 Detects: command injection, substitution attacks, dangerous commands,
 environment manipulation, network exfiltration, unicode obfuscation,

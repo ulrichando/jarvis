@@ -92,7 +92,7 @@ class State:
     last_api_request: Optional[dict] = None
     last_api_request_messages: Optional[list] = None
     last_classifier_requests: Optional[list] = None
-    cached_claude_md_content: Optional[str] = None
+    cached_memory_md_content: Optional[str] = None
     in_memory_error_log: list[dict] = field(default_factory=list)
     inline_plugins: list[str] = field(default_factory=list)
     chrome_flag_override: Optional[bool] = None
@@ -119,7 +119,7 @@ class State:
     direct_connect_server_url: Optional[str] = None
     system_prompt_section_cache: dict[str, Optional[str]] = field(default_factory=dict)
     last_emitted_date: Optional[str] = None
-    additional_directories_for_claude_md: list[str] = field(default_factory=list)
+    additional_directories_for_memory_md: list[str] = field(default_factory=list)
     allowed_channels: list[dict] = field(default_factory=list)
     has_dev_channels: bool = False
     session_project_dir: Optional[str] = None
@@ -211,7 +211,17 @@ def get_cwd_state() -> str:
 
 
 def set_cwd_state(cwd: str) -> None:
+    old_cwd = _STATE.cwd
     _STATE.cwd = cwd
+    if old_cwd and old_cwd != cwd:
+        try:
+            from src.hooks import HooksManager
+            if not hasattr(set_cwd_state, "_hooks"):
+                set_cwd_state._hooks = HooksManager()
+                set_cwd_state._hooks.load()
+            set_cwd_state._hooks.run_cwd_changed(old_cwd, cwd)
+        except Exception:
+            pass  # Hooks are best-effort
 
 
 def add_to_total_duration_state(duration: float, duration_without_retries: float) -> None:
@@ -353,6 +363,32 @@ def consume_post_compaction() -> bool:
     was = _STATE.pending_post_compaction
     _STATE.pending_post_compaction = False
     return was
+
+
+# ---------------------------------------------------------------------------
+# Kairos state
+# ---------------------------------------------------------------------------
+
+def get_kairos_active() -> bool:
+    """Return whether kairos mode is active."""
+    return _STATE.kairos_active
+
+
+def set_kairos_active(active: bool) -> None:
+    """Enable or disable kairos mode."""
+    _STATE.kairos_active = active
+
+
+# ---------------------------------------------------------------------------
+# User message opt-in (brief mode)
+# ---------------------------------------------------------------------------
+
+def get_user_msg_opt_in() -> bool:
+    return _STATE.user_msg_opt_in
+
+
+def set_user_msg_opt_in(opt_in: bool) -> None:
+    _STATE.user_msg_opt_in = opt_in
 
 
 def reset_state_for_tests() -> None:

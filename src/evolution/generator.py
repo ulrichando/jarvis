@@ -4,13 +4,10 @@ Takes analysis results and generates Python code improvements.
 Scoped ONLY to brain/ directory — never modifies core infrastructure.
 """
 
-from src.reasoning.groq_client import GroqReasoner
-
-
 GENERATOR_PROMPT = """You are JARVIS's self-improvement engine. You analyze usage patterns and generate Python code improvements.
 
 RULES:
-- Only generate Python code that improves brain/ modules
+- Only generate Python code that improves src/ modules
 - Code must be a complete, importable Python module
 - Include docstrings explaining what the improvement does
 - Focus on: shortcuts for common queries, fixes for failures, performance optimizations
@@ -18,18 +15,24 @@ RULES:
 - Output ONLY the Python code, nothing else. No markdown, no explanation.
 
 CURRENT ARCHITECTURE:
-- brain/reasoning/groq_client.py — GroqReasoner with query() method
-- brain/commands/executor.py — CommandExecutor with execute(), open_app(), open_url()
-- brain/memory/store.py — MemoryStore with learn(), recall(), add_turn()
-- brain/evolution/evolved_shortcuts.py — where shortcuts live (import and use)
+- src/reasoning/providers.py — Multi-provider LLM backend with query() method
+- src/commands/executor.py — CommandExecutor with execute(), open_app(), open_url()
+- src/memory/store.py — MemoryStore with learn(), recall(), add_turn()
+- src/evolution/evolved_shortcuts.py — where shortcuts live (import and use)
 """
 
 
 class EvolutionGenerator:
     """Generates code improvements from analysis results."""
 
-    def __init__(self):
-        self.reasoner = GroqReasoner()
+    def __init__(self, reasoner=None):
+        self.reasoner = reasoner
+
+    def _get_reasoner(self):
+        if self.reasoner is None:
+            from src.reasoning.groq_client import GroqReasoner
+            self.reasoner = GroqReasoner()
+        return self.reasoner
 
     async def generate_shortcuts(self, opportunities: list[dict]) -> str | None:
         """Generate shortcut handlers for common queries."""
@@ -60,7 +63,7 @@ def check_shortcut(query: str) -> str | None:
 
 Generate the full module with shortcuts for ALL the queries listed above."""
 
-        code = await self.reasoner.query(
+        code = await self._get_reasoner().query(
             prompt,
             system_prompt=GENERATOR_PROMPT,
             history=None,
@@ -85,7 +88,7 @@ Generate a Python function `handle_error(query: str, error: str) -> str` that:
 - Returns a helpful fallback response
 - Returns None if it's not a known error pattern"""
 
-        code = await self.reasoner.query(
+        code = await self._get_reasoner().query(
             prompt,
             system_prompt=GENERATOR_PROMPT,
             history=None,

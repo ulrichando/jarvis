@@ -2,7 +2,7 @@
 
 Capabilities:
 - Periodic screenshots (configurable interval)
-- Vision model analysis (Anthropic Claude, Ollama llava/llama3.2-vision)
+- Vision model analysis (Anthropic, Ollama llava/llama3.2-vision)
 - OCR text extraction as fallback
 - Active window detection
 - Screen change detection (knows when something changes)
@@ -210,7 +210,7 @@ class ScreenObserver:
         except Exception:
             pass
 
-        # Check if provider registry has an Anthropic provider (Claude has vision)
+        # Check if provider registry has an Anthropic provider (supports vision)
         if self._provider_registry:
             for p in self._provider_registry.get_active_providers():
                 if p.type == "anthropic":
@@ -240,7 +240,7 @@ class ScreenObserver:
         except Exception as e:
             log.debug("Ollama vision failed: %s", e)
 
-        # Fallback to provider registry (Anthropic Claude vision, etc.)
+        # Fallback to provider registry (Anthropic vision, etc.)
         if self._provider_registry:
             try:
                 result, provider = await self._provider_registry.query_vision(

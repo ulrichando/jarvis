@@ -25,23 +25,23 @@ def _is_env_defined_falsy(val: str | None) -> bool:
 
 def is_repl_mode_enabled() -> bool:
     """REPL mode is default-on for ants in the interactive CLI (opt out with
-    CLAUDE_CODE_REPL=0). The legacy CLAUDE_REPL_MODE=1 also forces it on.
+    JARVIS_REPL=0). The legacy JARVIS_REPL_MODE=1 also forces it on.
 
     SDK entrypoints (sdk-ts, sdk-py, sdk-cli) are NOT defaulted on.
     """
-    if _is_env_defined_falsy(os.environ.get("CLAUDE_CODE_REPL")):
+    if _is_env_defined_falsy(os.environ.get("JARVIS_REPL")):
         return False
-    if _is_env_truthy(os.environ.get("CLAUDE_REPL_MODE")):
+    if _is_env_truthy(os.environ.get("JARVIS_REPL_MODE")):
         return True
     return (
         os.environ.get("USER_TYPE") == "ant"
-        and os.environ.get("CLAUDE_CODE_ENTRYPOINT") == "cli"
+        and os.environ.get("JARVIS_ENTRYPOINT") == "cli"
     )
 
 
 # Tools that are only accessible via REPL when REPL mode is enabled.
-# When REPL mode is on, these tools are hidden from Claude's direct use,
-# forcing Claude to use REPL for batch operations.
+# When REPL mode is on, these tools are hidden from JARVIS's direct use,
+# forcing JARVIS to use REPL for batch operations.
 REPL_ONLY_TOOLS: frozenset[str] = frozenset([
     FILE_READ_TOOL_NAME,
     FILE_WRITE_TOOL_NAME,

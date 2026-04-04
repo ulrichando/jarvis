@@ -14,7 +14,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 TMUX_COMMAND = "tmux"
-CLAUDE_SOCKET_PREFIX = "claude"
+JARVIS_SOCKET_PREFIX = "jarvis"
 
 # Socket state
 _socket_name: Optional[str] = None
@@ -44,20 +44,20 @@ async def _exec_tmux(args: list, use_cwd: bool = False) -> dict:
         return {"stdout": "", "stderr": "tmux not found", "code": 127}
 
 
-def get_claude_socket_name() -> str:
+def get_jarvis_socket_name() -> str:
     """Gets the socket name for the isolated tmux session."""
     global _socket_name
     if not _socket_name:
-        _socket_name = f"{CLAUDE_SOCKET_PREFIX}-{os.getpid()}"
+        _socket_name = f"{JARVIS_SOCKET_PREFIX}-{os.getpid()}"
     return _socket_name
 
 
-def get_claude_socket_path() -> Optional[str]:
+def get_jarvis_socket_path() -> Optional[str]:
     """Gets the socket path if initialized."""
     return _socket_path
 
 
-def set_claude_socket_info(path: str, pid: int) -> None:
+def set_jarvis_socket_info(path: str, pid: int) -> None:
     """Sets socket info after initialization."""
     global _socket_path, _server_pid
     _socket_path = path
@@ -69,7 +69,7 @@ def is_socket_initialized() -> bool:
     return _socket_path is not None and _server_pid is not None
 
 
-def get_claude_tmux_env() -> Optional[str]:
+def get_jarvis_tmux_env() -> Optional[str]:
     """
     Gets the TMUX environment variable value for the isolated socket.
     Format: "socket_path,server_pid,pane_index"
@@ -143,7 +143,7 @@ async def ensure_socket_initialized() -> None:
 
 async def _do_initialize() -> None:
     """Internal initialization of the tmux socket."""
-    socket = get_claude_socket_name()
+    socket = get_jarvis_socket_name()
 
     result = await _exec_tmux([
         "-L", socket, "new-session", "-d", "-s", "base",
@@ -168,7 +168,7 @@ async def _do_initialize() -> None:
             path, pid_str = parts
             try:
                 pid = int(pid_str)
-                set_claude_socket_info(path, pid)
+                set_jarvis_socket_info(path, pid)
                 return
             except ValueError:
                 pass
@@ -182,7 +182,7 @@ async def _do_initialize() -> None:
     if pid_result["code"] == 0:
         try:
             pid = int(pid_result["stdout"].strip())
-            set_claude_socket_info(fallback_path, pid)
+            set_jarvis_socket_info(fallback_path, pid)
             return
         except ValueError:
             pass

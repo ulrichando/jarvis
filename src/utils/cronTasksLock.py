@@ -14,7 +14,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-LOCK_FILE_REL = os.path.join(".claude", "scheduled_tasks.lock")
+LOCK_FILE_REL = os.path.join(".jarvis", "scheduled_tasks.lock")
 
 
 @dataclass

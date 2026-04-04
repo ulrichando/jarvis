@@ -36,7 +36,7 @@ _BUILTIN_TIPS: List[Tip] = [
     ),
     Tip(
         id="memory-command",
-        content=lambda: "Use /memory to view and manage Claude memory",
+        content=lambda: "Use /memory to view and manage JARVIS memory",
         cooldown_sessions=15,
     ),
     Tip(

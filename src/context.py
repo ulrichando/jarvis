@@ -1,7 +1,7 @@
 """
 System and user context for conversations.
 
-Converted from context.ts -- provides git status, CLAUDE.md content, and
+Converted from context.ts -- provides git status, JARVIS.md content, and
 other context prepended to each conversation.
 """
 
@@ -159,16 +159,16 @@ def _get_local_iso_date() -> str:
 async def get_user_context() -> dict[str, str]:
     """
     User context prepended to each conversation, cached for the duration.
-    Includes CLAUDE.md content and current date.
+    Includes JARVIS.md/CLAUDE.md content and current date.
     """
     start_time = time.monotonic()
     logger.debug("user_context_started")
 
-    # In a full implementation, this would load CLAUDE.md files
+    # In a full implementation, this would load JARVIS.md/CLAUDE.md files
     claude_md: Optional[str] = None
 
     logger.debug(
-        "user_context_completed duration_ms=%d claudemd_length=%d",
+        "user_context_completed duration_ms=%d memory_length=%d",
         int((time.monotonic() - start_time) * 1000),
         len(claude_md) if claude_md else 0,
     )

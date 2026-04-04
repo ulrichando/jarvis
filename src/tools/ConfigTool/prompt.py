@@ -18,7 +18,7 @@ def generate_prompt() -> str:
 ## Configurable settings list
 The following settings are available for you to change:
 
-### Global Settings (stored in ~/.claude.json)
+### Global Settings (stored in ~/.jarvis/settings.json)
 - theme: "dark", "light", "light-daltonized", "dark-daltonized" - Visual theme for the interface
 
 ### Project Settings (stored in settings.json)

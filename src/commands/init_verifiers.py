@@ -30,7 +30,7 @@ Use AskUserQuestion to confirm verifier name and project-specific questions.
 
 ## Phase 4: Generate Verifier Skill
 
-Write the skill file to `.claude/skills/<verifier-name>/SKILL.md`.
+Write the skill file to `.jarvis/skills/<verifier-name>/SKILL.md`.
 
 ## Phase 5: Confirm Creation
 

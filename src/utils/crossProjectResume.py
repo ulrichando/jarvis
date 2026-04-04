@@ -50,5 +50,5 @@ def check_cross_project_resume(
     if is_same_repo:
         return SameRepoWorktree(project_path=log_project_path)
 
-    command = f"cd {log_project_path} && claude --resume {session_id}"
+    command = f"cd {log_project_path} && jarvis --resume {session_id}"
     return DifferentProject(command=command, project_path=log_project_path)

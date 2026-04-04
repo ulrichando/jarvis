@@ -29,7 +29,7 @@ from src.oauth import (
 from src.prompt_builder import PromptBuilder, MAX_INSTRUCTION_CHARS
 from src.agent.coordinator import AgentCoordinator, AgentHandle
 from src.tasks_brain.runner import BackgroundRunner
-from src.commands_brain.registry import CommandRegistry, CommandDef, PermLevel, _fuzzy_score
+from src.commands.registry import CommandRegistry, CommandDef, PermLevel, _fuzzy_score
 
 
 # ── Helpers ────────────────────────────────────────────────────────────

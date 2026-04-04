@@ -27,7 +27,7 @@ async def check_chrome_extension_notification(
     if not is_subscriber():
         return {
             "key": "chrome-requires-subscription",
-            "text": "Claude in Chrome requires a claude.ai subscription",
+            "text": "JARVIS Chrome extension requires a subscription",
             "priority": "immediate",
             "timeout_ms": 5000,
         }
@@ -44,8 +44,8 @@ async def check_chrome_extension_notification(
 
     if chrome_flag is None:
         return {
-            "key": "claude-in-chrome-default-enabled",
-            "text": "Claude in Chrome enabled",
+            "key": "jarvis-in-chrome-default-enabled",
+            "text": "JARVIS in Chrome enabled",
             "priority": "low",
         }
 

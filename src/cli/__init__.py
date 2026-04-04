@@ -1,4 +1,4 @@
-"""JARVIS CLI shell -- terminal interface with Claude Code visual standards.
+"""JARVIS CLI shell -- terminal interface.
 
 Submodules:
     display         Tool call/result formatting, diff display, token footer

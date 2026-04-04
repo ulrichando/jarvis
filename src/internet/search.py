@@ -31,16 +31,8 @@ def web_search(query: str, max_results: int = 5) -> list[dict]:
     if DDGS is None:
         return [{"title": "Search unavailable", "url": "", "body": "Install: pip install ddgs"}]
     try:
-        # Redirect stderr to suppress runtime warnings during search
-        _stderr = sys.stderr
-        sys.stderr = open(os.devnull, "w")
-        try:
-            with DDGS() as ddgs:
-                results = list(ddgs.text(query, max_results=max_results))
-        finally:
-            sys.stderr.close()
-            sys.stderr = _stderr
-        return [{"title": r["title"], "url": r["href"], "body": r["body"]} for r in results]
+        results = DDGS().text(query, max_results=max_results)
+        return [{"title": r.get("title", ""), "url": r.get("href", r.get("url", "")), "body": r.get("body", "")} for r in results]
     except Exception as e:
         return [{"title": "Search failed", "url": "", "body": str(e)}]
 

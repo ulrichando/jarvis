@@ -64,12 +64,12 @@ async def check_background_remote_session_eligibility(
     from .preconditions import (
         check_has_remote_environment,
         check_is_in_git_repo,
-        check_needs_claude_ai_login,
+        check_needs_api_login,
     )
 
     errors: list[BackgroundRemoteSessionPrecondition] = []
 
-    needs_login = await check_needs_claude_ai_login()
+    needs_login = await check_needs_api_login()
     if needs_login:
         errors.append(NotLoggedIn())
 

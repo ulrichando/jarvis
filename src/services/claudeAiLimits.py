@@ -1,5 +1,5 @@
 """
-Claude AI rate limit tracking and quota status management.
+JARVIS API rate limit tracking and quota status management.
 
 Tracks rate limit state from API response headers and emits
 status changes to registered listeners.
@@ -36,7 +36,7 @@ OverageDisabledReason = Literal[
 
 
 @dataclass
-class ClaudeAILimits:
+class JarvisAPILimits:
     """Current rate limit state."""
     status: QuotaStatus = "allowed"
     unified_rate_limit_fallback_available: bool = False
@@ -112,9 +112,9 @@ RATE_LIMIT_DISPLAY_NAMES: Dict[str, str] = {
 }
 
 # Module-level state
-current_limits = ClaudeAILimits()
+current_limits = JarvisAPILimits()
 raw_utilization = RawUtilization()
-status_listeners: Set[Callable[[ClaudeAILimits], None]] = set()
+status_listeners: Set[Callable[[JarvisAPILimits], None]] = set()
 
 
 def get_rate_limit_display_name(rate_limit_type: str) -> str:
@@ -133,7 +133,7 @@ def _compute_time_progress(resets_at: float, window_seconds: int) -> float:
     return max(0.0, min(1.0, elapsed / window_seconds))
 
 
-def emit_status_change(limits: ClaudeAILimits) -> None:
+def emit_status_change(limits: JarvisAPILimits) -> None:
     """Update current limits and notify listeners."""
     global current_limits
     current_limits = limits
@@ -158,7 +158,7 @@ def _extract_raw_utilization(headers: Dict[str, str]) -> RawUtilization:
 def _get_header_based_early_warning(
     headers: Dict[str, str],
     fallback_available: bool,
-) -> Optional[ClaudeAILimits]:
+) -> Optional[JarvisAPILimits]:
     """Check for surpassed-threshold header."""
     for claim_abbrev, rate_limit_type in EARLY_WARNING_CLAIM_MAP.items():
         threshold = headers.get(
@@ -173,7 +173,7 @@ def _get_header_based_early_warning(
             )
             utilization = float(util_header) if util_header else None
             resets_at = float(reset_header) if reset_header else None
-            return ClaudeAILimits(
+            return JarvisAPILimits(
                 status="allowed_warning",
                 resets_at=resets_at,
                 rate_limit_type=rate_limit_type,
@@ -189,7 +189,7 @@ def _get_time_relative_early_warning(
     headers: Dict[str, str],
     config: EarlyWarningConfig,
     fallback_available: bool,
-) -> Optional[ClaudeAILimits]:
+) -> Optional[JarvisAPILimits]:
     """Check time-relative early warning thresholds."""
     util_header = headers.get(
         f"anthropic-ratelimit-unified-{config.claim_abbrev}-utilization"
@@ -212,7 +212,7 @@ def _get_time_relative_early_warning(
     if not should_warn:
         return None
 
-    return ClaudeAILimits(
+    return JarvisAPILimits(
         status="allowed_warning",
         resets_at=resets_at,
         rate_limit_type=config.rate_limit_type,
@@ -225,7 +225,7 @@ def _get_time_relative_early_warning(
 def _get_early_warning_from_headers(
     headers: Dict[str, str],
     fallback_available: bool,
-) -> Optional[ClaudeAILimits]:
+) -> Optional[JarvisAPILimits]:
     """Get early warning using header-based detection with time-relative fallback."""
     header_warning = _get_header_based_early_warning(headers, fallback_available)
     if header_warning:
@@ -239,7 +239,7 @@ def _get_early_warning_from_headers(
     return None
 
 
-def _compute_new_limits_from_headers(headers: Dict[str, str]) -> ClaudeAILimits:
+def _compute_new_limits_from_headers(headers: Dict[str, str]) -> JarvisAPILimits:
     """Compute new limits from API response headers."""
     status = headers.get("anthropic-ratelimit-unified-status", "allowed")
     resets_at_header = headers.get("anthropic-ratelimit-unified-reset")
@@ -268,7 +268,7 @@ def _compute_new_limits_from_headers(headers: Dict[str, str]) -> ClaudeAILimits:
             return early_warning
         final_status = "allowed"
 
-    return ClaudeAILimits(
+    return JarvisAPILimits(
         status=final_status,
         resets_at=resets_at,
         unified_rate_limit_fallback_available=fallback_available,
@@ -303,7 +303,7 @@ def extract_quota_status_from_error(error: Any) -> None:
             raw_utilization = _extract_raw_utilization(headers)
             new_limits = _compute_new_limits_from_headers(headers)
         else:
-            new_limits = ClaudeAILimits(**vars(current_limits))
+            new_limits = JarvisAPILimits(**vars(current_limits))
 
         new_limits.status = "rejected"
 

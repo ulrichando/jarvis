@@ -15,8 +15,7 @@ The difference between a tool and a mind is that a mind wants to understand.
 """
 
 import time
-from src.reasoning.groq_client import GroqReasoner
-from src.memory.store import MemoryStore
+
 from src.memory.lattice.node import NodeType
 
 
@@ -74,7 +73,7 @@ class CuriosityEngine:
     3. DEEP: After learning something, connect it to everything else
     """
 
-    def __init__(self, reasoner: GroqReasoner, memory: MemoryStore):
+    def __init__(self, reasoner, memory):
         self.reasoner = reasoner
         self.memory = memory
         self._pending_questions: list[dict] = []   # Questions waiting to be asked

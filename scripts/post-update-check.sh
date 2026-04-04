@@ -34,7 +34,7 @@ else
 fi
 
 # 2. Check critical imports (only actual dependencies — no openai/anthropic SDK needed)
-for mod in brain aiohttp msgpack edge_tts; do
+for mod in src aiohttp msgpack edge_tts; do
     if "$VENV/bin/python3" -c "import $mod" 2>/dev/null; then
         echo -e "  ${GREEN}✓${RESET} $mod"
     else
@@ -58,7 +58,7 @@ else
 fi
 
 # 4. Check JARVIS source
-if [ -f "$JARVIS/brain/main.py" ]; then
+if [ -f "$JARVIS/src/brain.py" ]; then
     echo -e "  ${GREEN}✓${RESET} JARVIS source intact"
 else
     echo -e "  ${RED}✗${RESET} JARVIS source missing!"

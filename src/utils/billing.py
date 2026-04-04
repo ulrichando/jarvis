@@ -24,8 +24,8 @@ def set_mock_billing_access_override(value: Optional[bool]) -> None:
     _mock_billing_access_override = value
 
 
-def has_claude_ai_billing_access() -> bool:
-    """Check if user has Claude AI billing access."""
+def has_api_billing_access() -> bool:
+    """Check if user has API billing access."""
     if _mock_billing_access_override is not None:
         return _mock_billing_access_override
     return False

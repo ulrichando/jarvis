@@ -1,4 +1,4 @@
-"""Prompts from Claude in Chrome notification."""
+"""Prompts from JARVIS in Chrome notification."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ def check_prompts_from_chrome(
 ) -> None:
     """Show notification about pending prompts from Chrome extension.
 
-    Equivalent to usePromptsFromClaudeInChrome React hook.
+    Equivalent to usePromptsFromJarvisInChrome hook.
     """
     if not pending_prompts or not add_notification:
         return

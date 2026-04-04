@@ -396,11 +396,11 @@ class TestHooksSummary(unittest.TestCase):
 
 
 class TestNestedHooksFormat(unittest.TestCase):
-    """Test Claude Code-style nested hooks format."""
+    """Test JARVIS-style nested hooks format."""
 
     @patch("src.hooks.manager.subprocess.run")
     def test_nested_hooks_key(self, mock_run):
-        """Support matcher + nested hooks array like Claude Code."""
+        """Support matcher + nested hooks array format."""
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
         hm = HooksManager()

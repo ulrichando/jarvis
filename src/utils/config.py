@@ -45,7 +45,7 @@ class ProjectConfig:
 def _get_config_home() -> str:
     return os.environ.get(
         "JARVIS_HOME",
-        os.path.join(str(Path.home()), ".claude")
+        os.path.join(str(Path.home()), ".jarvis")
     )
 
 
@@ -99,12 +99,12 @@ def get_memory_path() -> str:
     return os.path.join(_get_config_home(), "memory")
 
 
-def get_managed_claude_rules_dir() -> Optional[str]:
-    """Get the managed Claude rules directory."""
-    path = "/etc/claude-code/rules"
+def get_managed_rules_dir() -> Optional[str]:
+    """Get the managed rules directory."""
+    path = "/etc/jarvis/rules"
     return path if os.path.isdir(path) else None
 
 
-def get_user_claude_rules_dir() -> str:
-    """Get the user Claude rules directory."""
+def get_user_rules_dir() -> str:
+    """Get the user rules directory."""
     return os.path.join(_get_config_home(), "rules")

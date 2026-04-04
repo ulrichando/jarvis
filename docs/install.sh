@@ -307,9 +307,9 @@ echo -e "    ${CYAN}jarvis${RESET}              Start interactive session"
 echo -e "    ${CYAN}jarvis-web${RESET}          Start web server"
 echo -e "    ${CYAN}jarvis -p 'hello'${RESET}   One-shot query"
 echo ""
-if [ -z "$CLAUDE_KEY" ] && [ "$AI_CHOICE" != "2" ]; then
-    echo -e "  ${DIM}To add Claude API:${RESET}"
-    echo -e "    Edit ${CYAN}~/.jarvis/providers.json${RESET} and add your Anthropic API key"
+if [ "$AI_CHOICES" = "8" ]; then
+    echo -e "  ${DIM}To add an AI provider:${RESET}"
+    echo -e "    Edit ${CYAN}~/.jarvis/providers.json${RESET} and add your API key"
     echo ""
 fi
 echo -e "  ${DIM}Restart your shell or run:${RESET}  ${CYAN}source ~/.zshrc${RESET}"

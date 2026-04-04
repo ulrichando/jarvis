@@ -41,16 +41,16 @@ def abbreviate_activity(summary: str) -> str:
 
 def build_bridge_connect_url(environment_id: str, ingress_url: Optional[str] = None) -> str:
     """Build the connect URL shown when the bridge is idle."""
-    base_url = ingress_url or "https://claude.ai"
-    return f"{base_url}/code?bridge={environment_id}"
+    base_url = ingress_url or "http://localhost:8765"
+    return f"{base_url}/remote?bridge={environment_id}"
 
 
 def build_bridge_session_url(
     session_id: str, environment_id: str, ingress_url: Optional[str] = None,
 ) -> str:
     """Build the session URL shown when a session is attached."""
-    base_url = ingress_url or "https://claude.ai"
-    return f"{base_url}/code/session/{session_id}?bridge={environment_id}"
+    base_url = ingress_url or "http://localhost:8765"
+    return f"{base_url}/remote/session/{session_id}?bridge={environment_id}"
 
 
 def compute_glimmer_index(tick: int, message_width: int) -> int:
@@ -98,11 +98,11 @@ def get_bridge_status(
 
 
 def build_idle_footer_text(url: str) -> str:
-    return f"Code everywhere with the Claude app or {url}"
+    return f"Connect remotely at {url}"
 
 
 def build_active_footer_text(url: str) -> str:
-    return f"Continue coding in the Claude app or {url}"
+    return f"Remote session active at {url}"
 
 
 FAILED_FOOTER_TEXT = "Something went wrong, please try again"

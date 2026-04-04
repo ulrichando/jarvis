@@ -13,4 +13,4 @@ def check_official_marketplace(
 
     Equivalent to useOfficialMarketplaceNotification React hook.
     """
-    pass  # Notification logic specific to Claude.ai marketplace
+    pass  # Notification logic specific to JARVIS marketplace

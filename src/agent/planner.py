@@ -11,7 +11,7 @@ This is what makes JARVIS truly agentic.
 
 import json
 from src.reasoning.groq_client import GroqReasoner
-from src.commands_brain.executor import CommandExecutor
+from src.commands.executor import CommandExecutor
 
 
 PLANNER_PROMPT = """You are a task planner. Break the user's request into a list of steps.

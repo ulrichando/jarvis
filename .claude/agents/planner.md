@@ -25,7 +25,7 @@ RULES:
 
 PROJECT CONTEXT:
 This is JARVIS — an autonomous AI assistant with:
-- Python brain (brain/) — orchestrator, agent loop, memory, reasoning, commands
+- Python brain (src/) — orchestrator, agent loop, memory, reasoning, commands
 - Rust core (jarvis-core/) — gRPC server, not required for normal operation
 - Multi-shell architecture: CLI, web (aiohttp + React), desktop (GTK+WebKit)
 - Memory: SQLite conversation log + Neural Lattice knowledge graph

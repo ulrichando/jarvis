@@ -17,7 +17,7 @@ SessionStatus = Literal["busy", "idle", "waiting"]
 
 def _get_sessions_dir() -> str:
     home = os.path.expanduser("~")
-    config_dir = os.environ.get("JARVIS_HOME", os.path.join(home, ".claude"))
+    config_dir = os.environ.get("JARVIS_HOME", os.path.join(home, ".jarvis"))
     return os.path.join(config_dir, "sessions")
 
 

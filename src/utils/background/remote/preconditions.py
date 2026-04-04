@@ -7,8 +7,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-async def check_needs_claude_ai_login() -> bool:
-    """Check if user needs to log in with Claude.ai."""
+async def check_needs_api_login() -> bool:
+    """Check if user needs to log in with the API provider."""
     return False
 
 

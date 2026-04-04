@@ -1,4 +1,4 @@
-"""Claude in Chrome common utilities."""
+"""JARVIS in Chrome common utilities."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-CLAUDE_IN_CHROME_MCP_SERVER_NAME = "claude-in-chrome"
+JARVIS_IN_CHROME_MCP_SERVER_NAME = "jarvis-in-chrome"
 
 ChromiumBrowser = str  # 'chrome', 'edge', 'brave', 'opera', 'vivaldi', 'arc'
 
@@ -51,10 +51,10 @@ CHROMIUM_BROWSERS: dict[str, BrowserConfig] = {
 def get_secure_socket_path() -> str:
     """Get the secure socket path for native messaging."""
     home = str(Path.home())
-    return os.path.join(home, ".claude", "chrome-socket")
+    return os.path.join(home, ".jarvis", "chrome-socket")
 
 
 def get_socket_dir() -> str:
     """Get the socket directory."""
     home = str(Path.home())
-    return os.path.join(home, ".claude")
+    return os.path.join(home, ".jarvis")

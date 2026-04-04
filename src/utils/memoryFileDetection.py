@@ -55,10 +55,10 @@ def detect_session_pattern_type(
 
 
 def is_auto_managed_memory_file(file_path: str) -> bool:
-    """Check if a file is a Claude-managed memory file (NOT user-managed instruction files).
+    """Check if a file is a JARVIS-managed memory file (NOT user-managed instruction files).
 
     Includes: auto-memory, agent memory, session memory/transcripts.
-    Excludes: CLAUDE.md, CLAUDE.local.md, .claude/rules/*.md (user-managed).
+    Excludes: JARVIS.md, JARVIS.local.md, .jarvis/rules/*.md (user-managed).
     """
     normalized = _normalize_path(file_path)
 

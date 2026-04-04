@@ -1,4 +1,4 @@
-"""Converted from ClaudeMdExternalIncludesDialog.tsx
+"""Converted from JarvisMdExternalIncludesDialog.tsx
 Business logic extracted from TypeScript/TSX source."""
 
 from __future__ import annotations

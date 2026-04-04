@@ -6,7 +6,7 @@ import os
 from typing import Optional
 
 COMPUTER_USE_MCP_SERVER_NAME = "computer-use"
-CLI_HOST_BUNDLE_ID = "com.anthropic.claude-code.cli-no-window"
+CLI_HOST_BUNDLE_ID = "com.jarvis.cli-no-window"
 
 TERMINAL_BUNDLE_ID_FALLBACK: dict[str, str] = {
     "iTerm.app": "com.googlecode.iterm2",

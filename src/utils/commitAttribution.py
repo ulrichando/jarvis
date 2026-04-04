@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class AttributionSummary:
-    claude_percent: int = 0
+    ai_percent: int = 0
     human_percent: int = 0
     total_lines: int = 0
 
@@ -58,7 +58,7 @@ async def calculate_commit_attribution(
         return data
 
     data.summary.total_lines = len(tracked_files) * 10  # Rough estimate
-    data.summary.claude_percent = 80  # Placeholder
+    data.summary.ai_percent = 80  # Placeholder
     data.summary.human_percent = 20
 
     return data

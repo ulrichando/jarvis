@@ -1,4 +1,4 @@
-"""Scheduled prompt tasks stored in .claude/scheduled_tasks.json."""
+"""Scheduled prompt tasks stored in .jarvis/scheduled_tasks.json."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from .cronJitterConfig import CronJitterConfig, DEFAULT_CRON_JITTER_CONFIG
 
 logger = logging.getLogger(__name__)
 
-CRON_FILE_REL = os.path.join(".claude", "scheduled_tasks.json")
+CRON_FILE_REL = os.path.join(".jarvis", "scheduled_tasks.json")
 
 
 @dataclass

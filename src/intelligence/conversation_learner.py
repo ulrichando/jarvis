@@ -10,9 +10,6 @@ Instead of memorizing every sentence, JARVIS extracts:
 This runs AFTER every response, analyzing the conversation for learnable moments.
 """
 
-import re
-from src.reasoning.groq_client import GroqReasoner
-from src.memory.store import MemoryStore
 from src.memory.lattice.node import NodeType
 
 
@@ -41,7 +38,7 @@ One fact per line. Under 15 words each. NONE if nothing useful."""
 class ConversationLearner:
     """Learns useful knowledge from conversations."""
 
-    def __init__(self, reasoner: GroqReasoner, memory: MemoryStore):
+    def __init__(self, reasoner, memory):
         self.reasoner = reasoner
         self.memory = memory
         self._buffer: list[tuple[str, str]] = []  # (role, content) pairs

@@ -7,8 +7,26 @@ from typing import Optional
 
 
 def is_bridge_enabled() -> bool:
-    """Runtime check for bridge mode entitlement."""
-    return os.environ.get("CLAUDE_CODE_BRIDGE_ENABLED", "").lower() in ("1", "true")
+    """Runtime check for bridge mode.
+
+    Enabled when JARVIS_BRIDGE_ENABLED=1 or when a remote config exists.
+    """
+    if os.environ.get("JARVIS_BRIDGE_ENABLED", "").lower() in ("1", "true"):
+        return True
+    # Also check legacy env var
+    if os.environ.get("CLAUDE_CODE_BRIDGE_ENABLED", "").lower() in ("1", "true"):
+        return True
+    # Check if remote.json exists with auto_connect
+    from pathlib import Path
+    remote_cfg = Path(os.environ.get("JARVIS_HOME", Path.home() / ".jarvis")) / "remote.json"
+    if remote_cfg.exists():
+        try:
+            import json
+            data = json.loads(remote_cfg.read_text())
+            return data.get("auto_connect", False)
+        except Exception:
+            pass
+    return False
 
 
 async def is_bridge_enabled_blocking() -> bool:
@@ -25,7 +43,7 @@ async def get_bridge_disabled_reason() -> Optional[str]:
 
 def is_env_less_bridge_enabled() -> bool:
     """Runtime check for the env-less (v2) REPL bridge path."""
-    return os.environ.get("TENGU_BRIDGE_REPL_V2", "").lower() in ("1", "true")
+    return os.environ.get("JARVIS_BRIDGE_V2", os.environ.get("TENGU_BRIDGE_REPL_V2", "")).lower() in ("1", "true")
 
 
 def is_cse_shim_enabled() -> bool:

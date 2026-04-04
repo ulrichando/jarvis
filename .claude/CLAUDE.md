@@ -12,7 +12,7 @@ pip install -e .
 jarvis                          # or: python -m src.cli.jarvis_cli
 
 # Run web server (port 8765)
-jarvis-web                      # or: python -m src.server.server
+jarvis-web                      # or: python -m src.server.web_server
 
 # Run desktop overlay (starts server if needed, then GTK+WebKit window)
 python -c "from src.desktop.app import main; main()"
@@ -21,8 +21,8 @@ python -c "from src.desktop.app import main; main()"
 ./scripts/start-jarvis.sh
 
 # Frontend (React + Vite + Tailwind)
-cd shells/web/frontend && npm install && npm run build   # production
-cd shells/web/frontend && npm run dev                     # dev server
+cd src/server/frontend && npm install && npm run build   # production
+cd src/server/frontend && npm run dev                     # dev server
 
 # Tests
 python -m pytest test/ -q                                 # all tests
@@ -30,7 +30,7 @@ python -m pytest test/test_command_registry.py -q         # single file
 python -m pytest test/test_tools.py::TestTools::test_name # single test
 
 # Frontend lint
-cd shells/web/frontend && npm run lint
+cd src/server/frontend && npm run lint
 ```
 
 ## Architecture
@@ -58,8 +58,8 @@ Central orchestrator. Owns memory, reasoning, agent loop, screen observer, permi
 ### Agent Loop (`src/agent/loop.py`)
 Iterative tool-calling loop. Sends messages+tools to LLM, executes returned tool_calls, appends results, repeats until LLM returns no tool_calls or hits iteration limit (40 across parent+children). Sub-agents via `dispatch` tool: scout (read-only), worker (full access), planner (analysis).
 
-### Command Registry (`src/commands_brain/registry.py`)
-Decorator-based: `@command(name, aliases, description, category, permission)`. 146 commands across 9 categories (core, session, memory, agent, task, mcp, plugin, git, security). Handlers in `src/commands_brain/handlers/*.py`. Each returns `CommandResult(text, success, action, data)`.
+### Command Registry (`src/commands/registry.py`)
+Decorator-based: `@command(name, aliases, description, category, permission)`. 146 commands across 9 categories (core, session, memory, agent, task, mcp, plugin, git, security). Handlers in `src/commands/handlers/*.py`. Each returns `CommandResult(text, success, action, data)`.
 
 ### Provider System (`src/reasoning/providers.py`)
 Multi-provider LLM backend. Configured via `~/.jarvis/providers.json`. Supports Ollama, Groq, OpenAI, Anthropic, xAI, Together, OpenRouter. Smart routing: `get_active_providers(prefer_code, prefer_tool_calling, prefer_smart)`. Prompt-based tool calling fallback for models without native function calling (parses `CALL: tool_name {"args"}` from text).
@@ -75,7 +75,7 @@ PreToolUse/PostToolUse/Stop lifecycle hooks. Configured in `~/.jarvis/hooks.yaml
 
 ### Shells
 - **CLI** (`src/cli/jarvis_cli.py`): ANSI terminal with braille spinner, markdown rendering, tool call visualization.
-- **Web** (`src/server/web_server.py`): aiohttp HTTP+WebSocket server. React frontend at `shells/web/frontend/`. TTS via Edge TTS. Audio transcription via Whisper.
+- **Web** (`src/server/web_server.py`): aiohttp HTTP+WebSocket server. React frontend at `src/server/frontend/`. TTS via Edge TTS. Audio transcription via Whisper.
 - **Desktop** (`src/desktop/app.py`): GTK3+WebKit2 transparent overlay. Loads React UI with `?desktop=1`. Client coordination API prevents dual reactor display.
 
 ### Extensibility
@@ -103,5 +103,5 @@ PreToolUse/PostToolUse/Stop lifecycle hooks. Configured in `~/.jarvis/hooks.yaml
 - Tool execution goes through permissions check → hooks → checkpoint → execute → hooks
 - JARVIS is both MCP client (consumes external tools) and server (exposes its capabilities)
 - Desktop/browser coordination: server tracks active clients, desktop hides when browser opens
-- Frontend builds to `shells/web/frontend/dist/`, served as static files by aiohttp
+- Frontend builds to `src/server/frontend/dist/`, served as static files by aiohttp
 - All source code lives in `src/` — no `brain/` folder

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-BASE_CHROME_PROMPT = """# Claude in Chrome browser automation
+BASE_CHROME_PROMPT = """# JARVIS in Chrome browser automation
 
 You have access to browser automation tools for interacting with web pages in Chrome.
 

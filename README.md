@@ -40,8 +40,8 @@ Done. Run with: python src/server.py
 Point JARVIS at any file or project. It reads the code, finds issues, and proposes fixes before applying them.
 
 ```
-> review brain/checkpoints.py
-  Read brain/checkpoints.py
+> review src/checkpoints.py
+  Read src/checkpoints.py
 
 ## Issues Found:
 1. Race condition in snapshot() — two edits in same microsecond collide
@@ -108,7 +108,7 @@ JARVIS can create new capabilities for itself — plugins, skills, and tools fro
 ```
 > create a plugin that monitors my battery level
 Creating new plugin: monitor battery level...
-Done. File: brain/plugins/plugin_monitor_battery.py
+Done. File: ~/.jarvis/plugins/monitor_battery.py
 Plugin loaded — try it now.
 ```
 
@@ -119,7 +119,7 @@ With a vision model (moondream), JARVIS can see and describe what's on your scre
 > what's on my screen
 Looking at your screen...
 
-You're in VS Code editing brain/main.py. The file has a function
+You're in VS Code editing src/brain.py. The file has a function
 called think_stream on line 470. There's a terminal panel open
 at the bottom showing pytest output — all 121 tests passing.
 ```
@@ -142,7 +142,7 @@ You said: scan my network for open ports
 ```
 User Input (CLI / Web / Desktop / Chrome / Voice)
     ↓
-Brain (brain/main.py)
+Brain (src/brain.py)
     ├─ Plugins        → instant response (no LLM)
     ├─ Skills         → prompt templates for agent loop
     ├─ Agent Loop     → LLM + tools (read/write/bash/search/web)
@@ -157,25 +157,25 @@ Response → streamed to terminal / web / desktop
 
 | Component | What it does |
 |-----------|-------------|
-| **Brain** (`brain/main.py`) | Central orchestrator — routes input, manages state |
-| **Agent Loop** (`brain/agent/loop.py`) | LLM → tool calls → execute → feed back → repeat |
-| **Tools** (`brain/agent/tools.py`) | bash, read_file, write_file, edit_file, search_files, web_search, web_fetch, think, dispatch |
-| **Providers** (`brain/reasoning/providers.py`) | Multi-model routing — Anthropic, OpenAI, DeepSeek, Ollama, xAI, OpenRouter |
-| **Memory** (`brain/memory/`) | Neural lattice + SQLite conversation log + holographic + associative |
-| **Commands** (`brain/commands/`) | 108 slash commands across 9 categories |
-| **DeepSearch** (`brain/agent/deepsearch.py`) | Multi-step iterative web research |
-| **Swarm** (`brain/agent/swarm.py`) | Parallel agent orchestration |
-| **Self-Modify** (`brain/evolution/self_modify.py`) | Creates plugins, skills, tools from description |
-| **Skill Library** (`brain/evolution/skill_library.py`) | Auto-extracts reusable skills from successful tasks |
-| **Reflector** (`brain/evolution/reflector.py`) | Learns from failures, injects lessons into future tasks |
+| **Brain** (`src/brain.py`) | Central orchestrator — routes input, manages state |
+| **Agent Loop** (`src/agent/loop.py`) | LLM → tool calls → execute → feed back → repeat |
+| **Tools** (`src/agent/tools.py`) | bash, read_file, write_file, edit_file, search_files, web_search, web_fetch, think, dispatch |
+| **Providers** (`src/reasoning/providers.py`) | Multi-model routing — Anthropic, OpenAI, DeepSeek, Ollama, xAI, OpenRouter |
+| **Memory** (`src/memory/`) | Neural lattice + SQLite conversation log + holographic + associative |
+| **Commands** (`src/commands/`) | 146 slash commands across 9 categories |
+| **DeepSearch** (`src/agent/deepsearch.py`) | Multi-step iterative web research |
+| **Swarm** (`src/agent/swarm.py`) | Parallel agent orchestration |
+| **Self-Modify** (`src/evolution/self_modify.py`) | Creates plugins, skills, tools from description |
+| **Skill Library** (`src/evolution/skill_library.py`) | Auto-extracts reusable skills from successful tasks |
+| **Reflector** (`src/evolution/reflector.py`) | Learns from failures, injects lessons into future tasks |
 
 ### Interfaces
 
 | Shell | Description |
 |-------|-------------|
-| **CLI** (`src/cli/`) | Terminal interface — Claude Code-style UX |
-| **Web** (`shells/web/`) | React + Tailwind frontend with Three.js holographic sphere |
-| **Desktop** (`shells/desktop/`) | Transparent GTK overlay with arc reactor |
+| **CLI** (`src/cli/`) | Terminal interface with JARVIS-style UX |
+| **Web** (`src/server/` + `shells/web/frontend/`) | React + Tailwind frontend with Three.js holographic sphere |
+| **Desktop** (`src/desktop/`) | Transparent GTK overlay with arc reactor |
 | **Chrome** (`shells/chrome-extension-jarvis/`) | Browser extension with popup chat |
 
 ---
@@ -231,7 +231,7 @@ jarvis -m agent                 # Start in agent mode
 jarvis-web                      # Start web server (port 8765)
 ```
 
-### Slash Commands (108)
+### Slash Commands (146)
 
 ```
 /help           Show all commands
@@ -289,22 +289,23 @@ JARVIS gets smarter over time:
 ## Project Structure
 
 ```
-brain/              Python intelligence engine
+src/                Python intelligence engine
   agent/            Agent loop, tools, swarm, deepsearch
-  commands/         108 slash commands (9 categories)
+  commands/         146 slash commands (9 categories)
   evolution/        Self-modification, skill library, reflector
   intelligence/     NLU, RL, curiosity, autonomous thinking
   memory/           Neural lattice, holographic, associative
   reasoning/        Multi-provider LLM routing
   speech/           Whisper STT, Piper TTS, wake word
   vision/           Screen observation, camera, recognition
-shells/
   cli/              Terminal interface
-  web/              React + Three.js frontend
+  server/           aiohttp web server
   desktop/          GTK transparent overlay
+shells/
+  web/frontend/     React + Three.js frontend
 core/               Rust gRPC server
 os/                 Custom Linux OS (kernel + systemd)
-test/               121 tests
+test/               373 tests
 ```
 
 ---

@@ -13,8 +13,8 @@ logger = logging.getLogger(__name__)
 
 
 def load_user_bindings(config_dir: Optional[str] = None) -> list[KeybindingBlock]:
-    """Load user keybindings from ~/.claude/keybindings.json."""
-    home = config_dir or os.path.expanduser("~/.claude")
+    """Load user keybindings from ~/.jarvis/keybindings.json."""
+    home = config_dir or os.environ.get("JARVIS_HOME", os.path.expanduser("~/.jarvis"))
     path = os.path.join(home, "keybindings.json")
     if not os.path.exists(path):
         return []

@@ -1,1 +1,1 @@
-"""Claude in Chrome utilities."""
+"""JARVIS in Chrome utilities."""

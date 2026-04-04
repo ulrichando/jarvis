@@ -66,6 +66,26 @@ class PluginManager:
                 except Exception as exc:
                     logger.warning("Failed to load plugin %s: %s", py_file, exc)
 
+        # Also load bundled plugins from src/plugins/builtinPlugins
+        try:
+            from src.plugins.builtinPlugins import get_builtin_plugins
+            result = get_builtin_plugins()
+            enabled_list = result.get("enabled", []) if isinstance(result, dict) else []
+            for loaded in enabled_list:
+                name = loaded.name if hasattr(loaded, 'name') else str(loaded)
+                if not any(p.name == name for p in self._plugins):
+                    info = PluginInfo(
+                        name=name,
+                        description=getattr(loaded, 'manifest', {}).get('description', ''),
+                        triggers=[],
+                        module=None,
+                        path=Path("builtin"),
+                    )
+                    self._plugins.append(info)
+                    found += 1
+        except Exception as exc:
+            logger.debug("Bundled plugins not loaded: %s", exc)
+
         logger.info("Discovered %d plugin(s)", found)
         return found
 

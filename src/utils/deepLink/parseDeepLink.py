@@ -1,6 +1,6 @@
 """Deep Link URI Parser.
 
-Parses claude-cli://open URIs with optional q, cwd, repo params.
+Parses jarvis-cli://open URIs with optional q, cwd, repo params.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
-DEEP_LINK_PROTOCOL = "claude-cli"
+DEEP_LINK_PROTOCOL = "jarvis-cli"
 MAX_QUERY_LENGTH = 5000
 MAX_CWD_LENGTH = 4096
 REPO_SLUG_PATTERN = re.compile(r"^[\w.\-]+/[\w.\-]+$")
@@ -33,7 +33,7 @@ def _contains_control_chars(s: str) -> bool:
 
 
 def parse_deep_link(uri: str) -> DeepLinkAction:
-    """Parse a claude-cli:// URI into a structured action.
+    """Parse a jarvis-cli:// URI into a structured action.
 
     Raises ValueError if the URI is malformed or contains dangerous characters.
     """
@@ -88,7 +88,7 @@ def parse_deep_link(uri: str) -> DeepLinkAction:
 
 
 def build_deep_link(action: DeepLinkAction) -> str:
-    """Build a claude-cli:// deep link URL."""
+    """Build a jarvis-cli:// deep link URL."""
     from urllib.parse import urlencode
 
     params: dict[str, str] = {}

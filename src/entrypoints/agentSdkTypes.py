@@ -239,7 +239,7 @@ async def fork_session(
 
 @dataclass
 class CronTask:
-    """A scheduled task from `<dir>/.claude/scheduled_tasks.json`."""
+    """A scheduled task from `<dir>/.jarvis/scheduled_tasks.json`."""
     id: str
     cron: str
     prompt: str

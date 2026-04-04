@@ -129,6 +129,24 @@ class SkillManager:
                 except Exception as exc:
                     logger.warning("Failed to load skill %s: %s", md_file, exc)
 
+        # Also load bundled skills from src/skills/bundled/
+        try:
+            from src.skills.bundledSkills import load_bundled_skills
+            bundled = load_bundled_skills()
+            for name, meta in bundled.items():
+                if name not in self._skills:
+                    self._skills[name] = Skill(
+                        name=name,
+                        description=meta.get("description", ""),
+                        triggers=meta.get("triggers", []),
+                        prompt_template=meta.get("prompt_template", f"Run the {name} skill."),
+                        model_invocable=meta.get("model_invocable", True),
+                        user_invocable=meta.get("user_invocable", True),
+                    )
+                    found += 1
+        except Exception as exc:
+            logger.debug("Bundled skills not loaded: %s", exc)
+
         logger.info("Discovered %d skill(s)", found)
         return found
 

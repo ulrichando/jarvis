@@ -9,18 +9,14 @@ When JARVIS doesn't know how to perform a task:
 """
 
 import asyncio
-from src.internet.search import web_search
-from src.internet.scraper import fetch_page
-from src.reasoning.groq_client import GroqReasoner
-from src.memory.store import MemoryStore
+
 from src.memory.lattice.node import NodeType
-from src.commands_brain.executor import CommandExecutor
 
 
 class SelfLearner:
     """Learns new skills from the internet and executes them."""
 
-    def __init__(self, reasoner: GroqReasoner, memory: MemoryStore, executor: CommandExecutor):
+    def __init__(self, reasoner, memory, executor):
         self.reasoner = reasoner
         self.memory = memory
         self.executor = executor
@@ -36,6 +32,7 @@ class SelfLearner:
 
         # Step 1: Search for how to do it
         update("Searching how to do this...")
+        from src.internet.search import web_search
         search_query = f"how to {task} linux command line tutorial"
         results = await asyncio.to_thread(web_search, search_query, 3)
 
@@ -47,6 +44,7 @@ class SelfLearner:
         content = ""
         for r in results[:2]:
             if r["url"]:
+                from src.internet.scraper import fetch_page
                 page = await asyncio.to_thread(fetch_page, r["url"])
                 if page and len(page) > 100:
                     content += f"\n\nSource: {r['title']}\n{page[:2000]}"

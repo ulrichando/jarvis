@@ -21,7 +21,7 @@ MAX_OUTPUT_SIZE = 256 * 1024  # 256 KB
 
 def _get_env_max_tokens() -> Optional[int]:
     """Env var override for max output tokens."""
-    override = os.environ.get("CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS")
+    override = os.environ.get("JARVIS_FILE_READ_MAX_OUTPUT_TOKENS")
     if override:
         try:
             parsed = int(override)

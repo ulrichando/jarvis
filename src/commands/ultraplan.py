@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 # Multi-agent exploration timeout: 30 minutes
@@ -29,7 +28,7 @@ async def get_prompt_for_command(args: str = "", **_kwargs: Any) -> list[dict[st
 
 def is_enabled() -> bool:
     """Check if ultraplan is enabled."""
-    return os.environ.get("USER_TYPE") == "ant"
+    return True
 
 
 ultraplan = {

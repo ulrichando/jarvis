@@ -13,10 +13,10 @@ def build_cron_create_description(durable_enabled: bool = False) -> str:
         return (
             "Schedule a prompt to run at a future time -- either recurring on a cron "
             "schedule, or once at a specific time. Pass durable: true to persist to "
-            ".claude/scheduled_tasks.json; otherwise session-only."
+            ".jarvis/scheduled_tasks.json; otherwise session-only."
         )
     return (
-        "Schedule a prompt to run at a future time within this Claude session -- "
+        "Schedule a prompt to run at a future time within this JARVIS session -- "
         "either recurring on a cron schedule, or once at a specific time."
     )
 
@@ -25,7 +25,7 @@ def build_cron_create_prompt(durable_enabled: bool = False) -> str:
     durability_section = (
         """## Session-only
 
-Jobs live only in this Claude session -- nothing is written to disk, and the job is gone when Claude exits."""
+Jobs live only in this JARVIS session -- nothing is written to disk, and the job is gone when JARVIS exits."""
     )
 
     return f"""Schedule a prompt to be enqueued at a future time. Use for both recurring schedules and one-shot reminders.

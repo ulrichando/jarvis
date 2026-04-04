@@ -15,10 +15,10 @@ def _get_local_month_year() -> str:
 def get_web_search_prompt() -> str:
     current_month_year = _get_local_month_year()
     return f"""
-- Allows Claude to search the web and use the results to inform responses
+- Allows JARVIS to search the web and use the results to inform responses
 - Provides up-to-date information for current events and recent data
 - Returns search result information formatted as search result blocks, including links as markdown hyperlinks
-- Use this tool for accessing information beyond Claude's knowledge cutoff
+- Use this tool for accessing information beyond JARVIS's knowledge cutoff
 - Searches are performed automatically within a single API call
 
 CRITICAL REQUIREMENT - You MUST follow this:

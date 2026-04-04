@@ -28,7 +28,7 @@ async def resolve_file_attachments(
     """
     resolved: list[dict[str, Any]] = []
     upload_dir = os.path.join(
-        os.environ.get("CLAUDE_CONFIG_HOME", os.path.expanduser("~/.claude")),
+        os.environ.get("JARVIS_HOME", os.path.expanduser("~/.jarvis")),
         "uploads",
         session_id,
     )

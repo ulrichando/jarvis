@@ -12,7 +12,7 @@ from typing import Optional
 
 
 def generate_temp_file_path(
-    prefix: str = "claude-prompt",
+    prefix: str = "jarvis-prompt",
     extension: str = ".md",
     content_hash: Optional[str] = None,
 ) -> str:

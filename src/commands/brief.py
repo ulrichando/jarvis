@@ -39,8 +39,8 @@ async def call(on_done: Any, context: Any) -> None:
     """Toggle brief-only mode."""
     from ..bootstrap.state import get_kairos_active, set_user_msg_opt_in
     from ..services.analytics import log_event
-    from ..tools.brief_tool.brief_tool import is_brief_entitled
-    from ..tools.brief_tool.prompt import BRIEF_TOOL_NAME
+    from ..tools.BriefTool.BriefTool import is_brief_entitled
+    from ..tools.BriefTool.prompt import BRIEF_TOOL_NAME
 
     current = context.get_app_state().is_brief_only
     new_state = not current

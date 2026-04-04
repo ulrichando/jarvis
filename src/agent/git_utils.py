@@ -1,6 +1,6 @@
 """Git utility functions for JARVIS agent operations.
 
-Ported from Claude Code's git utilities. Provides repository info,
+Provides repository info,
 diff generation, worktree management, commit attribution, and safety
 checks. All functions handle errors gracefully -- returning None or
 empty strings on failure, never raising.
