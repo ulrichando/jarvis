@@ -25,7 +25,7 @@ function App() {
 
     const clientType = isDesktop ? 'desktop' : 'browser'
 
-    // Register with server
+    // Register with server — exclusive mode: only one UI type at a time
     fetch('/api/client/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -33,28 +33,34 @@ function App() {
     })
       .then((r) => r.json())
       .then((data) => {
+        if (data.blocked) {
+          // Other UI is active — show nothing, this instance is rejected
+          setShowReactor(false)
+          return
+        }
         setShowReactor(data.show_reactor)
-        // Don't auto-open chat — user opens it with C key
       })
-      .catch(() => {
-        // Don't auto-open chat — user opens it with C key
-      })
+      .catch(() => {})
 
-    // Poll for client changes (detect when browser opens/closes)
+    // Poll: if we were blocked, check if the other client disconnected so we can take over
     const poll = setInterval(() => {
       fetch('/api/client/status')
         .then((r) => r.json())
         .then((data) => {
-          if (isDesktop) {
-            // Desktop hides reactor when browser is active
-            setShowReactor(!data.browser)
-          } else {
-            // Browser always shows reactor
-            setShowReactor(true)
+          const other = isDesktop ? data.browser : data.desktop
+          if (!other && !showReactor) {
+            // Other client left — re-register to claim the UI
+            fetch('/api/client/register', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ type: clientType }),
+            }).then(r => r.json()).then(d => {
+              if (!d.blocked) setShowReactor(true)
+            }).catch(() => {})
           }
         })
         .catch(() => {})
-    }, 2000)
+    }, 3000)
 
     // Unregister on close
     const unregister = () => {
@@ -80,11 +86,14 @@ function App() {
     if (audioRef.current) {
       try { audioRef.current.pause() } catch { /* ignore */ }
       audioRef.current = null
+      // Tell server to unmute ambient listener
+      sendMessage({ type: 'tts_state', speaking: false })
     }
     // Also cancel browser TTS in case it was triggered externally
     if ('speechSynthesis' in window) window.speechSynthesis.cancel()
+    document.dispatchEvent(new CustomEvent('jarvis-tts-end'))
     setReactorState('idle')
-  }, [])
+  }, [sendMessage])
 
   // Listen for user-speaking event from voice detection
   useEffect(() => {
@@ -115,6 +124,8 @@ function App() {
         stopSpeaking()
         setReactorState('speaking')
         document.dispatchEvent(new CustomEvent('jarvis-tts-start'))
+        // Tell server to mute ambient listener (echo prevention)
+        sendMessage({ type: 'tts_state', speaking: true })
 
         // Always use Edge TTS neural voice (same voice everywhere)
         const text = last.spoken.substring(0, 500)
@@ -126,6 +137,8 @@ function App() {
           if (audioRef.current === audio) audioRef.current = null
           setReactorState('idle')
           document.dispatchEvent(new CustomEvent('jarvis-tts-end'))
+          // Tell server to unmute ambient listener
+          sendMessage({ type: 'tts_state', speaking: false })
         }
 
         audio.onended = onDone
@@ -146,7 +159,18 @@ function App() {
 
     async function startVoice() {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        // Try with echo cancellation first, fall back to basic audio if WebKit rejects it
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: { ideal: true },
+              noiseSuppression: { ideal: true },
+              autoGainControl: { ideal: false },
+            }
+          })
+        } catch {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        }
         const ctx = new AudioContext()
         const source = ctx.createMediaStreamSource(stream)
         analyser = ctx.createAnalyser()

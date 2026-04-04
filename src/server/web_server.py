@@ -477,7 +477,16 @@ class JarvisWebServer:
             transcript = ws._ambient.feed(audio_chunk)
 
             if transcript:
-                # Speech detected and transcribed!
+                # Echo detection: compare to last response to avoid JARVIS hearing himself
+                if hasattr(self, '_last_response') and self._last_response:
+                    last_words = set(self._last_response.lower().split())
+                    heard_words = set(transcript.lower().split())
+                    if last_words and heard_words:
+                        overlap = len(last_words & heard_words) / max(len(heard_words), 1)
+                        if overlap > 0.5:
+                            print(f"[JARVIS] Echo detected, ignoring: \"{transcript[:60]}\"")
+                            return
+
                 print(f"[JARVIS] Ambient STT: \"{transcript}\"")
                 await ws.send_json({"type": "stt_result", "text": transcript})
         except Exception as e:
@@ -1698,20 +1707,27 @@ class JarvisWebServer:
         self._active_clients = active_clients  # Expose for _speak_system check
 
         async def client_register(request):
-            """Register a client (desktop or browser). Returns who should show the reactor."""
+            """Register a client (desktop or browser).
+
+            Exclusive mode: only one UI type at a time.
+            Desktop + CLI = OK.  Browser + CLI = OK.  Desktop + Browser = blocked.
+            """
             data = await request.json()
             client_type = data.get("type", "browser")  # "desktop" or "browser"
+            other = "browser" if client_type == "desktop" else "desktop"
+
+            if active_clients.get(other):
+                # Other UI already active — reject
+                return web.json_response({
+                    "show_reactor": False,
+                    "blocked": True,
+                    "reason": f"{other} is already active",
+                    "active_clients": active_clients,
+                })
+
             active_clients[client_type] = True
-
-            # Browser takes priority — if browser connects, desktop hides reactor
-            show_reactor = True
-            if client_type == "desktop" and active_clients["browser"]:
-                show_reactor = False
-            if client_type == "browser":
-                show_reactor = True
-
             return web.json_response({
-                "show_reactor": show_reactor,
+                "show_reactor": True,
                 "active_clients": active_clients,
             })
 
@@ -1815,8 +1831,42 @@ class JarvisWebServer:
         app.router.add_get("/api/theme", theme_get_handler)
         app.router.add_post("/api/theme", theme_set_handler)
 
+        # ── Exclusive mode: desktop and browser cannot coexist ──
+        # Desktop + CLI = OK.  Browser + CLI = OK.  Desktop + Browser = blocked.
+        def _block_page(mode):
+            return (
+                '<!DOCTYPE html><html><head><meta charset="utf-8"><title>JARVIS</title>'
+                '<style>'
+                "body{background:#020406;color:#00b8d4;font-family:'Share Tech Mono',monospace;"
+                'display:flex;align-items:center;justify-content:center;height:100vh;margin:0}'
+                '.box{text-align:center;max-width:420px}'
+                'h1{font-size:1.4rem;margin-bottom:1rem}'
+                'p{color:#b0c8d4;font-size:0.85rem;line-height:1.6}'
+                'code{color:#00e5ff}'
+                '</style></head><body><div class="box">'
+                f'<h1>JARVIS is running on {mode}</h1>'
+                f'<p>Only one UI can be active at a time.<br>'
+                f'Close the {mode} first, or use the CLI:<br><br>'
+                '<code>jarvis</code></p>'
+                '</div></body></html>'
+            )
+
+        def _check_exclusive(request):
+            """Return a block page if the other UI mode is active, else None."""
+            is_desktop_req = 'desktop' in request.query_string
+            if is_desktop_req and active_clients.get("browser"):
+                return web.Response(text=_block_page("browser"),
+                                    content_type="text/html")
+            if not is_desktop_req and active_clients.get("desktop"):
+                return web.Response(text=_block_page("desktop"),
+                                    content_type="text/html")
+            return None
+
         # Serve index.html for root and SPA fallback
         async def index_handler(request):
+            blocked = _check_exclusive(request)
+            if blocked:
+                return blocked
             return web.FileResponse(STATIC_DIR / "index.html")
         app.router.add_get("/", index_handler)
 
@@ -1828,6 +1878,9 @@ class JarvisWebServer:
             path = STATIC_DIR / request.path.lstrip("/")
             if path.exists() and path.is_file():
                 return web.FileResponse(path)
+            blocked = _check_exclusive(request)
+            if blocked:
+                return blocked
             return web.FileResponse(STATIC_DIR / "index.html")
         app.router.add_get("/{path:.*}", spa_fallback)
 
