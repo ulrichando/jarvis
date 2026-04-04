@@ -183,14 +183,12 @@ function App() {
         dataArray = new Uint8Array(analyser.frequencyBinCount)
         console.log('[JARVIS] Mic stream active, AudioContext state:', ctx.state)
 
-        // Mic level for reactor pulse
-        function updateLevel() {
+        // Mic level for reactor pulse — use setInterval (not rAF which throttles on hidden windows)
+        animFrame = setInterval(() => {
           analyser.getByteFrequencyData(dataArray)
           const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length / 255
           setAudioLevel(avg)
-          animFrame = requestAnimationFrame(updateLevel)
-        }
-        updateLevel()
+        }, 50)
 
         // Method 1: Browser SpeechRecognition (Chrome — instant)
         const SR = window.SpeechRecognition || window.webkitSpeechRecognition
@@ -291,7 +289,7 @@ function App() {
     startVoice()
 
     return () => {
-      if (animFrame) cancelAnimationFrame(animFrame)
+      if (animFrame) clearInterval(animFrame)
       if (stream) stream.getTracks().forEach((t) => t.stop())
     }
   }, [sendMessage])
