@@ -177,13 +177,15 @@ class JarvisWebServer:
                         continue
                     msg_type = data.get("type", "query")
 
-                    # Guard: Brain still loading (MCP init ~25s)
+                    # Guard: Brain still loading (MCP init ~45s)
                     if self.brain is None and msg_type in ("query", "learn", "recall", "stats", "passive_analysis"):
-                        await ws.send_json({
-                            "type": "message", "role": "jarvis",
-                            "content": "Still initializing... give me a moment.",
-                            "spoken": "Still initializing, give me a moment.",
-                        })
+                        if not getattr(ws, '_init_warned', False):
+                            ws._init_warned = True
+                            await ws.send_json({
+                                "type": "message", "role": "jarvis",
+                                "content": "Still initializing... give me a moment.",
+                                "spoken": "Still initializing, give me a moment.",
+                            })
                         continue
 
                     if msg_type == "query":
@@ -273,6 +275,30 @@ class JarvisWebServer:
                           "voice only", "stop showing text", "stop displaying text"):
             await ws.send_json({"type": "message", "role": "jarvis",
                                 "content": "__HIDE_TEXT__", "spoken": "Going voice only.",
+                                "model": "", "latency_ms": 0, "voice_style": "default"})
+            return
+
+        # UI handoff — "switch to desktop" / "switch to browser" / "go to desktop"
+        switch_to_desktop = ("switch to desktop", "go to desktop", "move to desktop",
+                             "desktop mode", "jarvis desktop", "back to desktop")
+        switch_to_browser = ("switch to browser", "go to browser", "move to browser",
+                             "open in browser", "browser mode", "jarvis browser",
+                             "open browser")
+        if text_lower in switch_to_desktop:
+            clients = getattr(self, '_active_clients', {})
+            await self._broadcast({"type": "handoff", "target": "desktop"})
+            clients["browser"] = False
+            await ws.send_json({"type": "message", "role": "jarvis",
+                                "content": "Moving to desktop.", "spoken": "Moving to desktop.",
+                                "model": "", "latency_ms": 0, "voice_style": "default"})
+            return
+        if text_lower in switch_to_browser:
+            import subprocess as _sp
+            env = {**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0.0")}
+            _sp.Popen(["xdg-open", f"http://127.0.0.1:{PORT}/"], start_new_session=True,
+                      stdout=_sp.DEVNULL, stderr=_sp.DEVNULL, env=env)
+            await ws.send_json({"type": "message", "role": "jarvis",
+                                "content": "Opening browser.", "spoken": "Opening browser.",
                                 "model": "", "latency_ms": 0, "voice_style": "default"})
             return
 
@@ -1709,25 +1735,23 @@ class JarvisWebServer:
         async def client_register(request):
             """Register a client (desktop or browser).
 
-            Exclusive mode: only one UI type at a time.
-            Desktop + CLI = OK.  Browser + CLI = OK.  Desktop + Browser = blocked.
+            Seamless handoff: browser takes priority over desktop.
+            When browser opens, desktop hides. When browser closes, desktop resumes.
+            Only one UI renders the reactor at a time — no double display.
             """
             data = await request.json()
             client_type = data.get("type", "browser")  # "desktop" or "browser"
-            other = "browser" if client_type == "desktop" else "desktop"
-
-            if active_clients.get(other):
-                # Other UI already active — reject
-                return web.json_response({
-                    "show_reactor": False,
-                    "blocked": True,
-                    "reason": f"{other} is already active",
-                    "active_clients": active_clients,
-                })
-
             active_clients[client_type] = True
+
+            # Browser always gets the reactor; desktop yields
+            if client_type == "browser":
+                show_reactor = True
+            else:
+                # Desktop only shows if browser isn't active
+                show_reactor = not active_clients.get("browser", False)
+
             return web.json_response({
-                "show_reactor": True,
+                "show_reactor": show_reactor,
                 "active_clients": active_clients,
             })
 
@@ -1742,9 +1766,34 @@ class JarvisWebServer:
             """Check who's active."""
             return web.json_response(active_clients)
 
+        async def client_handoff(request):
+            """Switch JARVIS to a different UI surface.
+
+            POST /api/client/handoff {target: "desktop" | "browser"}
+            Broadcasts a handoff event so the other client closes/opens.
+            """
+            data = await request.json()
+            target = data.get("target", "desktop")
+
+            if target == "desktop":
+                # Tell browser clients to close
+                await self._broadcast({"type": "handoff", "target": "desktop"})
+                active_clients["browser"] = False
+            elif target == "browser":
+                # Tell desktop to hide, open browser
+                await self._broadcast({"type": "handoff", "target": "browser"})
+                import subprocess as _sp
+                env = {**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0.0")}
+                _sp.Popen(["xdg-open", f"http://127.0.0.1:{PORT}/"],
+                          start_new_session=True, stdout=_sp.DEVNULL,
+                          stderr=_sp.DEVNULL, env=env)
+
+            return web.json_response({"ok": True, "target": target, "active_clients": active_clients})
+
         app.router.add_post("/api/client/register", client_register)
         app.router.add_post("/api/client/unregister", client_unregister)
         app.router.add_get("/api/client/status", client_status)
+        app.router.add_post("/api/client/handoff", client_handoff)
 
         # Chat API — used by React frontend
         async def think_handler(request):
@@ -1833,40 +1882,8 @@ class JarvisWebServer:
 
         # ── Exclusive mode: desktop and browser cannot coexist ──
         # Desktop + CLI = OK.  Browser + CLI = OK.  Desktop + Browser = blocked.
-        def _block_page(mode):
-            return (
-                '<!DOCTYPE html><html><head><meta charset="utf-8"><title>JARVIS</title>'
-                '<style>'
-                "body{background:#020406;color:#00b8d4;font-family:'Share Tech Mono',monospace;"
-                'display:flex;align-items:center;justify-content:center;height:100vh;margin:0}'
-                '.box{text-align:center;max-width:420px}'
-                'h1{font-size:1.4rem;margin-bottom:1rem}'
-                'p{color:#b0c8d4;font-size:0.85rem;line-height:1.6}'
-                'code{color:#00e5ff}'
-                '</style></head><body><div class="box">'
-                f'<h1>JARVIS is running on {mode}</h1>'
-                f'<p>Only one UI can be active at a time.<br>'
-                f'Close the {mode} first, or use the CLI:<br><br>'
-                '<code>jarvis</code></p>'
-                '</div></body></html>'
-            )
-
-        def _check_exclusive(request):
-            """Return a block page if the other UI mode is active, else None."""
-            is_desktop_req = 'desktop' in request.query_string
-            if is_desktop_req and active_clients.get("browser"):
-                return web.Response(text=_block_page("browser"),
-                                    content_type="text/html")
-            if not is_desktop_req and active_clients.get("desktop"):
-                return web.Response(text=_block_page("desktop"),
-                                    content_type="text/html")
-            return None
-
         # Serve index.html for root and SPA fallback
         async def index_handler(request):
-            blocked = _check_exclusive(request)
-            if blocked:
-                return blocked
             return web.FileResponse(STATIC_DIR / "index.html")
         app.router.add_get("/", index_handler)
 
@@ -1878,9 +1895,6 @@ class JarvisWebServer:
             path = STATIC_DIR / request.path.lstrip("/")
             if path.exists() and path.is_file():
                 return web.FileResponse(path)
-            blocked = _check_exclusive(request)
-            if blocked:
-                return blocked
             return web.FileResponse(STATIC_DIR / "index.html")
         app.router.add_get("/{path:.*}", spa_fallback)
 
@@ -1893,9 +1907,27 @@ class JarvisWebServer:
         # This allows the desktop health check to pass while Brain loads.
         if self.brain is None:
             print("[JARVIS] Initializing Brain (MCP servers loading)...")
+            # Tell connected clients init is starting
+            await self._broadcast({
+                "type": "status", "status": "initializing",
+            })
+            await self._broadcast({
+                "type": "message", "role": "jarvis",
+                "content": "Initializing systems...",
+                "spoken": "Initializing systems.",
+            })
             await asyncio.get_event_loop().run_in_executor(None, self._init_brain)
             await self.brain.start()
             print("[JARVIS] Brain ready.")
+            # Tell connected clients JARVIS is ready
+            await self._broadcast({
+                "type": "status", "status": "",
+            })
+            await self._broadcast({
+                "type": "message", "role": "jarvis",
+                "content": "All systems online. What do you need?",
+                "spoken": "All systems online. What do you need?",
+            })
 
         # Start server-side mic capture as fallback
         await self._start_server_mic()

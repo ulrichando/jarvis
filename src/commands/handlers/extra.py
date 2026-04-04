@@ -126,6 +126,51 @@ async def cmd_desktop(ctx: CommandContext) -> CommandResult:
 
 
 # ---------------------------------------------------------------------------
+# /switch -- Switch JARVIS between desktop / browser / CLI
+# ---------------------------------------------------------------------------
+
+@command("switch", aliases=["sw"], description="Switch JARVIS UI: desktop, browser, or status",
+         usage="/switch <desktop|browser|status>", category="core", permission=PermLevel.STANDARD)
+async def cmd_switch(ctx: CommandContext) -> CommandResult:
+    target = ctx.args.strip().lower()
+
+    if not target or target == "status":
+        try:
+            import urllib.request, json as _json
+            resp = urllib.request.urlopen("http://127.0.0.1:8765/api/client/status", timeout=2)
+            data = _json.loads(resp.read())
+            desktop = "active" if data.get("desktop") else "inactive"
+            browser = "active" if data.get("browser") else "inactive"
+            return CommandResult(text=f"Desktop: {desktop}\nBrowser: {browser}")
+        except Exception:
+            return CommandResult(text="Server not running. Start with: jarvis-web or jarvis-desktop")
+
+    if target in ("desktop", "d"):
+        try:
+            import urllib.request, json as _json
+            data = _json.dumps({"target": "desktop"}).encode()
+            req = urllib.request.Request(
+                "http://127.0.0.1:8765/api/client/handoff",
+                data=data, headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=2)
+            return CommandResult(text="Switching to desktop.")
+        except Exception:
+            return CommandResult(text="Server not running. Start desktop with: jarvis-desktop", success=False)
+
+    if target in ("browser", "b", "web"):
+        try:
+            env = {**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0.0")}
+            subprocess.Popen(["xdg-open", "http://127.0.0.1:8765/"],
+                             start_new_session=True, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, env=env)
+            return CommandResult(text="Opening browser.")
+        except Exception:
+            return CommandResult(text="Failed to open browser.", success=False)
+
+    return CommandResult(text="Usage: /switch <desktop|browser|status>", success=False)
+
+
+# ---------------------------------------------------------------------------
 # /color -- Change JARVIS theme color globally
 # ---------------------------------------------------------------------------
 

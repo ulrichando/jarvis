@@ -164,7 +164,9 @@ def main():
     webview.load_uri(f"http://{host}:{port}/?desktop=1&_t={int(_time.time())}")
     window.add(webview)
 
-    # ── Register desktop with server (exclusive mode — blocks browser) ──
+    # ── Register desktop and poll for browser handoff ──
+    _reactor_visible = [True]
+
     try:
         import urllib.request, json as _json
         data = _json.dumps({"type": "desktop"}).encode()
@@ -174,12 +176,32 @@ def main():
         )
         resp = urllib.request.urlopen(req, timeout=2)
         reg = _json.loads(resp.read())
-        if reg.get("blocked"):
-            print(f"JARVIS desktop blocked: {reg.get('reason', 'browser is active')}")
-            print("Close the browser tab first, then retry.")
-            sys.exit(0)
+        _reactor_visible[0] = reg.get("show_reactor", True)
+        if not _reactor_visible[0]:
+            window.hide()
     except Exception:
         pass
+
+    def _poll_client_status():
+        """Seamless handoff: hide when browser opens, show when browser closes."""
+        try:
+            import urllib.request, json as _json
+            resp = urllib.request.urlopen(
+                f"http://{host}:{port}/api/client/status", timeout=2)
+            data = _json.loads(resp.read())
+            browser_active = data.get("browser", False)
+
+            if browser_active and _reactor_visible[0]:
+                _reactor_visible[0] = False
+                GLib.idle_add(lambda: window.hide() or False)
+            elif not browser_active and not _reactor_visible[0]:
+                _reactor_visible[0] = True
+                GLib.idle_add(lambda: window.show_all() or False)
+        except Exception:
+            pass
+        return True
+
+    GLib.timeout_add_seconds(2, _poll_client_status)
 
     # ── Dragging ──
     _drag = {"active": False, "x": 0, "y": 0}

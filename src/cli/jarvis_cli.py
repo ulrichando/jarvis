@@ -1263,11 +1263,12 @@ async def main():
         else:
             footer = left
 
-        # Draw inline — clear from here and print 4 lines
+        # Draw input frame: separator, prompt, separator, footer
         _write("\033[J")  # clear from cursor to end of screen
         _writeln(sep)
-        _write(f"{prompt}{buf_text}")
+        _write(f"{prompt}\033[0;1;97m{buf_text}\033[0m")
         _write("\033[s")  # save cursor on prompt line
+        _write("\033[?25h")  # ensure cursor visible
         _writeln()
         _writeln(sep)
         _write(footer)
@@ -1280,18 +1281,23 @@ async def main():
         nonlocal _frame_drawn
         if not _frame_drawn:
             return
-        # Prompt is on line 2 of frame. Go up 1 to separator, clear to end.
+        # Prompt is on line 2 (after separator). Go up 1 to separator, clear to end.
         _write("\033[u\033[A\r\033[J")
         _frame_drawn = False
 
+    _output_buf_text = [""]  # track current input text for redraw after output
+
     def _output(text: str):
-        """Print text. Erases frame first if needed, then writes inline."""
+        """Print text. Erases frame first so output flows cleanly.
+        Frame is redrawn when it's the user's turn to type (like Claude Code)."""
         _erase_frame()
         _write(text)
         sys.stdout.flush()
 
     def _outputln(text: str = ""):
-        _output(text + "\n")
+        _erase_frame()
+        _write(text + "\n")
+        sys.stdout.flush()
 
     # Helper to full redraw (used by /clear and resize)
     def _redraw():
@@ -1382,15 +1388,16 @@ async def main():
         def _redraw(hide_menu=True):
             """Redraw input line in the fixed zone."""
             text = "".join(buf)
+            _output_buf_text[0] = text  # sync for _output to redraw with current text
             if hide_menu:
                 _hide_menu()
             _erase_frame()
             _draw_input_frame(mode_prefix, text)
 
-        MAX_VISIBLE = 10
+        MAX_VISIBLE = 6
 
         def _show_menu(matches):
-            """Show autocomplete menu above the input frame."""
+            """Show autocomplete menu BELOW the input (Claude Code style)."""
             nonlocal menu_visible, menu_lines
             _hide_menu()
             if not matches:
@@ -1403,17 +1410,14 @@ async def main():
             extra = (1 if start > 0 else 0) + (1 if end < total else 0)
             total_menu_lines = visible + extra
 
-            # Position relative to prompt (\033[u). Separator is 1 above prompt.
-            # Menu goes above that: total offset up = 1 + total_menu_lines.
-            offset = 1 + total_menu_lines
+            # Go to below footer (prompt + separator + footer = 3 lines down)
             _write("\033[u")  # go to prompt
-            _write(f"\033[{offset}A\r")  # up to menu top
+            _write("\033[3B\r")  # down past separator + footer
             if start > 0:
-                _write(f"\033[K    {DIM}↑ {start} more above{RESET}\n")
+                _write(f"\033[K    {DIM}↑ {start} more{RESET}\n")
             for i in range(start, end):
                 cmd = matches[i]
                 pfx = f"  {CYAN}❯{RESET} " if i == selected else "    "
-                # Show alias hint if match was via alias
                 input_prefix = "".join(buf)[1:].lower()
                 alias_hint = ""
                 if input_prefix and not cmd.name.startswith(input_prefix):
@@ -1421,26 +1425,25 @@ async def main():
                         if alias.lstrip("/").lower().startswith(input_prefix):
                             alias_hint = f" {DIM}(/{alias.lstrip('/')}){RESET}"
                             break
-                desc = cmd.description[:tw - 50] if cmd.description else ""
-                _write(f"\033[K{pfx}{CYAN}/{cmd.name:<25s}{RESET}{alias_hint} {DIM}{desc}{RESET}\n")
+                desc = cmd.description[:tw - 40] if cmd.description else ""
+                _write(f"\033[K{pfx}{CYAN}/{cmd.name:<22s}{RESET}{alias_hint} {DIM}{desc}{RESET}\n")
             if end < total:
-                _write(f"\033[K    {DIM}↓ {total - end} more below{RESET}\n")
+                _write(f"\033[K    {DIM}↓ {total - end} more{RESET}\n")
             menu_lines = total_menu_lines
-            _write("\033[u")  # back to prompt
+            _write("\033[u")  # back to prompt cursor
             menu_visible = True
             sys.stdout.flush()
 
         def _hide_menu():
-            """Erase the autocomplete menu."""
+            """Erase the autocomplete menu below the footer."""
             nonlocal menu_visible, menu_lines
             if not menu_visible:
                 return
-            offset = 1 + menu_lines
-            _write("\033[u")
-            _write(f"\033[{offset}A\r")
+            _write("\033[u")  # go to prompt
+            _write("\033[3B\r")  # down past separator + footer
             for i in range(menu_lines):
                 _write("\033[K\n")
-            _write("\033[u")
+            _write("\033[u")  # back to prompt
             menu_visible = False
             menu_lines = 0
             sys.stdout.flush()
@@ -1459,7 +1462,7 @@ async def main():
                     pass
             prefix = text[1:].lower()
             if not prefix:
-                return list(all_cmds)
+                return list(all_cmds)  # Show all on bare "/"
             # Match command names AND aliases
             seen = set()
             matches = []
@@ -1910,16 +1913,35 @@ async def main():
         _spin_task = None
         _spin_label = ["Thinking..."]
 
+        # Spinner writes on a dedicated line ABOVE the input frame.
+        # Frame layout during thinking:
+        #   ⠋ Thinking... 4s       ← spinner line (updated in place)
+        #   ──────────────────────
+        #   ❯                      ← input frame (always visible)
+        #   ──────────────────────
+        #   ? for shortcuts
+        _spin_line_active = [False]
+
         async def _spin_loop():
             i = 0
             t0 = time.time()
+            # Draw initial spinner line + frame below it
+            _erase_frame()
+            _write(f"  {BLUE}{SPINNER_FRAMES[0]}{RESET} {DIM}{_spin_label[0]}{RESET}\033[K\n")
+            _spin_line_active[0] = True
+            _draw_input_frame("", _output_buf_text[0])
+
             while True:
                 elapsed = time.time() - t0
                 frame = SPINNER_FRAMES[i % len(SPINNER_FRAMES)]
                 elapsed_str = f" {DIM}{elapsed:.0f}s{RESET}" if elapsed >= 2 else ""
-                _output(f"\r  {BLUE}{frame}{RESET} {DIM}{_spin_label[0]}{RESET}{elapsed_str}\033[K")
+                # Go to spinner line: from saved prompt position, up 2 (past separator + spinner)
+                _write("\033[u\033[2A\r")
+                _write(f"  {BLUE}{frame}{RESET} {DIM}{_spin_label[0]}{RESET}{elapsed_str}\033[K")
+                _write("\033[u")  # back to prompt
+                sys.stdout.flush()
                 i += 1
-                await asyncio.sleep(0.08)
+                await asyncio.sleep(0.12)
 
         def _start_spin(label="Thinking..."):
             nonlocal _spin_task
@@ -1932,7 +1954,12 @@ async def main():
             if _spin_task and not _spin_task.done():
                 _spin_task.cancel()
                 _spin_task = None
-                _output("\r\033[K")
+            if _spin_line_active[0]:
+                # Clear spinner line: go up from prompt past separator, clear line
+                _write("\033[u\033[2A\r\033[K")
+                _write("\033[u")
+                _spin_line_active[0] = False
+            _erase_frame()
 
         _start_spin()
 
@@ -1986,7 +2013,7 @@ async def main():
                     if not _streaming_text:
                         _stop_spin()
                         _streaming_text = True
-                        _outputln()
+                        _output(f"  {CYAN}●{RESET} ")
                     full_text += chunk
                     _output(chunk)
 
@@ -2013,7 +2040,6 @@ async def main():
 
         if _streaming_text:
             _outputln()
-            _outputln()
         else:
             _output("\r\033[K")
 
@@ -2025,23 +2051,11 @@ async def main():
                 full_text = "Sorry, I got confused there. Could you rephrase that?"
 
         if full_text.strip() and not _streaming_text:
-            _outputln(render_markdown(full_text.strip()))
-            _outputln()
+            _outputln(f"  {CYAN}●{RESET} {render_markdown(full_text.strip())}")
 
-        # Token footer with cost (uses display.py)
-        elapsed_total = time.time() - start
-        _turn_cost = 0.0
-        try:
-            from src.agent.cost_tracker import get_tracker
-            _turn_cost = get_tracker().get_session_cost()
-        except Exception:
-            pass
-        footer_line = _token_footer(_tokens_this_turn, tool_count, elapsed_total, _turn_cost)
-        if footer_line.strip():
-            _outputln(footer_line)
+        # Clean finish
         if full_text.strip() and tool_count > 0:
             _buddy_says("success")
-        _outputln()
 
         if full_text.strip():
             session_mgr.add_message("jarvis", full_text)
@@ -2134,10 +2148,11 @@ async def main():
             _cancelled = False
             _voice_mode = False
 
-            # Echo user input in output zone — subtle, like JARVIS
-            _outputln()
-            _outputln(f"  {user_input}")
-            _outputln()
+            # Echo user input — highlighted bar with ❯ like Claude Code
+            tw = _tw()
+            visible_len = len(user_input) + 4  # "  ❯ " prefix
+            pad = max(0, tw - visible_len)
+            _outputln(f"\033[48;5;236m  {YELLOW}❯{RESET}\033[48;5;236m \033[1;97m{user_input}{' ' * pad}\033[0m")
 
             # ═══ VOICE INPUT ═══
             if user_input in ("v", "/voice", "/speak", "/mic", "/listen"):
