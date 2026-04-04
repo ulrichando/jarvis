@@ -266,6 +266,13 @@ class ProviderRegistry:
         2. Large local models (70B+) — slower but capable
         3. Small local models — only as last resort (prompt-based tools)
         """
+        # Extract system prompt from messages if not passed explicitly
+        if not system:
+            for m in messages:
+                if m.get("role") == "system":
+                    system = m.get("content", "")
+                    break
+
         is_code = False
         for m in messages:
             content = (m.get("content") or "").lower()
@@ -294,16 +301,14 @@ class ProviderRegistry:
         # Fallback: try plain query without tools (so LLM at least responds)
         for provider in self.get_active_providers():
             try:
-                # Extract user message from messages list
+                # Extract last user message from messages list
                 user_msg = ""
-                system_msg = ""
-                for m in messages:
+                for m in reversed(messages):
                     if m.get("role") == "user":
                         user_msg = m.get("content", "")
-                    elif m.get("role") == "system":
-                        system_msg = m.get("content", "")
+                        break
                 if user_msg:
-                    result = await self._query_provider(provider, user_msg, system_msg, None)
+                    result = await self._query_provider(provider, user_msg, system, None)
                     if result and len(result) > 3:
                         return {"text": result, "tool_calls": []}, f"{provider.name}:{provider.model}"
             except Exception:
@@ -534,15 +539,10 @@ class ProviderRegistry:
                 "text": system,
                 "cache_control": {"type": "ephemeral"},  # 5-min cache TTL
             })
-            # Identity reinforcement (uncached — changes aren't expected but keeps it fresh)
+            # Brief identity reminder (uncached)
             system_blocks.append({
                 "type": "text",
-                "text": (
-                    "CRITICAL REMINDER: You are JARVIS, NOT Claude, NOT an Anthropic assistant. "
-                    "NEVER say 'I'm Claude' or mention Anthropic. You are JARVIS, built by Ulrich. "
-                    "Be direct and brief. No emoji. No capability lists. "
-                    "Match the user's energy — casual in = casual out."
-                ),
+                "text": "Remember: you are JARVIS, not Claude. Built by Ulrich.",
             })
 
         # Cache tool definitions too (they don't change between calls)
