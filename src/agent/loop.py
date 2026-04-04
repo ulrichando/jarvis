@@ -812,9 +812,32 @@ async def agent_loop_stream(
             # Scrub Claude identity leaks — JARVIS is JARVIS
             text_content = _scrub_identity(text_content)
             # Remove any leaked tool-call XML tags that slipped through parsing
-            text_content = _re.sub(r'</?(?:tool_use|tool_result|tool_name|tool_parameter|function_calls|invoke|parameter)[^>]*>', '', text_content)
+            _fake_xml = _re.compile(
+                r'</?(?:tool_use|tool_result|tool_name|tool_parameter|function_calls'
+                r'|invoke|parameter|anythingllm-function-calls|anythingllm-function-result)[^>]*>',
+            )
+            text_content = _fake_xml.sub('', text_content)
             text_content = _re.sub(r'<(?:bash|read_file|write_file|edit_file|search_files)>.*?</(?:bash|read_file|write_file|edit_file|search_files)>', '', text_content, flags=_re.DOTALL)
             text_content = text_content.strip()
+
+            # Detect hallucinated tool output — model wrote fake tool calls in text
+            # instead of using actual tool calling API. Don't emit this as response.
+            _has_fake_tools = bool(_re.search(
+                r'(?:CALL:|```(?:bash|python)\n.*(?:pip install|systemctl|chmod|mkdir|write_file))',
+                text_content, _re.DOTALL
+            ))
+            if _has_fake_tools and not tool_calls and iterations == 1:
+                log.warning("Model hallucinated tool calls in text, retrying with tool nudge")
+                # Add a nudge message and retry — don't emit the fake output
+                messages.append({"role": "assistant", "content": text_content})
+                messages.append({"role": "user", "content": (
+                    "You wrote steps as text instead of actually executing them. "
+                    "Use the bash, read_file, write_file tools to do the work. "
+                    "Do NOT write what you would do — call the tools now."
+                )})
+                iterations += 1
+                continue
+
             if text_content:
                 full_response += text_content
                 yield {"type": "text", "content": text_content}
