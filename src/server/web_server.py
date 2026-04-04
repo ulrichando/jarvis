@@ -79,26 +79,68 @@ class JarvisWebServer:
         except Exception:
             pass
 
+    # Lazy-loaded Piper voice (local, fast)
+    _piper_voice = None
+
+    def _get_piper_voice(self):
+        if self._piper_voice is None:
+            try:
+                from piper import PiperVoice
+                model_path = os.path.expanduser("~/.local/share/piper-voices/en_US-lessac-medium.onnx")
+                if os.path.exists(model_path):
+                    self._piper_voice = PiperVoice.load(model_path)
+                    print("[JARVIS] Piper TTS loaded (local, fast)")
+            except Exception as e:
+                print(f"[JARVIS] Piper TTS unavailable: {e}")
+        return self._piper_voice
+
     async def tts_handler(self, request: web.Request) -> web.StreamResponse:
-        """Generate neural TTS audio from text. Streams MP3 chunks as they arrive.
+        """Generate TTS audio from text. Uses Piper (local, fast) with Edge TTS fallback.
 
         Query params:
             text: raw text to speak
-            voice: edge-tts voice name
-            style: voice style (default, focused, gentle, thoughtful, urgent)
+            voice: edge-tts voice name (only used for Edge TTS fallback)
+            engine: "piper" or "edge" (default: piper if available)
         """
         text = request.query.get("text", "")
         if not text:
             return web.Response(status=400, text="Missing text parameter")
 
-        # SAFETY NET: clean text before TTS — never speak code
         text = self._clean_for_speech(text)
         if not text or len(text) < 2:
-            return web.Response(status=204)  # No content to speak
+            return web.Response(status=204)
 
+        engine = request.query.get("engine", "piper")
+
+        # Try Piper first (local, ~0.1s latency)
+        if engine != "edge":
+            piper = self._get_piper_voice()
+            if piper:
+                try:
+                    import io, wave
+                    loop = asyncio.get_running_loop()
+
+                    def _generate():
+                        buf = io.BytesIO()
+                        with wave.open(buf, 'wb') as wf:
+                            wf.setnchannels(1)
+                            wf.setsampwidth(2)
+                            wf.setframerate(piper.config.sample_rate)
+                            for chunk in piper.synthesize(text):
+                                wf.writeframes(chunk.audio_int16_bytes)
+                        return buf.getvalue()
+
+                    wav_data = await loop.run_in_executor(None, _generate)
+                    return web.Response(
+                        body=wav_data,
+                        content_type="audio/wav",
+                        headers={"Cache-Control": "no-cache"},
+                    )
+                except Exception as e:
+                    print(f"[JARVIS] Piper TTS failed, falling back to Edge: {e}")
+
+        # Fallback: Edge TTS (cloud, ~1-2s latency)
         voice = request.query.get("voice", TTS_VOICE)
-
-        # Stream MP3 chunks directly to client as they arrive from edge-tts
         try:
             response = web.StreamResponse(
                 status=200,
