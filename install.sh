@@ -119,9 +119,9 @@ if [ -f "requirements.lock" ]; then
 fi
 
 # Install JARVIS itself
-pip3 install --quiet --break-system-packages -e . 2>/dev/null || \
-pip3 install --quiet -e . 2>/dev/null || \
-pip install --quiet --break-system-packages -e . 2>/dev/null || true
+pip3 install --quiet --break-system-packages . 2>/dev/null || \
+pip3 install --quiet . 2>/dev/null || \
+pip install --quiet --break-system-packages . 2>/dev/null || true
 
 # ── Create launcher script ──
 mkdir -p "$HOME/.local/bin"

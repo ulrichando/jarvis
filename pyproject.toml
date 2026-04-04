@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "jarvis"
 version = "3.0.0"
@@ -32,5 +36,5 @@ jarvis = "src.cli.jarvis_cli:run"
 jarvis-web = "src.server.web_server:main"
 jarvis-desktop = "src.desktop.app:main"
 
-[tool.setuptools.packages.find]
-include = ["src*"]
+[tool.hatch.build.targets.wheel]
+packages = ["src"]

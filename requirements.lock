@@ -16,7 +16,7 @@ pydantic==2.12.5
 pillow==12.1.1
 
 # Optional: vision
-opencv-python==4.13.0
+opencv-python==4.10.0.84
 mss==10.1.0
 pytesseract==0.3.13
 

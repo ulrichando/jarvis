@@ -115,7 +115,7 @@ def _get_hooks():
     return _hooks_mgr
 
 
-MAX_ITERATIONS = 25
+MAX_ITERATIONS = 75
 COMPACT_THRESHOLD = 80000
 GLOBAL_ITERATION_MAX = 100
 _groq_semaphore = asyncio.Semaphore(4)
@@ -776,6 +776,8 @@ async def agent_loop_stream(
         for attempt in range(3):
             try:
                 response = await reasoner.query_with_tools(messages, _effective_tools)
+                _tc = response.get("tool_calls", []) if response else []
+                _txt = (response.get("text", "") or "")[:80] if response else ""
                 break
             except Exception as e:
                 err = str(e).lower()
