@@ -52,17 +52,28 @@ PYTHONUNBUFFERED=1 python3 -m src.server.web_server > /tmp/jarvis-web.log 2>&1 &
 SERVER_PID=$!
 echo "  Server PID: $SERVER_PID"
 
-# Wait for server
+# Wait for HTTP server to start
 for i in $(seq 1 30); do
-    if curl -s http://localhost:8765/api/mesh/ping > /dev/null 2>&1; then
-        echo "  Server: online"
+    if curl -s http://localhost:8765/ > /dev/null 2>&1; then
+        echo "  HTTP: up"
+        break
+    fi
+    sleep 1
+done
+
+# Wait for brain to fully initialize (MCP servers, memory, etc.)
+echo "  Waiting for brain init (MCP takes ~30s)..."
+for i in $(seq 1 90); do
+    READY=$(curl -s http://localhost:8765/api/ready 2>/dev/null | grep -o '"ready": true')
+    if [ -n "$READY" ]; then
+        echo "  Server: online (brain ready)"
         break
     fi
     sleep 1
 done
 echo ""
 
-# Step 4: Launch desktop app (single instance)
+# Step 4: Launch desktop app (single instance) — only after brain is ready
 echo "[4/4] Launching desktop..."
 pkill -f "src.desktop" 2>/dev/null
 sleep 1

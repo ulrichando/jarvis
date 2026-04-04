@@ -1766,6 +1766,13 @@ class JarvisWebServer:
         app.router.add_post("/api/transcribe", self._transcribe_handler)
         app.router.add_get("/jarvis_package.tar.gz", self.package_handler)
         app.router.add_get("/dropper.sh", self.dropper_handler)
+        # Readiness check — returns 200 only when brain is fully initialized
+        async def _ready_check(request):
+            if self.brain is not None:
+                return web.json_response({"ready": True})
+            return web.json_response({"ready": False}, status=503)
+        app.router.add_get("/api/ready", _ready_check)
+
         # Mesh API
         app.router.add_get("/api/mesh/ping", self.mesh_ping)
         app.router.add_get("/api/mesh/knowledge", self.mesh_knowledge)
