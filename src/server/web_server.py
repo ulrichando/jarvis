@@ -1814,11 +1814,15 @@ class JarvisWebServer:
             client_type = data.get("type", "browser")  # "desktop" or "browser"
             active_clients[client_type] = True
 
+            # Mute server mic when a UI client connects (it handles its own voice)
+            if hasattr(self, '_server_listener'):
+                self._server_listener.jarvis_speaking = True
+                print(f"[JARVIS] {client_type} connected — server mic muted (UI handles voice)")
+
             # Browser always gets the reactor; desktop yields
             if client_type == "browser":
                 show_reactor = True
             else:
-                # Desktop only shows if browser isn't active
                 show_reactor = not active_clients.get("browser", False)
 
             return web.json_response({
@@ -1831,6 +1835,13 @@ class JarvisWebServer:
             data = await request.json()
             client_type = data.get("type", "browser")
             active_clients[client_type] = False
+
+            # Unmute server mic only if NO UI clients remain
+            has_ui = active_clients.get("desktop") or active_clients.get("browser")
+            if not has_ui and hasattr(self, '_server_listener'):
+                self._server_listener.jarvis_speaking = False
+                print("[JARVIS] All UI clients disconnected — server mic unmuted")
+
             return web.json_response({"ok": True, "active_clients": active_clients})
 
         async def client_status(request):

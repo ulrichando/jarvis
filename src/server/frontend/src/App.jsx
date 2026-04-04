@@ -260,15 +260,9 @@ function App() {
           analyser.getByteFrequencyData(dataArray)
           const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length / 255
 
-          // COMPLETELY skip VAD while TTS is playing — the mic picks up
-          // JARVIS's own voice and can't distinguish it from the user.
-          // This prevents JARVIS from interrupting himself.
-          if (isSpeakingTTS) {
-            setTimeout(checkVoice, 100)
-            return
-          }
-
-          const threshold = 0.06
+          // During TTS: use a much higher threshold so only loud user speech
+          // (not speaker echo) triggers an interrupt. This lets users barge in.
+          const threshold = isSpeakingTTS ? 0.18 : 0.06
           const silenceThreshold = 0.03
 
           if (avg > threshold && !recording) {
