@@ -318,12 +318,17 @@ def main():
 
         new_icon = generate_icon()
 
-        # Update tray icon
+        # Update tray icon (new_icon has a unique color-stamped filename
+        # so AppIndicator detects the change instead of serving cached icon)
         tray = _tray_ref[0]
         if tray is not None:
             if hasattr(tray, 'set_icon_full'):
-                # AppIndicator — must set by path
+                # AppIndicator — set_icon_full with new unique path
                 tray.set_icon_full(new_icon, "JARVIS")
+                # Also update icon search path to force refresh
+                if hasattr(tray, 'set_icon_theme_path'):
+                    tray.set_icon_theme_path(os.path.dirname(new_icon))
+                    tray.set_icon_full(new_icon, "JARVIS")
             elif hasattr(tray, 'set_from_file'):
                 # StatusIcon
                 tray.set_from_file(new_icon)
