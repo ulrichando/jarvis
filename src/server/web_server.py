@@ -110,7 +110,7 @@ class JarvisWebServer:
         if not text or len(text) < 2:
             return web.Response(status=204)
 
-        engine = request.query.get("engine", "piper")
+        engine = request.query.get("engine", "edge")
 
         # Try Piper first (local, ~0.1s latency)
         if engine != "edge":
