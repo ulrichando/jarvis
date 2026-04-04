@@ -571,6 +571,16 @@ class ProviderRegistry:
                     r = client.messages.create(**kwargs)
                     provider.model = model
 
+                    # Debug: log tool call status
+                    import logging as _log_mod
+                    _dbg = _log_mod.getLogger("jarvis.tools")
+                    _dbg.info("Anthropic response: stop=%s, tools_passed=%d, content_blocks=%s",
+                              getattr(r, 'stop_reason', '?'), len(claude_tools),
+                              [b.type for b in r.content])
+                    if not any(b.type == "tool_use" for b in r.content) and claude_tools:
+                        _dbg.warning("Model did NOT use tools despite %d tools available", len(claude_tools))
+                        print(f"[JARVIS-DEBUG] No tool_use in response. stop_reason={getattr(r, 'stop_reason', '?')}, blocks={[b.type for b in r.content]}")
+
                     text, tool_calls, thinking = "", [], ""
                     for block in r.content:
                         if block.type == "text":
