@@ -148,22 +148,20 @@ def main():
         return True
     webview.connect("permission-request", _on_permission_request)
 
-    # Log JS console messages for debugging
-    def _on_console_message(webview, message, line, source_id=None):
-        # WebKit2 4.1 console-message signal: (message_level, message_text, line, source_id)
-        print(f"[WebView JS] {message}")
-    try:
-        webview.get_settings().set_enable_write_console_messages_to_stdout(True)
-    except Exception:
-        pass
+    # Enable JS console output and developer tools for debugging
+    settings.set_enable_write_console_messages_to_stdout(True)
+    settings.set_enable_developer_extras(True)
 
-    # Force React UI (same as browser) with desktop param + cache bust
-    import time as _time
-    webview.load_uri(f"http://{host}:{port}/?desktop=1&_t={int(_time.time())}")
-
-    # Disable WebKit cache so it always loads fresh
+    # Clear WebKit cache BEFORE loading (ensures fresh JS bundle)
     ctx = webview.get_context()
     ctx.get_website_data_manager().clear(WebKit2.WebsiteDataTypes.ALL, 0, None, None, None)
+
+    # Disable all caching
+    ctx.set_cache_model(WebKit2.CacheModel.DOCUMENT_VIEWER)
+
+    # Load React UI with cache-bust param
+    import time as _time
+    webview.load_uri(f"http://{host}:{port}/?desktop=1&_t={int(_time.time())}")
     window.add(webview)
 
     # ── Register desktop with server (exclusive mode — blocks browser) ──
