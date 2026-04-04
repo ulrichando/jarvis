@@ -8,8 +8,16 @@ Inspired by Claude Code's compaction strategy:
 """
 
 import copy
+import json as _json
 import re
 from dataclasses import dataclass, field
+
+from src.services.tokenEstimation import (
+    rough_token_count_estimation,
+    rough_token_count_estimation_for_content,
+    rough_token_count_estimation_for_file_type,
+    bytes_per_token_for_file_type,
+)
 
 # Rough token estimation (4 chars ≈ 1 token for English)
 CHARS_PER_TOKEN = 4
@@ -36,16 +44,25 @@ DEFAULT_MAX_TOKENS = 180000  # Safe default for Claude
 
 
 def estimate_tokens(messages: list[dict]) -> int:
-    """Rough token count for a message list."""
+    """Token count for a message list.
+
+    Uses file-type-aware estimation from the token estimation service
+    for tool call arguments (JSON args use 2 bytes/token instead of 4)
+    and structured content blocks.
+    """
     total = 0
     for msg in messages:
         content = msg.get("content", "") or ""
-        total += len(content) // CHARS_PER_TOKEN
-        # Tool calls add tokens too
+        if isinstance(content, list):
+            # Structured content blocks (Anthropic format)
+            total += rough_token_count_estimation_for_content(content)
+        else:
+            total += len(content) // CHARS_PER_TOKEN
+        # Tool calls — arguments are JSON, so use the denser ratio
         if "tool_calls" in msg:
             for tc in msg["tool_calls"]:
                 args = tc.get("function", {}).get("arguments", "")
-                total += len(args) // CHARS_PER_TOKEN + 20  # overhead
+                total += rough_token_count_estimation_for_file_type(args, "json") + 20
     return total
 
 
@@ -502,14 +519,14 @@ def build_compaction_prompt(
 
     conversation_text = "\n\n".join(formatted_blocks)
 
+    # Use the richer prompt template from the compact service which
+    # instructs the LLM to produce <analysis> + <summary> blocks with
+    # better preservation of file paths, code snippets, and error context.
+    from src.services.compact.prompt import build_compact_prompt
+    base_prompt = build_compact_prompt(direction="full")
+
     return (
-        "Summarize the following conversation history concisely. Preserve:\n"
-        "- All file paths mentioned\n"
-        "- All errors and their resolutions\n"
-        "- Key decisions made\n"
-        "- Current task state and pending work\n"
-        "- Important findings from tool outputs\n"
-        "\n"
+        f"{base_prompt}\n\n"
         "Conversation to summarize:\n"
         f"{conversation_text}"
     )
@@ -571,7 +588,11 @@ async def smart_compact(
         prompt = build_compaction_prompt(groups, preserve_recent)
         if prompt:
             try:
-                summary = await summarizer(prompt)
+                raw_summary = await summarizer(prompt)
+                # The compact prompt asks for <analysis>+<summary> blocks;
+                # extract just the <summary> content for cleaner storage.
+                from src.services.compact.compact import format_compact_summary
+                summary = format_compact_summary(raw_summary)
             except Exception:
                 # Fall back to heuristic on any error
                 old_msgs = [m for g in old_groups for m in g.messages]

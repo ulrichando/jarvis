@@ -559,6 +559,14 @@ async def agent_loop_stream(
     compactor = AutoCompactor(model=model_name)
     cost_tracker = get_cost_tracker()
 
+    # Session memory manager -- tracks token thresholds to trigger
+    # periodic session memory extraction (persists to ~/.jarvis/session_memory.md)
+    try:
+        from src.services.SessionMemory.sessionMemory import init_session_memory
+        session_memory_mgr = init_session_memory()
+    except Exception:
+        session_memory_mgr = None
+
     while iterations < max_iterations:
         iterations += 1
         iteration_budget["count"] += 1
@@ -704,6 +712,14 @@ async def agent_loop_stream(
 
             yield {"type": "tool_result", "name": tool_name, "content": result}
             _append_tool_result(messages, tool_id, result, tool_name=tool_name)
+
+            # Notify session memory manager after each tool call
+            if session_memory_mgr is not None:
+                try:
+                    current_tokens = estimate_tokens(messages)
+                    await session_memory_mgr.on_tool_call(messages, current_tokens)
+                except Exception:
+                    pass  # session memory is best-effort
 
         # Dispatch calls (with SubagentStart/Stop hooks)
         if dispatch_calls:

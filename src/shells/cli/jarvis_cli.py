@@ -979,19 +979,54 @@ async def main():
     banner = render_banner(model_name, provider_name, cwd_display, session_name, cmd_count)
     _writeln(banner)
 
-    # Random startup tip
-    import random
-    _tips = [
-        "Type / to see all commands",
-        "Use arrow keys to browse history",
-        "Ctrl+R to search history",
-        "Try /ultraplan for complex tasks",
-        "/copy grabs the last code block",
-        "!cmd runs a shell command inline",
-        "!!cmd runs and analyzes the output",
-        "/doctor checks your setup",
-    ]
-    _writeln(f"  {DIM}tip: {random.choice(_tips)}{RESET}")
+    # Startup tip — uses the tip service for cooldown-aware scheduling
+    # Falls back to a random built-in tip if the service fails
+    _tip_text = None
+    try:
+        from src.services.tips.tipScheduler import get_tip_to_show_on_spinner, record_shown_tip
+        import asyncio as _tip_asyncio
+        _loop = _tip_asyncio.get_event_loop()
+        if _loop.is_running():
+            # We're already in an async context — schedule it
+            import concurrent.futures
+            _tip_fut = concurrent.futures.Future()
+            async def _get_tip():
+                try:
+                    tip = await get_tip_to_show_on_spinner()
+                    if tip:
+                        content = tip.content
+                        text = await content() if _tip_asyncio.iscoroutinefunction(content) else content()
+                        record_shown_tip(tip)
+                        _tip_fut.set_result(text)
+                    else:
+                        _tip_fut.set_result(None)
+                except Exception:
+                    _tip_fut.set_result(None)
+            _tip_asyncio.ensure_future(_get_tip())
+            # Don't block — use fallback if not ready
+        else:
+            _selected_tip = _loop.run_until_complete(get_tip_to_show_on_spinner())
+            if _selected_tip:
+                content = _selected_tip.content
+                _tip_text = _loop.run_until_complete(content()) if _tip_asyncio.iscoroutinefunction(content) else content()
+                record_shown_tip(_selected_tip)
+    except Exception:
+        pass
+
+    if not _tip_text:
+        import random
+        _fallback_tips = [
+            "Type / to see all commands",
+            "Use arrow keys to browse history",
+            "Ctrl+R to search history",
+            "Try /ultraplan for complex tasks",
+            "/copy grabs the last code block",
+            "!cmd runs a shell command inline",
+            "!!cmd runs and analyzes the output",
+            "/doctor checks your setup",
+        ]
+        _tip_text = random.choice(_fallback_tips)
+    _writeln(f"  {DIM}tip: {_tip_text}{RESET}")
     _writeln()
 
     # Initialize companion

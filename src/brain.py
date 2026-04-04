@@ -448,6 +448,14 @@ class Brain:
         system = builder.build(base_prompt, context)
         if memory_context:
             system += f"\n\n═══ MEMORY ═══\n{memory_context}"
+        # Inject persistent session memory if available
+        try:
+            from src.services.SessionMemory.sessionMemoryUtils import get_session_memory_content
+            _sm_content = await get_session_memory_content()
+            if _sm_content:
+                system += f"\n\n═══ SESSION MEMORY ═══\n{_sm_content}"
+        except Exception:
+            pass
         if self.awareness.should_be_cautious():
             system += "\n\n⚠ Recent failures detected. Be extra careful."
         if self.mode == "plan":
@@ -618,6 +626,14 @@ class Brain:
             )
             if memory_context:
                 system += f"\nMEMORY: {memory_context[:2000]}"
+            # Inject persistent session memory if available
+            try:
+                from src.services.SessionMemory.sessionMemoryUtils import get_session_memory_content
+                _sm_content = await get_session_memory_content()
+                if _sm_content:
+                    system += f"\n\n═══ SESSION MEMORY ═══\n{_sm_content}"
+            except Exception:
+                pass
             # Inject screen context so JARVIS knows what user is looking at
             # Only inject screen context when the user is asking about something visual/screen-related
             _screen_words = ["screen", "see", "looking at", "what app", "window", "display",

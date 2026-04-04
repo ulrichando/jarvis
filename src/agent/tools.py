@@ -14,10 +14,50 @@ import shutil
 import glob as _glob
 
 from src.sandbox import SandboxConfig, execute_sandboxed, detect_sandbox_capabilities
+
+# ── BashTool security & validation imports ───────────────────────────
 from src.tools.BashTool.bashSecurity import (
     BLOCKED_PATTERNS as BASH_BLOCKED_PATTERNS,
     DANGEROUS_RM_PATHS,
     validate_bash_command as validate_bash_security,
+)
+from src.tools.BashTool.commandSemantics import interpret_command_result as _interpret_bash_result
+from src.tools.BashTool.sedValidation import check_sed_constraints as _check_sed_constraints
+from src.tools.BashTool.readOnlyValidation import validate_read_only as _validate_read_only
+from src.tools.BashTool.destructiveCommandWarning import (
+    get_destructive_command_warning as _get_destructive_warning,
+)
+from src.tools.BashTool.pathValidation import is_sensitive_path as _is_sensitive_path
+
+# ── FileEditTool validation imports ──────────────────────────────────
+from src.tools.FileEditTool.utils import (
+    find_actual_string as _find_actual_string,
+    apply_edit_to_file as _apply_edit_to_file,
+    normalize_quotes as _normalize_quotes,
+    get_snippet as _get_edit_snippet,
+)
+
+# ── FileReadTool limits & image processing ───────────────────────────
+from src.tools.FileReadTool.limits import (
+    get_default_file_reading_limits as _get_file_read_limits,
+    MAX_OUTPUT_SIZE as _FILE_READ_MAX_SIZE,
+)
+try:
+    from src.tools.FileReadTool.imageProcessor import resize_image as _resize_image
+except ImportError:
+    _resize_image = None  # Pillow not installed
+
+# ── AgentTool imports ────────────────────────────────────────────────
+from src.tools.AgentTool.loadAgentsDir import (
+    AgentDefinition,
+    AgentDefinitionsResult,
+    get_active_agents_from_list,
+)
+
+# ── ConfigTool settings registry ─────────────────────────────────────
+from src.tools.ConfigTool.supportedSettings import (
+    SUPPORTED_SETTINGS as _SUPPORTED_SETTINGS,
+    get_options_for_setting as _get_setting_options,
 )
 
 # ── File read tracking (for edit staleness detection) ─────────────────
@@ -829,8 +869,12 @@ def execute_tool(name: str, args: dict, readonly: bool = False) -> str:
 
         if readonly and name == "bash":
             cmd = args.get("command", "").strip()
-            if not any(cmd.startswith(p) for p in READONLY_BASH_PREFIXES):
-                return f"BLOCKED: Command '{cmd.split()[0]}' is not allowed in plan mode. Only read-only commands are permitted."
+            # Use rich read-only validation from BashTool module
+            ro_error = _validate_read_only(cmd)
+            if ro_error:
+                # Also check our simple prefix allowlist as fallback
+                if not any(cmd.startswith(p) for p in READONLY_BASH_PREFIXES):
+                    return f"BLOCKED: {ro_error} Only read-only commands are permitted in plan mode."
 
         if name == "bash":
             return _exec_bash(args)
@@ -1041,10 +1085,27 @@ def _exec_bash(args: dict) -> str:
     if not command:
         return "No command provided."
 
-    # Security check from src/tools/BashTool/bashSecurity.py
+    # ── Layer 1: blocked patterns (pipe-to-shell, dangerous rm) ──────
     security_error = validate_bash_security(command)
     if security_error:
         return f"BLOCKED: {security_error}"
+
+    # ── Layer 2: sed safety (448 lines of allowlist/denylist logic) ───
+    cmd_first_word = command.strip().split()[0] if command.strip() else ""
+    if cmd_first_word == "sed" or " sed " in command or command.strip().startswith("sed "):
+        sed_result = _check_sed_constraints(command)
+        if sed_result.behavior == "ask":
+            return f"BLOCKED: {sed_result.message}"
+
+    # ── Layer 3: sensitive path detection ────────────────────────────
+    # Extract paths from the command (simple heuristic: words starting with / or ~)
+    for token in command.split():
+        if token.startswith("/") or token.startswith("~"):
+            if _is_sensitive_path(token):
+                return f"BLOCKED: Command references sensitive path: {token}"
+
+    # ── Layer 4: destructive command warning (informational) ─────────
+    destructive_warning = _get_destructive_warning(command)
 
     cmd_first = command.strip().split()[0].split("/")[-1] if command.strip() else ""
 
@@ -1105,6 +1166,13 @@ def _exec_bash(args: dict) -> str:
                 half = MAX_OUTPUT_SIZE // 2
                 quarter = MAX_OUTPUT_SIZE // 4
                 output = output[:half] + "\n\n... (truncated) ...\n\n" + output[-quarter:]
+            # Semantic exit code interpretation (grep 1 = no matches, not error, etc.)
+            sem = _interpret_bash_result(command, result["returncode"], result.get("stdout", ""), result.get("stderr", ""))
+            if sem.message:
+                prefix += f" ({sem.message})"
+            # Destructive warning (informational)
+            if destructive_warning:
+                prefix += f"\n{destructive_warning}"
             return f"{prefix}\n{output}"
         except Exception:
             pass  # Fall through to unsandboxed execution
@@ -1131,7 +1199,14 @@ def _exec_bash(args: dict) -> str:
         if len(output) > MAX_OUTPUT_SIZE:
             half = MAX_OUTPUT_SIZE // 2
             output = output[:half] + "\n\n... (truncated) ...\n\n" + output[-(half // 2):]
-        return f"exit_code={result.returncode}\n{output}"
+        # Semantic exit code interpretation
+        sem = _interpret_bash_result(command, result.returncode, result.stdout or "", result.stderr or "")
+        prefix = f"exit_code={result.returncode}"
+        if sem.message:
+            prefix += f" ({sem.message})"
+        if destructive_warning:
+            prefix += f"\n{destructive_warning}"
+        return f"{prefix}\n{output}"
     except subprocess.TimeoutExpired:
         return f"Command timed out after {timeout}s"
     except Exception as e:
@@ -1290,6 +1365,19 @@ def _exec_read(args: dict) -> str:
     resolved = os.path.realpath(path)
     ext = os.path.splitext(resolved)[1].lower()
 
+    # Enforce file size limit from FileReadTool/limits.py
+    try:
+        file_size = os.path.getsize(resolved)
+        if file_size > _FILE_READ_MAX_SIZE and ext not in (".pdf",) and ext not in IMAGE_EXTENSIONS:
+            read_limits = _get_file_read_limits()
+            return (
+                f"File too large: {file_size:,} bytes exceeds limit of "
+                f"{read_limits.max_size_bytes:,} bytes. Use offset/limit to read a portion, "
+                f"or use bash with head/tail."
+            )
+    except OSError:
+        pass  # stat failed, continue and let open() handle it
+
     # PDF support
     if ext == ".pdf":
         result = _read_pdf(resolved, offset, limit)
@@ -1299,7 +1387,7 @@ def _exec_read(args: dict) -> str:
             result = result[:half] + "\n\n... (truncated) ...\n\n" + result[-(half // 2):]
         return result
 
-    # Image support
+    # Image support (with optional resize via FileReadTool/imageProcessor)
     if ext in IMAGE_EXTENSIONS:
         _file_read_times[resolved] = os.path.getmtime(resolved)
         return _read_image(resolved)
@@ -1407,17 +1495,11 @@ def _exec_write(args: dict) -> str:
         return f"Error writing {_sanitize_error_path(path)}: {e}"
 
 
-def _normalize_curly_quotes(s: str) -> str:
-    """Replace curly/smart quotes with straight ASCII equivalents."""
-    return (s
-            .replace("\u2018", "'").replace("\u2019", "'")   # ' '
-            .replace("\u201c", '"').replace("\u201d", '"'))   # " "
-
-
 def _exec_edit(args: dict) -> str:
     path = os.path.expanduser(args.get("path", ""))
     old_string = args.get("old_string", "")
     new_string = args.get("new_string", "")
+    replace_all = args.get("replace_all", False)
 
     if not path or not old_string:
         return "Need path and old_string."
@@ -1445,57 +1527,60 @@ def _exec_edit(args: dict) -> str:
         with open(path, "r") as f:
             content = f.read()
 
-        # Try to find old_string directly
-        count = content.count(old_string)
+        # Use FileEditTool's find_actual_string for smart matching
+        # (handles curly quote normalization transparently)
+        actual_old = _find_actual_string(content, old_string)
 
-        # If not found, try curly quote normalization
-        actual_old = old_string
-        if count == 0:
-            normalized_content = _normalize_curly_quotes(content)
-            normalized_old = _normalize_curly_quotes(old_string)
-            norm_count = normalized_content.count(normalized_old)
-            if norm_count == 1:
-                # Find the original text that matches after normalization
-                # by scanning through content for the matching region
-                norm_idx = normalized_content.index(normalized_old)
-                actual_old = content[norm_idx:norm_idx + len(normalized_old)]
-                # Verify: the normalized version of actual_old should equal normalized_old
-                if _normalize_curly_quotes(actual_old) == normalized_old:
-                    count = 1
-                else:
-                    count = 0
-            elif norm_count > 1:
-                return f"old_string matches {norm_count} locations (after quote normalization). Provide more context to make it unique."
-
-        if count == 0:
+        if actual_old is None:
+            # Provide a helpful error: show close matches via difflib
+            lines = content.splitlines()
+            old_lines = old_string.splitlines()
+            if old_lines:
+                close = difflib.get_close_matches(old_lines[0], lines, n=3, cutoff=0.5)
+                if close:
+                    hint = "\n".join(f"  > {c}" for c in close)
+                    return (
+                        f"old_string not found in {_sanitize_error_path(path)}. "
+                        f"Similar lines found:\n{hint}\n"
+                        f"Read the file first to get the exact text."
+                    )
             return f"old_string not found in {_sanitize_error_path(path)}. Read the file first to get the exact text."
-        if count > 1:
-            return f"old_string matches {count} locations. Provide more context to make it unique."
 
-        new_content = content.replace(actual_old, new_string, 1)
+        count = content.count(actual_old)
+        if count > 1 and not replace_all:
+            return f"old_string matches {count} locations. Provide more context to make it unique, or set replace_all=true."
+
+        # Apply edit using FileEditTool's apply_edit_to_file (handles trailing newline stripping)
+        new_content = _apply_edit_to_file(content, actual_old, new_string, replace_all)
         with open(path, "w") as f:
             f.write(new_content)
 
         # Update tracked mtime after successful edit
         _file_read_times[resolved] = os.path.getmtime(resolved)
 
-        # Generate unified diff snippet for context
+        # Generate snippet showing context around the edit
+        try:
+            snippet_info = _get_edit_snippet(content, actual_old, new_string)
+            snippet_text = f"  (around line {snippet_info['start_line']})\n{snippet_info['snippet']}"
+        except Exception:
+            snippet_text = ""
+
+        # Generate unified diff for context
         old_lines = content.splitlines(keepends=True)
         new_lines = new_content.splitlines(keepends=True)
         diff = list(difflib.unified_diff(
             old_lines, new_lines,
             fromfile=f"a/{os.path.basename(path)}",
             tofile=f"b/{os.path.basename(path)}",
-            n=3,  # 3 lines of context
+            n=3,
         ))
         if diff:
-            # Limit diff output to avoid flooding
             diff_text = "".join(diff[:50])
             if len(diff) > 50:
                 diff_text += "\n... (diff truncated)"
             return f"Edited {path} successfully.\n\n{diff_text}"
 
-        return f"Edited {path} successfully."
+        return f"Edited {path} successfully.{snippet_text}"
     except Exception as e:
         return f"Error editing {_sanitize_error_path(path)}: {e}"
 
