@@ -174,11 +174,14 @@ function App() {
           stream = await navigator.mediaDevices.getUserMedia({ audio: true })
         }
         const ctx = new AudioContext()
+        // Resume AudioContext if suspended (autoplay policy)
+        if (ctx.state === 'suspended') await ctx.resume()
         const source = ctx.createMediaStreamSource(stream)
         analyser = ctx.createAnalyser()
         analyser.fftSize = 256
         source.connect(analyser)
         dataArray = new Uint8Array(analyser.frequencyBinCount)
+        console.log('[JARVIS] Mic stream active, AudioContext state:', ctx.state)
 
         // Mic level for reactor pulse
         function updateLevel() {
@@ -282,7 +285,7 @@ function App() {
         }
         checkVoice()
 
-      } catch { /* Mic not available */ }
+      } catch (err) { console.warn('[JARVIS] Voice init failed:', err.message || err) }
     }
 
     startVoice()
