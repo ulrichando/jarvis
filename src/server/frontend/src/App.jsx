@@ -170,18 +170,14 @@ function App() {
           recognition.continuous = true
           recognition.interimResults = true
           recognition.lang = 'en-US'
-          let interrupted = false
           recognition.onresult = (event) => {
             const last = event.results[event.results.length - 1]
-            // Interrupt JARVIS immediately on ANY speech (interim or final)
-            if (!interrupted) {
-              interrupted = true
-              document.dispatchEvent(new CustomEvent('user-speaking'))
-            }
             if (last.isFinal) {
-              interrupted = false
               const text = last[0].transcript.trim()
               if (text && text.length > 1) {
+                // Only interrupt JARVIS for real user speech (final results),
+                // not interim — interim picks up JARVIS's own TTS voice as echo
+                document.dispatchEvent(new CustomEvent('user-speaking'))
                 setReactorState('thinking')
                 sendMessage({ type: 'query', text: text })
               }
@@ -191,21 +187,13 @@ function App() {
           recognition.onerror = () => { /* ignore */ }
           try { recognition.start() } catch { /* ignore */ }
 
-          // Still run VAD for energy-based interrupt (catches speech before recognition fires)
+          // VAD energy-based interrupt is DISABLED during TTS playback because
+          // the mic picks up JARVIS's own voice from speakers and can't distinguish
+          // it from the user. SpeechRecognition handles real interrupts via onresult.
+          // We only track TTS state for SpeechRecognition to gate interrupts.
           let isSpeakingTTS = false
           document.addEventListener('jarvis-tts-start', () => { isSpeakingTTS = true })
           document.addEventListener('jarvis-tts-end', () => { isSpeakingTTS = false })
-          function checkVoiceChrome() {
-            if (!analyser) return
-            analyser.getByteFrequencyData(dataArray)
-            const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length / 255
-            // Only interrupt during TTS — if JARVIS is speaking and user talks over
-            if (isSpeakingTTS && avg > 0.10) {
-              document.dispatchEvent(new CustomEvent('user-speaking'))
-            }
-            setTimeout(checkVoiceChrome, 50)
-          }
-          checkVoiceChrome()
           return // Using browser STT + VAD
         }
 
@@ -246,12 +234,18 @@ function App() {
           analyser.getByteFrequencyData(dataArray)
           const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length / 255
 
-          // Higher threshold when TTS is playing (ignore JARVIS's own voice from speakers)
-          const threshold = isSpeakingTTS ? 0.10 : 0.06
-          const silenceThreshold = isSpeakingTTS ? 0.06 : 0.03
+          // COMPLETELY skip VAD while TTS is playing — the mic picks up
+          // JARVIS's own voice and can't distinguish it from the user.
+          // This prevents JARVIS from interrupting himself.
+          if (isSpeakingTTS) {
+            setTimeout(checkVoice, 100)
+            return
+          }
+
+          const threshold = 0.06
+          const silenceThreshold = 0.03
 
           if (avg > threshold && !recording) {
-            // User started speaking — STOP JARVIS immediately
             document.dispatchEvent(new CustomEvent('user-speaking'))
             chunks = []
             try { mediaRecorder.start() } catch { /* ignore */ }
