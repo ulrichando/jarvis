@@ -209,7 +209,7 @@ curl -fsSL https://ulrichando.github.io/jarvis/install.sh | bash
 ```bash
 git clone https://github.com/ulrichando/jarvis.git
 cd jarvis
-pip install -e .
+pip install .
 jarvis
 ```
 

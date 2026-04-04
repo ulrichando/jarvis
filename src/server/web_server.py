@@ -184,7 +184,6 @@ class JarvisWebServer:
                             await ws.send_json({
                                 "type": "message", "role": "jarvis",
                                 "content": "Still initializing... give me a moment.",
-                                "spoken": "Still initializing, give me a moment.",
                             })
                         continue
 
@@ -206,6 +205,9 @@ class JarvisWebServer:
                         speaking = data.get("speaking", False)
                         if hasattr(ws, '_ambient'):
                             ws._ambient.set_jarvis_speaking(speaking)
+                        # Also mute/unmute the server-side mic listener
+                        if hasattr(self, '_server_listener'):
+                            self._server_listener.jarvis_speaking = speaking
                     elif msg_type == "add_provider":
                         await self._handle_add_provider(ws, data)
                     elif msg_type == "remove_provider":
@@ -295,6 +297,16 @@ class JarvisWebServer:
             clients = getattr(self, '_active_clients', {})
             await self._broadcast({"type": "handoff", "target": "desktop"})
             clients["browser"] = False
+            # Launch desktop app if not already running
+            if not clients.get("desktop"):
+                import subprocess as _sp_dt
+                _jarvis_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                env = {**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0.0")}
+                _sp_dt.Popen(
+                    ["python3", "-c", "from src.desktop.app import main; main()"],
+                    cwd=_jarvis_root, start_new_session=True,
+                    stdout=_sp_dt.DEVNULL, stderr=_sp_dt.DEVNULL, env=env,
+                )
             await ws.send_json({"type": "message", "role": "jarvis",
                                 "content": "Moving to desktop.", "spoken": "Moving to desktop.",
                                 "model": "", "latency_ms": 0, "voice_style": "default"})
@@ -453,9 +465,11 @@ class JarvisWebServer:
             if used_tools:
                 spoken = self._clean_for_speech(speech_buffer)
             else:
-                # Always send the full response for speech — the frontend
-                # only speaks the final message (skips partials)
                 spoken = self._clean_for_speech(full_response)
+
+            # Pre-mute server mic before TTS plays (avoid race with tts_state)
+            if spoken and len(spoken) > 3 and hasattr(self, '_server_listener'):
+                self._server_listener.jarvis_speaking = True
 
             if first_sent:
                 await ws.send_json({
@@ -1152,6 +1166,15 @@ class JarvisWebServer:
                 clients = getattr(self, '_active_clients', {})
                 await self._broadcast({"type": "handoff", "target": "desktop"})
                 clients["browser"] = False
+                if not clients.get("desktop"):
+                    import subprocess as _sp_dt2
+                    _jarvis_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                    env = {**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0.0")}
+                    _sp_dt2.Popen(
+                        ["python3", "-c", "from src.desktop.app import main; main()"],
+                        cwd=_jarvis_root, start_new_session=True,
+                        stdout=_sp_dt2.DEVNULL, stderr=_sp_dt2.DEVNULL, env=env,
+                    )
                 await self._broadcast({
                     "type": "message", "role": "jarvis",
                     "content": "Moving to desktop.", "spoken": "Moving to desktop.",
@@ -1955,7 +1978,6 @@ class JarvisWebServer:
             await self._broadcast({
                 "type": "message", "role": "jarvis",
                 "content": "Initializing systems...",
-                "spoken": "Initializing systems.",
             })
             await asyncio.get_event_loop().run_in_executor(None, self._init_brain)
             await self.brain.start()
@@ -1967,11 +1989,20 @@ class JarvisWebServer:
             await self._broadcast({
                 "type": "message", "role": "jarvis",
                 "content": "All systems online. What do you need?",
-                "spoken": "All systems online. What do you need?",
             })
 
         # Start server-side mic capture as fallback
+        # Pre-mute for a few seconds so mic doesn't pick up the startup TTS
         await self._start_server_mic()
+        if hasattr(self, '_server_listener'):
+            self._server_listener.jarvis_speaking = True
+            self._last_response = "All systems online. What do you need?"
+
+            async def _unmute_after_startup():
+                await asyncio.sleep(6)  # Wait for startup TTS to finish
+                if hasattr(self, '_server_listener'):
+                    self._server_listener.jarvis_speaking = False
+            asyncio.create_task(_unmute_after_startup())
 
         print(f"[JARVIS] Web shell:  http://localhost:{PORT}")
         print(f"[JARVIS] WebSocket:  ws://localhost:{PORT}/ws")

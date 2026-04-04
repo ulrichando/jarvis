@@ -282,7 +282,8 @@ class ProviderRegistry:
         for provider in self.get_active_providers(prefer_tool_calling=True, prefer_code=is_code):
             try:
                 result = await self._query_tools_provider(provider, messages, tools, system)
-                if result.get("tool_calls") or (result.get("text") and len(result["text"]) > 5):
+                tc = result.get("tool_calls", [])
+                if tc or (result.get("text") and len(result["text"]) > 5):
                     self._last_working = provider.name
                     return result, f"{provider.name}:{provider.model}"
                 errors.append(f"{provider.name}: no tool result")
@@ -551,22 +552,45 @@ class ProviderRegistry:
         def _call():
             for model in [provider.model] + [m for m in (provider.models or []) if m != provider.model]:
                 try:
-                    # Build kwargs
+                    # Build kwargs — system must be a list (not None) for Anthropic
                     kwargs = {
                         "model": model,
                         "max_tokens": 8192,
-                        "system": system_blocks if system_blocks else None,
                         "messages": claude_messages,
                     }
+                    if system_blocks:
+                        kwargs["system"] = system_blocks
                     if claude_tools:
                         kwargs["tools"] = claude_tools
 
                     # Extended thinking with budget (Opus/Sonnet 4.x)
-                    if any(m in model for m in ["opus-4", "sonnet-4"]):
-                        # Adaptive thinking auto-scales based on complexity
-                        # Budget prevents runaway thinking costs
+                    _use_thinking = any(m in model for m in ["opus-4", "sonnet-4"])
+                    if _use_thinking:
                         kwargs["thinking"] = {"type": "enabled", "budget_tokens": 8000}
                         kwargs["max_tokens"] = 16000  # Must be > budget_tokens
+
+                    # Use streaming for thinking models to avoid SDK timeout
+                    if _use_thinking:
+                        text, tool_calls, thinking = "", [], ""
+                        usage = {}
+                        with client.messages.stream(**kwargs) as stream:
+                            r = stream.get_final_message()
+                        for block in r.content:
+                            if block.type == "text":
+                                text += block.text
+                            elif block.type == "tool_use":
+                                tool_calls.append({"id": block.id, "name": block.name, "args": block.input})
+                            elif block.type == "thinking":
+                                thinking += block.thinking
+                        if hasattr(r, 'usage') and r.usage:
+                            usage = {
+                                "input": r.usage.input_tokens,
+                                "output": r.usage.output_tokens,
+                                "cache_read": getattr(r.usage, 'cache_read_input_tokens', 0),
+                                "cache_creation": getattr(r.usage, 'cache_creation_input_tokens', 0),
+                            }
+                        provider.model = model
+                        return {"text": text, "tool_calls": tool_calls, "usage": usage, "thinking": thinking}
 
                     r = client.messages.create(**kwargs)
                     provider.model = model
@@ -579,7 +603,6 @@ class ProviderRegistry:
                               [b.type for b in r.content])
                     if not any(b.type == "tool_use" for b in r.content) and claude_tools:
                         _dbg.warning("Model did NOT use tools despite %d tools available", len(claude_tools))
-                        print(f"[JARVIS-DEBUG] No tool_use in response. stop_reason={getattr(r, 'stop_reason', '?')}, blocks={[b.type for b in r.content]}")
 
                     text, tool_calls, thinking = "", [], ""
                     for block in r.content:

@@ -131,8 +131,8 @@ def build_sandbox_command(
         parts.append("--net")
 
     # Build the inner command with environment
-    sandbox_home = os.path.join(cwd or os.getcwd(), ".sandbox-home")
-    sandbox_tmp = os.path.join(cwd or os.getcwd(), ".sandbox-tmp")
+    sandbox_home = os.path.join("/tmp", "jarvis-sandbox-home")
+    sandbox_tmp = os.path.join("/tmp", "jarvis-sandbox-tmp")
 
     extra_env = {
         "HOME": sandbox_home,

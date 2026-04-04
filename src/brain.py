@@ -157,6 +157,12 @@ WHEN TO ASK BEFORE ACTING:
 - web_search / web_fetch: search the internet and read pages
 - dispatch: spawn sub-agents for parallel work
 
+PARALLEL TOOL CALLS — call multiple tools at once when they're independent:
+- Reading 3 files? Call read_file 3 times in one turn, don't wait between each.
+- Running independent commands? Call bash multiple times in one turn.
+- Checking multiple things? Batch them. Don't do one-at-a-time round-trips.
+- Only sequence tool calls when one depends on the output of another.
+
 When creating files, write COMPLETE working code — not placeholders or TODO stubs.
 When reviewing code, read the actual files — don't guess.
 
