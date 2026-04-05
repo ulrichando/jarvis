@@ -562,23 +562,34 @@ def main():
 
     # ── Click-through mode (input passes through to desktop) ──
     def _set_click_through(enabled):
-        """Make window click-through so clicks pass to apps below."""
-        if enabled:
-            from ctypes import cdll, c_ulong, c_int
-            try:
-                xlib = cdll.LoadLibrary("libX11.so.6")
-                display = xlib.XOpenDisplay(None)
-                if display:
-                    xid = window.get_window().get_xid()
-                    # Set input region to empty rectangle (click-through)
-                    xfixes = cdll.LoadLibrary("libXfixes.so.3")
-                    region = xfixes.XFixesCreateRegion(display, None, 0)
-                    xfixes.XFixesSetWindowShapeRegion(display, xid, 2, 0, 0, region)  # ShapeInput=2
-                    xfixes.XFixesDestroyRegion(display, region)
-                    xlib.XFlush(display)
-                    xlib.XCloseDisplay(display)
-            except Exception:
-                pass
+        """Make window click-through. Supports both X11 and Wayland."""
+        try:
+            if os.environ.get("WAYLAND_DISPLAY"):
+                # Wayland: use GTK input shape region
+                import cairo
+                gdk_win = window.get_window()
+                if gdk_win:
+                    if enabled:
+                        region = cairo.Region(cairo.RectangleInt(0, 0, 0, 0))
+                        gdk_win.input_shape_combine_region(region, 0, 0)
+                    else:
+                        gdk_win.input_shape_combine_region(None, 0, 0)
+            else:
+                # X11: use XFixes input shape
+                if enabled:
+                    from ctypes import cdll
+                    xlib = cdll.LoadLibrary("libX11.so.6")
+                    display = xlib.XOpenDisplay(None)
+                    if display:
+                        xid = window.get_window().get_xid()
+                        xfixes = cdll.LoadLibrary("libXfixes.so.3")
+                        region = xfixes.XFixesCreateRegion(display, None, 0)
+                        xfixes.XFixesSetWindowShapeRegion(display, xid, 2, 0, 0, region)
+                        xfixes.XFixesDestroyRegion(display, region)
+                        xlib.XFlush(display)
+                        xlib.XCloseDisplay(display)
+        except Exception:
+            pass
 
     # Enable click-through by default — clicks pass through to apps below
     def _enable_click_through_on_map(widget, event=None):

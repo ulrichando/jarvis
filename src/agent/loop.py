@@ -771,13 +771,12 @@ async def agent_loop_stream(
             if _short_casual:
                 _effective_tools = []  # No tools — JARVIS stays in personality
 
-        # Call LLM — retry on overflow/rate limit
+        # Call LLM — retry with exponential backoff + jitter
+        import random as _rand
         response = None
-        for attempt in range(3):
+        for attempt in range(4):
             try:
                 response = await reasoner.query_with_tools(messages, _effective_tools)
-                _tc = response.get("tool_calls", []) if response else []
-                _txt = (response.get("text", "") or "")[:80] if response else ""
                 break
             except Exception as e:
                 err = str(e).lower()
@@ -785,10 +784,16 @@ async def agent_loop_stream(
                     log.warning("Context overflow (attempt %d), compacting...", attempt + 1)
                     messages = compact_messages(messages, max_tokens=COMPACT_THRESHOLD // 2)
                     continue
-                if "rate" in err or "429" in err:
-                    wait = 3 * (attempt + 1)
-                    log.warning("Rate limited, waiting %ds...", wait)
+                if "rate" in err or "429" in err or "overloaded" in err or "529" in err:
+                    # Exponential backoff with jitter (Claude Code pattern)
+                    base_delay = min(0.5 * (2 ** attempt), 32)
+                    jitter = _rand.random() * 0.25 * base_delay
+                    wait = base_delay + jitter
+                    log.warning("Rate limited (attempt %d), waiting %.1fs...", attempt + 1, wait)
                     await asyncio.sleep(wait)
+                    continue
+                if attempt < 3:
+                    await asyncio.sleep(1)
                     continue
                 yield {"type": "error", "content": str(e)}
                 return

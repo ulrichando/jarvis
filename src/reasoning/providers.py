@@ -104,16 +104,51 @@ class Provider:
 
 
 class ProviderRegistry:
-    """Manages AI providers. Providers can be added/removed at runtime."""
+    """Manages AI providers with circuit breaker for resilience."""
+
+    # Circuit breaker: skip provider after N failures in WINDOW seconds
+    _CB_MAX_FAILURES = 3
+    _CB_WINDOW = 300       # 5 minutes
+    _CB_COOLDOWN = 120     # 2 minutes before retry
 
     def __init__(self):
         self._providers: dict[str, Provider] = {}
         self._clients: dict[str, object] = {}
         self._last_working: str | None = None
+        self._circuit_breaker: dict[str, dict] = {}  # {name: {failures: int, last_fail: float, open_until: float}}
         self._load()
-        # Auto-discover providers from env vars and Claude credentials
         self._load_env_providers()
         self._load_claude_credentials()
+
+    def _cb_is_open(self, name: str) -> bool:
+        """Check if circuit breaker is open (provider should be skipped)."""
+        import time
+        cb = self._circuit_breaker.get(name)
+        if not cb:
+            return False
+        if time.time() < cb.get("open_until", 0):
+            return True  # Still in cooldown
+        # Cooldown expired — half-open, allow one attempt
+        return False
+
+    def _cb_record_failure(self, name: str):
+        """Record a provider failure for circuit breaker."""
+        import time
+        now = time.time()
+        cb = self._circuit_breaker.setdefault(name, {"failures": 0, "last_fail": 0, "open_until": 0})
+        # Reset if last failure was outside the window
+        if now - cb["last_fail"] > self._CB_WINDOW:
+            cb["failures"] = 0
+        cb["failures"] += 1
+        cb["last_fail"] = now
+        if cb["failures"] >= self._CB_MAX_FAILURES:
+            cb["open_until"] = now + self._CB_COOLDOWN
+            print(f"[JARVIS] Circuit breaker OPEN for {name} — skipping for {self._CB_COOLDOWN}s")
+
+    def _cb_record_success(self, name: str):
+        """Record a success — close the circuit breaker."""
+        if name in self._circuit_breaker:
+            self._circuit_breaker[name] = {"failures": 0, "last_fail": 0, "open_until": 0}
 
     # ── Public API ──────────────────────────────────────────────────
 
@@ -284,18 +319,23 @@ class ProviderRegistry:
                 break
 
         errors = []
-        # For tool calling, prefer cloud providers first (fast + native function calling)
-        # On rate limit, immediately skip to next provider instead of waiting
         for provider in self.get_active_providers(prefer_tool_calling=True, prefer_code=is_code):
+            # Circuit breaker — skip providers that have failed repeatedly
+            if self._cb_is_open(provider.name):
+                errors.append(f"{provider.name}: circuit breaker open")
+                continue
             try:
                 result = await self._query_tools_provider(provider, messages, tools, system)
                 tc = result.get("tool_calls", [])
                 if tc or (result.get("text") and len(result["text"]) > 5):
                     self._last_working = provider.name
+                    self._cb_record_success(provider.name)
                     return result, f"{provider.name}:{provider.model}"
                 errors.append(f"{provider.name}: no tool result")
+                self._cb_record_failure(provider.name)
             except Exception as e:
                 errors.append(f"{provider.name}: {e}")
+                self._cb_record_failure(provider.name)
                 continue
 
         # Fallback: try plain query without tools (so LLM at least responds)
@@ -634,6 +674,17 @@ class ProviderRegistry:
                                 tool_calls.append({"id": block.id, "name": block.name, "args": block.input})
                             elif block.type == "thinking":
                                 thinking += block.thinking
+                        # Check rate limit headers
+                        try:
+                            headers = getattr(r, '_headers', {}) or {}
+                            remaining = headers.get('x-ratelimit-remaining-tokens') or headers.get('x-ratelimit-remaining')
+                            if remaining and int(remaining) < 100:
+                                import logging
+                                logging.getLogger("jarvis.providers").warning(
+                                    "Rate limit low on %s: %s remaining", model, remaining)
+                        except Exception:
+                            pass
+
                         if hasattr(r, 'usage') and r.usage:
                             usage = {
                                 "input": r.usage.input_tokens,
