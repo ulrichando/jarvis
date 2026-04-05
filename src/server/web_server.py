@@ -57,9 +57,19 @@ TTS_VOICE = "en-US-AndrewMultilingualNeural"
 
 class JarvisWebServer:
 
+    # --- Security: allowed WebSocket origins ---
+    _ALLOWED_ORIGINS = {
+        "http://localhost", "http://127.0.0.1", "http://0.0.0.0",
+        "https://localhost", "https://127.0.0.1",
+    }
+    # Rate limit: max messages per client per second
+    _WS_RATE_LIMIT = 10  # messages/sec
+    _WS_RATE_WINDOW = 1.0  # seconds
+
     def __init__(self):
         self.brain = None  # Deferred — initialized in run() after port binds
         self.clients: set[web.WebSocketResponse] = set()
+        self._ws_rate: dict = {}  # ws -> (count, window_start)
         # Remote session manager — shared singleton
         remote_config = get_remote_config()
         self.remote_manager = RemoteSessionManager(
@@ -69,6 +79,37 @@ class JarvisWebServer:
         self.remote_permission_bridge = RemotePermissionBridge()
         # Auth token for remote API (None = no auth required)
         self._remote_auth_token: str | None = remote_config.get("auth_token")
+        # Local auth token (optional, from JARVIS_WS_TOKEN env or config)
+        self._local_auth_token: str | None = os.environ.get("JARVIS_WS_TOKEN") or remote_config.get("ws_token")
+
+    def _check_ws_origin(self, request: web.Request) -> bool:
+        """Validate WebSocket origin header against allowed origins."""
+        origin = request.headers.get("Origin", "")
+        if not origin:
+            return True  # No origin = direct connection (curl, desktop app)
+        # Strip port for comparison
+        origin_base = re.sub(r':\d+$', '', origin)
+        if origin_base in self._ALLOWED_ORIGINS:
+            return True
+        # Allow same-host connections
+        host = request.headers.get("Host", "")
+        if host and origin.endswith(host.split(":")[0]):
+            return True
+        logging.getLogger("jarvis.web").warning("Rejected WS from origin: %s", origin)
+        return False
+
+    def _check_ws_rate(self, ws: web.WebSocketResponse) -> bool:
+        """Simple rate limiter per WebSocket connection."""
+        now = time.time()
+        ws_id = id(ws)
+        count, window_start = self._ws_rate.get(ws_id, (0, now))
+        if now - window_start > self._WS_RATE_WINDOW:
+            self._ws_rate[ws_id] = (1, now)
+            return True
+        if count >= self._WS_RATE_LIMIT:
+            return False
+        self._ws_rate[ws_id] = (count + 1, window_start)
+        return True
 
     def _init_brain(self):
         """Initialize Brain (heavy — MCP servers take ~25s)."""
@@ -213,6 +254,24 @@ class JarvisWebServer:
     MAX_CLIENTS = 15
 
     async def websocket_handler(self, request: web.Request) -> web.WebSocketResponse:
+        # Origin validation — reject cross-origin connections
+        if not self._check_ws_origin(request):
+            ws = web.WebSocketResponse()
+            await ws.prepare(request)
+            await ws.send_json({"type": "error", "error": "Origin not allowed"})
+            await ws.close(code=1008, message=b"Origin not allowed")
+            return ws
+
+        # Optional local auth token check
+        if self._local_auth_token:
+            token = request.query.get("token", "")
+            if token != self._local_auth_token:
+                ws = web.WebSocketResponse()
+                await ws.prepare(request)
+                await ws.send_json({"type": "error", "error": "Unauthorized"})
+                await ws.close(code=1008, message=b"Unauthorized")
+                return ws
+
         # Connection limit
         if len(self.clients) >= self.MAX_CLIENTS:
             ws = web.WebSocketResponse()
@@ -230,6 +289,11 @@ class JarvisWebServer:
         try:
             async for msg in ws:
                 try:
+                    # Rate limiting
+                    if not self._check_ws_rate(ws):
+                        await self._safe_send(ws, {"type": "error", "error": "Rate limit exceeded"})
+                        continue
+
                     if msg.type == web.WSMsgType.BINARY:
                         await self._handle_audio(ws, msg.data)
                     elif msg.type == web.WSMsgType.TEXT:
@@ -308,6 +372,7 @@ class JarvisWebServer:
                     continue
         finally:
             self.clients.discard(ws)
+            self._ws_rate.pop(id(ws), None)  # Clean up rate limit state
             # Clean up all custom attributes to prevent memory leaks
             for attr in ('_ambient', '_viewer', '_audio_logged', '_vision_logged', '_init_warned'):
                 if hasattr(ws, attr):
@@ -634,9 +699,19 @@ class JarvisWebServer:
                             "type": "usage",
                             "input_tokens": event.get("input_tokens", 0),
                             "output_tokens": event.get("output_tokens", 0),
+                            "context_pct": event.get("context_pct", 0),
+                            "context_used": event.get("context_used", 0),
+                            "context_max": event.get("context_max", 0),
                             "session_cost": event.get("session_cost", ""),
                         })
                     elif etype == "done":
+                        # Send final context status
+                        if event.get("context_status"):
+                            await ws.send_json({
+                                "type": "context_status",
+                                "status": event.get("context_status", ""),
+                                "pct": event.get("context_pct", 0),
+                            })
                         break
                 full_response = buffer
             except Exception as e:
@@ -1192,8 +1267,11 @@ class JarvisWebServer:
         """Serve dropper script for target OS."""
         from src.replicator.packager import generate_dropper_script
         import subprocess
-        local_ip = subprocess.run("hostname -I", shell=True, capture_output=True, text=True).stdout.strip().split()[0]
+        local_ip = subprocess.run(["hostname", "-I"], capture_output=True, text=True).stdout.strip().split()[0]
         target_os = request.query.get("os", "linux")
+        # Whitelist valid OS values to prevent injection
+        if target_os not in ("linux", "macos", "windows", "darwin"):
+            return web.Response(text="Invalid OS", status=400)
         script = generate_dropper_script(target_os).replace("ORIGIN_IP", local_ip)
         return web.Response(text=script, content_type="text/plain")
 
@@ -2402,6 +2480,10 @@ class JarvisWebServer:
         app.router.add_get("/api/models/search", _model_search)
         async def _model_upload(request):
             """Upload a local GGUF model file and import into Ollama."""
+            # Size limit: 50GB (large models can be big)
+            MAX_UPLOAD_SIZE = 50 * 1024 * 1024 * 1024
+            ALLOWED_EXTENSIONS = {'gguf', 'ggml', 'bin', 'safetensors', 'pt', 'onnx'}
+
             reader = await request.multipart()
             field = await reader.next()
             if not field or field.name != 'model':
@@ -2409,19 +2491,40 @@ class JarvisWebServer:
 
             filename = field.filename or "uploaded_model.gguf"
             ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'gguf'
-            model_name = filename.rsplit('.', 1)[0].replace(' ', '-').lower()
 
-            # Save uploaded file to temp
+            # Validate extension
+            if ext not in ALLOWED_EXTENSIONS:
+                return web.json_response({
+                    "ok": False,
+                    "error": f"Invalid file type .{ext}. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}",
+                }, status=400)
+
+            # Sanitize model name (alphanumeric, hyphens, underscores only)
+            model_name = re.sub(r'[^a-z0-9_-]', '-', filename.rsplit('.', 1)[0].lower())
+
+            # Save uploaded file to secure temp directory
             import tempfile
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=f'.{ext}', dir='/tmp')
+            tmp_dir = tempfile.mkdtemp(prefix="jarvis-upload-")
+            tmp_path = os.path.join(tmp_dir, f"model.{ext}")
             size = 0
-            while True:
-                chunk = await field.read_chunk(8192)
-                if not chunk:
-                    break
-                tmp.write(chunk)
-                size += len(chunk)
-            tmp.close()
+            with open(tmp_path, 'wb') as tmp_f:
+                while True:
+                    chunk = await field.read_chunk(8192)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > MAX_UPLOAD_SIZE:
+                        os.unlink(tmp_path)
+                        os.rmdir(tmp_dir)
+                        return web.json_response({
+                            "ok": False, "error": f"File too large (max {MAX_UPLOAD_SIZE // (1024**3)}GB)",
+                        }, status=413)
+                    tmp_f.write(chunk)
+
+            # Create a fake tmp object for compatibility with downstream code
+            class _TmpCompat:
+                name = tmp_path
+            tmp = _TmpCompat()
             print(f"[JARVIS] Model uploaded: {filename} ({size/1024/1024:.0f} MB) → {tmp.name}")
 
             # Import into Ollama — GGUF/GGML import directly, others need conversion
@@ -2429,8 +2532,10 @@ class JarvisWebServer:
                 # safetensors/pt/onnx — Ollama can't import these directly
                 # Try llama.cpp convert if available, otherwise inform user
                 try:
-                    convert_cmd = f"python3 -m llama_cpp.convert {tmp.name} --outfile {tmp.name}.gguf"
-                    proc = subprocess.run(convert_cmd, shell=True, capture_output=True, timeout=300)
+                    proc = subprocess.run(
+                        ["python3", "-m", "llama_cpp.convert", tmp.name, "--outfile", f"{tmp.name}.gguf"],
+                        capture_output=True, timeout=300,
+                    )
                     if proc.returncode == 0:
                         os.unlink(tmp.name)
                         tmp_name_orig = tmp.name

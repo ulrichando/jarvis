@@ -24,7 +24,7 @@ CHARS_PER_TOKEN = 4
 # Model limits (conservative to leave room for response + tools)
 MODEL_LIMITS = {
     # Claude models
-    "claude-opus-4-6-20250514": 900000,    # 1M context
+    "claude-opus-4-20250514": 180000,      # 200K context
     "claude-sonnet-4-6-20250514": 900000,  # 1M context
     "claude-sonnet-4-20250514": 180000,    # 200K context
     "claude-haiku-4-5-20251001": 180000,   # 200K context
@@ -295,9 +295,13 @@ class AutoCompactor:
 
     Wraps the existing ``compact_messages`` and the new ``microcompact_messages``
     behind a simple API that the agent loop can call every turn.
+
+    When a ``summarizer`` callable is provided, escalates to LLM-based
+    ``smart_compact`` instead of the heuristic ``compact_messages``.
     """
 
-    def __init__(self, model: str = "", proactive_threshold: float = 0.75):
+    def __init__(self, model: str = "", proactive_threshold: float = 0.75,
+                 summarizer=None):
         max_tokens = MODEL_LIMITS.get(model, DEFAULT_MAX_TOKENS)
         self.budget = TokenBudget(max_tokens=max_tokens)
         self._proactive_threshold = proactive_threshold
@@ -305,6 +309,7 @@ class AutoCompactor:
         self._microcompact_interval: int = 5
         self._turn_count: int = 0
         self._model = model
+        self._summarizer = summarizer  # async callable(prompt: str) -> str
 
     # -- helpers ----------------------------------------------------------
 
@@ -343,18 +348,67 @@ class AutoCompactor:
         """Full smart compaction with escalation.
 
         1. Try microcompact first (cheap).
-        2. If still over threshold, escalate to full ``compact_messages``.
-        3. Update budget bookkeeping.
+        2. If still over threshold and summarizer available, use LLM-based smart_compact.
+        3. Otherwise fall back to heuristic ``compact_messages``.
+        4. Update budget bookkeeping.
         """
         # Stage 1 — microcompact
         result = self.microcompact(messages)
 
         # Stage 2 — full compaction if still over threshold
         if self.budget.usage_pct > (self._proactive_threshold * 100):
-            result = compact_messages(
-                result,
-                max_tokens=self.budget.max_tokens,
-            )
+            if self._summarizer is not None:
+                # LLM-based compaction — run synchronously via event loop check
+                import asyncio
+                try:
+                    loop = asyncio.get_running_loop()
+                    # We're in an async context, schedule and await
+                    import concurrent.futures
+                    future = asyncio.ensure_future(
+                        smart_compact(result, self.budget.max_tokens,
+                                      summarizer=self._summarizer)
+                    )
+                    # Can't await here (sync method), store for next turn
+                    self._pending_smart_compact = future
+                except RuntimeError:
+                    pass
+                # Fall back to heuristic for this turn
+                result = compact_messages(result, max_tokens=self.budget.max_tokens)
+            else:
+                result = compact_messages(result, max_tokens=self.budget.max_tokens)
+            self.update(result)
+
+        self.budget.compaction_count += 1
+        self._last_compact_tokens = self.budget.used_tokens
+        return result
+
+    async def auto_compact_async(self, messages: list[dict]) -> list[dict]:
+        """Async version of auto_compact — uses LLM-based smart_compact when available."""
+        # Stage 1 — microcompact
+        result = self.microcompact(messages)
+
+        # Stage 2 — LLM-based or heuristic compaction
+        if self.budget.usage_pct > (self._proactive_threshold * 100):
+            if self._summarizer is not None:
+                try:
+                    cr = await smart_compact(
+                        result, self.budget.max_tokens,
+                        summarizer=self._summarizer,
+                    )
+                    result = cr.messages
+                    import logging
+                    logging.getLogger("jarvis.agent").info(
+                        "Smart compact: %d→%d tokens, %d groups removed",
+                        cr.tokens_before, cr.tokens_after, cr.groups_removed,
+                    )
+                except Exception as e:
+                    import logging
+                    logging.getLogger("jarvis.agent").warning(
+                        "Smart compact failed, falling back to heuristic: %s", e
+                    )
+                    result = compact_messages(result, max_tokens=self.budget.max_tokens)
+            else:
+                result = compact_messages(result, max_tokens=self.budget.max_tokens)
             self.update(result)
 
         self.budget.compaction_count += 1
