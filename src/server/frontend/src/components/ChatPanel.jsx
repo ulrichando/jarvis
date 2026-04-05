@@ -96,8 +96,19 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
       setContextUsage({
         input_tokens: data.input_tokens || 0,
         output_tokens: data.output_tokens || 0,
+        context_pct: data.context_pct || 0,
+        context_used: data.context_used || 0,
+        context_max: data.context_max || 0,
         session_cost: data.session_cost || '',
       })
+    }
+
+    if (type === 'context_status') {
+      setContextUsage(prev => ({
+        ...prev,
+        context_pct: data.pct || 0,
+        context_status: data.status || '',
+      }))
     }
 
     if (type === 'message') {

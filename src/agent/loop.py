@@ -149,6 +149,23 @@ def _maybe_compact(messages: list[dict], compactor: AutoCompactor | None = None)
     return messages
 
 
+async def _maybe_compact_async(messages: list[dict], compactor: AutoCompactor | None = None) -> list[dict]:
+    """Async compaction — uses LLM-based smart_compact when compactor has a summarizer."""
+    if compactor:
+        if compactor.should_compact(messages) and compactor._summarizer is not None:
+            messages = await compactor.auto_compact_async(messages)
+            hooks = _get_hooks()
+            if hooks:
+                budget = compactor.get_budget()
+                hooks.run_context_compacted(budget.used_tokens + 1000, budget.used_tokens)
+            return messages
+        # Fall back to sync maybe_compact for sub-threshold or no summarizer
+        return _maybe_compact(messages, compactor)
+    if estimate_tokens(messages) > COMPACT_THRESHOLD:
+        return compact_messages(messages, max_tokens=COMPACT_THRESHOLD)
+    return messages
+
+
 async def _run_sub_agent(
     reasoner: GroqReasoner,
     agent_type: str,
@@ -229,14 +246,24 @@ async def _agent_loop_internal(
     if tool_executor is None:
         tool_executor = execute_tool
 
+    # Initialize AutoCompactor with model-aware context limits
+    model_name = getattr(reasoner, 'model', '') or getattr(reasoner, 'active_model_name', '') or ''
+    compactor = AutoCompactor(model=model_name)
+
+    # Adaptive history: use more turns for larger context models
+    from src.agent.context import MODEL_LIMITS, DEFAULT_MAX_TOKENS
+    ctx_limit = MODEL_LIMITS.get(model_name, DEFAULT_MAX_TOKENS)
+    max_history_turns = 10 if ctx_limit <= 32000 else 20 if ctx_limit <= 200000 else 30
+    max_content_len = 2000 if ctx_limit <= 32000 else 4000 if ctx_limit <= 200000 else 8000
+
     messages = [{"role": "system", "content": system_prompt}]
 
     if history:
-        for turn in history[-10:]:
+        for turn in history[-max_history_turns:]:
             role = "assistant" if turn["role"] == "jarvis" else "user"
             content = turn["content"]
-            if len(content) > 2000:
-                content = content[:2000] + "..."
+            if len(content) > max_content_len:
+                content = content[:max_content_len] + "..."
             messages.append({"role": role, "content": content})
 
     messages.append({"role": "user", "content": user_input})
@@ -253,7 +280,7 @@ async def _agent_loop_internal(
                 final_text += "\n[Iteration budget exhausted]"
                 break
 
-        messages = _maybe_compact(messages)
+        messages = _maybe_compact(messages, compactor=compactor)
 
         # Call LLM with tools — retry on overflow/rate limit
         response = None
@@ -722,14 +749,37 @@ async def agent_loop_stream(
     if tools is None:
         tools = TOOL_SCHEMAS
 
+    # Build an LLM summarizer for smart compaction (uses the same reasoner)
+    async def _llm_summarizer(prompt: str) -> str:
+        """Use the active LLM to summarize compacted context."""
+        try:
+            r = await reasoner.query_with_tools(
+                [{"role": "system", "content": "You are a conversation summarizer. Be concise."},
+                 {"role": "user", "content": prompt}],
+                [],  # no tools
+            )
+            return r.get("text", "")
+        except Exception:
+            return ""
+
+    # Initialize AutoCompactor for smart context management
+    model_name = getattr(reasoner, 'model', '') or getattr(reasoner, 'active_model_name', '') or ''
+    compactor = AutoCompactor(model=model_name, summarizer=_llm_summarizer)
+
+    # Adaptive history: use more turns for larger context models
+    from src.agent.context import MODEL_LIMITS, DEFAULT_MAX_TOKENS
+    ctx_limit = MODEL_LIMITS.get(model_name, DEFAULT_MAX_TOKENS)
+    max_history_turns = 10 if ctx_limit <= 32000 else 20 if ctx_limit <= 200000 else 30
+    max_content_len = 2000 if ctx_limit <= 32000 else 4000 if ctx_limit <= 200000 else 8000
+
     messages = [{"role": "system", "content": system_prompt}]
 
     if history:
-        for turn in history[-12:]:
+        for turn in history[-max_history_turns:]:
             role = "assistant" if turn["role"] == "jarvis" else "user"
             content = turn["content"]
-            if len(content) > 2000:
-                content = content[:2000] + "..."
+            if len(content) > max_content_len:
+                content = content[:max_content_len] + "..."
             messages.append({"role": role, "content": content})
 
     messages.append({"role": "user", "content": user_input})
@@ -737,10 +787,6 @@ async def agent_loop_stream(
     full_response = ""
     iterations = 0
     iteration_budget = {"count": 0, "max": GLOBAL_ITERATION_MAX}
-
-    # Initialize AutoCompactor for smart context management
-    model_name = getattr(reasoner, 'model', '') or ''
-    compactor = AutoCompactor(model=model_name)
     cost_tracker = get_cost_tracker()
 
     # Session memory manager -- tracks token thresholds to trigger
@@ -758,7 +804,7 @@ async def agent_loop_stream(
             yield {"type": "text", "content": "\n[Iteration budget exhausted]"}
             break
 
-        messages = _maybe_compact(messages, compactor=compactor)
+        messages = await _maybe_compact_async(messages, compactor=compactor)
 
         # For casual chat on first iteration: skip tools so JARVIS stays in character
         _effective_tools = tools
@@ -808,14 +854,21 @@ async def agent_loop_stream(
                     yield {"type": "error", "content": str(e)}
                     return
 
-        # Emit token usage (cost recording is handled by GroqReasoner._track_usage)
+        # Feed real API token counts into compactor budget (replaces heuristic)
         if response and response.get("usage"):
             usage = response["usage"]
             in_tok = usage.get("input", 0)
             out_tok = usage.get("output", 0)
+            if in_tok > 0:
+                compactor.budget.used_tokens = in_tok  # Real count from API
+                compactor.budget.cumulative_input_tokens += in_tok
+                compactor.budget.cumulative_output_tokens += out_tok
             yield {"type": "usage",
                    "input_tokens": in_tok,
                    "output_tokens": out_tok,
+                   "context_pct": int(compactor.budget.usage_pct),
+                   "context_used": compactor.budget.used_tokens,
+                   "context_max": compactor.budget.max_tokens,
                    "session_cost": cost_tracker.get_status_line()}
 
         if response is None:
@@ -1006,6 +1059,8 @@ async def agent_loop_stream(
         if not stop_hr.allowed:
             log.info("Stop hook blocked completion: %s", stop_hr.message)
 
-    # Emit final cost summary
+    # Emit final cost + context summary
     yield {"type": "cost", "summary": cost_tracker.get_summary(), "status": cost_tracker.get_status_line()}
-    yield {"type": "done", "content": full_response}
+    yield {"type": "done", "content": full_response,
+           "context_status": compactor.get_status(),
+           "context_pct": int(compactor.budget.usage_pct)}
