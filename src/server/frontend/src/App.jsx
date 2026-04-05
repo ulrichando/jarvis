@@ -250,6 +250,8 @@ function App() {
         mediaRecorder.onstop = async () => {
           const blob = new Blob(chunks, { type: mediaRecorder.mimeType })
           chunks = []
+          // Don't upload if TTS is playing — this recording is JARVIS's own voice
+          if (isSpeakingTTS) { console.log('[VOICE] Discarded — TTS was playing'); return }
           console.log('[VOICE] Recording stopped, blob size:', blob.size)
           if (blob.size < 2000) { console.log('[VOICE] Too small, skipping'); return }
           setReactorState('thinking')
@@ -270,10 +272,21 @@ function App() {
 
         // VAD: detect speech, record, interrupt TTS on barge-in
         let isSpeakingTTS = false
-        document.addEventListener('jarvis-tts-start', () => { isSpeakingTTS = true })
+        document.addEventListener('jarvis-tts-start', () => {
+          isSpeakingTTS = true
+          // Kill any in-progress recording — it's capturing JARVIS's own voice now
+          if (recording) {
+            try { mediaRecorder.stop() } catch { /* ignore */ }
+            recording = false
+            chunks = [] // Discard — contains TTS audio
+            console.log('[VAD] TTS started — killed active recording')
+          } else {
+            console.log('[VAD] TTS started — mic muted')
+          }
+        })
         document.addEventListener('jarvis-tts-end', () => {
-          // Keep mic muted for 2s after TTS ends — speaker echo lingers
-          setTimeout(() => { isSpeakingTTS = false }, 2000)
+          console.log('[VAD] TTS ended — mic muted for 2s')
+          setTimeout(() => { isSpeakingTTS = false; console.log('[VAD] Mic unmuted') }, 2000)
         })
 
         // Use time-domain data for proper RMS level detection
