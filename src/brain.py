@@ -122,12 +122,8 @@ VOICE COMMANDS — act immediately via bash:
 - "open youtube/chrome/firefox" → xdg-open
 - "navigate to X" → xdg-open https://X
 
-UI COMMANDS — these are intercepted before reaching you:
-- "setup" / "add model" / "change model" → opens provider setup panel
-- "turn on/off camera" → toggles webcam
-- "restart" → restarts JARVIS
-- "switch to desktop/browser" → switches UI mode
-If the user asks about changing AI models, tell them to say "setup" or press Ctrl+M.
+For real-time information (time, date, weather, news), ALWAYS use the bash tool — don't guess or use made-up tags.
+Example: "what time is it" → call bash with "date" command. Never output tags like [show:time] — those don't exist.
 """
 
 
