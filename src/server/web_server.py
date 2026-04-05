@@ -304,24 +304,26 @@ class JarvisWebServer:
         if is_ambient and self.brain:
             try:
                 classify_prompt = (
-                    f'Is this speech directed at you (JARVIS, a voice AI assistant), '
-                    f'or is it background noise/TV/music/someone else talking?\n'
-                    f'Speech: "{text}"\n'
-                    f'Reply ONLY "yes" if directed at you, or "no" if background noise.'
+                    f'You heard this through your microphone: "{text}"\n\n'
+                    f'Is someone talking TO YOU (asking a question, giving a command, greeting you), '
+                    f'or is this just background noise (TV, music, other people talking to each other, random fragments)?\n\n'
+                    f'Signs it\'s FOR YOU: questions, commands, greetings, mentions "jarvis", clear complete sentences directed at an AI.\n'
+                    f'Signs it\'s BACKGROUND: fragments, TV dialogue, music lyrics, people talking to each other, incomplete thoughts.\n\n'
+                    f'Reply ONLY "yes" or "no".'
                 )
                 result = await asyncio.wait_for(
                     self.brain.reasoner.query_fast(classify_prompt,
-                        "You are JARVIS. Reply only 'yes' or 'no'. "
-                        "'yes' = someone is talking TO you. 'no' = background noise, TV, or not directed at you."),
-                    timeout=3,
+                        "You are JARVIS, a voice AI assistant. Classify if speech is directed at you. Reply ONLY 'yes' or 'no'. When unsure, say 'yes'."),
+                    timeout=5,
                 )
-                result_clean = result.strip().lower().rstrip(".")
-                if result_clean.startswith("no"):
+                result_clean = result.strip().lower().rstrip(".!").split()[0] if result.strip() else "yes"
+                if result_clean == "no":
                     print(f'[JARVIS] Ambient filtered: "{text[:40]}"')
                     return
                 print(f'[JARVIS] Ambient accepted: "{text[:40]}"')
-            except Exception:
-                pass  # Timeout or error — let it through
+            except Exception as e:
+                print(f'[JARVIS] Classifier timeout/error, accepting: "{text[:40]}"')
+                # Timeout — accept the query rather than dropping it
 
         # Normalize for voice-friendly matching (Whisper adds punctuation/filler)
         text_lower = text.lower().strip()
