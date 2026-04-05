@@ -80,10 +80,24 @@ echo ""
 
 # ── Step 3: Start web server ──
 echo "[3/4] Starting JARVIS server..."
-pkill -f "src.server.web_server" 2>/dev/null
-sleep 1
+# Kill ALL old instances reliably — by PID file, port, and process name
+if [ -f /tmp/jarvis-server.pid ]; then
+    kill -9 $(cat /tmp/jarvis-server.pid) 2>/dev/null
+    rm -f /tmp/jarvis-server.pid
+fi
+fuser -k 8765/tcp 2>/dev/null
+pkill -9 -f "src.server.web_server" 2>/dev/null
+pkill -9 -f "python.*web_server" 2>/dev/null
+sleep 2
+# Verify port is free
+if fuser 8765/tcp 2>/dev/null; then
+    echo "  ERROR: Port 8765 still in use! Force killing..."
+    fuser -k -9 8765/tcp 2>/dev/null
+    sleep 2
+fi
 PYTHONUNBUFFERED=1 python3 -m src.server.web_server > /tmp/jarvis-web.log 2>&1 &
 SERVER_PID=$!
+echo "$SERVER_PID" > /tmp/jarvis-server.pid
 echo "  Server PID: $SERVER_PID"
 
 # Wait for HTTP

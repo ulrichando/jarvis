@@ -126,10 +126,21 @@ def main():
         return False
     window.connect("draw", on_draw)
 
-    # ── WebKit ──
-    # Allow autoplay so Edge TTS audio plays without user gesture
+    # ── WebKit — autoplay allowed + temp cache dir ──
+    import tempfile as _tf
+    _cache_dir = _tf.mkdtemp(prefix="jarvis-webkit-")
+    data_mgr = WebKit2.WebsiteDataManager(
+        base_cache_directory=_cache_dir,
+        base_data_directory=_cache_dir,
+    )
+    web_ctx = WebKit2.WebContext.new_with_website_data_manager(data_mgr)
+    web_ctx.set_cache_model(WebKit2.CacheModel.DOCUMENT_VIEWER)
+    # Create WebView with BOTH context and autoplay policy
     policies = WebKit2.WebsitePolicies(autoplay=WebKit2.AutoplayPolicy.ALLOW)
-    webview = WebKit2.WebView(website_policies=policies)
+    webview = WebKit2.WebView(
+        web_context=web_ctx,
+        website_policies=policies,
+    )
     webview.set_background_color(Gdk.RGBA(0, 0, 0, 0))
 
     settings = webview.get_settings()
@@ -152,16 +163,31 @@ def main():
     settings.set_enable_write_console_messages_to_stdout(True)
     settings.set_enable_developer_extras(True)
 
-    # Clear WebKit cache BEFORE loading (ensures fresh JS bundle)
+    # Use ephemeral (non-persistent) web context — never caches to disk
+    eph_ctx = WebKit2.WebContext.new_ephemeral()
+    eph_ctx.set_cache_model(WebKit2.CacheModel.DOCUMENT_VIEWER)
+
+    # Apply ephemeral context to webview
     ctx = webview.get_context()
     ctx.get_website_data_manager().clear(WebKit2.WebsiteDataTypes.ALL, 0, None, None, None)
-
-    # Disable all caching
     ctx.set_cache_model(WebKit2.CacheModel.DOCUMENT_VIEWER)
 
-    # Load React UI with cache-bust param
+    # Load React UI
     import time as _time
+    settings.set_enable_page_cache(False)
     webview.load_uri(f"http://{host}:{port}/?desktop=1&_t={int(_time.time())}")
+
+    # Force bypass cache after first load, re-apply transparent background
+    _reloaded = [False]
+    def _on_load(wv, event):
+        if event == WebKit2.LoadEvent.FINISHED:
+            # Re-apply transparent background after every load
+            wv.set_background_color(Gdk.RGBA(0, 0, 0, 0))
+            # First load: force bypass cache reload
+            if not _reloaded[0]:
+                _reloaded[0] = True
+                GLib.timeout_add(500, lambda: wv.reload_bypass_cache() or False)
+    webview.connect("load-changed", _on_load)
     window.add(webview)
 
     # ── Register desktop and poll for browser handoff ──

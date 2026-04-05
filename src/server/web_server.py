@@ -299,6 +299,30 @@ class JarvisWebServer:
         if not text:
             return
 
+        # Ambient speech classification — let the LLM decide if this is for JARVIS
+        is_ambient = data.get("ambient", False)
+        if is_ambient and self.brain:
+            try:
+                classify_prompt = (
+                    f'Is this speech directed at you (JARVIS, a voice AI assistant), '
+                    f'or is it background noise/TV/music/someone else talking?\n'
+                    f'Speech: "{text}"\n'
+                    f'Reply ONLY "yes" if directed at you, or "no" if background noise.'
+                )
+                result = await asyncio.wait_for(
+                    self.brain.reasoner.query_fast(classify_prompt,
+                        "You are JARVIS. Reply only 'yes' or 'no'. "
+                        "'yes' = someone is talking TO you. 'no' = background noise, TV, or not directed at you."),
+                    timeout=3,
+                )
+                result_clean = result.strip().lower().rstrip(".")
+                if result_clean.startswith("no"):
+                    print(f'[JARVIS] Ambient filtered: "{text[:40]}"')
+                    return
+                print(f'[JARVIS] Ambient accepted: "{text[:40]}"')
+            except Exception:
+                pass  # Timeout or error — let it through
+
         # Normalize for voice-friendly matching (Whisper adds punctuation/filler)
         text_lower = text.lower().strip()
         import re as _re_match
@@ -639,6 +663,17 @@ class JarvisWebServer:
                     "latency_ms": latency,
                     "voice_style": voice_style,
                 })
+
+            # Server-side TTS — play through OS speakers
+            # Desktop WebKit can't reliably play audio (autoplay blocked)
+            # So the server plays it directly via the TTS system
+            if spoken and len(spoken) > 3:
+                clients = getattr(self, '_active_clients', {})
+                if clients.get("desktop") and not clients.get("browser"):
+                    try:
+                        await asyncio.wait_for(self._speak_system(spoken), timeout=30)
+                    except Exception as e:
+                        print(f"[JARVIS] Server TTS error: {e}")
 
     async def _handle_audio(self, ws: web.WebSocketResponse, data: bytes):
         """Handle audio — either push-to-talk blob or ambient stream chunk.
@@ -1921,6 +1956,10 @@ class JarvisWebServer:
             return web.json_response({"status": "error", "error": str(e)}, status=500)
 
     async def run(self):
+        # Write PID file for reliable shutdown
+        with open("/tmp/jarvis-server.pid", "w") as f:
+            f.write(str(os.getpid()))
+
         app = web.Application()
         app.router.add_get("/ws", self.websocket_handler)
         app.router.add_get("/tts", self.tts_handler)
@@ -2581,7 +2620,16 @@ class JarvisWebServer:
         # Desktop + CLI = OK.  Browser + CLI = OK.  Desktop + Browser = blocked.
         # Serve index.html for root and SPA fallback
         async def index_handler(request):
-            return web.FileResponse(STATIC_DIR / "index.html")
+            # Read fresh on every request — picks up new builds without restart
+            return web.Response(
+                text=(STATIC_DIR / "index.html").read_text(),
+                content_type="text/html",
+                headers={
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                },
+            )
         app.router.add_get("/", index_handler)
 
         # Serve static assets (JS, CSS, images)
