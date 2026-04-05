@@ -10,7 +10,7 @@ def check_shortcut(query: str) -> str | None:
     """Check if a query matches a known shortcut. Returns response or None."""
     q = query.lower().strip()
 
-    # Time — return actual time as spoken text
+    # Time — return actual spoken time
     if ("time" in q and "times" not in q) and any(w in q for w in ["what", "current", "show", "tell"]):
         now = datetime.datetime.now()
         return now.strftime("It's %I:%M %p.")
