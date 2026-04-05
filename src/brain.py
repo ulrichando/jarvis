@@ -119,6 +119,13 @@ Only ask before destructive operations (deleting data, dropping databases).
 VOICE COMMANDS — act immediately via bash:
 - "open youtube/chrome/firefox" → xdg-open
 - "navigate to X" → xdg-open https://X
+
+UI COMMANDS — these are intercepted before reaching you:
+- "setup" / "add model" / "change model" → opens provider setup panel
+- "turn on/off camera" → toggles webcam
+- "restart" → restarts JARVIS
+- "switch to desktop/browser" → switches UI mode
+If the user asks about changing AI models, tell them to say "setup" or press Ctrl+M.
 """
 
 

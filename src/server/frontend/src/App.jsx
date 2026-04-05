@@ -97,45 +97,7 @@ function App() {
     return () => document.removeEventListener('user-speaking', stopSpeaking)
   }, [stopSpeaking])
 
-  // Handle incoming WebSocket messages — handoff and status only
-  // (TTS is triggered by ChatPanel via onSpoken callback)
-  useEffect(() => {
-    if (wsMessages.length === 0) return
-    const last = wsMessages[wsMessages.length - 1]
-
-    // Handle handoff: switch between desktop and browser
-    if (last.type === 'handoff') {
-      if (last.target === 'desktop' && !isDesktop) {
-        stopSpeaking()
-        navigator.sendBeacon('/api/client/unregister', JSON.stringify({ type: 'browser' }))
-        window.close()
-        document.title = 'JARVIS — Moved to Desktop'
-        setShowReactor(false)
-      }
-      if (last.target === 'browser' && isDesktop) {
-        setShowReactor(false)
-      }
-    }
-
-    if (last.type === 'status' && last.status === 'thinking') {
-      queueMicrotask(() => {
-        stopSpeaking()
-        setReactorState('thinking')
-      })
-    }
-
-    // Camera toggle from server
-    if (last.type === 'camera') {
-      setCameraOn(last.enabled)
-    }
-
-    // Provider failure — show setup wizard
-    if (last.type === 'provider_error') {
-      setSetupOpen(true)
-    }
-  }, [wsMessages, stopSpeaking])
-
-  // TTS playback callback — called by ChatPanel when a message with spoken text arrives
+  // TTS playback callback — called by ChatPanel AND voice query responses
   const playSpoken = useCallback((data) => {
     if (!data.spoken || data.spoken.length <= 3 || data.partial) {
       if (!data.spoken && data.final) setTimeout(() => setReactorState('idle'), 1000)
@@ -169,6 +131,37 @@ function App() {
     })
   }, [isDesktop, showReactor, stopSpeaking, sendMessage])
 
+  // Handle incoming WebSocket messages — handoff, status, camera, TTS
+  useEffect(() => {
+    if (wsMessages.length === 0) return
+    const last = wsMessages[wsMessages.length - 1]
+
+    if (last.type === 'handoff') {
+      if (last.target === 'desktop' && !isDesktop) {
+        stopSpeaking()
+        navigator.sendBeacon('/api/client/unregister', JSON.stringify({ type: 'browser' }))
+        window.close()
+        document.title = 'JARVIS — Moved to Desktop'
+        setShowReactor(false)
+      }
+      if (last.target === 'browser' && isDesktop) {
+        setShowReactor(false)
+      }
+    }
+
+    if (last.type === 'status' && last.status === 'thinking') {
+      queueMicrotask(() => { stopSpeaking(); setReactorState('thinking') })
+    }
+
+    // Play TTS for voice query responses (these come via App WS, not ChatPanel WS)
+    if (last.type === 'message' && last.spoken && last.spoken.length > 3 && !last.partial) {
+      playSpoken(last)
+    }
+
+    if (last.type === 'camera') setCameraOn(last.enabled)
+    if (last.type === 'provider_error') setSetupOpen(true)
+  }, [wsMessages, stopSpeaking, playSpoken])
+
   // Voice: SpeechRecognition (Chrome) or MediaRecorder+Whisper (WebKit/desktop)
   useEffect(() => {
     let animFrame, analyser, dataArray, stream
@@ -197,11 +190,13 @@ function App() {
         dataArray = new Uint8Array(analyser.frequencyBinCount)
         console.log('[JARVIS] Mic stream active, AudioContext state:', ctx.state)
 
-        // Mic level for reactor pulse — use setInterval (not rAF which throttles on hidden windows)
+        // Mic level for reactor pulse — RMS-based for accurate level
+        const levelData = new Float32Array(analyser.fftSize)
         animFrame = setInterval(() => {
-          analyser.getByteFrequencyData(dataArray)
-          const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length / 255
-          setAudioLevel(avg)
+          analyser.getFloatTimeDomainData(levelData)
+          let s = 0
+          for (let i = 0; i < levelData.length; i++) s += levelData[i] * levelData[i]
+          setAudioLevel(Math.sqrt(s / levelData.length))
         }, 50)
 
         // Method 1: Browser SpeechRecognition (Chrome — instant)
@@ -250,19 +245,22 @@ function App() {
         mediaRecorder.onstop = async () => {
           const blob = new Blob(chunks, { type: mediaRecorder.mimeType })
           chunks = []
-          if (blob.size < 2000) return
+          console.log('[VOICE] Recording stopped, blob size:', blob.size)
+          if (blob.size < 2000) { console.log('[VOICE] Too small, skipping'); return }
           setReactorState('thinking')
           try {
             const form = new FormData()
             form.append('audio', blob, 'speech.webm')
+            console.log('[VOICE] Uploading to /api/transcribe...')
             const resp = await fetch('/api/transcribe', { method: 'POST', body: form })
             const data = await resp.json()
+            console.log('[VOICE] Transcription:', data.text)
             if (data.text && data.text.trim().length > 1) {
               sendMessage({ type: 'query', text: data.text })
             } else {
               setReactorState('idle')
             }
-          } catch { setReactorState('idle') }
+          } catch (err) { console.log('[VOICE] Error:', err); setReactorState('idle') }
         }
 
         // VAD: detect speech, record, interrupt TTS on barge-in
@@ -270,14 +268,25 @@ function App() {
         document.addEventListener('jarvis-tts-start', () => { isSpeakingTTS = true })
         document.addEventListener('jarvis-tts-end', () => { isSpeakingTTS = false })
 
+        // Use time-domain data for proper RMS level detection
+        const waveData = new Float32Array(analyser.fftSize)
+        let _vadLogTimer = 0
         function checkVoice() {
           if (!analyser) return
-          analyser.getByteFrequencyData(dataArray)
-          const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length / 255
+          analyser.getFloatTimeDomainData(waveData)
+          // RMS = true sound level, not frequency energy
+          let sum = 0
+          for (let i = 0; i < waveData.length; i++) sum += waveData[i] * waveData[i]
+          const avg = Math.sqrt(sum / waveData.length)
 
-          // During TTS: higher threshold for barge-in (filter speaker echo)
-          const threshold = isSpeakingTTS ? 0.18 : 0.06
-          const silenceThreshold = 0.03
+          if (Date.now() - _vadLogTimer > 3000 && avg > 0.005) {
+            console.log('[VAD] rms=' + avg.toFixed(4) + ' recording=' + recording)
+            _vadLogTimer = Date.now()
+          }
+
+          // RMS thresholds: speech ~0.03-0.1, silence ~0.001-0.01
+          const threshold = isSpeakingTTS ? 0.08 : 0.03
+          const silenceThreshold = 0.01
 
           if (avg > threshold && !recording) {
             document.dispatchEvent(new CustomEvent('user-speaking'))
@@ -321,6 +330,7 @@ function App() {
         setSettingsOpen(false)
       }
       if (e.key === 's' || e.key === 'S') setSettingsOpen((prev) => !prev)
+      if (e.key === 'm' || e.key === 'M') setSetupOpen((prev) => !prev)
     }
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
@@ -346,7 +356,7 @@ function App() {
         />
       )}
 
-      {/* Arc Reactor — fullscreen Three.js canvas behind everything */}
+      {/* Arc Reactor */}
       {showReactor && (
         <ArcReactor state={reactorState} isDesktop={isDesktop} audioLevel={audioLevel} theme={theme} />
       )}

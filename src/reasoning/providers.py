@@ -796,7 +796,9 @@ class ProviderRegistry:
         is_local = "localhost" in provider.base_url or "127.0.0.1" in provider.base_url
 
         def _call():
-            if is_local:
+            # Prompt-based tool calling is ONLY for tiny models that truly can't do native
+            # Modern Ollama (0.1.33+) supports native tool calling — use it
+            if is_local and not tools:
                 return self._prompt_based_tool_call(client, provider, messages, tools)
 
             # Cloud API: native function calling with retry on rate limit
@@ -807,14 +809,17 @@ class ProviderRegistry:
                     # Try each model in provider's model list
                     for model in (provider.models or [provider.model]):
                         try:
-                            chat = client.chat.completions.create(
-                                messages=messages,
-                                model=model,
-                                tools=tools,
-                                tool_choice="auto",
-                                temperature=0.3,
-                                max_completion_tokens=4096,
-                            )
+                            kwargs = {
+                                "messages": messages,
+                                "model": model,
+                                "tools": tools,
+                                "temperature": 0.3,
+                                "max_tokens": 4096,
+                            }
+                            # tool_choice: Ollama doesn't always support it
+                            if not is_local:
+                                kwargs["tool_choice"] = "auto"
+                            chat = client.chat.completions.create(**kwargs)
                             msg = chat.choices[0].message
                             result = {"text": msg.content or "", "tool_calls": [], "usage": {}}
                             if hasattr(chat, 'usage') and chat.usage:
@@ -831,9 +836,40 @@ class ProviderRegistry:
                                     result["tool_calls"].append({
                                         "id": tc.id, "name": tc.function.name, "args": args,
                                     })
+                            # Fallback: some models put tool calls in text as JSON
+                            if not result["tool_calls"] and result["text"]:
+                                import re as _re_tc
+                                # Match {"name": "...", "parameters": {...}} or {"command": "..."}
+                                for tool in tools:
+                                    fname = tool["function"]["name"]
+                                    props = list(tool["function"]["parameters"].get("properties", {}).keys())
+                                    if props:
+                                        # Try to extract the first property value from JSON in text
+                                        m = _re_tc.search(r'\{[^}]*"' + props[0] + r'":\s*"([^"]+)"', result["text"])
+                                        if m:
+                                            result["tool_calls"].append({
+                                                "id": "tc_parsed", "name": fname,
+                                                "args": {props[0]: m.group(1)},
+                                            })
+                                            result["text"] = ""
+                                            break
                             return result
                         except Exception as e:
                             err_str = str(e).lower()
+                            # Tool call format failed — retry with parsed tool call from error
+                            if "tool_use_failed" in err_str and "failed_generation" in err_str:
+                                try:
+                                    import re as _re_tool
+                                    gen = str(e)
+                                    m = _re_tool.search(r'<function=(\w+)>(\{[^}]+\})', gen)
+                                    if m:
+                                        return {
+                                            "text": "",
+                                            "tool_calls": [{"id": "tc_0", "name": m.group(1), "args": json.loads(m.group(2))}],
+                                            "usage": {},
+                                        }
+                                except Exception:
+                                    pass
                             if "rate_limit" in err_str or "429" in err_str or "quota" in err_str:
                                 last_error = e
                                 # Rate limited on this model, try next model in list

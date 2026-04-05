@@ -203,30 +203,20 @@ def main():
 
     GLib.timeout_add_seconds(2, _poll_client_status)
 
-    # ── Dragging ──
-    _drag = {"active": False, "x": 0, "y": 0}
-
+    # ── Dragging — use window manager move for reliable drag ──
     def on_button_press(widget, event):
         if event.button == 1:
-            _drag["active"] = True
-            _drag["x"] = event.x_root
-            _drag["y"] = event.y_root
+            # Start window manager drag
+            window.begin_move_drag(event.button, int(event.x_root), int(event.y_root), event.time)
 
     def on_button_release(widget, event):
-        _drag["active"] = False
         # Save position after drag
         x, y = window.get_position()
         _cfg.update({"x": x, "y": y})
         _save_desktop_config(_cfg)
 
     def on_motion(widget, event):
-        if _drag["active"]:
-            x, y = window.get_position()
-            dx = event.x_root - _drag["x"]
-            dy = event.y_root - _drag["y"]
-            window.move(int(x + dx), int(y + dy))
-            _drag["x"] = event.x_root
-            _drag["y"] = event.y_root
+        pass  # Window manager handles the actual movement
 
     # ── Resize with scroll ──
     _size = {"w": 350, "h": 350}
@@ -351,7 +341,14 @@ def main():
         menu = Gtk.Menu()
 
         item_show = Gtk.MenuItem(label="Show / Hide JARVIS")
-        item_show.connect("activate", lambda w: window.set_visible(not window.get_visible()))
+        def _toggle_show(w):
+            vis = not window.get_visible()
+            window.set_visible(vis)
+            if vis:
+                window.present()  # Bring to front
+                # Re-enable click-through after showing
+                GLib.timeout_add(500, lambda: _set_click_through(True) or False)
+        item_show.connect("activate", _toggle_show)
         menu.append(item_show)
 
         menu.append(Gtk.SeparatorMenuItem())
@@ -383,7 +380,10 @@ def main():
 
         item_center = Gtk.MenuItem(label="Center on Screen")
         def _center(w):
-            window.set_position(Gtk.WindowPosition.CENTER)
+            scr = Gdk.Screen.get_default()
+            sw, sh = scr.get_width(), scr.get_height()
+            ww, wh = _size["w"], _size["h"]
+            window.move((sw - ww) // 2, (sh - wh) // 2)
             GLib.timeout_add(200, _save_state)
         item_center.connect("activate", _center)
         menu.append(item_center)
@@ -450,6 +450,22 @@ def main():
 
         menu.append(Gtk.SeparatorMenuItem())
 
+        # Move mode — temporarily disable click-through for dragging
+        item_move = Gtk.MenuItem(label="Move JARVIS (5s drag)")
+        def _move_mode(w):
+            _set_click_through(False)
+            window.present()
+            # Re-enable click-through after 5 seconds
+            def _relock():
+                _set_click_through(True)
+                _save_state()
+                return False
+            GLib.timeout_add(5000, _relock)
+        item_move.connect("activate", _move_mode)
+        menu.append(item_move)
+
+        menu.append(Gtk.SeparatorMenuItem())
+
         item_quit = Gtk.MenuItem(label="Quit JARVIS")
         item_quit.connect("activate", lambda w: Gtk.main_quit())
         menu.append(item_quit)
@@ -513,7 +529,7 @@ def main():
             except Exception:
                 pass
 
-    # Enable click-through by default
+    # Enable click-through by default — clicks pass through to apps below
     def _enable_click_through_on_map(widget, event=None):
         GLib.timeout_add(500, lambda: _set_click_through(True) or False)
     window.connect("map-event", _enable_click_through_on_map)

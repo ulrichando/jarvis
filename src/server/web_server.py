@@ -360,6 +360,18 @@ class JarvisWebServer:
                                 "model": "", "latency_ms": 0})
             return
 
+        # Provider setup — open the wizard
+        _setup_triggers = ("setup", "provider setup", "add provider", "add model",
+                           "setup providers", "configure ai", "change model",
+                           "switch model", "model setup", "open setup",
+                           "settings", "provider settings", "ai settings")
+        if text_clean in _setup_triggers or any(p in text_clean for p in _setup_triggers):
+            await self._broadcast({"type": "provider_error", "manual": True})
+            await ws.send_json({"type": "message", "role": "jarvis",
+                                "content": "Opening provider setup.",
+                                "model": "", "latency_ms": 0})
+            return
+
         # Camera on/off
         _cam_on = ("turn on camera", "camera on", "enable camera", "open camera",
                    "start camera", "turn on webcam", "webcam on")
@@ -1937,32 +1949,43 @@ class JarvisWebServer:
 
         # Provider setup API — add/test providers, check Ollama
         async def _provider_add(request):
-            """Add or update a provider and test the connection."""
+            """Add or update a provider. For Ollama, just switch the model."""
             data = await request.json()
             name = data.get("name", "")
             ptype = data.get("type", "openai")
             api_key = data.get("api_key", "")
             base_url = data.get("base_url", "")
             model = data.get("model", "")
+            skip_test = data.get("skip_test", False)
             if not name or not api_key:
                 return web.json_response({"ok": False, "error": "Missing name or api_key"}, status=400)
 
-            # Test the connection first
-            try:
-                if ptype == "anthropic":
-                    import anthropic
-                    client = anthropic.Anthropic(api_key=api_key)
-                    r = client.messages.create(model=model, max_tokens=10,
-                        messages=[{"role": "user", "content": "hi"}])
-                else:
-                    import openai
-                    client = openai.OpenAI(api_key=api_key, base_url=base_url)
-                    r = client.chat.completions.create(model=model, max_tokens=10,
-                        messages=[{"role": "user", "content": "hi"}])
-            except Exception as e:
-                return web.json_response({"ok": False, "error": str(e)[:200]})
+            # For Ollama local models — skip the slow test, just verify model exists
+            is_local = "localhost" in base_url or "127.0.0.1" in base_url
+            if not skip_test:
+                try:
+                    if is_local:
+                        # Just check model exists via Ollama API (fast)
+                        import urllib.request as _ur
+                        r = _ur.urlopen(f"{base_url.replace('/v1','')}/api/tags", timeout=3)
+                        models_data = json.loads(r.read())
+                        available = [m["name"] for m in models_data.get("models", [])]
+                        if model not in available and not any(model in m for m in available):
+                            return web.json_response({"ok": False, "error": f"Model '{model}' not found. Available: {', '.join(available[:5])}"})
+                    elif ptype == "anthropic":
+                        import anthropic
+                        client = anthropic.Anthropic(api_key=api_key)
+                        client.messages.create(model=model, max_tokens=10,
+                            messages=[{"role": "user", "content": "hi"}])
+                    else:
+                        import openai
+                        client = openai.OpenAI(api_key=api_key, base_url=base_url)
+                        client.chat.completions.create(model=model, max_tokens=10,
+                            messages=[{"role": "user", "content": "hi"}], timeout=10)
+                except Exception as e:
+                    return web.json_response({"ok": False, "error": str(e)[:200]})
 
-            # Save to providers.json
+            # Save to providers.json — update existing or add new
             providers_path = os.path.expanduser("~/.jarvis/providers.json")
             try:
                 with open(providers_path) as f:
@@ -1970,11 +1993,22 @@ class JarvisWebServer:
             except Exception:
                 providers = {}
 
-            providers[name] = {
-                "name": name, "type": ptype, "api_key": api_key,
-                "base_url": base_url, "model": model,
-                "models": [model], "priority": len(providers), "enabled": True,
-            }
+            if name in providers:
+                # Update existing — switch the model and make it primary
+                providers[name]["model"] = model
+                if model not in providers[name].get("models", []):
+                    providers[name]["models"].insert(0, model)
+                # Make this provider highest priority (0) and bump others down
+                providers[name]["priority"] = 0
+                for k, v in providers.items():
+                    if k != name:
+                        v["priority"] = max(1, v.get("priority", 1))
+            else:
+                providers[name] = {
+                    "name": name, "type": ptype, "api_key": api_key,
+                    "base_url": base_url, "model": model,
+                    "models": [model], "priority": len(providers), "enabled": True,
+                }
             with open(providers_path, "w") as f:
                 json.dump(providers, f, indent=2)
 
@@ -1984,8 +2018,34 @@ class JarvisWebServer:
                     'src.reasoning.providers', fromlist=['ProviderRegistry']
                 ).ProviderRegistry()
 
-            print(f"[JARVIS] Provider added: {name} ({model})")
+            print(f"[JARVIS] Provider switched: {name} → {model}")
             return web.json_response({"ok": True, "provider": name, "model": model})
+
+        async def _provider_current(request):
+            """Get the current active provider and model."""
+            try:
+                providers_path = os.path.expanduser("~/.jarvis/providers.json")
+                with open(providers_path) as f:
+                    providers = json.load(f)
+                # Find highest priority enabled provider
+                active = sorted(
+                    [(k, v) for k, v in providers.items() if v.get("enabled")],
+                    key=lambda x: x[1].get("priority", 99)
+                )
+                if active:
+                    name, p = active[0]
+                    return web.json_response({
+                        "provider": name,
+                        "model": p.get("model", ""),
+                        "type": p.get("type", ""),
+                        "all_providers": [{
+                            "name": k, "model": v.get("model"), "priority": v.get("priority"),
+                            "enabled": v.get("enabled"), "type": v.get("type"),
+                        } for k, v in providers.items()],
+                    })
+            except Exception:
+                pass
+            return web.json_response({"provider": "none", "model": "none"})
 
         async def _ollama_status(request):
             """Check if Ollama is running and list models."""
@@ -2019,6 +2079,58 @@ class JarvisWebServer:
             query = request.query.get("q", "").strip().lower()
             if not query or len(query) < 2:
                 return web.json_response({"models": []})
+
+            # Hardware info for compatibility check
+            try:
+                from src.hardware import detect_hardware
+                hw = detect_hardware()
+                avail_ram = hw.available_ram_gb
+                has_gpu = hw.has_nvidia
+                vram_gb = 0
+                if has_gpu:
+                    import subprocess as _sp_vram
+                    r = _sp_vram.run(['nvidia-smi', '--query-gpu=memory.free', '--format=csv,noheader,nounits'],
+                        capture_output=True, text=True, timeout=3)
+                    if r.returncode == 0:
+                        vram_gb = int(r.stdout.strip()) / 1024
+            except Exception:
+                avail_ram, has_gpu, vram_gb = 64, False, 0
+
+            def _check_compat(size_str, model_name=""):
+                """Check if model fits current hardware. Returns (fits, reason)."""
+                # Parse size from string like "43GB", "4.4GB", "2.0GB"
+                size_gb = 0
+                if size_str:
+                    import re as _re_sz
+                    m = _re_sz.search(r'([\d.]+)\s*[Gg][Bb]', size_str)
+                    if m:
+                        size_gb = float(m.group(1))
+                # Estimate from model name if no explicit size
+                if not size_gb:
+                    name_lower = (model_name or "").lower()
+                    if "70b" in name_lower or "72b" in name_lower:
+                        size_gb = 42
+                    elif "32b" in name_lower or "34b" in name_lower:
+                        size_gb = 20
+                    elif "13b" in name_lower or "14b" in name_lower or "16b" in name_lower:
+                        size_gb = 9
+                    elif "7b" in name_lower or "8b" in name_lower:
+                        size_gb = 5
+                    elif "3b" in name_lower:
+                        size_gb = 2
+                    elif "1b" in name_lower:
+                        size_gb = 1
+
+                if size_gb == 0:
+                    return "unknown", "Size unknown — try it"
+                if size_gb <= avail_ram * 0.8:
+                    if size_gb <= 6 and has_gpu:
+                        return "perfect", f"Fits GPU ({size_gb:.0f}GB)"
+                    return "good", f"Fits RAM ({size_gb:.0f}GB / {avail_ram:.0f}GB avail)"
+                elif size_gb <= avail_ram:
+                    return "tight", f"Tight fit ({size_gb:.0f}GB / {avail_ram:.0f}GB avail)"
+                else:
+                    return "too_large", f"Too large ({size_gb:.0f}GB > {avail_ram:.0f}GB avail)"
 
             results = []
 
@@ -2081,24 +2193,73 @@ class JarvisWebServer:
                         if query in m["id"].lower() or query in m["name"].lower():
                             results.append(m)
 
-            # HuggingFace search for GGUF models
-            try:
-                import urllib.request
-                hf_url = f"https://huggingface.co/api/models?search={query}&filter=gguf&sort=downloads&limit=5"
-                req = urllib.request.Request(hf_url, headers={"User-Agent": "JARVIS/3.0"})
-                resp = urllib.request.urlopen(req, timeout=5)
-                hf_data = json.loads(resp.read())
-                for m in hf_data:
+            # HuggingFace lookup and search
+            import urllib.request, urllib.error
+
+            # Direct lookup if query looks like org/model
+            if "/" in query:
+                try:
+                    hf_url = f"https://huggingface.co/api/models/{query}"
+                    req = urllib.request.Request(hf_url, headers={"User-Agent": "JARVIS/3.0"})
+                    resp = urllib.request.urlopen(req, timeout=5)
+                    m = json.loads(resp.read())
+                    tags = m.get("tags", [])
+                    has_gguf = any("gguf" in str(t).lower() for t in tags)
                     results.append({
-                        "id": m.get("modelId", ""),
+                        "id": m.get("modelId", query),
                         "name": m.get("modelId", "").split("/")[-1],
                         "size": "",
-                        "source": "huggingface",
+                        "source": "huggingface-gguf" if has_gguf else "huggingface",
+                        "pipeline": m.get("pipeline_tag", ""),
+                        "downloads": m.get("downloads", 0),
                     })
-            except Exception:
-                pass
+                except urllib.error.HTTPError:
+                    pass  # model not found
+                except Exception as e:
+                    print(f"[JARVIS] HF lookup error: {e}")
 
-            return web.json_response({"models": results[:15]})
+            # Search HuggingFace — GGUF first, then all
+            search_q = query.split("/")[-1] if "/" in query else query
+            for hf_filter in ["gguf", ""]:
+                if len(results) >= 10:
+                    break
+                try:
+                    filter_param = f"&filter={hf_filter}" if hf_filter else ""
+                    hf_url = f"https://huggingface.co/api/models?search={search_q}{filter_param}&sort=downloads&limit=5"
+                    req = urllib.request.Request(hf_url, headers={"User-Agent": "JARVIS/3.0"})
+                    resp = urllib.request.urlopen(req, timeout=5)
+                    hf_data = json.loads(resp.read())
+                    for m in hf_data:
+                        mid = m.get("modelId", "")
+                        if any(r["id"] == mid for r in results):
+                            continue
+                        tags = m.get("tags", [])
+                        has_gguf = any("gguf" in str(t).lower() for t in tags)
+                        results.append({
+                            "id": mid,
+                            "name": mid.split("/")[-1],
+                            "size": "",
+                            "source": "huggingface-gguf" if has_gguf else "huggingface",
+                            "pipeline": m.get("pipeline_tag", ""),
+                            "downloads": m.get("downloads", 0),
+                        })
+                except Exception:
+                    pass
+
+            # Add hardware compatibility to each result
+            for r in results:
+                compat, reason = _check_compat(r.get("size", ""), r.get("name", r.get("id", "")))
+                r["compat"] = compat
+                r["compat_reason"] = reason
+
+            return web.json_response({
+                "models": results[:15],
+                "hardware": {
+                    "ram_gb": round(avail_ram),
+                    "vram_gb": round(vram_gb, 1),
+                    "gpu": has_gpu,
+                },
+            })
 
         async def _model_download(request):
             """Download a model — from Ollama or HuggingFace."""
@@ -2144,10 +2305,85 @@ class JarvisWebServer:
             return web.json_response({"ok": False, "error": f"Unknown source: {source}"})
 
         app.router.add_post("/api/provider/add", _provider_add)
+        app.router.add_get("/api/provider/current", _provider_current)
         app.router.add_get("/api/ollama/status", _ollama_status)
         app.router.add_post("/api/ollama/pull", _ollama_pull)
         app.router.add_get("/api/models/search", _model_search)
+        async def _model_upload(request):
+            """Upload a local GGUF model file and import into Ollama."""
+            reader = await request.multipart()
+            field = await reader.next()
+            if not field or field.name != 'model':
+                return web.json_response({"ok": False, "error": "No model file"}, status=400)
+
+            filename = field.filename or "uploaded_model.gguf"
+            ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'gguf'
+            model_name = filename.rsplit('.', 1)[0].replace(' ', '-').lower()
+
+            # Save uploaded file to temp
+            import tempfile
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=f'.{ext}', dir='/tmp')
+            size = 0
+            while True:
+                chunk = await field.read_chunk(8192)
+                if not chunk:
+                    break
+                tmp.write(chunk)
+                size += len(chunk)
+            tmp.close()
+            print(f"[JARVIS] Model uploaded: {filename} ({size/1024/1024:.0f} MB) → {tmp.name}")
+
+            # Import into Ollama — GGUF/GGML import directly, others need conversion
+            if ext not in ('gguf', 'ggml', 'bin'):
+                # safetensors/pt/onnx — Ollama can't import these directly
+                # Try llama.cpp convert if available, otherwise inform user
+                try:
+                    convert_cmd = f"python3 -m llama_cpp.convert {tmp.name} --outfile {tmp.name}.gguf"
+                    proc = subprocess.run(convert_cmd, shell=True, capture_output=True, timeout=300)
+                    if proc.returncode == 0:
+                        os.unlink(tmp.name)
+                        tmp_name_orig = tmp.name
+                        tmp.name = tmp_name_orig + '.gguf'
+                    else:
+                        os.unlink(tmp.name)
+                        return web.json_response({
+                            "ok": False,
+                            "error": f".{ext} format needs conversion. Install llama-cpp-python or convert to .gguf first.",
+                        })
+                except Exception:
+                    os.unlink(tmp.name)
+                    return web.json_response({
+                        "ok": False,
+                        "error": f".{ext} format not directly supported. Convert to .gguf first (use llama.cpp or HuggingFace).",
+                    })
+
+            modelfile = f"FROM {tmp.name}\n"
+            modelfile_path = f"/tmp/jarvis_modelfile_{model_name}"
+            with open(modelfile_path, 'w') as f:
+                f.write(modelfile)
+
+            try:
+                proc = subprocess.Popen(
+                    ["ollama", "create", model_name, "-f", modelfile_path],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                )
+                stdout, stderr = proc.communicate(timeout=300)
+                if proc.returncode == 0:
+                    print(f"[JARVIS] Model imported as '{model_name}'")
+                    # Clean up
+                    os.unlink(tmp.name)
+                    os.unlink(modelfile_path)
+                    return web.json_response({"ok": True, "model": model_name, "size_mb": size // (1024*1024)})
+                else:
+                    return web.json_response({"ok": False, "error": stderr.decode()[:200]})
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                return web.json_response({"ok": False, "error": "Import timed out (5 min limit)"})
+            except FileNotFoundError:
+                return web.json_response({"ok": False, "error": "Ollama not installed"})
+
         app.router.add_post("/api/models/download", _model_download)
+        app.router.add_post("/api/models/upload", _model_upload)
 
         # Full restart — kills the process; systemd/start script relaunches
         async def _restart_handler(request):
