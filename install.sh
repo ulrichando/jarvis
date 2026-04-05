@@ -14,6 +14,7 @@ set -e
 CYAN='\033[36m'
 GREEN='\033[32m'
 RED='\033[31m'
+YELLOW='\033[33m'
 DIM='\033[2m'
 BOLD='\033[1m'
 RESET='\033[0m'
@@ -73,21 +74,22 @@ if command -v apt &>/dev/null; then
         gir1.2-ayatanaappindicator3-0.1 \
         libcairo2-dev libgirepository1.0-dev \
         portaudio19-dev tesseract-ocr \
-        ffmpeg 2>/dev/null || true
+        ffmpeg libspeexdsp-dev \
+        pipewire-module-echo-cancel 2>/dev/null || true
 elif command -v dnf &>/dev/null; then
     sudo dnf install -y \
         python3-gobject gtk3 webkit2gtk4.1 \
         libayatana-appindicator-gtk3 \
         cairo-devel gobject-introspection-devel \
         portaudio-devel tesseract \
-        ffmpeg 2>/dev/null || true
+        ffmpeg speexdsp-devel 2>/dev/null || true
 elif command -v pacman &>/dev/null; then
     sudo pacman -S --noconfirm \
         python-gobject gtk3 webkit2gtk-4.1 \
         libappindicator-gtk3 \
         cairo gobject-introspection \
         portaudio tesseract \
-        ffmpeg 2>/dev/null || true
+        ffmpeg speexdsp 2>/dev/null || true
 fi
 echo ""
 
@@ -98,7 +100,6 @@ if [ -d "$JARVIS_DIR" ]; then
 else
     echo -e "  ${DIM}Downloading JARVIS...${RESET}"
     git clone --quiet --depth 1 "$JARVIS_REPO" "$JARVIS_DIR" 2>/dev/null || {
-        # If repo doesn't exist yet, use local copy
         if [ -d "$(dirname "$0")/src" ]; then
             echo -e "  ${DIM}Using local source...${RESET}"
             JARVIS_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -118,56 +119,60 @@ if [ -f "requirements.lock" ]; then
     pip install --quiet --break-system-packages -r requirements.lock 2>/dev/null || true
 fi
 
-# Install JARVIS itself
+# Install JARVIS itself (hatchling build, no egg-info)
 pip3 install --quiet --break-system-packages . 2>/dev/null || \
 pip3 install --quiet . 2>/dev/null || \
 pip install --quiet --break-system-packages . 2>/dev/null || true
 
-# ── Create launcher script ──
-mkdir -p "$HOME/.local/bin"
-cat > "$JARVIS_BIN" << 'LAUNCHER'
-#!/usr/bin/env bash
-# JARVIS launcher
-SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
-JARVIS_HOME="${JARVIS_HOME:-$HOME/.jarvis}"
-mkdir -p "$JARVIS_HOME"
-
-# Find jarvis source
-if [ -d "$HOME/.jarvis-src" ]; then
-    JARVIS_SRC="$HOME/.jarvis-src"
-elif [ -d "$(dirname "$SCRIPT_DIR")/src" ]; then
-    JARVIS_SRC="$(dirname "$SCRIPT_DIR")"
-else
-    JARVIS_SRC="$HOME/.jarvis-src"
+# ── Build frontend if npm available ──
+if command -v npm &>/dev/null && [ -d "$JARVIS_DIR/src/server/frontend" ]; then
+    echo -e "  ${DIM}Building frontend...${RESET}"
+    cd "$JARVIS_DIR/src/server/frontend"
+    npm install --quiet 2>/dev/null || true
+    npm run build 2>/dev/null || true
+    cd "$JARVIS_DIR"
+    echo -e "  ${GREEN}✓${RESET} Frontend built"
 fi
 
-cd "$JARVIS_SRC" 2>/dev/null || true
-exec python3 -m src.cli.jarvis_cli "$@"
-LAUNCHER
-chmod +x "$JARVIS_BIN"
-
-# ── Create web launcher ──
-cat > "$HOME/.local/bin/jarvis-web" << 'WEBLAUNCH'
-#!/usr/bin/env bash
-JARVIS_SRC="${HOME}/.jarvis-src"
-[ -d "$JARVIS_SRC" ] || JARVIS_SRC="$(pwd)"
-cd "$JARVIS_SRC" 2>/dev/null || true
-exec python3 -m src.server.web_server "$@"
-WEBLAUNCH
-chmod +x "$HOME/.local/bin/jarvis-web"
-
-# ── Create desktop launcher ──
-cat > "$HOME/.local/bin/jarvis-desktop" << 'DESKLAUNCH'
-#!/usr/bin/env bash
-JARVIS_SRC="${HOME}/.jarvis-src"
-[ -d "$JARVIS_SRC" ] || JARVIS_SRC="$(pwd)"
-cd "$JARVIS_SRC" 2>/dev/null || true
-export DISPLAY="${DISPLAY:-:0.0}"
-exec python3 -c "from src.desktop.app import main; main()" "$@"
-DESKLAUNCH
-chmod +x "$HOME/.local/bin/jarvis-desktop"
+# ── Setup PipeWire echo cancellation ──
+echo -e "  ${DIM}Configuring echo cancellation...${RESET}"
+mkdir -p "$HOME/.config/pipewire/pipewire.conf.d"
+if [ ! -f "$HOME/.config/pipewire/pipewire.conf.d/jarvis-echo-cancel.conf" ]; then
+    cat > "$HOME/.config/pipewire/pipewire.conf.d/jarvis-echo-cancel.conf" << 'AECCONF'
+context.modules = [
+    {
+        name = libpipewire-module-echo-cancel
+        args = {
+            library.name = aec/libspa-aec-webrtc
+            node.latency = 1024/48000
+            monitor.mode = true
+            capture.props = {
+                node.name = "Echo Cancellation Capture"
+            }
+            source.props = {
+                node.name = "Echo Cancellation Source"
+                node.description = "JARVIS Mic (Echo Cancelled)"
+            }
+            sink.props = {
+                node.name = "Echo Cancellation Sink"
+            }
+            playback.props = {
+                node.name = "Echo Cancellation Playback"
+            }
+        }
+    }
+]
+AECCONF
+    echo -e "  ${GREEN}✓${RESET} PipeWire WebRTC echo cancellation configured"
+    # Restart PipeWire to load the module
+    systemctl --user restart pipewire pipewire-pulse wireplumber 2>/dev/null || true
+    sleep 2
+    # Set echo-cancelled source as default
+    pactl set-default-source "Echo Cancellation Source" 2>/dev/null || true
+fi
 
 # ── Ensure ~/.local/bin is in PATH ──
+mkdir -p "$HOME/.local/bin"
 if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
     SHELL_RC=""
     if [ -f "$HOME/.zshrc" ]; then
@@ -189,17 +194,17 @@ echo -e "  ${BOLD}Choose your AI providers ${DIM}(select multiple with commas: 1
 echo ""
 echo -e "  ${CYAN}1${RESET}  Anthropic  ${DIM}(Claude — best quality)${RESET}"
 echo -e "  ${CYAN}2${RESET}  OpenAI     ${DIM}(GPT-4o, GPT-4o-mini)${RESET}"
-echo -e "  ${CYAN}3${RESET}  DeepSeek   ${DIM}(V3/R1 — cheapest cloud, great for code)${RESET}"
+echo -e "  ${CYAN}3${RESET}  Groq       ${DIM}(Llama 3.3 — free tier, fast)${RESET}"
 echo -e "  ${CYAN}4${RESET}  xAI        ${DIM}(Grok-3)${RESET}"
 echo -e "  ${CYAN}5${RESET}  OpenRouter  ${DIM}(access all models via one key)${RESET}"
 echo -e "  ${CYAN}6${RESET}  Ollama     ${DIM}(local — free, private, no API key needed)${RESET}"
-echo -e "  ${CYAN}7${RESET}  Custom     ${DIM}(any OpenAI-compatible server, local GGUF, LM Studio, vLLM, etc.)${RESET}"
-echo -e "  ${CYAN}8${RESET}  Skip       ${DIM}(configure later)${RESET}"
+echo -e "  ${CYAN}7${RESET}  Custom     ${DIM}(any OpenAI-compatible server)${RESET}"
+echo -e "  ${CYAN}8${RESET}  Skip       ${DIM}(configure later via the UI — say 'setup' to JARVIS)${RESET}"
 echo ""
-read -p "  Choice (e.g. 1,6 — default 1,6): " AI_CHOICES
-AI_CHOICES="${AI_CHOICES:-1,6}"
+read -p "  Choice (e.g. 1,6 — default 6): " AI_CHOICES
+AI_CHOICES="${AI_CHOICES:-6}"
 
-mkdir -p "$HOME/.jarvis/data"
+mkdir -p "$HOME/.jarvis/data" "$HOME/.jarvis/logs"
 
 # Parse choices
 PROVIDERS="{"
@@ -232,7 +237,7 @@ for choice in $(echo "$AI_CHOICES" | tr ',' ' '); do
             echo ""
             read -p "  Anthropic API key (sk-ant-...): " KEY
             add_provider "claude" "anthropic" "$KEY" "https://api.anthropic.com" \
-                "claude-haiku-4-5-20251001" '"claude-haiku-4-5-20251001", "claude-sonnet-4-20250514"'
+                "claude-haiku-4-5-20251001" '"claude-haiku-4-5-20251001", "claude-sonnet-4-20250514", "claude-opus-4-20250514"'
             ;;
         2)
             echo ""
@@ -242,9 +247,9 @@ for choice in $(echo "$AI_CHOICES" | tr ',' ' '); do
             ;;
         3)
             echo ""
-            read -p "  DeepSeek API key: " KEY
-            add_provider "deepseek" "openai" "$KEY" "https://api.deepseek.com" \
-                "deepseek-chat" '"deepseek-chat", "deepseek-reasoner"'
+            read -p "  Groq API key (gsk-...): " KEY
+            add_provider "groq" "openai" "$KEY" "https://api.groq.com/openai/v1" \
+                "llama-3.1-8b-instant" '"llama-3.1-8b-instant"'
             ;;
         4)
             echo ""
@@ -256,13 +261,13 @@ for choice in $(echo "$AI_CHOICES" | tr ',' ' '); do
             echo ""
             read -p "  OpenRouter API key: " KEY
             add_provider "openrouter" "openai" "$KEY" "https://openrouter.ai/api/v1" \
-                "anthropic/claude-3.5-sonnet" '"anthropic/claude-3.5-sonnet", "openai/gpt-4o"'
+                "anthropic/claude-sonnet-4" '"anthropic/claude-sonnet-4", "openai/gpt-4o"'
             ;;
         6)
             INSTALL_OLLAMA=true
             echo ""
             echo -e "  ${DIM}Local models:${RESET}"
-            echo -e "    ${CYAN}a${RESET}  qwen2.5:7b      ${DIM}(4.7GB — fast, good for chat)${RESET}"
+            echo -e "    ${CYAN}a${RESET}  qwen2.5:7b      ${DIM}(4.7GB — fast, good for chat + tools)${RESET}"
             echo -e "    ${CYAN}b${RESET}  llama3.2:3b     ${DIM}(2.0GB — tiny, very fast)${RESET}"
             echo -e "    ${CYAN}c${RESET}  deepseek-r1:14b  ${DIM}(8.9GB — reasoning)${RESET}"
             echo -e "    ${CYAN}d${RESET}  qwen2.5:72b     ${DIM}(47GB — best local, needs 64GB RAM)${RESET}"
@@ -274,8 +279,8 @@ for choice in $(echo "$AI_CHOICES" | tr ',' ' '); do
                 *) OLLAMA_MODEL="qwen2.5:7b" ;;
             esac
             PROVIDERS="$PROVIDERS
-  \"ollama-fast\": {
-    \"name\": \"ollama-fast\",
+  \"ollama\": {
+    \"name\": \"ollama\",
     \"type\": \"openai\",
     \"api_key\": \"ollama\",
     \"base_url\": \"http://localhost:11434/v1\",
@@ -289,14 +294,11 @@ for choice in $(echo "$AI_CHOICES" | tr ',' ' '); do
             ;;
         7)
             echo ""
-            echo -e "  ${DIM}Custom OpenAI-compatible endpoint${RESET}"
-            echo -e "  ${DIM}Works with: LM Studio, vLLM, llama.cpp, text-generation-webui, LocalAI, etc.${RESET}"
-            echo ""
             read -p "  Provider name (e.g. lmstudio): " CUSTOM_NAME
             CUSTOM_NAME="${CUSTOM_NAME:-custom}"
             read -p "  Base URL (e.g. http://localhost:1234/v1): " CUSTOM_URL
             CUSTOM_URL="${CUSTOM_URL:-http://localhost:1234/v1}"
-            read -p "  Model name (e.g. local-model): " CUSTOM_MODEL
+            read -p "  Model name: " CUSTOM_MODEL
             CUSTOM_MODEL="${CUSTOM_MODEL:-local-model}"
             read -p "  API key (Enter for none): " CUSTOM_KEY
             CUSTOM_KEY="${CUSTOM_KEY:-no-key}"
@@ -304,7 +306,7 @@ for choice in $(echo "$AI_CHOICES" | tr ',' ' '); do
                 "$CUSTOM_MODEL" "\"$CUSTOM_MODEL\""
             ;;
         8)
-            echo -e "  ${DIM}Skipped. Edit ~/.jarvis/providers.json later.${RESET}"
+            echo -e "  ${DIM}Skipped. Say 'setup' to JARVIS or press Ctrl+M to configure later.${RESET}"
             ;;
     esac
 done
@@ -316,7 +318,7 @@ PROVIDERS="$PROVIDERS
 
 if [ ! -f "$HOME/.jarvis/providers.json" ]; then
     echo "$PROVIDERS" > "$HOME/.jarvis/providers.json"
-    echo -e "  ${GREEN}✓${RESET} Provider config saved to ~/.jarvis/providers.json"
+    echo -e "  ${GREEN}✓${RESET} Provider config saved"
 fi
 
 # ── Install Ollama if selected ──
@@ -335,19 +337,37 @@ if [ "$INSTALL_OLLAMA" = true ]; then
     fi
 fi
 
+# ── Create autostart entry ──
+mkdir -p "$HOME/.config/autostart"
+cat > "$HOME/.config/autostart/jarvis.desktop" << AUTOSTART
+[Desktop Entry]
+Type=Application
+Name=JARVIS
+Comment=JARVIS AI Assistant
+Exec=$JARVIS_DIR/scripts/start-jarvis.sh
+Terminal=false
+Hidden=false
+X-GNOME-Autostart-enabled=true
+AUTOSTART
+echo -e "  ${GREEN}✓${RESET} Autostart configured (JARVIS starts on login)"
+
 # ── Done ──
 echo ""
 echo -e "  ${GREEN}${BOLD}JARVIS installed successfully!${RESET}"
 echo ""
 echo -e "  ${DIM}Commands:${RESET}"
-echo -e "    ${CYAN}jarvis${RESET}              Start interactive session"
-echo -e "    ${CYAN}jarvis-web${RESET}          Start web server"
-echo -e "    ${CYAN}jarvis-desktop${RESET}      Start desktop overlay"
-echo -e "    ${CYAN}jarvis -p 'hello'${RESET}   One-shot query"
+echo -e "    ${CYAN}jarvis${RESET}                  Interactive CLI"
+echo -e "    ${CYAN}jarvis-web${RESET}              Web server (http://localhost:8765)"
+echo -e "    ${CYAN}jarvis-desktop${RESET}          Desktop overlay"
+echo -e "    ${CYAN}bash scripts/start-jarvis.sh${RESET}  Full stack (audio + server + desktop)"
+echo ""
+echo -e "  ${DIM}Voice:${RESET}  Just speak — JARVIS listens and responds"
+echo -e "  ${DIM}Setup:${RESET}  Say 'setup' or press Ctrl+M to change AI providers"
+echo -e "  ${DIM}Vision:${RESET} Say 'turn on camera' to enable webcam"
 echo ""
 if [ "$AI_CHOICES" = "8" ]; then
-    echo -e "  ${DIM}To add an AI provider:${RESET}"
-    echo -e "    Edit ${CYAN}~/.jarvis/providers.json${RESET} and add your API key"
+    echo -e "  ${YELLOW}No AI provider configured yet.${RESET}"
+    echo -e "  ${DIM}Say 'setup' to JARVIS or edit ~/.jarvis/providers.json${RESET}"
     echo ""
 fi
 echo -e "  ${DIM}Restart your shell or run:${RESET}  ${CYAN}source ~/.zshrc${RESET}"

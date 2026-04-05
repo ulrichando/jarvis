@@ -28,7 +28,7 @@ if [ -f "$VENV/bin/python3" ]; then
 else
     echo -e "  ${RED}✗${RESET} Venv Python missing — recreating..."
     python3 -m venv "$VENV" --system-site-packages
-    "$VENV/bin/pip" install -e "$JARVIS/" 2>/dev/null
+    "$VENV/bin/pip" install "$JARVIS/" 2>/dev/null
     "$VENV/bin/pip" install -r "$JARVIS/requirements.pinned" 2>/dev/null
     ISSUES=$((ISSUES + 1))
 fi
