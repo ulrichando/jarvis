@@ -1,25 +1,11 @@
-"""Auto-evolved shortcuts — this file is rewritten by the evolution engine.
+"""Evolved shortcuts — DISABLED.
 
-DO NOT EDIT MANUALLY — changes will be overwritten on next evolution cycle.
+All queries go through the LLM directly, just like Claude.
+The LLM decides when to use bash, web_search, read_file, etc.
+No hardcoded responses.
 """
-
-import datetime
 
 
 def check_shortcut(query: str) -> str | None:
-    """Check if a query matches a known shortcut. Returns response or None."""
-    q = query.lower().strip()
-
-    # Time — return actual spoken time
-    if ("time" in q and "times" not in q) and any(w in q for w in ["what", "current", "show", "tell"]):
-        now = datetime.datetime.now()
-        return now.strftime("It's %I:%M %p.")
-    if "clock" in q:
-        now = datetime.datetime.now()
-        return now.strftime("It's %I:%M %p.")
-
-    # Date
-    if "date" in q and any(w in q for w in ["what", "today", "current"]):
-        return datetime.date.today().strftime("Today is %A, %B %d, %Y.")
-
+    """No shortcuts — let the LLM handle everything."""
     return None

@@ -307,15 +307,10 @@ function App() {
         let isSpeakingTTS = false
         document.addEventListener('jarvis-tts-start', () => {
           isSpeakingTTS = true
-          // Kill any in-progress recording — it's capturing JARVIS's own voice now
-          if (recording) {
-            try { mediaRecorder.stop() } catch { /* ignore */ }
-            recording = false
-            chunks = [] // Discard — contains TTS audio
-            console.log('[VAD] TTS started — killed active recording')
-          } else {
-            console.log('[VAD] TTS started — mic muted')
-          }
+          // Don't kill active recordings — the user might still be talking
+          // The recording will finish naturally when silence is detected
+          // The isSpeakingTTS flag prevents NEW recordings from starting
+          console.log('[VAD] TTS started — no new recordings')
         })
         document.addEventListener('jarvis-tts-end', () => {
           console.log('[VAD] TTS ended — mic muted for 4s')
@@ -357,8 +352,8 @@ function App() {
           if (avg < silenceThreshold && recording) {
             clearTimeout(silenceTimer)
             silenceTimer = setTimeout(() => {
-              // Discard recordings shorter than 0.8s — just noise clicks
-              if (Date.now() - _recordStart < 800) {
+              // Discard recordings shorter than 1.5s — not a real sentence
+              if (Date.now() - _recordStart < 1500) {
                 try { mediaRecorder.stop() } catch { /* ignore */ }
                 recording = false
                 chunks = []
@@ -366,7 +361,7 @@ function App() {
               }
               try { mediaRecorder.stop() } catch { /* ignore */ }
               recording = false
-            }, 200)
+            }, 500)
           }
           setTimeout(checkVoice, 50)
         }

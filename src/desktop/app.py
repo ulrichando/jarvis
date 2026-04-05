@@ -177,16 +177,28 @@ def main():
     settings.set_enable_page_cache(False)
     webview.load_uri(f"http://{host}:{port}/?desktop=1&_t={int(_time.time())}")
 
-    # Force bypass cache after first load, re-apply transparent background
+    # Hide window during initial load to prevent old theme flash
+    window.set_opacity(0)
+
     _reloaded = [False]
+    _saved_primary = _cfg.get("theme_primary", "#00e5ff")
+    _saved_glow = _cfg.get("theme_glow", "#0088aa")
+    _target_opacity = _cfg.get("opacity", 1.0)
+
     def _on_load(wv, event):
         if event == WebKit2.LoadEvent.FINISHED:
-            # Re-apply transparent background after every load
             wv.set_background_color(Gdk.RGBA(0, 0, 0, 0))
-            # First load: force bypass cache reload
+            # Apply saved theme colors
+            js = f"window.__jarvisSetTheme && window.__jarvisSetTheme('{_saved_primary}', '{_saved_glow}')"
+            wv.run_javascript(js, None, None, None)
+
             if not _reloaded[0]:
+                # First load — reload to bust cache, stay hidden
                 _reloaded[0] = True
                 GLib.timeout_add(500, lambda: wv.reload_bypass_cache() or False)
+            else:
+                # Second load (fresh) — show window with correct theme
+                GLib.timeout_add(300, lambda: window.set_opacity(_target_opacity) or False)
     webview.connect("load-changed", _on_load)
     window.add(webview)
 
@@ -563,9 +575,7 @@ def main():
     # ── Show ──
     _size = {"w": _cfg.get("width", 700), "h": _cfg.get("height", 700)}
 
-    # Apply saved opacity
-    if _cfg.get("opacity", 1.0) < 1.0:
-        window.set_opacity(_cfg["opacity"])
+    # Window starts hidden (opacity 0) — shown after reload with correct theme
     window.show_all()
     print("JARVIS desktop running.")
     print("  Tray icon in system tray")
