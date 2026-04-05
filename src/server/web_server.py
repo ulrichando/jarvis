@@ -1261,85 +1261,86 @@ class JarvisWebServer:
         import threading
 
         def _mic_thread():
-            try:
-                import pyaudio
-                from src.speech.ambient import AmbientListener
+            """Server mic with auto-recovery on device failure."""
+            import pyaudio, numpy as np, time as _time
+            from src.speech.ambient import AmbientListener
 
-                pa = pyaudio.PyAudio()
-                listener = AmbientListener()
-                self._server_listener = listener
+            MAX_RETRIES = 5
+            retry_delay = 1.0
 
-                stream = pa.open(
-                    format=pyaudio.paFloat32,
-                    channels=1,
-                    rate=16000,
-                    input=True,
-                    frames_per_buffer=4096,
-                )
+            for attempt in range(MAX_RETRIES):
+                pa = None
+                stream = None
+                try:
+                    pa = pyaudio.PyAudio()
+                    listener = AmbientListener()
+                    self._server_listener = listener
 
-                print("[JARVIS] Server-side mic capture started (PyAudio)")
+                    stream = pa.open(
+                        format=pyaudio.paFloat32, channels=1, rate=16000,
+                        input=True, frames_per_buffer=4096,
+                    )
+                    print(f"[JARVIS] Server mic started (attempt {attempt + 1})")
+                    retry_delay = 1.0  # Reset on success
 
-                import time as _time
-                _frame_count = 0
-                _speaking_since = 0
-                while self._server_mic_running:
-                    try:
-                        data = stream.read(4096, exception_on_overflow=False)
-                        import numpy as np
-                        audio = np.frombuffer(data, dtype=np.float32)
+                    _frame_count = 0
+                    while self._server_mic_running:
+                        try:
+                            data = stream.read(4096, exception_on_overflow=False)
+                            audio = np.frombuffer(data, dtype=np.float32)
 
-                        # Skip all processing when muted (UI client handles voice)
-                        if listener.jarvis_speaking:
-                            continue
-
-                        # Send mic level to clients every ~5 frames (~300ms)
-                        _frame_count += 1
-                        if _frame_count % 5 == 0 and not listener.jarvis_speaking:
-                            rms = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
-                            level = min(1.0, rms * 20)
-                            if level > 0.03:
-                                import asyncio
-                                asyncio.run_coroutine_threadsafe(
-                                    self._broadcast({"type": "mic_level", "level": round(level, 3)}),
-                                    self._loop,
-                                )
-
-                        transcript = listener.feed(audio)
-
-                        # Debug: log when speech is detected
-                        if listener.is_speaking and _frame_count % 20 == 0:
-                            dur = _time.time() - listener.speech_start if listener.speech_start else 0
-                            print(f"[JARVIS] Hearing speech... ({dur:.1f}s)")
-
-                        if transcript:
-                            # Filter junk — only respond to real speech
-                            t = transcript.strip()
-                            words = t.split()
-                            if len(words) < 2:
-                                continue  # Single word — ignore
-                            if len(t) < 5:
-                                continue  # Too short
-                            # Skip if it's just filler/noise
-                            filler = {"mm-hmm", "mm", "hmm", "uh", "um", "ah", "oh",
-                                      "okay", "ok", "yeah", "yep", "no", "nope",
-                                      "right", "sure", "huh", "what"}
-                            if all(w.lower().rstrip(".,!?") in filler for w in words):
+                            if listener.jarvis_speaking:
                                 continue
 
-                            print(f'[JARVIS] Server mic STT: "{transcript}"')
-                            import asyncio
-                            asyncio.run_coroutine_threadsafe(
-                                self._handle_server_mic_query(transcript),
-                                self._loop,
-                            )
-                    except Exception:
-                        pass
+                            _frame_count += 1
+                            if _frame_count % 5 == 0:
+                                rms = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
+                                level = min(1.0, rms * 20)
+                                if level > 0.03:
+                                    asyncio.run_coroutine_threadsafe(
+                                        self._broadcast({"type": "mic_level", "level": round(level, 3)}),
+                                        self._loop,
+                                    )
 
-                stream.stop_stream()
-                stream.close()
-                pa.terminate()
-            except Exception as e:
-                print(f"[JARVIS] Server mic failed: {e}")
+                            transcript = listener.feed(audio)
+                            if listener.is_speaking and _frame_count % 20 == 0:
+                                dur = _time.time() - listener.speech_start if listener.speech_start else 0
+                                print(f"[JARVIS] Hearing speech... ({dur:.1f}s)")
+
+                            if transcript:
+                                t = transcript.strip()
+                                words = t.split()
+                                if len(words) < 2 or len(t) < 5:
+                                    continue
+                                filler = {"mm-hmm", "mm", "hmm", "uh", "um", "ah", "oh",
+                                          "okay", "ok", "yeah", "yep", "no", "nope",
+                                          "right", "sure", "huh", "what"}
+                                if all(w.lower().rstrip(".,!?") in filler for w in words):
+                                    continue
+                                print(f'[JARVIS] Server mic STT: "{transcript}"')
+                                asyncio.run_coroutine_threadsafe(
+                                    self._handle_server_mic_query(transcript), self._loop)
+                        except Exception as e:
+                            if "Input overflowed" not in str(e):
+                                print(f"[JARVIS] Mic read error: {e}")
+
+                except Exception as e:
+                    print(f"[JARVIS] Server mic error (attempt {attempt + 1}/{MAX_RETRIES}): {e}")
+                finally:
+                    if stream:
+                        try: stream.stop_stream(); stream.close()
+                        except: pass
+                    if pa:
+                        try: pa.terminate()
+                        except: pass
+
+                if not self._server_mic_running:
+                    break
+                _time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 30.0)
+
+            if self._server_mic_running:
+                print("[JARVIS] Server mic permanently failed after retries")
 
         self._server_mic_running = True
         self._loop = asyncio.get_running_loop()
@@ -1488,23 +1489,26 @@ class JarvisWebServer:
             self.clients.discard(ws)
 
     async def _speak_system(self, text: str):
-        """Generate TTS and play. User can interrupt by speaking."""
-        import tempfile, os
+        """Generate TTS and play with timeout protection."""
+        import tempfile
 
         try:
             voice = TTS_VOICE
             communicate = edge_tts.Communicate(text, voice)
 
+            # Stream TTS audio with timeout
             audio_data = io.BytesIO()
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    audio_data.write(chunk["data"])
+            async def _stream():
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        audio_data.write(chunk["data"])
+
+            await asyncio.wait_for(_stream(), timeout=30)
 
             audio_bytes = audio_data.getvalue()
             if not audio_bytes:
                 return
 
-            # Save to temp file and play
             with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
                 f.write(audio_bytes)
                 tmp_path = f.name
@@ -1516,16 +1520,21 @@ class JarvisWebServer:
                     stderr=asyncio.subprocess.DEVNULL,
                 )
                 self._current_ffplay = proc
-                # Mic stays muted during playback to prevent echo loops
-                await proc.wait()
-                self._current_ffplay = None
+                # ffplay timeout — kill if stuck (broken audio device)
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=60)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    print("[JARVIS] TTS playback timed out, killed ffplay")
             except FileNotFoundError:
                 pass
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
+            finally:
+                self._current_ffplay = None
+                try: os.unlink(tmp_path)
+                except: pass
 
+        except asyncio.TimeoutError:
+            print("[JARVIS] Edge TTS streaming timed out")
         except Exception as e:
             print(f'[JARVIS] TTS error: {e}')
             self._current_ffplay = None
