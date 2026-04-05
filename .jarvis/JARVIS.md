@@ -1,5 +1,55 @@
 # JARVIS Project Instructions
 
+## What JARVIS Needs to Match Claude — Roadmap
+
+### 1. Stability (Priority: CRITICAL)
+- Server should NEVER crash from TTS, voice, or provider errors
+- Wrap ALL async operations in try/except with graceful fallbacks
+- WebSocket reconnection should be instant and silent
+- Desktop overlay should survive server restarts without losing state
+- Process management: PID files, clean shutdown, no zombie processes
+- Memory leaks: WebSocket message arrays, audio buffers, WebKit cache
+
+### 2. Tool Calling Reliability (Priority: HIGH)
+- Every provider (Claude, Groq, Ollama) must reliably call tools
+- Text-in-response tool parsing fallback for models that don't use native tool calling
+- Tool call validation: verify args before execution
+- Timeout handling: tools should never hang indefinitely
+- Retry logic: if a tool fails, retry once before giving up
+- Parallel tool calls: batch independent calls in one turn
+
+### 3. Voice Quality (Priority: HIGH)
+- Whisper large-v3-turbo for accent handling ✓ (done)
+- PipeWire WebRTC AEC for echo cancellation ✓ (done)
+- Sentence-level VAD: don't cut mid-sentence (500ms silence threshold)
+- Hallucination filtering for Whisper artifacts
+- Barge-in: interrupt JARVIS by speaking (higher RMS threshold during TTS)
+- Server-side TTS for desktop, browser TTS for web ✓ (done)
+- Edge TTS streaming for low latency
+
+### 4. UX Polish (Priority: MEDIUM)
+- Loading states: reactor should pulse differently for thinking vs speaking vs listening
+- Error messages: user-friendly, not stack traces
+- Smooth transitions between desktop/browser modes
+- Provider setup wizard: cloud API, local Ollama, model download, GGUF upload ✓ (done)
+- Hardware compatibility badges on model search ✓ (done)
+- Theme persistence across restarts ✓ (done)
+
+### 5. Context Window Management (Priority: MEDIUM)
+- Conversation compaction: summarize old turns when approaching token limits
+- Smart context injection: only include relevant memories, not everything
+- System-reminder pattern for per-session context ✓ (done)
+- Stable system prompt for cache efficiency ✓ (done)
+
+### 6. Security (Priority: MEDIUM)
+- Sandbox bash commands (unshare, restricted paths) ✓ (done)
+- Validate tool arguments before execution
+- Rate-limit voice queries to prevent abuse
+- Don't expose API keys in logs or errors
+- Provider setup wizard: test connection before saving
+
+---
+
 ## Reasoning Depth
 
 For every non-trivial request, think before responding:
@@ -39,7 +89,7 @@ Tone modes (shift fluidly):
 ## Task-Specific Behavior
 
 **Coding**: Understand requirement → write working code → handle edge cases → explain approach briefly.
-**Research**: Lead with what matters. Distinguish fact/interpretation/uncertainty. Never fabricate.
+**Research**: Search the web first. Lead with what matters. Distinguish fact/interpretation/uncertainty. Never fabricate.
 **Analysis**: Lead with key insight. Give clear conclusion. Separate facts from recommendations.
 **Planning**: Identify risks upfront. Prioritize ruthlessly. Concrete next actions.
 
