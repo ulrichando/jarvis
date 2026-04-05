@@ -641,7 +641,7 @@ class ProviderRegistry:
                         kwargs["tools"] = claude_tools
 
                     # Extended thinking — adaptive budget based on query complexity
-                    _use_thinking = any(m in model for m in ["opus-4", "sonnet-4"])
+                    _use_thinking = any(m in model for m in ["opus-4", "sonnet-4", "haiku-4"])
                     if _use_thinking:
                         # Check if query is simple (short casual chat) vs complex (code/tools)
                         _last_user = ""
@@ -883,7 +883,17 @@ class ProviderRegistry:
                                     try:
                                         args = json.loads(tc.function.arguments)
                                     except json.JSONDecodeError:
-                                        args = {"raw": tc.function.arguments}
+                                        # Lenient JSON: try fixing common LLM mistakes
+                                        raw = tc.function.arguments
+                                        try:
+                                            # Fix trailing commas, single quotes
+                                            fixed = raw.replace("'", '"').rstrip(",}")  + "}"
+                                            args = json.loads(fixed)
+                                        except Exception:
+                                            # Last resort: extract key-value from malformed string
+                                            import re as _re_json
+                                            m = _re_json.search(r'"(\w+)":\s*"([^"]*)"', raw)
+                                            args = {m.group(1): m.group(2)} if m else {"command": raw}
                                     result["tool_calls"].append({
                                         "id": tc.id, "name": tc.function.name, "args": args,
                                     })

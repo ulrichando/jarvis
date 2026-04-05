@@ -354,20 +354,21 @@ async def _agent_loop_internal(
 
 
 def _append_assistant_message(messages: list[dict], text: str, tool_calls: list[dict]):
-    """Append assistant message with tool calls in OpenAI format."""
+    """Append assistant message with tool calls in OpenAI format. Handles malformed args."""
     msg = {"role": "assistant", "content": text or None}
     if tool_calls:
-        msg["tool_calls"] = [
-            {
-                "id": tc["id"],
+        formatted = []
+        for tc in tool_calls:
+            try:
+                args_str = json.dumps(tc["args"]) if isinstance(tc["args"], dict) else str(tc["args"])
+            except (TypeError, ValueError):
+                args_str = str(tc["args"])
+            formatted.append({
+                "id": tc.get("id", f"tc_{len(formatted)}"),
                 "type": "function",
-                "function": {
-                    "name": tc["name"],
-                    "arguments": json.dumps(tc["args"]) if isinstance(tc["args"], dict) else tc["args"],
-                },
-            }
-            for tc in tool_calls
-        ]
+                "function": {"name": tc["name"], "arguments": args_str},
+            })
+        msg["tool_calls"] = formatted
     messages.append(msg)
 
 
@@ -795,8 +796,17 @@ async def agent_loop_stream(
                 if attempt < 3:
                     await asyncio.sleep(1)
                     continue
-                yield {"type": "error", "content": str(e)}
-                return
+                # All retries failed — feed error back as context so LLM can adjust
+                error_msg = f"[Tool calling failed after {attempt + 1} attempts: {str(e)[:100]}]"
+                messages.append({"role": "user", "content": error_msg})
+                yield {"type": "text", "content": error_msg}
+                # Try one more time with simplified prompt
+                try:
+                    response = await reasoner.query_with_tools(messages, [])  # No tools — just get a text response
+                    break
+                except Exception:
+                    yield {"type": "error", "content": str(e)}
+                    return
 
         # Emit token usage (cost recording is handled by GroqReasoner._track_usage)
         if response and response.get("usage"):
