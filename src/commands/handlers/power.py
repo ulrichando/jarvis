@@ -4,11 +4,10 @@ import subprocess
 from src.commands.registry import command, CommandContext, CommandResult, PermLevel
 
 
-def _speak_and_act(brain, message: str, action_fn, delay: float = 2.0):
-    """Speak a farewell message, then execute the power action after a delay."""
+def _act_after_delay(action_fn, delay: float = 2.0):
+    """Execute a power action after a short delay."""
     loop = asyncio.get_event_loop()
     loop.call_later(delay, action_fn)
-    return CommandResult(text=message, data={"spoken": message})
 
 
 @command("shutdown", aliases=["poweroff"],
@@ -26,16 +25,10 @@ async def cmd_shutdown(ctx: CommandContext) -> CommandResult:
     if args.isdigit():
         minutes = int(args)
         SystemAgent.scheduled_shutdown(minutes)
-        return CommandResult(
-            text=f"Shutdown scheduled in {minutes} minute{'s' if minutes != 1 else ''}.",
-            data={"spoken": f"Shutting down in {minutes} minutes."},
-        )
+        return CommandResult(text=f"Shutdown scheduled in {minutes} minute{'s' if minutes != 1 else ''}.")
 
-    return _speak_and_act(
-        ctx.brain,
-        "Shutting down. Goodbye, Ulrich.",
-        lambda: subprocess.Popen(["sudo", "shutdown", "-h", "now"]),
-    )
+    _act_after_delay(lambda: subprocess.Popen(["sudo", "shutdown", "-h", "now"]))
+    return CommandResult(text="Shutting down.")
 
 
 @command("reboot", aliases=["restart"],
@@ -43,11 +36,8 @@ async def cmd_shutdown(ctx: CommandContext) -> CommandResult:
          usage="/reboot",
          category="security", permission=PermLevel.DANGEROUS)
 async def cmd_reboot(ctx: CommandContext) -> CommandResult:
-    return _speak_and_act(
-        ctx.brain,
-        "Rebooting. I'll be right back.",
-        lambda: subprocess.Popen(["sudo", "reboot"]),
-    )
+    _act_after_delay(lambda: subprocess.Popen(["sudo", "reboot"]))
+    return CommandResult(text="Rebooting.")
 
 
 @command("hibernate",
@@ -56,29 +46,8 @@ async def cmd_reboot(ctx: CommandContext) -> CommandResult:
          category="security", permission=PermLevel.DANGEROUS)
 async def cmd_hibernate(ctx: CommandContext) -> CommandResult:
     from src.agent.system_agents import SystemAgent
-
-    # Enable WoL and get info so user knows how to wake it
-    wol_info = SystemAgent.get_wol_info()
-    mac_lines = []
-    for iface, data in wol_info.items():
-        if iface == "ip":
-            continue
-        mac_lines.append(f"  {iface}: MAC={data['mac']}")
-
-    wol_note = ""
-    if mac_lines:
-        wol_note = (
-            "\nWake-on-LAN enabled. To wake remotely:\n"
-            + "\n".join(mac_lines)
-            + f"\n  IP: {wol_info.get('ip', 'unknown')}"
-            + "\n  Use: /wake <mac> or send a magic packet"
-        )
-
-    return _speak_and_act(
-        ctx.brain,
-        "Hibernating. Wake-on-LAN is active. Send a magic packet to bring me back.",
-        SystemAgent.hibernate,
-    )
+    _act_after_delay(SystemAgent.hibernate)
+    return CommandResult(text="Hibernating.")
 
 
 @command("sleep", aliases=["suspend", "nap"],
@@ -87,12 +56,8 @@ async def cmd_hibernate(ctx: CommandContext) -> CommandResult:
          category="security", permission=PermLevel.DANGEROUS)
 async def cmd_sleep(ctx: CommandContext) -> CommandResult:
     from src.agent.system_agents import SystemAgent
-
-    return _speak_and_act(
-        ctx.brain,
-        "Going to sleep. Wake me when you need me.",
-        SystemAgent.hybrid_sleep,
-    )
+    _act_after_delay(SystemAgent.hybrid_sleep)
+    return CommandResult(text="Going to sleep.")
 
 
 @command("lock", description="Lock the screen",
@@ -116,7 +81,6 @@ async def cmd_wake(ctx: CommandContext) -> CommandResult:
     args = ctx.args.strip()
 
     if not args:
-        # Show known devices with MACs
         lines = ["Usage: /wake <mac-address> [broadcast-ip]", ""]
         if hasattr(NetworkAgent, 'DEVICES'):
             lines.append("Known devices:")
@@ -141,7 +105,6 @@ async def cmd_wake(ctx: CommandContext) -> CommandResult:
     parts = args.split()
     mac = parts[0]
 
-    # Resolve device name to MAC if it's a known device
     if hasattr(NetworkAgent, 'DEVICES') and mac.lower() in NetworkAgent.DEVICES:
         device = NetworkAgent.DEVICES[mac.lower()]
         resolved_mac = device.get("mac", "")
@@ -154,8 +117,5 @@ async def cmd_wake(ctx: CommandContext) -> CommandResult:
 
     result = SystemAgent.wake(mac, broadcast)
     if result.get("success"):
-        return CommandResult(
-            text=f"Wake-on-LAN packet sent to {mac}.",
-            data={"spoken": "Magic packet sent. The machine should wake up shortly."},
-        )
+        return CommandResult(text=f"Wake-on-LAN packet sent to {mac}.")
     return CommandResult(text=result.get("output", "WoL failed."), success=False)

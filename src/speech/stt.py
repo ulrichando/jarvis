@@ -13,20 +13,28 @@ _whisper_model = None
 
 
 def _get_model():
-    """Lazy-load the Whisper model.
-
-    Uses tiny.en for speed (~0.4s) — good enough for voice commands.
-    Force CPU to avoid CUDA OOM (GPU reserved for Ollama models).
-    """
+    """Lazy-load the Whisper model. Auto-selects device based on hardware."""
     global _whisper_model
     if _whisper_model is None:
         from faster_whisper import WhisperModel
-        # Use tiny.en for speed — fast voice commands. Override STT_MODEL.
+
+        # Auto-detect best device
+        device = "cpu"
+        compute = "int8"
+        try:
+            from src.hardware import detect_hardware
+            hw = detect_hardware()
+            if hw.has_cuda:
+                device = "cuda"
+                compute = "float16"
+        except Exception:
+            pass
+
         fast_model = "tiny.en"
         _whisper_model = WhisperModel(
             fast_model,
-            device="cpu",
-            compute_type="int8",
+            device=device,
+            compute_type=compute,
             num_workers=2,
         )
     return _whisper_model

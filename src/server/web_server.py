@@ -219,17 +219,8 @@ class JarvisWebServer:
                         continue
                     msg_type = data.get("type", "query")
 
-                    # Guard: Brain still loading (MCP init ~45s)
-                    if self.brain is None and msg_type in ("query", "learn", "recall", "stats", "passive_analysis"):
-                        if not getattr(ws, '_init_warned', False):
-                            ws._init_warned = True
-                            await ws.send_json({
-                                "type": "message", "role": "jarvis",
-                                "content": "Still initializing... give me a moment.",
-                            })
-                        continue
-
                     if msg_type == "query":
+                        # Always try command interception first (camera/restart/etc work without brain)
                         await self._handle_query(ws, data)
                     elif msg_type == "passive_analysis":
                         await self._handle_passive(ws, data)
@@ -319,13 +310,72 @@ class JarvisWebServer:
                       "voice only", "stop showing text", "stop displaying text")
         if text_clean in _show_text or text_lower in _show_text:
             await ws.send_json({"type": "message", "role": "jarvis",
-                                "content": "__SHOW_TEXT__", "spoken": "Text display is now on.",
-                                "model": "", "latency_ms": 0, "voice_style": "default"})
+                                "content": "__SHOW_TEXT__",
+                                "model": "", "latency_ms": 0})
             return
         if text_clean in _hide_text or text_lower in _hide_text:
             await ws.send_json({"type": "message", "role": "jarvis",
-                                "content": "__HIDE_TEXT__", "spoken": "Going voice only.",
-                                "model": "", "latency_ms": 0, "voice_style": "default"})
+                                "content": "__HIDE_TEXT__",
+                                "model": "", "latency_ms": 0})
+            return
+
+        # Face recognition enrollment: "remember my face", "learn my face"
+        _face_enroll = ("remember my face", "learn my face", "save my face",
+                        "remember me", "enroll my face")
+        if any(p in text_clean for p in _face_enroll):
+            # Try enrolling via active camera stream first
+            for client_ws in self.clients:
+                if hasattr(client_ws, '_viewer'):
+                    result = client_ws._viewer.recognition.face.enroll_face_id("Ulrich")
+                    # Also capture IR frame for better face ID
+                    try:
+                        from src.vision.camera import has_ir_camera, capture_ir_frame
+                        if has_ir_camera():
+                            ir_path = capture_ir_frame()
+                            if ir_path:
+                                result["ir_captured"] = True
+                    except Exception:
+                        pass
+                    msg = result.get("message", "Face enrollment started.")
+                    if result.get("ir_captured"):
+                        msg += " IR camera detected — using infrared for better accuracy."
+                    await ws.send_json({"type": "message", "role": "jarvis",
+                                        "content": msg,
+                                        "model": "", "latency_ms": 0})
+                    return
+            # No camera stream — try direct IR capture
+            try:
+                from src.vision.camera import has_ir_camera
+                if has_ir_camera():
+                    # Turn on camera and start enrollment
+                    await self._broadcast({"type": "camera", "enabled": True})
+                    await ws.send_json({"type": "message", "role": "jarvis",
+                                        "content": "IR camera detected. Turning on camera for face enrollment. Look at the camera.",
+                                        "model": "", "latency_ms": 0})
+                    return
+            except Exception:
+                pass
+            await ws.send_json({"type": "message", "role": "jarvis",
+                                "content": "Camera needs to be on first. Say 'turn on camera'.",
+                                "model": "", "latency_ms": 0})
+            return
+
+        # Camera on/off
+        _cam_on = ("turn on camera", "camera on", "enable camera", "open camera",
+                   "start camera", "turn on webcam", "webcam on")
+        _cam_off = ("turn off camera", "camera off", "disable camera", "close camera",
+                    "stop camera", "turn off webcam", "webcam off")
+        if text_clean in _cam_on or any(p in text_clean for p in _cam_on):
+            await self._broadcast({"type": "camera", "enabled": True})
+            await ws.send_json({"type": "message", "role": "jarvis",
+                                "content": "Camera is on.",
+                                "model": "", "latency_ms": 0})
+            return
+        if text_clean in _cam_off or any(p in text_clean for p in _cam_off):
+            await self._broadcast({"type": "camera", "enabled": False})
+            await ws.send_json({"type": "message", "role": "jarvis",
+                                "content": "Camera is off.",
+                                "model": "", "latency_ms": 0})
             return
 
         # Restart command
@@ -334,8 +384,8 @@ class JarvisWebServer:
         if text_clean in _restart_triggers or text_lower in _restart_triggers \
                 or any(p in text_clean for p in _restart_triggers):
             await ws.send_json({"type": "message", "role": "jarvis",
-                                "content": "Restarting...", "spoken": "Restarting. Give me a moment.",
-                                "model": "", "latency_ms": 0, "voice_style": "default"})
+                                "content": "Restarting...",
+                                "model": "", "latency_ms": 0})
             print("[JARVIS] Restart requested via voice/text")
             await asyncio.sleep(2)
             # Kill desktop overlay before restarting
@@ -355,8 +405,8 @@ class JarvisWebServer:
             clients = getattr(self, '_active_clients', {})
             await self._broadcast({"type": "handoff", "target": "desktop"})
             clients["browser"] = False
-            # Launch desktop app if not already running
-            if not clients.get("desktop"):
+            # Launch desktop app if not already running and display available
+            if not clients.get("desktop") and os.environ.get("DISPLAY"):
                 import subprocess as _sp_dt
                 _jarvis_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                 env = {**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0.0")}
@@ -366,7 +416,7 @@ class JarvisWebServer:
                     stdout=_sp_dt.DEVNULL, stderr=_sp_dt.DEVNULL, env=env,
                 )
             await ws.send_json({"type": "message", "role": "jarvis",
-                                "content": "Moving to desktop.", "spoken": "Moving to desktop.",
+                                "content": "Moving to desktop.",
                                 "model": "", "latency_ms": 0, "voice_style": "default"})
             return
         if text_clean in switch_to_browser or text_lower in switch_to_browser \
@@ -376,7 +426,7 @@ class JarvisWebServer:
             _sp.Popen(["xdg-open", f"http://127.0.0.1:{PORT}/"], start_new_session=True,
                       stdout=_sp.DEVNULL, stderr=_sp.DEVNULL, env=env)
             await ws.send_json({"type": "message", "role": "jarvis",
-                                "content": "Opening browser.", "spoken": "Opening browser.",
+                                "content": "Opening browser.",
                                 "model": "", "latency_ms": 0, "voice_style": "default"})
             return
 
@@ -396,11 +446,31 @@ class JarvisWebServer:
                 await ws.send_json({"type": "power", "action": action})
                 break
 
+        # Guard: Brain still loading — commands above work without it, LLM needs it
+        if self.brain is None:
+            await ws.send_json({
+                "type": "message", "role": "jarvis",
+                "content": "Still initializing... give me a moment.",
+                "model": "", "latency_ms": 0,
+            })
+            return
+
         # Inject vision awareness if available
         if hasattr(ws, '_viewer'):
             awareness = ws._viewer.get_awareness()
             if awareness["person_present"]:
-                self.brain.awareness.vision_context = awareness["summary"]
+                parts = [awareness["summary"]]
+                # Add face identity if recognized
+                identity = awareness.get("identity") or awareness.get("name")
+                if identity:
+                    parts.append(f"Identified as: {identity}")
+                expression = awareness.get("expression")
+                if expression and expression != "neutral":
+                    parts.append(f"Expression: {expression}")
+                gaze = awareness.get("gaze_direction")
+                if gaze:
+                    parts.append(f"Looking: {gaze}")
+                self.brain.awareness.vision_context = ". ".join(parts)
             else:
                 self.brain.awareness.vision_context = ""
 
@@ -516,6 +586,15 @@ class JarvisWebServer:
 
         latency = int((time.time() - start) * 1000)
         voice_style = self._get_voice_style()
+
+        # Check if all providers failed — notify frontend to show setup wizard
+        try:
+            from src.server import _provider_error
+            if _provider_error.get("failed"):
+                await ws.send_json({"type": "provider_error", "errors": _provider_error.get("errors", [])})
+                _provider_error["failed"] = False  # Reset after notifying
+        except ImportError:
+            pass
 
         # Don't send empty responses
         if full_response and full_response.strip():
@@ -731,6 +810,12 @@ class JarvisWebServer:
             if "," in frame_b64:
                 frame_b64 = frame_b64.split(",", 1)[1]
             frame_bytes = base64.b64decode(frame_b64)
+
+            # Store latest frame for the `see` tool
+            import time as _tf
+            from src.server import _latest_camera_frame
+            _latest_camera_frame["frame"] = frame_b64
+            _latest_camera_frame["timestamp"] = _tf.time()
 
             # Feed to ambient viewer
             event = ws._viewer.feed(frame_bytes)
@@ -1090,7 +1175,17 @@ class JarvisWebServer:
 
     async def _start_server_mic(self):
         """Capture audio from the OS mic directly, feed to ambient listener.
-        This runs when the desktop app can't access the mic through the webview."""
+        Only starts if hardware has a microphone. Skips entirely when UI handles voice."""
+        # Hardware check: skip if no mic available
+        try:
+            from src.hardware import detect_hardware
+            hw = detect_hardware()
+            if not hw.can_voice_input:
+                print("[JARVIS] No microphone detected — server mic disabled")
+                return
+        except Exception:
+            pass
+
         import threading
 
         def _mic_thread():
@@ -1121,16 +1216,9 @@ class JarvisWebServer:
                         import numpy as np
                         audio = np.frombuffer(data, dtype=np.float32)
 
-                        # Watchdog: auto-unmute mic if stuck speaking > 30s
+                        # Skip all processing when muted (UI client handles voice)
                         if listener.jarvis_speaking:
-                            if _speaking_since == 0:
-                                _speaking_since = _time.time()
-                            elif _time.time() - _speaking_since > 30:
-                                print("[JARVIS] Watchdog: mic was stuck muted, resetting")
-                                listener.jarvis_speaking = False
-                                _speaking_since = 0
-                        else:
-                            _speaking_since = 0
+                            continue
 
                         # Send mic level to clients every ~5 frames (~300ms)
                         _frame_count += 1
@@ -1235,7 +1323,7 @@ class JarvisWebServer:
                     )
                 await self._broadcast({
                     "type": "message", "role": "jarvis",
-                    "content": "Moving to desktop.", "spoken": "Moving to desktop.",
+                    "content": "Moving to desktop.",
                     "model": "", "latency_ms": 0, "voice_style": "default",
                 })
                 return
@@ -1246,7 +1334,7 @@ class JarvisWebServer:
                           stdout=_sp.DEVNULL, stderr=_sp.DEVNULL, env=env)
                 await self._broadcast({
                     "type": "message", "role": "jarvis",
-                    "content": "Opening browser.", "spoken": "Opening browser.",
+                    "content": "Opening browser.",
                     "model": "", "latency_ms": 0, "voice_style": "default",
                 })
                 return
@@ -1276,20 +1364,26 @@ class JarvisWebServer:
             model = self.brain.reasoner.model
             print(f'[JARVIS] Response: "{spoken[:80]}" (model={model}, {latency}ms)')
 
-            await self._broadcast({
-                "type": "message", "role": "jarvis",
-                "content": response, "spoken": spoken,
-                "model": model, "latency_ms": latency,
-                "voice_style": "default",
-            })
+            clients = getattr(self, '_active_clients', {})
+            has_ui_client = clients.get("desktop") or clients.get("browser")
 
-            if spoken and len(spoken) > 1:
-                await self._broadcast({"type": "status", "status": "speaking"})
-                # Only play through OS speakers if no webview/browser client is
-                # connected — those clients play TTS themselves from the broadcast.
-                clients = getattr(self, '_active_clients', {})
-                has_ui_client = clients.get("desktop") or clients.get("browser")
-                if not has_ui_client:
+            if has_ui_client:
+                # UI client handles TTS — broadcast text only, no spoken field
+                await self._broadcast({
+                    "type": "message", "role": "jarvis",
+                    "content": response,
+                    "model": model, "latency_ms": latency,
+                })
+            else:
+                # No UI — broadcast with spoken for any future client + play via OS speakers
+                await self._broadcast({
+                    "type": "message", "role": "jarvis",
+                    "content": response, "spoken": spoken,
+                    "model": model, "latency_ms": latency,
+                    "voice_style": "default",
+                })
+                if spoken and len(spoken) > 1:
+                    await self._broadcast({"type": "status", "status": "speaking"})
                     try:
                         await self._speak_system(spoken)
                     except Exception as e:
@@ -1754,20 +1848,19 @@ class JarvisWebServer:
         from src.agent.system_agents import SystemAgent
 
         actions = {
-            "shutdown":  ("Shutting down. Goodbye, Ulrich.", SystemAgent.shutdown),
-            "reboot":    ("Rebooting. I'll be right back.", SystemAgent.reboot),
-            "sleep":     ("Going to sleep. Wake me when you need me.", SystemAgent.hybrid_sleep),
-            "hibernate": ("Hibernating. Wake me when you need me.", SystemAgent.hibernate),
-            "suspend":   ("Suspending. Wake me when you need me.", SystemAgent.suspend),
-            "lock":      ("Screen locked.", SystemAgent.lock),
+            "shutdown":  SystemAgent.shutdown,
+            "reboot":    SystemAgent.reboot,
+            "sleep":     SystemAgent.hybrid_sleep,
+            "hibernate": SystemAgent.hibernate,
+            "suspend":   SystemAgent.suspend,
+            "lock":      SystemAgent.lock,
         }
 
         if action not in actions:
             return web.json_response({"error": f"Unknown action: {action}"}, status=400)
 
-        message, fn = actions[action]
-        await self._broadcast_power(message)
-        # Delay destructive actions so TTS can play the farewell
+        fn = actions[action]
+        await self._broadcast({"type": "power", "action": action})
         if action in ("shutdown", "reboot", "sleep", "hibernate", "suspend"):
             asyncio.get_event_loop().call_later(2, fn)
         else:
@@ -1842,6 +1935,220 @@ class JarvisWebServer:
         # Hot reload
         app.router.add_post("/api/reload", self.reload_handler)
 
+        # Provider setup API — add/test providers, check Ollama
+        async def _provider_add(request):
+            """Add or update a provider and test the connection."""
+            data = await request.json()
+            name = data.get("name", "")
+            ptype = data.get("type", "openai")
+            api_key = data.get("api_key", "")
+            base_url = data.get("base_url", "")
+            model = data.get("model", "")
+            if not name or not api_key:
+                return web.json_response({"ok": False, "error": "Missing name or api_key"}, status=400)
+
+            # Test the connection first
+            try:
+                if ptype == "anthropic":
+                    import anthropic
+                    client = anthropic.Anthropic(api_key=api_key)
+                    r = client.messages.create(model=model, max_tokens=10,
+                        messages=[{"role": "user", "content": "hi"}])
+                else:
+                    import openai
+                    client = openai.OpenAI(api_key=api_key, base_url=base_url)
+                    r = client.chat.completions.create(model=model, max_tokens=10,
+                        messages=[{"role": "user", "content": "hi"}])
+            except Exception as e:
+                return web.json_response({"ok": False, "error": str(e)[:200]})
+
+            # Save to providers.json
+            providers_path = os.path.expanduser("~/.jarvis/providers.json")
+            try:
+                with open(providers_path) as f:
+                    providers = json.load(f)
+            except Exception:
+                providers = {}
+
+            providers[name] = {
+                "name": name, "type": ptype, "api_key": api_key,
+                "base_url": base_url, "model": model,
+                "models": [model], "priority": len(providers), "enabled": True,
+            }
+            with open(providers_path, "w") as f:
+                json.dump(providers, f, indent=2)
+
+            # Reload providers in the brain
+            if self.brain and hasattr(self.brain, 'reasoner'):
+                self.brain.reasoner.providers = __import__(
+                    'src.reasoning.providers', fromlist=['ProviderRegistry']
+                ).ProviderRegistry()
+
+            print(f"[JARVIS] Provider added: {name} ({model})")
+            return web.json_response({"ok": True, "provider": name, "model": model})
+
+        async def _ollama_status(request):
+            """Check if Ollama is running and list models."""
+            try:
+                import urllib.request
+                r = urllib.request.urlopen("http://localhost:11434/api/tags", timeout=3)
+                data = json.loads(r.read())
+                models = [m["name"] for m in data.get("models", [])]
+                return web.json_response({"online": True, "models": models})
+            except Exception:
+                return web.json_response({"online": False, "models": []})
+
+        async def _ollama_pull(request):
+            """Pull a model via Ollama."""
+            data = await request.json()
+            model = data.get("model", "")
+            if not model:
+                return web.json_response({"ok": False, "error": "No model specified"}, status=400)
+            import subprocess
+            proc = subprocess.Popen(
+                ["ollama", "pull", model],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            stdout, stderr = proc.communicate(timeout=300)
+            if proc.returncode == 0:
+                return web.json_response({"ok": True, "model": model})
+            return web.json_response({"ok": False, "error": stderr.decode()[:200]})
+
+        async def _model_search(request):
+            """Search for downloadable models from Ollama library and HuggingFace."""
+            query = request.query.get("q", "").strip().lower()
+            if not query or len(query) < 2:
+                return web.json_response({"models": []})
+
+            results = []
+
+            # Ollama library — curated models that work well
+            ollama_models = {
+                "llama3": [
+                    {"id": "llama3.3", "name": "Llama 3.3 70B", "size": "43GB", "source": "ollama"},
+                    {"id": "llama3.2:3b", "name": "Llama 3.2 3B", "size": "2.0GB", "source": "ollama"},
+                    {"id": "llama3.2:1b", "name": "Llama 3.2 1B", "size": "1.3GB", "source": "ollama"},
+                    {"id": "llama3.1:8b", "name": "Llama 3.1 8B", "size": "4.7GB", "source": "ollama"},
+                ],
+                "qwen": [
+                    {"id": "qwen2.5:72b", "name": "Qwen 2.5 72B", "size": "47GB", "source": "ollama"},
+                    {"id": "qwen2.5:32b", "name": "Qwen 2.5 32B", "size": "20GB", "source": "ollama"},
+                    {"id": "qwen2.5:7b", "name": "Qwen 2.5 7B", "size": "4.7GB", "source": "ollama"},
+                    {"id": "qwen2.5:3b", "name": "Qwen 2.5 3B", "size": "1.9GB", "source": "ollama"},
+                    {"id": "qwen3:8b", "name": "Qwen 3 8B", "size": "5.2GB", "source": "ollama"},
+                ],
+                "mistral": [
+                    {"id": "mistral", "name": "Mistral 7B", "size": "4.1GB", "source": "ollama"},
+                    {"id": "mistral-small", "name": "Mistral Small 24B", "size": "14GB", "source": "ollama"},
+                ],
+                "phi": [
+                    {"id": "phi4", "name": "Phi-4 14B", "size": "9.1GB", "source": "ollama"},
+                    {"id": "phi3:mini", "name": "Phi-3 Mini 3.8B", "size": "2.3GB", "source": "ollama"},
+                ],
+                "gemma": [
+                    {"id": "gemma2:27b", "name": "Gemma 2 27B", "size": "16GB", "source": "ollama"},
+                    {"id": "gemma2:9b", "name": "Gemma 2 9B", "size": "5.5GB", "source": "ollama"},
+                    {"id": "gemma2:2b", "name": "Gemma 2 2B", "size": "1.6GB", "source": "ollama"},
+                ],
+                "deepseek": [
+                    {"id": "deepseek-r1:8b", "name": "DeepSeek R1 8B", "size": "4.9GB", "source": "ollama"},
+                    {"id": "deepseek-r1:14b", "name": "DeepSeek R1 14B", "size": "9.0GB", "source": "ollama"},
+                    {"id": "deepseek-coder-v2:16b", "name": "DeepSeek Coder V2 16B", "size": "8.9GB", "source": "ollama"},
+                ],
+                "codellama": [
+                    {"id": "codellama:13b", "name": "Code Llama 13B", "size": "7.4GB", "source": "ollama"},
+                    {"id": "codellama:7b", "name": "Code Llama 7B", "size": "3.8GB", "source": "ollama"},
+                ],
+                "starcoder": [
+                    {"id": "starcoder2:7b", "name": "StarCoder2 7B", "size": "4.0GB", "source": "ollama"},
+                ],
+                "moondream": [
+                    {"id": "moondream", "name": "Moondream 2 (Vision)", "size": "1.7GB", "source": "ollama"},
+                ],
+                "llava": [
+                    {"id": "llava:7b", "name": "LLaVA 7B (Vision)", "size": "4.7GB", "source": "ollama"},
+                ],
+            }
+
+            for key, models in ollama_models.items():
+                if query in key or key in query:
+                    results.extend(models)
+
+            # If no exact match, fuzzy search all
+            if not results:
+                for key, models in ollama_models.items():
+                    for m in models:
+                        if query in m["id"].lower() or query in m["name"].lower():
+                            results.append(m)
+
+            # HuggingFace search for GGUF models
+            try:
+                import urllib.request
+                hf_url = f"https://huggingface.co/api/models?search={query}&filter=gguf&sort=downloads&limit=5"
+                req = urllib.request.Request(hf_url, headers={"User-Agent": "JARVIS/3.0"})
+                resp = urllib.request.urlopen(req, timeout=5)
+                hf_data = json.loads(resp.read())
+                for m in hf_data:
+                    results.append({
+                        "id": m.get("modelId", ""),
+                        "name": m.get("modelId", "").split("/")[-1],
+                        "size": "",
+                        "source": "huggingface",
+                    })
+            except Exception:
+                pass
+
+            return web.json_response({"models": results[:15]})
+
+        async def _model_download(request):
+            """Download a model — from Ollama or HuggingFace."""
+            data = await request.json()
+            model = data.get("model", "")
+            source = data.get("source", "ollama")
+
+            if not model:
+                return web.json_response({"ok": False, "error": "No model specified"}, status=400)
+
+            if source == "ollama":
+                # Pull via Ollama
+                import subprocess
+                try:
+                    proc = subprocess.Popen(
+                        ["ollama", "pull", model],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    )
+                    stdout, stderr = proc.communicate(timeout=600)
+                    if proc.returncode == 0:
+                        return web.json_response({"ok": True, "model": model})
+                    return web.json_response({"ok": False, "error": stderr.decode()[:200]})
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    return web.json_response({"ok": False, "error": "Download timed out (10 min limit)"})
+                except FileNotFoundError:
+                    return web.json_response({"ok": False, "error": "Ollama not installed. Run: curl -fsSL https://ollama.ai/install.sh | sh"})
+            elif source == "huggingface":
+                # For HuggingFace GGUF, try ollama pull with full path
+                import subprocess
+                try:
+                    proc = subprocess.Popen(
+                        ["ollama", "pull", f"hf.co/{model}"],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    )
+                    stdout, stderr = proc.communicate(timeout=600)
+                    if proc.returncode == 0:
+                        return web.json_response({"ok": True, "model": model})
+                    return web.json_response({"ok": False, "error": stderr.decode()[:200]})
+                except Exception as e:
+                    return web.json_response({"ok": False, "error": str(e)[:200]})
+
+            return web.json_response({"ok": False, "error": f"Unknown source: {source}"})
+
+        app.router.add_post("/api/provider/add", _provider_add)
+        app.router.add_get("/api/ollama/status", _ollama_status)
+        app.router.add_post("/api/ollama/pull", _ollama_pull)
+        app.router.add_get("/api/models/search", _model_search)
+        app.router.add_post("/api/models/download", _model_download)
+
         # Full restart — kills the process; systemd/start script relaunches
         async def _restart_handler(request):
             await self._broadcast({
@@ -1885,10 +2192,10 @@ class JarvisWebServer:
             client_type = data.get("type", "browser")  # "desktop" or "browser"
             active_clients[client_type] = True
 
-            # Mute server mic when a UI client connects (it handles its own voice)
-            if hasattr(self, '_server_listener'):
-                self._server_listener.jarvis_speaking = True
-                print(f"[JARVIS] {client_type} connected — server mic muted (UI handles voice)")
+            # Stop server mic entirely when a UI client connects (UI handles its own voice)
+            if hasattr(self, '_server_mic_running') and self._server_mic_running:
+                self._server_mic_running = False
+                print(f"[JARVIS] {client_type} connected — server mic stopped (UI handles voice)")
 
             # Browser always gets the reactor; desktop yields
             if client_type == "browser":
@@ -1907,11 +2214,12 @@ class JarvisWebServer:
             client_type = data.get("type", "browser")
             active_clients[client_type] = False
 
-            # Unmute server mic only if NO UI clients remain
+            # Restart server mic only if NO UI clients remain (headless mode)
             has_ui = active_clients.get("desktop") or active_clients.get("browser")
-            if not has_ui and hasattr(self, '_server_listener'):
-                self._server_listener.jarvis_speaking = False
-                print("[JARVIS] All UI clients disconnected — server mic unmuted")
+            if not has_ui and hasattr(self, '_server_mic_running') and not self._server_mic_running:
+                print("[JARVIS] All UI clients disconnected — restarting server mic")
+                import asyncio as _aio
+                _aio.ensure_future(self._start_server_mic())
 
             return web.json_response({"ok": True, "active_clients": active_clients})
 

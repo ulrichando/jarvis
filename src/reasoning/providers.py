@@ -314,7 +314,44 @@ class ProviderRegistry:
             except Exception:
                 continue
 
-        return {"text": "I'm having trouble connecting. Check /doctor.", "tool_calls": []}, "none"
+        # Broadcast provider failure so frontend can show setup wizard
+        try:
+            from src.server import _provider_error
+            _provider_error["failed"] = True
+            _provider_error["errors"] = errors[:3]
+        except ImportError:
+            pass
+
+        # All providers failed — help the user fix it
+        has_ollama = any(
+            "localhost" in p.base_url or "127.0.0.1" in p.base_url
+            for p in self.providers if p.enabled
+        )
+        has_cloud = any(
+            "localhost" not in p.base_url and "127.0.0.1" not in p.base_url
+            for p in self.providers if p.enabled
+        )
+
+        lines = ["I can't reach any AI provider right now."]
+        if errors:
+            lines.append(f"Errors: {'; '.join(errors[:3])}")
+        lines.append("")
+        lines.append("To fix this:")
+        if not has_ollama:
+            lines.append("• Run a local model: ollama pull llama3.3 && ollama serve")
+            lines.append("  Then add Ollama in /providers or run /doctor")
+        else:
+            lines.append("• Start Ollama: ollama serve (local models, no internet needed)")
+        if not has_cloud:
+            lines.append("• Add a cloud API key: /provider add groq <key> (free at console.groq.com)")
+            lines.append("• Or: /provider add anthropic <key> (console.anthropic.com)")
+        else:
+            lines.append("• Check your API keys — they may be expired or out of credits")
+            lines.append("• Groq is free: sign up at console.groq.com")
+        lines.append("")
+        lines.append("Run /doctor for a full diagnostic.")
+
+        return {"text": "\n".join(lines), "tool_calls": []}, "none"
 
     # ── Provider-Specific Query ─────────────────────────────────────
 
