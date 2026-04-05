@@ -158,6 +158,38 @@ a working solution, or a clearer understanding. That is the only standard.
 
 class Brain:
 
+    @staticmethod
+    def _load_rules(jarvis_root: str) -> str:
+        """Load .jarvis/rules/ directory — individual rule files with optional path scoping.
+
+        Each file in .jarvis/rules/ is a rule. Files can have YAML frontmatter:
+            ---
+            paths: ["src/**/*.py", "*.js"]
+            ---
+            Rule content here.
+
+        If no paths: frontmatter, the rule applies globally.
+        """
+        import os
+        rules_dir = os.path.join(jarvis_root, ".jarvis", "rules")
+        if not os.path.isdir(rules_dir):
+            # Also check user-level rules
+            rules_dir = os.path.expanduser("~/.jarvis/rules")
+            if not os.path.isdir(rules_dir):
+                return ""
+
+        rules = []
+        for fname in sorted(os.listdir(rules_dir)):
+            if not fname.endswith(".md"):
+                continue
+            fpath = os.path.join(rules_dir, fname)
+            try:
+                content = open(fpath).read(5000)
+                rules.append(f"## {fname}\n{content}")
+            except Exception:
+                pass
+        return "\n\n".join(rules) if rules else ""
+
     # Product info from src/constants
     PRODUCT_NAME = "JARVIS"
     PRODUCT_VERSION = "2.0"
@@ -608,47 +640,92 @@ class Brain:
         if has_ultrathink_keyword(user_input):
             log.info("Ultrathink keyword detected — enabling extended thinking")
 
-        # Build system prompt with context
+        # Build system prompt — STABLE base (cacheable, shared)
         import os as _os
         jarvis_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-        base_prompt = AGENT_SYSTEM_PROMPT.format(jarvis_root=jarvis_root, cwd=_os.getcwd(), model_name=self.reasoner.active_model_name, hardware=self._hw_summary)
+        system = AGENT_SYSTEM_PROMPT.format(
+            jarvis_root=jarvis_root, cwd=_os.getcwd(),
+            model_name=self.reasoner.active_model_name, hardware=self._hw_summary,
+        )
+
+        # Build context reminder — injected as <system-reminder> in user message
+        # This is how Claude Code does it: system prompt stays stable for caching,
+        # per-project/per-session context goes in the user message.
         from src.prompt_builder import PromptBuilder
         builder = PromptBuilder()
         context = builder.discover_context()
-        system = builder.build(base_prompt, context)
-        # Add hooks guidance from constants/prompts
-        system += f"\n\n═══ HOOKS ═══\n{get_hooks_section()}"
-        system += f"\n\n═══ ACTIONS ═══\n{get_actions_section()}"
 
+        reminder_parts = []
+
+        # Project instructions (JARVIS.md, instructions.md)
+        if context.instruction_files:
+            for inst in context.instruction_files:
+                reminder_parts.append(f"# {inst.path.name} ({inst.source})\n{inst.content[:20000]}")
+
+        # Rules directory (.jarvis/rules/)
+        rules = self._load_rules(jarvis_root)
+        if rules:
+            reminder_parts.append(f"# Rules\n{rules}")
+
+        # Git context
+        if context.git_branch:
+            git_info = f"Branch: {context.git_branch}"
+            if context.git_status:
+                git_info += f"\n{context.git_status[:500]}"
+            reminder_parts.append(f"# Git\n{git_info}")
+
+        # Environment
+        import platform, datetime
+        reminder_parts.append(
+            f"# Environment\nDate: {datetime.date.today()}\n"
+            f"OS: {platform.system()} {platform.release()}\n"
+            f"Stack: {', '.join(context.detected_stack) if context.detected_stack else 'unknown'}"
+        )
+
+        # Memory
         if memory_context:
-            system += f"\n\n═══ MEMORY ═══\n{memory_context}"
-
-        # Inject memdir-based relevant memories
+            reminder_parts.append(f"# Memory\n{memory_context}")
         try:
             memdir_results = self.memdir_find(user_input, max_results=3)
             if memdir_results:
-                mem_lines = []
-                for entry in memdir_results:
-                    mem_lines.append(f"[{entry.id}] {entry.content[:200]}")
-                system += f"\n\n═══ MEMORY DIR ═══\n" + "\n".join(mem_lines)
+                mem_lines = [f"[{e.id}] {e.content[:200]}" for e in memdir_results]
+                reminder_parts.append(f"# Memory Dir\n" + "\n".join(mem_lines))
+        except Exception:
+            pass
+        try:
+            from src.services.SessionMemory.sessionMemoryUtils import get_session_memory_content
+            _sm = await get_session_memory_content()
+            if _sm:
+                reminder_parts.append(f"# Session Memory\n{_sm}")
         except Exception:
             pass
 
-        # Inject persistent session memory if available
-        try:
-            from src.services.SessionMemory.sessionMemoryUtils import get_session_memory_content
-            _sm_content = await get_session_memory_content()
-            if _sm_content:
-                system += f"\n\n═══ SESSION MEMORY ═══\n{_sm_content}"
-        except Exception:
-            pass
+        # Camera awareness
+        if hasattr(self.awareness, 'vision_context') and self.awareness.vision_context:
+            reminder_parts.append(f"# Camera\n{self.awareness.vision_context}")
+
+        # Screen context (only for visual queries)
+        _screen_words = ["screen", "see", "looking at", "what app", "window", "display"]
+        if any(w in user_input.lower() for w in _screen_words):
+            screen_ctx = self.screen.get_context_for_llm()
+            if screen_ctx:
+                reminder_parts.append(f"# Screen\n{screen_ctx[:1000]}")
+
+        # Caution
         if self.awareness.should_be_cautious():
-            system += "\n\n⚠ Recent failures detected. Be extra careful."
+            reminder_parts.append("⚠ Recent failures detected. Be extra careful.")
+
+        # Mode
         if self.mode == "plan":
-            system += "\n\n═══ PLAN MODE ═══\nYou are in READ-ONLY exploration mode. You can read files, search, and browse the web, but you CANNOT write, edit, or run destructive commands. Analyze and plan only."
+            system += "\nYou are in READ-ONLY mode. No writes."
             self.permissions.set_level(PermissionLevel.READ_ONLY)
         else:
             self.permissions.set_level(PermissionLevel.FULL)
+
+        # Build the system-reminder prefix for user input
+        _system_reminder = ""
+        if reminder_parts:
+            _system_reminder = "<system-reminder>\n" + "\n\n".join(reminder_parts) + "\n</system-reminder>\n\n"
 
         # Full tool set — 70B models have 120K context
         from src.agent.tools import TOOL_SCHEMAS
@@ -667,10 +744,13 @@ class Brain:
         else:
             max_iters = 10
 
+        # Prepend system-reminder context to user input (Claude Code pattern)
+        _enriched_input = _system_reminder + user_input if _system_reminder else user_input
+
         try:
             response = await agent_loop(
                 reasoner=self.reasoner,
-                user_input=user_input,
+                user_input=_enriched_input,
                 system_prompt=system,
                 history=history,
                 max_iterations=max_iters,
@@ -804,39 +884,34 @@ class Brain:
 
         if needs_agent:
             # Agent loop with tools
+            # Use the same system prompt + system-reminder pattern as _run_agent_loop
             import os as _os
             jarvis_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
             system = AGENT_SYSTEM_PROMPT.format(
                 jarvis_root=jarvis_root, cwd=_os.getcwd(),
                 model_name=self.reasoner.active_model_name,
+                hardware=self._hw_summary,
             )
+
+            # Build system-reminder context
+            from src.prompt_builder import PromptBuilder
+            _builder = PromptBuilder()
+            _ctx = _builder.discover_context()
+            _rem = []
+            for inst in _ctx.instruction_files:
+                _rem.append(f"# {inst.path.name}\n{inst.content[:20000]}")
+            _rules = self._load_rules(jarvis_root)
+            if _rules:
+                _rem.append(f"# Rules\n{_rules}")
             if memory_context:
-                system += f"\nMEMORY: {memory_context[:2000]}"
-            # Inject persistent session memory if available
-            try:
-                from src.services.SessionMemory.sessionMemoryUtils import get_session_memory_content
-                _sm_content = await get_session_memory_content()
-                if _sm_content:
-                    system += f"\n\n═══ SESSION MEMORY ═══\n{_sm_content}"
-            except Exception:
-                pass
-            # Inject camera awareness (from CorticalViewer — free, local, every turn)
+                _rem.append(f"# Memory\n{memory_context[:2000]}")
             if hasattr(self.awareness, 'vision_context') and self.awareness.vision_context:
-                system += f"\nCAMERA: {self.awareness.vision_context}"
-            # Inject screen context when user asks about something visual/screen-related
-            _screen_words = ["screen", "see", "looking at", "what app", "window", "display",
-                             "show me", "what's open", "monitor", "watching", "visible"]
+                _rem.append(f"# Camera\n{self.awareness.vision_context}")
+            _screen_words = ["screen", "see", "looking at", "what app", "window", "display"]
             if any(w in user_input.lower() for w in _screen_words):
                 screen_ctx = self.screen.get_context_for_llm()
                 if screen_ctx:
-                    system += f"\nSCREEN: {screen_ctx[:1000]}"
-            # Inject learned skills and reflections from past tasks
-            skill_ctx = self.skill_library.get_context_for_task(user_input, max_skills=2)
-            if skill_ctx:
-                system += f"\n{skill_ctx}"
-            reflect_ctx = self.reflector.get_context_for_task(user_input, max_reflections=2)
-            if reflect_ctx:
-                system += f"\n{reflect_ctx}"
+                    _rem.append(f"# Screen\n{screen_ctx[:1000]}")
             # Detect if this is a complex creation task — inject scaffolding knowledge
             _q_lower = user_input.lower()
             _creation_words = ["create", "build", "make", "generate", "scaffold", "set up", "develop"]
@@ -861,11 +936,17 @@ PROJECT CREATION RULES — follow these when building something:
                 system += "\nPLAN MODE: Read-only. No writes."
             history = self.memory.get_history(limit=10)
 
+            # Build system-reminder prefix for user input
+            _sr = ""
+            if _rem:
+                _sr = "<system-reminder>\n" + "\n\n".join(_rem) + "\n</system-reminder>\n\n"
+            _enriched = _sr + user_input if _sr else user_input
+
             full_response = ""
             tool_was_used = False
             async for event in agent_loop_stream(
                 reasoner=self.reasoner,
-                user_input=user_input,
+                user_input=_enriched,
                 system_prompt=system,
                 history=history,
                 readonly=(self.mode == "plan"),
