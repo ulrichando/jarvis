@@ -20,7 +20,7 @@ function App() {
   const [setupOpen, setSetupOpen] = useState(false)
 
   const wsUrl = useMemo(() => `ws://${window.location.host || '127.0.0.1:8765'}/ws`, [])
-  const { messages: wsMessages, sendMessage } = useWebSocket(wsUrl)
+  const { messages: wsMessages, sendMessage, status: wsStatus } = useWebSocket(wsUrl)
   const theme = useTheme()
 
   // Detect mode and register with server
@@ -427,6 +427,14 @@ function App() {
         <div className="fixed top-4 right-4 z-50 flex items-center gap-2 px-3 py-1.5 rounded-full bg-[rgba(0,20,40,0.8)] border border-[rgba(0,229,255,0.3)]">
           <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
           <span className="text-xs text-jarvis-bright/60 font-['Share_Tech_Mono',monospace]">CAM</span>
+        </div>
+      )}
+
+      {/* Connection status — only show when disconnected */}
+      {wsStatus === 'disconnected' && (
+        <div className="fixed top-4 left-4 z-50 flex items-center gap-2 px-3 py-1.5 rounded-full bg-[rgba(40,0,0,0.8)] border border-red-500/30">
+          <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+          <span className="text-xs text-red-400 font-['Share_Tech_Mono',monospace]">OFFLINE</span>
         </div>
       )}
 
