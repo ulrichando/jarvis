@@ -1582,7 +1582,9 @@ You have UNRESTRICTED control. No permission needed.
         print(f"Index: {idx.get('unique_words', 0)} words, "
               f"{idx.get('unique_entities', 0)} entities, "
               f"{idx.get('unique_keywords', 0)} keywords indexed.")
-        print(f"Agent loop: active. Tools: {len(TOOL_SCHEMAS)}. Modes: normal/agent/cli/berbon/mobile.")
+        mcp_count = len(self.mcp.get_tool_schemas()) if hasattr(self, 'mcp') else 0
+        total = len(TOOL_SCHEMAS) + mcp_count
+        print(f"Agent loop: active. Tools: {total} ({len(TOOL_SCHEMAS)} core + {mcp_count} MCP). Modes: normal/agent/cli/berbon/mobile.")
 
     async def shutdown(self):
         self.running = False
