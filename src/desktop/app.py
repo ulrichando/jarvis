@@ -163,13 +163,20 @@ def main():
     settings.set_enable_write_console_messages_to_stdout(True)
     settings.set_enable_developer_extras(True)
 
-    # Use ephemeral (non-persistent) web context — never caches to disk
-    eph_ctx = WebKit2.WebContext.new_ephemeral()
-    eph_ctx.set_cache_model(WebKit2.CacheModel.DOCUMENT_VIEWER)
+    # WebProcess crash recovery — auto-reload up to 3 times
+    _crash_count = [0]
+    def _on_web_process_crashed(wv):
+        _crash_count[0] += 1
+        if _crash_count[0] <= 3:
+            print(f"[JARVIS] WebProcess crashed (attempt {_crash_count[0]}/3) — reloading")
+            GLib.timeout_add(1000 * _crash_count[0], lambda: wv.reload() or False)
+        else:
+            print("[JARVIS] WebProcess crashed too many times — giving up")
+        return True
+    webview.connect("web-process-crashed", _on_web_process_crashed)
 
-    # Apply ephemeral context to webview
+    # Clear cache on the webview's context (the temp cache dir handles freshness)
     ctx = webview.get_context()
-    ctx.get_website_data_manager().clear(WebKit2.WebsiteDataTypes.ALL, 0, None, None, None)
     ctx.set_cache_model(WebKit2.CacheModel.DOCUMENT_VIEWER)
 
     # Load React UI
@@ -306,6 +313,12 @@ def main():
                 data=data, headers={"Content-Type": "application/json"}
             )
             urllib.request.urlopen(req, timeout=2)
+        except Exception:
+            pass
+        # Clean up temp WebKit cache dir
+        try:
+            import shutil
+            shutil.rmtree(_cache_dir, ignore_errors=True)
         except Exception:
             pass
         Gtk.main_quit()
