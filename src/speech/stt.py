@@ -92,25 +92,19 @@ def _has_speech_energy(audio: np.ndarray, threshold: float = 0.01) -> bool:
     return rms > threshold
 
 
-def transcribe_audio(audio: np.ndarray, sample_rate: int = 16000) -> str:
-    """Transcribe audio array to text.
+import concurrent.futures
+_transcription_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="whisper")
 
-    Args:
-        audio: numpy array of audio samples (float32, mono)
-        sample_rate: sample rate of audio (default 16000)
 
-    Returns:
-        Transcribed text, or empty string if no real speech detected
-    """
-    if not _has_speech_energy(audio):
-        return ""
-
+def _transcribe_sync(audio: np.ndarray, sample_rate: int) -> str:
+    """Synchronous transcription — runs in a thread pool with timeout."""
     model = _get_model()
     segments, info = model.transcribe(
         audio,
         beam_size=5,
         language="en",
         vad_filter=True,
+        condition_on_previous_text=False,  # Prevents decoder loops
         vad_parameters=dict(
             min_silence_duration_ms=500,
             speech_pad_ms=200,
@@ -120,7 +114,6 @@ def transcribe_audio(audio: np.ndarray, sample_rate: int = 16000) -> str:
     parts = []
     for seg in segments:
         text = seg.text.strip()
-        # Skip low-confidence or hallucinated segments
         if seg.no_speech_prob > 0.6:
             continue
         if _is_hallucination(text):
@@ -128,10 +121,33 @@ def transcribe_audio(audio: np.ndarray, sample_rate: int = 16000) -> str:
         parts.append(text)
 
     result = " ".join(parts)
-    # Final hallucination check on combined result
     if _is_hallucination(result):
         return ""
     return result
+
+
+def transcribe_audio(audio: np.ndarray, sample_rate: int = 16000, timeout: float = 15.0) -> str:
+    """Transcribe audio with timeout protection.
+
+    Uses a thread pool so a stuck Whisper model can't block the server.
+    """
+    if not _has_speech_energy(audio):
+        return ""
+
+    # Cap audio to 30 seconds max
+    max_samples = int(30.0 * sample_rate)
+    if len(audio) > max_samples:
+        audio = audio[:max_samples]
+
+    try:
+        future = _transcription_pool.submit(_transcribe_sync, audio, sample_rate)
+        return future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        print("[JARVIS] Whisper transcription timed out")
+        return ""
+    except Exception as e:
+        print(f"[JARVIS] Whisper error: {e}")
+        return ""
 
 
 def audio_bytes_to_numpy(audio_bytes: bytes) -> np.ndarray:
