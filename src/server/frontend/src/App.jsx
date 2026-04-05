@@ -132,6 +132,7 @@ function App() {
   }, [isDesktop, showReactor, stopSpeaking, sendMessage])
 
   // Handle incoming WebSocket messages — handoff, status, camera, TTS
+  const lastPlayedRef = useRef(null)
   useEffect(() => {
     if (wsMessages.length === 0) return
     const last = wsMessages[wsMessages.length - 1]
@@ -153,9 +154,13 @@ function App() {
       queueMicrotask(() => { stopSpeaking(); setReactorState('thinking') })
     }
 
-    // Play TTS for voice query responses (these come via App WS, not ChatPanel WS)
+    // Play TTS for voice query responses — only once per message
     if (last.type === 'message' && last.spoken && last.spoken.length > 3 && !last.partial) {
-      playSpoken(last)
+      const msgId = last.spoken.substring(0, 50) + last.latency_ms
+      if (lastPlayedRef.current !== msgId) {
+        lastPlayedRef.current = msgId
+        playSpoken(last)
+      }
     }
 
     if (last.type === 'camera') setCameraOn(last.enabled)
@@ -266,7 +271,10 @@ function App() {
         // VAD: detect speech, record, interrupt TTS on barge-in
         let isSpeakingTTS = false
         document.addEventListener('jarvis-tts-start', () => { isSpeakingTTS = true })
-        document.addEventListener('jarvis-tts-end', () => { isSpeakingTTS = false })
+        document.addEventListener('jarvis-tts-end', () => {
+          // Keep mic muted for 2s after TTS ends — speaker echo lingers
+          setTimeout(() => { isSpeakingTTS = false }, 2000)
+        })
 
         // Use time-domain data for proper RMS level detection
         const waveData = new Float32Array(analyser.fftSize)
@@ -279,17 +287,23 @@ function App() {
           for (let i = 0; i < waveData.length; i++) sum += waveData[i] * waveData[i]
           const avg = Math.sqrt(sum / waveData.length)
 
-          if (Date.now() - _vadLogTimer > 3000 && avg > 0.005) {
-            console.log('[VAD] rms=' + avg.toFixed(4) + ' recording=' + recording)
-            _vadLogTimer = Date.now()
+          // Don't start NEW recordings while JARVIS is speaking
+          // But let in-progress recordings finish (they contain the user's actual speech)
+          if (isSpeakingTTS && !recording) {
+            setTimeout(checkVoice, 100)
+            return
           }
 
           // RMS thresholds: speech ~0.03-0.1, silence ~0.001-0.01
-          const threshold = isSpeakingTTS ? 0.08 : 0.03
+          const threshold = 0.03
           const silenceThreshold = 0.01
 
           if (avg > threshold && !recording) {
-            document.dispatchEvent(new CustomEvent('user-speaking'))
+            // Only dispatch user-speaking if NOT during/after TTS
+            // (otherwise it would kill JARVIS's own speech)
+            if (!isSpeakingTTS) {
+              document.dispatchEvent(new CustomEvent('user-speaking'))
+            }
             chunks = []
             try { mediaRecorder.start() } catch { /* ignore */ }
             recording = true
