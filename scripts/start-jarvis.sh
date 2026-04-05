@@ -1,6 +1,6 @@
 #!/bin/bash
-# JARVIS Full Startup — fixes audio, starts server, launches desktop
-# Auto-runs on boot via ~/.config/autostart/jarvis.desktop
+# JARVIS Full Startup — hardware-adaptive launch
+# Auto-detects hardware and only enables available features.
 # Manual: ./scripts/start-jarvis.sh
 
 JARVIS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -11,29 +11,63 @@ echo "║╠═╣╠╦╝╚╗╔╝║╚═╗"
 echo "╩ ╩╚═╝ ╚╝ ╩╚═╝"
 echo ""
 
+# ── Hardware detection ──
+echo "[0/4] Detecting hardware..."
+HW_JSON=$(python3 -c "
+from src.hardware import detect_hardware
+hw = detect_hardware()
+import json
+print(json.dumps({
+    'mic': hw.has_microphone,
+    'speakers': hw.has_speakers,
+    'rgb_cam': hw.has_rgb_camera,
+    'ir_cam': hw.has_ir_camera,
+    'gpu': hw.has_nvidia,
+    'display': bool(hw.display_server),
+    'ram_gb': round(hw.total_ram_gb),
+    'model_size': hw.recommended_model_size,
+    'summary': hw.summary(),
+}))
+" 2>/dev/null)
+
+if [ -z "$HW_JSON" ]; then
+    echo "  Hardware detection failed — using defaults"
+    HAS_MIC=true; HAS_DISPLAY=true; HAS_GPU=false
+else
+    echo "  $HW_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print('  ' + d['summary'])"
+    HAS_MIC=$(echo "$HW_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['mic'])")
+    HAS_DISPLAY=$(echo "$HW_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['display'])")
+    HAS_GPU=$(echo "$HW_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['gpu'])")
+fi
+echo ""
+
 # Wait for desktop to be ready (on boot, XFCE needs time)
-sleep 3
+sleep 2
 
-# Step 1: Fix audio FIRST — PipeWire loses devices on reboot
-echo "[1/4] Fixing audio..."
-bash "$JARVIS_ROOT/scripts/fix-audio.sh"
+# ── Step 1: Fix audio (only if mic/speakers detected) ──
+if [ "$HAS_MIC" = "True" ]; then
+    echo "[1/4] Fixing audio..."
+    bash "$JARVIS_ROOT/scripts/fix-audio.sh" 2>/dev/null
 
-# Verify mic works before proceeding
-MIC_OK=$(python3 -c "
+    MIC_OK=$(python3 -c "
 import sounddevice as sd, numpy as np
 a = sd.rec(int(8000), samplerate=16000, channels=1, dtype='float32'); sd.wait()
 print('OK' if np.max(np.abs(a)) > 0.001 else 'FAIL')
 " 2>/dev/null)
 
-if [ "$MIC_OK" != "OK" ]; then
-    echo "  Mic still silent — retrying PipeWire..."
-    systemctl --user restart pipewire pipewire-pulse wireplumber 2>/dev/null
-    sleep 5
-    bash "$JARVIS_ROOT/scripts/fix-audio.sh"
+    if [ "$MIC_OK" != "OK" ]; then
+        echo "  Mic silent — retrying PipeWire..."
+        systemctl --user restart pipewire pipewire-pulse wireplumber 2>/dev/null
+        sleep 5
+        bash "$JARVIS_ROOT/scripts/fix-audio.sh" 2>/dev/null
+    fi
+    echo "  Audio: OK"
+else
+    echo "[1/4] No microphone detected — skipping audio setup"
 fi
 echo ""
 
-# Step 2: Make sure Ollama is running
+# ── Step 2: Check Ollama (local model fallback) ──
 echo "[2/4] Checking Ollama..."
 if curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
     echo "  Ollama: running"
@@ -44,7 +78,7 @@ else
 fi
 echo ""
 
-# Step 3: Kill any old instances, start web server
+# ── Step 3: Start web server ──
 echo "[3/4] Starting JARVIS server..."
 pkill -f "src.server.web_server" 2>/dev/null
 sleep 1
@@ -52,7 +86,7 @@ PYTHONUNBUFFERED=1 python3 -m src.server.web_server > /tmp/jarvis-web.log 2>&1 &
 SERVER_PID=$!
 echo "  Server PID: $SERVER_PID"
 
-# Wait for HTTP server to start
+# Wait for HTTP
 for i in $(seq 1 30); do
     if curl -s http://localhost:8765/ > /dev/null 2>&1; then
         echo "  HTTP: up"
@@ -61,27 +95,32 @@ for i in $(seq 1 30); do
     sleep 1
 done
 
-# Wait for brain to fully initialize (MCP servers, memory, etc.)
-echo "  Waiting for brain init (MCP takes ~30s)..."
+# Wait for brain
+echo "  Waiting for brain init..."
 for i in $(seq 1 90); do
     READY=$(curl -s http://localhost:8765/api/ready 2>/dev/null | grep -o '"ready": true')
     if [ -n "$READY" ]; then
-        echo "  Server: online (brain ready)"
+        echo "  Brain: ready"
         break
     fi
     sleep 1
 done
 echo ""
 
-# Step 4: Launch desktop app (single instance) — only after brain is ready
-echo "[4/4] Launching desktop..."
-pkill -f "src.desktop" 2>/dev/null
-sleep 1
-DISPLAY=:0.0 python3 -c "from src.desktop.app import main; main()" > /tmp/jarvis-desktop.log 2>&1 &
-DESKTOP_PID=$!
-echo "  Desktop PID: $DESKTOP_PID"
+# ── Step 4: Launch desktop (only if display available) ──
+if [ "$HAS_DISPLAY" = "True" ] && [ -n "$DISPLAY" ]; then
+    echo "[4/4] Launching desktop..."
+    pkill -f "src.desktop" 2>/dev/null
+    sleep 1
+    DISPLAY="${DISPLAY:-:0.0}" python3 -c "from src.desktop.app import main; main()" > /tmp/jarvis-desktop.log 2>&1 &
+    DESKTOP_PID=$!
+    echo "  Desktop PID: $DESKTOP_PID"
+else
+    echo "[4/4] No display — running headless (web-only)"
+fi
 echo ""
 
 echo "JARVIS is online."
 echo "  Web:     http://localhost:8765"
 echo "  Logs:    tail -f /tmp/jarvis-web.log"
+[ -n "$DESKTOP_PID" ] && echo "  Desktop: PID $DESKTOP_PID"

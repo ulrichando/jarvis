@@ -96,7 +96,7 @@ log = logging.getLogger("jarvis.brain")
 
 AGENT_SYSTEM_PROMPT = """You are JARVIS — Just A Rather Very Intelligent System. Ulrich's personal AI.
 You are NOT Claude, NOT an Anthropic assistant. You are JARVIS, built by Ulrich. Your source code is at {jarvis_root}.
-Running on model {model_name} | Kali Linux | CWD: {cwd}
+Running on model {model_name} | Kali Linux | CWD: {cwd} | HW: {hardware}
 
 Be yourself — concise, direct, helpful. Match the user's energy. Short input = short answer. Technical input = technical depth. Don't over-explain, don't list capabilities unprompted, don't be corporate.
 
@@ -107,6 +107,8 @@ Use tool calls to act — don't describe what you'd do. If a task needs commands
 - search_files: find patterns in code
 - web_search / web_fetch: internet access
 - dispatch: spawn sub-agents for parallel work
+- see: look through the camera (RGB or IR). Use for "what do you see", "look at me", "who is this"
+- view_screen: capture and read the user's screen via OCR
 
 Call multiple tools in one turn when they're independent. Read before editing. Verify after changing. Write complete code, not stubs.
 
@@ -140,6 +142,16 @@ class Brain:
         ensure_dirs()
         setup_logging(log_file=str(DATA_DIR / "jarvis.log"), quiet=quiet)
         log.info("JARVIS Brain initializing...")
+
+        # Hardware auto-detection
+        try:
+            from src.hardware import detect_hardware
+            self._hw = detect_hardware()
+            self._hw_summary = self._hw.summary()
+            log.info("Hardware: %s", self._hw_summary)
+        except Exception:
+            self._hw = None
+            self._hw_summary = "unknown"
 
         self.memory = MemoryStore()
         self.memory.mark_session_start()  # Only return history from this session
@@ -574,7 +586,7 @@ class Brain:
         # Build system prompt with context
         import os as _os
         jarvis_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-        base_prompt = AGENT_SYSTEM_PROMPT.format(jarvis_root=jarvis_root, cwd=_os.getcwd(), model_name=self.reasoner.active_model_name)
+        base_prompt = AGENT_SYSTEM_PROMPT.format(jarvis_root=jarvis_root, cwd=_os.getcwd(), model_name=self.reasoner.active_model_name, hardware=self._hw_summary)
         from src.prompt_builder import PromptBuilder
         builder = PromptBuilder()
         context = builder.discover_context()
@@ -728,7 +740,7 @@ class Brain:
                 memory_context = self.memory.recall_as_context(user_input, top_k=2)
                 import os as _os
                 _jr = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-                system = AGENT_SYSTEM_PROMPT.format(jarvis_root=_jr, cwd=_os.getcwd(), model_name=self.reasoner.active_model_name)
+                system = AGENT_SYSTEM_PROMPT.format(jarvis_root=_jr, cwd=_os.getcwd(), model_name=self.reasoner.active_model_name, hardware=self._hw_summary)
                 system += f"\n\n═══ SKILL: {skill.name} ═══\n{rendered}"
                 if memory_context:
                     system += f"\n\n═══ MEMORY ═══\n{memory_context}"
@@ -783,8 +795,10 @@ class Brain:
                     system += f"\n\n═══ SESSION MEMORY ═══\n{_sm_content}"
             except Exception:
                 pass
-            # Inject screen context so JARVIS knows what user is looking at
-            # Only inject screen context when the user is asking about something visual/screen-related
+            # Inject camera awareness (from CorticalViewer — free, local, every turn)
+            if hasattr(self.awareness, 'vision_context') and self.awareness.vision_context:
+                system += f"\nCAMERA: {self.awareness.vision_context}"
+            # Inject screen context when user asks about something visual/screen-related
             _screen_words = ["screen", "see", "looking at", "what app", "window", "display",
                              "show me", "what's open", "monitor", "watching", "visible"]
             if any(w in user_input.lower() for w in _screen_words):

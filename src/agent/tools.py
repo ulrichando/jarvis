@@ -603,6 +603,23 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "see",
+            "description": "Look through the user's webcam. Returns a detailed description of what you see. Use when the user asks 'what do you see', 'look at me', 'what am I holding', 'describe what's in front of you', or any visual question about the physical world. Costs an API call — only use when the user asks.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "What to focus on or describe (e.g., 'describe the person', 'read the text on the whiteboard', 'what object is being held up')",
+                        "default": "Describe what you see in detail.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "think",
             "description": "Use this tool to think through complex problems step by step before acting. Write out your reasoning. This doesn't execute anything — it just helps you reason clearly.",
             "parameters": {
@@ -1413,7 +1430,7 @@ TOOL_SCHEMAS = [
 # Tools allowed in plan/read-only mode
 READONLY_TOOLS = {
     "read_file", "Glob", "Grep", "web_search", "web_fetch", "think", "dispatch",
-    "view_screen", "tool_search", "ask_user", "todo_write",
+    "view_screen", "see", "tool_search", "ask_user", "todo_write",
     "TaskList", "TaskGet", "TaskOutput", "ListMcpResources", "LSP",
     "ConfigTool", "BriefTool", "EnterPlanMode", "ExitPlanMode",
     # Legacy alias
@@ -1487,6 +1504,8 @@ def execute_tool(name: str, args: dict, readonly: bool = False) -> str:
             return _exec_web_api(args)
         elif name == "view_screen":
             return _exec_view_screen(args)
+        elif name == "see":
+            return _exec_see(args)
         elif name == "tool_search":
             return _exec_tool_search(args)
         elif name == "think":
@@ -1647,6 +1666,97 @@ def _exec_view_screen(args: dict) -> str:
         return "\n".join(parts)
     except Exception as e:
         return f"Screen capture failed: {e}"
+
+
+def _exec_see(args: dict) -> str:
+    """Look through the webcam — returns a description of what JARVIS sees."""
+    prompt = args.get("prompt", "Describe what you see in detail.")
+    import time as _time
+
+    frame_b64 = None
+    source = ""
+
+    # 1. Try latest WebSocket frame (from desktop/browser camera stream)
+    try:
+        from src.server import _latest_camera_frame
+        if _latest_camera_frame.get("frame") and _time.time() - _latest_camera_frame.get("timestamp", 0) < 10:
+            frame_b64 = _latest_camera_frame["frame"]
+            source = "camera stream"
+    except ImportError:
+        pass
+
+    # 2. Try direct webcam capture via OpenCV (RGB + IR for face queries)
+    if not frame_b64:
+        try:
+            from src.vision.camera import capture_to_base64, is_camera_available, has_ir_camera, IR_CAMERA, RGB_CAMERA
+            # Use IR camera for face-related queries
+            _face_words = ["face", "who", "person", "identity", "recognize", "look at me"]
+            _use_ir = has_ir_camera() and any(w in prompt.lower() for w in _face_words)
+            cam_id = IR_CAMERA if _use_ir else RGB_CAMERA
+            if is_camera_available(cam_id):
+                frame_b64 = capture_to_base64(cam_id)
+                source = "IR camera" if _use_ir else "webcam"
+            elif is_camera_available(RGB_CAMERA):
+                frame_b64 = capture_to_base64(RGB_CAMERA)
+                source = "webcam"
+        except Exception:
+            pass
+
+    # 3. Try screen capture as last resort
+    if not frame_b64:
+        try:
+            import mss, base64, io
+            from PIL import Image
+            with mss.mss() as sct:
+                shot = sct.grab(sct.monitors[1])
+                img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+                img.thumbnail((1024, 768))
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=70)
+                frame_b64 = base64.b64encode(buf.getvalue()).decode()
+                source = "screen capture"
+        except Exception:
+            pass
+
+    if not frame_b64:
+        return "No camera or screen available. Say 'turn on camera' to start the webcam."
+
+    # Send to vision-capable model
+    try:
+        from src.reasoning.providers import ProviderRegistry
+        import asyncio
+
+        registry = ProviderRegistry()
+        full_prompt = f"{prompt}\n(Source: {source})"
+
+        # Run async vision query from sync context
+        async def _query():
+            return await registry.query_vision(frame_b64, full_prompt)
+
+        try:
+            loop = asyncio.get_running_loop()
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                result, provider = pool.submit(lambda: asyncio.run(_query())).result(timeout=30)
+        except RuntimeError:
+            result, provider = asyncio.run(_query())
+
+        if result:
+            return f"[{source}] {result}"
+        return f"Vision model returned no description. (source: {source})"
+    except Exception as e:
+        # Fall back to local CV analysis
+        try:
+            import base64
+            from src.vision.describe import analyze_image, describe_analysis
+            img_data = base64.b64decode(frame_b64)
+            tmp_path = "/tmp/jarvis_see_frame.jpg"
+            with open(tmp_path, "wb") as f:
+                f.write(img_data)
+            analysis = analyze_image(tmp_path)
+            return f"[{source}, local analysis] {describe_analysis(analysis)}"
+        except Exception:
+            return f"Vision failed: {e}"
 
 
 _GUI_APPS = {

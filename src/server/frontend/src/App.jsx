@@ -6,6 +6,8 @@ import HudPanel from './components/HudPanel'
 import ChatPanel from './components/ChatPanel'
 import SettingsPanel from './components/SettingsPanel'
 import NeuralLink from './components/NeuralLink'
+import CameraFeed from './components/CameraFeed'
+import ProviderSetup from './components/ProviderSetup'
 
 function App() {
   const [chatOpen, setChatOpen] = useState(false)
@@ -14,6 +16,8 @@ function App() {
   const [showReactor, setShowReactor] = useState(true)
   const [reactorState, setReactorState] = useState('idle')
   const [audioLevel, setAudioLevel] = useState(0)
+  const [cameraOn, setCameraOn] = useState(false)
+  const [setupOpen, setSetupOpen] = useState(false)
 
   const wsUrl = useMemo(() => `ws://${window.location.host || '127.0.0.1:8765'}/ws`, [])
   const { messages: wsMessages, sendMessage } = useWebSocket(wsUrl)
@@ -118,6 +122,16 @@ function App() {
         stopSpeaking()
         setReactorState('thinking')
       })
+    }
+
+    // Camera toggle from server
+    if (last.type === 'camera') {
+      setCameraOn(last.enabled)
+    }
+
+    // Provider failure — show setup wizard
+    if (last.type === 'provider_error') {
+      setSetupOpen(true)
     }
   }, [wsMessages, stopSpeaking])
 
@@ -337,7 +351,25 @@ function App() {
         <ArcReactor state={reactorState} isDesktop={isDesktop} audioLevel={audioLevel} theme={theme} />
       )}
 
-      {/* HUD Panels removed — clean sphere only */}
+      {/* Camera active indicator */}
+      {cameraOn && (
+        <div className="fixed top-4 right-4 z-50 flex items-center gap-2 px-3 py-1.5 rounded-full bg-[rgba(0,20,40,0.8)] border border-[rgba(0,229,255,0.3)]">
+          <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+          <span className="text-xs text-jarvis-bright/60 font-['Share_Tech_Mono',monospace]">CAM</span>
+        </div>
+      )}
+
+      {/* Camera feed — streams to server in background, no UI */}
+      <CameraFeed
+        active={cameraOn}
+        wsUrl={wsUrl}
+        onVisionEvent={(event) => {
+          if (event.type === 'person_appeared') {
+            const name = event.identity || 'someone'
+            sendMessage({ type: 'vision_context', text: name + ' appeared in front of the camera' })
+          }
+        }}
+      />
 
       {/* Neural Link — only when reactor + chat both visible */}
       {chatOpen && showReactor && isDesktop && <NeuralLink />}
@@ -354,6 +386,9 @@ function App() {
 
       {/* Settings */}
       <SettingsPanel isOpen={settingsOpen} onClose={closeSettings} />
+
+      {/* Provider setup wizard — appears when no AI providers work */}
+      <ProviderSetup isOpen={setupOpen} onClose={() => setSetupOpen(false)} />
 
     </div>
   )
