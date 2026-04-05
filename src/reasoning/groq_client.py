@@ -132,6 +132,15 @@ class GroqReasoner:
 
     @property
     def active_model_name(self) -> str:
+        if self._active_model and self._active_model != "none":
+            return self._active_model
+        # Not queried yet — return primary provider's model
+        try:
+            providers = self.providers.get_active_providers()
+            if providers:
+                return f"{providers[0].name}:{providers[0].model}"
+        except Exception:
+            pass
         return self._active_model
 
     async def query(

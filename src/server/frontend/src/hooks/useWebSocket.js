@@ -26,9 +26,16 @@ export default function useWebSocket(url) {
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data)
-          setMessages((prev) => [...prev, data])
+          // Keep only last 100 messages to prevent memory leak
+          setMessages((prev) => {
+            const next = [...prev, data]
+            return next.length > 100 ? next.slice(-50) : next
+          })
         } catch {
-          setMessages((prev) => [...prev, { type: 'raw', content: event.data }])
+          setMessages((prev) => {
+            const next = [...prev, { type: 'raw', content: event.data }]
+            return next.length > 100 ? next.slice(-50) : next
+          })
         }
       }
 
