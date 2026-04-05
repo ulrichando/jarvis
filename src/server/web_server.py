@@ -210,12 +210,22 @@ class JarvisWebServer:
         except (ConnectionResetError, ConnectionError, RuntimeError, Exception):
             pass  # Client disconnected — not an error
 
+    MAX_CLIENTS = 15
+
     async def websocket_handler(self, request: web.Request) -> web.WebSocketResponse:
-        ws = web.WebSocketResponse()
+        # Connection limit
+        if len(self.clients) >= self.MAX_CLIENTS:
+            ws = web.WebSocketResponse()
+            await ws.prepare(request)
+            await ws.send_json({"type": "error", "error": "Too many connections"})
+            await ws.close(code=1013, message=b"Try again later")
+            return ws
+
+        ws = web.WebSocketResponse(heartbeat=20.0, max_msg_size=16 * 1024 * 1024)
         await ws.prepare(request)
         self.clients.add(ws)
         peer = request.remote
-        print(f"[JARVIS] Client connected: {peer}")
+        print(f"[JARVIS] Client connected: {peer} ({len(self.clients)} total)")
 
         try:
             async for msg in ws:
@@ -298,13 +308,22 @@ class JarvisWebServer:
                     continue
         finally:
             self.clients.discard(ws)
-            # Clean up ambient listener resources
-            if hasattr(ws, '_ambient'):
-                ws._ambient.speech_buffer.clear()
-                ws._ambient._pre_buffer.clear()
-            if not ws.closed:
-                await ws.close()
-            print(f"[JARVIS] Client disconnected: {peer}")
+            # Clean up all custom attributes to prevent memory leaks
+            for attr in ('_ambient', '_viewer', '_audio_logged', '_vision_logged', '_init_warned'):
+                if hasattr(ws, attr):
+                    obj = getattr(ws, attr)
+                    if hasattr(obj, 'speech_buffer'):
+                        obj.speech_buffer.clear()
+                    if hasattr(obj, '_pre_buffer'):
+                        obj._pre_buffer.clear()
+                    try: delattr(ws, attr)
+                    except: pass
+            try:
+                if not ws.closed:
+                    await ws.close()
+            except Exception:
+                pass
+            print(f"[JARVIS] Client disconnected: {peer} ({len(self.clients)} remaining)")
 
         return ws
 
@@ -1455,13 +1474,18 @@ class JarvisWebServer:
                 self._server_listener.jarvis_speaking = False
 
     async def _broadcast(self, data: dict):
-        """Send a JSON message to all connected WebSocket clients."""
+        """Send a JSON message to all connected WebSocket clients. Prunes dead ones."""
+        dead = []
         for ws in list(self.clients):
             try:
                 if not ws.closed:
                     await ws.send_json(data)
+                else:
+                    dead.append(ws)
             except Exception:
-                pass
+                dead.append(ws)
+        for ws in dead:
+            self.clients.discard(ws)
 
     async def _speak_system(self, text: str):
         """Generate TTS and play. User can interrupt by speaking."""
@@ -1966,7 +1990,7 @@ class JarvisWebServer:
         with open("/tmp/jarvis-server.pid", "w") as f:
             f.write(str(os.getpid()))
 
-        app = web.Application()
+        app = web.Application(client_max_size=16 * 1024 * 1024)  # 16MB max request
         app.router.add_get("/ws", self.websocket_handler)
         app.router.add_get("/tts", self.tts_handler)
         app.router.add_get("/api/tts", self.tts_handler)
