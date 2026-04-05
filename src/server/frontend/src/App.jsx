@@ -78,17 +78,13 @@ function App() {
   const audioRef = useRef(null)
 
   const stopSpeaking = useCallback(() => {
-    // Stop Edge TTS audio playback
     if (audioRef.current) {
       try { audioRef.current.pause() } catch { /* ignore */ }
       audioRef.current = null
-      // Tell server to unmute ambient listener
       sendMessage({ type: 'tts_state', speaking: false })
+      document.dispatchEvent(new CustomEvent('jarvis-tts-end'))
+      setReactorState('idle')
     }
-    // Also cancel browser TTS in case it was triggered externally
-    if ('speechSynthesis' in window) window.speechSynthesis.cancel()
-    document.dispatchEvent(new CustomEvent('jarvis-tts-end'))
-    setReactorState('idle')
   }, [sendMessage])
 
   // Listen for user-speaking event from voice detection
@@ -97,19 +93,40 @@ function App() {
     return () => document.removeEventListener('user-speaking', stopSpeaking)
   }, [stopSpeaking])
 
-  // TTS playback callback — called by ChatPanel AND voice query responses
+  // TTS playback — deduplicated. Called from ChatPanel onSpoken AND App WS useEffect.
+  const ttsPlayedRef = useRef('')
   const playSpoken = useCallback((data) => {
     if (!data.spoken || data.spoken.length <= 3 || data.partial) {
       if (!data.spoken && data.final) setTimeout(() => setReactorState('idle'), 1000)
       return
     }
-    // Only the primary client speaks (browser always, desktop only when browser absent)
+    // Deduplicate — don't play same text twice
+    const sig = data.spoken.substring(0, 60)
+    if (ttsPlayedRef.current === sig) return
+    ttsPlayedRef.current = sig
+
     const isTtsOwner = !isDesktop || showReactor
     if (!isTtsOwner) return
+
+    // Desktop: server plays TTS via ffplay — only update state, don't play audio
+    if (isDesktop) {
+      setReactorState('speaking')
+      window.__lastSpokenText = data.spoken
+      document.dispatchEvent(new CustomEvent('jarvis-tts-start'))
+      // Server handles playback — just set a timer to reset state
+      const wordCount = data.spoken.split(' ').length
+      const estimatedMs = Math.max(2000, wordCount * 400)
+      setTimeout(() => {
+        setReactorState('idle')
+        document.dispatchEvent(new CustomEvent('jarvis-tts-end'))
+      }, estimatedMs)
+      return
+    }
 
     queueMicrotask(() => {
       stopSpeaking()
       setReactorState('speaking')
+      window.__lastSpokenText = data.spoken  // For echo detection
       document.dispatchEvent(new CustomEvent('jarvis-tts-start'))
       sendMessage({ type: 'tts_state', speaking: true })
 
@@ -118,7 +135,10 @@ function App() {
       const audio = new Audio(ttsUrl)
       audioRef.current = audio
 
+      let _done = false
       const onDone = () => {
+        if (_done) return  // Only fire once
+        _done = true
         if (audioRef.current === audio) audioRef.current = null
         setReactorState('idle')
         document.dispatchEvent(new CustomEvent('jarvis-tts-end'))
@@ -132,7 +152,6 @@ function App() {
   }, [isDesktop, showReactor, stopSpeaking, sendMessage])
 
   // Handle incoming WebSocket messages — handoff, status, camera, TTS
-  const lastPlayedRef = useRef(null)
   useEffect(() => {
     if (wsMessages.length === 0) return
     const last = wsMessages[wsMessages.length - 1]
@@ -154,13 +173,9 @@ function App() {
       queueMicrotask(() => { stopSpeaking(); setReactorState('thinking') })
     }
 
-    // Play TTS for voice query responses — only once per message
+    // Play TTS for voice query responses (dedup handled inside playSpoken)
     if (last.type === 'message' && last.spoken && last.spoken.length > 3 && !last.partial) {
-      const msgId = last.spoken.substring(0, 50) + last.latency_ms
-      if (lastPlayedRef.current !== msgId) {
-        lastPlayedRef.current = msgId
-        playSpoken(last)
-      }
+      playSpoken(last)
     }
 
     if (last.type === 'camera') setCameraOn(last.enabled)
@@ -245,29 +260,47 @@ function App() {
         let chunks = []
         let recording = false
         let silenceTimer = null
+        let _recordStart = 0
+        let lastJarvisSpeech = ''  // Echo detection — track what JARVIS last said
+
+        // Track JARVIS's speech for echo detection
+        document.addEventListener('jarvis-tts-start', () => {
+          // Capture the last spoken text from the most recent playSpoken call
+          if (window.__lastSpokenText) lastJarvisSpeech = window.__lastSpokenText.toLowerCase()
+        })
 
         mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data) }
         mediaRecorder.onstop = async () => {
           const blob = new Blob(chunks, { type: mediaRecorder.mimeType })
           chunks = []
-          // Don't upload if TTS is playing — this recording is JARVIS's own voice
-          if (isSpeakingTTS) { console.log('[VOICE] Discarded — TTS was playing'); return }
-          console.log('[VOICE] Recording stopped, blob size:', blob.size)
-          if (blob.size < 2000) { console.log('[VOICE] Too small, skipping'); return }
+          if (isSpeakingTTS) return  // TTS playing — discard
+          if (blob.size < 4000) return  // Too small — noise
           setReactorState('thinking')
           try {
             const form = new FormData()
             form.append('audio', blob, 'speech.webm')
-            console.log('[VOICE] Uploading to /api/transcribe...')
             const resp = await fetch('/api/transcribe', { method: 'POST', body: form })
             const data = await resp.json()
-            console.log('[VOICE] Transcription:', data.text)
-            if (data.text && data.text.trim().length > 1) {
-              sendMessage({ type: 'query', text: data.text })
-            } else {
-              setReactorState('idle')
+              const text = (data.text || '').trim()
+            if (!text || text.length <= 2) { setReactorState('idle'); return }
+
+            // Only filter obvious Whisper artifacts (single word noise)
+            if (text.split(' ').length < 2) { setReactorState('idle'); return }
+
+            // Echo detection — if JARVIS just spoke these words, skip
+            if (lastJarvisSpeech) {
+              const lower = text.toLowerCase()
+              const jWords = new Set(lastJarvisSpeech.split(/\s+/))
+              const heard = lower.split(/\s+/)
+              const overlap = heard.filter(w => jWords.has(w)).length / Math.max(heard.length, 1)
+              if (overlap > 0.5) { setReactorState('idle'); return }
             }
-          } catch (err) { console.log('[VOICE] Error:', err); setReactorState('idle') }
+
+            // Send to server — the LLM decides if this is directed at JARVIS
+            // Mark as ambient so the server can use a fast classifier
+            console.log('[VOICE] Heard:', text)
+            sendMessage({ type: 'query', text: text, ambient: true })
+          } catch { setReactorState('idle') }
         }
 
         // VAD: detect speech, record, interrupt TTS on barge-in
@@ -285,8 +318,8 @@ function App() {
           }
         })
         document.addEventListener('jarvis-tts-end', () => {
-          console.log('[VAD] TTS ended — mic muted for 2s')
-          setTimeout(() => { isSpeakingTTS = false; console.log('[VAD] Mic unmuted') }, 2000)
+          console.log('[VAD] TTS ended — mic muted for 4s')
+          setTimeout(() => { isSpeakingTTS = false; console.log('[VAD] Mic unmuted') }, 4000)
         })
 
         // Use time-domain data for proper RMS level detection
@@ -307,17 +340,16 @@ function App() {
             return
           }
 
-          // RMS thresholds: speech ~0.03-0.1, silence ~0.001-0.01
-          const threshold = 0.03
-          const silenceThreshold = 0.01
+          // RMS thresholds — raised to avoid background noise triggering
+          const threshold = 0.05
+          const silenceThreshold = 0.02
 
           if (avg > threshold && !recording) {
-            // Only dispatch user-speaking if NOT during/after TTS
-            // (otherwise it would kill JARVIS's own speech)
             if (!isSpeakingTTS) {
               document.dispatchEvent(new CustomEvent('user-speaking'))
             }
             chunks = []
+            _recordStart = Date.now()
             try { mediaRecorder.start() } catch { /* ignore */ }
             recording = true
             clearTimeout(silenceTimer)
@@ -325,6 +357,13 @@ function App() {
           if (avg < silenceThreshold && recording) {
             clearTimeout(silenceTimer)
             silenceTimer = setTimeout(() => {
+              // Discard recordings shorter than 0.8s — just noise clicks
+              if (Date.now() - _recordStart < 800) {
+                try { mediaRecorder.stop() } catch { /* ignore */ }
+                recording = false
+                chunks = []
+                return
+              }
               try { mediaRecorder.stop() } catch { /* ignore */ }
               recording = false
             }, 200)
