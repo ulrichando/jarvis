@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import secrets
+import signal
 import time
 import io
 import uuid
@@ -201,6 +202,14 @@ class JarvisWebServer:
 
         return web.json_response({"chunks": result})
 
+    async def _safe_send(self, ws, data: dict):
+        """Send JSON to a WebSocket, silently handle disconnects."""
+        try:
+            if not ws.closed:
+                await ws.send_json(data)
+        except (ConnectionResetError, ConnectionError, RuntimeError, Exception):
+            pass  # Client disconnected — not an error
+
     async def websocket_handler(self, request: web.Request) -> web.WebSocketResponse:
         ws = web.WebSocketResponse()
         await ws.prepare(request)
@@ -210,14 +219,15 @@ class JarvisWebServer:
 
         try:
             async for msg in ws:
-                if msg.type == web.WSMsgType.BINARY:
-                    await self._handle_audio(ws, msg.data)
-                elif msg.type == web.WSMsgType.TEXT:
-                    try:
-                        data = json.loads(msg.data)
-                    except json.JSONDecodeError:
-                        continue
-                    msg_type = data.get("type", "query")
+                try:
+                    if msg.type == web.WSMsgType.BINARY:
+                        await self._handle_audio(ws, msg.data)
+                    elif msg.type == web.WSMsgType.TEXT:
+                        try:
+                            data = json.loads(msg.data)
+                        except json.JSONDecodeError:
+                            continue
+                        msg_type = data.get("type", "query")
 
                     if msg_type == "query":
                         # Always try command interception first (camera/restart/etc work without brain)
@@ -282,6 +292,10 @@ class JarvisWebServer:
                         interval = data.get("interval", 10)
                         if hasattr(ws, '_viewer'):
                             ws._viewer.recognition.enable_ai_vision(enabled, interval)
+                except Exception as _msg_err:
+                    # Individual message handling failed — log and continue
+                    print(f"[JARVIS] Message error: {_msg_err}")
+                    continue
         finally:
             self.clients.discard(ws)
             # Clean up ambient listener resources
@@ -406,11 +420,16 @@ class JarvisWebServer:
                                 "content": "Restarting...",
                                 "model": "", "latency_ms": 0})
             print("[JARVIS] Restart requested via voice/text")
-            await asyncio.sleep(2)
-            # Kill desktop overlay before restarting
+            await asyncio.sleep(1)
+            # Graceful shutdown — close all clients, kill desktop, then exit
+            for c in list(self.clients):
+                try: await c.close()
+                except: pass
             import subprocess as _sp_kill
             _sp_kill.run(["pkill", "-f", "src.desktop.app"], capture_output=True)
-            os._exit(0)
+            # Use signal to trigger clean aiohttp shutdown
+            import signal
+            os.kill(os.getpid(), signal.SIGTERM)
             return
 
         # UI handoff — voice-friendly: strip punctuation, match substrings
@@ -2417,11 +2436,11 @@ class JarvisWebServer:
                 "type": "message", "role": "jarvis",
                 "content": "Restarting...", "spoken": "",
             })
-            print("[JARVIS] Restart requested — exiting for relaunch")
+            print("[JARVIS] Restart requested via API — exiting for relaunch")
             await asyncio.sleep(1)
-            import subprocess as _sp_k
+            import subprocess as _sp_k, signal as _sig
             _sp_k.run(["pkill", "-f", "src.desktop.app"], capture_output=True)
-            os._exit(0)
+            os.kill(os.getpid(), _sig.SIGTERM)
         app.router.add_post("/api/restart", _restart_handler)
         # Remote session API — makes JARVIS cloud-capable
         app.router.add_post("/api/remote/connect", self.remote_connect_handler)
@@ -2691,7 +2710,25 @@ class JarvisWebServer:
                 print(f"[JARVIS] Bridge auth:  NONE (open access)")
 
 
-        await asyncio.Future()
+        # Keep running until SIGTERM (graceful shutdown)
+        stop_event = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, lambda: stop_event.set())
+        print("[JARVIS] Server running. SIGTERM to stop.")
+        await stop_event.wait()
+
+        # Graceful cleanup
+        print("[JARVIS] Shutting down...")
+        for ws in list(self.clients):
+            try: await ws.close()
+            except: pass
+        self._server_mic_running = False
+        await runner.cleanup()
+        # Remove PID file
+        try: os.unlink("/tmp/jarvis-server.pid")
+        except: pass
+        print("[JARVIS] Server stopped.")
 
 
 def main():
