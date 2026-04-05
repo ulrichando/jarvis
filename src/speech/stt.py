@@ -30,7 +30,9 @@ def _get_model():
         except Exception:
             pass
 
-        fast_model = "tiny.en"
+        # Use large-v3-turbo for best accuracy with accents and proper nouns
+        # Fast on GPU (RTX 2060+), best transcription quality available
+        fast_model = "large-v3-turbo"
         _whisper_model = WhisperModel(
             fast_model,
             device=device,

@@ -299,31 +299,12 @@ class JarvisWebServer:
         if not text:
             return
 
-        # Ambient speech classification — let the LLM decide if this is for JARVIS
+        # Voice input — mark as ambient so the LLM knows it came from the mic
         is_ambient = data.get("ambient", False)
-        if is_ambient and self.brain:
-            try:
-                classify_prompt = (
-                    f'You heard this through your microphone: "{text}"\n\n'
-                    f'Is someone talking TO YOU (asking a question, giving a command, greeting you), '
-                    f'or is this just background noise (TV, music, other people talking to each other, random fragments)?\n\n'
-                    f'Signs it\'s FOR YOU: questions, commands, greetings, mentions "jarvis", clear complete sentences directed at an AI.\n'
-                    f'Signs it\'s BACKGROUND: fragments, TV dialogue, music lyrics, people talking to each other, incomplete thoughts.\n\n'
-                    f'Reply ONLY "yes" or "no".'
-                )
-                result = await asyncio.wait_for(
-                    self.brain.reasoner.query_fast(classify_prompt,
-                        "You are JARVIS, a voice AI assistant. Classify if speech is directed at you. Reply ONLY 'yes' or 'no'. When unsure, say 'yes'."),
-                    timeout=5,
-                )
-                result_clean = result.strip().lower().rstrip(".!").split()[0] if result.strip() else "yes"
-                if result_clean == "no":
-                    print(f'[JARVIS] Ambient filtered: "{text[:40]}"')
-                    return
-                print(f'[JARVIS] Ambient accepted: "{text[:40]}"')
-            except Exception as e:
-                print(f'[JARVIS] Classifier timeout/error, accepting: "{text[:40]}"')
-                # Timeout — accept the query rather than dropping it
+        if is_ambient:
+            # Prefix with voice context so the LLM can decide how to respond
+            text = f"[voice input] {text}"
+            print(f'[JARVIS] Voice: "{text[14:54]}"')
 
         # Normalize for voice-friendly matching (Whisper adds punctuation/filler)
         text_lower = text.lower().strip()
@@ -634,7 +615,12 @@ class JarvisWebServer:
         except ImportError:
             pass
 
-        # Don't send empty responses
+        # Never leave voice input unanswered
+        is_voice = text.startswith("[voice input]")
+        if (not full_response or not full_response.strip()) and is_voice:
+            full_response = "Sorry, I didn't catch that. Say again?"
+            speech_buffer = full_response
+
         if full_response and full_response.strip():
             # For speech: use only the final LLM turn (after tools)
             if used_tools:
@@ -666,10 +652,9 @@ class JarvisWebServer:
                     "voice_style": voice_style,
                 })
 
-            # Server-side TTS — play through OS speakers
-            # Desktop WebKit can't reliably play audio (autoplay blocked)
-            # So the server plays it directly via the TTS system
-            if spoken and len(spoken) > 3:
+            # Server-side TTS — only for voice input, not typed text
+            # CLI/typed queries stay text-only (like Claude Code)
+            if spoken and len(spoken) > 3 and is_voice:
                 clients = getattr(self, '_active_clients', {})
                 if clients.get("desktop") and not clients.get("browser"):
                     try:
