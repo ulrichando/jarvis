@@ -592,6 +592,11 @@ class JarvisWebServer:
                                     spoken = self._clean_for_speech(first_sentence)
                                     if spoken and len(spoken) > 5:
                                         latency = int((time.time() - start) * 1000)
+                                        # Speak first sentence immediately for voice queries
+                                        if is_voice:
+                                            clients = getattr(self, '_active_clients', {})
+                                            if clients.get("desktop") and not clients.get("browser"):
+                                                asyncio.create_task(self._speak_system(spoken))
                                         await ws.send_json({
                                             "type": "message", "role": "jarvis",
                                             "content": first_sentence,
@@ -691,14 +696,22 @@ class JarvisWebServer:
                 })
 
             # Server-side TTS — only for voice input, not typed text
-            # CLI/typed queries stay text-only (like Claude Code)
             if spoken and len(spoken) > 3 and is_voice:
                 clients = getattr(self, '_active_clients', {})
                 if clients.get("desktop") and not clients.get("browser"):
-                    try:
-                        await asyncio.wait_for(self._speak_system(spoken), timeout=30)
-                    except Exception as e:
-                        print(f"[JARVIS] Server TTS error: {e}")
+                    # If first sentence already spoken, speak only the remainder
+                    if first_sent and first_spoken_end > 0:
+                        remainder = self._clean_for_speech(spoken[first_spoken_end:].strip())
+                        if remainder and len(remainder) > 3:
+                            try:
+                                await asyncio.wait_for(self._speak_system(remainder), timeout=30)
+                            except Exception as e:
+                                print(f"[JARVIS] Server TTS error: {e}")
+                    else:
+                        try:
+                            await asyncio.wait_for(self._speak_system(spoken), timeout=30)
+                        except Exception as e:
+                            print(f"[JARVIS] Server TTS error: {e}")
 
     async def _handle_audio(self, ws: web.WebSocketResponse, data: bytes):
         """Handle audio — either push-to-talk blob or ambient stream chunk.
