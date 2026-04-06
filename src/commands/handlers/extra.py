@@ -949,6 +949,11 @@ async def cmd_effort(ctx: CommandContext) -> CommandResult:
 
     if level in effort_info:
         brain._effort_level = level
+        # Push to provider registry immediately
+        try:
+            brain.reasoner.providers.set_effort(level)
+        except Exception:
+            pass
         # Persist preference
         settings_path = os.path.expanduser("~/.jarvis/settings.json")
         try:

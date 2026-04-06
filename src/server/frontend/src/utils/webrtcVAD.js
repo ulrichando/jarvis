@@ -56,7 +56,7 @@ class WebRTCVAD {
           this.onSpeech()
         }
         silenceStart = Date.now()
-      } else if (speaking && Date.now() - silenceStart > 300) {
+      } else if (speaking && Date.now() - silenceStart > 500) {
         speaking = false
         this.onSilence()
       }

@@ -17,6 +17,12 @@ import io
 import uuid
 from pathlib import Path
 
+# Suppress JACK/ALSA noise before any audio library loads
+os.environ.setdefault("JACK_NO_AUDIO_RESERVATION", "1")
+os.environ.setdefault("PYTHONWARNINGS", "ignore")
+# Tell ALSA not to complain about missing virtual devices
+os.environ.setdefault("ALSA_CARD", "default")
+
 import numpy as np
 import edge_tts
 from aiohttp import web
@@ -1419,7 +1425,7 @@ class JarvisWebServer:
 
         def _mic_thread():
             """Server mic with auto-recovery on device failure."""
-            import pyaudio, numpy as np, time as _time
+            import sys, pyaudio, numpy as np, time as _time
             from src.speech.ambient import AmbientListener
 
             MAX_RETRIES = 5
@@ -1429,7 +1435,16 @@ class JarvisWebServer:
                 pa = None
                 stream = None
                 try:
-                    pa = pyaudio.PyAudio()
+                    # Suppress JACK/ALSA stderr spam during PyAudio init
+                    _devnull = open(os.devnull, 'w')
+                    _old_stderr = os.dup(2)
+                    os.dup2(_devnull.fileno(), 2)
+                    try:
+                        pa = pyaudio.PyAudio()
+                    finally:
+                        os.dup2(_old_stderr, 2)
+                        os.close(_old_stderr)
+                        _devnull.close()
                     listener = AmbientListener()
                     self._server_listener = listener
 

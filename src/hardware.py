@@ -113,24 +113,18 @@ class HardwareProfile:
 _hw: HardwareProfile | None = None
 
 
-def detect_hardware() -> HardwareProfile:
-    """Detect all hardware — cached after first call."""
-    global _hw
-    if _hw is not None:
-        return _hw
-
-    hw = HardwareProfile()
-
-    # ── Cameras ──
+def _probe_cameras(hw: "HardwareProfile"):
+    """Probe camera devices — called lazily, only when vision is needed."""
     try:
         import cv2
+        os.environ.setdefault("OPENCV_LOG_LEVEL", "SILENT")
+        cv2.setLogLevel(0)
         for i in range(5):
-            cap = cv2.VideoCapture(i)
+            cap = cv2.VideoCapture(i, cv2.CAP_V4L2)
             if cap.isOpened():
                 w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                 h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 cap.release()
-                # Detect IR: greyscale format at 576x360 is typically IR
                 cam_type = "ir" if (w == 576 and h == 360 and i >= 2) else "rgb"
                 hw.cameras.append({"id": i, "type": cam_type, "res": f"{w}x{h}"})
                 if cam_type == "rgb" and not hw.has_rgb_camera:
@@ -143,6 +137,25 @@ def detect_hardware() -> HardwareProfile:
                 cap.release()
     except Exception:
         pass
+
+
+def detect_hardware(include_cameras: bool = False) -> HardwareProfile:
+    """Detect hardware — cached after first call.
+
+    Cameras are NOT probed on startup (expensive, noisy). Pass include_cameras=True
+    only when vision is actually needed — e.g. when the LLM calls a camera tool.
+    """
+    global _hw
+    if _hw is not None:
+        # If cameras were skipped before but are now requested, probe them now
+        if include_cameras and not _hw.cameras:
+            _probe_cameras(_hw)
+        return _hw
+
+    hw = HardwareProfile()
+
+    if include_cameras:
+        _probe_cameras(hw)
 
     # ── Fingerprint ──
     try:

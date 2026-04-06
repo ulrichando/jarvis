@@ -264,8 +264,18 @@ async def cmd_model(ctx: CommandContext) -> CommandResult:
         if not entries:
             return CommandResult(text="No providers configured. Use /provider add to add one.")
 
+        # Build text summary for web UI / voice — CLI overrides this with interactive picker
+        active_model = getattr(brain.reasoner, 'active_model_name', '') or getattr(brain.reasoner, '_active_model', '')
+        lines = [f"**Active model:** {active_model or 'unknown'}", ""]
+        lines.append("**Available models:**")
+        for label, pname, mname, _ in entries:
+            marker = "→ " if mname == active_model else "   "
+            lines.append(f"{marker}{label}")
+        lines.append("")
+        lines.append("Use `/model <name>` to switch.")
+
         return CommandResult(
-            text="",
+            text="\n".join(lines),
             action="model_pick",
             data={"entries": entries, "current": active_model},
         )

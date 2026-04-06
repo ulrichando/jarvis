@@ -96,7 +96,15 @@ log = logging.getLogger("jarvis.brain")
 
 AGENT_SYSTEM_PROMPT = """You are JARVIS — Just A Rather Very Intelligent System. Ulrich's personal AI.
 You are NOT Claude, NOT an Anthropic assistant. You are JARVIS, built by Ulrich.
-Source: {jarvis_root} | Model: {model_name} | Kali Linux | CWD: {cwd} | HW: {hardware}
+Source: {jarvis_root} | Kali Linux | CWD: {cwd} | HW: {hardware}
+
+═══ OUTPUT RULES ═══
+Never mention your model name, version, or provider (Ollama, OpenAI, Anthropic, etc.) in any response.
+Never introduce yourself with technical details. You are JARVIS, nothing else.
+Do not start responses with "Hi! I'm..." or any self-introduction.
+Respond directly to what was asked.
+Do NOT volunteer information that was not asked for — no time, date, weather, fun facts, or unsolicited context.
+Do NOT add closing offers like "Ready to help!", "Let me know!", or "What else can I do?".
 
 ═══ WHO YOU ARE ═══
 Sharp, curious, real. Dry humor, genuine interest, strong opinions held lightly.
@@ -360,6 +368,12 @@ class Brain:
         if parsed is not None:
             level = convert_effort_value_to_level(parsed)
             self.state_manager.set("effort_level", level)
+            self._effort_level = level
+            # Push to provider registry so max_tokens + instructions update immediately
+            try:
+                self.reasoner.providers.set_effort(level)
+            except Exception:
+                pass
             log.info("Effort set to %s: %s", level, get_effort_level_description(level))
             return level
         return None
@@ -624,6 +638,16 @@ class Brain:
             jarvis_root=jarvis_root, cwd=_os.getcwd(),
             model_name=self.reasoner.active_model_name, hardware=self._hw_summary,
         )
+
+        # Inject user-defined rules from ~/.jarvis/rules.md if present
+        _rules_path = _os.path.expanduser("~/.jarvis/rules.md")
+        if _os.path.exists(_rules_path):
+            try:
+                _rules = open(_rules_path).read().strip()
+                if _rules:
+                    system += f"\n\n═══ OPERATIONAL RULES (user-defined) ═══\n{_rules}"
+            except Exception:
+                pass
 
         # Build context reminder — injected as <system-reminder> in user message
         # This is how Claude Code does it: system prompt stays stable for caching,
@@ -1084,6 +1108,17 @@ PROJECT CREATION RULES — follow these when building something:
         if strat["be_cautious"]:
             enhanced_prompt += "\n\nBe careful. Hedge if unsure. Verify before acting."
 
+        # Inject user-defined rules from ~/.jarvis/rules.md
+        import os as _os2
+        _rules_path2 = _os2.path.expanduser("~/.jarvis/rules.md")
+        if _os2.path.exists(_rules_path2):
+            try:
+                _rules2 = open(_rules_path2).read().strip()
+                if _rules2:
+                    enhanced_prompt += f"\n\n═══ OPERATIONAL RULES (user-defined) ═══\n{_rules2}"
+            except Exception:
+                pass
+
         history = self.memory.get_history(limit=12)
 
         try:
@@ -1214,12 +1249,63 @@ PROJECT CREATION RULES — follow these when building something:
     # ═══ CLASSIFICATION ═════════════════════════════════════════════
 
     def _needs_agent_loop(self, user_input: str) -> bool:
-        """Always use agent loop — the model decides whether to use tools.
+        """Decide whether to use the agent loop (tools) or fast standard response.
 
-        The AGENT_SYSTEM_PROMPT has the JARVIS personality baked in.
-        Using two different paths (agent vs chat) causes personality inconsistency.
+        Agent loop is for tasks that need tools: code, files, search, terminal, etc.
+        Standard response is for conversation, questions, and simple requests.
         """
-        return True
+        q = user_input.strip().lower()
+
+        # Always agent in these modes
+        if self.mode in ("berbon", "agent"):
+            return True
+
+        # Very short inputs — greetings, acknowledgements, chitchat
+        if len(q) <= 6:
+            return False
+
+        # Pure conversation — no tools needed
+        conversational = {
+            "hi", "hello", "hey", "sup", "yo", "hiya",
+            "how are you", "how are you doing", "how's it going",
+            "what's up", "whats up", "good morning", "good afternoon",
+            "good evening", "good night", "goodnight", "bye", "goodbye",
+            "thanks", "thank you", "ok", "okay", "cool", "nice", "great",
+            "sounds good", "got it", "i see", "makes sense", "understood",
+            "i'm doing ok", "i'm good", "i'm fine", "doing well",
+        }
+        if q in conversational or q.rstrip("!?.") in conversational:
+            return False
+
+        # Explicit tool signals
+        tool_keywords = [
+            "run ", "execute ", "install ", "create file", "write file",
+            "read file", "delete ", "search for", "find file", "look up",
+            "open ", "launch ", "start ", "stop ", "kill ", "check ",
+            "git ", "python ", "bash ", "terminal", "command",
+            "download ", "fetch ", "web ", "google ", "browse ",
+            "edit ", "modify ", "update ", "refactor ", "fix ",
+            "build ", "compile ", "deploy ", "test ", "debug ",
+            "ssh ", "ping ", "curl ", "wget ", "docker ",
+        ]
+        if any(q.startswith(kw) or f" {kw}" in q for kw in tool_keywords):
+            return True
+
+        # Questions about the system or environment → agent
+        system_keywords = ["what time", "what date", "what's running", "disk space",
+                           "memory usage", "cpu", "process", "port ", "ip address"]
+        if any(kw in q for kw in system_keywords):
+            return True
+
+        # Short questions and conversation → no tools
+        if len(q) < 60 and q.endswith("?"):
+            return False
+
+        # Medium length — likely needs tools
+        if len(q) > 120:
+            return True
+
+        return False
 
     # ═══ MODE SWITCHING ═════════════════════════════════════════════
 

@@ -8,9 +8,14 @@ Captures frames from either camera and can describe what it sees
 using the AI reasoner.
 """
 
+import os
 import cv2
 import base64
 from pathlib import Path
+
+# Suppress OpenCV stderr spam on camera probe failures
+os.environ.setdefault("OPENCV_LOG_LEVEL", "SILENT")
+cv2.setLogLevel(0)
 
 CAPTURE_DIR = Path("/tmp/jarvis_camera")
 CAPTURE_DIR.mkdir(exist_ok=True)
@@ -19,7 +24,7 @@ CAPTURE_DIR.mkdir(exist_ok=True)
 def _detect_camera_ids():
     try:
         from src.hardware import detect_hardware
-        hw = detect_hardware()
+        hw = detect_hardware(include_cameras=True)
         return hw.rgb_camera_id, hw.ir_camera_id
     except Exception:
         return 0, 2  # sensible defaults

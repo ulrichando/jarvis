@@ -625,6 +625,449 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+# Commands with fixed enumerable options — shown as visual pickers in the CLI
+_COMMAND_OPTIONS: dict[str, list[tuple[str, str]]] = {
+    # ── Core toggles ───────────────────────────────────────────────
+    "effort": [
+        ("low",    "Minimal reasoning, fastest responses"),
+        ("medium", "Balanced depth and speed"),
+        ("high",   "Deep reasoning, thorough answers"),
+        ("max",    "Maximum effort, extended thinking"),
+    ],
+    "mode": [
+        ("normal", "Standard conversational mode"),
+        ("agent",  "Autonomous agent with tools"),
+        ("plan",   "Read-only planning mode"),
+        ("berbon", "Fully autonomous mode"),
+        ("cli",    "CLI-optimised mode"),
+    ],
+    "theme": [
+        ("dark",  "Dark terminal theme"),
+        ("light", "Light terminal theme"),
+        ("auto",  "Follow system preference"),
+    ],
+    "permissions": [
+        ("read_only",  "Read files only, no writes or commands"),
+        ("standard",   "Normal tool access"),
+        ("full",       "Full tool access including writes"),
+        ("dangerous",  "Unrestricted access"),
+    ],
+    "debug": [
+        ("on",    "Enable all debug logging"),
+        ("off",   "Disable debug logging"),
+        ("api",   "Toggle API/provider logs"),
+        ("hooks", "Toggle hooks logs"),
+        ("tools", "Toggle tool execution logs"),
+        ("mcp",   "Toggle MCP logs"),
+    ],
+    "voice": [
+        ("on",       "Enable voice input/output"),
+        ("off",      "Disable voice"),
+        ("language", "Change voice language"),
+    ],
+    "vim": [
+        ("on",     "Enable vim keybindings"),
+        ("off",    "Disable vim keybindings"),
+        ("toggle", "Toggle vim mode"),
+    ],
+    "fast": [
+        ("on",     "Enable fast mode (less reasoning)"),
+        ("off",    "Disable fast mode"),
+        ("toggle", "Toggle fast mode"),
+    ],
+    "sandbox": [
+        ("on",     "Enable command sandboxing"),
+        ("off",    "Disable sandboxing"),
+        ("status", "Show current sandbox state"),
+    ],
+    "statusline": [
+        ("on",      "Show status line"),
+        ("off",     "Hide status line"),
+        ("default", "Reset to default"),
+    ],
+    "color": [
+        ("cyan",    "Cyan accent (default)"),
+        ("green",   "Green accent"),
+        ("blue",    "Blue accent"),
+        ("purple",  "Purple accent"),
+        ("orange",  "Orange accent"),
+        ("red",     "Red accent"),
+        ("white",   "White accent"),
+        ("yellow",  "Yellow accent"),
+    ],
+    "verbose": [
+        ("on",     "Enable verbose output"),
+        ("off",    "Disable verbose output"),
+        ("toggle", "Toggle verbose mode"),
+    ],
+    "privacy": [
+        ("show",    "Show privacy settings"),
+        ("disable", "Disable telemetry"),
+        ("enable",  "Enable telemetry"),
+    ],
+    "self-modify": [
+        ("propose", "Propose improvements to JARVIS code"),
+        ("apply",   "Apply a proposed change"),
+    ],
+    "benchmark": [
+        ("llm",   "Benchmark LLM response time"),
+        ("tools", "Benchmark tool execution speed"),
+        ("all",   "Run all benchmarks"),
+    ],
+    "extra-usage": [
+        ("on",     "Enable extra usage (continue past limits)"),
+        ("off",    "Disable extra usage"),
+        ("status", "Show extra usage status"),
+    ],
+    "monitor": [
+        ("on",     "Enable security monitoring"),
+        ("off",    "Disable security monitoring"),
+        ("status", "Show monitor status"),
+    ],
+    "bridge": [
+        ("start",    "Start the remote bridge server"),
+        ("stop",     "Stop the remote bridge server"),
+        ("status",   "Show bridge connection status"),
+        ("url",      "Show connection URL"),
+        ("sessions", "List active remote sessions"),
+    ],
+    "ide": [
+        ("connect",    "Connect to IDE (VS Code / JetBrains)"),
+        ("disconnect", "Disconnect from IDE"),
+        ("status",     "Show IDE connection status"),
+    ],
+    "buddy": [
+        ("on",     "Enable AI companion"),
+        ("off",    "Disable AI companion"),
+        ("pet",    "Interact with your companion"),
+        ("switch", "Switch companion character"),
+    ],
+    "passes": [
+        ("list",  "List your passes"),
+        ("share", "Share a free week with a friend"),
+    ],
+    "pr": [
+        ("create",   "Draft and create a pull request"),
+        ("status",   "Show open PRs"),
+        ("comments", "Show PR review comments"),
+    ],
+    "branch": [
+        ("list",   "List all branches"),
+        ("create", "Create a new branch"),
+        ("switch", "Switch to a branch"),
+        ("delete", "Delete a branch"),
+        ("recent", "Show recently used branches"),
+    ],
+    "worktree": [
+        ("list",   "List git worktrees"),
+        ("add",    "Add a new worktree"),
+        ("remove", "Remove a worktree"),
+    ],
+    "session": [
+        ("list",   "List all saved sessions"),
+        ("new",    "Start a new session"),
+        ("info",   "Show current session info"),
+        ("save",   "Save current session as named"),
+        ("delete", "Delete a saved session"),
+    ],
+    "memory": [
+        ("show",   "Show memory contents"),
+        ("search", "Search memories by query"),
+        ("stats",  "Memory statistics and health"),
+        ("edit",   "Edit a memory entry"),
+    ],
+    "mcp": [
+        ("list",      "List connected MCP servers"),
+        ("reconnect", "Reconnect to an MCP server"),
+        ("health",    "Check MCP server health"),
+    ],
+    "agents": [
+        ("list",   "List running agents"),
+        ("create", "Create a named agent"),
+        ("info",   "Show agent details"),
+        ("delete", "Remove an agent"),
+        ("reload", "Reload agent definitions"),
+    ],
+    "task": [
+        ("create", "Create a new task"),
+        ("list",   "List all tasks"),
+        ("view",   "View a task's details"),
+        ("update", "Update a task"),
+        ("done",   "Mark a task as completed"),
+    ],
+    "todo": [
+        ("add",   "Add a new todo item"),
+        ("list",  "List all todos"),
+        ("clear", "Clear completed todos"),
+    ],
+    "budget": [
+        ("limit", "Show current budget limit"),
+        ("set",   "Set a new spending limit"),
+    ],
+    "chrome": [
+        ("status",  "Check Chrome extension status"),
+        ("install", "Install Chrome extension"),
+    ],
+    "remote-env": [
+        ("show", "Show remote environment config"),
+        ("set",  "Set a remote environment variable"),
+    ],
+    "shutdown": [
+        ("cancel", "Cancel a pending shutdown"),
+    ],
+}
+
+
+# Multi-step command flows: list of steps, each is {"type": "pick"|"input", ...}
+# Add "optional": True to a step to allow Esc/cancel without aborting the whole flow.
+_COMMAND_FLOWS: dict[str, list] = {
+    "agent": [
+        {"type": "pick", "title": "Select agent type", "options": [
+            ("scout",            "Read-only explorer"),
+            ("worker",           "Full access — read, write, run"),
+            ("planner",          "Analysis and planning only"),
+            ("reviewer",         "Code review specialist"),
+            ("security-auditor", "Security analysis"),
+        ]},
+        {"type": "input", "title": "Agent task", "placeholder": "Describe the task…"},
+    ],
+    "spawn": [
+        {"type": "pick", "title": "Select agent type", "options": [
+            ("scout",            "Read-only explorer"),
+            ("worker",           "Full access — read, write, run"),
+            ("planner",          "Analysis and planning only"),
+            ("reviewer",         "Code review specialist"),
+            ("security-auditor", "Security analysis"),
+        ]},
+        {"type": "input", "title": "Background task", "placeholder": "Describe the task (runs non-blocking)…"},
+    ],
+    "delegate": [
+        {"type": "input", "title": "Task to delegate", "placeholder": "Describe what you need done…"},
+        {"type": "pick", "title": "Specialist agent (Esc to auto-select)", "optional": True, "options": [
+            ("terminal",  "Terminal/shell operations"),
+            ("network",   "Network and web tasks"),
+            ("security",  "Security analysis"),
+            ("file",      "File system operations"),
+            ("desktop",   "Desktop/GUI automation"),
+            ("app",       "Application management"),
+            ("system",    "System administration"),
+            ("vision",    "Computer vision tasks"),
+            ("research",  "Research and analysis"),
+        ]},
+    ],
+    "orchestrate": [
+        {"type": "input", "title": "Orchestrate multi-agent pipeline", "placeholder": "Describe the goal…"},
+    ],
+    "coordinate": [
+        {"type": "input", "title": "Coordinate parallel agents", "placeholder": "Describe the task to decompose…"},
+    ],
+    "swarm": [
+        {"type": "input", "title": "Spawn agent swarm", "placeholder": "Describe the task to decompose…"},
+    ],
+}
+
+# Commands that show a fzf text-input prompt before dispatching
+_COMMAND_PROMPTS: dict[str, dict] = {
+    "add-dir": {
+        "title": "Add directory to workspace",
+        "desc":  "JARVIS will be able to read and edit files in this directory.",
+        "placeholder": "Directory path…",
+        "path": True,
+    },
+    "worker": {
+        "title": "Spawn worker agent",
+        "desc":  "Full-access agent that can read, write, and run commands.",
+        "placeholder": "Describe the task…",
+        "path": False,
+    },
+    "scout": {
+        "title": "Spawn scout agent",
+        "desc":  "Read-only agent for exploration and research.",
+        "placeholder": "Describe the task…",
+        "path": False,
+    },
+    "planner": {
+        "title": "Spawn planner agent",
+        "desc":  "Analysis-only agent that produces structured plans.",
+        "placeholder": "Describe what to plan…",
+        "path": False,
+    },
+    "learn": {
+        "title": "Store a fact in memory",
+        "desc":  "Saved to the Neural Lattice for future recall.",
+        "placeholder": "Enter a fact to remember…",
+        "path": False,
+    },
+    "recall": {
+        "title": "Search memory",
+        "desc":  "Search the Neural Lattice for relevant memories.",
+        "placeholder": "What do you want to recall?…",
+        "path": False,
+    },
+    "forget": {
+        "title": "Remove a memory",
+        "desc":  "Delete a memory node by ID, query, or filename.",
+        "placeholder": "Memory ID, query or filename…",
+        "path": False,
+    },
+    "associations": {
+        "title": "Explore memory associations",
+        "desc":  "Show connected memories for a concept.",
+        "placeholder": "Concept to explore…",
+        "path": False,
+    },
+    "common-sense": {
+        "title": "Common-sense knowledge query",
+        "desc":  "Query the common-sense knowledge base.",
+        "placeholder": "Ask a common-sense question…",
+        "path": False,
+    },
+    "recon": {
+        "title": "Reconnaissance target",
+        "desc":  "Full recon: whois, DNS, nmap, gobuster (DANGEROUS on external hosts).",
+        "placeholder": "Target host or IP…",
+        "path": False,
+    },
+    "pentest": {
+        "title": "Penetration test target",
+        "desc":  "Automated pentest workflow — ONLY on systems you own/have permission.",
+        "placeholder": "Target host or IP…",
+        "path": False,
+    },
+    "mcp-disconnect": {
+        "title": "Disconnect MCP server",
+        "desc":  "Enter the MCP server name to disconnect.",
+        "placeholder": "Server name…",
+        "path": False,
+    },
+    "kill-agent": {
+        "title": "Kill agent by ID",
+        "desc":  "Stop a running agent.",
+        "placeholder": "Agent ID…",
+        "path": False,
+    },
+    "rename": {
+        "title": "Rename session",
+        "desc":  "Give the current session a new name.",
+        "placeholder": "New session name…",
+        "path": False,
+    },
+    "feedback": {
+        "title": "Submit feedback",
+        "desc":  "Your feedback is stored locally in ~/.jarvis/feedback/.",
+        "placeholder": "Your feedback…",
+        "path": False,
+    },
+    "btw": {
+        "title": "Side question",
+        "desc":  "Ask a quick question without interrupting the main conversation.",
+        "placeholder": "Your side question…",
+        "path": False,
+    },
+    "explain": {
+        "title": "Explain code or file",
+        "desc":  "JARVIS will read and explain the code at the given path.",
+        "placeholder": "File path or code snippet…",
+        "path": True,
+    },
+    "team": {
+        "title": "Spawn a team for a goal",
+        "desc":  "JARVIS will create a multi-agent team to accomplish this goal.",
+        "placeholder": "Describe the goal…",
+        "path": False,
+    },
+    "ultraplan": {
+        "title": "Deep planning with research",
+        "desc":  "Scout + planner agents work together to produce a detailed plan.",
+        "placeholder": "Describe the goal…",
+        "path": False,
+    },
+    "fix-error": {
+        "title": "Fix a runtime or syntax error",
+        "desc":  "Paste a traceback or describe the error.",
+        "placeholder": "Error description or traceback…",
+        "path": False,
+    },
+    "rpc": {
+        "title": "Call MCP tool directly",
+        "desc":  "Format: tool_name {\"arg\": \"value\"}",
+        "placeholder": "tool_name {\"args\"}…",
+        "path": False,
+    },
+    "tag": {
+        "title": "Tag session",
+        "desc":  "Format: add <tag>  or  remove <tag>  or  list",
+        "placeholder": "add <tag> / remove <tag> / list",
+        "path": False,
+    },
+    "alias": {
+        "title": "Create command alias",
+        "desc":  "Format: <alias_name> <command>",
+        "placeholder": "myalias /some-command args…",
+        "path": False,
+    },
+    "tool-search": {
+        "title": "Search tools",
+        "desc":  "Search built-in and MCP tools by name or description.",
+        "placeholder": "Search query…",
+        "path": False,
+    },
+    "import": {
+        "title": "Import session from file",
+        "desc":  "Provide a path to a session export file.",
+        "placeholder": "File path…",
+        "path": True,
+    },
+    "install": {
+        "title": "Install plugin or skill",
+        "desc":  "Provide the path to the plugin/skill file.",
+        "placeholder": "File path…",
+        "path": True,
+    },
+    "uninstall": {
+        "title": "Uninstall plugin or skill",
+        "desc":  "Enter the plugin or skill name to remove.",
+        "placeholder": "Plugin or skill name…",
+        "path": False,
+    },
+    "skill": {
+        "title": "View skill details",
+        "desc":  "Enter the skill name to inspect.",
+        "placeholder": "Skill name…",
+        "path": False,
+    },
+    "plugin": {
+        "title": "Manage plugin",
+        "desc":  "Format: install|enable|disable|remove <name>",
+        "placeholder": "install|enable|disable|remove <name>…",
+        "path": False,
+    },
+    "apply-fix": {
+        "title": "Apply a fix by number",
+        "desc":  "Enter the fix number from /troubleshoot output.",
+        "placeholder": "Fix number (e.g. 1)…",
+        "path": False,
+    },
+    "wake": {
+        "title": "Wake-on-LAN",
+        "desc":  "Send a magic packet to wake a sleeping machine.",
+        "placeholder": "MAC address (e.g. AA:BB:CC:DD:EE:FF)…",
+        "path": False,
+    },
+}
+
+
+async def _fzf(args: list, input_text: str = "") -> str:
+    """Run fzf in a thread so the async event loop stays alive (keeps WS alive)."""
+    import asyncio as _asyncio
+    loop = _asyncio.get_event_loop()
+    proc = await loop.run_in_executor(
+        None,
+        lambda: subprocess.run(args, input=input_text, text=True, stdout=subprocess.PIPE),
+    )
+    return proc.stdout.strip() if proc and proc.returncode == 0 else ""
+
+
 async def _fetch_model_entries(client) -> list[tuple]:
     """Fetch all available models. Returns list of (label, provider, model_name, is_active)."""
     entries = []
@@ -714,6 +1157,14 @@ async def _interactive_pick(entries: list[str], title: str = "", current: int = 
 
 
 async def main():
+    # Suppress asyncio "Cannot write to closing transport" and similar shutdown noise
+    def _quiet_exception_handler(loop, context):
+        msg = context.get("message", "")
+        if "closing transport" in msg or "connection lost" in msg.lower():
+            return  # harmless shutdown race, ignore
+        loop.default_exception_handler(context)
+    asyncio.get_event_loop().set_exception_handler(_quiet_exception_handler)
+
     args = parse_args()
 
     # MCP server mode
@@ -1106,11 +1557,17 @@ async def main():
         _trust_dir(cwd)
         _writeln()
 
-    # Clear screen — banner at TOP, input pinned at BOTTOM
-    os.system("clear" if os.name != "nt" else "cls")
+    # Enter alternate screen buffer (like vim/htop) — hides shell history while JARVIS runs
+    if sys.stdout.isatty():
+        sys.stdout.write("\033[?1049h")  # enter alternate screen
+        sys.stdout.write("\033[2J\033[H")  # clear it, cursor to top-left
+        sys.stdout.flush()
 
     def _exit_alt_screen():
-        pass
+        """Restore the normal screen buffer — shell history reappears."""
+        if sys.stdout.isatty():
+            sys.stdout.write("\033[?1049l")
+            sys.stdout.flush()
 
     def _tw():
         try:
@@ -1402,8 +1859,9 @@ async def main():
         cwd_display = os.getcwd().replace(os.path.expanduser("~"), "~")
         if session_mgr.current:
             session_name = session_mgr.current.name or session_mgr.current.display_name
-        # Clear and redraw — banner at top
-        os.system("clear" if os.name != "nt" else "cls")
+        # Clear and redraw — use direct VT100 (synchronous, no subprocess timing issues)
+        _write("\033[2J\033[H")  # clear entire screen, cursor to top-left
+        sys.stdout.flush()
         _frame_drawn = False
         _writeln(render_banner(model_name, provider_name, cwd_display, session_name, cmd_count))
         _writeln()
@@ -1764,7 +2222,7 @@ async def main():
             elif _kb_action == "app:redraw":
                 _hide_menu()
                 _erase_frame()
-                os.system("clear" if os.name != "nt" else "cls")
+                _write("\033[2J\033[H")
                 _frame_drawn = False
                 _writeln(render_banner(model_name, provider_name, cwd_display, session_name, cmd_count))
                 _writeln()
@@ -1822,7 +2280,7 @@ async def main():
                 # Ctrl+L: Clear and redraw screen (full redraw, not just input)
                 _hide_menu()
                 _erase_frame()
-                os.system("clear" if os.name != "nt" else "cls")
+                _write("\033[2J\033[H")
                 _frame_drawn = False
                 _writeln(render_banner(model_name, provider_name, cwd_display, session_name, cmd_count))
                 _writeln()
@@ -2242,6 +2700,7 @@ async def main():
                     pass
 
         # Redraw input frame after query completes
+        _outputln()
         _draw_input_frame(_get_mode_prefix())
         _active_task = None
 
@@ -2263,6 +2722,7 @@ async def main():
                 tw = _tw()
 
                 try:
+                    _erase_frame()
                     _draw_input_frame(mode_prefix)
 
                     _in_input = True
@@ -2287,7 +2747,7 @@ async def main():
                         break
 
             if not user_input:
-                continue
+                continue  # stay in place — frame already drawn, loop will redraw in-place
             _cancelled = False
             _voice_mode = False
 
@@ -2416,88 +2876,117 @@ async def main():
                         _outputln(f"  {DIM}Type /help for all commands. ({e}){RESET}")
                     continue
 
-                # CLI-only shortcuts
-                if cmd_name == "visual" and cmd_args:
-                    subprocess.Popen(
-                        ["x-terminal-emulator", "-e", f"bash -c '{cmd_args}; echo; echo [DONE]; read'"],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
-                    )
-                    continue
+                # ─── fzf-based pickers for commands with options/args ─────────
+                if not cmd_args and cmd_name in _COMMAND_OPTIONS:
+                    opts = _COMMAND_OPTIONS[cmd_name]
+                    lines = "\n".join(f"{o[0]}\t{o[1]}" for o in opts)
+                    _erase_frame()
+                    try:
+                        chosen_line = await _fzf(
+                            ["fzf", "--prompt", f"/{cmd_name} > ", "--height=40%",
+                             "--layout=reverse", "--border=rounded",
+                             "--with-nth=1", "--delimiter=\t",
+                             "--preview-window=hidden", "--no-multi",
+                             "--header=↑/↓ navigate  Enter select  Esc cancel"],
+                            lines,
+                        )
+                    finally:
+                        _draw_input_frame(_get_mode_prefix())
+                    if chosen_line:
+                        val = chosen_line.split("\t")[0].strip()
+                        user_input = f"/{cmd_name} {val}"
+                        cmd_args = val
+                    else:
+                        continue
 
-                # Interactive /model picker — works in both local and server mode
-                if cmd_name == "model" and not cmd_args:
+                elif not cmd_args and cmd_name in _COMMAND_PROMPTS:
+                    info = _COMMAND_PROMPTS[cmd_name]
+                    _erase_frame()
+                    try:
+                        out = await _fzf(
+                            ["fzf", "--prompt", f"{info.get('title', cmd_name)}: ",
+                             "--height=40%", "--layout=reverse", "--border=rounded",
+                             "--print-query", "--no-multi", "--no-info",
+                             "--header", info.get("desc", ""),
+                             "--phony"],
+                        )
+                        val = out.splitlines()[0] if out else ""
+                    finally:
+                        _draw_input_frame(_get_mode_prefix())
+                    if val:
+                        user_input = f"/{cmd_name} {val}"
+                        cmd_args = val
+                    else:
+                        continue
+
+                elif not cmd_args and cmd_name in _COMMAND_FLOWS:
+                    steps = _COMMAND_FLOWS[cmd_name]
+                    collected = []
+                    cancelled = False
+                    _erase_frame()
+                    try:
+                        for step in steps:
+                            is_optional = step.get("optional", False)
+                            if step["type"] == "pick":
+                                lines2 = "\n".join(f"{o[0]}\t{o[1]}" for o in step["options"])
+                                hint = "↑/↓ navigate  Enter select  Esc skip" if is_optional else "↑/↓ navigate  Enter select  Esc cancel"
+                                chosen2 = await _fzf(
+                                    ["fzf", "--prompt", f"{step['title']} > ",
+                                     "--height=40%", "--layout=reverse", "--border=rounded",
+                                     "--with-nth=1", "--delimiter=\t",
+                                     f"--header={hint}"],
+                                    lines2,
+                                )
+                                if not chosen2:
+                                    if is_optional:
+                                        break  # skip optional step, keep collected so far
+                                    cancelled = True; break
+                                collected.append(chosen2.split("\t")[0].strip())
+                            elif step["type"] == "input":
+                                val2 = await _fzf(
+                                    ["fzf", "--prompt", f"{step['title']}: ",
+                                     "--height=40%", "--layout=reverse", "--border=rounded",
+                                     "--print-query", "--no-multi", "--no-info",
+                                     "--phony"],
+                                )
+                                val2 = val2.splitlines()[0] if val2 else ""
+                                if not val2:
+                                    if is_optional:
+                                        break
+                                    cancelled = True; break
+                                collected.append(val2)
+                    finally:
+                        _draw_input_frame(_get_mode_prefix())
+                    if cancelled or not collected:
+                        continue
+                    user_input = f"/{cmd_name} {' '.join(collected)}"
+                    cmd_args = " ".join(collected)
+
+                # ─── model picker via fzf ──────────────────────────────────────
+                elif cmd_name == "model" and not cmd_args:
                     entries = await _fetch_model_entries(client)
                     if entries:
-                        import tty as _tty, termios as _termios
-                        _fd = sys.stdin.fileno()
-                        _old_term = _termios.tcgetattr(_fd)
-                        _sel = 0
-                        _MAX = 8
-                        labels = [e[0] for e in entries]
-                        _picker_lines = [0]  # mutable so nested func can update
-
-                        def _W(s):
-                            """Write with \r\n (required in raw mode)."""
-                            sys.stdout.write(s.replace("\n", "\r\n"))
-
-                        def _draw_picker(first=False):
-                            total = len(labels)
-                            start = max(0, min(_sel - _MAX // 2, total - _MAX))
-                            end = min(total, start + _MAX)
-                            lines = []
-                            lines.append(f"  {DIM}Select model  ↑/↓ navigate · Enter select · Esc cancel{RESET}")
-                            lines.append("")
-                            if start > 0:
-                                lines.append(f"    {DIM}↑ {start} more{RESET}")
-                            for i in range(start, end):
-                                pfx = f"  {CYAN}❯{RESET} " if i == _sel else "    "
-                                lines.append(f"  {pfx}{labels[i]}")
-                            if end < total:
-                                lines.append(f"    {DIM}↓ {total - end} more{RESET}")
-                            lines.append("")
-
-                            if not first and _picker_lines[0]:
-                                # Move cursor back up to overwrite previous render
-                                sys.stdout.write(f"\033[{_picker_lines[0]}A")
-                            for line in lines:
-                                sys.stdout.write(f"\033[2K\r{line}\r\n")
-                            _picker_lines[0] = len(lines)
-                            sys.stdout.flush()
-
-                        chosen = None
+                        lines_m = "\n".join(f"{e[2]}\t{e[0]}" for e in entries)
                         _erase_frame()
-                        sys.stdout.write("\r\n")
                         try:
-                            _tty.setraw(_fd)
-                            _draw_picker(first=True)
-                            while True:
-                                ch = sys.stdin.read(1)
-                                if ch == "\x1b":
-                                    nxt = sys.stdin.read(2)
-                                    if nxt == "[A":
-                                        _sel = max(0, _sel - 1)
-                                        _draw_picker()
-                                    elif nxt == "[B":
-                                        _sel = min(len(labels) - 1, _sel + 1)
-                                        _draw_picker()
-                                    else:
-                                        break  # Esc
-                                elif ch in ("\r", "\n"):
-                                    chosen = _sel
-                                    break
-                                elif ch in ("q", "\x03"):
-                                    break
+                            chosen_m = await _fzf(
+                                ["fzf", "--prompt", "model > ", "--height=40%",
+                                 "--layout=reverse", "--border=rounded",
+                                 "--with-nth=2", "--delimiter=\t",
+                                 "--header=↑/↓ navigate  Enter select  Esc cancel"],
+                                lines_m,
+                            )
                         finally:
-                            _termios.tcsetattr(_fd, _termios.TCSADRAIN, _old_term)
                             _draw_input_frame(_get_mode_prefix())
-
-                        if chosen is not None:
-                            mname = entries[chosen][2]
+                        if chosen_m:
+                            mname = chosen_m.split("\t")[0].strip()
                             _outputln()
                             if client._server_mode:
                                 async for ev in client.query_stream(f"/model {mname}"):
-                                    if ev.get("type") == "text" and ev.get("text"):
-                                        _outputln(render_markdown(ev["text"]))
+                                    if ev.get("type") == "text" and ev.get("content"):
+                                        _outputln(render_markdown(ev["content"]))
+                                # Update local display to reflect the switch
+                                model_name = mname
                             else:
                                 from src.commands.registry import CommandContext as _CC
                                 from src.commands import registry as _creg
@@ -2505,8 +2994,53 @@ async def main():
                                            raw_input=f"/model {mname}", args=mname, mode=brain.mode)
                                 _r = await _creg.dispatch("model", _ctx)
                                 _outputln(_r.text if _r else f"Switched to {mname}")
+                                # Refresh model_name from providers
+                                if client._is_full_brain and hasattr(brain, "reasoner"):
+                                    try:
+                                        _provs = brain.reasoner.providers.get_active_providers()
+                                        if _provs:
+                                            model_name = _provs[0].model or mname
+                                            provider_name = _provs[0].name or provider_name
+                                    except Exception:
+                                        model_name = mname
                             _outputln()
-                        continue
+                            _redraw()  # refresh banner + footer with new model name
+                    continue
+
+                # ─── Generic fzf prompt for any command that needs arguments ──
+                elif not cmd_args:
+                    try:
+                        from src.commands import registry as _areg
+                        _cmd_obj = next((c for c in _areg.list_commands(include_hidden=True) if c.name == cmd_name), None)
+                        _usage = getattr(_cmd_obj, 'usage', '') or ''
+                        _desc  = getattr(_cmd_obj, 'description', '') or ''
+                        if _cmd_obj and '<' in _usage:
+                            _erase_frame()
+                            try:
+                                _out_g = await _fzf(
+                                    ["fzf", "--prompt", f"/{cmd_name}: ",
+                                     "--height=40%", "--layout=reverse", "--border=rounded",
+                                     "--print-query", "--phony", "--no-info",
+                                     "--header", f"{_desc}  |  usage: {_usage}"],
+                                )
+                                _val_g = (_out_g.splitlines() or [""])[0].strip()
+                            finally:
+                                _draw_input_frame(_get_mode_prefix())
+                            if _val_g:
+                                user_input = f"/{cmd_name} {_val_g}"
+                                cmd_args = _val_g
+                            else:
+                                continue
+                    except Exception:
+                        pass
+
+                # CLI-only shortcuts
+                if cmd_name == "visual" and cmd_args:
+                    subprocess.Popen(
+                        ["x-terminal-emulator", "-e", f"bash -c '{cmd_args}; echo; echo [DONE]; read'"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+                    )
+                    continue
 
                 # Dispatch command locally (non-interactive commands)
                 result = None
@@ -2543,6 +3077,75 @@ async def main():
                         _outputln()
                         _outputln(result.text)
                         _outputln()
+
+                    # ── Post-dispatch display refresh ─────────────────────────
+                    # Update banner or footer for commands that change visible state.
+                    # Rules:
+                    #   - banner_change=True  → full _redraw() (clears screen, redraws banner + frame)
+                    #   - frame_only=True     → just redraw the input frame footer (no screen clear)
+                    if getattr(result, 'success', True):
+                        banner_change = False
+                        frame_only = False
+
+                        # Model / provider name changes → update banner
+                        if cmd_name in ("model", "m"):
+                            if client._is_full_brain and hasattr(brain, "reasoner"):
+                                try:
+                                    _provs = brain.reasoner.providers.get_active_providers()
+                                    if _provs:
+                                        model_name = _provs[0].model or model_name
+                                        provider_name = _provs[0].name or provider_name
+                                except Exception:
+                                    pass
+                            banner_change = True
+
+                        # Theme / color — update live ANSI codes, then banner for color change
+                        elif cmd_name in ("theme",):
+                            _tval = (cmd_args or "").strip().split()[0] if cmd_args else ""
+                            if _tval in ("dark", "light", "auto"):
+                                _apply_theme(_tval)
+                            else:
+                                _apply_theme(_load_theme())
+                            banner_change = True
+
+                        elif cmd_name in ("color",):
+                            banner_change = True
+
+                        # Vim mode toggle — update local flag, refresh frame indicator
+                        elif cmd_name in ("vim",):
+                            _tval = (cmd_args or "").strip().lower()
+                            if _tval == "on":
+                                _vim_enabled = True
+                            elif _tval == "off":
+                                _vim_enabled = False
+                            elif _tval == "toggle":
+                                _vim_enabled = not _vim_enabled
+                            frame_only = True
+
+                        # Session name changes → update banner
+                        elif cmd_name in ("rename", "session", "new", "resume",
+                                         "stash", "pop", "load"):
+                            try:
+                                if session_mgr.current:
+                                    session_name = (
+                                        session_mgr.current.name
+                                        or getattr(session_mgr.current, 'display_name', '')
+                                        or "session"
+                                    )
+                            except Exception:
+                                pass
+                            banner_change = True
+
+                        # Mode, permissions, effort — footer/prompt reads these live
+                        elif cmd_name in ("mode", "permissions", "perms", "effort"):
+                            frame_only = True
+
+                        if banner_change:
+                            _redraw()
+                        elif frame_only:
+                            _erase_frame()
+                            _draw_input_frame(_get_mode_prefix())
+
                     continue
                 elif not client._server_mode:
                     # Unknown command — try fuzzy suggestion
@@ -2592,6 +3195,7 @@ async def main():
                 continue
 
             # ═══ MAIN QUERY — launch as background task ═══
+            _output_buf_text[0] = ""  # clear input text before thinking starts
             _active_task = asyncio.get_event_loop().create_task(
                 _run_query(user_input, voice_mode=_voice_mode)
             )

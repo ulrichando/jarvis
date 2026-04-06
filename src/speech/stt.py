@@ -153,8 +153,18 @@ def _boost_vocabulary(text: str) -> str:
     return text
 
 
+_LOCAL_MODEL_PATH = os.path.expanduser(
+    "~/.cache/huggingface/hub/models--mobiuslabsgmbh--faster-whisper-large-v3-turbo"
+    "/snapshots/0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf"
+)
+
+
 def _get_model():
-    """Lazy-load the Whisper model. Auto-selects device based on hardware."""
+    """Lazy-load the Whisper model. Auto-selects device based on hardware.
+
+    Uses the pinned local cache path so it works fully air-gapped — no
+    network request is made even if Groq is unreachable.
+    """
     global _whisper_model
     if _whisper_model is None:
         from faster_whisper import WhisperModel
@@ -171,10 +181,11 @@ def _get_model():
         except Exception:
             pass
 
-        # Use large-v3-turbo for best accuracy with accents and proper nouns
-        fast_model = "large-v3-turbo"
+        # Prefer pinned local path (air-gapped safe); fall back to name-based
+        # resolution only if the cache directory is missing.
+        model_id = _LOCAL_MODEL_PATH if os.path.isdir(_LOCAL_MODEL_PATH) else "large-v3-turbo"
         _whisper_model = WhisperModel(
-            fast_model,
+            model_id,
             device=device,
             compute_type=compute,
             num_workers=2,
@@ -207,6 +218,11 @@ _HALLUCINATIONS = {
     "please", "excuse me", "i'm here", "here we go",
     "let's go", "come on", "oh my god", "oh my gosh",
     "i don't know", "i don't care", "whatever",
+    # Garbled text patterns
+    "oh come to kyrins", "dem firma buffer", "we're gonna get him",
+    "hann svilcht böld", "hann svilcht böldbiand dragon", "bounth kitchen go away",
+    "that's exactly what he said", "did you ugly me has a look", "kyrins",
+    "svilcht", "böld", "biand", "bounth", "utveckl", "fáir fóssófár", "svíxtur hægku",
 }
 
 
@@ -215,6 +231,27 @@ def _is_hallucination(text: str) -> bool:
     t = text.lower().strip().rstrip(".!?,;:")
     if t in _HALLUCINATIONS:
         return True
+    
+    # Check for encoding artifacts and non-ASCII corruption
+    if any(ord(c) > 255 or c in "���" for c in text):
+        return True
+    
+    # Check for mixed scripts (non-Latin characters that aren't punctuation)
+    ascii_letters = sum(1 for c in text if c.isalpha() and ord(c) < 128)
+    total_letters = sum(1 for c in text if c.isalpha())
+    if total_letters > 0 and ascii_letters / total_letters < 0.8:
+        return True
+    
+    # Check for gibberish patterns (too many consonants, no vowels)
+    vowels = set("aeiouAEIOU")
+    consonants = set("bcdfghjklmnpqrstvwxyzBCDFGHJKLMNPQRSTVWXYZ")
+    letters_only = ''.join(c for c in text if c.isalpha())
+    if len(letters_only) >= 6:
+        vowel_count = sum(1 for c in letters_only if c in vowels)
+        consonant_count = sum(1 for c in letters_only if c in consonants)
+        if consonant_count > 0 and vowel_count / (vowel_count + consonant_count) < 0.15:
+            return True
+    
     # Too short — likely noise
     if len(t) < 3:
         return True
@@ -294,21 +331,10 @@ def transcribe_audio(audio: np.ndarray, sample_rate: int = 16000, timeout: float
     if len(audio) > max_samples:
         audio = audio[:max_samples]
 
-    # Priority chain: fine-tuned LoRA → Groq API → local Whisper
+    # Priority chain: Groq API → local Whisper (offline fallback)
     result = ""
 
-    # 1. Fine-tuned model (best for your voice, if trained)
-    try:
-        result = _transcribe_fine_tuned(audio, sample_rate)
-        if result and not _is_hallucination(result):
-            result = _boost_vocabulary(result)
-            _save_for_training(audio, result, sample_rate)
-            return result
-        result = ""
-    except Exception:
-        pass
-
-    # 2. Groq Whisper API (fast, free)
+    # 1. Groq Whisper API — primary (fast, free, whisper-large-v3-turbo)
     try:
         result = _transcribe_groq(audio, sample_rate)
         if result and not _is_hallucination(result):
@@ -319,7 +345,7 @@ def transcribe_audio(audio: np.ndarray, sample_rate: int = 16000, timeout: float
     except Exception:
         pass
 
-    # 3. Local Whisper (always available, offline capable)
+    # 2. Local Whisper — offline fallback only
     try:
         future = _transcription_pool.submit(_transcribe_sync, audio, sample_rate)
         result = future.result(timeout=timeout)
