@@ -152,7 +152,10 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
     }
   }, [setReactorState, onSpoken])
 
-  // WebSocket connection
+  // WebSocket connection — stable ref to avoid reconnect storms
+  const handleWsMessageRef = useRef(handleWsMessage)
+  handleWsMessageRef.current = handleWsMessage
+
   useEffect(() => {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const wsUrl = `${proto}//${window.location.host}/ws`
@@ -171,7 +174,7 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data)
-          handleWsMessage(data)
+          handleWsMessageRef.current(data)
         } catch { /* ignore parse errors */ }
       }
 
@@ -191,7 +194,7 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
       clearTimeout(reconnectTimer)
       ws?.close()
     }
-  }, [handleWsMessage])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const sendMessage = useCallback(() => {
     const text = input.trim()

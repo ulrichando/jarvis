@@ -127,7 +127,11 @@ If tone shifts mid-conversation, adapt immediately.
 You have voice input AND output. Desktop AI overlay with mic and speakers.
 - [voice input] prefix = from microphone. ALWAYS respond. Never go silent.
 - Can't understand → "Sorry, didn't catch that." Never ignore.
-- Voice responses: SHORT. 1-2 sentences for simple questions.
+- Voice responses: SHORT. 1-2 sentences MAX. No filler, no recaps.
+- NEVER repeat what you just said. NEVER summarize what you already told the user.
+- NEVER re-explain context from previous turns. The user heard you the first time.
+- If the user says something unclear, ask ONE short question. Don't list options.
+- Act first, report results. Don't ask permission — just do it and say what happened.
 
 ═══ TOOLS ═══
 Use tools to act. Never guess when you can look it up. Never describe steps — execute them.
@@ -148,6 +152,21 @@ WHEN TO USE TOOLS:
 - Code → read files first, then edit. Verify after.
 - When in doubt, SEARCH.
 Call multiple tools in one turn when independent.
+
+═══ SPEED ═══
+Voice queries need fast responses. Prefer fast commands over slow ones:
+- Network: use ping/curl/ss instead of nmap (nmap scans take 30s+)
+- Services: use systemctl is-active, ss -tlnp, curl localhost:PORT
+- Files: use find with -maxdepth, not recursive grep on entire filesystem
+If a command might take >10s, warn the user first or use a faster alternative.
+
+═══ SAFETY ═══
+NEVER shutdown, reboot, or poweroff the system.
+NEVER kill VS Code, desktop environment, display manager, or system services.
+When asked to close an app: use its specific close method (e.g. wmctrl, xdotool for window close).
+  Do NOT use pkill/killall on broad patterns — be surgical. Only close EXACTLY what was asked.
+When unsure which process to target, LIST running windows first (wmctrl -l), then close the right one.
+NEVER escalate — if asked to close a file manager, don't also close the browser or restart anything.
 
 ═══ STANDARDS ═══
 Before every response: Is this actually helpful? Is it accurate? Is the length right?
@@ -423,7 +442,7 @@ class Brain:
 
     # ═══ MAIN ENTRY POINT ═══════════════════════════════════════════
 
-    async def think(self, user_input: str) -> str:
+    async def think(self, user_input: str, on_tool_call=None, on_tool_result=None) -> str:
         """JARVIS's main thinking pipeline.
 
         Flow:
@@ -602,7 +621,9 @@ class Brain:
         # The classifier is authoritative — RL can only ADD agent, not remove it
 
         # Always use agent loop — JARVIS personality is in AGENT_SYSTEM_PROMPT
-        response = await self._run_agent_loop(user_input, memory_context, start)
+        response = await self._run_agent_loop(user_input, memory_context, start,
+                                              on_tool_call=on_tool_call,
+                                              on_tool_result=on_tool_result)
 
         # ═══ POST-PROCESSING ═══
         self.memory.add_turn("jarvis", response)
@@ -734,7 +755,7 @@ class Brain:
         if mcp_schemas:
             tools.extend(mcp_schemas)
 
-        history = self.memory.get_history(limit=10)
+        history = self.memory.get_history(limit=40)
 
         # More iterations for complex tasks (code review, research)
         q_lower = user_input.lower()
@@ -765,7 +786,7 @@ class Brain:
                 self._rl_strategy["state_idx"], self._rl_strategy["action_idx"],
                 0.1, (time.time() - start) * 1000, self.awareness.consecutive_successes,
             )
-            self._log(user_input, "", start, "agent-error")
+            self._log(user_input, "", start, "agent-error", skip_memory=True)
             return f"Agent loop hit an error: {e}. Try again?"
 
         agent_quality = self.reasoning.reflect_on_response(user_input, response)
@@ -774,7 +795,7 @@ class Brain:
             self._rl_strategy["state_idx"], self._rl_strategy["action_idx"],
             agent_quality, (time.time() - start) * 1000, self.awareness.consecutive_successes,
         )
-        self._log(user_input, response, start, "agent")
+        self._log(user_input, response, start, "agent", skip_memory=True)
         return response
 
     async def think_stream(self, user_input: str):
@@ -934,7 +955,7 @@ PROJECT CREATION RULES — follow these when building something:
 """
             if self.mode == "plan":
                 system += "\nPLAN MODE: Read-only. No writes."
-            history = self.memory.get_history(limit=10)
+            history = self.memory.get_history(limit=40)
 
             # Build system-reminder prefix for user input
             _sr = ""
@@ -984,7 +1005,7 @@ PROJECT CREATION RULES — follow these when building something:
             # Fast chat — direct LLM query, no reasoning layer, no tools
             full_response = ""
             from src.reasoning.persona import SYSTEM_PROMPT
-            history = self.memory.get_history(limit=10)
+            history = self.memory.get_history(limit=40)
             try:
                 async for chunk in self.reasoner.query_stream(
                     user_input, system_prompt=SYSTEM_PROMPT, history=history
