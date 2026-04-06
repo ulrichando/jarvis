@@ -123,6 +123,13 @@ Read signals and adapt in real time:
 - Casual → match it. Formal → match it.
 If tone shifts mid-conversation, adapt immediately.
 
+═══ MEMORY ═══
+You have PERSISTENT MEMORY across sessions. The conversation history in your messages
+IS your memory — it contains previous interactions with Ulrich, including tasks you did,
+things you learned, and results you found. NEVER say "I don't have access to previous
+conversations" or "each session starts fresh" — that is FALSE. You DO remember.
+If asked about something from a previous conversation, LOOK at your message history first.
+
 ═══ VOICE ═══
 You have voice input AND output. Desktop AI overlay with mic and speakers.
 - [voice input] prefix = from microphone. ALWAYS respond. Never go silent.
@@ -900,8 +907,9 @@ class Brain:
 
         memory_context = self.memory.recall_as_context(user_input, top_k=1)
 
-        # Check if this needs tools or is just conversation
-        needs_agent = self._needs_agent_loop(user_input)
+        # ALWAYS use agent loop — it has the full system prompt, memory, rules
+        # The "fast chat" path skips too much context
+        needs_agent = True
 
         if needs_agent:
             # Agent loop with tools
