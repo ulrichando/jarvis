@@ -625,6 +625,94 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+async def _fetch_model_entries(client) -> list[tuple]:
+    """Fetch all available models. Returns list of (label, provider, model_name, is_active)."""
+    entries = []
+    try:
+        from src.reasoning.providers import ProviderRegistry
+        reg = ProviderRegistry()
+        for p in reg.get_active_providers():
+            is_local = "localhost" in p.base_url or "127.0.0.1" in p.base_url
+            tag = "local" if is_local else "cloud"
+            for m in p.models:
+                entries.append((f"{m}  [{tag}]", p.name, m, False))
+        # Ollama models not already listed
+        try:
+            import urllib.request as _ur, json as _j
+            resp = _ur.urlopen("http://localhost:11434/api/tags", timeout=2)
+            ollama_models = [m["name"] for m in _j.loads(resp.read()).get("models", [])]
+            existing = {e[2] for e in entries}
+            for m in ollama_models:
+                if m not in existing:
+                    entries.append((f"{m}  [local/ollama]", "ollama", m, False))
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return entries
+
+
+async def _interactive_pick(entries: list[str], title: str = "", current: int = 0) -> int | None:
+    """Arrow-key interactive list picker. Returns selected index or None on Esc/q."""
+    import tty, termios
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    sel = max(0, min(current, len(entries) - 1))
+    MAX_VIS = 10
+
+    def _render():
+        # Clear all lines we'll use
+        total = len(entries)
+        rows = min(MAX_VIS, total)
+        header_lines = 2 if title else 1
+        # Move cursor up to top of our block if already drawn
+        sys.stdout.write("\033[2K\r")
+        if title:
+            sys.stdout.write(f"  {DIM}{title}{RESET}\n\033[2K\r\n")
+        start = max(0, min(sel - MAX_VIS // 2, total - MAX_VIS))
+        end = min(total, start + MAX_VIS)
+        if start > 0:
+            sys.stdout.write(f"  {DIM}↑ {start} more{RESET}\n\033[2K\r")
+        for i in range(start, end):
+            pfx = f"  {CYAN}❯{RESET} " if i == sel else "    "
+            sys.stdout.write(f"\033[2K\r{pfx}{entries[i]}\n")
+        if end < total:
+            sys.stdout.write(f"\033[2K\r  {DIM}↓ {total - end} more{RESET}\n")
+        sys.stdout.flush()
+
+    try:
+        tty.setraw(fd)
+        _render()
+        while True:
+            ch = sys.stdin.read(1)
+            if ch == "\x1b":
+                nxt = sys.stdin.read(2)
+                if nxt == "[A":  # up
+                    sel = max(0, sel - 1)
+                elif nxt == "[B":  # down
+                    sel = min(len(entries) - 1, sel + 1)
+                else:
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old)
+                    return None
+            elif ch in ("\r", "\n"):
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+                return sel
+            elif ch in ("q", "\x03"):
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+                return None
+            # Redraw: move cursor back up
+            total = len(entries)
+            vis = min(MAX_VIS, total)
+            extra = (1 if sel > 0 else 0) + (1 if sel < total - 1 else 0)
+            header_lines = 2 if title else 1
+            lines_drawn = vis + extra + header_lines
+            sys.stdout.write(f"\033[{lines_drawn}A")
+            _render()
+    except Exception:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        return None
+
+
 async def main():
     args = parse_args()
 
@@ -1335,6 +1423,14 @@ async def main():
     except (AttributeError, ValueError):
         pass
 
+    class _ModelEntry:
+        """Autocomplete entry for model names (duck-typed to match command objects)."""
+        def __init__(self, name: str, description: str = ""):
+            self.name = name
+            self.description = description
+            self.aliases = []
+            self.is_model = True
+
     # ── Async input reader with slash command autocomplete ──
     async def _async_read_input(mode_prefix, tw):
         """Async input reader. Non-blocking so queries can stream concurrently.
@@ -1448,11 +1544,49 @@ async def main():
             menu_lines = 0
             sys.stdout.flush()
 
+        # Cache of available models for autocomplete
+        _model_entries_cache = []
+
+        def _load_model_entries():
+            nonlocal _model_entries_cache
+            if _model_entries_cache:
+                return _model_entries_cache
+            entries = []
+            try:
+                from src.reasoning.providers import ProviderRegistry
+                reg = ProviderRegistry()
+                for p in reg.get_active_providers():
+                    is_local = "localhost" in p.base_url or "127.0.0.1" in p.base_url
+                    tag = "local" if is_local else "cloud"
+                    for m in p.models:
+                        entries.append(_ModelEntry(m, f"[{tag}] {p.name}"))
+                try:
+                    import urllib.request as _ur, json as _j
+                    resp = _ur.urlopen("http://localhost:11434/api/tags", timeout=2)
+                    ollama_models = [m["name"] for m in _j.loads(resp.read()).get("models", [])]
+                    existing = {e.name for e in entries}
+                    for m in ollama_models:
+                        if m not in existing:
+                            entries.append(_ModelEntry(m, "[local/ollama]"))
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            _model_entries_cache = entries
+            return entries
+
         def _get_matches():
             nonlocal all_cmds
             text = "".join(buf)
             if not text.startswith("/"):
                 return []
+
+            # Sub-completion: /model <name>
+            if text.lower().startswith("/model "):
+                model_prefix = text[7:].lower()
+                models = _load_model_entries()
+                return [m for m in models if m.name.lower().startswith(model_prefix)]
+
             # Reload if commands weren't available at init (e.g., lazy registration)
             if not all_cmds:
                 try:
@@ -1650,8 +1784,13 @@ async def main():
                 if menu_visible:
                     matches = _get_matches()
                     if matches and selected < len(matches):
+                        item = matches[selected]
                         buf.clear()
-                        buf.extend(f"/{matches[selected].name}")
+                        if getattr(item, 'is_model', False):
+                            # Model entry selected from /model <filter> — run it directly
+                            buf.extend(f"/model {item.name}")
+                        else:
+                            buf.extend(f"/{item.name}")
                 _hide_menu()
                 text = "".join(buf)
                 # Multi-line: if text ends with \, continue on next line
@@ -1752,8 +1891,12 @@ async def main():
                 if menu_visible:
                     matches = _get_matches()
                     if matches and selected < len(matches):
+                        item = matches[selected]
                         buf.clear()
-                        buf.extend(f"/{matches[selected].name} ")
+                        if getattr(item, 'is_model', False):
+                            buf.extend(f"/model {item.name}")
+                        else:
+                            buf.extend(f"/{item.name} ")
                         _redraw()
                         _hide_menu()
             elif ch >= " ":
@@ -2281,52 +2424,138 @@ async def main():
                     )
                     continue
 
-                # In server mode, forward commands to server via think_stream
-                if not client._server_mode:
-                    # Dispatch through CommandRegistry (local brain)
-                    if client._is_full_brain and hasattr(brain, "dispatch_command"):
-                        result = await brain.dispatch_command(cmd_name, cmd_args, session_mgr=session_mgr)
-                    else:
-                        try:
-                            from src.commands import registry as cmd_registry
-                            from src.commands.registry import CommandContext
-                            ctx = CommandContext(
-                                brain=brain if client._is_full_brain else None,
-                                session_mgr=session_mgr, raw_input=user_input,
-                                args=cmd_args, mode=brain.mode if client._is_full_brain else "normal",
-                            )
-                            result = await cmd_registry.dispatch(cmd_name, ctx)
-                        except Exception:
-                            result = None
+                # Interactive /model picker — works in both local and server mode
+                if cmd_name == "model" and not cmd_args:
+                    entries = await _fetch_model_entries(client)
+                    if entries:
+                        import tty as _tty, termios as _termios
+                        _fd = sys.stdin.fileno()
+                        _old_term = _termios.tcgetattr(_fd)
+                        _sel = 0
+                        _MAX = 8
+                        labels = [e[0] for e in entries]
+                        _picker_lines = [0]  # mutable so nested func can update
 
-                    if result is not None:
-                        if result.action == "exit":
-                            _teardown_zones()
-                            session_mgr.save_current()
-                            await client.close()
-                            session_mgr.close()
-                            _exit_alt_screen()
-                            print("Session saved. JARVIS offline.")
-                            return
-                        elif result.action == "clear":
-                            _redraw()
-                            _setup_zones()
-                        elif result.text:
-                            _outputln()
-                            _outputln(result.text)
-                            _outputln()
-                    else:
-                        # Unknown command — try fuzzy suggestion
+                        def _W(s):
+                            """Write with \r\n (required in raw mode)."""
+                            sys.stdout.write(s.replace("\n", "\r\n"))
+
+                        def _draw_picker(first=False):
+                            total = len(labels)
+                            start = max(0, min(_sel - _MAX // 2, total - _MAX))
+                            end = min(total, start + _MAX)
+                            lines = []
+                            lines.append(f"  {DIM}Select model  ↑/↓ navigate · Enter select · Esc cancel{RESET}")
+                            lines.append("")
+                            if start > 0:
+                                lines.append(f"    {DIM}↑ {start} more{RESET}")
+                            for i in range(start, end):
+                                pfx = f"  {CYAN}❯{RESET} " if i == _sel else "    "
+                                lines.append(f"  {pfx}{labels[i]}")
+                            if end < total:
+                                lines.append(f"    {DIM}↓ {total - end} more{RESET}")
+                            lines.append("")
+
+                            if not first and _picker_lines[0]:
+                                # Move cursor back up to overwrite previous render
+                                sys.stdout.write(f"\033[{_picker_lines[0]}A")
+                            for line in lines:
+                                sys.stdout.write(f"\033[2K\r{line}\r\n")
+                            _picker_lines[0] = len(lines)
+                            sys.stdout.flush()
+
+                        chosen = None
+                        _erase_frame()
+                        sys.stdout.write("\r\n")
                         try:
-                            from src.commands import registry as cmd_registry
-                            suggestions = cmd_registry.suggest(cmd_name, limit=3)
-                            if suggestions:
-                                names = ", ".join(f"/{s.name}" for s in suggestions)
-                                _outputln(f"  {DIM}Unknown command: /{cmd_name}. Did you mean: {names}?{RESET}")
+                            _tty.setraw(_fd)
+                            _draw_picker(first=True)
+                            while True:
+                                ch = sys.stdin.read(1)
+                                if ch == "\x1b":
+                                    nxt = sys.stdin.read(2)
+                                    if nxt == "[A":
+                                        _sel = max(0, _sel - 1)
+                                        _draw_picker()
+                                    elif nxt == "[B":
+                                        _sel = min(len(labels) - 1, _sel + 1)
+                                        _draw_picker()
+                                    else:
+                                        break  # Esc
+                                elif ch in ("\r", "\n"):
+                                    chosen = _sel
+                                    break
+                                elif ch in ("q", "\x03"):
+                                    break
+                        finally:
+                            _termios.tcsetattr(_fd, _termios.TCSADRAIN, _old_term)
+                            _draw_input_frame(_get_mode_prefix())
+
+                        if chosen is not None:
+                            mname = entries[chosen][2]
+                            _outputln()
+                            if client._server_mode:
+                                async for ev in client.query_stream(f"/model {mname}"):
+                                    if ev.get("type") == "text" and ev.get("text"):
+                                        _outputln(render_markdown(ev["text"]))
                             else:
-                                _outputln(f"  {DIM}Unknown command: /{cmd_name}. Type /help for commands.{RESET}")
-                        except Exception:
-                            _outputln(f"  {DIM}Unknown command: /{cmd_name}{RESET}")
+                                from src.commands.registry import CommandContext as _CC
+                                from src.commands import registry as _creg
+                                _ctx = _CC(brain=brain, session_mgr=session_mgr,
+                                           raw_input=f"/model {mname}", args=mname, mode=brain.mode)
+                                _r = await _creg.dispatch("model", _ctx)
+                                _outputln(_r.text if _r else f"Switched to {mname}")
+                            _outputln()
+                        continue
+
+                # Dispatch command locally (non-interactive commands)
+                result = None
+                try:
+                    from src.commands import registry as cmd_registry
+                    from src.commands.registry import CommandContext
+                    ctx = CommandContext(
+                        brain=brain if client._is_full_brain else None,
+                        session_mgr=session_mgr, raw_input=user_input,
+                        args=cmd_args, mode=brain.mode if client._is_full_brain else "normal",
+                    )
+                    result = await cmd_registry.dispatch(cmd_name, ctx)
+                except Exception:
+                    pass
+
+                # In server mode, only handle local-only actions; let rest go to server
+                if client._server_mode and result is not None:
+                    if result.action not in ("exit", "clear"):
+                        result = None
+
+                if result is not None:
+                    if result.action == "exit":
+                        _teardown_zones()
+                        session_mgr.save_current()
+                        await client.close()
+                        session_mgr.close()
+                        _exit_alt_screen()
+                        print("Session saved. JARVIS offline.")
+                        return
+                    elif result.action == "clear":
+                        _redraw()
+                        _setup_zones()
+                    elif result.text:
+                        _outputln()
+                        _outputln(result.text)
+                        _outputln()
+                    continue
+                elif not client._server_mode:
+                    # Unknown command — try fuzzy suggestion
+                    try:
+                        from src.commands import registry as cmd_registry
+                        suggestions = cmd_registry.suggest(cmd_name, limit=3)
+                        if suggestions:
+                            names = ", ".join(f"/{s.name}" for s in suggestions)
+                            _outputln(f"  {DIM}Unknown command: /{cmd_name}. Did you mean: {names}?{RESET}")
+                        else:
+                            _outputln(f"  {DIM}Unknown command: /{cmd_name}. Type /help for commands.{RESET}")
+                    except Exception:
+                        _outputln(f"  {DIM}Unknown command: /{cmd_name}{RESET}")
                     continue
 
             # ═══ SHELL SHORTCUT: !command ═══

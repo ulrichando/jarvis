@@ -238,40 +238,37 @@ async def cmd_model(ctx: CommandContext) -> CommandResult:
 
     providers = brain.reasoner.providers
 
-    # No args: show current model with pricing and context window
+    # No args: interactive model picker
     if not args:
-        model = getattr(brain.reasoner, 'active_model_name', 'unknown')
-        current_provider = providers.get_active_providers()[0] if providers.get_active_providers() else None
-        lines = [f"Current: {model}"]
-        if current_provider:
-            lines.append(f"Provider: {current_provider.name} ({current_provider.type})")
-            lines.append(f"All models: {', '.join(current_provider.models)}")
-
-        # Show context window
+        # Build list of all models: configured providers + Ollama local models
+        entries = []  # (display_label, provider_name, model_name, is_active)
+        active_model = getattr(brain.reasoner, 'active_model_name', '')
+        for p in providers.get_active_providers():
+            is_local = "localhost" in p.base_url or "127.0.0.1" in p.base_url
+            tag = "local" if is_local else "cloud"
+            for m in p.models:
+                active = m == p.model and p == providers.get_active_providers()[0]
+                entries.append((f"{m}  [{tag}]", p.name, m, active))
+        # Add Ollama models not already listed
         try:
-            from src.agent.context import MODEL_LIMITS, DEFAULT_MAX_TOKENS
-            ctx_limit = MODEL_LIMITS.get(model, DEFAULT_MAX_TOKENS)
-            lines.append(f"Context window: {ctx_limit:,} tokens")
+            import urllib.request as _ur, json as _j
+            resp = _ur.urlopen("http://localhost:11434/api/tags", timeout=2)
+            ollama_models = [m["name"] for m in _j.loads(resp.read()).get("models", [])]
+            existing = {e[2] for e in entries}
+            for m in ollama_models:
+                if m not in existing:
+                    entries.append((f"{m}  [local/ollama]", "ollama", m, False))
         except Exception:
             pass
 
-        # Show pricing
-        try:
-            from src.agent.cost_tracker import CostTracker
-            pricing = CostTracker._resolve_pricing(model)
-            if pricing:
-                lines.append(f"Pricing (per 1M tokens):")
-                lines.append(f"  Input:  ${pricing.get('input', 0):.2f}")
-                lines.append(f"  Output: ${pricing.get('output', 0):.2f}")
-                if pricing.get('cache_read'):
-                    lines.append(f"  Cache read:  ${pricing['cache_read']:.2f}")
-                if pricing.get('cache_write'):
-                    lines.append(f"  Cache write: ${pricing['cache_write']:.2f}")
-        except Exception:
-            pass
+        if not entries:
+            return CommandResult(text="No providers configured. Use /provider add to add one.")
 
-        lines.append(f"\nUse /model list to see all options")
-        return CommandResult(text="\n".join(lines))
+        return CommandResult(
+            text="",
+            action="model_pick",
+            data={"entries": entries, "current": active_model},
+        )
 
     # List all available models
     if args == "list":
@@ -324,11 +321,19 @@ async def cmd_model(ctx: CommandContext) -> CommandResult:
                     target_model = m
                     break
 
+    def _make_primary(provider):
+        """Give this provider priority 0; shift all others down."""
+        for p in providers._providers.values():
+            if p.name != provider.name:
+                p.priority = p.priority + 1 if p.priority >= 0 else p.priority
+        provider.priority = 0
+        providers._save()
+
     # Try to switch within existing providers
     for p in providers.get_active_providers():
         if target_model in p.models or target_model == p.model:
             p.model = target_model
-            providers._save()
+            _make_primary(p)
             return CommandResult(text=f"Switched to: {target_model} ({p.name})")
 
     # Try Ollama
@@ -338,7 +343,6 @@ async def cmd_model(ctx: CommandContext) -> CommandResult:
         data = json.loads(resp.read())
         ollama_models = [m["name"] for m in data.get("models", [])]
         if target_model in ollama_models or any(target_model in m for m in ollama_models):
-            # Find or create Ollama provider
             matched = next((m for m in ollama_models if target_model in m), target_model)
             existing = None
             for p in providers.get_active_providers():
@@ -348,10 +352,11 @@ async def cmd_model(ctx: CommandContext) -> CommandResult:
             if existing:
                 existing.model = matched
                 existing.models = [matched]
-                providers._save()
+                _make_primary(existing)
             else:
                 providers.add_provider("ollama", "ollama", base_url="http://localhost:11434/v1", model=matched)
-            return CommandResult(text=f"Switched to local: {matched} (Ollama)")
+                _make_primary(providers._providers["ollama"])
+            return CommandResult(text=f"Switched to: {matched} (ollama)")
     except Exception:
         pass
 
