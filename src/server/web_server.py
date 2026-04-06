@@ -682,6 +682,22 @@ class JarvisWebServer:
                                         first_spoken_end = idx + 1
                                     break
                     elif etype == "tool_call":
+                        tool_name = event.get("name", "")
+                        # Voice narration — speak what we're doing on first tool call
+                        if is_voice and not used_tools:
+                            _narr = {
+                                "bash": "Let me check.",
+                                "read_file": "Reading that.",
+                                "write_file": "Writing that.",
+                                "edit_file": "Editing that.",
+                                "search_files": "Searching.",
+                                "web_search": "Looking that up.",
+                                "web_fetch": "Fetching that.",
+                                "dispatch": "On it.",
+                            }.get(tool_name, "Working on it.")
+                            clients = getattr(self, '_active_clients', {})
+                            if clients.get("desktop") and not clients.get("browser"):
+                                asyncio.create_task(self._speak_short(_narr))
                         used_tools = True
                         # Reset speech buffer — only speak the LLM's final reply
                         speech_buffer = ""
@@ -690,7 +706,7 @@ class JarvisWebServer:
                         await ws.send_json({
                             "type": "tool_call",
                             "id": current_tool_id,
-                            "name": event.get("name", ""),
+                            "name": tool_name,
                             "args": event.get("args", {}),
                         })
                     elif etype == "tool_result":
