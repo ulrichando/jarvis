@@ -182,6 +182,22 @@ function App() {
     if (last.type === 'camera') setCameraOn(last.enabled)
     if (last.type === 'provider_error') setSetupOpen(true)
 
+    // Live theme update — auto-refresh colors when changed via API
+    if (last.type === 'theme_update' && last.primary) {
+      if (window.__jarvisSetTheme) {
+        window.__jarvisSetTheme(last.primary, last.glow)
+      } else {
+        const root = document.documentElement
+        root.style.setProperty('--color-jarvis-cyan', last.primary)
+        root.style.setProperty('--color-jarvis-bright', last.glow)
+        const r = parseInt(last.primary.slice(1, 3), 16)
+        const g = parseInt(last.primary.slice(3, 5), 16)
+        const b = parseInt(last.primary.slice(5, 7), 16)
+        root.style.setProperty('--color-jarvis-dim', `rgba(${r}, ${g}, ${b}, 0.1)`)
+        root.style.setProperty('--color-jarvis-border', `rgba(${r}, ${g}, ${b}, 0.15)`)
+      }
+    }
+
     // Brain ready — flash green indicator
     if (last.type === 'brain_ready') {
       setBrainReady(true)
