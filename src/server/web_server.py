@@ -638,6 +638,7 @@ class JarvisWebServer:
         used_tools = False  # track if agent loop used any tools
         tool_id_counter = 0  # unique IDs for tool call/result pairing
         current_tool_id = None  # track the current tool's ID
+        narration_task = None  # track background narration so we can cancel it
 
         if hasattr(self.brain, 'think_stream'):
             try:
@@ -697,7 +698,7 @@ class JarvisWebServer:
                             }.get(tool_name, "Working on it.")
                             clients = getattr(self, '_active_clients', {})
                             if clients.get("desktop") and not clients.get("browser"):
-                                asyncio.create_task(self._speak_short(_narr))
+                                narration_task = asyncio.create_task(self._speak_short(_narr))
                         used_tools = True
                         # Reset speech buffer — only speak the LLM's final reply
                         speech_buffer = ""
@@ -797,6 +798,14 @@ class JarvisWebServer:
             if spoken and len(spoken) > 3 and is_voice:
                 clients = getattr(self, '_active_clients', {})
                 if clients.get("desktop") and not clients.get("browser"):
+                    # Cancel any in-progress narration before speaking the real response
+                    if narration_task and not narration_task.done():
+                        narration_task.cancel()
+                        # Kill any ffplay from narration so it doesn't overlap
+                        if hasattr(self, '_current_ffplay') and self._current_ffplay:
+                            try: self._current_ffplay.kill()
+                            except: pass
+                        await asyncio.sleep(0.1)
                     # If first sentence already spoken, speak only the remainder
                     if first_sent and first_spoken_end > 0:
                         remainder = self._clean_for_speech(spoken[first_spoken_end:].strip())
@@ -1477,14 +1486,22 @@ class JarvisWebServer:
     async def _handle_server_mic_query(self, transcript: str):
         """Handle a query from the server-side mic."""
         # Echo detection — ignore if JARVIS hears his own last response
+        # Only filter near-exact echoes. The mic muting handles most echo prevention;
+        # this is a last resort for audio that leaks through the cooldown window.
         if self._last_response:
             t_lower = transcript.lower().strip().rstrip(".,!?")
             r_lower = self._last_response.lower().strip().rstrip(".,!?")
-            # Check if transcript is a substring of last response or vice versa
-            if (t_lower in r_lower or r_lower in t_lower
-                    or len(set(t_lower.split()) & set(r_lower.split())) > len(t_lower.split()) * 0.6):
-                print(f"[JARVIS] Echo filtered: \"{transcript[:40]}\"")
+            # Exact substring match (JARVIS repeated back verbatim)
+            if t_lower in r_lower or r_lower in t_lower:
+                print(f"[JARVIS] Echo filtered (substring): \"{transcript[:40]}\"")
                 return
+            # High word overlap on short transcripts only (likely partial echo, not conversation)
+            heard_words = set(t_lower.split())
+            if len(heard_words) <= 8:
+                overlap = len(heard_words & set(r_lower.split())) / max(len(heard_words), 1)
+                if overlap > 0.7:
+                    print(f"[JARVIS] Echo filtered ({overlap:.0%} overlap): \"{transcript[:40]}\"")
+                    return
 
         # Mute mic while processing
         if hasattr(self, '_server_listener'):
@@ -1631,6 +1648,8 @@ class JarvisWebServer:
                 pass
         finally:
             if hasattr(self, '_server_listener'):
+                # Post-speech cooldown — let residual room audio decay before listening
+                await asyncio.sleep(0.5)
                 self._server_listener.jarvis_speaking = False
 
     async def _broadcast(self, data: dict):
@@ -1648,9 +1667,12 @@ class JarvisWebServer:
             self.clients.discard(ws)
 
     async def _speak_short(self, text: str):
-        """Quick non-blocking TTS for short status phrases like 'Let me check'."""
+        """Quick TTS for short status phrases like 'Let me check'."""
         try:
             import tempfile
+            # Mute mic during narration to prevent echo
+            if hasattr(self, '_server_listener'):
+                self._server_listener.jarvis_speaking = True
             communicate = edge_tts.Communicate(text, TTS_VOICE)
             audio_data = io.BytesIO()
             async for chunk in communicate.stream():
@@ -1662,15 +1684,34 @@ class JarvisWebServer:
             with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
                 f.write(audio_bytes)
                 tmp_path = f.name
-            # Fire and forget — don't wait for playback to finish
-            await asyncio.create_subprocess_exec(
-                "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", tmp_path,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", tmp_path,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                self._current_ffplay = proc  # track so it can be cancelled
+                await asyncio.wait_for(proc.wait(), timeout=15)
+            except asyncio.TimeoutError:
+                proc.kill()
+            except asyncio.CancelledError:
+                try: proc.kill()
+                except: pass
+                raise
+            finally:
+                self._current_ffplay = None
+                try: os.unlink(tmp_path)
+                except: pass
             print(f"[JARVIS] Narrating: \"{text}\"")
+        except asyncio.CancelledError:
+            pass  # cancelled by final response — that's fine
         except Exception as e:
             print(f"[JARVIS] Short TTS error: {e}")
+        finally:
+            # Post-speech cooldown — let residual room audio decay
+            await asyncio.sleep(0.3)
+            if hasattr(self, '_server_listener'):
+                self._server_listener.jarvis_speaking = False
 
     async def _speak_system(self, text: str):
         """Generate TTS and play with timeout protection."""

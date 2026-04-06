@@ -12,16 +12,51 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
   const [isStreaming, setIsStreaming] = useState(false)
   const [toolExecutions, setToolExecutions] = useState({})
   const [contextUsage, setContextUsage] = useState(null)
+  const messagesContainerRef = useRef(null)
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
   const wsRef = useRef(null)
   const toolIdCounter = useRef(0)
   // Track tool executions for the current response to embed in the final message
   const currentToolsRef = useRef({})
+  const scrollRAF = useRef(null)
+  const wasLoadingRef = useRef(false)
+
+  // Subtle chime when response completes
+  const playDoneChime = useCallback(() => {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)()
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.connect(gain)
+      gain.connect(ctx.destination)
+      osc.type = 'sine'
+      osc.frequency.setValueAtTime(880, ctx.currentTime)
+      osc.frequency.setValueAtTime(1100, ctx.currentTime + 0.08)
+      gain.gain.setValueAtTime(0.08, ctx.currentTime)
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25)
+      osc.start(ctx.currentTime)
+      osc.stop(ctx.currentTime + 0.25)
+    } catch {}
+  }, [])
+
+  // Detect loading→done transition and notify
+  useEffect(() => {
+    if (wasLoadingRef.current && !isLoading) {
+      playDoneChime()
+    }
+    wasLoadingRef.current = isLoading
+  }, [isLoading, playDoneChime])
 
   // Auto-scroll to bottom on new messages or streaming updates
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (scrollRAF.current) cancelAnimationFrame(scrollRAF.current)
+    scrollRAF.current = requestAnimationFrame(() => {
+      const container = messagesContainerRef.current
+      if (container) {
+        container.scrollTop = container.scrollHeight
+      }
+    })
   }, [messages, streamingMessage, toolExecutions])
 
   // Focus input when panel opens
@@ -307,6 +342,7 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
 
       {/* Messages */}
       <div
+        ref={messagesContainerRef}
         className="flex-1 overflow-y-auto p-3 flex flex-col gap-2.5"
         style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(0,229,255,0.2) transparent' }}
       >

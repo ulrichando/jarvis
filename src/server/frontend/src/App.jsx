@@ -374,7 +374,7 @@ function App() {
                 }
                 try { mediaRecorder.stop() } catch { /* ignore */ }
                 recording = false
-              }, 800) // 800ms silence = end of utterance (was 500ms)
+              }, 1200) // 1200ms silence = end of utterance - sentence-level VAD
             }
           }
           setTimeout(checkVoice, 50)
