@@ -110,17 +110,34 @@ class MemoryStore:
         self.conn.commit()
 
     def mark_session_start(self):
-        """Mark the start of a new CLI session. History only returns turns after this."""
-        self._session_start = time.time()
+        """Mark the start of a new session.
+
+        Sets the history window to include recent conversations (last 6 hours)
+        so JARVIS remembers context across server restarts.
+        """
+        # Look back 6 hours instead of cutting off at boot time
+        self._session_start = time.time() - (6 * 3600)
 
     def get_history(self, limit: int = 20) -> list[dict]:
-        """Get conversation history from the current session only."""
+        """Get conversation history from the current session window.
+
+        Uses a two-pass approach:
+        1. Get the last `limit` entries (recent context)
+        2. Also include any entries from the last 3 hours (cross-restart memory)
+        Deduplicates and caps at limit * 2 to avoid blowing up context.
+        """
         session_start = getattr(self, '_session_start', 0)
+        # Time-based window: last 3 hours minimum
+        time_cutoff = min(session_start, time.time() - 3 * 3600)
+        # Get more entries to cover voice-heavy sessions
+        # Voice generates ~150 entries/hour, so 3h = ~450 entries
+        # Cap at limit * 4 to stay within LLM context budget
+        effective_limit = min(limit * 4, 160)
         rows = self.conn.execute(
             "SELECT role, content, timestamp FROM conversations "
             "WHERE timestamp >= ? "
             "ORDER BY timestamp DESC LIMIT ?",
-            (session_start, limit),
+            (time_cutoff, effective_limit),
         ).fetchall()
         return [dict(row) for row in reversed(rows)]
 

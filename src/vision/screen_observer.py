@@ -31,13 +31,144 @@ class ScreenContext:
     window_class: str = ""
     screen_text: str = ""
     vision_summary: str = ""  # Rich description from vision model
+    ui_tree: str = ""         # AT-SPI accessibility tree summary
     timestamp: float = 0
     screenshot_path: str = ""
     changed: bool = False
 
 
+def _read_atspi_tree(max_depth: int = 3, max_elements: int = 30) -> str:
+    """Read the AT-SPI accessibility tree of the focused application.
+
+    Returns a compact summary of UI elements: buttons, text fields,
+    labels, menus — what's on screen without needing a screenshot.
+    Fast (~50ms), local, no API cost.
+
+    Falls back to window list via wmctrl if AT-SPI doesn't find the focused app.
+    """
+    result = ""
+
+    # Try AT-SPI first
+    try:
+        import gi
+        gi.require_version('Atspi', '2.0')
+        from gi.repository import Atspi
+
+        desktop = Atspi.get_desktop(0)
+        if desktop:
+            # Find the focused application
+            focused_app = None
+            for i in range(desktop.get_child_count()):
+                app = desktop.get_child_at_index(i)
+                if not app:
+                    continue
+                try:
+                    for j in range(min(app.get_child_count(), 10)):
+                        win = app.get_child_at_index(j)
+                        if win and win.get_state_set().contains(Atspi.StateType.ACTIVE):
+                            focused_app = app
+                            break
+                except Exception:
+                    continue
+                if focused_app:
+                    break
+
+            if focused_app:
+                elements = []
+                _count = [0]
+
+                def _walk(node, depth=0):
+                    if _count[0] >= max_elements or depth > max_depth:
+                        return
+                    if not node:
+                        return
+                    try:
+                        role = node.get_role_name() or ""
+                        name = node.get_name() or ""
+                        if not name and role in ("filler", "panel", "section", "redundant object"):
+                            for i in range(min(node.get_child_count(), 8)):
+                                _walk(node.get_child_at_index(i), depth + 1)
+                            return
+                        indent = "  " * depth
+                        if name:
+                            elements.append(f"{indent}[{role}] {name}")
+                            _count[0] += 1
+                        elif role in ("button", "text", "entry", "menu item", "link",
+                                      "tab", "check box", "radio button", "combo box"):
+                            elements.append(f"{indent}[{role}]")
+                            _count[0] += 1
+                        for i in range(min(node.get_child_count(), 8)):
+                            _walk(node.get_child_at_index(i), depth + 1)
+                    except Exception:
+                        pass
+
+                app_name = focused_app.get_name() or "Unknown"
+                elements.append(f"App: {app_name}")
+                for i in range(min(focused_app.get_child_count(), 5)):
+                    _walk(focused_app.get_child_at_index(i), 1)
+
+                if len(elements) > 1:  # More than just "App: name"
+                    result = "\n".join(elements)
+    except Exception as e:
+        log.debug("AT-SPI read failed: %s", e)
+
+    # Fallback: list all open windows via wmctrl
+    if not result or result.count("\n") < 2:
+        try:
+            wmctrl = subprocess.run(
+                ["wmctrl", "-l", "-p"],
+                capture_output=True, text=True, timeout=3,
+            )
+            if wmctrl.returncode == 0:
+                lines = []
+                for line in wmctrl.stdout.strip().split("\n"):
+                    parts = line.split(None, 4)
+                    if len(parts) >= 5:
+                        title = parts[4]
+                        if title and title not in ("Desktop", "xfce4-panel"):
+                            lines.append(f"  Window: {title}")
+                if lines:
+                    result = "Open windows:\n" + "\n".join(lines[:10])
+        except Exception:
+            pass
+
+    return result
+
+
+def _track_window_focus() -> tuple[str, str]:
+    """Get current focused window title and class. Fast (~5ms)."""
+    title, wclass = "", ""
+    try:
+        wid = subprocess.run(
+            ["xdotool", "getactivewindow"],
+            capture_output=True, text=True, timeout=2,
+        ).stdout.strip()
+        if not wid:
+            return "", ""
+        title = subprocess.run(
+            ["xdotool", "getwindowname", wid],
+            capture_output=True, text=True, timeout=2,
+        ).stdout.strip()
+        xprop = subprocess.run(
+            ["xprop", "-id", wid, "WM_CLASS"],
+            capture_output=True, text=True, timeout=2,
+        )
+        out = xprop.stdout.strip()
+        if '"' in out:
+            parts = out.split('"')
+            wclass = parts[3] if len(parts) >= 4 else parts[1]
+    except Exception:
+        pass
+    return title, wclass
+
+
 class ScreenObserver:
-    """Observes the screen silently and builds context."""
+    """Observes the screen using 3 combined methods:
+
+    1. Window focus tracking (instant, free) — always knows what app is active
+    2. AT-SPI accessibility tree (fast, local) — structured UI elements
+    3. Periodic screenshots + vision (rich, expensive) — only when needed
+    """
 
     def __init__(self, interval: float = 5.0, provider_registry=None):
         self.interval = interval
@@ -45,11 +176,14 @@ class ScreenObserver:
         self._thread = None
         self._latest: ScreenContext = ScreenContext()
         self._prev_text_hash = ""
+        self._prev_window = ""
         self._history: list[ScreenContext] = []
         self._provider_registry = provider_registry
         self._vision_available = None  # Lazy-detect
         self._vision_interval = 30.0  # Vision analysis every 30s (expensive)
+        self._atspi_interval = 3.0    # AT-SPI every 3s (cheap)
         self._last_vision_time = 0
+        self._last_atspi_time = 0
         SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
     def set_provider_registry(self, registry):
@@ -145,17 +279,26 @@ class ScreenObserver:
         return ctx.vision_summary or ctx.screen_text or "No screen data available."
 
     def get_context_for_llm(self) -> str:
-        """Get screen context formatted for injection into LLM prompt."""
+        """Get screen context formatted for injection into LLM prompt.
+
+        Combines all 3 awareness methods:
+        1. Window focus (what app)
+        2. AT-SPI tree (what UI elements are visible)
+        3. Vision/OCR (what the screen looks like)
+        """
         ctx = self._latest
-        if not ctx.active_window and not ctx.screen_text and not ctx.vision_summary:
+        if not ctx.active_window and not ctx.screen_text and not ctx.vision_summary and not ctx.ui_tree:
             return ""
         parts = []
         if ctx.active_window:
-            parts.append(f"User is looking at: {ctx.active_window} ({ctx.window_class})")
+            parts.append(f"Active window: {ctx.active_window} ({ctx.window_class})")
+        if ctx.ui_tree:
+            # Compact AT-SPI summary — most useful for understanding UI state
+            parts.append(f"UI elements:\n{ctx.ui_tree[:600]}")
         if ctx.vision_summary:
-            parts.append(f"Screen context: {ctx.vision_summary[:500]}")
+            parts.append(f"Visual: {ctx.vision_summary[:400]}")
         elif ctx.screen_text:
-            text = ctx.screen_text[:500]
+            text = ctx.screen_text[:400]
             parts.append(f"Screen text: {text}")
         return "\n".join(parts)
 
@@ -318,21 +461,50 @@ class ScreenObserver:
     # ── Internal ──
 
     def _observe_loop(self):
-        """Background loop that periodically captures the screen."""
+        """Background loop — fast window+AT-SPI tracking, slow screenshots."""
         while self._running:
             try:
-                self._capture()
+                now = time.time()
+
+                # Always track window focus (instant, ~5ms)
+                title, wclass = _track_window_focus()
+                window_changed = title != self._prev_window
+                self._prev_window = title
+
+                # AT-SPI on interval or window change (fast, ~50ms)
+                ui_tree = ""
+                if window_changed or now - self._last_atspi_time > self._atspi_interval:
+                    ui_tree = _read_atspi_tree()
+                    self._last_atspi_time = now
+
+                # Update latest context without full screenshot
+                self._latest.active_window = title
+                self._latest.window_class = wclass
+                self._latest.timestamp = now
+                if ui_tree:
+                    self._latest.ui_tree = ui_tree
+                self._latest.changed = window_changed
+
+                # Full screenshot capture on interval (expensive)
+                if now - (self._latest.timestamp or 0) > self.interval or window_changed:
+                    self._capture()
+
             except Exception as e:
-                log.debug("Screen capture error: %s", e)
-            time.sleep(self.interval)
+                log.debug("Screen observe error: %s", e)
+            time.sleep(1)  # Fast tick for window tracking
 
     def _capture(self, force_vision: bool = False, vision_prompt: str = "") -> ScreenContext:
-        """Take a screenshot, extract text, detect window."""
+        """Take a screenshot, extract text, detect window, read AT-SPI tree."""
         ctx = ScreenContext(timestamp=time.time())
 
-        # Get active window
-        ctx.active_window = self.get_active_window()
-        ctx.window_class = self.get_active_window_class()
+        # Get active window (use fast tracker)
+        ctx.active_window, ctx.window_class = _track_window_focus()
+
+        # AT-SPI accessibility tree
+        try:
+            ctx.ui_tree = _read_atspi_tree()
+        except Exception:
+            pass
 
         # Screenshot — prefer mss (fast, silent), fall back to scrot
         path = str(SCREENSHOT_DIR / "latest.png")

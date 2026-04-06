@@ -250,21 +250,31 @@ async def _agent_loop_internal(
     model_name = getattr(reasoner, 'model', '') or getattr(reasoner, 'active_model_name', '') or ''
     compactor = AutoCompactor(model=model_name)
 
-    # Adaptive history: use more turns for larger context models
+    # Adaptive history: budget by character count, not turn count.
+    # Voice conversations have many short turns — turn limits miss older context.
     from src.agent.context import MODEL_LIMITS, DEFAULT_MAX_TOKENS
     ctx_limit = MODEL_LIMITS.get(model_name, DEFAULT_MAX_TOKENS)
-    max_history_turns = 10 if ctx_limit <= 32000 else 20 if ctx_limit <= 200000 else 30
     max_content_len = 2000 if ctx_limit <= 32000 else 4000 if ctx_limit <= 200000 else 8000
+    # Reserve ~25% of context for history (~3 chars per token)
+    max_history_chars = (ctx_limit // 4) * 3
 
     messages = [{"role": "system", "content": system_prompt}]
 
     if history:
-        for turn in history[-max_history_turns:]:
-            role = "assistant" if turn["role"] == "jarvis" else "user"
+        selected = []
+        char_budget = max_history_chars
+        for turn in reversed(history):
             content = turn["content"]
             if len(content) > max_content_len:
                 content = content[:max_content_len] + "..."
-            messages.append({"role": role, "content": content})
+            cost = len(content) + 20
+            if char_budget - cost < 0 and selected:
+                break
+            char_budget -= cost
+            role = "assistant" if turn["role"] == "jarvis" else "user"
+            selected.append({"role": role, "content": content})
+        for msg in reversed(selected):
+            messages.append(msg)
 
     messages.append({"role": "user", "content": user_input})
 
@@ -766,21 +776,31 @@ async def agent_loop_stream(
     model_name = getattr(reasoner, 'model', '') or getattr(reasoner, 'active_model_name', '') or ''
     compactor = AutoCompactor(model=model_name, summarizer=_llm_summarizer)
 
-    # Adaptive history: use more turns for larger context models
+    # Adaptive history: budget by character count, not turn count.
+    # Voice conversations have many short turns — turn limits miss older context.
     from src.agent.context import MODEL_LIMITS, DEFAULT_MAX_TOKENS
     ctx_limit = MODEL_LIMITS.get(model_name, DEFAULT_MAX_TOKENS)
-    max_history_turns = 10 if ctx_limit <= 32000 else 20 if ctx_limit <= 200000 else 30
     max_content_len = 2000 if ctx_limit <= 32000 else 4000 if ctx_limit <= 200000 else 8000
+    # Reserve ~25% of context for history (~3 chars per token)
+    max_history_chars = (ctx_limit // 4) * 3
 
     messages = [{"role": "system", "content": system_prompt}]
 
     if history:
-        for turn in history[-max_history_turns:]:
-            role = "assistant" if turn["role"] == "jarvis" else "user"
+        selected = []
+        char_budget = max_history_chars
+        for turn in reversed(history):
             content = turn["content"]
             if len(content) > max_content_len:
                 content = content[:max_content_len] + "..."
-            messages.append({"role": role, "content": content})
+            cost = len(content) + 20
+            if char_budget - cost < 0 and selected:
+                break
+            char_budget -= cost
+            role = "assistant" if turn["role"] == "jarvis" else "user"
+            selected.append({"role": role, "content": content})
+        for msg in reversed(selected):
+            messages.append(msg)
 
     messages.append({"role": "user", "content": user_input})
 

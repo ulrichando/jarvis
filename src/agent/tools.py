@@ -1422,6 +1422,33 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    # ── SMS / Phone messaging via KDE Connect ──────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "send_sms",
+            "description": (
+                "Send a text message (SMS) to a phone number via KDE Connect.\n"
+                "Requires a paired Android phone running KDE Connect.\n"
+                "Use this when Ulrich asks you to text someone, send a message, or SMS.\n"
+                "If no device is paired, tell the user to pair their phone first."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "phone_number": {
+                        "type": "string",
+                        "description": "Phone number to send to (e.g. '+1234567890')",
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "The text message to send",
+                    },
+                },
+                "required": ["phone_number", "message"],
+            },
+        },
+    },
 ]
 
 
@@ -1573,6 +1600,8 @@ def execute_tool(name: str, args: dict, readonly: bool = False) -> str:
         # ── Remote Trigger ─────────────────────────────────────────────
         elif name == "RemoteTrigger":
             return "__REMOTE_TRIGGER__"  # Handled by agent loop
+        elif name == "send_sms":
+            return _exec_send_sms(args)
         elif name.startswith("mcp_"):
             return _exec_mcp_tool(name, args)
         else:
@@ -2992,3 +3021,74 @@ def _exec_list_mcp_resources(args: dict) -> str:
         return "MCP manager does not support resource listing."
     except Exception as e:
         return f"MCP resource listing error: {e}"
+
+
+# ── SMS via KDE Connect ───────────────────────────────────────────────
+
+def _exec_send_sms(args: dict) -> str:
+    """Send SMS via KDE Connect to a paired Android phone."""
+    phone = args.get("phone_number", "").strip()
+    message = args.get("message", "").strip()
+
+    if not phone:
+        return "No phone number provided."
+    if not message:
+        return "No message provided."
+
+    # Find paired + reachable device
+    try:
+        result = subprocess.run(
+            ["kdeconnect-cli", "-a", "--id-only"],
+            capture_output=True, text=True, timeout=5,
+        )
+        devices = [d.strip() for d in result.stdout.strip().split("\n") if d.strip()]
+    except FileNotFoundError:
+        return "kdeconnect-cli not installed. Install KDE Connect: sudo apt install kdeconnect"
+    except Exception as e:
+        return f"Error listing KDE Connect devices: {e}"
+
+    if not devices:
+        # Try listing all paired (even offline)
+        try:
+            result2 = subprocess.run(
+                ["kdeconnect-cli", "-l", "--id-only"],
+                capture_output=True, text=True, timeout=5,
+            )
+            paired = [d.strip() for d in result2.stdout.strip().split("\n") if d.strip()]
+            if paired:
+                return (
+                    "Phone is paired but not reachable. Make sure:\n"
+                    "- Phone and PC are on the same WiFi\n"
+                    "- KDE Connect app is running on the phone\n"
+                    f"Paired devices: {', '.join(paired)}"
+                )
+        except Exception:
+            pass
+        return (
+            "No paired phone found. To set up:\n"
+            "1. Install 'KDE Connect' app on your Android phone\n"
+            "2. Make sure phone and PC are on the same WiFi\n"
+            "3. Run: kdeconnect-cli -l   (should show your phone)\n"
+            "4. Pair from the phone app or: kdeconnect-cli --pair -d <device_id>"
+        )
+
+    device_id = devices[0]
+
+    # Send the SMS
+    try:
+        result = subprocess.run(
+            [
+                "kdeconnect-cli",
+                "-d", device_id,
+                "--send-sms", message,
+                "--destination", phone,
+            ],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0:
+            return f"SMS sent to {phone}: \"{message}\""
+        else:
+            err = result.stderr.strip() or result.stdout.strip()
+            return f"Failed to send SMS: {err}"
+    except Exception as e:
+        return f"Error sending SMS: {e}"
