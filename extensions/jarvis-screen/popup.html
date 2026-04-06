@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 360px;
+      min-height: 200px;
+      background: #0a0a0f;
+      color: #e0e0e0;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 13px;
+    }
+    .header {
+      background: linear-gradient(135deg, #001a2e, #002244);
+      padding: 12px 16px;
+      border-bottom: 1px solid #00b8d433;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .header .dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: #00e5ff;
+      box-shadow: 0 0 8px #00e5ff88;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    .header h1 {
+      font-size: 14px;
+      font-weight: 600;
+      color: #00e5ff;
+      letter-spacing: 1px;
+    }
+    .content { padding: 12px 16px; }
+    .input-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    input {
+      flex: 1;
+      background: #111;
+      border: 1px solid #00b8d433;
+      color: #e0e0e0;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      outline: none;
+    }
+    input:focus { border-color: #00b8d4; }
+    input::placeholder { color: #555; }
+    button {
+      background: linear-gradient(135deg, #00b8d4, #0099b8);
+      color: #fff;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    button:hover { background: linear-gradient(135deg, #00d4f0, #00b8d4); }
+    button:disabled { opacity: 0.5; cursor: wait; }
+    .response {
+      background: #111;
+      border: 1px solid #00b8d422;
+      border-radius: 8px;
+      padding: 12px;
+      min-height: 60px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+    .response.empty { color: #444; font-style: italic; }
+    .response.error { color: #ff4444; border-color: #ff444433; }
+    .shortcut {
+      margin-top: 10px;
+      text-align: center;
+      color: #555;
+      font-size: 11px;
+    }
+    .shortcut kbd {
+      background: #222;
+      padding: 2px 6px;
+      border-radius: 3px;
+      border: 1px solid #333;
+      font-family: monospace;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="dot"></div>
+    <h1>JARVIS SCREEN VISION</h1>
+  </div>
+  <div class="content">
+    <div class="input-row">
+      <input type="text" id="query" placeholder="Ask about what's on screen..." />
+      <button id="capture">Analyze</button>
+    </div>
+    <div class="response empty" id="response">Click "Analyze" or press Ctrl+Shift+J to capture your screen and ask JARVIS about it.</div>
+    <div class="shortcut">Shortcut: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>J</kbd></div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

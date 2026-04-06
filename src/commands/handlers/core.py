@@ -307,14 +307,22 @@ async def cmd_model(ctx: CommandContext) -> CommandResult:
     # Shortcuts for common models
     shortcuts = {
         "haiku": "claude-haiku-4-5-20251001",
-        "sonnet": "claude-sonnet-4-6-20250514",
-        "opus": "claude-opus-4-6-20250514",
+        "sonnet": "claude-sonnet-4-20250514",
+        "opus": "claude-opus-4-20250514",
         "gpt4": "gpt-4o",
         "gpt4mini": "gpt-4o-mini",
         "deepseek": "deepseek-chat",
         "deepseek-r1": "deepseek-reasoner",
     }
     target_model = shortcuts.get(args, args)
+
+    # Fuzzy match: if exact match fails, try partial match against configured models
+    if target_model == args:  # no shortcut matched
+        for p in providers.get_active_providers():
+            for m in p.models:
+                if args in m.lower():
+                    target_model = m
+                    break
 
     # Try to switch within existing providers
     for p in providers.get_active_providers():

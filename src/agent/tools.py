@@ -558,30 +558,8 @@ TOOL_SCHEMAS = [
             },
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "computer_use",
-            "description": "Control the desktop — click, type, scroll, take screenshots. Use to automate GUI apps, fill forms, click buttons, navigate menus. Take a screenshot first to see what's on screen.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["screenshot", "click", "type", "key", "scroll", "move"],
-                        "description": "Action to perform",
-                    },
-                    "x": {"type": "integer", "description": "X coordinate (for click/scroll/move)"},
-                    "y": {"type": "integer", "description": "Y coordinate (for click/scroll/move)"},
-                    "text": {"type": "string", "description": "Text to type (for type action)"},
-                    "key": {"type": "string", "description": "Key to press (for key action, e.g. 'Return', 'ctrl+c', 'alt+Tab')"},
-                    "button": {"type": "string", "description": "Mouse button (left/middle/right)"},
-                    "direction": {"type": "string", "description": "Scroll direction (up/down)"},
-                },
-                "required": ["action"],
-            },
-        },
-    },
+    # computer_use removed from default tools — LLM should use bash/xdotool instead.
+    # The execute_tool handler still supports it if explicitly needed.
     {
         "type": "function",
         "function": {
