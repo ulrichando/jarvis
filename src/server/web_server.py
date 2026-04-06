@@ -409,7 +409,9 @@ class JarvisWebServer:
         if is_ambient:
             # Prefix with voice context so the LLM can decide how to respond
             text = f"[voice input] {text}"
-            print(f'[JARVIS] Voice: "{text[14:54]}"')
+            print(f'[Ulrich] "{text[14:54]}"')
+        else:
+            print(f'[JARVIS] Browser query: "{text[:80]}"')
 
         # Normalize for voice-friendly matching (Whisper adds punctuation/filler)
         text_lower = text.lower().strip()
@@ -639,6 +641,7 @@ class JarvisWebServer:
         tool_id_counter = 0  # unique IDs for tool call/result pairing
         current_tool_id = None  # track the current tool's ID
         narration_task = None  # track background narration so we can cancel it
+        early_tts_task = None  # track first-sentence TTS so we can wait for it
 
         if hasattr(self.brain, 'think_stream'):
             try:
@@ -666,18 +669,21 @@ class JarvisWebServer:
                                     if spoken and len(spoken) > 5:
                                         latency = int((time.time() - start) * 1000)
                                         # Speak first sentence immediately for voice queries
+                                        _early_server_tts = False
                                         if is_voice:
                                             clients = getattr(self, '_active_clients', {})
                                             if clients.get("desktop") and not clients.get("browser"):
-                                                asyncio.create_task(self._speak_system(spoken))
+                                                early_tts_task = asyncio.create_task(self._speak_system(spoken))
+                                                _early_server_tts = True
                                         await ws.send_json({
                                             "type": "message", "role": "jarvis",
                                             "content": first_sentence,
-                                            "spoken": spoken,
+                                            "spoken": "" if _early_server_tts else spoken,
                                             "model": self.brain.reasoner.model,
                                             "latency_ms": latency,
                                             "voice_style": self._get_voice_style(),
                                             "partial": True,
+                                            "server_tts": _early_server_tts,
                                         })
                                         first_sent = True
                                         first_spoken_end = idx + 1
@@ -704,6 +710,7 @@ class JarvisWebServer:
                         speech_buffer = ""
                         tool_id_counter += 1
                         current_tool_id = f"tool-{tool_id_counter}"
+                        print(f"[JARVIS] Tool: {tool_name}({str(event.get('args', {}))[:80]})")
                         await ws.send_json({
                             "type": "tool_call",
                             "id": current_tool_id,
@@ -711,11 +718,13 @@ class JarvisWebServer:
                             "args": event.get("args", {}),
                         })
                     elif etype == "tool_result":
+                        result_str = str(event.get("content", event.get("result", "")))[:500]
+                        print(f"[JARVIS] Result: {event.get('name', '')} → {result_str[:80]}")
                         await ws.send_json({
                             "type": "tool_result",
                             "id": current_tool_id,
                             "name": event.get("name", ""),
-                            "content": str(event.get("content", event.get("result", "")))[:500],
+                            "content": result_str,
                         })
                         current_tool_id = None
                     elif etype == "usage":
@@ -764,6 +773,9 @@ class JarvisWebServer:
             speech_buffer = full_response
 
         if full_response and full_response.strip():
+            model = getattr(self.brain.reasoner, 'active_model_name', '') or getattr(self.brain.reasoner, 'model', '')
+            print(f'[JARVIS] Response: "{full_response.strip()[:80]}" (model={model}, {latency}ms)')
+
             # For speech: use only the final LLM turn (after tools)
             if used_tools:
                 spoken = self._clean_for_speech(speech_buffer)
@@ -774,38 +786,49 @@ class JarvisWebServer:
             if spoken and len(spoken) > 3 and hasattr(self, '_server_listener'):
                 self._server_listener.jarvis_speaking = True
 
+            # Check if server will handle TTS (suppress frontend TTS to avoid double voice)
+            _clients = getattr(self, '_active_clients', {})
+            _server_tts = (is_voice and spoken and len(spoken) > 3
+                           and _clients.get("desktop") and not _clients.get("browser"))
+            _sent_spoken = "" if _server_tts else spoken
+
             if first_sent:
                 await ws.send_json({
                     "type": "message", "role": "jarvis",
                     "content": full_response,
-                    "spoken": spoken,
+                    "spoken": _sent_spoken,
                     "model": self.brain.reasoner.model,
                     "latency_ms": latency,
                     "voice_style": voice_style,
                     "final": True,
+                    "server_tts": _server_tts,
                 })
             else:
                 await ws.send_json({
                     "type": "message", "role": "jarvis",
                     "content": full_response,
-                    "spoken": spoken,
+                    "spoken": _sent_spoken,
                     "model": self.brain.reasoner.model,
                     "latency_ms": latency,
                     "voice_style": voice_style,
+                    "server_tts": _server_tts,
                 })
 
             # Server-side TTS — only for voice input, not typed text
-            if spoken and len(spoken) > 3 and is_voice:
-                clients = getattr(self, '_active_clients', {})
-                if clients.get("desktop") and not clients.get("browser"):
+            if _server_tts:
                     # Cancel any in-progress narration before speaking the real response
                     if narration_task and not narration_task.done():
                         narration_task.cancel()
-                        # Kill any ffplay from narration so it doesn't overlap
                         if hasattr(self, '_current_ffplay') and self._current_ffplay:
                             try: self._current_ffplay.kill()
                             except: pass
                         await asyncio.sleep(0.1)
+                    # Wait for early first-sentence TTS to finish before speaking remainder
+                    if early_tts_task and not early_tts_task.done():
+                        try:
+                            await asyncio.wait_for(early_tts_task, timeout=15)
+                        except Exception:
+                            pass
                     # If first sentence already spoken, speak only the remainder
                     if first_sent and first_spoken_end > 0:
                         remainder = self._clean_for_speech(spoken[first_spoken_end:].strip())
@@ -845,6 +868,10 @@ class JarvisWebServer:
             return
 
         # Small chunk = ambient stream
+        # Skip if server mic is already handling audio (prevents duplicate processing)
+        if getattr(self, '_server_mic_running', False):
+            return
+
         try:
             # Convert raw PCM float32 to numpy
             audio_chunk = np.frombuffer(data, dtype=np.float32)
@@ -865,7 +892,7 @@ class JarvisWebServer:
                             print(f"[JARVIS] Echo detected, ignoring: \"{transcript[:60]}\"")
                             return
 
-                print(f"[JARVIS] Ambient STT: \"{transcript}\"")
+                print(f"[Ulrich] \"{transcript}\"")
                 await ws.send_json({"type": "stt_result", "text": transcript})
 
                 # Process the transcription — send to brain like a voice query
@@ -1446,7 +1473,26 @@ class JarvisWebServer:
                                           "right", "sure", "huh", "what"}
                                 if all(w.lower().rstrip(".,!?") in filler for w in words):
                                     continue
-                                print(f'[JARVIS] Server mic STT: "{transcript}"')
+                                # Face gate — only respond to the owner
+                                if self._face_gate_enabled:
+                                    is_owner = self._verify_owner_face()
+                                    if not is_owner:
+                                        print(f'[JARVIS] Face gate BLOCKED: "{transcript[:40]}" (not owner)')
+                                        continue
+
+                                # Log with speaker name from CorticalViewer face recognition
+                                _speaker = "Ulrich"
+                                try:
+                                    for _ws in list(self.clients):
+                                        _v = getattr(_ws, '_viewer', None)
+                                        if _v and _v.recognition.face.current_identity:
+                                            _lbl = _v.recognition.face.get_label(_v.recognition.face.current_identity)
+                                            if _lbl and _lbl not in ("unknown", "none"):
+                                                _speaker = _lbl.capitalize()
+                                            break
+                                except Exception:
+                                    pass
+                                print(f'[{_speaker}] "{transcript}"')
                                 asyncio.run_coroutine_threadsafe(
                                     self._handle_server_mic_query(transcript), self._loop)
                         except Exception as e:
@@ -1483,6 +1529,46 @@ class JarvisWebServer:
     _current_ffplay = None
     _last_response = ""
 
+    # Face gate — only respond to voice from the verified owner
+    _face_gate_enabled = True
+
+    def _verify_owner_face(self) -> bool:
+        """Check if the owner is present using the CorticalViewer's live face recognition.
+
+        Uses the already-running vision pipeline on the desktop WebSocket connection,
+        which continuously processes camera frames and tracks identities.
+
+        Fail-open: returns True if no viewer, no face data, or any error.
+        """
+        try:
+            # Find a connected client with an active CorticalViewer
+            for ws in list(self.clients):
+                viewer = getattr(ws, '_viewer', None)
+                if viewer is None:
+                    continue
+
+                face_rec = viewer.recognition.face
+                identity_id = face_rec.current_identity
+                if identity_id is None:
+                    continue  # no face currently detected
+
+                label = face_rec.get_label(identity_id)
+                confidence = face_rec.current_confidence
+
+                if label in ("primary_user", "ulrich", "Ulrich", "owner") and confidence >= 0.5:
+                    return True
+
+                # Face detected but not the owner
+                print(f"[JARVIS] Face gate: label={label}, confidence={confidence:.2f}")
+                return False
+
+            # No viewer or no face data — fail-open
+            return True
+
+        except Exception as e:
+            print(f"[JARVIS] Face gate error (allowing): {e}")
+            return True
+
     async def _handle_server_mic_query(self, transcript: str):
         """Handle a query from the server-side mic."""
         # Echo detection — ignore if JARVIS hears his own last response
@@ -1512,6 +1598,28 @@ class JarvisWebServer:
             import re as _re_mic
             text_lower = transcript.lower().strip()
             text_clean = _re_mic.sub(r'[^\w\s]', '', text_lower).strip()
+
+            # Face gate toggle
+            if any(p in text_clean for p in ("face lock on", "enable face lock", "face gate on",
+                                              "lock to my face", "only respond to me")):
+                self._face_gate_enabled = True
+                await self._broadcast({"type": "message", "role": "jarvis",
+                    "content": "Face lock enabled. I'll only respond to you now.",
+                    "model": "", "latency_ms": 0, "voice_style": "default"})
+                clients = getattr(self, '_active_clients', {})
+                if clients.get("desktop") and not clients.get("browser"):
+                    asyncio.create_task(self._speak_short("Face lock on."))
+                return
+            if any(p in text_clean for p in ("face lock off", "disable face lock", "face gate off",
+                                              "respond to anyone", "respond to everyone")):
+                self._face_gate_enabled = False
+                await self._broadcast({"type": "message", "role": "jarvis",
+                    "content": "Face lock disabled. I'll respond to anyone now.",
+                    "model": "", "latency_ms": 0, "voice_style": "default"})
+                clients = getattr(self, '_active_clients', {})
+                if clients.get("desktop") and not clients.get("browser"):
+                    asyncio.create_task(self._speak_short("Face lock off."))
+                return
 
             switch_to_desktop = ("switch to desktop", "go to desktop", "move to desktop",
                                  "desktop mode", "jarvis desktop", "back to desktop")
@@ -1619,15 +1727,20 @@ class JarvisWebServer:
             is_desktop = clients.get("desktop", False)
 
             # Broadcast message to all clients
+            # If server will handle TTS via ffplay, don't send 'spoken' to frontend
+            # (otherwise both browser Audio API AND ffplay play = double voice)
+            server_will_speak = (is_desktop or not is_browser) and spoken and len(spoken) > 1
             await self._broadcast({
                 "type": "message", "role": "jarvis",
-                "content": response, "spoken": spoken,
+                "content": response,
+                "spoken": "" if server_will_speak else spoken,
                 "model": model, "latency_ms": latency,
                 "voice_style": "default",
+                "server_tts": server_will_speak,  # tell frontend server handles TTS
             })
 
             # TTS: desktop uses server-side ffplay, browser uses Audio API
-            if (is_desktop or not is_browser) and spoken and len(spoken) > 1:
+            if server_will_speak:
                 # Mute mic BEFORE speaking to prevent echo
                 if hasattr(self, '_server_listener'):
                     self._server_listener.jarvis_speaking = True
@@ -2906,6 +3019,13 @@ class JarvisWebServer:
             else:
                 return web.json_response({"error": "Invalid theme"}, status=400)
             generate_icon(primary)
+            # Push theme change to all connected clients in real-time
+            await server._broadcast({
+                "type": "theme_update",
+                "primary": primary,
+                "glow": glow,
+                "theme": theme or "custom",
+            })
             return web.json_response({"theme": theme or "custom", "primary": primary, "glow": glow})
 
         app.router.add_get("/api/theme", theme_get_handler)
