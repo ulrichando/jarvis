@@ -111,14 +111,41 @@ class ProviderRegistry:
     _CB_WINDOW = 300       # 5 minutes
     _CB_COOLDOWN = 120     # 2 minutes before retry
 
+    # Effort level → max_tokens mapping
+    EFFORT_MAX_TOKENS = {
+        "low":    512,
+        "medium": 2048,
+        "high":   4096,
+        "max":    8192,
+    }
+    # Effort level → system prompt suffix for local models (no native thinking support)
+    EFFORT_INSTRUCTIONS = {
+        "low":    "Be concise. Answer in 1-3 sentences. No elaboration.",
+        "medium": "Give a clear, thorough answer. Include key details.",
+        "high":   "Think carefully. Cover edge cases, alternatives, and examples.",
+        "max":    "Be exhaustive. Explore all angles, provide full reasoning, leave nothing out.",
+    }
+
     def __init__(self):
         self._providers: dict[str, Provider] = {}
         self._clients: dict[str, object] = {}
         self._last_working: str | None = None
         self._circuit_breaker: dict[str, dict] = {}  # {name: {failures: int, last_fail: float, open_until: float}}
+        self._effort: str = "medium"  # current effort level
         self._load()
         self._load_env_providers()
         self._load_claude_credentials()
+
+    def set_effort(self, level: str):
+        """Set the effort level — affects max_tokens and response depth."""
+        if level in self.EFFORT_MAX_TOKENS:
+            self._effort = level
+
+    def _effort_tokens(self) -> int:
+        return self.EFFORT_MAX_TOKENS.get(self._effort, 2048)
+
+    def _effort_system_suffix(self) -> str:
+        return self.EFFORT_INSTRUCTIONS.get(self._effort, "")
 
     def _cb_is_open(self, name: str) -> bool:
         """Check if circuit breaker is open (provider should be skipped)."""
@@ -481,7 +508,7 @@ class ProviderRegistry:
             for model in [provider.model] + [m for m in (provider.models or []) if m != provider.model]:
                 try:
                     r = client.messages.create(
-                        model=model, max_tokens=8192,
+                        model=model, max_tokens=self._effort_tokens(),
                         system=system_blocks,
                         messages=messages,
                     )
@@ -566,19 +593,23 @@ class ProviderRegistry:
         if not client:
             return ""
 
-        messages = [{"role": "system", "content": system_prompt}]
+        effort_suffix = self._effort_system_suffix()
+        full_system = f"{system_prompt}\n\n{effort_suffix}" if effort_suffix else system_prompt
+        messages = [{"role": "system", "content": full_system}]
         if history:
             for turn in history[-6:]:
                 role = "assistant" if turn["role"] == "jarvis" else "user"
                 messages.append({"role": role, "content": turn["content"][:500]})
         messages.append({"role": "user", "content": user_input})
 
+        max_tok = self._effort_tokens()
+
         def _call():
             chat = client.chat.completions.create(
                 messages=messages,
                 model=provider.model,
                 temperature=0.4,
-                max_completion_tokens=4096,
+                max_tokens=max_tok,
             )
             return chat.choices[0].message.content or ""
 
@@ -845,6 +876,16 @@ class ProviderRegistry:
             return {"text": "", "tool_calls": []}
 
         is_local = "localhost" in provider.base_url or "127.0.0.1" in provider.base_url
+        max_tok = self._effort_tokens()
+
+        # Inject effort instruction into system message for local models
+        if is_local:
+            effort_suffix = self._effort_system_suffix()
+            if effort_suffix:
+                for msg in messages:
+                    if msg.get("role") == "system":
+                        msg["content"] = msg["content"].rstrip() + f"\n\n{effort_suffix}"
+                        break
 
         def _call():
             # Cloud API: native function calling with retry on rate limit
@@ -860,7 +901,7 @@ class ProviderRegistry:
                                 "model": model,
                                 "tools": tools,
                                 "temperature": 0.3,
-                                "max_tokens": 4096,
+                                "max_tokens": max_tok,
                             }
                             # tool_choice: Ollama doesn't always support it
                             if not is_local:

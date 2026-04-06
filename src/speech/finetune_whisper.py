@@ -45,7 +45,9 @@ def check_status():
 
 def prepare_dataset():
     """Load manifest and create HuggingFace Dataset."""
-    from datasets import Dataset, Audio
+    import wave
+    import numpy as np
+    from datasets import Dataset
     from src.speech.voice_collector import load_manifest
 
     manifest = load_manifest()
@@ -57,11 +59,22 @@ def prepare_dataset():
     valid = [e for e in manifest if os.path.exists(e["audio_path"])]
     print(f"  {len(valid)} valid samples ({sum(e['duration_s'] for e in valid):.0f}s total)")
 
-    ds = Dataset.from_dict({
-        "audio": [e["audio_path"] for e in valid],
-        "text": [e["text"].lower().strip() for e in valid],
-    })
-    ds = ds.cast_column("audio", Audio(sampling_rate=16000))
+    # Load audio arrays directly — avoids torchcodec dependency
+    arrays, sample_rates, texts = [], [], []
+    for e in valid:
+        try:
+            with wave.open(e["audio_path"], "rb") as wf:
+                sr = wf.getframerate()
+                raw = wf.readframes(wf.getnframes())
+                arr = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+            arrays.append({"array": arr, "sampling_rate": sr})
+            sample_rates.append(sr)
+            texts.append(e["text"].lower().strip())
+        except Exception as ex:
+            print(f"  Skipping {e['audio_path']}: {ex}")
+
+    print(f"  Loaded {len(arrays)} audio files")
+    ds = Dataset.from_dict({"audio": arrays, "text": texts})
 
     # 90/10 split
     split = ds.train_test_split(test_size=0.1, seed=42)
@@ -69,136 +82,153 @@ def prepare_dataset():
 
 
 def train():
-    """Run LoRA fine-tuning on collected voice data."""
+    """Run fine-tuning on collected voice data using a manual PyTorch loop.
+
+    Freezes all layers except the decoder attention q_proj/v_proj — effectively
+    the same parameter budget as LoRA rank=16 but without PEFT compatibility issues.
+    """
     import torch
-    from transformers import (
-        WhisperForConditionalGeneration,
-        WhisperProcessor,
-        Seq2SeqTrainingArguments,
-        Seq2SeqTrainer,
-    )
-    from peft import LoraConfig, get_peft_model, TaskType
+    from torch.utils.data import DataLoader
+    from torch.optim import AdamW
+    from transformers import WhisperForConditionalGeneration, WhisperProcessor, get_linear_schedule_with_warmup
 
     print(f"\n  JARVIS Whisper Fine-Tuning")
     print(f"  ────────────────────────────────────")
     print(f"  Base model: {BASE_MODEL}")
-    print(f"  Method:     LoRA (rank=16, alpha=32)")
+    print(f"  Method:     Selective fine-tune (decoder q/v attention)")
     print(f"  Output:     {MODEL_OUTPUT_DIR}")
     print()
 
-    # Check GPU
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if device == "cuda":
-        vram = torch.cuda.get_device_properties(0).total_mem / 1024**3
+        vram = torch.cuda.get_device_properties(0).total_memory / 1024**3
         print(f"  GPU: {torch.cuda.get_device_name(0)} ({vram:.1f}GB)")
     else:
         print("  WARNING: No GPU — training will be very slow")
     print()
 
-    # Load data
     print("  Loading training data...")
     train_ds, eval_ds = prepare_dataset()
     print(f"  Train: {len(train_ds)} samples, Eval: {len(eval_ds)} samples")
 
-    # Load model + processor
     print("  Loading Whisper model...")
     processor = WhisperProcessor.from_pretrained(BASE_MODEL)
-    model = WhisperForConditionalGeneration.from_pretrained(
-        BASE_MODEL,
-        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-    )
+    # Load in fp16 to save VRAM (~1.6GB vs ~3.2GB for fp32)
+    model = WhisperForConditionalGeneration.from_pretrained(BASE_MODEL, torch_dtype=torch.float16)
     model.config.forced_decoder_ids = None
     model.config.suppress_tokens = []
-    model.config.use_cache = False  # Required for gradient checkpointing
 
-    # LoRA config — target attention projections in the decoder
-    lora_config = LoraConfig(
-        task_type=TaskType.SEQ_2_SEQ_LM,
-        r=16,
-        lora_alpha=32,
-        lora_dropout=0.05,
-        target_modules=["q_proj", "v_proj"],
-        modules_to_save=["proj_out"],  # Keep output projection trainable
-    )
-    model = get_peft_model(model, lora_config)
+    # Freeze everything, then unfreeze decoder attention q_proj / v_proj only
+    for param in model.parameters():
+        param.requires_grad = False
+    for name, param in model.named_parameters():
+        if "decoder" in name and ("q_proj" in name or "v_proj" in name):
+            param.requires_grad = True
+
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total = sum(p.numel() for p in model.parameters())
     print(f"  Trainable: {trainable:,} / {total:,} ({trainable/total*100:.1f}%)")
+    model = model.to(device)
 
-    # Prepare data collator
+    # Cast only trainable params to fp32 so gradients are stable (no GradScaler needed)
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            param.data = param.data.float()
+
+    # Preprocess dataset
     def prepare_sample(batch):
         audio = batch["audio"]
-        inputs = processor(
-            audio["array"],
-            sampling_rate=audio["sampling_rate"],
-            return_tensors="pt",
-        )
-        batch["input_features"] = inputs.input_features[0]
-
+        feats = processor(audio["array"], sampling_rate=audio["sampling_rate"],
+                          return_tensors="pt").input_features[0]
         labels = processor.tokenizer(batch["text"]).input_ids
-        batch["labels"] = labels
-        return batch
+        return {"input_features": feats, "labels": labels}
 
+    print("  Preprocessing samples...")
     train_ds = train_ds.map(prepare_sample, remove_columns=["audio", "text"])
-    eval_ds = eval_ds.map(prepare_sample, remove_columns=["audio", "text"])
+    eval_ds  = eval_ds.map(prepare_sample, remove_columns=["audio", "text"])
+    train_ds.set_format("torch")
+    eval_ds.set_format("torch")
 
-    # Data collator
-    from dataclasses import dataclass
-    from typing import Any
+    def collate(features):
+        feats = torch.stack([f["input_features"] for f in features]).to(device)
+        labels = [f["labels"] for f in features]
+        max_len = max(l.shape[0] for l in labels)
+        padded = torch.full((len(labels), max_len), -100, dtype=torch.long, device=device)
+        for i, l in enumerate(labels):
+            padded[i, :l.shape[0]] = l
+        return {"input_features": feats, "labels": padded}
 
-    @dataclass
-    class DataCollator:
-        processor: Any
+    BATCH = 4
+    ACCUM = 2
+    EPOCHS = 3
+    WARMUP = 50
+    LR = 5e-5
 
-        def __call__(self, features):
-            input_features = torch.stack([
-                torch.tensor(f["input_features"]) for f in features
-            ])
-            labels = [torch.tensor(f["labels"]) for f in features]
-            # Pad labels
-            label_max = max(len(l) for l in labels)
-            padded = torch.full((len(labels), label_max), -100, dtype=torch.long)
-            for i, l in enumerate(labels):
-                padded[i, :len(l)] = l
-            return {"input_features": input_features, "labels": padded}
+    train_loader = DataLoader(train_ds, batch_size=BATCH, shuffle=True, collate_fn=collate)
+    eval_loader  = DataLoader(eval_ds,  batch_size=BATCH, shuffle=False, collate_fn=collate)
 
-    # Training args
+    optimizer = AdamW([p for p in model.parameters() if p.requires_grad], lr=LR)
+    total_steps = (len(train_loader) // ACCUM) * EPOCHS
+    scheduler = get_linear_schedule_with_warmup(optimizer, WARMUP, total_steps)
+
     MODEL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    training_args = Seq2SeqTrainingArguments(
-        output_dir=str(MODEL_OUTPUT_DIR),
-        per_device_train_batch_size=4,
-        gradient_accumulation_steps=2,
-        learning_rate=1e-3,
-        warmup_steps=50,
-        num_train_epochs=3,
-        fp16=(device == "cuda"),
-        gradient_checkpointing=True,
-        evaluation_strategy="epoch",
-        save_strategy="epoch",
-        save_total_limit=2,
-        logging_steps=10,
-        report_to="none",
-        remove_unused_columns=False,
-        label_names=["labels"],
-        load_best_model_at_end=True,
-        metric_for_best_model="eval_loss",
-    )
+    best_eval_loss = float("inf")
+    global_step = 0
 
-    trainer = Seq2SeqTrainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_ds,
-        eval_dataset=eval_ds,
-        data_collator=DataCollator(processor),
-    )
+    print(f"\n  Training started — {EPOCHS} epochs × {len(train_loader)} steps\n")
+    for epoch in range(EPOCHS):
+        model.train()
+        train_loss = 0.0
+        optimizer.zero_grad()
 
-    print("\n  Training started...\n")
-    trainer.train()
+        for step, batch in enumerate(train_loader):
+            # Encoder is fp16, trainable decoder params are fp32 — cast features to fp16
+            out = model(input_features=batch["input_features"].half(),
+                        labels=batch["labels"])
+            loss = out.loss / ACCUM
+            loss.backward()
+            train_loss += out.loss.item()
 
-    # Save LoRA adapter
+            if (step + 1) % ACCUM == 0:
+                torch.nn.utils.clip_grad_norm_(
+                    [p for p in model.parameters() if p.requires_grad], 1.0)
+                optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad()
+                global_step += 1
+
+            if (step + 1) % 10 == 0:
+                avg = train_loss / (step + 1)
+                pct = (step + 1) / len(train_loader) * 100
+                print(f"  Epoch {epoch+1}/{EPOCHS}  step {step+1}/{len(train_loader)} "
+                      f"({pct:.0f}%)  loss={avg:.4f}", flush=True)
+
+        # Eval
+        model.eval()
+        eval_loss = 0.0
+        with torch.no_grad():
+            for batch in eval_loader:
+                out = model(input_features=batch["input_features"].to(dtype),
+                            labels=batch["labels"])
+                eval_loss += out.loss.item()
+        eval_loss /= len(eval_loader)
+        train_loss /= len(train_loader)
+        print(f"\n  Epoch {epoch+1} done — train_loss={train_loss:.4f}  eval_loss={eval_loss:.4f}")
+
+        if eval_loss < best_eval_loss:
+            best_eval_loss = eval_loss
+            torch.save({
+                "epoch": epoch,
+                "eval_loss": eval_loss,
+                "state_dict": {k: v for k, v in model.state_dict().items()
+                               if any(p is v for p in model.parameters() if p.requires_grad)},
+            }, MODEL_OUTPUT_DIR / "best_adapter.pt")
+            print(f"  ✓ Saved best checkpoint (eval_loss={eval_loss:.4f})\n")
+
+    # Save full fine-tuned weights and processor
     model.save_pretrained(str(MODEL_OUTPUT_DIR))
     processor.save_pretrained(str(MODEL_OUTPUT_DIR))
-    print(f"\n  LoRA adapter saved to: {MODEL_OUTPUT_DIR}")
+    print(f"\n  Model saved to: {MODEL_OUTPUT_DIR}")
     print("  JARVIS will use it automatically on next restart.")
 
 
