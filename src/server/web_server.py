@@ -286,6 +286,13 @@ class JarvisWebServer:
         peer = request.remote
         print(f"[JARVIS] Client connected: {peer} ({len(self.clients)} total)")
 
+        # If brain is already ready, tell the new client immediately
+        if self.brain is not None:
+            await self._safe_send(ws, {
+                "type": "brain_ready",
+                "tools": len(self.brain.mcp.get_tool_schemas()) + 40,
+            })
+
         try:
             async for msg in ws:
                 try:
@@ -835,6 +842,12 @@ class JarvisWebServer:
 
                 print(f"[JARVIS] Ambient STT: \"{transcript}\"")
                 await ws.send_json({"type": "stt_result", "text": transcript})
+
+                # Process the transcription — send to brain like a voice query
+                await self._handle_query(ws, {
+                    "text": transcript,
+                    "ambient": True,
+                })
         except Exception as e:
             if not hasattr(ws, '_audio_error_logged'):
                 ws._audio_error_logged = True
@@ -1504,24 +1517,64 @@ class JarvisWebServer:
                 return
 
             await self._broadcast({"type": "stt_result", "text": transcript})
+
+            # Guard: Brain still loading
+            if self.brain is None:
+                await self._broadcast({
+                    "type": "message", "role": "jarvis",
+                    "content": "Still initializing... give me a moment.",
+                    "model": "", "latency_ms": 0, "voice_style": "default",
+                })
+                return
+
             await self._broadcast({"type": "status", "status": "thinking"})
 
             import time
             start = time.time()
 
+            # Narrate tool calls via voice so user knows what JARVIS is doing
+            _tool_count = [0]
+            _loop = asyncio.get_event_loop()
+            _narrated = [False]  # Only speak the first narration
+
+            def _on_tool(name, args):
+                _tool_count[0] += 1
+                print(f"[JARVIS] Tool: {name}({str(args)[:80]})")
+                _desc = {
+                    "bash": "Let me check",
+                    "read_file": "Reading that file",
+                    "write_file": "Writing the file",
+                    "edit_file": "Editing the file",
+                    "search_files": "Searching for that",
+                    "web_search": "Looking that up",
+                    "web_fetch": "Fetching that page",
+                    "dispatch": "On it",
+                }.get(name, "Working on it")
+                # Speak on first tool call only — don't interrupt with repeated narration
+                if not _narrated[0]:
+                    _narrated[0] = True
+                    asyncio.run_coroutine_threadsafe(
+                        self._speak_short(_desc), _loop)
+
+            def _on_result(name, result):
+                print(f"[JARVIS] Result: {name} → {str(result)[:80]}")
+
             try:
                 response = await asyncio.wait_for(
-                    self.brain.think(transcript), timeout=30
+                    self.brain.think(f"[voice input] {transcript}",
+                                    on_tool_call=_on_tool, on_tool_result=_on_result),
+                    timeout=120  # 2 min — tool-heavy tasks (scans, builds) need more time
                 )
             except asyncio.TimeoutError:
                 print(f'[JARVIS] Think timed out: "{transcript[:50]}"')
-                response = "Sorry, that took too long."
+                response = "That's taking a while — still working on it."
 
             latency = int((time.time() - start) * 1000)
 
             if not response or not response.strip():
-                await self._broadcast({"type": "status", "status": ""})
-                return
+                # Voice input should ALWAYS get a response — never go silent
+                response = "Done."
+                # If tools were called but no text returned, the action likely succeeded
 
             spoken = self._clean_for_speech(response)
             self._last_response = spoken  # Store for echo detection
@@ -1529,29 +1582,28 @@ class JarvisWebServer:
             print(f'[JARVIS] Response: "{spoken[:80]}" (model={model}, {latency}ms)')
 
             clients = getattr(self, '_active_clients', {})
-            has_ui_client = clients.get("desktop") or clients.get("browser")
+            is_browser = clients.get("browser", False)
+            is_desktop = clients.get("desktop", False)
 
-            if has_ui_client:
-                # UI client handles TTS — broadcast text only, no spoken field
-                await self._broadcast({
-                    "type": "message", "role": "jarvis",
-                    "content": response,
-                    "model": model, "latency_ms": latency,
-                })
-            else:
-                # No UI — broadcast with spoken for any future client + play via OS speakers
-                await self._broadcast({
-                    "type": "message", "role": "jarvis",
-                    "content": response, "spoken": spoken,
-                    "model": model, "latency_ms": latency,
-                    "voice_style": "default",
-                })
-                if spoken and len(spoken) > 1:
-                    await self._broadcast({"type": "status", "status": "speaking"})
-                    try:
-                        await self._speak_system(spoken)
-                    except Exception as e:
-                        print(f"[JARVIS] TTS error: {e}")
+            # Broadcast message to all clients
+            await self._broadcast({
+                "type": "message", "role": "jarvis",
+                "content": response, "spoken": spoken,
+                "model": model, "latency_ms": latency,
+                "voice_style": "default",
+            })
+
+            # TTS: desktop uses server-side ffplay, browser uses Audio API
+            if (is_desktop or not is_browser) and spoken and len(spoken) > 1:
+                # Mute mic BEFORE speaking to prevent echo
+                if hasattr(self, '_server_listener'):
+                    self._server_listener.jarvis_speaking = True
+                await self._broadcast({"type": "status", "status": "speaking"})
+                print(f"[JARVIS] Speaking via ffplay: \"{spoken[:60]}\"")
+                try:
+                    await self._speak_system(spoken)
+                except Exception as e:
+                    print(f"[JARVIS] TTS error: {e}")
 
             await self._broadcast({"type": "status", "status": ""})
 
@@ -1578,6 +1630,31 @@ class JarvisWebServer:
                 dead.append(ws)
         for ws in dead:
             self.clients.discard(ws)
+
+    async def _speak_short(self, text: str):
+        """Quick non-blocking TTS for short status phrases like 'Let me check'."""
+        try:
+            import tempfile
+            communicate = edge_tts.Communicate(text, TTS_VOICE)
+            audio_data = io.BytesIO()
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    audio_data.write(chunk["data"])
+            audio_bytes = audio_data.getvalue()
+            if not audio_bytes:
+                return
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+                f.write(audio_bytes)
+                tmp_path = f.name
+            # Fire and forget — don't wait for playback to finish
+            await asyncio.create_subprocess_exec(
+                "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", tmp_path,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            print(f"[JARVIS] Narrating: \"{text}\"")
+        except Exception as e:
+            print(f"[JARVIS] Short TTS error: {e}")
 
     async def _speak_system(self, text: str):
         """Generate TTS and play with timeout protection."""
@@ -2624,10 +2701,14 @@ class JarvisWebServer:
             client_type = data.get("type", "browser")  # "desktop" or "browser"
             active_clients[client_type] = True
 
-            # Stop server mic entirely when a UI client connects (UI handles its own voice)
-            if hasattr(self, '_server_mic_running') and self._server_mic_running:
-                self._server_mic_running = False
-                print(f"[JARVIS] {client_type} connected — server mic stopped (UI handles voice)")
+            # Stop server mic only for browser (Chrome has SpeechRecognition)
+            # Desktop WebKit can't reliably capture mic, so server mic stays on
+            if client_type == "browser":
+                if hasattr(self, '_server_mic_running') and self._server_mic_running:
+                    self._server_mic_running = False
+                    print(f"[JARVIS] browser connected — server mic stopped (browser handles voice)")
+            else:
+                print(f"[JARVIS] desktop connected — server mic stays on (WebKit can't capture mic)")
 
             # Browser always gets the reactor; desktop yields
             if client_type == "browser":
@@ -2820,7 +2901,40 @@ class JarvisWebServer:
             await asyncio.get_event_loop().run_in_executor(None, self._init_brain)
             await self.brain.start()
             print("[JARVIS] Brain ready.")
-            # Tell connected clients JARVIS is ready
+
+            # Launch desktop UI — kill old instance first to ensure fresh assets
+            try:
+                import subprocess as _sp_desktop
+                # Kill any old desktop app so it picks up new JS/CSS
+                # Use pgrep to find PIDs, then kill only those (avoids killing server)
+                pgrep = _sp_desktop.run(
+                    ["pgrep", "-f", "desktop.app import main"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if pgrep.returncode == 0:
+                    for pid in pgrep.stdout.strip().split('\n'):
+                        if pid and pid != str(os.getpid()):
+                            try:
+                                os.kill(int(pid), 15)  # SIGTERM
+                            except (ProcessLookupError, ValueError):
+                                pass
+                    await asyncio.sleep(1)
+                _jarvis_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                env = {**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0.0")}
+                _sp_desktop.Popen(
+                    ["python3", "-c", "from src.desktop.app import main; main()"],
+                    cwd=_jarvis_root, start_new_session=True,
+                    stdout=_sp_desktop.DEVNULL, stderr=_sp_desktop.DEVNULL, env=env,
+                )
+                print("[JARVIS] Desktop UI launched.")
+            except Exception as e:
+                print(f"[JARVIS] Desktop UI launch skipped: {e}")
+
+            # Tell connected clients JARVIS is ready — distinct event for UI indicator
+            await self._broadcast({
+                "type": "brain_ready",
+                "tools": len(self.brain.mcp.get_tool_schemas()) + 40,
+            })
             await self._broadcast({
                 "type": "status", "status": "",
             })

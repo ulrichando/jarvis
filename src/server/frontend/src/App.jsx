@@ -14,10 +14,11 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const isDesktop = useMemo(() => new URLSearchParams(window.location.search).has('desktop'), [])
   const [showReactor, setShowReactor] = useState(true)
-  const [reactorState, setReactorState] = useState('idle')
+  const [reactorState, setReactorState] = useState('booting')
   const [audioLevel, setAudioLevel] = useState(0)
   const [cameraOn, setCameraOn] = useState(false)
   const [setupOpen, setSetupOpen] = useState(false)
+  const [brainReady, setBrainReady] = useState(false)
 
   const wsUrl = useMemo(() => `ws://${window.location.host || '127.0.0.1:8765'}/ws`, [])
   const { messages: wsMessages, sendMessage, status: wsStatus } = useWebSocket(wsUrl)
@@ -180,6 +181,13 @@ function App() {
 
     if (last.type === 'camera') setCameraOn(last.enabled)
     if (last.type === 'provider_error') setSetupOpen(true)
+
+    // Brain ready — flash green indicator
+    if (last.type === 'brain_ready') {
+      setBrainReady(true)
+      setReactorState('ready')
+      setTimeout(() => setReactorState('idle'), 3000)
+    }
   }, [wsMessages, stopSpeaking, playSpoken])
 
   // Voice: SpeechRecognition (Chrome) or MediaRecorder+Whisper (WebKit/desktop)
@@ -335,9 +343,9 @@ function App() {
             return
           }
 
-          // RMS thresholds — raised to avoid background noise triggering
-          const threshold = 0.05
-          const silenceThreshold = 0.02
+          // RMS thresholds — tuned for natural conversation
+          const threshold = 0.05       // Start recording at this level
+          const silenceThreshold = 0.015 // Lower = more tolerant of quiet speech
 
           if (avg > threshold && !recording) {
             if (!isSpeakingTTS) {
@@ -349,19 +357,25 @@ function App() {
             recording = true
             clearTimeout(silenceTimer)
           }
-          if (avg < silenceThreshold && recording) {
+          // Reset silence timer on any speech above threshold while recording
+          if (avg > silenceThreshold && recording) {
             clearTimeout(silenceTimer)
-            silenceTimer = setTimeout(() => {
-              // Discard recordings shorter than 1.5s — not a real sentence
-              if (Date.now() - _recordStart < 1500) {
+          }
+          if (avg < silenceThreshold && recording) {
+            if (!silenceTimer) {
+              silenceTimer = setTimeout(() => {
+                silenceTimer = null
+                // Discard recordings shorter than 0.8s — not enough for a word
+                if (Date.now() - _recordStart < 800) {
+                  try { mediaRecorder.stop() } catch { /* ignore */ }
+                  recording = false
+                  chunks = []
+                  return
+                }
                 try { mediaRecorder.stop() } catch { /* ignore */ }
                 recording = false
-                chunks = []
-                return
-              }
-              try { mediaRecorder.stop() } catch { /* ignore */ }
-              recording = false
-            }, 500)
+              }, 800) // 800ms silence = end of utterance (was 500ms)
+            }
           }
           setTimeout(checkVoice, 50)
         }
@@ -430,13 +444,7 @@ function App() {
         </div>
       )}
 
-      {/* Connection status — only show when disconnected */}
-      {wsStatus === 'disconnected' && (
-        <div className="fixed top-4 left-4 z-50 flex items-center gap-2 px-3 py-1.5 rounded-full bg-[rgba(40,0,0,0.8)] border border-red-500/30">
-          <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-          <span className="text-xs text-red-400 font-['Share_Tech_Mono',monospace]">OFFLINE</span>
-        </div>
-      )}
+      {/* Brain status is shown via reactor eye ring colors — no text indicators needed */}
 
       {/* Camera feed — streams to server in background, no UI */}
       <CameraFeed

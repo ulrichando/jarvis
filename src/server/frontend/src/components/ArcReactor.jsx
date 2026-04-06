@@ -162,12 +162,14 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
         }
         edgePts.push(edgePts[0].clone())
 
+        const edgeMat = new THREE.LineBasicMaterial({
+          color: glowInt, transparent: true, opacity: 0.45,
+          blending: THREE.AdditiveBlending,
+        })
+        themedMaterials.push({ mat: edgeMat, role: 'glow' })
         const edgeLine = new THREE.Line(
           new THREE.BufferGeometry().setFromPoints(edgePts),
-          new THREE.LineBasicMaterial({
-            color: glowInt, transparent: true, opacity: 0.45,
-            blending: THREE.AdditiveBlending,
-          })
+          edgeMat
         )
 
         const mat = new THREE.MeshBasicMaterial({
@@ -178,6 +180,7 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
           blending: THREE.AdditiveBlending,
           depthWrite: false,
         })
+        themedMaterials.push({ mat, role: 'glow' })
 
         const piece = new THREE.Group()
         piece.add(new THREE.Mesh(geo, mat))
@@ -247,43 +250,55 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
       globe.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), lineMat(0.3 + Math.random() * 0.15)))
     }
 
-    // ── 6. Bright orbital bands (thick, tilted) ──
+    // ── 6. Bright orbital bands (3D wobble, tilted) ──
     const bands = []
-    for (let b = 0; b < 4; b++) {
-      const bandR = R + 0.02
+    for (let b = 0; b < 5; b++) {
+      const bandR = R + 0.02 + b * 0.01
       const pts = []
       for (let j = 0; j <= 128; j++) {
         const a = (j / 128) * Math.PI * 2
-        pts.push(new THREE.Vector3(bandR * Math.cos(a), 0, bandR * Math.sin(a)))
+        // Wobble in Y for 3D depth instead of flat circle
+        const wobbleY = 0.04 * Math.sin(a * (2 + b) + b * 0.7)
+        pts.push(new THREE.Vector3(bandR * Math.cos(a), wobbleY, bandR * Math.sin(a)))
       }
       const band = new THREE.Line(
         new THREE.BufferGeometry().setFromPoints(pts),
-        lineMat(0.35 + Math.random() * 0.15)
+        lineMat(0.3 + Math.random() * 0.2)
       )
-      band.rotation.x = b * 0.5 + Math.random() * 0.3
+      band.rotation.x = b * 0.45 + Math.random() * 0.3
+      band.rotation.y = b * 0.2
       band.rotation.z = b * 0.35 - 0.3
       bands.push(band)
       globe.add(band)
     }
 
-    // ── 7. Central ring (the "eye") ──
-    const eyePts = []
-    for (let j = 0; j <= 64; j++) {
-      const a = (j / 64) * Math.PI * 2
-      eyePts.push(new THREE.Vector3(0.25 * Math.cos(a), 0.25 * Math.sin(a), 0))
-    }
-    const eye = new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints(eyePts),
-      lineMat(0.5)
-    )
-    globe.add(eye)
-    // Second ring slightly bigger
-    const eye2Pts = []
-    for (let j = 0; j <= 64; j++) {
-      const a = (j / 64) * Math.PI * 2
-      eye2Pts.push(new THREE.Vector3(0.35 * Math.cos(a), 0.35 * Math.sin(a), 0))
-    }
-    globe.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(eye2Pts), lineMat(0.4)))
+    // ── 7. Central rings (the "eye") — real 3D torus geometry ──
+    const eyeRings = []
+    const eyeConfigs = [
+      { radius: 0.20, tube: 0.008, tilt: { x: 0.3,  y: 0,    z: 0.2  } },
+      { radius: 0.28, tube: 0.010, tilt: { x: -0.4, y: 0.5,  z: -0.1 } },
+      { radius: 0.36, tube: 0.012, tilt: { x: 0.15, y: -0.3, z: 0.4  } },
+      { radius: 0.44, tube: 0.010, tilt: { x: -0.2, y: 0.4,  z: -0.3 } },
+      { radius: 0.52, tube: 0.008, tilt: { x: 0.5,  y: -0.2, z: 0.15 } },
+    ]
+    eyeConfigs.forEach((cfg, i) => {
+      const torusGeo = new THREE.TorusGeometry(cfg.radius, cfg.tube, 8, 64)
+      const torusMat = new THREE.MeshBasicMaterial({
+        color: glowInt,
+        transparent: true,
+        opacity: 0.4 + i * 0.04,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      })
+      themedMaterials.push({ mat: torusMat, role: 'glow' })
+      const ring = new THREE.Mesh(torusGeo, torusMat)
+      ring.rotation.x = cfg.tilt.x
+      ring.rotation.y = cfg.tilt.y
+      ring.rotation.z = cfg.tilt.z
+      globe.add(ring)
+      eyeRings.push(ring)
+    })
 
     // ── 8. Surface particles (accent sparkle) ──
     const SPARK_N = 25000
@@ -337,13 +352,15 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
       geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
 
       const brightness = 0.15 + Math.random() * 0.35
+      const neuralColor = i % 5 === 0 ? glowInt : i % 3 === 0 ? primaryInt : structInt
       const mat = new THREE.LineBasicMaterial({
-        color: i % 5 === 0 ? glowInt : i % 3 === 0 ? primaryInt : structInt,
+        color: neuralColor,
         transparent: true,
         opacity: brightness,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
       })
+      themedMaterials.push({ mat, role: i % 5 === 0 ? 'glow' : 'struct' })
       const line = new THREE.Line(geo, mat)
       globe.add(line)
 
@@ -404,14 +421,79 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
         : 0
       const energy = Math.max(smoothAudio, speakPulse)
 
+      // ── State-driven color transitions ──
+      // 'ready' = green flash, 'booting' = amber dim, default = theme color
+      let targetColor = primaryInt
+      let targetGlow = glowInt
+      if (st === 'ready') {
+        targetColor = 0x22c55e  // green-500
+        targetGlow = 0x4ade80   // green-400
+      } else if (st === 'booting') {
+        targetColor = 0xf59e0b  // amber-500
+        targetGlow = 0xfbbf24   // amber-400
+      }
+
+      // Smooth color lerp on all themed materials
+      const lerpColor = (current, target, t) => {
+        const cr = (current >> 16) & 0xff, cg = (current >> 8) & 0xff, cb = current & 0xff
+        const tr = (target >> 16) & 0xff, tg = (target >> 8) & 0xff, tb = target & 0xff
+        const r = Math.round(cr + (tr - cr) * t)
+        const g = Math.round(cg + (tg - cg) * t)
+        const b = Math.round(cb + (tb - cb) * t)
+        return (r << 16) | (g << 8) | b
+      }
+
+      const colorLerp = st === 'ready' ? 0.15 : 0.08  // faster transition for ready flash
+      for (const tm of themedMaterials) {
+        const curInt = tm.mat.color.getHex()
+        const tgt = tm.role === 'glow' ? targetGlow : targetColor
+        if (curInt !== tgt) {
+          tm.mat.color.setHex(lerpColor(curInt, tgt, colorLerp))
+        }
+      }
+      sparkMat.color.setHex(lerpColor(sparkMat.color.getHex(), targetGlow, colorLerp))
+      glowMat.color.setHex(lerpColor(glowMat.color.getHex(), targetGlow, colorLerp))
+
+      // Ready state: boost glow intensity
+      if (st === 'ready') {
+        glowMat.opacity = Math.min(1.0, glowMat.opacity + 0.02)
+        const gs = 4.5 + 1.5 * Math.sin(time * 3.0)
+        glowSprite.scale.set(gs, gs, 1)
+      }
+
       // Globe rotation
-      const speed = st === 'thinking' ? 0.005 : st === 'speaking' ? 0.003 : 0.0015
+      const speed = st === 'thinking' ? 0.005 : st === 'speaking' ? 0.003 : st === 'ready' ? 0.008 : 0.0015
       globe.rotation.y += speed
       globe.rotation.x = Math.sin(time * 0.3) * 0.08
 
       // Bands rotate
       bands.forEach((b, i) => {
         b.rotation.y += (0.003 + i * 0.0015) * (i % 2 === 0 ? 1 : -1)
+      })
+
+      // Eye rings — slow independent rotation + status color indicator
+      // Blue = speaking, green = ready, amber = booting, theme = idle/thinking
+      const eyeTargetColor = st === 'speaking' ? 0x3b82f6   // blue-500
+        : st === 'ready' ? 0x4ade80                          // green-400
+        : st === 'booting' ? 0xfbbf24                        // amber-400
+        : glowInt                                            // theme
+      const eyeLerp = st === 'speaking' ? 0.15 : st === 'ready' ? 0.12 : 0.06
+      eyeRings.forEach((ring, i) => {
+        ring.rotation.x += (0.002 + i * 0.001) * (i % 2 === 0 ? 1 : -1)
+        ring.rotation.z += 0.001 * (i % 2 === 0 ? -1 : 1)
+        // Color transition
+        const curHex = ring.material.color.getHex()
+        if (curHex !== eyeTargetColor) {
+          ring.material.color.setHex(lerpColor(curHex, eyeTargetColor, eyeLerp))
+        }
+        // State-driven brightness
+        if (st === 'speaking') {
+          ring.material.opacity = 0.5 + 0.4 * Math.sin(time * 5 + i * 1.2)
+        } else if (st === 'ready') {
+          ring.material.opacity = 0.7 + 0.3 * Math.sin(time * 6 + i * 1.5)
+        } else if (st === 'booting') {
+          ring.material.opacity = 0.3 + 0.2 * Math.sin(time * 2 + i)
+        }
       })
 
       // Neural lines — dense cyan arcs racing inside sphere

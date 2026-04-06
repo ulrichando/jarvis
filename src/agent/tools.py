@@ -1850,7 +1850,31 @@ def _exec_bash(args: dict) -> str:
             if _is_sensitive_path(token):
                 return f"BLOCKED: Command references sensitive path: {token}"
 
-    # ── Layer 4: destructive command warning (informational) ─────────
+    # ── Layer 4: hard block on system-critical commands ──────────────
+    _HARD_BLOCKED = {"shutdown", "reboot", "poweroff", "halt", "init"}
+    _PROCESS_KILL = {"kill", "killall", "pkill", "xkill"}
+    _cmd_words = command.strip().split()
+    _cmd_base = _cmd_words[0].split("/")[-1] if _cmd_words else ""
+
+    # Block shutdown/reboot entirely — JARVIS should never do this
+    if _cmd_base in _HARD_BLOCKED or any(w in _HARD_BLOCKED for w in _cmd_words):
+        return "BLOCKED: JARVIS cannot shutdown, reboot, or halt the system."
+
+    # Block kill commands that target critical processes
+    if _cmd_base in _PROCESS_KILL:
+        _PROTECTED_PROCESSES = {
+            "code", "vscode", "code-oss",  # VS Code
+            "Xorg", "Xwayland", "gnome-shell", "plasmashell", "kwin",  # Desktop
+            "systemd", "init", "dbus", "pulseaudio", "pipewire",  # System
+            "sshd", "NetworkManager", "nm-applet",  # Network
+            "gdm", "sddm", "lightdm",  # Display managers
+        }
+        target = " ".join(_cmd_words[1:]).lower()
+        for proc in _PROTECTED_PROCESSES:
+            if proc.lower() in target:
+                return f"BLOCKED: Cannot kill protected process '{proc}'. Close it through its own UI instead."
+
+    # ── Layer 5: destructive command warning (informational) ─────────
     destructive_warning = _get_destructive_warning(command)
 
     cmd_first = command.strip().split()[0].split("/")[-1] if command.strip() else ""

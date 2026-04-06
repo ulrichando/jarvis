@@ -7,6 +7,7 @@ export default function useWebSocket(url) {
   const reconnectTimer = useRef(null)
   const reconnectDelay = useRef(1000)
   const connectRef = useRef(null)
+  const wasConnected = useRef(false)
 
   useEffect(() => {
     function connect() {
@@ -19,6 +20,14 @@ export default function useWebSocket(url) {
 
       ws.onopen = () => {
         console.log('[JARVIS WS] Connected')
+        // If we were previously connected and lost connection (server restart),
+        // reload the page to pick up new JS/CSS assets
+        if (wasConnected.current) {
+          console.log('[JARVIS WS] Server restarted — reloading page')
+          window.location.reload()
+          return
+        }
+        wasConnected.current = true
         setStatus('connected')
         reconnectDelay.current = 1000
       }
