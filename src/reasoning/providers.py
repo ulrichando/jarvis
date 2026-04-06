@@ -365,11 +365,11 @@ class ProviderRegistry:
         # All providers failed — help the user fix it
         has_ollama = any(
             "localhost" in p.base_url or "127.0.0.1" in p.base_url
-            for p in self.providers if p.enabled
+            for p in self._providers.values() if p.enabled
         )
         has_cloud = any(
             "localhost" not in p.base_url and "127.0.0.1" not in p.base_url
-            for p in self.providers if p.enabled
+            for p in self._providers.values() if p.enabled
         )
 
         lines = ["I can't reach any AI provider right now."]
@@ -847,11 +847,6 @@ class ProviderRegistry:
         is_local = "localhost" in provider.base_url or "127.0.0.1" in provider.base_url
 
         def _call():
-            # Prompt-based tool calling is ONLY for tiny models that truly can't do native
-            # Modern Ollama (0.1.33+) supports native tool calling — use it
-            if is_local and not tools:
-                return self._prompt_based_tool_call(client, provider, messages, tools)
-
             # Cloud API: native function calling with retry on rate limit
             import time as _time
             last_error = None
@@ -935,6 +930,9 @@ class ProviderRegistry:
                                 last_error = e
                                 # Rate limited on this model, try next model in list
                                 continue
+                            # Local model doesn't support native tool calling — use prompt-based fallback
+                            if is_local and tools:
+                                return self._prompt_based_tool_call(client, provider, messages, tools)
                             raise  # Not a rate limit error, bubble up
                 except Exception as e:
                     last_error = e
@@ -943,6 +941,9 @@ class ProviderRegistry:
                         wait = min(5 * (attempt + 1), 15)
                         _time.sleep(wait)
                         continue
+                    # Local model doesn't support native tool calling — use prompt-based fallback
+                    if is_local and tools:
+                        return self._prompt_based_tool_call(client, provider, messages, tools)
                     raise
             # All retries exhausted
             if last_error:

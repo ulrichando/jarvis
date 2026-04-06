@@ -108,10 +108,44 @@ def main():
     window.set_keep_above(True)
     window.set_type_hint(Gdk.WindowTypeHint.UTILITY)
 
-    if _cfg.get("x", -1) >= 0 and _cfg.get("y", -1) >= 0:
-        window.move(_cfg["x"], _cfg["y"])
+    def _largest_monitor_center(w, h):
+        """Return (x, y) to center w×h on the largest monitor (by area)."""
+        display = Gdk.Display.get_default()
+        best = None
+        best_area = 0
+        if display:
+            for i in range(display.get_n_monitors()):
+                m = display.get_monitor(i)
+                g = m.get_geometry()
+                area = g.width * g.height
+                if area > best_area:
+                    best_area = area
+                    best = g
+        if best:
+            return best.x + (best.width - w) // 2, best.y + (best.height - h) // 2
+        scr = Gdk.Screen.get_default()
+        return (scr.get_width() - w) // 2, (scr.get_height() - h) // 2
+
+    def _pos_on_any_monitor(x, y, w, h):
+        """Return True if (x,y,w,h) is sufficiently visible on at least one monitor."""
+        display = Gdk.Display.get_default()
+        if not display:
+            return True
+        for i in range(display.get_n_monitors()):
+            g = display.get_monitor(i).get_geometry()
+            overlap_x = max(0, min(x + w, g.x + g.width) - max(x, g.x))
+            overlap_y = max(0, min(y + h, g.y + g.height) - max(y, g.y))
+            if overlap_x * overlap_y > (w * h) // 4:  # >25% visible
+                return True
+        return False
+
+    _win_w, _win_h = _cfg.get("width", 700), _cfg.get("height", 700)
+    _saved_x, _saved_y = _cfg.get("x", -1), _cfg.get("y", -1)
+    if _saved_x >= 0 and _saved_y >= 0 and _pos_on_any_monitor(_saved_x, _saved_y, _win_w, _win_h):
+        window.move(_saved_x, _saved_y)
     else:
-        window.set_position(Gtk.WindowPosition.CENTER)
+        cx, cy = _largest_monitor_center(_win_w, _win_h)
+        window.move(cx, cy)
     screen = Gdk.Screen.get_default()
 
     # Transparency
@@ -431,10 +465,37 @@ def main():
 
         item_center = Gtk.MenuItem(label="Center on Screen")
         def _center(w):
-            scr = Gdk.Screen.get_default()
-            sw, sh = scr.get_width(), scr.get_height()
             ww, wh = _size["w"], _size["h"]
-            window.move((sw - ww) // 2, (sh - wh) // 2)
+            display = Gdk.Display.get_default()
+            monitor = None
+            # Center on the monitor where the pointer currently is
+            try:
+                seat = display.get_default_seat()
+                device = seat.get_pointer()
+                _, px, py = device.get_position()
+                monitor = display.get_monitor_at_point(px, py)
+            except Exception:
+                pass
+            # Fall back to monitor the window is on
+            if monitor is None:
+                gdk_win = window.get_window()
+                if gdk_win:
+                    try:
+                        monitor = display.get_monitor_at_window(gdk_win)
+                    except Exception:
+                        pass
+            # Fall back to monitor 0
+            if monitor is None and display.get_n_monitors() > 0:
+                monitor = display.get_monitor(0)
+            if monitor:
+                geo = monitor.get_geometry()
+                wx = geo.x + (geo.width - ww) // 2
+                wy = geo.y + (geo.height - wh) // 2
+            else:
+                scr = Gdk.Screen.get_default()
+                wx = (scr.get_width() - ww) // 2
+                wy = (scr.get_height() - wh) // 2
+            window.move(wx, wy)
             GLib.timeout_add(200, _save_state)
         item_center.connect("activate", _center)
         menu.append(item_center)
