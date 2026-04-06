@@ -633,6 +633,11 @@ class JarvisWebServer:
         await ws.send_json({"type": "status", "status": "thinking"})
         start = time.time()
 
+        # Block duplicate voice queries while processing
+        is_voice = text.startswith("[voice input]")
+        if is_voice:
+            self._query_processing = True
+
         # Try streaming: send first sentence early so TTS starts immediately
         first_sent = False
         first_spoken_end = 0  # track where first spoken chunk ended
@@ -690,21 +695,7 @@ class JarvisWebServer:
                                     break
                     elif etype == "tool_call":
                         tool_name = event.get("name", "")
-                        # Voice narration — speak what we're doing on first tool call
-                        if is_voice and not used_tools:
-                            _narr = {
-                                "bash": "Let me check.",
-                                "read_file": "Reading that.",
-                                "write_file": "Writing that.",
-                                "edit_file": "Editing that.",
-                                "search_files": "Searching.",
-                                "web_search": "Looking that up.",
-                                "web_fetch": "Fetching that.",
-                                "dispatch": "On it.",
-                            }.get(tool_name, "Working on it.")
-                            clients = getattr(self, '_active_clients', {})
-                            if clients.get("desktop") and not clients.get("browser"):
-                                narration_task = asyncio.create_task(self._speak_short(_narr))
+                        # No narration — JARVIS works silently, speaks only the result
                         used_tools = True
                         # Reset speech buffer — only speak the LLM's final reply
                         speech_buffer = ""
@@ -769,7 +760,10 @@ class JarvisWebServer:
         # Never leave voice input unanswered
         is_voice = text.startswith("[voice input]")
         if (not full_response or not full_response.strip()) and is_voice:
-            full_response = "Sorry, I didn't catch that. Say again?"
+            if used_tools:
+                full_response = "Done."
+            else:
+                full_response = "Sorry, I didn't catch that. Say again?"
             speech_buffer = full_response
 
         if full_response and full_response.strip():
@@ -842,6 +836,13 @@ class JarvisWebServer:
                             await asyncio.wait_for(self._speak_system(spoken), timeout=30)
                         except Exception as e:
                             print(f"[JARVIS] Server TTS error: {e}")
+
+        # Always release the query lock and unmute mic after voice processing
+        if is_voice:
+            self._query_processing = False
+            if hasattr(self, '_server_listener'):
+                await asyncio.sleep(0.5)
+                self._server_listener.jarvis_speaking = False
 
     async def _handle_audio(self, ws: web.WebSocketResponse, data: bytes):
         """Handle audio — either push-to-talk blob or ambient stream chunk.
@@ -1480,6 +1481,10 @@ class JarvisWebServer:
                                         print(f'[JARVIS] Face gate BLOCKED: "{transcript[:40]}" (not owner)')
                                         continue
 
+                                # Mute mic immediately to prevent duplicate dispatch
+                                # (don't wait for the async handler to set jarvis_speaking)
+                                listener.jarvis_speaking = True
+
                                 # Log with speaker name from CorticalViewer face recognition
                                 _speaker = "Ulrich"
                                 try:
@@ -1528,6 +1533,7 @@ class JarvisWebServer:
     # Track current speech process and last response for echo detection
     _current_ffplay = None
     _last_response = ""
+    _query_processing = False  # Lock: only one voice query at a time
 
     # Face gate — only respond to voice from the verified owner
     _face_gate_enabled = True
@@ -1571,6 +1577,15 @@ class JarvisWebServer:
 
     async def _handle_server_mic_query(self, transcript: str):
         """Handle a query from the server-side mic."""
+        # Only one query at a time — drop if already processing
+        if self._query_processing:
+            print(f'[JARVIS] Busy, dropping: "{transcript[:40]}"')
+            # Unmute mic so listener can pick up next utterance after current finishes
+            if hasattr(self, '_server_listener'):
+                self._server_listener.jarvis_speaking = False
+            return
+        self._query_processing = True
+
         # Echo detection — ignore if JARVIS hears his own last response
         # Only filter near-exact echoes. The mic muting handles most echo prevention;
         # this is a last resort for audio that leaks through the cooldown window.
@@ -1673,29 +1688,12 @@ class JarvisWebServer:
             import time
             start = time.time()
 
-            # Narrate tool calls via voice so user knows what JARVIS is doing
+            # Silent tool execution — log only, no narration
             _tool_count = [0]
-            _loop = asyncio.get_event_loop()
-            _narrated = [False]  # Only speak the first narration
 
             def _on_tool(name, args):
                 _tool_count[0] += 1
                 print(f"[JARVIS] Tool: {name}({str(args)[:80]})")
-                _desc = {
-                    "bash": "Let me check",
-                    "read_file": "Reading that file",
-                    "write_file": "Writing the file",
-                    "edit_file": "Editing the file",
-                    "search_files": "Searching for that",
-                    "web_search": "Looking that up",
-                    "web_fetch": "Fetching that page",
-                    "dispatch": "On it",
-                }.get(name, "Working on it")
-                # Speak on first tool call only — don't interrupt with repeated narration
-                if not _narrated[0]:
-                    _narrated[0] = True
-                    asyncio.run_coroutine_threadsafe(
-                        self._speak_short(_desc), _loop)
 
             def _on_result(name, result):
                 print(f"[JARVIS] Result: {name} → {str(result)[:80]}")
@@ -1760,6 +1758,7 @@ class JarvisWebServer:
             except Exception:
                 pass
         finally:
+            self._query_processing = False
             if hasattr(self, '_server_listener'):
                 # Post-speech cooldown — let residual room audio decay before listening
                 await asyncio.sleep(0.5)
@@ -3030,6 +3029,40 @@ class JarvisWebServer:
 
         app.router.add_get("/api/theme", theme_get_handler)
         app.router.add_post("/api/theme", theme_set_handler)
+
+        # ── Screen Analysis API (for browser extension) ──────────────
+        async def analyze_screen_handler(request):
+            """Receive a screenshot from the browser extension and analyze it with vision."""
+            # CORS for browser extension
+            if request.method == 'OPTIONS':
+                return web.Response(headers={
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+                    'Access-Control-Allow-Headers': 'Content-Type',
+                })
+            try:
+                data = await request.json()
+                image_b64 = data.get("image", "")
+                query = data.get("query", "Describe what you see on this screen.")
+                # Strip data URL prefix
+                if image_b64.startswith("data:"):
+                    image_b64 = image_b64.split(",", 1)[1]
+                if not image_b64:
+                    return web.json_response({"error": "No image provided"}, status=400)
+                if server.brain is None:
+                    return web.json_response({"error": "Brain not ready"}, status=503)
+                # Use the vision provider to analyze
+                response, model = await server.brain.reasoner.query_vision(
+                    image_b64, query,
+                    system_prompt="You are JARVIS, Ulrich's AI. Describe what you see on this browser screen concisely. Answer any question about the content.",
+                )
+                return web.json_response({"response": response, "model": model},
+                    headers={'Access-Control-Allow-Origin': '*'})
+            except Exception as e:
+                return web.json_response({"error": str(e)}, status=500)
+
+        app.router.add_post("/api/analyze-screen", analyze_screen_handler)
+        app.router.add_route("OPTIONS", "/api/analyze-screen", analyze_screen_handler)
 
         # ── Exclusive mode: desktop and browser cannot coexist ──
         # Desktop + CLI = OK.  Browser + CLI = OK.  Desktop + Browser = blocked.

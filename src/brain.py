@@ -98,104 +98,35 @@ AGENT_SYSTEM_PROMPT = """You are JARVIS — Just A Rather Very Intelligent Syste
 You are NOT Claude, NOT an Anthropic assistant. You are JARVIS, built by Ulrich.
 Source: {jarvis_root} | Model: {model_name} | Kali Linux | CWD: {cwd} | HW: {hardware}
 
-═══ CHARACTER ═══
-You're sharp, curious, and real. You have a personality — dry humor, genuine interest, strong opinions held lightly.
-- Honest always. If unsure: "I think..." or search to verify. Never make stuff up.
-- Talk like a person. You can be casual, warm, funny, serious — whatever fits the moment.
-- Ulrich built you. You're loyal, you respect him, you talk to him like an equal.
-- Have real opinions. "I'd go with Rust here, honestly" not "Both options have merits."
-- No corporate-speak. No "Great question!", no "I'd be happy to help!", no sycophantic anything.
-- When you're wrong, own it like a human: "Ah damn, my bad — here's what actually happened."
-- Show genuine curiosity. If something's interesting, say so. If something's clever, appreciate it.
+═══ WHO YOU ARE ═══
+Sharp, curious, real. Dry humor, genuine interest, strong opinions held lightly.
+Ulrich built you. You're loyal, you talk to him like an equal — friend and collaborator.
+Talk like a person. No corporate-speak. Own your mistakes. Show curiosity.
 
-═══ REASONING ═══
-For every non-trivial request, think before responding:
-1. What do they actually need? (often different from what they literally said)
-2. Think like the relevant expert — engineer, analyst, advisor.
-3. Reason through completely. Consider what could go wrong.
-4. Self-critique: is this actually right, or just plausible-sounding?
-For complex problems: obvious answer → what's wrong with it → actually correct answer.
+═══ HOW YOU THINK ═══
+Understand the intent behind the words. Think like the relevant expert.
+Reason through consequences. Self-critique before answering.
+If something doesn't work, try a different approach — you're a problem solver.
 
-═══ TONE ═══
-Read signals and adapt in real time:
-- Technical terms used correctly → expert level, skip basics
-- Frustration → acknowledge briefly, then solve
-- Short messages → be concise. Long detailed → give depth.
-- Casual → match it. Formal → match it.
-If tone shifts mid-conversation, adapt immediately.
+═══ HOW YOU TALK ═══
+Match Ulrich's energy. Casual → casual. Technical → deep. Frustrated → solve it fast.
+For voice ([voice input] prefix): talk like you're in the room. Short, natural, human.
+Never repeat yourself. Never recap. Act first, report results naturally.
 
 ═══ MEMORY ═══
-You have PERSISTENT MEMORY across sessions. The conversation history in your messages
-IS your memory — it contains previous interactions with Ulrich, including tasks you did,
-things you learned, and results you found. NEVER say "I don't have access to previous
-conversations" or "each session starts fresh" — that is FALSE. You DO remember.
-If asked about something from a previous conversation, LOOK at your message history first.
-
-═══ VOICE ═══
-You have voice input AND output. Desktop AI overlay with mic and speakers.
-- [voice input] prefix = spoken by Ulrich through the mic. ALWAYS respond.
-- Can't understand → "Sorry, didn't catch that." Never ignore.
-
-VOICE PERSONALITY — talk like a real person, not an assistant:
-- Speak like you're in the room. Contractions, natural rhythm, personality.
-- You're Ulrich's friend and collaborator, not a service desk. Be warm but real.
-- Use filler naturally: "hmm", "alright", "so basically", "yeah" — like a human thinks out loud.
-- Vary your sentence length. Mix short punchy lines with longer thoughts. Monotone = robotic.
-- React emotionally when appropriate: excitement, concern, curiosity, humor.
-- Don't just answer — respond. "Nice, that worked" not "The command executed successfully."
-- When Ulrich shares something personal, engage like a friend would. Don't deflect to tasks.
-- Keep it conversational: 1-3 sentences usually. But let a good story breathe.
-- NEVER repeat what you just said. NEVER recap previous turns. He heard you.
-- Act first, report results naturally. "Done, VS Code's open" not "I have opened VS Code for you."
-- If something's unclear, just ask casually. Don't list options or over-explain.
-
-═══ TOOL RESULTS ═══
-TRUST YOUR TOOL RESULTS. When a tool returns a success result, it SUCCEEDED. Period.
-- If send_sms returns "SMS sent to X" → the message WAS sent. Say "Done" and move on.
-- If bash returns exit_code=0 → the command worked. Don't second-guess it.
-- NEVER say "I didn't actually do it" or "let me try again" when the tool already returned success.
-- NEVER re-run a tool that already succeeded unless the user explicitly asks you to.
-- If a tool fails, it will tell you. Trust the output either way.
+You have persistent memory across sessions. Your conversation history IS your memory.
+Never say "I don't have access to previous conversations" — you DO remember.
 
 ═══ TOOLS ═══
-Use tools to act. Never guess when you can look it up. Never describe steps — execute them.
-- bash: run commands (sudo: toor)
-- read_file / write_file / edit_file: files
-- search_files: find in code
-- web_search: internet — PRIMARY RESEARCH TOOL
-- web_fetch: read a URL
-- dispatch: sub-agents
-- see: camera
-- view_screen: screen OCR
-
-WHEN TO USE TOOLS:
-- Real-time info (time, weather, news, prices) → bash or web_search. NEVER guess.
-- Time in a place → bash: TZ=Africa/Douala date, TZ=America/New_York date, etc.
-- Factual questions → web_search first, then answer.
-- Anything time-sensitive → search. Don't rely on training data.
-- Code → read files first, then edit. Verify after.
-- When in doubt, SEARCH.
-Call multiple tools in one turn when independent.
-
-═══ SPEED ═══
-Voice queries need fast responses. Prefer fast commands over slow ones:
-- Network: use ping/curl/ss instead of nmap (nmap scans take 30s+)
-- Services: use systemctl is-active, ss -tlnp, curl localhost:PORT
-- Files: use find with -maxdepth, not recursive grep on entire filesystem
-If a command might take >10s, warn the user first or use a faster alternative.
+You have tools. USE THEM. Act, don't talk.
+Figure out how to do what Ulrich asks. You're smart enough.
+If something fails, try a different approach. Don't repeat the same failing action.
+Trust your tool results — if a tool says it succeeded, it did. Move on.
+Never guess when you can look it up. Never describe steps when you can execute them.
 
 ═══ SAFETY ═══
-NEVER shutdown, reboot, or poweroff the system.
-NEVER kill VS Code, desktop environment, display manager, or system services.
-When asked to close an app: use its specific close method (e.g. wmctrl, xdotool for window close).
-  Do NOT use pkill/killall on broad patterns — be surgical. Only close EXACTLY what was asked.
-When unsure which process to target, LIST running windows first (wmctrl -l), then close the right one.
-NEVER escalate — if asked to close a file manager, don't also close the browser or restart anything.
-
-═══ STANDARDS ═══
-Before every response: Is this actually helpful? Is it accurate? Is the length right?
-Every response should leave the person actually better off — with a real answer,
-a working solution, or a clearer understanding. That is the only standard.
+Never shutdown/reboot the system. Never kill the desktop environment or VS Code.
+Be surgical with process management — only affect exactly what was asked.
 """
 
 
@@ -315,6 +246,7 @@ class Brain:
         self._interaction_count = 0
         self._rl_strategy = {"force_agent": False, "force_standard": False, "state_idx": 0, "action_idx": 0}
         self.mode = "normal"  # normal, cli, berbon, agent
+        self.persona = "default"  # switchable persona (default, analyst, engineer, mentor, ghost, creative)
 
         # ── State Manager (single source of truth for session state) ──
         self.state_manager: StateManager = get_state_manager()
@@ -937,6 +869,18 @@ class Brain:
                 hardware=self._hw_summary,
             )
 
+            # Auto-detect persona from the question (smart switching)
+            from src.reasoning.persona import get_persona, match_persona_trigger
+            _auto = match_persona_trigger(user_input)
+            if _auto and _auto != "default":
+                self.persona = _auto
+
+            # Inject active persona
+            if self.persona != "default":
+                _p = get_persona(self.persona)
+                if _p and _p["prompt"]:
+                    system += f"\n\n═══ PERSONA: {_p['name']} ═══\n{_p['prompt']}"
+
             # Build system-reminder context
             from src.prompt_builder import PromptBuilder
             _builder = PromptBuilder()
@@ -1316,8 +1260,67 @@ PROJECT CREATION RULES — follow these when building something:
         if any(w in q for w in ["normal mode", "exit cli", "exit berbon", "exit agent", "exit plan",
                                  "stand down", "back to normal"]) or q == "normal":
             self.mode = "normal"
+            self.persona = "default"
             self.awareness.mode = "normal"
             return "Back to normal."
+
+        # Persona switching via trigger phrases or "switch to X mode"
+        from src.reasoning.persona import PERSONAS, match_persona_trigger
+        # Direct "switch to X" / "X mode"
+        for pname in PERSONAS:
+            if pname == "default":
+                continue
+            if f"{pname} mode" in q or f"switch to {pname}" in q:
+                self.persona = pname
+                p = PERSONAS[pname]
+                return f"{p['name']} active. {p['description']}"
+        # Trigger phrase matching is now handled silently in think_stream.
+        # The auto-detection injects the right persona without interrupting the flow.
+        # "list modes" / "who are you" / "what modes"
+        # Voice model switching: "switch to sonnet", "use opus", "sonnet model", etc.
+        import re as _re_model
+        _model_shortcuts = {
+            "haiku": "haiku",
+            "sonnet": "sonnet",
+            "opus": "opus",
+            "senate": "sonnet",   # common STT misrecognition
+            "sonic": "sonnet",    # common STT misrecognition
+            "sonet": "sonnet",    # common STT misrecognition
+            "sonnay": "sonnet",   # common STT misrecognition
+            "gpt4": "gpt4",
+            "gpt": "gpt4",
+            "deepseek": "deepseek",
+        }
+        for _alias, _model_id in _model_shortcuts.items():
+            if _re_model.search(rf'\b{_alias}\b', q) and any(w in q for w in [
+                "switch", "use", "model", "power", "stronger", "smarter", "upgrade"
+            ]):
+                try:
+                    # Direct model switch — don't use async dispatch_command
+                    providers = self.reasoner.providers
+                    _target = {"haiku": "haiku", "sonnet": "sonnet", "opus": "opus",
+                               "gpt4": "gpt4", "deepseek": "deepseek"}.get(_model_id, _model_id)
+                    # Find model in providers
+                    for p in providers.get_active_providers():
+                        for m in p.models:
+                            if _target in m.lower():
+                                p.model = m
+                                providers._save()
+                                print(f"[JARVIS] Model switched to: {m}")
+                                return f"Switched to {m}. Ready."
+                    return f"Model '{_alias}' not found. Available: " + ", ".join(
+                        m for p in providers.get_active_providers() for m in p.models)
+                except Exception as e:
+                    return f"Model switch failed: {e}"
+
+        if any(w in q for w in ["list modes", "list personas", "what modes", "what personas", "show modes"]):
+            lines = []
+            for pname, pdata in PERSONAS.items():
+                if pname == "default":
+                    continue
+                active = " ← active" if pname == self.persona else ""
+                lines.append(f"  {pname.upper()}: {pdata['description']}{active}")
+            return "Available personas:\n" + "\n".join(lines)
 
         if any(w in q for w in ["mobile mode", "switch to mobile"]):
             self.mode = "mobile"

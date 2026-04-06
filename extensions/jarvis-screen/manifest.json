@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "JARVIS Screen Vision",
+  "version": "1.0.0",
+  "description": "Let JARVIS see your browser screen — screenshot capture and AI analysis",
+  "permissions": [
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "http://localhost:8765/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": "icon.png"
+  },
+  "commands": {
+    "capture-screen": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+J"
+      },
+      "description": "Capture screen and send to JARVIS"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "icons": {
+    "48": "icon.png",
+    "128": "icon.png"
+  }
+}
