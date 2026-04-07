@@ -263,6 +263,67 @@ class JarvisWebServer:
         except (ConnectionResetError, ConnectionError, RuntimeError, Exception):
             pass  # Client disconnected — not an error
 
+    async def _launch_desktop_on_owner_machine(self, ws=None):
+        """SSH to Ulrich's machine and launch the desktop overlay there.
+
+        Uses the dedicated jarvis_to_kali key stored on the Proxmox host.
+        The key and owner host are read from ~/.jarvis/remote.json (client_host).
+        Falls back to 10.10.0.121 if not configured.
+        """
+        import asyncio as _aio
+        import json as _json
+        from pathlib import Path as _Path
+
+        _remote_cfg = {}
+        try:
+            _f = _Path("/data/.jarvis/remote.json")
+            if _f.exists():
+                _remote_cfg = _json.loads(_f.read_text())
+        except Exception:
+            pass
+
+        owner_host = _remote_cfg.get("client_host", "10.10.0.121")
+        owner_user = _remote_cfg.get("client_user", "ulrich")
+        ssh_key    = "/root/.ssh/jarvis_to_kali"
+
+        async def _do_launch():
+            try:
+                proc = await _aio.create_subprocess_exec(
+                    "ssh",
+                    "-i", ssh_key,
+                    "-o", "StrictHostKeyChecking=no",
+                    "-o", "ConnectTimeout=5",
+                    f"{owner_user}@{owner_host}",
+                    # Launch detached; DISPLAY auto-detected
+                    f"export DISPLAY=${{DISPLAY:-:0}}; "
+                    f"cd /home/{owner_user}/Documents/Projects/jarvis && "
+                    "nohup python3 -c 'from src.desktop.app import main; main()' "
+                    "> /tmp/jarvis-desktop.log 2>&1 &",
+                    stdout=_aio.subprocess.DEVNULL,
+                    stderr=_aio.subprocess.PIPE,
+                )
+                _, stderr = await _aio.wait_for(proc.communicate(), timeout=8)
+                if proc.returncode and proc.returncode != 0:
+                    err = stderr.decode().strip()
+                    return False, err
+                return True, ""
+            except Exception as e:
+                return False, str(e)
+
+        reply = {"type": "message", "role": "jarvis",
+                 "model": "", "latency_ms": 0, "voice_style": "default"}
+
+        ok, err = await _do_launch()
+        if ok:
+            reply["content"] = "Desktop overlay launched on your machine."
+        else:
+            reply["content"] = f"Couldn't reach your machine to launch desktop: {err}"
+
+        if ws:
+            await self._safe_send(ws, reply)
+        else:
+            await self._broadcast(reply)
+
     MAX_CLIENTS = 15
 
     async def websocket_handler(self, request: web.Request) -> web.WebSocketResponse:
@@ -606,9 +667,7 @@ class JarvisWebServer:
         if text_clean in switch_to_desktop or text_lower in switch_to_desktop \
                 or any(p in text_clean for p in switch_to_desktop):
             if not os.environ.get("DISPLAY"):
-                await ws.send_json({"type": "message", "role": "jarvis",
-                                    "content": "No desktop available on this server. Use the web UI or launch the desktop app on your local machine.",
-                                    "model": "", "latency_ms": 0, "voice_style": "default"})
+                await self._launch_desktop_on_owner_machine(ws)
                 return
             clients = getattr(self, '_active_clients', {})
             await self._broadcast({"type": "handoff", "target": "desktop"})
@@ -1800,13 +1859,9 @@ class JarvisWebServer:
                                  "open in browser", "browser mode", "jarvis browser",
                                  "open browser")
             if text_clean in switch_to_desktop or any(p in text_clean for p in switch_to_desktop):
-                # Headless server (Docker/no DISPLAY) — desktop app can't run here
+                # Headless server (Docker/no DISPLAY) — SSH to owner's machine to launch
                 if not os.environ.get("DISPLAY"):
-                    await self._broadcast({
-                        "type": "message", "role": "jarvis",
-                        "content": "No desktop available on this server. Use the web UI here or launch the desktop app on your local machine.",
-                        "model": "", "latency_ms": 0, "voice_style": "default",
-                    })
+                    await self._launch_desktop_on_owner_machine(ws)
                     return
                 clients = getattr(self, '_active_clients', {})
                 await self._broadcast({"type": "handoff", "target": "desktop"})
