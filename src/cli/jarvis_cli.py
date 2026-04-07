@@ -1759,16 +1759,13 @@ async def main():
         # Mode (if not normal)
         if mode_str and mode_str != "normal":
             right_parts.append(mode_str)
-        # Effort level (using src/utils/effort)
+        # Effort level — always visible like Claude Code
         try:
-            _sm = _get_state_manager()
-            effort_val = _sm.get("effort_level", "high")
-            if effort_val and effort_val != "high":
-                from src.constants.figures import EFFORT_LOW, EFFORT_MEDIUM, EFFORT_MAX
-                _eicon = {
-                    "low": EFFORT_LOW, "medium": EFFORT_MEDIUM, "max": EFFORT_MAX,
-                }.get(effort_val, "")
-                right_parts.append(f"{_eicon} {effort_val}")
+            if client._is_full_brain and hasattr(brain, '_effort_level'):
+                effort_val = brain._effort_level or "high"
+            else:
+                effort_val = "high"
+            right_parts.append(f"/effort · {effort_val}")
         except Exception:
             pass
         # Session cost
@@ -1854,6 +1851,16 @@ async def main():
                 if providers:
                     model_name = providers[0].model or "local"
                     provider_name = providers[0].name or "local"
+            except Exception:
+                pass
+        elif client._server_mode:
+            try:
+                import urllib.request as _ur, json as _jj
+                resp = _ur.urlopen(f"{client._server_url}/api/providers", timeout=1)
+                provs = _jj.loads(resp.read()).get("providers", [])
+                if provs:
+                    model_name = provs[0].get("model", model_name)
+                    provider_name = provs[0].get("name", provider_name)
             except Exception:
                 pass
         cwd_display = os.getcwd().replace(os.path.expanduser("~"), "~")
@@ -3227,7 +3234,12 @@ async def main():
             print("Session saved. JARVIS offline.")
             return
         except Exception as e:
-            _outputln(f"  {RED}✘ {e}{RESET}\n")
+            msg = str(e)
+            # Suppress harmless asyncio transport noise (aiohttp keepalive races)
+            if "closing transport" in msg or "connection lost" in msg.lower():
+                pass
+            else:
+                _outputln(f"  {RED}✘ {e}{RESET}\n")
 
 
 def run():

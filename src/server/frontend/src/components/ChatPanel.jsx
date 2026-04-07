@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import ToolProgress from './ToolProgress'
 import ContextBar from './ContextBar'
 
-export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState, onSpoken }) {
+export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState, onSpoken, isDesktop }) {
   const [messages, setMessages] = useState([
     { role: 'jarvis', text: 'Online. How can I assist you, Ulrich?' },
   ])
@@ -193,7 +193,8 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
 
   useEffect(() => {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const wsUrl = `${proto}//${window.location.host}/ws`
+    const clientType = isDesktop ? 'desktop' : 'browser'
+    const wsUrl = `${proto}//${window.location.host}/ws?client=${clientType}`
     let ws = null
     let reconnectTimer = null
     let reconnectDelay = 1000
@@ -313,6 +314,7 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
       style={{
         boxShadow: '0 0 30px rgba(0,184,212,0.15), inset 0 0 30px rgba(0,184,212,0.03)',
       }}
+      onMouseDown={(e) => e.stopPropagation()}
     >
       {/* Spin animation for tool progress */}
       <style>{`@keyframes tool-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>

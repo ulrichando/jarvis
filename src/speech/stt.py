@@ -61,7 +61,7 @@ def _transcribe_groq(audio: np.ndarray, sample_rate: int = 16000) -> str:
         resp.raise_for_status()
         return resp.json().get("text", "").strip()
     except Exception as e:
-        print(f"[JARVIS] Groq Whisper failed, falling back to local: {e}")
+        print(f"[JARVIS] Groq Whisper failed: {e}")
         return ""
 
 
@@ -223,6 +223,7 @@ _HALLUCINATIONS = {
     "hann svilcht böld", "hann svilcht böldbiand dragon", "bounth kitchen go away",
     "that's exactly what he said", "did you ugly me has a look", "kyrins",
     "svilcht", "böld", "biand", "bounth", "utveckl", "fáir fóssófár", "svíxtur hægku",
+    "lavyrv hadlari", "lavyrv", "hadlari", "special airju", "airju",
 }
 
 
@@ -319,9 +320,9 @@ def _transcribe_sync(audio: np.ndarray, sample_rate: int) -> str:
 
 
 def transcribe_audio(audio: np.ndarray, sample_rate: int = 16000, timeout: float = 15.0) -> str:
-    """Transcribe audio — Groq API first, local Whisper fallback.
+    """Transcribe audio — Groq Whisper API primary, local Whisper fallback if API unavailable.
 
-    Groq is faster and free. Local Whisper used when offline or API fails.
+    Groq is faster and free. Local Whisper kicks in only when Groq fails/is offline.
     """
     if not _has_speech_energy(audio):
         return ""
@@ -331,19 +332,15 @@ def transcribe_audio(audio: np.ndarray, sample_rate: int = 16000, timeout: float
     if len(audio) > max_samples:
         audio = audio[:max_samples]
 
-    # Priority chain: Groq API → local Whisper (offline fallback)
-    result = ""
-
-    # 1. Groq Whisper API — primary (fast, free, whisper-large-v3-turbo)
+    # 1. Groq Whisper API — primary
     try:
         result = _transcribe_groq(audio, sample_rate)
         if result and not _is_hallucination(result):
             result = _boost_vocabulary(result)
             _save_for_training(audio, result, sample_rate)
             return result
-        result = ""
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[JARVIS] Groq Whisper error: {e}")
 
     # 2. Local Whisper — offline fallback only
     try:

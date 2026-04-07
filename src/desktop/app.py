@@ -652,6 +652,30 @@ def main():
         except Exception:
             pass
 
+    # ── WebKit → GTK message bridge ──
+    # React calls: window.webkit.messageHandlers.jarvis.postMessage(JSON.stringify({cmd, ...}))
+    script_mgr = webview.get_user_content_manager()
+
+    def _on_jarvis_message(mgr, result):
+        try:
+            msg = result.get_js_value().to_string()
+            data = _json.loads(msg)
+            cmd = data.get("cmd", "")
+            if cmd == "click_through":
+                # Chat opened → disable click-through so user can type
+                # Chat closed → re-enable click-through (overlay mode)
+                enabled = data.get("enabled", True)
+                GLib.idle_add(lambda: _set_click_through(enabled) or False)
+            elif cmd == "hide":
+                GLib.idle_add(lambda: window.set_visible(False) or False)
+            elif cmd == "show":
+                GLib.idle_add(lambda: window.set_visible(True) or False)
+        except Exception:
+            pass
+
+    script_mgr.connect("script-message-received::jarvis", _on_jarvis_message)
+    script_mgr.register_script_message_handler("jarvis")
+
     # Enable click-through by default — clicks pass through to apps below
     def _enable_click_through_on_map(widget, event=None):
         GLib.timeout_add(500, lambda: _set_click_through(True) or False)
