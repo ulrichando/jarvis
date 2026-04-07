@@ -714,6 +714,38 @@ class JarvisWebServer:
                 await ws.send_json({"type": "power", "action": action})
                 break
 
+        # Theme / color change — intercept here so we can broadcast to ALL clients
+        _color_arg = None
+        if text_lower.startswith("/color "):
+            _color_arg = text_lower[7:].strip()
+        else:
+            # Natural-language: "change color to iron-man", "set theme stealth", etc.
+            for _pat in ("change color to ", "change theme to ", "set color to ",
+                         "set theme to ", "switch theme to ", "switch color to "):
+                if _pat in text_lower:
+                    _color_arg = text_lower.split(_pat, 1)[1].strip().split()[0]
+                    break
+        if _color_arg:
+            from src.desktop.colors import PRESETS, set_theme, set_custom_color, generate_icon
+            _primary = _glow = None
+            if _color_arg.startswith("#") and len(_color_arg) in (4, 7):
+                if len(_color_arg) == 4:
+                    _color_arg = f"#{_color_arg[1]*2}{_color_arg[2]*2}{_color_arg[3]*2}"
+                _primary, _glow = set_custom_color(_color_arg)
+                generate_icon(_primary)
+                _label = f"custom color {_primary}"
+            elif _color_arg in PRESETS:
+                _primary, _glow = set_theme(_color_arg)
+                generate_icon(_primary)
+                _label = PRESETS[_color_arg][2]
+            if _primary:
+                await self._broadcast({"type": "theme_update", "primary": _primary,
+                                       "glow": _glow, "theme": _color_arg})
+                await ws.send_json({"type": "message", "role": "jarvis",
+                                    "content": f"Theme set to {_label}: {_primary}",
+                                    "model": "", "latency_ms": 0})
+                return
+
         # Guard: Brain still loading — commands above work without it, LLM needs it
         if self.brain is None:
             await ws.send_json({

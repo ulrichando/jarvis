@@ -428,6 +428,22 @@ function App() {
         </div>
       )}
 
+      {/* Fullscreen toggle — browser only */}
+      {!isDesktop && (
+        <button
+          onClick={() => {
+            if (!document.fullscreenElement) document.documentElement.requestFullscreen?.()
+            else document.exitFullscreen?.()
+          }}
+          className="fixed top-3 right-3 z-50 w-7 h-7 flex items-center justify-center rounded bg-[rgba(0,10,20,0.6)] border border-jarvis-border text-[rgba(0,229,255,0.4)] hover:text-jarvis-bright hover:border-[rgba(0,229,255,0.4)] transition-all"
+          title="Toggle fullscreen (F11)"
+        >
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
+            <path d="M0 0h4v1.5H1.5V4H0zm8 0h4v4h-1.5V1.5H8zM0 8h1.5v2.5H4V12H0zm10.5 2.5H8V12h4V8h-1.5z"/>
+          </svg>
+        </button>
+      )}
+
       {/* Camera active indicator */}
       {cameraOn && (
         <div className="fixed top-4 right-4 z-50 flex items-center gap-2 px-3 py-1.5 rounded-full bg-[rgba(0,20,40,0.8)] border border-[rgba(0,229,255,0.3)]">
