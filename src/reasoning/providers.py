@@ -149,6 +149,7 @@ class ProviderRegistry:
         self._load()
         self._load_env_providers()
         self._load_claude_credentials()
+        self._load_remote_brain()
 
     def set_effort(self, level: str):
         """Set the effort level — affects max_tokens and response depth."""
@@ -483,6 +484,15 @@ class ProviderRegistry:
 
     async def _query_provider(self, provider: Provider, user_input: str,
                               system_prompt: str, history: list[dict] | None) -> str:
+        if provider.type == "remote":
+            messages = [{"role": "system", "content": system_prompt}] if system_prompt else []
+            if history:
+                for turn in history[-6:]:
+                    role = "assistant" if turn["role"] == "jarvis" else "user"
+                    messages.append({"role": role, "content": turn["content"][:500]})
+            messages.append({"role": "user", "content": user_input})
+            result = await self._query_tools_remote(provider, messages, [], system_prompt)
+            return result.get("text", "")
         if provider.type == "anthropic":
             return await self._query_anthropic(provider, user_input, system_prompt, history)
         else:
@@ -676,10 +686,37 @@ class ProviderRegistry:
 
     async def _query_tools_provider(self, provider: Provider, messages: list[dict],
                                     tools: list[dict], system: str) -> dict:
+        if provider.type == "remote":
+            return await self._query_tools_remote(provider, messages, tools, system)
         if provider.type == "anthropic":
             return await self._query_tools_anthropic(provider, messages, tools, system)
         else:
             return await self._query_tools_openai(provider, messages, tools, system)
+
+    async def _query_tools_remote(self, provider: Provider, messages: list[dict],
+                                  tools: list[dict], system: str) -> dict:
+        """Forward LLM call to remote JARVIS brain (e.g. Proxmox server).
+        Tool execution stays local — only inference is proxied."""
+        import aiohttp
+        payload = {"messages": messages, "tools": tools, "system": system}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{provider.base_url}/api/llm",
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=120),
+                    headers={"Content-Type": "application/json"},
+                ) as resp:
+                    if resp.status != 200:
+                        raise RuntimeError(f"Remote brain returned {resp.status}")
+                    data = await resp.json()
+                    return {
+                        "text":       data.get("text", ""),
+                        "tool_calls": data.get("tool_calls", []),
+                        "usage":      data.get("usage", {}),
+                    }
+        except aiohttp.ClientConnectorError as e:
+            raise RuntimeError(f"Cannot reach remote brain at {provider.base_url}: {e}") from e
 
     async def _query_tools_anthropic(self, provider: Provider, messages: list[dict],
                                      tools: list[dict], system: str) -> dict:
@@ -1317,3 +1354,40 @@ RULES:
         if api_key.startswith(("sk-ant-", "anthropic-")):
             return "anthropic"
         return "openai"  # OpenAI-compatible is the safe default
+
+    def _load_remote_brain(self):
+        """Auto-register a remote JARVIS brain from ~/.jarvis/remote.json.
+
+        If remote.json has a non-localhost brain_url, register it as a priority-0
+        remote provider. This makes local JARVIS forward all LLM inference to the
+        brain while tools keep executing on the local device.
+        """
+        remote_file = JARVIS_HOME / "remote.json"
+        if not remote_file.exists():
+            return
+        try:
+            with open(remote_file) as f:
+                data = json.load(f)
+            # Support both brain_url (new) and server_url (legacy)
+            brain_url = (data.get("brain_url") or "").strip()
+            if not brain_url:
+                return
+            if "localhost" in brain_url or "127.0.0.1" in brain_url:
+                return  # Not a remote brain — skip
+            if "jarvis-brain" in self._providers:
+                return  # Already registered (e.g. loaded from providers.json)
+            # Bump all existing providers down one priority slot
+            for p in self._providers.values():
+                p.priority += 1
+            self._providers["jarvis-brain"] = Provider(
+                name="jarvis-brain",
+                type="remote",
+                api_key="",
+                base_url=brain_url.rstrip("/"),
+                model="remote",
+                models=["remote"],
+                priority=0,
+                enabled=True,
+            )
+        except Exception:
+            pass

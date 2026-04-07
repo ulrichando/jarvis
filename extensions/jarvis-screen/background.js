@@ -1,6 +1,7 @@
 // JARVIS Screen Vision — background service worker v2.0
 
-const JARVIS_URL = 'http://localhost:8765'
+// Change this to point at your Proxmox server when not running locally
+const JARVIS_URL = 'http://10.10.0.50:8765'
 const MAX_TABS   = 10
 const DOM_TTL    = 30_000  // 30s DOM cache
 

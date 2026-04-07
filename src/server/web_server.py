@@ -549,6 +549,11 @@ class JarvisWebServer:
                              "open browser")
         if text_clean in switch_to_desktop or text_lower in switch_to_desktop \
                 or any(p in text_clean for p in switch_to_desktop):
+            if not os.environ.get("DISPLAY"):
+                await ws.send_json({"type": "message", "role": "jarvis",
+                                    "content": "No desktop available on this server. Use the web UI or launch the desktop app on your local machine.",
+                                    "model": "", "latency_ms": 0, "voice_style": "default"})
+                return
             clients = getattr(self, '_active_clients', {})
             await self._broadcast({"type": "handoff", "target": "desktop"})
             clients["browser"] = False
@@ -1739,6 +1744,14 @@ class JarvisWebServer:
                                  "open in browser", "browser mode", "jarvis browser",
                                  "open browser")
             if text_clean in switch_to_desktop or any(p in text_clean for p in switch_to_desktop):
+                # Headless server (Docker/no DISPLAY) — desktop app can't run here
+                if not os.environ.get("DISPLAY"):
+                    await self._broadcast({
+                        "type": "message", "role": "jarvis",
+                        "content": "No desktop available on this server. Use the web UI here or launch the desktop app on your local machine.",
+                        "model": "", "latency_ms": 0, "voice_style": "default",
+                    })
+                    return
                 clients = getattr(self, '_active_clients', {})
                 await self._broadcast({"type": "handoff", "target": "desktop"})
                 clients["browser"] = False
@@ -3071,6 +3084,43 @@ class JarvisWebServer:
                 return web.json_response({"response": f"Error: {e}"}, status=500)
 
         app.router.add_post("/api/think", think_handler)
+
+        # ── Raw LLM proxy — used by relay clients for local tool execution ──
+        # Exposes LLM inference only (no agent loop, no tool execution).
+        # Remote JARVIS instances use this so their LOCAL tools run on their own hardware.
+        async def llm_proxy_handler(request):
+            if request.method == 'OPTIONS':
+                return web.Response(headers={
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+                    'Access-Control-Allow-Headers': 'Content-Type',
+                })
+            try:
+                data      = await request.json()
+                messages  = data.get('messages', [])
+                tools     = data.get('tools', [])
+                system    = data.get('system', '')
+                if not messages:
+                    return web.json_response({'error': 'No messages'}, status=400,
+                                             headers={'Access-Control-Allow-Origin': '*'})
+                while self.brain is None:
+                    await asyncio.sleep(0.1)
+                result, model = await self.brain.reasoner.providers.query_with_tools(
+                    messages, tools, system
+                )
+                return web.json_response(
+                    {'text': result.get('text', ''),
+                     'tool_calls': result.get('tool_calls', []),
+                     'model': model},
+                    headers={'Access-Control-Allow-Origin': '*'}
+                )
+            except Exception as e:
+                logger.error(f"llm_proxy_handler error: {e}")
+                return web.json_response({'error': str(e)}, status=500,
+                                         headers={'Access-Control-Allow-Origin': '*'})
+
+        app.router.add_post("/api/llm", llm_proxy_handler)
+        app.router.add_route("OPTIONS", "/api/llm", llm_proxy_handler)
 
         # Providers API — used by Settings panel
         async def providers_list_handler(request):

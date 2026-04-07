@@ -1,4 +1,5 @@
 // JARVIS Side Panel v2.0 — DOM-aware AI with multi-tab @mention
+const JARVIS_URL = 'http://10.10.0.50:8765'
 
 const messagesEl   = document.getElementById('messages')
 const emptyState   = document.getElementById('emptyState')
@@ -333,7 +334,7 @@ async function sendQuery() {
   }
 
   try {
-    const resp = await fetch('http://localhost:8765/api/page-query', {
+    const resp = await fetch(`${JARVIS_URL}/api/page-query`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ query: q, pageContent, mentionedTabs }),
@@ -502,5 +503,5 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('load', async () => {
   queryInput.focus()
   await loadTabList()
-  fetch('http://localhost:8765/health').catch(() => {})
+  fetch(`${JARVIS_URL}/health`).catch(() => {})
 })

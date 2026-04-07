@@ -1,10 +1,13 @@
 .git
 __pycache__
 *.pyc
+*.pyo
 node_modules
 src/server/frontend/node_modules
 src/cli-ts/node_modules
 src/cli-ts/dist
+# Built frontend is rebuilt fresh inside Docker from the Node stage
+src/server/static-react/
 .env
 *.log
 test/
