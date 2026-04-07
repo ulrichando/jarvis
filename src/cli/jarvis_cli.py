@@ -3386,6 +3386,9 @@ async def main():
                         _disp = ":0"
                 _jarvis_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
                 env = {**os.environ, "DISPLAY": _disp}
+                # Kill any existing desktop instance before launching
+                subprocess.run(["pkill", "-f", "src.desktop.app"], capture_output=True)
+                time.sleep(0.4)
                 subprocess.Popen(
                     ["python3", "-c", "from src.desktop.app import main; main()"],
                     cwd=_jarvis_root, start_new_session=True,
