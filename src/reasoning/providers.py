@@ -90,6 +90,12 @@ class Provider:
     priority: int       # Lower = tried first (0 = highest)
     enabled: bool = True
 
+    @property
+    def is_local(self) -> bool:
+        """True if this provider runs locally (localhost/127.0.0.1)."""
+        url = (self.base_url or "").lower()
+        return "localhost" in url or "127.0.0.1" in url
+
     def to_dict(self) -> dict:
         return {
             "name": self.name,
@@ -107,9 +113,13 @@ class ProviderRegistry:
     """Manages AI providers with circuit breaker for resilience."""
 
     # Circuit breaker: skip provider after N failures in WINDOW seconds
+    # Cloud providers — calibrated for API rate-limit recovery windows
     _CB_MAX_FAILURES = 3
-    _CB_WINDOW = 300       # 5 minutes
-    _CB_COOLDOWN = 120     # 2 minutes before retry
+    _CB_WINDOW       = 300   # 5 minutes
+    _CB_COOLDOWN     = 120   # 2 minutes before retry
+    # Local providers (Ollama etc.) — much faster recovery (process restart, model load)
+    _CB_LOCAL_WINDOW    = 60   # 1 minute — stale failures don't accumulate
+    _CB_LOCAL_COOLDOWN  = 15   # 15 seconds — local process recovers in seconds
 
     # Effort level → max_tokens mapping
     EFFORT_MAX_TOKENS = {
@@ -125,6 +135,10 @@ class ProviderRegistry:
         "high":   "Think carefully. Cover edge cases, alternatives, and examples.",
         "max":    "Be exhaustive. Explore all angles, provide full reasoning, leave nothing out.",
     }
+
+    # Internet check cache: avoid re-checking on every query
+    _inet_cache: tuple[float, bool] | None = None
+    _INET_TTL = 30  # seconds between checks
 
     def __init__(self):
         self._providers: dict[str, Provider] = {}
@@ -147,10 +161,10 @@ class ProviderRegistry:
     def _effort_system_suffix(self) -> str:
         return self.EFFORT_INSTRUCTIONS.get(self._effort, "")
 
-    def _cb_is_open(self, name: str) -> bool:
+    def _cb_is_open(self, provider: "Provider") -> bool:
         """Check if circuit breaker is open (provider should be skipped)."""
         import time
-        cb = self._circuit_breaker.get(name)
+        cb = self._circuit_breaker.get(provider.name)
         if not cb:
             return False
         if time.time() < cb.get("open_until", 0):
@@ -158,24 +172,49 @@ class ProviderRegistry:
         # Cooldown expired — half-open, allow one attempt
         return False
 
-    def _cb_record_failure(self, name: str):
-        """Record a provider failure for circuit breaker."""
+    def _cb_record_failure(self, provider: "Provider", is_transient: bool = False):
+        """Record a provider failure for circuit breaker.
+
+        is_transient=True for timeouts/loading errors on local providers — these
+        don't open the circuit since the process just needs a moment to warm up.
+        """
         import time
         now = time.time()
-        cb = self._circuit_breaker.setdefault(name, {"failures": 0, "last_fail": 0, "open_until": 0})
+        # Local transient errors (model loading, first cold start): don't penalise
+        if provider.is_local and is_transient:
+            return
+        window   = self._CB_LOCAL_WINDOW   if provider.is_local else self._CB_WINDOW
+        cooldown = self._CB_LOCAL_COOLDOWN if provider.is_local else self._CB_COOLDOWN
+        cb = self._circuit_breaker.setdefault(provider.name, {"failures": 0, "last_fail": 0, "open_until": 0})
         # Reset if last failure was outside the window
-        if now - cb["last_fail"] > self._CB_WINDOW:
+        if now - cb["last_fail"] > window:
             cb["failures"] = 0
         cb["failures"] += 1
         cb["last_fail"] = now
         if cb["failures"] >= self._CB_MAX_FAILURES:
-            cb["open_until"] = now + self._CB_COOLDOWN
-            print(f"[JARVIS] Circuit breaker OPEN for {name} — skipping for {self._CB_COOLDOWN}s")
+            cb["open_until"] = now + cooldown
+            print(f"[JARVIS] Circuit breaker OPEN for {provider.name} — skipping for {cooldown}s")
 
     def _cb_record_success(self, name: str):
         """Record a success — close the circuit breaker."""
         if name in self._circuit_breaker:
             self._circuit_breaker[name] = {"failures": 0, "last_fail": 0, "open_until": 0}
+
+    def _has_internet(self) -> bool:
+        """Return True if internet is reachable (cached for _INET_TTL seconds)."""
+        import time
+        import socket
+        now = time.time()
+        if self._inet_cache and now - self._inet_cache[0] < self._INET_TTL:
+            return self._inet_cache[1]
+        try:
+            socket.setdefaulttimeout(2)
+            socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect(("8.8.8.8", 53))
+            result = True
+        except OSError:
+            result = False
+        ProviderRegistry._inet_cache = (now, result)
+        return result
 
     # ── Public API ──────────────────────────────────────────────────
 
@@ -249,6 +288,12 @@ class ProviderRegistry:
 
         def _is_cloud(p):
             return "localhost" not in p.base_url and "127.0.0.1" not in p.base_url
+
+        # Ollama (local) only when offline — skip local providers if internet is up
+        if self._has_internet():
+            cloud = [p for p in providers if _is_cloud(p)]
+            if cloud:  # only filter if there are cloud providers to fall back to
+                providers = cloud
 
         def _is_smart(p):
             return any(big in p.model for big in ["70b", "72b", "65b", "mixtral", "32b"])
@@ -346,11 +391,15 @@ class ProviderRegistry:
                 break
 
         errors = []
+        import asyncio as _asyncio
+        active = self.get_active_providers(prefer_code=is_code)
         # Respect user's priority order — prefer_tool_calling would override it by
         # always putting cloud first. Trust priority 0 = highest regardless of local/cloud.
-        for provider in self.get_active_providers(prefer_code=is_code):
-            # Circuit breaker — skip providers that have failed repeatedly
-            if self._cb_is_open(provider.name):
+        for provider in active:
+            # Circuit breaker — skip providers that have failed repeatedly.
+            # Exception: if this is the only available provider (e.g. offline → Ollama only),
+            # never block the sole option — just try and let it fail naturally.
+            if self._cb_is_open(provider) and len(active) > 1:
                 errors.append(f"{provider.name}: circuit breaker open")
                 continue
             try:
@@ -361,14 +410,16 @@ class ProviderRegistry:
                     self._cb_record_success(provider.name)
                     return result, f"{provider.name}:{provider.model}"
                 errors.append(f"{provider.name}: no tool result")
-                self._cb_record_failure(provider.name)
+                self._cb_record_failure(provider)
             except BaseException as e:
                 # BaseException catches CancelledError (asyncio timeout) in addition to
                 # regular exceptions — without this, asyncio cancellations bypass the
                 # circuit breaker and the slow provider is retried on every query.
                 errors.append(f"{provider.name}: {e}")
-                self._cb_record_failure(provider.name)
-                import asyncio as _asyncio
+                # For local providers, timeouts likely mean the model is loading — treat
+                # as transient so the circuit breaker doesn't open and block the fallback.
+                is_transient = provider.is_local and isinstance(e, (_asyncio.TimeoutError, TimeoutError))
+                self._cb_record_failure(provider, is_transient=is_transient)
                 if isinstance(e, _asyncio.CancelledError):
                     raise  # Re-raise so asyncio cancellation still propagates
                 continue

@@ -37,7 +37,27 @@ log = logging.getLogger("jarvis.agent")
 # Concurrency-safe tools (from registry)
 _CONCURRENCY_SAFE = get_concurrency_safe_tools()
 
+import hashlib as _hashlib
 import re as _re
+
+
+def _tool_call_sig(tool_name: str, tool_args: dict) -> str:
+    """Stable hash of a (tool_name, args) pair for semantic-retry detection."""
+    key = f"{tool_name}:{sorted(tool_args.items()) if isinstance(tool_args, dict) else tool_args}"
+    return _hashlib.md5(key.encode()).hexdigest()
+
+
+def _is_tool_failure(result: str) -> bool:
+    """Return True if a tool result string indicates a non-zero / error outcome."""
+    if not result:
+        return False
+    if _re.match(r"exit_code=0\b", result):
+        return False
+    if _re.match(r"exit_code=[1-9]", result):
+        return True
+    return result.startswith(("ERROR:", "BLOCKED:", "Command failed", "Syntax error",
+                               "[Tool calling failed", "[All retry"))
+
 
 def _scrub_identity(text: str) -> str:
     """Replace ALL Claude/Anthropic identity leaks with JARVIS identity."""
@@ -280,6 +300,7 @@ async def _agent_loop_internal(
 
     final_text = ""
     iterations = 0
+    _failed_call_sigs_ns: set[str] = set()  # semantic-retry tracking (non-streaming)
 
     while iterations < max_iterations:
         iterations += 1
@@ -357,7 +378,8 @@ async def _agent_loop_internal(
         # Execute regular tools (respect plan mode)
         _readonly = _loop_state.get("plan_mode", False)
         await _execute_tools(messages, regular_calls, tool_executor,
-                             on_tool_call, on_tool_result, readonly=_readonly)
+                             on_tool_call, on_tool_result, readonly=_readonly,
+                             failed_sigs=_failed_call_sigs_ns)
 
         # Execute dispatch calls (concurrent)
         if dispatch_calls:
@@ -597,8 +619,11 @@ def _append_tool_result(messages: list[dict], tool_id: str, result: str,
 
 
 async def _execute_tools(messages: list[dict], tool_calls: list[dict],
-                         executor, on_call=None, on_result=None, readonly=False):
+                         executor, on_call=None, on_result=None, readonly=False,
+                         failed_sigs: set | None = None):
     """Execute tool calls — parallel for concurrency-safe, sequential for others."""
+    if failed_sigs is None:
+        failed_sigs = set()
     hooks = _get_hooks()
     checkpoints = _get_checkpoints()
     perms = _get_permissions()
@@ -672,6 +697,9 @@ async def _execute_tools(messages: list[dict], tool_calls: list[dict],
         if on_call:
             on_call(tool_name, tool_args)
 
+        _sig = _tool_call_sig(tool_name, tool_args)
+        _is_repeat = _sig in failed_sigs
+
         try:
             result = await asyncio.to_thread(executor, tool_name, tool_args)
         except Exception as exc:
@@ -681,6 +709,12 @@ async def _execute_tools(messages: list[dict], tool_calls: list[dict],
                 fail_hr = hooks.run_post_tool_use_failure(tool_name, tool_args, str(exc))
                 if fail_hr.message:
                     result += f"\n[Hook: {fail_hr.message}]"
+            failed_sigs.add(_sig)
+            if _is_repeat:
+                result += (
+                    "\n\n⚠ SAME CALL FAILED AGAIN — do NOT retry this command. "
+                    "Switch to a completely different approach or tool."
+                )
             if on_result:
                 on_result(tool_name, result)
             _append_tool_result(messages, tool_id, result, tool_name=tool_name)
@@ -698,6 +732,15 @@ async def _execute_tools(messages: list[dict], tool_calls: list[dict],
             if path:
                 change_type = "write" if tool_name == "write_file" else "edit"
                 hooks.run_file_changed(path, change_type)
+
+        # Track semantic failures
+        if _is_tool_failure(result):
+            failed_sigs.add(_sig)
+            if _is_repeat:
+                result += (
+                    "\n\n⚠ SAME CALL FAILED AGAIN — do NOT retry this command. "
+                    "Switch to a completely different approach or tool."
+                )
 
         if on_result:
             on_result(tool_name, result)
@@ -816,6 +859,10 @@ async def agent_loop_stream(
         session_memory_mgr = init_session_memory()
     except Exception:
         session_memory_mgr = None
+
+    # Track failed (tool_name, args) signatures within this turn so we can warn
+    # the model when it repeats the exact same failing call (semantic retry anti-pattern).
+    _failed_call_sigs: set[str] = set()
 
     while iterations < max_iterations:
         iterations += 1
@@ -1006,6 +1053,11 @@ async def agent_loop_stream(
 
             yield {"type": "tool_call", "name": tool_name, "args": tool_args}
 
+            # Semantic-retry detection: warn the model if it's about to repeat
+            # a call that already failed with identical arguments this turn.
+            _sig = _tool_call_sig(tool_name, tool_args)
+            _is_repeat_failure = _sig in _failed_call_sigs
+
             try:
                 result = await asyncio.to_thread(execute_tool, tool_name, tool_args, readonly)
             except Exception as exc:
@@ -1014,6 +1066,12 @@ async def agent_loop_stream(
                     fail_hr = hooks.run_post_tool_use_failure(tool_name, tool_args, str(exc))
                     if fail_hr.message:
                         result += f"\n[Hook: {fail_hr.message}]"
+                _failed_call_sigs.add(_sig)
+                if _is_repeat_failure:
+                    result += (
+                        "\n\n⚠ SAME CALL FAILED AGAIN — do NOT retry this command. "
+                        "Switch to a completely different approach or tool."
+                    )
                 yield {"type": "tool_result", "name": tool_name, "content": result}
                 _append_tool_result(messages, tool_id, result, tool_name=tool_name)
                 continue
@@ -1029,6 +1087,15 @@ async def agent_loop_stream(
                 if path:
                     change_type = "write" if tool_name == "write_file" else "edit"
                     hooks.run_file_changed(path, change_type)
+
+            # Track failures for semantic-retry detection
+            if _is_tool_failure(result):
+                _failed_call_sigs.add(_sig)
+                if _is_repeat_failure:
+                    result += (
+                        "\n\n⚠ SAME CALL FAILED AGAIN — do NOT retry this command. "
+                        "Switch to a completely different approach or tool."
+                    )
 
             yield {"type": "tool_result", "name": tool_name, "content": result}
             _append_tool_result(messages, tool_id, result, tool_name=tool_name)

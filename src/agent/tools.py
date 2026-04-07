@@ -2239,9 +2239,17 @@ def _exec_write(args: dict) -> str:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         resolved = os.path.realpath(path)
         extra_info = ""
+        old_content: str | None = None
 
         # If file already exists, handle backup and line ending preservation
         if os.path.exists(resolved):
+            # Read old content for diff generation
+            try:
+                with open(resolved, "r", encoding="utf-8", errors="replace") as f:
+                    old_content = f.read()
+            except Exception:
+                pass
+
             # Create .bak backup
             bak_path = resolved + ".bak"
             try:
@@ -2267,7 +2275,25 @@ def _exec_write(args: dict) -> str:
         _file_read_times[resolved] = os.path.getmtime(resolved)
 
         lines = content.count("\n") + 1
-        return f"Wrote {lines} lines to {path}{extra_info}"
+        result_msg = f"Wrote {lines} lines to {path}{extra_info}"
+
+        # Append unified diff when overwriting an existing file
+        if old_content is not None:
+            old_lines = old_content.splitlines(keepends=True)
+            new_lines = content.splitlines(keepends=True)
+            diff = list(difflib.unified_diff(
+                old_lines, new_lines,
+                fromfile=f"a/{os.path.basename(path)}",
+                tofile=f"b/{os.path.basename(path)}",
+                n=3,
+            ))
+            if diff:
+                diff_text = "".join(diff[:60])
+                if len(diff) > 60:
+                    diff_text += "\n... (diff truncated)"
+                result_msg += f"\n\n{diff_text}"
+
+        return result_msg
     except Exception as e:
         return f"Error writing {_sanitize_error_path(path)}: {e}"
 

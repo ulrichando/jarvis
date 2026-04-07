@@ -221,7 +221,6 @@ def main():
     # Hide window during initial load to prevent old theme flash
     window.set_opacity(0)
 
-    _reloaded = [False]
     _saved_primary = _cfg.get("theme_primary", "#00e5ff")
     _saved_glow = _cfg.get("theme_glow", "#0088aa")
     _target_opacity = _cfg.get("opacity", 1.0)
@@ -229,17 +228,11 @@ def main():
     def _on_load(wv, event):
         if event == WebKit2.LoadEvent.FINISHED:
             wv.set_background_color(Gdk.RGBA(0, 0, 0, 0))
-            # Apply saved theme colors
+            # Apply saved theme colors then reveal — URL already has _t=timestamp
+            # so the single load is always fresh; no double-reload needed.
             js = f"window.__jarvisSetTheme && window.__jarvisSetTheme('{_saved_primary}', '{_saved_glow}')"
             wv.run_javascript(js, None, None, None)
-
-            if not _reloaded[0]:
-                # First load — reload to bust cache, stay hidden
-                _reloaded[0] = True
-                GLib.timeout_add(500, lambda: wv.reload_bypass_cache() or False)
-            else:
-                # Second load (fresh) — show window with correct theme
-                GLib.timeout_add(300, lambda: window.set_opacity(_target_opacity) or False)
+            GLib.timeout_add(300, lambda: window.set_opacity(_target_opacity) or False)
     webview.connect("load-changed", _on_load)
     window.add(webview)
 

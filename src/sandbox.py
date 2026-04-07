@@ -1,4 +1,7 @@
-"""JARVIS Sandbox — Linux namespace isolation for bash commands.
+"""JARVIS sandbox — JARVIS Sandbox — Linux namespace isolation for bash commands.
+# JARVIS sandbox
+
+# JARVIS sandbox - Core sandboxing for secure command execution
 
 Ported from claw-code's sandbox.rs. Uses Linux `unshare` to create
 isolated environments for command execution:
@@ -12,6 +15,7 @@ isolated environments for command execution:
 """
 
 import os
+import shlex
 import shutil
 import subprocess
 import logging
@@ -144,9 +148,10 @@ def build_sandbox_command(
     if config.allowed_mounts:
         extra_env["JARVIS_SANDBOX_ALLOWED_MOUNTS"] = ":".join(config.allowed_mounts)
 
-    # Wrap: unshare [flags] sh -lc "command"
-    escaped = command.replace("'", "'\\''")
-    parts.extend(["sh", "-lc", f"mkdir -p {sandbox_home} {sandbox_tmp} 2>/dev/null; {escaped}"])
+    # Wrap: unshare [flags] bash -lc 'command' — shlex.quote ensures the
+    # inner script is passed as a single argument through the outer sh -c shell.
+    inner_cmd = f"mkdir -p {sandbox_home} {sandbox_tmp} 2>/dev/null; {command}"
+    parts.extend(["bash", "-lc", shlex.quote(inner_cmd)])
 
     return " ".join(parts), extra_env
 

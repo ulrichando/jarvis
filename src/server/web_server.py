@@ -726,13 +726,51 @@ class JarvisWebServer:
                                 "args": event.get("args", {}),
                             })
                         elif etype == "tool_result":
-                            result_str = str(event.get("content", event.get("result", "")))[:500]
-                            print(f"[JARVIS] Result: {event.get('name', '')} → {result_str[:80]}")
+                            tool_name_r = event.get("name", "")
+                            raw_result = str(event.get("content", event.get("result", "")))
+                            print(f"[JARVIS] Result: {tool_name_r} → {raw_result[:80]}")
+
+                            # Extract embedded unified diff from edit_file / write_file results
+                            diff_payload: str | None = None
+                            if tool_name_r in ("edit_file", "write_file"):
+                                import re as _re2
+                                _diff_match = _re2.search(
+                                    r'\n\n((?:---|\+\+\+|@@|[ +\-\\]).+?)$',
+                                    raw_result, _re2.DOTALL
+                                )
+                                if _diff_match:
+                                    diff_payload = _diff_match.group(1).strip()
+
+                            result_msg = {
+                                "type": "tool_result",
+                                "id": current_tool_id,
+                                "name": tool_name_r,
+                                "content": raw_result[:500],
+                            }
+                            if diff_payload:
+                                result_msg["diff"] = diff_payload[:2000]
+                            await ws.send_json(result_msg)
+                            current_tool_id = None
+                        elif etype == "dispatch":
+                            used_tools = True
+                            speech_buffer = ""
+                            tool_id_counter += 1
+                            current_tool_id = f"tool-{tool_id_counter}"
+                            await ws.send_json({
+                                "type": "tool_call",
+                                "id": current_tool_id,
+                                "name": "dispatch",
+                                "args": {
+                                    "agent_type": event.get("agent_type", "?"),
+                                    "task": event.get("task", ""),
+                                },
+                            })
+                        elif etype == "dispatch_result":
                             await ws.send_json({
                                 "type": "tool_result",
                                 "id": current_tool_id,
-                                "name": event.get("name", ""),
-                                "content": result_str,
+                                "name": "dispatch",
+                                "content": str(event.get("result", ""))[:500],
                             })
                             current_tool_id = None
                         elif etype == "usage":
@@ -977,6 +1015,27 @@ class JarvisWebServer:
         and anything that sounds unnatural when read by TTS.
         """
         t = text
+        # Strip tool-narration prefixes that the model emits when retrying.
+        # These are internal monologue phrases that should never be spoken.
+        # Loop because they can stack: "Let me fix that: Let me try again: <answer>"
+        _NARRATION_PREFIX = re.compile(
+            r'^(?:'
+            r"Let me (?:fix that|try (?:again|that again|a different|without|another|once more|something)|attempt|re-?try|check|rephrase|re-?run|re-?do|start over)|"
+            r"I(?:'ll| will) (?:try (?:a different|again|without|another|something)|attempt|re-?try|fix that|re-?run)|"
+            r"Retrying (?:with|without|using)|"
+            r"Trying (?:again|a different|without|another)|"
+            r"Executing (?:the )?command|"
+            r"Running (?:the )?command|"
+            r"(?:One|Just) (?:moment|sec)|"
+            r"Hold on"
+            r')[^.!?:]*[.!?:]?\s*',
+            re.IGNORECASE,
+        )
+        for _ in range(5):  # max 5 stacked prefixes
+            stripped = _NARRATION_PREFIX.sub('', t, count=1)
+            if stripped == t:
+                break
+            t = stripped
         # Remove display/command tags
         t = re.sub(r'\[show:\w+\]', '', t)
         t = re.sub(r'\[/show\]', '', t)
@@ -1728,13 +1787,28 @@ class JarvisWebServer:
 
             # Silent tool execution — log only, no narration
             _tool_count = [0]
+            _long_tool_active = [False]
 
             def _on_tool(name, args):
                 _tool_count[0] += 1
+                _long_tool_active[0] = True
                 print(f"[JARVIS] Tool: {name}({str(args)[:80]})")
 
             def _on_result(name, result):
+                _long_tool_active[0] = False
                 print(f"[JARVIS] Result: {name} → {str(result)[:80]}")
+
+            # Speak a short filler after 2 s if a tool is still running,
+            # so voice users aren't left in silence during long operations.
+            async def _voice_filler():
+                try:
+                    await asyncio.sleep(2.0)
+                    if _long_tool_active[0]:
+                        await self._speak_system("Working on it.")
+                except asyncio.CancelledError:
+                    pass
+
+            _filler_task = asyncio.create_task(_voice_filler())
 
             try:
                 response = await asyncio.wait_for(
@@ -1745,6 +1819,8 @@ class JarvisWebServer:
             except asyncio.TimeoutError:
                 print(f'[JARVIS] Think timed out: "{transcript[:50]}"')
                 response = "That's taking a while — still working on it."
+            finally:
+                _filler_task.cancel()
 
             latency = int((time.time() - start) * 1000)
 
