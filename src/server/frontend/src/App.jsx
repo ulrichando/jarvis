@@ -73,21 +73,7 @@ function App() {
     const isTtsOwner = !isDesktop || showReactor
     if (!isTtsOwner) return
 
-    // Desktop: server plays TTS via ffplay — only update state, don't play audio
-    if (isDesktop) {
-      setReactorState('speaking')
-      window.__lastSpokenText = data.spoken
-      document.dispatchEvent(new CustomEvent('jarvis-tts-start'))
-      // Server handles playback — just set a timer to reset state
-      const wordCount = data.spoken.split(' ').length
-      const estimatedMs = Math.max(2000, wordCount * 400)
-      setTimeout(() => {
-        setReactorState('idle')
-        document.dispatchEvent(new CustomEvent('jarvis-tts-end'))
-      }, estimatedMs)
-      return
-    }
-
+    // Desktop uses WebKit Audio API — same as browser (server is remote, can't ffplay locally)
     queueMicrotask(() => {
       stopSpeaking()
       setReactorState('speaking')
