@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import ToolProgress from './ToolProgress'
+import TodoBlock from './TodoBlock'
 import ContextBar from './ContextBar'
 
 export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState, onSpoken, isDesktop }) {
@@ -39,6 +40,49 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
       osc.stop(ctx.currentTime + 0.25)
     } catch {}
   }, [])
+
+  // Faint heartbeat pulse during tool execution — confirms the agent is alive
+  // 220 Hz sine at volume 0.02, a single short tick every 3 s.
+  const waitingToneRef = useRef(null)
+  const hasActiveTools = Object.values(toolExecutions).some(t => t.status === 'running')
+
+  useEffect(() => {
+    if (!isLoading || !hasActiveTools) {
+      if (waitingToneRef.current) {
+        clearInterval(waitingToneRef.current)
+        waitingToneRef.current = null
+      }
+      return
+    }
+    const playTick = () => {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)()
+        const osc = ctx.createOscillator()
+        const gain = ctx.createGain()
+        osc.connect(gain)
+        gain.connect(ctx.destination)
+        osc.type = 'sine'
+        osc.frequency.setValueAtTime(220, ctx.currentTime)
+        gain.gain.setValueAtTime(0.0, ctx.currentTime)
+        gain.gain.linearRampToValueAtTime(0.02, ctx.currentTime + 0.04)
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18)
+        osc.start(ctx.currentTime)
+        osc.stop(ctx.currentTime + 0.2)
+      } catch {}
+    }
+    // First tick after 2 s (don't fire for fast tools), then every 3 s
+    const initial = setTimeout(() => {
+      playTick()
+      waitingToneRef.current = setInterval(playTick, 3000)
+    }, 2000)
+    return () => {
+      clearTimeout(initial)
+      if (waitingToneRef.current) {
+        clearInterval(waitingToneRef.current)
+        waitingToneRef.current = null
+      }
+    }
+  }, [isLoading, hasActiveTools])
 
   // Detect loading→done transition and notify
   useEffect(() => {
@@ -119,6 +163,7 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
             ...updated[key],
             status: isError ? 'error' : 'complete',
             result: data.content || '',
+            diff: data.diff || null,
             elapsed,
           }
           currentToolsRef.current[key] = updated[key]
@@ -297,9 +342,11 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
         >
           {collapsed ? '\u25B8' : '\u25BE'} {entries.length} tool{entries.length !== 1 ? 's' : ''} used
         </button>
-        {!collapsed && entries.map(([id, exec]) => (
-          <ToolProgress key={id} execution={exec} />
-        ))}
+        {!collapsed && entries.map(([id, exec]) =>
+          exec.name === 'todo_write'
+            ? <TodoBlock key={id} execution={exec} />
+            : <ToolProgress key={id} execution={exec} />
+        )}
       </div>
     )
   }
@@ -388,9 +435,11 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
         {/* Active tool executions (during streaming) */}
         {Object.keys(toolExecutions).length > 0 && (
           <div className="self-start max-w-[90%] px-1">
-            {Object.entries(toolExecutions).map(([id, exec]) => (
-              <ToolProgress key={id} execution={exec} />
-            ))}
+            {Object.entries(toolExecutions).map(([id, exec]) =>
+              exec.name === 'todo_write'
+                ? <TodoBlock key={id} execution={exec} />
+                : <ToolProgress key={id} execution={exec} />
+            )}
           </div>
         )}
 

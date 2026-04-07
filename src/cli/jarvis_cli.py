@@ -192,28 +192,61 @@ class Spinner:
     def __init__(self):
         self._frame = 0
         self._active = False
+        self._start: float = 0.0
+
+    @staticmethod
+    def _fmt_elapsed(seconds: float) -> str:
+        s = int(seconds)
+        return f"{s // 60}m{s % 60}s" if s >= 60 else f"{s}s"
+
+    @staticmethod
+    def _term_width() -> int:
+        import shutil
+        return shutil.get_terminal_size((80, 24)).columns
+
+    def _render(self, icon: str, icon_color: str, label: str, elapsed: float | None = None):
+        """Render a spinner/status line with optional right-aligned elapsed time."""
+        _clear_line()
+        prefix = f"  {icon_color}{icon}{RESET} {label}"
+        if elapsed is not None:
+            elapsed_str = self._fmt_elapsed(elapsed)
+            # Strip ANSI codes for length measurement
+            import re as _re
+            visible_len = len(_re.sub(r'\033\[[^m]*m', '', prefix))
+            pad = max(1, self._term_width() - visible_len - len(elapsed_str) - 1)
+            _write(f"{prefix}{' ' * pad}{DIM}{elapsed_str}{RESET}")
+        else:
+            _write(prefix)
+        self._active = True
 
     def tick(self, label: str):
         frame = SPINNER_FRAMES[self._frame % len(SPINNER_FRAMES)]
         self._frame += 1
-        _clear_line()
-        _write(f"  {BLUE}{frame}{RESET} {label}")
-        self._active = True
+        if self._start == 0.0:
+            self._start = time.monotonic()
+        self._render(frame, BLUE, label, time.monotonic() - self._start)
 
     def done(self, label: str):
-        _clear_line()
-        _writeln(f"  {GREEN}✔{RESET} {label}")
+        elapsed = time.monotonic() - self._start if self._start else None
+        self._render("✔", GREEN, label, elapsed)
+        sys.stdout.write("\n")
+        sys.stdout.flush()
         self._active = False
+        self._start = 0.0
 
     def fail(self, label: str):
-        _clear_line()
-        _writeln(f"  {RED}✘{RESET} {label}")
+        elapsed = time.monotonic() - self._start if self._start else None
+        self._render("✘", RED, label, elapsed)
+        sys.stdout.write("\n")
+        sys.stdout.flush()
         self._active = False
+        self._start = 0.0
 
     def clear(self):
         if self._active:
             _clear_line()
             self._active = False
+            self._start = 0.0
 
 
 # ── Markdown Rendering (simplified, terminal-safe) ────────────────────
@@ -392,14 +425,34 @@ def format_tool_result(name: str, result: str) -> str:
     """Format tool result as markdown code block."""
     if not result or result.strip() == "(no output)":
         return ""
-    # Truncate long results
     lines = result.strip().split("\n")
+    truncated = len(lines) > 30 or len(result) > 3000
+
+    # Persist full output to ~/.jarvis/tmp/ when truncating
+    tmp_path = None
+    if truncated:
+        try:
+            import tempfile as _tf
+            _jarvis_tmp = os.path.expanduser("~/.jarvis/tmp")
+            os.makedirs(_jarvis_tmp, exist_ok=True)
+            with _tf.NamedTemporaryFile(
+                mode="w", suffix=".txt",
+                prefix=f"tool_{name}_",
+                dir=_jarvis_tmp, delete=False,
+            ) as _f:
+                _f.write(result.strip())
+                tmp_path = _f.name
+        except Exception:
+            pass
+
     if len(lines) > 30:
         display = "\n".join(lines[:25]) + f"\n... ({len(lines) - 25} more lines)"
     else:
         display = result.strip()
     if len(display) > 3000:
         display = display[:3000] + "\n... (truncated)"
+    if tmp_path:
+        display += f"\n[full output → {tmp_path}]"
     return f"### Tool `{name}`\n\n```text\n{display}\n```"
 
 
@@ -464,11 +517,39 @@ class StandaloneBrain:
                     return data.get("response", "No response")
         return await self.brain.think(text)
 
+    async def _reconnect_ws(self) -> bool:
+        """Re-establish the WebSocket connection after it goes stale."""
+        try:
+            if self._ws and not self._ws.closed:
+                await self._ws.close()
+        except Exception:
+            pass
+        try:
+            self._ws = await self._session.ws_connect(self._ws_url)
+            return True
+        except Exception:
+            return False
+
     async def query_stream(self, text: str):
         if self._server_mode and self._ws:
             import json
-            # Send query via WebSocket
-            await self._ws.send_json({"type": "query", "text": text})
+            # Reconnect if the WS is stale (server restarted)
+            if self._ws.closed:
+                if not await self._reconnect_ws():
+                    yield {"type": "error", "content": "Server disconnected — could not reconnect"}
+                    return
+            # Send query; retry once with a fresh connection on transport error
+            try:
+                await self._ws.send_json({"type": "query", "text": text})
+            except Exception:
+                if not await self._reconnect_ws():
+                    yield {"type": "error", "content": "Server disconnected — could not reconnect"}
+                    return
+                try:
+                    await self._ws.send_json({"type": "query", "text": text})
+                except Exception as e:
+                    yield {"type": "error", "content": str(e)}
+                    return
             # Track what we've already shown to prevent duplicates
             _streamed = False
             async for msg in self._ws:
@@ -1744,8 +1825,9 @@ async def main():
     def _draw_input_frame(mode_prefix="", buf_text=""):
         """Draw the 4-line input frame inline at the current cursor position.
 
-        Uses \\033[s to save the prompt cursor position. All other functions
-        (menu, erase, search) navigate relative to the saved prompt via \\033[u].
+        Cursor is left at the prompt line using relative movement (\\033[2A).
+        All navigation functions assume cursor is at the prompt row on entry.
+        Frame layout (4 rows): top-sep | prompt | footer-sep | footer
         """
         nonlocal _frame_drawn
         tw = _tw()
@@ -1809,12 +1891,11 @@ async def main():
         _write("\033[J")  # clear from cursor to end of screen
         _writeln(sep)
         _write(f"{prompt}\033[0;1;97m{buf_text}\033[0m")
-        _write("\033[s")  # save cursor on prompt line
         _write("\033[?25h")  # ensure cursor visible
         _writeln()
         _writeln(sep)
         _write(footer)
-        _write("\033[u")  # restore to prompt line
+        _write("\033[2A")  # move cursor up 2 rows back to prompt line (relative, scroll-safe)
         _frame_drawn = True
         sys.stdout.flush()
 
@@ -1823,8 +1904,8 @@ async def main():
         nonlocal _frame_drawn
         if not _frame_drawn:
             return
-        # Prompt is on line 2 (after separator). Go up 1 to separator, clear to end.
-        _write("\033[u\033[A\r\033[J")
+        # Cursor is at prompt line. Go up 1 to separator, clear to end of screen.
+        _write("\033[A\r\033[J")
         _frame_drawn = False
 
     _output_buf_text = [""]  # track current input text for redraw after output
@@ -1971,9 +2052,8 @@ async def main():
             extra = (1 if start > 0 else 0) + (1 if end < total else 0)
             total_menu_lines = visible + extra
 
-            # Go to below footer (prompt + separator + footer = 3 lines down)
-            _write("\033[u")  # go to prompt
-            _write("\033[3B\r")  # down past separator + footer
+            # Cursor is at prompt. Go down 3 to reach area below footer.
+            _write("\033[3B\r")  # down past footer-sep + footer
             if start > 0:
                 _write(f"\033[K    {DIM}↑ {start} more{RESET}\n")
             for i in range(start, end):
@@ -1991,7 +2071,7 @@ async def main():
             if end < total:
                 _write(f"\033[K    {DIM}↓ {total - end} more{RESET}\n")
             menu_lines = total_menu_lines
-            _write("\033[u")  # back to prompt cursor
+            _write(f"\033[{menu_lines + 3}A")  # back to prompt (menu_lines + 3 rows up)
             menu_visible = True
             sys.stdout.flush()
 
@@ -2000,11 +2080,10 @@ async def main():
             nonlocal menu_visible, menu_lines
             if not menu_visible:
                 return
-            _write("\033[u")  # go to prompt
-            _write("\033[3B\r")  # down past separator + footer
+            _write("\033[3B\r")  # cursor at prompt, go down past footer-sep + footer
             for i in range(menu_lines):
                 _write("\033[K\n")
-            _write("\033[u")  # back to prompt
+            _write(f"\033[{menu_lines + 3}A")  # back to prompt (menu_lines + 3 rows up)
             menu_visible = False
             menu_lines = 0
             sys.stdout.flush()
@@ -2135,14 +2214,14 @@ async def main():
                 if len(match_text) > max_len:
                     match_text = match_text[:max_len - 3] + "..."
                 match_text = match_text.replace("\n", " ")
-            # Redraw the frame area with search prompt. Use relative positioning.
-            _write("\033[u\033[A\r")  # prompt -> up to separator
+            # Cursor is at prompt. Go up 1 to separator, redraw frame area.
+            _write("\033[A\r")  # up to top separator
             _write(f"\033[K{DIM}{'─' * _tw()}{RESET}\n")
             _write(f"\033[K{YELLOW}(reverse-i-search){RESET}: {query}{DIM} -> {match_text}{RESET}\n")
             _write(f"\033[K{DIM}{'─' * _tw()}{RESET}\n")
             _write(f"\033[K  {DIM}Ctrl+R next | Enter accept | Esc cancel{RESET}")
-            # Position cursor on search input line
-            _write("\033[u")
+            # Cursor is now on the shortcuts line (3 rows below top-sep). Go up 2 to search line.
+            _write("\033[2A")
             cursor_col = len("(reverse-i-search): ") + len(query) + 1
             _write(f"\r\033[{cursor_col - 1}C")
             sys.stdout.flush()
@@ -2543,10 +2622,10 @@ async def main():
                 elapsed = time.time() - t0
                 frame = SPINNER_FRAMES[i % len(SPINNER_FRAMES)]
                 elapsed_str = f" {DIM}{elapsed:.0f}s{RESET}" if elapsed >= 2 else ""
-                # Go to spinner line: from saved prompt position, up 2 (past separator + spinner)
-                _write("\033[u\033[2A\r")
+                # Go to spinner line: cursor at prompt, up 2 (past top-sep to spinner)
+                _write("\033[2A\r")
                 _write(f"  {BLUE}{frame}{RESET} {DIM}{_spin_label[0]}{RESET}{elapsed_str}\033[K")
-                _write("\033[u")  # back to prompt
+                _write("\033[2B")  # back to prompt (down 2: top-sep then prompt)
                 sys.stdout.flush()
                 i += 1
                 await asyncio.sleep(0.12)
@@ -2563,9 +2642,9 @@ async def main():
                 _spin_task.cancel()
                 _spin_task = None
             if _spin_line_active[0]:
-                # Clear spinner line: go up from prompt past separator, clear line
-                _write("\033[u\033[2A\r\033[K")
-                _write("\033[u")
+                # Clear spinner line: cursor at prompt, up 2 to spinner, clear line
+                _write("\033[2A\r\033[K")
+                _write("\033[2B")  # back to prompt
                 _spin_line_active[0] = False
             _erase_frame()
 
@@ -2614,6 +2693,28 @@ async def main():
                             _buddy_says("error")
                     _start_spin("Thinking...")
 
+                elif etype == "dispatch":
+                    _stop_spin()
+                    if _streaming_text:
+                        _outputln()
+                        _streaming_text = False
+                    tool_count += 1
+                    agent_type = event.get("agent_type", "?")
+                    task = event.get("task", "")[:60]
+                    _tool_states.append({
+                        "name": "dispatch", "args": {"agent_type": agent_type, "task": task},
+                        "start": time.time(), "lines": [], "error": False,
+                    })
+                    _outputln(f"  {MAGENTA}◈{RESET} {DIM}agent:{agent_type}{RESET}  {task}")
+                    _start_spin(f"agent:{agent_type}")
+
+                elif etype == "dispatch_result":
+                    _stop_spin()
+                    if _tool_states and _tool_states[-1]["name"] == "dispatch":
+                        elapsed_d = time.time() - _tool_states[-1]["start"]
+                        _outputln(f"  {GREEN}✔{RESET} {DIM}agent done{RESET}  {DIM}{elapsed_d:.1f}s{RESET}")
+                    _start_spin("Thinking...")
+
                 elif etype == "text":
                     chunk = event.get("content", "")
                     if not chunk:
@@ -2660,6 +2761,20 @@ async def main():
 
         if full_text.strip() and not _streaming_text:
             _outputln(f"  {CYAN}●{RESET} {render_markdown(full_text.strip())}")
+
+        # ── Turn summary footer ────────────────────────────────────────
+        elapsed_turn = time.time() - start
+        _summary_parts = [f"{elapsed_turn:.1f}s"]
+        if tool_count:
+            _summary_parts.append(f"{tool_count} tool{'s' if tool_count != 1 else ''}")
+        try:
+            from src.agent.cost_tracker import get_tracker as _get_ct
+            _cost = _get_ct().get_session_cost()
+            if _cost > 0.0001:
+                _summary_parts.append(f"${_cost:.4f}")
+        except Exception:
+            pass
+        _outputln(f"  {DIM}─  {' · '.join(_summary_parts)}{RESET}")
 
         # Clean finish
         if full_text.strip() and tool_count > 0:
