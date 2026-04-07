@@ -121,19 +121,6 @@ function App() {
     if (wsMessages.length === 0) return
     const last = wsMessages[wsMessages.length - 1]
 
-    if (last.type === 'handoff') {
-      if (last.target === 'desktop' && !isDesktop) {
-        stopSpeaking()
-        navigator.sendBeacon('/api/client/unregister', JSON.stringify({ type: 'browser' }))
-        window.close()
-        document.title = 'JARVIS — Moved to Desktop'
-        setShowReactor(false)
-      }
-      if (last.target === 'browser' && isDesktop) {
-        setShowReactor(false)
-      }
-    }
-
     if (last.type === 'status' && last.status === 'thinking') {
       queueMicrotask(() => { stopSpeaking(); setReactorState('thinking') })
     }

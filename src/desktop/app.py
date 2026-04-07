@@ -261,28 +261,16 @@ def main():
     import time as _time
     settings.set_enable_page_cache(False)
 
-    # Inject WS URL as a user script so it's available before React initialises.
-    # This is the only way to pass the URL to a file:// origin safely.
-    if ws_url:
-        _ucm = webview.get_user_content_manager()
-        _us = WebKit2.UserScript(
-            f"window.__JARVIS_WS_URL__ = '{ws_url}';",
-            WebKit2.UserContentInjectedFrames.TOP_FRAME,
-            WebKit2.UserScriptInjectionTime.START,
-            None, None,
-        )
-        _ucm.add_script(_us)
-
-    # When connected to a remote brain, load the React bundle from the local
-    # filesystem (file://) so WebKit never needs to fetch assets over the network.
-    # For a local brain, keep loading from the local HTTP server as before.
+    # Load from the brain's URL (HTTPS for remote, HTTP for local).
+    # The reload-on-reconnect loop is already fixed in useWebSocket.js
+    # (only reloads on localhost), so loading the remote HTTPS URL is safe.
     _is_remote = api_base and "localhost" not in api_base and "127.0.0.1" not in api_base
-    _local_ui = _deploy_local_ui() if _is_remote else None
-    if _local_ui:
-        print(f"[JARVIS] Loading local UI bundle: {_local_ui}")
-        webview.load_uri(f"file://{_local_ui}?desktop=1")
+    if _is_remote:
+        _load_url = f"{api_base}/?desktop=1"
     else:
-        webview.load_uri(f"http://{host}:{port}/?desktop=1&_t={int(_time.time())}")
+        _load_url = f"http://{host}:{port}/?desktop=1&_t={int(_time.time())}"
+    print(f"[JARVIS] Loading UI from: {_load_url}")
+    webview.load_uri(_load_url)
 
     # Hide window during initial load to prevent old theme flash
     window.set_opacity(0)
