@@ -1,11 +1,54 @@
 services:
-  jarvis-backend:
+
+  # ── JARVIS backend ──────────────────────────────────────────────────────────
+  jarvis:
     build: .
+    image: jarvis:latest
     ports:
       - "8765:8765"
     volumes:
-      - ~/.jarvis:/data/.jarvis:rw
+      - jarvis_data:/data/.jarvis
       - ./.env:/app/.env:ro
     env_file:
       - .env
+    environment:
+      # Point to the Ollama service (used when cloud providers are unavailable)
+      - OLLAMA_HOST=http://ollama:11434
+    depends_on:
+      ollama:
+        condition: service_started
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8765/api/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+  # ── Ollama (local LLM fallback) ─────────────────────────────────────────────
+  # GPU: uncomment the `deploy` block below if you have an NVIDIA GPU
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/version || wget -qO- http://localhost:11434/api/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    # Uncomment for NVIDIA GPU support:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+volumes:
+  jarvis_data:   # JARVIS config, memory, and models
+  ollama_data:   # Ollama model weights

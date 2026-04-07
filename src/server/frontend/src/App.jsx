@@ -13,7 +13,7 @@ function App() {
   const [chatOpen, setChatOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const isDesktop = useMemo(() => new URLSearchParams(window.location.search).has('desktop'), [])
-  const [showReactor, setShowReactor] = useState(true)
+  const [showReactor, setShowReactor] = useState(isDesktop)
   const [reactorState, setReactorState] = useState('booting')
   const [audioLevel, setAudioLevel] = useState(0)
   const [cameraOn, setCameraOn] = useState(false)
@@ -25,7 +25,8 @@ function App() {
   const wsUrl = useMemo(() => {
     const host = window.location.host || '127.0.0.1:8765'
     const clientType = isDesktop ? 'desktop' : 'browser'
-    return `ws://${host}/ws?client=${clientType}`
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    return `${proto}//${host}/ws?client=${clientType}`
   }, [isDesktop])
   const { messages: wsMessages, sendMessage, status: wsStatus } = useWebSocket(wsUrl)
   const theme = useTheme()

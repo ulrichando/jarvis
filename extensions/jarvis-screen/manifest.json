@@ -12,6 +12,7 @@
   ],
   "host_permissions": [
     "http://localhost:8765/*",
+    "http://10.10.0.50:8765/*",
     "<all_urls>"
   ],
   "content_scripts": [
