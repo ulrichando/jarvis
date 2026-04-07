@@ -42,6 +42,36 @@ class SandboxConfig:
     allowed_mounts: list[str] = field(default_factory=list)
     timeout: int = 60
 
+    @classmethod
+    def from_trust(cls, trust_level: int) -> "SandboxConfig":
+        """Return the appropriate sandbox config for a DeviceTrust level.
+
+        Trust levels (from DeviceTrust enum):
+          3 = OWNER     — loopback / self: no sandbox at all
+          2 = ELEVATED  — local LAN: no sandbox, full network access
+          1 = STANDARD  — token-auth remote: no sandbox, standard access
+          0 = SANDBOXED — unknown/internet: full namespace + network jail
+        """
+        if trust_level >= 2:     # OWNER or ELEVATED (local)
+            return cls(
+                enabled=False,
+                namespace_isolation=False,
+                network_isolation=False,
+            )
+        elif trust_level == 1:   # STANDARD (authenticated remote)
+            return cls(
+                enabled=False,
+                namespace_isolation=False,
+                network_isolation=False,
+            )
+        else:                    # SANDBOXED (unknown)
+            return cls(
+                enabled=True,
+                namespace_isolation=True,
+                network_isolation=True,
+                filesystem_mode=FilesystemMode.WORKSPACE_ONLY,
+            )
+
 
 @dataclass
 class SandboxStatus:

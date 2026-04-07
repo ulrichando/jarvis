@@ -1427,6 +1427,47 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    # ── Network awareness ──────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "network_scan",
+            "description": (
+                "Discover and inspect all devices connected to JARVIS's network.\n"
+                "\n"
+                "JARVIS is the brain of this system. He knows which devices are talking to "
+                "him, their trust levels, and their position on the network. This tool lets "
+                "him actively explore his network topology.\n"
+                "\n"
+                "Actions:\n"
+                "- 'status'   : Show known devices + local interfaces + public IP (fast, cached)\n"
+                "- 'discover' : Active LAN scan via ARP + nmap (takes up to 30s, finds new devices)\n"
+                "- 'interfaces': List JARVIS's own network interfaces and IPs\n"
+                "- 'public_ip': Get JARVIS's internet-facing IP address\n"
+                "\n"
+                "Trust levels assigned to devices:\n"
+                "  OWNER     — loopback / local process (full access, no sandbox)\n"
+                "  ELEVATED  — LAN device (trusted, no sandbox)\n"
+                "  STANDARD  — authenticated remote (no sandbox)\n"
+                "  SANDBOXED — unknown / internet (jailed)\n"
+                "\n"
+                "Use this to answer questions like 'what devices are connected to you?', "
+                "'who is on your network?', 'what is your IP?', or 'scan the network'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["status", "discover", "interfaces", "public_ip"],
+                        "description": "What to do. Default: status",
+                        "default": "status",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
 ]
 
 
@@ -1438,6 +1479,7 @@ READONLY_TOOLS = {
     "view_screen", "see", "tool_search", "ask_user", "todo_write",
     "TaskList", "TaskGet", "TaskOutput", "ListMcpResources", "LSP",
     "ConfigTool", "BriefTool", "EnterPlanMode", "ExitPlanMode",
+    "network_scan",
     # Legacy alias
     "search_files",
 }
@@ -1580,6 +1622,8 @@ def execute_tool(name: str, args: dict, readonly: bool = False) -> str:
             return "__REMOTE_TRIGGER__"  # Handled by agent loop
         elif name == "send_sms":
             return _exec_send_sms(args)
+        elif name == "network_scan":
+            return _exec_network_scan(args)
         elif name.startswith("mcp_"):
             return _exec_mcp_tool(name, args)
         else:
@@ -3096,3 +3140,121 @@ def _exec_send_sms(args: dict) -> str:
             return f"Failed to send SMS: {err}"
     except Exception as e:
         return f"Error sending SMS: {e}"
+
+
+# ── Network scan / device discovery ───────────────────────────────────
+
+def _exec_network_scan(args: dict) -> str:
+    """JARVIS surveys his own network: known devices, LAN topology, public IP."""
+    import asyncio
+    import json as _json
+
+    action = args.get("action", "status")
+
+    try:
+        from src.server.device_registry import get_registry
+        registry = get_registry()
+    except Exception as e:
+        return f"Device registry unavailable: {e}"
+
+    # Run async discovery inside the executor context (may be called from sync loop)
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    def _run(coro):
+        if loop.is_running():
+            # We are inside an async context — use run_coroutine_threadsafe
+            import concurrent.futures
+            fut = asyncio.run_coroutine_threadsafe(coro, loop)
+            return fut.result(timeout=35)
+        return loop.run_until_complete(coro)
+
+    if action == "public_ip":
+        ip = _run(registry.get_public_ip())
+        return f"JARVIS public IP: {ip or 'unavailable (no internet or blocked)'}"
+
+    if action == "interfaces":
+        ifaces = registry.get_local_interfaces()
+        if not ifaces:
+            return "No network interfaces detected."
+        lines = ["JARVIS network interfaces:"]
+        for iface in ifaces:
+            name = iface.get("interface", "")
+            ip   = iface.get("ip", iface.get("ip", ""))
+            subnet = iface.get("subnet", "")
+            line = f"  {name}  {ip}"
+            if subnet and subnet != ip:
+                line += f"  ({subnet})"
+            lines.append(line)
+        return "\n".join(lines)
+
+    if action == "discover":
+        discovered = _run(registry.discover_network(force=True))
+        public_ip  = _run(registry.get_public_ip())
+        ifaces     = registry.get_local_interfaces()
+
+        lines = [
+            f"Network discovery complete.  {len(discovered)} device(s) on LAN.",
+            f"JARVIS public IP: {public_ip or 'unknown'}",
+            "",
+        ]
+        if ifaces:
+            local_ips = [i.get("ip", "") for i in ifaces]
+            lines.append(f"Local interfaces: {', '.join(ip for ip in local_ips if ip)}")
+            lines.append("")
+
+        lines.append(f"{'IP':<18} {'HOSTNAME':<28} {'MAC':<18} {'TRUST':<12} SOURCE")
+        lines.append("─" * 84)
+        for dev in discovered:
+            ip   = dev.get("ip", "")
+            host = dev.get("hostname", "")[:26]
+            mac  = dev.get("mac", "—")[:17]
+            trust= dev.get("trust", "SANDBOXED")
+            src  = dev.get("source", "")
+            lines.append(f"{ip:<18} {host:<28} {mac:<18} {trust:<12} {src}")
+
+        # Also show registered (connected) devices
+        known = registry.get_all()
+        if known:
+            lines.append("")
+            lines.append("Connected / previously seen devices:")
+            for d in known:
+                ts = int(d.last_seen)
+                lines.append(
+                    f"  {d.ip:<18} [{d.label}]  trust={d.trust.name}"
+                    f"  seen {d.total_connections}x  hostname={d.hostname or '—'}"
+                )
+        return "\n".join(lines)
+
+    # Default: status (fast, no scan)
+    known = registry.get_all()
+    summary = registry.summary()
+    ifaces  = registry.get_local_interfaces()
+
+    lines = ["JARVIS device awareness:"]
+    lines.append(f"  Public IP       : {summary.get('public_ip', 'unknown (run discover)')}")
+    local_ips = [i.get("ip", "") for i in ifaces]
+    lines.append(f"  Local IPs       : {', '.join(ip for ip in local_ips if ip) or 'none detected'}")
+    lines.append(f"  Known devices   : {summary['total']}")
+    lines.append("")
+
+    by_trust = summary.get("by_trust", {})
+    for trust_name in ("OWNER", "ELEVATED", "STANDARD", "SANDBOXED"):
+        devs = by_trust.get(trust_name, [])
+        if devs:
+            lines.append(f"  [{trust_name}]")
+            for d in devs:
+                lines.append(
+                    f"    {d['ip']:<18} {d.get('label',''):<20} "
+                    f"hostname={d.get('hostname','—')}  "
+                    f"seen={d.get('total_connections',1)}x"
+                )
+
+    if not known:
+        lines.append("  No devices registered yet. Devices appear on first WS connect.")
+        lines.append("  Run action='discover' for a live LAN scan.")
+
+    return "\n".join(lines)
