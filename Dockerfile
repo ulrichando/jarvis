@@ -36,6 +36,8 @@ RUN apt-get update && apt-get upgrade -y --no-install-recommends && apt-get inst
     build-essential \
     # Healthcheck
     curl \
+    # SSH client — needed to launch desktop app on owner's machine
+    openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python package — base deps only (no opencv-python with X11)
