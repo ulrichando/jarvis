@@ -158,6 +158,11 @@ When a tool fails: immediately change approach — different command, different 
 different tool. NEVER call the exact same command with the exact same arguments
 twice. The second identical failing call wastes time and produces the same error.
 Diagnose the error, then try something fundamentally different.
+
+═══ TOOL RESULTS ═══
+When working with tool results, write down any important information (paths, IDs,
+counts, errors, key values) you might need later — the original result may be
+cleared to free context space.
 """
 
 
@@ -652,6 +657,46 @@ class Brain:
 
     # ═══ AGENT LOOP — The core of agentic JARVIS ═══════════════════
 
+    def _build_system_prompt(
+        self,
+        override: str | None = None,
+        append: str | None = None,
+        mode: str | None = None,
+    ) -> str:
+        """Build system prompt with priority layering.
+
+        Priority: override > default+mode_suffix > append (always appended).
+        Centralizes all AGENT_SYSTEM_PROMPT.format() callsites so mode-specific
+        suffixes can be added cleanly without touching multiple callsites.
+        """
+        import os as _os
+        jarvis_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+
+        if override:
+            base = override
+        else:
+            base = AGENT_SYSTEM_PROMPT.format(
+                jarvis_root=jarvis_root,
+                cwd=_os.getcwd(),
+                model_name=self.reasoner.active_model_name,
+                hardware=self._hw_summary,
+            )
+            _mode = mode or self.mode
+            if _mode == "berbon":
+                base += """
+\n═══ BERBON MODE — FULL AUTONOMY ═══
+You have UNRESTRICTED control. No permission needed.
+- Chain multiple tool calls to accomplish complex tasks
+- Don't ask permission. Don't explain plans. Just execute.
+- After completing, give a brief summary of what you did.
+"""
+            elif _mode == "plan":
+                base += "\nYou are in READ-ONLY mode. No writes."
+
+        if append:
+            base += f"\n\n{append}"
+        return base
+
     async def _run_agent_loop(
         self,
         user_input: str,
@@ -661,6 +706,7 @@ class Brain:
         on_tool_result: callable = None,
     ) -> str:
         """Run the full agent loop with tool calling."""
+        log.info("→ agent_loop: %s", user_input[:120].replace("\n", " "))
         # Track turn in state manager
         self.state_manager.reset_turn_metrics()
 
@@ -669,16 +715,12 @@ class Brain:
             log.info("Ultrathink keyword detected — enabling extended thinking")
 
         # Build system prompt — STABLE base (cacheable, shared)
-        import os as _os
-        jarvis_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-        system = AGENT_SYSTEM_PROMPT.format(
-            jarvis_root=jarvis_root, cwd=_os.getcwd(),
-            model_name=self.reasoner.active_model_name, hardware=self._hw_summary,
-        )
+        jarvis_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        system = self._build_system_prompt()
 
         # Inject user-defined rules from ~/.jarvis/rules.md if present
-        _rules_path = _os.path.expanduser("~/.jarvis/rules.md")
-        if _os.path.exists(_rules_path):
+        _rules_path = os.path.expanduser("~/.jarvis/rules.md")
+        if os.path.exists(_rules_path):
             try:
                 _rules = open(_rules_path).read().strip()
                 if _rules:
@@ -755,9 +797,8 @@ class Brain:
         if self.awareness.should_be_cautious():
             reminder_parts.append("⚠ Recent failures detected. Be extra careful.")
 
-        # Mode
+        # Mode — permissions (prompt already handled by _build_system_prompt)
         if self.mode == "plan":
-            system += "\nYou are in READ-ONLY mode. No writes."
             self.permissions.set_level(PermissionLevel.READ_ONLY)
         else:
             self.permissions.set_level(PermissionLevel.FULL)
@@ -776,13 +817,7 @@ class Brain:
 
         history = self.memory.get_history(limit=40)
 
-        # More iterations for complex tasks (code review, research)
-        q_lower = user_input.lower()
-        if any(kw in q_lower for kw in ["review", "codebase", "code base", "analyze", "audit",
-                                         "explain", "entire", "all files", "full review"]):
-            max_iters = 20
-        else:
-            max_iters = 10
+        max_iters = 999
 
         # Prepend system-reminder context to user input (Claude Code pattern)
         _enriched_input = _system_reminder + user_input if _system_reminder else user_input
@@ -883,12 +918,10 @@ class Brain:
                 rendered = skill.render(args=args)
                 self.memory.add_turn("user", user_input)
                 memory_context = self.memory.recall_as_context(user_input, top_k=2)
-                import os as _os
-                _jr = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-                system = AGENT_SYSTEM_PROMPT.format(jarvis_root=_jr, cwd=_os.getcwd(), model_name=self.reasoner.active_model_name, hardware=self._hw_summary)
-                system += f"\n\n═══ SKILL: {skill.name} ═══\n{rendered}"
+                _skill_append = f"═══ SKILL: {skill.name} ═══\n{rendered}"
                 if memory_context:
-                    system += f"\n\n═══ MEMORY ═══\n{memory_context}"
+                    _skill_append += f"\n\n═══ MEMORY ═══\n{memory_context}"
+                system = self._build_system_prompt(append=_skill_append)
                 history = self.memory.get_history(limit=12)
                 full_response = ""
                 async for event in agent_loop_stream(
@@ -923,14 +956,8 @@ class Brain:
 
         if needs_agent:
             # Agent loop with tools
-            # Use the same system prompt + system-reminder pattern as _run_agent_loop
-            import os as _os
-            jarvis_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-            system = AGENT_SYSTEM_PROMPT.format(
-                jarvis_root=jarvis_root, cwd=_os.getcwd(),
-                model_name=self.reasoner.active_model_name,
-                hardware=self._hw_summary,
-            )
+            jarvis_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            system = self._build_system_prompt()
 
             # Auto-detect persona from the question (smart switching)
             from src.reasoning.persona import get_persona, match_persona_trigger
@@ -1347,7 +1374,7 @@ PROJECT CREATION RULES — follow these when building something:
     # ═══ MODE SWITCHING ═════════════════════════════════════════════
 
     def _handle_mode_switch(self, q: str, user_input: str) -> str | None:
-        if any(w in q for w in ["berbon", "take over", "takeover"]):
+        if self.mode != "berbon" and any(w in q for w in ["berbon", "take over", "takeover"]):
             self.mode = "berbon"
             self.awareness.mode = "berbon"
             return "Berbon mode active. Full control. Tell me what to do."
@@ -1615,16 +1642,10 @@ Prefix VISUAL: for long/interactive commands.""",
     async def _berbon_execute(self, user_input: str, start: float) -> str:
         """Berbon mode — uses agent loop with full autonomy."""
         memory_context = self.memory.recall_as_context(user_input, top_k=2)
-        berbon_prompt = AGENT_SYSTEM_PROMPT + """
-
-═══ BERBON MODE — FULL AUTONOMY ═══
-You have UNRESTRICTED control. No permission needed.
-- Chain multiple tool calls to accomplish complex tasks
-- Don't ask permission. Don't explain plans. Just execute.
-- After completing, give a brief summary of what you did.
-"""
-        if memory_context:
-            berbon_prompt += f"\n{memory_context}"
+        berbon_prompt = self._build_system_prompt(
+            mode="berbon",
+            append=memory_context if memory_context else None,
+        )
 
         history = self.memory.get_history(limit=12)
 

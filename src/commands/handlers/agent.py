@@ -210,7 +210,7 @@ async def _agents_create(brain, args: str) -> CommandResult:
     tools = None
     model = ""
     readonly = False
-    max_iters = 15
+    max_iters = 999
     description = ""
     prompt = ""
 
@@ -348,7 +348,7 @@ async def _agents_generate(brain, description: str) -> CommandResult:
         description=parsed.get("description", description),
         system_prompt=parsed["prompt"],
         allowed_tools=parsed.get("tools"),
-        max_iterations=parsed.get("max_iterations", 15),
+        max_iterations=parsed.get("max_iterations", 999),
         model=parsed.get("model", ""),
         scope="user",
         bash_readonly=parsed.get("bash_readonly", False),

@@ -1638,17 +1638,15 @@ async def main():
         _trust_dir(cwd)
         _writeln()
 
-    # Enter alternate screen buffer (like vim/htop) — hides shell history while JARVIS runs
+    # Use normal screen buffer so terminal scrollback (Shift+PgUp / mouse wheel) works.
+    # Clear screen on start so the banner is at the top of the visible area.
     if sys.stdout.isatty():
-        sys.stdout.write("\033[?1049h")  # enter alternate screen
-        sys.stdout.write("\033[2J\033[H")  # clear it, cursor to top-left
+        sys.stdout.write("\033[2J\033[H")  # clear visible area, cursor to top-left
         sys.stdout.flush()
 
     def _exit_alt_screen():
-        """Restore the normal screen buffer — shell history reappears."""
-        if sys.stdout.isatty():
-            sys.stdout.write("\033[?1049l")
-            sys.stdout.flush()
+        """No-op — we stay on the normal screen buffer."""
+        pass
 
     def _tw():
         try:
@@ -2470,6 +2468,9 @@ async def main():
                 else:
                     _hide_menu()
 
+        _paste_mode = [False]
+        _paste_buf: list[str] = []
+
         def _handle_escape_seq():
             """Process buffered escape sequence after timeout."""
             nonlocal selected, _esc_buf, _esc_timer
@@ -2478,6 +2479,22 @@ async def main():
             _esc_timer = None
             seq = "".join(_esc_buf)  # e.g. "[A" for up arrow
             _esc_buf.clear()
+
+            # Bracketed paste — start marker
+            if seq == "[200~":
+                _paste_mode[0] = True
+                _paste_buf.clear()
+                return
+
+            # Bracketed paste — end marker: flush paste buffer in one redraw
+            if seq == "[201~":
+                _paste_mode[0] = False
+                if _paste_buf:
+                    pasted = "".join(_paste_buf).replace("\r", "").replace("\n", " ")
+                    buf.extend(pasted)
+                    _paste_buf.clear()
+                    _redraw()
+                return
 
             # In search mode, Escape cancels
             if _search_mode and seq == "":
@@ -2533,11 +2550,27 @@ async def main():
                 return
 
             for ch in data:
-                if _esc_timer is not None or len(_esc_buf) > 0:
+                if _paste_mode[0]:
+                    # Inside bracketed paste — collect without redrawing
+                    if ch == "\x1b":
+                        # Could be the end marker \x1b[201~
+                        _esc_buf.clear()
+                        _esc_timer = loop.call_later(0.05, _handle_escape_seq)
+                    elif _esc_timer is not None or len(_esc_buf) > 0:
+                        _esc_buf.append(ch)
+                        if len(_esc_buf) >= 2 and _esc_buf[0] == "[" and _esc_buf[-1] in "~ABCDHFPQRSMm":
+                            if _esc_timer:
+                                _esc_timer.cancel()
+                                _esc_timer = None
+                            _handle_escape_seq()
+                    else:
+                        _paste_buf.append(ch)
+                elif _esc_timer is not None or len(_esc_buf) > 0:
                     # We're in an escape sequence (after \x1b)
                     _esc_buf.append(ch)
                     # Arrow keys: \x1b [ A/B/C/D — need exactly "[" + letter
-                    if len(_esc_buf) >= 2 and _esc_buf[0] == "[" and _esc_buf[-1].isalpha():
+                    # Also handle ~ terminated sequences (e.g. [200~ [201~ for bracketed paste)
+                    if len(_esc_buf) >= 2 and _esc_buf[0] == "[" and _esc_buf[-1] in "~ABCDHFPQRSMm":
                         if _esc_timer:
                             _esc_timer.cancel()
                             _esc_timer = None
@@ -2563,6 +2596,8 @@ async def main():
 
         try:
             tty.setcbreak(fd)
+            _write("\033[?2004h")  # enable bracketed paste mode
+            sys.stdout.flush()
             loop.add_reader(fd, _on_stdin)
             result = await result_future
             return result
@@ -2574,6 +2609,8 @@ async def main():
                 loop.remove_reader(fd)
             except Exception:
                 pass
+            _write("\033[?2004l")  # disable bracketed paste mode
+            sys.stdout.flush()
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
     # ── Background Query Runner ──

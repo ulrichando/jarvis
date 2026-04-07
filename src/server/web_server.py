@@ -670,7 +670,7 @@ class JarvisWebServer:
                 # Only accumulate text from the LAST LLM turn for speech
                 # (after all tools finish, the final LLM reply is what matters)
                 speech_buffer = ""
-                async with asyncio.timeout(120):
+                async with asyncio.timeout(3600):
                     async for event in self.brain.think_stream(text):
                         etype = event.get("type", "") if isinstance(event, dict) else ""
                         if etype == "text":
@@ -799,13 +799,13 @@ class JarvisWebServer:
                 print(f'[JARVIS] Query timeout (120s): "{text[:50]}"')
             except Exception as e:
                 try:
-                    full_response = await asyncio.wait_for(self.brain.think(text), timeout=30)
+                    full_response = await asyncio.wait_for(self.brain.think(text), timeout=3600)
                 except Exception:
                     full_response = ""
                 speech_buffer = full_response
         else:
             try:
-                full_response = await asyncio.wait_for(self.brain.think(text), timeout=30)
+                full_response = await asyncio.wait_for(self.brain.think(text), timeout=3600)
             except Exception:
                 full_response = ""
             speech_buffer = full_response
@@ -3163,10 +3163,10 @@ class JarvisWebServer:
                     image_b64 = image_b64.split(",", 1)[1]
                 if not image_b64:
                     return web.json_response({"error": "No image provided"}, status=400)
-                if server.brain is None:
+                if self.brain is None:
                     return web.json_response({"error": "Brain not ready"}, status=503)
                 # Use the vision provider to analyze
-                response, model = await server.brain.reasoner.query_vision(
+                response, model = await self.brain.reasoner.providers.query_vision(
                     image_b64, query,
                     system_prompt="You are JARVIS, Ulrich's AI. Describe what you see on this browser screen concisely. Answer any question about the content.",
                 )
@@ -3177,6 +3177,82 @@ class JarvisWebServer:
 
         app.router.add_post("/api/analyze-screen", analyze_screen_handler)
         app.router.add_route("OPTIONS", "/api/analyze-screen", analyze_screen_handler)
+
+        # ── Browser extension: DOM-aware page query (SSE streaming) ──────────
+
+        def _build_page_context_reminder(query: str, page: dict, tabs: list) -> str:
+            """Wrap browser page content in a system-reminder block for brain context."""
+            parts = []
+            if page and page.get('url'):
+                pg = f"# Current Page\nURL: {page['url']}\nTitle: {page.get('title', '')}"
+                if page.get('description'):
+                    pg += f"\nDescription: {page['description']}"
+                if page.get('pageType'):
+                    pg += f"\nPage type: {page['pageType']}"
+                if page.get('headings'):
+                    pg += '\nHeadings:\n' + '\n'.join(
+                        f"  H{h['level']}: {h['text']}" for h in page['headings'][:10])
+                if page.get('text'):
+                    pg += f"\nContent:\n{page['text'][:6000]}"
+                parts.append(pg)
+            for i, tab in enumerate(tabs[:5], 1):
+                t = f"# Referenced Tab {i}\nURL: {tab.get('url', '')}\nTitle: {tab.get('title', '')}"
+                if tab.get('text'):
+                    t += f"\nContent:\n{tab['text'][:3000]}"
+                parts.append(t)
+            if not parts:
+                return query
+            reminder = '<system-reminder>\n' + '\n\n'.join(parts) + '\n</system-reminder>\n\n'
+            if len(reminder) > 15000:
+                reminder = reminder[:15000] + '…\n</system-reminder>\n\n'
+            return reminder + query
+
+        async def page_query_handler(request):
+            """Stream a JARVIS response enriched with the browser's current page DOM."""
+            if request.method == 'OPTIONS':
+                return web.Response(headers={
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+                    'Access-Control-Allow-Headers': 'Content-Type',
+                })
+            try:
+                data = await request.json()
+                query        = data.get('query', '').strip()
+                page_content = data.get('pageContent', {})
+                mentioned    = data.get('mentionedTabs', [])
+                if not query:
+                    return web.json_response({'error': 'No query'},
+                                             status=400,
+                                             headers={'Access-Control-Allow-Origin': '*'})
+                # Wait for brain to be ready
+                while self.brain is None:
+                    await asyncio.sleep(0.1)
+                enriched = _build_page_context_reminder(query, page_content, mentioned)
+                response = web.StreamResponse(headers={
+                    'Content-Type': 'text/event-stream',
+                    'Cache-Control': 'no-cache',
+                    'Access-Control-Allow-Origin': '*',
+                    'X-Accel-Buffering': 'no',
+                })
+                await response.prepare(request)
+                async for event in self.brain.think_stream(enriched):
+                    payload = json.dumps(event)
+                    await response.write(f'data: {payload}\n\n'.encode())
+                    if event.get('type') == 'done':
+                        break
+                await response.write_eof()
+                return response
+            except Exception as e:
+                logger.error(f"page_query_handler error: {e}")
+                try:
+                    return web.json_response({'error': str(e)},
+                                             status=500,
+                                             headers={'Access-Control-Allow-Origin': '*'})
+                except Exception:
+                    return web.Response(status=500)
+
+        app.router.add_post("/api/page-query", page_query_handler)
+        app.router.add_route("OPTIONS", "/api/page-query", page_query_handler)
 
         # ── Exclusive mode: desktop and browser cannot coexist ──
         # Desktop + CLI = OK.  Browser + CLI = OK.  Desktop + Browser = blocked.

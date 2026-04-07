@@ -68,13 +68,29 @@ RULES:
 
 PERSONALITY: Methodical, thorough, strategic."""
 
+VERIFIER_PROMPT = """You are a JARVIS Verifier agent — an adversarial post-work reviewer.
+
+YOUR JOB: Independently verify that the work just completed is correct, complete,
+and didn't break anything. You were NOT involved in the work. Be skeptical.
+
+RULES:
+- Read every file that was modified or created
+- Run tests if a test suite exists (pytest, npm test, etc.)
+- Check for syntax errors, import errors, missing files, broken references
+- Look for things the worker might have missed or silently broken
+- Check that the task goal was actually achieved, not just partially done
+- End with a verdict line: PASS — work is correct OR FAIL — <specific problems>
+
+PERSONALITY: Critical, precise, trust nothing until verified."""
+
+
 AGENT_CONFIGS = {
     "scout": AgentConfig(
         name="scout",
         description="Read-only exploration — find files, read code, search the codebase",
         system_prompt=SCOUT_PROMPT,
         allowed_tools=["read_file", "search_files", "bash", "think"],
-        max_iterations=10,
+        max_iterations=999,
     ),
     "worker": AgentConfig(
         name="worker",
@@ -82,14 +98,22 @@ AGENT_CONFIGS = {
         system_prompt=WORKER_PROMPT,
         allowed_tools=["bash", "read_file", "write_file", "edit_file",
                         "search_files", "web_search", "web_fetch", "think"],
-        max_iterations=25,
+        max_iterations=999,
     ),
     "planner": AgentConfig(
         name="planner",
         description="Analysis and planning — research, reason, create structured plans",
         system_prompt=PLANNER_PROMPT,
         allowed_tools=["read_file", "search_files", "web_search", "web_fetch", "think"],
-        max_iterations=15,
+        max_iterations=999,
+    ),
+    "verifier": AgentConfig(
+        name="verifier",
+        description="Adversarial post-work reviewer — reads modified files, runs checks, gives PASS/FAIL verdict",
+        system_prompt=VERIFIER_PROMPT,
+        allowed_tools=["read_file", "search_files", "bash", "think"],
+        max_iterations=999,
+        bash_readonly=True,
     ),
 }
 

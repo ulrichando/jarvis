@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "updated_at": "2026-04-07T07:31:06.213099+00:00",
+  "updated_at": "2026-04-07T10:52:13.147389+00:00",
   "entries": {
     "src/cli/jarvis_cli.py": {
-      "mtime": 1775543402.0037305,
-      "size_bytes": 139190,
+      "mtime": 1775551100.6719913,
+      "size_bytes": 140848,
       "symbols": [
         "resolve_keybinding",
         "Spinner"
@@ -31,8 +31,8 @@
       "lang": "Python"
     },
     "src/brain.py": {
-      "mtime": 1775546318.7690992,
-      "size_bytes": 82985,
+      "mtime": 1775556235.3597887,
+      "size_bytes": 83490,
       "symbols": [
         "Brain"
       ],
@@ -53,8 +53,8 @@
       "lang": "Python"
     },
     "src/agent/loop.py": {
-      "mtime": 1775540266.529179,
-      "size_bytes": 48367,
+      "mtime": 1775556231.5118017,
+      "size_bytes": 50115,
       "symbols": [],
       "summary": "",
       "lang": "Python"
@@ -84,8 +84,8 @@
       "lang": "Python"
     },
     "src/commands/handlers/agent.py": {
-      "mtime": 1775316246.7205276,
-      "size_bytes": 37480,
+      "mtime": 1775556259.7717063,
+      "size_bytes": 37482,
       "symbols": [
         "cmd_agent",
         "cmd_agents"
@@ -136,8 +136,8 @@
       "lang": "Python"
     },
     "src/commands/handlers/core.py": {
-      "mtime": 1775498347.1148918,
-      "size_bytes": 32358,
+      "mtime": 1775549940.1858232,
+      "size_bytes": 36381,
       "symbols": [
         "cmd_help",
         "cmd_status",
@@ -248,8 +248,8 @@
       "lang": "Python"
     },
     "src/agent/registry.py": {
-      "mtime": 1775309255.5318375,
-      "size_bytes": 21016,
+      "mtime": 1775556250.5557375,
+      "size_bytes": 21018,
       "symbols": [
         "validate_agent_type",
         "validate_agent",
@@ -318,12 +318,10 @@
       "lang": "Python"
     },
     "src/cli/display.py": {
-      "mtime": 1775314920.2790353,
-      "size_bytes": 15733,
+      "mtime": 1775557766.277833,
+      "size_bytes": 41077,
       "symbols": [
-        "format_tokens",
-        "tool_call_line",
-        "tool_result_line"
+        "format_tokens"
       ],
       "summary": "",
       "lang": "Python"
@@ -878,16 +876,15 @@
       "lang": "Python"
     },
     "src/agent/agents.py": {
-      "mtime": 1775309255.7094219,
-      "size_bytes": 8421,
+      "mtime": 1775556245.335755,
+      "size_bytes": 9500,
       "symbols": [
         "AgentConfig",
         "is_bash_readonly",
         "get_agent_tools",
         "build_sub_agent_prompt",
         "resolve_agent",
-        "list_all_agents",
-        "get_all_agent_names"
+        "list_all_agents"
       ],
       "summary": "",
       "lang": "Python"
@@ -972,17 +969,13 @@
       "lang": "Python"
     },
     "src/components/StructuredDiff.py": {
-      "mtime": 1775311218.9775798,
-      "size_bytes": 7698,
+      "mtime": 1775557805.3336728,
+      "size_bytes": 10911,
       "symbols": [
+        "getSyntaxTheme",
         "computeGutterWidth",
         "DiffLine",
-        "renderColorDiff",
-        "render_edit_diff",
-        "render_file_diff",
-        "StructuredDiff",
-        "Props",
-        "CachedRender"
+        "renderColorDiff"
       ],
       "summary": "",
       "lang": "Python"
@@ -2125,8 +2118,8 @@
       "lang": "Python"
     },
     "extensions/jarvis-screen/popup.html": {
-      "mtime": 1775452002.2664883,
-      "size_bytes": 2947,
+      "mtime": 1775556388.1907294,
+      "size_bytes": 5113,
       "symbols": [],
       "summary": "",
       "lang": "HTML"
@@ -2958,9 +2951,14 @@
       "lang": "Python"
     },
     "extensions/jarvis-screen/background.js": {
-      "mtime": 1775451982.566485,
-      "size_bytes": 1730,
+      "mtime": 1775558254.83971,
+      "size_bytes": 7586,
       "symbols": [
+        "persistRegistry",
+        "restoreRegistry",
+        "syncLiveTabs",
+        "upsertTab",
+        "extractDomFromTab",
         "captureScreen",
         "captureAndAnalyze"
       ],
@@ -3560,8 +3558,8 @@
       "lang": "Python"
     },
     "extensions/jarvis-screen/popup.js": {
-      "mtime": 1775452011.062486,
-      "size_bytes": 1104,
+      "mtime": 1775554905.5346382,
+      "size_bytes": 1342,
       "symbols": [
         "analyze"
       ],
@@ -4668,8 +4666,8 @@
       "lang": "Python"
     },
     "extensions/jarvis-screen/manifest.json": {
-      "mtime": 1775451969.0304751,
-      "size_bytes": 678,
+      "mtime": 1775558194.244044,
+      "size_bytes": 1022,
       "symbols": [],
       "summary": "",
       "lang": "JSON"
@@ -9900,15 +9898,15 @@
       "lang": "Python"
     },
     ".jarvis/file-summaries.json": {
-      "mtime": 1775546768.4363072,
-      "size_bytes": 475132,
+      "mtime": 1775558228.2687507,
+      "size_bytes": 475677,
       "symbols": [],
       "summary": "",
       "lang": "JSON"
     },
     "src/server/web_server.py": {
-      "mtime": 1775544247.4260576,
-      "size_bytes": 160095,
+      "mtime": 1775558224.4118767,
+      "size_bytes": 164044,
       "symbols": [
         "JarvisWebServer"
       ],
@@ -19563,6 +19561,36 @@
       "symbols": [],
       "summary": "",
       "lang": "Python"
+    },
+    "extensions/jarvis-screen/side_panel.html": {
+      "mtime": 1775558311.515405,
+      "size_bytes": 15124,
+      "symbols": [],
+      "summary": "",
+      "lang": "HTML"
+    },
+    "extensions/jarvis-screen/side_panel.js": {
+      "mtime": 1775558422.074828,
+      "size_bytes": 16010,
+      "symbols": [
+        "renderMarkdown",
+        "hideEmpty",
+        "addMessage",
+        "addStreamingRow",
+        "appendToolEvent",
+        "scrollBottom",
+        "domainInitial",
+        "renderTabBar"
+      ],
+      "summary": "",
+      "lang": "JavaScript"
+    },
+    "extensions/jarvis-screen/content.js": {
+      "mtime": 1775558186.4880874,
+      "size_bytes": 4017,
+      "symbols": [],
+      "summary": "",
+      "lang": "JavaScript"
     }
   }
 }

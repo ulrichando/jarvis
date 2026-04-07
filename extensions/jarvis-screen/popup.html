@@ -4,89 +4,174 @@
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      width: 360px;
-      min-height: 200px;
-      background: #0a0a0f;
-      color: #e0e0e0;
-      font-family: 'Segoe UI', system-ui, sans-serif;
+      width: 500px;
+      height: 600px;
+      background: #fff;
+      color: #202124;
+      font-family: 'Google Sans', 'Roboto', 'Segoe UI', system-ui, sans-serif;
       font-size: 13px;
+      display: flex;
+      flex-direction: column;
     }
     .header {
-      background: linear-gradient(135deg, #001a2e, #002244);
-      padding: 12px 16px;
-      border-bottom: 1px solid #00b8d433;
+      background: #fff;
+      padding: 16px;
+      border-bottom: 1px solid #e5e5e5;
       display: flex;
       align-items: center;
       gap: 10px;
-    }
-    .header .dot {
-      width: 10px; height: 10px;
-      border-radius: 50%;
-      background: #00e5ff;
-      box-shadow: 0 0 8px #00e5ff88;
-      animation: pulse 2s infinite;
-    }
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.5; }
+      flex-shrink: 0;
     }
     .header h1 {
-      font-size: 14px;
+      font-size: 16px;
       font-weight: 600;
-      color: #00e5ff;
-      letter-spacing: 1px;
+      color: #202124;
+      letter-spacing: 0;
     }
-    .content { padding: 12px 16px; }
-    .input-row {
+    .messages-container {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      background: #fff;
+    }
+    .messages-container::-webkit-scrollbar {
+      width: 6px;
+    }
+    .messages-container::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .messages-container::-webkit-scrollbar-thumb {
+      background: #ccc;
+      border-radius: 3px;
+    }
+    .messages-container::-webkit-scrollbar-thumb:hover {
+      background: #999;
+    }
+    .message {
       display: flex;
       gap: 8px;
+      animation: slideIn 0.3s ease-out;
+    }
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .message.user { justify-content: flex-end; }
+    .message.assistant { justify-content: flex-start; }
+    .message-content {
+      max-width: 80%;
+      padding: 10px 12px;
+      border-radius: 12px;
+      line-height: 1.4;
+      word-wrap: break-word;
+    }
+    .user .message-content {
+      background: #d2e7f7;
+      color: #0d47a1;
+      border-bottom-right-radius: 4px;
+    }
+    .assistant .message-content {
+      background: #f0f4f8;
+      border: 1px solid #e0e0e0;
+      border-bottom-left-radius: 4px;
+      color: #202124;
+    }
+    .message.error .message-content {
+      background: #ffebee;
+      border-color: #ffcdd2;
+      color: #c62828;
+    }
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: #9aa0a6;
+      text-align: center;
+      padding: 32px;
+    }
+    .empty-state .icon {
+      font-size: 32px;
       margin-bottom: 12px;
+      opacity: 0.5;
     }
-    input {
+    .input-section {
+      background: #fff;
+      border-top: 1px solid #e5e5e5;
+      padding: 12px 16px;
+      flex-shrink: 0;
+    }
+    .input-wrapper {
+      display: flex;
+      gap: 8px;
+      align-items: flex-end;
+    }
+    textarea {
       flex: 1;
-      background: #111;
-      border: 1px solid #00b8d433;
-      color: #e0e0e0;
-      padding: 8px 12px;
-      border-radius: 6px;
+      background: #f8f9fa;
+      border: 1px solid #dadce0;
+      color: #202124;
+      padding: 10px 12px;
+      border-radius: 24px;
       font-size: 13px;
+      font-family: inherit;
       outline: none;
+      resize: none;
+      max-height: 100px;
+      min-height: 40px;
     }
-    input:focus { border-color: #00b8d4; }
-    input::placeholder { color: #555; }
+    textarea:focus {
+      border-color: #1967d2;
+      background: #fff;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    }
+    textarea::placeholder { color: #9aa0a6; }
     button {
       background: linear-gradient(135deg, #00b8d4, #0099b8);
       color: #fff;
       border: none;
-      padding: 8px 16px;
-      border-radius: 6px;
+      padding: 10px 16px;
+      border-radius: 8px;
       cursor: pointer;
       font-size: 13px;
       font-weight: 600;
       white-space: nowrap;
+      height: 40px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
     button:hover { background: linear-gradient(135deg, #00d4f0, #00b8d4); }
     button:disabled { opacity: 0.5; cursor: wait; }
-    .response {
-      background: #111;
-      border: 1px solid #00b8d422;
-      border-radius: 8px;
-      padding: 12px;
-      min-height: 60px;
-      line-height: 1.5;
-      white-space: pre-wrap;
-      max-height: 300px;
-      overflow-y: auto;
+    .loading {
+      display: flex;
+      gap: 4px;
+      align-items: center;
     }
-    .response.empty { color: #444; font-style: italic; }
-    .response.error { color: #ff4444; border-color: #ff444433; }
-    .shortcut {
-      margin-top: 10px;
+    .loading span {
+      width: 6px;
+      height: 6px;
+      background: #00e5ff;
+      border-radius: 50%;
+      animation: bounce 1.4s infinite;
+    }
+    .loading span:nth-child(2) { animation-delay: 0.2s; }
+    .loading span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes bounce {
+      0%, 80%, 100% { opacity: 0.3; }
+      40% { opacity: 1; }
+    }
+    .shortcut-hint {
       text-align: center;
       color: #555;
       font-size: 11px;
+      margin-top: 8px;
     }
-    .shortcut kbd {
+    .shortcut-hint kbd {
       background: #222;
       padding: 2px 6px;
       border-radius: 3px;
@@ -97,17 +182,25 @@
 </head>
 <body>
   <div class="header">
-    <div class="dot"></div>
-    <h1>JARVIS SCREEN VISION</h1>
+    <h1>JARVIS</h1>
   </div>
-  <div class="content">
-    <div class="input-row">
-      <input type="text" id="query" placeholder="Ask about what's on screen..." />
-      <button id="capture">Analyze</button>
+  
+  <div class="messages-container" id="messagesContainer">
+    <div class="empty-state">
+      <div class="icon">📸</div>
+      <div>Ask JARVIS about what's on your screen</div>
+      <div class="shortcut-hint">Tip: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>J</kbd></div>
     </div>
-    <div class="response empty" id="response">Click "Analyze" or press Ctrl+Shift+J to capture your screen and ask JARVIS about it.</div>
-    <div class="shortcut">Shortcut: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>J</kbd></div>
   </div>
+
+  <div class="input-section">
+    <div class="input-wrapper">
+      <textarea id="query" placeholder="Ask about what's on screen..." rows="1"></textarea>
+      <button id="capture">Send</button>
+    </div>
+    <div class="shortcut-hint">Press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>J</kbd> to capture screen</div>
+  </div>
+
   <script src="popup.js"></script>
 </body>
 </html>
