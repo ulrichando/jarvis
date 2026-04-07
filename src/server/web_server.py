@@ -294,8 +294,9 @@ class JarvisWebServer:
                     "-o", "StrictHostKeyChecking=no",
                     "-o", "ConnectTimeout=5",
                     f"{owner_user}@{owner_host}",
-                    # Launch detached; DISPLAY auto-detected
-                    f"export DISPLAY=${{DISPLAY:-:0}}; "
+                    # Kill any existing desktop instance first, then launch fresh
+                    "pkill -f 'desktop.app import main' 2>/dev/null; sleep 0.5; "
+                    f"export DISPLAY=$(cat /tmp/.jarvis-display 2>/dev/null || echo ':0'); "
                     f"cd /home/{owner_user}/Documents/Projects/jarvis && "
                     "nohup python3 -c 'from src.desktop.app import main; main()' "
                     "> /tmp/jarvis-desktop.log 2>&1 &",
