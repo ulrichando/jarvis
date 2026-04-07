@@ -84,11 +84,34 @@ def _save_desktop_config(config):
         pass
 
 
+def _deploy_local_ui():
+    """Copy the React bundle to ~/.jarvis/ui/ for file:// loading.
+
+    Returns the path to the local index.html, or None if unavailable.
+    """
+    import shutil
+    from pathlib import Path
+    src_dir = Path(__file__).parent.parent / "server" / "static-react"
+    dst_dir = Path.home() / ".jarvis" / "ui"
+    if not src_dir.exists():
+        return None
+    try:
+        if dst_dir.exists():
+            shutil.rmtree(dst_dir)
+        shutil.copytree(src_dir, dst_dir)
+        return str(dst_dir / "index.html")
+    except Exception as e:
+        print(f"[JARVIS] UI copy failed: {e}")
+        return None
+
+
 def main():
     host = "127.0.0.1"
     port = 8765
+    ws_url = None   # injected into WebKit as window.__JARVIS_WS_URL__
+    api_base = None # base URL for fetch() calls
 
-    # If a remote brain is configured, use it directly — no local server needed
+    # If a remote brain is configured, use wss:// to it directly
     try:
         import json as _json
         from pathlib import Path
@@ -97,21 +120,25 @@ def main():
             _rd = _json.loads(_remote.read_text())
             _brain = (_rd.get("brain_url") or "").strip()
             if _brain and "localhost" not in _brain and "127.0.0.1" not in _brain:
-                from urllib.parse import urlparse
-                _p = urlparse(_brain)
-                host = _p.hostname or host
-                port = _p.port or port
-                print(f"[JARVIS] Desktop connecting to remote brain: {host}:{port}")
+                # Use HTTPS/WSS (jarvis.local with mkcert cert)
+                _brain_https = _brain.replace("http://", "https://")
+                ws_url = _brain_https.replace("https://", "wss://").rstrip("/") + "/ws"
+                api_base = _brain_https.rstrip("/")
+                print(f"[JARVIS] Desktop → remote brain: {api_base}")
     except Exception:
         pass
 
-    if host == "127.0.0.1" and not _server_running(host, port):
-        server_thread = threading.Thread(target=_start_server, args=(host, port), daemon=True)
-        server_thread.start()
-        print("Starting JARVIS server (MCP init takes ~30s, please wait)...")
-        if not _wait_for_server(host, port):
-            print("Failed to start server. Check /tmp/jarvis-desktop.log")
-            sys.exit(1)
+    if ws_url is None:
+        # Local brain — start server if needed
+        if not _server_running(host, port):
+            server_thread = threading.Thread(target=_start_server, args=(host, port), daemon=True)
+            server_thread.start()
+            print("Starting JARVIS server (MCP init takes ~30s, please wait)...")
+            if not _wait_for_server(host, port):
+                print("Failed to start server. Check /tmp/jarvis-desktop.log")
+                sys.exit(1)
+        ws_url = f"ws://{host}:{port}/ws"
+        api_base = f"http://{host}:{port}"
 
     # ── Window (load saved size/position) ──
     _cfg = _load_desktop_config()
@@ -233,7 +260,29 @@ def main():
     # Load React UI
     import time as _time
     settings.set_enable_page_cache(False)
-    webview.load_uri(f"http://{host}:{port}/?desktop=1&_t={int(_time.time())}")
+
+    # Inject WS URL as a user script so it's available before React initialises.
+    # This is the only way to pass the URL to a file:// origin safely.
+    if ws_url:
+        _ucm = webview.get_user_content_manager()
+        _us = WebKit2.UserScript(
+            f"window.__JARVIS_WS_URL__ = '{ws_url}';",
+            WebKit2.UserContentInjectedFrames.TOP_FRAME,
+            WebKit2.UserScriptInjectionTime.START,
+            None, None,
+        )
+        _ucm.add_script(_us)
+
+    # When connected to a remote brain, load the React bundle from the local
+    # filesystem (file://) so WebKit never needs to fetch assets over the network.
+    # For a local brain, keep loading from the local HTTP server as before.
+    _is_remote = api_base and "localhost" not in api_base and "127.0.0.1" not in api_base
+    _local_ui = _deploy_local_ui() if _is_remote else None
+    if _local_ui:
+        print(f"[JARVIS] Loading local UI bundle: {_local_ui}")
+        webview.load_uri(f"file://{_local_ui}?desktop=1")
+    else:
+        webview.load_uri(f"http://{host}:{port}/?desktop=1&_t={int(_time.time())}")
 
     # Hide window during initial load to prevent old theme flash
     window.set_opacity(0)
@@ -252,45 +301,6 @@ def main():
             GLib.timeout_add(300, lambda: window.set_opacity(_target_opacity) or False)
     webview.connect("load-changed", _on_load)
     window.add(webview)
-
-    # ── Register desktop and poll for browser handoff ──
-    _reactor_visible = [True]
-
-    try:
-        import urllib.request, json as _json
-        data = _json.dumps({"type": "desktop"}).encode()
-        req = urllib.request.Request(
-            f"http://{host}:{port}/api/client/register",
-            data=data, headers={"Content-Type": "application/json"}
-        )
-        resp = urllib.request.urlopen(req, timeout=2)
-        reg = _json.loads(resp.read())
-        _reactor_visible[0] = reg.get("show_reactor", True)
-        if not _reactor_visible[0]:
-            window.hide()
-    except Exception:
-        pass
-
-    def _poll_client_status():
-        """Seamless handoff: hide when browser opens, show when browser closes."""
-        try:
-            import urllib.request, json as _json
-            resp = urllib.request.urlopen(
-                f"http://{host}:{port}/api/client/status", timeout=2)
-            data = _json.loads(resp.read())
-            browser_active = data.get("browser", False)
-
-            if browser_active and _reactor_visible[0]:
-                _reactor_visible[0] = False
-                GLib.idle_add(lambda: window.hide() or False)
-            elif not browser_active and not _reactor_visible[0]:
-                _reactor_visible[0] = True
-                GLib.idle_add(lambda: window.show_all() or False)
-        except Exception:
-            pass
-        return True
-
-    GLib.timeout_add_seconds(2, _poll_client_status)
 
     # ── Dragging — use window manager move for reliable drag ──
     def on_button_press(widget, event):

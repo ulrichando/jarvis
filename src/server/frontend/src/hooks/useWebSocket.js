@@ -50,6 +50,8 @@ export default function useWebSocket(url) {
       }
 
       ws.onclose = () => {
+        // Only reconnect if this is still the active WS (prevents duplicate connections)
+        if (wsRef.current !== ws) return
         setStatus('disconnected')
         wsRef.current = null
         reconnectTimer.current = setTimeout(() => {
