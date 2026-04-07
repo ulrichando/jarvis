@@ -204,7 +204,23 @@ async def cmd_history(ctx: CommandContext) -> CommandResult:
     args = ctx.args.strip()
     limit = int(args) if args.isdigit() else 20
 
+    # In relay mode, fetch history from the remote brain (includes browser conversations)
     history = brain.memory.get_history(limit=limit)
+    if not history:
+        try:
+            import json as _j, urllib.request as _ur
+            from pathlib import Path as _P
+            _rfile = _P.home() / ".jarvis" / "remote.json"
+            if _rfile.exists():
+                _rd = _j.loads(_rfile.read_text())
+                _burl = (_rd.get("brain_url") or "").rstrip("/")
+                if _burl and "localhost" not in _burl and "127.0.0.1" not in _burl:
+                    resp = _ur.urlopen(f"{_burl}/api/conversations?limit={limit}", timeout=5)
+                    data = _j.loads(resp.read())
+                    history = data.get("conversations", [])
+        except Exception:
+            pass
+
     if not history:
         return CommandResult(text="No conversation history.")
 
