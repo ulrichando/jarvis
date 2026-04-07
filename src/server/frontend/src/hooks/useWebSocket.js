@@ -20,9 +20,10 @@ export default function useWebSocket(url) {
 
       ws.onopen = () => {
         console.log('[JARVIS WS] Connected')
-        // If we were previously connected and lost connection (server restart),
-        // reload the page to pick up new JS/CSS assets
-        if (wasConnected.current) {
+        // Only reload on reconnect for localhost (picks up new assets after local deploy).
+        // Remote URLs (Proxmox brain) must NOT reload — causes infinite loop in WebKit.
+        const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+        if (wasConnected.current && isLocal) {
           console.log('[JARVIS WS] Server restarted — reloading page')
           window.location.reload()
           return

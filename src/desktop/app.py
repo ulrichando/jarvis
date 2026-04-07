@@ -88,7 +88,24 @@ def main():
     host = "127.0.0.1"
     port = 8765
 
-    if not _server_running(host, port):
+    # If a remote brain is configured, use it directly — no local server needed
+    try:
+        import json as _json
+        from pathlib import Path
+        _remote = Path.home() / ".jarvis" / "remote.json"
+        if _remote.exists():
+            _rd = _json.loads(_remote.read_text())
+            _brain = (_rd.get("brain_url") or "").strip()
+            if _brain and "localhost" not in _brain and "127.0.0.1" not in _brain:
+                from urllib.parse import urlparse
+                _p = urlparse(_brain)
+                host = _p.hostname or host
+                port = _p.port or port
+                print(f"[JARVIS] Desktop connecting to remote brain: {host}:{port}")
+    except Exception:
+        pass
+
+    if host == "127.0.0.1" and not _server_running(host, port):
         server_thread = threading.Thread(target=_start_server, args=(host, port), daemon=True)
         server_thread.start()
         print("Starting JARVIS server (MCP init takes ~30s, please wait)...")

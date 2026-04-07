@@ -1419,7 +1419,6 @@ RULES:
                     local = self._providers[name]
                     if local.model != model:
                         local.model = model
-                        print(f"[JARVIS] Synced {name} model from brain: {model}")
             self._save()
         except Exception:
             pass  # Server unreachable — silently use local config
