@@ -465,22 +465,57 @@ class StandaloneBrain:
         self.brain = None
         self._is_full_brain = True
         self._server_mode = False
-        self._server_url = "http://localhost:8765"
-        self._ws_url = "ws://localhost:8765/ws"
+        self._server_url, self._ws_url = self._resolve_server_url()
         self._ws = None
+
+    @staticmethod
+    def _resolve_server_url() -> tuple[str, str]:
+        """Return (http_url, ws_url) for the brain to use.
+
+        Priority:
+          1. JARVIS_SERVER env var  (e.g. http://jarvis.local:8765)
+          2. ~/.jarvis/remote.json  {"brain_url": "http://jarvis.local:8765"}
+          3. localhost:8765 fallback
+        """
+        import json as _j
+        from pathlib import Path
+
+        # Env override
+        env = os.environ.get("JARVIS_SERVER", "").strip()
+        if env:
+            base = env.rstrip("/")
+            return base, base.replace("http://", "ws://").replace("https://", "wss://") + "/ws"
+
+        # remote.json (shared with desktop)
+        remote_path = Path.home() / ".jarvis" / "remote.json"
+        if remote_path.exists():
+            try:
+                cfg = _j.loads(remote_path.read_text())
+                brain_url = (cfg.get("brain_url") or "").strip().rstrip("/")
+                if brain_url:
+                    ws = brain_url.replace("http://", "ws://").replace("https://", "wss://") + "/ws"
+                    return brain_url, ws
+            except Exception:
+                pass
+
+        return "http://localhost:8765", "ws://localhost:8765/ws"
 
     async def connect(self) -> bool:
         # Try connecting to running JARVIS server first (shared Brain)
         try:
             import aiohttp
+            _http_timeout = aiohttp.ClientTimeout(total=3)
             async with aiohttp.ClientSession() as session:
-                async with session.get(f"{self._server_url}/api/mesh/ping", timeout=aiohttp.ClientTimeout(total=2)) as resp:
+                async with session.get(f"{self._server_url}/api/ready", timeout=_http_timeout) as resp:
                     if resp.status == 200:
                         self._server_mode = True
                         self._is_full_brain = False
-                        # Connect WebSocket for streaming
+                        # Connect WebSocket — use heartbeat, no deprecated timeout kwarg
                         self._session = aiohttp.ClientSession()
-                        self._ws = await self._session.ws_connect(self._ws_url)
+                        self._ws = await asyncio.wait_for(
+                            self._session.ws_connect(self._ws_url, heartbeat=20.0),
+                            timeout=5.0,
+                        )
                         return True
         except Exception:
             pass
@@ -1556,17 +1591,20 @@ async def main():
     model_name = "local"
     provider_name = "local"
     if client._server_mode:
-        model_name = "server"
-        provider_name = "localhost:8765"
-        # Try to get actual model from server
+        # Show the remote server host so it's obvious which brain is being used
+        import re as _re
+        _host = _re.sub(r'^https?://', '', client._server_url).rstrip('/')
+        model_name = "remote"
+        provider_name = _host
+        # Try to get actual model name from server
         try:
             import urllib.request, json as _j
             resp = urllib.request.urlopen(f"{client._server_url}/api/providers", timeout=2)
             data = _j.loads(resp.read())
             provs = data.get("providers", [])
             if provs:
-                model_name = provs[0].get("model", "server")
-                provider_name = provs[0].get("name", "server")
+                model_name = provs[0].get("model", "remote")
+                provider_name = f"{provs[0].get('name', _host)} @ {_host}"
         except Exception:
             pass
     elif brain and hasattr(brain, "reasoner"):
@@ -1642,15 +1680,17 @@ async def main():
         _trust_dir(cwd)
         _writeln()
 
-    # Use normal screen buffer so terminal scrollback (Shift+PgUp / mouse wheel) works.
-    # Clear screen on start so the banner is at the top of the visible area.
+    # Enter alternate screen buffer so the shell prompt disappears entirely (like vim/less).
+    # On exit we restore the original screen, so scrollback history is preserved.
     if sys.stdout.isatty():
-        sys.stdout.write("\033[2J\033[H")  # clear visible area, cursor to top-left
+        sys.stdout.write("\033[?1049h\033[H\033[2J")  # enter alt screen, cursor home, clear
         sys.stdout.flush()
 
     def _exit_alt_screen():
-        """No-op — we stay on the normal screen buffer."""
-        pass
+        """Restore the normal screen buffer (original terminal content reappears)."""
+        if sys.stdout.isatty():
+            sys.stdout.write("\033[?1049l")  # exit alt screen
+            sys.stdout.flush()
 
     def _tw():
         try:
@@ -3402,9 +3442,14 @@ def run():
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        pass
+        # Ensure alt screen is exited even on abrupt kill
+        if sys.stdout.isatty():
+            sys.stdout.write("\033[?1049l")
+            sys.stdout.flush()
     except RuntimeError:
-        pass
+        if sys.stdout.isatty():
+            sys.stdout.write("\033[?1049l")
+            sys.stdout.flush()
     finally:
         # Suppress aiohttp cleanup errors that print after event loop closes
         # These are harmless but ugly — redirect stderr to devnull during shutdown
