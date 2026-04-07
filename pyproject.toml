@@ -23,6 +23,7 @@ dependencies = [
     "pyyaml",
     "pydantic",
     "Pillow",
+    "PyNaCl",
 ]
 
 [project.optional-dependencies]
