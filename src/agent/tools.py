@@ -1468,6 +1468,70 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    # ── Browser (Playwright) ──────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "browser",
+            "description": (
+                "Control a real Chromium browser via Playwright. "
+                "Use this to navigate websites, click elements, fill forms, extract content, "
+                "take screenshots, and run JavaScript. The browser session persists across calls "
+                "within the same conversation. Supports headed (visible) or headless mode.\n\n"
+                "Actions:\n"
+                "- navigate: Go to a URL. Returns page title and brief content summary.\n"
+                "- click: Click an element by CSS selector or text content.\n"
+                "- type: Type text into an input field (selector required).\n"
+                "- screenshot: Take a screenshot. Returns file path.\n"
+                "- extract: Extract text from the page or a specific selector.\n"
+                "- evaluate: Run JavaScript in the page context. Returns the result.\n"
+                "- scroll: Scroll the page (direction: up/down, amount in pixels).\n"
+                "- back: Go back in history.\n"
+                "- close: Close the browser session.\n"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["navigate", "click", "type", "screenshot", "extract",
+                                 "evaluate", "scroll", "back", "close"],
+                        "description": "The browser action to perform.",
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": "URL to navigate to (for 'navigate' action).",
+                    },
+                    "selector": {
+                        "type": "string",
+                        "description": "CSS selector or text to target an element.",
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "Text to type (for 'type') or search for (for 'click' by text).",
+                    },
+                    "script": {
+                        "type": "string",
+                        "description": "JavaScript to evaluate (for 'evaluate' action).",
+                    },
+                    "direction": {
+                        "type": "string",
+                        "enum": ["up", "down"],
+                        "description": "Scroll direction (default: down).",
+                    },
+                    "amount": {
+                        "type": "integer",
+                        "description": "Pixels to scroll (default: 500).",
+                    },
+                    "headless": {
+                        "type": "boolean",
+                        "description": "Run browser in headless mode (default: true). Set false to show the browser window.",
+                    },
+                },
+                "required": ["action"],
+            },
+        },
+    },
 ]
 
 
@@ -1624,6 +1688,8 @@ def execute_tool(name: str, args: dict, readonly: bool = False) -> str:
             return _exec_send_sms(args)
         elif name == "network_scan":
             return _exec_network_scan(args)
+        elif name == "browser":
+            return _exec_browser(args)
         elif name.startswith("mcp_"):
             return _exec_mcp_tool(name, args)
         else:
@@ -1944,12 +2010,16 @@ def _exec_bash(args: dict) -> str:
             inner_cmd = "bash"  # Just open a shell
         return _launch_in_terminal(inner_cmd)
 
-    # Commands that need an interactive terminal (sudo, apt, etc.)
+    # Commands that need an interactive terminal — only route to terminal when sandboxed.
+    # With JARVIS_NO_SANDBOX=1 (owner mode), run directly so output is captured inline.
     interactive_cmds = ["sudo apt", "apt update", "apt upgrade", "apt install",
                         "apt remove", "dpkg", "systemctl"]
     if any(command.strip().startswith(ic) or command.strip().startswith(f"echo 'toor' | {ic}")
            for ic in interactive_cmds):
-        return _launch_in_terminal(command)
+        if os.environ.get("JARVIS_NO_SANDBOX"):
+            pass  # fall through to direct execution below
+        else:
+            return _launch_in_terminal(command)
 
     # GUI apps: launch detached
     if cmd_first in _GUI_APPS:
@@ -3259,5 +3329,131 @@ def _exec_network_scan(args: dict) -> str:
     if not known:
         lines.append("  No devices registered yet. Devices appear on first WS connect.")
         lines.append("  Run action='discover' for a live LAN scan.")
+
+
+# ── Browser tool (Playwright) ─────────────────────────────────────────────────
+
+# Persistent browser/page within a process (one session per JARVIS instance)
+_pw_instance = None   # playwright sync instance
+_pw_browser  = None   # browser
+_pw_page     = None   # current page
+
+
+def _exec_browser(args: dict) -> str:
+    """Playwright browser tool — navigate, click, type, extract, screenshot, eval JS."""
+    global _pw_instance, _pw_browser, _pw_page
+    import tempfile, base64
+
+    action   = args.get("action", "navigate")
+    headless = args.get("headless", True)
+
+    def _ensure_browser():
+        global _pw_instance, _pw_browser, _pw_page
+        try:
+            # Prefer pipx-installed playwright (system apt version has broken Node.js driver)
+            import sys as _sys
+            _pw_site = os.path.expanduser(
+                "~/.local/share/pipx/venvs/playwright/lib/python3.13/site-packages"
+            )
+            if os.path.isdir(_pw_site) and _pw_site not in _sys.path:
+                _sys.path.insert(0, _pw_site)
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            return "Playwright not installed. Run: pipx install playwright && playwright install chromium"
+        if _pw_browser is None or not _pw_browser.is_connected():
+            _pw_instance = sync_playwright().start()
+            _pw_browser  = _pw_instance.chromium.launch(headless=headless)
+        if _pw_page is None or _pw_page.is_closed():
+            _pw_page = _pw_browser.new_page()
+        return None
+
+    if action == "close":
+        try:
+            if _pw_browser:
+                _pw_browser.close()
+            if _pw_instance:
+                _pw_instance.stop()
+        except Exception:
+            pass
+        _pw_instance = _pw_browser = _pw_page = None
+        return "Browser session closed."
+
+    err = _ensure_browser()
+    if err:
+        return err
+
+    try:
+        if action == "navigate":
+            url = args.get("url", "")
+            if not url:
+                return "url required for navigate"
+            _pw_page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            _pw_page.wait_for_load_state("networkidle", timeout=10000)
+            title = _pw_page.title()
+            # Grab first ~1500 chars of visible text
+            text = _pw_page.evaluate(
+                "() => document.body?.innerText?.replace(/\\s+/g,' ').substring(0,1500) || ''"
+            )
+            return f"Navigated to: {_pw_page.url}\nTitle: {title}\n\nContent preview:\n{text}"
+
+        elif action == "click":
+            selector = args.get("selector")
+            text_val  = args.get("text")
+            if text_val:
+                _pw_page.get_by_text(text_val, exact=False).first.click(timeout=8000)
+            elif selector:
+                _pw_page.locator(selector).first.click(timeout=8000)
+            else:
+                return "selector or text required for click"
+            _pw_page.wait_for_load_state("networkidle", timeout=8000)
+            return f"Clicked. Current URL: {_pw_page.url}"
+
+        elif action == "type":
+            selector = args.get("selector", "")
+            text_val  = args.get("text", "")
+            if not selector:
+                return "selector required for type"
+            _pw_page.locator(selector).first.fill(text_val, timeout=8000)
+            return f"Typed into {selector}"
+
+        elif action == "screenshot":
+            path = tempfile.mktemp(prefix="jarvis-browser-", suffix=".png")
+            _pw_page.screenshot(path=path, full_page=False)
+            return f"Screenshot saved: {path}"
+
+        elif action == "extract":
+            selector = args.get("selector")
+            if selector:
+                els = _pw_page.locator(selector).all()
+                texts = [e.inner_text() for e in els[:20]]
+                return "\n".join(texts)
+            else:
+                return _pw_page.evaluate(
+                    "() => document.body?.innerText?.replace(/\\s+/g,' ').substring(0,5000) || ''"
+                )
+
+        elif action == "evaluate":
+            script = args.get("script", "")
+            if not script:
+                return "script required for evaluate"
+            result = _pw_page.evaluate(script)
+            return str(result)
+
+        elif action == "scroll":
+            direction = args.get("direction", "down")
+            amount    = args.get("amount", 500)
+            dy = amount if direction == "down" else -amount
+            _pw_page.evaluate(f"window.scrollBy(0, {dy})")
+            return f"Scrolled {direction} {amount}px"
+
+        elif action == "back":
+            _pw_page.go_back(wait_until="domcontentloaded", timeout=10000)
+            return f"Went back. Current URL: {_pw_page.url}"
+
+        else:
+            return f"Unknown action: {action}"
+
+    except Exception as e:
+        return f"Browser error: {e}"
 
     return "\n".join(lines)
