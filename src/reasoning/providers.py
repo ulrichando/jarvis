@@ -1389,5 +1389,37 @@ RULES:
                 priority=0,
                 enabled=True,
             )
+            # Sync provider config from remote brain so local reflects server state
+            self._sync_from_remote(brain_url.rstrip("/"))
         except Exception:
             pass
+
+    def _sync_from_remote(self, brain_url: str):
+        """Pull provider config from remote brain and update local providers.
+
+        Runs at startup so the local CLI always reflects what the server is using
+        (e.g. if you switched to Sonnet on the browser, CLI picks it up next start).
+        Does nothing if the server is unreachable — local config is the fallback.
+        """
+        import urllib.request
+        import urllib.error
+        try:
+            req = urllib.request.Request(
+                f"{brain_url}/api/providers",
+                headers={"Accept": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                remote_providers = json.loads(resp.read())
+            # remote_providers is a list of provider dicts (keys masked)
+            # We only care about syncing the active model for each named provider
+            for remote in remote_providers:
+                name  = remote.get("name", "")
+                model = remote.get("model", "")
+                if name and model and name in self._providers:
+                    local = self._providers[name]
+                    if local.model != model:
+                        local.model = model
+                        print(f"[JARVIS] Synced {name} model from brain: {model}")
+            self._save()
+        except Exception:
+            pass  # Server unreachable — silently use local config
