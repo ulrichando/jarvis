@@ -3386,9 +3386,15 @@ async def main():
                         _disp = ":0"
                 _jarvis_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
                 env = {**os.environ, "DISPLAY": _disp}
-                # Kill any existing desktop instance before launching
-                subprocess.run(["pkill", "-f", "src.desktop.app"], capture_output=True)
-                time.sleep(0.4)
+                # Kill any existing desktop instance via PID file
+                _pid_file = "/tmp/.jarvis-desktop.pid"
+                try:
+                    if os.path.exists(_pid_file):
+                        _old_pid = int(open(_pid_file).read().strip())
+                        os.kill(_old_pid, 15)  # SIGTERM
+                        time.sleep(0.5)
+                except Exception:
+                    pass
                 subprocess.Popen(
                     ["python3", "-c", "from src.desktop.app import main; main()"],
                     cwd=_jarvis_root, start_new_session=True,

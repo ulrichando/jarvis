@@ -294,8 +294,8 @@ class JarvisWebServer:
                     "-o", "StrictHostKeyChecking=no",
                     "-o", "ConnectTimeout=5",
                     f"{owner_user}@{owner_host}",
-                    # Kill any existing desktop instance first, then launch fresh
-                    "pkill -f 'desktop.app import main' 2>/dev/null; sleep 0.5; "
+                    # Kill any existing desktop instance via PID file
+                    "kill $(cat /tmp/.jarvis-desktop.pid 2>/dev/null) 2>/dev/null; sleep 0.5; "
                     f"export DISPLAY=$(cat /tmp/.jarvis-display 2>/dev/null || echo ':0'); "
                     f"cd /home/{owner_user}/Documents/Projects/jarvis && "
                     "nohup python3 -c 'from src.desktop.app import main; main()' "

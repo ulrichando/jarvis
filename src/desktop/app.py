@@ -105,7 +105,16 @@ def _deploy_local_ui():
         return None
 
 
+_DESKTOP_PID_FILE = "/tmp/.jarvis-desktop.pid"
+
+
 def main():
+    # Write PID file so external processes can reliably kill this instance
+    import atexit as _atexit
+    with open(_DESKTOP_PID_FILE, "w") as _pf:
+        _pf.write(str(os.getpid()))
+    _atexit.register(lambda: os.path.exists(_DESKTOP_PID_FILE) and os.unlink(_DESKTOP_PID_FILE))
+
     host = "127.0.0.1"
     port = 8765
     ws_url = None   # injected into WebKit as window.__JARVIS_WS_URL__
