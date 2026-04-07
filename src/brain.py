@@ -260,7 +260,21 @@ class Brain:
         self.state_manager: StateManager = get_state_manager()
         self.state_manager.set("mode", self.mode)
         self.state_manager.set("initial_model", self.reasoner.active_model_name)
-        self.state_manager.set("effort_level", "high")
+        # Load persisted effort level from settings, default high
+        _persisted_effort = "high"
+        try:
+            import json as _json
+            _sfile = os.path.expanduser("~/.jarvis/settings.json")
+            if os.path.exists(_sfile):
+                _persisted_effort = _json.loads(open(_sfile).read()).get("effort_level", "high")
+        except Exception:
+            pass
+        self.state_manager.set("effort_level", _persisted_effort)
+        self._effort_level = _persisted_effort
+        try:
+            self.reasoner.providers.set_effort(_persisted_effort)
+        except Exception:
+            pass
         self.state_manager.set("thinking_mode",
                                "adaptive" if should_enable_thinking_by_default() else "disabled")
 
@@ -878,9 +892,7 @@ class Brain:
 
         memory_context = self.memory.recall_as_context(user_input, top_k=1)
 
-        # ALWAYS use agent loop — it has the full system prompt, memory, rules
-        # The "fast chat" path skips too much context
-        needs_agent = True
+        needs_agent = self._needs_agent_loop(user_input)
 
         if needs_agent:
             # Agent loop with tools
@@ -1297,15 +1309,13 @@ PROJECT CREATION RULES — follow these when building something:
         if any(kw in q for kw in system_keywords):
             return True
 
-        # Short questions and conversation → no tools
+        # Short questions — likely conversation
         if len(q) < 60 and q.endswith("?"):
             return False
 
-        # Medium length — likely needs tools
-        if len(q) > 120:
-            return True
-
-        return False
+        # Anything else that's not clearly conversational → agent loop
+        # Better to have tools available and not use them than to need them and not have them
+        return True
 
     # ═══ MODE SWITCHING ═════════════════════════════════════════════
 

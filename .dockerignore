@@ -1,0 +1,12 @@
+.git
+__pycache__
+*.pyc
+node_modules
+src/server/frontend/node_modules
+src/cli-ts/node_modules
+src/cli-ts/dist
+.env
+*.log
+test/
+docs/
+.claude/

@@ -290,7 +290,9 @@ class JarvisWebServer:
         await ws.prepare(request)
         self.clients.add(ws)
         peer = request.remote
-        print(f"[JARVIS] Client connected: {peer} ({len(self.clients)} total)")
+        _client_label = request.rel_url.query.get('client', 'unknown')
+        ws._client_label = _client_label  # store for disconnect log
+        print(f"[JARVIS] WS connect: {peer} [{_client_label}] ({len(self.clients)} active)")
 
         # If brain is already ready, tell the new client immediately
         if self.brain is not None:
@@ -309,12 +311,15 @@ class JarvisWebServer:
 
                     if msg.type == web.WSMsgType.BINARY:
                         await self._handle_audio(ws, msg.data)
+                        continue
                     elif msg.type == web.WSMsgType.TEXT:
                         try:
                             data = json.loads(msg.data)
                         except json.JSONDecodeError:
                             continue
                         msg_type = data.get("type", "query")
+                    else:
+                        continue
 
                     if msg_type == "query":
                         # Always try command interception first (camera/restart/etc work without brain)
@@ -401,7 +406,8 @@ class JarvisWebServer:
                     await ws.close()
             except Exception:
                 pass
-            print(f"[JARVIS] Client disconnected: {peer} ({len(self.clients)} remaining)")
+            _lbl = getattr(ws, '_client_label', 'unknown')
+            print(f"[JARVIS] WS disconnect: {peer} [{_lbl}] ({len(self.clients)} active)")
 
         return ws
 
@@ -412,12 +418,16 @@ class JarvisWebServer:
 
         # Voice input — mark as ambient so the LLM knows it came from the mic
         is_ambient = data.get("ambient", False)
+        _from_server_mic = data.get("_from_server_mic", False)
+        _clients = getattr(self, '_active_clients', {})
+        _platform = "desktop" if _clients.get("desktop") and not _clients.get("browser") else "web"
         if is_ambient:
             # Prefix with voice context so the LLM can decide how to respond
             text = f"[voice input] {text}"
-            print(f'[Ulrich] "{text[14:54]}"')
+            if not _from_server_mic:  # server mic already printed at transcript time
+                print(f'[Ulrich:{_platform}] "{text[14:94]}"')
         else:
-            print(f'[JARVIS] Browser query: "{text[:80]}"')
+            print(f'[Ulrich:{_platform}] "{text[:80]}"')
 
         # Normalize for voice-friendly matching (Whisper adds punctuation/filler)
         text_lower = text.lower().strip()
@@ -660,95 +670,106 @@ class JarvisWebServer:
                 # Only accumulate text from the LAST LLM turn for speech
                 # (after all tools finish, the final LLM reply is what matters)
                 speech_buffer = ""
-                async for event in self.brain.think_stream(text):
-                    etype = event.get("type", "") if isinstance(event, dict) else ""
-                    if etype == "text":
-                        chunk = event.get("content", "")
-                        buffer += chunk
-                        speech_buffer += chunk
-                        # Send chunk to frontend immediately for display
-                        await ws.send_json({
-                            "type": "stream", "content": chunk,
-                        })
-                        # Send first sentence early for TTS (speak while still generating)
-                        if not first_sent and not used_tools and len(buffer) > 8:
-                            for delim in ['. ', '! ', '? ', '.\n', '!\n', '?\n', ', ', '— ', ': ']:
-                                idx = buffer.find(delim)
-                                if idx > 5:
-                                    first_sentence = buffer[:idx + 1].strip()
-                                    spoken = self._clean_for_speech(first_sentence)
-                                    if spoken and len(spoken) > 5:
-                                        latency = int((time.time() - start) * 1000)
-                                        # Speak first sentence immediately for voice queries
-                                        _early_server_tts = False
-                                        if is_voice:
-                                            clients = getattr(self, '_active_clients', {})
-                                            if clients.get("desktop") and not clients.get("browser"):
-                                                early_tts_task = asyncio.create_task(self._speak_system(spoken))
-                                                _early_server_tts = True
-                                        await ws.send_json({
-                                            "type": "message", "role": "jarvis",
-                                            "content": first_sentence,
-                                            "spoken": "" if _early_server_tts else spoken,
-                                            "model": self.brain.reasoner.model,
-                                            "latency_ms": latency,
-                                            "voice_style": self._get_voice_style(),
-                                            "partial": True,
-                                            "server_tts": _early_server_tts,
-                                        })
-                                        first_sent = True
-                                        first_spoken_end = idx + 1
-                                    break
-                    elif etype == "tool_call":
-                        tool_name = event.get("name", "")
-                        # No narration — JARVIS works silently, speaks only the result
-                        used_tools = True
-                        # Reset speech buffer — only speak the LLM's final reply
-                        speech_buffer = ""
-                        tool_id_counter += 1
-                        current_tool_id = f"tool-{tool_id_counter}"
-                        print(f"[JARVIS] Tool: {tool_name}({str(event.get('args', {}))[:80]})")
-                        await ws.send_json({
-                            "type": "tool_call",
-                            "id": current_tool_id,
-                            "name": tool_name,
-                            "args": event.get("args", {}),
-                        })
-                    elif etype == "tool_result":
-                        result_str = str(event.get("content", event.get("result", "")))[:500]
-                        print(f"[JARVIS] Result: {event.get('name', '')} → {result_str[:80]}")
-                        await ws.send_json({
-                            "type": "tool_result",
-                            "id": current_tool_id,
-                            "name": event.get("name", ""),
-                            "content": result_str,
-                        })
-                        current_tool_id = None
-                    elif etype == "usage":
-                        await ws.send_json({
-                            "type": "usage",
-                            "input_tokens": event.get("input_tokens", 0),
-                            "output_tokens": event.get("output_tokens", 0),
-                            "context_pct": event.get("context_pct", 0),
-                            "context_used": event.get("context_used", 0),
-                            "context_max": event.get("context_max", 0),
-                            "session_cost": event.get("session_cost", ""),
-                        })
-                    elif etype == "done":
-                        # Send final context status
-                        if event.get("context_status"):
+                async with asyncio.timeout(120):
+                    async for event in self.brain.think_stream(text):
+                        etype = event.get("type", "") if isinstance(event, dict) else ""
+                        if etype == "text":
+                            chunk = event.get("content", "")
+                            buffer += chunk
+                            speech_buffer += chunk
+                            # Send chunk to frontend immediately for display
                             await ws.send_json({
-                                "type": "context_status",
-                                "status": event.get("context_status", ""),
-                                "pct": event.get("context_pct", 0),
+                                "type": "stream", "content": chunk,
                             })
-                        break
+                            # Send first sentence early for TTS (speak while still generating)
+                            if not first_sent and not used_tools and len(buffer) > 8:
+                                for delim in ['. ', '! ', '? ', '.\n', '!\n', '?\n', ', ', '— ', ': ']:
+                                    idx = buffer.find(delim)
+                                    if idx > 5:
+                                        first_sentence = buffer[:idx + 1].strip()
+                                        spoken = self._clean_for_speech(first_sentence)
+                                        if spoken and len(spoken) > 5:
+                                            latency = int((time.time() - start) * 1000)
+                                            # Speak first sentence immediately for voice queries
+                                            _early_server_tts = False
+                                            if is_voice:
+                                                clients = getattr(self, '_active_clients', {})
+                                                if clients.get("desktop") and not clients.get("browser"):
+                                                    early_tts_task = asyncio.create_task(self._speak_system(spoken))
+                                                    _early_server_tts = True
+                                            await ws.send_json({
+                                                "type": "message", "role": "jarvis",
+                                                "content": first_sentence,
+                                                "spoken": "" if _early_server_tts else spoken,
+                                                "model": self.brain.reasoner.model,
+                                                "latency_ms": latency,
+                                                "voice_style": self._get_voice_style(),
+                                                "partial": True,
+                                                "server_tts": _early_server_tts,
+                                            })
+                                            first_sent = True
+                                            first_spoken_end = idx + 1
+                                        break
+                        elif etype == "tool_call":
+                            tool_name = event.get("name", "")
+                            # No narration — JARVIS works silently, speaks only the result
+                            used_tools = True
+                            # Reset speech buffer — only speak the LLM's final reply
+                            speech_buffer = ""
+                            tool_id_counter += 1
+                            current_tool_id = f"tool-{tool_id_counter}"
+                            print(f"[JARVIS] Tool: {tool_name}({str(event.get('args', {}))[:80]})")
+                            await ws.send_json({
+                                "type": "tool_call",
+                                "id": current_tool_id,
+                                "name": tool_name,
+                                "args": event.get("args", {}),
+                            })
+                        elif etype == "tool_result":
+                            result_str = str(event.get("content", event.get("result", "")))[:500]
+                            print(f"[JARVIS] Result: {event.get('name', '')} → {result_str[:80]}")
+                            await ws.send_json({
+                                "type": "tool_result",
+                                "id": current_tool_id,
+                                "name": event.get("name", ""),
+                                "content": result_str,
+                            })
+                            current_tool_id = None
+                        elif etype == "usage":
+                            await ws.send_json({
+                                "type": "usage",
+                                "input_tokens": event.get("input_tokens", 0),
+                                "output_tokens": event.get("output_tokens", 0),
+                                "context_pct": event.get("context_pct", 0),
+                                "context_used": event.get("context_used", 0),
+                                "context_max": event.get("context_max", 0),
+                                "session_cost": event.get("session_cost", ""),
+                            })
+                        elif etype == "done":
+                            # Send final context status
+                            if event.get("context_status"):
+                                await ws.send_json({
+                                    "type": "context_status",
+                                    "status": event.get("context_status", ""),
+                                    "pct": event.get("context_pct", 0),
+                                })
+                            break
                 full_response = buffer
+            except TimeoutError:
+                full_response = buffer or "That took too long — try again or use a faster model."
+                speech_buffer = full_response
+                print(f'[JARVIS] Query timeout (120s): "{text[:50]}"')
             except Exception as e:
-                full_response = await self.brain.think(text)
+                try:
+                    full_response = await asyncio.wait_for(self.brain.think(text), timeout=30)
+                except Exception:
+                    full_response = ""
                 speech_buffer = full_response
         else:
-            full_response = await self.brain.think(text)
+            try:
+                full_response = await asyncio.wait_for(self.brain.think(text), timeout=30)
+            except Exception:
+                full_response = ""
             speech_buffer = full_response
 
         latency = int((time.time() - start) * 1000)
@@ -782,15 +803,16 @@ class JarvisWebServer:
             else:
                 spoken = self._clean_for_speech(full_response)
 
-            # Pre-mute server mic before TTS plays (avoid race with tts_state)
-            if spoken and len(spoken) > 3 and hasattr(self, '_server_listener'):
-                self._server_listener.jarvis_speaking = True
-
             # Check if server will handle TTS (suppress frontend TTS to avoid double voice)
             _clients = getattr(self, '_active_clients', {})
             _server_tts = (is_voice and spoken and len(spoken) > 3
                            and _clients.get("desktop") and not _clients.get("browser"))
             _sent_spoken = "" if _server_tts else spoken
+
+            # Pre-mute server mic — ONLY when server is actually going to speak via TTS
+            # (not for text queries — if muted here and send_json fails, mic stays muted forever)
+            if _server_tts and hasattr(self, '_server_listener'):
+                self._server_listener.jarvis_speaking = True
 
             if first_sent:
                 await ws.send_json({
@@ -899,13 +921,14 @@ class JarvisWebServer:
                             print(f"[JARVIS] Echo detected, ignoring: \"{transcript[:60]}\"")
                             return
 
-                print(f"[Ulrich] \"{transcript}\"")
+                print(f"[Ulrich:desktop] \"{transcript}\"")
                 await ws.send_json({"type": "stt_result", "text": transcript})
 
                 # Process the transcription — send to brain like a voice query
                 await self._handle_query(ws, {
                     "text": transcript,
                     "ambient": True,
+                    "_from_server_mic": True,  # suppress duplicate print in _handle_query
                 })
         except Exception as e:
             if not hasattr(ws, '_audio_error_logged'):
@@ -2890,9 +2913,9 @@ class JarvisWebServer:
             if client_type == "browser":
                 if hasattr(self, '_server_mic_running') and self._server_mic_running:
                     self._server_mic_running = False
-                    print(f"[JARVIS] browser connected — server mic stopped (browser handles voice)")
+                    print(f"[JARVIS] UI registered: browser — mic control handed to browser")
             else:
-                print(f"[JARVIS] desktop connected — server mic stays on (WebKit can't capture mic)")
+                print(f"[JARVIS] UI registered: desktop — server mic active (WebKit has no mic access)")
 
             # Browser always gets the reactor; desktop yields
             if client_type == "browser":
@@ -3199,6 +3222,26 @@ class JarvisWebServer:
             else:
                 print(f"[JARVIS] Bridge auth:  NONE (open access)")
 
+
+        # Watch providers.json for changes — hot-reload when CLI or another process changes it
+        async def _watch_providers():
+            from src.config import JARVIS_HOME
+            _pfile = JARVIS_HOME / "providers.json"
+            _last_mtime = _pfile.stat().st_mtime if _pfile.exists() else 0
+            while True:
+                await asyncio.sleep(2)
+                try:
+                    mtime = _pfile.stat().st_mtime
+                    if mtime != _last_mtime:
+                        _last_mtime = mtime
+                        if self.brain is not None:
+                            self.brain.reasoner.providers.reload()
+                            model = self.brain.reasoner.providers.get_active_providers()
+                            model_str = f"{model[0].name}:{model[0].model}" if model else "?"
+                            print(f"[JARVIS] providers.json changed — reloaded ({model_str})")
+                except Exception:
+                    pass
+        asyncio.create_task(_watch_providers())
 
         # Keep running until SIGTERM (graceful shutdown)
         stop_event = asyncio.Event()

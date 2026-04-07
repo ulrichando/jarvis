@@ -95,7 +95,7 @@ if fuser 8765/tcp 2>/dev/null; then
     fuser -k -9 8765/tcp 2>/dev/null
     sleep 2
 fi
-PYTHONUNBUFFERED=1 python3 -m src.server.web_server > /tmp/jarvis-web.log 2>&1 &
+PYTHONUNBUFFERED=1 python3 -u -m src.server.web_server > /tmp/jarvis-clean.log 2>&1 &
 SERVER_PID=$!
 echo "$SERVER_PID" > /tmp/jarvis-server.pid
 echo "  Server PID: $SERVER_PID"
@@ -135,6 +135,7 @@ fi
 echo ""
 
 echo "JARVIS is online."
-echo "  Web:     http://localhost:8765"
-echo "  Logs:    tail -f /tmp/jarvis-web.log"
-[ -n "$DESKTOP_PID" ] && echo "  Desktop: PID $DESKTOP_PID"
+echo "  Web:      http://localhost:8765"
+echo "  Server:   PID $SERVER_PID  →  tail -f /tmp/jarvis-clean.log"
+[ -n "$DESKTOP_PID" ] && echo "  Desktop:  PID $DESKTOP_PID  →  tail -f /tmp/jarvis-desktop.log"
+echo "  All logs: ./scripts/logs.sh [voice|llm|tools|errors]"

@@ -19,8 +19,14 @@ function App() {
   const [cameraOn, setCameraOn] = useState(false)
   const [setupOpen, setSetupOpen] = useState(false)
   const [brainReady, setBrainReady] = useState(false)
+  const [heardText, setHeardText] = useState('')
+  const heardTimerRef = React.useRef(null)
 
-  const wsUrl = useMemo(() => `ws://${window.location.host || '127.0.0.1:8765'}/ws`, [])
+  const wsUrl = useMemo(() => {
+    const host = window.location.host || '127.0.0.1:8765'
+    const clientType = isDesktop ? 'desktop' : 'browser'
+    return `ws://${host}/ws?client=${clientType}`
+  }, [isDesktop])
   const { messages: wsMessages, sendMessage, status: wsStatus } = useWebSocket(wsUrl)
   const theme = useTheme()
 
@@ -174,6 +180,12 @@ function App() {
       queueMicrotask(() => { stopSpeaking(); setReactorState('thinking') })
     }
 
+    // Clear heard caption when JARVIS starts responding
+    if (last.type === 'stream' || last.type === 'message') {
+      clearTimeout(heardTimerRef.current)
+      heardTimerRef.current = setTimeout(() => setHeardText(''), 1500)
+    }
+
     // Play TTS for voice query responses (dedup handled inside playSpoken)
     if (last.type === 'message' && last.spoken && last.spoken.length > 3 && !last.partial) {
       playSpoken(last)
@@ -181,6 +193,10 @@ function App() {
 
     if (last.type === 'camera') setCameraOn(last.enabled)
     if (last.type === 'provider_error') setSetupOpen(true)
+
+    // Voice commands: "show text" / "hide text"
+    if (last.type === 'message' && last.content === '__SHOW_TEXT__') setChatOpen(true)
+    if (last.type === 'message' && last.content === '__HIDE_TEXT__') setChatOpen(false)
 
     // Live theme update — auto-refresh colors when changed via API
     if (last.type === 'theme_update' && last.primary) {
@@ -244,7 +260,9 @@ function App() {
         }, 50)
 
         // Method 1: Browser SpeechRecognition (Chrome — instant)
-        const SR = window.SpeechRecognition || window.webkitSpeechRecognition
+        // Skip in desktop/WebKit mode — webkitSpeechRecognition exists but has no backend there
+        const isDesktopMode = isDesktop || window.location.search.includes('desktop=1')
+        const SR = !isDesktopMode && (window.SpeechRecognition || window.webkitSpeechRecognition)
         if (SR) {
           const recognition = new SR()
           recognition.continuous = true
@@ -259,6 +277,8 @@ function App() {
                 // not interim — interim picks up JARVIS's own TTS voice as echo
                 document.dispatchEvent(new CustomEvent('user-speaking'))
                 setReactorState('thinking')
+                setHeardText(text)
+                clearTimeout(heardTimerRef.current)
                 sendMessage({ type: 'query', text: text })
               }
             }
@@ -323,6 +343,8 @@ function App() {
             // Send to server — the LLM decides if this is directed at JARVIS
             // Mark as ambient so the server can use a fast classifier
             console.log('[VOICE] Heard:', text)
+            setHeardText(text)
+            clearTimeout(heardTimerRef.current)
             sendMessage({ type: 'query', text: text, ambient: true })
           } catch { setReactorState('idle') }
         }
@@ -360,8 +382,8 @@ function App() {
           }
 
           // RMS thresholds — tuned for natural conversation
-          const threshold = 0.05       // Start recording at this level
-          const silenceThreshold = 0.015 // Lower = more tolerant of quiet speech
+          const threshold = 0.008       // Start recording at this level
+          const silenceThreshold = 0.003 // Lower = more tolerant of quiet speech
 
           if (avg > threshold && !recording) {
             if (!isSpeakingTTS) {
@@ -408,6 +430,13 @@ function App() {
     }
   }, [sendMessage])
 
+  // Notify GTK when chat opens/closes — toggles click-through so user can type
+  useEffect(() => {
+    if (!isDesktop) return
+    const msg = JSON.stringify({ cmd: 'click_through', enabled: !chatOpen })
+    window.webkit?.messageHandlers?.jarvis?.postMessage(msg)
+  }, [chatOpen, isDesktop])
+
   // Keyboard shortcuts
   useEffect(() => {
     const handleKey = (e) => {
@@ -415,7 +444,8 @@ function App() {
         if (e.key === 'Escape') setChatOpen(false)
         return
       }
-      if (e.key === 'c' || e.key === 'C') setChatOpen((prev) => !prev)
+      // Desktop: no accidental C-key toggle — chat opens only via voice "show text"
+      if (!isDesktop && (e.key === 'c' || e.key === 'C')) setChatOpen((prev) => !prev)
       if (e.key === 'Escape') {
         setChatOpen(false)
         setSettingsOpen(false)
@@ -425,7 +455,7 @@ function App() {
     }
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
-  }, [])
+  }, [isDesktop])
 
   const closeChat = useCallback(() => setChatOpen(false), [])
   const closeSettings = useCallback(() => setSettingsOpen(false), [])
@@ -450,6 +480,16 @@ function App() {
       {/* Arc Reactor */}
       {showReactor && (
         <ArcReactor state={reactorState} isDesktop={isDesktop} audioLevel={audioLevel} theme={theme} />
+      )}
+
+      {/* Live voice caption — desktop only, shows what JARVIS heard */}
+      {isDesktop && heardText && (
+        <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 pointer-events-none">
+          <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-[rgba(0,10,20,0.85)] border border-[rgba(0,229,255,0.25)] backdrop-blur-sm">
+            <span className="text-xs text-[rgba(0,229,255,0.5)] font-['Share_Tech_Mono',monospace] uppercase tracking-widest">ULRICH</span>
+            <span className="text-sm text-[rgba(255,255,255,0.85)] font-['Share_Tech_Mono',monospace]">{heardText}</span>
+          </div>
+        </div>
       )}
 
       {/* Camera active indicator */}

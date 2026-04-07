@@ -1,0 +1,11 @@
+services:
+  jarvis-backend:
+    build: .
+    ports:
+      - "8765:8765"
+    volumes:
+      - ~/.jarvis:/data/.jarvis:rw
+      - ./.env:/app/.env:ro
+    env_file:
+      - .env
+    restart: unless-stopped

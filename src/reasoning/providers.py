@@ -346,7 +346,9 @@ class ProviderRegistry:
                 break
 
         errors = []
-        for provider in self.get_active_providers(prefer_tool_calling=True, prefer_code=is_code):
+        # Respect user's priority order — prefer_tool_calling would override it by
+        # always putting cloud first. Trust priority 0 = highest regardless of local/cloud.
+        for provider in self.get_active_providers(prefer_code=is_code):
             # Circuit breaker — skip providers that have failed repeatedly
             if self._cb_is_open(provider.name):
                 errors.append(f"{provider.name}: circuit breaker open")
@@ -360,9 +362,15 @@ class ProviderRegistry:
                     return result, f"{provider.name}:{provider.model}"
                 errors.append(f"{provider.name}: no tool result")
                 self._cb_record_failure(provider.name)
-            except Exception as e:
+            except BaseException as e:
+                # BaseException catches CancelledError (asyncio timeout) in addition to
+                # regular exceptions — without this, asyncio cancellations bypass the
+                # circuit breaker and the slow provider is retried on every query.
                 errors.append(f"{provider.name}: {e}")
                 self._cb_record_failure(provider.name)
+                import asyncio as _asyncio
+                if isinstance(e, _asyncio.CancelledError):
+                    raise  # Re-raise so asyncio cancellation still propagates
                 continue
 
         # Fallback: try plain query without tools (so LLM at least responds)
@@ -454,7 +462,7 @@ class ProviderRegistry:
             for model in [provider.model] + [m for m in (provider.models or []) if m != provider.model]:
                 try:
                     r = client.messages.create(
-                        model=model, max_tokens=1024,
+                        model=model, max_tokens=self._effort_tokens(),
                         system=system_prompt, messages=messages,
                     )
                     for block in r.content:
@@ -482,7 +490,7 @@ class ProviderRegistry:
             try:
                 chat = client.chat.completions.create(
                     messages=messages, model=provider.model,
-                    temperature=0.3, max_completion_tokens=4096,
+                    temperature=0.3, max_tokens=self._effort_tokens(),
                 )
                 return chat.choices[0].message.content or ""
             except Exception:
@@ -543,7 +551,7 @@ class ProviderRegistry:
             for model in [provider.model] + [m for m in (provider.models or []) if m != provider.model]:
                 try:
                     with client.messages.stream(
-                        model=model, max_tokens=8192,
+                        model=model, max_tokens=self._effort_tokens(),
                         system=system_blocks, messages=messages,
                     ) as stream:
                         provider.model = model
@@ -663,7 +671,7 @@ class ProviderRegistry:
                     # Build kwargs — system must be a list (not None) for Anthropic
                     kwargs = {
                         "model": model,
-                        "max_tokens": 8192,
+                        "max_tokens": self._effort_tokens(),
                         "messages": claude_messages,
                     }
                     if system_blocks:
@@ -893,8 +901,10 @@ class ProviderRegistry:
             last_error = None
             for attempt in range(3):
                 try:
-                    # Try each model in provider's model list
-                    for model in (provider.models or [provider.model]):
+                    # For local models use only the configured model (avoid iterating
+                    # the full template list which can waste time on unloaded models)
+                    model_list = [provider.model] if is_local else (provider.models or [provider.model])
+                    for model in model_list:
                         try:
                             kwargs = {
                                 "messages": messages,
@@ -1056,19 +1066,12 @@ RULES:
                 f"{base}/api/chat", data=data,
                 headers={"Content-Type": "application/json"},
             )
-            resp = urllib.request.urlopen(req, timeout=120)
+            # Short timeout: local model slow/busy → fail fast and use cloud provider
+            resp = urllib.request.urlopen(req, timeout=4)
             result = json.loads(resp.read())
             text = result.get("message", {}).get("content", "")
-        except Exception as e:
-            # Fallback to OpenAI client
-            try:
-                chat = client.chat.completions.create(
-                    messages=enhanced, model=provider.model,
-                    temperature=0.2, max_completion_tokens=4096,
-                )
-                text = chat.choices[0].message.content or ""
-            except Exception:
-                return {"text": "", "tool_calls": []}
+        except Exception:
+            return {"text": "", "tool_calls": []}
 
         # Parse tool calls from response — multiple formats
         tool_calls = []
@@ -1160,16 +1163,20 @@ RULES:
         if provider.name in self._clients:
             return self._clients[provider.name]
         try:
+            import httpx
             from anthropic import Anthropic
+            # 5s connect, 30s read (per-chunk): if API is silent for 30s, fail fast
+            _timeout = httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0)
             key = provider.api_key
             is_oauth = isinstance(key, str) and "oat" in key[:15]
             if is_oauth:
                 client = Anthropic(
                     auth_token=key,
+                    timeout=_timeout,
                     default_headers={"anthropic-beta": "claude-code-20250219,oauth-2025-04-20"},
                 )
             else:
-                client = Anthropic(api_key=key)
+                client = Anthropic(api_key=key, timeout=_timeout)
             self._clients[provider.name] = client
             return client
         except Exception:
@@ -1182,8 +1189,13 @@ RULES:
         # Standard OpenAI-compatible client
         try:
             from openai import OpenAI
+            # Local models (Ollama) get a shorter timeout so they fail fast
+            # and fall through to cloud providers; cloud gets standard 60s
+            is_local = "localhost" in provider.base_url or "127.0.0.1" in provider.base_url
+            # Local models get 4s — fail fast so cloud providers handle the query;
+            # qwen2.5:72b can be very slow, especially while busy
             client = OpenAI(api_key=provider.api_key, base_url=provider.base_url,
-                            max_retries=0, timeout=60)
+                            max_retries=0, timeout=4 if is_local else 60)
             self._clients[provider.name] = client
             return client
         except ImportError:
@@ -1212,6 +1224,13 @@ RULES:
                 self._providers[name] = Provider(**d)
         except Exception:
             pass
+
+    def reload(self):
+        """Hot-reload providers from disk (picks up external changes)."""
+        self._providers.clear()
+        self._clients.clear()
+        self._load()
+        self._load_env_providers()
 
     def _load_env_providers(self):
         """Auto-register providers from .env / environment variables."""
