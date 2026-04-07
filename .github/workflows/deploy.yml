@@ -4,40 +4,25 @@ on:
   push:
     branches: [master]
 
-env:
-  IMAGE_NAME: ghcr.io/ulrichando/jarvis
-
 jobs:
   deploy:
-    # Self-hosted runner ON Proxmox — no public internet needed for SSH
+    # Self-hosted runner ON Proxmox — builds and deploys locally, no registry needed
     runs-on: self-hosted
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Build Docker image
         run: |
-          docker build -t ${{ env.IMAGE_NAME }}:latest \
-                       -t ${{ env.IMAGE_NAME }}:sha-${{ github.sha }} \
-                       .
+          docker build -t ghcr.io/ulrichando/jarvis:latest .
 
-      - name: Push to GHCR
+      - name: Deploy (restart container with new image)
         run: |
-          docker push ${{ env.IMAGE_NAME }}:latest
-          docker push ${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
-
-      - name: Deploy (restart container from new image)
-        run: |
+          # Stop the container, replace its image, start again.
+          # Using docker compose so volumes and env_file are preserved.
+          docker stop jarvis-jarvis-1 2>/dev/null || true
+          docker rm jarvis-jarvis-1 2>/dev/null || true
           cd /opt/jarvis
-          docker compose pull jarvis
           docker compose up -d jarvis
-          docker image prune -f
-          echo "Deployed: $(docker inspect jarvis-jarvis-1 --format '{{.Image}}')"
+          echo "Deployed at $(date)"
