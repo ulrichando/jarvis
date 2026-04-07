@@ -2073,8 +2073,15 @@ def _exec_bash(args: dict) -> str:
 
     # Original unsandboxed execution (fallback)
     try:
+        # Full root access: wrap with sudo when NO_SANDBOX=1 and not already root/sudo
+        _cmd_to_run = command
+        if (os.environ.get("JARVIS_NO_SANDBOX")
+                and os.geteuid() != 0
+                and not command.strip().startswith("sudo")):
+            _cmd_to_run = f"sudo -E -n sh -c {__import__('shlex').quote(command)}"
+
         result = subprocess.run(
-            command, shell=True, capture_output=True, text=True,
+            _cmd_to_run, shell=True, capture_output=True, text=True,
             timeout=timeout, cwd=os.getcwd(),
             env={**os.environ,
                  "DISPLAY": os.environ.get("DISPLAY", ":0.0"),
