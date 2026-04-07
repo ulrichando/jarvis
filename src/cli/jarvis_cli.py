@@ -1938,6 +1938,12 @@ async def main():
         _writeln(sep)
         _write(footer)
         _write("\033[2A")  # move cursor up 2 rows back to prompt line (relative, scroll-safe)
+        # Reposition cursor column: \033[2A preserves the footer's column, not the prompt's.
+        # Go to column 0, then advance to the end of prompt+input.
+        _ansi_re = re.compile(r'\033\[[^m]*m')
+        _prompt_vis_len = len(_ansi_re.sub('', prompt))
+        _target_col = _prompt_vis_len + len(buf_text)
+        _write(f"\r\033[{_target_col}C" if _target_col > 0 else "\r")
         _frame_drawn = True
         sys.stdout.flush()
 
