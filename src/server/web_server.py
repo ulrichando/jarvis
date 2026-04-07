@@ -2589,6 +2589,23 @@ class JarvisWebServer:
             return web.json_response({"ready": False}, status=503)
         app.router.add_get("/api/ready", _ready_check)
 
+        # Conversation history API — used by CLI relay mode to sync
+        async def _conversations_handler(request):
+            try:
+                limit = int(request.rel_url.query.get("limit", 50))
+                offset = int(request.rel_url.query.get("offset", 0))
+                if self.brain and hasattr(self.brain, "memory"):
+                    rows = self.brain.memory.get_history(limit=limit, offset=offset)
+                    return web.json_response({"conversations": [
+                        {"role": r.role, "content": r.content,
+                         "timestamp": r.timestamp if hasattr(r, "timestamp") else 0}
+                        for r in rows
+                    ]})
+                return web.json_response({"conversations": []})
+            except Exception as e:
+                return web.json_response({"conversations": [], "error": str(e)})
+        app.router.add_get("/api/conversations", _conversations_handler)
+
         # Mesh API
         app.router.add_get("/api/mesh/ping", self.mesh_ping)
         app.router.add_get("/api/mesh/knowledge", self.mesh_knowledge)
