@@ -1,18 +1,36 @@
 {
   "manifest_version": 3,
   "name": "JARVIS Screen Vision",
-  "version": "1.0.0",
-  "description": "Let JARVIS see your browser screen — screenshot capture and AI analysis",
+  "version": "2.0.0",
+  "description": "JARVIS — native DOM-aware AI side panel with multi-tab context",
   "permissions": [
     "activeTab",
-    "scripting"
+    "tabs",
+    "sidePanel",
+    "scripting",
+    "storage"
   ],
   "host_permissions": [
-    "http://localhost:8765/*"
+    "http://localhost:8765/*",
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
   ],
   "action": {
-    "default_popup": "popup.html",
-    "default_icon": "icon.png"
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "side_panel.html"
   },
   "commands": {
     "capture-screen": {
@@ -26,7 +44,8 @@
     "service_worker": "background.js"
   },
   "icons": {
-    "48": "icon.png",
-    "128": "icon.png"
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
   }
 }

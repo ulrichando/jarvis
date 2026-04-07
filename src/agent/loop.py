@@ -135,12 +135,12 @@ def _get_hooks():
     return _hooks_mgr
 
 
-MAX_ITERATIONS = 75
+MAX_ITERATIONS = 999
 COMPACT_THRESHOLD = 80000
-GLOBAL_ITERATION_MAX = 100
+GLOBAL_ITERATION_MAX = 999
 _groq_semaphore = asyncio.Semaphore(4)
-SUB_AGENT_MAX_RESULT = 8000
-TOOL_RESULT_MAX = 10000
+SUB_AGENT_MAX_RESULT = 20000
+TOOL_RESULT_MAX = 20000
 
 # Session directory for persisted tool results
 _session_dir: str = ""
@@ -301,6 +301,7 @@ async def _agent_loop_internal(
     final_text = ""
     iterations = 0
     _failed_call_sigs_ns: set[str] = set()  # semantic-retry tracking (non-streaming)
+    _write_ops: list[str] = []  # track write/edit/destructive bash operations for verifier
 
     while iterations < max_iterations:
         iterations += 1
@@ -375,6 +376,18 @@ async def _agent_loop_internal(
                 on_tool_result(name, result)
             _append_tool_result(messages, tid, result, tool_name=name)
 
+        # Track write operations for verifier threshold
+        _WRITE_TOOLS = {"write_file", "edit_file"}
+        _WRITE_BASH_PATTERNS = (" > ", " >> ", " >| ", "tee ", "mkdir ", "rm ", "mv ", "cp ")
+        for _tc in regular_calls:
+            _tc_name = _tc["name"]
+            if _tc_name in _WRITE_TOOLS:
+                _write_ops.append(f"{_tc_name}: {_tc['args'].get('path', _tc['args'].get('file_path', '?'))}")
+            elif _tc_name == "bash":
+                _cmd = _tc["args"].get("command", "")
+                if any(p in _cmd for p in _WRITE_BASH_PATTERNS):
+                    _write_ops.append(f"bash: {_cmd[:80]}")
+
         # Execute regular tools (respect plan mode)
         _readonly = _loop_state.get("plan_mode", False)
         await _execute_tools(messages, regular_calls, tool_executor,
@@ -403,6 +416,27 @@ async def _agent_loop_internal(
             )
             for tool_id, result in dispatch_results:
                 _append_tool_result(messages, tool_id, result, tool_name="dispatch")
+
+    # Auto-spawn verifier for non-trivial work (≥3 write/edit/destructive ops)
+    _VERIFIER_THRESHOLD = 3
+    if allow_dispatch and len(_write_ops) >= _VERIFIER_THRESHOLD:
+        modified_summary = "\n".join(_write_ops[:20])  # cap at 20 for context
+        verify_task = (
+            f"Verify the work just completed.\n\n"
+            f"Original task: {user_input[:500]}\n\n"
+            f"Operations performed:\n{modified_summary}"
+        )
+        log.info("Non-trivial work detected (%d ops) — spawning verifier", len(_write_ops))
+        try:
+            verdict = await _run_sub_agent(
+                reasoner=reasoner,
+                agent_type="verifier",
+                task=verify_task,
+                iteration_budget=iteration_budget,
+            )
+            final_text += f"\n\n{verdict}"
+        except Exception as e:
+            log.warning("Verifier failed: %s", e)
 
     # Stop hook — final verification before task completion
     hooks = _get_hooks()
@@ -673,6 +707,8 @@ async def _execute_tools(messages: list[dict], tool_calls: list[dict],
         tool_name = tc["name"]
         tool_args = tc["args"]
         tool_id = tc["id"]
+        _preview = str(tool_args)[:80].replace("\n", " ")
+        log.info("  ⚙ tool: %s %s", tool_name, _preview)
 
         if perms:
             allowed, reason = perms.check(tool_name, tool_args)

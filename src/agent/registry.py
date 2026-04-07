@@ -175,7 +175,7 @@ class CustomAgent:
     description: str = ""
     system_prompt: str = ""
     allowed_tools: list[str] = field(default_factory=list)
-    max_iterations: int = 15
+    max_iterations: int = 999
     model: str = ""
     scope: str = "user"         # "user" or "project"
     path: Optional[Path] = None
@@ -296,7 +296,7 @@ class AgentRegistry:
         description: str,
         system_prompt: str,
         allowed_tools: list[str] | None = None,
-        max_iterations: int = 15,
+        max_iterations: int = 999,
         model: str = "",
         scope: str = "user",
         bash_readonly: bool = False,

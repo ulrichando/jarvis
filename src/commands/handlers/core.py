@@ -373,29 +373,64 @@ async def cmd_model(ctx: CommandContext) -> CommandResult:
     return CommandResult(text=f"Model not found: {args}\nUse /model list to see available models.", success=False)
 
 
-@command("permissions", aliases=["perms"], description="Manage allow & deny tool permission rules and levels",
-         usage="/permissions [read_only|standard|full|dangerous]", category="core", permission=PermLevel.STANDARD)
+@command("permissions", aliases=["perms"],
+         description="Manage permission level, mode (bypass/default), and tool rules",
+         usage="/permissions [bypass|default|read_only|standard|full|dangerous|mode]",
+         category="core", permission=PermLevel.STANDARD)
 async def cmd_permissions(ctx: CommandContext) -> CommandResult:
     brain = ctx.brain
     args = ctx.args.strip().lower()
     if not brain:
         return CommandResult(text="Brain not available", success=False)
 
+    from src.permissions import PermissionLevel, PermissionMode
+
+    # ── Mode subcommands ───────────────────────────────────────────────
+    if args in ("bypass", "on"):
+        brain.permissions.set_mode(PermissionMode.BYPASS)
+        return CommandResult(
+            text="Permission mode: BYPASS\n"
+                 "All tool permission checks are disabled for this session.\n"
+                 "Run /permissions default to restore normal checks."
+        )
+
+    if args in ("default", "off", "reset"):
+        brain.permissions.set_mode(PermissionMode.DEFAULT)
+        return CommandResult(text="Permission mode: DEFAULT\nNormal permission checks restored.")
+
+    if args in ("accept_edits", "accept-edits"):
+        brain.permissions.set_mode(PermissionMode.ACCEPT_EDITS)
+        return CommandResult(text="Permission mode: ACCEPT_EDITS\nFile edits auto-accepted; other tools still checked.")
+
+    if args in ("deny_all", "deny-all"):
+        brain.permissions.set_mode(PermissionMode.DENY_ALL)
+        return CommandResult(text="Permission mode: DENY_ALL\nAll tools denied except explicit allowlist.")
+
+    if args == "plan":
+        brain.permissions.set_mode(PermissionMode.PLAN)
+        return CommandResult(text="Permission mode: PLAN\nRead-only mode — writes and bash blocked.")
+
+    if args == "mode":
+        current = brain.permissions.summary().get("mode", "default")
+        return CommandResult(text=f"Current permission mode: {current.upper()}")
+
+    # ── Status (no args) ───────────────────────────────────────────────
     if not args:
         summary = brain.permissions.summary()
+        current_mode = summary.get("mode", "default").upper()
+        mode_suffix = " ⚠ (all checks disabled)" if current_mode == "BYPASS" else ""
         lines = [
             "Permissions",
             "=" * 40,
             f"  Level: {summary['level']}",
-            f"  Mode:  {summary.get('mode', 'default')}",
+            f"  Mode:  {current_mode}{mode_suffix}",
         ]
-        if summary.get('denied_tools'):
+        if summary.get("denied_tools"):
             lines.append(f"  Denied tools: {', '.join(summary['denied_tools'])}")
-        if summary.get('denied_prefixes'):
+        if summary.get("denied_prefixes"):
             lines.append(f"  Denied prefixes: {', '.join(summary['denied_prefixes'])}")
 
-        # Active rules
-        rules = summary.get('rules', [])
+        rules = summary.get("rules", [])
         if rules:
             lines.append(f"\n  Active Rules ({len(rules)})")
             lines.append("  " + "-" * 20)
@@ -404,16 +439,21 @@ async def cmd_permissions(ctx: CommandContext) -> CommandResult:
             if len(rules) > 15:
                 lines.append(f"    ... and {len(rules) - 15} more")
 
-        # Denial counts
-        denial_counts = summary.get('denial_counts', {})
+        denial_counts = summary.get("denial_counts", {})
         if denial_counts:
             lines.append(f"\n  Denial Counts")
             lines.append("  " + "-" * 20)
             for tool, count in sorted(denial_counts.items(), key=lambda x: -x[1]):
                 lines.append(f"    {tool}: {count}")
+
+        lines += [
+            "",
+            "  Mode commands:  /permissions bypass | default | accept_edits | deny_all | plan",
+            "  Level commands: /permissions read_only | standard | full | dangerous",
+        ]
         return CommandResult(text="\n".join(lines))
 
-    from src.permissions import PermissionLevel
+    # ── Level subcommands ──────────────────────────────────────────────
     level_map = {
         "read_only": PermissionLevel.READ_ONLY, "readonly": PermissionLevel.READ_ONLY,
         "standard": PermissionLevel.STANDARD,
@@ -422,7 +462,12 @@ async def cmd_permissions(ctx: CommandContext) -> CommandResult:
     }
     level = level_map.get(args)
     if level is None:
-        return CommandResult(text=f"Unknown level: {args}. Use: read_only, standard, full, dangerous", success=False)
+        return CommandResult(
+            text=f"Unknown: '{args}'\n"
+                 "  Mode:  bypass | default | accept_edits | deny_all | plan\n"
+                 "  Level: read_only | standard | full | dangerous",
+            success=False,
+        )
     brain.permissions.set_level(level)
     return CommandResult(text=f"Permission level set to: {level.name}")
 
@@ -616,6 +661,45 @@ async def cmd_mode(ctx: CommandContext) -> CommandResult:
     elif brain.permissions.level == 0 and args != "plan":
         brain.permissions.set_level(2)  # FULL
     return CommandResult(text=f"Mode switched to: {args}")
+
+
+@command("berbon", description="Switch to Berbon mode (full autonomy, no permission prompts)",
+         category="core", permission=PermLevel.STANDARD)
+async def cmd_berbon(ctx: CommandContext) -> CommandResult:
+    brain = ctx.brain
+    if not brain:
+        return CommandResult(text="Brain not available", success=False)
+    brain.mode = "berbon"
+    if hasattr(brain, 'awareness'):
+        brain.awareness.mode = "berbon"
+    brain.permissions.set_level(2)  # FULL
+    return CommandResult(text="Berbon mode active. Full control. Tell me what to do.")
+
+
+@command("plan", aliases=["planning"], description="Switch to Plan mode (read-only, no writes)",
+         category="core", permission=PermLevel.STANDARD)
+async def cmd_plan(ctx: CommandContext) -> CommandResult:
+    brain = ctx.brain
+    if not brain:
+        return CommandResult(text="Brain not available", success=False)
+    brain.mode = "plan"
+    if hasattr(brain, 'awareness'):
+        brain.awareness.mode = "plan"
+    brain.permissions.set_level(0)  # READ_ONLY
+    return CommandResult(text="Plan mode. Read-only — I'll reason through problems without making changes.")
+
+
+@command("normal", aliases=["standdown"], description="Return to normal mode",
+         category="core", permission=PermLevel.STANDARD)
+async def cmd_normal(ctx: CommandContext) -> CommandResult:
+    brain = ctx.brain
+    if not brain:
+        return CommandResult(text="Brain not available", success=False)
+    brain.mode = "normal"
+    if hasattr(brain, 'awareness'):
+        brain.awareness.mode = "normal"
+    brain.permissions.set_level(2)  # FULL
+    return CommandResult(text="Back to normal mode.")
 
 
 @command("context", aliases=["ctx"], description="Show detailed token usage breakdown by category",

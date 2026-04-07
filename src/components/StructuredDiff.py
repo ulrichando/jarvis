@@ -33,6 +33,63 @@ BG_GREEN = "\033[42m"
 RED_DIM = "\033[2;31m"
 GREEN_DIM = "\033[2;32m"
 
+# True-color support (inherited from terminal env)
+_TRUECOLOR = os.environ.get("COLORTERM", "").lower() in ("truecolor", "24bit")
+
+
+def _rgb_bg(r: int, g: int, b: int) -> str:
+    return f"\033[48;2;{r};{g};{b}m" if _TRUECOLOR else ""
+
+
+TC_DIFF_ADD_BG = _rgb_bg(34, 92, 43)
+TC_DIFF_DEL_BG = _rgb_bg(122, 41, 54)
+TC_WORD_ADD_BG = _rgb_bg(56, 166, 96)
+TC_WORD_DEL_BG = _rgb_bg(179, 89, 107)
+
+# ── Theme ──────────────────────────────────────────────────────────────────────
+
+_THEME = {
+    "add_bg":      TC_DIFF_ADD_BG,
+    "del_bg":      TC_DIFF_DEL_BG,
+    "word_add_bg": TC_WORD_ADD_BG,
+    "word_del_bg": TC_WORD_DEL_BG,
+    "add_fg":      GREEN,
+    "del_fg":      RED,
+    "context_fg":  DIM,
+    "hunk_fg":     CYAN,
+    "header_fg":   DIM,
+}
+
+
+def getSyntaxTheme() -> dict:
+    """Return the active diff syntax-theme dict (truecolor or 8-color fallback)."""
+    return dict(_THEME)
+
+
+def _word_diff(old_line: str, new_line: str) -> tuple[str, str]:
+    """Return (old_highlighted, new_highlighted) with word-level change markers."""
+    if not _TRUECOLOR:
+        return old_line, new_line
+    tokens_old = re.split(r"(\W+)", old_line)
+    tokens_new = re.split(r"(\W+)", new_line)
+    sm = difflib.SequenceMatcher(None, tokens_old, tokens_new, autojunk=False)
+    old_out: list[str] = []
+    new_out: list[str] = []
+    for op, i1, i2, j1, j2 in sm.get_opcodes():
+        seg_old = "".join(tokens_old[i1:i2])
+        seg_new = "".join(tokens_new[j1:j2])
+        if op == "equal":
+            old_out.append(seg_old)
+            new_out.append(seg_new)
+        elif op == "replace":
+            old_out.append(f"{TC_WORD_DEL_BG}{seg_old}{RESET}")
+            new_out.append(f"{TC_WORD_ADD_BG}{seg_new}{RESET}")
+        elif op == "delete":
+            old_out.append(f"{TC_WORD_DEL_BG}{seg_old}{RESET}")
+        elif op == "insert":
+            new_out.append(f"{TC_WORD_ADD_BG}{seg_new}{RESET}")
+    return "".join(old_out), "".join(new_out)
+
 
 def computeGutterWidth(max_line: int) -> int:
     """Compute the width of the line number gutter."""
@@ -144,23 +201,50 @@ def renderColorDiff(
         output.append(f"  {BOLD}{short}{RESET}")
         output.append(f"  {DIM}{'─' * (len(short) + 2)}{RESET}")
 
-    for dl in parsed:
+    # Collect lines into remove/add pairs for word-level diff
+    # Build a list of (index, DiffLine) pairs for pairing
+    pairs: list[tuple[int, int]] = []  # (remove_idx, add_idx) in parsed
+    pending_removes: list[int] = []
+
+    for idx, dl in enumerate(parsed):
+        if dl.type == "remove":
+            pending_removes.append(idx)
+        elif dl.type == "add":
+            if pending_removes:
+                pairs.append((pending_removes.pop(0), idx))
+        else:
+            pending_removes.clear()
+
+    pair_map: dict[int, int] = {r: a for r, a in pairs}   # remove_idx → add_idx
+    pair_map_rev: dict[int, int] = {a: r for r, a in pairs}  # add_idx → remove_idx
+
+    rendered_word_diff: dict[int, str] = {}  # idx → rendered line content
+
+    for r_idx, a_idx in pairs:
+        old_hl, new_hl = _word_diff(parsed[r_idx].content, parsed[a_idx].content)
+        rendered_word_diff[r_idx] = old_hl
+        rendered_word_diff[a_idx] = new_hl
+
+    for idx, dl in enumerate(parsed):
         old_gutter = str(dl.old_num).rjust(gutter_w) if dl.old_num is not None else " " * gutter_w
         new_gutter = str(dl.new_num).rjust(gutter_w) if dl.new_num is not None else " " * gutter_w
+        content = rendered_word_diff.get(idx, dl.content)
 
         if dl.type == "header":
             output.append(f"  {DIM}{dl.content}{RESET}")
         elif dl.type == "hunk":
             output.append(f"  {CYAN}{dl.content}{RESET}")
         elif dl.type == "add":
+            add_bg = TC_DIFF_ADD_BG
             output.append(
                 f"  {GREEN_DIM}{' ' * gutter_w}{RESET} {GREEN}{new_gutter}{RESET} "
-                f"{GREEN}+{dl.content}{RESET}"
+                f"{add_bg}{GREEN}+{content}{RESET}"
             )
         elif dl.type == "remove":
+            del_bg = TC_DIFF_DEL_BG
             output.append(
                 f"  {RED_DIM}{old_gutter}{RESET} {RED}{' ' * gutter_w}{RESET} "
-                f"{RED}-{dl.content}{RESET}"
+                f"{del_bg}{RED}-{content}{RESET}"
             )
         elif dl.type == "context":
             output.append(
