@@ -14,6 +14,9 @@ services:
     environment:
       # Point to the Ollama service (used when cloud providers are unavailable)
       - OLLAMA_HOST=http://ollama:11434
+      # Disable bash sandbox — JARVIS runs as owner, full access
+      - JARVIS_NO_SANDBOX=1
+      - JARVIS_OWNER=ulrich
     depends_on:
       ollama:
         condition: service_started

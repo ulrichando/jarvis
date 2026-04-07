@@ -1238,6 +1238,10 @@ async def _interactive_pick(entries: list[str], title: str = "", current: int = 
 
 
 async def main():
+    # CLI runs as the owner — no sandbox, full permissions
+    os.environ.setdefault("JARVIS_NO_SANDBOX", "1")
+    os.environ.setdefault("JARVIS_OWNER", "ulrich")
+
     # Suppress asyncio "Cannot write to closing transport" and similar shutdown noise
     def _quiet_exception_handler(loop, context):
         msg = context.get("message", "")
