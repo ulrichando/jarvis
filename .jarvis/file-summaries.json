@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "updated_at": "2026-04-07T21:34:47.807556+00:00",
+  "updated_at": "2026-04-07T21:57:10.174748+00:00",
   "entries": {
     "src/cli/jarvis_cli.py": {
       "mtime": 1775575912.4433544,
@@ -2951,8 +2951,8 @@
       "lang": "Python"
     },
     "extensions/jarvis-screen/background.js": {
-      "mtime": 1775570717.8199146,
-      "size_bytes": 7659,
+      "mtime": 1775597698.815438,
+      "size_bytes": 7657,
       "symbols": [
         "persistRegistry",
         "restoreRegistry",
@@ -4666,8 +4666,8 @@
       "lang": "Python"
     },
     "extensions/jarvis-screen/manifest.json": {
-      "mtime": 1775570731.1512797,
-      "size_bytes": 1054,
+      "mtime": 1775597690.3954523,
+      "size_bytes": 1052,
       "symbols": [],
       "summary": "",
       "lang": "JSON"
@@ -9898,8 +9898,8 @@
       "lang": "Python"
     },
     ".jarvis/file-summaries.json": {
-      "mtime": 1775597626.5132089,
-      "size_bytes": 476432,
+      "mtime": 1775598911.2804606,
+      "size_bytes": 476428,
       "symbols": [],
       "summary": "",
       "lang": "JSON"
@@ -19570,8 +19570,8 @@
       "lang": "HTML"
     },
     "extensions/jarvis-screen/side_panel.js": {
-      "mtime": 1775570725.5194707,
-      "size_bytes": 16038,
+      "mtime": 1775597704.551428,
+      "size_bytes": 16036,
       "symbols": [
         "renderMarkdown",
         "hideEmpty",
@@ -19604,8 +19604,8 @@
       "lang": "Python"
     },
     ".github/workflows/deploy.yml": {
-      "mtime": 1775574901.5577483,
-      "size_bytes": 1651,
+      "mtime": 1775598706.40503,
+      "size_bytes": 799,
       "symbols": [],
       "summary": "",
       "lang": "YAML"
