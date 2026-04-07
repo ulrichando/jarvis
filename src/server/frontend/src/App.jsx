@@ -13,7 +13,7 @@ function App() {
   const [chatOpen, setChatOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const isDesktop = useMemo(() => new URLSearchParams(window.location.search).has('desktop'), [])
-  const [showReactor, setShowReactor] = useState(isDesktop)
+  const [showReactor, setShowReactor] = useState(true)
   const [reactorState, setReactorState] = useState('booting')
   const [audioLevel, setAudioLevel] = useState(0)
   const [cameraOn, setCameraOn] = useState(false)
@@ -23,63 +23,20 @@ function App() {
   const heardTimerRef = React.useRef(null)
 
   const wsUrl = useMemo(() => {
-    const host = window.location.host || '127.0.0.1:8765'
     const clientType = isDesktop ? 'desktop' : 'browser'
+    // Allow Python desktop app to inject the WS URL (needed for file:// origin)
+    if (window.__JARVIS_WS_URL__) return `${window.__JARVIS_WS_URL__}?client=${clientType}`
+    const host = window.location.host || '127.0.0.1:8765'
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     return `${proto}//${host}/ws?client=${clientType}`
   }, [isDesktop])
   const { messages: wsMessages, sendMessage, status: wsStatus } = useWebSocket(wsUrl)
   const theme = useTheme()
 
-  // Detect mode and register with server
+  // Mark desktop/browser mode on <html> and <body>
   useEffect(() => {
     document.documentElement.classList.add(isDesktop ? 'desktop-mode' : 'web-mode')
     document.body.classList.add(isDesktop ? 'desktop-mode' : 'web-mode')
-
-    const clientType = isDesktop ? 'desktop' : 'browser'
-
-    // Register with server — seamless handoff between desktop and browser
-    fetch('/api/client/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: clientType }),
-    })
-      .then((r) => r.json())
-      .then((data) => setShowReactor(data.show_reactor))
-      .catch(() => {})
-
-    // Poll for handoff: only one UI shows the reactor at a time
-    // Browser takes priority over desktop. When browser closes, desktop resumes.
-    const poll = setInterval(() => {
-      fetch('/api/client/status')
-        .then((r) => r.json())
-        .then((data) => {
-          if (isDesktop) {
-            // Desktop hides when browser is active, shows when browser leaves
-            setShowReactor(!data.browser)
-          } else {
-            // Browser hides when desktop is active AND browser just lost focus
-            // (This shouldn't normally happen — browser is always priority)
-            setShowReactor(true)
-          }
-        })
-        .catch(() => {})
-    }, 2000)
-
-    // Unregister on close
-    const unregister = () => {
-      navigator.sendBeacon(
-        '/api/client/unregister',
-        JSON.stringify({ type: clientType })
-      )
-    }
-    window.addEventListener('beforeunload', unregister)
-
-    return () => {
-      clearInterval(poll)
-      window.removeEventListener('beforeunload', unregister)
-      unregister()
-    }
   }, [isDesktop])
 
   // TTS playback with interrupt — global stop function
@@ -228,6 +185,11 @@ function App() {
     let animFrame, analyser, dataArray, stream
 
     async function startVoice() {
+      // mediaDevices unavailable on plain HTTP in WebKit (remote server) — skip silently
+      if (!navigator.mediaDevices?.getUserMedia) {
+        console.warn('[JARVIS] Voice init skipped: mediaDevices not available (HTTP origin)')
+        return
+      }
       try {
         // Try with echo cancellation first, fall back to basic audio if WebKit rejects it
         try {

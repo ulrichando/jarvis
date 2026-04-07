@@ -1,5 +1,5 @@
 // JARVIS Side Panel v2.0 — DOM-aware AI with multi-tab @mention
-const JARVIS_URL = 'http://10.10.0.50:8765'
+const JARVIS_URL = 'https://jarvis.local'
 
 const messagesEl   = document.getElementById('messages')
 const emptyState   = document.getElementById('emptyState')
