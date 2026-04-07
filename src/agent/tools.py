@@ -1964,8 +1964,11 @@ def _exec_bash(args: dict) -> str:
         except Exception as e:
             return f"Failed to launch: {e}"
 
-    # Check if sandbox requested
-    use_sandbox = not args.get("dangerouslyDisableSandbox", False)
+    # Check if sandbox requested — disabled when running in web server or explicitly bypassed
+    use_sandbox = (
+        not args.get("dangerouslyDisableSandbox", False)
+        and not os.environ.get("JARVIS_NO_SANDBOX")
+    )
 
     if use_sandbox:
         try:

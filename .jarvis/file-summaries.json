@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "updated_at": "2026-04-07T14:51:29.764537+00:00",
+  "updated_at": "2026-04-07T21:01:11.908883+00:00",
   "entries": {
     "src/cli/jarvis_cli.py": {
-      "mtime": 1775551100.6719913,
-      "size_bytes": 140848,
+      "mtime": 1775575912.4433544,
+      "size_bytes": 140860,
       "symbols": [
         "resolve_keybinding",
         "Spinner"
@@ -13,8 +13,8 @@
       "lang": "Python"
     },
     "src/agent/tools.py": {
-      "mtime": 1775540921.6426208,
-      "size_bytes": 131185,
+      "mtime": 1775576453.271342,
+      "size_bytes": 138076,
       "symbols": [],
       "summary": "",
       "lang": "Python"
@@ -318,8 +318,8 @@
       "lang": "Python"
     },
     "src/cli/display.py": {
-      "mtime": 1775557766.277833,
-      "size_bytes": 41077,
+      "mtime": 1775575071.9287026,
+      "size_bytes": 41596,
       "symbols": [
         "format_tokens"
       ],
@@ -1236,8 +1236,8 @@
       "lang": "Python"
     },
     "src/sandbox.py": {
-      "mtime": 1775543528.261558,
-      "size_bytes": 6034,
+      "mtime": 1775574921.517627,
+      "size_bytes": 7234,
       "symbols": [
         "FilesystemMode",
         "SandboxConfig",
@@ -9898,15 +9898,15 @@
       "lang": "Python"
     },
     ".jarvis/file-summaries.json": {
-      "mtime": 1775572577.2271936,
+      "mtime": 1775573489.7684584,
       "size_bytes": 475833,
       "symbols": [],
       "summary": "",
       "lang": "JSON"
     },
     "src/server/web_server.py": {
-      "mtime": 1775572006.184837,
-      "size_bytes": 165976,
+      "mtime": 1775576461.9713228,
+      "size_bytes": 169760,
       "symbols": [
         "JarvisWebServer"
       ],
@@ -9928,8 +9928,8 @@
       "lang": "JSON"
     },
     "src/reasoning/providers.py": {
-      "mtime": 1775572253.7874787,
-      "size_bytes": 63671,
+      "mtime": 1775575848.3237684,
+      "size_bytes": 65174,
       "symbols": [
         "Provider",
         "ProviderRegistry"
@@ -10006,8 +10006,8 @@
       "lang": "Python"
     },
     "src/server/frontend/src/App.jsx": {
-      "mtime": 1775571574.9046004,
-      "size_bytes": 22216,
+      "mtime": 1775573629.0484495,
+      "size_bytes": 22294,
       "symbols": [
         "App"
       ],
@@ -19591,6 +19591,24 @@
       "symbols": [],
       "summary": "",
       "lang": "JavaScript"
+    },
+    "src/server/device_registry.py": {
+      "mtime": 1775574904.9937274,
+      "size_bytes": 18859,
+      "symbols": [
+        "DeviceTrust",
+        "DeviceRecord",
+        "DeviceRegistry"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    ".github/workflows/deploy.yml": {
+      "mtime": 1775574901.5577483,
+      "size_bytes": 1651,
+      "symbols": [],
+      "summary": "",
+      "lang": "YAML"
     }
   }
 }

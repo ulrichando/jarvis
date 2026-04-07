@@ -1532,7 +1532,7 @@ async def main():
         info = [
             f"  {BOLD}JARVIS v2.0{RESET}",
             f"  {model} · {provider}",
-            f"  {cwd}",
+            f"  {DIM}ready{RESET}",
         ]
         lines = []
         for i in range(len(mascot)):

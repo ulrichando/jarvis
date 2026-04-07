@@ -3406,6 +3406,13 @@ class JarvisWebServer:
             })
             await asyncio.get_event_loop().run_in_executor(None, self._init_brain)
             await self.brain.start()
+            # Web server runs as owner — bypass permission prompts and sandbox
+            os.environ["JARVIS_NO_SANDBOX"] = "1"
+            try:
+                if hasattr(self.brain, "permissions"):
+                    self.brain.permissions.level = "bypass"
+            except Exception:
+                pass
             print("[JARVIS] Brain ready.")
 
             # Launch desktop UI — kill old instance first to ensure fresh assets
