@@ -298,7 +298,38 @@ class JarvisWebServer:
         peer = request.remote
         _client_label = request.rel_url.query.get('client', 'unknown')
         ws._client_label = _client_label  # store for disconnect log
-        print(f"[JARVIS] WS connect: {peer} [{_client_label}] ({len(self.clients)} active)")
+
+        # ── Device registration ──────────────────────────────────────────
+        # Determine if this connection carried a valid auth token
+        _token = request.rel_url.query.get('token', '')
+        _authenticated = bool(self._local_auth_token and _token == self._local_auth_token)
+        device = await self.devices.register(
+            ip=peer,
+            label=_client_label,
+            headers=dict(request.headers),
+            authenticated=_authenticated,
+        )
+        ws._device = device  # available to all message handlers
+
+        trust_name = device.trust.name
+        trust_emoji = {
+            "OWNER": "★",
+            "ELEVATED": "◆",
+            "STANDARD": "●",
+            "SANDBOXED": "○",
+        }.get(trust_name, "?")
+        print(
+            f"[JARVIS] WS connect: {peer} [{_client_label}] "
+            f"trust={trust_emoji}{trust_name} "
+            f"({len(self.clients)} active)"
+        )
+
+        # Tell the client who JARVIS thinks they are
+        await self._safe_send(ws, {
+            "type": "device_hello",
+            "device": device.to_dict(),
+            "sandbox": device.trust < DeviceTrust.ELEVATED,
+        })
 
         # If brain is already ready, tell the new client immediately
         if self.brain is not None:
@@ -340,6 +371,25 @@ class JarvisWebServer:
                         await ws.send_json({"type": "memories", "memories": m})
                     elif msg_type == "stats":
                         await ws.send_json({"type": "stats", "stats": self.brain.brain_stats()})
+                    elif msg_type == "devices":
+                        # JARVIS reports his network awareness
+                        action = data.get("action", "list")
+                        if action == "discover":
+                            discovered = await self.devices.discover_network(force=True)
+                            public_ip  = await self.devices.get_public_ip()
+                            await ws.send_json({
+                                "type": "devices",
+                                "discovered": discovered,
+                                "known": [d.to_dict() for d in self.devices.get_all()],
+                                "interfaces": self.devices.get_local_interfaces(),
+                                "public_ip": public_ip,
+                            })
+                        else:
+                            await ws.send_json({
+                                "type": "devices",
+                                "known": [d.to_dict() for d in self.devices.get_all()],
+                                "summary": self.devices.summary(),
+                            })
                     elif msg_type == "video_frame":
                         await self._handle_video_frame(ws, data)
                     elif msg_type == "tts_state":
