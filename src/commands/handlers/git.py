@@ -670,3 +670,92 @@ async def cmd_commit_push_pr(ctx: CommandContext) -> CommandResult:
         steps.append(f"PR error: {e}")
 
     return CommandResult(text="\n".join(steps))
+
+
+# ── /index ─────────────────────────────────────────────────────────────
+
+@command("index", description="Manage codebase index: fast project context for JARVIS",
+         usage="/index [build|rebuild|status|clear]", category="git", permission=PermLevel.STANDARD)
+async def cmd_index(ctx: CommandContext) -> CommandResult:
+    """Build and manage the two-tier codebase index.
+
+    /index build   — Walk tree, extract symbols, populate cache
+    /index rebuild — Force rebuild (ignores existing cache)
+    /index status  — Show index stats and token estimate
+    /index clear   — Delete the index cache
+    """
+    from src.indexer.builder import build_index, get_status, _summaries_path
+    import time
+
+    args = ctx.args.strip().lower() if ctx.args else "build"
+    action = args.split()[0] if args else "build"
+    root = Path.cwd()
+
+    jarvis_dir = root / ".jarvis"
+    if not jarvis_dir.exists() and action != "status":
+        return CommandResult(
+            text="No .jarvis/ found. Run /init first to initialize this project.",
+            success=False,
+        )
+
+    # ── status ──
+    if action == "status":
+        s = get_status(root)
+        if not s["initialized"]:
+            return CommandResult(text="Project not initialized. Run /init first.")
+        if not s["index_exists"]:
+            return CommandResult(
+                text="No index built yet. Run /index build to create one."
+            )
+        lines = [
+            "Codebase Index Status",
+            "=" * 40,
+            f"  Files indexed:     {s['entries']}",
+            f"  Files w/ symbols:  {s['files_with_symbols']}",
+            f"  Cache size:        {s['cache_size_bytes'] // 1024}KB",
+            f"  Est. tokens:       ~{s['estimated_tokens']}",
+        ]
+        if s["updated_at"]:
+            lines.append(f"  Last built:        {s['updated_at'][:19].replace('T', ' ')} UTC")
+        return CommandResult(text="\n".join(lines))
+
+    # ── clear ──
+    if action == "clear":
+        p = _summaries_path(root)
+        if p.exists():
+            p.unlink()
+            return CommandResult(text="Codebase index cleared.")
+        return CommandResult(text="No index to clear.")
+
+    # ── build / rebuild ──
+    force = action == "rebuild"
+    verb = "Rebuilding" if force else "Building"
+
+    lines = [f"{verb} codebase index for {root.name}..."]
+    t0 = time.monotonic()
+
+    stats = build_index(root=root, force=force)
+
+    if "error" in stats:
+        return CommandResult(text=stats["error"], success=False)
+
+    elapsed = stats["duration_ms"]
+    lines += [
+        "=" * 40,
+        f"  Files scanned:   {stats['files_scanned']} / {stats['total_found']} total",
+        f"  Files updated:   {stats['files_updated']}",
+        f"  Symbols found:   {stats['symbols_found']}",
+        f"  Cache size:      {stats['cache_size_bytes'] // 1024}KB",
+        f"  Duration:        {elapsed}ms",
+    ]
+    if stats.get("file_cap_hit"):
+        lines += [
+            "",
+            f"⚠ File cap hit: {stats['files_scanned']} of {stats['total_found']} files indexed.",
+            f"  To include more, increase MAX_FILES in src/indexer/builder.py (currently {stats['files_scanned']}).",
+        ]
+    lines += [
+        "",
+        "Index injected automatically at session start. Run /index status to see token estimate.",
+    ]
+    return CommandResult(text="\n".join(lines))
