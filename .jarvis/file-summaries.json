@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "updated_at": "2026-04-07T21:57:10.174748+00:00",
+  "updated_at": "2026-04-07T22:14:47.437274+00:00",
   "entries": {
     "src/cli/jarvis_cli.py": {
-      "mtime": 1775575912.4433544,
-      "size_bytes": 140860,
+      "mtime": 1775599255.1354856,
+      "size_bytes": 141026,
       "symbols": [
         "resolve_keybinding",
         "Spinner"
@@ -9352,8 +9352,8 @@
       "lang": "Python"
     },
     "docker-compose.yml": {
-      "mtime": 1775570505.7802134,
-      "size_bytes": 1718,
+      "mtime": 1775599266.5074704,
+      "size_bytes": 1841,
       "symbols": [],
       "summary": "",
       "lang": "YAML"
@@ -9898,15 +9898,15 @@
       "lang": "Python"
     },
     ".jarvis/file-summaries.json": {
-      "mtime": 1775598911.2804606,
+      "mtime": 1775599610.2863884,
       "size_bytes": 476428,
       "symbols": [],
       "summary": "",
       "lang": "JSON"
     },
     "src/server/web_server.py": {
-      "mtime": 1775576461.9713228,
-      "size_bytes": 169760,
+      "mtime": 1775599987.7133703,
+      "size_bytes": 171665,
       "symbols": [
         "JarvisWebServer"
       ],
