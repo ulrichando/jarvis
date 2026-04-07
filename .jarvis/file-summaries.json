@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "updated_at": "2026-04-07T21:01:11.908883+00:00",
+  "updated_at": "2026-04-07T21:34:47.807556+00:00",
   "entries": {
     "src/cli/jarvis_cli.py": {
       "mtime": 1775575912.4433544,
@@ -195,8 +195,8 @@
       "lang": "Python"
     },
     "src/desktop/app.py": {
-      "mtime": 1775539096.220143,
-      "size_bytes": 26594,
+      "mtime": 1775597657.6400387,
+      "size_bytes": 27874,
       "symbols": [
         "main"
       ],
@@ -4136,8 +4136,8 @@
       "lang": "Python"
     },
     "pyproject.toml": {
-      "mtime": 1775332155.180955,
-      "size_bytes": 828,
+      "mtime": 1775597539.247677,
+      "size_bytes": 842,
       "symbols": [],
       "summary": "",
       "lang": "TOML"
@@ -9898,8 +9898,8 @@
       "lang": "Python"
     },
     ".jarvis/file-summaries.json": {
-      "mtime": 1775573489.7684584,
-      "size_bytes": 475833,
+      "mtime": 1775597626.5132089,
+      "size_bytes": 476432,
       "symbols": [],
       "summary": "",
       "lang": "JSON"
@@ -10006,8 +10006,8 @@
       "lang": "Python"
     },
     "src/server/frontend/src/App.jsx": {
-      "mtime": 1775573629.0484495,
-      "size_bytes": 22294,
+      "mtime": 1775597672.1554828,
+      "size_bytes": 21253,
       "symbols": [
         "App"
       ],
@@ -13217,8 +13217,8 @@
       "lang": "Python"
     },
     "src/server/frontend/src/hooks/useWebSocket.js": {
-      "mtime": 1775435135.7799,
-      "size_bytes": 2577,
+      "mtime": 1775596255.164646,
+      "size_bytes": 2874,
       "symbols": [
         "useWebSocket"
       ],
@@ -19609,6 +19609,13 @@
       "symbols": [],
       "summary": "",
       "lang": "YAML"
+    },
+    "src/mcp/servers/jarvis_deploy.py": {
+      "mtime": 1775597545.599669,
+      "size_bytes": 17293,
+      "symbols": [],
+      "summary": "",
+      "lang": "Python"
     }
   }
 }
