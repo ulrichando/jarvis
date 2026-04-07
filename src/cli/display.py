@@ -132,6 +132,8 @@ TOOL_ICONS = {
     "computer_use": PLAY_ICON,        # ▶  computer
     "view_screen":  PLAY_ICON,        # ▶  screen
     "database":     FLAG_ICON,        # ⚑  db
+    "network_scan": REFRESH_ARROW,    # ↻  network / discovery
+    "send_sms":     PLAY_ICON,        # ▶  messaging
 }
 
 # Language detection from file extension
@@ -399,6 +401,17 @@ def tool_call_line(name: str, args: dict) -> str:
     elif name == "computer_use":
         action = args.get("action", "?")
         return f"  {icon} {DIM}Computer{RESET}  {action}"
+
+    elif name == "network_scan":
+        action = args.get("action", "status")
+        labels = {
+            "status":     "Device status",
+            "discover":   "LAN discovery",
+            "interfaces": "Local interfaces",
+            "public_ip":  "Public IP lookup",
+        }
+        label = labels.get(action, action)
+        return f"  {icon} {DIM}Network{RESET}  {CYAN}{label}{RESET}"
 
     elif name == "database":
         query = args.get("query", "")[:70]
