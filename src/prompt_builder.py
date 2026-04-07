@@ -44,6 +44,7 @@ class ProjectContext:
     git_diff_summary: str = ""
     instruction_files: list[InstructionFile] = field(default_factory=list)
     detected_stack: list[str] = field(default_factory=list)
+    codebase_index: str = ""  # Compact project index (two-tier: tree + cached symbols)
 
 
 class PromptBuilder:
@@ -70,6 +71,13 @@ class PromptBuilder:
 
         # Detect stack
         ctx.detected_stack = self._detect_stack()
+
+        # Codebase index (only if .jarvis/ exists — project initialized)
+        try:
+            from src.indexer.builder import get_context as _get_index_context
+            ctx.codebase_index = _get_index_context(root=self.cwd, max_chars=120000)
+        except Exception:
+            pass
 
         return ctx
 

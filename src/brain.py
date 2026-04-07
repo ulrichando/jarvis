@@ -712,6 +712,10 @@ class Brain:
                 git_info += f"\n{context.git_status[:500]}"
             reminder_parts.append(f"# Git\n{git_info}")
 
+        # Codebase index (two-tier: always-fresh tree + cached symbols)
+        if context.codebase_index:
+            reminder_parts.append(f"# Codebase Index\n{context.codebase_index}")
+
         # Environment
         import platform, datetime
         reminder_parts.append(
