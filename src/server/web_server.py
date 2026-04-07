@@ -32,6 +32,10 @@ from src.brain import Brain
 from src.speech.composer import compose_chunks
 from src.speech.stt import transcribe_audio, audio_bytes_to_numpy
 
+# Device registry — JARVIS knows who is talking to him
+from src.server.device_registry import get_registry, DeviceTrust
+from src.sandbox import SandboxConfig
+
 # Remote session management
 from src.remote.RemoteSessionManager import RemoteSessionManager
 from src.remote.session_manager import get_remote_session_manager, set_remote_session_manager
@@ -76,6 +80,8 @@ class JarvisWebServer:
         self.brain = None  # Deferred — initialized in run() after port binds
         self.clients: set[web.WebSocketResponse] = set()
         self._ws_rate: dict = {}  # ws -> (count, window_start)
+        # Device registry — tracks every client JARVIS has ever spoken to
+        self.devices = get_registry()
         # Remote session manager — shared singleton
         remote_config = get_remote_config()
         self.remote_manager = RemoteSessionManager(
