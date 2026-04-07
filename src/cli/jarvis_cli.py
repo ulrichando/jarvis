@@ -3364,6 +3364,30 @@ async def main():
                         _outputln(f"  {DIM}Unknown command: /{cmd_name}{RESET}")
                     continue
 
+            # ═══ LOCAL SHORTCUT: launch desktop overlay ═══
+            _ui_clean = re.sub(r'[^\w\s]', '', user_input.lower()).strip()
+            _desktop_triggers = (
+                "switch to desktop", "go to desktop", "move to desktop",
+                "desktop mode", "jarvis desktop", "back to desktop",
+                "open desktop", "launch desktop", "start desktop",
+            )
+            if any(t in _ui_clean for t in _desktop_triggers):
+                _disp = os.environ.get("DISPLAY", "")
+                if not _disp:
+                    try:
+                        _disp = open("/tmp/.jarvis-display").read().strip()
+                    except Exception:
+                        _disp = ":0"
+                _jarvis_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                env = {**os.environ, "DISPLAY": _disp}
+                subprocess.Popen(
+                    ["python3", "-c", "from src.desktop.app import main; main()"],
+                    cwd=_jarvis_root, start_new_session=True,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env,
+                )
+                _outputln(f"  {CYAN}●{RESET} Desktop overlay launching on this machine.")
+                continue
+
             # ═══ SHELL SHORTCUT: !command ═══
             if user_input.startswith("!"):
                 cmd = user_input[1:].strip()
