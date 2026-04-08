@@ -6,6 +6,10 @@
 JARVIS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$JARVIS_ROOT"
 
+# Full root access — no sandbox, no restrictions
+export JARVIS_NO_SANDBOX=1
+export JARVIS_OWNER=ulrich
+
 echo "╦╔═╗╦═╗╦  ╦╦╔═╗"
 echo "║╠═╣╠╦╝╚╗╔╝║╚═╗"
 echo "╩ ╩╚═╝ ╚╝ ╩╚═╝"

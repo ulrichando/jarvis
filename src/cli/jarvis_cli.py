@@ -3385,7 +3385,8 @@ async def main():
                     except Exception:
                         _disp = ":0"
                 _jarvis_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-                env = {**os.environ, "DISPLAY": _disp}
+                env = {**os.environ, "DISPLAY": _disp,
+                       "JARVIS_NO_SANDBOX": "1", "JARVIS_OWNER": "ulrich"}
                 # Kill any existing desktop instance via PID file
                 _pid_file = "/tmp/.jarvis-desktop.pid"
                 try:

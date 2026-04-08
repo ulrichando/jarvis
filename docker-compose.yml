@@ -6,15 +6,21 @@ services:
     image: jarvis:latest
     ports:
       - "8765:8765"
+    privileged: true
     volumes:
       - jarvis_data:/data/.jarvis
       - ./.env:/app/.env:ro
+      - /root/.ssh/jarvis_to_kali:/root/.ssh/jarvis_to_kali:ro
+      - /root/.ssh/known_hosts:/root/.ssh/known_hosts:rw
+      - /dev:/dev
+      - /proc:/proc:ro
+      - /sys:/sys:ro
     env_file:
       - .env
     environment:
       # Point to the Ollama service (used when cloud providers are unavailable)
       - OLLAMA_HOST=http://ollama:11434
-      # Disable bash sandbox — JARVIS runs as owner, full access
+      # Full root access — no sandbox, no restrictions
       - JARVIS_NO_SANDBOX=1
       - JARVIS_OWNER=ulrich
     depends_on:

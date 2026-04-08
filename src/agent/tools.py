@@ -1948,51 +1948,51 @@ def _exec_bash(args: dict) -> str:
     if not command:
         return "No command provided."
 
-    # ── Layer 1: blocked patterns (pipe-to-shell, dangerous rm) ──────
-    security_error = validate_bash_security(command)
-    if security_error:
-        return f"BLOCKED: {security_error}"
+    _full_access = bool(os.environ.get("JARVIS_NO_SANDBOX"))
 
-    # ── Layer 2: sed safety (448 lines of allowlist/denylist logic) ───
-    cmd_first_word = command.strip().split()[0] if command.strip() else ""
-    if cmd_first_word == "sed" or " sed " in command or command.strip().startswith("sed "):
-        sed_result = _check_sed_constraints(command)
-        if sed_result.behavior == "ask":
-            return f"BLOCKED: {sed_result.message}"
+    if not _full_access:
+        # ── Layer 1: blocked patterns (pipe-to-shell, dangerous rm) ──────
+        security_error = validate_bash_security(command)
+        if security_error:
+            return f"BLOCKED: {security_error}"
 
-    # ── Layer 3: sensitive path detection ────────────────────────────
-    # Extract paths from the command (simple heuristic: words starting with / or ~)
-    for token in command.split():
-        if token.startswith("/") or token.startswith("~"):
-            if _is_sensitive_path(token):
-                return f"BLOCKED: Command references sensitive path: {token}"
+        # ── Layer 2: sed safety ───────────────────────────────────────────
+        cmd_first_word = command.strip().split()[0] if command.strip() else ""
+        if cmd_first_word == "sed" or " sed " in command or command.strip().startswith("sed "):
+            sed_result = _check_sed_constraints(command)
+            if sed_result.behavior == "ask":
+                return f"BLOCKED: {sed_result.message}"
 
-    # ── Layer 4: hard block on system-critical commands ──────────────
-    _HARD_BLOCKED = {"shutdown", "reboot", "poweroff", "halt", "init"}
-    _PROCESS_KILL = {"kill", "killall", "pkill", "xkill"}
-    _cmd_words = command.strip().split()
-    _cmd_base = _cmd_words[0].split("/")[-1] if _cmd_words else ""
+        # ── Layer 3: sensitive path detection ────────────────────────────
+        for token in command.split():
+            if token.startswith("/") or token.startswith("~"):
+                if _is_sensitive_path(token):
+                    return f"BLOCKED: Command references sensitive path: {token}"
 
-    # Block shutdown/reboot entirely — JARVIS should never do this
-    if _cmd_base in _HARD_BLOCKED or any(w in _HARD_BLOCKED for w in _cmd_words):
-        return "BLOCKED: JARVIS cannot shutdown, reboot, or halt the system."
+        # ── Layer 4: hard block on system-critical commands ──────────────
+        _HARD_BLOCKED = {"shutdown", "reboot", "poweroff", "halt", "init"}
+        _PROCESS_KILL = {"kill", "killall", "pkill", "xkill"}
+        _cmd_words = command.strip().split()
+        _cmd_base = _cmd_words[0].split("/")[-1] if _cmd_words else ""
 
-    # Block kill commands that target critical processes
-    if _cmd_base in _PROCESS_KILL:
-        _PROTECTED_PROCESSES = {
-            "code", "vscode", "code-oss",  # VS Code
-            "Xorg", "Xwayland", "gnome-shell", "plasmashell", "kwin",  # Desktop
-            "systemd", "init", "dbus", "pulseaudio", "pipewire",  # System
-            "sshd", "NetworkManager", "nm-applet",  # Network
-            "gdm", "sddm", "lightdm",  # Display managers
-        }
-        target = " ".join(_cmd_words[1:]).lower()
-        for proc in _PROTECTED_PROCESSES:
-            if proc.lower() in target:
-                return f"BLOCKED: Cannot kill protected process '{proc}'. Close it through its own UI instead."
+        if _cmd_base in _HARD_BLOCKED or any(w in _HARD_BLOCKED for w in _cmd_words):
+            return "BLOCKED: JARVIS cannot shutdown, reboot, or halt the system."
 
-    # ── Layer 5: destructive command warning (informational) ─────────
-    destructive_warning = _get_destructive_warning(command)
+        if _cmd_base in _PROCESS_KILL:
+            _PROTECTED_PROCESSES = {
+                "code", "vscode", "code-oss",
+                "Xorg", "Xwayland", "gnome-shell", "plasmashell", "kwin",
+                "systemd", "init", "dbus", "pulseaudio", "pipewire",
+                "sshd", "NetworkManager", "nm-applet",
+                "gdm", "sddm", "lightdm",
+            }
+            target = " ".join(_cmd_words[1:]).lower()
+            for proc in _PROTECTED_PROCESSES:
+                if proc.lower() in target:
+                    return f"BLOCKED: Cannot kill protected process '{proc}'."
+
+    # ── Destructive warning (informational only, never blocks) ───────
+    destructive_warning = _get_destructive_warning(command) if not _full_access else ""
 
     cmd_first = command.strip().split()[0].split("/")[-1] if command.strip() else ""
 
