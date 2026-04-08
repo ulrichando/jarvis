@@ -297,6 +297,7 @@ class JarvisWebServer:
                     # Kill any existing desktop instance via PID file
                     "kill $(cat /tmp/.jarvis-desktop.pid 2>/dev/null) 2>/dev/null; sleep 0.5; "
                     f"export DISPLAY=$(cat /tmp/.jarvis-display 2>/dev/null || echo ':0'); "
+                    "export JARVIS_NO_SANDBOX=1; export JARVIS_OWNER=ulrich; "
                     f"cd /home/{owner_user}/Documents/Projects/jarvis && "
                     "nohup python3 -c 'from src.desktop.app import main; main()' "
                     "> /tmp/jarvis-desktop.log 2>&1 &",
