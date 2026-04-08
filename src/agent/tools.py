@@ -160,8 +160,9 @@ TOOL_SCHEMAS = [
                 '(e.g., cd "path with spaces/file.txt")\n'
                 "- Try to maintain your current working directory throughout the session by using absolute paths "
                 "and avoiding usage of `cd`. You may use `cd` if the User explicitly requests it.\n"
-                "- You may specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). By default, "
-                "your command will timeout after 120000ms (2 minutes).\n"
+                "- You may specify an optional timeout in seconds (default 60, max 600). "
+                "For long-running commands (network scans, builds, installs) always pass an explicit timeout — "
+                "e.g. nmap on a /24 subnet with vuln scripts needs timeout=600.\n"
                 "- You can use the `run_in_background` parameter to run the command in the background. Only use "
                 "this if you don't need the result immediately and are OK being notified when the command completes later.\n"
                 "- When issuing multiple commands:\n"
@@ -189,8 +190,8 @@ TOOL_SCHEMAS = [
                     },
                     "timeout": {
                         "type": "integer",
-                        "description": "Timeout in seconds (default 30, max 300)",
-                        "default": 30,
+                        "description": "Timeout in seconds (default 60, max 600). Use 300-600 for network scans, builds, or installs.",
+                        "default": 60,
                     },
                 },
                 "required": ["command"],

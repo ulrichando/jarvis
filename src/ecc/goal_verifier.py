@@ -102,8 +102,10 @@ class GoalVerifier:
             if re.search(p, combined, re.IGNORECASE)
         )
 
-        # Only flag as incomplete when failures clearly outnumber successes
-        if failure_hits >= 2 and failure_hits > success_hits:
+        # Only flag as incomplete when failures clearly outnumber successes.
+        # Threshold raised to 3 to avoid false-positives from security/network
+        # tool output (nmap, vuln scanners) which produce benign "ERROR"/"could not" noise.
+        if failure_hits >= 3 and failure_hits > success_hits * 2:
             errors = []
             for p in _FAILURE_PATTERNS:
                 m = re.search(p, combined, re.IGNORECASE)
