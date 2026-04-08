@@ -1,4 +1,5 @@
 """Security & System commands -- pentesting, recon, auditing for Kali workflows."""
+import json
 import os
 import re
 import stat
@@ -7,6 +8,7 @@ import time
 from pathlib import Path
 
 from src.commands.registry import command, CommandContext, CommandResult, PermLevel
+from src.config import JARVIS_HOME
 
 
 def _run(cmd: list[str], timeout: int = 120) -> tuple[int, str, str]:
@@ -816,3 +818,250 @@ async def cmd_pentest(ctx: CommandContext) -> CommandResult:
         )
     except Exception as e:
         return CommandResult(text=f"Pentest failed: {e}", success=False)
+
+
+# ── Scan cost persistence ─────────────────────────────────────────────
+
+_SCAN_COSTS_FILE = JARVIS_HOME / "scan_costs.jsonl"
+
+
+def _save_scan_cost_record(record: dict) -> None:
+    """Append one scan cost record to ~/.jarvis/scan_costs.jsonl."""
+    try:
+        _SCAN_COSTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(_SCAN_COSTS_FILE, "a") as fh:
+            fh.write(json.dumps(record) + "\n")
+    except Exception:
+        pass
+
+
+# ── /vuln-scan ────────────────────────────────────────────────────────
+
+@command(
+    "vuln-scan",
+    aliases=["vulnscan", "vs"],
+    description="Full automated vulnerability discovery pipeline (Glasswing-style)",
+    usage="/vuln-scan <path|git-url|host:port> [--no-exploit] [--report-dir <dir>]",
+    category="security",
+    permission=PermLevel.FULL,
+)
+async def cmd_vuln_scan(ctx: CommandContext) -> CommandResult:
+    """Run the 8-stage Glasswing vulnerability discovery pipeline.
+
+    Stages:
+      1. File risk ranking          — scores every file 1-5 by attack surface
+      2. Parallel hypothesis engine — dispatches sub-agents per high-risk file
+      3. Static / taint analysis    — traces untrusted input to dangerous sinks
+      4. Confirmation loop          — deep-dive per hypothesis, reject false positives
+      5. False positive filter      — second-pass validation agent
+      6. CVSS severity scoring      — critical / high / medium / low with reasoning
+      7. Report generation          — security-report.md + security-findings.json
+      8. Defensive review           — vulnmgmt, secarch, threathunt, threatintel,
+                                      forensics, devsecops perspectives merged in
+
+    Token and cost per scan are logged to ~/.jarvis/scan_costs.jsonl.
+    Use /scan-costs to review the history.
+    """
+    args = ctx.args.strip()
+    if not args:
+        return CommandResult(
+            text="Usage: /vuln-scan <path|git-url|host:port> [--no-exploit] [--report-dir <dir>]",
+            success=False,
+        )
+
+    parts = args.split()
+    no_exploit = "--no-exploit" in parts
+    parts = [p for p in parts if p != "--no-exploit"]
+
+    report_dir: str | None = None
+    if "--report-dir" in parts:
+        idx = parts.index("--report-dir")
+        if idx + 1 < len(parts):
+            report_dir = parts[idx + 1]
+            parts = parts[:idx] + parts[idx + 2:]
+
+    target = " ".join(parts).strip()
+    if not target:
+        return CommandResult(
+            text="Usage: /vuln-scan <path|git-url|host:port> [--no-exploit] [--report-dir <dir>]",
+            success=False,
+        )
+
+    if not ctx.brain:
+        return CommandResult(text="Error: brain context not available", success=False)
+
+    # ── Snapshot cost tracker before the scan ────────────────────────
+    from src.agent.cost_tracker import get_tracker as _get_ct, CostTracker
+    ct = _get_ct()
+    cost_before = ct.get_session_cost()
+    tokens_before = {m: u.total_tokens for m, u in ct.get_session_usage().items()}
+    scan_start = time.time()
+    scan_id = f"scan-{int(scan_start)}"
+
+    # ── Build orchestrator task ──────────────────────────────────────
+    exploit_note = (
+        "SKIP stage 6 (exploit-builder) — --no-exploit flag was set."
+        if no_exploit else
+        "Run stage 6 (exploit-builder) on all CRITICAL and HIGH findings (CVSS >= 7.0)."
+    )
+    report_note = (
+        f"Write final reports to {report_dir}/ instead of the target directory."
+        if report_dir else
+        "Write final reports (security-report.md, security-findings.json) into the target directory."
+    )
+
+    task = (
+        f"Run the full Glasswing vulnerability discovery pipeline on:\n\n"
+        f"  TARGET: {target}\n"
+        f"  SCAN ID: {scan_id}\n\n"
+        f"Use the sec-orchestrator agent to coordinate the complete pipeline:\n\n"
+        f"  Stage 1 — file-risk-ranker: rank ALL files by attack surface (score 0-100).\n"
+        f"            Process files in descending score order.\n\n"
+        f"  Stage 2 — vuln-hypothesis-engine: dispatch in parallel batches of 5 for\n"
+        f"            the top 20 files (score > 40). Cover: memory safety, injection,\n"
+        f"            auth bypass, logic errors, race conditions, deserialization, crypto.\n\n"
+        f"  Stage 3 — static-analyzer: for each hypothesis, trace data flows from\n"
+        f"            untrusted input sources through transforms to dangerous sinks.\n"
+        f"            Check for missing validation, unsafe pointer ops, integer overflows,\n"
+        f"            use-after-free, bounds failures.\n\n"
+        f"  Stage 4 — confirmation-filter: deep-dive per (hypothesis + taint trace) pair.\n"
+        f"            Issue CONFIRMED / FALSE_POSITIVE / NEEDS_MANUAL with confidence.\n\n"
+        f"  Stage 5 — Second-pass false positive filter: re-review all CONFIRMED findings\n"
+        f"            and drop minor edge cases that affect almost no users.\n\n"
+        f"  Stage 6 — severity-scorer: CVSS 3.1 for all confirmed findings. Include\n"
+        f"            exploitability, attack vector, impact, and affected systems.\n"
+        f"            {exploit_note}\n\n"
+        f"  Stage 7 — report-writer: produce per-file vulnerability report with vuln type,\n"
+        f"            file path, line numbers, severity, risk explanation, remediation,\n"
+        f"            and CWE classification. {report_note}\n\n"
+        f"  Stage 8 — Defensive review: dispatch the following agents IN PARALLEL to\n"
+        f"            review the confirmed findings list and contribute their perspective:\n"
+        f"            • vulnmgmt   — prioritization, patch/mitigate/accept decisions\n"
+        f"            • secarch    — architectural root causes and systemic fixes\n"
+        f"            • threathunt — detection opportunities and hunt queries\n"
+        f"            • threatintel — known CVE/exploit alignment and threat actor TTPs\n"
+        f"            • forensics  — forensic indicators of exploitation\n"
+        f"            • devsecops  — CI/CD gates and SAST rules to prevent recurrence\n"
+        f"            Merge their outputs into the executive summary as a 'Defensive\n"
+        f"            Analysis' section with a unified prioritized remediation list.\n\n"
+        f"Announce each stage transition: [STAGE N] Starting <name>...\n"
+        f"Output the executive summary and top-10 prioritized findings when done."
+    )
+
+    result = await ctx.brain.think(task)
+
+    # ── Compute and log cost delta ───────────────────────────────────
+    scan_duration = time.time() - scan_start
+    cost_after = ct.get_session_cost()
+    cost_delta = cost_after - cost_before
+    tokens_after = {m: u.total_tokens for m, u in ct.get_session_usage().items()}
+    all_models = set(list(tokens_before.keys()) + list(tokens_after.keys()))
+    tokens_delta = {
+        m: tokens_after.get(m, 0) - tokens_before.get(m, 0)
+        for m in all_models
+        if tokens_after.get(m, 0) - tokens_before.get(m, 0) > 0
+    }
+    total_delta_tokens = sum(tokens_delta.values())
+
+    _save_scan_cost_record({
+        "scan_id": scan_id,
+        "target": target,
+        "timestamp": scan_start,
+        "duration_s": round(scan_duration, 1),
+        "cost_usd": round(cost_delta, 6),
+        "tokens_by_model": tokens_delta,
+        "no_exploit": no_exploit,
+    })
+
+    cost_line = (
+        f"\n\n{'─' * 50}\n"
+        f"Scan cost: ${cost_delta:.4f} | "
+        f"{CostTracker.format_tokens(total_delta_tokens)} tokens | "
+        f"{scan_duration:.0f}s elapsed | ID: {scan_id}"
+    )
+    return CommandResult(
+        text=result + cost_line,
+        data={"scan_id": scan_id, "cost_usd": cost_delta, "tokens": total_delta_tokens},
+    )
+
+
+# ── /scan-costs ───────────────────────────────────────────────────────
+
+@command(
+    "scan-costs",
+    aliases=["vulncosts", "scancost"],
+    description="Show token and cost history for /vuln-scan runs",
+    usage="/scan-costs [--last N]",
+    category="security",
+    permission=PermLevel.READ_ONLY,
+)
+async def cmd_scan_costs(ctx: CommandContext) -> CommandResult:
+    """Display per-scan token consumption and estimated API cost history.
+
+    Records are stored in ~/.jarvis/scan_costs.jsonl (one JSON object per line).
+    Each record contains: scan_id, target, timestamp, duration_s, cost_usd,
+    tokens_by_model, no_exploit flag.
+    """
+    from src.agent.cost_tracker import CostTracker
+
+    parts = ctx.args.strip().split()
+    last_n = 10
+    if "--last" in parts:
+        idx = parts.index("--last")
+        if idx + 1 < len(parts) and parts[idx + 1].isdigit():
+            last_n = int(parts[idx + 1])
+
+    if not _SCAN_COSTS_FILE.exists():
+        return CommandResult(
+            text="No scan cost records found. Run /vuln-scan to start tracking costs."
+        )
+
+    records: list[dict] = []
+    with open(_SCAN_COSTS_FILE) as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                try:
+                    records.append(json.loads(line))
+                except Exception:
+                    pass
+
+    if not records:
+        return CommandResult(text="No scan cost records found.")
+
+    recent = records[-last_n:]
+    lifetime_cost = sum(r.get("cost_usd", 0) for r in records)
+    lifetime_tokens = sum(sum(r.get("tokens_by_model", {}).values()) for r in records)
+
+    lines = [
+        f"Scan Cost History  (showing {len(recent)} of {len(records)} scans)",
+        "=" * 60,
+        f"  Lifetime: {len(records)} scans | "
+        f"${lifetime_cost:.4f} total | "
+        f"{CostTracker.format_tokens(lifetime_tokens)} tokens",
+        "",
+    ]
+
+    for r in reversed(recent):
+        ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(r.get("timestamp", 0)))
+        target = r.get("target", "unknown")[:52]
+        cost = r.get("cost_usd", 0)
+        dur = r.get("duration_s", 0)
+        tok = sum(r.get("tokens_by_model", {}).values())
+        flag = " [no-exploit]" if r.get("no_exploit") else ""
+        lines.append(f"  [{ts}]  {target}{flag}")
+        lines.append(
+            f"    ${cost:.4f} | {CostTracker.format_tokens(tok)} tokens | "
+            f"{dur:.0f}s | {r.get('scan_id', '')}"
+        )
+        for model, toks in r.get("tokens_by_model", {}).items():
+            label = model.split("/")[-1]
+            for pfx in ("claude-", "gpt-"):
+                if label.startswith(pfx):
+                    label = label[len(pfx):]
+                    break
+            short = label.split("-")[0] if "-" in label else label
+            lines.append(f"      {short}: {CostTracker.format_tokens(toks)}")
+        lines.append("")
+
+    return CommandResult(text="\n".join(lines))

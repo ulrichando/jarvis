@@ -449,7 +449,7 @@ class ParallelDispatcher:
         provider = ""
         try:
             if mode == "full_loop":
-                response = await asyncio.wait_for(
+                response, provider = await asyncio.wait_for(
                     self._full_loop(target, query, max_iterations),
                     timeout=timeout,
                 )

@@ -186,7 +186,7 @@ class Swarm:
         )
 
         try:
-            response = await self.reasoner.query(
+            response, _ = await self.reasoner.query(
                 prompt,
                 system_prompt="You decompose tasks for parallel execution. Return ONLY valid JSON array.",
                 history=None,
@@ -244,7 +244,7 @@ class Swarm:
 
             for iteration in range(agent.max_iterations):
                 try:
-                    response = await asyncio.wait_for(
+                    response, _ = await asyncio.wait_for(
                         self.reasoner.query_with_tools(messages, tools),
                         timeout=timeout,
                     )
@@ -316,10 +316,13 @@ class Swarm:
 
     async def _run_single(self, task: str, context: str, timeout: float) -> str:
         """Fallback: run as a single agent when decomposition fails."""
-        return await self._run_subtask(
+        result = await self._run_subtask(
             subtask=task, agent_type="coder",
             context=context, timeout=timeout,
         )
+        if result.status == "done":
+            return result.result
+        return f"[{result.status}] {result.result}"
 
     async def _aggregate(self, task: str, results: list[SubtaskResult]) -> str:
         """Aggregate results from all sub-agents into final output."""
@@ -343,7 +346,7 @@ class Swarm:
                     f"Synthesize these results into a clear, unified summary. "
                     f"Report what was accomplished and any important details."
                 )
-                synthesis = await self.reasoner.query(
+                synthesis, _ = await self.reasoner.query(
                     prompt,
                     system_prompt="You synthesize results from multiple agents into a clear summary.",
                     history=None,
