@@ -272,7 +272,7 @@ class CoordinatorAgent:
         )
 
         try:
-            response = await self._reasoner.query(
+            response, _ = await self._reasoner.query(
                 prompt,
                 system_prompt="You decompose engineering tasks into parallel subtasks with dependency ordering. Return ONLY valid JSON.",
                 history=None,
@@ -673,7 +673,7 @@ class CoordinatorAgent:
         )
 
         try:
-            synthesis = await self._reasoner.query(
+            synthesis, _ = await self._reasoner.query(
                 prompt,
                 system_prompt="You synthesize multiple research/implementation results into a coherent summary.",
                 history=None,

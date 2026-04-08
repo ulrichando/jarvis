@@ -348,7 +348,7 @@ class AgentCoordinator:
             f"Example: [\"Create manifest.json with extension config\", \"Create popup.html with chat UI\", \"Create background.js with WebSocket connection\"]"
         )
         try:
-            response = await reasoner.query(
+            response, _ = await reasoner.query(
                 prompt,
                 system_prompt="You decompose tasks into parallel subtasks. Return ONLY a valid JSON array of strings. No explanation.",
                 history=None,

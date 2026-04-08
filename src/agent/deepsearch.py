@@ -152,7 +152,7 @@ class DeepSearch:
             f"Return ONLY a JSON array of strings: [\"query1\", \"query2\", ...]"
         )
         try:
-            response = await self.reasoner.query(
+            response, _ = await self.reasoner.query(
                 prompt,
                 system_prompt="You generate targeted web search queries for research. Return ONLY a JSON array of strings.",
                 history=None,
@@ -243,7 +243,7 @@ class DeepSearch:
         )
 
         try:
-            response = await self.reasoner.query(
+            response, _ = await self.reasoner.query(
                 prompt,
                 system_prompt="You analyze research findings. Extract new facts and identify remaining knowledge gaps. Return ONLY valid JSON.",
                 history=None,
@@ -286,7 +286,7 @@ class DeepSearch:
             f"Be factual. Only include information from the findings above."
         )
 
-        report = await self.reasoner.query(
+        report, _ = await self.reasoner.query(
             prompt,
             system_prompt="You write clear, factual research reports. Cite sources. Be thorough but concise.",
             history=None,
