@@ -2675,21 +2675,25 @@ class JarvisWebServer:
                     if is_local:
                         # Just check model exists via Ollama API (fast)
                         import urllib.request as _ur
-                        r = _ur.urlopen(f"{base_url.replace('/v1','')}/api/tags", timeout=3)
-                        models_data = json.loads(r.read())
+                        def _check_ollama():
+                            r = _ur.urlopen(f"{base_url.replace('/v1','')}/api/tags", timeout=3)
+                            return json.loads(r.read())
+                        models_data = await asyncio.get_event_loop().run_in_executor(None, _check_ollama)
                         available = [m["name"] for m in models_data.get("models", [])]
                         if model not in available and not any(model in m for m in available):
                             return web.json_response({"ok": False, "error": f"Model '{model}' not found. Available: {', '.join(available[:5])}"})
                     elif ptype == "anthropic":
                         import anthropic
                         client = anthropic.Anthropic(api_key=api_key)
-                        client.messages.create(model=model, max_tokens=10,
-                            messages=[{"role": "user", "content": "hi"}])
+                        await asyncio.get_event_loop().run_in_executor(
+                            None, lambda: client.messages.create(model=model, max_tokens=10,
+                                messages=[{"role": "user", "content": "hi"}]))
                     else:
                         import openai
                         client = openai.OpenAI(api_key=api_key, base_url=base_url)
-                        client.chat.completions.create(model=model, max_tokens=10,
-                            messages=[{"role": "user", "content": "hi"}], timeout=10)
+                        await asyncio.get_event_loop().run_in_executor(
+                            None, lambda: client.chat.completions.create(model=model, max_tokens=10,
+                                messages=[{"role": "user", "content": "hi"}], timeout=10))
                 except Exception as e:
                     return web.json_response({"ok": False, "error": str(e)[:200]})
 
@@ -2759,8 +2763,10 @@ class JarvisWebServer:
             """Check if Ollama is running and list models."""
             try:
                 import urllib.request
-                r = urllib.request.urlopen("http://localhost:11434/api/tags", timeout=3)
-                data = json.loads(r.read())
+                def _check():
+                    r = urllib.request.urlopen("http://localhost:11434/api/tags", timeout=3)
+                    return json.loads(r.read())
+                data = await asyncio.get_event_loop().run_in_executor(None, _check)
                 models = [m["name"] for m in data.get("models", [])]
                 return web.json_response({"online": True, "models": models})
             except Exception:
@@ -2773,12 +2779,15 @@ class JarvisWebServer:
             if not model:
                 return web.json_response({"ok": False, "error": "No model specified"}, status=400)
             import subprocess
-            proc = subprocess.Popen(
-                ["ollama", "pull", model],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            )
-            stdout, stderr = proc.communicate(timeout=300)
-            if proc.returncode == 0:
+            def _pull():
+                proc = subprocess.Popen(
+                    ["ollama", "pull", model],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                )
+                stdout, stderr = proc.communicate(timeout=300)
+                return proc.returncode, stderr
+            returncode, stderr = await asyncio.get_event_loop().run_in_executor(None, _pull)
+            if returncode == 0:
                 return web.json_response({"ok": True, "model": model})
             return web.json_response({"ok": False, "error": stderr.decode()[:200]})
 
@@ -2797,8 +2806,10 @@ class JarvisWebServer:
                 vram_gb = 0
                 if has_gpu:
                     import subprocess as _sp_vram
-                    r = _sp_vram.run(['nvidia-smi', '--query-gpu=memory.free', '--format=csv,noheader,nounits'],
-                        capture_output=True, text=True, timeout=3)
+                    r = await asyncio.get_event_loop().run_in_executor(
+                        None, lambda: _sp_vram.run(
+                            ['nvidia-smi', '--query-gpu=memory.free', '--format=csv,noheader,nounits'],
+                            capture_output=True, text=True, timeout=3))
                     if r.returncode == 0:
                         vram_gb = int(r.stdout.strip()) / 1024
             except Exception:
@@ -2909,8 +2920,10 @@ class JarvisWebServer:
                 try:
                     hf_url = f"https://huggingface.co/api/models/{query}"
                     req = urllib.request.Request(hf_url, headers={"User-Agent": "JARVIS/3.0"})
-                    resp = urllib.request.urlopen(req, timeout=5)
-                    m = json.loads(resp.read())
+                    def _hf_lookup():
+                        resp = urllib.request.urlopen(req, timeout=5)
+                        return json.loads(resp.read())
+                    m = await asyncio.get_event_loop().run_in_executor(None, _hf_lookup)
                     tags = m.get("tags", [])
                     has_gguf = any("gguf" in str(t).lower() for t in tags)
                     results.append({
@@ -2935,8 +2948,10 @@ class JarvisWebServer:
                     filter_param = f"&filter={hf_filter}" if hf_filter else ""
                     hf_url = f"https://huggingface.co/api/models?search={search_q}{filter_param}&sort=downloads&limit=5"
                     req = urllib.request.Request(hf_url, headers={"User-Agent": "JARVIS/3.0"})
-                    resp = urllib.request.urlopen(req, timeout=5)
-                    hf_data = json.loads(resp.read())
+                    def _hf_search():
+                        resp = urllib.request.urlopen(req, timeout=5)
+                        return json.loads(resp.read())
+                    hf_data = await asyncio.get_event_loop().run_in_executor(None, _hf_search)
                     for m in hf_data:
                         mid = m.get("modelId", "")
                         if any(r["id"] == mid for r in results):
@@ -2982,16 +2997,18 @@ class JarvisWebServer:
                 # Pull via Ollama
                 import subprocess
                 try:
-                    proc = subprocess.Popen(
-                        ["ollama", "pull", model],
-                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    )
-                    stdout, stderr = proc.communicate(timeout=600)
-                    if proc.returncode == 0:
+                    def _ollama_download():
+                        proc = subprocess.Popen(
+                            ["ollama", "pull", model],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        )
+                        stdout, stderr = proc.communicate(timeout=600)
+                        return proc.returncode, stderr
+                    returncode, stderr = await asyncio.get_event_loop().run_in_executor(None, _ollama_download)
+                    if returncode == 0:
                         return web.json_response({"ok": True, "model": model})
                     return web.json_response({"ok": False, "error": stderr.decode()[:200]})
                 except subprocess.TimeoutExpired:
-                    proc.kill()
                     return web.json_response({"ok": False, "error": "Download timed out (10 min limit)"})
                 except FileNotFoundError:
                     return web.json_response({"ok": False, "error": "Ollama not installed. Run: curl -fsSL https://ollama.ai/install.sh | sh"})
@@ -2999,12 +3016,15 @@ class JarvisWebServer:
                 # For HuggingFace GGUF, try ollama pull with full path
                 import subprocess
                 try:
-                    proc = subprocess.Popen(
-                        ["ollama", "pull", f"hf.co/{model}"],
-                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    )
-                    stdout, stderr = proc.communicate(timeout=600)
-                    if proc.returncode == 0:
+                    def _hf_download():
+                        proc = subprocess.Popen(
+                            ["ollama", "pull", f"hf.co/{model}"],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        )
+                        stdout, stderr = proc.communicate(timeout=600)
+                        return proc.returncode, stderr
+                    returncode, stderr = await asyncio.get_event_loop().run_in_executor(None, _hf_download)
+                    if returncode == 0:
                         return web.json_response({"ok": True, "model": model})
                     return web.json_response({"ok": False, "error": stderr.decode()[:200]})
                 except Exception as e:
