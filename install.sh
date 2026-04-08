@@ -3,7 +3,7 @@
 # JARVIS Installer — one command to install JARVIS on any Linux system
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/ulrichando/jarvis/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/ulrichando/jarvis/master/install.sh | bash
 #
 # Or locally:
 #   bash install.sh
