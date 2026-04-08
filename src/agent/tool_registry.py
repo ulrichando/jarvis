@@ -407,7 +407,14 @@ def persist_large_result(
     # Persist the full output to disk.
     results_dir = os.path.join(session_dir, "tool-results")
     os.makedirs(results_dir, exist_ok=True)
-    out_path = os.path.join(results_dir, f"{tool_use_id}.json")
+    # Sanitize tool_use_id to prevent path traversal
+    safe_id = os.path.basename(tool_use_id).replace("..", "_")
+    if not safe_id:
+        safe_id = "unknown"
+    out_path = os.path.join(results_dir, f"{safe_id}.json")
+    # Verify resolved path stays within results_dir
+    if not os.path.abspath(out_path).startswith(os.path.abspath(results_dir)):
+        return ToolResult(content=content[:limit], is_truncated=True, original_size=original_size)
 
     payload = {
         "tool": tool_name,
