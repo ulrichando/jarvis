@@ -2779,40 +2779,25 @@ async def main():
         _tool_states = []
         _tokens_this_turn = 0
 
-        # Async status dot — JARVIS style (● blinks while working)
+        # Spinner — animates inside the prompt line (replaces ❯ with braille frames).
+        # No separate spinner row, no \033[2A cursor-up needed, scroll-safe.
         _spin_task = None
         _spin_label = ["Thinking..."]
-
-        # Spinner writes on a dedicated line ABOVE the input frame.
-        # Frame layout during thinking:
-        #   ⠋ Thinking... 4s       ← spinner line (updated in place)
-        #   ──────────────────────
-        #   ❯                      ← input frame (always visible)
-        #   ──────────────────────
-        #   ? for shortcuts
-        _spin_line_active = [False]
 
         async def _spin_loop():
             i = 0
             t0 = time.time()
-            # Draw initial spinner line + frame below it
-            _erase_frame()
-            _write(f"  {BLUE}{SPINNER_FRAMES[0]}{RESET} {DIM}{_spin_label[0]}{RESET}\033[K\n")
-            _spin_line_active[0] = True
-            _draw_input_frame("", _output_buf_text[0])
-
             try:
-              while True:
-                elapsed = time.time() - t0
-                frame = SPINNER_FRAMES[i % len(SPINNER_FRAMES)]
-                elapsed_str = f" {DIM}{elapsed:.0f}s{RESET}" if elapsed >= 2 else ""
-                # Go to spinner line: cursor at prompt, up 2 (past top-sep to spinner)
-                _write("\033[2A\r")
-                _write(f"  {BLUE}{frame}{RESET} {DIM}{_spin_label[0]}{RESET}{elapsed_str}\033[K")
-                _write("\033[2B")  # back to prompt (down 2: top-sep then prompt)
-                sys.stdout.flush()
-                i += 1
-                await asyncio.sleep(0.12)
+                while True:
+                    elapsed = time.time() - t0
+                    frame = SPINNER_FRAMES[i % len(SPINNER_FRAMES)]
+                    elapsed_str = f" {DIM}{elapsed:.0f}s{RESET}" if elapsed >= 2 else ""
+                    # Redraw the prompt line in place: go to prompt row (cursor is there),
+                    # overwrite from column 0 so ❯ becomes the spinner frame.
+                    _write(f"\r\033[K  {BLUE}{frame}{RESET} {DIM}{_spin_label[0]}{RESET}{elapsed_str}")
+                    sys.stdout.flush()
+                    i += 1
+                    await asyncio.sleep(0.12)
             except asyncio.CancelledError:
                 pass  # Expected when _stop_spin() cancels
 
@@ -2820,6 +2805,9 @@ async def main():
             nonlocal _spin_task
             _stop_spin()
             _spin_label[0] = label
+            # Ensure frame is drawn so cursor is on the prompt line
+            if not _frame_drawn:
+                _draw_input_frame("", _output_buf_text[0])
             _spin_task = asyncio.get_event_loop().create_task(_spin_loop())
 
         def _stop_spin():
@@ -2827,12 +2815,7 @@ async def main():
             if _spin_task and not _spin_task.done():
                 _spin_task.cancel()
                 _spin_task = None
-            if _spin_line_active[0]:
-                # Clear spinner line: cursor at prompt, up 2 to spinner, clear line
-                _write("\033[2A\r\033[K")
-                _write("\033[2B")  # back to prompt
-                _spin_line_active[0] = False
-            _erase_frame()
+            _erase_frame()  # cursor on prompt line → up 1 to sep → clear to end
 
         _start_spin()
 
