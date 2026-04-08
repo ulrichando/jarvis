@@ -11,6 +11,7 @@ Users can add new providers through the web UI.
 
 import asyncio
 import json
+import logging
 import os
 from dataclasses import dataclass
 from src.config import JARVIS_HOME
@@ -362,7 +363,11 @@ class ProviderRegistry:
                     if result:
                         yield result
                         return
-            except Exception:
+            except (ConnectionError, TimeoutError, OSError) as e:
+                logging.getLogger("jarvis.providers").warning("Provider %s stream failed: %s", provider.name, e)
+                continue
+            except Exception as e:
+                logging.getLogger("jarvis.providers").warning("Provider %s unexpected error: %s", provider.name, e)
                 continue
 
     async def query_with_tools(self, messages: list[dict], tools: list[dict],
@@ -438,7 +443,11 @@ class ProviderRegistry:
                     result = await self._query_provider(provider, user_msg, system, None)
                     if result and len(result) > 3:
                         return {"text": result, "tool_calls": []}, f"{provider.name}:{provider.model}"
-            except Exception:
+            except (ConnectionError, TimeoutError, OSError) as e:
+                logging.getLogger("jarvis.providers").warning("Provider %s plain query failed: %s", provider.name, e)
+                continue
+            except Exception as e:
+                logging.getLogger("jarvis.providers").warning("Provider %s unexpected error in fallback: %s", provider.name, e)
                 continue
 
         # Broadcast provider failure so frontend can show setup wizard
@@ -1257,14 +1266,17 @@ RULES:
             _timeout = httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0)
             key = provider.api_key
             is_oauth = isinstance(key, str) and "oat" in key[:15]
-            if is_oauth:
-                client = Anthropic(
-                    auth_token=key,
-                    timeout=_timeout,
-                    default_headers={"anthropic-beta": "claude-code-20250219,oauth-2025-04-20"},
-                )
-            else:
-                client = Anthropic(api_key=key, timeout=_timeout)
+            try:
+                if is_oauth:
+                    client = Anthropic(
+                        auth_token=key,
+                        timeout=_timeout,
+                        default_headers={"anthropic-beta": "claude-code-20250219,oauth-2025-04-20"},
+                    )
+                else:
+                    client = Anthropic(api_key=key, timeout=_timeout)
+            finally:
+                key = None  # Clear key reference to prevent exposure in tracebacks
             self._clients[provider.name] = client
             return client
         except Exception:
@@ -1310,8 +1322,10 @@ RULES:
                 data = json.load(f)
             for name, d in data.items():
                 self._providers[name] = Provider(**d)
-        except Exception:
-            pass
+        except (json.JSONDecodeError, TypeError, KeyError) as e:
+            logging.getLogger("jarvis.providers").warning("Failed to parse providers.json: %s", e)
+        except OSError as e:
+            logging.getLogger("jarvis.providers").warning("Failed to read providers.json: %s", e)
 
     def reload(self):
         """Hot-reload providers from disk (picks up external changes)."""

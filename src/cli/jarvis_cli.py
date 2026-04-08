@@ -23,6 +23,35 @@ import threading
 import logging
 import warnings
 
+try:
+    from wcwidth import wcswidth as _wcswidth
+except ImportError:
+    _wcswidth = None
+
+
+def _display_width(text: str) -> int:
+    """Get the display width of text, accounting for wide characters (CJK, emoji)."""
+    if _wcswidth is not None:
+        w = _wcswidth(text)
+        if w >= 0:
+            return w
+    return len(text)
+
+
+def _truncate_display(text: str, max_width: int) -> str:
+    """Truncate text to fit within max_width display columns."""
+    if _display_width(text) <= max_width:
+        return text
+    result = ""
+    width = 0
+    for char in text:
+        cw = _display_width(char)
+        if width + cw > max_width:
+            break
+        result += char
+        width += cw
+    return result
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 # Suppress noisy library logs from polluting the terminal
@@ -161,6 +190,9 @@ def _apply_theme(theme_name: str = ""):
     GREY = t["muted"]
     WHITE = t["text"]
     BG_DARK = t["code_bg"]
+
+# Color variables — initialized with defaults, overridden by _apply_theme()
+CYAN = GREEN = YELLOW = RED = BLUE = MAGENTA = GREY = WHITE = BG_DARK = ""
 
 # Initialize theme on module load
 _active_theme = _load_theme()
@@ -467,6 +499,7 @@ class StandaloneBrain:
         self._server_mode = False
         self._server_url, self._ws_url = self._resolve_server_url()
         self._ws = None
+        self._session = None
 
     @staticmethod
     def _resolve_server_url() -> tuple[str, str]:
@@ -517,8 +550,10 @@ class StandaloneBrain:
                             timeout=5.0,
                         )
                         return True
-        except Exception:
-            pass
+        except (ConnectionError, asyncio.TimeoutError, OSError) as e:
+            logging.getLogger("jarvis.cli").debug("Server connection failed: %s", e)
+        except Exception as e:
+            logging.getLogger("jarvis.cli").debug("Unexpected connection error: %s", e)
 
         # Server not running — start local Brain
         prev_level = logging.root.level
@@ -1251,13 +1286,10 @@ async def _interactive_pick(entries: list[str], title: str = "", current: int = 
                 elif nxt == "[B":  # down
                     sel = min(len(entries) - 1, sel + 1)
                 else:
-                    termios.tcsetattr(fd, termios.TCSADRAIN, old)
                     return None
             elif ch in ("\r", "\n"):
-                termios.tcsetattr(fd, termios.TCSADRAIN, old)
                 return sel
             elif ch in ("q", "\x03"):
-                termios.tcsetattr(fd, termios.TCSADRAIN, old)
                 return None
             # Redraw: move cursor back up
             total = len(entries)
@@ -1267,9 +1299,8 @@ async def _interactive_pick(entries: list[str], title: str = "", current: int = 
             lines_drawn = vis + extra + header_lines
             sys.stdout.write(f"\033[{lines_drawn}A")
             _render()
-    except Exception:
+    finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
-        return None
 
 
 async def main():
@@ -1633,9 +1664,10 @@ async def main():
         try:
             import json as _json
             if os.path.exists(trust_file):
-                trusted = _json.loads(open(trust_file).read())
+                with open(trust_file) as f:
+                    trusted = _json.loads(f.read())
                 return directory in trusted
-        except Exception:
+        except (OSError, ValueError):
             pass
         return False
 
@@ -1645,13 +1677,15 @@ async def main():
         trusted = []
         try:
             if os.path.exists(trust_file):
-                trusted = _json.loads(open(trust_file).read())
-        except Exception:
+                with open(trust_file) as f:
+                    trusted = _json.loads(f.read())
+        except (OSError, ValueError):
             pass
         if directory not in trusted:
             trusted.append(directory)
         os.makedirs(os.path.dirname(trust_file), exist_ok=True)
-        open(trust_file, "w").write(_json.dumps(trusted, indent=2))
+        with open(trust_file, "w") as f:
+            f.write(_json.dumps(trusted, indent=2))
 
     if not _is_trusted(cwd):
         tw = 80
@@ -1864,6 +1898,8 @@ async def main():
     def _teardown_zones():
         pass
 
+    _ANSI_ESCAPE_RE = re.compile(r'\033\[[^m]*m')
+
     def _draw_input_frame(mode_prefix="", buf_text=""):
         """Draw the 4-line input frame inline at the current cursor position.
 
@@ -1922,8 +1958,8 @@ async def main():
         left = f"  {DIM}? for shortcuts{RESET}"
         if right_str:
             # Calculate visible length (strip ANSI) for padding
-            visible_left_len = 16  # "  ? for shortcuts"
-            visible_right_len = len(right_str)
+            visible_left_len = _display_width(_ANSI_ESCAPE_RE.sub('', left))
+            visible_right_len = _display_width(right_str)
             pad = max(1, tw - visible_left_len - visible_right_len - 2)
             footer = f"{left}{' ' * pad}{DIM}{right_str}{RESET}"
         else:
@@ -1940,9 +1976,8 @@ async def main():
         _write("\033[2A")  # move cursor up 2 rows back to prompt line (relative, scroll-safe)
         # Reposition cursor column: \033[2A preserves the footer's column, not the prompt's.
         # Go to column 0, then advance to the end of prompt+input.
-        _ansi_re = re.compile(r'\033\[[^m]*m')
-        _prompt_vis_len = len(_ansi_re.sub('', prompt))
-        _target_col = _prompt_vis_len + len(buf_text)
+        _prompt_vis_len = _display_width(_ANSI_ESCAPE_RE.sub('', prompt))
+        _target_col = _prompt_vis_len + _display_width(buf_text)
         _write(f"\r\033[{_target_col}C" if _target_col > 0 else "\r")
         _frame_drawn = True
         sys.stdout.flush()
@@ -2002,11 +2037,21 @@ async def main():
         _writeln(render_banner(model_name, provider_name, cwd_display, session_name, cmd_count))
         _writeln()
 
-    # Handle terminal resize — full redraw including input frame
+    # Handle terminal resize — deferred to event loop for async safety
     import signal
     _in_input = False  # Track if we're waiting for input
+    _resize_pending = False
 
     def _handle_resize(signum, frame):
+        nonlocal _resize_pending
+        _resize_pending = True  # Just set flag — actual redraw deferred to event loop
+
+    def _process_resize():
+        """Called from event loop to safely process pending resize."""
+        nonlocal _resize_pending
+        if not _resize_pending:
+            return
+        _resize_pending = False
         _redraw()
         _setup_zones()
         if _in_input:
@@ -2059,10 +2104,15 @@ async def main():
         # Also check a module-level history accumulator for this session
         if not hasattr(_async_read_input, '_session_history'):
             _async_read_input._session_history = []
+        # Cap history to prevent unbounded memory growth
+        _MAX_HISTORY = 1000
+        if len(_async_read_input._session_history) > _MAX_HISTORY:
+            _async_read_input._session_history = _async_read_input._session_history[-_MAX_HISTORY:]
         # Merge: session messages + any new ones typed this session
         for h in _async_read_input._session_history:
             if h not in _history_entries:
                 _history_entries.append(h)
+        _history_entries = _history_entries[-_MAX_HISTORY:]
         _history_idx = len(_history_entries)
         _saved_buf = []
 
@@ -2114,7 +2164,7 @@ async def main():
                         if alias.lstrip("/").lower().startswith(input_prefix):
                             alias_hint = f" {DIM}(/{alias.lstrip('/')}){RESET}"
                             break
-                desc = cmd.description[:tw - 40] if cmd.description else ""
+                desc = _truncate_display(cmd.description, max(20, tw - 40)) if cmd.description else ""
                 _write(f"\033[K{pfx}{CYAN}/{cmd.name:<22s}{RESET}{alias_hint} {DIM}{desc}{RESET}\n")
             if end < total:
                 _write(f"\033[K    {DIM}↓ {total - end} more{RESET}\n")
@@ -2259,8 +2309,8 @@ async def main():
             if matches and _search_match_idx < len(matches):
                 match_text = matches[_search_match_idx]
                 max_len = _tw() - 4
-                if len(match_text) > max_len:
-                    match_text = match_text[:max_len - 3] + "..."
+                if _display_width(match_text) > max_len:
+                    match_text = _truncate_display(match_text, max_len - 3) + "..."
                 match_text = match_text.replace("\n", " ")
             # Cursor is at prompt. Go up 1 to separator, redraw frame area.
             _write("\033[A\r")  # up to top separator
@@ -2270,7 +2320,7 @@ async def main():
             _write(f"\033[K  {DIM}Ctrl+R next | Enter accept | Esc cancel{RESET}")
             # Cursor is now on the shortcuts line (3 rows below top-sep). Go up 2 to search line.
             _write("\033[2A")
-            cursor_col = len("(reverse-i-search): ") + len(query) + 1
+            cursor_col = len("(reverse-i-search): ") + _display_width(query) + 1
             _write(f"\r\033[{cursor_col - 1}C")
             sys.stdout.flush()
 
@@ -2347,11 +2397,13 @@ async def main():
                 buf.clear()
                 _history_idx = len(_history_entries)
                 _redraw()
-                result_future.set_result("")
+                if not result_future.done():
+                    result_future.set_result("")
                 return
             elif _kb_action == "app:exit":
                 _hide_menu()
-                result_future.set_result(None)
+                if not result_future.done():
+                    result_future.set_result(None)
                 return
             elif _kb_action == "app:redraw":
                 _hide_menu()
@@ -2396,10 +2448,12 @@ async def main():
                     if hasattr(_async_read_input, '_session_history'):
                         _async_read_input._session_history.append(text)
                 _history_idx = len(_history_entries)
-                result_future.set_result(text)
+                if not result_future.done():
+                    result_future.set_result(text)
             elif ch == "\x04":
                 _hide_menu()
-                result_future.set_result(None)
+                if not result_future.done():
+                    result_future.set_result(None)
             elif ch == "\x03":
                 _hide_menu()
                 # Ctrl+C: cancel active task if running, else clear input
@@ -2409,7 +2463,8 @@ async def main():
                 buf.clear()
                 _history_idx = len(_history_entries)
                 _redraw()
-                result_future.set_result("")
+                if not result_future.done():
+                    result_future.set_result("")
             elif ch == "\x0c":
                 # Ctrl+L: Clear and redraw screen (full redraw, not just input)
                 _hide_menu()
@@ -2432,6 +2487,7 @@ async def main():
                 _hide_menu()
                 import tempfile
                 editor = os.environ.get("EDITOR", "vi")
+                tf_path = None
                 with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as tf:
                     tf.write("".join(buf))
                     tf_path = tf.name
@@ -2439,20 +2495,26 @@ async def main():
                     import termios as _termios
                     _termios.tcsetattr(fd, _termios.TCSADRAIN, old_settings)
                     _write("\033[r")  # Reset scroll region for editor
-                    os.system(f"{editor} {tf_path}")
-                    import tty as _tty
-                    _tty.setcbreak(fd)
+                    import shlex as _shlex
+                    subprocess.run([*_shlex.split(editor), tf_path], check=False)
                     with open(tf_path, "r") as f:
                         new_text = f.read().strip()
                     buf.clear()
                     buf.extend(new_text)
-                except Exception:
-                    pass
+                except (OSError, ValueError) as e:
+                    log.debug("Editor launch failed: %s", e)
                 finally:
+                    # Always restore terminal to cbreak mode
                     try:
-                        os.unlink(tf_path)
-                    except OSError:
+                        import tty as _tty
+                        _tty.setcbreak(fd)
+                    except Exception:
                         pass
+                    if tf_path:
+                        try:
+                            os.unlink(tf_path)
+                        except OSError:
+                            pass
                 _setup_zones()
                 _redraw()
             elif ch == "\x14":
@@ -2520,10 +2582,23 @@ async def main():
 
         _paste_mode = [False]
         _paste_buf: list[str] = []
+        _paste_timeout = None
+
+        def _paste_timeout_flush():
+            """Safety: flush paste buffer if end marker never arrives."""
+            nonlocal _paste_timeout
+            _paste_timeout = None
+            if _paste_mode[0]:
+                _paste_mode[0] = False
+                if _paste_buf:
+                    pasted = "".join(_paste_buf).replace("\r\n", "\n").replace("\r", "\n")
+                    buf.extend(pasted)
+                    _paste_buf.clear()
+                    _redraw()
 
         def _handle_escape_seq():
             """Process buffered escape sequence after timeout."""
-            nonlocal selected, _esc_buf, _esc_timer
+            nonlocal selected, _esc_buf, _esc_timer, _paste_timeout
             nonlocal _history_idx, _saved_buf
             nonlocal _search_mode, _search_buf, _search_match_idx
             _esc_timer = None
@@ -2534,13 +2609,21 @@ async def main():
             if seq == "[200~":
                 _paste_mode[0] = True
                 _paste_buf.clear()
+                # Safety timeout: if end marker never arrives, flush after 10s
+                nonlocal _paste_timeout
+                if _paste_timeout is not None:
+                    _paste_timeout.cancel()
+                _paste_timeout = loop.call_later(10.0, _paste_timeout_flush)
                 return
 
             # Bracketed paste — end marker: flush paste buffer in one redraw
             if seq == "[201~":
                 _paste_mode[0] = False
+                if _paste_timeout is not None:
+                    _paste_timeout.cancel()
+                    _paste_timeout = None
                 if _paste_buf:
-                    pasted = "".join(_paste_buf).replace("\r", "").replace("\n", " ")
+                    pasted = "".join(_paste_buf).replace("\r\n", "\n").replace("\r", "\n")
                     buf.extend(pasted)
                     _paste_buf.clear()
                     _redraw()
@@ -2556,11 +2639,16 @@ async def main():
 
             if seq == "[A" and menu_visible:
                 matches = _get_matches()
-                selected = max(0, selected - 1)
+                if matches:
+                    selected = min(selected, len(matches) - 1)
+                    selected = max(0, selected - 1)
                 _show_menu(matches)
             elif seq == "[B" and menu_visible:
                 matches = _get_matches()
-                selected = min(len(matches) - 1, selected + 1)
+                if matches:
+                    selected = min(len(matches) - 1, selected + 1)
+                else:
+                    selected = 0
                 _show_menu(matches)
             elif seq == "[A" and not menu_visible:
                 # Up arrow: previous history entry
@@ -2594,6 +2682,8 @@ async def main():
             nonlocal _esc_buf, _esc_timer
             if result_future.done():
                 return
+            # Process any pending resize before handling input
+            _process_resize()
             try:
                 data = os.read(fd, 32).decode("utf-8", errors="replace")
             except OSError:
@@ -2631,13 +2721,19 @@ async def main():
                             _esc_timer.cancel()
                             _esc_timer = None
                         _handle_escape_seq()
-                    elif len(_esc_buf) > 6:
+                    elif len(_esc_buf) > 12:
                         # Too long — something went wrong, flush
                         if _esc_timer:
                             _esc_timer.cancel()
                             _esc_timer = None
-                        _esc_buf.clear()
+                        _handle_escape_seq()
                 elif ch == "\x1b":
+                    # Cancel any pending timer before starting new sequence
+                    if _esc_timer:
+                        _esc_timer.cancel()
+                        _esc_timer = None
+                    if _esc_buf:
+                        _handle_escape_seq()
                     _esc_buf.clear()
                     # Wait briefly for rest of sequence
                     _esc_timer = loop.call_later(0.05, _handle_escape_seq)
@@ -2705,7 +2801,8 @@ async def main():
             _spin_line_active[0] = True
             _draw_input_frame("", _output_buf_text[0])
 
-            while True:
+            try:
+              while True:
                 elapsed = time.time() - t0
                 frame = SPINNER_FRAMES[i % len(SPINNER_FRAMES)]
                 elapsed_str = f" {DIM}{elapsed:.0f}s{RESET}" if elapsed >= 2 else ""
@@ -2716,6 +2813,8 @@ async def main():
                 sys.stdout.flush()
                 i += 1
                 await asyncio.sleep(0.12)
+            except asyncio.CancelledError:
+                pass  # Expected when _stop_spin() cancels
 
         def _start_spin(label="Thinking..."):
             nonlocal _spin_task
@@ -2827,7 +2926,7 @@ async def main():
                     pass
 
         except asyncio.CancelledError:
-            full_text = ""
+            # Keep any text already streamed; don't discard partial response
             _outputln(f"\n  {DIM}Cancelled.{RESET}")
         except Exception as e:
             full_text = f"Error: {str(e)[:80]}"
@@ -3245,8 +3344,10 @@ async def main():
 
                 # CLI-only shortcuts
                 if cmd_name == "visual" and cmd_args:
+                    import shlex as _shlex_v
                     subprocess.Popen(
-                        ["x-terminal-emulator", "-e", f"bash -c '{cmd_args}; echo; echo [DONE]; read'"],
+                        ["x-terminal-emulator", "-e", "bash", "-c",
+                         f"{_shlex_v.quote(cmd_args)}; echo; echo [DONE]; read"],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
                     )
                     continue
@@ -3262,8 +3363,9 @@ async def main():
                         args=cmd_args, mode=brain.mode if client._is_full_brain else "normal",
                     )
                     result = await cmd_registry.dispatch(cmd_name, ctx)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logging.getLogger("jarvis.cli").debug("Command /%s dispatch error: %s", cmd_name, e)
+                    _outputln(f"  {DIM}Command error: {e}{RESET}")
 
                 # In server mode, only handle local-only actions; let rest go to server
                 if client._server_mode and result is not None:
@@ -3381,8 +3483,9 @@ async def main():
                 _disp = os.environ.get("DISPLAY", "")
                 if not _disp:
                     try:
-                        _disp = open("/tmp/.jarvis-display").read().strip()
-                    except Exception:
+                        with open("/tmp/.jarvis-display") as f:
+                            _disp = f.read().strip()
+                    except OSError:
                         _disp = ":0"
                 _jarvis_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
                 env = {**os.environ, "DISPLAY": _disp,
@@ -3391,7 +3494,8 @@ async def main():
                 _pid_file = "/tmp/.jarvis-desktop.pid"
                 try:
                     if os.path.exists(_pid_file):
-                        _old_pid = int(open(_pid_file).read().strip())
+                        with open(_pid_file) as f:
+                            _old_pid = int(f.read().strip())
                         os.kill(_old_pid, 15)  # SIGTERM
                         time.sleep(0.5)
                 except Exception:
@@ -3481,16 +3585,16 @@ async def main():
 def run():
     try:
         asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        # Ensure alt screen is exited even on abrupt kill
-        if sys.stdout.isatty():
-            sys.stdout.write("\033[?1049l")
-            sys.stdout.flush()
-    except RuntimeError:
-        if sys.stdout.isatty():
-            sys.stdout.write("\033[?1049l")
-            sys.stdout.flush()
+    except (KeyboardInterrupt, SystemExit, RuntimeError):
+        pass  # Handled in finally
     finally:
+        # Ensure alt screen is always exited, even on abrupt kill
+        try:
+            if sys.stdout.isatty():
+                sys.stdout.write("\033[?1049l")
+                sys.stdout.flush()
+        except Exception:
+            pass
         # Suppress aiohttp cleanup errors that print after event loop closes
         # These are harmless but ugly — redirect stderr to devnull during shutdown
         try:
