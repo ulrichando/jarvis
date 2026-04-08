@@ -1948,13 +1948,12 @@ async def main():
         return sep, prompt, footer
 
     def _draw_input_frame(mode_prefix="", buf_text=""):
-        """Draw the 4-row inline frame at the current cursor position.
-        Cursor is left at the prompt line. All callers assume cursor stays there."""
+        """Draw the 4-row inline frame. Always erases the existing frame first so
+        the cursor is positioned at the top-separator row before drawing."""
         nonlocal _frame_drawn
+        _erase_frame()            # cursor → top-separator row, clears to end of screen
         sep, prompt, footer = _build_frame_parts()
-        # Hide cursor during redraw to suppress flicker.
-        _write("\033[?25l")
-        _write("\033[J")          # clear from cursor to end of screen
+        _write("\033[?25l")       # hide cursor during redraw
         _write(sep + "\n")
         _write(f"{prompt}\033[0;1;97m{buf_text}\033[0m\n")
         _write(sep + "\n")
@@ -1980,16 +1979,15 @@ async def main():
     _output_buf_text = [""]  # current input text, kept for spinner redraws
 
     def _output(text: str):
-        """Write text, keeping the frame always visible.
-        Erase → write → redraw are buffered and flushed atomically — no blink."""
-        _erase_frame()       # no flush yet
-        _write(text)         # no flush yet
-        _draw_input_frame(_output_buf_prefix[0], _output_buf_text[0])  # flushes once
+        """Write text atomically: erase frame → text → redraw frame in one flush."""
+        _erase_frame()   # cursor → frame start, clears to end of screen. No flush.
+        _write(text)     # no flush
+        _draw_input_frame(_output_buf_prefix[0], _output_buf_text[0])  # one flush
 
     def _outputln(text: str = ""):
         _erase_frame()
         _write(text + "\n")
-        _draw_input_frame(_output_buf_prefix[0], _output_buf_text[0])  # flushes once
+        _draw_input_frame(_output_buf_prefix[0], _output_buf_text[0])
 
     _output_buf_prefix = [""]  # current mode prefix, kept for atomic redraws
 
@@ -2287,7 +2285,7 @@ async def main():
             sys.stdout.flush()
 
         def _draw_search_prompt():
-            """Draw the Ctrl+R search prompt in the input zone."""
+            """Draw the Ctrl+R search prompt using absolute addressing — immune to cursor drift."""
             query = "".join(_search_buf)
             matches = _get_search_matches()
             match_text = ""
@@ -2297,16 +2295,19 @@ async def main():
                 if _display_width(match_text) > max_len:
                     match_text = _truncate_display(match_text, max_len - 3) + "..."
                 match_text = match_text.replace("\n", " ")
-            # Cursor is at prompt. Go up 1 to separator, redraw frame area.
-            _write("\033[A\r")  # up to top separator
-            _write(f"\033[K{DIM}{'─' * _tw()}{RESET}\n")
-            _write(f"\033[K{YELLOW}(reverse-i-search){RESET}: {query}{DIM} -> {match_text}{RESET}\n")
-            _write(f"\033[K{DIM}{'─' * _tw()}{RESET}\n")
-            _write(f"\033[K  {DIM}Ctrl+R next | Enter accept | Esc cancel{RESET}")
-            # Cursor is now on the shortcuts line (3 rows below top-sep). Go up 2 to search line.
-            _write("\033[2A")
+
+            R = _term_rows()
+            sep = f"{DIM}{'─' * _tw()}{RESET}"
+
+            _write("\033[?25l")  # hide cursor during redraw
+            _write(f"\033[{R - 3};1H\033[2K{sep}")
+            _write(f"\033[{R - 2};1H\033[2K{YELLOW}(reverse-i-search){RESET}: {query}{DIM} -> {match_text}{RESET}")
+            _write(f"\033[{R - 1};1H\033[2K{sep}")
+            _write(f"\033[{R};1H\033[2K  {DIM}Ctrl+R next | Enter accept | Esc cancel{RESET}")
+            # Position cursor on search line after query text (columns are 1-indexed).
             cursor_col = len("(reverse-i-search): ") + _display_width(query) + 1
-            _write(f"\r\033[{cursor_col - 1}C")
+            _write(f"\033[{R - 2};{cursor_col}H")
+            _write("\033[?25h")  # show cursor
             sys.stdout.flush()
 
         def _get_search_matches():
