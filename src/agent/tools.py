@@ -3042,7 +3042,7 @@ def _exec_task_update(args: dict) -> str:
     if not task_id:
         return "No task_id provided."
     for task in _task_list:
-        if task["id"] == task_id:
+        if task.get("id") == task_id:
             updated = []
             if "status" in args:
                 new_status = args["status"]
@@ -3064,10 +3064,10 @@ def _exec_task_update(args: dict) -> str:
                 task["owner"] = args["owner"]
                 updated.append(f"owner={args['owner']}")
             if "addBlocks" in args:
-                task["blocks"].extend(args["addBlocks"])
+                task.setdefault("blocks", []).extend(args["addBlocks"])
                 updated.append("blocks")
             if "addBlockedBy" in args:
-                task["blockedBy"].extend(args["addBlockedBy"])
+                task.setdefault("blockedBy", []).extend(args["addBlockedBy"])
                 updated.append("blockedBy")
             return f"Updated task {task_id}: {', '.join(updated)}" if updated else f"No changes to task {task_id}"
     return f"Task not found: {task_id}"
