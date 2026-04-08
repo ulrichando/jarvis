@@ -1954,6 +1954,7 @@ async def main():
         _erase_frame()            # cursor → frame start, clears to end of screen
         sep, prompt, footer = _build_frame_parts()
         _write("\033[?25l")       # hide cursor during redraw
+        _write("\n")              # blank line separates output from frame
         _write(sep + "\n")
         _write(f"{prompt}\033[0;1;97m{buf_text}\033[0m\n")
         _write(sep + "\n")
@@ -1972,8 +1973,8 @@ async def main():
         nonlocal _frame_drawn
         if not _frame_drawn:
             return
-        # Cursor is at prompt line (row 2 of 4). Go up 1 to top-sep, clear to end.
-        _write("\033[A\r\033[J")
+        # Cursor is at prompt line (row 3 of 5). Go up 2 to blank line, clear to end.
+        _write("\033[2A\r\033[J")
         _frame_drawn = False
 
     _output_buf_text = [""]  # current input text, kept for spinner redraws
@@ -2778,8 +2779,8 @@ async def main():
                     elapsed = time.time() - t0
                     frame = SPINNER_FRAMES[i % len(SPINNER_FRAMES)]
                     elapsed_str = f" {DIM}{elapsed:.0f}s{RESET}" if elapsed >= 2 else ""
-                    # Save cursor (at prompt), jump 2 rows up to spinner line, update, restore.
-                    _write(f"\0337\033[2A\r\033[K  {BLUE}{frame}{RESET} {DIM}{_spin_label[0]}{RESET}{elapsed_str}\0338")
+                    # Save cursor (at prompt), jump 3 rows up to spinner line, update, restore.
+                    _write(f"\0337\033[3A\r\033[K  {BLUE}{frame}{RESET} {DIM}{_spin_label[0]}{RESET}{elapsed_str}\0338")
                     sys.stdout.flush()
                     i += 1
             except asyncio.CancelledError:
@@ -2803,7 +2804,7 @@ async def main():
                 _spin_task = None
             if _spin_line_active[0]:
                 # Clear spinner line: save cursor → go to spinner row → erase → restore.
-                _write(f"\0337\033[2A\r\033[K\0338")
+                _write(f"\0337\033[3A\r\033[K\0338")
                 _spin_line_active[0] = False
                 sys.stdout.flush()
 
