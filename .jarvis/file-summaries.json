@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "updated_at": "2026-04-07T22:14:47.437274+00:00",
+  "updated_at": "2026-04-08T05:40:40.308348+00:00",
   "entries": {
     "src/cli/jarvis_cli.py": {
-      "mtime": 1775599255.1354856,
-      "size_bytes": 141026,
+      "mtime": 1775606471.6208484,
+      "size_bytes": 145164,
       "symbols": [
         "resolve_keybinding",
         "Spinner"
@@ -13,8 +13,8 @@
       "lang": "Python"
     },
     "src/agent/tools.py": {
-      "mtime": 1775576453.271342,
-      "size_bytes": 138076,
+      "mtime": 1775606454.4808714,
+      "size_bytes": 147019,
       "symbols": [],
       "summary": "",
       "lang": "Python"
@@ -31,8 +31,8 @@
       "lang": "Python"
     },
     "src/brain.py": {
-      "mtime": 1775556235.3597887,
-      "size_bytes": 83490,
+      "mtime": 1775625504.0824847,
+      "size_bytes": 88769,
       "symbols": [
         "Brain"
       ],
@@ -53,8 +53,8 @@
       "lang": "Python"
     },
     "src/agent/loop.py": {
-      "mtime": 1775556231.5118017,
-      "size_bytes": 50115,
+      "mtime": 1775620498.3014126,
+      "size_bytes": 56127,
       "symbols": [],
       "summary": "",
       "lang": "Python"
@@ -84,8 +84,8 @@
       "lang": "Python"
     },
     "src/commands/handlers/agent.py": {
-      "mtime": 1775556259.7717063,
-      "size_bytes": 37482,
+      "mtime": 1775625547.778203,
+      "size_bytes": 48852,
       "symbols": [
         "cmd_agent",
         "cmd_agents"
@@ -185,8 +185,8 @@
       "lang": "Python"
     },
     "src/commands/handlers/debug.py": {
-      "mtime": 1775313485.5164354,
-      "size_bytes": 27983,
+      "mtime": 1775618907.2896364,
+      "size_bytes": 24304,
       "symbols": [
         "cmd_debug",
         "cmd_benchmark"
@@ -195,8 +195,8 @@
       "lang": "Python"
     },
     "src/desktop/app.py": {
-      "mtime": 1775597657.6400387,
-      "size_bytes": 27874,
+      "mtime": 1775619356.5652268,
+      "size_bytes": 27651,
       "symbols": [
         "main"
       ],
@@ -273,8 +273,8 @@
       "lang": "Python"
     },
     "src/commands/handlers/session.py": {
-      "mtime": 1775312250.9161325,
-      "size_bytes": 19491,
+      "mtime": 1775600634.0516205,
+      "size_bytes": 20248,
       "symbols": [
         "cmd_session",
         "cmd_resume"
@@ -876,15 +876,14 @@
       "lang": "Python"
     },
     "src/agent/agents.py": {
-      "mtime": 1775556245.335755,
-      "size_bytes": 9500,
+      "mtime": 1775622855.8708644,
+      "size_bytes": 12546,
       "symbols": [
         "AgentConfig",
         "is_bash_readonly",
         "get_agent_tools",
         "build_sub_agent_prompt",
-        "resolve_agent",
-        "list_all_agents"
+        "resolve_agent"
       ],
       "summary": "",
       "lang": "Python"
@@ -1542,7 +1541,7 @@
       "lang": "Markdown"
     },
     "src/desktop/colors.py": {
-      "mtime": 1775320941.4819155,
+      "mtime": 1775619356.5652268,
       "size_bytes": 4833,
       "symbols": [
         "get_theme",
@@ -1606,8 +1605,8 @@
       "lang": "Python"
     },
     "scripts/start-jarvis.sh": {
-      "mtime": 1775509106.8323145,
-      "size_bytes": 4564,
+      "mtime": 1775606490.9728217,
+      "size_bytes": 4670,
       "symbols": [],
       "summary": "",
       "lang": "Shell"
@@ -4136,8 +4135,8 @@
       "lang": "Python"
     },
     "pyproject.toml": {
-      "mtime": 1775597539.247677,
-      "size_bytes": 842,
+      "mtime": 1775626655.8326533,
+      "size_bytes": 865,
       "symbols": [],
       "summary": "",
       "lang": "TOML"
@@ -9352,8 +9351,8 @@
       "lang": "Python"
     },
     "docker-compose.yml": {
-      "mtime": 1775599266.5074704,
-      "size_bytes": 1841,
+      "mtime": 1775606464.504858,
+      "size_bytes": 2034,
       "symbols": [],
       "summary": "",
       "lang": "YAML"
@@ -9898,15 +9897,15 @@
       "lang": "Python"
     },
     ".jarvis/file-summaries.json": {
-      "mtime": 1775599610.2863884,
+      "mtime": 1775600087.4403992,
       "size_bytes": 476428,
       "symbols": [],
       "summary": "",
       "lang": "JSON"
     },
     "src/server/web_server.py": {
-      "mtime": 1775599987.7133703,
-      "size_bytes": 171665,
+      "mtime": 1775626636.6967363,
+      "size_bytes": 174920,
       "symbols": [
         "JarvisWebServer"
       ],
@@ -9914,14 +9913,14 @@
       "lang": "Python"
     },
     "src/reasoning/persona.py": {
-      "mtime": 1775456507.4270225,
-      "size_bytes": 97078,
+      "mtime": 1775619324.6312537,
+      "size_bytes": 97566,
       "symbols": [],
       "summary": "",
       "lang": "Python"
     },
     "src/server/frontend/package-lock.json": {
-      "mtime": 1775308386.1652606,
+      "mtime": 1775625921.4640768,
       "size_bytes": 96557,
       "symbols": [],
       "summary": "",
@@ -10006,8 +10005,8 @@
       "lang": "Python"
     },
     "src/server/frontend/src/App.jsx": {
-      "mtime": 1775597672.1554828,
-      "size_bytes": 21253,
+      "mtime": 1775623571.011197,
+      "size_bytes": 21931,
       "symbols": [
         "App"
       ],
@@ -13217,8 +13216,8 @@
       "lang": "Python"
     },
     "src/server/frontend/src/hooks/useWebSocket.js": {
-      "mtime": 1775596255.164646,
-      "size_bytes": 2874,
+      "mtime": 1775626647.9406874,
+      "size_bytes": 3327,
       "symbols": [
         "useWebSocket"
       ],
@@ -19570,8 +19569,8 @@
       "lang": "HTML"
     },
     "extensions/jarvis-screen/side_panel.js": {
-      "mtime": 1775597704.551428,
-      "size_bytes": 16036,
+      "mtime": 1775626762.9681907,
+      "size_bytes": 16164,
       "symbols": [
         "renderMarkdown",
         "hideEmpty",
@@ -19613,6 +19612,112 @@
     "src/mcp/servers/jarvis_deploy.py": {
       "mtime": 1775597545.599669,
       "size_bytes": 17293,
+      "symbols": [],
+      "summary": "",
+      "lang": "Python"
+    },
+    "src/agent/master_orchestrator.py": {
+      "mtime": 1775625417.6830695,
+      "size_bytes": 43476,
+      "symbols": [
+        "QueryAnalysis",
+        "SubTask",
+        "TaskGraph",
+        "RoutingDecision",
+        "AgentResult"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "src/agent/parallel_dispatch.py": {
+      "mtime": 1775624086.4651349,
+      "size_bytes": 29485,
+      "symbols": [],
+      "summary": "",
+      "lang": "Python"
+    },
+    "src/agent/personality_agents.py": {
+      "mtime": 1775623123.3896697,
+      "size_bytes": 27696,
+      "symbols": [
+        "PersonalityProfile"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "src/agent/personality_profiles.py": {
+      "mtime": 1775621755.411493,
+      "size_bytes": 24463,
+      "symbols": [
+        "ProfileSpec"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "src/agent/persona_agent_factory.py": {
+      "mtime": 1775621819.3550785,
+      "size_bytes": 17320,
+      "symbols": [
+        "PersonaAgentFactory"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "src/server/hot_reload.py": {
+      "mtime": 1775626622.2087996,
+      "size_bytes": 8993,
+      "symbols": [
+        "HotReloadManager"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "src/ecc/tool_fixer.py": {
+      "mtime": 1775620336.717486,
+      "size_bytes": 5901,
+      "symbols": [
+        "ToolFixer"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "src/ecc/corrector.py": {
+      "mtime": 1775620382.2214627,
+      "size_bytes": 5532,
+      "symbols": [
+        "ECCMetrics",
+        "ECCorrector"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "src/ecc/goal_verifier.py": {
+      "mtime": 1775620358.6814744,
+      "size_bytes": 4159,
+      "symbols": [
+        "VerifyResult",
+        "GoalVerifier"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "scripts/dev.sh": {
+      "mtime": 1775626678.912553,
+      "size_bytes": 2845,
+      "symbols": [],
+      "summary": "",
+      "lang": "Shell"
+    },
+    "scripts/self-deploy.sh": {
+      "mtime": 1775617037.7617376,
+      "size_bytes": 2050,
+      "symbols": [],
+      "summary": "",
+      "lang": "Shell"
+    },
+    "src/ecc/__init__.py": {
+      "mtime": 1775620310.4095004,
+      "size_bytes": 704,
       "symbols": [],
       "summary": "",
       "lang": "Python"

@@ -364,10 +364,13 @@ async function sendQuery() {
           rerenderBubble()
         } else if (ev.type === 'tool_call') {
           appendToolEvent(`⚙ ${ev.name || ''}`)
+        } else if (ev.type === 'error') {
+          fullText += `\n\n⚠ ${ev.content || 'Unknown error'}`
+          rerenderBubble()
         } else if (ev.type === 'done') {
           done_ = true; break
         }
-        // usage, context_status, error_recoverable etc. → silently ignore
+        // usage, cost, dispatch, tool_result etc. → silently ignore
       }
     }
   } catch (e) {

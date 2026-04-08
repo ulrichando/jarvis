@@ -36,6 +36,17 @@ export default function useWebSocket(url) {
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data)
+
+          // Hot reload: frontend assets were rebuilt — refresh to pick them up
+          if (data.type === 'hot_reload' && data.frontend === true) {
+            const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+            if (isLocal) {
+              console.log('[JARVIS HMR] Frontend rebuilt — reloading')
+              window.location.reload()
+              return
+            }
+          }
+
           // Keep only last 100 messages to prevent memory leak
           setMessages((prev) => {
             const next = [...prev, data]
