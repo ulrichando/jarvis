@@ -1880,7 +1880,15 @@ async def main():
 
     # ── Simple Terminal Layout (no scroll regions, no absolute positioning) ──
     # Banner at top. Output flows down. Input drawn inline. Like JARVIS.
-    INPUT_ZONE_HEIGHT = 4
+    # ── Terminal layout constants ────────────────────────────────────────────
+    # The bottom _FRAME_HEIGHT rows are a FIXED zone (outside the scroll region).
+    # Layout (rows counted from bottom, 1 = last row):
+    #   R-4 : spinner line   (blank when idle)
+    #   R-3 : top separator  ─────────────────
+    #   R-2 : prompt line    ❯ <input>
+    #   R-1 : foot separator ─────────────────
+    #   R   : footer         ? for shortcuts
+    _FRAME_HEIGHT = 5
 
     def _term_rows():
         try:
@@ -1889,35 +1897,54 @@ async def main():
             return 24
 
     _frame_drawn = False
+    _cursor_in_frame = [True]  # True when cursor is at a frame row (prompt etc.)
+
+    def _scroll_end():
+        """Last row of the scrollable output region (1-indexed)."""
+        return max(1, _term_rows() - _FRAME_HEIGHT)
 
     def _setup_zones():
-        pass
+        """Enable scroll region so output scrolls above the fixed frame."""
+        R = _term_rows()
+        se = max(1, R - _FRAME_HEIGHT)
+        _write(f"\033[1;{se}r")   # scroll region: rows 1..R-5
+        _write(f"\033[{se};1H")   # park cursor at bottom of scroll region
+        _cursor_in_frame[0] = False
+        sys.stdout.flush()
 
     def _teardown_zones():
-        pass
+        """Reset scroll region to full terminal (called on exit)."""
+        _write("\033[r")
+        sys.stdout.flush()
+
+    def _to_output_region():
+        """If cursor is in the fixed frame zone, move it into the scroll region.
+        Called before every output write so text never overwrites the frame."""
+        if _cursor_in_frame[0]:
+            _write(f"\033[{_scroll_end()};1H")
+            _cursor_in_frame[0] = False
 
     _ANSI_ESCAPE_RE = re.compile(r'\033\[[^m]*m')
 
     def _draw_input_frame(mode_prefix="", buf_text=""):
-        """Draw the 4-line input frame inline at the current cursor position.
+        """Draw the 5-row fixed frame using absolute row addressing.
 
-        Cursor is left at the prompt line using relative movement (\\033[2A).
-        All navigation functions assume cursor is at the prompt row on entry.
-        Frame layout (4 rows): top-sep | prompt | footer-sep | footer
+        Layout:  spinner | top-sep | prompt | foot-sep | footer
+        Rows are absolute (1-indexed VT100): R-4 … R.
+        No \\n is emitted — the fixed rows are outside the scroll region,
+        so nothing here can trigger a scroll.
         """
         nonlocal _frame_drawn
         tw = _tw()
+        R = _term_rows()
         mode_str = brain.mode if client._is_full_brain else "normal"
 
         # Right side: model · effort · cost · companion
         right_parts = []
-        # Model name
         if model_name and model_name != "local":
             right_parts.append(model_name)
-        # Mode (if not normal)
         if mode_str and mode_str != "normal":
             right_parts.append(mode_str)
-        # Effort level — always visible like Claude Code
         try:
             if client._is_full_brain and hasattr(brain, '_effort_level'):
                 effort_val = brain._effort_level or "high"
@@ -1926,7 +1953,6 @@ async def main():
             right_parts.append(f"/effort · {effort_val}")
         except Exception:
             pass
-        # Session cost
         try:
             from src.agent.cost_tracker import get_tracker
             tracker = get_tracker()
@@ -1935,7 +1961,6 @@ async def main():
                 right_parts.append(f"${cost:.2f}")
         except Exception:
             pass
-        # Companion name
         if _companion and _companion.enabled and hasattr(_companion, 'data') and _companion.data:
             cname = _companion.data.get("name", "")
             if cname:
@@ -1943,7 +1968,6 @@ async def main():
         right_str = " · ".join(right_parts)
 
         sep = f"\033[38;5;240m{'─' * tw}{RESET}"
-        # Show vim mode in prompt if vim is enabled
         vim_indicator = ""
         if _vim_enabled:
             if isinstance(_vim_state, NormalState):
@@ -1952,10 +1976,8 @@ async def main():
                 vim_indicator = f"{GREEN}[I]{RESET} "
         prompt = f"{vim_indicator}{YELLOW}{mode_str}{RESET} ❯ " if mode_str != "normal" else f"{vim_indicator}❯ "
 
-        # Footer: shortcuts left, status right
         left = f"  {DIM}? for shortcuts{RESET}"
         if right_str:
-            # Calculate visible length (strip ANSI) for padding
             visible_left_len = _display_width(_ANSI_ESCAPE_RE.sub('', left))
             visible_right_len = _display_width(right_str)
             pad = max(1, tw - visible_left_len - visible_right_len - 2)
@@ -1963,43 +1985,58 @@ async def main():
         else:
             footer = left
 
-        # Draw input frame: separator, prompt, separator, footer
-        _write("\033[J")  # clear from cursor to end of screen
-        _writeln(sep)
-        _write(f"{prompt}\033[0;1;97m{buf_text}\033[0m")
-        _write("\033[?25h")  # ensure cursor visible
-        _writeln()
-        _writeln(sep)
-        _write(footer)
-        _write("\033[2A")  # move cursor up 2 rows back to prompt line (relative, scroll-safe)
-        # Reposition cursor column: \033[2A preserves the footer's column, not the prompt's.
-        # Go to column 0, then advance to the end of prompt+input.
+        # Absolute row addresses (1-indexed)
+        row_sep1   = R - 3   # top separator
+        row_prompt = R - 2   # prompt / input line
+        row_sep2   = R - 1   # footer separator
+        row_footer = R       # footer text
+
+        # Draw each frame row with \033[2K (clear entire line) + content.
+        # \033[R;1H positions cursor; no \n emitted — no scroll risk.
+        _write(f"\033[{row_sep1};1H\033[2K{sep}")
+        _write(f"\033[{row_prompt};1H\033[2K{prompt}\033[0;1;97m{buf_text}\033[0m")
+        _write("\033[?25h")   # ensure cursor is visible
+        _write(f"\033[{row_sep2};1H\033[2K{sep}")
+        _write(f"\033[{row_footer};1H\033[2K{footer}")
+
+        # Park cursor at prompt row, correct column
         _prompt_vis_len = _display_width(_ANSI_ESCAPE_RE.sub('', prompt))
-        _target_col = _prompt_vis_len + _display_width(buf_text)
-        _write(f"\r\033[{_target_col}C" if _target_col > 0 else "\r")
+        _target_col = _prompt_vis_len + _display_width(buf_text) + 1  # 1-indexed
+        _write(f"\033[{row_prompt};{_target_col}H")
+
         _frame_drawn = True
+        _cursor_in_frame[0] = True
         sys.stdout.flush()
 
     def _erase_frame():
-        """Erase the input frame. Cursor returns to where the frame started."""
+        """Clear the 5 fixed frame rows and park cursor in the scroll region.
+        Called before a full-screen redraw (Ctrl+L); rarely needed otherwise
+        because the frame is protected by the scroll region."""
         nonlocal _frame_drawn
         if not _frame_drawn:
             return
-        # Cursor is at prompt line. Go up 1 to separator, clear to end of screen.
-        _write("\033[A\r\033[J")
+        R = _term_rows()
+        # Clear spinner row
+        _write(f"\033[{R-4};1H\033[2K")
+        # Clear frame rows R-3..R in one shot
+        _write(f"\033[{R-3};1H\033[J")
+        # Park cursor at bottom of scroll region
+        _write(f"\033[{_scroll_end()};1H")
         _frame_drawn = False
+        _cursor_in_frame[0] = False
+        sys.stdout.flush()
 
     _output_buf_text = [""]  # track current input text for redraw after output
 
     def _output(text: str):
-        """Print text. Erases frame first so output flows cleanly.
-        Frame is redrawn when it's the user's turn to type (like Claude Code)."""
-        _erase_frame()
+        """Write text into the scrollable output region.
+        The fixed frame at the bottom is never touched."""
+        _to_output_region()
         _write(text)
         sys.stdout.flush()
 
     def _outputln(text: str = ""):
-        _erase_frame()
+        _to_output_region()
         _write(text + "\n")
         sys.stdout.flush()
 
@@ -2129,8 +2166,7 @@ async def main():
             _output_buf_text[0] = text  # sync for _output to redraw with current text
             if hide_menu:
                 _hide_menu()
-            _erase_frame()
-            _draw_input_frame(mode_prefix, text)
+            _draw_input_frame(mode_prefix, text)  # uses \033[2K per row — no erase needed
 
         MAX_VISIBLE = 6
 
@@ -2260,7 +2296,7 @@ async def main():
 
             Displays shortcuts in the output area, then redraws the input frame.
             """
-            _erase_frame()
+            _to_output_region()
             sections = [
                 ("Input", [
                     ("v", "Voice input"),
@@ -2791,24 +2827,20 @@ async def main():
         _spin_line_active = [False]
 
         async def _spin_loop():
-            # Initial draw is handled synchronously by _start_spin().
-            # This task only animates subsequent frames.
-            i = 1  # Frame 0 already drawn by _start_spin
+            # Frame 0 already drawn by _start_spin(); animate from frame 1 on.
+            i = 1
             t0 = time.time()
             try:
                 while True:
                     await asyncio.sleep(0.12)
                     if not _spin_line_active[0]:
-                        break  # Stopped while sleeping — don't write stale frames
+                        break
                     elapsed = time.time() - t0
                     frame = SPINNER_FRAMES[i % len(SPINNER_FRAMES)]
                     elapsed_str = f" {DIM}{elapsed:.0f}s{RESET}" if elapsed >= 2 else ""
-                    # Save cursor (correct position on prompt row), update spinner, restore cursor.
-                    # \033[s / \033[u (ANSI SC/RC) preserve exact row+col — no column drift.
-                    _write("\033[s")    # save cursor at prompt (correct column)
-                    _write("\033[2A\r")  # go to spinner line (2 above prompt), col 0
-                    _write(f"  {BLUE}{frame}{RESET} {DIM}{_spin_label[0]}{RESET}{elapsed_str}\033[K")
-                    _write("\033[u")    # restore cursor to prompt (exact row+col)
+                    R = _term_rows()
+                    # Absolute row addressing + save/restore cursor — no drift, no scroll.
+                    _write(f"\033[s\033[{R-4};1H\033[2K  {BLUE}{frame}{RESET} {DIM}{_spin_label[0]}{RESET}{elapsed_str}\033[u")
                     sys.stdout.flush()
                     i += 1
             except asyncio.CancelledError:
@@ -2816,14 +2848,14 @@ async def main():
 
         def _start_spin(label="Thinking..."):
             nonlocal _spin_task
-            _stop_spin()           # Clear any existing spinner + frame first
+            _stop_spin()
             _spin_label[0] = label
-            # Draw spinner line + frame SYNCHRONOUSLY — no async gap, frame never
-            # disappears between _stop_spin erasure and the async task redrawing it.
-            _write(f"  {BLUE}{SPINNER_FRAMES[0]}{RESET} {DIM}{label}{RESET}\033[K\n")
+            # Write spinner at its fixed absolute row (save/restore cursor so
+            # the prompt cursor position is not disturbed).
+            R = _term_rows()
+            _write(f"\033[s\033[{R-4};1H\033[2K  {BLUE}{SPINNER_FRAMES[0]}{RESET} {DIM}{label}{RESET}\033[u")
             _spin_line_active[0] = True
-            _draw_input_frame("", _output_buf_text[0])
-            # Animation loop picks up from frame 1 onward
+            sys.stdout.flush()
             _spin_task = asyncio.get_event_loop().create_task(_spin_loop())
 
         def _stop_spin():
@@ -2832,17 +2864,10 @@ async def main():
                 _spin_task.cancel()
                 _spin_task = None
             if _spin_line_active[0]:
-                # Spinner line is drawn. Cursor is at prompt line (the animation loop
-                # always returns to prompt via \033[2B, and _start_spin leaves it there).
-                # The spinner line is exactly 2 rows above prompt:
-                #   prompt → \033[1A → top-sep → \033[1A → spinner line
-                # Clear spinner line + entire input frame in one operation.
-                _write("\033[2A\r\033[J")
+                # Clear spinner row with absolute addressing; save/restore cursor.
+                R = _term_rows()
+                _write(f"\033[s\033[{R-4};1H\033[2K\033[u")
                 _spin_line_active[0] = False
-                _frame_drawn = False
-            else:
-                _spin_line_active[0] = False
-                _erase_frame()
 
         _start_spin()
 
@@ -3040,7 +3065,6 @@ async def main():
                 tw = _tw()
 
                 try:
-                    _erase_frame()
                     _draw_input_frame(mode_prefix)
 
                     _in_input = True
