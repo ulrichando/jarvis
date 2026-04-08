@@ -520,154 +520,51 @@ async def cmd_dream(ctx: CommandContext) -> CommandResult:
 
 # ── /self-modify ───────────────────────────────────────────────────────
 
-@command("self-modify", aliases=["selfmod"], description="Self-modification: propose changes to JARVIS code",
-         usage="/self-modify <target_description>", category="core",
-         permission=PermLevel.DANGEROUS, hidden=True)
+@command("self-modify", aliases=["selfmod", "evolve"],
+         description="Edit JARVIS source code to add or fix a capability",
+         usage="/self-modify <description of what to add or fix>",
+         category="core", permission=PermLevel.FULL, hidden=False)
 async def cmd_self_modify(ctx: CommandContext) -> CommandResult:
     brain = ctx.brain
-    desc = ctx.args.strip()
-    if not desc:
+    task = ctx.args.strip()
+
+    if not task:
         return CommandResult(
-            text="Usage: /self-modify <description of desired behavior>\n\n"
-                 "Examples:\n"
-                 "  /self-modify add a greeting plugin that says good morning\n"
-                 "  /self-modify create a tool that monitors CPU usage\n"
-                 "  /self-modify improve error messages in the agent loop",
+            text=(
+                "Usage: /self-modify <description>\n\n"
+                "Examples:\n"
+                "  /self-modify add a tool that reads system CPU temperature\n"
+                "  /self-modify make the browser tool support drag-and-drop\n"
+                "  /self-modify add a /ping command that checks if a host is reachable\n\n"
+                "JARVIS will read his source, implement the change, deploy it, and confirm."
+            ),
             success=False,
         )
 
     if not brain:
         return CommandResult(text="Brain not available.", success=False)
 
-    # Determine modification strategy based on target
-    target_lower = desc.lower()
-
-    # Strategy 1: Plugin generation (safest)
-    if any(w in target_lower for w in ["plugin", "add a", "create a", "new feature", "greeting"]):
-        return await _self_modify_plugin(brain, desc)
-
-    # Strategy 2: Code analysis and proposal (for existing code changes)
-    if any(w in target_lower for w in ["improve", "fix", "refactor", "optimize", "change"]):
-        return await _self_modify_proposal(brain, desc)
-
-    # Default: plugin generation
-    return await _self_modify_plugin(brain, desc)
-
-
-async def _self_modify_plugin(brain, desc: str) -> CommandResult:
-    """Generate a plugin from a description."""
-    # Use agent loop if available, otherwise use reasoner directly
     prompt = (
-        "Generate a JARVIS plugin (Python file) based on this description:\n"
-        f"{desc}\n\n"
-        "The plugin must follow this structure:\n"
-        "```python\n"
-        "PLUGIN_META = {\n"
-        '    "name": "plugin_name",\n'
-        '    "description": "what it does",\n'
-        '    "version": "0.1.0",\n'
-        "}\n\n"
-        "def on_load(brain):\n"
-        "    # Setup code\n"
-        "    pass\n\n"
-        "def on_message(brain, message):\n"
-        "    # React to messages, return modified message or None\n"
-        "    return None\n"
-        "```\n\n"
-        "Return ONLY the Python code, no explanation."
+        f"Self-modification task: {task}\n\n"
+        f"Instructions:\n"
+        f"1. Identify which source file needs the change:\n"
+        f"   - New OS/system tools → src/agent/tools.py\n"
+        f"   - Browser actions → src/agent/tools.py (browser tool)\n"
+        f"   - New commands → src/commands/handlers/\n"
+        f"   - Server endpoints → src/server/web_server.py\n"
+        f"   - Core behavior → src/brain.py\n"
+        f"2. Use read_file to read the relevant file\n"
+        f"3. Use edit_file or write_file to implement the change\n"
+        f"4. Run: bash /home/ulrich/Documents/Projects/jarvis/scripts/self-deploy.sh --python\n"
+        f"5. Confirm the change was applied successfully"
     )
 
-    code = None
+    result_text = ""
     try:
-        if hasattr(brain, 'agent_loop'):
-            code = await brain.agent_loop(prompt, max_steps=3)
-        elif hasattr(brain, 'reasoner'):
-            code = await brain.reasoner.query(prompt, system_prompt="You are a Python code generator.")
+        async for event in brain.think_stream(prompt):
+            if event.get("type") == "text":
+                result_text += event["content"]
     except Exception as e:
-        return CommandResult(text=f"Code generation failed: {e}", success=False)
+        return CommandResult(text=f"Self-modification failed: {e}", success=False)
 
-    if not code:
-        return CommandResult(text="No code generated.", success=False)
-
-    # Extract code from markdown fences if present
-    if "```python" in code:
-        code = code.split("```python", 1)[1].split("```", 1)[0]
-    elif "```" in code:
-        code = code.split("```", 1)[1].split("```", 1)[0]
-    code = code.strip()
-
-    # Basic validation
-    if "def " not in code:
-        return CommandResult(
-            text=f"Generated code does not contain function definitions. Output:\n{code[:500]}",
-            success=False,
-        )
-
-    # Save to plugins directory
-    plugin_dir = Path.home() / ".jarvis" / "plugins"
-    plugin_dir.mkdir(parents=True, exist_ok=True)
-
-    safe_name = "".join(c if c.isalnum() else "_" for c in desc[:30]).strip("_").lower()
-    plugin_file = plugin_dir / f"{safe_name}.py"
-
-    # Avoid overwriting
-    if plugin_file.exists():
-        plugin_file = plugin_dir / f"{safe_name}_{int(time.time()) % 10000}.py"
-
-    plugin_file.write_text(code + "\n")
-
-    # Reload plugins if available
-    if hasattr(brain, 'plugins') and hasattr(brain.plugins, "reload"):
-        try:
-            brain.plugins.reload()
-        except Exception:
-            pass
-
-    return CommandResult(
-        text=f"Self-modification complete.\n"
-             f"  Plugin saved: {plugin_file}\n"
-             f"  Description:  {desc}\n"
-             f"  Size:         {len(code)} bytes\n\n"
-             f"Preview:\n{code[:300]}{'...' if len(code) > 300 else ''}",
-        data={"plugin_path": str(plugin_file)},
-    )
-
-
-async def _self_modify_proposal(brain, desc: str) -> CommandResult:
-    """Analyze codebase and propose improvements without writing code directly."""
-    if not hasattr(brain, 'reasoner'):
-        return CommandResult(text="Reasoner not available.", success=False)
-
-    # Gather context about the target
-    try:
-        from src.agent.loop import _run_sub_agent
-
-        analysis_prompt = (
-            f"Analyze the JARVIS codebase and propose specific code changes for:\n{desc}\n\n"
-            f"Find the relevant files, understand the current implementation, "
-            f"and provide a detailed proposal with:\n"
-            f"1. Files to modify\n"
-            f"2. Specific changes (before/after)\n"
-            f"3. Risks and testing needed\n"
-            f"Do NOT make changes, only propose them."
-        )
-
-        proposal = await _run_sub_agent(brain.reasoner, "scout", analysis_prompt)
-    except Exception as e:
-        # Fallback to simple query
-        try:
-            proposal = await brain.reasoner.query(
-                f"Propose improvements for: {desc}",
-                system_prompt="You are analyzing a Python AI assistant codebase called JARVIS.",
-            )
-        except Exception as e2:
-            return CommandResult(text=f"Analysis failed: {e2}", success=False)
-
-    return CommandResult(
-        text=f"Self-Modification Proposal\n"
-             f"{'=' * 40}\n"
-             f"Target: {desc}\n\n"
-             f"{proposal}\n\n"
-             f"To apply, use /worker with the specific changes.",
-        data={"proposal": True},
-    )
+    return CommandResult(text=result_text or "Self-modification complete.")
