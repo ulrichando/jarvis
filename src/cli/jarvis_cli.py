@@ -2882,9 +2882,14 @@ async def main():
                     if not _streaming_text:
                         _stop_spin()
                         _streaming_text = True
-                        _output(f"  {CYAN}●{RESET} ")
+                        # Erase frame once, write prefix — cursor now inline in output.
+                        _erase_frame()
+                        _write(f"  {CYAN}●{RESET} ")
                     full_text += chunk
-                    _output(chunk)
+                    # Write chunk inline — no erase/redraw per token.
+                    # Frame is redrawn once after streaming ends.
+                    _write(chunk)
+                    sys.stdout.flush()
 
                 elif etype == "usage":
                     _tokens_this_turn += event.get("input_tokens", 0) + event.get("output_tokens", 0)
