@@ -1715,17 +1715,14 @@ async def main():
         _trust_dir(cwd)
         _writeln()
 
-    # Enter alternate screen buffer so the shell prompt disappears entirely (like vim/less).
-    # On exit we restore the original screen, so scrollback history is preserved.
+    # Use normal screen buffer so the terminal scrollback history is preserved.
+    # Just clear the visible screen for a clean start.
     if sys.stdout.isatty():
-        sys.stdout.write("\033[?1049h\033[H\033[2J")  # enter alt screen, cursor home, clear
+        sys.stdout.write("\033[H\033[2J")  # cursor home + clear visible screen
         sys.stdout.flush()
 
     def _exit_alt_screen():
-        """Restore the normal screen buffer (original terminal content reappears)."""
-        if sys.stdout.isatty():
-            sys.stdout.write("\033[?1049l")  # exit alt screen
-            sys.stdout.flush()
+        pass  # no alt screen to exit
 
     def _tw():
         try:
@@ -3567,12 +3564,7 @@ def run():
         pass  # Handled in finally
     finally:
         # Ensure alt screen is always exited, even on abrupt kill
-        try:
-            if sys.stdout.isatty():
-                sys.stdout.write("\033[?1049l")
-                sys.stdout.flush()
-        except Exception:
-            pass
+        pass  # no alt screen to exit
         # Suppress aiohttp cleanup errors that print after event loop closes
         # These are harmless but ugly — redirect stderr to devnull during shutdown
         try:
