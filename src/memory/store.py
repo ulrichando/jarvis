@@ -52,20 +52,26 @@ class MemoryStore:
             from src.memory.common_sense import load_common_sense
             loaded = load_common_sense(self._holographic)
             log.debug("HolographicMemory loaded with %d common-sense facts", loaded)
-        except Exception as e:
-            log.warning("HolographicMemory not loaded: %s", e)
+        except ImportError:
+            log.debug("HolographicMemory not available (optional dependency)")
+        except (OSError, ValueError, TypeError) as e:
+            log.warning("HolographicMemory failed to initialize: %s", e)
 
         try:
             from src.memory.associative import AssociativeMemory
             self._associative = AssociativeMemory()
-        except Exception as e:
-            log.warning("AssociativeMemory not loaded: %s", e)
+        except ImportError:
+            log.debug("AssociativeMemory not available (optional dependency)")
+        except (OSError, ValueError, TypeError) as e:
+            log.warning("AssociativeMemory failed to initialize: %s", e)
 
         try:
             from src.memory.activation import ActivationMemory
             self._activation = ActivationMemory()
-        except Exception as e:
-            log.warning("ActivationMemory not loaded: %s", e)
+        except ImportError:
+            log.debug("ActivationMemory not available (optional dependency)")
+        except (OSError, ValueError, TypeError) as e:
+            log.warning("ActivationMemory failed to initialize: %s", e)
 
     def _init_tables(self):
         self.conn.executescript("""
@@ -160,8 +166,8 @@ class MemoryStore:
         if self._holographic:
             try:
                 self._holographic.store_text(content, source=str(node_type))
-            except Exception:
-                pass
+            except (TypeError, ValueError, OSError) as e:
+                log.debug("Holographic store failed: %s", e)
 
         # Feed associative memory (spreading activation network)
         if self._associative:
@@ -173,8 +179,8 @@ class MemoryStore:
                     source="lattice",
                 )
                 self._associative.store(trace)
-            except Exception:
-                pass
+            except (TypeError, ValueError, AttributeError) as e:
+                log.debug("Associative store failed: %s", e)
 
         # Feed ACT-R activation memory
         if self._activation:
@@ -184,8 +190,8 @@ class MemoryStore:
                     tags=set(tags or []),
                     source="lattice",
                 )
-            except Exception:
-                pass
+            except (TypeError, ValueError, AttributeError) as e:
+                log.debug("Activation store failed: %s", e)
 
         return node
 
@@ -221,8 +227,8 @@ class MemoryStore:
                         )
                         lattice_results.append(node)
                         seen_content.add(result.content.lower())
-            except Exception:
-                pass
+            except (TypeError, ValueError, AttributeError) as e:
+                log.debug("Holographic recall failed: %s", e)
 
         # Associative recall — spreading activation finds related traces
         if self._associative:
@@ -239,8 +245,8 @@ class MemoryStore:
                         )
                         lattice_results.append(node)
                         seen_content.add(trace.content.lower())
-            except Exception:
-                pass
+            except (TypeError, ValueError, AttributeError) as e:
+                log.debug("Associative recall failed: %s", e)
 
         # ACT-R activation recall — cognitive model with recency/frequency
         if self._activation:
@@ -257,8 +263,8 @@ class MemoryStore:
                         )
                         lattice_results.append(node)
                         seen_content.add(trace.content.lower())
-            except Exception:
-                pass
+            except (TypeError, ValueError, AttributeError) as e:
+                log.debug("ACT-R recall failed: %s", e)
 
         # Sort by strength and return top_k
         lattice_results.sort(key=lambda n: n.strength, reverse=True)

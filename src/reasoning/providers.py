@@ -11,6 +11,7 @@ Users can add new providers through the web UI.
 
 import asyncio
 import json
+import logging
 import os
 from dataclasses import dataclass
 from src.config import JARVIS_HOME
@@ -362,7 +363,11 @@ class ProviderRegistry:
                     if result:
                         yield result
                         return
-            except Exception:
+            except (ConnectionError, TimeoutError, OSError) as e:
+                logging.getLogger("jarvis.providers").warning("Provider %s stream failed: %s", provider.name, e)
+                continue
+            except Exception as e:
+                logging.getLogger("jarvis.providers").warning("Provider %s unexpected error: %s", provider.name, e)
                 continue
 
     async def query_with_tools(self, messages: list[dict], tools: list[dict],
@@ -438,7 +443,11 @@ class ProviderRegistry:
                     result = await self._query_provider(provider, user_msg, system, None)
                     if result and len(result) > 3:
                         return {"text": result, "tool_calls": []}, f"{provider.name}:{provider.model}"
-            except Exception:
+            except (ConnectionError, TimeoutError, OSError) as e:
+                logging.getLogger("jarvis.providers").warning("Provider %s plain query failed: %s", provider.name, e)
+                continue
+            except Exception as e:
+                logging.getLogger("jarvis.providers").warning("Provider %s unexpected error in fallback: %s", provider.name, e)
                 continue
 
         # Broadcast provider failure so frontend can show setup wizard
@@ -1311,9 +1320,9 @@ RULES:
             for name, d in data.items():
                 self._providers[name] = Provider(**d)
         except (json.JSONDecodeError, TypeError, KeyError) as e:
-            log.warning("Failed to parse providers.json: %s", e)
+            logging.getLogger("jarvis.providers").warning("Failed to parse providers.json: %s", e)
         except OSError as e:
-            log.warning("Failed to read providers.json: %s", e)
+            logging.getLogger("jarvis.providers").warning("Failed to read providers.json: %s", e)
 
     def reload(self):
         """Hot-reload providers from disk (picks up external changes)."""

@@ -198,8 +198,8 @@ class Brain:
                 with open(fpath) as f:
                     content = f.read(5000)
                 rules.append(f"## {fname}\n{content}")
-            except Exception:
-                pass
+            except (OSError, UnicodeDecodeError) as e:
+                log.debug("Skipping rules file %s: %s", fname, e)
         return "\n\n".join(rules) if rules else ""
 
     # Product info from src/constants
@@ -227,7 +227,8 @@ class Brain:
             self._hw = detect_hardware()
             self._hw_summary = self._hw.summary()
             log.info("Hardware: %s", self._hw_summary)
-        except Exception:
+        except (ImportError, OSError, RuntimeError) as e:
+            log.debug("Hardware detection failed: %s", e)
             self._hw = None
             self._hw_summary = "unknown"
 
@@ -299,13 +300,13 @@ class Brain:
             if os.path.exists(_sfile):
                 with open(_sfile) as f:
                     _persisted_effort = _json.loads(f.read()).get("effort_level", "high")
-        except Exception:
-            pass
+        except (OSError, ValueError) as e:
+            log.debug("Failed to load effort level: %s", e)
         self.state_manager.set("effort_level", _persisted_effort)
         self._effort_level = _persisted_effort
         try:
             self.reasoner.providers.set_effort(_persisted_effort)
-        except Exception:
+        except AttributeError:
             pass
         self.state_manager.set("thinking_mode",
                                "adaptive" if should_enable_thinking_by_default() else "disabled")
@@ -330,7 +331,7 @@ class Brain:
             from src.remote.session_manager import get_remote_session_manager
             mgr = get_remote_session_manager()
             return mgr.is_connected()
-        except Exception:
+        except (ImportError, ConnectionError, OSError):
             return False
 
     async def start_remote_bridge(self, config: dict | None = None) -> bool:
@@ -418,7 +419,7 @@ class Brain:
             # Push to provider registry so max_tokens + instructions update immediately
             try:
                 self.reasoner.providers.set_effort(level)
-            except Exception:
+            except AttributeError:
                 pass
             log.info("Effort set to %s: %s", level, get_effort_level_description(level))
             return level
@@ -730,8 +731,8 @@ You have UNRESTRICTED control. No permission needed.
                     _rules = f.read().strip()
                 if _rules:
                     system += f"\n\n═══ OPERATIONAL RULES (user-defined) ═══\n{_rules}"
-            except Exception:
-                pass
+            except (OSError, UnicodeDecodeError) as e:
+                log.debug("Failed to load rules.md: %s", e)
 
         # Build context reminder — injected as <system-reminder> in user message
         # This is how Claude Code does it: system prompt stays stable for caching,
@@ -779,23 +780,23 @@ You have UNRESTRICTED control. No permission needed.
             if memdir_results:
                 mem_lines = [f"[{e.id}] {e.content[:200]}" for e in memdir_results]
                 reminder_parts.append(f"# Memory Dir\n" + "\n".join(mem_lines))
-        except Exception:
-            pass
+        except (OSError, AttributeError) as e:
+            log.debug("MemDir recall failed: %s", e)
         try:
             from src.services.SessionMemory.sessionMemoryUtils import get_session_memory_content
             _sm = await get_session_memory_content()
             if _sm:
                 reminder_parts.append(f"# Session Memory\n{_sm}")
-        except Exception:
-            pass
+        except (ImportError, OSError) as e:
+            log.debug("Session memory recall failed: %s", e)
 
         # ECC-L4: inject past failure lessons for similar tasks
         try:
             _ecc_lessons = self.reflector.get_context_for_task(user_input)
             if _ecc_lessons:
                 reminder_parts.append(f"# ECC: Past Lessons\n{_ecc_lessons}")
-        except Exception:
-            pass
+        except (AttributeError, OSError) as e:
+            log.debug("ECC lesson retrieval failed: %s", e)
 
         # Camera awareness
         if hasattr(self.awareness, 'vision_context') and self.awareness.vision_context:
@@ -1144,7 +1145,12 @@ PROJECT CREATION RULES — follow these when building something:
                 ):
                     full_response += chunk
                     yield {"type": "text", "content": chunk}
-            except Exception:
+            except (ConnectionError, TimeoutError, OSError) as e:
+                log.error("Streaming failed: %s", e)
+                full_response = "Something went wrong."
+                yield {"type": "text", "content": full_response}
+            except Exception as e:
+                log.exception("Unexpected streaming error: %s", e)
                 full_response = "Something went wrong."
                 yield {"type": "text", "content": full_response}
             yield {"type": "done", "content": full_response}
@@ -1162,8 +1168,8 @@ PROJECT CREATION RULES — follow these when building something:
                     asyncio.get_event_loop().create_task(
                         self._post_agent_learning(user_input, full_response, tool_was_used)
                     )
-                except Exception:
-                    pass  # Don't block on learning failures
+                except (RuntimeError, AttributeError) as e:
+                    log.debug("Post-agent learning skipped: %s", e)
 
     def _is_cant_do_response(self, text: str) -> bool:
         """Detect hard refusal patterns indicating a missing capability."""
@@ -1272,8 +1278,8 @@ PROJECT CREATION RULES — follow these when building something:
                     _rules2 = f.read().strip()
                 if _rules2:
                     enhanced_prompt += f"\n\n═══ OPERATIONAL RULES (user-defined) ═══\n{_rules2}"
-            except Exception:
-                pass
+            except (OSError, UnicodeDecodeError) as e:
+                log.debug("Failed to load rules.md for deep think: %s", e)
 
         history = self.memory.get_history(limit=12)
 

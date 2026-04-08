@@ -519,11 +519,11 @@ class JarvisWebServer:
                     if hasattr(obj, '_pre_buffer'):
                         obj._pre_buffer.clear()
                     try: delattr(ws, attr)
-                    except: pass
+                    except AttributeError: pass
             try:
                 if not ws.closed:
                     await ws.close()
-            except Exception:
+            except (ConnectionError, RuntimeError):
                 pass
             _lbl = getattr(ws, '_client_label', 'unknown')
             print(f"[JARVIS] WS disconnect: {peer} [{_lbl}] ({len(self.clients)} active)")
@@ -652,7 +652,7 @@ class JarvisWebServer:
             # Graceful shutdown — close all clients, kill desktop, then exit
             for c in list(self.clients):
                 try: await c.close()
-                except: pass
+                except (ConnectionError, RuntimeError): pass
             import subprocess as _sp_kill
             _sp_kill.run(["pkill", "-f", "src.desktop.app"], capture_output=True)
             # Use signal to trigger clean aiohttp shutdown
