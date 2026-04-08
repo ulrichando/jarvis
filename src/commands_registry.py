@@ -152,12 +152,12 @@ def meets_availability_requirement(cmd: Command) -> bool:
         return True
     for a in cmd.availability:
         if a == CommandAvailability.CLAUDE_AI:
-            # Would check is_api_subscriber()
-            pass
+            # TODO: check is_api_subscriber() when auth system is ready
+            return False
         elif a == CommandAvailability.CONSOLE:
-            # Would check console API key status
-            pass
-    return False
+            # TODO: check console API key status when auth system is ready
+            return False
+    return True
 
 
 # Cache for loaded commands by cwd
@@ -252,7 +252,7 @@ async def get_slash_command_tool_skills(cwd: str) -> list[Command]:
                 and cmd.source != "builtin"
                 and (cmd.has_user_specified_description or cmd.when_to_use)
                 and cmd.loaded_from in ("skills", "plugin", "bundled")
-                or cmd.disable_model_invocation
+                and not cmd.disable_model_invocation
             )
         ]
     except Exception as error:

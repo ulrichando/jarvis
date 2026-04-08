@@ -103,10 +103,13 @@ class JarvisWebServer:
         origin_base = re.sub(r':\d+$', '', origin)
         if origin_base in self._ALLOWED_ORIGINS:
             return True
-        # Allow same-host connections
+        # Allow same-host connections (exact match to prevent subdomain spoofing)
         host = request.headers.get("Host", "")
-        if host and origin.endswith(host.split(":")[0]):
-            return True
+        if host:
+            host_name = host.split(":")[0]
+            origin_host = re.sub(r':\d+$', '', re.sub(r'^https?://', '', origin))
+            if origin_host == host_name:
+                return True
         logging.getLogger("jarvis.web").warning("Rejected WS from origin: %s", origin)
         return False
 
@@ -3484,8 +3487,9 @@ class JarvisWebServer:
 
         # SPA fallback — any non-API, non-WS route serves index.html
         async def spa_fallback(request):
-            path = STATIC_DIR / request.path.lstrip("/")
-            if path.exists() and path.is_file():
+            path = (STATIC_DIR / request.path.lstrip("/")).resolve()
+            static_root = STATIC_DIR.resolve()
+            if str(path).startswith(str(static_root)) and path.exists() and path.is_file():
                 return web.FileResponse(path)
             return web.FileResponse(STATIC_DIR / "index.html")
         app.router.add_get("/{path:.*}", spa_fallback)

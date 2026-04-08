@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -292,11 +293,11 @@ class HooksManager:
         return self._run_event("ContextCompacted", "", {"before_tokens": before_tokens, "after_tokens": after_tokens})
 
     async def run_pre_hooks(self, tool_name: str, tool_input: dict) -> dict:
-        hr = self.run_pre_tool_use(tool_name, tool_input)
+        hr = await asyncio.to_thread(self.run_pre_tool_use, tool_name, tool_input)
         return hr.modified_args if hr.modified_args else tool_input
 
     async def run_post_hooks(self, tool_name: str, result: str) -> str:
-        self.run_post_tool_use(tool_name, {}, result)
+        await asyncio.to_thread(self.run_post_tool_use, tool_name, {}, result)
         return result
 
     # ── Introspection ──

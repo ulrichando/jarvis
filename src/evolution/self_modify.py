@@ -457,11 +457,12 @@ Include the TOOL_SCHEMA for the LLM to know how to call it."""
 
     def _sandbox_test(self, code: str) -> dict:
         """Run code in a subprocess sandbox with timeout and resource limits."""
+        safe_code = code.replace("'''", "\\'\\'\\'")
         test_script = f"""
 import sys
 sys.path.insert(0, '.')
 try:
-    compile('''{code.replace("'''", "\\'\\'\\'")}''', '<test>', 'exec')
+    compile('''{safe_code}''', '<test>', 'exec')
     print("COMPILE_OK")
 except SyntaxError as e:
     print(f"COMPILE_FAIL: {{e}}")

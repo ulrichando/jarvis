@@ -252,9 +252,11 @@ def box(text: str, title: Optional[str] = None, width: Optional[int] = None) -> 
         remaining = inner_width - len(title_str)
         if remaining < 0:
             remaining = 0
-        top = f"\u250c{title_str}{''.join(['\u2500'] * remaining)}\u2510"
+        border = '\u2500' * remaining
+        top = f"\u250c{title_str}{border}\u2510"
     else:
-        top = f"\u250c{'\u2500' * inner_width}\u2510"
+        horiz = '\u2500' * inner_width
+        top = f"\u250c{horiz}\u2510"
 
     # Content lines
     result_lines = [top]
@@ -266,7 +268,8 @@ def box(text: str, title: Optional[str] = None, width: Optional[int] = None) -> 
         result_lines.append(f"\u2502{line}{' ' * padding}\u2502")
 
     # Bottom border
-    bottom = f"\u2514{'\u2500' * inner_width}\u2518"
+    horiz_bottom = '\u2500' * inner_width
+    bottom = f"\u2514{horiz_bottom}\u2518"
     result_lines.append(bottom)
 
     return "\n".join(result_lines)
