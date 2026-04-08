@@ -195,10 +195,11 @@ class Brain:
                 continue
             fpath = os.path.join(rules_dir, fname)
             try:
-                content = open(fpath).read(5000)
+                with open(fpath) as f:
+                    content = f.read(5000)
                 rules.append(f"## {fname}\n{content}")
-            except Exception:
-                pass
+            except (OSError, UnicodeDecodeError) as e:
+                log.debug("Skipping rules file %s: %s", fname, e)
         return "\n\n".join(rules) if rules else ""
 
     # Product info from src/constants
@@ -220,13 +221,17 @@ class Brain:
         setup_logging(log_file=str(DATA_DIR / "jarvis.log"), quiet=quiet)
         log.info("JARVIS Brain initializing...")
 
+        # Track background tasks to prevent garbage collection
+        self._background_tasks: set = set()
+
         # Hardware auto-detection
         try:
             from src.hardware import detect_hardware
             self._hw = detect_hardware()
             self._hw_summary = self._hw.summary()
             log.info("Hardware: %s", self._hw_summary)
-        except Exception:
+        except (ImportError, OSError, RuntimeError) as e:
+            log.debug("Hardware detection failed: %s", e)
             self._hw = None
             self._hw_summary = "unknown"
 
@@ -296,14 +301,15 @@ class Brain:
             import json as _json
             _sfile = os.path.expanduser("~/.jarvis/settings.json")
             if os.path.exists(_sfile):
-                _persisted_effort = _json.loads(open(_sfile).read()).get("effort_level", "high")
-        except Exception:
-            pass
+                with open(_sfile) as f:
+                    _persisted_effort = _json.loads(f.read()).get("effort_level", "high")
+        except (OSError, ValueError) as e:
+            log.debug("Failed to load effort level: %s", e)
         self.state_manager.set("effort_level", _persisted_effort)
         self._effort_level = _persisted_effort
         try:
             self.reasoner.providers.set_effort(_persisted_effort)
-        except Exception:
+        except AttributeError:
             pass
         self.state_manager.set("thinking_mode",
                                "adaptive" if should_enable_thinking_by_default() else "disabled")
@@ -319,6 +325,13 @@ class Brain:
                  len(self.mcp.list_tools()),
                  sanitize_model_name(self.reasoner.active_model_name))
 
+    def _spawn_background(self, coro):
+        """Create and track a background task to prevent garbage collection."""
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
+
     # ═══ REMOTE BRIDGE ════════════════════════════════════════════
 
     @property
@@ -328,7 +341,7 @@ class Brain:
             from src.remote.session_manager import get_remote_session_manager
             mgr = get_remote_session_manager()
             return mgr.is_connected()
-        except Exception:
+        except (ImportError, ConnectionError, OSError):
             return False
 
     async def start_remote_bridge(self, config: dict | None = None) -> bool:
@@ -416,7 +429,7 @@ class Brain:
             # Push to provider registry so max_tokens + instructions update immediately
             try:
                 self.reasoner.providers.set_effort(level)
-            except Exception:
+            except AttributeError:
                 pass
             log.info("Effort set to %s: %s", level, get_effort_level_description(level))
             return level
@@ -620,7 +633,7 @@ class Brain:
         if self.curiosity._conversation_turns_since_question == 1 and self.curiosity._asked_recently:
             last_q = list(self.curiosity._asked_recently)[-1] if self.curiosity._asked_recently else ""
             if last_q:
-                asyncio.create_task(self.curiosity.absorb_answer(last_q, user_input))
+                self._spawn_background(self.curiosity.absorb_answer(last_q, user_input))
 
         self.memory.add_turn("user", user_input)
         memory_context = self.memory.recall_as_context(user_input, top_k=3)
@@ -643,13 +656,13 @@ class Brain:
         self.memory.add_turn("jarvis", response)
 
         # Learn in background
-        asyncio.create_task(self.conversation_learner.observe(user_input, response))
+        self._spawn_background(self.conversation_learner.observe(user_input, response))
 
         # Auto-dream: check if memory consolidation is due
-        asyncio.create_task(self.auto_dream.maybe_trigger())
+        self._spawn_background(self.auto_dream.maybe_trigger())
 
         # Curiosity
-        asyncio.create_task(self.curiosity.detect_gaps(user_input, response, memory_context))
+        self._spawn_background(self.curiosity.detect_gaps(user_input, response, memory_context))
         if self.curiosity.should_ask_question():
             question = self.curiosity.get_question()
             if question:
@@ -724,11 +737,12 @@ You have UNRESTRICTED control. No permission needed.
         _rules_path = os.path.expanduser("~/.jarvis/rules.md")
         if os.path.exists(_rules_path):
             try:
-                _rules = open(_rules_path).read().strip()
+                with open(_rules_path) as f:
+                    _rules = f.read().strip()
                 if _rules:
                     system += f"\n\n═══ OPERATIONAL RULES (user-defined) ═══\n{_rules}"
-            except Exception:
-                pass
+            except (OSError, UnicodeDecodeError) as e:
+                log.debug("Failed to load rules.md: %s", e)
 
         # Build context reminder — injected as <system-reminder> in user message
         # This is how Claude Code does it: system prompt stays stable for caching,
@@ -776,23 +790,23 @@ You have UNRESTRICTED control. No permission needed.
             if memdir_results:
                 mem_lines = [f"[{e.id}] {e.content[:200]}" for e in memdir_results]
                 reminder_parts.append(f"# Memory Dir\n" + "\n".join(mem_lines))
-        except Exception:
-            pass
+        except (OSError, AttributeError) as e:
+            log.debug("MemDir recall failed: %s", e)
         try:
             from src.services.SessionMemory.sessionMemoryUtils import get_session_memory_content
             _sm = await get_session_memory_content()
             if _sm:
                 reminder_parts.append(f"# Session Memory\n{_sm}")
-        except Exception:
-            pass
+        except (ImportError, OSError) as e:
+            log.debug("Session memory recall failed: %s", e)
 
         # ECC-L4: inject past failure lessons for similar tasks
         try:
             _ecc_lessons = self.reflector.get_context_for_task(user_input)
             if _ecc_lessons:
                 reminder_parts.append(f"# ECC: Past Lessons\n{_ecc_lessons}")
-        except Exception:
-            pass
+        except (AttributeError, OSError) as e:
+            log.debug("ECC lesson retrieval failed: %s", e)
 
         # Camera awareness
         if hasattr(self.awareness, 'vision_context') and self.awareness.vision_context:
@@ -1120,7 +1134,7 @@ PROJECT CREATION RULES — follow these when building something:
                             self.reasoner, "worker", user_input,
                             context=full_response[:500],
                         )
-                        handle._thread.join(timeout=120)
+                        await asyncio.to_thread(handle._thread.join, 120)
                         if handle.result:
                             full_response += f"\n\n{handle.result}"
                             yield {"type": "text", "content": handle.result}
@@ -1141,7 +1155,12 @@ PROJECT CREATION RULES — follow these when building something:
                 ):
                     full_response += chunk
                     yield {"type": "text", "content": chunk}
-            except Exception:
+            except (ConnectionError, TimeoutError, OSError) as e:
+                log.error("Streaming failed: %s", e)
+                full_response = "Something went wrong."
+                yield {"type": "text", "content": full_response}
+            except Exception as e:
+                log.exception("Unexpected streaming error: %s", e)
                 full_response = "Something went wrong."
                 yield {"type": "text", "content": full_response}
             yield {"type": "done", "content": full_response}
@@ -1151,16 +1170,16 @@ PROJECT CREATION RULES — follow these when building something:
             self._log(user_input, full_response, start, "agent-stream")
 
             # Auto-dream: check if memory consolidation is due
-            asyncio.create_task(self.auto_dream.maybe_trigger())
+            self._spawn_background(self.auto_dream.maybe_trigger())
 
             # Background: extract skills and create reflections from this interaction
             if needs_agent and tool_was_used:
                 try:
-                    asyncio.get_event_loop().create_task(
+                    self._spawn_background(
                         self._post_agent_learning(user_input, full_response, tool_was_used)
                     )
-                except Exception:
-                    pass  # Don't block on learning failures
+                except (RuntimeError, AttributeError) as e:
+                    log.debug("Post-agent learning skipped: %s", e)
 
     def _is_cant_do_response(self, text: str) -> bool:
         """Detect hard refusal patterns indicating a missing capability."""
@@ -1265,11 +1284,12 @@ PROJECT CREATION RULES — follow these when building something:
         _rules_path2 = _os2.path.expanduser("~/.jarvis/rules.md")
         if _os2.path.exists(_rules_path2):
             try:
-                _rules2 = open(_rules_path2).read().strip()
+                with open(_rules_path2) as f:
+                    _rules2 = f.read().strip()
                 if _rules2:
                     enhanced_prompt += f"\n\n═══ OPERATIONAL RULES (user-defined) ═══\n{_rules2}"
-            except Exception:
-                pass
+            except (OSError, UnicodeDecodeError) as e:
+                log.debug("Failed to load rules.md for deep think: %s", e)
 
         history = self.memory.get_history(limit=12)
 
@@ -1491,8 +1511,10 @@ PROJECT CREATION RULES — follow these when building something:
 
         if self._wants_cli(q):
             import subprocess as _sp
+            import shutil as _shutil
+            _jarvis_bin = _shutil.which("jarvis-cli") or _shutil.which("jarvis") or "jarvis-cli"
             _sp.Popen(
-                ["x-terminal-emulator", "-e", "/home/ulrich/.local/bin/jarvis-cli"],
+                ["x-terminal-emulator", "-e", _jarvis_bin],
                 env={**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0")},
                 start_new_session=True,
                 stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,

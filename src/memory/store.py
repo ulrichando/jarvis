@@ -7,6 +7,7 @@ The Index provides O(1) recall across all dimensions.
 
 import logging
 import sqlite3
+import threading
 import time
 from src.config import DATA_DIR
 from src.memory.lattice import NeuralLattice, MemoryNode, NodeType
@@ -31,6 +32,7 @@ class MemoryStore:
             db_path = str(DATA_DIR / "jarvis.db")
 
         # Conversation log (SQLite — WAL mode for concurrent access)
+        self._db_lock = threading.Lock()
         self.conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.row_factory = sqlite3.Row
@@ -52,20 +54,26 @@ class MemoryStore:
             from src.memory.common_sense import load_common_sense
             loaded = load_common_sense(self._holographic)
             log.debug("HolographicMemory loaded with %d common-sense facts", loaded)
-        except Exception as e:
-            log.warning("HolographicMemory not loaded: %s", e)
+        except ImportError:
+            log.debug("HolographicMemory not available (optional dependency)")
+        except (OSError, ValueError, TypeError) as e:
+            log.warning("HolographicMemory failed to initialize: %s", e)
 
         try:
             from src.memory.associative import AssociativeMemory
             self._associative = AssociativeMemory()
-        except Exception as e:
-            log.warning("AssociativeMemory not loaded: %s", e)
+        except ImportError:
+            log.debug("AssociativeMemory not available (optional dependency)")
+        except (OSError, ValueError, TypeError) as e:
+            log.warning("AssociativeMemory failed to initialize: %s", e)
 
         try:
             from src.memory.activation import ActivationMemory
             self._activation = ActivationMemory()
-        except Exception as e:
-            log.warning("ActivationMemory not loaded: %s", e)
+        except ImportError:
+            log.debug("ActivationMemory not available (optional dependency)")
+        except (OSError, ValueError, TypeError) as e:
+            log.warning("ActivationMemory failed to initialize: %s", e)
 
     def _init_tables(self):
         self.conn.executescript("""
@@ -103,11 +111,12 @@ class MemoryStore:
     def add_turn(self, role: str, content: str):
         """Log a conversation turn. Does NOT absorb into lattice —
         only explicit learn() calls go into the lattice."""
-        self.conn.execute(
-            "INSERT INTO conversations (role, content, timestamp) VALUES (?, ?, ?)",
-            (role, content, time.time()),
-        )
-        self.conn.commit()
+        with self._db_lock:
+            self.conn.execute(
+                "INSERT INTO conversations (role, content, timestamp) VALUES (?, ?, ?)",
+                (role, content, time.time()),
+            )
+            self.conn.commit()
 
     def mark_session_start(self):
         """Mark the start of a new session.
@@ -133,12 +142,13 @@ class MemoryStore:
         # Voice generates ~150 entries/hour, so 3h = ~450 entries
         # Cap at limit * 4 to stay within LLM context budget
         effective_limit = min(limit * 4, 160)
-        rows = self.conn.execute(
-            "SELECT role, content, timestamp FROM conversations "
-            "WHERE timestamp >= ? "
-            "ORDER BY timestamp DESC LIMIT ?",
-            (time_cutoff, effective_limit),
-        ).fetchall()
+        with self._db_lock:
+            rows = self.conn.execute(
+                "SELECT role, content, timestamp FROM conversations "
+                "WHERE timestamp >= ? "
+                "ORDER BY timestamp DESC LIMIT ?",
+                (time_cutoff, effective_limit),
+            ).fetchall()
         return [dict(row) for row in reversed(rows)]
 
     # ── Neural Lattice Operations ──────────────────────────────────────
@@ -160,8 +170,8 @@ class MemoryStore:
         if self._holographic:
             try:
                 self._holographic.store_text(content, source=str(node_type))
-            except Exception:
-                pass
+            except (TypeError, ValueError, OSError) as e:
+                log.debug("Holographic store failed: %s", e)
 
         # Feed associative memory (spreading activation network)
         if self._associative:
@@ -173,8 +183,8 @@ class MemoryStore:
                     source="lattice",
                 )
                 self._associative.store(trace)
-            except Exception:
-                pass
+            except (TypeError, ValueError, AttributeError) as e:
+                log.debug("Associative store failed: %s", e)
 
         # Feed ACT-R activation memory
         if self._activation:
@@ -184,8 +194,8 @@ class MemoryStore:
                     tags=set(tags or []),
                     source="lattice",
                 )
-            except Exception:
-                pass
+            except (TypeError, ValueError, AttributeError) as e:
+                log.debug("Activation store failed: %s", e)
 
         return node
 
@@ -221,8 +231,8 @@ class MemoryStore:
                         )
                         lattice_results.append(node)
                         seen_content.add(result.content.lower())
-            except Exception:
-                pass
+            except (TypeError, ValueError, AttributeError) as e:
+                log.debug("Holographic recall failed: %s", e)
 
         # Associative recall — spreading activation finds related traces
         if self._associative:
@@ -239,8 +249,8 @@ class MemoryStore:
                         )
                         lattice_results.append(node)
                         seen_content.add(trace.content.lower())
-            except Exception:
-                pass
+            except (TypeError, ValueError, AttributeError) as e:
+                log.debug("Associative recall failed: %s", e)
 
         # ACT-R activation recall — cognitive model with recency/frequency
         if self._activation:
@@ -257,8 +267,8 @@ class MemoryStore:
                         )
                         lattice_results.append(node)
                         seen_content.add(trace.content.lower())
-            except Exception:
-                pass
+            except (TypeError, ValueError, AttributeError) as e:
+                log.debug("ACT-R recall failed: %s", e)
 
         # Sort by strength and return top_k
         lattice_results.sort(key=lambda n: n.strength, reverse=True)
@@ -291,8 +301,8 @@ class MemoryStore:
                 for entry in memdir_results:
                     preview = entry.content[:150].replace("\n", " ")
                     lines.append(f"  - [{entry.id}] {preview}")
-        except Exception:
-            pass
+        except (OSError, AttributeError) as e:
+            log.debug("Memdir search failed: %s", e)
 
         return "\n".join(lines) if lines else ""
 
@@ -348,13 +358,13 @@ class MemoryStore:
         if self._holographic:
             try:
                 self._holographic.decay()
-            except Exception:
-                pass
+            except (AttributeError, TypeError) as e:
+                log.debug("Holographic decay failed: %s", e)
         if self._associative:
             try:
                 assoc_pruned = self._associative.decay_and_prune()
-            except Exception:
-                pass
+            except (AttributeError, TypeError) as e:
+                log.debug("Associative decay failed: %s", e)
 
         return {
             "pruned": pruned,
@@ -366,9 +376,10 @@ class MemoryStore:
     @property
     def stats(self) -> dict:
         """Get memory system stats."""
-        conv_count = self.conn.execute(
-            "SELECT COUNT(*) FROM conversations"
-        ).fetchone()[0]
+        with self._db_lock:
+            conv_count = self.conn.execute(
+                "SELECT COUNT(*) FROM conversations"
+            ).fetchone()[0]
         result = {
             "conversations": conv_count,
             "lattice": self.lattice.stats,
@@ -377,18 +388,18 @@ class MemoryStore:
         if self._holographic:
             try:
                 result["holographic"] = self._holographic.stats()
-            except Exception:
-                pass
+            except (AttributeError, TypeError) as e:
+                log.debug("Holographic stats failed: %s", e)
         if self._associative:
             try:
                 result["associative"] = self._associative.stats()
-            except Exception:
-                pass
+            except (AttributeError, TypeError) as e:
+                log.debug("Associative stats failed: %s", e)
         if self._activation:
             try:
                 result["activation"] = self._activation.stats()
-            except Exception:
-                pass
+            except (AttributeError, TypeError) as e:
+                log.debug("Activation stats failed: %s", e)
         return result
 
     def close(self):

@@ -107,10 +107,10 @@ class SessionStorage:
             batch = list(self._pending_flush)
             self._pending_flush.clear()
 
-        path = self._get_session_file()
-        lines = "".join(json.dumps(e.to_dict()) + "\n" for e in batch)
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(lines)
+            path = self._get_session_file()
+            lines = "".join(json.dumps(e.to_dict()) + "\n" for e in batch)
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(lines)
 
     def _get_session_file(self) -> Path:
         return self._storage_dir / f"{self._session_id}.jsonl"

@@ -321,6 +321,11 @@ TOOL_SCHEMAS = [
                         "type": "string",
                         "description": "The replacement text",
                     },
+                    "replace_all": {
+                        "type": "boolean",
+                        "description": "If true, replace all occurrences (default: false, replaces first only)",
+                        "default": False,
+                    },
                 },
                 "required": ["path", "old_string", "new_string"],
             },
@@ -653,7 +658,7 @@ TOOL_SCHEMAS = [
                 "- security-auditor: General code security audit -- OWASP top 10, secrets, misconfigs\n"
                 "- reviewer: Code quality review -- bugs, style, best practices\n"
                 "Security pipeline agents (use sec-orchestrator to run the full pipeline, or call individually):\n"
-                "- sec-orchestrator: Full automated security scan pipeline -- coordinates all 7 agents below\n"
+                "- sec-orchestrator: Full automated 9-stage security scan pipeline -- use /vuln-scan or dispatch directly\n"
                 "- file-risk-ranker: Ranks files by attack surface score (0-100) across 7 dimensions\n"
                 "- vuln-hypothesis-engine: Generates specific testable vulnerability hypotheses for a file\n"
                 "- static-analyzer: Traces taint paths from sources through sanitizers to dangerous sinks\n"
@@ -661,6 +666,13 @@ TOOL_SCHEMAS = [
                 "- severity-scorer: CVSS 3.1 scoring, exploit chain linking, priority ranking\n"
                 "- exploit-builder: Generates PoC exploits -- ROP chains, injection payloads, privesc, sandbox escapes\n"
                 "- report-writer: Produces security-report.md and security-findings.json from all pipeline results\n"
+                "Defensive security persona agents (use in stage 8 of sec-orchestrator, or call independently):\n"
+                "- vulnmgmt: Vulnerability management -- patch/mitigate/accept decisions, remediation prioritization\n"
+                "- secarch: Security architecture -- root cause analysis, systemic design-level fixes\n"
+                "- threathunt: Threat hunting -- detection hypotheses, SIEM queries, behavioral indicators\n"
+                "- threatintel: Threat intelligence -- CVE/exploit alignment, threat actor TTP mapping\n"
+                "- forensics: Digital forensics -- evidence preservation, IOC extraction, exploitation indicators\n"
+                "- devsecops: DevSecOps -- CI/CD security gates, SAST rules, pre-commit hooks\n"
                 "\n"
                 "When NOT to use the dispatch tool:\n"
                 "- If you want to read a specific file path, use read_file or search_files instead, to find the match more quickly\n"
@@ -2372,8 +2384,12 @@ def _exec_write(args: dict) -> str:
         return err
 
     try:
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        resolved = os.path.realpath(path)
+        # Resolve path first, then validate and create dirs using resolved path
+        resolved = os.path.realpath(os.path.expanduser(path))
+        valid, err = _validate_path(resolved, write=True)
+        if not valid:
+            return err
+        os.makedirs(os.path.dirname(resolved) or ".", exist_ok=True)
         extra_info = ""
         old_content: str | None = None
 
@@ -2404,7 +2420,7 @@ def _exec_write(args: dict) -> str:
             except Exception:
                 pass
 
-        with open(path, "w") as f:
+        with open(resolved, "w", encoding="utf-8") as f:
             f.write(content)
 
         # Track the write time for staleness detection
@@ -2927,9 +2943,18 @@ def _exec_glob(args: dict) -> str:
     if not pattern:
         return "No pattern provided."
 
+    # Validate search path
+    valid, err = _validate_path(path, write=False)
+    if not valid:
+        return err
+
     try:
         full_pattern = os.path.join(path, pattern)
+        # Verify pattern doesn't escape the search path via ../
+        resolved_base = os.path.realpath(path)
         matches = _glob.glob(full_pattern, recursive=True)
+        # Filter out matches that escape the base path
+        matches = [m for m in matches if os.path.realpath(m).startswith(resolved_base)]
         # Sort by modification time (newest first)
         matches.sort(key=lambda f: os.path.getmtime(f) if os.path.exists(f) else 0, reverse=True)
         matches = matches[:250]  # Cap results
@@ -2948,6 +2973,11 @@ def _exec_grep(args: dict) -> str:
     if not pattern:
         return "No pattern provided."
 
+    # Validate search path
+    valid, err = _validate_path(path, write=False)
+    if not valid:
+        return err
+
     try:
         from src.agent.ripgrep import RipgrepConfig, search as rg_search
 
@@ -2957,10 +2987,10 @@ def _exec_grep(args: dict) -> str:
             glob=args.get("glob", ""),
             file_type=args.get("type", ""),
             output_mode=args.get("output_mode", "files_with_matches"),
-            context=args.get("context", 0),
+            context=min(args.get("context", 0), 100),
             case_insensitive=args.get("-i", False),
             multiline=args.get("multiline", False),
-            head_limit=args.get("head_limit", 250),
+            head_limit=min(args.get("head_limit", 250), 10000),
         )
         result = rg_search(config)
         return result.output
@@ -3043,7 +3073,7 @@ def _exec_task_update(args: dict) -> str:
     if not task_id:
         return "No task_id provided."
     for task in _task_list:
-        if task["id"] == task_id:
+        if task.get("id") == task_id:
             updated = []
             if "status" in args:
                 new_status = args["status"]
@@ -3065,10 +3095,10 @@ def _exec_task_update(args: dict) -> str:
                 task["owner"] = args["owner"]
                 updated.append(f"owner={args['owner']}")
             if "addBlocks" in args:
-                task["blocks"].extend(args["addBlocks"])
+                task.setdefault("blocks", []).extend(args["addBlocks"])
                 updated.append("blocks")
             if "addBlockedBy" in args:
-                task["blockedBy"].extend(args["addBlockedBy"])
+                task.setdefault("blockedBy", []).extend(args["addBlockedBy"])
                 updated.append("blockedBy")
             return f"Updated task {task_id}: {', '.join(updated)}" if updated else f"No changes to task {task_id}"
     return f"Task not found: {task_id}"
@@ -3104,9 +3134,9 @@ def _exec_config(args: dict) -> str:
     settings = {}
     if os.path.exists(settings_path):
         try:
-            with open(settings_path, "r") as f:
+            with open(settings_path, "r", encoding="utf-8") as f:
                 settings = json.load(f)
-        except Exception:
+        except (OSError, json.JSONDecodeError):
             settings = {}
 
     if value is None:
@@ -3118,7 +3148,7 @@ def _exec_config(args: dict) -> str:
         settings[setting] = value
         try:
             os.makedirs(jarvis_home, exist_ok=True)
-            with open(settings_path, "w") as f:
+            with open(settings_path, "w", encoding="utf-8") as f:
                 json.dump(settings, f, indent=2)
             return f"Set {setting} = {value}"
         except Exception as e:
