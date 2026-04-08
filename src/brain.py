@@ -195,7 +195,8 @@ class Brain:
                 continue
             fpath = os.path.join(rules_dir, fname)
             try:
-                content = open(fpath).read(5000)
+                with open(fpath) as f:
+                    content = f.read(5000)
                 rules.append(f"## {fname}\n{content}")
             except Exception:
                 pass
@@ -296,7 +297,8 @@ class Brain:
             import json as _json
             _sfile = os.path.expanduser("~/.jarvis/settings.json")
             if os.path.exists(_sfile):
-                _persisted_effort = _json.loads(open(_sfile).read()).get("effort_level", "high")
+                with open(_sfile) as f:
+                    _persisted_effort = _json.loads(f.read()).get("effort_level", "high")
         except Exception:
             pass
         self.state_manager.set("effort_level", _persisted_effort)
@@ -724,7 +726,8 @@ You have UNRESTRICTED control. No permission needed.
         _rules_path = os.path.expanduser("~/.jarvis/rules.md")
         if os.path.exists(_rules_path):
             try:
-                _rules = open(_rules_path).read().strip()
+                with open(_rules_path) as f:
+                    _rules = f.read().strip()
                 if _rules:
                     system += f"\n\n═══ OPERATIONAL RULES (user-defined) ═══\n{_rules}"
             except Exception:
@@ -1120,7 +1123,7 @@ PROJECT CREATION RULES — follow these when building something:
                             self.reasoner, "worker", user_input,
                             context=full_response[:500],
                         )
-                        handle._thread.join(timeout=120)
+                        await asyncio.to_thread(handle._thread.join, 120)
                         if handle.result:
                             full_response += f"\n\n{handle.result}"
                             yield {"type": "text", "content": handle.result}
@@ -1265,7 +1268,8 @@ PROJECT CREATION RULES — follow these when building something:
         _rules_path2 = _os2.path.expanduser("~/.jarvis/rules.md")
         if _os2.path.exists(_rules_path2):
             try:
-                _rules2 = open(_rules_path2).read().strip()
+                with open(_rules_path2) as f:
+                    _rules2 = f.read().strip()
                 if _rules2:
                     enhanced_prompt += f"\n\n═══ OPERATIONAL RULES (user-defined) ═══\n{_rules2}"
             except Exception:
@@ -1491,8 +1495,10 @@ PROJECT CREATION RULES — follow these when building something:
 
         if self._wants_cli(q):
             import subprocess as _sp
+            import shutil as _shutil
+            _jarvis_bin = _shutil.which("jarvis-cli") or _shutil.which("jarvis") or "jarvis-cli"
             _sp.Popen(
-                ["x-terminal-emulator", "-e", "/home/ulrich/.local/bin/jarvis-cli"],
+                ["x-terminal-emulator", "-e", _jarvis_bin],
                 env={**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0")},
                 start_new_session=True,
                 stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
