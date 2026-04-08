@@ -1251,13 +1251,10 @@ async def _interactive_pick(entries: list[str], title: str = "", current: int = 
                 elif nxt == "[B":  # down
                     sel = min(len(entries) - 1, sel + 1)
                 else:
-                    termios.tcsetattr(fd, termios.TCSADRAIN, old)
                     return None
             elif ch in ("\r", "\n"):
-                termios.tcsetattr(fd, termios.TCSADRAIN, old)
                 return sel
             elif ch in ("q", "\x03"):
-                termios.tcsetattr(fd, termios.TCSADRAIN, old)
                 return None
             # Redraw: move cursor back up
             total = len(entries)
@@ -1267,9 +1264,8 @@ async def _interactive_pick(entries: list[str], title: str = "", current: int = 
             lines_drawn = vis + extra + header_lines
             sys.stdout.write(f"\033[{lines_drawn}A")
             _render()
-    except Exception:
+    finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
-        return None
 
 
 async def main():
@@ -1864,6 +1860,8 @@ async def main():
     def _teardown_zones():
         pass
 
+    _ANSI_ESCAPE_RE = re.compile(r'\033\[[^m]*m')
+
     def _draw_input_frame(mode_prefix="", buf_text=""):
         """Draw the 4-line input frame inline at the current cursor position.
 
@@ -1940,8 +1938,7 @@ async def main():
         _write("\033[2A")  # move cursor up 2 rows back to prompt line (relative, scroll-safe)
         # Reposition cursor column: \033[2A preserves the footer's column, not the prompt's.
         # Go to column 0, then advance to the end of prompt+input.
-        _ansi_re = re.compile(r'\033\[[^m]*m')
-        _prompt_vis_len = len(_ansi_re.sub('', prompt))
+        _prompt_vis_len = len(_ANSI_ESCAPE_RE.sub('', prompt))
         _target_col = _prompt_vis_len + len(buf_text)
         _write(f"\r\033[{_target_col}C" if _target_col > 0 else "\r")
         _frame_drawn = True
@@ -2347,11 +2344,13 @@ async def main():
                 buf.clear()
                 _history_idx = len(_history_entries)
                 _redraw()
-                result_future.set_result("")
+                if not result_future.done():
+                    result_future.set_result("")
                 return
             elif _kb_action == "app:exit":
                 _hide_menu()
-                result_future.set_result(None)
+                if not result_future.done():
+                    result_future.set_result(None)
                 return
             elif _kb_action == "app:redraw":
                 _hide_menu()
@@ -2396,10 +2395,12 @@ async def main():
                     if hasattr(_async_read_input, '_session_history'):
                         _async_read_input._session_history.append(text)
                 _history_idx = len(_history_entries)
-                result_future.set_result(text)
+                if not result_future.done():
+                    result_future.set_result(text)
             elif ch == "\x04":
                 _hide_menu()
-                result_future.set_result(None)
+                if not result_future.done():
+                    result_future.set_result(None)
             elif ch == "\x03":
                 _hide_menu()
                 # Ctrl+C: cancel active task if running, else clear input
@@ -2409,7 +2410,8 @@ async def main():
                 buf.clear()
                 _history_idx = len(_history_entries)
                 _redraw()
-                result_future.set_result("")
+                if not result_future.done():
+                    result_future.set_result("")
             elif ch == "\x0c":
                 # Ctrl+L: Clear and redraw screen (full redraw, not just input)
                 _hide_menu()
@@ -2441,15 +2443,19 @@ async def main():
                     _write("\033[r")  # Reset scroll region for editor
                     import shlex as _shlex
                     subprocess.run([*_shlex.split(editor), tf_path], check=False)
-                    import tty as _tty
-                    _tty.setcbreak(fd)
                     with open(tf_path, "r") as f:
                         new_text = f.read().strip()
                     buf.clear()
                     buf.extend(new_text)
-                except Exception:
-                    pass
+                except (OSError, ValueError) as e:
+                    log.debug("Editor launch failed: %s", e)
                 finally:
+                    # Always restore terminal to cbreak mode
+                    try:
+                        import tty as _tty
+                        _tty.setcbreak(fd)
+                    except Exception:
+                        pass
                     try:
                         os.unlink(tf_path)
                     except OSError:
@@ -2541,7 +2547,7 @@ async def main():
             if seq == "[201~":
                 _paste_mode[0] = False
                 if _paste_buf:
-                    pasted = "".join(_paste_buf).replace("\r", "").replace("\n", " ")
+                    pasted = "".join(_paste_buf).replace("\r\n", "\n").replace("\r", "\n")
                     buf.extend(pasted)
                     _paste_buf.clear()
                     _redraw()
@@ -2632,13 +2638,19 @@ async def main():
                             _esc_timer.cancel()
                             _esc_timer = None
                         _handle_escape_seq()
-                    elif len(_esc_buf) > 6:
+                    elif len(_esc_buf) > 12:
                         # Too long — something went wrong, flush
                         if _esc_timer:
                             _esc_timer.cancel()
                             _esc_timer = None
-                        _esc_buf.clear()
+                        _handle_escape_seq()
                 elif ch == "\x1b":
+                    # Cancel any pending timer before starting new sequence
+                    if _esc_timer:
+                        _esc_timer.cancel()
+                        _esc_timer = None
+                    if _esc_buf:
+                        _handle_escape_seq()
                     _esc_buf.clear()
                     # Wait briefly for rest of sequence
                     _esc_timer = loop.call_later(0.05, _handle_escape_seq)
