@@ -160,8 +160,8 @@ TOOL_SCHEMAS = [
                 '(e.g., cd "path with spaces/file.txt")\n'
                 "- Try to maintain your current working directory throughout the session by using absolute paths "
                 "and avoiding usage of `cd`. You may use `cd` if the User explicitly requests it.\n"
-                "- You may specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). By default, "
-                "your command will timeout after 120000ms (2 minutes).\n"
+                "- You may specify an optional timeout in seconds (default 60, max 600). By default, "
+                "your command will timeout after 60 seconds.\n"
                 "- You can use the `run_in_background` parameter to run the command in the background. Only use "
                 "this if you don't need the result immediately and are OK being notified when the command completes later.\n"
                 "- When issuing multiple commands:\n"
@@ -241,8 +241,8 @@ TOOL_SCHEMAS = [
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Max number of lines to read (default 200)",
-                        "default": 200,
+                        "description": "Max number of lines to read (default 2000)",
+                        "default": 2000,
                     },
                 },
                 "required": ["path"],
@@ -2287,7 +2287,34 @@ def _exec_read(args: dict) -> str:
         return f"Directory listing ({len(entries)} entries):\n" + "\n".join(sorted(entries))
 
     resolved = os.path.realpath(path)
+
+    # Boundary/symlink guard: block symlinks whose *resolved* target escapes
+    # ALLOWED_ROOTS.  Regular files outside ALLOWED_ROOTS are still readable
+    # (user explicitly provided the path); only symlink indirection is blocked.
+    _abs_path = os.path.abspath(path)  # normalises .. but does NOT follow symlinks
+    if _abs_path != resolved:          # path is a symlink (target differs)
+        _in_allowed = any(
+            resolved == os.path.realpath(r)
+            or resolved.startswith(os.path.realpath(r) + os.sep)
+            for r in ALLOWED_ROOTS
+        )
+        if not _in_allowed:
+            return (
+                f"Access denied: symlink {path!r} resolves to {resolved!r} "
+                "which is outside the allowed root paths."
+            )
+
     ext = os.path.splitext(resolved)[1].lower()
+
+    # Enforce per-category media size limits (images/audio/video/document)
+    try:
+        from src.media.mime import check_media_size, detect_mime
+        _, _category = detect_mime(resolved)
+        _size_err = check_media_size(resolved, _category)
+        if _size_err and ext not in (".pdf",):
+            return _size_err
+    except Exception:
+        pass  # media module not available — fall through to existing size check
 
     # Enforce file size limit from FileReadTool/limits.py
     try:
@@ -2639,7 +2666,13 @@ def _exec_database(args: dict) -> str:
                 lines.append("-" * len(lines[0]))
                 for row in rows:
                     lines.append(" | ".join(str(v) for v in row))
-                total = cursor.execute(f"SELECT COUNT(*) FROM ({query})").fetchone()[0] if len(rows) >= 100 else len(rows)
+                if len(rows) >= 100:
+                    try:
+                        total = cursor.execute(f"SELECT COUNT(*) FROM ({query}) AS _c").fetchone()[0]
+                    except Exception:
+                        total = "100+"  # complex query (JOIN/CTE/GROUP BY) — approximate
+                else:
+                    total = len(rows)
                 conn.close()
                 result = "\n".join(lines)
                 if len(rows) >= 100:
@@ -2678,8 +2711,23 @@ def _exec_database(args: dict) -> str:
         elif db_type == "mysql":
             try:
                 import mysql.connector
-                # Parse connection string or use as host
-                conn = mysql.connector.connect(host=database)
+                import urllib.parse as _urlparse
+                # Parse connection string: mysql://user:pass@host:port/dbname
+                # or fall back to treating it as a host name
+                parsed = _urlparse.urlparse(database) if database.startswith("mysql://") else None
+                if parsed and parsed.hostname:
+                    connect_kwargs: dict = {"host": parsed.hostname}
+                    if parsed.port:
+                        connect_kwargs["port"] = parsed.port
+                    if parsed.username:
+                        connect_kwargs["user"] = parsed.username
+                    if parsed.password:
+                        connect_kwargs["password"] = parsed.password
+                    if parsed.path and parsed.path.lstrip("/"):
+                        connect_kwargs["database"] = parsed.path.lstrip("/")
+                    conn = mysql.connector.connect(**connect_kwargs)
+                else:
+                    conn = mysql.connector.connect(host=database)
                 cursor = conn.cursor()
                 cursor.execute(query)
                 if cursor.description:
@@ -2805,13 +2853,29 @@ def _exec_web_fetch(args: dict) -> str:
     if not url:
         return "No URL provided."
 
+    # Basic SSRF guard — block loopback, link-local, and cloud metadata ranges
+    import ipaddress, urllib.parse as _urlparse
+    try:
+        host = _urlparse.urlparse(url).hostname or ""
+        try:
+            addr = ipaddress.ip_address(host)
+            if addr.is_loopback or addr.is_link_local or addr.is_private:
+                return f"SSRF guard: {host} is a private/loopback address — fetch blocked."
+        except ValueError:
+            pass  # hostname, not a literal IP
+        # Block common cloud metadata endpoints
+        if host in ("169.254.169.254", "metadata.google.internal", "169.254.170.2"):
+            return f"SSRF guard: cloud metadata endpoint {host} is blocked."
+    except Exception:
+        pass
+
     try:
         from src.internet.scraper import fetch_page
         content = fetch_page(url)
         if content:
-            # Cap at 5000 chars
-            if len(content) > 5000:
-                content = content[:5000] + "\n\n... (truncated)"
+            # Cap at 50 000 chars (matches OpenClaw's 50 KB limit)
+            if len(content) > 50000:
+                content = content[:50000] + "\n\n... (truncated)"
             return content
         return "No content extracted."
     except Exception as e:
@@ -2952,8 +3016,11 @@ def _exec_glob(args: dict) -> str:
         # Verify pattern doesn't escape the search path via ../
         resolved_base = os.path.realpath(path)
         matches = _glob.glob(full_pattern, recursive=True)
-        # Filter out matches that escape the base path
-        matches = [m for m in matches if os.path.realpath(m).startswith(resolved_base)]
+        # Filter out matches that escape the base path (add sep so /tmp/foo doesn't match /tmp/foobar)
+        _base_prefix = resolved_base.rstrip(os.sep) + os.sep
+        matches = [m for m in matches
+                   if os.path.realpath(m) == resolved_base
+                   or os.path.realpath(m).startswith(_base_prefix)]
         # Sort by modification time (newest first)
         matches.sort(key=lambda f: os.path.getmtime(f) if os.path.exists(f) else 0, reverse=True)
         matches = matches[:250]  # Cap results
@@ -3378,6 +3445,8 @@ def _exec_network_scan(args: dict) -> str:
         lines.append("  No devices registered yet. Devices appear on first WS connect.")
         lines.append("  Run action='discover' for a live LAN scan.")
 
+    return "\n".join(lines)
+
 
 # ── Browser tool (Playwright) ─────────────────────────────────────────────────
 
@@ -3399,12 +3468,14 @@ def _exec_browser(args: dict) -> str:
         global _pw_instance, _pw_browser, _pw_page
         try:
             # Prefer pipx-installed playwright (system apt version has broken Node.js driver)
-            import sys as _sys
-            _pw_site = os.path.expanduser(
-                "~/.local/share/pipx/venvs/playwright/lib/python3.13/site-packages"
-            )
-            if os.path.isdir(_pw_site) and _pw_site not in _sys.path:
-                _sys.path.insert(0, _pw_site)
+            import sys as _sys, glob as _g
+            _pw_venv_lib = os.path.expanduser("~/.local/share/pipx/venvs/playwright/lib")
+            # Find site-packages under any python3.x directory (version-independent)
+            _candidates = _g.glob(os.path.join(_pw_venv_lib, "python3.*", "site-packages"))
+            for _pw_site in _candidates:
+                if os.path.isdir(_pw_site) and _pw_site not in _sys.path:
+                    _sys.path.insert(0, _pw_site)
+                    break
             from playwright.sync_api import sync_playwright
         except ImportError:
             return "Playwright not installed. Run: pipx install playwright && playwright install chromium"
@@ -3465,7 +3536,8 @@ def _exec_browser(args: dict) -> str:
             return f"Typed into {selector}"
 
         elif action == "screenshot":
-            path = tempfile.mktemp(prefix="jarvis-browser-", suffix=".png")
+            fd, path = tempfile.mkstemp(prefix="jarvis-browser-", suffix=".png")
+            os.close(fd)
             _pw_page.screenshot(path=path, full_page=False)
             return f"Screenshot saved: {path}"
 
@@ -3503,5 +3575,3 @@ def _exec_browser(args: dict) -> str:
 
     except Exception as e:
         return f"Browser error: {e}"
-
-    return "\n".join(lines)

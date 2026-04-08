@@ -336,7 +336,16 @@ class JarvisWebServer:
 
         owner_host = _remote_cfg.get("client_host", "10.10.0.121")
         owner_user = _remote_cfg.get("client_user", "ulrich")
-        ssh_key    = "/root/.ssh/jarvis_to_kali"
+        # Key is mounted at /data/.ssh/ (jarvis non-root user's home) in Docker,
+        # or falls back to /root/.ssh/ for bare-metal / dev installs.
+        import os as _os
+        _ssh_candidates = [
+            _remote_cfg.get("ssh_key", ""),
+            "/data/.ssh/jarvis_to_kali",
+            "/root/.ssh/jarvis_to_kali",
+            _os.path.expanduser("~/.ssh/jarvis_to_kali"),
+        ]
+        ssh_key = next((p for p in _ssh_candidates if p and _os.path.exists(p)), "/root/.ssh/jarvis_to_kali")
 
         async def _do_launch():
             try:
@@ -418,6 +427,21 @@ class JarvisWebServer:
         # Determine if this connection carried a valid auth token
         _token = request.rel_url.query.get('token', '')
         _authenticated = bool(self._local_auth_token and _token == self._local_auth_token)
+
+        # Ed25519 device token verification (X-JARVIS-Device-Token header or ?device_token=)
+        _device_token = (
+            request.headers.get("X-JARVIS-Device-Token", "")
+            or request.rel_url.query.get("device_token", "")
+        )
+        _device_id_verified = ""
+        if _device_token:
+            try:
+                from src.security.device_auth import get_device_auth
+                _ok, _device_id_verified = get_device_auth().verify_token(_device_token)
+                if _ok and _device_id_verified:
+                    _authenticated = True  # Ed25519 verified → treat as authenticated
+            except Exception:
+                pass
         device = await self.devices.register(
             ip=peer,
             label=_client_label,

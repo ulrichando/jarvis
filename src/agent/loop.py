@@ -25,7 +25,10 @@ import json
 import logging
 from typing import AsyncGenerator
 from src.agent.tools import TOOL_SCHEMAS, execute_tool
-from src.agent.context import compact_messages, estimate_tokens, AutoCompactor
+from src.agent.context import (
+    compact_messages, estimate_tokens, AutoCompactor,
+    repair_tool_pairs, check_context_window,
+)
 from src.agent.tool_registry import (
     get_concurrency_safe_tools, get_result_size_limit, persist_large_result,
 )
@@ -288,6 +291,13 @@ async def _agent_loop_internal(
     model_name = getattr(reasoner, 'model', '') or getattr(reasoner, 'active_model_name', '') or ''
     compactor = AutoCompactor(model=model_name)
 
+    # Context-window guard — hard minimum 16K, warn below 32K
+    _ctx_ok, _ctx_warn = check_context_window(model_name)
+    if not _ctx_ok:
+        return f"[JARVIS] Cannot run agent: {_ctx_warn}"
+    if _ctx_warn:
+        log.warning(_ctx_warn)
+
     # Adaptive history: budget by character count, not turn count.
     # Voice conversations have many short turns — turn limits miss older context.
     from src.agent.context import MODEL_LIMITS, DEFAULT_MAX_TOKENS
@@ -316,6 +326,28 @@ async def _agent_loop_internal(
 
     messages.append({"role": "user", "content": user_input})
 
+    # ── Bootstrap budget tracking ──────────────────────────────────────
+    # Warn when the initial injection (system + history + user turn) already
+    # consumes ≥85% of the context window before any agent loop iterations.
+    # Truncate (prune oldest history) if at 100%.
+    from src.agent.context import estimate_tokens, SAFETY_MARGIN
+    _boot_tokens = estimate_tokens(messages)
+    _boot_pct    = _boot_tokens / ctx_limit * 100 if ctx_limit else 0
+    if _boot_pct >= 100:
+        # Hard prune: drop oldest non-system/non-user-input messages until < 85%
+        _target = int(ctx_limit * 0.5)
+        _sys_msgs = [m for m in messages if m.get("role") == "system"]
+        _hist_msgs = [m for m in messages[len(_sys_msgs):-1]]  # exclude last user msg
+        _last_user = messages[-1:]
+        while estimate_tokens(_sys_msgs + _hist_msgs + _last_user) > _target and len(_hist_msgs) > 2:
+            _hist_msgs.pop(0)
+        messages = _sys_msgs + _hist_msgs + _last_user
+        log.warning("Bootstrap budget exceeded (%.0f%%) — pruned %d history messages",
+                    _boot_pct, len(messages) - len(_sys_msgs) - 1)
+    elif _boot_pct >= 85:
+        log.warning("Bootstrap budget at %.0f%% (%d/%d tokens) before first LLM call",
+                    _boot_pct, _boot_tokens, ctx_limit)
+
     final_text = ""
     iterations = 0
     _failed_call_sigs_ns: set[str] = set()  # semantic-retry tracking (non-streaming)
@@ -332,6 +364,11 @@ async def _agent_loop_internal(
                 break
 
         messages = _maybe_compact(messages, compactor=compactor)
+
+        # Repair orphaned tool_use/tool_result pairs before every LLM call.
+        # Orphaned tool_results cause a 400 on Anthropic and silent errors on
+        # OpenAI — this must run even when no compaction happened.
+        messages = repair_tool_pairs(messages)
 
         # Call LLM with tools — retry on overflow/rate limit
         response = None

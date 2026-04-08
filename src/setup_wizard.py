@@ -34,12 +34,15 @@ PROVIDER_TEMPLATES: dict[str, dict[str, Any]] = {
         "models": ["llama3", "mistral", "codellama"],
         "default_model": "llama3",
     },
+    # Groq key is used for Whisper STT and PlayAI TTS only — not for LLM inference.
+    # LLM models are blocked at org level; keep this entry so the key can be stored.
     "groq": {
         "type": "groq",
         "base_url": "https://api.groq.com/openai/v1",
-        "models": ["llama-3.3-70b-versatile", "mixtral-8x7b-32768"],
-        "default_model": "llama-3.3-70b-versatile",
+        "models": ["whisper-large-v3-turbo"],   # STT/TTS use only
+        "default_model": "whisper-large-v3-turbo",
         "env_key": "GROQ_API_KEY",
+        "llm_disabled": True,  # Do not enable as an LLM chat provider
     },
     "openai": {
         "type": "openai",

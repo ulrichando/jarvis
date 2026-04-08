@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "updated_at": "2026-04-08T17:47:14.995800+00:00",
+  "updated_at": "2026-04-08T20:28:00.810760+00:00",
   "entries": {
     "src/cli/jarvis_cli.py": {
-      "mtime": 1775642841.9077883,
-      "size_bytes": 150433,
+      "mtime": 1775679638.5445676,
+      "size_bytes": 149484,
       "symbols": [
         "resolve_keybinding",
         "Spinner"
@@ -195,8 +195,8 @@
       "lang": "Python"
     },
     "src/desktop/app.py": {
-      "mtime": 1775639072.8587081,
-      "size_bytes": 28040,
+      "mtime": 1775674519.7310216,
+      "size_bytes": 28915,
       "symbols": [
         "main"
       ],
@@ -402,8 +402,8 @@
       "lang": "Python"
     },
     "install.sh": {
-      "mtime": 1775639072.8556626,
-      "size_bytes": 13747,
+      "mtime": 1775675954.182575,
+      "size_bytes": 15179,
       "symbols": [],
       "summary": "",
       "lang": "Shell"
@@ -924,8 +924,8 @@
       "lang": "Python"
     },
     "src/hardware.py": {
-      "mtime": 1775504095.465549,
-      "size_bytes": 8087,
+      "mtime": 1775674273.2992475,
+      "size_bytes": 8507,
       "symbols": [
         "HardwareProfile",
         "detect_hardware"
@@ -1541,8 +1541,8 @@
       "lang": "Markdown"
     },
     "src/desktop/colors.py": {
-      "mtime": 1775619356.5652268,
-      "size_bytes": 4833,
+      "mtime": 1775676262.4732401,
+      "size_bytes": 3945,
       "symbols": [
         "get_theme",
         "get_colors",
@@ -2950,8 +2950,8 @@
       "lang": "Python"
     },
     "extensions/jarvis-screen/background.js": {
-      "mtime": 1775597698.815438,
-      "size_bytes": 7657,
+      "mtime": 1775676050.4181678,
+      "size_bytes": 7738,
       "symbols": [
         "persistRegistry",
         "restoreRegistry",
@@ -4665,8 +4665,8 @@
       "lang": "Python"
     },
     "extensions/jarvis-screen/manifest.json": {
-      "mtime": 1775597690.3954523,
-      "size_bytes": 1052,
+      "mtime": 1775676014.0903227,
+      "size_bytes": 1113,
       "symbols": [],
       "summary": "",
       "lang": "JSON"
@@ -9897,8 +9897,8 @@
       "lang": "Python"
     },
     ".jarvis/file-summaries.json": {
-      "mtime": 1775670293.6848736,
-      "size_bytes": 483776,
+      "mtime": 1775677713.1599607,
+      "size_bytes": 484330,
       "symbols": [],
       "summary": "",
       "lang": "JSON"
@@ -10150,8 +10150,8 @@
       "lang": "Python"
     },
     "src/memory/store.py": {
-      "mtime": 1775639072.8588264,
-      "size_bytes": 17292,
+      "mtime": 1775674281.2471986,
+      "size_bytes": 17737,
       "symbols": [
         "MemoryStore"
       ],
@@ -19569,8 +19569,8 @@
       "lang": "HTML"
     },
     "extensions/jarvis-screen/side_panel.js": {
-      "mtime": 1775626762.9681907,
-      "size_bytes": 16164,
+      "mtime": 1775675918.8587217,
+      "size_bytes": 16274,
       "symbols": [
         "renderMarkdown",
         "hideEmpty",
@@ -19925,6 +19925,29 @@
       ],
       "summary": "",
       "lang": "Python"
+    },
+    "scripts/launch-desktop.py": {
+      "mtime": 1775675342.3734403,
+      "size_bytes": 1255,
+      "symbols": [
+        "daemonize"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "extensions/jarvis-screen/options.html": {
+      "mtime": 1775675937.3066452,
+      "size_bytes": 2263,
+      "symbols": [],
+      "summary": "",
+      "lang": "HTML"
+    },
+    "extensions/jarvis-screen/options.js": {
+      "mtime": 1775675944.9626133,
+      "size_bytes": 1064,
+      "symbols": [],
+      "summary": "",
+      "lang": "JavaScript"
     }
   }
 }

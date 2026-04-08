@@ -41,6 +41,15 @@ MODEL_LIMITS = {
 
 DEFAULT_MAX_TOKENS = 180000  # Safe default for 200K context models
 
+# ── Token-budget safety knobs ─────────────────────────────────────────────────
+SAFETY_MARGIN    = 1.2    # Multiply every token estimate before a budget decision
+HARD_MIN_CONTEXT = 16_000  # Refuse to run an agent on models smaller than this
+WARN_BELOW_CONTEXT = 32_000  # Warn (but allow) when context < this
+
+# ── Adaptive compaction chunk ratios ──────────────────────────────────────────
+BASE_CHUNK_RATIO = 0.40   # Trigger compaction at 40% of context window (× margin)
+MIN_CHUNK_RATIO  = 0.15   # Floor: never let the ratio drop below 15%
+
 
 def estimate_tokens(messages: list[dict]) -> int:
     """Token count for a message list.
@@ -260,6 +269,89 @@ class TokenBudget:
         return self.usage_pct > 80
 
 
+def repair_tool_pairs(messages: list[dict]) -> list[dict]:
+    """Remove orphaned tool_result messages.
+
+    An orphaned tool_result is one whose tool_use_id (or tool_call_id) has no
+    matching tool_use block in any preceding assistant message.  Sending such
+    messages to the LLM causes a 400 / validation error on every provider.
+    """
+    import logging as _log
+    _rlog = _log.getLogger("jarvis.context")
+
+    # Collect every tool_use id that actually exists in assistant turns
+    tool_use_ids: set[str] = set()
+    for msg in messages:
+        if msg.get("role") == "assistant":
+            # OpenAI-format: tool_calls array
+            for tc in msg.get("tool_calls", []):
+                tid = tc.get("id", "")
+                if tid:
+                    tool_use_ids.add(tid)
+            # Anthropic-format: content list with tool_use blocks
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        tid = block.get("id", "")
+                        if tid:
+                            tool_use_ids.add(tid)
+
+    # Also scan Anthropic-format user messages (tool_result inside content list)
+    # Those come from _convert_messages_for_anthropic — track their ids too.
+    result: list[dict] = []
+    for msg in messages:
+        role = msg.get("role", "")
+        if role == "tool":
+            # OpenAI-format tool result — drop if no ID or ID has no matching tool_use
+            tid = msg.get("tool_call_id", "")
+            if not tid or tid not in tool_use_ids:
+                _rlog.debug("repair_tool_pairs: dropping orphaned tool_result id=%r", tid)
+                continue
+        elif role == "user":
+            content = msg.get("content")
+            if isinstance(content, list):
+                # Filter out orphaned tool_result blocks from Anthropic-format messages
+                filtered = [
+                    block for block in content
+                    if not (
+                        isinstance(block, dict)
+                        and block.get("type") == "tool_result"
+                        and block.get("tool_use_id", "") not in tool_use_ids
+                    )
+                ]
+                if len(filtered) != len(content):
+                    dropped = len(content) - len(filtered)
+                    _rlog.debug("repair_tool_pairs: dropped %d orphaned tool_result block(s) from user msg", dropped)
+                    if not filtered:
+                        # Don't add an empty-content user message
+                        continue
+                    msg = {**msg, "content": filtered}
+        result.append(msg)
+
+    return result
+
+
+def check_context_window(model: str) -> tuple[bool, str]:
+    """Verify the model has a sufficient context window.
+
+    Returns:
+        (ok, message) — if ok is False the caller should reject the request.
+    """
+    limit = MODEL_LIMITS.get(model, DEFAULT_MAX_TOKENS)
+    if limit < HARD_MIN_CONTEXT:
+        return False, (
+            f"Model {model!r} context window ({limit:,} tokens) is below the hard "
+            f"minimum ({HARD_MIN_CONTEXT:,}). Use a larger model."
+        )
+    if limit < WARN_BELOW_CONTEXT:
+        return True, (
+            f"Warning: model {model!r} has a limited context window ({limit:,} tokens). "
+            "Complex tasks may require compaction."
+        )
+    return True, ""
+
+
 def microcompact_messages(
     messages: list[dict],
     preserve_recent: int = 10,
@@ -300,10 +392,15 @@ class AutoCompactor:
     ``smart_compact`` instead of the heuristic ``compact_messages``.
     """
 
-    def __init__(self, model: str = "", proactive_threshold: float = 0.75,
+    def __init__(self, model: str = "", proactive_threshold: float | None = None,
                  summarizer=None):
         max_tokens = MODEL_LIMITS.get(model, DEFAULT_MAX_TOKENS)
         self.budget = TokenBudget(max_tokens=max_tokens)
+        # Adaptive chunk ratio: starts at BASE_CHUNK_RATIO, may shrink toward MIN_CHUNK_RATIO
+        self._chunk_ratio: float = BASE_CHUNK_RATIO
+        # proactive_threshold default comes from adaptive chunk ratio × safety margin
+        if proactive_threshold is None:
+            proactive_threshold = self._chunk_ratio * SAFETY_MARGIN
         self._proactive_threshold = proactive_threshold
         self._last_compact_tokens: int = 0
         self._microcompact_interval: int = 5
@@ -317,10 +414,32 @@ class AutoCompactor:
         """Recalculate *used_tokens* from the current message list."""
         self.budget.used_tokens = estimate_tokens(messages)
 
+    def _update_chunk_ratio(self, messages: list[dict]) -> None:
+        """Shrink the chunk ratio when average message size is large.
+
+        If avg message > 10% of context window, step the ratio down by 5pp
+        (but never below MIN_CHUNK_RATIO).  This mirrors OpenClaw's adaptive
+        behaviour: big messages → compress sooner.
+        """
+        if not messages:
+            return
+        avg_tokens = self.budget.used_tokens / len(messages)
+        threshold_10pct = self.budget.max_tokens * 0.10
+        if avg_tokens > threshold_10pct:
+            self._chunk_ratio = max(MIN_CHUNK_RATIO, self._chunk_ratio - 0.05)
+            self._proactive_threshold = self._chunk_ratio * SAFETY_MARGIN
+
     def should_compact(self, messages: list[dict]) -> bool:
-        """Return True when usage exceeds the proactive threshold."""
+        """Return True when usage exceeds the adaptive compaction threshold.
+
+        Threshold = chunk_ratio × context_window × SAFETY_MARGIN.
+        The chunk_ratio itself shrinks toward MIN_CHUNK_RATIO when messages
+        are individually large (adaptive compaction trigger).
+        """
         self.update(messages)
-        return self.budget.usage_pct > (self._proactive_threshold * 100)
+        self._update_chunk_ratio(messages)
+        threshold_tokens = self._chunk_ratio * self.budget.max_tokens * SAFETY_MARGIN
+        return self.budget.used_tokens > threshold_tokens
 
     # -- compaction entry points ------------------------------------------
 
@@ -635,21 +754,63 @@ async def smart_compact(
     system_groups = [g for g in groups if g.group_type == "system"]
     recent_groups = [g for g in groups if g.is_recent]
 
-    # --- Generate summary ---
+    # --- Generate summary (multi-stage when there are many groups) ---
     summary = ""
     if summarizer is not None:
-        prompt = build_compaction_prompt(groups, preserve_recent)
-        if prompt:
-            try:
-                raw_summary = await summarizer(prompt)
-                # The compact prompt asks for <analysis>+<summary> blocks;
-                # extract just the <summary> content for cleaner storage.
-                from src.services.compact.compact import format_compact_summary
-                summary = format_compact_summary(raw_summary)
-            except Exception:
-                # Fall back to heuristic on any error
-                old_msgs = [m for g in old_groups for m in g.messages]
-                summary = build_context_summary(old_msgs)
+        # Multi-stage: split old groups into ≤3 chunks, summarize each, then merge.
+        # This avoids asking the LLM to digest a massive single prompt, which
+        # degrades summary quality on large histories.
+        _STAGE_MAX_GROUPS = 8  # max groups per summarization stage
+        try:
+            if len(old_groups) > _STAGE_MAX_GROUPS:
+                # Partition old_groups into ≤3 roughly equal slices
+                n_stages = min(3, (len(old_groups) + _STAGE_MAX_GROUPS - 1) // _STAGE_MAX_GROUPS)
+                chunk_size = (len(old_groups) + n_stages - 1) // n_stages
+                staged_summaries: list[str] = []
+                for stage_i in range(n_stages):
+                    chunk = old_groups[stage_i * chunk_size:(stage_i + 1) * chunk_size]
+                    # Build a fake "all groups" list so build_compaction_prompt picks them up
+                    all_for_stage = system_groups + chunk + recent_groups
+                    for g in chunk:
+                        g.is_recent = False  # already filtered
+                    stage_prompt = build_compaction_prompt(all_for_stage, preserve_recent=0)
+                    if stage_prompt:
+                        try:
+                            raw = await summarizer(stage_prompt)
+                            from src.services.compact.compact import format_compact_summary
+                            staged_summaries.append(format_compact_summary(raw))
+                        except Exception:
+                            chunk_msgs = [m for g in chunk for m in g.messages]
+                            staged_summaries.append(build_context_summary(chunk_msgs))
+                # Merge stage summaries with a final LLM call
+                if len(staged_summaries) > 1:
+                    merge_prompt = (
+                        "You are merging partial conversation summaries into one concise summary. "
+                        "Preserve all key facts, decisions, file paths, errors, and pending work.\n\n"
+                        + "\n\n---\n\n".join(
+                            f"Part {i + 1}:\n{s}" for i, s in enumerate(staged_summaries)
+                        )
+                    )
+                    try:
+                        summary = await summarizer(merge_prompt)
+                    except Exception:
+                        summary = "\n\n".join(staged_summaries)
+                elif staged_summaries:
+                    summary = staged_summaries[0]
+                else:
+                    old_msgs = [m for g in old_groups for m in g.messages]
+                    summary = build_context_summary(old_msgs)
+            else:
+                # Single-stage (few groups)
+                prompt = build_compaction_prompt(groups, preserve_recent)
+                if prompt:
+                    raw_summary = await summarizer(prompt)
+                    from src.services.compact.compact import format_compact_summary
+                    summary = format_compact_summary(raw_summary)
+        except Exception:
+            # Fall back to heuristic on any error
+            old_msgs = [m for g in old_groups for m in g.messages]
+            summary = build_context_summary(old_msgs)
     else:
         old_msgs = [m for g in old_groups for m in g.messages]
         summary = build_context_summary(old_msgs)

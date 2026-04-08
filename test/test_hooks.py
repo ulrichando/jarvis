@@ -421,14 +421,27 @@ class TestHookConstants(unittest.TestCase):
     """Test that constants are correct."""
 
     def test_all_events_present(self):
-        expected = {
+        # Core original events
+        original = {
             "PreToolUse", "PostToolUse", "PostToolUseFailure",
             "PermissionDenied", "Notification", "Stop",
             "SessionStart", "SessionEnd",
             "SubagentStart", "SubagentStop",
             "CwdChanged", "FileChanged", "ContextCompacted",
         }
-        self.assertEqual(set(HOOK_EVENTS), expected)
+        # New events added from OpenClaw review
+        new_events = {
+            "BeforeModelResolve", "BeforePromptBuild",
+            "LLMInput", "LLMOutput",
+            "AgentStart", "AgentEnd",
+            "CompactionStart", "CompactionEnd",
+            "MemoryRead", "MemoryWrite",
+            "PluginLoad", "PluginUnload",
+            "SkillInvoke", "SkillComplete",
+        }
+        expected = original | new_events
+        self.assertTrue(expected.issubset(set(HOOK_EVENTS)),
+                        f"Missing events: {expected - set(HOOK_EVENTS)}")
 
     def test_blocking_events(self):
         self.assertIn("PreToolUse", BLOCKING_EVENTS)

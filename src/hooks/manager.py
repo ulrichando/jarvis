@@ -16,23 +16,80 @@ from typing import Any, Optional
 log = logging.getLogger("jarvis.hooks")
 
 HOOK_EVENTS = (
+    # ── Tool lifecycle ────────────────────────────────────────────────
     "PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionDenied",
+    # ── LLM lifecycle ─────────────────────────────────────────────────
+    "BeforeModelResolve",   # before LLM provider is selected
+    "BeforePromptBuild",    # before system prompt is assembled
+    "LLMInput",             # messages about to be sent to the LLM (can modify)
+    "LLMOutput",            # raw LLM response received (can modify)
+    # ── Agent loop lifecycle ──────────────────────────────────────────
+    "AgentStart",           # agent loop begins (first iteration)
+    "AgentEnd",             # agent loop ends (no more tool_calls)
+    # ── Context compaction ────────────────────────────────────────────
+    "CompactionStart",      # context compaction is about to happen
+    "CompactionEnd",        # compaction complete (before/after token counts)
+    "ContextCompacted",     # alias kept for back-compat
+    # ── Memory ───────────────────────────────────────────────────────
+    "MemoryRead",           # memory is about to be retrieved
+    "MemoryWrite",          # memory is about to be stored
+    # ── Plugin / skill lifecycle ─────────────────────────────────────
+    "PluginLoad",           # a plugin file has been loaded
+    "PluginUnload",         # a plugin is being unloaded
+    "SkillInvoke",          # a skill is about to execute
+    "SkillComplete",        # a skill has finished executing
+    # ── Session / notification ────────────────────────────────────────
     "Notification", "Stop", "SessionStart", "SessionEnd",
-    "SubagentStart", "SubagentStop", "CwdChanged", "FileChanged", "ContextCompacted",
+    # ── Sub-agent ─────────────────────────────────────────────────────
+    "SubagentStart", "SubagentStop",
+    # ── Environment ──────────────────────────────────────────────────
+    "CwdChanged", "FileChanged",
 )
 
-BLOCKING_EVENTS = {"PreToolUse", "PermissionDenied", "Stop", "SubagentStart", "SubagentStop"}
+BLOCKING_EVENTS = {
+    "PreToolUse", "PermissionDenied", "Stop",
+    "SubagentStart", "SubagentStop",
+    "LLMInput",         # hooks can veto/rewrite the prompt before it is sent
+    "AgentStart",       # hooks can abort the agent loop before it begins
+    "SkillInvoke",      # hooks can block a skill from running
+    "MemoryWrite",      # hooks can block a memory write
+}
 
 _EVENT_ALIASES = {
+    # Tool lifecycle
     "pre_tool_use": "PreToolUse", "pre_command": "PreToolUse",
     "post_tool_use": "PostToolUse", "post_command": "PostToolUse",
     "on_error": "PostToolUseFailure", "post_tool_use_failure": "PostToolUseFailure",
-    "permission_denied": "PermissionDenied", "notification": "Notification",
-    "stop": "Stop", "session_start": "SessionStart", "session_end": "SessionEnd",
-    "on_startup": "SessionStart", "on_shutdown": "SessionEnd",
-    "subagent_start": "SubagentStart", "subagent_stop": "SubagentStop",
-    "cwd_changed": "CwdChanged", "file_changed": "FileChanged",
+    "permission_denied": "PermissionDenied",
+    # LLM lifecycle
+    "before_model_resolve": "BeforeModelResolve",
+    "before_prompt_build": "BeforePromptBuild",
+    "llm_input": "LLMInput", "llm_request": "LLMInput",
+    "llm_output": "LLMOutput", "llm_response": "LLMOutput",
+    # Agent loop
+    "agent_start": "AgentStart", "agent_begin": "AgentStart",
+    "agent_end": "AgentEnd", "agent_done": "AgentEnd",
+    # Compaction
+    "compaction_start": "CompactionStart",
+    "compaction_end": "CompactionEnd",
     "context_compacted": "ContextCompacted",
+    # Memory
+    "memory_read": "MemoryRead",
+    "memory_write": "MemoryWrite", "memory_store": "MemoryWrite",
+    # Plugin / skill
+    "plugin_load": "PluginLoad",
+    "plugin_unload": "PluginUnload",
+    "skill_invoke": "SkillInvoke", "skill_start": "SkillInvoke",
+    "skill_complete": "SkillComplete", "skill_end": "SkillComplete",
+    # Session
+    "notification": "Notification",
+    "stop": "Stop",
+    "session_start": "SessionStart", "on_startup": "SessionStart",
+    "session_end": "SessionEnd", "on_shutdown": "SessionEnd",
+    # Sub-agent
+    "subagent_start": "SubagentStart", "subagent_stop": "SubagentStop",
+    # Environment
+    "cwd_changed": "CwdChanged", "file_changed": "FileChanged",
 }
 
 
@@ -298,13 +355,56 @@ class HooksManager:
     def run_context_compacted(self, before_tokens: int, after_tokens: int) -> HookResult:
         return self._run_event("ContextCompacted", "", {"before_tokens": before_tokens, "after_tokens": after_tokens})
 
+    def run_before_model_resolve(self, provider_hints: dict) -> HookResult:
+        return self._run_event("BeforeModelResolve", "", provider_hints)
+
+    def run_before_prompt_build(self, context: dict) -> HookResult:
+        return self._run_event("BeforePromptBuild", "", context)
+
+    def run_llm_input(self, messages: list, model: str = "") -> HookResult:
+        return self._run_event("LLMInput", model, {"messages": messages})
+
+    def run_llm_output(self, response: str, model: str = "") -> HookResult:
+        return self._run_event("LLMOutput", model, {"response": response})
+
+    def run_agent_start(self, task: str = "") -> HookResult:
+        return self._run_event("AgentStart", "", {"task": task})
+
+    def run_agent_end(self, task: str = "", result: str = "") -> HookResult:
+        return self._run_event("AgentEnd", "", {"task": task}, result)
+
+    def run_compaction_start(self, before_tokens: int) -> HookResult:
+        return self._run_event("CompactionStart", "", {"before_tokens": before_tokens})
+
+    def run_compaction_end(self, before_tokens: int, after_tokens: int) -> HookResult:
+        return self._run_event("CompactionEnd", "", {"before_tokens": before_tokens, "after_tokens": after_tokens})
+
+    def run_memory_read(self, query: str, session_id: str = "") -> HookResult:
+        return self._run_event("MemoryRead", "", {"query": query, "session_id": session_id})
+
+    def run_memory_write(self, content: str, metadata: dict | None = None) -> HookResult:
+        return self._run_event("MemoryWrite", "", {"content": content, "metadata": metadata or {}})
+
+    def run_plugin_load(self, plugin_id: str, path: str = "") -> HookResult:
+        return self._run_event("PluginLoad", plugin_id, {"path": path})
+
+    def run_plugin_unload(self, plugin_id: str) -> HookResult:
+        return self._run_event("PluginUnload", plugin_id, {})
+
+    def run_skill_invoke(self, skill_name: str, args: str = "") -> HookResult:
+        return self._run_event("SkillInvoke", skill_name, {"args": args})
+
+    def run_skill_complete(self, skill_name: str, result: str = "") -> HookResult:
+        return self._run_event("SkillComplete", skill_name, {}, result)
+
     async def run_pre_hooks(self, tool_name: str, tool_input: dict) -> dict:
         hr = await asyncio.to_thread(self.run_pre_tool_use, tool_name, tool_input)
         return hr.modified_args if hr.modified_args else tool_input
 
     async def run_post_hooks(self, tool_name: str, result: str) -> str:
-        await asyncio.to_thread(self.run_post_tool_use, tool_name, {}, result)
-        return result
+        hr = await asyncio.to_thread(self.run_post_tool_use, tool_name, {}, result)
+        # Return hook-modified result if the hook produced one, else original
+        return hr.modified_args.get("result", result) if hr.modified_args else result
 
     # ── Introspection ──
 

@@ -1,7 +1,8 @@
-// JARVIS Screen Vision — background service worker v2.0
+// JARVIS — background service worker v2.0
 
-// Change this to point at your Proxmox server when not running locally
-const JARVIS_URL = 'https://jarvis.local'
+// Brain URL — configurable via extension options page
+let JARVIS_URL = 'https://jarvis.local'
+chrome.storage.sync.get(['brain_url'], (r) => { if (r.brain_url) JARVIS_URL = r.brain_url.replace(/\/$/, '') })
 const MAX_TABS   = 10
 const DOM_TTL    = 30_000  // 30s DOM cache
 

@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "JARVIS Screen Vision",
+  "name": "JARVIS",
   "version": "2.0.0",
   "description": "JARVIS — native DOM-aware AI side panel with multi-tab context",
   "permissions": [
@@ -43,6 +43,10 @@
   },
   "background": {
     "service_worker": "background.js"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
   },
   "icons": {
     "16": "icon16.png",

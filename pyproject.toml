@@ -25,6 +25,10 @@ dependencies = [
     "Pillow",
     "PyNaCl",
     "wcwidth",
+    # Device auth (Ed25519 keypair)
+    "cryptography",
+    # Cron expression parsing (scheduler.py)
+    "croniter",
 ]
 
 [project.optional-dependencies]

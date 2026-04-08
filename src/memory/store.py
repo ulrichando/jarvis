@@ -170,7 +170,31 @@ class MemoryStore:
 
         Stores in the lattice (primary) and also feeds the enhanced memory
         layers so they can improve recall quality.
+
+        Guards applied before storing:
+          1. Prompt injection detection — adversarial inputs are rejected.
+          2. Near-duplicate dedup — 0.95+ similar chunks are skipped.
         """
+        # Guard 1: prompt injection detection
+        try:
+            from src.security.prompt_injection import is_prompt_injection
+            if is_prompt_injection(content):
+                log.warning("Memory learn() blocked — prompt injection detected (%.60r)", content)
+                # Return a stub node without storing
+                return self.lattice.absorb("[blocked: prompt injection]", node_type, tags)
+        except Exception:
+            pass
+
+        # Guard 2: near-duplicate dedup
+        try:
+            from src.memory.dedup import get_deduplicator
+            dedup = get_deduplicator()
+            if dedup.check_and_add(content):
+                log.debug("Memory learn() skipped — near-duplicate (>= 0.95 similarity)")
+                return self.lattice.absorb(content, node_type, tags)
+        except Exception:
+            pass
+
         node = self.lattice.absorb(content, node_type, tags)
 
         # Feed holographic memory (FFT-based vector recall)

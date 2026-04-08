@@ -40,13 +40,7 @@ def ensure_dirs() -> None:
 
 
 def setup_logging() -> logging.Logger:
-    """Configure root logger for JARVIS."""
-    logging.basicConfig(
-        level=getattr(logging, LOG_LEVEL),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        handlers=[
-            logging.StreamHandler(),
-            logging.FileHandler(LOG_FILE, mode="a"),
-        ],
-    )
+    """Configure root logger for JARVIS (delegates to logging_config)."""
+    from src.logging_config import setup_logging as _setup
+    _setup(level=LOG_LEVEL, log_file=str(LOG_FILE))
     return logging.getLogger("jarvis")

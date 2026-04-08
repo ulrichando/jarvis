@@ -18,6 +18,58 @@ from src.config import JARVIS_HOME
 
 PROVIDERS_FILE = JARVIS_HOME / "providers.json"
 
+# ── Cache hit tracking (accumulated across all LLM calls in this process) ──────
+_cache_stats: dict = {"read": 0, "write": 0, "input": 0, "output": 0}
+
+
+def get_cache_stats() -> dict:
+    """Return a snapshot of cumulative cache token usage."""
+    return dict(_cache_stats)
+
+
+def reset_cache_stats() -> None:
+    """Reset the cache stats counter (e.g. at session start)."""
+    _cache_stats.update({"read": 0, "write": 0, "input": 0, "output": 0})
+
+
+def _normalize_usage(raw: dict) -> dict:
+    """Normalise provider-specific usage fields to a standard schema.
+
+    Standard schema:
+        input        — prompt tokens sent
+        output       — completion tokens generated
+        cache_read   — tokens served from the prompt cache (cost 0.1×)
+        cache_write  — tokens written into the prompt cache (cost 1.25×)
+
+    Provider mappings:
+        Anthropic  → cache_read_input_tokens, cache_creation_input_tokens
+        OpenAI     → prompt_tokens_details.cached_tokens → cache_read
+        Kimi       → prompt_tokens_details.cached_tokens → cache_read
+        Remote     → passes through as-is if already normalised
+    """
+    if not raw:
+        return {}
+    out = {
+        "input":       int(raw.get("input", raw.get("prompt_tokens", 0)) or 0),
+        "output":      int(raw.get("output", raw.get("completion_tokens", 0)) or 0),
+        "cache_read":  int(raw.get("cache_read", raw.get("cacheRead", 0)) or 0),
+        "cache_write": int(raw.get("cache_write", raw.get("cacheWrite",
+                           raw.get("cache_creation", 0))) or 0),
+    }
+    # OpenAI / Kimi bury cache hits inside prompt_tokens_details
+    details = raw.get("prompt_tokens_details") or {}
+    if isinstance(details, dict) and details.get("cached_tokens"):
+        out["cache_read"] = max(out["cache_read"], int(details["cached_tokens"]))
+    return out
+
+
+def _update_cache_stats(usage: dict) -> None:
+    """Update module-level cache accumulators from a normalised usage dict."""
+    _cache_stats["read"]   += usage.get("cache_read",  0)
+    _cache_stats["write"]  += usage.get("cache_write", 0)
+    _cache_stats["input"]  += usage.get("input",  0)
+    _cache_stats["output"] += usage.get("output", 0)
+
 # Known provider templates — auto-detect from API key prefix or name
 TEMPLATES = {
     "claude": {
@@ -64,7 +116,8 @@ TEMPLATES = {
     },
     "ollama": {
         "type": "openai",
-        "base_url": "http://localhost:11434/v1",
+        # Respect OLLAMA_HOST env var so Docker Compose can point 'ollama' → service DNS
+        "base_url": os.environ.get("OLLAMA_HOST", "http://localhost:11434") + "/v1",
         "models": [
             "llama3.2:3b",
             "deepseek-coder-v2:16b",
@@ -479,11 +532,9 @@ class ProviderRegistry:
         else:
             lines.append("• Start Ollama: ollama serve (local models, no internet needed)")
         if not has_cloud:
-            lines.append("• Add a cloud API key: /provider add groq <key> (free at console.groq.com)")
-            lines.append("• Or: /provider add anthropic <key> (console.anthropic.com)")
+            lines.append("• Add a cloud API key: /provider add anthropic <key> (console.anthropic.com)")
         else:
             lines.append("• Check your API keys — they may be expired or out of credits")
-            lines.append("• Groq is free: sign up at console.groq.com")
         lines.append("")
         lines.append("Run /doctor for a full diagnostic.")
 
@@ -528,17 +579,38 @@ class ProviderRegistry:
             {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_b64}},
             {"type": "text", "text": prompt},
         ]}]
+        # Apply same cache boundary split as other Anthropic calls
+        _CACHE_MARKER = "<!-- JARVIS_CACHE_BOUNDARY -->"
+        if system_prompt and _CACHE_MARKER in system_prompt:
+            _dyn, _stable = system_prompt.split(_CACHE_MARKER, 1)
+            _sys: list | str = []
+            if _dyn.strip():
+                _sys.append({"type": "text", "text": _dyn.strip()})
+            if _stable.strip():
+                _sys.append({"type": "text", "text": _stable.strip(),
+                              "cache_control": {"type": "ephemeral"}})
+        else:
+            _sys = system_prompt  # plain string — no boundary present
         def _call():
             for model in [provider.model] + [m for m in (provider.models or []) if m != provider.model]:
                 try:
                     r = client.messages.create(
                         model=model, max_tokens=self._effort_tokens(),
-                        system=system_prompt, messages=messages,
+                        system=_sys, messages=messages,
                     )
+                    text = ""
                     for block in r.content:
                         if block.type == "text":
-                            return block.text
-                    return ""
+                            text += block.text
+                    # Track cache hits from vision calls
+                    if hasattr(r, 'usage') and r.usage:
+                        _update_cache_stats(_normalize_usage({
+                            "input":       r.usage.input_tokens,
+                            "output":      r.usage.output_tokens,
+                            "cache_read":  getattr(r.usage, 'cache_read_input_tokens', 0),
+                            "cache_write": getattr(r.usage, 'cache_creation_input_tokens', 0),
+                        }))
+                    return text
                 except Exception:
                     continue
             return ""
@@ -549,8 +621,11 @@ class ProviderRegistry:
         client = self._get_openai_client(provider)
         if not client:
             return ""
+        # Strip cache boundary marker from system prompt (OpenAI doesn't use it)
+        _CACHE_MARKER = "<!-- JARVIS_CACHE_BOUNDARY -->"
+        clean_system = system_prompt.replace(_CACHE_MARKER, "").strip() if system_prompt else system_prompt
         messages = [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": clean_system},
             {"role": "user", "content": [
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
                 {"type": "text", "text": prompt},
@@ -562,6 +637,16 @@ class ProviderRegistry:
                     messages=messages, model=provider.model,
                     temperature=0.3, max_tokens=self._effort_tokens(),
                 )
+                # Track cache hits from OpenAI vision calls
+                if hasattr(chat, 'usage') and chat.usage:
+                    raw_u = {
+                        "input":  getattr(chat.usage, 'prompt_tokens', 0),
+                        "output": getattr(chat.usage, 'completion_tokens', 0),
+                    }
+                    _ptd = getattr(chat.usage, 'prompt_tokens_details', None)
+                    if _ptd:
+                        raw_u["prompt_tokens_details"] = {"cached_tokens": getattr(_ptd, 'cached_tokens', 0)}
+                    _update_cache_stats(_normalize_usage(raw_u))
                 return chat.choices[0].message.content or ""
             except Exception:
                 return ""
@@ -575,12 +660,22 @@ class ProviderRegistry:
 
         messages = self._build_anthropic_messages(history, user_input)
 
-        # Cached system prompt
-        system_blocks = [{
-            "type": "text",
-            "text": system_prompt,
-            "cache_control": {"type": "ephemeral"},
-        }] if system_prompt else None
+        # Cached system prompt — split on JARVIS_CACHE_BOUNDARY
+        _CACHE_MARKER = "<!-- JARVIS_CACHE_BOUNDARY -->"
+        if system_prompt:
+            if _CACHE_MARKER in system_prompt:
+                _dyn, _stable = system_prompt.split(_CACHE_MARKER, 1)
+                system_blocks = []
+                if _dyn.strip():
+                    system_blocks.append({"type": "text", "text": _dyn.strip()})
+                if _stable.strip():
+                    system_blocks.append({"type": "text", "text": _stable.strip(),
+                                          "cache_control": {"type": "ephemeral"}})
+            else:
+                system_blocks = [{"type": "text", "text": system_prompt,
+                                   "cache_control": {"type": "ephemeral"}}]
+        else:
+            system_blocks = None
 
         def _call():
             for model in [provider.model] + [m for m in (provider.models or []) if m != provider.model]:
@@ -610,12 +705,22 @@ class ProviderRegistry:
 
         messages = self._build_anthropic_messages(history, user_input)
 
-        # Cached system prompt
-        system_blocks = [{
-            "type": "text",
-            "text": system_prompt,
-            "cache_control": {"type": "ephemeral"},
-        }] if system_prompt else None
+        # Cached system prompt — split on JARVIS_CACHE_BOUNDARY
+        _CACHE_MARKER = "<!-- JARVIS_CACHE_BOUNDARY -->"
+        if system_prompt:
+            if _CACHE_MARKER in system_prompt:
+                _dyn, _stable = system_prompt.split(_CACHE_MARKER, 1)
+                system_blocks = []
+                if _dyn.strip():
+                    system_blocks.append({"type": "text", "text": _dyn.strip()})
+                if _stable.strip():
+                    system_blocks.append({"type": "text", "text": _stable.strip(),
+                                          "cache_control": {"type": "ephemeral"}})
+            else:
+                system_blocks = [{"type": "text", "text": system_prompt,
+                                   "cache_control": {"type": "ephemeral"}}]
+        else:
+            system_blocks = None
 
         def _stream():
             for model in [provider.model] + [m for m in (provider.models or []) if m != provider.model]:
@@ -744,19 +849,28 @@ class ProviderRegistry:
 
         claude_messages = self._convert_messages_for_anthropic(messages, system)
 
-        # System prompt as array with caching (90% cost savings on repeated calls)
+        # System prompt as array with caching (90% cost savings on repeated calls).
+        # Split on JARVIS_CACHE_BOUNDARY: dynamic prefix (CWD, model) is NOT cached;
+        # stable persona/rules suffix IS cached with ephemeral (5-min TTL).
+        _CACHE_MARKER = "<!-- JARVIS_CACHE_BOUNDARY -->"
         system_blocks = []
         if system:
-            system_blocks.append({
-                "type": "text",
-                "text": system,
-                "cache_control": {"type": "ephemeral"},  # 5-min cache TTL
-            })
-            # Brief identity reminder (uncached)
-            system_blocks.append({
-                "type": "text",
-                "text": "Remember: you are JARVIS, not Claude. Built by Ulrich.",
-            })
+            if _CACHE_MARKER in system:
+                _dynamic, _stable = system.split(_CACHE_MARKER, 1)
+                if _dynamic.strip():
+                    system_blocks.append({"type": "text", "text": _dynamic.strip()})
+                if _stable.strip():
+                    system_blocks.append({
+                        "type": "text",
+                        "text": _stable.strip(),
+                        "cache_control": {"type": "ephemeral"},
+                    })
+            else:
+                system_blocks.append({
+                    "type": "text",
+                    "text": system,
+                    "cache_control": {"type": "ephemeral"},
+                })
 
         # Cache tool definitions too (they don't change between calls)
         if claude_tools:
@@ -822,12 +936,14 @@ class ProviderRegistry:
                             pass
 
                         if hasattr(r, 'usage') and r.usage:
-                            usage = {
+                            raw_usage = {
                                 "input": r.usage.input_tokens,
                                 "output": r.usage.output_tokens,
                                 "cache_read": getattr(r.usage, 'cache_read_input_tokens', 0),
-                                "cache_creation": getattr(r.usage, 'cache_creation_input_tokens', 0),
+                                "cache_write": getattr(r.usage, 'cache_creation_input_tokens', 0),
                             }
+                            usage = _normalize_usage(raw_usage)
+                            _update_cache_stats(usage)
                         provider.model = model
                         return {"text": text, "tool_calls": tool_calls, "usage": usage, "thinking": thinking}
 
@@ -854,12 +970,14 @@ class ProviderRegistry:
 
                     usage = {}
                     if hasattr(r, 'usage') and r.usage:
-                        usage = {
+                        raw_usage = {
                             "input": r.usage.input_tokens,
                             "output": r.usage.output_tokens,
                             "cache_read": getattr(r.usage, 'cache_read_input_tokens', 0),
-                            "cache_creation": getattr(r.usage, 'cache_creation_input_tokens', 0),
+                            "cache_write": getattr(r.usage, 'cache_creation_input_tokens', 0),
                         }
+                        usage = _normalize_usage(raw_usage)
+                        _update_cache_stats(usage)
                     return {"text": text, "tool_calls": tool_calls, "usage": usage, "thinking": thinking}
                 except Exception as e:
                     import logging
@@ -1017,10 +1135,19 @@ class ProviderRegistry:
                             msg = chat.choices[0].message
                             result = {"text": msg.content or "", "tool_calls": [], "usage": {}}
                             if hasattr(chat, 'usage') and chat.usage:
-                                result["usage"] = {
-                                    "input": getattr(chat.usage, 'prompt_tokens', 0),
+                                raw_u = {
+                                    "input":  getattr(chat.usage, 'prompt_tokens', 0),
                                     "output": getattr(chat.usage, 'completion_tokens', 0),
                                 }
+                                # OpenAI / Kimi cache hits live inside prompt_tokens_details
+                                _ptd = getattr(chat.usage, 'prompt_tokens_details', None)
+                                if _ptd:
+                                    raw_u["prompt_tokens_details"] = {
+                                        "cached_tokens": getattr(_ptd, 'cached_tokens', 0),
+                                    }
+                                norm = _normalize_usage(raw_u)
+                                _update_cache_stats(norm)
+                                result["usage"] = norm
                             if msg.tool_calls:
                                 for tc in msg.tool_calls:
                                     try:

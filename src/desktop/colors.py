@@ -17,18 +17,10 @@ DESKTOP_CONFIG = os.path.expanduser("~/.jarvis/desktop.json")
 # Each preset: (primary_hex, glow_hex, name)
 # primary = main accent, glow = brighter variant for highlights
 PRESETS = {
-    "arc-reactor":  ("#00b8d4", "#00e5ff", "Arc Reactor (Cyan)"),
-    "iron-man":     ("#ff8800", "#ffcc55", "Iron Man (Gold)"),
-    "ultron":       ("#ff3333", "#ff6666", "Ultron (Red)"),
-    "stealth":      ("#8b5cf6", "#a78bfa", "Stealth (Purple)"),
-    "emerald":      ("#10b981", "#34d399", "Emerald (Green)"),
-    "frost":        ("#38bdf8", "#7dd3fc", "Frost (Blue)"),
-    "solar":        ("#f59e0b", "#fbbf24", "Solar (Amber)"),
-    "hotrod":       ("#ef4444", "#f87171", "Hot Rod (Red)"),
-    "ghost":        ("#94a3b8", "#cbd5e1", "Ghost (Silver)"),
+    "ghost": ("#94a3b8", "#cbd5e1", "Ghost (Silver)"),
 }
 
-DEFAULT_THEME = "arc-reactor"
+DEFAULT_THEME = "ghost"
 
 
 def _load_config() -> dict:
@@ -50,24 +42,11 @@ def _save_config(config: dict) -> None:
 
 def get_theme() -> str:
     """Return current theme name."""
-    cfg = _load_config()
-    return cfg.get("theme", DEFAULT_THEME)
+    return DEFAULT_THEME
 
 
 def get_colors() -> Tuple[str, str]:
     """Return (primary_hex, glow_hex) for the current theme."""
-    cfg = _load_config()
-    theme = cfg.get("theme", DEFAULT_THEME)
-
-    # Custom color override
-    if theme == "custom":
-        primary = cfg.get("theme_primary", "#00b8d4")
-        glow = cfg.get("theme_glow", "#00e5ff")
-        return primary, glow
-
-    if theme in PRESETS:
-        return PRESETS[theme][0], PRESETS[theme][1]
-
     return PRESETS[DEFAULT_THEME][0], PRESETS[DEFAULT_THEME][1]
 
 

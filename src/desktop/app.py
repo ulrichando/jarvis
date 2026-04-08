@@ -113,9 +113,21 @@ _DESKTOP_PID_FILE = os.path.join(
 
 
 def main():
-    # Write PID file so external processes can reliably kill this instance
+    # Single-instance guard: kill any existing desktop instance first
     import atexit as _atexit
     os.makedirs(os.path.dirname(_DESKTOP_PID_FILE), exist_ok=True)
+    if os.path.exists(_DESKTOP_PID_FILE):
+        try:
+            with open(_DESKTOP_PID_FILE) as _pf:
+                _old_pid = int(_pf.read().strip())
+            if _old_pid != os.getpid():
+                try:
+                    os.kill(_old_pid, 15)  # SIGTERM
+                    time.sleep(0.5)
+                except ProcessLookupError:
+                    pass
+        except Exception:
+            pass
     with open(_DESKTOP_PID_FILE, "w") as _pf:
         _pf.write(str(os.getpid()))
     os.chmod(_DESKTOP_PID_FILE, 0o600)
@@ -126,20 +138,24 @@ def main():
     ws_url = None   # injected into WebKit as window.__JARVIS_WS_URL__
     api_base = None # base URL for fetch() calls
 
-    # If a remote brain is configured, use wss:// to it directly
+    # If a remote brain is configured, probe it first — fall back to local if unreachable
     try:
         import json as _json
+        import urllib.request as _ureq
         from pathlib import Path
         _remote = Path.home() / ".jarvis" / "remote.json"
         if _remote.exists():
             _rd = _json.loads(_remote.read_text())
             _brain = (_rd.get("brain_url") or "").strip()
             if _brain and "localhost" not in _brain and "127.0.0.1" not in _brain:
-                # Use HTTPS/WSS (jarvis.local with mkcert cert)
                 _brain_https = _brain.replace("http://", "https://")
-                ws_url = _brain_https.replace("https://", "wss://").rstrip("/") + "/ws"
-                api_base = _brain_https.rstrip("/")
-                print(f"[JARVIS] Desktop → remote brain: {api_base}")
+                try:
+                    _ureq.urlopen(_brain_https + "/", timeout=3)
+                    ws_url = _brain_https.replace("https://", "wss://").rstrip("/") + "/ws"
+                    api_base = _brain_https.rstrip("/")
+                    print(f"[JARVIS] Desktop → remote brain: {api_base}")
+                except Exception:
+                    print(f"[JARVIS] Remote brain {_brain_https} unreachable — using local server")
     except Exception:
         pass
 
@@ -293,6 +309,13 @@ def main():
     _saved_primary = _cfg.get("theme_primary", "#00e5ff")
     _saved_glow = _cfg.get("theme_glow", "#0088aa")
     _target_opacity = _cfg.get("opacity", 1.0)
+    _revealed = [False]
+
+    def _reveal():
+        if not _revealed[0]:
+            _revealed[0] = True
+            window.set_opacity(_target_opacity)
+        return False
 
     def _on_load(wv, event):
         if event == WebKit2.LoadEvent.FINISHED:
@@ -301,8 +324,10 @@ def main():
             # so the single load is always fresh; no double-reload needed.
             js = f"window.__jarvisSetTheme && window.__jarvisSetTheme('{_saved_primary}', '{_saved_glow}')"
             wv.run_javascript(js, None, None, None)
-            GLib.timeout_add(300, lambda: window.set_opacity(_target_opacity) or False)
+            GLib.timeout_add(300, _reveal)
     webview.connect("load-changed", _on_load)
+    # Fallback: reveal after 5s even if load event never fires
+    GLib.timeout_add(5000, _reveal)
     window.add(webview)
 
     # ── Dragging — use window manager move for reliable drag ──

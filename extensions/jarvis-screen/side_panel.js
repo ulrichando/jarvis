@@ -1,5 +1,6 @@
 // JARVIS Side Panel v2.0 — DOM-aware AI with multi-tab @mention
-const JARVIS_URL = 'https://jarvis.local'
+let JARVIS_URL = 'https://jarvis.local'
+chrome.storage.sync.get(['brain_url'], (r) => { if (r.brain_url) JARVIS_URL = r.brain_url.replace(/\/$/, '') })
 
 const messagesEl   = document.getElementById('messages')
 const emptyState   = document.getElementById('emptyState')

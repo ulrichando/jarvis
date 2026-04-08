@@ -1,3 +1,7 @@
+networks:
+  jarvis_net:
+    driver: bridge
+
 services:
 
   # ── JARVIS backend ──────────────────────────────────────────────────────────
@@ -6,43 +10,50 @@ services:
     image: jarvis:latest
     ports:
       - "8765:8765"
-    privileged: true
     volumes:
       - jarvis_data:/data/.jarvis
       - ./.env:/app/.env:ro
-      - /root/.ssh/jarvis_to_kali:/root/.ssh/jarvis_to_kali:ro
-      - /root/.ssh/known_hosts:/root/.ssh/known_hosts:rw
-      - /dev:/dev
-      - /proc:/proc:ro
-      - /sys:/sys:ro
+      # SSH key mounted into jarvis user's home — container runs as non-root 'jarvis'
+      # Generate on the Proxmox host: ssh-keygen -t ed25519 -f /root/.ssh/jarvis_to_kali
+      - /root/.ssh/jarvis_to_kali:/data/.ssh/jarvis_to_kali:ro
+      - /root/.ssh/known_hosts:/data/.ssh/known_hosts:rw
+      # Audio: scope to sound devices only (not the full /dev tree)
+      - /dev/snd:/dev/snd
+    devices:
+      - /dev/snd
     env_file:
       - .env
     environment:
-      # Point to the Ollama service (used when cloud providers are unavailable)
+      # Ollama service endpoint (Docker DNS resolves 'ollama' to the container)
       - OLLAMA_HOST=http://ollama:11434
-      # Full root access — no sandbox, no restrictions
       - JARVIS_NO_SANDBOX=1
       - JARVIS_OWNER=ulrich
+      # Data directory — must match the volume mount above
+      - JARVIS_HOME=/data/.jarvis
     depends_on:
       ollama:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
+    networks:
+      - jarvis_net
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8765/api/ready"]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 90s
+      retries: 5
+      start_period: 120s
 
   # ── Ollama (local LLM fallback) ─────────────────────────────────────────────
   # GPU: uncomment the `deploy` block below if you have an NVIDIA GPU
   ollama:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.9.0
     ports:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
     restart: unless-stopped
+    networks:
+      - jarvis_net
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/version || wget -qO- http://localhost:11434/api/version"]
       interval: 30s
