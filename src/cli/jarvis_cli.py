@@ -2801,7 +2801,8 @@ async def main():
             _spin_line_active[0] = True
             _draw_input_frame("", _output_buf_text[0])
 
-            while True:
+            try:
+              while True:
                 elapsed = time.time() - t0
                 frame = SPINNER_FRAMES[i % len(SPINNER_FRAMES)]
                 elapsed_str = f" {DIM}{elapsed:.0f}s{RESET}" if elapsed >= 2 else ""
@@ -2812,6 +2813,8 @@ async def main():
                 sys.stdout.flush()
                 i += 1
                 await asyncio.sleep(0.12)
+            except asyncio.CancelledError:
+                pass  # Expected when _stop_spin() cancels
 
         def _start_spin(label="Thinking..."):
             nonlocal _spin_task
@@ -2923,7 +2926,7 @@ async def main():
                     pass
 
         except asyncio.CancelledError:
-            full_text = ""
+            # Keep any text already streamed; don't discard partial response
             _outputln(f"\n  {DIM}Cancelled.{RESET}")
         except Exception as e:
             full_text = f"Error: {str(e)[:80]}"
@@ -3341,8 +3344,10 @@ async def main():
 
                 # CLI-only shortcuts
                 if cmd_name == "visual" and cmd_args:
+                    import shlex as _shlex_v
                     subprocess.Popen(
-                        ["x-terminal-emulator", "-e", f"bash -c '{cmd_args}; echo; echo [DONE]; read'"],
+                        ["x-terminal-emulator", "-e", "bash", "-c",
+                         f"{_shlex_v.quote(cmd_args)}; echo; echo [DONE]; read"],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
                     )
                     continue
@@ -3358,8 +3363,9 @@ async def main():
                         args=cmd_args, mode=brain.mode if client._is_full_brain else "normal",
                     )
                     result = await cmd_registry.dispatch(cmd_name, ctx)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logging.getLogger("jarvis.cli").debug("Command /%s dispatch error: %s", cmd_name, e)
+                    _outputln(f"  {DIM}Command error: {e}{RESET}")
 
                 # In server mode, only handle local-only actions; let rest go to server
                 if client._server_mode and result is not None:
@@ -3579,16 +3585,16 @@ async def main():
 def run():
     try:
         asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        # Ensure alt screen is exited even on abrupt kill
-        if sys.stdout.isatty():
-            sys.stdout.write("\033[?1049l")
-            sys.stdout.flush()
-    except RuntimeError:
-        if sys.stdout.isatty():
-            sys.stdout.write("\033[?1049l")
-            sys.stdout.flush()
+    except (KeyboardInterrupt, SystemExit, RuntimeError):
+        pass  # Handled in finally
     finally:
+        # Ensure alt screen is always exited, even on abrupt kill
+        try:
+            if sys.stdout.isatty():
+                sys.stdout.write("\033[?1049l")
+                sys.stdout.flush()
+        except Exception:
+            pass
         # Suppress aiohttp cleanup errors that print after event loop closes
         # These are harmless but ugly — redirect stderr to devnull during shutdown
         try:
