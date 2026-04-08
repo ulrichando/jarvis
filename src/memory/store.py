@@ -7,6 +7,7 @@ The Index provides O(1) recall across all dimensions.
 
 import logging
 import sqlite3
+import threading
 import time
 from src.config import DATA_DIR
 from src.memory.lattice import NeuralLattice, MemoryNode, NodeType
@@ -31,6 +32,7 @@ class MemoryStore:
             db_path = str(DATA_DIR / "jarvis.db")
 
         # Conversation log (SQLite — WAL mode for concurrent access)
+        self._db_lock = threading.Lock()
         self.conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.row_factory = sqlite3.Row
@@ -109,11 +111,12 @@ class MemoryStore:
     def add_turn(self, role: str, content: str):
         """Log a conversation turn. Does NOT absorb into lattice —
         only explicit learn() calls go into the lattice."""
-        self.conn.execute(
-            "INSERT INTO conversations (role, content, timestamp) VALUES (?, ?, ?)",
-            (role, content, time.time()),
-        )
-        self.conn.commit()
+        with self._db_lock:
+            self.conn.execute(
+                "INSERT INTO conversations (role, content, timestamp) VALUES (?, ?, ?)",
+                (role, content, time.time()),
+            )
+            self.conn.commit()
 
     def mark_session_start(self):
         """Mark the start of a new session.
@@ -139,12 +142,13 @@ class MemoryStore:
         # Voice generates ~150 entries/hour, so 3h = ~450 entries
         # Cap at limit * 4 to stay within LLM context budget
         effective_limit = min(limit * 4, 160)
-        rows = self.conn.execute(
-            "SELECT role, content, timestamp FROM conversations "
-            "WHERE timestamp >= ? "
-            "ORDER BY timestamp DESC LIMIT ?",
-            (time_cutoff, effective_limit),
-        ).fetchall()
+        with self._db_lock:
+            rows = self.conn.execute(
+                "SELECT role, content, timestamp FROM conversations "
+                "WHERE timestamp >= ? "
+                "ORDER BY timestamp DESC LIMIT ?",
+                (time_cutoff, effective_limit),
+            ).fetchall()
         return [dict(row) for row in reversed(rows)]
 
     # ── Neural Lattice Operations ──────────────────────────────────────
@@ -297,8 +301,8 @@ class MemoryStore:
                 for entry in memdir_results:
                     preview = entry.content[:150].replace("\n", " ")
                     lines.append(f"  - [{entry.id}] {preview}")
-        except Exception:
-            pass
+        except (OSError, AttributeError) as e:
+            log.debug("Memdir search failed: %s", e)
 
         return "\n".join(lines) if lines else ""
 
@@ -354,13 +358,13 @@ class MemoryStore:
         if self._holographic:
             try:
                 self._holographic.decay()
-            except Exception:
-                pass
+            except (AttributeError, TypeError) as e:
+                log.debug("Holographic decay failed: %s", e)
         if self._associative:
             try:
                 assoc_pruned = self._associative.decay_and_prune()
-            except Exception:
-                pass
+            except (AttributeError, TypeError) as e:
+                log.debug("Associative decay failed: %s", e)
 
         return {
             "pruned": pruned,
@@ -372,9 +376,10 @@ class MemoryStore:
     @property
     def stats(self) -> dict:
         """Get memory system stats."""
-        conv_count = self.conn.execute(
-            "SELECT COUNT(*) FROM conversations"
-        ).fetchone()[0]
+        with self._db_lock:
+            conv_count = self.conn.execute(
+                "SELECT COUNT(*) FROM conversations"
+            ).fetchone()[0]
         result = {
             "conversations": conv_count,
             "lattice": self.lattice.stats,
@@ -383,18 +388,18 @@ class MemoryStore:
         if self._holographic:
             try:
                 result["holographic"] = self._holographic.stats()
-            except Exception:
-                pass
+            except (AttributeError, TypeError) as e:
+                log.debug("Holographic stats failed: %s", e)
         if self._associative:
             try:
                 result["associative"] = self._associative.stats()
-            except Exception:
-                pass
+            except (AttributeError, TypeError) as e:
+                log.debug("Associative stats failed: %s", e)
         if self._activation:
             try:
                 result["activation"] = self._activation.stats()
-            except Exception:
-                pass
+            except (AttributeError, TypeError) as e:
+                log.debug("Activation stats failed: %s", e)
         return result
 
     def close(self):

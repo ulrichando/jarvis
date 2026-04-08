@@ -221,6 +221,9 @@ class Brain:
         setup_logging(log_file=str(DATA_DIR / "jarvis.log"), quiet=quiet)
         log.info("JARVIS Brain initializing...")
 
+        # Track background tasks to prevent garbage collection
+        self._background_tasks: set = set()
+
         # Hardware auto-detection
         try:
             from src.hardware import detect_hardware
@@ -321,6 +324,13 @@ class Brain:
                  len(self.skills.list_skills()),
                  len(self.mcp.list_tools()),
                  sanitize_model_name(self.reasoner.active_model_name))
+
+    def _spawn_background(self, coro):
+        """Create and track a background task to prevent garbage collection."""
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
 
     # ═══ REMOTE BRIDGE ════════════════════════════════════════════
 
@@ -623,7 +633,7 @@ class Brain:
         if self.curiosity._conversation_turns_since_question == 1 and self.curiosity._asked_recently:
             last_q = list(self.curiosity._asked_recently)[-1] if self.curiosity._asked_recently else ""
             if last_q:
-                asyncio.create_task(self.curiosity.absorb_answer(last_q, user_input))
+                self._spawn_background(self.curiosity.absorb_answer(last_q, user_input))
 
         self.memory.add_turn("user", user_input)
         memory_context = self.memory.recall_as_context(user_input, top_k=3)
@@ -646,13 +656,13 @@ class Brain:
         self.memory.add_turn("jarvis", response)
 
         # Learn in background
-        asyncio.create_task(self.conversation_learner.observe(user_input, response))
+        self._spawn_background(self.conversation_learner.observe(user_input, response))
 
         # Auto-dream: check if memory consolidation is due
-        asyncio.create_task(self.auto_dream.maybe_trigger())
+        self._spawn_background(self.auto_dream.maybe_trigger())
 
         # Curiosity
-        asyncio.create_task(self.curiosity.detect_gaps(user_input, response, memory_context))
+        self._spawn_background(self.curiosity.detect_gaps(user_input, response, memory_context))
         if self.curiosity.should_ask_question():
             question = self.curiosity.get_question()
             if question:
@@ -1160,12 +1170,12 @@ PROJECT CREATION RULES — follow these when building something:
             self._log(user_input, full_response, start, "agent-stream")
 
             # Auto-dream: check if memory consolidation is due
-            asyncio.create_task(self.auto_dream.maybe_trigger())
+            self._spawn_background(self.auto_dream.maybe_trigger())
 
             # Background: extract skills and create reflections from this interaction
             if needs_agent and tool_was_used:
                 try:
-                    asyncio.get_event_loop().create_task(
+                    self._spawn_background(
                         self._post_agent_learning(user_input, full_response, tool_was_used)
                     )
                 except (RuntimeError, AttributeError) as e:

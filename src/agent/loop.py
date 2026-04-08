@@ -501,7 +501,8 @@ async def _handle_sentinel_tool(name: str, args: dict) -> str:
         worktree_name = args.get("name", "jarvis-worktree")
         try:
             import subprocess
-            result = subprocess.run(
+            result = await asyncio.to_thread(
+                subprocess.run,
                 ["git", "worktree", "add", f"/tmp/{worktree_name}", "-b", worktree_name],
                 capture_output=True, text=True, timeout=30
             )
@@ -517,8 +518,11 @@ async def _handle_sentinel_tool(name: str, args: dict) -> str:
         if wt:
             try:
                 import subprocess
-                subprocess.run(["git", "worktree", "remove", wt, "--force"],
-                             capture_output=True, timeout=30)
+                await asyncio.to_thread(
+                    subprocess.run,
+                    ["git", "worktree", "remove", wt, "--force"],
+                    capture_output=True, timeout=30
+                )
                 _loop_state["worktree"] = None
                 return f"Removed worktree {wt}"
             except Exception as e:
