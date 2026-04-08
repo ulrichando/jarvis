@@ -317,7 +317,8 @@ async def cmd_doctor(ctx: CommandContext) -> CommandResult:
     # -- Python --
     py_ver = sys.version.split()[0]
     py_ok = sys.version_info >= (3, 10)
-    lines.append(f"  Python:       {py_ver} {'\u2714' if py_ok else '\u2718 (3.10+ required)'}")
+    py_status = '\u2714' if py_ok else '\u2718 (3.10+ required)'
+    lines.append(f"  Python:       {py_ver} {py_status}")
     if not py_ok:
         issues += 1
     lines.append(f"  Platform:     {platform.platform()}")
@@ -328,7 +329,8 @@ async def cmd_doctor(ctx: CommandContext) -> CommandResult:
     lines.append("  " + "-" * 34)
     env_file = os.path.expanduser("~/.jarvis/.env")
     env_exists = os.path.exists(env_file)
-    lines.append(f"  .env file:    {'\u2714' if env_exists else '\u2718 (~/.jarvis/.env)'}")
+    env_status = '\u2714' if env_exists else '\u2718 (~/.jarvis/.env)'
+    lines.append(f"  .env file:    {env_status}")
     if not env_exists:
         issues += 1
     for name, label, required in [
@@ -394,7 +396,8 @@ async def cmd_doctor(ctx: CommandContext) -> CommandResult:
     lines.append("  " + "-" * 34)
     for tool in ["git", "nmap", "xclip", "xsel", "jq", "cargo", "node", "npm"]:
         path = shutil.which(tool)
-        lines.append(f"  {tool:<12s}   {'\u2714' if path else '\u2718'}")
+        tool_icon = '\u2714' if path else '\u2718'
+        lines.append(f"  {tool:<12s}   {tool_icon}")
 
     # -- System resources --
     lines.append("")

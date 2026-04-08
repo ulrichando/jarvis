@@ -1310,8 +1310,10 @@ RULES:
                 data = json.load(f)
             for name, d in data.items():
                 self._providers[name] = Provider(**d)
-        except Exception:
-            pass
+        except (json.JSONDecodeError, TypeError, KeyError) as e:
+            log.warning("Failed to parse providers.json: %s", e)
+        except OSError as e:
+            log.warning("Failed to read providers.json: %s", e)
 
     def reload(self):
         """Hot-reload providers from disk (picks up external changes)."""
