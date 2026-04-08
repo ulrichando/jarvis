@@ -157,13 +157,48 @@ class JarvisWebServer:
                 print(f"[JARVIS] Piper TTS unavailable: {e}")
         return self._piper_voice
 
-    async def tts_handler(self, request: web.Request) -> web.StreamResponse:
-        """Generate TTS audio from text. Uses Piper (local, fast) with Edge TTS fallback.
+    # Groq TTS — same API key as Whisper STT, fast cloud inference, male voice
+    GROQ_TTS_VOICE = "Chip-PlayAI"   # Clear, confident male voice
+    GROQ_TTS_MODEL = "playai-tts"
 
-        Query params:
-            text: raw text to speak
-            voice: edge-tts voice name (only used for Edge TTS fallback)
-            engine: "piper" or "edge" (default: piper if available)
+    async def _groq_tts(self, text: str) -> bytes | None:
+        """Generate speech via Groq PlayAI TTS. Returns MP3 bytes or None on failure."""
+        api_key = os.environ.get("GROQ_API_KEY", "")
+        if not api_key:
+            return None
+        try:
+            import aiohttp as _aio
+            payload = {
+                "model":           self.GROQ_TTS_MODEL,
+                "input":           text,
+                "voice":           self.GROQ_TTS_VOICE,
+                "response_format": "mp3",
+            }
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type":  "application/json",
+            }
+            async with _aio.ClientSession() as sess:
+                async with sess.post(
+                    "https://api.groq.com/openai/v1/audio/speech",
+                    json=payload, headers=headers, timeout=_aio.ClientTimeout(total=15),
+                ) as resp:
+                    if resp.status == 200:
+                        return await resp.read()
+                    err = await resp.text()
+                    print(f"[JARVIS] Groq TTS HTTP {resp.status}: {err[:120]}")
+                    return None
+        except Exception as e:
+            print(f"[JARVIS] Groq TTS error: {e}")
+            return None
+
+    async def tts_handler(self, request: web.Request) -> web.StreamResponse:
+        """Generate TTS audio from text.
+
+        Priority:
+          1. Groq PlayAI TTS  — male voice, fast, uses existing API key
+          2. Edge TTS          — Microsoft neural, male (Andrew), cloud fallback
+          3. Piper             — local, but en_US-lessac is female; kept as last resort
         """
         text = request.query.get("text", "")
         if not text:
@@ -173,55 +208,66 @@ class JarvisWebServer:
         if not text or len(text) < 2:
             return web.Response(status=204)
 
-        engine = request.query.get("engine", "piper")
+        engine = request.query.get("engine", "groq")
 
-        # Try Piper first (local, ~0.1s latency)
-        if engine != "edge":
-            piper = self._get_piper_voice()
-            if piper:
-                try:
-                    import io, wave
-                    loop = asyncio.get_running_loop()
+        # ── 1. Groq PlayAI TTS (primary — male, fast) ─────────────────────
+        if engine not in ("edge", "piper"):
+            audio = await self._groq_tts(text)
+            if audio:
+                return web.Response(
+                    body=audio,
+                    content_type="audio/mpeg",
+                    headers={"Cache-Control": "no-cache"},
+                )
+            print("[JARVIS] Groq TTS failed — falling back to Edge TTS")
 
-                    def _generate():
-                        buf = io.BytesIO()
-                        with wave.open(buf, 'wb') as wf:
-                            wf.setnchannels(1)
-                            wf.setsampwidth(2)
-                            wf.setframerate(piper.config.sample_rate)
-                            for chunk in piper.synthesize(text):
-                                wf.writeframes(chunk.audio_int16_bytes)
-                        return buf.getvalue()
+        # ── 2. Edge TTS (male voice fallback) ─────────────────────────────
+        if engine != "piper":
+            voice = request.query.get("voice", TTS_VOICE)
+            try:
+                communicate = edge_tts.Communicate(text, voice)
+                chunks = []
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio" and chunk["data"]:
+                        chunks.append(chunk["data"])
+                audio_data = b"".join(chunks)
+                if audio_data:
+                    return web.Response(
+                        body=audio_data,
+                        content_type="audio/mpeg",
+                        headers={"Cache-Control": "no-cache"},
+                    )
+            except Exception as e:
+                print(f"[JARVIS] Edge TTS error: {e}")
 
-                    wav_data = await loop.run_in_executor(None, _generate)
+        # ── 3. Piper local TTS (last resort) ──────────────────────────────
+        piper = self._get_piper_voice()
+        if piper:
+            try:
+                import io, wave
+                loop = asyncio.get_running_loop()
+
+                def _generate():
+                    buf = io.BytesIO()
+                    with wave.open(buf, 'wb') as wf:
+                        wf.setnchannels(1)
+                        wf.setsampwidth(2)
+                        wf.setframerate(piper.config.sample_rate)
+                        for chunk in piper.synthesize(text):
+                            wf.writeframes(chunk.audio_int16_bytes)
+                    return buf.getvalue()
+
+                wav_data = await loop.run_in_executor(None, _generate)
+                if wav_data:
                     return web.Response(
                         body=wav_data,
                         content_type="audio/wav",
                         headers={"Cache-Control": "no-cache"},
                     )
-                except Exception as e:
-                    print(f"[JARVIS] Piper TTS failed, falling back to Edge: {e}")
+            except Exception as e:
+                print(f"[JARVIS] Piper TTS failed: {e}")
 
-        # Fallback: Edge TTS (cloud, ~1-2s latency)
-        # Buffer entire response before sending — WebKit2 GTK can't play chunked MP3 streams.
-        voice = request.query.get("voice", TTS_VOICE)
-        try:
-            communicate = edge_tts.Communicate(text, voice)
-            chunks = []
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio" and chunk["data"]:
-                    chunks.append(chunk["data"])
-            audio_data = b"".join(chunks)
-            if not audio_data:
-                return web.Response(status=204)
-            return web.Response(
-                body=audio_data,
-                content_type="audio/mpeg",
-                headers={"Cache-Control": "no-cache"},
-            )
-        except Exception as e:
-            print(f"[JARVIS] TTS error: {e}")
-            return web.Response(status=500, text="TTS generation failed")
+        return web.Response(status=500, text="All TTS engines failed")
 
     async def tts_chunks_handler(self, request: web.Request) -> web.Response:
         """Return speech chunks with pause metadata for the frontend.
@@ -2231,27 +2277,39 @@ class JarvisWebServer:
                 self._server_listener.jarvis_speaking = False
 
     async def _speak_system(self, text: str):
-        """Generate TTS and play with timeout protection."""
+        """Generate TTS and play via ffplay. Tries Groq first, then Edge TTS."""
         import tempfile
 
+        audio_bytes: bytes | None = None
+        suffix = ".mp3"
+
+        # ── Groq PlayAI TTS (primary — male voice) ────────────────────────
         try:
-            voice = TTS_VOICE
-            communicate = edge_tts.Communicate(text, voice)
+            audio_bytes = await asyncio.wait_for(self._groq_tts(text), timeout=15)
+        except asyncio.TimeoutError:
+            print("[JARVIS] Groq TTS timed out — falling back to Edge TTS")
+            audio_bytes = None
 
-            # Stream TTS audio with timeout
-            audio_data = io.BytesIO()
-            async def _stream():
-                async for chunk in communicate.stream():
-                    if chunk["type"] == "audio":
-                        audio_data.write(chunk["data"])
+        # ── Edge TTS fallback ─────────────────────────────────────────────
+        if not audio_bytes:
+            try:
+                communicate = edge_tts.Communicate(text, TTS_VOICE)
+                buf = io.BytesIO()
+                async def _stream():
+                    async for chunk in communicate.stream():
+                        if chunk["type"] == "audio":
+                            buf.write(chunk["data"])
+                await asyncio.wait_for(_stream(), timeout=30)
+                audio_bytes = buf.getvalue() or None
+            except Exception as e:
+                print(f"[JARVIS] Edge TTS error: {e}")
+                audio_bytes = None
 
-            await asyncio.wait_for(_stream(), timeout=30)
+        if not audio_bytes:
+            return
 
-            audio_bytes = audio_data.getvalue()
-            if not audio_bytes:
-                return
-
-            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+        try:
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
                 f.write(audio_bytes)
                 tmp_path = f.name
 
@@ -2262,7 +2320,6 @@ class JarvisWebServer:
                     stderr=asyncio.subprocess.DEVNULL,
                 )
                 self._current_ffplay = proc
-                # ffplay timeout — kill if stuck (broken audio device)
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=60)
                 except asyncio.TimeoutError:
@@ -2274,11 +2331,8 @@ class JarvisWebServer:
                 self._current_ffplay = None
                 try: os.unlink(tmp_path)
                 except: pass
-
-        except asyncio.TimeoutError:
-            print("[JARVIS] Edge TTS streaming timed out")
         except Exception as e:
-            print(f'[JARVIS] TTS error: {e}')
+            print(f"[JARVIS] TTS playback error: {e}")
             self._current_ffplay = None
 
     # ── Remote Session API ──────────────────────────────────────────

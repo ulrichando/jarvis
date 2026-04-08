@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "updated_at": "2026-04-08T09:52:15.182704+00:00",
+  "updated_at": "2026-04-08T17:47:14.995800+00:00",
   "entries": {
     "src/cli/jarvis_cli.py": {
-      "mtime": 1775641349.351651,
-      "size_bytes": 150511,
+      "mtime": 1775642841.9077883,
+      "size_bytes": 150433,
       "symbols": [
         "resolve_keybinding",
         "Spinner"
@@ -9897,15 +9897,15 @@
       "lang": "Python"
     },
     ".jarvis/file-summaries.json": {
-      "mtime": 1775641698.2119715,
+      "mtime": 1775670293.6848736,
       "size_bytes": 483776,
       "symbols": [],
       "summary": "",
       "lang": "JSON"
     },
     "src/server/web_server.py": {
-      "mtime": 1775641326.2997746,
-      "size_bytes": 184502,
+      "mtime": 1775642851.927736,
+      "size_bytes": 187148,
       "symbols": [
         "JarvisWebServer"
       ],
