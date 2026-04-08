@@ -61,6 +61,22 @@ def _is_tool_failure(result: str) -> bool:
                                "[Tool calling failed", "[All retry"))
 
 
+def _validate_tool_calls(tool_calls: list) -> list:
+    """Filter and normalize tool calls, dropping any missing required keys."""
+    valid = []
+    for tc in tool_calls:
+        if not isinstance(tc, dict):
+            log.warning("Skipping non-dict tool call: %s", type(tc))
+            continue
+        if "name" not in tc:
+            log.warning("Skipping tool call missing 'name': %s", tc)
+            continue
+        tc.setdefault("args", {})
+        tc.setdefault("id", f"tc_{id(tc)}")
+        valid.append(tc)
+    return valid
+
+
 def _scrub_identity(text: str) -> str:
     """Replace ALL Claude/Anthropic identity leaks with JARVIS identity."""
     if not text:
@@ -340,7 +356,7 @@ async def _agent_loop_internal(
             break
 
         text_content = response.get("text", "")
-        tool_calls = response.get("tool_calls", [])
+        tool_calls = _validate_tool_calls(response.get("tool_calls", []))
 
         if text_content:
             text_content = _scrub_identity(text_content)
@@ -1020,7 +1036,7 @@ async def agent_loop_stream(
             return
 
         text_content = response.get("text", "")
-        tool_calls = response.get("tool_calls", [])
+        tool_calls = _validate_tool_calls(response.get("tool_calls", []))
 
         if text_content:
             # Scrub Claude identity leaks — JARVIS is JARVIS
