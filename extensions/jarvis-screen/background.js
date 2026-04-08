@@ -1,8 +1,26 @@
 // JARVIS — background service worker v2.0
 
-// Brain URL — configurable via extension options page
-let JARVIS_URL = 'https://jarvis.local'
-chrome.storage.sync.get(['brain_url'], (r) => { if (r.brain_url) JARVIS_URL = r.brain_url.replace(/\/$/, '') })
+// Brain URL — Proxmox primary, localhost fallback
+const PRIMARY_BRAIN   = 'http://10.10.0.50:8765'
+const FALLBACK_BRAIN  = 'http://localhost:8765'
+let JARVIS_URL = PRIMARY_BRAIN
+
+async function resolveBrainUrl() {
+  // 1. User-configured URL takes priority
+  const stored = await chrome.storage.sync.get(['brain_url'])
+  const candidate = stored.brain_url ? stored.brain_url.replace(/\/$/, '') : PRIMARY_BRAIN
+  try {
+    const res = await fetch(`${candidate}/api/ready`, { signal: AbortSignal.timeout(4000) })
+    if (res.ok) { JARVIS_URL = candidate; return }
+  } catch {}
+  // 2. Fallback to localhost if primary unreachable
+  try {
+    const res = await fetch(`${FALLBACK_BRAIN}/api/ready`, { signal: AbortSignal.timeout(2000) })
+    if (res.ok) { JARVIS_URL = FALLBACK_BRAIN; return }
+  } catch {}
+  JARVIS_URL = candidate  // keep configured even if offline
+}
+resolveBrainUrl()
 const MAX_TABS   = 10
 const DOM_TTL    = 30_000  // 30s DOM cache
 

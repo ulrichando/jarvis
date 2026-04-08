@@ -2,7 +2,7 @@ const urlInput = document.getElementById('url')
 const msg      = document.getElementById('msg')
 
 chrome.storage.sync.get(['brain_url'], (r) => {
-  urlInput.value = r.brain_url || 'https://jarvis.local'
+  urlInput.value = r.brain_url || 'http://10.10.0.50:8765'
 })
 
 document.getElementById('save').addEventListener('click', () => {
