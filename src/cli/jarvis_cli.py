@@ -1715,16 +1715,28 @@ async def main():
         _trust_dir(cwd)
         _writeln()
 
-    # Normal screen buffer — VS Code terminal (and most modern terminals) do not provide
-    # scrollback inside the alt screen buffer, so we stay on the normal screen.
-    # \033[3J clears the terminal's scrollback history so scrolling up only shows this
-    # JARVIS session. \033[H\033[2J clears the visible screen for a clean start.
+    # Auto-detect terminal: VS Code integrated terminal has no alt-screen scrollback,
+    # so use normal screen there. Real terminals (kitty, alacritty, gnome-terminal, etc.)
+    # support alt screen scrollback — use it for full session isolation.
+    _in_vscode = (
+        os.environ.get("TERM_PROGRAM") == "vscode"
+        or "VSCODE_INJECTION" in os.environ
+        or "VSCODE_GIT_IPC_HANDLE" in os.environ
+    )
+
     if sys.stdout.isatty():
-        sys.stdout.write("\033[3J\033[H\033[2J")
+        if _in_vscode:
+            # VS Code: normal screen + clear scrollback so scroll stays within this session.
+            sys.stdout.write("\033[3J\033[H\033[2J")
+        else:
+            # Real terminal: alt screen gives isolated scrollback, clean exit restores shell.
+            sys.stdout.write("\033[?1049h\033[H\033[2J")
         sys.stdout.flush()
 
     def _exit_alt_screen():
-        pass  # normal screen — nothing to restore
+        if not _in_vscode and sys.stdout.isatty():
+            sys.stdout.write("\033[?1049l")
+            sys.stdout.flush()
 
     def _tw():
         try:
@@ -3565,8 +3577,17 @@ def run():
     except (KeyboardInterrupt, SystemExit, RuntimeError):
         pass  # Handled in finally
     finally:
-        # Ensure alt screen is always exited, even on abrupt kill
-        pass  # normal screen — nothing to restore
+        # Ensure alt screen is exited on abrupt kill (real terminals only)
+        try:
+            if sys.stdout.isatty() and not (
+                os.environ.get("TERM_PROGRAM") == "vscode"
+                or "VSCODE_INJECTION" in os.environ
+                or "VSCODE_GIT_IPC_HANDLE" in os.environ
+            ):
+                sys.stdout.write("\033[?1049l")
+                sys.stdout.flush()
+        except Exception:
+            pass
         # Suppress aiohttp cleanup errors that print after event loop closes
         # These are harmless but ugly — redirect stderr to devnull during shutdown
         try:
