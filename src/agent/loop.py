@@ -31,6 +31,8 @@ from src.agent.tool_registry import (
 )
 from src.agent.cost_tracker import get_tracker as get_cost_tracker
 from src.reasoning.groq_client import GroqReasoner
+from src.ecc.tool_fixer import ToolFixer
+from src.ecc.goal_verifier import GoalVerifier
 
 log = logging.getLogger("jarvis.agent")
 
@@ -302,6 +304,7 @@ async def _agent_loop_internal(
     iterations = 0
     _failed_call_sigs_ns: set[str] = set()  # semantic-retry tracking (non-streaming)
     _write_ops: list[str] = []  # track write/edit/destructive bash operations for verifier
+    _ecc_fixer = ToolFixer()   # ECC-L2: per-turn tool parameter mutation
 
     while iterations < max_iterations:
         iterations += 1
@@ -392,7 +395,8 @@ async def _agent_loop_internal(
         _readonly = _loop_state.get("plan_mode", False)
         await _execute_tools(messages, regular_calls, tool_executor,
                              on_tool_call, on_tool_result, readonly=_readonly,
-                             failed_sigs=_failed_call_sigs_ns)
+                             failed_sigs=_failed_call_sigs_ns,
+                             ecc_fixer=_ecc_fixer)
 
         # Execute dispatch calls (concurrent)
         if dispatch_calls:
@@ -654,7 +658,8 @@ def _append_tool_result(messages: list[dict], tool_id: str, result: str,
 
 async def _execute_tools(messages: list[dict], tool_calls: list[dict],
                          executor, on_call=None, on_result=None, readonly=False,
-                         failed_sigs: set | None = None):
+                         failed_sigs: set | None = None,
+                         ecc_fixer: "ToolFixer | None" = None):
     """Execute tool calls — parallel for concurrency-safe, sequential for others."""
     if failed_sigs is None:
         failed_sigs = set()
@@ -739,10 +744,31 @@ async def _execute_tools(messages: list[dict], tool_calls: list[dict],
         try:
             result = await asyncio.to_thread(executor, tool_name, tool_args)
         except Exception as exc:
-            result = f"ERROR: {exc}"
+            exc_str = str(exc)
+            result = f"ERROR: {exc_str}"
+            # ECC-L2: try parameter mutation before marking as permanently failed
+            if ecc_fixer and not _is_repeat:
+                _fixed_args, _fix_desc = ecc_fixer.try_fix(tool_name, tool_args, exc_str, _sig)
+                if _fixed_args is not None:
+                    try:
+                        _fixed_result = await asyncio.to_thread(executor, tool_name, _fixed_args)
+                        if not _is_tool_failure(_fixed_result):
+                            log.info("ECC-L2 (ns): fixed %s — %s", tool_name, _fix_desc)
+                            result = f"{_fixed_result}\n[ECC: auto-fixed — {_fix_desc}]"
+                            if hooks:
+                                post = hooks.run_post_tool_use(tool_name, _fixed_args, result)
+                                if post.message:
+                                    result += f"\n[Hook: {post.message}]"
+                            failed_sigs.add(_sig)   # original args failed
+                            if on_result:
+                                on_result(tool_name, result)
+                            _append_tool_result(messages, tool_id, result, tool_name=tool_name)
+                            continue
+                    except Exception:
+                        pass   # fall through to normal error handling
             # PostToolUseFailure hook
             if hooks:
-                fail_hr = hooks.run_post_tool_use_failure(tool_name, tool_args, str(exc))
+                fail_hr = hooks.run_post_tool_use_failure(tool_name, tool_args, exc_str)
                 if fail_hr.message:
                     result += f"\n[Hook: {fail_hr.message}]"
             failed_sigs.add(_sig)
@@ -769,8 +795,18 @@ async def _execute_tools(messages: list[dict], tool_calls: list[dict],
                 change_type = "write" if tool_name == "write_file" else "edit"
                 hooks.run_file_changed(path, change_type)
 
-        # Track semantic failures
+        # Track semantic failures — ECC-L2: try mutation if first failure
         if _is_tool_failure(result):
+            if ecc_fixer and not _is_repeat:
+                _fixed_args, _fix_desc = ecc_fixer.try_fix(tool_name, tool_args, result, _sig)
+                if _fixed_args is not None:
+                    try:
+                        _fixed_result = await asyncio.to_thread(executor, tool_name, _fixed_args)
+                        if not _is_tool_failure(_fixed_result):
+                            log.info("ECC-L2 (ns-sem): fixed %s — %s", tool_name, _fix_desc)
+                            result = f"{_fixed_result}\n[ECC: auto-fixed — {_fix_desc}]"
+                    except Exception:
+                        pass   # original failure stands
             failed_sigs.add(_sig)
             if _is_repeat:
                 result += (
@@ -899,6 +935,11 @@ async def agent_loop_stream(
     # Track failed (tool_name, args) signatures within this turn so we can warn
     # the model when it repeats the exact same failing call (semantic retry anti-pattern).
     _failed_call_sigs: set[str] = set()
+
+    # ECC session state
+    _ecc_fixer = ToolFixer()           # L2: tool parameter mutation
+    _ecc_gv    = GoalVerifier()        # L3: post-task goal verification
+    _ecc_tool_results: list[str] = []  # L3: accumulate tool results for verification
 
     while iterations < max_iterations:
         iterations += 1
@@ -1097,9 +1138,32 @@ async def agent_loop_stream(
             try:
                 result = await asyncio.to_thread(execute_tool, tool_name, tool_args, readonly)
             except Exception as exc:
-                result = f"ERROR: {exc}"
+                exc_str = str(exc)
+                result = f"ERROR: {exc_str}"
+                # ECC-L2: try parameter mutation before giving up
+                if not _is_repeat_failure:
+                    _fixed_args, _fix_desc = _ecc_fixer.try_fix(tool_name, tool_args, exc_str, _sig)
+                    if _fixed_args is not None:
+                        try:
+                            _fixed_result = await asyncio.to_thread(
+                                execute_tool, tool_name, _fixed_args, readonly
+                            )
+                            if not _is_tool_failure(_fixed_result):
+                                log.info("ECC-L2 (stream-exc): fixed %s — %s", tool_name, _fix_desc)
+                                result = f"{_fixed_result}\n[ECC: auto-fixed — {_fix_desc}]"
+                                if hooks:
+                                    _post = hooks.run_post_tool_use(tool_name, _fixed_args, result)
+                                    if _post.message:
+                                        result += f"\n[Hook: {_post.message}]"
+                                _failed_call_sigs.add(_sig)
+                                _ecc_tool_results.append(result[:500])
+                                yield {"type": "tool_result", "name": tool_name, "content": result}
+                                _append_tool_result(messages, tool_id, result, tool_name=tool_name)
+                                continue
+                        except Exception:
+                            pass   # fall through to normal error handling
                 if hooks:
-                    fail_hr = hooks.run_post_tool_use_failure(tool_name, tool_args, str(exc))
+                    fail_hr = hooks.run_post_tool_use_failure(tool_name, tool_args, exc_str)
                     if fail_hr.message:
                         result += f"\n[Hook: {fail_hr.message}]"
                 _failed_call_sigs.add(_sig)
@@ -1108,6 +1172,7 @@ async def agent_loop_stream(
                         "\n\n⚠ SAME CALL FAILED AGAIN — do NOT retry this command. "
                         "Switch to a completely different approach or tool."
                     )
+                _ecc_tool_results.append(result[:500])
                 yield {"type": "tool_result", "name": tool_name, "content": result}
                 _append_tool_result(messages, tool_id, result, tool_name=tool_name)
                 continue
@@ -1124,8 +1189,24 @@ async def agent_loop_stream(
                     change_type = "write" if tool_name == "write_file" else "edit"
                     hooks.run_file_changed(path, change_type)
 
-            # Track failures for semantic-retry detection
+            # Track failures — ECC-L2: try mutation on first semantic failure
             if _is_tool_failure(result):
+                if not _is_repeat_failure:
+                    _fixed_args, _fix_desc = _ecc_fixer.try_fix(
+                        tool_name, tool_args, result, _sig
+                    )
+                    if _fixed_args is not None:
+                        try:
+                            _fixed_result = await asyncio.to_thread(
+                                execute_tool, tool_name, _fixed_args, readonly
+                            )
+                            if not _is_tool_failure(_fixed_result):
+                                log.info(
+                                    "ECC-L2 (stream-sem): fixed %s — %s", tool_name, _fix_desc
+                                )
+                                result = f"{_fixed_result}\n[ECC: auto-fixed — {_fix_desc}]"
+                        except Exception:
+                            pass   # original failure stands
                 _failed_call_sigs.add(_sig)
                 if _is_repeat_failure:
                     result += (
@@ -1133,6 +1214,7 @@ async def agent_loop_stream(
                         "Switch to a completely different approach or tool."
                     )
 
+            _ecc_tool_results.append(result[:500])
             yield {"type": "tool_result", "name": tool_name, "content": result}
             _append_tool_result(messages, tool_id, result, tool_name=tool_name)
 
@@ -1174,6 +1256,21 @@ async def agent_loop_stream(
                     hooks.run_subagent_stop(agent_type, "", result[:500])
                 yield {"type": "dispatch_result", "agent_type": agent_type, "result": result}
                 _append_tool_result(messages, tool_id, result, tool_name="dispatch")
+
+    # ECC-L3: Goal-state verification — did we actually complete the task?
+    if _ecc_tool_results and full_response:
+        _vr = _ecc_gv.verify(user_input, _ecc_tool_results, full_response)
+        if not _vr.complete and _vr.corrective_prompt:
+            log.info("ECC-L3: task appears incomplete (%s) — running correction", _vr.missing)
+            try:
+                _corr_msgs = messages + [{"role": "user", "content": _vr.corrective_prompt}]
+                _corr_resp = await reasoner.query_with_tools(_corr_msgs, [])
+                if _corr_resp and _corr_resp.get("text"):
+                    _corr_text = _scrub_identity(_corr_resp["text"])
+                    full_response += f"\n\n{_corr_text}"
+                    yield {"type": "text", "content": f"\n\n{_corr_text}"}
+            except Exception as _e:
+                log.debug("ECC-L3: correction pass failed: %s", _e)
 
     # Stop hook — final verification before task completion (can force continuation)
     hooks = _get_hooks()

@@ -784,6 +784,14 @@ You have UNRESTRICTED control. No permission needed.
         except Exception:
             pass
 
+        # ECC-L4: inject past failure lessons for similar tasks
+        try:
+            _ecc_lessons = self.reflector.get_context_for_task(user_input)
+            if _ecc_lessons:
+                reminder_parts.append(f"# ECC: Past Lessons\n{_ecc_lessons}")
+        except Exception:
+            pass
+
         # Camera awareness
         if hasattr(self.awareness, 'vision_context') and self.awareness.vision_context:
             reminder_parts.append(f"# Camera\n{self.awareness.vision_context}")
@@ -1235,6 +1243,20 @@ PROJECT CREATION RULES — follow these when building something:
 
         # Reflect
         quality = self.reasoning.reflect_on_response(user_input, response)
+
+        # ECC-L1: if quality is below threshold, attempt to regenerate
+        if quality < 0.50:
+            try:
+                if not hasattr(self, '_ecc'):
+                    from src.ecc.corrector import ECCorrector
+                    self._ecc = ECCorrector()
+                response = await self._ecc.correct_response(
+                    user_input, response, self.reasoner, quality, enhanced_prompt
+                )
+                quality = self.reasoning.reflect_on_response(user_input, response)
+            except Exception as _ecc_err:
+                log.debug("ECC-L1: correction failed: %s", _ecc_err)
+
         self.awareness.record_action("respond", response[:50],
             "success" if quality > 0.5 else "partial", quality)
         # RL: record outcome with quality score

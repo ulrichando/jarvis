@@ -164,7 +164,7 @@ class JarvisWebServer:
         if not text or len(text) < 2:
             return web.Response(status=204)
 
-        engine = request.query.get("engine", "edge")
+        engine = request.query.get("engine", "piper")
 
         # Try Piper first (local, ~0.1s latency)
         if engine != "edge":
@@ -194,25 +194,22 @@ class JarvisWebServer:
                     print(f"[JARVIS] Piper TTS failed, falling back to Edge: {e}")
 
         # Fallback: Edge TTS (cloud, ~1-2s latency)
+        # Buffer entire response before sending — WebKit2 GTK can't play chunked MP3 streams.
         voice = request.query.get("voice", TTS_VOICE)
         try:
-            response = web.StreamResponse(
-                status=200,
-                headers={
-                    "Content-Type": "audio/mpeg",
-                    "Cache-Control": "no-cache",
-                    "Transfer-Encoding": "chunked",
-                },
-            )
-            await response.prepare(request)
-
             communicate = edge_tts.Communicate(text, voice)
+            chunks = []
             async for chunk in communicate.stream():
                 if chunk["type"] == "audio" and chunk["data"]:
-                    await response.write(chunk["data"])
-
-            await response.write_eof()
-            return response
+                    chunks.append(chunk["data"])
+            audio_data = b"".join(chunks)
+            if not audio_data:
+                return web.Response(status=204)
+            return web.Response(
+                body=audio_data,
+                content_type="audio/mpeg",
+                headers={"Cache-Control": "no-cache"},
+            )
         except Exception as e:
             print(f"[JARVIS] TTS error: {e}")
             return web.Response(status=500, text="TTS generation failed")

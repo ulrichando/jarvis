@@ -4,8 +4,14 @@ Sub-agents are isolated agent_loop() calls with restricted tool sets
 and focused system prompts. The main brain dispatches them for parallel,
 context-clean task execution.
 
-Built-in agents: scout, worker, planner
-Custom agents: loaded from ~/.jarvis/agents/ and .jarvis/agents/ via AgentRegistry
+Built-in agents:            scout, worker, planner, verifier
+Personality profile agents: red_team, blue_team, engineer, analyst,
+                            legal, financial, designer, ghost, mentor,
+                            creative, language_specialist
+                            (built dynamically from PersonaAgentFactory)
+Custom agents:              ~/.jarvis/agents/ and .jarvis/agents/ via AgentRegistry
+
+Resolution order: built-in → personality profile → custom registry
 """
 
 import logging
@@ -13,6 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 log = logging.getLogger("jarvis.agent")
+
 
 
 # ── Agent Configurations ──────────────────────────────────────────────
@@ -202,15 +209,38 @@ def _get_registry():
 def resolve_agent(agent_type: str) -> AgentConfig | None:
     """Resolve an agent type to an AgentConfig.
 
-    Checks built-in agents first, then custom agents from the registry.
+    Resolution order:
+      1. Built-in agents       (scout, worker, planner, verifier)
+      2. Archetype agents      (red_team, blue_team, engineer, …)
+      3. Per-persona agents    (hacker, rust, contract, …)
+      4. Custom file agents    (~/.jarvis/agents/ and .jarvis/agents/)
+
     Returns None if not found.
     """
-    # Built-in agents
+    # 1. Built-in
     config = AGENT_CONFIGS.get(agent_type)
     if config:
         return config
 
-    # Custom agents from registry
+    # 2. Archetype agents (composite multi-persona)
+    try:
+        from src.agent.personality_agents import resolve_archetype_agent
+        archetype = resolve_archetype_agent(agent_type)
+        if archetype:
+            return archetype
+    except Exception as e:
+        log.warning("Archetype lookup failed for '%s': %s", agent_type, e)
+
+    # 3. Per-persona agents (individual domain profile)
+    try:
+        from src.agent.personality_agents import resolve_personality_agent
+        personality = resolve_personality_agent(agent_type)
+        if personality:
+            return personality
+    except Exception as e:
+        log.warning("Personality agent lookup failed for '%s': %s", agent_type, e)
+
+    # 4. Custom file-based agents
     registry = _get_registry()
     if registry:
         custom = registry.get(agent_type)
@@ -221,7 +251,7 @@ def resolve_agent(agent_type: str) -> AgentConfig | None:
 
 
 def list_all_agents() -> list[dict]:
-    """List all available agents (built-in + custom)."""
+    """List all available agents (built-in + archetypes + per-persona + custom)."""
     agents = []
 
     # Built-in
@@ -234,7 +264,40 @@ def list_all_agents() -> list[dict]:
             "max_iterations": config.max_iterations,
         })
 
-    # Custom
+    try:
+        from src.agent.personality_agents import get_factory
+        factory = get_factory()
+
+        # Archetypes
+        for a in factory.list_archetypes():
+            agents.append({
+                "name":           a["name"],
+                "description":    a["description"],
+                "type":           "archetype",
+                "persona_count":  a["persona_count"],
+                "personas":       a["personas"],
+                "tool_preset":    a["tool_preset"],
+                "tools":          a["tools"],
+                "bash_readonly":  a["bash_readonly"],
+                "max_iterations": a["max_iterations"],
+            })
+
+        # Per-persona
+        for p in factory.list_profiles():
+            agents.append({
+                "name":           f"[{p['domain']}]",
+                "description":    p["description"],
+                "type":           "personality-domain",
+                "domain":         p["domain"],
+                "personas":       p["personas"],
+                "tools":          p["tools"],
+                "bash_readonly":  p["bash_readonly"],
+                "max_iterations": p["max_iterations"],
+            })
+    except Exception as e:
+        log.warning("Could not load personality agents: %s", e)
+
+    # Custom file-based
     registry = _get_registry()
     if registry:
         for custom in registry:
@@ -255,12 +318,25 @@ def list_all_agents() -> list[dict]:
 def get_all_agent_names() -> list[str]:
     """Get all available agent type names (for dispatch enum)."""
     names = list(AGENT_CONFIGS.keys())
+
+    try:
+        from src.agent.personality_agents import get_all_archetype_names, get_all_personality_names
+        for name in get_all_archetype_names():
+            if name not in names:
+                names.append(name)
+        for name in get_all_personality_names():
+            if name not in names:
+                names.append(name)
+    except Exception as e:
+        log.warning("Could not load personality agent names: %s", e)
+
     registry = _get_registry()
     if registry:
         for custom in registry:
             name = custom.name.lower()
             if name not in names:
                 names.append(name)
+
     return names
 
 
