@@ -73,7 +73,7 @@ function App() {
     const isTtsOwner = !isDesktop || showReactor
     if (!isTtsOwner) return
 
-    // Desktop uses WebKit Audio API — same as browser (server is remote, can't ffplay locally)
+    // Use fetch + AudioContext for TTS — more reliable than new Audio(url) in WebKit2 GTK
     queueMicrotask(() => {
       stopSpeaking()
       setReactorState('speaking')
@@ -83,22 +83,40 @@ function App() {
 
       const text = data.spoken.substring(0, 500)
       const ttsUrl = `/api/tts?text=${encodeURIComponent(text)}`
-      const audio = new Audio(ttsUrl)
-      audioRef.current = audio
+
+      // Sentinel object for audioRef so stopSpeaking() can interrupt
+      const handle = { _src: null, pause() { try { this._src?.stop() } catch {} } }
+      audioRef.current = handle
 
       let _done = false
       const onDone = () => {
-        if (_done) return  // Only fire once
+        if (_done) return
         _done = true
-        if (audioRef.current === audio) audioRef.current = null
+        if (audioRef.current === handle) audioRef.current = null
         setReactorState('idle')
         document.dispatchEvent(new CustomEvent('jarvis-tts-end'))
         sendMessage({ type: 'tts_state', speaking: false })
       }
 
-      audio.onended = onDone
-      audio.onerror = onDone
-      audio.play().catch(onDone)
+      fetch(ttsUrl)
+        .then(r => {
+          if (!r.ok) throw new Error(`TTS HTTP ${r.status}`)
+          return r.arrayBuffer()
+        })
+        .then(ab => {
+          if (audioRef.current !== handle) return  // Was interrupted — discard
+          const ctx = new (window.AudioContext || window.webkitAudioContext)()
+          return ctx.decodeAudioData(ab).then(decoded => {
+            if (audioRef.current !== handle) return  // Interrupted while decoding
+            const src = ctx.createBufferSource()
+            src.buffer = decoded
+            src.connect(ctx.destination)
+            src.onended = onDone
+            handle._src = src
+            src.start(0)
+          })
+        })
+        .catch(e => { console.error('[JARVIS TTS] error:', e, ttsUrl); onDone() })
     })
   }, [isDesktop, showReactor, stopSpeaking, sendMessage])
 

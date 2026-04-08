@@ -947,3 +947,165 @@ async def cmd_agent_status(ctx: CommandContext) -> CommandResult:
         icon = "\u2714" if state == "done" else "\u27f3"
         lines.append(f"  {icon} [{tid}] {info['type']:<10s} {state:<10s} {info['desc'][:40]}")
     return CommandResult(text="\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
+# /dispatch -- Multi-agent parallel dispatch
+# ---------------------------------------------------------------------------
+
+@command(
+    "dispatch",
+    aliases=["pd", "multi"],
+    description="Route query to specialist agents in parallel, rank by relevance",
+    usage=(
+        "/dispatch <query>\n"
+        "/dispatch --top <N> <query>          # select N agents (default 3)\n"
+        "/dispatch --domains <d1,d2> <query>  # target specific domains\n"
+        "/dispatch --loop <query>             # use full tool loop per agent\n"
+        "/dispatch --verbose <query>          # show scoring details\n"
+        "/dispatch --timeout <secs> <query>   # per-agent timeout (default 45)\n"
+        "\nAvailable domains: engineer language_specialist analyst red_team\n"
+        "  blue_team legal financial designer ui-design ghost mentor creative"
+    ),
+    category="agent",
+    permission=PermLevel.FULL,
+)
+async def cmd_dispatch(ctx: CommandContext) -> CommandResult:
+    """Parallel multi-agent dispatch with auto-routing and response ranking."""
+    args = ctx.args.strip()
+    if not args:
+        return CommandResult(
+            text=(
+                "Usage: /dispatch <query>\n\n"
+                "Routes your query to the most relevant specialist agents,\n"
+                "runs them in parallel, and ranks results by relevance + confidence.\n\n"
+                "Flags:\n"
+                "  --top <N>          Number of agents to select (default 3)\n"
+                "  --domains <list>   Comma-separated domain list (bypass routing)\n"
+                "  --loop             Use full agent loop with tools (slower)\n"
+                "  --all              Broadcast to all 12 archetypes\n"
+                "  --verbose          Show scoring breakdown\n"
+                "  --timeout <secs>   Per-agent timeout (default 45)\n\n"
+                "Domains: engineer language_specialist analyst red_team blue_team\n"
+                "         legal financial designer ui-design ghost mentor creative"
+            ),
+            success=False,
+        )
+
+    brain = ctx.brain
+    if not brain:
+        return CommandResult(text="Brain not available.", success=False)
+
+    # ── Parse flags ──────────────────────────────────────────────────
+    top_k = 3
+    domains: list[str] | None = None
+    mode = "single_shot"
+    broadcast = False
+    verbose = False
+    timeout = 45.0
+
+    tokens = args.split()
+    remaining: list[str] = []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in ("--top", "-n") and i + 1 < len(tokens):
+            try:
+                top_k = int(tokens[i + 1])
+                i += 2
+                continue
+            except ValueError:
+                pass
+        elif tok == "--domains" and i + 1 < len(tokens):
+            domains = [d.strip() for d in tokens[i + 1].split(",")]
+            i += 2
+            continue
+        elif tok in ("--loop", "--full", "--tools"):
+            mode = "full_loop"
+        elif tok == "--all":
+            broadcast = True
+        elif tok == "--verbose":
+            verbose = True
+        elif tok in ("--timeout", "-t") and i + 1 < len(tokens):
+            try:
+                timeout = float(tokens[i + 1])
+                i += 2
+                continue
+            except ValueError:
+                pass
+        else:
+            remaining.append(tok)
+        i += 1
+
+    query = " ".join(remaining).strip()
+    if not query:
+        return CommandResult(text="Please provide a query after the flags.", success=False)
+
+    # ── Dispatch ─────────────────────────────────────────────────────
+    from src.agent.parallel_dispatch import get_dispatcher
+
+    dispatcher = get_dispatcher(brain.reasoner)
+
+    try:
+        if broadcast:
+            results = await dispatcher.dispatch_all(query, mode=mode, timeout=timeout)
+        elif domains:
+            results = await dispatcher.dispatch_domains(query, domains, mode=mode, timeout=timeout)
+        else:
+            results = await dispatcher.dispatch(
+                query, top_k=top_k, mode=mode, timeout=timeout
+            )
+    except Exception as e:
+        log.exception("Parallel dispatch failed")
+        return CommandResult(text=f"Dispatch error: {e}", success=False)
+
+    if not results:
+        return CommandResult(text="No agents responded.", success=False)
+
+    report = dispatcher.format_results(results, verbose=verbose)
+    return CommandResult(text=report)
+
+
+# ---------------------------------------------------------------------------
+# /dispatch-all -- Broadcast to every archetype
+# ---------------------------------------------------------------------------
+
+@command(
+    "dispatch-all",
+    aliases=["broadcast", "swarm-query"],
+    description="Broadcast a query to all 12 specialist archetypes in parallel",
+    usage="/dispatch-all <query>",
+    category="agent",
+    permission=PermLevel.FULL,
+)
+async def cmd_dispatch_all(ctx: CommandContext) -> CommandResult:
+    """Broadcast query to all 12 archetypes — comprehensive multi-perspective analysis."""
+    query = ctx.args.strip()
+    if not query:
+        return CommandResult(
+            text=(
+                "Usage: /dispatch-all <query>\n\n"
+                "Sends your query to all 12 specialist archetypes simultaneously\n"
+                "(94 total personas) and returns ranked responses.\n\n"
+                "This is comprehensive but expensive — use /dispatch for targeted queries."
+            ),
+            success=False,
+        )
+
+    brain = ctx.brain
+    if not brain:
+        return CommandResult(text="Brain not available.", success=False)
+
+    from src.agent.parallel_dispatch import get_dispatcher
+
+    dispatcher = get_dispatcher(brain.reasoner)
+    try:
+        results = await dispatcher.dispatch_all(query, timeout=60.0)
+    except Exception as e:
+        log.exception("Broadcast dispatch failed")
+        return CommandResult(text=f"Broadcast error: {e}", success=False)
+
+    if not results:
+        return CommandResult(text="No agents responded.", success=False)
+
+    return CommandResult(text=dispatcher.format_results(results, verbose=False))
