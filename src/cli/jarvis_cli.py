@@ -1715,17 +1715,16 @@ async def main():
         _trust_dir(cwd)
         _writeln()
 
-    # Alt screen buffer: own isolated scrollback — scroll stops at session start, never bleeds
-    # into previous terminal sessions. Previous scroll-region code blocked scrolling; that's
-    # gone now, so alt screen scrollback works correctly.
+    # Normal screen buffer — VS Code terminal (and most modern terminals) do not provide
+    # scrollback inside the alt screen buffer, so we stay on the normal screen.
+    # \033[3J clears the terminal's scrollback history so scrolling up only shows this
+    # JARVIS session. \033[H\033[2J clears the visible screen for a clean start.
     if sys.stdout.isatty():
-        sys.stdout.write("\033[?1049h\033[H\033[2J")
+        sys.stdout.write("\033[3J\033[H\033[2J")
         sys.stdout.flush()
 
     def _exit_alt_screen():
-        if sys.stdout.isatty():
-            sys.stdout.write("\033[?1049l")
-            sys.stdout.flush()
+        pass  # normal screen — nothing to restore
 
     def _tw():
         try:
@@ -3567,12 +3566,7 @@ def run():
         pass  # Handled in finally
     finally:
         # Ensure alt screen is always exited, even on abrupt kill
-        try:
-            if sys.stdout.isatty():
-                sys.stdout.write("\033[?1049l")
-                sys.stdout.flush()
-        except Exception:
-            pass
+        pass  # normal screen — nothing to restore
         # Suppress aiohttp cleanup errors that print after event loop closes
         # These are harmless but ugly — redirect stderr to devnull during shutdown
         try:
