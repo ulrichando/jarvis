@@ -1109,3 +1109,115 @@ async def cmd_dispatch_all(ctx: CommandContext) -> CommandResult:
         return CommandResult(text="No agents responded.", success=False)
 
     return CommandResult(text=dispatcher.format_results(results, verbose=False))
+
+
+# ---------------------------------------------------------------------------
+# /orchestrator — Master Orchestrator diagnostics and control
+# ---------------------------------------------------------------------------
+
+@command(
+    "orchestrator",
+    aliases=["orch"],
+    description="Master Orchestrator diagnostics: analyze routing, view learned weights, reset",
+    usage="/orchestrator [analyze <query> | stats | reset | route <query>]",
+    category="agent",
+    permission=PermLevel.FULL,
+)
+async def cmd_orchestrator(ctx: CommandContext) -> CommandResult:
+    """Inspect and control the Master Orchestrator."""
+    from src.agent.master_orchestrator import get_orchestrator
+    import json
+
+    orch = get_orchestrator()
+    args = ctx.args.strip()
+
+    if not args or args == "stats":
+        # ── Stats: show learned routing weights ──────────────────────────────
+        weights = orch.routing_stats()
+        if not weights:
+            return CommandResult(
+                text="No routing history yet. The orchestrator learns as requests are processed."
+            )
+        lines = ["**Learned Routing Weights** (EMA quality per agent×domain)\n"]
+        for w in weights[:30]:
+            bar = "█" * int(w["ema_quality"] * 10) + "░" * (10 - int(w["ema_quality"] * 10))
+            domain = w["domain"] or "global"
+            lines.append(
+                f"  {w['agent']:<22} [{domain:<22}] {bar} {w['ema_quality']:.3f}  "
+                f"(n={w['observations']})"
+            )
+        return CommandResult(text="\n".join(lines))
+
+    if args == "reset":
+        orch.reset_weights()
+        return CommandResult(text="Routing weights cleared.")
+
+    sub, _, rest = args.partition(" ")
+    query = rest.strip()
+
+    if sub in ("analyze", "a") and query:
+        # ── Analyze: show how the orchestrator would decompose a query ────────
+        result = orch.analyze(query)
+        lines = [
+            f"**Orchestrator Analysis** — `{query[:60]}{'…' if len(query)>60 else ''}`\n",
+            f"  Complexity score : {result['complexity_score']:.2f}",
+            f"  Would parallelize: {'YES' if result['is_complex'] else 'NO'}",
+            f"  Sequential flow  : {'YES' if result['is_sequential'] else 'NO'}",
+            f"  Detected domains : {', '.join(result['domains']) or 'none'}",
+            f"\n  **Subtasks** ({len(result['tasks'])}):",
+        ]
+        for t in result["tasks"]:
+            dep = f" (after {t['depends_on']})" if t.get("depends_on") else ""
+            par = "parallel" if t["parallel_ok"] else "sequential"
+            lines.append(f"\n  [{t['id']}] {t['description'][:70]}")
+            lines.append(f"       agent={t['domain'] or 'auto'}  {par}{dep}")
+            if t["routing"]:
+                for r in t["routing"][:3]:
+                    lines.append(f"       → {r['agent']:<22} confidence={r['confidence']:.3f}")
+        return CommandResult(text="\n".join(lines))
+
+    if sub in ("route", "r") and query:
+        # ── Route: actually run the orchestrator and show the result ──────────
+        brain = ctx.brain
+        if not brain:
+            return CommandResult(text="Brain not available.", success=False)
+
+        async def _exec(agent_name: str, task_desc: str) -> str:
+            from src.agent.agents import resolve_agent
+            from src.agent.loop import agent_loop
+            cfg = resolve_agent(agent_name)
+            sys_p = cfg.system_prompt if cfg else ""
+            return await agent_loop(
+                reasoner=brain.reasoner,
+                user_input=task_desc,
+                system_prompt=sys_p,
+                history=brain.memory.get_history(limit=10),
+                max_iterations=cfg.max_iterations if cfg else 30,
+            )
+
+        try:
+            result = await orch.route(query, executor=_exec)
+        except Exception as e:
+            log.exception("Orchestrator route error")
+            return CommandResult(text=f"Orchestration error: {e}", success=False)
+
+        meta = [
+            f"\n\n---",
+            f"*Orchestrated: {result.task_count} task(s) • strategy={result.synthesis_strategy} • "
+            f"{result.total_latency_ms}ms*",
+        ]
+        if result.routing:
+            agents = ", ".join(r.agent_name for r in result.routing)
+            meta.append(f"*Agents: {agents}*")
+        return CommandResult(text=result.response + "\n".join(meta))
+
+    return CommandResult(
+        text=(
+            "Usage:\n"
+            "  /orchestrator stats          — learned routing weights\n"
+            "  /orchestrator analyze <q>    — show decomposition without running\n"
+            "  /orchestrator route <q>      — run full orchestration pipeline\n"
+            "  /orchestrator reset          — clear all learned weights"
+        ),
+        success=False,
+    )

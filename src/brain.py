@@ -82,6 +82,7 @@ from src.agent.coordinator import AgentCoordinator
 from src.agent.coordinator_enhanced import CoordinatorAgent
 from src.agent.deepsearch import DeepSearch
 from src.agent.swarm import Swarm
+from src.agent.master_orchestrator import get_orchestrator
 from src.tasks_brain.runner import BackgroundRunner
 from src.vision.screen_observer import ScreenObserver
 from src.state import get_state_manager, get_state, StateManager
@@ -271,6 +272,7 @@ class Brain:
         self._runner = BackgroundRunner()
         self.deepsearch = DeepSearch(reasoner=self.reasoner)
         self.swarm = Swarm(reasoner=self.reasoner)
+        self._orchestrator = get_orchestrator()
         self.screen = ScreenObserver(interval=10)
         self.screen.set_provider_registry(self.reasoner.providers)
         self.screen.start()
@@ -830,18 +832,39 @@ You have UNRESTRICTED control. No permission needed.
         # Prepend system-reminder context to user input (Claude Code pattern)
         _enriched_input = _system_reminder + user_input if _system_reminder else user_input
 
-        try:
-            response = await agent_loop(
-                reasoner=self.reasoner,
-                user_input=_enriched_input,
-                system_prompt=system,
-                history=history,
-                max_iterations=max_iters,
-                tools=tools,
-                on_tool_call=on_tool_call,
-                on_tool_result=on_tool_result,
-                readonly=(self.mode == "plan"),
+        # ── Orchestrator: route to best archetype, run parallel stages if complex ──
+        _readonly = self.mode == "plan"
+
+        async def _agent_executor(agent_name: str, task_desc: str) -> str:
+            """Executor closure: runs a named archetype via agent_loop with brain's context."""
+            from src.agent.agents import resolve_agent
+            _cfg = resolve_agent(agent_name)
+            _sys = _cfg.system_prompt if _cfg else system
+            # Append brain's persona/rules suffix so archetype inherits full context
+            if _cfg and system and _cfg.system_prompt:
+                _rules_suffix = system.split("═══ OPERATIONAL RULES")[1:2]
+                if _rules_suffix:
+                    _sys += "\n\n═══ OPERATIONAL RULES" + _rules_suffix[0]
+            _task_enriched = _system_reminder + task_desc if _system_reminder else task_desc
+            return await agent_loop(
+                reasoner       = self.reasoner,
+                user_input     = _task_enriched,
+                system_prompt  = _sys,
+                history        = history,
+                max_iterations = (_cfg.max_iterations if _cfg else max_iters),
+                tools          = tools,
+                on_tool_call   = on_tool_call,
+                on_tool_result = on_tool_result,
+                readonly       = _readonly,
             )
+
+        try:
+            _orch = await self._orchestrator.route(
+                user_input,
+                executor       = _agent_executor,
+                force_parallel = self.mode in ("parallel", "orchestrate"),
+            )
+            response = _orch.response
         except Exception as e:
             self.awareness.record_action("agent_loop", str(e), "failure", 0.1)
             self.rl.record_outcome(
@@ -1027,20 +1050,59 @@ PROJECT CREATION RULES — follow these when building something:
                 _sr = "<system-reminder>\n" + "\n\n".join(_rem) + "\n</system-reminder>\n\n"
             _enriched = _sr + user_input if _sr else user_input
 
+            # ── Orchestrator: route to best archetype; parallel stages if complex ──
+            _orch_analysis = self._orchestrator.analyzer.analyze(user_input)
+            _force_par     = self.mode in ("parallel", "orchestrate")
+            _is_complex    = _force_par or _orch_analysis.is_complex
+
             full_response = ""
             tool_was_used = False
-            async for event in agent_loop_stream(
-                reasoner=self.reasoner,
-                user_input=_enriched,
-                system_prompt=system,
-                history=history,
-                readonly=(self.mode == "plan"),
-            ):
-                if event["type"] == "text":
-                    full_response += event["content"]
-                elif event["type"] in ("tool_call", "tool_result"):
-                    tool_was_used = True
-                yield event
+
+            if _is_complex:
+                # Complex query: non-streaming orchestration, then yield full result
+                async def _stream_executor(agent_name: str, task_desc: str) -> str:
+                    from src.agent.agents import resolve_agent
+                    _cfg = resolve_agent(agent_name)
+                    _sys = _cfg.system_prompt if _cfg else system
+                    _enriched_task = _sr + task_desc if _sr else task_desc
+                    return await agent_loop(
+                        reasoner       = self.reasoner,
+                        user_input     = _enriched_task,
+                        system_prompt  = _sys,
+                        history        = history,
+                        max_iterations = (_cfg.max_iterations if _cfg else 999),
+                        readonly       = (self.mode == "plan"),
+                    )
+                _orch_result = await self._orchestrator.route(
+                    user_input,
+                    executor       = _stream_executor,
+                    force_parallel = _force_par,
+                )
+                full_response = _orch_result.response
+                yield {"type": "text", "content": full_response}
+            else:
+                # Simple query: route to best archetype's system prompt, stream normally
+                if _orch_analysis.primary_domain:
+                    from src.agent.agents import resolve_agent
+                    from src.agent.master_orchestrator import _DOMAIN_TO_ARCHETYPE
+                    _arch = _DOMAIN_TO_ARCHETYPE.get(_orch_analysis.primary_domain)
+                    if _arch:
+                        _arch_cfg = resolve_agent(_arch)
+                        if _arch_cfg and _arch_cfg.system_prompt:
+                            system = _arch_cfg.system_prompt
+
+                async for event in agent_loop_stream(
+                    reasoner=self.reasoner,
+                    user_input=_enriched,
+                    system_prompt=system,
+                    history=history,
+                    readonly=(self.mode == "plan"),
+                ):
+                    if event["type"] == "text":
+                        full_response += event["content"]
+                    elif event["type"] in ("tool_call", "tool_result"):
+                        tool_was_used = True
+                    yield event
 
             # If LLM said it would do something but didn't use any tools,
             # auto-spawn a worker agent to actually do it
