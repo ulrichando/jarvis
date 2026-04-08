@@ -191,6 +191,9 @@ def _apply_theme(theme_name: str = ""):
     WHITE = t["text"]
     BG_DARK = t["code_bg"]
 
+# Color variables — initialized with defaults, overridden by _apply_theme()
+CYAN = GREEN = YELLOW = RED = BLUE = MAGENTA = GREY = WHITE = BG_DARK = ""
+
 # Initialize theme on module load
 _active_theme = _load_theme()
 _apply_theme(_active_theme)
@@ -496,6 +499,7 @@ class StandaloneBrain:
         self._server_mode = False
         self._server_url, self._ws_url = self._resolve_server_url()
         self._ws = None
+        self._session = None
 
     @staticmethod
     def _resolve_server_url() -> tuple[str, str]:
@@ -546,8 +550,10 @@ class StandaloneBrain:
                             timeout=5.0,
                         )
                         return True
-        except Exception:
-            pass
+        except (ConnectionError, asyncio.TimeoutError, OSError) as e:
+            logging.getLogger("jarvis.cli").debug("Server connection failed: %s", e)
+        except Exception as e:
+            logging.getLogger("jarvis.cli").debug("Unexpected connection error: %s", e)
 
         # Server not running — start local Brain
         prev_level = logging.root.level
@@ -1658,9 +1664,10 @@ async def main():
         try:
             import json as _json
             if os.path.exists(trust_file):
-                trusted = _json.loads(open(trust_file).read())
+                with open(trust_file) as f:
+                    trusted = _json.loads(f.read())
                 return directory in trusted
-        except Exception:
+        except (OSError, ValueError):
             pass
         return False
 
@@ -1670,13 +1677,15 @@ async def main():
         trusted = []
         try:
             if os.path.exists(trust_file):
-                trusted = _json.loads(open(trust_file).read())
-        except Exception:
+                with open(trust_file) as f:
+                    trusted = _json.loads(f.read())
+        except (OSError, ValueError):
             pass
         if directory not in trusted:
             trusted.append(directory)
         os.makedirs(os.path.dirname(trust_file), exist_ok=True)
-        open(trust_file, "w").write(_json.dumps(trusted, indent=2))
+        with open(trust_file, "w") as f:
+            f.write(_json.dumps(trusted, indent=2))
 
     if not _is_trusted(cwd):
         tw = 80
@@ -1949,8 +1958,8 @@ async def main():
         left = f"  {DIM}? for shortcuts{RESET}"
         if right_str:
             # Calculate visible length (strip ANSI) for padding
-            visible_left_len = 16  # "  ? for shortcuts"
-            visible_right_len = len(right_str)
+            visible_left_len = _display_width(_ANSI_ESCAPE_RE.sub('', left))
+            visible_right_len = _display_width(right_str)
             pad = max(1, tw - visible_left_len - visible_right_len - 2)
             footer = f"{left}{' ' * pad}{DIM}{right_str}{RESET}"
         else:
@@ -2028,11 +2037,21 @@ async def main():
         _writeln(render_banner(model_name, provider_name, cwd_display, session_name, cmd_count))
         _writeln()
 
-    # Handle terminal resize — full redraw including input frame
+    # Handle terminal resize — deferred to event loop for async safety
     import signal
     _in_input = False  # Track if we're waiting for input
+    _resize_pending = False
 
     def _handle_resize(signum, frame):
+        nonlocal _resize_pending
+        _resize_pending = True  # Just set flag — actual redraw deferred to event loop
+
+    def _process_resize():
+        """Called from event loop to safely process pending resize."""
+        nonlocal _resize_pending
+        if not _resize_pending:
+            return
+        _resize_pending = False
         _redraw()
         _setup_zones()
         if _in_input:
@@ -2085,10 +2104,15 @@ async def main():
         # Also check a module-level history accumulator for this session
         if not hasattr(_async_read_input, '_session_history'):
             _async_read_input._session_history = []
+        # Cap history to prevent unbounded memory growth
+        _MAX_HISTORY = 1000
+        if len(_async_read_input._session_history) > _MAX_HISTORY:
+            _async_read_input._session_history = _async_read_input._session_history[-_MAX_HISTORY:]
         # Merge: session messages + any new ones typed this session
         for h in _async_read_input._session_history:
             if h not in _history_entries:
                 _history_entries.append(h)
+        _history_entries = _history_entries[-_MAX_HISTORY:]
         _history_idx = len(_history_entries)
         _saved_buf = []
 
@@ -2140,7 +2164,7 @@ async def main():
                         if alias.lstrip("/").lower().startswith(input_prefix):
                             alias_hint = f" {DIM}(/{alias.lstrip('/')}){RESET}"
                             break
-                desc = _truncate_display(cmd.description, tw - 40) if cmd.description else ""
+                desc = _truncate_display(cmd.description, max(20, tw - 40)) if cmd.description else ""
                 _write(f"\033[K{pfx}{CYAN}/{cmd.name:<22s}{RESET}{alias_hint} {DIM}{desc}{RESET}\n")
             if end < total:
                 _write(f"\033[K    {DIM}↓ {total - end} more{RESET}\n")
@@ -2463,6 +2487,7 @@ async def main():
                 _hide_menu()
                 import tempfile
                 editor = os.environ.get("EDITOR", "vi")
+                tf_path = None
                 with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as tf:
                     tf.write("".join(buf))
                     tf_path = tf.name
@@ -2485,10 +2510,11 @@ async def main():
                         _tty.setcbreak(fd)
                     except Exception:
                         pass
-                    try:
-                        os.unlink(tf_path)
-                    except OSError:
-                        pass
+                    if tf_path:
+                        try:
+                            os.unlink(tf_path)
+                        except OSError:
+                            pass
                 _setup_zones()
                 _redraw()
             elif ch == "\x14":
@@ -2656,6 +2682,8 @@ async def main():
             nonlocal _esc_buf, _esc_timer
             if result_future.done():
                 return
+            # Process any pending resize before handling input
+            _process_resize()
             try:
                 data = os.read(fd, 32).decode("utf-8", errors="replace")
             except OSError:
@@ -3449,8 +3477,9 @@ async def main():
                 _disp = os.environ.get("DISPLAY", "")
                 if not _disp:
                     try:
-                        _disp = open("/tmp/.jarvis-display").read().strip()
-                    except Exception:
+                        with open("/tmp/.jarvis-display") as f:
+                            _disp = f.read().strip()
+                    except OSError:
                         _disp = ":0"
                 _jarvis_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
                 env = {**os.environ, "DISPLAY": _disp,
@@ -3459,7 +3488,8 @@ async def main():
                 _pid_file = "/tmp/.jarvis-desktop.pid"
                 try:
                     if os.path.exists(_pid_file):
-                        _old_pid = int(open(_pid_file).read().strip())
+                        with open(_pid_file) as f:
+                            _old_pid = int(f.read().strip())
                         os.kill(_old_pid, 15)  # SIGTERM
                         time.sleep(0.5)
                 except Exception:
