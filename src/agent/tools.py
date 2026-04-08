@@ -189,8 +189,8 @@ TOOL_SCHEMAS = [
                     },
                     "timeout": {
                         "type": "integer",
-                        "description": "Timeout in seconds (default 30, max 300)",
-                        "default": 30,
+                        "description": "Timeout in seconds (default 60, max 600)",
+                        "default": 60,
                     },
                 },
                 "required": ["command"],
@@ -319,6 +319,11 @@ TOOL_SCHEMAS = [
                     "new_string": {
                         "type": "string",
                         "description": "The replacement text",
+                    },
+                    "replace_all": {
+                        "type": "boolean",
+                        "description": "If true, replace all occurrences (default: false, replaces first only)",
+                        "default": False,
                     },
                 },
                 "required": ["path", "old_string", "new_string"],
@@ -2371,8 +2376,12 @@ def _exec_write(args: dict) -> str:
         return err
 
     try:
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        resolved = os.path.realpath(path)
+        # Resolve path first, then validate and create dirs using resolved path
+        resolved = os.path.realpath(os.path.expanduser(path))
+        valid, err = _validate_path(resolved, write=True)
+        if not valid:
+            return err
+        os.makedirs(os.path.dirname(resolved) or ".", exist_ok=True)
         extra_info = ""
         old_content: str | None = None
 
@@ -2403,7 +2412,7 @@ def _exec_write(args: dict) -> str:
             except Exception:
                 pass
 
-        with open(path, "w") as f:
+        with open(resolved, "w", encoding="utf-8") as f:
             f.write(content)
 
         # Track the write time for staleness detection
@@ -2926,9 +2935,18 @@ def _exec_glob(args: dict) -> str:
     if not pattern:
         return "No pattern provided."
 
+    # Validate search path
+    valid, err = _validate_path(path, write=False)
+    if not valid:
+        return err
+
     try:
         full_pattern = os.path.join(path, pattern)
+        # Verify pattern doesn't escape the search path via ../
+        resolved_base = os.path.realpath(path)
         matches = _glob.glob(full_pattern, recursive=True)
+        # Filter out matches that escape the base path
+        matches = [m for m in matches if os.path.realpath(m).startswith(resolved_base)]
         # Sort by modification time (newest first)
         matches.sort(key=lambda f: os.path.getmtime(f) if os.path.exists(f) else 0, reverse=True)
         matches = matches[:250]  # Cap results
@@ -2947,6 +2965,11 @@ def _exec_grep(args: dict) -> str:
     if not pattern:
         return "No pattern provided."
 
+    # Validate search path
+    valid, err = _validate_path(path, write=False)
+    if not valid:
+        return err
+
     try:
         from src.agent.ripgrep import RipgrepConfig, search as rg_search
 
@@ -2956,10 +2979,10 @@ def _exec_grep(args: dict) -> str:
             glob=args.get("glob", ""),
             file_type=args.get("type", ""),
             output_mode=args.get("output_mode", "files_with_matches"),
-            context=args.get("context", 0),
+            context=min(args.get("context", 0), 100),
             case_insensitive=args.get("-i", False),
             multiline=args.get("multiline", False),
-            head_limit=args.get("head_limit", 250),
+            head_limit=min(args.get("head_limit", 250), 10000),
         )
         result = rg_search(config)
         return result.output
@@ -3103,9 +3126,9 @@ def _exec_config(args: dict) -> str:
     settings = {}
     if os.path.exists(settings_path):
         try:
-            with open(settings_path, "r") as f:
+            with open(settings_path, "r", encoding="utf-8") as f:
                 settings = json.load(f)
-        except Exception:
+        except (OSError, json.JSONDecodeError):
             settings = {}
 
     if value is None:
@@ -3117,7 +3140,7 @@ def _exec_config(args: dict) -> str:
         settings[setting] = value
         try:
             os.makedirs(jarvis_home, exist_ok=True)
-            with open(settings_path, "w") as f:
+            with open(settings_path, "w", encoding="utf-8") as f:
                 json.dump(settings, f, indent=2)
             return f"Set {setting} = {value}"
         except Exception as e:

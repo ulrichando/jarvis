@@ -290,23 +290,25 @@ class BashSecurityChecker:
         unquoted = _strip_single_quoted(cmd)
 
         # Output redirection to system directories
+        # Match >, >>, 2>, 2>>, &>, and file descriptor redirects
+        _redir = r"(?:>>?|[0-9]>>?|&>>?)"
         dangerous_redirect_targets = [
-            (r">\s*/etc/", "Redirect to /etc/ (system config)"),
-            (r">\s*/boot/", "Redirect to /boot/ (bootloader)"),
-            (r">\s*/dev/[sh]d[a-z]", "Redirect to raw disk device"),
-            (r">\s*/dev/nvme", "Redirect to NVMe device"),
-            (r">\s*/dev/mapper/", "Redirect to device-mapper"),
-            (r">\s*/proc/", "Redirect to /proc/"),
-            (r">\s*/sys/", "Redirect to /sys/"),
-            (r">\s*/usr/", "Redirect to /usr/"),
-            (r">\s*/lib/", "Redirect to /lib/"),
-            (r">\s*/bin/", "Redirect to /bin/"),
-            (r">\s*/sbin/", "Redirect to /sbin/"),
-            (r">\s*~/\.bashrc", "Redirect to ~/.bashrc (RCE on next login)"),
-            (r">\s*~/\.bash_profile", "Redirect to ~/.bash_profile"),
-            (r">\s*~/\.profile", "Redirect to ~/.profile"),
-            (r">\s*~/\.zshrc", "Redirect to ~/.zshrc"),
-            (r">\s*~/\.ssh/", "Redirect to ~/.ssh/"),
+            (_redir + r"\s*/etc/", "Redirect to /etc/ (system config)"),
+            (_redir + r"\s*/boot/", "Redirect to /boot/ (bootloader)"),
+            (_redir + r"\s*/dev/[sh]d[a-z]", "Redirect to raw disk device"),
+            (_redir + r"\s*/dev/nvme", "Redirect to NVMe device"),
+            (_redir + r"\s*/dev/mapper/", "Redirect to device-mapper"),
+            (_redir + r"\s*/proc/", "Redirect to /proc/"),
+            (_redir + r"\s*/sys/", "Redirect to /sys/"),
+            (_redir + r"\s*/usr/", "Redirect to /usr/"),
+            (_redir + r"\s*/lib/", "Redirect to /lib/"),
+            (_redir + r"\s*/bin/", "Redirect to /bin/"),
+            (_redir + r"\s*/sbin/", "Redirect to /sbin/"),
+            (_redir + r"\s*~/\.bashrc", "Redirect to ~/.bashrc (RCE on next login)"),
+            (_redir + r"\s*~/\.bash_profile", "Redirect to ~/.bash_profile"),
+            (_redir + r"\s*~/\.profile", "Redirect to ~/.profile"),
+            (_redir + r"\s*~/\.zshrc", "Redirect to ~/.zshrc"),
+            (_redir + r"\s*~/\.ssh/", "Redirect to ~/.ssh/"),
         ]
 
         for pattern, desc in dangerous_redirect_targets:
@@ -787,7 +789,13 @@ class ReadOnlyValidator:
                 if first_arg in self.SAFE_PYTHON_FLAGS:
                     continue
                 if first_arg == "-c":
-                    # Allow simple one-liners but flag this for further review
+                    # Validate -c code for dangerous operations
+                    code_arg = " ".join(rest[1:]) if len(rest) > 1 else ""
+                    _dangerous_py = ("__import__", "subprocess", "os.system", "os.exec",
+                                     "os.popen", "os.remove", "os.unlink", "os.rmdir",
+                                     "shutil.rmtree", "open(", "exec(", "eval(")
+                    if any(d in code_arg for d in _dangerous_py):
+                        return False, f"python -c contains potentially dangerous operation"
                     continue
                 if first_arg == "-m" and len(rest) > 1 and rest[1] in self.SAFE_PYTHON_MODULES:
                     continue
