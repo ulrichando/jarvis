@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "updated_at": "2026-04-08T06:28:33.250515+00:00",
+  "updated_at": "2026-04-08T07:15:54.352740+00:00",
   "entries": {
     "src/cli/jarvis_cli.py": {
       "mtime": 1775606471.6208484,
@@ -9897,8 +9897,8 @@
       "lang": "Python"
     },
     ".jarvis/file-summaries.json": {
-      "mtime": 1775629304.716267,
-      "size_bytes": 480244,
+      "mtime": 1775632509.244424,
+      "size_bytes": 480245,
       "symbols": [],
       "summary": "",
       "lang": "JSON"
