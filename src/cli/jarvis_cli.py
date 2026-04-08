@@ -2806,10 +2806,11 @@ async def main():
                 elapsed = time.time() - t0
                 frame = SPINNER_FRAMES[i % len(SPINNER_FRAMES)]
                 elapsed_str = f" {DIM}{elapsed:.0f}s{RESET}" if elapsed >= 2 else ""
-                # Go to spinner line: cursor at prompt, up 2 (past top-sep to spinner)
-                _write("\033[2A\r")
+                # Save cursor (exact row+col at prompt), jump to spinner line, restore.
+                # \033[s/\033[u preserve column — \033[2B only restores the row, causing drift.
+                _write("\033[s\033[2A\r")
                 _write(f"  {BLUE}{frame}{RESET} {DIM}{_spin_label[0]}{RESET}{elapsed_str}\033[K")
-                _write("\033[2B")  # back to prompt (down 2: top-sep then prompt)
+                _write("\033[u")  # restore cursor to exact prompt position
                 sys.stdout.flush()
                 i += 1
                 await asyncio.sleep(0.12)
