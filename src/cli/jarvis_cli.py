@@ -2793,33 +2793,37 @@ async def main():
         _spin_line_active = [False]
 
         async def _spin_loop():
-            i = 0
+            # Initial draw is handled synchronously by _start_spin().
+            # This task only animates subsequent frames.
+            i = 1  # Frame 0 already drawn by _start_spin
             t0 = time.time()
-            # Draw initial spinner line + frame below it
-            _erase_frame()
-            _write(f"  {BLUE}{SPINNER_FRAMES[0]}{RESET} {DIM}{_spin_label[0]}{RESET}\033[K\n")
-            _spin_line_active[0] = True
-            _draw_input_frame("", _output_buf_text[0])
-
             try:
-              while True:
-                elapsed = time.time() - t0
-                frame = SPINNER_FRAMES[i % len(SPINNER_FRAMES)]
-                elapsed_str = f" {DIM}{elapsed:.0f}s{RESET}" if elapsed >= 2 else ""
-                # Go to spinner line: cursor at prompt, up 2 (past top-sep to spinner)
-                _write("\033[2A\r")
-                _write(f"  {BLUE}{frame}{RESET} {DIM}{_spin_label[0]}{RESET}{elapsed_str}\033[K")
-                _write("\033[2B")  # back to prompt (down 2: top-sep then prompt)
-                sys.stdout.flush()
-                i += 1
-                await asyncio.sleep(0.12)
+                while True:
+                    await asyncio.sleep(0.12)
+                    if not _spin_line_active[0]:
+                        break  # Stopped while sleeping — don't write stale frames
+                    elapsed = time.time() - t0
+                    frame = SPINNER_FRAMES[i % len(SPINNER_FRAMES)]
+                    elapsed_str = f" {DIM}{elapsed:.0f}s{RESET}" if elapsed >= 2 else ""
+                    # Go to spinner line: cursor at prompt, up 2 (past top-sep to spinner)
+                    _write("\033[2A\r")
+                    _write(f"  {BLUE}{frame}{RESET} {DIM}{_spin_label[0]}{RESET}{elapsed_str}\033[K")
+                    _write("\033[2B")  # back to prompt (down 2: top-sep then prompt)
+                    sys.stdout.flush()
+                    i += 1
             except asyncio.CancelledError:
                 pass  # Expected when _stop_spin() cancels
 
         def _start_spin(label="Thinking..."):
             nonlocal _spin_task
-            _stop_spin()
+            _stop_spin()           # Clear any existing spinner + frame first
             _spin_label[0] = label
+            # Draw spinner line + frame SYNCHRONOUSLY — no async gap, frame never
+            # disappears between _stop_spin erasure and the async task redrawing it.
+            _write(f"  {BLUE}{SPINNER_FRAMES[0]}{RESET} {DIM}{label}{RESET}\033[K\n")
+            _spin_line_active[0] = True
+            _draw_input_frame("", _output_buf_text[0])
+            # Animation loop picks up from frame 1 onward
             _spin_task = asyncio.get_event_loop().create_task(_spin_loop())
 
         def _stop_spin():
@@ -2827,12 +2831,18 @@ async def main():
             if _spin_task and not _spin_task.done():
                 _spin_task.cancel()
                 _spin_task = None
-            # Do NOT use \033[2A to navigate to the spinner line — if the terminal
-            # has scrolled, \033[2A lands on the wrong row and places the cursor on
-            # previous output. Just mark inactive and let _erase_frame clean up the
-            # input frame. The orphaned spinner line scrolls away with next output.
-            _spin_line_active[0] = False
-            _erase_frame()
+            if _spin_line_active[0]:
+                # Spinner line is drawn. Cursor is at prompt line (the animation loop
+                # always returns to prompt via \033[2B, and _start_spin leaves it there).
+                # The spinner line is exactly 2 rows above prompt:
+                #   prompt → \033[1A → top-sep → \033[1A → spinner line
+                # Clear spinner line + entire input frame in one operation.
+                _write("\033[2A\r\033[J")
+                _spin_line_active[0] = False
+                _frame_drawn = False
+            else:
+                _spin_line_active[0] = False
+                _erase_frame()
 
         _start_spin()
 
