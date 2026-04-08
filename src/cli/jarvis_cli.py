@@ -1714,17 +1714,15 @@ async def main():
         _trust_dir(cwd)
         _writeln()
 
-    # Enter alternate screen buffer so the shell prompt disappears entirely (like vim/less).
-    # On exit we restore the original screen, so scrollback history is preserved.
+    # Use normal screen buffer (not alt screen) so the user can scroll through output history.
+    # On start, just clear the visible screen to give a clean slate.
     if sys.stdout.isatty():
-        sys.stdout.write("\033[?1049h\033[H\033[2J")  # enter alt screen, cursor home, clear
+        sys.stdout.write("\033[H\033[2J")  # cursor home + clear visible screen (no alt screen)
         sys.stdout.flush()
 
     def _exit_alt_screen():
-        """Restore the normal screen buffer (original terminal content reappears)."""
-        if sys.stdout.isatty():
-            sys.stdout.write("\033[?1049l")  # exit alt screen
-            sys.stdout.flush()
+        """No-op: we no longer use the alt screen buffer."""
+        pass
 
     def _tw():
         try:
@@ -1944,7 +1942,7 @@ async def main():
                 right_parts.append(cname)
         right_str = " · ".join(right_parts)
 
-        sep = f"{DIM}{'─' * tw}{RESET}"
+        sep = f"\033[38;5;240m{'─' * tw}{RESET}"
         # Show vim mode in prompt if vim is enabled
         vim_indicator = ""
         if _vim_enabled:
@@ -2805,10 +2803,12 @@ async def main():
                     elapsed = time.time() - t0
                     frame = SPINNER_FRAMES[i % len(SPINNER_FRAMES)]
                     elapsed_str = f" {DIM}{elapsed:.0f}s{RESET}" if elapsed >= 2 else ""
-                    # Go to spinner line: cursor at prompt, up 2 (past top-sep to spinner)
-                    _write("\033[2A\r")
+                    # Save cursor (correct position on prompt row), update spinner, restore cursor.
+                    # \033[s / \033[u (ANSI SC/RC) preserve exact row+col — no column drift.
+                    _write("\033[s")    # save cursor at prompt (correct column)
+                    _write("\033[2A\r")  # go to spinner line (2 above prompt), col 0
                     _write(f"  {BLUE}{frame}{RESET} {DIM}{_spin_label[0]}{RESET}{elapsed_str}\033[K")
-                    _write("\033[2B")  # back to prompt (down 2: top-sep then prompt)
+                    _write("\033[u")    # restore cursor to prompt (exact row+col)
                     sys.stdout.flush()
                     i += 1
             except asyncio.CancelledError:
@@ -3598,13 +3598,8 @@ def run():
     except (KeyboardInterrupt, SystemExit, RuntimeError):
         pass  # Handled in finally
     finally:
-        # Ensure alt screen is always exited, even on abrupt kill
-        try:
-            if sys.stdout.isatty():
-                sys.stdout.write("\033[?1049l")
-                sys.stdout.flush()
-        except Exception:
-            pass
+        # Alt screen is no longer used — nothing to exit
+        pass
         # Suppress aiohttp cleanup errors that print after event loop closes
         # These are harmless but ugly — redirect stderr to devnull during shutdown
         try:
