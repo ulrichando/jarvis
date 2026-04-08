@@ -2612,7 +2612,27 @@ class JarvisWebServer:
             f.write(str(os.getpid()))
         os.chmod(self._pid_file, 0o600)
 
-        app = web.Application(client_max_size=16 * 1024 * 1024)  # 16MB max request
+        # CSRF protection middleware: validate Origin on state-changing requests
+        @web.middleware
+        async def csrf_middleware(request, handler):
+            if request.method in ("POST", "PUT", "DELETE", "PATCH"):
+                origin = request.headers.get("Origin", "")
+                if origin:
+                    origin_host = re.sub(r':\d+$', '', re.sub(r'^https?://', '', origin))
+                    allowed = origin_host in ("localhost", "127.0.0.1", "0.0.0.0", "")
+                    if not allowed:
+                        host = request.headers.get("Host", "")
+                        if host:
+                            allowed = origin_host == host.split(":")[0]
+                    if not allowed:
+                        logging.getLogger("jarvis.web").warning(
+                            "CSRF blocked POST from origin: %s", origin)
+                        return web.json_response(
+                            {"error": "Origin not allowed"}, status=403)
+            return await handler(request)
+
+        app = web.Application(client_max_size=16 * 1024 * 1024,
+                              middlewares=[csrf_middleware])  # 16MB max request
         app.router.add_get("/ws", self.websocket_handler)
         app.router.add_get("/tts", self.tts_handler)
         app.router.add_get("/api/tts", self.tts_handler)

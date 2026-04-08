@@ -23,6 +23,35 @@ import threading
 import logging
 import warnings
 
+try:
+    from wcwidth import wcswidth as _wcswidth
+except ImportError:
+    _wcswidth = None
+
+
+def _display_width(text: str) -> int:
+    """Get the display width of text, accounting for wide characters (CJK, emoji)."""
+    if _wcswidth is not None:
+        w = _wcswidth(text)
+        if w >= 0:
+            return w
+    return len(text)
+
+
+def _truncate_display(text: str, max_width: int) -> str:
+    """Truncate text to fit within max_width display columns."""
+    if _display_width(text) <= max_width:
+        return text
+    result = ""
+    width = 0
+    for char in text:
+        cw = _display_width(char)
+        if width + cw > max_width:
+            break
+        result += char
+        width += cw
+    return result
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 # Suppress noisy library logs from polluting the terminal
@@ -1938,8 +1967,8 @@ async def main():
         _write("\033[2A")  # move cursor up 2 rows back to prompt line (relative, scroll-safe)
         # Reposition cursor column: \033[2A preserves the footer's column, not the prompt's.
         # Go to column 0, then advance to the end of prompt+input.
-        _prompt_vis_len = len(_ANSI_ESCAPE_RE.sub('', prompt))
-        _target_col = _prompt_vis_len + len(buf_text)
+        _prompt_vis_len = _display_width(_ANSI_ESCAPE_RE.sub('', prompt))
+        _target_col = _prompt_vis_len + _display_width(buf_text)
         _write(f"\r\033[{_target_col}C" if _target_col > 0 else "\r")
         _frame_drawn = True
         sys.stdout.flush()
@@ -2111,7 +2140,7 @@ async def main():
                         if alias.lstrip("/").lower().startswith(input_prefix):
                             alias_hint = f" {DIM}(/{alias.lstrip('/')}){RESET}"
                             break
-                desc = cmd.description[:tw - 40] if cmd.description else ""
+                desc = _truncate_display(cmd.description, tw - 40) if cmd.description else ""
                 _write(f"\033[K{pfx}{CYAN}/{cmd.name:<22s}{RESET}{alias_hint} {DIM}{desc}{RESET}\n")
             if end < total:
                 _write(f"\033[K    {DIM}↓ {total - end} more{RESET}\n")
@@ -2256,8 +2285,8 @@ async def main():
             if matches and _search_match_idx < len(matches):
                 match_text = matches[_search_match_idx]
                 max_len = _tw() - 4
-                if len(match_text) > max_len:
-                    match_text = match_text[:max_len - 3] + "..."
+                if _display_width(match_text) > max_len:
+                    match_text = _truncate_display(match_text, max_len - 3) + "..."
                 match_text = match_text.replace("\n", " ")
             # Cursor is at prompt. Go up 1 to separator, redraw frame area.
             _write("\033[A\r")  # up to top separator
@@ -2267,7 +2296,7 @@ async def main():
             _write(f"\033[K  {DIM}Ctrl+R next | Enter accept | Esc cancel{RESET}")
             # Cursor is now on the shortcuts line (3 rows below top-sep). Go up 2 to search line.
             _write("\033[2A")
-            cursor_col = len("(reverse-i-search): ") + len(query) + 1
+            cursor_col = len("(reverse-i-search): ") + _display_width(query) + 1
             _write(f"\r\033[{cursor_col - 1}C")
             sys.stdout.flush()
 
@@ -2527,10 +2556,23 @@ async def main():
 
         _paste_mode = [False]
         _paste_buf: list[str] = []
+        _paste_timeout = None
+
+        def _paste_timeout_flush():
+            """Safety: flush paste buffer if end marker never arrives."""
+            nonlocal _paste_timeout
+            _paste_timeout = None
+            if _paste_mode[0]:
+                _paste_mode[0] = False
+                if _paste_buf:
+                    pasted = "".join(_paste_buf).replace("\r\n", "\n").replace("\r", "\n")
+                    buf.extend(pasted)
+                    _paste_buf.clear()
+                    _redraw()
 
         def _handle_escape_seq():
             """Process buffered escape sequence after timeout."""
-            nonlocal selected, _esc_buf, _esc_timer
+            nonlocal selected, _esc_buf, _esc_timer, _paste_timeout
             nonlocal _history_idx, _saved_buf
             nonlocal _search_mode, _search_buf, _search_match_idx
             _esc_timer = None
@@ -2541,11 +2583,19 @@ async def main():
             if seq == "[200~":
                 _paste_mode[0] = True
                 _paste_buf.clear()
+                # Safety timeout: if end marker never arrives, flush after 10s
+                nonlocal _paste_timeout
+                if _paste_timeout is not None:
+                    _paste_timeout.cancel()
+                _paste_timeout = loop.call_later(10.0, _paste_timeout_flush)
                 return
 
             # Bracketed paste — end marker: flush paste buffer in one redraw
             if seq == "[201~":
                 _paste_mode[0] = False
+                if _paste_timeout is not None:
+                    _paste_timeout.cancel()
+                    _paste_timeout = None
                 if _paste_buf:
                     pasted = "".join(_paste_buf).replace("\r\n", "\n").replace("\r", "\n")
                     buf.extend(pasted)
@@ -2563,11 +2613,16 @@ async def main():
 
             if seq == "[A" and menu_visible:
                 matches = _get_matches()
-                selected = max(0, selected - 1)
+                if matches:
+                    selected = min(selected, len(matches) - 1)
+                    selected = max(0, selected - 1)
                 _show_menu(matches)
             elif seq == "[B" and menu_visible:
                 matches = _get_matches()
-                selected = min(len(matches) - 1, selected + 1)
+                if matches:
+                    selected = min(len(matches) - 1, selected + 1)
+                else:
+                    selected = 0
                 _show_menu(matches)
             elif seq == "[A" and not menu_visible:
                 # Up arrow: previous history entry

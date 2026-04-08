@@ -1266,14 +1266,17 @@ RULES:
             _timeout = httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0)
             key = provider.api_key
             is_oauth = isinstance(key, str) and "oat" in key[:15]
-            if is_oauth:
-                client = Anthropic(
-                    auth_token=key,
-                    timeout=_timeout,
-                    default_headers={"anthropic-beta": "claude-code-20250219,oauth-2025-04-20"},
-                )
-            else:
-                client = Anthropic(api_key=key, timeout=_timeout)
+            try:
+                if is_oauth:
+                    client = Anthropic(
+                        auth_token=key,
+                        timeout=_timeout,
+                        default_headers={"anthropic-beta": "claude-code-20250219,oauth-2025-04-20"},
+                    )
+                else:
+                    client = Anthropic(api_key=key, timeout=_timeout)
+            finally:
+                key = None  # Clear key reference to prevent exposure in tracebacks
             self._clients[provider.name] = client
             return client
         except Exception:
