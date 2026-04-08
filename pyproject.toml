@@ -24,6 +24,7 @@ dependencies = [
     "pydantic",
     "Pillow",
     "PyNaCl",
+    "wcwidth",
 ]
 
 [project.optional-dependencies]
