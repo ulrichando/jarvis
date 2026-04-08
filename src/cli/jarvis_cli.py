@@ -1715,10 +1715,16 @@ async def main():
         _trust_dir(cwd)
         _writeln()
 
-    # Use normal screen buffer so the terminal scrollback history is preserved.
-    # Just clear the visible screen for a clean start.
+    # Use normal screen buffer (no alt screen) so terminal scrollback works within the session.
+    # Push the shell prompt into scrollback by printing blank lines equal to terminal height,
+    # then clear the visible screen — JARVIS gets a clean slate, shell prompt stays scrollable above.
     if sys.stdout.isatty():
-        sys.stdout.write("\033[H\033[2J")  # cursor home + clear visible screen
+        try:
+            rows = os.get_terminal_size().lines
+        except OSError:
+            rows = 24
+        sys.stdout.write("\n" * rows)  # push shell prompt into scrollback
+        sys.stdout.write("\033[H\033[2J")  # clear visible screen, cursor home
         sys.stdout.flush()
 
     def _exit_alt_screen():
