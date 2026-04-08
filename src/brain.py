@@ -1057,6 +1057,9 @@ PROJECT CREATION RULES — follow these when building something:
                     except Exception as e:
                         yield {"type": "text", "content": f"\nAgent error: {e}"}
 
+            # Self-modification is only triggered explicitly via /self-modify command.
+            # Do NOT auto-intercept refusals — that causes unsolicited autonomous changes.
+
         else:
             # Fast chat — direct LLM query, no reasoning layer, no tools
             full_response = ""
@@ -1088,6 +1091,19 @@ PROJECT CREATION RULES — follow these when building something:
                     )
                 except Exception:
                     pass  # Don't block on learning failures
+
+    def _is_cant_do_response(self, text: str) -> bool:
+        """Detect hard refusal patterns indicating a missing capability."""
+        if len(text.split()) > 120:
+            return False  # Long responses are explanations, not hard refusals
+        cant_patterns = [
+            "i can't", "i cannot", "i'm unable to", "i don't have the ability",
+            "i'm not able to", "that's not something i can", "i don't have access to",
+            "i lack the ability", "i'm limited to", "i don't have a way to",
+            "i'm not capable of", "i have no way to",
+        ]
+        low = text.lower()
+        return any(p in low for p in cant_patterns)
 
     async def _post_agent_learning(self, task: str, result: str, used_tools: bool):
         """Background: extract skills and reflections after agent tasks."""
