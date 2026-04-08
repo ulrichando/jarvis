@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "updated_at": "2026-04-08T05:40:40.308348+00:00",
+  "updated_at": "2026-04-08T06:28:33.250515+00:00",
   "entries": {
     "src/cli/jarvis_cli.py": {
       "mtime": 1775606471.6208484,
@@ -13,8 +13,8 @@
       "lang": "Python"
     },
     "src/agent/tools.py": {
-      "mtime": 1775606454.4808714,
-      "size_bytes": 147019,
+      "mtime": 1775629423.0173025,
+      "size_bytes": 148218,
       "symbols": [],
       "summary": "",
       "lang": "Python"
@@ -2117,8 +2117,8 @@
       "lang": "Python"
     },
     "extensions/jarvis-screen/popup.html": {
-      "mtime": 1775556388.1907294,
-      "size_bytes": 5113,
+      "mtime": 1775627277.1661742,
+      "size_bytes": 7098,
       "symbols": [],
       "summary": "",
       "lang": "HTML"
@@ -9897,8 +9897,8 @@
       "lang": "Python"
     },
     ".jarvis/file-summaries.json": {
-      "mtime": 1775600087.4403992,
-      "size_bytes": 476428,
+      "mtime": 1775629304.716267,
+      "size_bytes": 480244,
       "symbols": [],
       "summary": "",
       "lang": "JSON"
@@ -19562,8 +19562,8 @@
       "lang": "Python"
     },
     "extensions/jarvis-screen/side_panel.html": {
-      "mtime": 1775558311.515405,
-      "size_bytes": 15124,
+      "mtime": 1775627248.5022688,
+      "size_bytes": 15125,
       "symbols": [],
       "summary": "",
       "lang": "HTML"
@@ -19721,6 +19721,62 @@
       "symbols": [],
       "summary": "",
       "lang": "Python"
+    },
+    ".jarvis/agents/exploit-builder.md": {
+      "mtime": 1775628729.9767196,
+      "size_bytes": 3939,
+      "symbols": [],
+      "summary": "",
+      "lang": "Markdown"
+    },
+    ".jarvis/agents/confirmation-filter.md": {
+      "mtime": 1775628686.880889,
+      "size_bytes": 2781,
+      "symbols": [],
+      "summary": "",
+      "lang": "Markdown"
+    },
+    ".jarvis/agents/static-analyzer.md": {
+      "mtime": 1775628670.1609547,
+      "size_bytes": 2679,
+      "symbols": [],
+      "summary": "",
+      "lang": "Markdown"
+    },
+    ".jarvis/agents/severity-scorer.md": {
+      "mtime": 1775628703.7808225,
+      "size_bytes": 2654,
+      "symbols": [],
+      "summary": "",
+      "lang": "Markdown"
+    },
+    ".jarvis/agents/report-writer.md": {
+      "mtime": 1775628746.9926527,
+      "size_bytes": 2646,
+      "symbols": [],
+      "summary": "",
+      "lang": "Markdown"
+    },
+    ".jarvis/agents/vuln-hypothesis-engine.md": {
+      "mtime": 1775628652.7490232,
+      "size_bytes": 2430,
+      "symbols": [],
+      "summary": "",
+      "lang": "Markdown"
+    },
+    ".jarvis/agents/file-risk-ranker.md": {
+      "mtime": 1775628638.045081,
+      "size_bytes": 2128,
+      "symbols": [],
+      "summary": "",
+      "lang": "Markdown"
+    },
+    ".jarvis/agents/sec-orchestrator.md": {
+      "mtime": 1775628623.501138,
+      "size_bytes": 1979,
+      "symbols": [],
+      "summary": "",
+      "lang": "Markdown"
     }
   }
 }
