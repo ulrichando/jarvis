@@ -30,7 +30,8 @@ dependencies = [
 vision = ["opencv-python", "mss", "pytesseract"]
 tts = ["piper-tts"]
 desktop = ["PyGObject"]
-all = ["jarvis[vision,tts,desktop]"]
+dev = ["watchdog"]
+all = ["jarvis[vision,tts,desktop,dev]"]
 
 [project.scripts]
 jarvis = "src.cli.jarvis_cli:run"

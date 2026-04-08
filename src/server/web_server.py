@@ -3611,6 +3611,12 @@ class JarvisWebServer:
                     pass
         asyncio.create_task(_watch_providers())
 
+        # File-watcher hot reload (JARVIS_HOT_RELOAD=1 enables it)
+        if os.environ.get("JARVIS_HOT_RELOAD") == "1":
+            from src.server.hot_reload import HotReloadManager
+            _hot_reload = HotReloadManager(broadcast_fn=self._broadcast)
+            _hot_reload.start(asyncio.get_running_loop())
+
         # Keep running until SIGTERM (graceful shutdown)
         stop_event = asyncio.Event()
         loop = asyncio.get_running_loop()
