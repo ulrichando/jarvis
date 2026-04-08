@@ -2439,7 +2439,8 @@ async def main():
                     import termios as _termios
                     _termios.tcsetattr(fd, _termios.TCSADRAIN, old_settings)
                     _write("\033[r")  # Reset scroll region for editor
-                    os.system(f"{editor} {tf_path}")
+                    import shlex as _shlex
+                    subprocess.run([*_shlex.split(editor), tf_path], check=False)
                     import tty as _tty
                     _tty.setcbreak(fd)
                     with open(tf_path, "r") as f:

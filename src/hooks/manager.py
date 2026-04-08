@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -178,7 +179,12 @@ class HooksManager:
         payload = json.dumps({"hook_event_name": event, "tool_name": tool_name,
                               "tool_input": tool_args, "tool_result": result, "cwd": os.getcwd()})
         try:
-            proc = subprocess.run(command, shell=True, input=payload,
+            # Use shlex.split to avoid shell=True injection risks.
+            # Falls back to shell=True only if the command contains shell
+            # operators (pipes, redirects) that require a shell.
+            use_shell = any(c in command for c in ('|', '>', '<', '&&', '||', ';', '`', '$'))
+            cmd_arg = command if use_shell else shlex.split(command)
+            proc = subprocess.run(cmd_arg, shell=use_shell, input=payload,
                                   capture_output=True, text=True, timeout=entry.get("timeout", 30))
             if proc.returncode == 0:
                 return self._parse_output(proc.stdout, event)
