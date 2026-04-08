@@ -16,6 +16,7 @@ Controls:
 
 import sys
 import os
+import subprocess
 import threading
 import time
 import logging
@@ -105,14 +106,19 @@ def _deploy_local_ui():
         return None
 
 
-_DESKTOP_PID_FILE = "/tmp/.jarvis-desktop.pid"
+_DESKTOP_PID_FILE = os.path.join(
+    os.environ.get("XDG_RUNTIME_DIR", f"/tmp/jarvis-{os.getuid()}"),
+    "jarvis-desktop.pid",
+)
 
 
 def main():
     # Write PID file so external processes can reliably kill this instance
     import atexit as _atexit
+    os.makedirs(os.path.dirname(_DESKTOP_PID_FILE), exist_ok=True)
     with open(_DESKTOP_PID_FILE, "w") as _pf:
         _pf.write(str(os.getpid()))
+    os.chmod(_DESKTOP_PID_FILE, 0o600)
     _atexit.register(lambda: os.path.exists(_DESKTOP_PID_FILE) and os.unlink(_DESKTOP_PID_FILE))
 
     host = "127.0.0.1"
@@ -570,11 +576,15 @@ def main():
         menu.append(Gtk.SeparatorMenuItem())
 
         item_open_browser = Gtk.MenuItem(label="Open in Browser")
-        item_open_browser.connect("activate", lambda w: os.system(f"xdg-open http://{host}:{port}/ &"))
+        item_open_browser.connect("activate", lambda w: subprocess.Popen(
+            ["xdg-open", f"http://{host}:{port}/"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         menu.append(item_open_browser)
 
         item_cli = Gtk.MenuItem(label="Open JARVIS CLI")
-        item_cli.connect("activate", lambda w: os.system("x-terminal-emulator -e jarvis &"))
+        item_cli.connect("activate", lambda w: subprocess.Popen(
+            ["x-terminal-emulator", "-e", "jarvis"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         menu.append(item_cli)
 
         menu.append(Gtk.SeparatorMenuItem())

@@ -2605,8 +2605,12 @@ class JarvisWebServer:
 
     async def run(self):
         # Write PID file for reliable shutdown
-        with open("/tmp/jarvis-server.pid", "w") as f:
+        _pid_dir = os.environ.get("XDG_RUNTIME_DIR", f"/tmp/jarvis-{os.getuid()}")
+        os.makedirs(_pid_dir, exist_ok=True)
+        self._pid_file = os.path.join(_pid_dir, "jarvis-server.pid")
+        with open(self._pid_file, "w") as f:
             f.write(str(os.getpid()))
+        os.chmod(self._pid_file, 0o600)
 
         app = web.Application(client_max_size=16 * 1024 * 1024)  # 16MB max request
         app.router.add_get("/ws", self.websocket_handler)
@@ -3633,12 +3637,12 @@ class JarvisWebServer:
         print("[JARVIS] Shutting down...")
         for ws in list(self.clients):
             try: await ws.close()
-            except: pass
+            except (ConnectionError, RuntimeError): pass
         self._server_mic_running = False
         await runner.cleanup()
         # Remove PID file
-        try: os.unlink("/tmp/jarvis-server.pid")
-        except: pass
+        try: os.unlink(self._pid_file)
+        except OSError: pass
         print("[JARVIS] Server stopped.")
 
 
