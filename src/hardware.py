@@ -12,6 +12,7 @@ Usage:
 
 import subprocess
 import os
+import threading
 from dataclasses import dataclass, field
 
 
@@ -247,6 +248,13 @@ def detect_hardware(include_cameras: bool = False) -> HardwareProfile:
     _hw = hw
     return hw
 
+
+# Pre-warm hardware detection in a background thread so the first real call
+# is instant. Callers that need the result call detect_hardware() normally —
+# if the thread is still running it will wait (the function is re-entrant safe
+# because the thread holds no lock that the main thread needs).
+_hw_thread = threading.Thread(target=detect_hardware, daemon=True, name="hw-detect")
+_hw_thread.start()
 
 # Convenience accessor
 HW = detect_hardware

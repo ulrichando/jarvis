@@ -51,9 +51,16 @@ class MemoryStore:
         try:
             from src.memory.neural_memory import HolographicMemory
             self._holographic = HolographicMemory()
-            from src.memory.common_sense import load_common_sense
-            loaded = load_common_sense(self._holographic)
-            log.debug("HolographicMemory loaded with %d common-sense facts", loaded)
+            # Load common-sense facts in a background thread — it runs 207 numpy FFT
+            # operations which take ~120ms and are not needed before the first query.
+            def _load_cs():
+                try:
+                    from src.memory.common_sense import load_common_sense
+                    loaded = load_common_sense(self._holographic)
+                    log.debug("HolographicMemory loaded with %d common-sense facts", loaded)
+                except Exception as e:
+                    log.warning("Common-sense load failed: %s", e)
+            threading.Thread(target=_load_cs, daemon=True, name="common-sense-load").start()
         except ImportError:
             log.debug("HolographicMemory not available (optional dependency)")
         except (OSError, ValueError, TypeError) as e:
