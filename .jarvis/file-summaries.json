@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "updated_at": "2026-04-08T08:50:39.380299+00:00",
+  "updated_at": "2026-04-08T09:52:15.182704+00:00",
   "entries": {
     "src/cli/jarvis_cli.py": {
-      "mtime": 1775637314.7833319,
-      "size_bytes": 149615,
+      "mtime": 1775641349.351651,
+      "size_bytes": 150511,
       "symbols": [
         "resolve_keybinding",
         "Spinner"
@@ -13,7 +13,7 @@
       "lang": "Python"
     },
     "src/agent/tools.py": {
-      "mtime": 1775637314.8094773,
+      "mtime": 1775639152.9071538,
       "size_bytes": 150088,
       "symbols": [],
       "summary": "",
@@ -31,7 +31,7 @@
       "lang": "Python"
     },
     "src/brain.py": {
-      "mtime": 1775637314.7826593,
+      "mtime": 1775639072.8573842,
       "size_bytes": 90352,
       "symbols": [
         "Brain"
@@ -40,7 +40,7 @@
       "lang": "Python"
     },
     "src/commands/handlers/extra.py": {
-      "mtime": 1775637314.7835808,
+      "mtime": 1775639072.8581672,
       "size_bytes": 55545,
       "symbols": [
         "cmd_buddy",
@@ -53,14 +53,14 @@
       "lang": "Python"
     },
     "src/agent/loop.py": {
-      "mtime": 1775637314.7817402,
+      "mtime": 1775639072.8561718,
       "size_bytes": 56826,
       "symbols": [],
       "summary": "",
       "lang": "Python"
     },
     "src/agent/bash_security.py": {
-      "mtime": 1775637314.7815561,
+      "mtime": 1775639072.855952,
       "size_bytes": 42695,
       "symbols": [
         "SecurityViolation",
@@ -94,7 +94,7 @@
       "lang": "Python"
     },
     "src/commands/handlers/security.py": {
-      "mtime": 1775637314.8096814,
+      "mtime": 1775639072.8583806,
       "size_bytes": 47502,
       "symbols": [
         "cmd_scan"
@@ -170,8 +170,8 @@
       "lang": "Python"
     },
     "src/agent/coordinator_enhanced.py": {
-      "mtime": 1775309255.5792248,
-      "size_bytes": 28700,
+      "mtime": 1775639606.5356214,
+      "size_bytes": 28714,
       "symbols": [
         "TaskStatus",
         "AgentCapability",
@@ -195,7 +195,7 @@
       "lang": "Python"
     },
     "src/desktop/app.py": {
-      "mtime": 1775637314.7842786,
+      "mtime": 1775639072.8587081,
       "size_bytes": 28040,
       "symbols": [
         "main"
@@ -237,7 +237,7 @@
       "lang": "Python"
     },
     "src/evolution/self_modify.py": {
-      "mtime": 1775637314.7843807,
+      "mtime": 1775639072.8588264,
       "size_bytes": 21617,
       "symbols": [
         "JarvisPlugin",
@@ -305,8 +305,8 @@
       "lang": "Python"
     },
     "src/agent/coordinator.py": {
-      "mtime": 1775309255.7181854,
-      "size_bytes": 17757,
+      "mtime": 1775639610.9836094,
+      "size_bytes": 17774,
       "symbols": [
         "CoordinatorMode",
         "TaskNotification",
@@ -327,7 +327,7 @@
       "lang": "Python"
     },
     "src/agent/tool_registry.py": {
-      "mtime": 1775637314.7817402,
+      "mtime": 1775639072.8563247,
       "size_bytes": 16016,
       "symbols": [
         "ToolMeta",
@@ -369,7 +369,7 @@
       "lang": "Python"
     },
     "src/agent/swarm.py": {
-      "mtime": 1775637535.7408452,
+      "mtime": 1775639072.8563247,
       "size_bytes": 14236,
       "symbols": [
         "SwarmAgent",
@@ -380,7 +380,7 @@
       "lang": "Python"
     },
     "src/hooks/manager.py": {
-      "mtime": 1775637314.7843807,
+      "mtime": 1775639072.8588264,
       "size_bytes": 14426,
       "symbols": [
         "HookResult",
@@ -402,7 +402,7 @@
       "lang": "Python"
     },
     "install.sh": {
-      "mtime": 1775637409.4818869,
+      "mtime": 1775639072.8556626,
       "size_bytes": 13747,
       "symbols": [],
       "summary": "",
@@ -514,8 +514,8 @@
       "lang": "Python"
     },
     "src/agent/deepsearch.py": {
-      "mtime": 1775309255.6554344,
-      "size_bytes": 11789,
+      "mtime": 1775639152.905707,
+      "size_bytes": 11798,
       "symbols": [
         "SearchResult",
         "Finding",
@@ -663,7 +663,7 @@
       "lang": "Python"
     },
     "src/commands_registry.py": {
-      "mtime": 1775637314.7835808,
+      "mtime": 1775639072.8583806,
       "size_bytes": 10175,
       "symbols": [
         "CommandType",
@@ -900,7 +900,7 @@
       "lang": "Python"
     },
     "src/brain_utils/formatting.py": {
-      "mtime": 1775637314.7826593,
+      "mtime": 1775639072.8573842,
       "size_bytes": 8288,
       "symbols": [
         "Color",
@@ -4135,7 +4135,7 @@
       "lang": "Python"
     },
     "pyproject.toml": {
-      "mtime": 1775637314.778709,
+      "mtime": 1775639072.8556626,
       "size_bytes": 880,
       "symbols": [],
       "summary": "",
@@ -9897,15 +9897,15 @@
       "lang": "Python"
     },
     ".jarvis/file-summaries.json": {
-      "mtime": 1775637570.7978008,
-      "size_bytes": 481513,
+      "mtime": 1775641698.2119715,
+      "size_bytes": 483776,
       "symbols": [],
       "summary": "",
       "lang": "JSON"
     },
     "src/server/web_server.py": {
-      "mtime": 1775637314.7855806,
-      "size_bytes": 178069,
+      "mtime": 1775641326.2997746,
+      "size_bytes": 184502,
       "symbols": [
         "JarvisWebServer"
       ],
@@ -9927,7 +9927,7 @@
       "lang": "JSON"
     },
     "src/reasoning/providers.py": {
-      "mtime": 1775637314.7850168,
+      "mtime": 1775639072.8595052,
       "size_bytes": 66258,
       "symbols": [
         "Provider",
@@ -10005,8 +10005,8 @@
       "lang": "Python"
     },
     "src/server/frontend/src/App.jsx": {
-      "mtime": 1775623571.011197,
-      "size_bytes": 21931,
+      "mtime": 1775641518.286748,
+      "size_bytes": 25974,
       "symbols": [
         "App"
       ],
@@ -10131,7 +10131,7 @@
       "lang": "Python"
     },
     "src/memory/session_storage.py": {
-      "mtime": 1775637314.784602,
+      "mtime": 1775639072.8588264,
       "size_bytes": 16939,
       "symbols": [
         "SessionEntry",
@@ -10150,7 +10150,7 @@
       "lang": "Python"
     },
     "src/memory/store.py": {
-      "mtime": 1775637314.784602,
+      "mtime": 1775639072.8588264,
       "size_bytes": 17292,
       "symbols": [
         "MemoryStore"
@@ -10212,8 +10212,8 @@
       "lang": "Python"
     },
     "src/speech/composer.py": {
-      "mtime": 1775309246.592092,
-      "size_bytes": 13746,
+      "mtime": 1775641190.4885077,
+      "size_bytes": 14208,
       "symbols": [
         "compose_ssml",
         "compose_chunks",
@@ -10846,8 +10846,8 @@
       "lang": "Python"
     },
     "src/speech/ambient.py": {
-      "mtime": 1775439299.554733,
-      "size_bytes": 7006,
+      "mtime": 1775641152.1447158,
+      "size_bytes": 11634,
       "symbols": [
         "AmbientListener"
       ],
@@ -19617,8 +19617,8 @@
       "lang": "Python"
     },
     "src/agent/master_orchestrator.py": {
-      "mtime": 1775625417.6830695,
-      "size_bytes": 43476,
+      "mtime": 1775639855.4548194,
+      "size_bytes": 44039,
       "symbols": [
         "QueryAnalysis",
         "SubTask",
@@ -19630,7 +19630,7 @@
       "lang": "Python"
     },
     "src/agent/parallel_dispatch.py": {
-      "mtime": 1775637542.240793,
+      "mtime": 1775639072.8563247,
       "size_bytes": 29495,
       "symbols": [],
       "summary": "",
@@ -19692,7 +19692,7 @@
       "lang": "Python"
     },
     "src/ecc/goal_verifier.py": {
-      "mtime": 1775637314.110064,
+      "mtime": 1775639152.9071538,
       "size_bytes": 4159,
       "symbols": [
         "VerifyResult",
@@ -19772,14 +19772,14 @@
       "lang": "Markdown"
     },
     ".jarvis/agents/sec-orchestrator.md": {
-      "mtime": 1775637314.8027089,
+      "mtime": 1775639072.8520617,
       "size_bytes": 3387,
       "symbols": [],
       "summary": "",
       "lang": "Markdown"
     },
     "test/test_providers.py": {
-      "mtime": 1775637314.785664,
+      "mtime": 1775639072.860601,
       "size_bytes": 24793,
       "symbols": [
         "TestProviderDataclass",
@@ -19789,7 +19789,7 @@
       "lang": "Python"
     },
     "test/test_agent_loop.py": {
-      "mtime": 1775637314.785664,
+      "mtime": 1775639072.8604007,
       "size_bytes": 24267,
       "symbols": [
         "TestValidateToolCalls",
@@ -19799,7 +19799,7 @@
       "lang": "Python"
     },
     "test/test_session_storage.py": {
-      "mtime": 1775637314.7859058,
+      "mtime": 1775639072.8607063,
       "size_bytes": 20045,
       "symbols": [
         "TestSessionEntry",
@@ -19809,7 +19809,7 @@
       "lang": "Python"
     },
     "test/test_commands_registry_ext.py": {
-      "mtime": 1775637314.785664,
+      "mtime": 1775639072.8604007,
       "size_bytes": 9925,
       "symbols": [
         "TestMeetsAvailabilityRequirement",
@@ -19819,13 +19819,109 @@
       "lang": "Python"
     },
     "test/test_web_security.py": {
-      "mtime": 1775637314.7859058,
+      "mtime": 1775639072.8607063,
       "size_bytes": 8647,
       "symbols": [
         "spa_path_is_safe",
         "check_ws_origin",
         "TestSPAPathTraversal",
         "TestWSOriginValidation"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "src/speech/voice_intelligence.py": {
+      "mtime": 1775641074.021142,
+      "size_bytes": 25512,
+      "symbols": [
+        "ConversationState",
+        "EmotionalToneDetector"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "test/test_master_orchestrator.py": {
+      "mtime": 1775639958.4344277,
+      "size_bytes": 24295,
+      "symbols": [
+        "run",
+        "tmp_db",
+        "learner",
+        "analyzer",
+        "decomposer",
+        "router",
+        "resolver",
+        "synthesizer"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "test/test_coordinator_enhanced.py": {
+      "mtime": 1775640814.926509,
+      "size_bytes": 20492,
+      "symbols": [
+        "run",
+        "TestSubTask",
+        "TestTaskGraph",
+        "TestProgressTracker"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "test/test_parallel_dispatch.py": {
+      "mtime": 1775640650.4753153,
+      "size_bytes": 19012,
+      "symbols": [
+        "run",
+        "TestKwMatch",
+        "TestScoreTarget",
+        "TestRouteQuery",
+        "TestComputeQuality"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "test/test_coordinator.py": {
+      "mtime": 1775640734.3389058,
+      "size_bytes": 18615,
+      "symbols": [
+        "TestCoordinatorMode",
+        "TestTaskNotification",
+        "TestWorkerState",
+        "TestAgentHandle",
+        "TestSpawnWorker",
+        "TestUpdateWorker",
+        "TestWorkerQueries"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "test/test_deepsearch.py": {
+      "mtime": 1775640880.152177,
+      "size_bytes": 16864,
+      "symbols": [
+        "run",
+        "TestSearchResult",
+        "TestFinding",
+        "TestResearchContext",
+        "TestDeepSearchReasonerProperty",
+        "TestPlanQueries",
+        "TestAnalyze"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "test/test_swarm.py": {
+      "mtime": 1775640561.3237457,
+      "size_bytes": 13508,
+      "symbols": [
+        "run",
+        "make_reasoner",
+        "TestSwarmAgent",
+        "TestSubtaskResult",
+        "TestSpecialistAgents",
+        "TestSwarmReasonerProperty",
+        "TestSwarmDecompose"
       ],
       "summary": "",
       "lang": "Python"

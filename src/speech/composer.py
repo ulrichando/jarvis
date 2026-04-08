@@ -249,39 +249,34 @@ def _split_at_breath_points(sentence: str) -> list[str]:
 
 
 def _determine_pause(sentence: str, index: int, total: int) -> int:
-    """Determine how long to pause after this sentence."""
+    """Determine how long to pause after this sentence.
+
+    Adds ±12% Gaussian jitter so no two pauses sound identical.
+    """
     s = sentence.strip()
 
     # Last sentence — no trailing pause needed
     if index == total - 1:
         return 0
 
-    # Ellipsis → dramatic pause
     if s.endswith("..."):
-        return PAUSE_DRAMATIC
+        base = PAUSE_DRAMATIC
+    elif s.endswith("?"):
+        base = PAUSE_QUESTION
+    elif s.endswith("!"):
+        base = PAUSE_EXCLAIM
+    elif s.endswith(":"):
+        base = PAUSE_COLON
+    elif s.endswith("—") or s.endswith("--"):
+        base = PAUSE_DRAMATIC
+    elif s.endswith("."):
+        base = PAUSE_PERIOD
+    else:
+        base = PAUSE_PERIOD
 
-    # Question → let it land
-    if s.endswith("?"):
-        return PAUSE_QUESTION
-
-    # Exclamation → energy beat
-    if s.endswith("!"):
-        return PAUSE_EXCLAIM
-
-    # Colon → about to explain
-    if s.endswith(":"):
-        return PAUSE_COLON
-
-    # Ends with dash → interrupted thought
-    if s.endswith("—") or s.endswith("--"):
-        return PAUSE_DRAMATIC
-
-    # Normal period → full beat
-    if s.endswith("."):
-        return PAUSE_PERIOD
-
-    # Default
-    return PAUSE_PERIOD
+    # Natural jitter — ±12% so no two pauses sound identical
+    jitter = _random.gauss(1.0, 0.08)
+    return max(50, int(base * jitter))
 
 
 def _is_important(sentence: str, index: int, total: int) -> bool:
@@ -344,22 +339,44 @@ def _apply_emphasis(text: str) -> str:
 
 # ── Prosody styles ──────────────────────────────────────────────────
 
-def _get_prosody(style: str) -> tuple[str, str, str]:
-    """Get rate, pitch, volume for a voice style.
+import random as _random
 
-    Returns (rate, pitch, volume) as SSML prosody values.
+# Base prosody values per style (rate_pct, pitch_hz, volume_pct)
+_PROSODY_BASE: dict[str, tuple[int, int, int]] = {
+    "default":    (0,    0,   0),
+    "focused":    (5,    0,   5),
+    "gentle":     (-8,  -5,  -5),
+    "thoughtful": (-5,   0,   0),
+    "urgent":     (12,  10,  10),
+    "matching":   (3,    5,   5),
+    "receptive":  (-3,   0,   0),
+    "empathetic": (-5,  -3,  -3),
+}
+
+def _get_prosody(style: str) -> tuple[str, str, str]:
+    """Get rate, pitch, volume for a voice style with slight natural variation.
+
+    Each call adds small Gaussian noise so the voice never sounds mechanical
+    or like the same pattern repeating.  Variation is bounded so it stays
+    intelligible and pleasant.
     """
-    styles = {
-        "default":    ("0%",   "+0Hz", "+0%"),      # Natural baseline
-        "focused":    ("+5%",  "+0Hz", "+5%"),       # Slightly faster, louder — urgency
-        "gentle":     ("-8%",  "-5Hz", "-5%"),       # Slower, softer — calming
-        "thoughtful": ("-5%",  "+0Hz", "+0%"),       # Slower — giving weight to words
-        "urgent":     ("+12%", "+10Hz", "+10%"),     # Fast, high, loud — alert
-        "matching":   ("+3%",  "+5Hz", "+5%"),       # Energized — matching excitement
-        "receptive":  ("-3%",  "+0Hz", "+0%"),       # Slightly slow — listening mode
-        "empathetic": ("-5%",  "-3Hz", "-3%"),       # Soft, slow — understanding
-    }
-    return styles.get(style, styles["default"])
+    base_rate, base_pitch, base_vol = _PROSODY_BASE.get(style, _PROSODY_BASE["default"])
+
+    # Add Gaussian noise: small σ so variation is subtle
+    rate  = base_rate  + int(_random.gauss(0, 1.2))
+    pitch = base_pitch + int(_random.gauss(0, 1.0))
+    vol   = base_vol   + int(_random.gauss(0, 0.8))
+
+    # Clamp to reasonable bounds
+    rate  = max(-15, min(rate,  20))
+    pitch = max(-10, min(pitch, 15))
+    vol   = max(-10, min(vol,   15))
+
+    rate_str  = f"{rate:+d}%" if rate != 0 else "0%"
+    pitch_str = f"{pitch:+d}Hz"
+    vol_str   = f"{vol:+d}%"  if vol  != 0 else "+0%"
+
+    return rate_str, pitch_str, vol_str
 
 
 # ── Convenience ─────────────────────────────────────────────────────

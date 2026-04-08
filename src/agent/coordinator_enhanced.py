@@ -560,7 +560,7 @@ class CoordinatorAgent:
                                 f"Pipeline stage {i + 1}/{len(stages)}: {stage_name}")
 
             # Spawn and wait
-            handle = self._base.spawn_agent(self._reasoner, agent_type, prompt, context)
+            handle = self._base.spawn_agent(self._reasoner, agent_type, prompt, context=context)
             if handle._thread:
                 handle._thread.join(timeout=stage_timeout)
 

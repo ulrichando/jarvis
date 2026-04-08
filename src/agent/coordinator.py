@@ -111,7 +111,7 @@ class AgentCoordinator:
             finally:
                 try:
                     loop.close()
-                except Exception:
+                except (RuntimeError, OSError):
                     pass
 
         thread = threading.Thread(

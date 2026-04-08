@@ -1,4 +1,10 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+
+// Module-level constant — never re-created, safe to reference inside effects
+const HARD_INTERRUPT_WORDS = new Set([
+  'stop', 'halt', 'listen', 'pause', 'wait', 'quiet',
+  'shush', 'enough', 'cancel', 'nevermind',
+])
 import useWebSocket from './hooks/useWebSocket'
 import useTheme from './hooks/useTheme'
 import ArcReactor from './components/ArcReactor'
@@ -40,12 +46,38 @@ function App() {
   }, [isDesktop])
 
   // TTS playback with interrupt — global stop function
+  // Flushes the entire audio queue with zero trailing words.
   const audioRef = useRef(null)
+  const isSpeakingRef = useRef(false)  // Tracks TTS state without causing re-renders
+
+  // Stable ref so the voice useEffect always calls the latest hardInterrupt
+  // without needing to restart the voice system on every render.
+  const hardInterruptRef = useRef(null)
+
+  const hardInterrupt = useCallback((reason = 'user_barged_in') => {
+    // 1. Kill audio IMMEDIATELY — no trailing words
+    if (audioRef.current) {
+      try { audioRef.current.pause() } catch { /* ignore */ }
+      audioRef.current = null
+    }
+    isSpeakingRef.current = false
+    // 2. Signal server — cancels in-flight LLM streaming + any server-side TTS
+    sendMessage({ type: 'interrupt', reason })
+    // 3. Update local TTS state
+    sendMessage({ type: 'tts_state', speaking: false })
+    document.dispatchEvent(new CustomEvent('jarvis-tts-end'))
+    setReactorState('idle')
+    console.log(`[JARVIS VAD] Hard interrupt: ${reason}`)
+  }, [sendMessage])
+
+  // Keep ref in sync with latest hardInterrupt
+  useEffect(() => { hardInterruptRef.current = hardInterrupt }, [hardInterrupt])
 
   const stopSpeaking = useCallback(() => {
     if (audioRef.current) {
       try { audioRef.current.pause() } catch { /* ignore */ }
       audioRef.current = null
+      isSpeakingRef.current = false
       sendMessage({ type: 'tts_state', speaking: false })
       document.dispatchEvent(new CustomEvent('jarvis-tts-end'))
       setReactorState('idle')
@@ -76,6 +108,7 @@ function App() {
     // Use fetch + AudioContext for TTS — more reliable than new Audio(url) in WebKit2 GTK
     queueMicrotask(() => {
       stopSpeaking()
+      isSpeakingRef.current = true
       setReactorState('speaking')
       window.__lastSpokenText = data.spoken  // For echo detection
       document.dispatchEvent(new CustomEvent('jarvis-tts-start'))
@@ -92,6 +125,7 @@ function App() {
       const onDone = () => {
         if (_done) return
         _done = true
+        isSpeakingRef.current = false
         if (audioRef.current === handle) audioRef.current = null
         setReactorState('idle')
         document.dispatchEvent(new CustomEvent('jarvis-tts-end'))
@@ -126,7 +160,14 @@ function App() {
     const last = wsMessages[wsMessages.length - 1]
 
     if (last.type === 'status' && last.status === 'thinking') {
+      // When JARVIS starts thinking for a NEW response, flush any in-progress audio
       queueMicrotask(() => { stopSpeaking(); setReactorState('thinking') })
+    }
+
+    // Server confirmed interrupt — ensure audio is fully flushed
+    if (last.type === 'interrupted') {
+      stopSpeaking()
+      setReactorState('idle')
     }
 
     // Clear heard caption when JARVIS starts responding
@@ -222,32 +263,55 @@ function App() {
           recognition.continuous = true
           recognition.interimResults = true
           recognition.lang = 'en-US'
+
+          let srIsSpeakingTTS = false
+          document.addEventListener('jarvis-tts-start', () => { srIsSpeakingTTS = true })
+          document.addEventListener('jarvis-tts-end',   () => { srIsSpeakingTTS = false })
+
           recognition.onresult = (event) => {
             const last = event.results[event.results.length - 1]
-            if (last.isFinal) {
-              const text = last[0].transcript.trim()
-              if (text && text.length > 1) {
-                // Only interrupt JARVIS for real user speech (final results),
-                // not interim — interim picks up JARVIS's own TTS voice as echo
-                document.dispatchEvent(new CustomEvent('user-speaking'))
-                setReactorState('thinking')
-                setHeardText(text)
-                clearTimeout(heardTimerRef.current)
-                sendMessage({ type: 'query', text: text })
+            const transcript = last[0].transcript.trim()
+            if (!transcript) return
+
+            // ── INTERIM results: hard keyword spotter ────────────────────
+            // This is the fastest possible path — fires on every partial result.
+            // Only check the first 4 words so we don't accidentally trigger on
+            // mid-sentence occurrences of 'stop' (e.g. "don't stop the music").
+            if (!last.isFinal) {
+              const words = transcript.toLowerCase().replace(/[^a-z\s]/g, '').split(/\s+/).slice(0, 4)
+              if (words.some(w => HARD_INTERRUPT_WORDS.has(w))) {
+                console.log('[JARVIS VAD] Hard keyword in interim:', transcript)
+                hardInterruptRef.current?.('hard_keyword')
+                return
               }
+              // ── Barge-in: confident interim speech while JARVIS is talking ──
+              // AEC (echo cancellation) in getUserMedia suppresses JARVIS's own
+              // voice, so interim results during TTS are the user, not JARVIS.
+              if (srIsSpeakingTTS && last[0].confidence > 0.45 && transcript.length > 3) {
+                console.log('[JARVIS VAD] Barge-in detected (interim):', transcript)
+                hardInterruptRef.current?.('barge_in')
+                document.dispatchEvent(new CustomEvent('user-speaking'))
+              }
+              return
+            }
+
+            // ── FINAL results ────────────────────────────────────────────
+            if (transcript.length > 1) {
+              // If JARVIS was speaking, this is a barge-in + new query
+              if (srIsSpeakingTTS) {
+                hardInterruptRef.current?.('barge_in_final')
+              } else {
+                document.dispatchEvent(new CustomEvent('user-speaking'))
+              }
+              setReactorState('thinking')
+              setHeardText(transcript)
+              clearTimeout(heardTimerRef.current)
+              sendMessage({ type: 'query', text: transcript })
             }
           }
           recognition.onend = () => { try { recognition.start() } catch { /* ignore */ } }
           recognition.onerror = () => { /* ignore */ }
           try { recognition.start() } catch { /* ignore */ }
-
-          // VAD energy-based interrupt is DISABLED during TTS playback because
-          // the mic picks up JARVIS's own voice from speakers and can't distinguish
-          // it from the user. SpeechRecognition handles real interrupts via onresult.
-          // We only track TTS state for SpeechRecognition to gate interrupts.
-          let isSpeakingTTS = false
-          document.addEventListener('jarvis-tts-start', () => { isSpeakingTTS = true })
-          document.addEventListener('jarvis-tts-end', () => { isSpeakingTTS = false })
           return // Using browser STT + VAD
         }
 
@@ -259,19 +323,29 @@ function App() {
         let recording = false
         let silenceTimer = null
         let _recordStart = 0
-        let lastJarvisSpeech = ''  // Echo detection — track what JARVIS last said
+        let lastJarvisSpeech = ''    // Echo detection — track what JARVIS last said
+        let _bargeinFired = false    // Prevent duplicate interrupt signals per barge-in
+        let _noiseFloor = 0.002      // Adaptive noise floor for barge-in calibration
+        let _noiseCalibrated = false
+        let _noiseFrames = 0
 
-        // Track JARVIS's speech for echo detection
+        // Track JARVIS's speech for echo detection + barge-in
+        let wr_isSpeakingTTS = false
         document.addEventListener('jarvis-tts-start', () => {
-          // Capture the last spoken text from the most recent playSpoken call
+          wr_isSpeakingTTS = true
+          _bargeinFired = false  // Reset for this TTS session
           if (window.__lastSpokenText) lastJarvisSpeech = window.__lastSpokenText.toLowerCase()
+        })
+        document.addEventListener('jarvis-tts-end', () => {
+          // Brief guard period after TTS ends before mic fully opens (AEC tail)
+          setTimeout(() => { wr_isSpeakingTTS = false }, 800)
         })
 
         mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data) }
         mediaRecorder.onstop = async () => {
           const blob = new Blob(chunks, { type: mediaRecorder.mimeType })
           chunks = []
-          if (isSpeakingTTS) return  // TTS playing — discard
+          const wasBargein = wr_isSpeakingTTS  // Capture flag at stop time
           if (blob.size < 4000) return  // Too small — noise
           setReactorState('thinking')
           try {
@@ -279,11 +353,18 @@ function App() {
             form.append('audio', blob, 'speech.webm')
             const resp = await fetch('/api/transcribe', { method: 'POST', body: form })
             const data = await resp.json()
-              const text = (data.text || '').trim()
+            const text = (data.text || '').trim()
             if (!text || text.length <= 2) { setReactorState('idle'); return }
-
-            // Only filter obvious Whisper artifacts (single word noise)
             if (text.split(' ').length < 2) { setReactorState('idle'); return }
+
+            // Hard keyword check on transcribed barge-in
+            const txWords = text.toLowerCase().replace(/[^a-z\s]/g, '').split(/\s+/)
+            if (txWords.slice(0, 4).some(w => HARD_INTERRUPT_WORDS.has(w))) {
+              console.log('[JARVIS VAD] Hard keyword in transcript:', text)
+              hardInterruptRef.current?.('hard_keyword_transcript')
+              setReactorState('idle')
+              return
+            }
 
             // Echo detection — if JARVIS just spoke these words, skip
             if (lastJarvisSpeech) {
@@ -294,70 +375,72 @@ function App() {
               if (overlap > 0.5) { setReactorState('idle'); return }
             }
 
-            // Send to server — the LLM decides if this is directed at JARVIS
-            // Mark as ambient so the server can use a fast classifier
-            console.log('[VOICE] Heard:', text)
+            console.log('[VOICE] Heard:', text, wasBargein ? '(barge-in)' : '')
             setHeardText(text)
             clearTimeout(heardTimerRef.current)
             sendMessage({ type: 'query', text: text, ambient: true })
           } catch { setReactorState('idle') }
         }
 
-        // VAD: detect speech, record, interrupt TTS on barge-in
-        let isSpeakingTTS = false
-        document.addEventListener('jarvis-tts-start', () => {
-          isSpeakingTTS = true
-          // Don't kill active recordings — the user might still be talking
-          // The recording will finish naturally when silence is detected
-          // The isSpeakingTTS flag prevents NEW recordings from starting
-          console.log('[VAD] TTS started — no new recordings')
-        })
-        document.addEventListener('jarvis-tts-end', () => {
-          console.log('[VAD] TTS ended — mic muted for 4s')
-          setTimeout(() => { isSpeakingTTS = false; console.log('[VAD] Mic unmuted') }, 4000)
-        })
-
-        // Use time-domain data for proper RMS level detection
+        // VAD: detect speech, record, support barge-in during TTS
         const waveData = new Float32Array(analyser.fftSize)
-        let _vadLogTimer = 0
         function checkVoice() {
           if (!analyser) return
           analyser.getFloatTimeDomainData(waveData)
-          // RMS = true sound level, not frequency energy
           let sum = 0
           for (let i = 0; i < waveData.length; i++) sum += waveData[i] * waveData[i]
-          const avg = Math.sqrt(sum / waveData.length)
+          const rms = Math.sqrt(sum / waveData.length)
 
-          // Don't start NEW recordings while JARVIS is speaking
-          // But let in-progress recordings finish (they contain the user's actual speech)
-          if (isSpeakingTTS && !recording) {
-            setTimeout(checkVoice, 100)
+          // Adaptive noise floor calibration (first ~2 seconds of ambient silence)
+          if (!_noiseCalibrated) {
+            _noiseFloor = (_noiseFloor * _noiseFrames + rms) / (_noiseFrames + 1)
+            _noiseFrames++
+            if (_noiseFrames > 40) _noiseCalibrated = true
+          } else if (!recording && !wr_isSpeakingTTS) {
+            // Slow continuous adaptation during silence
+            _noiseFloor = _noiseFloor * 0.997 + rms * 0.003
+          }
+
+          // Thresholds: barge-in needs a higher energy bar than normal speech
+          const baseThreshold    = Math.max(0.006, _noiseFloor * 2.5)
+          const bargeInThreshold = Math.max(0.018, _noiseFloor * 5.0)  // 2× as demanding
+          const silenceThreshold = Math.max(0.003, _noiseFloor * 1.2)
+
+          // ── Barge-in mode: JARVIS is currently speaking ─────────────────
+          if (wr_isSpeakingTTS && !recording) {
+            if (rms > bargeInThreshold && !_bargeinFired) {
+              // Loud enough to be a real voice over TTS — trigger interrupt
+              _bargeinFired = true
+              console.log('[JARVIS VAD] Barge-in (rms:', rms.toFixed(4), 'threshold:', bargeInThreshold.toFixed(4), ')')
+              hardInterruptRef.current?.('barge_in')
+              document.dispatchEvent(new CustomEvent('user-speaking'))
+              // Start recording so we capture what the user is saying
+              chunks = []
+              _recordStart = Date.now()
+              try { mediaRecorder.start() } catch { /* ignore */ }
+              recording = true
+            }
+            setTimeout(checkVoice, 50)
             return
           }
 
-          // RMS thresholds — tuned for natural conversation
-          const threshold = 0.008       // Start recording at this level
-          const silenceThreshold = 0.003 // Lower = more tolerant of quiet speech
-
-          if (avg > threshold && !recording) {
-            if (!isSpeakingTTS) {
-              document.dispatchEvent(new CustomEvent('user-speaking'))
-            }
+          // ── Normal listening mode ────────────────────────────────────────
+          if (rms > baseThreshold && !recording && !wr_isSpeakingTTS) {
+            document.dispatchEvent(new CustomEvent('user-speaking'))
             chunks = []
             _recordStart = Date.now()
             try { mediaRecorder.start() } catch { /* ignore */ }
             recording = true
             clearTimeout(silenceTimer)
           }
-          // Reset silence timer on any speech above threshold while recording
-          if (avg > silenceThreshold && recording) {
+
+          if (rms > silenceThreshold && recording) {
             clearTimeout(silenceTimer)
           }
-          if (avg < silenceThreshold && recording) {
+          if (rms < silenceThreshold && recording) {
             if (!silenceTimer) {
               silenceTimer = setTimeout(() => {
                 silenceTimer = null
-                // Discard recordings shorter than 0.8s — not enough for a word
                 if (Date.now() - _recordStart < 800) {
                   try { mediaRecorder.stop() } catch { /* ignore */ }
                   recording = false
@@ -366,7 +449,7 @@ function App() {
                 }
                 try { mediaRecorder.stop() } catch { /* ignore */ }
                 recording = false
-              }, 1200) // 1200ms silence = end of utterance - sentence-level VAD
+              }, 1200)
             }
           }
           setTimeout(checkVoice, 50)

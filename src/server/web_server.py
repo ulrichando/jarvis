@@ -31,6 +31,7 @@ from aiohttp import web
 from src.brain import Brain
 from src.speech.composer import compose_chunks
 from src.speech.stt import transcribe_audio, audio_bytes_to_numpy
+from src.speech.voice_intelligence import ConversationIntelligence, HardInterruptDetector
 
 # Device registry — JARVIS knows who is talking to him
 from src.server.device_registry import get_registry, DeviceTrust
@@ -80,6 +81,11 @@ class JarvisWebServer:
         self.brain = None  # Deferred — initialized in run() after port binds
         self.clients: set[web.WebSocketResponse] = set()
         self._ws_rate: dict = {}  # ws -> (count, window_start)
+        # Conversation intelligence — emotional awareness, verbosity, thinking pause
+        self._conv_intel = ConversationIntelligence()
+        self._interrupt_det = HardInterruptDetector()
+        # Query processing lock — prevents duplicates mid-response
+        self._query_processing = False
         # Device registry — tracks every client JARVIS has ever spoken to
         self.devices = get_registry()
         # Remote session manager — shared singleton
@@ -455,10 +461,21 @@ class JarvisWebServer:
                             })
                     elif msg_type == "video_frame":
                         await self._handle_video_frame(ws, data)
+                    elif msg_type == "interrupt":
+                        # User barged in or said a hard stop keyword — kill everything NOW
+                        await self._handle_interrupt(ws)
                     elif msg_type == "tts_state":
                         speaking = data.get("speaking", False)
                         if hasattr(ws, '_ambient'):
                             ws._ambient.set_jarvis_speaking(speaking)
+                            if speaking:
+                                # Arm the barge-in callback — fires the moment real voice is
+                                # detected over the mic while TTS is playing
+                                ws._ambient.on_barge_in = lambda: asyncio.ensure_future(
+                                    self._handle_interrupt(ws)
+                                )
+                            else:
+                                ws._ambient.on_barge_in = None
                         # Also mute/unmute the server-side mic listener
                         if hasattr(self, '_server_listener'):
                             self._server_listener.jarvis_speaking = speaking
@@ -547,6 +564,32 @@ class JarvisWebServer:
                 print(f'[Ulrich:{_platform}] "{text[14:94]}"')
         else:
             print(f'[Ulrich:{_platform}] "{text[:80]}"')
+
+        # ── Hard interrupt keyword check ───────────────────────────────────
+        # If the user's first words are a stop command, just kill TTS and don't respond
+        _raw_text = text.replace("[voice input] ", "").strip()
+        if is_ambient and self._interrupt_det.check(_raw_text):
+            logging.getLogger("jarvis.voice").info(
+                "[JARVIS] Hard interrupt keyword detected: %r", _raw_text[:40]
+            )
+            await self._handle_interrupt(ws)
+            return
+
+        # ── Per-connection interrupt event ─────────────────────────────────
+        if not hasattr(ws, '_interrupt_event'):
+            ws._interrupt_event = asyncio.Event()
+        ws._interrupt_event.clear()
+
+        # ── Voice intelligence: analyse turn, compute thinking pause ───────
+        _voice_ctx = None
+        if is_ambient:
+            _voice_ctx = self._conv_intel.analyze_input(_raw_text)
+            # Thinking pause — signals that JARVIS actually processed the question
+            if _voice_ctx.thinking_pause_s > 0:
+                await asyncio.sleep(_voice_ctx.thinking_pause_s)
+            # Check again — user may have interrupted during the pause
+            if ws._interrupt_event.is_set():
+                return
 
         # Normalize for voice-friendly matching (Whisper adds punctuation/filler)
         text_lower = text.lower().strip()
@@ -807,6 +850,28 @@ class JarvisWebServer:
         is_voice = text.startswith("[voice input]")
         if is_voice:
             self._query_processing = True
+        self._conv_intel.mark_processing()
+
+        # ── Inject voice intelligence hints into the query ─────────────────
+        # The hints are wrapped in a hidden context block that the LLM reads
+        # but that never appears verbatim in the spoken response.
+        if _voice_ctx is not None and is_voice:
+            hints = _voice_ctx.hint_block()
+            if hints:
+                text = (
+                    f"{text}\n\n"
+                    f"[_voice_context_hints — read silently, never quote these]\n"
+                    f"{hints}\n"
+                    f"[/voice_context_hints]"
+                )
+            # Broadcast state + voice style to frontend
+            await self._safe_send(ws, {
+                "type": "conv_state",
+                "state": "processing",
+                "emotion": _voice_ctx.emotion,
+                "verbosity": _voice_ctx.verbosity,
+                "voice_style": _voice_ctx.voice_style,
+            })
 
         # Try streaming: send first sentence early so TTS starts immediately
         first_sent = False
@@ -817,6 +882,7 @@ class JarvisWebServer:
         current_tool_id = None  # track the current tool's ID
         narration_task = None  # track background narration so we can cancel it
         early_tts_task = None  # track first-sentence TTS so we can wait for it
+        _query_text_for_checkin = _raw_text if is_voice else text  # For self-interrupt check
 
         if hasattr(self.brain, 'think_stream'):
             try:
@@ -826,6 +892,13 @@ class JarvisWebServer:
                 speech_buffer = ""
                 async with asyncio.timeout(3600):
                     async for event in self.brain.think_stream(text):
+                        # ── Interrupt check — highest priority ────────────
+                        if hasattr(ws, '_interrupt_event') and ws._interrupt_event.is_set():
+                            logging.getLogger("jarvis.voice").info(
+                                "[JARVIS] Stream aborted mid-response (interrupted)"
+                            )
+                            break
+
                         etype = event.get("type", "") if isinstance(event, dict) else ""
                         if etype == "text":
                             chunk = event.get("content", "")
@@ -1044,6 +1117,7 @@ class JarvisWebServer:
                         except Exception:
                             pass
                     # If first sentence already spoken, speak only the remainder
+                    self._conv_intel.mark_speaking_start()
                     if first_sent and first_spoken_end > 0:
                         remainder = self._clean_for_speech(spoken[first_spoken_end:].strip())
                         if remainder and len(remainder) > 3:
@@ -1056,13 +1130,55 @@ class JarvisWebServer:
                             await asyncio.wait_for(self._speak_system(spoken), timeout=30)
                         except Exception as e:
                             print(f"[JARVIS] Server TTS error: {e}")
+                    self._conv_intel.mark_listening()
 
         # Always release the query lock and unmute mic after voice processing
         if is_voice:
             self._query_processing = False
+            self._conv_intel.mark_listening()
             if hasattr(self, '_server_listener'):
                 await asyncio.sleep(0.5)
                 self._server_listener.jarvis_speaking = False
+
+    async def _handle_interrupt(self, ws: web.WebSocketResponse):
+        """Immediate hard interrupt — user spoke over JARVIS or said a stop keyword.
+
+        Priority order:
+          1. Kill server-side TTS audio process instantly
+          2. Set per-connection interrupt event so the streaming loop exits
+          3. Unmute mic immediately so the user's new query can be heard
+          4. Release the query lock
+          5. Log the event for tuning
+        """
+        # Signal the in-flight streaming coroutine to abort
+        if hasattr(ws, '_interrupt_event') and ws._interrupt_event:
+            ws._interrupt_event.set()
+
+        # Kill server-side ffplay / piper process if speaking
+        if hasattr(self, '_current_ffplay') and self._current_ffplay:
+            try:
+                self._current_ffplay.kill()
+            except Exception:
+                pass
+            self._current_ffplay = None
+
+        # Unmute mic — do NOT wait for the TTS to finish naturally
+        if hasattr(ws, '_ambient'):
+            ws._ambient.set_jarvis_speaking(False)
+            ws._ambient.on_barge_in = None  # Disarm until next TTS
+        if hasattr(self, '_server_listener'):
+            self._server_listener.jarvis_speaking = False
+
+        # Release lock immediately so the next voice query is accepted
+        self._query_processing = False
+
+        # Update state machine
+        self._conv_intel.mark_interrupted()
+
+        # Notify frontend so it can flush audio and update UI state
+        await self._safe_send(ws, {"type": "interrupted"})
+
+        logging.getLogger("jarvis.voice").info("[JARVIS] ← Interrupted — mic unmuted, queue flushed")
 
     async def _handle_audio(self, ws: web.WebSocketResponse, data: bytes):
         """Handle audio — either push-to-talk blob or ambient stream chunk.
@@ -1147,9 +1263,24 @@ class JarvisWebServer:
             await ws.send_json({"type": "stt_error", "error": str(e)})
 
     def _get_voice_style(self) -> str:
-        """Determine voice style from awareness context."""
+        """Determine voice style — voice intelligence takes priority, brain awareness as fallback."""
+        # Primary: ConversationIntelligence emotion map (more up-to-date)
+        recent_emotion = self._conv_intel.tone.recent_dominant
+        emotion_style_map = {
+            "frustrated": "focused",
+            "impatient":  "focused",
+            "excited":    "matching",
+            "playful":    "matching",
+            "confused":   "gentle",
+            "relaxed":    "default",
+            "focused":    "thoughtful",
+        }
+        if recent_emotion in emotion_style_map:
+            return emotion_style_map[recent_emotion]
+
+        # Fallback: legacy awareness system
         voice_style = "default"
-        if hasattr(self.brain, "reasoning") and hasattr(self.brain.reasoning, "_last_reasoning"):
+        try:
             awareness = self.brain.awareness
             if awareness.user_energy == "frustrated":
                 voice_style = "focused"
@@ -1159,6 +1290,8 @@ class JarvisWebServer:
                 voice_style = "gentle"
             elif awareness.user_intent == "exploring":
                 voice_style = "thoughtful"
+        except Exception:
+            pass
         return voice_style
 
     @staticmethod

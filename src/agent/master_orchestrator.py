@@ -26,6 +26,7 @@ import hashlib
 import logging
 import re
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -165,8 +166,8 @@ class TaskGraph:
 
     def stages(self) -> list[list[SubTask]]:
         """Topological sort → list of parallel execution stages."""
-        completed: set[str]          = set()
-        remaining: list[SubTask]     = list(self.tasks)
+        completed: set[str]            = set()
+        remaining: list[SubTask]       = list(self.tasks)
         stages:    list[list[SubTask]] = []
 
         while remaining:
@@ -176,15 +177,19 @@ class TaskGraph:
                 break
             parallel = [t for t in ready if t.parallel_ok]
             seq      = [t for t in ready if not t.parallel_ok]
+
+            promoted: set[str] = set()
             if parallel:
                 stages.append(parallel)
                 for t in parallel:
                     completed.add(t.id)
-                    remaining.remove(t)
+                    promoted.add(t.id)
             for t in seq:
                 stages.append([t])
                 completed.add(t.id)
-                remaining.remove(t)
+                promoted.add(t.id)
+
+            remaining = [t for t in remaining if t.id not in promoted]
 
         return stages or [[]]
 
@@ -231,11 +236,12 @@ class RoutingLearner:
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
+        self._lock = threading.Lock()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=5.0) as conn:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS routing_history (
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -263,7 +269,7 @@ class RoutingLearner:
 
     def get_weights(self, domain: str | None = None) -> dict[str, float]:
         """Return {agent_name: ema_quality} for a domain (or global average)."""
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=5.0) as conn:
             if domain:
                 rows = conn.execute(
                     "SELECT agent_name, ema_quality FROM agent_weights WHERE domain = ?",
@@ -282,7 +288,7 @@ class RoutingLearner:
 
     def get_stats(self) -> list[dict]:
         """Routing stats for diagnostics (/orchestrator stats)."""
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=5.0) as conn:
             rows = conn.execute(
                 "SELECT agent_name, domain, ema_quality, obs_count, last_updated "
                 "FROM agent_weights ORDER BY ema_quality DESC"
@@ -306,7 +312,7 @@ class RoutingLearner:
         query_hash: str | None = None,
     ) -> None:
         """Record outcome and update EMA quality for this agent×domain."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._lock, sqlite3.connect(self.db_path, timeout=5.0) as conn:
             conn.execute(
                 "INSERT INTO routing_history (query_hash, domain, agent_name, quality, latency_ms) "
                 "VALUES (?, ?, ?, ?, ?)",
@@ -332,7 +338,7 @@ class RoutingLearner:
                 )
 
     def reset(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._lock, sqlite3.connect(self.db_path, timeout=5.0) as conn:
             conn.execute("DELETE FROM agent_weights")
             conn.execute("DELETE FROM routing_history")
         log.info("Routing weights reset.")
@@ -508,7 +514,8 @@ class AgentRouter:
         try:
             from src.agent.parallel_dispatch import route_query
             keyword_scores: list[tuple[str, float]] = route_query(task.description, top_k=top_k)
-        except Exception:
+        except Exception as _e:
+            log.warning("route_query failed (%s), using fallback scorer", _e)
             keyword_scores = self._fallback_score(task, top_k)
 
         learned = self.learner.get_weights(task.domain)
@@ -609,7 +616,10 @@ class ConflictResolver:
         resolved: list[AgentResult] = []
         for task_results in by_task.values():
             if len(task_results) == 1:
-                resolved.append(task_results[0])
+                r = task_results[0]
+                if r.quality_score == 0.0:
+                    r.quality_score = _score_quality(r.response)
+                resolved.append(r)
             else:
                 resolved.append(self._pick_best(task_results))
         return resolved
@@ -881,8 +891,8 @@ class MasterOrchestrator:
         if on_start:
             try:
                 on_start(agent_name, task.id)
-            except Exception:
-                pass
+            except Exception as _e:
+                log.debug("on_start callback error: %s", _e)
 
         try:
             response = await executor(agent_name, task.description)
@@ -903,8 +913,8 @@ class MasterOrchestrator:
         if on_done:
             try:
                 on_done(agent_name, task.id, quality)
-            except Exception:
-                pass
+            except Exception as _e:
+                log.debug("on_done callback error: %s", _e)
 
         return AgentResult(
             task_id       = task.id,
