@@ -1715,14 +1715,17 @@ async def main():
         _trust_dir(cwd)
         _writeln()
 
-    # Normal screen buffer (no alt screen) so full terminal scrollback works.
-    # \033[3J clears the scrollback buffer so only this JARVIS session appears when scrolling up.
+    # Alt screen buffer: own isolated scrollback — scroll stops at session start, never bleeds
+    # into previous terminal sessions. Previous scroll-region code blocked scrolling; that's
+    # gone now, so alt screen scrollback works correctly.
     if sys.stdout.isatty():
-        sys.stdout.write("\033[3J\033[H\033[2J")  # clear scrollback + clear visible screen
+        sys.stdout.write("\033[?1049h\033[H\033[2J")
         sys.stdout.flush()
 
     def _exit_alt_screen():
-        pass  # no alt screen to exit
+        if sys.stdout.isatty():
+            sys.stdout.write("\033[?1049l")
+            sys.stdout.flush()
 
     def _tw():
         try:
@@ -3564,7 +3567,12 @@ def run():
         pass  # Handled in finally
     finally:
         # Ensure alt screen is always exited, even on abrupt kill
-        pass  # no alt screen to exit
+        try:
+            if sys.stdout.isatty():
+                sys.stdout.write("\033[?1049l")
+                sys.stdout.flush()
+        except Exception:
+            pass
         # Suppress aiohttp cleanup errors that print after event loop closes
         # These are harmless but ugly — redirect stderr to devnull during shutdown
         try:
