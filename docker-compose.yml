@@ -69,6 +69,15 @@ services:
     #           count: all
     #           capabilities: [gpu]
 
+  # ── Cloudflare Tunnel ──────────────────────────────────────────────────────
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    network_mode: host
+    restart: unless-stopped
+    env_file:
+      - .env
+
 volumes:
   jarvis_data:   # JARVIS config, memory, and models
   ollama_data:   # Ollama model weights
