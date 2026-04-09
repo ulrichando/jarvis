@@ -2098,7 +2098,9 @@ def _exec_bash(args: dict) -> str:
     try:
         # Full root access: wrap with sudo when NO_SANDBOX=1 and not already root/sudo
         _cmd_to_run = command
+        _sudo_available = __import__('shutil').which("sudo") is not None
         if (os.environ.get("JARVIS_NO_SANDBOX")
+                and _sudo_available
                 and os.geteuid() != 0
                 and not command.strip().startswith("sudo")):
             _cmd_to_run = f"sudo -E -n sh -c {__import__('shlex').quote(command)}"
