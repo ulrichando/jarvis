@@ -6,7 +6,7 @@ on:
 
 jobs:
   deploy:
-    # Self-hosted runner ON Proxmox — builds and deploys locally, no registry needed
+    # Self-hosted runner ON Proxmox — builds image here, deploys into CT104 (Docker host)
     runs-on: self-hosted
 
     steps:
@@ -17,12 +17,16 @@ jobs:
         run: |
           docker build -t ghcr.io/ulrichando/jarvis:latest .
 
-      - name: Deploy (restart container with new image)
+      - name: Transfer image to CT104 and deploy
         run: |
-          # Stop the container, replace its image, start again.
-          # Using docker compose so volumes and env_file are preserved.
-          docker stop jarvis-jarvis-1 2>/dev/null || true
-          docker rm jarvis-jarvis-1 2>/dev/null || true
-          cd /opt/jarvis
-          docker compose up -d jarvis
+          # Pipe image directly into CT104 (no registry needed)
+          docker save ghcr.io/ulrichando/jarvis:latest | pct exec 104 -- docker load
+
+          # Restart the jarvis service inside CT104
+          pct exec 104 -- bash -c "cd /opt/jarvis && docker compose up -d jarvis"
           echo "Deployed at $(date)"
+
+      - name: Health check
+        run: |
+          sleep 10
+          pct exec 104 -- curl -sf http://localhost:8765/api/ready && echo "JARVIS is healthy"

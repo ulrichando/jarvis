@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "updated_at": "2026-04-08T20:28:00.810760+00:00",
+  "updated_at": "2026-04-09T11:58:24.158946+00:00",
   "entries": {
     "src/cli/jarvis_cli.py": {
-      "mtime": 1775679638.5445676,
-      "size_bytes": 149484,
+      "mtime": 1775681476.6431224,
+      "size_bytes": 150086,
       "symbols": [
         "resolve_keybinding",
         "Spinner"
@@ -13,8 +13,8 @@
       "lang": "Python"
     },
     "src/agent/tools.py": {
-      "mtime": 1775639152.9071538,
-      "size_bytes": 150088,
+      "mtime": 1775683737.346966,
+      "size_bytes": 153606,
       "symbols": [],
       "summary": "",
       "lang": "Python"
@@ -31,8 +31,8 @@
       "lang": "Python"
     },
     "src/brain.py": {
-      "mtime": 1775639072.8573842,
-      "size_bytes": 90352,
+      "mtime": 1775685943.994595,
+      "size_bytes": 90383,
       "symbols": [
         "Brain"
       ],
@@ -53,8 +53,8 @@
       "lang": "Python"
     },
     "src/agent/loop.py": {
-      "mtime": 1775639072.8561718,
-      "size_bytes": 56826,
+      "mtime": 1775686320.6956732,
+      "size_bytes": 58790,
       "symbols": [],
       "summary": "",
       "lang": "Python"
@@ -148,13 +148,12 @@
       "lang": "Python"
     },
     "src/agent/context.py": {
-      "mtime": 1775429243.882669,
-      "size_bytes": 29867,
+      "mtime": 1775686315.1157064,
+      "size_bytes": 38071,
       "symbols": [
         "estimate_tokens",
         "compact_messages",
-        "build_context_summary",
-        "token_usage_display"
+        "build_context_summary"
       ],
       "summary": "",
       "lang": "Python"
@@ -380,8 +379,8 @@
       "lang": "Python"
     },
     "src/hooks/manager.py": {
-      "mtime": 1775639072.8588264,
-      "size_bytes": 14426,
+      "mtime": 1775683410.488747,
+      "size_bytes": 20391,
       "symbols": [
         "HookResult",
         "HookConfig",
@@ -708,8 +707,8 @@
       "lang": "Python"
     },
     "src/setup_wizard.py": {
-      "mtime": 1775309244.7879655,
-      "size_bytes": 9709,
+      "mtime": 1775687488.7613854,
+      "size_bytes": 9948,
       "symbols": [
         "run_setup",
         "check_setup_needed"
@@ -2608,8 +2607,8 @@
       "lang": "Markdown"
     },
     "src/config.py": {
-      "mtime": 1775309246.531982,
-      "size_bytes": 2134,
+      "mtime": 1775683774.9867659,
+      "size_bytes": 2013,
       "symbols": [
         "ensure_dirs",
         "setup_logging"
@@ -2950,9 +2949,10 @@
       "lang": "Python"
     },
     "extensions/jarvis-screen/background.js": {
-      "mtime": 1775676050.4181678,
-      "size_bytes": 7738,
+      "mtime": 1775691298.8216758,
+      "size_bytes": 8416,
       "symbols": [
+        "resolveBrainUrl",
         "persistRegistry",
         "restoreRegistry",
         "syncLiveTabs",
@@ -3432,8 +3432,8 @@
       "lang": "Python"
     },
     "src/logging_config.py": {
-      "mtime": 1775309247.0037587,
-      "size_bytes": 1221,
+      "mtime": 1775683431.5606291,
+      "size_bytes": 4318,
       "symbols": [
         "setup_logging"
       ],
@@ -4135,8 +4135,8 @@
       "lang": "Python"
     },
     "pyproject.toml": {
-      "mtime": 1775639072.8556626,
-      "size_bytes": 880,
+      "mtime": 1775687129.1152384,
+      "size_bytes": 997,
       "symbols": [],
       "summary": "",
       "lang": "TOML"
@@ -9351,8 +9351,8 @@
       "lang": "Python"
     },
     "docker-compose.yml": {
-      "mtime": 1775606464.504858,
-      "size_bytes": 2034,
+      "mtime": 1775697889.0384905,
+      "size_bytes": 2786,
       "symbols": [],
       "summary": "",
       "lang": "YAML"
@@ -9897,15 +9897,15 @@
       "lang": "Python"
     },
     ".jarvis/file-summaries.json": {
-      "mtime": 1775677713.1599607,
-      "size_bytes": 484330,
+      "mtime": 1775735845.4749014,
+      "size_bytes": 488331,
       "symbols": [],
       "summary": "",
       "lang": "JSON"
     },
     "src/server/web_server.py": {
-      "mtime": 1775642851.927736,
-      "size_bytes": 187148,
+      "mtime": 1775687170.915021,
+      "size_bytes": 188281,
       "symbols": [
         "JarvisWebServer"
       ],
@@ -9927,9 +9927,11 @@
       "lang": "JSON"
     },
     "src/reasoning/providers.py": {
-      "mtime": 1775639072.8595052,
-      "size_bytes": 66258,
+      "mtime": 1775687499.2893317,
+      "size_bytes": 73071,
       "symbols": [
+        "get_cache_stats",
+        "reset_cache_stats",
         "Provider",
         "ProviderRegistry"
       ],
@@ -10119,8 +10121,8 @@
       "lang": "Python"
     },
     "test/test_hooks.py": {
-      "mtime": 1775314198.4541066,
-      "size_bytes": 17089,
+      "mtime": 1775683514.1721723,
+      "size_bytes": 17629,
       "symbols": [
         "TestHooksNoHooks",
         "TestMatcher",
@@ -10150,8 +10152,8 @@
       "lang": "Python"
     },
     "src/memory/store.py": {
-      "mtime": 1775674281.2471986,
-      "size_bytes": 17737,
+      "mtime": 1775684874.798771,
+      "size_bytes": 18793,
       "symbols": [
         "MemoryStore"
       ],
@@ -17438,8 +17440,8 @@
       "lang": "Python"
     },
     "src/tools/ScheduleCronTool/CronDeleteTool.py": {
-      "mtime": 1775309254.0336483,
-      "size_bytes": 341,
+      "mtime": 1775683486.4563248,
+      "size_bytes": 461,
       "symbols": [
         "execute_cron_delete"
       ],
@@ -17447,8 +17449,8 @@
       "lang": "Python"
     },
     "src/tools/ScheduleCronTool/CronCreateTool.py": {
-      "mtime": 1775309254.0401194,
-      "size_bytes": 341,
+      "mtime": 1775683466.8764331,
+      "size_bytes": 1040,
       "symbols": [
         "execute_cron_create"
       ],
@@ -17666,8 +17668,8 @@
       "lang": "Python"
     },
     "src/tools/ScheduleCronTool/CronListTool.py": {
-      "mtime": 1775309254.005538,
-      "size_bytes": 293,
+      "mtime": 1775683492.5082915,
+      "size_bytes": 399,
       "symbols": [
         "execute_cron_list"
       ],
@@ -19569,17 +19571,17 @@
       "lang": "HTML"
     },
     "extensions/jarvis-screen/side_panel.js": {
-      "mtime": 1775675918.8587217,
-      "size_bytes": 16274,
+      "mtime": 1775691306.8896368,
+      "size_bytes": 16822,
       "symbols": [
+        "resolveBrainUrl",
         "renderMarkdown",
         "hideEmpty",
         "addMessage",
         "addStreamingRow",
         "appendToolEvent",
         "scrollBottom",
-        "domainInitial",
-        "renderTabBar"
+        "domainInitial"
       ],
       "summary": "",
       "lang": "JavaScript"
@@ -19943,11 +19945,183 @@
       "lang": "HTML"
     },
     "extensions/jarvis-screen/options.js": {
-      "mtime": 1775675944.9626133,
-      "size_bytes": 1064,
+      "mtime": 1775691311.3736148,
+      "size_bytes": 1066,
       "symbols": [],
       "summary": "",
       "lang": "JavaScript"
+    },
+    "test/test_token_mechanisms.py": {
+      "mtime": 1775686523.2745001,
+      "size_bytes": 22390,
+      "symbols": [
+        "TestRepairToolPairs",
+        "TestCheckContextWindow"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "src/cron/scheduler.py": {
+      "mtime": 1775683790.586683,
+      "size_bytes": 14064,
+      "symbols": [
+        "CronJob",
+        "CronScheduler"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "src/security/device_auth.py": {
+      "mtime": 1775684709.5874522,
+      "size_bytes": 8783,
+      "symbols": [
+        "DeviceAuth"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "src/plugins/sdk.py": {
+      "mtime": 1775683316.9012752,
+      "size_bytes": 6242,
+      "symbols": [
+        "PluginApi",
+        "PluginEntry",
+        "definePluginEntry",
+        "get_plugin",
+        "list_plugins"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "src/routing/resolver.py": {
+      "mtime": 1775684842.2349076,
+      "size_bytes": 6039,
+      "symbols": [
+        "Route",
+        "RouteResolver",
+        "get_resolver"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "src/media/mime.py": {
+      "mtime": 1775683767.442806,
+      "size_bytes": 5640,
+      "symbols": [
+        "detect_mime",
+        "check_media_size"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "src/security/prompt_injection.py": {
+      "mtime": 1775684742.4073193,
+      "size_bytes": 5603,
+      "symbols": [
+        "is_prompt_injection",
+        "sanitize_for_memory",
+        "scan_batch"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "src/memory/dedup.py": {
+      "mtime": 1775684810.35504,
+      "size_bytes": 5398,
+      "symbols": [
+        "MemoryDeduplicator",
+        "get_deduplicator"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "src/channels/registry.py": {
+      "mtime": 1775684785.3591435,
+      "size_bytes": 4623,
+      "symbols": [
+        "ChannelRegistry",
+        "get_registry"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "src/context/engine_protocol.py": {
+      "mtime": 1775683293.2734103,
+      "size_bytes": 3953,
+      "symbols": [
+        "ContextEngine",
+        "set_context_engine",
+        "get_context_engine",
+        "clear_context_engine"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "src/channels/base.py": {
+      "mtime": 1775684768.8752112,
+      "size_bytes": 3900,
+      "symbols": [
+        "ChannelMessage",
+        "ChannelCapabilities",
+        "ChannelPlugin"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "src/utils/log_sanitize.py": {
+      "mtime": 1775683204.857923,
+      "size_bytes": 3714,
+      "symbols": [
+        "sanitize_for_log",
+        "LogSanitizeFilter",
+        "attach_sanitize_filter"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "src/memory/sdk.py": {
+      "mtime": 1775683268.6895518,
+      "size_bytes": 3151,
+      "symbols": [
+        "MemorySearchManager",
+        "set_memory_backend",
+        "get_memory_backend",
+        "clear_memory_backend"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "src/secrets.py": {
+      "mtime": 1775683183.462049,
+      "size_bytes": 2949,
+      "symbols": [
+        "SecretRef",
+        "resolve_secret",
+        "secret_ref_from_config"
+      ],
+      "summary": "",
+      "lang": "Python"
+    },
+    "src/channels/__init__.py": {
+      "mtime": 1775684750.6872857,
+      "size_bytes": 742,
+      "symbols": [],
+      "summary": "",
+      "lang": "Python"
+    },
+    "src/media/constants.py": {
+      "mtime": 1775683222.0338225,
+      "size_bytes": 602,
+      "symbols": [],
+      "summary": "",
+      "lang": "Python"
+    },
+    "src/media/__init__.py": {
+      "mtime": 1775683215.109863,
+      "size_bytes": 407,
+      "symbols": [],
+      "summary": "",
+      "lang": "Python"
     }
   }
 }

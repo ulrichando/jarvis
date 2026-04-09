@@ -1,6 +1,6 @@
 // JARVIS Side Panel v2.0 — DOM-aware AI with multi-tab @mention
-const PRIMARY_BRAIN  = 'http://10.10.0.50:8765'
-const FALLBACK_BRAIN = 'http://localhost:8765'
+const PRIMARY_BRAIN  = 'https://jarvis.0wlan.com'
+const FALLBACK_BRAIN = 'http://10.10.0.129:8765'
 let JARVIS_URL = PRIMARY_BRAIN
 
 async function resolveBrainUrl() {

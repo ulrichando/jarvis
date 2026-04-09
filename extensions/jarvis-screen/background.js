@@ -1,8 +1,8 @@
 // JARVIS — background service worker v2.0
 
-// Brain URL — Proxmox primary, localhost fallback
-const PRIMARY_BRAIN   = 'http://10.10.0.50:8765'
-const FALLBACK_BRAIN  = 'http://localhost:8765'
+// Brain URL — cloud primary, LAN fallback, localhost last resort
+const PRIMARY_BRAIN   = 'https://jarvis.0wlan.com'
+const FALLBACK_BRAIN  = 'http://10.10.0.129:8765'
 let JARVIS_URL = PRIMARY_BRAIN
 
 async function resolveBrainUrl() {
