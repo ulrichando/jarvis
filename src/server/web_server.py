@@ -2977,6 +2977,19 @@ class JarvisWebServer:
             return web.json_response({"ready": False}, status=503)
         app.router.add_get("/api/ready", _ready_check)
 
+        # Version endpoint — returns current git commit hash for auto-update checks
+        async def _version_handler(request):
+            import subprocess as _sp
+            try:
+                commit = _sp.check_output(
+                    ["git", "rev-parse", "--short", "HEAD"],
+                    cwd="/app", stderr=_sp.DEVNULL
+                ).decode().strip()
+            except Exception:
+                commit = "unknown"
+            return web.json_response({"commit": commit}, headers={"Access-Control-Allow-Origin": "*"})
+        app.router.add_get("/api/version", _version_handler)
+
         # Conversation history API — used by CLI relay mode to sync
         async def _conversations_handler(request):
             try:

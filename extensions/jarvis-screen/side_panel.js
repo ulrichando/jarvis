@@ -18,6 +18,33 @@ async function resolveBrainUrl() {
 }
 resolveBrainUrl()
 
+// ── Auto-update check ─────────────────────────────────────────────────────────
+async function checkForUpdate() {
+  try {
+    const res = await fetch(`${JARVIS_URL}/api/version`, { signal: AbortSignal.timeout(4000) })
+    if (!res.ok) return
+    const { commit } = await res.json()
+    const stored = await chrome.storage.local.get(['known_commit'])
+    const known = stored.known_commit
+    if (known && commit && commit !== known) {
+      const banner = document.createElement('div')
+      banner.style.cssText = `
+        position:fixed;top:0;left:0;right:0;z-index:9999;
+        background:linear-gradient(90deg,#f59e0b,#d97706);
+        color:#000;font-size:11px;font-family:monospace;
+        padding:6px 12px;display:flex;align-items:center;gap:8px;
+        box-shadow:0 2px 8px rgba(0,0,0,0.4);
+      `
+      banner.innerHTML = `<span>⬆ JARVIS updated — reload extension to get latest</span>
+        <span style="margin-left:auto;cursor:pointer;font-weight:bold" onclick="this.parentElement.remove()">✕</span>`
+      document.body.prepend(banner)
+    }
+    if (commit) chrome.storage.local.set({ known_commit: commit })
+  } catch { /* offline */ }
+}
+setTimeout(checkForUpdate, 3000)
+setInterval(checkForUpdate, 10 * 60 * 1000)
+
 const messagesEl   = document.getElementById('messages')
 const emptyState   = document.getElementById('emptyState')
 const queryInput   = document.getElementById('query')
