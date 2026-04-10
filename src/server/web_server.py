@@ -2979,14 +2979,19 @@ class JarvisWebServer:
 
         # Version endpoint — returns current git commit hash for auto-update checks
         async def _version_handler(request):
-            import subprocess as _sp
-            try:
-                commit = _sp.check_output(
-                    ["git", "rev-parse", "--short", "HEAD"],
-                    cwd="/app", stderr=_sp.DEVNULL
-                ).decode().strip()
-            except Exception:
-                commit = "unknown"
+            # In Docker: JARVIS_GIT_COMMIT is set at build time via --build-arg
+            # Locally: fall back to git rev-parse
+            commit = os.environ.get("JARVIS_GIT_COMMIT", "")
+            if not commit or commit == "unknown":
+                import subprocess as _sp
+                try:
+                    commit = _sp.check_output(
+                        ["git", "rev-parse", "--short", "HEAD"],
+                        cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        stderr=_sp.DEVNULL
+                    ).decode().strip()
+                except Exception:
+                    commit = "unknown"
             return web.json_response({"commit": commit}, headers={"Access-Control-Allow-Origin": "*"})
         app.router.add_get("/api/version", _version_handler)
 

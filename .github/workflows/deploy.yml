@@ -15,8 +15,10 @@ jobs:
 
       - name: Build Docker image
         run: |
+          # Embed commit hash so /api/version works inside the container
+          GIT_COMMIT=$(git rev-parse --short HEAD)
           # Tag as the name docker-compose.yml expects on CT104
-          docker build -t ghcr.io/ulrichando/jarvis:latest .
+          docker build --build-arg GIT_COMMIT="$GIT_COMMIT" -t ghcr.io/ulrichando/jarvis:latest .
 
       - name: Transfer image to CT104 and deploy
         run: |

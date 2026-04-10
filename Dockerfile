@@ -21,6 +21,10 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV JARVIS_HOME=/data/.jarvis
 
+# Embed git commit hash at build time so /api/version works without .git
+ARG GIT_COMMIT=unknown
+ENV JARVIS_GIT_COMMIT=$GIT_COMMIT
+
 WORKDIR /app
 
 # Patch all base image vulnerabilities first, then install runtime deps.
