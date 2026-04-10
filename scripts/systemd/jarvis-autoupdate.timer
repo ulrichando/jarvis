@@ -1,0 +1,10 @@
+[Unit]
+Description=JARVIS Auto-Update every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=jarvis-autoupdate.service
+
+[Install]
+WantedBy=timers.target

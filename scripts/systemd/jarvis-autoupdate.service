@@ -1,0 +1,10 @@
+[Unit]
+Description=JARVIS Auto-Update (one-shot)
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Documents/Projects/jarvis
+ExecStart=%h/Documents/Projects/jarvis/scripts/auto-update.sh
+StandardOutput=journal
+StandardError=journal

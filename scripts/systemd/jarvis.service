@@ -1,0 +1,15 @@
+[Unit]
+Description=JARVIS Web Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Documents/Projects/jarvis
+ExecStart=/usr/bin/python3 -m src.server.web_server
+Restart=always
+RestartSec=2
+Environment=PYTHONUNBUFFERED=1
+Environment=JARVIS_HOT_RELOAD=1
+
+[Install]
+WantedBy=default.target
