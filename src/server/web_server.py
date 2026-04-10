@@ -198,9 +198,9 @@ class JarvisWebServer:
         """Generate TTS audio from text.
 
         Priority:
-          1. Groq PlayAI TTS  — male voice, fast, uses existing API key
-          2. Edge TTS          — Microsoft neural, male (Andrew), cloud fallback
-          3. Piper             — local, but en_US-lessac is female; kept as last resort
+          1. Groq Orpheus TTS  — canopylabs/orpheus-v1-english, voice: dan (primary)
+          2. Edge TTS           — Microsoft neural, male (Andrew), cloud fallback
+          3. Piper              — local, last resort
         """
         text = request.query.get("text", "")
         if not text:
