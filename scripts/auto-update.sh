@@ -58,24 +58,24 @@ fi
 notify-send "JARVIS Updated" "New version pulled: $(git rev-parse --short HEAD)" \
   --icon=dialog-information --expire-time=5000 2>/dev/null || true
 
-# Restart web server if running
-if pgrep -f "src.server.web_server" &>/dev/null; then
-  echo "$LOG_PREFIX Restarting web server..."
+# Restart web server via systemd (Restart=always means it comes back automatically)
+if systemctl --user is-active --quiet jarvis 2>/dev/null; then
+  echo "$LOG_PREFIX Restarting web server via systemd..."
+  systemctl --user restart jarvis
+  echo "$LOG_PREFIX Web server restarted"
+elif pgrep -f "src.server.web_server" &>/dev/null; then
+  # Fallback: not under systemd — pkill and let the process die cleanly
+  # (JARVIS will restart itself via os.execv if JARVIS_HOT_RELOAD=1 is set)
+  echo "$LOG_PREFIX Restarting web server (not managed by systemd)..."
   pkill -f "src.server.web_server" 2>/dev/null || true
-  sleep 2
-  PYTHONUNBUFFERED=1 nohup python3 -u -m src.server.web_server \
-    > /tmp/jarvis-clean.log 2>&1 &
-  echo "$!" > /tmp/jarvis-server.pid
-  echo "$LOG_PREFIX Web server restarted (PID $!)"
 fi
 
-# Restart desktop overlay if running (on any update — local or server)
+# Restart desktop overlay if running
 if pgrep -f "jarvis.*desktop\|desktop.*jarvis\|src.desktop.app" &>/dev/null; then
   echo "$LOG_PREFIX Restarting desktop overlay..."
   pkill -f "jarvis.*desktop\|desktop.*jarvis\|src.desktop.app" 2>/dev/null || true
   sleep 1
-  nohup python3 -m src.desktop.app \
-    > /tmp/jarvis-desktop.log 2>&1 &
+  nohup python3 -m src.desktop.app > /tmp/jarvis-desktop.log 2>&1 &
   echo "$LOG_PREFIX Desktop restarted"
 elif [ "$SERVER_UPDATED" = "true" ]; then
   echo "$LOG_PREFIX Server updated but desktop not running — skipping restart"
