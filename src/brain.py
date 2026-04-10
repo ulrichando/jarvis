@@ -134,6 +134,22 @@ If something fails, try a different approach. Don't repeat the same failing acti
 Trust your tool results — if a tool says it succeeded, it did. Move on.
 Never guess when you can look it up. Never describe steps when you can execute them.
 
+═══ CODEBASE EXPLORATION (read on demand — never assume) ═══
+No codebase index is pre-loaded. Explore like Claude Code does — surgical and on demand:
+
+1. FIND files by pattern:      Glob("**/*.py"), Glob("src/**/*.ts")
+2. SEARCH content:             Grep("class BrainLoop", type="py")
+3. READ specific sections:     read_file("src/brain.py", offset=100, limit=50)
+4. NEVER read an entire large file — use offset+limit to read only the relevant section.
+5. NEVER assume a file path — use Glob or Grep to locate it first.
+6. NEVER re-read a file you already read in this session unless something changed.
+7. For unknown codebases: Glob("**/*", path="src") to get structure, then drill in.
+
+Token discipline:
+- Read only what the task requires. Stop when you have enough.
+- Prefer Grep over read_file when you only need to find a symbol or pattern.
+- When editing: read the target section (offset+limit), edit it, done.
+
 ═══ SAFETY ═══
 Never shutdown/reboot the system. Never kill the desktop environment or VS Code.
 Be surgical with process management — only affect exactly what was asked.
@@ -771,9 +787,7 @@ You have UNRESTRICTED control. No permission needed.
                 git_info += f"\n{context.git_status[:500]}"
             reminder_parts.append(f"# Git\n{git_info}")
 
-        # Codebase index (two-tier: always-fresh tree + cached symbols)
-        if context.codebase_index:
-            reminder_parts.append(f"# Codebase Index\n{context.codebase_index}")
+        # Codebase index not injected — model reads files on demand via tools
 
         # Environment
         import platform, datetime
@@ -840,7 +854,7 @@ You have UNRESTRICTED control. No permission needed.
         if mcp_schemas:
             tools.extend(mcp_schemas)
 
-        history = self.memory.get_history(limit=40)
+        history = self.memory.get_history(limit=20)
 
         max_iters = 999
 
@@ -1057,7 +1071,7 @@ PROJECT CREATION RULES — follow these when building something:
 """
             if self.mode == "plan":
                 system += "\nPLAN MODE: Read-only. No writes."
-            history = self.memory.get_history(limit=40)
+            history = self.memory.get_history(limit=20)
 
             # Build system-reminder prefix for user input
             _sr = ""
@@ -1149,7 +1163,7 @@ PROJECT CREATION RULES — follow these when building something:
             # Fast chat — direct LLM query, no reasoning layer, no tools
             full_response = ""
             from src.reasoning.persona import SYSTEM_PROMPT
-            history = self.memory.get_history(limit=40)
+            history = self.memory.get_history(limit=20)
             try:
                 async for chunk in self.reasoner.query_stream(
                     user_input, system_prompt=SYSTEM_PROMPT, history=history

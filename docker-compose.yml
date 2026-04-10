@@ -32,7 +32,7 @@ services:
       - JARVIS_HOME=/data/.jarvis
     depends_on:
       ollama:
-        condition: service_healthy
+        condition: service_started
     restart: unless-stopped
     networks:
       - jarvis_net

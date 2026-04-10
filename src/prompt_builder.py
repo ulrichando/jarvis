@@ -72,12 +72,8 @@ class PromptBuilder:
         # Detect stack
         ctx.detected_stack = self._detect_stack()
 
-        # Codebase index (only if .jarvis/ exists — project initialized)
-        try:
-            from src.indexer.builder import get_context as _get_index_context
-            ctx.codebase_index = _get_index_context(root=self.cwd, max_chars=120000)
-        except Exception:
-            pass
+        # Codebase index intentionally not pre-loaded — JARVIS reads files on demand
+        # like Claude Code does. Use read_file/search_files tools instead.
 
         return ctx
 

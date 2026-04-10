@@ -400,6 +400,24 @@ async def _agent_loop_internal(
             final_text += text_content
 
         if not tool_calls:
+            # Auto-continue if the response suggests more work ahead
+            _forward_signals = (
+                "next", "now i'll", "now i will", "i'll now", "i will now",
+                "then i'll", "then i will", "let me", "i need to", "i'll create",
+                "i'll write", "i'll build", "i'll implement", "i'll add",
+                "moving on", "continuing", "proceeding", "step ", "phase ",
+                "first,", "second,", "third,", "finally,",
+            )
+            _tc_lower = text_content.lower()
+            _should_continue = (
+                tools
+                and any(sig in _tc_lower for sig in _forward_signals)
+                and iterations < max_iterations
+            )
+            if _should_continue:
+                _append_assistant_message(messages, text_content, [])
+                messages.append({"role": "user", "content": "Continue."})
+                continue
             break
 
         # Store assistant + tool_calls in OpenAI format
@@ -1114,6 +1132,24 @@ async def agent_loop_stream(
                 yield {"type": "text", "content": text_content}
 
         if not tool_calls:
+            # Auto-continue if the response suggests more work ahead
+            _forward_signals = (
+                "next", "now i'll", "now i will", "i'll now", "i will now",
+                "then i'll", "then i will", "let me", "i need to", "i'll create",
+                "i'll write", "i'll build", "i'll implement", "i'll add",
+                "moving on", "continuing", "proceeding", "step ", "phase ",
+                "first,", "second,", "third,", "finally,",
+            )
+            _tc_lower = text_content.lower()
+            _should_continue = (
+                _effective_tools
+                and any(sig in _tc_lower for sig in _forward_signals)
+                and iterations < max_iterations
+            )
+            if _should_continue:
+                _append_assistant_message(messages, text_content, [])
+                messages.append({"role": "user", "content": "Continue."})
+                continue
             break
 
         # Store in OpenAI format
