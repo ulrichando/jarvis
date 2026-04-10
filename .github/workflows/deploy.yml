@@ -15,12 +15,13 @@ jobs:
 
       - name: Build Docker image
         run: |
-          docker build -t git.0wlan.com/ulrich/jarvis:latest .
+          # Tag as the name docker-compose.yml expects on CT104
+          docker build -t ghcr.io/ulrichando/jarvis:latest .
 
       - name: Transfer image to CT104 and deploy
         run: |
           # Pipe image directly into CT104 (no registry needed)
-          docker save git.0wlan.com/ulrich/jarvis:latest | /usr/sbin/pct exec 104 -- docker load
+          docker save ghcr.io/ulrichando/jarvis:latest | /usr/sbin/pct exec 104 -- docker load
 
           # Restart the jarvis service inside CT104
           /usr/sbin/pct exec 104 -- bash -c "cd /opt/jarvis && docker compose up -d jarvis"
