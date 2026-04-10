@@ -4,12 +4,35 @@ networks:
 
 services:
 
-  # ── JARVIS backend ──────────────────────────────────────────────────────────
+  # ── nginx reverse proxy (zero-downtime blue-green swap) ──────────────────────
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # upstream.conf is written by the deploy workflow to point at the active slot
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+    depends_on:
+      - jarvis
+    restart: unless-stopped
+    networks:
+      - jarvis_net
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ── JARVIS backend (active slot) ─────────────────────────────────────────────
+  # The deploy workflow swaps this to a fresh container while keeping nginx up.
+  # "jarvis" is always the live slot nginx routes to.
+  # "jarvis_canary" is the staging slot brought up during a deploy, then renamed.
   jarvis:
     build: .
-    image: jarvis:latest
-    ports:
-      - "80:8765"
+    image: ghcr.io/ulrichando/jarvis:latest
+    expose:
+      - "8765"
     volumes:
       - jarvis_data:/data/.jarvis
       - ./.env:/app/.env:ro
