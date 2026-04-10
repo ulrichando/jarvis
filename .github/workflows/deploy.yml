@@ -29,11 +29,20 @@ jobs:
           # Pipe image directly into CT104 (no registry needed)
           docker save ghcr.io/ulrichando/jarvis:latest | /usr/sbin/pct exec 104 -- docker load
 
-          # Restart the jarvis service inside CT104
-          /usr/sbin/pct exec 104 -- bash -c "cd /opt/jarvis && docker compose up -d jarvis"
+          # Force-recreate so the new image is actually used (not the cached container)
+          /usr/sbin/pct exec 104 -- bash -c "cd /opt/jarvis && docker compose up -d --force-recreate --no-deps jarvis"
           echo "Deployed at $(date)"
 
       - name: Health check
         run: |
-          sleep 10
-          /usr/sbin/pct exec 104 -- curl -sf http://localhost:8765/api/ready && echo "JARVIS is healthy"
+          echo "Waiting for JARVIS to be ready..."
+          for i in $(seq 1 90); do
+            if /usr/sbin/pct exec 104 -- curl -sf http://localhost:8765/api/ready > /dev/null 2>&1; then
+              echo "JARVIS is healthy (${i}s)"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "JARVIS did not come up in 90s — last logs:"
+          /usr/sbin/pct exec 104 -- docker logs --tail=30 jarvis-jarvis-1
+          exit 1
