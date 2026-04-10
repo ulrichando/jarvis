@@ -4,6 +4,10 @@ on:
   push:
     branches: [master]
 
+concurrency:
+  group: deploy-jarvis
+  cancel-in-progress: false
+
 jobs:
   deploy:
     # Self-hosted runner ON Proxmox — builds image here, deploys into CT104 (Docker host)
