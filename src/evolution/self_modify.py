@@ -570,24 +570,29 @@ Output the COMPLETE updated file. Not just the changes — the FULL file."""
 
     def restart(self) -> str:
         """Restart the JARVIS server process."""
-        restart_script = JARVIS_ROOT / ".restart.sh"
-        restart_script.write_text(f"""#!/bin/bash
-sleep 2
-cd {JARVIS_ROOT}
-source .venv/bin/activate
-PYTHONUNBUFFERED=1 python3 -m src.server.web_server &
-""")
+        # Try systemd service first (production/local service mode)
         try:
-            restart_script.chmod(0o755)
-        except (AttributeError, OSError):
-            os.chmod(str(restart_script), 0o755)
+            result = subprocess.run(
+                ["systemctl", "--user", "is-active", "jarvis"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                subprocess.Popen(
+                    ["systemctl", "--user", "restart", "jarvis"],
+                    start_new_session=True,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                return "Restarting via systemd... I'll be back in a few seconds."
+        except Exception:
+            pass
 
-        subprocess.Popen(
-            ["bash", str(restart_script)],
-            start_new_session=True,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        return "Restarting... I'll be back in a few seconds."
+        # Fallback: send SIGTERM to self — supervisor/systemd will relaunch
+        try:
+            import signal
+            os.kill(os.getpid(), signal.SIGTERM)
+        except Exception:
+            pass
+        return "Restarting..."
 
     def get_own_source(self, module_path: str) -> str:
         """Read one of JARVIS's own source files."""

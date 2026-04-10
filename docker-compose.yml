@@ -90,6 +90,21 @@ services:
     #           count: all
     #           capabilities: [gpu]
 
+  # ── Prowlarr (indexer manager) ─────────────────────────────────────────────
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    ports:
+      - "9696:9696"
+    volumes:
+      - prowlarr_config:/config
+    environment:
+      - PUID=0
+      - PGID=0
+      - TZ=Africa/Douala
+    restart: unless-stopped
+    networks:
+      - jarvis_net
+
   # ── Cloudflare Tunnel ──────────────────────────────────────────────────────
   cloudflared:
     image: cloudflare/cloudflared:latest
@@ -100,5 +115,6 @@ services:
       - .env
 
 volumes:
-  jarvis_data:   # JARVIS config, memory, and models
-  ollama_data:   # Ollama model weights
+  jarvis_data:      # JARVIS config, memory, and models
+  ollama_data:      # Ollama model weights
+  prowlarr_config:  # Prowlarr indexer config and DB

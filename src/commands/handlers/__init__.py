@@ -21,3 +21,4 @@ from src.commands.handlers import troubleshoot  # noqa: F401  (code troubleshoot
 from src.commands.handlers import power         # noqa: F401  (shutdown, reboot, sleep, lock)
 from src.commands.handlers import insights      # noqa: F401  (insights, security-review, pr-comments)
 from src.commands.handlers import remote        # noqa: F401  (remote, IDE, integration commands)
+from src.commands.handlers import habit         # noqa: F401  (self-modification, /habit command)
