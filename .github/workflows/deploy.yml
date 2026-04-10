@@ -25,20 +25,31 @@ jobs:
             -t ghcr.io/ulrichando/jarvis:$GIT_COMMIT \
             .
 
+      # ── Push to GHCR (only changed layers go over the wire) ──────────────────
+      - name: Push image to GHCR
+        run: |
+          echo "${{ secrets.GHCR_TOKEN }}" \
+            | docker login ghcr.io -u ulrichando --password-stdin
+          docker push ghcr.io/ulrichando/jarvis:latest
+          docker push ghcr.io/ulrichando/jarvis:$(git rev-parse --short HEAD)
+          echo "Pushed at $(date)"
+
       # ── Zero-downtime canary deploy ──────────────────────────────────────────
       # Strategy:
-      #   1. Load new image into CT104
+      #   1. CT104 pulls from GHCR — only changed layers downloaded (fast)
       #   2. Start jarvis_canary (new image) alongside the live jarvis container
       #   3. Wait for canary to pass its health check
       #   4. nginx reload → traffic instantly switches to canary (no dropped requests)
       #   5. Remove old jarvis container; rename canary → jarvis
       #   6. Rollback automatically if canary never becomes healthy
 
-      - name: Load image into CT104
+      - name: Pull new image on CT104
         run: |
-          docker save ghcr.io/ulrichando/jarvis:latest \
-            | /usr/sbin/pct exec 104 -- docker load
-          echo "Image loaded at $(date)"
+          # Log CT104 into GHCR, then pull — only changed layers are downloaded
+          echo "${{ secrets.GHCR_TOKEN }}" \
+            | /usr/sbin/pct exec 104 -- docker login ghcr.io -u ulrichando --password-stdin
+          /usr/sbin/pct exec 104 -- docker pull ghcr.io/ulrichando/jarvis:latest
+          echo "Pull complete at $(date)"
 
       - name: Start canary container
         run: |
@@ -62,7 +73,6 @@ jobs:
               -v \$(pwd)/.env:/app/.env:ro \
               -v /root/.ssh/jarvis_to_kali:/data/.ssh/jarvis_to_kali:ro \
               -v /root/.ssh/known_hosts:/data/.ssh/known_hosts:rw \
-              --device /dev/snd \
               --restart no \
               ghcr.io/ulrichando/jarvis:latest
 
@@ -104,12 +114,8 @@ jobs:
             cd /opt/jarvis
 
             # Point nginx upstream at the canary
-            cat > nginx/conf.d/upstream.conf <<'EOF'
-          # Managed by deploy workflow — do not edit by hand.
-          upstream jarvis_active {
-              server jarvis_canary:8765;
-          }
-          EOF
+            printf '# Managed by deploy workflow — do not edit by hand.\nupstream jarvis_active {\n    server jarvis_canary:8765;\n}\n' \
+              > nginx/conf.d/upstream.conf
 
             # nginx -s reload is graceful: existing connections finish on old upstream,
             # new connections go to canary — zero dropped requests
@@ -127,13 +133,8 @@ jobs:
             docker rename jarvis_canary jarvis-jarvis-1
 
             # Restore upstream.conf to point at the standard service name
-            # (for the next deploy cycle — canary will again be the staging slot)
-            cat > nginx/conf.d/upstream.conf <<'EOF'
-          # Managed by deploy workflow — do not edit by hand.
-          upstream jarvis_active {
-              server jarvis:8765;
-          }
-          EOF
+            printf '# Managed by deploy workflow — do not edit by hand.\nupstream jarvis_active {\n    server jarvis:8765;\n}\n' \
+              > nginx/conf.d/upstream.conf
 
             # Bring compose back in sync: registers the renamed container as the
             # managed 'jarvis' service without recreating it
