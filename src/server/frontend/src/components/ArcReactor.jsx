@@ -206,7 +206,7 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
     })
 
     // ── 4. Random "circuit" lines on surface (the city-grid look) ──
-    for (let i = 0; i < 300; i++) {
+    for (let i = 0; i < 80; i++) {
       const pts = []
       let theta = Math.random() * Math.PI * 2
       let phi = Math.acos(2 * Math.random() - 1)
@@ -301,7 +301,7 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
     })
 
     // ── 8. Surface particles (accent sparkle) ──
-    const SPARK_N = 25000
+    const SPARK_N = 5000
     const sparkPos = new Float32Array(SPARK_N * 3)
     const sparkPhases = new Float32Array(SPARK_N)
     const sparkBase = new Float32Array(SPARK_N * 3)
@@ -335,7 +335,7 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
     globe.add(new THREE.Points(sparkGeo, sparkMat))
 
     // ── 8b. Dense cyan neural lines — bright crisscrossing web inside sphere ──
-    const NEURAL_LINES = 200
+    const NEURAL_LINES = 80
     const signals = []
     for (let i = 0; i < NEURAL_LINES; i++) {
       const tiltX = Math.random() * Math.PI
@@ -402,11 +402,15 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
     globe.add(glowSprite)
 
     // ── Animate ──
-    let time = 0, smoothAudio = 0, animId
+    let time = 0, smoothAudio = 0, animId, lastFrame = 0
+    const TARGET_FPS = 30
+    const FRAME_MS  = 1000 / TARGET_FPS
 
-    function animate() {
+    function animate(now = 0) {
       animId = requestAnimationFrame(animate)
-      time += 0.003
+      if (now - lastFrame < FRAME_MS) return
+      lastFrame = now
+      time += 0.006  // doubled step to compensate for halved call rate
       const audio = audioRef.current
       const st = stateRef.current
 
@@ -422,14 +426,23 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
       const energy = Math.max(smoothAudio, speakPulse)
 
       // ── State-driven color transitions ──
-      // 'ready' = green flash, 'booting' = amber dim, default = theme color
+      // listening/idle = green  | thinking = amber  | speaking = blue  | offline = red
       let targetColor = primaryInt
       let targetGlow = glowInt
-      if (st === 'ready') {
-        targetColor = 0x22c55e  // green-500
+      if (st === 'offline') {
+        targetColor = 0xef4444  // red-500  — disconnected
+        targetGlow = 0xf87171   // red-400
+      } else if (st === 'thinking') {
+        targetColor = 0xf59e0b  // amber-500 — processing
+        targetGlow = 0xfbbf24   // amber-400
+      } else if (st === 'speaking') {
+        targetColor = 0x3b82f6  // blue-500  — JARVIS talking
+        targetGlow = 0x60a5fa   // blue-400
+      } else if (st === 'idle' || st === 'listening' || st === 'ready') {
+        targetColor = 0x22c55e  // green-500 — listening / ready
         targetGlow = 0x4ade80   // green-400
       } else if (st === 'booting') {
-        targetColor = 0xf59e0b  // amber-500
+        targetColor = 0xf59e0b  // amber-500 — initializing
         targetGlow = 0xfbbf24   // amber-400
       }
 
@@ -472,12 +485,14 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
       })
 
       // Eye rings — slow independent rotation + status color indicator
-      // Blue = speaking, green = ready, amber = booting, theme = idle/thinking
-      const eyeTargetColor = st === 'speaking' ? 0x3b82f6   // blue-500
-        : st === 'ready' ? 0x4ade80                          // green-400
-        : st === 'booting' ? 0xfbbf24                        // amber-400
-        : glowInt                                            // theme
-      const eyeLerp = st === 'speaking' ? 0.15 : st === 'ready' ? 0.12 : 0.06
+      // green = listening | amber = thinking | blue = speaking | red = offline
+      const eyeTargetColor = st === 'offline'    ? 0xf87171   // red-400
+        : st === 'thinking'                       ? 0xfbbf24   // amber-400
+        : st === 'speaking'                       ? 0x60a5fa   // blue-400
+        : st === 'idle' || st === 'listening' || st === 'ready' ? 0x4ade80  // green-400
+        : st === 'booting'                        ? 0xfbbf24   // amber-400
+        : glowInt
+      const eyeLerp = st === 'speaking' ? 0.15 : st === 'thinking' ? 0.12 : st === 'offline' ? 0.2 : 0.06
       eyeRings.forEach((ring, i) => {
         ring.rotation.x += (0.002 + i * 0.001) * (i % 2 === 0 ? 1 : -1)
         ring.rotation.z += 0.001 * (i % 2 === 0 ? -1 : 1)
@@ -489,8 +504,12 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
         // State-driven brightness
         if (st === 'speaking') {
           ring.material.opacity = 0.5 + 0.4 * Math.sin(time * 5 + i * 1.2)
-        } else if (st === 'ready') {
-          ring.material.opacity = 0.7 + 0.3 * Math.sin(time * 6 + i * 1.5)
+        } else if (st === 'thinking') {
+          ring.material.opacity = 0.4 + 0.4 * Math.sin(time * 3 + i * 0.8)
+        } else if (st === 'idle' || st === 'listening' || st === 'ready') {
+          ring.material.opacity = 0.5 + 0.25 * Math.sin(time * 2 + i * 1.5)
+        } else if (st === 'offline') {
+          ring.material.opacity = 0.2 + 0.15 * Math.sin(time * 1.5 + i)
         } else if (st === 'booting') {
           ring.material.opacity = 0.3 + 0.2 * Math.sin(time * 2 + i)
         }

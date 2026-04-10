@@ -516,7 +516,12 @@ function App() {
 
       {/* Arc Reactor */}
       {showReactor && (
-        <ArcReactor state={reactorState} isDesktop={isDesktop} audioLevel={audioLevel} theme={theme} />
+        <ArcReactor
+          state={wsStatus !== 'connected' ? (wsStatus === 'connecting' ? 'booting' : 'offline') : reactorState}
+          isDesktop={isDesktop}
+          audioLevel={audioLevel}
+          theme={theme}
+        />
       )}
 
       {/* Live voice caption — desktop only, shows what JARVIS heard */}
