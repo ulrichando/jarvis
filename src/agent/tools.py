@@ -1589,7 +1589,84 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "open_url",
+            "description": (
+                "Open a URL in the user's browser. Use this instead of xdg-open when you need "
+                "to open a website for the user. Works even when JARVIS runs on a remote server "
+                "(Docker, Proxmox, cloud) because it sends the URL to the user's connected browser. "
+                "Use for: YouTube, Google, news, any website the user asks to open."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Full URL to open (e.g. https://youtube.com)",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "What you're opening (for narration), e.g. 'YouTube'",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "switch_channel",
+            "description": (
+                "Switch JARVIS's active interface to a different channel. "
+                "Use when the current channel can't do what Ulrich needs — e.g. switch to browser "
+                "to show a webpage, switch to desktop for an overlay, switch to CLI for file work. "
+                "Channels: 'browser', 'desktop', 'cli'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "enum": ["browser", "desktop", "cli"],
+                        "description": "Target channel to switch to",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Why switching (for narration, e.g. 'to show you the website')",
+                    },
+                },
+                "required": ["target"],
+            },
+        },
+    },
 ]
+
+
+# ── open_url / switch_channel broadcast hooks — set by web_server ────
+_open_url_hook = None       # callable(url: str) → None
+_switch_channel_hook = None  # callable(target: str) → None
+_channel_state_hook = None   # callable() → dict  (returns current channel state)
+
+
+def set_open_url_hook(fn):
+    """Register a callback that broadcasts open_url events to connected browser clients."""
+    global _open_url_hook
+    _open_url_hook = fn
+
+
+def set_switch_channel_hook(fn):
+    """Register a callback that broadcasts channel-switch events."""
+    global _switch_channel_hook
+    _switch_channel_hook = fn
+
+
+def set_channel_state_hook(fn):
+    """Register a callback that returns current channel state dict."""
+    global _channel_state_hook
+    _channel_state_hook = fn
 
 
 # ── Tool Execution ──────────────────────────────────────────────────
@@ -1614,9 +1691,60 @@ READONLY_BASH_PREFIXES = (
 )
 
 
+def _exec_switch_channel(args: dict) -> str:
+    """Switch JARVIS to a different interface channel."""
+    target = args.get("target", "").strip().lower()
+    reason = args.get("reason", "")
+    if not target:
+        return "Error: target channel is required"
+    if target not in ("browser", "desktop", "cli"):
+        return f"Error: unknown channel '{target}'. Use: browser, desktop, cli"
+
+    if _switch_channel_hook is not None:
+        try:
+            _switch_channel_hook(target)
+            msg = f"Switching to {target}"
+            if reason:
+                msg += f" — {reason}"
+            return msg + "."
+        except Exception as e:
+            return f"Error switching channel: {e}"
+
+    return f"No channel switch hook registered (running headless?). Target was: {target}"
+
+
 def get_plan_mode_tools() -> list[dict]:
     """Return tool schemas filtered for plan/read-only mode."""
     return [t for t in TOOL_SCHEMAS if t["function"]["name"] in READONLY_TOOLS or t["function"]["name"] == "bash"]
+
+
+def _exec_open_url(args: dict) -> str:
+    """Open a URL in the user's browser via the registered broadcast hook."""
+    url = args.get("url", "").strip()
+    label = args.get("description", url)
+    if not url:
+        return "Error: url is required"
+    if not url.startswith(("http://", "https://", "ftp://")):
+        url = "https://" + url
+
+    # Use web_server broadcast hook if available (server/cloud mode)
+    if _open_url_hook is not None:
+        try:
+            _open_url_hook(url)
+            return f"Opening {label} in browser."
+        except Exception as e:
+            return f"Error broadcasting open_url: {e}"
+
+    # Fallback: xdg-open for local mode
+    try:
+        env = {**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0.0")}
+        subprocess.Popen(
+            ["xdg-open", url], start_new_session=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env,
+        )
+        return f"Opening {label}."
+    except Exception as e:
+        return f"Error opening URL: {e}"
 
 
 def execute_tool(name: str, args: dict, readonly: bool = False) -> str:
@@ -1668,6 +1796,10 @@ def execute_tool(name: str, args: dict, readonly: bool = False) -> str:
             )
         elif name == "database":
             return _exec_database(args)
+        elif name == "open_url":
+            return _exec_open_url(args)
+        elif name == "switch_channel":
+            return _exec_switch_channel(args)
         elif name == "web_api":
             return _exec_web_api(args)
         elif name == "view_screen":

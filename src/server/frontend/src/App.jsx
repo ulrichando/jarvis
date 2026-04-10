@@ -208,6 +208,17 @@ function App() {
     if (last.type === 'camera') setCameraOn(last.enabled)
     if (last.type === 'provider_error') setSetupOpen(true)
 
+    // Channel handoff — JARVIS switching to this browser tab
+    if (last.type === 'handoff' && last.target === 'browser') {
+      // Bring this window to focus if possible
+      window.focus()
+      setShowReactor(true)
+    }
+    // JARVIS asking to switch to CLI — show a toast/notification (can't spawn terminal from browser)
+    if (last.type === 'handoff' && last.target === 'cli') {
+      console.info('[JARVIS] Channel switch → CLI requested')
+    }
+
     // Power events — shut down / quit desktop when requested via voice
     if (last.type === 'power' && (last.action === 'shutdown' || last.action === 'quit')) {
       if (isDesktop && window.webkit?.messageHandlers?.jarvis) {

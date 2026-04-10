@@ -137,6 +137,55 @@ class JarvisWebServer:
     def _init_brain(self):
         """Initialize Brain (heavy — MCP servers take ~25s)."""
         self.brain = Brain(quiet=True)
+        # Register open_url + switch_channel hooks so agent loop can control the UI
+        try:
+            from src.agent.tools import set_open_url_hook, set_switch_channel_hook, set_channel_state_hook
+            _server = self
+
+            def _get_loop():
+                import asyncio as _aio
+                _loop = getattr(_server, '_loop', None)
+                if _loop is None:
+                    try:
+                        _loop = _aio.get_event_loop()
+                    except RuntimeError:
+                        return None
+                return _loop if _loop.is_running() else None
+
+            def _open_url_sync(url: str):
+                import asyncio as _aio
+                _l = _get_loop()
+                if _l:
+                    _aio.run_coroutine_threadsafe(
+                        _server._broadcast({"type": "open_url", "url": url}), _l
+                    )
+
+            def _switch_channel_sync(target: str):
+                import asyncio as _aio
+                _l = _get_loop()
+                if _l:
+                    _aio.run_coroutine_threadsafe(
+                        _server._broadcast({"type": "handoff", "target": target}), _l
+                    )
+                    # Update active_clients tracking
+                    ac = getattr(_server, '_active_clients', {})
+                    if target in ac:
+                        for k in ac:
+                            ac[k] = (k == target)
+
+            def _get_channel_state():
+                return dict(getattr(_server, '_active_clients', {}))
+
+            set_open_url_hook(_open_url_sync)
+            set_switch_channel_hook(_switch_channel_sync)
+            set_channel_state_hook(_get_channel_state)
+
+            # Keep brain's channel_state in sync
+            if self.brain:
+                self.brain._channel_state = getattr(self, '_active_clients', {})
+        except Exception as _e:
+            print(f"[JARVIS] channel hooks not registered: {_e}")
+
         # Pre-load Whisper model so first voice request is fast
         try:
             from src.speech.stt import _get_model
@@ -618,6 +667,11 @@ class JarvisWebServer:
         _from_server_mic = data.get("_from_server_mic", False)
         _clients = getattr(self, '_active_clients', {})
         _platform = "desktop" if _clients.get("desktop") and not _clients.get("browser") else "web"
+        # Track which channel sent this query so JARVIS knows where it is
+        _current_ch = getattr(ws, '_client_label', _platform)
+        if self.brain:
+            self.brain._current_channel = _current_ch
+            self.brain._channel_state = _clients
         if is_ambient:
             # Prefix with voice context so the LLM can decide how to respond
             text = f"[voice input] {text}"
@@ -2128,6 +2182,41 @@ class JarvisWebServer:
                 })
                 return
 
+            # Habit / self-modification intercept
+            # Phrases that signal Ulrich wants JARVIS to change its own behavior
+            _HABIT_TRIGGERS = (
+                "from now on", "stop doing", "stop saying", "always say",
+                "never say", "always do", "never do", "change your habit",
+                "change the habit", "edit your", "modify your", "update your",
+                "fix your habit", "your habit of", "i want you to always",
+                "i want you to never", "i want you to stop",
+            )
+            if any(p in text_clean for p in _HABIT_TRIGGERS):
+                # Route through /habit command so SelfModifier edits the right file
+                if self.brain is not None:
+                    await self._broadcast({"type": "stt_result", "text": transcript})
+                    await self._broadcast({"type": "status", "status": "thinking"})
+                    try:
+                        from src.commands.registry import registry as _cmd_registry, CommandContext
+                        _ctx = CommandContext(
+                            args=transcript,
+                            brain=self.brain,
+                            mode="voice",
+                        )
+                        _habit_result = await _cmd_registry.dispatch("habit", _ctx)
+                        _habit_text = _habit_result.text if _habit_result else "Done."
+                        await self._broadcast({
+                            "type": "message", "role": "jarvis",
+                            "content": _habit_text,
+                            "model": "", "latency_ms": 0, "voice_style": "default",
+                        })
+                        spoken = _habit_text.split("\n")[0][:200]
+                        asyncio.create_task(self._speak_short(spoken))
+                        return
+                    except Exception as _he:
+                        log.error(f"[habit] voice intercept failed: {_he}")
+                        # Fall through to normal brain.think() below
+
             await self._broadcast({"type": "stt_result", "text": transcript})
 
             # Guard: Brain still loading
@@ -3535,6 +3624,12 @@ class JarvisWebServer:
             _sp_k.run(["pkill", "-f", "src.desktop.app"], capture_output=True)
             os.kill(os.getpid(), _sig.SIGTERM)
         app.router.add_post("/api/restart", _restart_handler)
+
+        async def _clear_tools_handler(request):
+            await self._broadcast({"type": "clear_tools"})
+            return web.json_response({"status": "cleared"})
+        app.router.add_post("/api/clear-tools", _clear_tools_handler)
+
         app.router.add_post("/api/manage", self.manage_handler)
         app.router.add_get("/api/manage", self.manage_handler)
         # Remote session API — makes JARVIS cloud-capable
@@ -3554,8 +3649,8 @@ class JarvisWebServer:
         app.router.add_post("/v1/environments/{env_id}/bridge/reconnect", self.bridge_reconnect_handler)
 
         # ── Client coordination — only one reactor visible at a time ──
-        active_clients = {"desktop": False, "browser": False}
-        self._active_clients = active_clients  # Expose for _speak_system check
+        active_clients = {"desktop": False, "browser": False, "cli": False, "extension": False}
+        self._active_clients = active_clients  # Expose for _speak_system check + brain channel state
 
         async def client_register(request):
             """Register a client (desktop or browser).
@@ -3583,6 +3678,10 @@ class JarvisWebServer:
             else:
                 show_reactor = not active_clients.get("browser", False)
 
+            # Keep brain's channel state in sync
+            if self.brain:
+                self.brain._channel_state = active_clients
+
             return web.json_response({
                 "show_reactor": show_reactor,
                 "active_clients": active_clients,
@@ -3593,6 +3692,10 @@ class JarvisWebServer:
             data = await request.json()
             client_type = data.get("type", "browser")
             active_clients[client_type] = False
+
+            # Keep brain's channel state in sync
+            if self.brain:
+                self.brain._channel_state = active_clients
 
             # Restart server mic only if NO UI clients remain (headless mode)
             has_ui = active_clients.get("desktop") or active_clients.get("browser")

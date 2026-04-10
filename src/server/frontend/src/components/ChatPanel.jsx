@@ -191,6 +191,23 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
       }))
     }
 
+    if (type === 'clear_tools' || type === 'brain_ready') {
+      setToolExecutions({})
+      setIsLoading(false)
+      setStreamingMessage('')
+      setIsStreaming(false)
+      currentToolsRef.current = {}
+      if (type === 'clear_tools') return
+    }
+
+    if (type === 'open_url') {
+      // JARVIS asked to open a URL in the user's browser
+      if (data.url) {
+        window.open(data.url, '_blank', 'noopener,noreferrer')
+      }
+      return
+    }
+
     if (type === 'message') {
       // Trigger TTS via parent callback
       if (onSpoken) onSpoken(data)
@@ -250,6 +267,11 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
 
       ws.onopen = () => {
         reconnectDelay = 1000
+        // Clear any stuck tool cards from before the disconnect/restart
+        setToolExecutions({})
+        setIsLoading(false)
+        setStreamingMessage('')
+        setIsStreaming(false)
       }
 
       ws.onmessage = (event) => {

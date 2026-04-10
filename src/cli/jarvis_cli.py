@@ -585,6 +585,11 @@ class StandaloneBrain:
                 ) as resp:
                     data = await resp.json()
                     return data.get("response", "No response")
+        if self.brain:
+            self.brain._current_channel = "cli"
+            if not hasattr(self.brain, '_channel_state'):
+                self.brain._channel_state = {}
+            self.brain._channel_state["cli"] = True
         return await self.brain.think(text)
 
     async def _reconnect_ws(self) -> bool:
