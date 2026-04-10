@@ -40,10 +40,8 @@ services:
       # Generate on the Proxmox host: ssh-keygen -t ed25519 -f /root/.ssh/jarvis_to_kali
       - /root/.ssh/jarvis_to_kali:/data/.ssh/jarvis_to_kali:ro
       - /root/.ssh/known_hosts:/data/.ssh/known_hosts:rw
-      # Audio: scope to sound devices only (not the full /dev tree)
-      - /dev/snd:/dev/snd
-    devices:
-      - /dev/snd
+      # Note: no /dev/snd — CT104 is a server LXC with no sound hardware.
+      # TTS/STT audio is handled via SSH to the owner's desktop machine.
     env_file:
       - .env
     environment:
