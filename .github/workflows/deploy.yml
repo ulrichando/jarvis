@@ -37,12 +37,12 @@ jobs:
         run: |
           echo "Waiting for JARVIS to be ready..."
           for i in $(seq 1 90); do
-            if /usr/sbin/pct exec 104 -- curl -sf http://localhost:8765/api/ready > /dev/null 2>&1; then
+            if /usr/sbin/pct exec 104 -- curl -sf http://localhost/api/ready > /dev/null 2>&1; then
               echo "JARVIS is healthy (${i}s)"
               exit 0
             fi
             sleep 1
           done
           echo "JARVIS did not come up in 90s — last logs:"
-          /usr/sbin/pct exec 104 -- docker logs --tail=30 jarvis-jarvis-1
+          /usr/sbin/pct exec 104 -- docker logs --tail=30 jarvis-jarvis-1 2>&1 || true
           exit 1
