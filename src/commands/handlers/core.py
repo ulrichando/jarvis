@@ -170,7 +170,7 @@ async def cmd_version(ctx: CommandContext) -> CommandResult:
     return CommandResult(text="\n".join(lines))
 
 
-@command("cost", aliases=["usage"], description="Show token usage and estimated cost",
+@command("cost", aliases=["usage"], description="Show token usage and estimated cost per provider",
          usage="/cost", category="core", permission=PermLevel.READ_ONLY)
 async def cmd_cost(ctx: CommandContext) -> CommandResult:
     from src.agent.cost_tracker import get_tracker, CostTracker
@@ -179,26 +179,28 @@ async def cmd_cost(ctx: CommandContext) -> CommandResult:
     model_usage = tracker.get_session_usage()
 
     if not model_usage:
-        return CommandResult(text="No usage data available yet.")
+        return CommandResult(text="No usage data yet. Start a conversation first.")
 
-    lines = ["Token Usage & Cost", "=" * 50]
+    lines = ["  Token Consumption by Provider", "  " + "=" * 40]
 
-    # Per-model breakdown
     total_input = 0
     total_output = 0
     total_cache_read = 0
     total_cache_write = 0
 
-    for model, usage in model_usage.items():
-        cost = tracker._calculate_cost(model, usage)
-        # Short label
-        label = model.split("/")[-1]
-        for prefix in ("claude-", "gpt-"):
-            if label.startswith(prefix):
-                label = label[len(prefix):]
-                break
+    for key, usage in model_usage.items():
+        cost = tracker._calculate_cost(key, usage)
 
-        lines.append(f"\n  {label}")
+        # key is "provider:model" — split cleanly
+        if ":" in key:
+            provider, model = key.split(":", 1)
+        else:
+            provider, model = "unknown", key
+
+        # Strip path prefix from model (e.g. "anthropic/claude-sonnet-4-6" → "claude-sonnet-4-6")
+        model = model.split("/")[-1]
+
+        lines.append(f"\n  {provider}  →  {model}")
         lines.append(f"    Input:       {CostTracker.format_tokens(usage.input_tokens):>8s}")
         lines.append(f"    Output:      {CostTracker.format_tokens(usage.output_tokens):>8s}")
         if usage.cache_read_tokens:
@@ -212,10 +214,9 @@ async def cmd_cost(ctx: CommandContext) -> CommandResult:
         total_cache_read += usage.cache_read_tokens
         total_cache_write += usage.cache_write_tokens
 
-    # Session totals
     total_tokens = total_input + total_output + total_cache_read + total_cache_write
     lines.append(f"\n  {'Session Total':─<40s}")
-    lines.append(f"    Total tokens: {CostTracker.format_tokens(total_tokens)}")
+    lines.append(f"    Tokens:       {CostTracker.format_tokens(total_tokens)}")
     lines.append(f"    Input:        {CostTracker.format_tokens(total_input)}")
     lines.append(f"    Output:       {CostTracker.format_tokens(total_output)}")
     if total_cache_read:

@@ -212,18 +212,7 @@ class JarvisWebServer:
 
         engine = request.query.get("engine", "groq")
 
-        # ── 1. Groq Orpheus TTS (primary) ─────────────────────────────────
-        if engine == "groq":
-            audio = await self._groq_tts(text)
-            if audio:
-                return web.Response(
-                    body=audio,
-                    content_type="audio/mpeg",
-                    headers={"Cache-Control": "no-cache"},
-                )
-            print("[JARVIS] Groq TTS failed, falling back to Edge TTS")
-
-        # ── 2. Edge TTS (male voice fallback) ─────────────────────────────
+        # ── 1. Edge TTS (primary — Microsoft neural, no API terms required) ──
         if engine != "piper":
             voice = request.query.get("voice", TTS_VOICE)
             try:
@@ -2317,14 +2306,7 @@ class JarvisWebServer:
         audio_bytes: bytes | None = None
         suffix = ".mp3"
 
-        # ── Groq PlayAI TTS (primary — male voice) ────────────────────────
-        try:
-            audio_bytes = await asyncio.wait_for(self._groq_tts(text), timeout=15)
-        except asyncio.TimeoutError:
-            print("[JARVIS] Groq TTS timed out — falling back to Edge TTS")
-            audio_bytes = None
-
-        # ── Edge TTS fallback ─────────────────────────────────────────────
+        # ── Edge TTS (primary) ────────────────────────────────────────────
         if not audio_bytes:
             try:
                 communicate = edge_tts.Communicate(text, TTS_VOICE)

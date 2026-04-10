@@ -1929,13 +1929,7 @@ async def main():
             right_parts.append(f"/effort · {effort_val}")
         except Exception:
             pass
-        try:
-            from src.agent.cost_tracker import get_tracker
-            cost = get_tracker().get_session_cost()
-            if cost > 0.001:
-                right_parts.append(f"${cost:.2f}")
-        except Exception:
-            pass
+        # Cost removed from footer — use /cost for per-provider breakdown
         if _companion and _companion.enabled and hasattr(_companion, 'data') and _companion.data:
             cname = _companion.data.get("name", "")
             if cname:
