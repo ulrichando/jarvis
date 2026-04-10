@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "updated_at": "2026-04-10T12:22:55.977623+00:00",
+  "updated_at": "2026-04-10T13:38:41.309169+00:00",
   "entries": {
     "src/cli/jarvis_cli.py": {
       "mtime": 1775681476.6431224,
@@ -31,8 +31,8 @@
       "lang": "Python"
     },
     "src/brain.py": {
-      "mtime": 1775685943.994595,
-      "size_bytes": 90383,
+      "mtime": 1775825216.9284565,
+      "size_bytes": 90391,
       "symbols": [
         "Brain"
       ],
@@ -2949,8 +2949,8 @@
       "lang": "Python"
     },
     "extensions/jarvis-screen/background.js": {
-      "mtime": 1775737095.2467606,
-      "size_bytes": 8435,
+      "mtime": 1775827193.9791615,
+      "size_bytes": 8628,
       "symbols": [
         "resolveBrainUrl",
         "persistRegistry",
@@ -9897,15 +9897,15 @@
       "lang": "Python"
     },
     ".jarvis/file-summaries.json": {
-      "mtime": 1775823632.549981,
-      "size_bytes": 488729,
+      "mtime": 1775827740.9440095,
+      "size_bytes": 488731,
       "symbols": [],
       "summary": "",
       "lang": "JSON"
     },
     "src/server/web_server.py": {
-      "mtime": 1775821944.6859407,
-      "size_bytes": 194786,
+      "mtime": 1775827185.4631965,
+      "size_bytes": 194935,
       "symbols": [
         "JarvisWebServer"
       ],
@@ -19571,8 +19571,8 @@
       "lang": "HTML"
     },
     "extensions/jarvis-screen/side_panel.js": {
-      "mtime": 1775813291.9704244,
-      "size_bytes": 18188,
+      "mtime": 1775827201.5191305,
+      "size_bytes": 18407,
       "symbols": [
         "resolveBrainUrl",
         "checkForUpdate",

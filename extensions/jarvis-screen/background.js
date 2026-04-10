@@ -13,10 +13,15 @@ async function resolveBrainUrl() {
     const res = await fetch(`${candidate}/api/ready`, { signal: AbortSignal.timeout(4000) })
     if (res.ok) { JARVIS_URL = candidate; return }
   } catch {}
-  // 2. Fallback to localhost if primary unreachable
+  // 2. Fallback to LAN IP
   try {
     const res = await fetch(`${FALLBACK_BRAIN}/api/ready`, { signal: AbortSignal.timeout(2000) })
     if (res.ok) { JARVIS_URL = FALLBACK_BRAIN; return }
+  } catch {}
+  // 3. Last resort: localhost
+  try {
+    const res = await fetch('http://localhost:8765/api/ready', { signal: AbortSignal.timeout(2000) })
+    if (res.ok) { JARVIS_URL = 'http://localhost:8765'; return }
   } catch {}
   JARVIS_URL = candidate  // keep configured even if offline
 }

@@ -2955,7 +2955,9 @@ class JarvisWebServer:
                 origin = request.headers.get("Origin", "")
                 if origin:
                     origin_host = re.sub(r':\d+$', '', re.sub(r'^https?://', '', origin))
-                    allowed = origin_host in ("localhost", "127.0.0.1", "0.0.0.0", "")
+                    allowed = (origin_host in ("localhost", "127.0.0.1", "0.0.0.0", "")
+                               or origin.startswith("chrome-extension://")
+                               or origin.startswith("moz-extension://"))
                     if not allowed:
                         host = request.headers.get("Host", "")
                         if host:

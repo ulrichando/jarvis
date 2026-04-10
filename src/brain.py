@@ -283,7 +283,7 @@ class Brain:
         self.screen.set_provider_registry(self.reasoner.providers)
         self.screen.start()
         self.auto_dream: AutoDreamManager = init_auto_dream()
-        self._background_tasks = {}  # For tracking bg tasks
+        self._background_tasks: set = set()  # For tracking bg tasks
         self._scheduled_tasks = {}   # For tracking scheduled tasks
         self.command_registry = command_registry
         self.running = False

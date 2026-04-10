@@ -14,6 +14,11 @@ async function resolveBrainUrl() {
     const res = await fetch(`${FALLBACK_BRAIN}/api/ready`, { signal: AbortSignal.timeout(2000) })
     if (res.ok) { JARVIS_URL = FALLBACK_BRAIN; return }
   } catch {}
+  // 3. Last resort: localhost
+  try {
+    const res = await fetch('http://localhost:8765/api/ready', { signal: AbortSignal.timeout(2000) })
+    if (res.ok) { JARVIS_URL = 'http://localhost:8765'; return }
+  } catch {}
   JARVIS_URL = candidate
 }
 resolveBrainUrl()
