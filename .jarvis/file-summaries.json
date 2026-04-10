@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "updated_at": "2026-04-10T15:49:05.019056+00:00",
+  "updated_at": "2026-04-10T15:55:34.837239+00:00",
   "entries": {
     "src/cli/jarvis_cli.py": {
       "mtime": 1775681476.6431224,
@@ -9897,8 +9897,8 @@
       "lang": "Python"
     },
     ".jarvis/file-summaries.json": {
-      "mtime": 1775830611.972983,
-      "size_bytes": 488731,
+      "mtime": 1775836454.443089,
+      "size_bytes": 490665,
       "symbols": [],
       "summary": "",
       "lang": "JSON"
@@ -19605,8 +19605,8 @@
       "lang": "Python"
     },
     ".github/workflows/deploy.yml": {
-      "mtime": 1775820882.3304303,
-      "size_bytes": 1180,
+      "mtime": 1775836289.8046508,
+      "size_bytes": 1245,
       "symbols": [],
       "summary": "",
       "lang": "YAML"
