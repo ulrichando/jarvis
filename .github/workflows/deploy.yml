@@ -17,21 +17,28 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Build Docker image
+      - name: Build & push Docker image
         run: |
           GIT_COMMIT=$(git rev-parse --short HEAD)
-          docker build --build-arg GIT_COMMIT="$GIT_COMMIT" \
-            -t ghcr.io/ulrichando/jarvis:latest \
-            -t ghcr.io/ulrichando/jarvis:$GIT_COMMIT \
-            .
 
-      # ── Push to GHCR (only changed layers go over the wire) ──────────────────
-      - name: Push image to GHCR
-        run: |
+          # Login first so cache pull works
           echo "${{ secrets.GHCR_TOKEN }}" \
             | docker login ghcr.io -u ulrichando --password-stdin
+
+          # BuildKit inline cache: pull cached layers from GHCR before building,
+          # push updated cache back after — unchanged layers are never rebuilt.
+          DOCKER_BUILDKIT=1 docker build \
+            --build-arg GIT_COMMIT="$GIT_COMMIT" \
+            --cache-from ghcr.io/ulrichando/jarvis:cache \
+            --build-arg BUILDKIT_INLINE_CACHE=1 \
+            -t ghcr.io/ulrichando/jarvis:latest \
+            -t ghcr.io/ulrichando/jarvis:$GIT_COMMIT \
+            -t ghcr.io/ulrichando/jarvis:cache \
+            .
+
           docker push ghcr.io/ulrichando/jarvis:latest
-          docker push ghcr.io/ulrichando/jarvis:$(git rev-parse --short HEAD)
+          docker push ghcr.io/ulrichando/jarvis:$GIT_COMMIT
+          docker push ghcr.io/ulrichando/jarvis:cache
           echo "Pushed at $(date)"
 
       # ── Zero-downtime canary deploy ──────────────────────────────────────────

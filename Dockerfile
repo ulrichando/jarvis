@@ -3,9 +3,6 @@
 # Update pin: docker pull node:22-alpine && docker inspect node:22-alpine | grep -i digest
 FROM node:22-alpine@sha256:4d64b49e6c891c8fc821007cb1cdc6c0db7773110ac2c34bf2e6960adef62ed3 AS frontend-builder
 
-# Patch all Alpine packages to fix known vulnerabilities before building
-RUN apk upgrade --no-cache
-
 WORKDIR /app/src/server/frontend
 
 COPY src/server/frontend/package*.json ./
@@ -30,9 +27,7 @@ ENV JARVIS_GIT_COMMIT=$GIT_COMMIT
 
 WORKDIR /app
 
-# Patch all base image vulnerabilities first, then install runtime deps.
-# --no-install-recommends keeps the image lean.
-RUN apt-get update && apt-get upgrade -y --no-install-recommends && \
+RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         # Audio
         ffmpeg \
