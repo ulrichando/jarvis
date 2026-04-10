@@ -14,6 +14,7 @@ import SettingsPanel from './components/SettingsPanel'
 import NeuralLink from './components/NeuralLink'
 import CameraFeed from './components/CameraFeed'
 import ProviderSetup from './components/ProviderSetup'
+import VoiceWaveform from './components/VoiceWaveform'
 
 function App() {
   const [chatOpen, setChatOpen] = useState(false)
@@ -25,6 +26,7 @@ function App() {
   const [cameraOn, setCameraOn] = useState(false)
   const [setupOpen, setSetupOpen] = useState(false)
   const [brainReady, setBrainReady] = useState(false)
+  const [currentModel, setCurrentModel] = useState('')
   const [heardText, setHeardText] = useState('')
   const heardTimerRef = React.useRef(null)
 
@@ -170,10 +172,15 @@ function App() {
       setReactorState('idle')
     }
 
-    // Clear heard caption when JARVIS starts responding
-    if (last.type === 'stream' || last.type === 'message') {
+    // Clear heard caption when JARVIS finishes responding (not on first stream chunk)
+    if (last.type === 'message' && !last.partial) {
       clearTimeout(heardTimerRef.current)
-      heardTimerRef.current = setTimeout(() => setHeardText(''), 1500)
+      heardTimerRef.current = setTimeout(() => setHeardText(''), 4000)
+    }
+
+    // Track current model from responses
+    if (last.type === 'message' && last.model) {
+      setCurrentModel(last.model)
     }
 
     // Play TTS for voice query responses (dedup handled inside playSpoken)
@@ -533,6 +540,9 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* Speaking waveform */}
+      <VoiceWaveform active={reactorState === 'speaking'} audioRef={audioRef} />
 
       {/* Fullscreen toggle — browser only */}
       {!isDesktop && (

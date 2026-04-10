@@ -300,6 +300,18 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
       eyeRings.push(ring)
     })
 
+    // ── 7b. Scanning ring — appears when thinking ──
+    const scanRingGeo = new THREE.TorusGeometry(R * 1.05, 0.006, 4, 80)
+    const scanRingMat = new THREE.MeshBasicMaterial({
+      color: 0xfbbf24,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    })
+    const scanRing = new THREE.Mesh(scanRingGeo, scanRingMat)
+    globe.add(scanRing)
+
     // ── 8. Surface particles (accent sparkle) ──
     const SPARK_N = 5000
     const sparkPos = new Float32Array(SPARK_N * 3)
@@ -478,6 +490,16 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
       const speed = st === 'thinking' ? 0.005 : st === 'speaking' ? 0.003 : st === 'ready' ? 0.008 : 0.0015
       globe.rotation.y += speed
       globe.rotation.x = Math.sin(time * 0.3) * 0.08
+
+      // Scanning ring — pulses and rotates when thinking
+      if (st === 'thinking') {
+        scanRingMat.opacity = Math.min(0.8, scanRingMat.opacity + 0.05)
+        scanRing.rotation.y += 0.04
+        scanRing.rotation.x = Math.sin(time * 1.5) * Math.PI * 0.5
+        scanRing.scale.setScalar(1.0 + 0.05 * Math.sin(time * 6))
+      } else {
+        scanRingMat.opacity = Math.max(0, scanRingMat.opacity - 0.03)
+      }
 
       // Bands rotate
       bands.forEach((b, i) => {
