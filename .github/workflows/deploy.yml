@@ -14,8 +14,8 @@ jobs:
     runs-on: self-hosted
 
     env:
-      REGISTRY: git.0wlan.com
-      IMAGE: git.0wlan.com/ulrich/jarvis
+      REGISTRY: 10.10.0.123:3000
+      IMAGE: 10.10.0.123:3000/ulrich/jarvis
 
     steps:
       - name: Checkout code
