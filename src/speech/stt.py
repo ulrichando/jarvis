@@ -142,6 +142,9 @@ def _boost_vocabulary(text: str) -> str:
         "grok": "groq", "groak": "groq",
         "haycoo": "haiku", "highku": "haiku",
         "kali linux": "kali linux",
+        # Geography — common Whisper misrecognitions
+        "camera": "cameroon", "cameron": "cameroon", "camaron": "cameroon",
+        "came rune": "cameroon", "cam run": "cameroon",
     }
     lower = text.lower()
     for wrong, right in _FIXES.items():

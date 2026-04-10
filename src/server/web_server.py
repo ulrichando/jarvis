@@ -2147,6 +2147,7 @@ class JarvisWebServer:
             # Silent tool execution — log only, no narration
             _tool_count = [0]
             _long_tool_active = [False]
+            _last_tool_result = [None]  # Track last tool output for voice fallback
 
             def _on_tool(name, args):
                 _tool_count[0] += 1
@@ -2155,6 +2156,7 @@ class JarvisWebServer:
 
             def _on_result(name, result):
                 _long_tool_active[0] = False
+                _last_tool_result[0] = (name, str(result))
                 print(f"[JARVIS] Result: {name} → {str(result)[:80]}")
 
             # Speak a short filler after 2 s if a tool is still running,
@@ -2184,11 +2186,34 @@ class JarvisWebServer:
             latency = int((time.time() - start) * 1000)
 
             if not response or not response.strip():
-                # Voice input should ALWAYS get a response — never go silent
-                response = "Done."
-                # If tools were called but no text returned, the action likely succeeded
+                # LLM returned empty after tool use — speak the raw tool result
+                # so the user isn't left in silence (common when circuit breaker
+                # trips mid-session and the fallback model skips verbalization).
+                if _last_tool_result[0]:
+                    _tname, _tresult = _last_tool_result[0]
+                    # Strip "exit_code=0\n" prefix from bash results
+                    if _tresult.startswith("exit_code=0"):
+                        _tresult = _tresult.split("\n", 1)[-1].strip()
+                    elif _tresult.startswith("exit_code="):
+                        _tresult = ""
+                    if _tresult and len(_tresult) < 300:
+                        response = _tresult
+                    else:
+                        response = "Done."
+                else:
+                    response = "Done."
 
             spoken = self._clean_for_speech(response)
+            # If clean_for_speech stripped everything (e.g. the result looked like code),
+            # fall back to speaking the raw result so the user always hears something.
+            if (not spoken or len(spoken.strip()) <= 1) and _last_tool_result[0]:
+                _tname, _tresult = _last_tool_result[0]
+                if _tresult.startswith("exit_code=0"):
+                    _tresult = _tresult.split("\n", 1)[-1].strip()
+                if _tresult and len(_tresult) < 200:
+                    spoken = _tresult
+                else:
+                    spoken = "Done."
             self._last_response = spoken  # Store for echo detection
             model = self.brain.reasoner.model
             print(f'[JARVIS] Response: "{spoken[:80]}" (model={model}, {latency}ms)')
