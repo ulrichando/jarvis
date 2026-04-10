@@ -1438,6 +1438,8 @@ class JarvisWebServer:
         t = re.sub(r'^\s*(File |Traceback|at |Error:|Exception:|TypeError|ValueError|KeyError|ImportError).*$', '', t, flags=re.MULTILINE)
         # Remove pip/npm output
         t = re.sub(r'^\s*(Requirement|Successfully|Collecting|Downloading|Installing).*$', '', t, flags=re.MULTILINE)
+        # Remove markdown horizontal rules (===, ---, ___, ~~~)
+        t = re.sub(r'^[=\-_~]{2,}\s*$', '', t, flags=re.MULTILINE)
         # Remove box drawing / table chars
         t = re.sub(r'[╭╰╮╯│┃┏┓┗┛├┤┬┴┼═─|]+', '', t)
         # Remove bullet list markers
