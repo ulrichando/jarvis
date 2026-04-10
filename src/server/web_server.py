@@ -159,9 +159,9 @@ class JarvisWebServer:
                 print(f"[JARVIS] Piper TTS unavailable: {e}")
         return self._piper_voice
 
-    # Groq TTS — playai-tts decommissioned by Groq, disabled
-    GROQ_TTS_VOICE = "Chip-PlayAI"
-    GROQ_TTS_MODEL = None  # disabled
+    # Groq TTS — Orpheus v1 (replaced decommissioned playai-tts)
+    GROQ_TTS_MODEL = "canopylabs/orpheus-v1-english"
+    GROQ_TTS_VOICE = "dan"  # male voice
 
     async def _groq_tts(self, text: str) -> bytes | None:
         """Generate speech via Groq PlayAI TTS. Returns MP3 bytes or None on failure."""
@@ -210,11 +210,18 @@ class JarvisWebServer:
         if not text or len(text) < 2:
             return web.Response(status=204)
 
-        engine = request.query.get("engine", "edge")
+        engine = request.query.get("engine", "groq")
 
-        # ── 1. Groq PlayAI TTS — decommissioned, skipped ──────────────────
-
-        # ── 2. Edge TTS (primary — male voice Andrew) ─────────────────────
+        # ── 1. Groq Orpheus TTS (primary) ─────────────────────────────────
+        if engine == "groq":
+            audio = await self._groq_tts(text)
+            if audio:
+                return web.Response(
+                    body=audio,
+                    content_type="audio/mpeg",
+                    headers={"Cache-Control": "no-cache"},
+                )
+            print("[JARVIS] Groq TTS failed, falling back to Edge TTS")
 
         # ── 2. Edge TTS (male voice fallback) ─────────────────────────────
         if engine != "piper":
