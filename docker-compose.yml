@@ -9,7 +9,7 @@ services:
     build: .
     image: jarvis:latest
     ports:
-      - "8765:8765"
+      - "80:8765"
     volumes:
       - jarvis_data:/data/.jarvis
       - ./.env:/app/.env:ro
@@ -37,7 +37,7 @@ services:
     networks:
       - jarvis_net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8765/api/ready"]
+      test: ["CMD", "curl", "-f", "http://localhost/api/ready"]
       interval: 30s
       timeout: 10s
       retries: 5
