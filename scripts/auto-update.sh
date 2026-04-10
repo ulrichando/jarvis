@@ -58,12 +58,23 @@ fi
 notify-send "JARVIS Updated" "New version pulled: $(git rev-parse --short HEAD)" \
   --icon=dialog-information --expire-time=5000 2>/dev/null || true
 
+# Restart web server if running
+if pgrep -f "src.server.web_server" &>/dev/null; then
+  echo "$LOG_PREFIX Restarting web server..."
+  pkill -f "src.server.web_server" 2>/dev/null || true
+  sleep 2
+  PYTHONUNBUFFERED=1 nohup python3 -u -m src.server.web_server \
+    > /tmp/jarvis-clean.log 2>&1 &
+  echo "$!" > /tmp/jarvis-server.pid
+  echo "$LOG_PREFIX Web server restarted (PID $!)"
+fi
+
 # Restart desktop overlay if running (on any update — local or server)
 if pgrep -f "jarvis.*desktop\|desktop.*jarvis\|src.desktop.app" &>/dev/null; then
   echo "$LOG_PREFIX Restarting desktop overlay..."
   pkill -f "jarvis.*desktop\|desktop.*jarvis\|src.desktop.app" 2>/dev/null || true
   sleep 1
-  nohup python -m src.desktop.app \
+  nohup python3 -m src.desktop.app \
     > /tmp/jarvis-desktop.log 2>&1 &
   echo "$LOG_PREFIX Desktop restarted"
 elif [ "$SERVER_UPDATED" = "true" ]; then

@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "updated_at": "2026-04-10T13:38:41.309169+00:00",
+  "updated_at": "2026-04-10T14:16:51.969809+00:00",
   "entries": {
     "src/cli/jarvis_cli.py": {
       "mtime": 1775681476.6431224,
@@ -9897,8 +9897,8 @@
       "lang": "Python"
     },
     ".jarvis/file-summaries.json": {
-      "mtime": 1775827740.9440095,
-      "size_bytes": 488731,
+      "mtime": 1775830557.775937,
+      "size_bytes": 488732,
       "symbols": [],
       "summary": "",
       "lang": "JSON"
@@ -20124,8 +20124,8 @@
       "lang": "Python"
     },
     "scripts/auto-update.sh": {
-      "mtime": 1775814117.938484,
-      "size_bytes": 2709,
+      "mtime": 1775830409.5754888,
+      "size_bytes": 3099,
       "symbols": [],
       "summary": "",
       "lang": "Shell"
