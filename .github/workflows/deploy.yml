@@ -13,6 +13,10 @@ jobs:
     # Self-hosted runner ON Proxmox — builds image here, deploys into CT104 (Docker host)
     runs-on: self-hosted
 
+    env:
+      REGISTRY: git.0wlan.com
+      IMAGE: git.0wlan.com/ulrich/jarvis
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -21,29 +25,29 @@ jobs:
         run: |
           GIT_COMMIT=$(git rev-parse --short HEAD)
 
-          # Login first so cache pull works
-          echo "${{ secrets.GHCR_TOKEN }}" \
-            | docker login ghcr.io -u ulrichando --password-stdin
+          # Login to your own Forgejo registry — no GitHub needed
+          echo "${{ secrets.FORGEJO_TOKEN }}" \
+            | docker login $REGISTRY -u ulrich --password-stdin
 
-          # BuildKit inline cache: pull cached layers from GHCR before building,
-          # push updated cache back after — unchanged layers are never rebuilt.
+          # BuildKit inline cache: pull cached layers from Forgejo registry before
+          # building, push updated cache back after — unchanged layers are instant.
           DOCKER_BUILDKIT=1 docker build \
             --build-arg GIT_COMMIT="$GIT_COMMIT" \
-            --cache-from ghcr.io/ulrichando/jarvis:cache \
+            --cache-from $IMAGE:cache \
             --build-arg BUILDKIT_INLINE_CACHE=1 \
-            -t ghcr.io/ulrichando/jarvis:latest \
-            -t ghcr.io/ulrichando/jarvis:$GIT_COMMIT \
-            -t ghcr.io/ulrichando/jarvis:cache \
+            -t $IMAGE:latest \
+            -t $IMAGE:$GIT_COMMIT \
+            -t $IMAGE:cache \
             .
 
-          docker push ghcr.io/ulrichando/jarvis:latest
-          docker push ghcr.io/ulrichando/jarvis:$GIT_COMMIT
-          docker push ghcr.io/ulrichando/jarvis:cache
+          docker push $IMAGE:latest
+          docker push $IMAGE:$GIT_COMMIT
+          docker push $IMAGE:cache
           echo "Pushed at $(date)"
 
       # ── Zero-downtime canary deploy ──────────────────────────────────────────
       # Strategy:
-      #   1. CT104 pulls from GHCR — only changed layers downloaded (fast)
+      #   1. CT104 pulls from Forgejo registry — only changed layers downloaded
       #   2. Start jarvis_canary (new image) alongside the live jarvis container
       #   3. Wait for canary to pass its health check
       #   4. nginx reload → traffic instantly switches to canary (no dropped requests)
@@ -52,10 +56,9 @@ jobs:
 
       - name: Pull new image on CT104
         run: |
-          # Log CT104 into GHCR, then pull — only changed layers are downloaded
-          echo "${{ secrets.GHCR_TOKEN }}" \
-            | /usr/sbin/pct exec 104 -- docker login ghcr.io -u ulrichando --password-stdin
-          /usr/sbin/pct exec 104 -- docker pull ghcr.io/ulrichando/jarvis:latest
+          echo "${{ secrets.FORGEJO_TOKEN }}" \
+            | /usr/sbin/pct exec 104 -- docker login $REGISTRY -u ulrich --password-stdin
+          /usr/sbin/pct exec 104 -- docker pull $IMAGE:latest
           echo "Pull complete at $(date)"
 
       - name: Start canary container
@@ -81,7 +84,7 @@ jobs:
               -v /root/.ssh/jarvis_to_kali:/data/.ssh/jarvis_to_kali:ro \
               -v /root/.ssh/known_hosts:/data/.ssh/known_hosts:rw \
               --restart no \
-              ghcr.io/ulrichando/jarvis:latest
+              $IMAGE:latest
 
             echo 'Canary started'
           "
@@ -124,27 +127,19 @@ jobs:
             printf '# Managed by deploy workflow — do not edit by hand.\nupstream jarvis_active {\n    server jarvis_canary:8765;\n}\n' \
               > nginx/conf.d/upstream.conf
 
-            # nginx -s reload is graceful: existing connections finish on old upstream,
-            # new connections go to canary — zero dropped requests
             docker compose exec -T nginx nginx -s reload
             echo 'nginx reloaded → traffic now on canary'
 
-            # Give nginx a moment to finish draining old connections
             sleep 3
 
-            # Stop and remove the old live container
             docker compose stop jarvis 2>/dev/null || true
             docker compose rm -f jarvis 2>/dev/null || true
 
-            # Rename canary to the canonical service name so compose is consistent
             docker rename jarvis_canary jarvis-jarvis-1
 
-            # Restore upstream.conf to point at the standard service name
             printf '# Managed by deploy workflow — do not edit by hand.\nupstream jarvis_active {\n    server jarvis:8765;\n}\n' \
               > nginx/conf.d/upstream.conf
 
-            # Bring compose back in sync: registers the renamed container as the
-            # managed 'jarvis' service without recreating it
             docker compose up -d --no-recreate jarvis
 
             echo 'Swap complete — JARVIS is live on new image'
