@@ -332,6 +332,127 @@ async def cmd_login(ctx: CommandContext) -> CommandResult:
     return CommandResult(text=f"Set {key_name} in {env_path} or export it:\n  export {key_name}=your-key-here")
 
 
+@command("ssh", description="Manage SSH hosts for remote execution",
+         usage="/ssh [list|add <alias> <user@host> [port] [key]|remove <alias>|test <alias>]", category="core")
+async def cmd_ssh(ctx: CommandContext) -> CommandResult:
+    """Manage ~/.jarvis/ssh_hosts.json entries."""
+    import json
+
+    hosts_file = os.path.expanduser("~/.jarvis/ssh_hosts.json")
+
+    def _load() -> dict:
+        if os.path.exists(hosts_file):
+            try:
+                with open(hosts_file) as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {}
+
+    def _save(hosts: dict) -> None:
+        os.makedirs(os.path.dirname(hosts_file), exist_ok=True)
+        with open(hosts_file, "w") as f:
+            json.dump(hosts, f, indent=2)
+
+    parts = ctx.args.strip().split() if ctx.args else []
+    action = parts[0] if parts else "list"
+
+    if action == "list":
+        hosts = _load()
+        if not hosts:
+            return CommandResult(text="No SSH hosts configured.\nUse: /ssh add <alias> <user@host> [port] [key]")
+        lines = ["SSH Hosts:", "=" * 40]
+        for alias, cfg in hosts.items():
+            user = cfg.get("user", "root")
+            host = cfg.get("host", "?")
+            port = cfg.get("port", 22)
+            key = cfg.get("key", "agent/password")
+            lines.append(f"  {alias:20s}  {user}@{host}:{port}  key={key}")
+        return CommandResult(text="\n".join(lines))
+
+    elif action == "add":
+        if len(parts) < 3:
+            return CommandResult(
+                text="Usage: /ssh add <alias> <user@host> [port] [key_path]\n"
+                     "       /ssh add <alias> manage <manage_url> <manage_token>",
+                success=False,
+            )
+        alias = parts[1]
+        user_host = parts[2]
+
+        # manage-API mode: /ssh add jarvis manage https://... <token>
+        if user_host == "manage":
+            if len(parts) < 5:
+                return CommandResult(
+                    text="Usage: /ssh add <alias> manage <url> <token>",
+                    success=False,
+                )
+            manage_url = parts[3]
+            manage_token = parts[4]
+            hosts = _load()
+            hosts[alias] = {"manage_url": manage_url, "manage_token": manage_token}
+            _save(hosts)
+            return CommandResult(text=f"Added manage host '{alias}': {manage_url}")
+
+        port = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 22
+        key = parts[4] if len(parts) > 4 else None
+
+        if "@" not in user_host:
+            return CommandResult(text="host must be user@hostname", success=False)
+        user, host = user_host.split("@", 1)
+
+        hosts = _load()
+        hosts[alias] = {"host": host, "user": user, "port": port}
+        if key:
+            hosts[alias]["key"] = key
+        _save(hosts)
+        return CommandResult(text=f"Added SSH host '{alias}': {user}@{host}:{port}")
+
+    elif action in ("remove", "rm", "delete"):
+        if len(parts) < 2:
+            return CommandResult(text="Usage: /ssh remove <alias>", success=False)
+        alias = parts[1]
+        hosts = _load()
+        if alias not in hosts:
+            return CommandResult(text=f"Host '{alias}' not found.", success=False)
+        del hosts[alias]
+        _save(hosts)
+        return CommandResult(text=f"Removed SSH host '{alias}'.")
+
+    elif action == "test":
+        if len(parts) < 2:
+            return CommandResult(text="Usage: /ssh test <alias>", success=False)
+        alias = parts[1]
+        from src.agent.tools import _exec_ssh
+        hosts = _load()
+        cfg = hosts.get(alias, {})
+        if cfg.get("manage_url"):
+            result = _exec_ssh({"host": alias, "command": "status", "timeout": 10})
+            ok = "JARVIS is running" in result or "running" in result
+        else:
+            result = _exec_ssh({"host": alias, "command": "echo ok", "timeout": 10})
+            ok = "ok" in result and "SSH error" not in result
+        return CommandResult(
+            text=f"Connection {'OK' if ok else 'FAILED'}\n{result}",
+            success=ok,
+        )
+
+    elif action == "set-password":
+        if len(parts) < 3:
+            return CommandResult(text="Usage: /ssh set-password <alias> <password>", success=False)
+        alias, password = parts[1], parts[2]
+        hosts = _load()
+        if alias not in hosts:
+            return CommandResult(text=f"Host '{alias}' not found. Add it first with /ssh add.", success=False)
+        hosts[alias]["password"] = password
+        _save(hosts)
+        return CommandResult(text=f"Password set for '{alias}'.")
+
+    return CommandResult(
+        text="Usage: /ssh [list|add <alias> <user@host> [port] [key]|remove <alias>|test <alias>|set-password <alias> <password>]"
+    )
+
+
 @command("logout", description="Clear authentication credentials",
          usage="/logout [provider]", category="core")
 async def cmd_logout(ctx: CommandContext) -> CommandResult:

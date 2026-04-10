@@ -15,12 +15,12 @@ jobs:
 
       - name: Build Docker image
         run: |
-          docker build -t ghcr.io/ulrichando/jarvis:latest .
+          docker build -t git.0wlan.com/ulrich/jarvis:latest .
 
       - name: Transfer image to CT104 and deploy
         run: |
           # Pipe image directly into CT104 (no registry needed)
-          docker save ghcr.io/ulrichando/jarvis:latest | pct exec 104 -- docker load
+          docker save git.0wlan.com/ulrich/jarvis:latest | pct exec 104 -- docker load
 
           # Restart the jarvis service inside CT104
           pct exec 104 -- bash -c "cd /opt/jarvis && docker compose up -d jarvis"

@@ -1555,6 +1555,40 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    # ── SSH ────────────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "ssh_exec",
+            "description": (
+                "Execute a command on a remote SSH host.\n"
+                "\n"
+                "Named hosts can be configured in ~/.jarvis/ssh_hosts.json:\n"
+                '  { "prod": { "host": "server.example.com", "user": "root", "port": 22, "key": "~/.ssh/id_rsa" } }\n'
+                "\n"
+                "You can also pass user@hostname directly as the host argument.\n"
+                "Use this tool to deploy code, restart services, check logs, or run any command on a remote machine."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "host": {
+                        "type": "string",
+                        "description": "Named host alias from ssh_hosts.json, or user@hostname (e.g. root@jarvis.0wlan.com)",
+                    },
+                    "command": {
+                        "type": "string",
+                        "description": "Shell command to execute on the remote host",
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Timeout in seconds (default: 30)",
+                    },
+                },
+                "required": ["host", "command"],
+            },
+        },
+    },
 ]
 
 
@@ -1650,6 +1684,8 @@ def execute_tool(name: str, args: dict, readonly: bool = False) -> str:
             return "__ASK_USER__"  # Handled by agent loop (needs async user input)
         elif name == "notebook_edit":
             return _exec_notebook_edit(args)
+        elif name == "ssh_exec":
+            return _exec_ssh(args)
         elif name == "dispatch":
             return "__DISPATCH__"  # Handled async by agent loop
         # ── Plan Mode ──────────────────────────────────────────────────
@@ -2263,6 +2299,153 @@ def _read_notebook(path: str) -> str:
             parts.append(f"Cell [{i}] ({cell_type}):\n{source}")
 
     return "\n\n".join(parts) if parts else "(Empty notebook)"
+
+
+def _exec_ssh(args: dict) -> str:
+    """Execute a command on a remote host.
+
+    If the named host has a manage_url + manage_token configured, uses the
+    JARVIS management HTTP API (no SSH required). Otherwise falls back to
+    paramiko SSH.
+    """
+    import json as _json
+
+    host_ref = args.get("host", "").strip()
+    command = args.get("command", "").strip()
+    timeout = int(args.get("timeout", 30))
+
+    if not host_ref or not command:
+        return "Error: host and command are required"
+
+    # Load named hosts config
+    hosts_file = os.path.expanduser("~/.jarvis/ssh_hosts.json")
+    hosts: dict = {}
+    if os.path.exists(hosts_file):
+        try:
+            with open(hosts_file) as _f:
+                hosts = _json.load(_f)
+        except Exception as e:
+            return f"Error reading ~/.jarvis/ssh_hosts.json: {e}"
+
+    cfg = hosts.get(host_ref, {})
+
+    # ── Management API path (preferred, no SSH needed) ──────────────
+    manage_url = cfg.get("manage_url")
+    manage_token = cfg.get("manage_token")
+    if manage_url and manage_token:
+        try:
+            import urllib.request as _ur
+            # Map common intent words to manage actions
+            _lc = command.lower().strip()
+            if _lc in ("restart", "reload"):
+                payload = {"action": "restart"}
+            elif _lc in ("status", "ping"):
+                payload = {"action": "status"}
+            elif _lc.startswith("pull"):
+                payload = {"action": "pull_restart" if "restart" in _lc else "pull"}
+            else:
+                payload = {"action": "exec", "command": command, "timeout": timeout}
+
+            data = _json.dumps(payload).encode()
+            req = _ur.Request(
+                manage_url,
+                data=data,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {manage_token}",
+                },
+                method="POST",
+            )
+            with _ur.urlopen(req, timeout=timeout) as resp:
+                body = _json.loads(resp.read().decode())
+
+            if payload["action"] == "status":
+                return (
+                    f"[{host_ref}] JARVIS is running\n"
+                    f"  PID: {body.get('pid')}  host: {body.get('host')}\n"
+                    f"  clients: {body.get('clients')}  brain: {body.get('brain')}"
+                )
+            if payload["action"] in ("restart", "pull_restart"):
+                return f"[{host_ref}] {body.get('msg', body)}"
+            if payload["action"] == "pull":
+                out = body.get("stdout", "").strip()
+                err = body.get("stderr", "").strip()
+                return f"[{host_ref}] git pull\n{out}" + (f"\n{err}" if err else "")
+            # exec
+            out = body.get("stdout", "").strip()
+            err = body.get("stderr", "").strip()
+            rc = body.get("returncode", 0)
+            result = f"[{host_ref}] $ {command}\n"
+            if out:
+                result += out
+            if err:
+                result += ("\n" if out else "") + f"STDERR:\n{err}"
+            if rc != 0:
+                result += f"\n[exit {rc}]"
+            return result.strip()
+        except Exception as e:
+            return f"Manage API error ({host_ref}): {e}"
+
+    # ── SSH fallback ─────────────────────────────────────────────────
+    try:
+        import paramiko
+    except ImportError:
+        return "Error: paramiko not installed. Run: pip install paramiko"
+
+    if host_ref in hosts:
+        hostname = cfg.get("host", host_ref)
+        username = cfg.get("user", "root")
+        port = int(cfg.get("port", 22))
+        key_path = cfg.get("key")
+        password = cfg.get("password")
+    elif "@" in host_ref:
+        username, hostname = host_ref.split("@", 1)
+        port = 22
+        key_path = None
+        password = None
+    else:
+        hostname = host_ref
+        username = "root"
+        port = 22
+        key_path = None
+        password = None
+
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+    connect_kwargs: dict = {
+        "hostname": hostname,
+        "port": port,
+        "username": username,
+        "timeout": timeout,
+    }
+    if key_path:
+        connect_kwargs["key_filename"] = os.path.expanduser(key_path)
+    elif password:
+        connect_kwargs["password"] = password
+
+    try:
+        client.connect(**connect_kwargs)
+        _stdin, stdout, stderr = client.exec_command(command, timeout=timeout)
+        out = stdout.read().decode("utf-8", errors="replace")
+        err = stderr.read().decode("utf-8", errors="replace")
+        exit_code = stdout.channel.recv_exit_status()
+        client.close()
+
+        result = f"[{username}@{hostname}] $ {command}\n"
+        if out:
+            result += out
+        if err:
+            result += ("\n" if out else "") + f"STDERR:\n{err}"
+        if exit_code != 0:
+            result += f"\n[exit {exit_code}]"
+        return result.strip()
+    except Exception as e:
+        try:
+            client.close()
+        except Exception:
+            pass
+        return f"SSH error ({username}@{hostname}): {e}"
 
 
 def _exec_read(args: dict) -> str:

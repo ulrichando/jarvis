@@ -99,6 +99,8 @@ class JarvisWebServer:
         self._remote_auth_token: str | None = remote_config.get("auth_token")
         # Local auth token (optional, from JARVIS_WS_TOKEN env or config)
         self._local_auth_token: str | None = os.environ.get("JARVIS_WS_TOKEN") or remote_config.get("ws_token")
+        # Management API token — auto-generated if not configured
+        self._manage_token: str = self._load_or_create_manage_token(remote_config)
 
     def _check_ws_origin(self, request: web.Request) -> bool:
         """Validate WebSocket origin header against allowed origins."""
@@ -2361,6 +2363,121 @@ class JarvisWebServer:
 
     # ── Remote Session API ──────────────────────────────────────────
 
+    @staticmethod
+    def _load_or_create_manage_token(remote_config: dict) -> str:
+        """Load manage_token from remote.json, or generate and save one."""
+        token = (
+            os.environ.get("JARVIS_MANAGE_TOKEN")
+            or remote_config.get("manage_token")
+        )
+        if token:
+            return token
+        token = secrets.token_urlsafe(32)
+        jarvis_home = Path(os.environ.get("JARVIS_HOME", Path.home() / ".jarvis"))
+        remote_path = jarvis_home / "remote.json"
+        try:
+            data = json.loads(remote_path.read_text()) if remote_path.exists() else {}
+            data["manage_token"] = token
+            remote_path.write_text(json.dumps(data, indent=2))
+        except Exception as e:
+            logger.warning(f"Could not persist manage_token: {e}")
+        logger.info(f"[manage] token: {token}")
+        return token
+
+    def _check_manage_auth(self, request: web.Request) -> bool:
+        """Validate management API token."""
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            return auth[7:] == self._manage_token
+        return request.query.get("token", "") == self._manage_token
+
+    async def manage_handler(self, request: web.Request) -> web.Response:
+        """POST /api/manage — authenticated management endpoint.
+
+        Body: { "action": "restart|pull|status|exec", "command": "..." }
+        Header: Authorization: Bearer <manage_token>
+        """
+        if not self._check_manage_auth(request):
+            return web.json_response({"error": "Unauthorized"}, status=401)
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+
+        action = body.get("action", "status")
+
+        if action == "status":
+            import platform
+            return web.json_response({
+                "status": "running",
+                "pid": os.getpid(),
+                "host": platform.node(),
+                "clients": len(self.clients),
+                "brain": bool(self.brain),
+            })
+
+        elif action == "restart":
+            async def _do_restart():
+                await asyncio.sleep(0.5)
+                import signal as _sig
+                os.kill(os.getpid(), _sig.SIGTERM)
+            asyncio.ensure_future(_do_restart())
+            return web.json_response({"ok": True, "action": "restart", "msg": "Restarting..."})
+
+        elif action == "pull":
+            import subprocess as _sp
+            cwd = os.environ.get("JARVIS_DIR", str(Path(__file__).parent.parent.parent))
+            proc = _sp.run(
+                ["git", "pull"],
+                capture_output=True, text=True, timeout=60, cwd=cwd,
+            )
+            return web.json_response({
+                "ok": proc.returncode == 0,
+                "stdout": proc.stdout,
+                "stderr": proc.stderr,
+                "returncode": proc.returncode,
+            })
+
+        elif action == "pull_restart":
+            import subprocess as _sp
+            cwd = os.environ.get("JARVIS_DIR", str(Path(__file__).parent.parent.parent))
+            proc = _sp.run(
+                ["git", "pull"],
+                capture_output=True, text=True, timeout=60, cwd=cwd,
+            )
+            async def _do_restart():
+                await asyncio.sleep(1)
+                import signal as _sig
+                os.kill(os.getpid(), _sig.SIGTERM)
+            asyncio.ensure_future(_do_restart())
+            return web.json_response({
+                "ok": proc.returncode == 0,
+                "stdout": proc.stdout,
+                "stderr": proc.stderr,
+                "action": "pull_restart",
+            })
+
+        elif action == "exec":
+            cmd = body.get("command", "").strip()
+            if not cmd:
+                return web.json_response({"error": "command required"}, status=400)
+            import subprocess as _sp
+            timeout = int(body.get("timeout", 30))
+            cwd = body.get("cwd", os.environ.get("JARVIS_DIR", str(Path(__file__).parent.parent.parent)))
+            proc = _sp.run(
+                cmd, shell=True, capture_output=True, text=True,
+                timeout=timeout, cwd=cwd,
+            )
+            return web.json_response({
+                "ok": proc.returncode == 0,
+                "stdout": proc.stdout,
+                "stderr": proc.stderr,
+                "returncode": proc.returncode,
+            })
+
+        return web.json_response({"error": f"Unknown action: {action}"}, status=400)
+
     def _check_remote_auth(self, request: web.Request) -> bool:
         """Validate the remote auth token from the request.
 
@@ -3383,6 +3500,8 @@ class JarvisWebServer:
             _sp_k.run(["pkill", "-f", "src.desktop.app"], capture_output=True)
             os.kill(os.getpid(), _sig.SIGTERM)
         app.router.add_post("/api/restart", _restart_handler)
+        app.router.add_post("/api/manage", self.manage_handler)
+        app.router.add_get("/api/manage", self.manage_handler)
         # Remote session API — makes JARVIS cloud-capable
         app.router.add_post("/api/remote/connect", self.remote_connect_handler)
         app.router.add_post("/api/remote/disconnect", self.remote_disconnect_handler)

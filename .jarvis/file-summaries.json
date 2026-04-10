@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "updated_at": "2026-04-09T11:58:24.158946+00:00",
+  "updated_at": "2026-04-10T02:42:00.985333+00:00",
   "entries": {
     "src/cli/jarvis_cli.py": {
       "mtime": 1775681476.6431224,
@@ -13,8 +13,8 @@
       "lang": "Python"
     },
     "src/agent/tools.py": {
-      "mtime": 1775683737.346966,
-      "size_bytes": 153606,
+      "mtime": 1775770492.0498757,
+      "size_bytes": 160713,
       "symbols": [],
       "summary": "",
       "lang": "Python"
@@ -390,8 +390,8 @@
       "lang": "Python"
     },
     "src/commands/handlers/remote.py": {
-      "mtime": 1775313667.8119738,
-      "size_bytes": 13972,
+      "mtime": 1775770511.0377927,
+      "size_bytes": 18766,
       "symbols": [
         "cmd_bridge",
         "cmd_ide",
@@ -2949,8 +2949,8 @@
       "lang": "Python"
     },
     "extensions/jarvis-screen/background.js": {
-      "mtime": 1775691298.8216758,
-      "size_bytes": 8416,
+      "mtime": 1775737095.2467606,
+      "size_bytes": 8435,
       "symbols": [
         "resolveBrainUrl",
         "persistRegistry",
@@ -9897,15 +9897,15 @@
       "lang": "Python"
     },
     ".jarvis/file-summaries.json": {
-      "mtime": 1775735845.4749014,
-      "size_bytes": 488331,
+      "mtime": 1775735904.1628175,
+      "size_bytes": 488332,
       "symbols": [],
       "summary": "",
       "lang": "JSON"
     },
     "src/server/web_server.py": {
-      "mtime": 1775687170.915021,
-      "size_bytes": 188281,
+      "mtime": 1775770462.5420058,
+      "size_bytes": 193141,
       "symbols": [
         "JarvisWebServer"
       ],
@@ -19571,8 +19571,8 @@
       "lang": "HTML"
     },
     "extensions/jarvis-screen/side_panel.js": {
-      "mtime": 1775691306.8896368,
-      "size_bytes": 16822,
+      "mtime": 1775737108.6707082,
+      "size_bytes": 16826,
       "symbols": [
         "resolveBrainUrl",
         "renderMarkdown",
@@ -19605,8 +19605,8 @@
       "lang": "Python"
     },
     ".github/workflows/deploy.yml": {
-      "mtime": 1775598706.40503,
-      "size_bytes": 799,
+      "mtime": 1775737680.1680927,
+      "size_bytes": 925,
       "symbols": [],
       "summary": "",
       "lang": "YAML"
@@ -19945,8 +19945,8 @@
       "lang": "HTML"
     },
     "extensions/jarvis-screen/options.js": {
-      "mtime": 1775691311.3736148,
-      "size_bytes": 1066,
+      "mtime": 1775737116.682677,
+      "size_bytes": 1068,
       "symbols": [],
       "summary": "",
       "lang": "JavaScript"
