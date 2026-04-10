@@ -1952,8 +1952,19 @@ async def main():
         if right_str:
             vl = _display_width(_ANSI_ESCAPE_RE.sub('', left))
             vr = _display_width(right_str)
-            pad = max(1, tw - vl - vr - 2)
-            footer = f"{left}{' ' * pad}{DIM}{right_str}{RESET}"
+            available = tw - vl - 2  # minimum 1 space separator
+            if vr > available:
+                # Terminal too narrow — drop right_parts one by one from left until it fits
+                trimmed = list(right_parts)
+                while trimmed and _display_width(" · ".join(trimmed)) > available:
+                    trimmed.pop(0)
+                right_str = " · ".join(trimmed)
+                vr = _display_width(right_str)
+            if right_str:
+                pad = max(1, tw - vl - vr - 2)
+                footer = f"{left}{' ' * pad}{DIM}{right_str}{RESET}"
+            else:
+                footer = left
         else:
             footer = left
         return sep, prompt, footer
@@ -2041,7 +2052,14 @@ async def main():
 
     def _handle_resize(signum, frame):
         nonlocal _resize_pending
-        _resize_pending = True  # Just set flag — actual redraw deferred to event loop
+        _resize_pending = True
+        # Schedule immediate redraw via the event loop — don't wait for next keypress
+        try:
+            _loop = asyncio.get_event_loop()
+            if _loop.is_running():
+                _loop.call_soon_threadsafe(_process_resize)
+        except Exception:
+            pass
 
     def _process_resize():
         """Called from event loop to safely process pending resize."""

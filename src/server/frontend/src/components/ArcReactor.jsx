@@ -519,14 +519,14 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
       })
 
       // Eye rings — slow independent rotation + status color indicator
-      // green = listening | amber = thinking | blue = speaking | red = offline
-      const eyeTargetColor = st === 'offline'    ? 0xf87171   // red-400
-        : st === 'thinking'                       ? 0xfbbf24   // amber-400
-        : st === 'speaking'                       ? 0x60a5fa   // blue-400
-        : st === 'idle' || st === 'listening' || st === 'ready' ? 0x4ade80  // green-400
-        : st === 'booting'                        ? 0xfbbf24   // amber-400
+      // green = idle/ready (online) | purple = listening | amber = thinking/booting | blue = speaking | red = offline
+      const eyeTargetColor = st === 'offline'               ? 0xf87171   // red-400    — disconnected
+        : st === 'thinking' || st === 'booting'             ? 0xfbbf24   // amber-400  — processing / starting
+        : st === 'speaking'                                  ? 0x60a5fa   // blue-400   — talking
+        : st === 'listening'                                 ? 0xa78bfa   // violet-400 — hearing input
+        : st === 'idle' || st === 'ready'                    ? 0x4ade80   // green-400  — online / ready
         : glowInt
-      const eyeLerp = st === 'speaking' ? 0.15 : st === 'thinking' ? 0.12 : st === 'offline' ? 0.2 : 0.06
+      const eyeLerp = st === 'speaking' ? 0.15 : st === 'thinking' ? 0.12 : st === 'offline' ? 0.2 : st === 'listening' ? 0.10 : 0.06
       eyeRings.forEach((ring, i) => {
         ring.rotation.x += (0.002 + i * 0.001) * (i % 2 === 0 ? 1 : -1)
         ring.rotation.z += 0.001 * (i % 2 === 0 ? -1 : 1)
@@ -540,7 +540,9 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
           ring.material.opacity = 0.5 + 0.4 * Math.sin(time * 5 + i * 1.2)
         } else if (st === 'thinking') {
           ring.material.opacity = 0.4 + 0.4 * Math.sin(time * 3 + i * 0.8)
-        } else if (st === 'idle' || st === 'listening' || st === 'ready') {
+        } else if (st === 'listening') {
+          ring.material.opacity = 0.55 + 0.30 * Math.sin(time * 4.5 + i * 2.0)  // faster pulse — active input
+        } else if (st === 'idle' || st === 'ready') {
           ring.material.opacity = 0.5 + 0.25 * Math.sin(time * 2 + i * 1.5)
         } else if (st === 'offline') {
           ring.material.opacity = 0.2 + 0.15 * Math.sin(time * 1.5 + i)
