@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "updated_at": "2026-04-10T06:16:40.167481+00:00",
+  "updated_at": "2026-04-10T12:22:55.977623+00:00",
   "entries": {
     "src/cli/jarvis_cli.py": {
       "mtime": 1775681476.6431224,
@@ -194,8 +194,8 @@
       "lang": "Python"
     },
     "src/desktop/app.py": {
-      "mtime": 1775674519.7310216,
-      "size_bytes": 28915,
+      "mtime": 1775817035.7534654,
+      "size_bytes": 30065,
       "symbols": [
         "main"
       ],
@@ -9897,15 +9897,15 @@
       "lang": "Python"
     },
     ".jarvis/file-summaries.json": {
-      "mtime": 1775801780.47784,
-      "size_bytes": 488334,
+      "mtime": 1775823632.549981,
+      "size_bytes": 488729,
       "symbols": [],
       "summary": "",
       "lang": "JSON"
     },
     "src/server/web_server.py": {
-      "mtime": 1775800418.398951,
-      "size_bytes": 193124,
+      "mtime": 1775821944.6859407,
+      "size_bytes": 194786,
       "symbols": [
         "JarvisWebServer"
       ],
@@ -9913,8 +9913,8 @@
       "lang": "Python"
     },
     "src/reasoning/persona.py": {
-      "mtime": 1775619324.6312537,
-      "size_bytes": 97566,
+      "mtime": 1775821954.7218971,
+      "size_bytes": 97706,
       "symbols": [],
       "summary": "",
       "lang": "Python"
@@ -9984,8 +9984,8 @@
       "lang": "CSS"
     },
     "src/server/frontend/src/components/ArcReactor.jsx": {
-      "mtime": 1775435742.3032284,
-      "size_bytes": 23026,
+      "mtime": 1775821512.2556672,
+      "size_bytes": 26705,
       "symbols": [
         "ArcReactor"
       ],
@@ -10007,8 +10007,8 @@
       "lang": "Python"
     },
     "src/server/frontend/src/App.jsx": {
-      "mtime": 1775641518.286748,
-      "size_bytes": 25974,
+      "mtime": 1775816893.5260813,
+      "size_bytes": 27638,
       "symbols": [
         "App"
       ],
@@ -11681,8 +11681,8 @@
       "lang": "Python"
     },
     "src/server/frontend/src/components/HudPanel.jsx": {
-      "mtime": 1775308386.1647785,
-      "size_bytes": 4640,
+      "mtime": 1775811422.212252,
+      "size_bytes": 5801,
       "symbols": [
         "getTimeString",
         "getDateString",
@@ -19571,17 +19571,17 @@
       "lang": "HTML"
     },
     "extensions/jarvis-screen/side_panel.js": {
-      "mtime": 1775737108.6707082,
-      "size_bytes": 16826,
+      "mtime": 1775813291.9704244,
+      "size_bytes": 18188,
       "symbols": [
         "resolveBrainUrl",
+        "checkForUpdate",
         "renderMarkdown",
         "hideEmpty",
         "addMessage",
         "addStreamingRow",
         "appendToolEvent",
-        "scrollBottom",
-        "domainInitial"
+        "scrollBottom"
       ],
       "summary": "",
       "lang": "JavaScript"
@@ -19605,8 +19605,8 @@
       "lang": "Python"
     },
     ".github/workflows/deploy.yml": {
-      "mtime": 1775798514.5919473,
-      "size_bytes": 959,
+      "mtime": 1775820882.3304303,
+      "size_bytes": 1180,
       "symbols": [],
       "summary": "",
       "lang": "YAML"
@@ -19833,8 +19833,8 @@
       "lang": "Python"
     },
     "src/speech/voice_intelligence.py": {
-      "mtime": 1775641074.021142,
-      "size_bytes": 25512,
+      "mtime": 1775816812.9184308,
+      "size_bytes": 25995,
       "symbols": [
         "ConversationState",
         "EmotionalToneDetector"
@@ -20122,6 +20122,22 @@
       "symbols": [],
       "summary": "",
       "lang": "Python"
+    },
+    "scripts/auto-update.sh": {
+      "mtime": 1775814117.938484,
+      "size_bytes": 2709,
+      "symbols": [],
+      "summary": "",
+      "lang": "Shell"
+    },
+    "src/server/frontend/src/components/VoiceWaveform.jsx": {
+      "mtime": 1775811436.640156,
+      "size_bytes": 2146,
+      "symbols": [
+        "VoiceWaveform"
+      ],
+      "summary": "",
+      "lang": "JavaScript"
     }
   }
 }

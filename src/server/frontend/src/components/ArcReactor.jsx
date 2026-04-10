@@ -413,6 +413,47 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
     glowSprite.scale.set(3.5, 3.5, 1)
     globe.add(glowSprite)
 
+    // ── 10. State color disc — the visible center circle that changes color ──
+    // Camera-facing sprite placed right at the front of the sphere.
+    // Uses a plain white-center radial texture so the material color shows clearly.
+    // This is the "circle inside the reactor" the user sees change state.
+    const stateTexture = (() => {
+      const size = 256
+      const c = document.createElement('canvas')
+      c.width = size; c.height = size
+      const ctx = c.getContext('2d')
+      const cx = size / 2, cy = size / 2
+      // Outer soft glow ring
+      const outer = ctx.createRadialGradient(cx, cy, size * 0.18, cx, cy, size * 0.5)
+      outer.addColorStop(0,   'rgba(255,255,255, 0)')
+      outer.addColorStop(0.4, 'rgba(255,255,255, 0.55)')
+      outer.addColorStop(0.75,'rgba(255,255,255, 0.25)')
+      outer.addColorStop(1.0, 'rgba(255,255,255, 0)')
+      ctx.fillStyle = outer
+      ctx.fillRect(0, 0, size, size)
+      // Bright inner core
+      const inner = ctx.createRadialGradient(cx, cy, 0, cx, cy, size * 0.22)
+      inner.addColorStop(0,   'rgba(255,255,255, 1)')
+      inner.addColorStop(0.5, 'rgba(255,255,255, 0.7)')
+      inner.addColorStop(1.0, 'rgba(255,255,255, 0)')
+      ctx.fillStyle = inner
+      ctx.fillRect(0, 0, size, size)
+      return new THREE.CanvasTexture(c)
+    })()
+
+    const stateDiscMat = new THREE.SpriteMaterial({
+      map: stateTexture,
+      color: 0x22c55e,  // starts green (idle/online)
+      transparent: true,
+      opacity: 0.0,     // fades in once brain is ready
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    })
+    const stateDisc = new THREE.Sprite(stateDiscMat)
+    stateDisc.scale.set(1.1, 1.1, 1)
+    stateDisc.position.set(0, 0, 1.35)  // front face of sphere (R=1.3)
+    scene.add(stateDisc)  // NOT globe — stays camera-facing, never rotates
+
     // ── Animate ──
     let time = 0, smoothAudio = 0, animId, lastFrame = 0
     const TARGET_FPS = 30
@@ -510,6 +551,20 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
 
       // Center glow follows the same state color as the eye rings
       glowMat.color.setHex(lerpColor(glowMat.color.getHex(), eyeTargetColor, eyeLerp))
+
+      // ── State color disc — the clear center circle indicator ──
+      stateDiscMat.color.setHex(lerpColor(stateDiscMat.color.getHex(), eyeTargetColor, eyeLerp * 1.5))
+      // Pulse opacity based on state: brighter when active, gentler when idle
+      const discBase = st === 'offline' ? 0.25
+        : st === 'speaking'             ? 0.55 + 0.35 * Math.sin(time * 7 + 0.5)
+        : st === 'thinking'             ? 0.45 + 0.30 * Math.sin(time * 4)
+        : st === 'listening'            ? 0.50 + 0.20 * Math.sin(time * 3)
+        : st === 'booting'              ? 0.30 + 0.20 * Math.sin(time * 2)
+        :                                 0.40 + 0.15 * Math.sin(time * 1.5)  // idle
+      stateDiscMat.opacity = Math.min(0.95, Math.max(0, discBase + energy * 0.3))
+      // Scale pulses slightly with audio/state
+      const discScale = 1.1 + 0.12 * Math.sin(time * 2) + energy * 0.25
+      stateDisc.scale.set(discScale, discScale, 1)
 
       // Neural lines — dense cyan arcs racing inside sphere
       const sigSpeed = st === 'thinking' ? 5.0 : st === 'speaking' ? 3.5 : 2.5

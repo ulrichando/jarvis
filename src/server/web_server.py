@@ -62,8 +62,8 @@ STATIC_DIR = _react_dir if (_react_dir / "index.html").exists() else _vanilla_di
 HOST = "0.0.0.0"
 PORT = 8765
 
-# Edge TTS voice — deep, confident, multilingual male voice
-TTS_VOICE = "en-US-AndrewMultilingualNeural"
+# Edge TTS voice — English-only (monolingual) to prevent auto language-switching
+TTS_VOICE = "en-US-AndrewNeural"
 
 
 class JarvisWebServer:
@@ -993,7 +993,8 @@ class JarvisWebServer:
                                             _early_server_tts = False
                                             if is_voice:
                                                 clients = getattr(self, '_active_clients', {})
-                                                if clients.get("desktop") and not clients.get("browser"):
+                                                _has_audio = bool(os.environ.get("DISPLAY") or os.environ.get("PULSE_SERVER"))
+                                                if clients.get("desktop") and not clients.get("browser") and _has_audio:
                                                     early_tts_task = asyncio.create_task(self._speak_system(spoken))
                                                     _early_server_tts = True
                                             await ws.send_json({
@@ -1141,9 +1142,13 @@ class JarvisWebServer:
                 spoken = self._clean_for_speech(full_response)
 
             # Check if server will handle TTS (suppress frontend TTS to avoid double voice)
+            # Server TTS requires local audio (DISPLAY). In Docker/headless (CT104),
+            # there is no audio hardware — let the frontend play TTS via WebAudio instead.
             _clients = getattr(self, '_active_clients', {})
+            _has_local_audio = bool(os.environ.get("DISPLAY") or os.environ.get("PULSE_SERVER"))
             _server_tts = (is_voice and spoken and len(spoken) > 3
-                           and _clients.get("desktop") and not _clients.get("browser"))
+                           and _clients.get("desktop") and not _clients.get("browser")
+                           and _has_local_audio)
             _sent_spoken = "" if _server_tts else spoken
 
             # Pre-mute server mic — ONLY when server is actually going to speak via TTS
@@ -2204,9 +2209,10 @@ class JarvisWebServer:
             is_desktop = clients.get("desktop", False)
 
             # Broadcast message to all clients
-            # If server will handle TTS via ffplay, don't send 'spoken' to frontend
-            # (otherwise both browser Audio API AND ffplay play = double voice)
-            server_will_speak = (is_desktop or not is_browser) and spoken and len(spoken) > 1
+            # Server-side TTS (ffplay) only works when local audio is available.
+            # On CT104/Docker (no DISPLAY), let the frontend play via WebAudio instead.
+            _has_local_audio = bool(os.environ.get("DISPLAY") or os.environ.get("PULSE_SERVER"))
+            server_will_speak = (is_desktop or not is_browser) and spoken and len(spoken) > 1 and _has_local_audio
             await self._broadcast({
                 "type": "message", "role": "jarvis",
                 "content": response,
