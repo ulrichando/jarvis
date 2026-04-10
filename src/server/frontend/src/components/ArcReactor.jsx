@@ -437,28 +437,10 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
         : 0
       const energy = Math.max(smoothAudio, speakPulse)
 
-      // ── State-driven color transitions ──
-      // listening/idle = green  | thinking = amber  | speaking = blue  | offline = red
-      let targetColor = primaryInt
-      let targetGlow = glowInt
-      if (st === 'offline') {
-        targetColor = 0xef4444  // red-500  — disconnected
-        targetGlow = 0xf87171   // red-400
-      } else if (st === 'thinking') {
-        targetColor = 0xf59e0b  // amber-500 — processing
-        targetGlow = 0xfbbf24   // amber-400
-      } else if (st === 'speaking') {
-        targetColor = 0x3b82f6  // blue-500  — JARVIS talking
-        targetGlow = 0x60a5fa   // blue-400
-      } else if (st === 'idle' || st === 'listening' || st === 'ready') {
-        targetColor = 0x22c55e  // green-500 — listening / ready
-        targetGlow = 0x4ade80   // green-400
-      } else if (st === 'booting') {
-        targetColor = 0xf59e0b  // amber-500 — initializing
-        targetGlow = 0xfbbf24   // amber-400
-      }
-
-      // Smooth color lerp on all themed materials
+      // ── Color lerp utility — used only for core/eye ring transitions ──
+      // The outer reactor structure (puzzle pieces, bands, circuit lines) stays
+      // the theme color permanently. Only the inner eye rings and center glow
+      // change color to reflect JARVIS state.
       const lerpColor = (current, target, t) => {
         const cr = (current >> 16) & 0xff, cg = (current >> 8) & 0xff, cb = current & 0xff
         const tr = (target >> 16) & 0xff, tg = (target >> 8) & 0xff, tb = target & 0xff
@@ -467,17 +449,6 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
         const b = Math.round(cb + (tb - cb) * t)
         return (r << 16) | (g << 8) | b
       }
-
-      const colorLerp = st === 'ready' ? 0.15 : 0.08  // faster transition for ready flash
-      for (const tm of themedMaterials) {
-        const curInt = tm.mat.color.getHex()
-        const tgt = tm.role === 'glow' ? targetGlow : targetColor
-        if (curInt !== tgt) {
-          tm.mat.color.setHex(lerpColor(curInt, tgt, colorLerp))
-        }
-      }
-      sparkMat.color.setHex(lerpColor(sparkMat.color.getHex(), targetGlow, colorLerp))
-      glowMat.color.setHex(lerpColor(glowMat.color.getHex(), targetGlow, colorLerp))
 
       // Ready state: boost glow intensity
       if (st === 'ready') {
@@ -536,6 +507,9 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
           ring.material.opacity = 0.3 + 0.2 * Math.sin(time * 2 + i)
         }
       })
+
+      // Center glow follows the same state color as the eye rings
+      glowMat.color.setHex(lerpColor(glowMat.color.getHex(), eyeTargetColor, eyeLerp))
 
       // Neural lines — dense cyan arcs racing inside sphere
       const sigSpeed = st === 'thinking' ? 5.0 : st === 'speaking' ? 3.5 : 2.5

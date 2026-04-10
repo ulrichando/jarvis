@@ -371,10 +371,49 @@ def main():
     # ── Keyboard ──
     _visible = [True]
 
+    def _full_quit():
+        """Fully terminate JARVIS desktop — kills ffplay, cleans up, then exits."""
+        # Kill any lingering TTS audio (ffplay launched by server on this machine)
+        try:
+            import subprocess as _sq
+            _sq.run(["pkill", "-f", "ffplay.*jarvis"], capture_output=True)
+        except Exception:
+            pass
+        # Kill local server if we started it (PID in /tmp/jarvis-server.pid)
+        # Don't kill remote (CT104) server — only local
+        if ws_url and ("127.0.0.1" in ws_url or "localhost" in ws_url):
+            _pid_file = "/tmp/jarvis-server.pid"
+            try:
+                if os.path.exists(_pid_file):
+                    with open(_pid_file) as _pf:
+                        _srv_pid = int(_pf.read().strip())
+                    os.kill(_srv_pid, 15)  # SIGTERM
+                    os.unlink(_pid_file)
+            except Exception:
+                pass
+        # Clean up temp WebKit cache dir
+        try:
+            import shutil
+            shutil.rmtree(_cache_dir, ignore_errors=True)
+        except Exception:
+            pass
+        # Unregister from server (non-blocking — fire and forget)
+        try:
+            import urllib.request, json as _json
+            data = _json.dumps({"type": "desktop"}).encode()
+            req = urllib.request.Request(
+                f"http://{host}:{port}/api/client/unregister",
+                data=data, headers={"Content-Type": "application/json"}
+            )
+            urllib.request.urlopen(req, timeout=0.5)  # short timeout — don't block quit
+        except Exception:
+            pass
+        os._exit(0)  # Force-exit all threads immediately
+
     def on_key(widget, event):
         if event.state & Gdk.ModifierType.CONTROL_MASK:
             if event.keyval == Gdk.KEY_q:
-                Gtk.main_quit()
+                _full_quit()
             elif event.keyval == Gdk.KEY_h:
                 _visible[0] = not _visible[0]
                 window.set_visible(_visible[0])
@@ -386,24 +425,7 @@ def main():
     window.connect("key-press-event", on_key)
 
     def on_destroy(widget):
-        # Unregister from server
-        try:
-            import urllib.request, json as _json
-            data = _json.dumps({"type": "desktop"}).encode()
-            req = urllib.request.Request(
-                f"http://{host}:{port}/api/client/unregister",
-                data=data, headers={"Content-Type": "application/json"}
-            )
-            urllib.request.urlopen(req, timeout=2)
-        except Exception:
-            pass
-        # Clean up temp WebKit cache dir
-        try:
-            import shutil
-            shutil.rmtree(_cache_dir, ignore_errors=True)
-        except Exception:
-            pass
-        Gtk.main_quit()
+        _full_quit()
 
     window.connect("destroy", on_destroy)
 
@@ -631,7 +653,7 @@ def main():
         menu.append(Gtk.SeparatorMenuItem())
 
         item_quit = Gtk.MenuItem(label="Quit JARVIS")
-        item_quit.connect("activate", lambda w: Gtk.main_quit())
+        item_quit.connect("activate", lambda w: _full_quit())
         menu.append(item_quit)
 
         menu.show_all()
@@ -722,6 +744,8 @@ def main():
                 GLib.idle_add(lambda: window.set_visible(False) or False)
             elif cmd == "show":
                 GLib.idle_add(lambda: window.set_visible(True) or False)
+            elif cmd == "quit":
+                GLib.idle_add(lambda: _full_quit() or False)
         except Exception:
             pass
 

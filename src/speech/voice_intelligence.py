@@ -475,6 +475,14 @@ class ConversationContext:
             "No hedging spiral. No padding. 'I don't know, but here's how we'd find out.' is perfect."
         )
 
+        lines.append(
+            "VOICE OUTPUT: This response will be spoken aloud. NEVER read raw command output, "
+            "file listings, error traces, code, paths, JSON, or technical logs verbatim. "
+            "Summarize what was done and what was found in plain conversational English. "
+            "One sentence for simple results, two for complex ones. If you ran commands, "
+            "just say what happened — not what the output said word for word."
+        )
+
         return "\n".join(lines) if lines else ""
 
 

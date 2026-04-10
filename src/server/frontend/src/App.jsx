@@ -29,6 +29,8 @@ function App() {
   const [currentModel, setCurrentModel] = useState('')
   const [heardText, setHeardText] = useState('')
   const heardTimerRef = React.useRef(null)
+  const offlineTimerRef = useRef(null)
+  const [stableWsStatus, setStableWsStatus] = useState('connecting')
 
   const wsUrl = useMemo(() => {
     const clientType = isDesktop ? 'desktop' : 'browser'
@@ -40,6 +42,21 @@ function App() {
   }, [isDesktop])
   const { messages: wsMessages, sendMessage, status: wsStatus } = useWebSocket(wsUrl)
   const theme = useTheme()
+
+  // Debounce the offline state — brief WS blips (< 3s) don't flash red
+  useEffect(() => {
+    if (wsStatus === 'connected') {
+      clearTimeout(offlineTimerRef.current)
+      setStableWsStatus('connected')
+    } else if (wsStatus === 'connecting') {
+      clearTimeout(offlineTimerRef.current)
+      setStableWsStatus('connecting')
+    } else {
+      // 'disconnected' — wait 3 seconds before showing offline
+      offlineTimerRef.current = setTimeout(() => setStableWsStatus('disconnected'), 3000)
+    }
+    return () => clearTimeout(offlineTimerRef.current)
+  }, [wsStatus])
 
   // Mark desktop/browser mode on <html> and <body>
   useEffect(() => {
@@ -191,6 +208,13 @@ function App() {
     if (last.type === 'camera') setCameraOn(last.enabled)
     if (last.type === 'provider_error') setSetupOpen(true)
 
+    // Power events — shut down / quit desktop when requested via voice
+    if (last.type === 'power' && (last.action === 'shutdown' || last.action === 'quit')) {
+      if (isDesktop && window.webkit?.messageHandlers?.jarvis) {
+        window.webkit.messageHandlers.jarvis.postMessage(JSON.stringify({ cmd: 'quit' }))
+      }
+    }
+
     // Voice commands: "show text" / "hide text"
     if (last.type === 'message' && last.content === '__SHOW_TEXT__') setChatOpen(true)
     if (last.type === 'message' && last.content === '__HIDE_TEXT__') setChatOpen(false)
@@ -316,6 +340,7 @@ function App() {
               sendMessage({ type: 'query', text: transcript })
             }
           }
+          recognition.onspeechstart = () => { setReactorState('listening') }
           recognition.onend = () => { try { recognition.start() } catch { /* ignore */ } }
           recognition.onerror = () => { /* ignore */ }
           try { recognition.start() } catch { /* ignore */ }
@@ -433,6 +458,7 @@ function App() {
 
           // ── Normal listening mode ────────────────────────────────────────
           if (rms > baseThreshold && !recording && !wr_isSpeakingTTS) {
+            setReactorState('listening')
             document.dispatchEvent(new CustomEvent('user-speaking'))
             chunks = []
             _recordStart = Date.now()
@@ -524,7 +550,7 @@ function App() {
       {/* Arc Reactor */}
       {showReactor && (
         <ArcReactor
-          state={wsStatus !== 'connected' ? (wsStatus === 'connecting' ? 'booting' : 'offline') : reactorState}
+          state={stableWsStatus !== 'connected' ? (stableWsStatus === 'connecting' ? 'booting' : 'offline') : reactorState}
           isDesktop={isDesktop}
           audioLevel={audioLevel}
           theme={theme}
