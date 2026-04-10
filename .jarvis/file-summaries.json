@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "updated_at": "2026-04-10T14:16:51.969809+00:00",
+  "updated_at": "2026-04-10T15:49:05.019056+00:00",
   "entries": {
     "src/cli/jarvis_cli.py": {
       "mtime": 1775681476.6431224,
@@ -9897,8 +9897,8 @@
       "lang": "Python"
     },
     ".jarvis/file-summaries.json": {
-      "mtime": 1775830557.775937,
-      "size_bytes": 488732,
+      "mtime": 1775830611.972983,
+      "size_bytes": 488731,
       "symbols": [],
       "summary": "",
       "lang": "JSON"
@@ -20136,6 +20136,80 @@
       "symbols": [
         "VoiceWaveform"
       ],
+      "summary": "",
+      "lang": "JavaScript"
+    },
+    "extensions/jarvis-screen-firefox/side_panel.js": {
+      "mtime": 1775835883.0462832,
+      "size_bytes": 18407,
+      "symbols": [
+        "resolveBrainUrl",
+        "checkForUpdate",
+        "renderMarkdown",
+        "hideEmpty",
+        "addMessage",
+        "addStreamingRow",
+        "appendToolEvent",
+        "scrollBottom"
+      ],
+      "summary": "",
+      "lang": "JavaScript"
+    },
+    "extensions/jarvis-screen-firefox/side_panel.html": {
+      "mtime": 1775835883.0462313,
+      "size_bytes": 15125,
+      "symbols": [],
+      "summary": "",
+      "lang": "HTML"
+    },
+    "extensions/jarvis-screen-firefox/background.js": {
+      "mtime": 1775835653.8208954,
+      "size_bytes": 8040,
+      "symbols": [
+        "resolveBrainUrl",
+        "persistRegistry",
+        "restoreRegistry",
+        "syncLiveTabs",
+        "upsertTab",
+        "extractDomFromTab",
+        "captureScreen",
+        "captureAndAnalyze"
+      ],
+      "summary": "",
+      "lang": "JavaScript"
+    },
+    "extensions/jarvis-screen-firefox/popup.html": {
+      "mtime": 1775835883.0464072,
+      "size_bytes": 7098,
+      "symbols": [],
+      "summary": "",
+      "lang": "HTML"
+    },
+    "extensions/jarvis-screen-firefox/content.js": {
+      "mtime": 1775835883.046328,
+      "size_bytes": 4017,
+      "symbols": [],
+      "summary": "",
+      "lang": "JavaScript"
+    },
+    "extensions/jarvis-screen-firefox/options.html": {
+      "mtime": 1775835883.0463524,
+      "size_bytes": 2263,
+      "symbols": [],
+      "summary": "",
+      "lang": "HTML"
+    },
+    "extensions/jarvis-screen-firefox/manifest.json": {
+      "mtime": 1775835623.331826,
+      "size_bytes": 1358,
+      "symbols": [],
+      "summary": "",
+      "lang": "JSON"
+    },
+    "extensions/jarvis-screen-firefox/options.js": {
+      "mtime": 1775835883.0463786,
+      "size_bytes": 1068,
+      "symbols": [],
       "summary": "",
       "lang": "JavaScript"
     }
