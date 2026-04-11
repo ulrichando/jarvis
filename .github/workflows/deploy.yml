@@ -9,8 +9,53 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # ── Rebuild base image only when dependencies change ──────────────────────────
+  # Runs in ~30s if base is current (image exists + no changes).
+  # Runs in ~15min only when pyproject.toml or Dockerfile.base change.
+  base:
+    runs-on: self-hosted
+    env:
+      REGISTRY: 10.10.0.123:3000
+      BASE_IMAGE: 10.10.0.123:3000/ulrich/jarvis-base
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build & push base image if changed
+        run: |
+          echo "${{ secrets.FORGEJO_TOKEN }}" \
+            | docker login $REGISTRY -u ulrich --password-stdin
+
+          # Check if base already exists in registry
+          if docker manifest inspect $BASE_IMAGE:latest > /dev/null 2>&1; then
+            # Compute hash of files that affect the base image
+            NEW_HASH=$(cat Dockerfile.base pyproject.toml | sha256sum | cut -c1-16)
+            # Get hash stored in existing base image label
+            OLD_HASH=$(docker inspect $BASE_IMAGE:latest \
+              --format='{{index .Config.Labels "jarvis.base.hash"}}' 2>/dev/null || echo "")
+            if [ "$NEW_HASH" = "$OLD_HASH" ]; then
+              echo "Base image up to date (hash=$NEW_HASH) — skipping rebuild"
+              exit 0
+            fi
+            echo "Base changed: $OLD_HASH → $NEW_HASH — rebuilding"
+          else
+            NEW_HASH=$(cat Dockerfile.base pyproject.toml | sha256sum | cut -c1-16)
+            echo "Base image not found — building for first time (hash=$NEW_HASH)"
+          fi
+
+          DOCKER_BUILDKIT=1 docker build \
+            --label "jarvis.base.hash=$NEW_HASH" \
+            -f Dockerfile.base \
+            -t $BASE_IMAGE:latest \
+            .
+
+          docker push $BASE_IMAGE:latest
+          echo "Base pushed at $(date)"
+
+  # ── Fast app build — only copies code into base ───────────────────────────────
   deploy:
-    # Self-hosted runner ON Proxmox — builds image here, deploys into CT104 (Docker host)
+    needs: base
     runs-on: self-hosted
 
     env:
@@ -21,13 +66,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Build & push Docker image
+      - name: Build & push app image
         run: |
           GIT_COMMIT=$(git rev-parse --short HEAD)
 
-          # Login to your own Forgejo registry — no GitHub needed
           echo "${{ secrets.FORGEJO_TOKEN }}" \
             | docker login $REGISTRY -u ulrich --password-stdin
+
+          # Pull base so Docker can use it locally (fast — already on registry)
+          docker pull 10.10.0.123:3000/ulrich/jarvis-base:latest
 
           DOCKER_BUILDKIT=1 docker build \
             --build-arg GIT_COMMIT="$GIT_COMMIT" \
@@ -39,20 +86,12 @@ jobs:
           docker push $IMAGE:$GIT_COMMIT
           echo "Pushed at $(date)"
 
-      # ── Zero-downtime canary deploy ──────────────────────────────────────────
-      # Strategy:
-      #   1. CT104 pulls from Forgejo registry — only changed layers downloaded
-      #   2. Start jarvis_canary (new image) alongside the live jarvis container
-      #   3. Wait for canary to pass its health check
-      #   4. nginx reload → traffic instantly switches to canary (no dropped requests)
-      #   5. Remove old jarvis container; rename canary → jarvis
-      #   6. Rollback automatically if canary never becomes healthy
-
       - name: Pull new image on CT104
         run: |
           echo "${{ secrets.FORGEJO_TOKEN }}" \
             | /usr/sbin/pct exec 104 -- docker login $REGISTRY -u ulrich --password-stdin
           /usr/sbin/pct exec 104 -- docker pull $IMAGE:latest
+          /usr/sbin/pct exec 104 -- docker pull 10.10.0.123:3000/ulrich/jarvis-base:latest
           echo "Pull complete at $(date)"
 
       - name: Start canary container
@@ -60,11 +99,7 @@ jobs:
           /usr/sbin/pct exec 104 -- bash -c "
             set -e
             cd /opt/jarvis
-
-            # Remove any leftover canary from a previous failed deploy
             docker rm -f jarvis_canary 2>/dev/null || true
-
-            # Start canary on the same internal network — no host port needed
             docker run -d \
               --name jarvis_canary \
               --network jarvis_jarvis_net \
@@ -79,7 +114,6 @@ jobs:
               -v /root/.ssh/known_hosts:/data/.ssh/known_hosts:rw \
               --restart no \
               $IMAGE:latest
-
             echo 'Canary started'
           "
 
@@ -95,7 +129,7 @@ jobs:
               HEALTHY=1
               break
             elif [ "$STATUS" = "unhealthy" ]; then
-              echo "Canary is unhealthy — rolling back"
+              echo "Canary unhealthy — rolling back"
               /usr/sbin/pct exec 104 -- docker rm -f jarvis_canary 2>/dev/null || true
               exit 1
             fi
@@ -103,7 +137,6 @@ jobs:
             sleep 1
           done
           if [ "$HEALTHY" = "0" ]; then
-            echo "Canary did not become healthy in 120s — rolling back"
             /usr/sbin/pct exec 104 -- bash -c "
               docker logs --tail=40 jarvis_canary 2>&1 || true
               docker rm -f jarvis_canary 2>/dev/null || true
@@ -111,59 +144,41 @@ jobs:
             exit 1
           fi
 
-      - name: Swap canary → live (nginx hot-reload, zero downtime)
+      - name: Swap canary → live (zero downtime)
         run: |
           /usr/sbin/pct exec 104 -- bash -c "
             set -e
             cd /opt/jarvis
 
-            # Step 1: nginx → canary (traffic keeps flowing, zero downtime)
             printf '# Managed by deploy workflow — do not edit by hand.\nupstream jarvis_active {\n    server jarvis_canary:8765;\n}\n' \
               > nginx/conf.d/upstream.conf
             docker compose exec -T nginx nginx -s reload
-            echo 'nginx reloaded → traffic now on canary'
+            echo 'nginx → canary'
 
             sleep 2
 
-            # Step 2: tear down the old compose-managed jarvis
             docker compose stop jarvis 2>/dev/null || true
             docker compose rm -f jarvis 2>/dev/null || true
-
-            # Step 3: recreate jarvis via compose from the already-pulled latest image
-            # (creates a proper compose-managed container with correct labels)
             docker compose up -d jarvis
 
-            # Step 4: wait for new compose jarvis to become healthy (up to 120s)
-            echo 'Waiting for new jarvis to become healthy...'
+            echo 'Waiting for new jarvis...'
             for i in \$(seq 1 120); do
               STATUS=\$(docker inspect --format='{{.State.Health.Status}}' jarvis-jarvis-1 2>/dev/null || echo 'missing')
-              if [ \"\$STATUS\" = 'healthy' ]; then
-                echo \"New jarvis healthy after \${i}s\"
-                break
-              elif [ \"\$STATUS\" = 'unhealthy' ]; then
-                echo 'New jarvis unhealthy — leaving canary in place and aborting'
-                docker logs --tail=30 jarvis-jarvis-1 2>&1 || true
-                exit 1
-              fi
+              [ \"\$STATUS\" = 'healthy' ] && { echo \"Healthy after \${i}s\"; break; }
+              [ \"\$STATUS\" = 'unhealthy' ] && { docker logs --tail=30 jarvis-jarvis-1 2>&1; exit 1; }
               echo \"  \${i}s: \$STATUS\"
               sleep 1
             done
 
-            # Step 5: switch nginx back to compose-managed jarvis
             printf '# Managed by deploy workflow — do not edit by hand.\nupstream jarvis_active {\n    server jarvis:8765;\n}\n' \
               > nginx/conf.d/upstream.conf
             docker compose exec -T nginx nginx -s reload
-            echo 'nginx reloaded → traffic now on new jarvis'
-
-            # Step 6: remove canary
             docker rm -f jarvis_canary 2>/dev/null || true
-
-            echo 'Swap complete — JARVIS is live on new image'
+            echo 'Swap complete'
           "
 
       - name: Final health check
         run: |
-          echo "Verifying live service after swap..."
           for i in $(seq 1 30); do
             if /usr/sbin/pct exec 104 -- curl -sf http://localhost/api/ready > /dev/null 2>&1; then
               echo "JARVIS healthy via nginx (${i}s)"
@@ -171,6 +186,5 @@ jobs:
             fi
             sleep 1
           done
-          echo "Post-swap health check failed — dumping logs:"
           /usr/sbin/pct exec 104 -- docker logs --tail=40 jarvis-jarvis-1 2>&1 || true
           exit 1
