@@ -503,6 +503,16 @@ class JarvisWebServer:
             f"({len(self.clients)} active)"
         )
 
+        # Auto-register client type based on ?client= query param
+        if _client_label in self._active_clients:
+            self._active_clients[_client_label] = True
+            if self.brain:
+                self.brain._channel_state = self._active_clients
+            # Stop server mic when a browser UI connects (it has its own mic)
+            if _client_label == "browser":
+                if hasattr(self, '_server_mic_running') and self._server_mic_running:
+                    self._server_mic_running = False
+
         # Tell the client who JARVIS thinks they are
         await self._safe_send(ws, {
             "type": "device_hello",
@@ -654,6 +664,22 @@ class JarvisWebServer:
                 pass
             _lbl = getattr(ws, '_client_label', 'unknown')
             print(f"[JARVIS] WS disconnect: {peer} [{_lbl}] ({len(self.clients)} active)")
+            # Auto-unregister client type on WS disconnect
+            if _lbl in self._active_clients:
+                # Only mark as inactive if no other WS from same client type remains
+                _same_type_left = any(
+                    getattr(c, '_client_label', '') == _lbl
+                    for c in self.clients
+                )
+                if not _same_type_left:
+                    self._active_clients[_lbl] = False
+                    if self.brain:
+                        self.brain._channel_state = self._active_clients
+                    # Restart server mic if no UI clients remain
+                    has_ui = self._active_clients.get("desktop") or self._active_clients.get("browser")
+                    if not has_ui and hasattr(self, '_server_mic_running') and not self._server_mic_running:
+                        import asyncio as _aio
+                        _aio.ensure_future(self._start_server_mic())
 
         return ws
 
@@ -912,7 +938,19 @@ class JarvisWebServer:
                 "content": "Still initializing... give me a moment.",
                 "model": "", "latency_ms": 0,
             })
-            return
+            # Wait for brain to become ready rather than dropping the message
+            _waited = 0
+            while self.brain is None and _waited < 45:
+                await asyncio.sleep(0.5)
+                _waited += 0.5
+            if self.brain is None:
+                await ws.send_json({
+                    "type": "message", "role": "jarvis",
+                    "content": "Initialization timed out. Please try again.",
+                    "model": "", "latency_ms": 0,
+                })
+                return
+            # Brain is now ready — fall through and process the message normally
 
         # Inject vision awareness if available
         if hasattr(ws, '_viewer'):
@@ -1088,10 +1126,10 @@ class JarvisWebServer:
                                 "type": "tool_result",
                                 "id": current_tool_id,
                                 "name": tool_name_r,
-                                "content": raw_result[:500],
+                                "content": raw_result[:4000],
                             }
                             if diff_payload:
-                                result_msg["diff"] = diff_payload[:2000]
+                                result_msg["diff"] = diff_payload[:6000]
                             await ws.send_json(result_msg)
                             current_tool_id = None
                         elif etype == "dispatch":
@@ -1113,7 +1151,7 @@ class JarvisWebServer:
                                 "type": "tool_result",
                                 "id": current_tool_id,
                                 "name": "dispatch",
-                                "content": str(event.get("result", ""))[:500],
+                                "content": str(event.get("result", ""))[:4000],
                             })
                             current_tool_id = None
                         elif etype == "usage":
@@ -3758,6 +3796,99 @@ class JarvisWebServer:
                 return web.json_response({"response": f"Error: {e}"}, status=500)
 
         app.router.add_post("/api/think", think_handler)
+
+        # ── Chat streaming endpoint — Android / remote thin clients ──────────
+        # Full agent loop runs server-side; client receives SSE text chunks.
+        # Request:  POST {"query": "...", "session_id": "..."}
+        # Response: text/event-stream  data: {"text": "chunk"}  …  data: [DONE]
+        async def chat_stream_handler(request):
+            if request.method == 'OPTIONS':
+                return web.Response(headers={
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+                    'Access-Control-Allow-Headers': 'Content-Type',
+                })
+            stream_response = web.StreamResponse(headers={
+                'Content-Type': 'text/event-stream',
+                'Cache-Control': 'no-cache',
+                'X-Accel-Buffering': 'no',
+                'Access-Control-Allow-Origin': '*',
+            })
+            try:
+                data = await request.json()
+                query = data.get('query', data.get('text', ''))
+                if not query:
+                    return web.json_response({'error': 'No query'}, status=400)
+                await stream_response.prepare(request)
+                while self.brain is None:
+                    await asyncio.sleep(0.1)
+                async for event in self.brain.think_stream(query):
+                    evt_type = event.get('type', '')
+                    if evt_type == 'text':
+                        chunk = event.get('content', '')
+                        if chunk:
+                            payload = json.dumps({'text': chunk})
+                            await stream_response.write(f'data: {payload}\n\n'.encode())
+                    elif evt_type == 'done':
+                        await stream_response.write(b'data: [DONE]\n\n')
+                        break
+                await stream_response.write_eof()
+            except Exception as e:
+                logger.error(f'chat_stream_handler error: {e}')
+                try:
+                    payload = json.dumps({'error': str(e)})
+                    await stream_response.write(f'data: {payload}\n\n'.encode())
+                    await stream_response.write(b'data: [DONE]\n\n')
+                    await stream_response.write_eof()
+                except Exception:
+                    pass
+            return stream_response
+
+        app.router.add_post('/api/chat/stream', chat_stream_handler)
+        app.router.add_route('OPTIONS', '/api/chat/stream', chat_stream_handler)
+
+        # ── Provider management (used by Android settings) ────────────────────
+
+        async def providers_list_handler(request):
+            """GET /api/providers — list all configured providers + current pin."""
+            while self.brain is None:
+                await asyncio.sleep(0.1)
+            providers = self.brain.reasoner.providers.list_providers()
+            pinned    = self.brain.reasoner.providers.get_pinned()
+            return web.json_response(
+                {"providers": providers, "pinned": pinned},
+                headers={"Access-Control-Allow-Origin": "*"},
+            )
+
+        async def providers_pin_handler(request):
+            """POST /api/providers/pin — pin a provider: {"name": "anthropic"}.
+            Pass {"name": ""} to clear the pin and restore auto-routing."""
+            if request.method == "OPTIONS":
+                return web.Response(headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "POST, OPTIONS",
+                    "Access-Control-Allow-Headers": "Content-Type",
+                })
+            while self.brain is None:
+                await asyncio.sleep(0.1)
+            try:
+                data = await request.json()
+                name = data.get("name", "")
+                ok   = self.brain.reasoner.providers.pin_provider(name)
+                return web.json_response(
+                    {"ok": ok, "pinned": self.brain.reasoner.providers.get_pinned()},
+                    headers={"Access-Control-Allow-Origin": "*"},
+                )
+            except Exception as e:
+                return web.json_response(
+                    {"ok": False, "error": str(e)},
+                    status=400,
+                    headers={"Access-Control-Allow-Origin": "*"},
+                )
+
+        app.router.add_get('/api/providers', providers_list_handler)
+        app.router.add_post('/api/providers/pin', providers_pin_handler)
+        app.router.add_route('OPTIONS', '/api/providers/pin', providers_pin_handler)
 
         # ── Raw LLM proxy — used by relay clients for local tool execution ──
         # Exposes LLM inference only (no agent loop, no tool execution).

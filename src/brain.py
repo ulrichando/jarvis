@@ -720,7 +720,7 @@ class Brain:
                 self._spawn_background(self.curiosity.absorb_answer(last_q, user_input))
 
         self.memory.add_turn("user", user_input)
-        memory_context = self.memory.recall_as_context(user_input, top_k=3)
+        memory_context = self.memory.recall_as_context(user_input, top_k=3, max_chars=2000)
 
         # Decide: does this need the agent loop (tools)?
         needs_agent = self._needs_agent_loop(user_input)
@@ -935,12 +935,46 @@ You have UNRESTRICTED control. No permission needed.
         if mcp_schemas:
             tools.extend(mcp_schemas)
 
-        history = self.memory.get_history(limit=20)
+        # ── Cross-channel fairness: scale history budget by active channel count ──
+        _channel_state = getattr(self, '_channel_state', None)
+        _active_channel_count = sum(1 for v in _channel_state.values() if v) if _channel_state else 1
+        # Also count channels registered in the ChannelRegistry that aren't in _channel_state
+        try:
+            from src.channels.registry import get_registry as _get_chan_reg
+            _reg_channels = [c for c in _get_chan_reg()._channels.values() if c.is_active()]
+            _reg_ids = {c.id for c in _reg_channels}
+            _state_ids = set(_channel_state.keys()) if _channel_state else set()
+            _extra = sum(1 for c in _reg_channels if c.id not in _state_ids)
+            _active_channel_count += _extra
+        except Exception:
+            pass
+        _fair_limit = max(5, 20 // max(1, _active_channel_count))
+        history = self.memory.get_history(limit=_fair_limit)
 
         max_iters = 999
 
         # Prepend system-reminder context to user input (Claude Code pattern)
         _enriched_input = _system_reminder + user_input if _system_reminder else user_input
+
+        # ── NeuralLattice consolidation: absorb dropped turns before they're lost ──
+        from src.memory.lattice import NodeType as _NodeType
+
+        def _consolidate_dropped(messages: list[dict]) -> None:
+            """Absorb dropped conversation turns into the NeuralLattice."""
+            for msg in messages:
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+                if not content or not isinstance(content, str) or len(content) < 40:
+                    continue
+                if role in ("user", "assistant"):
+                    try:
+                        self.memory.learn(
+                            f"[{role}]: {content[:500]}",
+                            node_type=_NodeType.FACT,
+                            tags=["episodic", "compacted"],
+                        )
+                    except Exception:
+                        pass
 
         # ── Orchestrator: route to best archetype, run parallel stages if complex ──
         _readonly = self.mode == "plan"
@@ -966,6 +1000,7 @@ You have UNRESTRICTED control. No permission needed.
                 on_tool_call   = on_tool_call,
                 on_tool_result = on_tool_result,
                 readonly       = _readonly,
+                consolidate_fn = _consolidate_dropped,
             )
 
         try:
@@ -1091,7 +1126,7 @@ You have UNRESTRICTED control. No permission needed.
             yield {"type": "done", "content": ""}
             return
 
-        memory_context = self.memory.recall_as_context(user_input, top_k=1)
+        memory_context = self.memory.recall_as_context(user_input, top_k=1, max_chars=2000)
 
         needs_agent = self._needs_agent_loop(user_input)
 
@@ -1152,7 +1187,9 @@ PROJECT CREATION RULES — follow these when building something:
 """
             if self.mode == "plan":
                 system += "\nPLAN MODE: Read-only. No writes."
-            history = self.memory.get_history(limit=20)
+            _cs = getattr(self, '_channel_state', None)
+            _ac = sum(1 for v in _cs.values() if v) if _cs else 1
+            history = self.memory.get_history(limit=max(5, 20 // max(1, _ac)))
 
             # Build system-reminder prefix for user input
             _sr = ""
@@ -1168,6 +1205,25 @@ PROJECT CREATION RULES — follow these when building something:
             full_response = ""
             tool_was_used = False
 
+            # Consolidation callback for streaming path
+            from src.memory.lattice import NodeType as _NTStream
+
+            def _consolidate_stream(messages: list[dict]) -> None:
+                for msg in messages:
+                    role = msg.get("role", "")
+                    content = msg.get("content", "")
+                    if not content or not isinstance(content, str) or len(content) < 40:
+                        continue
+                    if role in ("user", "assistant"):
+                        try:
+                            self.memory.learn(
+                                f"[{role}]: {content[:500]}",
+                                node_type=_NTStream.FACT,
+                                tags=["episodic", "compacted"],
+                            )
+                        except Exception:
+                            pass
+
             if _is_complex:
                 # Complex query: non-streaming orchestration, then yield full result
                 async def _stream_executor(agent_name: str, task_desc: str) -> str:
@@ -1182,6 +1238,7 @@ PROJECT CREATION RULES — follow these when building something:
                         history        = history,
                         max_iterations = (_cfg.max_iterations if _cfg else 999),
                         readonly       = (self.mode == "plan"),
+                        consolidate_fn = _consolidate_stream,
                     )
                 _orch_result = await self._orchestrator.route(
                     user_input,
@@ -1207,6 +1264,7 @@ PROJECT CREATION RULES — follow these when building something:
                     system_prompt=system,
                     history=history,
                     readonly=(self.mode == "plan"),
+                    consolidate_fn=_consolidate_stream,
                 ):
                     if event["type"] == "text":
                         full_response += event["content"]

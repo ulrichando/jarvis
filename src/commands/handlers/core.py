@@ -229,15 +229,68 @@ async def cmd_cost(ctx: CommandContext) -> CommandResult:
     return CommandResult(text="\n".join(lines))
 
 
-@command("model", aliases=["m"], description="Show or switch active LLM model",
-         usage="/model [name] | /model list", category="core", permission=PermLevel.STANDARD)
+@command("model", aliases=["m"],
+         description="Show or switch active LLM model",
+         usage="/model [name] | /model <name> <url> | /model list",
+         category="core", permission=PermLevel.STANDARD)
 async def cmd_model(ctx: CommandContext) -> CommandResult:
     brain = ctx.brain
-    args = ctx.args.strip().lower()
+    raw_args = ctx.args.strip()
+    args = raw_args.lower()
     if not brain:
         return CommandResult(text="Brain not available", success=False)
 
     providers = brain.reasoner.providers
+
+    # ── /model <name> <url>  or  /model <url> <name> ─────────────────────────
+    # If the user passes a URL (http/https) as one of the tokens, register it as
+    # a remote Ollama provider and switch to the specified model on that server.
+    _tokens = raw_args.split()
+    _url_token = next((t for t in _tokens if t.startswith("http://") or t.startswith("https://")), None)
+    if _url_token:
+        import urllib.request as _ur_m, json as _j_m
+        _model_token = next((t for t in _tokens if t != _url_token), "")
+        _base = _url_token.rstrip("/")
+        _tags_base = _base[:-3] if _base.endswith("/v1") else _base
+        _api_base = _base if _base.endswith("/v1") else _base + "/v1"
+        # Derive a stable provider name from the host
+        import re as _re_m
+        _pname = "ollama-" + _re_m.sub(r"[^a-z0-9]", "-", _tags_base.split("://")[-1]).strip("-")
+        # Auto-discover models if no model name given
+        if not _model_token:
+            try:
+                _resp = _ur_m.urlopen(f"{_tags_base}/api/tags", timeout=3)
+                _discovered = [m["name"] for m in _j_m.loads(_resp.read()).get("models", [])]
+                if not _discovered:
+                    return CommandResult(text=f"No models found at {_url_token}", success=False)
+                _model_token = _discovered[0]
+                _note = f"  Discovered {len(_discovered)} models, defaulting to: {_model_token}"
+            except Exception as e:
+                return CommandResult(text=f"Cannot reach {_url_token}: {e}", success=False)
+        else:
+            _note = ""
+        # Register or update the provider
+        if _pname in providers._providers:
+            _p = providers._providers[_pname]
+            _p.base_url = _api_base
+            _p.model = _model_token
+            if _model_token not in _p.models:
+                _p.models = [_model_token]
+            providers._save()
+        else:
+            providers.add_provider(_pname, "ollama", base_url=_api_base,
+                                   model=_model_token, provider_type="openai")
+        # Make it primary and pin it (bypass internet filter)
+        for _op in providers._providers.values():
+            if _op.name != _pname:
+                _op.priority = _op.priority + 1 if _op.priority >= 0 else _op.priority
+        providers._providers[_pname].priority = 0
+        providers._pinned = _pname
+        providers._save()
+        lines = [f"Switched to: {_model_token}  ({_url_token})"]
+        if _note:
+            lines.append(_note)
+        return CommandResult(text="\n".join(lines))
 
     # No args: interactive model picker
     if not args:
@@ -250,17 +303,36 @@ async def cmd_model(ctx: CommandContext) -> CommandResult:
             for m in p.models:
                 active = m == p.model and p == providers.get_active_providers()[0]
                 entries.append((f"{m}  [{tag}]", p.name, m, active))
-        # Add Ollama models not already listed
-        try:
-            import urllib.request as _ur, json as _j
-            resp = _ur.urlopen("http://localhost:11434/api/tags", timeout=2)
-            ollama_models = [m["name"] for m in _j.loads(resp.read()).get("models", [])]
-            existing = {e[2] for e in entries}
-            for m in ollama_models:
-                if m not in existing:
-                    entries.append((f"{m}  [local/ollama]", "ollama", m, False))
-        except Exception:
-            pass
+        # Add Ollama models from all configured Ollama providers + localhost fallback
+        import urllib.request as _ur, json as _j
+        ollama_urls_checked = set()
+        # Collect URLs from configured providers
+        ollama_provider_urls = []
+        for p in providers.get_active_providers():
+            if "11434" in p.base_url or "ollama" in p.name.lower():
+                # Normalize: strip /v1 suffix to get the tags endpoint base
+                base = p.base_url.rstrip("/")
+                if base.endswith("/v1"):
+                    base = base[:-3]
+                ollama_provider_urls.append((base, p.name))
+        # Always include localhost as fallback
+        ollama_provider_urls.append(("http://localhost:11434", "ollama"))
+        existing = {e[2] for e in entries}
+        for base_url, pname in ollama_provider_urls:
+            if base_url in ollama_urls_checked:
+                continue
+            ollama_urls_checked.add(base_url)
+            try:
+                resp = _ur.urlopen(f"{base_url}/api/tags", timeout=2)
+                ollama_models = [m["name"] for m in _j.loads(resp.read()).get("models", [])]
+                is_local = "localhost" in base_url or "127.0.0.1" in base_url
+                tag = "local/ollama" if is_local else f"remote/{pname}"
+                for m in ollama_models:
+                    if m not in existing:
+                        entries.append((f"{m}  [{tag}]", pname, m, False))
+                        existing.add(m)
+            except Exception:
+                pass
 
         if not entries:
             return CommandResult(text="No providers configured. Use /provider add to add one.")
@@ -295,20 +367,35 @@ async def cmd_model(ctx: CommandContext) -> CommandResult:
                 marker = " *" if m == p.model else ""
                 lines.append(f"    {m}{marker}")
 
-        # Check Ollama models
-        try:
-            import urllib.request, json
-            resp = urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2)
-            data = json.loads(resp.read())
-            ollama_models = [m["name"] for m in data.get("models", [])]
-            if ollama_models:
-                lines.append(f"\n  Ollama [local] — {len(ollama_models)} models")
-                for m in ollama_models:
-                    lines.append(f"    {m}")
-        except Exception:
-            pass
+        # Check all Ollama endpoints (configured providers + localhost fallback)
+        import urllib.request as _ulr, json as _ulj
+        _ollama_seen: set[str] = set()
+        _ollama_endpoints = []
+        for _p in providers.get_active_providers():
+            if "11434" in _p.base_url or "ollama" in _p.name.lower():
+                _ob = _p.base_url.rstrip("/")
+                if _ob.endswith("/v1"):
+                    _ob = _ob[:-3]
+                _ollama_endpoints.append((_ob, _p.name))
+        _ollama_endpoints.append(("http://localhost:11434", "ollama"))
+        for _ourl, _opname in _ollama_endpoints:
+            if _ourl in _ollama_seen:
+                continue
+            _ollama_seen.add(_ourl)
+            try:
+                _oresp = _ulr.urlopen(f"{_ourl}/api/tags", timeout=2)
+                _omodels = [m["name"] for m in _ulj.loads(_oresp.read()).get("models", [])]
+                if _omodels:
+                    _is_local = "localhost" in _ourl or "127.0.0.1" in _ourl
+                    _otag = "local" if _is_local else f"remote  {_ourl}"
+                    lines.append(f"\n  {_opname} [{_otag}] — {len(_omodels)} models")
+                    for _om in _omodels:
+                        lines.append(f"    {_om}")
+            except Exception:
+                pass
 
-        lines.append(f"\nSwitch: /model <name>")
+        lines.append(f"\nSwitch:  /model <name>")
+        lines.append(f"Remote:  /model <name> http://host:11434")
         lines.append(f"Shortcuts: /model haiku | /model sonnet | /model opus")
         return CommandResult(text="\n".join(lines))
 
@@ -333,11 +420,13 @@ async def cmd_model(ctx: CommandContext) -> CommandResult:
                     break
 
     def _make_primary(provider):
-        """Give this provider priority 0; shift all others down."""
+        """Give this provider priority 0; shift all others down. Pin it to bypass internet filter."""
         for p in providers._providers.values():
             if p.name != provider.name:
                 p.priority = p.priority + 1 if p.priority >= 0 else p.priority
         provider.priority = 0
+        providers._pinned = provider.name  # bypass internet-filter for explicit user switch
+        providers._clients.pop(provider.name, None)  # clear cached client so timeout recalculates
         providers._save()
 
     # Try to switch within existing providers
@@ -347,31 +436,185 @@ async def cmd_model(ctx: CommandContext) -> CommandResult:
             _make_primary(p)
             return CommandResult(text=f"Switched to: {target_model} ({p.name})")
 
-    # Try Ollama
-    try:
-        import urllib.request, json
-        resp = urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2)
-        data = json.loads(resp.read())
-        ollama_models = [m["name"] for m in data.get("models", [])]
-        if target_model in ollama_models or any(target_model in m for m in ollama_models):
-            matched = next((m for m in ollama_models if target_model in m), target_model)
-            existing = None
-            for p in providers.get_active_providers():
-                if "localhost:11434" in p.base_url:
-                    existing = p
-                    break
-            if existing:
-                existing.model = matched
-                existing.models = [matched]
-                _make_primary(existing)
-            else:
-                providers.add_provider("ollama", "ollama", base_url="http://localhost:11434/v1", model=matched)
-                _make_primary(providers._providers["ollama"])
-            return CommandResult(text=f"Switched to: {matched} (ollama)")
-    except Exception:
-        pass
+    # Try all configured Ollama providers + localhost fallback
+    import urllib.request as _ur2, json as _j2
+    ollama_candidates = []
+    for p in providers.get_active_providers():
+        if "11434" in p.base_url or "ollama" in p.name.lower():
+            base = p.base_url.rstrip("/")
+            if base.endswith("/v1"):
+                base = base[:-3]
+            ollama_candidates.append((base, p))
+    ollama_candidates.append(("http://localhost:11434", None))  # localhost fallback
+    for base_url, existing_provider in ollama_candidates:
+        try:
+            resp = _ur2.urlopen(f"{base_url}/api/tags", timeout=2)
+            data = _j2.loads(resp.read())
+            ollama_models = [m["name"] for m in data.get("models", [])]
+            if target_model in ollama_models or any(target_model in m for m in ollama_models):
+                matched = next((m for m in ollama_models if target_model in m), target_model)
+                if existing_provider:
+                    existing_provider.model = matched
+                    if matched not in existing_provider.models:
+                        existing_provider.models = [matched]
+                    _make_primary(existing_provider)
+                    return CommandResult(text=f"Switched to: {matched} ({existing_provider.name})")
+                else:
+                    providers.add_provider("ollama", "ollama", base_url="http://localhost:11434/v1", model=matched)
+                    _make_primary(providers._providers["ollama"])
+                    return CommandResult(text=f"Switched to: {matched} (ollama)")
+        except Exception:
+            pass
 
     return CommandResult(text=f"Model not found: {args}\nUse /model list to see available models.", success=False)
+
+
+@command("provider", aliases=["prov"], description="List, add, remove, or set active LLM providers",
+         usage="/provider [list] | add <name> <url> [key] [model] | remove <name> | set <name>",
+         category="core", permission=PermLevel.STANDARD)
+async def cmd_provider(ctx: CommandContext) -> CommandResult:
+    """Manage LLM providers.
+
+    /provider                         — list all
+    /provider list                    — list all
+    /provider add ollama http://host:11434 [model]
+    /provider add <name> <url> <key> [model]
+    /provider remove <name>           — remove a provider
+    /provider set <name>              — make a provider primary
+    """
+    brain = ctx.brain
+    if not brain:
+        return CommandResult(text="Brain not available", success=False)
+
+    providers = brain.reasoner.providers
+    raw = ctx.args.strip()
+    parts = raw.split() if raw else []
+    sub = parts[0].lower() if parts else "list"
+
+    # ── list ──────────────────────────────────────────────────────────────
+    if sub in ("list", "") or not parts:
+        all_providers = list(providers._providers.values())
+        if not all_providers:
+            return CommandResult(
+                text="No providers configured.\n"
+                     "  Add one:  /provider add ollama http://your-server:11434\n"
+                     "            /provider add openai https://api.openai.com/v1 sk-..."
+            )
+        active_providers = providers.get_active_providers()
+        primary = active_providers[0].name if active_providers else ""
+        lines = ["Providers", "=" * 50]
+        for p in sorted(all_providers, key=lambda x: x.priority):
+            marker = " *" if p.name == primary else "  "
+            state = "" if p.enabled else "  [disabled]"
+            local_tag = "local" if p.is_local else "remote"
+            lines.append(f"{marker} {p.name}  [{local_tag}]{state}")
+            lines.append(f"     url:   {p.base_url}")
+            lines.append(f"     model: {p.model}")
+        lines += [
+            "",
+            "  * = active/primary",
+            "  /provider add <name> <url> [key] [model]",
+            "  /provider remove <name>",
+            "  /provider set <name>",
+        ]
+        return CommandResult(text="\n".join(lines))
+
+    # ── add ───────────────────────────────────────────────────────────────
+    if sub == "add":
+        rest = parts[1:]
+        if len(rest) < 2:
+            return CommandResult(
+                text="Usage:\n"
+                     "  /provider add ollama http://host:11434 [model]\n"
+                     "  /provider add <name> <url> <api-key> [model]\n\n"
+                     "Examples:\n"
+                     "  /provider add ollama-remote http://10.10.0.50:11434\n"
+                     "  /provider add ollama-remote http://10.10.0.50:11434 llama3.2:3b\n"
+                     "  /provider add openai https://api.openai.com/v1 sk-abc123",
+                success=False
+            )
+
+        name = rest[0].lower()
+        url = rest[1]
+        # Ollama doesn't need a real API key — detect by name or URL
+        is_ollama = "ollama" in name or "11434" in url
+        if is_ollama:
+            key = "ollama"
+            model = rest[2] if len(rest) > 2 else ""
+            provider_type = "openai"
+            # Ensure URL ends with /v1 for OpenAI-compat endpoint
+            base_url = url.rstrip("/")
+            if not base_url.endswith("/v1"):
+                base_url += "/v1"
+            # Auto-discover models from the remote Ollama
+            if not model:
+                import urllib.request as _ur3, json as _j3
+                tags_url = url.rstrip("/")
+                if tags_url.endswith("/v1"):
+                    tags_url = tags_url[:-3]
+                try:
+                    resp = _ur3.urlopen(f"{tags_url}/api/tags", timeout=3)
+                    discovered = [m["name"] for m in _j3.loads(resp.read()).get("models", [])]
+                    model = discovered[0] if discovered else "llama3.2:3b"
+                    model_note = f"  Discovered {len(discovered)} models, using: {model}"
+                except Exception:
+                    model = "llama3.2:3b"
+                    model_note = "  Could not connect — set model manually with /model <name>"
+            else:
+                model_note = ""
+        else:
+            if len(rest) < 3:
+                return CommandResult(
+                    text=f"API key required for non-Ollama provider.\n"
+                         f"Usage: /provider add {name} {url} <api-key> [model]",
+                    success=False
+                )
+            key = rest[2]
+            model = rest[3] if len(rest) > 3 else ""
+            provider_type = ""
+            base_url = url
+            model_note = ""
+
+        p = providers.add_provider(name, key, base_url=base_url, model=model, provider_type=provider_type)
+        lines = [f"Provider added: {p.name}", f"  URL:   {p.base_url}", f"  Model: {p.model}"]
+        if model_note:
+            lines.append(model_note)
+        lines += ["", f"Switch to it:  /provider set {p.name}", f"Pick a model:  /model"]
+        return CommandResult(text="\n".join(lines))
+
+    # ── remove ────────────────────────────────────────────────────────────
+    if sub == "remove":
+        if len(parts) < 2:
+            return CommandResult(text="Usage: /provider remove <name>", success=False)
+        name = parts[1].lower()
+        if name not in providers._providers:
+            return CommandResult(text=f"Provider not found: {name}", success=False)
+        providers.remove_provider(name)
+        return CommandResult(text=f"Removed provider: {name}")
+
+    # ── set (make primary) ────────────────────────────────────────────────
+    if sub == "set":
+        if len(parts) < 2:
+            return CommandResult(text="Usage: /provider set <name>", success=False)
+        name = parts[1].lower()
+        if name not in providers._providers:
+            return CommandResult(text=f"Provider not found: {name}\nUse /provider list to see available.", success=False)
+        p = providers._providers[name]
+        for other in providers._providers.values():
+            if other.name != name:
+                other.priority = other.priority + 1 if other.priority >= 0 else other.priority
+        p.priority = 0
+        providers._save()
+        return CommandResult(text=f"Primary provider set to: {name}  (model: {p.model})")
+
+    return CommandResult(
+        text=f"Unknown subcommand: {sub}\n"
+             "  /provider list\n"
+             "  /provider add <name> <url> [key] [model]\n"
+             "  /provider remove <name>\n"
+             "  /provider set <name>",
+        success=False
+    )
 
 
 @command("permissions", aliases=["perms"],

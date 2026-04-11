@@ -200,6 +200,7 @@ class ProviderRegistry:
         self._last_working: str | None = None
         self._circuit_breaker: dict[str, dict] = {}  # {name: {failures: int, last_fail: float, open_until: float}}
         self._effort: str = "medium"  # current effort level
+        self._pinned: str = ""  # provider name pinned by explicit user switch — bypasses internet filter
         self._load()
         self._load_env_providers()
         self._load_claude_credentials()
@@ -311,6 +312,23 @@ class ProviderRegistry:
         self._clients.pop(name, None)
         self._save()
 
+    def pin_provider(self, name: str) -> bool:
+        """Pin a provider so it goes first regardless of internet state.
+        Pass empty string to clear the pin and restore auto-routing.
+        Returns True if the named provider exists (or name is empty)."""
+        if name == "":
+            self._pinned = ""
+            return True
+        name = name.lower().strip()
+        if name in self._providers:
+            self._pinned = name
+            return True
+        return False
+
+    def get_pinned(self) -> str:
+        """Return the currently pinned provider name, or empty string."""
+        return self._pinned
+
     def list_providers(self) -> list[dict]:
         """List all providers (keys masked)."""
         result = []
@@ -344,11 +362,16 @@ class ProviderRegistry:
         def _is_cloud(p):
             return "localhost" not in p.base_url and "127.0.0.1" not in p.base_url
 
-        # Ollama (local) only when offline — skip local providers if internet is up
-        if self._has_internet():
-            cloud = [p for p in providers if _is_cloud(p)]
-            if cloud:  # only filter if there are cloud providers to fall back to
-                providers = cloud
+        # If user explicitly pinned a provider, put it first and skip internet filter for it
+        if self._pinned and self._pinned in self._providers:
+            _pinned_p = self._providers[self._pinned]
+            providers = [_pinned_p] + [p for p in providers if p.name != self._pinned]
+        else:
+            # Ollama (local) only when offline — skip local providers if internet is up
+            if self._has_internet():
+                cloud = [p for p in providers if _is_cloud(p)]
+                if cloud:  # only filter if there are cloud providers to fall back to
+                    providers = cloud
 
         def _is_smart(p):
             return any(big in p.model for big in ["70b", "72b", "65b", "mixtral", "32b"])
@@ -1099,10 +1122,18 @@ class ProviderRegistry:
             return {"text": "", "tool_calls": []}
 
         is_local = "localhost" in provider.base_url or "127.0.0.1" in provider.base_url
+        # Treat remote Ollama the same as local — it has the same API quirks
+        # (no tool_choice, single model, shorter timeouts)
+        is_ollama = (
+            "11434" in provider.base_url
+            or "ollama" in provider.name.lower()
+            or provider.api_key == "ollama"
+        )
+        is_local_or_ollama = is_local or is_ollama
         max_tok = self._effort_tokens()
 
         # Inject effort instruction into system message for local models
-        if is_local:
+        if is_local_or_ollama:
             effort_suffix = self._effort_system_suffix()
             if effort_suffix:
                 for msg in messages:
@@ -1116,9 +1147,9 @@ class ProviderRegistry:
             last_error = None
             for attempt in range(3):
                 try:
-                    # For local models use only the configured model (avoid iterating
+                    # For local/Ollama models use only the configured model (avoid iterating
                     # the full template list which can waste time on unloaded models)
-                    model_list = [provider.model] if is_local else (provider.models or [provider.model])
+                    model_list = [provider.model] if is_local_or_ollama else (provider.models or [provider.model])
                     for model in model_list:
                         try:
                             kwargs = {
@@ -1128,8 +1159,8 @@ class ProviderRegistry:
                                 "temperature": 0.3,
                                 "max_tokens": max_tok,
                             }
-                            # tool_choice: Ollama doesn't always support it
-                            if not is_local:
+                            # tool_choice: Ollama (local or remote) doesn't always support it
+                            if not is_local_or_ollama:
                                 kwargs["tool_choice"] = "auto"
                             chat = client.chat.completions.create(**kwargs)
                             msg = chat.choices[0].message
@@ -1416,13 +1447,26 @@ RULES:
         # Standard OpenAI-compatible client
         try:
             from openai import OpenAI
-            # Local models (Ollama) get a shorter timeout so they fail fast
-            # and fall through to cloud providers; cloud gets standard 60s
             is_local = "localhost" in provider.base_url or "127.0.0.1" in provider.base_url
-            # Local models get 4s — fail fast so cloud providers handle the query;
-            # qwen2.5:72b can be very slow, especially while busy
+            is_ollama = (
+                "11434" in provider.base_url
+                or "ollama" in provider.name.lower()
+                or provider.api_key == "ollama"
+            )
+            # Timeout strategy:
+            # - Local Ollama, NOT pinned: 4s — fail fast and fall through to cloud
+            # - Local Ollama, pinned by user: 120s — user explicitly chose it, wait for it
+            # - Remote Ollama: 120s — user explicitly configured and pinned it
+            # - Cloud providers: 60s — standard API timeout
+            is_pinned = self._pinned == provider.name
+            if is_local and not is_pinned:
+                timeout = 4   # auto-fallback: fail fast to cloud
+            elif is_local or is_ollama:
+                timeout = 120  # explicit choice: wait for inference
+            else:
+                timeout = 60   # cloud
             client = OpenAI(api_key=provider.api_key, base_url=provider.base_url,
-                            max_retries=0, timeout=4 if is_local else 60)
+                            max_retries=0, timeout=timeout)
             self._clients[provider.name] = client
             return client
         except ImportError:

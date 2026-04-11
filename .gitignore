@@ -61,3 +61,6 @@ jarvis-export-*.json
 
 # Reference source (Claude Code src — not part of JARVIS)
 resource-info/
+
+# Android client (in-development, remove this line when ready to ship)
+clients/
