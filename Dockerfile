@@ -68,7 +68,7 @@ COPY --from=frontend-builder /app/src/server/static-react/ ./src/server/static-r
 # /data/.ssh is where docker-compose mounts the SSH key (jarvis non-root home).
 RUN mkdir -p /data/.jarvis /data/.ssh && \
     chmod 700 /data/.ssh && \
-    chown -R jarvis:jarvis /data /app
+    chown -R jarvis:jarvis /data
 
 USER jarvis
 
