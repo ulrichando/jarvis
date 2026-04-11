@@ -682,6 +682,13 @@ class StandaloneBrain:
                     self.brain.memory.save()
         except Exception:
             pass  # Suppress cleanup errors on exit
+        finally:
+            # Clear CLI channel state so brain doesn't count this channel as active
+            try:
+                if self.brain and hasattr(self.brain, '_channel_state'):
+                    self.brain._channel_state["cli"] = False
+            except Exception:
+                pass
 
 
 # ── CLI Entry ────────────────────────────────────────────────────────
@@ -1225,27 +1232,53 @@ async def _fzf(args: list, input_text: str = "") -> str:
 
 
 async def _fetch_model_entries(client) -> list[tuple]:
-    """Fetch all available models. Returns list of (label, provider, model_name, is_active)."""
+    """Fetch all available models. Returns list of (label, provider, model_name, is_active).
+
+    Scans:
+    - All configured providers (cloud + any registered Ollama remotes)
+    - Live /api/tags from every configured Ollama endpoint
+    - localhost:11434 as final fallback
+    """
     entries = []
     try:
+        import urllib.request as _ur, json as _j
         from src.reasoning.providers import ProviderRegistry
         reg = ProviderRegistry()
+
+        # Configured cloud/remote providers
         for p in reg.get_active_providers():
             is_local = "localhost" in p.base_url or "127.0.0.1" in p.base_url
             tag = "local" if is_local else "cloud"
             for m in p.models:
                 entries.append((f"{m}  [{tag}]", p.name, m, False))
-        # Ollama models not already listed
-        try:
-            import urllib.request as _ur, json as _j
-            resp = _ur.urlopen("http://localhost:11434/api/tags", timeout=2)
-            ollama_models = [m["name"] for m in _j.loads(resp.read()).get("models", [])]
-            existing = {e[2] for e in entries}
-            for m in ollama_models:
-                if m not in existing:
-                    entries.append((f"{m}  [local/ollama]", "ollama", m, False))
-        except Exception:
-            pass
+
+        # Live Ollama model list from all configured Ollama endpoints + localhost fallback
+        _seen_urls: set[str] = set()
+        _seen_models: set[str] = {e[2] for e in entries}
+        _ollama_endpoints: list[tuple[str, str]] = []
+        for p in reg.get_active_providers():
+            if "11434" in p.base_url or "ollama" in p.name.lower():
+                _base = p.base_url.rstrip("/")
+                if _base.endswith("/v1"):
+                    _base = _base[:-3]
+                _ollama_endpoints.append((_base, p.name))
+        _ollama_endpoints.append(("http://localhost:11434", "ollama"))  # always try local
+
+        for _ourl, _opname in _ollama_endpoints:
+            if _ourl in _seen_urls:
+                continue
+            _seen_urls.add(_ourl)
+            try:
+                _resp = _ur.urlopen(f"{_ourl}/api/tags", timeout=2)
+                _omodels = [m["name"] for m in _j.loads(_resp.read()).get("models", [])]
+                _is_local = "localhost" in _ourl or "127.0.0.1" in _ourl
+                _tag = "local/ollama" if _is_local else f"remote/{_opname}"
+                for _m in _omodels:
+                    if _m not in _seen_models:
+                        entries.append((f"{_m}  [{_tag}]", _opname, _m, False))
+                        _seen_models.add(_m)
+            except Exception:
+                pass
     except Exception:
         pass
     return entries

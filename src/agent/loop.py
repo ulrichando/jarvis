@@ -280,6 +280,7 @@ async def _agent_loop_internal(
     tool_executor: callable = None,
     iteration_budget: dict | None = None,
     allow_dispatch: bool = True,
+    consolidate_fn: callable = None,
 ) -> str:
     """Internal agent loop — shared by parent and sub-agents."""
     if tools is None:
@@ -289,7 +290,7 @@ async def _agent_loop_internal(
 
     # Initialize AutoCompactor with model-aware context limits
     model_name = getattr(reasoner, 'model', '') or getattr(reasoner, 'active_model_name', '') or ''
-    compactor = AutoCompactor(model=model_name)
+    compactor = AutoCompactor(model=model_name, consolidate_fn=consolidate_fn)
 
     # Context-window guard — hard minimum 16K, warn below 32K
     _ctx_ok, _ctx_warn = check_context_window(model_name)
@@ -907,6 +908,7 @@ async def agent_loop(
     on_tool_call: callable = None,
     on_tool_result: callable = None,
     readonly: bool = False,
+    consolidate_fn: callable = None,
 ) -> str:
     """Run the full agent loop. Returns final text response."""
     iteration_budget = {"count": 0, "max": GLOBAL_ITERATION_MAX}
@@ -929,6 +931,7 @@ async def agent_loop(
         iteration_budget=iteration_budget,
         allow_dispatch=True,
         tool_executor=tool_executor,
+        consolidate_fn=consolidate_fn,
     )
 
 
@@ -940,6 +943,7 @@ async def agent_loop_stream(
     tools: list[dict] | None = None,
     max_iterations: int = MAX_ITERATIONS,
     readonly: bool = False,
+    consolidate_fn: callable = None,
 ) -> AsyncGenerator[dict, None]:
     """Streaming agent loop — yields events for the UI.
 
@@ -964,7 +968,8 @@ async def agent_loop_stream(
 
     # Initialize AutoCompactor for smart context management
     model_name = getattr(reasoner, 'model', '') or getattr(reasoner, 'active_model_name', '') or ''
-    compactor = AutoCompactor(model=model_name, summarizer=_llm_summarizer)
+    compactor = AutoCompactor(model=model_name, summarizer=_llm_summarizer,
+                              consolidate_fn=consolidate_fn)
 
     # Adaptive history: budget by character count, not turn count.
     # Voice conversations have many short turns — turn limits miss older context.

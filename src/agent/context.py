@@ -78,13 +78,17 @@ def compact_messages(
     messages: list[dict],
     max_tokens: int = DEFAULT_MAX_TOKENS,
     preserve_recent: int = 6,
+    on_drop: callable = None,
 ) -> list[dict]:
     """Compact messages to fit within token budget.
 
-    Three-phase strategy (inspired by JARVIS design):
+    Three-phase strategy:
     1. Truncate old tool results (biggest token consumers)
-    2. Summarize old conversation turns
-    3. Drop oldest messages entirely if still over budget
+    2. Summarize old conversation turns — calls on_drop(msgs) before discarding
+    3. Drop oldest messages one-by-one — calls on_drop([msg]) before each drop
+
+    on_drop(messages) is called with the messages about to be discarded so the
+    caller can consolidate facts into long-term memory before they're lost.
     """
     current_tokens = estimate_tokens(messages)
 
@@ -123,8 +127,13 @@ def compact_messages(
 
     result = system + compacted_old + recent
 
-    # Phase 2: If still over, inject a summary and drop old messages
+    # Phase 2: If still over, consolidate into long-term memory then summarize
     if estimate_tokens(result) > max_tokens and len(compacted_old) > 2:
+        if on_drop:
+            try:
+                on_drop(compacted_old)
+            except Exception:
+                pass
         summary = build_context_summary(compacted_old)
         summary_msg = {
             "role": "user",
@@ -132,8 +141,14 @@ def compact_messages(
         }
         result = system + [summary_msg] + recent
 
-    # Phase 3: Drop oldest messages one by one until under budget
+    # Phase 3: Drop oldest messages one by one — consolidate each before dropping
     while estimate_tokens(result) > max_tokens and len(result) > len(system) + preserve_recent + 1:
+        dropped = result[len(system)]
+        if on_drop:
+            try:
+                on_drop([dropped])
+            except Exception:
+                pass
         result.pop(len(system))
 
     return result
@@ -393,7 +408,7 @@ class AutoCompactor:
     """
 
     def __init__(self, model: str = "", proactive_threshold: float | None = None,
-                 summarizer=None):
+                 summarizer=None, consolidate_fn: callable = None):
         max_tokens = MODEL_LIMITS.get(model, DEFAULT_MAX_TOKENS)
         self.budget = TokenBudget(max_tokens=max_tokens)
         # Adaptive chunk ratio: starts at BASE_CHUNK_RATIO, may shrink toward MIN_CHUNK_RATIO
@@ -406,7 +421,8 @@ class AutoCompactor:
         self._microcompact_interval: int = 5
         self._turn_count: int = 0
         self._model = model
-        self._summarizer = summarizer  # async callable(prompt: str) -> str
+        self._summarizer = summarizer      # async callable(prompt: str) -> str
+        self._consolidate_fn = consolidate_fn  # callable(messages) — save to long-term memory
 
     # -- helpers ----------------------------------------------------------
 
@@ -492,9 +508,11 @@ class AutoCompactor:
                 except RuntimeError:
                     pass
                 # Fall back to heuristic for this turn
-                result = compact_messages(result, max_tokens=self.budget.max_tokens)
+                result = compact_messages(result, max_tokens=self.budget.max_tokens,
+                                          on_drop=self._consolidate_fn)
             else:
-                result = compact_messages(result, max_tokens=self.budget.max_tokens)
+                result = compact_messages(result, max_tokens=self.budget.max_tokens,
+                                          on_drop=self._consolidate_fn)
             self.update(result)
 
         self.budget.compaction_count += 1
@@ -525,9 +543,11 @@ class AutoCompactor:
                     logging.getLogger("jarvis.agent").warning(
                         "Smart compact failed, falling back to heuristic: %s", e
                     )
-                    result = compact_messages(result, max_tokens=self.budget.max_tokens)
+                    result = compact_messages(result, max_tokens=self.budget.max_tokens,
+                                              on_drop=self._consolidate_fn)
             else:
-                result = compact_messages(result, max_tokens=self.budget.max_tokens)
+                result = compact_messages(result, max_tokens=self.budget.max_tokens,
+                                          on_drop=self._consolidate_fn)
             self.update(result)
 
         self.budget.compaction_count += 1

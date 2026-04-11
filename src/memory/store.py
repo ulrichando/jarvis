@@ -305,10 +305,14 @@ class MemoryStore:
         lattice_results.sort(key=lambda n: n.strength, reverse=True)
         return lattice_results[:top_k]
 
-    def recall_as_context(self, query: str, top_k: int = 5) -> str:
+    def recall_as_context(self, query: str, top_k: int = 5, max_chars: int = 3000) -> str:
         """Recall KNOWLEDGE (not conversation history) related to a query.
         Only returns FACTS, SKILLS, CONCEPTS — never episodic/conversation memories.
-        Also includes relevant entries from the memdir file-based memory."""
+        Also includes relevant entries from the memdir file-based memory.
+
+        max_chars caps the total size of the returned string so it cannot
+        consume an unbounded portion of the context window.
+        """
         all_memories = self.lattice.recall(query, top_k * 2)  # Fetch more, then filter
 
         # Filter: only knowledge, not conversation echoes
@@ -335,7 +339,10 @@ class MemoryStore:
         except (OSError, AttributeError) as e:
             log.debug("Memdir search failed: %s", e)
 
-        return "\n".join(lines) if lines else ""
+        result = "\n".join(lines) if lines else ""
+        if result and len(result) > max_chars:
+            result = result[:max_chars] + "\n  ... (memory truncated)"
+        return result
 
     # ── Fast recall methods (powered by inverted index) ───────────────
 

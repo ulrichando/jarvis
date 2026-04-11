@@ -400,9 +400,10 @@ def main():
         # Unregister from server (non-blocking — fire and forget)
         try:
             import urllib.request, json as _json
+            _unreg_base = api_base if api_base else f"http://{host}:{port}"
             data = _json.dumps({"type": "desktop"}).encode()
             req = urllib.request.Request(
-                f"http://{host}:{port}/api/client/unregister",
+                f"{_unreg_base}/api/client/unregister",
                 data=data, headers={"Content-Type": "application/json"}
             )
             urllib.request.urlopen(req, timeout=0.5)  # short timeout — don't block quit
