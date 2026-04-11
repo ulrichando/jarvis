@@ -123,24 +123,46 @@ jobs:
             set -e
             cd /opt/jarvis
 
-            # Point nginx upstream at the canary
+            # Step 1: nginx → canary (traffic keeps flowing, zero downtime)
             printf '# Managed by deploy workflow — do not edit by hand.\nupstream jarvis_active {\n    server jarvis_canary:8765;\n}\n' \
               > nginx/conf.d/upstream.conf
-
             docker compose exec -T nginx nginx -s reload
             echo 'nginx reloaded → traffic now on canary'
 
-            sleep 3
+            sleep 2
 
+            # Step 2: tear down the old compose-managed jarvis
             docker compose stop jarvis 2>/dev/null || true
             docker compose rm -f jarvis 2>/dev/null || true
 
-            docker rename jarvis_canary jarvis-jarvis-1
+            # Step 3: recreate jarvis via compose from the already-pulled latest image
+            # (creates a proper compose-managed container with correct labels)
+            docker compose up -d jarvis
 
+            # Step 4: wait for new compose jarvis to become healthy (up to 120s)
+            echo 'Waiting for new jarvis to become healthy...'
+            for i in \$(seq 1 120); do
+              STATUS=\$(docker inspect --format='{{.State.Health.Status}}' jarvis-jarvis-1 2>/dev/null || echo 'missing')
+              if [ \"\$STATUS\" = 'healthy' ]; then
+                echo \"New jarvis healthy after \${i}s\"
+                break
+              elif [ \"\$STATUS\" = 'unhealthy' ]; then
+                echo 'New jarvis unhealthy — leaving canary in place and aborting'
+                docker logs --tail=30 jarvis-jarvis-1 2>&1 || true
+                exit 1
+              fi
+              echo \"  \${i}s: \$STATUS\"
+              sleep 1
+            done
+
+            # Step 5: switch nginx back to compose-managed jarvis
             printf '# Managed by deploy workflow — do not edit by hand.\nupstream jarvis_active {\n    server jarvis:8765;\n}\n' \
               > nginx/conf.d/upstream.conf
+            docker compose exec -T nginx nginx -s reload
+            echo 'nginx reloaded → traffic now on new jarvis'
 
-            docker compose up -d --no-recreate jarvis
+            # Step 6: remove canary
+            docker rm -f jarvis_canary 2>/dev/null || true
 
             echo 'Swap complete — JARVIS is live on new image'
           "
