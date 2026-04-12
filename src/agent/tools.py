@@ -1718,6 +1718,20 @@ def get_plan_mode_tools() -> list[dict]:
     return [t for t in TOOL_SCHEMAS if t["function"]["name"] in READONLY_TOOLS or t["function"]["name"] == "bash"]
 
 
+def get_active_tools() -> list[dict]:
+    """Return tool schemas appropriate for the current runtime context.
+
+    Strips UI-only tools (switch_channel, open_url) when no web/desktop hook is
+    registered — prevents small models from calling channel-switch in headless CLI.
+    """
+    tools = list(TOOL_SCHEMAS)
+    if _switch_channel_hook is None:
+        tools = [t for t in tools if t["function"]["name"] != "switch_channel"]
+    if _open_url_hook is None:
+        tools = [t for t in tools if t["function"]["name"] != "open_url"]
+    return tools
+
+
 def _exec_open_url(args: dict) -> str:
     """Open a URL in the user's browser via the registered broadcast hook."""
     url = args.get("url", "").strip()

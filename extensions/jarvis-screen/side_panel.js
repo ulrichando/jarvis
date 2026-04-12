@@ -1,6 +1,5 @@
 // JARVIS Side Panel v2.0 — DOM-aware AI with multi-tab @mention
-const PRIMARY_BRAIN  = 'https://jarvis.0wlan.com'
-const FALLBACK_BRAIN = 'http://10.10.0.129:8765'
+const PRIMARY_BRAIN  = 'http://localhost:8765'
 let JARVIS_URL = PRIMARY_BRAIN
 
 async function resolveBrainUrl() {
@@ -10,19 +9,13 @@ async function resolveBrainUrl() {
     const res = await fetch(`${candidate}/api/ready`, { signal: AbortSignal.timeout(4000) })
     if (res.ok) { JARVIS_URL = candidate; return }
   } catch {}
-  try {
-    const res = await fetch(`${FALLBACK_BRAIN}/api/ready`, { signal: AbortSignal.timeout(2000) })
-    if (res.ok) { JARVIS_URL = FALLBACK_BRAIN; return }
-  } catch {}
-  // 3. Last resort: localhost
+  // Fallback: localhost
   try {
     const res = await fetch('http://localhost:8765/api/ready', { signal: AbortSignal.timeout(2000) })
     if (res.ok) { JARVIS_URL = 'http://localhost:8765'; return }
   } catch {}
   JARVIS_URL = candidate
 }
-resolveBrainUrl()
-
 // ── Auto-update check ─────────────────────────────────────────────────────────
 async function checkForUpdate() {
   try {
@@ -58,6 +51,44 @@ const sendBtn      = document.getElementById('sendBtn')
 const tabBarEl     = document.getElementById('tabBar')
 const readingStrip = document.getElementById('readingStrip')
 const mentionPopup = document.getElementById('mentionPopup')
+const modelSelect  = document.getElementById('modelSelect')
+
+// ── Model selector ───────────────────────────────────────────────────────────
+
+async function loadModels() {
+  try {
+    const res = await fetch(`${JARVIS_URL}/api/models`, { signal: AbortSignal.timeout(4000) })
+    if (!res.ok) return
+    const { models, active } = await res.json()
+    if (!models?.length) return
+
+    modelSelect.innerHTML = ''
+    models.forEach(({ name }) => {
+      const opt = document.createElement('option')
+      opt.value = name
+      opt.textContent = name.endsWith(':latest') ? name.slice(0, -7) : name
+      if (name === active) opt.selected = true
+      modelSelect.appendChild(opt)
+    })
+  } catch {
+    modelSelect.innerHTML = '<option value="">offline</option>'
+  }
+}
+
+modelSelect.addEventListener('change', async () => {
+  const model = modelSelect.value
+  if (!model) return
+  try {
+    await fetch(`${JARVIS_URL}/api/model`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ model }),
+    })
+  } catch { /* brain unreachable — selection still shows */ }
+})
+
+// Load models after brain URL resolves
+resolveBrainUrl().then(loadModels)
 
 // ── State ────────────────────────────────────────────────────────────────────
 
@@ -383,10 +414,11 @@ async function sendQuery() {
   }
 
   try {
+    const selectedModel = modelSelect.value || undefined
     const resp = await fetch(`${JARVIS_URL}/api/page-query`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ query: q, pageContent, mentionedTabs }),
+      body:    JSON.stringify({ query: q, pageContent, mentionedTabs, model: selectedModel }),
     })
 
     if (!resp.ok) throw new Error(`Server returned ${resp.status}`)

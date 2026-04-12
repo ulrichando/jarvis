@@ -8,31 +8,36 @@ concurrency:
   group: deploy-jarvis
   cancel-in-progress: true
 
+env:
+  REGISTRY:    ghcr.io
+  IMAGE:       ghcr.io/${{ github.repository_owner }}/jarvis
+  BASE_IMAGE:  ghcr.io/${{ github.repository_owner }}/jarvis-base
+
 jobs:
-  # ── Rebuild base image only when dependencies change ──────────────────────────
-  # Runs in ~30s if base is current (image exists + no changes).
-  # Runs in ~15min only when pyproject.toml or Dockerfile.base change.
+  # ── Rebuild base image only when dependencies change ─────────────────────────
   base:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 45
-    env:
-      REGISTRY: 10.10.0.123:3000
-      BASE_IMAGE: 10.10.0.123:3000/ulrich/jarvis-base
+    permissions:
+      contents: read
+      packages: write
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build & push base image if changed
         run: |
-          echo "${{ secrets.FORGEJO_TOKEN }}" \
-            | docker login $REGISTRY -u ulrich --password-stdin
+          NEW_HASH=$(cat Dockerfile.base pyproject.toml | sha256sum | cut -c1-16)
 
-          # Check if base already exists in registry
           if docker manifest inspect $BASE_IMAGE:latest > /dev/null 2>&1; then
-            # Compute hash of files that affect the base image
-            NEW_HASH=$(cat Dockerfile.base pyproject.toml | sha256sum | cut -c1-16)
-            # Get hash stored in existing base image label
             OLD_HASH=$(docker inspect $BASE_IMAGE:latest \
               --format='{{index .Config.Labels "jarvis.base.hash"}}' 2>/dev/null || echo "")
             if [ "$NEW_HASH" = "$OLD_HASH" ]; then
@@ -41,7 +46,6 @@ jobs:
             fi
             echo "Base changed: $OLD_HASH → $NEW_HASH — rebuilding"
           else
-            NEW_HASH=$(cat Dockerfile.base pyproject.toml | sha256sum | cut -c1-16)
             echo "Base image not found — building for first time (hash=$NEW_HASH)"
           fi
 
@@ -54,29 +58,31 @@ jobs:
           docker push $BASE_IMAGE:latest
           echo "Base pushed at $(date)"
 
-  # ── Fast app build — only copies code into base ───────────────────────────────
+  # ── Fast app build — copies code into base ────────────────────────────────────
   deploy:
     needs: base
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 15
-
-    env:
-      REGISTRY: 10.10.0.123:3000
-      IMAGE: 10.10.0.123:3000/ulrich/jarvis
+    permissions:
+      contents: read
+      packages: write
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build & push app image
         run: |
           GIT_COMMIT=$(git rev-parse --short HEAD)
 
-          echo "${{ secrets.FORGEJO_TOKEN }}" \
-            | docker login $REGISTRY -u ulrich --password-stdin
-
-          # Pull base so Docker can use it locally (fast — already on registry)
-          docker pull 10.10.0.123:3000/ulrich/jarvis-base:latest
+          docker pull $BASE_IMAGE:latest
 
           DOCKER_BUILDKIT=1 docker build \
             --build-arg GIT_COMMIT="$GIT_COMMIT" \
@@ -86,107 +92,96 @@ jobs:
 
           docker push $IMAGE:latest
           docker push $IMAGE:$GIT_COMMIT
-          echo "Pushed at $(date)"
+          echo "Pushed $IMAGE:$GIT_COMMIT at $(date)"
 
-      - name: Pull new image on CT104
-        run: |
-          echo "${{ secrets.FORGEJO_TOKEN }}" \
-            | /usr/sbin/pct exec 104 -- docker login $REGISTRY -u ulrich --password-stdin
-          /usr/sbin/pct exec 104 -- docker pull $IMAGE:latest
-          /usr/sbin/pct exec 104 -- docker pull 10.10.0.123:3000/ulrich/jarvis-base:latest
-          echo "Pull complete at $(date)"
-
-      - name: Start canary container
-        run: |
-          /usr/sbin/pct exec 104 -- bash -c "
+      - name: Deploy to server via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host:     ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key:      ${{ secrets.DEPLOY_KEY }}
+          script: |
             set -e
+            echo "${{ secrets.GITHUB_TOKEN }}" \
+              | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
             cd /opt/jarvis
+
+            # Pull new image
+            docker pull ${{ env.IMAGE }}:latest
+            echo "Pull complete"
+
+            # Canary start
             docker rm -f jarvis_canary 2>/dev/null || true
             docker run -d \
               --name jarvis_canary \
               --network jarvis_jarvis_net \
               --env-file .env \
-              -e OLLAMA_HOST=http://ollama:11434 \
+              -e OLLAMA_HOST=${{ secrets.OLLAMA_HOST }} \
               -e JARVIS_NO_SANDBOX=1 \
               -e JARVIS_OWNER=ulrich \
               -e JARVIS_HOME=/data/.jarvis \
               -v jarvis_data:/data/.jarvis \
-              -v \$(pwd)/.env:/app/.env:ro \
-              -v /root/.ssh/jarvis_to_kali:/data/.ssh/jarvis_to_kali:ro \
-              -v /root/.ssh/known_hosts:/data/.ssh/known_hosts:rw \
+              -v $(pwd)/.env:/app/.env:ro \
               --restart no \
-              $IMAGE:latest
-            echo 'Canary started'
-          "
+              ${{ env.IMAGE }}:latest
+            echo "Canary started"
 
-      - name: Wait for canary to be healthy
-        run: |
-          echo "Waiting for canary to pass health check..."
-          HEALTHY=0
-          for i in $(seq 1 120); do
-            STATUS=$(/usr/sbin/pct exec 104 -- docker inspect \
-              --format='{{.State.Health.Status}}' jarvis_canary 2>/dev/null || echo "missing")
-            if [ "$STATUS" = "healthy" ]; then
-              echo "Canary healthy after ${i}s"
-              HEALTHY=1
-              break
-            elif [ "$STATUS" = "unhealthy" ]; then
-              echo "Canary unhealthy — rolling back"
-              /usr/sbin/pct exec 104 -- docker rm -f jarvis_canary 2>/dev/null || true
-              exit 1
-            fi
-            echo "  ${i}s: $STATUS"
-            sleep 1
-          done
-          if [ "$HEALTHY" = "0" ]; then
-            /usr/sbin/pct exec 104 -- bash -c "
-              docker logs --tail=40 jarvis_canary 2>&1 || true
-              docker rm -f jarvis_canary 2>/dev/null || true
-            "
-            exit 1
-          fi
+            # Wait for canary health
+            HEALTHY=0
+            for i in $(seq 1 120); do
+              STATUS=$(docker inspect --format='{{.State.Health.Status}}' jarvis_canary 2>/dev/null || echo "missing")
+              if [ "$STATUS" = "healthy" ]; then
+                echo "Canary healthy after ${i}s"
+                HEALTHY=1
+                break
+              elif [ "$STATUS" = "unhealthy" ]; then
+                docker logs --tail=40 jarvis_canary 2>&1 || true
+                docker rm -f jarvis_canary 2>/dev/null || true
+                echo "Canary unhealthy — rollback"
+                exit 1
+              fi
+              echo "  ${i}s: $STATUS"
+              sleep 1
+            done
+            [ "$HEALTHY" = "0" ] && { docker rm -f jarvis_canary 2>/dev/null; exit 1; }
 
-      - name: Swap canary → live (zero downtime)
-        run: |
-          /usr/sbin/pct exec 104 -- bash -c "
-            set -e
-            cd /opt/jarvis
-
-            printf '# Managed by deploy workflow — do not edit by hand.\nupstream jarvis_active {\n    server jarvis_canary:8765;\n}\n' \
+            # Swap canary → live (zero downtime)
+            printf '# auto-generated\nupstream jarvis_active {\n    server jarvis_canary:8765;\n}\n' \
               > nginx/conf.d/upstream.conf
             docker compose exec -T nginx nginx -s reload
-            echo 'nginx → canary'
-
+            echo "nginx → canary"
             sleep 2
 
             docker compose stop jarvis 2>/dev/null || true
             docker compose rm -f jarvis 2>/dev/null || true
             docker compose up -d jarvis
 
-            echo 'Waiting for new jarvis...'
-            for i in \$(seq 1 120); do
-              STATUS=\$(docker inspect --format='{{.State.Health.Status}}' jarvis-jarvis-1 2>/dev/null || echo 'missing')
-              [ \"\$STATUS\" = 'healthy' ] && { echo \"Healthy after \${i}s\"; break; }
-              [ \"\$STATUS\" = 'unhealthy' ] && { docker logs --tail=30 jarvis-jarvis-1 2>&1; exit 1; }
-              echo \"  \${i}s: \$STATUS\"
+            for i in $(seq 1 120); do
+              STATUS=$(docker inspect --format='{{.State.Health.Status}}' jarvis-jarvis-1 2>/dev/null || echo "missing")
+              [ "$STATUS" = "healthy" ] && { echo "Live healthy after ${i}s"; break; }
+              [ "$STATUS" = "unhealthy" ] && { docker logs --tail=30 jarvis-jarvis-1 2>&1; exit 1; }
+              echo "  ${i}s: $STATUS"
               sleep 1
             done
 
-            printf '# Managed by deploy workflow — do not edit by hand.\nupstream jarvis_active {\n    server jarvis:8765;\n}\n' \
+            printf '# auto-generated\nupstream jarvis_active {\n    server jarvis:8765;\n}\n' \
               > nginx/conf.d/upstream.conf
             docker compose exec -T nginx nginx -s reload
             docker rm -f jarvis_canary 2>/dev/null || true
-            echo 'Swap complete'
-          "
+            echo "Swap complete"
 
       - name: Final health check
-        run: |
-          for i in $(seq 1 30); do
-            if /usr/sbin/pct exec 104 -- curl -sf http://localhost/api/ready > /dev/null 2>&1; then
-              echo "JARVIS healthy via nginx (${i}s)"
-              exit 0
-            fi
-            sleep 1
-          done
-          /usr/sbin/pct exec 104 -- docker logs --tail=40 jarvis-jarvis-1 2>&1 || true
-          exit 1
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host:     ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key:      ${{ secrets.DEPLOY_KEY }}
+          script: |
+            for i in $(seq 1 30); do
+              curl -sf http://localhost/api/ready > /dev/null 2>&1 && \
+                echo "JARVIS healthy via nginx (${i}s)" && exit 0
+              sleep 1
+            done
+            docker logs --tail=40 jarvis-jarvis-1 2>&1 || true
+            exit 1

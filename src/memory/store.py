@@ -158,6 +158,58 @@ class MemoryStore:
             ).fetchall()
         return [dict(row) for row in reversed(rows)]
 
+    def list_sessions(self, gap_minutes: int = 30) -> list[dict]:
+        """Group conversation turns into sessions by time gap.
+
+        A new session starts whenever two consecutive messages are more than
+        `gap_minutes` apart.  Returns a list of sessions sorted newest-first,
+        each with: id (start_ts), title (first user message), start_ts, end_ts,
+        message_count.
+        """
+        with self._db_lock:
+            rows = self.conn.execute(
+                "SELECT id, role, content, timestamp FROM conversations ORDER BY timestamp ASC"
+            ).fetchall()
+        if not rows:
+            return []
+
+        gap = gap_minutes * 60
+        sessions: list[dict] = []
+        current: list = []
+        for row in rows:
+            if current and (row["timestamp"] - current[-1]["timestamp"]) > gap:
+                sessions.append(current)
+                current = []
+            current.append(dict(row))
+        if current:
+            sessions.append(current)
+
+        result = []
+        for turns in sessions:
+            user_msgs = [t for t in turns if t["role"] == "user"]
+            title = user_msgs[0]["content"][:60] if user_msgs else "..."
+            result.append({
+                "id": turns[0]["id"],
+                "title": title,
+                "start_ts": turns[0]["timestamp"],
+                "end_ts":   turns[-1]["timestamp"],
+                "message_count": len(turns),
+            })
+        result.reverse()  # newest first
+        return result
+
+    def delete_session(self, start_ts: float, end_ts: float) -> int:
+        """Delete all turns whose timestamp falls within [start_ts, end_ts].
+        Returns the number of rows deleted.
+        """
+        with self._db_lock:
+            cur = self.conn.execute(
+                "DELETE FROM conversations WHERE timestamp >= ? AND timestamp <= ?",
+                (start_ts, end_ts),
+            )
+            self.conn.commit()
+            return cur.rowcount
+
     # ── Neural Lattice Operations ──────────────────────────────────────
 
     def learn(

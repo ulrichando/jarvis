@@ -1,8 +1,7 @@
 // JARVIS — background script v2.0 (Firefox)
 
-// Brain URL — cloud primary, LAN fallback, localhost last resort
-const PRIMARY_BRAIN   = 'https://jarvis.0wlan.com'
-const FALLBACK_BRAIN  = 'http://10.10.0.129:8765'
+// Brain URL — local only
+const PRIMARY_BRAIN   = 'http://localhost:8765'
 let JARVIS_URL = PRIMARY_BRAIN
 
 async function resolveBrainUrl() {
@@ -13,12 +12,7 @@ async function resolveBrainUrl() {
     const res = await fetch(`${candidate}/api/ready`, { signal: AbortSignal.timeout(4000) })
     if (res.ok) { JARVIS_URL = candidate; return }
   } catch {}
-  // 2. Fallback to LAN IP
-  try {
-    const res = await fetch(`${FALLBACK_BRAIN}/api/ready`, { signal: AbortSignal.timeout(2000) })
-    if (res.ok) { JARVIS_URL = FALLBACK_BRAIN; return }
-  } catch {}
-  // 3. Last resort: localhost
+  // 2. Fallback: localhost
   try {
     const res = await fetch('http://localhost:8765/api/ready', { signal: AbortSignal.timeout(2000) })
     if (res.ok) { JARVIS_URL = 'http://localhost:8765'; return }

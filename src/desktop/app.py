@@ -179,7 +179,6 @@ def main():
     window.set_default_size(_cfg.get("width", 700), _cfg.get("height", 700))
     window.set_decorated(False)
     window.set_app_paintable(True)
-    window.set_resizable(False)
     window.set_keep_above(True)
     window.set_type_hint(Gdk.WindowTypeHint.UTILITY)
 
@@ -350,12 +349,26 @@ def main():
 
     def on_scroll(widget, event):
         if event.direction == Gdk.ScrollDirection.UP:
-            _size["w"] = min(1200, _size["w"] + 50)
-            _size["h"] = min(1200, _size["h"] + 50)
+            _size["w"] = min(2000, _size["w"] + 50)
+            _size["h"] = min(2000, _size["h"] + 50)
         elif event.direction == Gdk.ScrollDirection.DOWN:
             _size["w"] = max(200, _size["w"] - 50)
             _size["h"] = max(200, _size["h"] - 50)
-        window.resize(_size["w"], _size["h"])
+        else:
+            return
+        # Re-center after scroll-resize
+        x, y = window.get_position()
+        w, h = _size["w"], _size["h"]
+        display = Gdk.Display.get_default()
+        monitor = None
+        try:
+            monitor = display.get_monitor_at_point(x + w // 2, y + h // 2)
+        except Exception:
+            pass
+        if monitor:
+            geo = monitor.get_geometry()
+            window.move(geo.x + (geo.width - w) // 2, geo.y + (geo.height - h) // 2)
+        window.resize(w, h)
 
     window.add_events(
         Gdk.EventMask.BUTTON_PRESS_MASK |
@@ -499,6 +512,7 @@ def main():
         item_show = Gtk.MenuItem(label="Show / Hide JARVIS")
         def _toggle_show(w):
             vis = not window.get_visible()
+            _visible[0] = vis
             window.set_visible(vis)
             if vis:
                 window.present()  # Bring to front
@@ -516,21 +530,51 @@ def main():
                          "opacity": window.get_opacity()})
             _save_desktop_config(_cfg)
 
+        def _resize_and_center(new_w, new_h):
+            """Resize window and re-center it on the current monitor."""
+            window.resize(new_w, new_h)
+            display = Gdk.Display.get_default()
+            monitor = None
+            try:
+                seat = display.get_default_seat()
+                device = seat.get_pointer()
+                _, px, py = device.get_position()
+                monitor = display.get_monitor_at_point(px, py)
+            except Exception:
+                pass
+            if monitor is None:
+                gdk_win = window.get_window()
+                if gdk_win:
+                    try:
+                        monitor = display.get_monitor_at_window(gdk_win)
+                    except Exception:
+                        pass
+            if monitor is None and display.get_n_monitors() > 0:
+                monitor = display.get_monitor(0)
+            if monitor:
+                geo = monitor.get_geometry()
+                wx = geo.x + (geo.width - new_w) // 2
+                wy = geo.y + (geo.height - new_h) // 2
+            else:
+                scr = Gdk.Screen.get_default()
+                wx = (scr.get_width() - new_w) // 2
+                wy = (scr.get_height() - new_h) // 2
+            window.move(wx, wy)
+            GLib.timeout_add(100, _save_state)
+
         item_bigger = Gtk.MenuItem(label="Bigger")
         def _bigger(w):
-            _size["w"] = min(1200, _size["w"] + 100)
-            _size["h"] = min(1200, _size["h"] + 100)
-            window.resize(_size["w"], _size["h"])
-            _save_state()
+            _size["w"] = min(2000, _size["w"] + 150)
+            _size["h"] = min(2000, _size["h"] + 150)
+            _resize_and_center(_size["w"], _size["h"])
         item_bigger.connect("activate", _bigger)
         menu.append(item_bigger)
 
         item_smaller = Gtk.MenuItem(label="Smaller")
         def _smaller(w):
-            _size["w"] = max(200, _size["w"] - 100)
-            _size["h"] = max(200, _size["h"] - 100)
-            window.resize(_size["w"], _size["h"])
-            _save_state()
+            _size["w"] = max(200, _size["w"] - 150)
+            _size["h"] = max(200, _size["h"] - 150)
+            _resize_and_center(_size["w"], _size["h"])
         item_smaller.connect("activate", _smaller)
         menu.append(item_smaller)
 
@@ -589,50 +633,31 @@ def main():
 
         menu.append(Gtk.SeparatorMenuItem())
 
-        # ── Color Theme Submenu ──
-        current_theme = get_theme()
-        color_item = Gtk.MenuItem(label="Theme Color")
-        color_sub = Gtk.Menu()
-
-        for preset_id, (_, _, label) in PRESETS.items():
-            prefix = "\u2022 " if preset_id == current_theme else "  "
-            item = Gtk.MenuItem(label=f"{prefix}{label}")
-            pid = preset_id  # capture
-            item.connect("activate", lambda w, t=pid: _apply_color_change(theme_name=t))
-            color_sub.append(item)
-
-        color_sub.append(Gtk.SeparatorMenuItem())
-
-        item_custom = Gtk.MenuItem(label="  Custom Color...")
-        def _pick_custom(w):
-            dialog = Gtk.ColorChooserDialog(title="JARVIS Color", parent=window)
-            primary, _ = get_colors()
-            from src.desktop.colors import hex_to_rgb
-            r, g, b = hex_to_rgb(primary)
-            dialog.set_rgba(Gdk.RGBA(r / 255, g / 255, b / 255, 1.0))
-            if dialog.run() == Gtk.ResponseType.OK:
-                rgba = dialog.get_rgba()
-                hex_color = f"#{int(rgba.red*255):02x}{int(rgba.green*255):02x}{int(rgba.blue*255):02x}"
-                _apply_color_change(custom_hex=hex_color)
-            dialog.destroy()
-        item_custom.connect("activate", _pick_custom)
-        color_sub.append(item_custom)
-
-        color_item.set_submenu(color_sub)
-        menu.append(color_item)
-
-        menu.append(Gtk.SeparatorMenuItem())
-
         item_open_browser = Gtk.MenuItem(label="Open in Browser")
-        item_open_browser.connect("activate", lambda w: subprocess.Popen(
-            ["xdg-open", f"http://{host}:{port}/"],
+        _browser_url = f"{api_base}/" if api_base else f"http://{host}:{port}/"
+        item_open_browser.connect("activate", lambda w, u=_browser_url: subprocess.Popen(
+            ["xdg-open", u],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         menu.append(item_open_browser)
 
         item_cli = Gtk.MenuItem(label="Open JARVIS CLI")
-        item_cli.connect("activate", lambda w: subprocess.Popen(
-            ["x-terminal-emulator", "-e", "jarvis"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+        def _open_cli(w):
+            # Try common terminal emulators in order of preference
+            _terminals = [
+                ["x-terminal-emulator", "-e", "jarvis"],
+                ["gnome-terminal", "--", "jarvis"],
+                ["xfce4-terminal", "-e", "jarvis"],
+                ["konsole", "-e", "jarvis"],
+                ["xterm", "-e", "jarvis"],
+            ]
+            for _cmd in _terminals:
+                try:
+                    subprocess.Popen(_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    return
+                except FileNotFoundError:
+                    continue
+            print("[JARVIS] No terminal emulator found — install xterm or gnome-terminal")
+        item_cli.connect("activate", _open_cli)
         menu.append(item_cli)
 
         menu.append(Gtk.SeparatorMenuItem())
@@ -640,8 +665,12 @@ def main():
         # Move mode — temporarily disable click-through for dragging
         item_move = Gtk.MenuItem(label="Move JARVIS (5s drag)")
         def _move_mode(w):
-            _set_click_through(False)
+            # Make sure the window is visible and on top before drag
+            if not window.get_visible():
+                window.set_visible(True)
+                _visible[0] = True
             window.present()
+            _set_click_through(False)
             # Re-enable click-through after 5 seconds
             def _relock():
                 _set_click_through(True)

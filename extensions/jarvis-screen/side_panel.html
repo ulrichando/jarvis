@@ -55,6 +55,28 @@
       user-select: none;
     }
 
+    /* ── Model selector ── */
+    .model-select {
+      appearance: none;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text-dim);
+      font-size: 11px;
+      font-family: inherit;
+      padding: 4px 22px 4px 8px;
+      cursor: pointer;
+      outline: none;
+      max-width: 130px;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%236b7280'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 6px center;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .model-select:hover { border-color: var(--border-hov); color: var(--text); }
+    .model-select:focus { border-color: var(--accent); color: var(--text); }
+    .model-select option { background: #1a1a1f; color: var(--text); }
+
     .header-left {
       display: flex;
       align-items: center;
@@ -549,6 +571,9 @@
         <div class="header-logo">J</div>
         <span class="header-title">JARVIS</span>
       </div>
+      <select class="model-select" id="modelSelect" title="Active model">
+        <option value="">loading…</option>
+      </select>
     </div>
 
     <!-- Tab bar -->

@@ -23,6 +23,47 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
   const scrollRAF = useRef(null)
   const wasLoadingRef = useRef(false)
 
+  // ── Conversation sidebar ──────────────────────────────────────────
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [sessions, setSessions] = useState([])
+  const [deletingId, setDeletingId] = useState(null)
+
+  const fetchSessions = useCallback(async () => {
+    try {
+      const res = await fetch('/api/conversations/sessions')
+      const data = await res.json()
+      setSessions(data.sessions || [])
+    } catch {}
+  }, [])
+
+  // Load sessions whenever sidebar opens
+  useEffect(() => {
+    if (sidebarOpen) fetchSessions()
+  }, [sidebarOpen, fetchSessions])
+
+  const deleteSession = useCallback(async (session) => {
+    setDeletingId(session.id)
+    try {
+      await fetch('/api/conversations/session', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ start_ts: session.start_ts, end_ts: session.end_ts }),
+      })
+      setSessions(prev => prev.filter(s => s.id !== session.id))
+    } catch {}
+    setDeletingId(null)
+  }, [])
+
+  const fmtDate = (ts) => {
+    const d = new Date(ts * 1000)
+    const now = new Date()
+    const diffDays = Math.floor((now - d) / 86400000)
+    if (diffDays === 0) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    if (diffDays === 1) return 'Yesterday'
+    if (diffDays < 7) return d.toLocaleDateString([], { weekday: 'short' })
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
+  }
+
   // Subtle chime when response completes
   const playDoneChime = useCallback(() => {
     try {
@@ -241,8 +282,10 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
       currentToolsRef.current = {}
 
       if (!data.partial) {
-        setReactorState(data.spoken ? 'speaking' : 'idle')
-        if (!data.spoken) {
+        // server_tts=true means server is speaking via ffplay — still show blue reactor
+        const willSpeak = data.spoken || data.server_tts
+        setReactorState(willSpeak ? 'speaking' : 'idle')
+        if (!willSpeak) {
           setTimeout(() => setReactorState('idle'), 1000)
         }
       }
@@ -375,7 +418,7 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
 
   return (
     <div
-      className={`fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[70vw] max-w-96 h-[50vh] bg-[rgba(2,6,12,0.95)] border border-[rgba(0,229,255,0.25)] rounded-xl flex flex-col z-999 overflow-hidden backdrop-blur-[20px] transition-all duration-300 origin-center ${
+      className={`fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-[50vh] bg-[rgba(2,6,12,0.95)] border border-[rgba(0,229,255,0.25)] rounded-xl flex z-999 overflow-hidden backdrop-blur-[20px] transition-all duration-300 origin-center ${
         isOpen
           ? 'scale-100 opacity-100 pointer-events-auto'
           : 'scale-[0.8] opacity-0 pointer-events-none'
@@ -388,143 +431,211 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
       {/* Spin animation for tool progress */}
       <style>{`@keyframes tool-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
 
-      {/* Header */}
-      <div className="flex justify-between items-center px-4 py-3 bg-jarvis-cyan/8 border-b border-jarvis-border">
-        <span className="font-['Orbitron'] text-xs font-medium text-jarvis-bright tracking-[2px]">
-          &#9670; JARVIS INTERFACE
-        </span>
-        <div className="flex gap-2">
-          <span
-            className="cursor-pointer text-jarvis-bright/50 text-sm px-1.5 py-0.5 transition-colors hover:text-jarvis-bright"
-            onClick={onMinimize}
-            title="Minimize"
-          >
-            &#x2500;
+      {/* ── Conversation history sidebar ─────────────────────────────── */}
+      <div
+        className="flex flex-col overflow-hidden border-r border-[rgba(0,229,255,0.12)] transition-all duration-300"
+        style={{ width: sidebarOpen ? '210px' : '0', flexShrink: 0 }}
+      >
+        {/* Sidebar header */}
+        <div className="flex justify-between items-center px-3 py-3 bg-jarvis-cyan/8 border-b border-[rgba(0,229,255,0.1)]" style={{ minWidth: '210px' }}>
+          <span className="font-['Orbitron'] text-[9px] tracking-[2px] text-jarvis-bright/60">
+            &#9670; HISTORY
           </span>
-          <span
-            className="cursor-pointer text-jarvis-bright/50 text-sm px-1.5 py-0.5 transition-colors hover:text-jarvis-bright"
-            onClick={onClose}
-            title="Close"
+          <button
+            onClick={() => setSidebarOpen(false)}
+            className="bg-transparent border-none text-jarvis-bright/40 cursor-pointer text-xs px-1 py-0.5 leading-none hover:text-jarvis-bright transition-colors"
+            title="Close history"
           >
             &#x2715;
-          </span>
+          </button>
+        </div>
+        {/* Sessions list */}
+        <div
+          className="flex-1 overflow-y-auto"
+          style={{ minWidth: '210px', scrollbarWidth: 'thin', scrollbarColor: 'rgba(0,229,255,0.15) transparent' }}
+        >
+          {sessions.length === 0 ? (
+            <p className="text-[11px] text-jarvis-bright/30 text-center mt-6 px-3 font-mono">
+              No sessions yet
+            </p>
+          ) : (
+            sessions.map(s => (
+              <div
+                key={s.id}
+                className="flex items-start gap-1.5 px-3 py-2.5 border-b border-[rgba(0,229,255,0.06)] hover:bg-[rgba(0,229,255,0.04)] group transition-colors"
+              >
+                <div className="flex-1 min-w-0">
+                  <p className="text-[11px] text-jarvis-text truncate leading-snug">{s.title}</p>
+                  <p className="text-[9px] text-jarvis-bright/30 mt-0.5 font-mono">
+                    {fmtDate(s.start_ts)} &middot; {s.message_count} msg{s.message_count !== 1 ? 's' : ''}
+                  </p>
+                </div>
+                <button
+                  onClick={() => deleteSession(s)}
+                  disabled={deletingId === s.id}
+                  className="shrink-0 bg-transparent border-none text-jarvis-bright/20 cursor-pointer text-[10px] px-1 py-0.5 leading-none rounded opacity-0 group-hover:opacity-100 transition-all hover:text-red-400 hover:bg-red-400/10 disabled:opacity-40"
+                  title="Delete session"
+                >
+                  {deletingId === s.id ? '…' : '✕'}
+                </button>
+              </div>
+            ))
+          )}
         </div>
       </div>
 
-      {/* Messages */}
-      <div
-        ref={messagesContainerRef}
-        className="flex-1 overflow-y-auto p-3 flex flex-col gap-2.5"
-        style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(0,229,255,0.2) transparent' }}
-      >
-        {messages.map((msg, i) => (
-          <div key={i}>
-            <div
-              className={`flex flex-col gap-1 px-3 py-2 rounded-lg max-w-[90%] animate-[msg-in_0.3s_ease] ${
-                msg.role === 'user'
-                  ? 'self-end bg-jarvis-cyan/12 border border-jarvis-border'
-                  : 'self-start bg-[rgba(0,40,60,0.5)] border border-[rgba(0,229,255,0.08)]'
+      {/* ── Chat panel ───────────────────────────────────────────────── */}
+      <div className="flex flex-col overflow-hidden" style={{ width: 'min(70vw, 384px)', flexShrink: 0 }}>
+        {/* Header */}
+        <div className="flex justify-between items-center px-4 py-3 bg-jarvis-cyan/8 border-b border-jarvis-border">
+          <span className="font-['Orbitron'] text-xs font-medium text-jarvis-bright tracking-[2px]">
+            &#9670; JARVIS INTERFACE
+          </span>
+          <div className="flex gap-2 items-center">
+            {/* History toggle */}
+            <span
+              className={`cursor-pointer text-sm px-1.5 py-0.5 transition-colors leading-none ${
+                sidebarOpen ? 'text-jarvis-bright' : 'text-jarvis-bright/50 hover:text-jarvis-bright'
               }`}
+              onClick={() => setSidebarOpen(v => !v)}
+              title="Conversation history"
             >
-              <span
-                className={`font-['Orbitron'] text-[9px] tracking-[1.5px] uppercase ${
-                  msg.role === 'user' ? 'text-jarvis-bright/70' : 'text-jarvis-bright/50'
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+              </svg>
+            </span>
+            <span
+              className="cursor-pointer text-jarvis-bright/50 text-sm px-1.5 py-0.5 transition-colors hover:text-jarvis-bright"
+              onClick={onMinimize}
+              title="Minimize"
+            >
+              &#x2500;
+            </span>
+            <span
+              className="cursor-pointer text-jarvis-bright/50 text-sm px-1.5 py-0.5 transition-colors hover:text-jarvis-bright"
+              onClick={onClose}
+              title="Close"
+            >
+              &#x2715;
+            </span>
+          </div>
+        </div>
+
+        {/* Messages */}
+        <div
+          ref={messagesContainerRef}
+          className="flex-1 overflow-y-auto p-3 flex flex-col gap-2.5"
+          style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(0,229,255,0.2) transparent' }}
+        >
+          {messages.map((msg, i) => (
+            <div key={i}>
+              <div
+                className={`flex flex-col gap-1 px-3 py-2 rounded-lg max-w-[90%] animate-[msg-in_0.3s_ease] ${
+                  msg.role === 'user'
+                    ? 'self-end bg-jarvis-cyan/12 border border-jarvis-border'
+                    : 'self-start bg-[rgba(0,40,60,0.5)] border border-[rgba(0,229,255,0.08)]'
                 }`}
               >
-                {msg.role === 'user' ? 'YOU' : 'JARVIS'}
-              </span>
-              {msg.thinking ? (
-                <span className="text-[13px] leading-relaxed text-jarvis-bright/40 italic">Thinking...</span>
-              ) : (
-                <span className="text-[13px] leading-relaxed text-jarvis-text whitespace-pre-wrap">{msg.text}</span>
-              )}
-              {/* Metadata line for JARVIS messages */}
-              {msg.role === 'jarvis' && msg.model && (
-                <span className="text-[9px] text-jarvis-bright/30 font-mono mt-1">
-                  {msg.model}{msg.latency ? ` \u00B7 ${msg.latency}ms` : ''}
+                <span
+                  className={`font-['Orbitron'] text-[9px] tracking-[1.5px] uppercase ${
+                    msg.role === 'user' ? 'text-jarvis-bright/70' : 'text-jarvis-bright/50'
+                  }`}
+                >
+                  {msg.role === 'user' ? 'YOU' : 'JARVIS'}
                 </span>
+                {msg.thinking ? (
+                  <span className="text-[13px] leading-relaxed text-jarvis-bright/40 italic">Thinking...</span>
+                ) : (
+                  <span className="text-[13px] leading-relaxed text-jarvis-text whitespace-pre-wrap">{msg.text}</span>
+                )}
+                {/* Metadata line for JARVIS messages */}
+                {msg.role === 'jarvis' && msg.model && (
+                  <span className="text-[9px] text-jarvis-bright/30 font-mono mt-1">
+                    {msg.model}{msg.latency ? ` \u00B7 ${msg.latency}ms` : ''}
+                  </span>
+                )}
+              </div>
+              {/* Collapsed tool section for completed messages */}
+              {msg.tools && (
+                <div className="self-start max-w-[90%] px-1">
+                  <ToolSection tools={msg.tools} />
+                </div>
               )}
             </div>
-            {/* Collapsed tool section for completed messages */}
-            {msg.tools && (
-              <div className="self-start max-w-[90%] px-1">
-                <ToolSection tools={msg.tools} />
-              </div>
-            )}
+          ))}
+
+          {/* Active tool executions (during streaming) */}
+          {Object.keys(toolExecutions).length > 0 && (
+            <div className="self-start max-w-[90%] px-1">
+              {Object.entries(toolExecutions).map(([id, exec]) =>
+                exec.name === 'todo_write'
+                  ? <TodoBlock key={id} execution={exec} />
+                  : <ToolProgress key={id} execution={exec} />
+              )}
+            </div>
+          )}
+
+          {/* Streaming message with blinking cursor */}
+          {isStreaming && streamingMessage && (
+            <div
+              className="flex flex-col gap-1 px-3 py-2 rounded-lg max-w-[90%] self-start bg-[rgba(0,40,60,0.5)] border border-[rgba(0,229,255,0.08)]"
+            >
+              <span className="font-['Orbitron'] text-[9px] tracking-[1.5px] uppercase text-jarvis-bright/50">
+                JARVIS
+              </span>
+              <span className="text-[13px] leading-relaxed text-jarvis-text whitespace-pre-wrap">
+                {streamingMessage}
+                <span className="inline-block w-0.5 h-3.5 bg-jarvis-bright/70 ml-px align-middle" style={{ animation: 'cursor-blink 1s step-end infinite' }} />
+              </span>
+            </div>
+          )}
+
+          {/* Loading indicator when waiting but not streaming yet */}
+          {isLoading && !isStreaming && Object.keys(toolExecutions).length === 0 && (
+            <div className="flex flex-col gap-1 px-3 py-2 rounded-lg max-w-[90%] self-start bg-[rgba(0,40,60,0.5)] border border-[rgba(0,229,255,0.08)]">
+              <span className="font-['Orbitron'] text-[9px] tracking-[1.5px] uppercase text-jarvis-bright/50">
+                JARVIS
+              </span>
+              <span className="text-[13px] leading-relaxed text-jarvis-bright/40 italic">Thinking...</span>
+            </div>
+          )}
+
+          <div ref={messagesEndRef} />
+        </div>
+
+        {/* Context bar */}
+        <ContextBar usage={contextUsage} />
+
+        {/* Cursor blink animation */}
+        <style>{`@keyframes cursor-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }`}</style>
+
+        {/* Input area */}
+        <div className="p-3 border-t border-[rgba(0,229,255,0.1)]">
+          <div className="flex items-center gap-2 bg-[rgba(0,20,40,0.6)] border border-[rgba(0,229,255,0.2)] rounded-lg px-2 py-1 transition-all focus-within:border-[rgba(0,229,255,0.5)] focus-within:shadow-[0_0_10px_rgba(0,229,255,0.1)]">
+            <input
+              ref={inputRef}
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Type a message..."
+              autoComplete="off"
+              className="flex-1 bg-transparent border-none outline-none text-jarvis-text font-['Share_Tech_Mono',monospace] text-[13px] py-2 px-1 placeholder:text-jarvis-cyan/30"
+            />
+            <button
+              onClick={sendMessage}
+              disabled={isLoading}
+              className="bg-transparent border-none text-jarvis-bright/50 cursor-pointer text-base px-2 py-1 rounded transition-all hover:text-jarvis-bright hover:bg-jarvis-bright/10 disabled:opacity-30"
+            >
+              &#x25B6;
+            </button>
+            <button
+              className="bg-transparent border-none text-jarvis-bright/50 cursor-pointer text-base px-2 py-1 rounded transition-all hover:text-jarvis-bright hover:bg-jarvis-bright/10"
+              title="Voice input"
+            >
+              &#x1F3A4;
+            </button>
           </div>
-        ))}
-
-        {/* Active tool executions (during streaming) */}
-        {Object.keys(toolExecutions).length > 0 && (
-          <div className="self-start max-w-[90%] px-1">
-            {Object.entries(toolExecutions).map(([id, exec]) =>
-              exec.name === 'todo_write'
-                ? <TodoBlock key={id} execution={exec} />
-                : <ToolProgress key={id} execution={exec} />
-            )}
-          </div>
-        )}
-
-        {/* Streaming message with blinking cursor */}
-        {isStreaming && streamingMessage && (
-          <div
-            className="flex flex-col gap-1 px-3 py-2 rounded-lg max-w-[90%] self-start bg-[rgba(0,40,60,0.5)] border border-[rgba(0,229,255,0.08)]"
-          >
-            <span className="font-['Orbitron'] text-[9px] tracking-[1.5px] uppercase text-jarvis-bright/50">
-              JARVIS
-            </span>
-            <span className="text-[13px] leading-relaxed text-jarvis-text whitespace-pre-wrap">
-              {streamingMessage}
-              <span className="inline-block w-0.5 h-3.5 bg-jarvis-bright/70 ml-px align-middle" style={{ animation: 'cursor-blink 1s step-end infinite' }} />
-            </span>
-          </div>
-        )}
-
-        {/* Loading indicator when waiting but not streaming yet */}
-        {isLoading && !isStreaming && Object.keys(toolExecutions).length === 0 && (
-          <div className="flex flex-col gap-1 px-3 py-2 rounded-lg max-w-[90%] self-start bg-[rgba(0,40,60,0.5)] border border-[rgba(0,229,255,0.08)]">
-            <span className="font-['Orbitron'] text-[9px] tracking-[1.5px] uppercase text-jarvis-bright/50">
-              JARVIS
-            </span>
-            <span className="text-[13px] leading-relaxed text-jarvis-bright/40 italic">Thinking...</span>
-          </div>
-        )}
-
-        <div ref={messagesEndRef} />
-      </div>
-
-      {/* Context bar */}
-      <ContextBar usage={contextUsage} />
-
-      {/* Cursor blink animation */}
-      <style>{`@keyframes cursor-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }`}</style>
-
-      {/* Input area */}
-      <div className="p-3 border-t border-[rgba(0,229,255,0.1)]">
-        <div className="flex items-center gap-2 bg-[rgba(0,20,40,0.6)] border border-[rgba(0,229,255,0.2)] rounded-lg px-2 py-1 transition-all focus-within:border-[rgba(0,229,255,0.5)] focus-within:shadow-[0_0_10px_rgba(0,229,255,0.1)]">
-          <input
-            ref={inputRef}
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Type a message..."
-            autoComplete="off"
-            className="flex-1 bg-transparent border-none outline-none text-jarvis-text font-['Share_Tech_Mono',monospace] text-[13px] py-2 px-1 placeholder:text-jarvis-cyan/30"
-          />
-          <button
-            onClick={sendMessage}
-            disabled={isLoading}
-            className="bg-transparent border-none text-jarvis-bright/50 cursor-pointer text-base px-2 py-1 rounded transition-all hover:text-jarvis-bright hover:bg-jarvis-bright/10 disabled:opacity-30"
-          >
-            &#x25B6;
-          </button>
-          <button
-            className="bg-transparent border-none text-jarvis-bright/50 cursor-pointer text-base px-2 py-1 rounded transition-all hover:text-jarvis-bright hover:bg-jarvis-bright/10"
-            title="Voice input"
-          >
-            &#x1F3A4;
-          </button>
         </div>
       </div>
     </div>

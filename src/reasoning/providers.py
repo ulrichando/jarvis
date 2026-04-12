@@ -270,7 +270,9 @@ class ProviderRegistry:
         cb["last_fail"] = now
         if cb["failures"] >= self._CB_MAX_FAILURES:
             cb["open_until"] = now + cooldown
-            print(f"[JARVIS] Circuit breaker OPEN for {provider.name} — skipping for {cooldown}s")
+            logging.getLogger("jarvis.providers").debug(
+                "Circuit breaker open for %s — skipping for %ds", provider.name, cooldown
+            )
 
     def _cb_record_success(self, name: str):
         """Record a success — close the circuit breaker."""

@@ -14,7 +14,6 @@ import SettingsPanel from './components/SettingsPanel'
 import NeuralLink from './components/NeuralLink'
 import CameraFeed from './components/CameraFeed'
 import ProviderSetup from './components/ProviderSetup'
-import VoiceWaveform from './components/VoiceWaveform'
 
 function App() {
   const [chatOpen, setChatOpen] = useState(false)
@@ -114,6 +113,7 @@ function App() {
   const playSpoken = useCallback((data) => {
     if (!data.spoken || data.spoken.length <= 3 || data.partial) {
       if (!data.spoken && data.final) setTimeout(() => setReactorState('idle'), 1000)
+      else if (data.spoken && data.spoken.length <= 3) setTimeout(() => setReactorState('idle'), 500)
       return
     }
     // Deduplicate — don't play same text twice
@@ -122,7 +122,7 @@ function App() {
     ttsPlayedRef.current = sig
 
     const isTtsOwner = !isDesktop || showReactor
-    if (!isTtsOwner) return
+    if (!isTtsOwner) { setTimeout(() => setReactorState('idle'), 500); return }
 
     // Use fetch + AudioContext for TTS — more reliable than new Audio(url) in WebKit2 GTK
     queueMicrotask(() => {
@@ -203,6 +203,11 @@ function App() {
     // Play TTS for voice query responses (dedup handled inside playSpoken)
     if (last.type === 'message' && last.spoken && last.spoken.length > 3 && !last.partial) {
       playSpoken(last)
+    }
+
+    // Server finished speaking via ffplay — reset reactor to idle
+    if (last.type === 'tts_done') {
+      setReactorState('idle')
     }
 
     if (last.type === 'camera') setCameraOn(last.enabled)
@@ -578,8 +583,6 @@ function App() {
         </div>
       )}
 
-      {/* Speaking waveform */}
-      <VoiceWaveform active={reactorState === 'speaking'} audioRef={audioRef} />
 
       {/* Fullscreen toggle — browser only */}
       {!isDesktop && (

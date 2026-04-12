@@ -1632,8 +1632,15 @@ PROJECT CREATION RULES — follow these when building something:
             return True
 
         # Questions about the system or environment → agent
-        system_keywords = ["what time", "what date", "what's running", "disk space",
+        # "what time in X" / "what time is it in X" = timezone lookup = factual, no tools needed
+        # "what time is it" alone = local system clock = agent needed
+        is_time_in_location = ("what time" in q and any(
+            prep in q for prep in [" in ", " at ", " for ", " of "]
+        ))
+        system_keywords = ["what's running", "disk space",
                            "memory usage", "cpu", "process", "port ", "ip address"]
+        if not is_time_in_location and "what time" in q:
+            return True  # local time check → needs bash
         if any(kw in q for kw in system_keywords):
             return True
 
