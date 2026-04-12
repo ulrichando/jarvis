@@ -2008,7 +2008,15 @@ class JarvisWebServer:
                                         self._loop,
                                     )
 
+                            _was_speaking = getattr(listener, '_was_speaking', False)
                             transcript = listener.feed(audio)
+                            if listener.is_speaking and not _was_speaking:
+                                # Voice just started — notify frontend → purple
+                                asyncio.run_coroutine_threadsafe(
+                                    self._broadcast({"type": "status", "status": "listening"}),
+                                    self._loop,
+                                )
+                            listener._was_speaking = listener.is_speaking
                             if listener.is_speaking and _frame_count % 20 == 0:
                                 dur = _time.time() - listener.speech_start if listener.speech_start else 0
                                 print(f"[JARVIS] Hearing speech... ({dur:.1f}s)")

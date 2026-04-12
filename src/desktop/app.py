@@ -178,9 +178,6 @@ def main():
     window.set_title("J.A.R.V.I.S.")
     window.set_default_size(_cfg.get("width", 700), _cfg.get("height", 700))
     window.set_decorated(False)
-    # Set window icon (taskbar) to the generated tray icon
-    if os.path.exists(_jarvis_icon_path):
-        window.set_icon_from_file(_jarvis_icon_path)
     window.set_app_paintable(True)
     window.set_keep_above(True)
     window.set_type_hint(Gdk.WindowTypeHint.UTILITY)
@@ -475,6 +472,8 @@ def main():
 
     # Generate icon with current theme color
     _jarvis_icon_path = generate_icon()
+    if os.path.exists(_jarvis_icon_path):
+        window.set_icon_from_file(_jarvis_icon_path)
 
     # Holder for indicator/tray so color changes can update it
     _tray_ref = [None]

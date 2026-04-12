@@ -548,7 +548,7 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
         } else if (st === 'offline') {
           ring.material.opacity = 0.2 + 0.15 * Math.sin(time * 1.5 + i)
         } else if (st === 'booting') {
-          ring.material.opacity = 0  // fully transparent while booting
+          ring.material.opacity = 0
         }
       })
 
