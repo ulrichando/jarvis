@@ -1,7 +1,8 @@
 """JARVIS color theme system.
 
 Manages the reactor/UI accent color. Stored in ~/.jarvis/desktop.json
-under the "theme" key. Both the tray icon and frontend read from here.
+under the "theme" / "theme_primary" / "theme_glow" keys.
+Both the tray icon and frontend read from here.
 """
 
 from __future__ import annotations
@@ -14,10 +15,15 @@ from typing import Tuple
 DESKTOP_CONFIG = os.path.expanduser("~/.jarvis/desktop.json")
 
 # ── Preset themes ──
-# Each preset: (primary_hex, glow_hex, name)
-# primary = main accent, glow = brighter variant for highlights
+# Each preset: (primary_hex, glow_hex, label)
 PRESETS = {
-    "ghost": ("#94a3b8", "#cbd5e1", "Ghost (Silver)"),
+    "cyan":   ("#00e5ff", "#0088aa", "Cyan (Classic)"),
+    "blue":   ("#60a5fa", "#3b82f6", "Blue (Cool)"),
+    "green":  ("#4ade80", "#16a34a", "Green (Matrix)"),
+    "amber":  ("#f59e0b", "#d97706", "Amber (Warm)"),
+    "red":    ("#ef4444", "#dc2626", "Red (Alert)"),
+    "violet": ("#a78bfa", "#7c3aed", "Violet (Mystic)"),
+    "ghost":  ("#94a3b8", "#cbd5e1", "Ghost (Silver)"),
 }
 
 DEFAULT_THEME = "ghost"
@@ -41,19 +47,33 @@ def _save_config(config: dict) -> None:
 
 
 def get_theme() -> str:
-    """Return current theme name."""
-    return DEFAULT_THEME
+    """Return current theme name (reads from config)."""
+    return _load_config().get("theme", DEFAULT_THEME)
 
 
 def get_colors() -> Tuple[str, str]:
-    """Return (primary_hex, glow_hex) for the current theme."""
-    return PRESETS[DEFAULT_THEME][0], PRESETS[DEFAULT_THEME][1]
+    """Return (primary_hex, glow_hex) for the current theme.
+
+    Handles both preset and custom themes by reading config.
+    """
+    cfg = _load_config()
+    theme = cfg.get("theme", DEFAULT_THEME)
+    if theme == "custom":
+        primary = cfg.get("theme_primary", PRESETS[DEFAULT_THEME][0])
+        glow    = cfg.get("theme_glow",    _brighten(primary))
+        return primary, glow
+    preset = PRESETS.get(theme, PRESETS[DEFAULT_THEME])
+    return preset[0], preset[1]
 
 
 def set_theme(theme: str) -> Tuple[str, str]:
     """Set theme by preset name. Returns the new (primary, glow) colors."""
     cfg = _load_config()
     cfg["theme"] = theme
+    # Store the resolved colors too so the desktop reads them back instantly
+    if theme in PRESETS:
+        cfg["theme_primary"] = PRESETS[theme][0]
+        cfg["theme_glow"]    = PRESETS[theme][1]
     _save_config(cfg)
     return get_colors()
 

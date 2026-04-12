@@ -1289,6 +1289,11 @@ class JarvisWebServer:
                         except Exception as e:
                             print(f"[JARVIS] Server TTS error: {e}")
                     self._conv_intel.mark_listening()
+                    # Notify client that server-side TTS is done → reactor → idle
+                    try:
+                        await ws.send_json({"type": "tts_done", "server_tts": True})
+                    except Exception:
+                        pass
 
         # Always release the query lock and unmute mic after voice processing
         if is_voice:
@@ -3154,6 +3159,34 @@ class JarvisWebServer:
                 return web.json_response({"conversations": [], "error": str(e)})
         app.router.add_get("/api/conversations", _conversations_handler)
 
+        async def _sessions_handler(request):
+            """GET /api/conversations/sessions — list sessions grouped by time gap."""
+            try:
+                if self.brain and hasattr(self.brain, "memory"):
+                    sessions = self.brain.memory.list_sessions()
+                    return web.json_response({"sessions": sessions})
+                return web.json_response({"sessions": []})
+            except Exception as e:
+                return web.json_response({"sessions": [], "error": str(e)})
+
+        async def _delete_session_handler(request):
+            """DELETE /api/conversations/session — delete all turns in a time range."""
+            try:
+                body = await request.json()
+                start_ts = float(body.get("start_ts", 0))
+                end_ts   = float(body.get("end_ts", 0))
+                if not start_ts or not end_ts:
+                    return web.json_response({"ok": False, "error": "start_ts and end_ts required"}, status=400)
+                if self.brain and hasattr(self.brain, "memory"):
+                    deleted = self.brain.memory.delete_session(start_ts, end_ts)
+                    return web.json_response({"ok": True, "deleted": deleted})
+                return web.json_response({"ok": False, "error": "No memory"}, status=503)
+            except Exception as e:
+                return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+        app.router.add_get("/api/conversations/sessions", _sessions_handler)
+        app.router.add_delete("/api/conversations/session", _delete_session_handler)
+
         # Mesh API
         app.router.add_get("/api/mesh/ping", self.mesh_ping)
         app.router.add_get("/api/mesh/knowledge", self.mesh_knowledge)
@@ -4115,6 +4148,66 @@ class JarvisWebServer:
 
         app.router.add_post("/api/page-query", page_query_handler)
         app.router.add_route("OPTIONS", "/api/page-query", page_query_handler)
+
+        # ── Model list + switcher (used by Chrome/Firefox extension) ──────────
+
+        CORS = {'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+                'Access-Control-Allow-Headers': 'Content-Type'}
+
+        async def models_list_handler(request):
+            """GET /api/models — returns all available local Ollama models."""
+            if request.method == 'OPTIONS':
+                return web.Response(headers=CORS)
+            try:
+                while self.brain is None:
+                    await asyncio.sleep(0.1)
+                providers = self.brain.reasoner.providers
+                active_model = self.brain.reasoner.active_model_name
+
+                models = []
+                seen = set()
+                for p in providers.get_active_providers():
+                    for m in p.models:
+                        if m not in seen:
+                            models.append({'name': m, 'provider': p.name})
+                            seen.add(m)
+
+                return web.json_response(
+                    {'models': models, 'active': active_model},
+                    headers=CORS,
+                )
+            except Exception as e:
+                return web.json_response({'error': str(e)}, status=500, headers=CORS)
+
+        async def model_switch_handler(request):
+            """POST /api/model  body: {"model": "qwen2.5:7b"}  — switches active model."""
+            if request.method == 'OPTIONS':
+                return web.Response(headers=CORS)
+            try:
+                data  = await request.json()
+                model = data.get('model', '').strip()
+                if not model:
+                    return web.json_response({'error': 'model required'}, status=400, headers=CORS)
+
+                while self.brain is None:
+                    await asyncio.sleep(0.1)
+
+                # Dispatch through the brain's existing /model command handler
+                from src.commands.registry import CommandRegistry, CommandContext
+                ctx = CommandContext(brain=self.brain, args=model, channel='chrome')
+                result = await CommandRegistry.instance().dispatch('/model', ctx)
+                if result and result.success:
+                    return web.json_response({'active': model, 'message': result.text}, headers=CORS)
+                return web.json_response(
+                    {'error': result.text if result else 'switch failed'}, status=400, headers=CORS)
+            except Exception as e:
+                return web.json_response({'error': str(e)}, status=500, headers=CORS)
+
+        app.router.add_get("/api/models", models_list_handler)
+        app.router.add_route("OPTIONS", "/api/models", models_list_handler)
+        app.router.add_post("/api/model", model_switch_handler)
+        app.router.add_route("OPTIONS", "/api/model", model_switch_handler)
 
         # ── Exclusive mode: desktop and browser cannot coexist ──
         # Desktop + CLI = OK.  Browser + CLI = OK.  Desktop + Browser = blocked.

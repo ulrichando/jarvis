@@ -24,7 +24,7 @@ import asyncio
 import json
 import logging
 from typing import AsyncGenerator
-from src.agent.tools import TOOL_SCHEMAS, execute_tool
+from src.agent.tools import TOOL_SCHEMAS, get_active_tools, execute_tool
 from src.agent.context import (
     compact_messages, estimate_tokens, AutoCompactor,
     repair_tool_pairs, check_context_window,
@@ -284,7 +284,7 @@ async def _agent_loop_internal(
 ) -> str:
     """Internal agent loop — shared by parent and sub-agents."""
     if tools is None:
-        tools = TOOL_SCHEMAS
+        tools = get_active_tools()
     if tool_executor is None:
         tool_executor = execute_tool
 
@@ -951,7 +951,7 @@ async def agent_loop_stream(
         text, tool_call, tool_result, dispatch, dispatch_result, done, error
     """
     if tools is None:
-        tools = TOOL_SCHEMAS
+        tools = get_active_tools()
 
     # Build an LLM summarizer for smart compaction (uses the same reasoner)
     async def _llm_summarizer(prompt: str) -> str:
