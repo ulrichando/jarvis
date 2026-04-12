@@ -119,6 +119,7 @@ TEMPLATES = {
         # Respect OLLAMA_HOST env var so Docker Compose can point 'ollama' → service DNS
         "base_url": os.environ.get("OLLAMA_HOST", "http://localhost:11434") + "/v1",
         "models": [
+            "qwen2.5:7b",
             "llama3.2:3b",
             "deepseek-coder-v2:16b",
             "gemma3:4b",
@@ -126,7 +127,7 @@ TEMPLATES = {
             "lazarevtill/Llama-3-WhiteRabbitNeo-8B-v2.0",
             "nomic-embed-text",
         ],
-        "default_model": "llama3.2:3b",
+        "default_model": "qwen2.5:7b",
         "api_key": "ollama",  # Ollama doesn't need a real key
     },
 }

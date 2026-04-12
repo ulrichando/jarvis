@@ -410,6 +410,11 @@ async def cmd_model(ctx: CommandContext) -> CommandResult:
         "gpt4mini": "gpt-4o-mini",
         "deepseek": "deepseek-chat",
         "deepseek-r1": "deepseek-reasoner",
+        # Local Ollama shortcuts
+        "qwen": "qwen2.5:7b",
+        "qwen7b": "qwen2.5:7b",
+        "llama": "llama3.2:3b",
+        "llama7b": "llama3:7b",
     }
     target_model = shortcuts.get(args, args)
 
