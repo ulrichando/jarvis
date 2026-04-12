@@ -16,9 +16,11 @@ ENV JARVIS_HOME=/data/.jarvis
 WORKDIR /app
 
 # Force IPv4 for apt — IPv6 mirrors are slow on this network
+# Force IPv4 and disable apt post-install hooks that hang (debconf, triggers)
 RUN echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4 && \
+    echo 'DPkg::Options {"--force-confdef"; "--force-confold";};' >> /etc/apt/apt.conf.d/99force-ipv4 && \
     apt-get update && \
-    apt-get install -y --no-install-recommends \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ffmpeg \
         libportaudio2 \
         portaudio19-dev \
