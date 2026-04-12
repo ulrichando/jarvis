@@ -222,6 +222,7 @@ class ProviderRegistry:
         self._circuit_breaker: dict[str, dict] = {}  # {name: {failures: int, last_fail: float, open_until: float}}
         self._effort: str = "medium"  # current effort level
         self._pinned: str = ""  # provider name pinned by explicit user switch — bypasses internet filter
+        self._file_mtime: float = 0.0   # last seen mtime of providers.json — for auto-reload
         self._load()
         self._load_env_providers()
         self._load_claude_credentials()
@@ -432,6 +433,7 @@ class ProviderRegistry:
     async def query(self, user_input: str, system_prompt: str,
                     history: list[dict] | None = None) -> tuple[str, str]:
         """Query providers in priority order. Returns (response, provider_name)."""
+        self._auto_reload_if_changed()
         errors = []
         for provider in self.get_active_providers():
             try:
@@ -474,6 +476,7 @@ class ProviderRegistry:
 
     async def query_with_tools(self, messages: list[dict], tools: list[dict],
                                system: str = "") -> tuple[dict, str]:
+        self._auto_reload_if_changed()
         """Tool-calling query across providers. Falls back to plain query if tool calling fails.
 
         Priority for tool calling:
@@ -1520,6 +1523,7 @@ RULES:
         if not PROVIDERS_FILE.exists():
             return
         try:
+            self._file_mtime = PROVIDERS_FILE.stat().st_mtime
             with open(PROVIDERS_FILE) as f:
                 data = json.load(f)
             for name, d in data.items():
@@ -1528,6 +1532,15 @@ RULES:
             logging.getLogger("jarvis.providers").warning("Failed to parse providers.json: %s", e)
         except OSError as e:
             logging.getLogger("jarvis.providers").warning("Failed to read providers.json: %s", e)
+
+    def _auto_reload_if_changed(self):
+        """Silently reload providers if providers.json was modified since last load."""
+        try:
+            if PROVIDERS_FILE.exists() and PROVIDERS_FILE.stat().st_mtime > self._file_mtime:
+                self.reload()
+                logging.getLogger("jarvis.providers").info("providers.json changed — reloaded")
+        except OSError:
+            pass
 
     def reload(self):
         """Hot-reload providers from disk (picks up external changes)."""

@@ -623,12 +623,23 @@ async def cmd_provider(ctx: CommandContext) -> CommandResult:
         providers._save()
         return CommandResult(text=f"Primary provider set to: {name}  (model: {p.model})")
 
+    # ── reload ────────────────────────────────────────────────────────────
+    if sub == "reload":
+        providers.reload()
+        active = providers.get_active_providers()
+        primary = active[0] if active else None
+        msg = "Providers reloaded from disk."
+        if primary:
+            msg += f"\n  Active: {primary.name} — {primary.model}"
+        return CommandResult(text=msg)
+
     return CommandResult(
         text=f"Unknown subcommand: {sub}\n"
              "  /provider list\n"
              "  /provider add <name> <url> [key] [model]\n"
              "  /provider remove <name>\n"
-             "  /provider set <name>",
+             "  /provider set <name>\n"
+             "  /provider reload",
         success=False
     )
 

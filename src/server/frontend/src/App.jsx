@@ -47,6 +47,8 @@ function App() {
     if (wsStatus === 'connected') {
       clearTimeout(offlineTimerRef.current)
       setStableWsStatus('connected')
+      // Ensure reactor exits booting state — brain_ready may fire quickly or be missed
+      setTimeout(() => setReactorState(s => s === 'booting' ? 'idle' : s), 1500)
     } else if (wsStatus === 'connecting') {
       clearTimeout(offlineTimerRef.current)
       setStableWsStatus('connecting')
@@ -62,6 +64,21 @@ function App() {
     document.documentElement.classList.add(isDesktop ? 'desktop-mode' : 'web-mode')
     document.body.classList.add(isDesktop ? 'desktop-mode' : 'web-mode')
   }, [isDesktop])
+
+  // Expose simulate function globally for desktop JS injection
+  useEffect(() => {
+    window.__simulateStates = () => {
+      const states = ['booting','idle','listening','thinking','speaking','offline']
+      let i = 0
+      const next = () => {
+        if (i >= states.length) return
+        setReactorState(states[i++])
+        setTimeout(next, 2000)
+      }
+      next()
+    }
+    return () => { delete window.__simulateStates }
+  }, [setReactorState])
 
   // TTS playback with interrupt — global stop function
   // Flushes the entire audio queue with zero trailing words.
@@ -179,8 +196,16 @@ function App() {
     const last = wsMessages[wsMessages.length - 1]
 
     if (last.type === 'status' && last.status === 'thinking') {
-      // When JARVIS starts thinking for a NEW response, flush any in-progress audio
       queueMicrotask(() => { stopSpeaking(); setReactorState('thinking') })
+    }
+    if (last.type === 'status' && last.status === 'listening') {
+      setReactorState('listening')
+    }
+    if (last.type === 'status' && last.status === 'speaking') {
+      setReactorState('speaking')
+    }
+    if (last.type === 'status' && last.status === '') {
+      setReactorState('idle')
     }
 
     // Server confirmed interrupt — ensure audio is fully flushed
@@ -572,6 +597,7 @@ function App() {
           theme={theme}
         />
       )}
+
 
       {/* Live voice caption — desktop only, shows what JARVIS heard */}
       {isDesktop && heardText && (
