@@ -303,19 +303,21 @@ async def cmd_model(ctx: CommandContext) -> CommandResult:
             for m in p.models:
                 active = m == p.model and p == providers.get_active_providers()[0]
                 entries.append((f"{m}  [{tag}]", p.name, m, active))
-        # Add Ollama models from all configured Ollama providers + localhost fallback
-        import urllib.request as _ur, json as _j
+        # Add Ollama models from all configured Ollama providers + OLLAMA_HOST + localhost
+        import urllib.request as _ur, json as _j, os as _os
         ollama_urls_checked = set()
-        # Collect URLs from configured providers
         ollama_provider_urls = []
         for p in providers.get_active_providers():
-            if "11434" in p.base_url or "ollama" in p.name.lower():
-                # Normalize: strip /v1 suffix to get the tags endpoint base
+            if "11434" in p.base_url or "ollama" in p.name.lower() or p.api_key == "ollama":
                 base = p.base_url.rstrip("/")
                 if base.endswith("/v1"):
                     base = base[:-3]
                 ollama_provider_urls.append((base, p.name))
-        # Always include localhost as fallback
+        # Add OLLAMA_HOST env var (covers Docker and remote Ollama servers)
+        _ohost = _os.environ.get("OLLAMA_HOST", "").strip().rstrip("/")
+        if _ohost:
+            ollama_provider_urls.append((_ohost, "ollama"))
+        # Always include localhost as final fallback
         ollama_provider_urls.append(("http://localhost:11434", "ollama"))
         existing = {e[2] for e in entries}
         for base_url, pname in ollama_provider_urls:
@@ -436,19 +438,27 @@ async def cmd_model(ctx: CommandContext) -> CommandResult:
             _make_primary(p)
             return CommandResult(text=f"Switched to: {target_model} ({p.name})")
 
-    # Try all configured Ollama providers + localhost fallback
-    import urllib.request as _ur2, json as _j2
+    # Try all configured Ollama providers + OLLAMA_HOST env + localhost fallback
+    import urllib.request as _ur2, json as _j2, os as _os2
     ollama_candidates = []
     for p in providers.get_active_providers():
-        if "11434" in p.base_url or "ollama" in p.name.lower():
+        if "11434" in p.base_url or "ollama" in p.name.lower() or p.api_key == "ollama":
             base = p.base_url.rstrip("/")
             if base.endswith("/v1"):
                 base = base[:-3]
             ollama_candidates.append((base, p))
+    # OLLAMA_HOST env var — covers Docker service names and remote Ollama servers
+    _oh = _os2.environ.get("OLLAMA_HOST", "").strip().rstrip("/")
+    if _oh:
+        ollama_candidates.append((_oh, None))
     ollama_candidates.append(("http://localhost:11434", None))  # localhost fallback
+    seen_bases = set()
     for base_url, existing_provider in ollama_candidates:
+        if base_url in seen_bases:
+            continue
+        seen_bases.add(base_url)
         try:
-            resp = _ur2.urlopen(f"{base_url}/api/tags", timeout=2)
+            resp = _ur2.urlopen(f"{base_url}/api/tags", timeout=3)
             data = _j2.loads(resp.read())
             ollama_models = [m["name"] for m in data.get("models", [])]
             if target_model in ollama_models or any(target_model in m for m in ollama_models):
@@ -460,9 +470,10 @@ async def cmd_model(ctx: CommandContext) -> CommandResult:
                     _make_primary(existing_provider)
                     return CommandResult(text=f"Switched to: {matched} ({existing_provider.name})")
                 else:
-                    providers.add_provider("ollama", "ollama", base_url="http://localhost:11434/v1", model=matched)
+                    _base_v1 = base_url.rstrip("/") + "/v1"
+                    providers.add_provider("ollama", "ollama", base_url=_base_v1, model=matched)
                     _make_primary(providers._providers["ollama"])
-                    return CommandResult(text=f"Switched to: {matched} (ollama)")
+                    return CommandResult(text=f"Switched to: {matched} (ollama @ {base_url})")
         except Exception:
             pass
 

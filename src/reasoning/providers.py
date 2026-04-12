@@ -146,9 +146,18 @@ class Provider:
 
     @property
     def is_local(self) -> bool:
-        """True if this provider runs locally (localhost/127.0.0.1)."""
+        """True if this provider runs locally or on the LAN (not a cloud API)."""
         url = (self.base_url or "").lower()
-        return "localhost" in url or "127.0.0.1" in url
+        if "localhost" in url or "127.0.0.1" in url:
+            return True
+        # Docker service name (e.g. http://ollama:11434) — single-label hostname = LAN
+        if self.api_key == "ollama" or "11434" in url or "ollama" in self.name.lower():
+            return True
+        # LAN IP ranges
+        import re as _re
+        if _re.search(r"https?://(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)", url):
+            return True
+        return False
 
     def to_dict(self) -> dict:
         return {
@@ -1520,6 +1529,21 @@ RULES:
                     models=template.get("models", []),
                     priority=len(self._providers), enabled=True,
                 )
+
+        # Auto-register Ollama when OLLAMA_HOST is explicitly set (Docker / remote server).
+        # The template already reads OLLAMA_HOST but only when used as a template — this
+        # ensures the provider is actually created in the registry when the env var is set.
+        ollama_host = os.environ.get("OLLAMA_HOST", "").strip()
+        if ollama_host and "ollama" not in self._providers:
+            template = TEMPLATES.get("ollama", {})
+            base_url = ollama_host.rstrip("/") + "/v1"
+            self._providers["ollama"] = Provider(
+                name="ollama", type="openai",
+                api_key="ollama", base_url=base_url,
+                model=template.get("default_model", "llama3.2:3b"),
+                models=template.get("models", []),
+                priority=len(self._providers), enabled=True,
+            )
 
     def _load_claude_credentials(self):
         """Auto-register Claude from Anthropic API key."""
