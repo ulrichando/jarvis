@@ -29,12 +29,12 @@ RUN printf '%s\n' \
 # ── Entropy fix: openssh-client postinst calls ssh-keygen which blocks on ──────
 # /dev/random waiting for entropy (VM entropy starvation bug).
 # Redirect /dev/random -> /dev/urandom for the duration of this build layer.
-# Safe for a build container — we don't need cryptographically-blocking random.
 RUN rm -f /dev/random && ln -sf /dev/urandom /dev/random
 
+# ── System packages — ffmpeg excluded (static binary below saves ~220 MB) ──────
+# Total apt download ~80 MB vs ~300 MB with ffmpeg. Prevents download timeout.
 RUN apt-get update && \
-    timeout 600 apt-get install -y \
-        ffmpeg \
+    timeout 900 apt-get install -y \
         libportaudio2 \
         portaudio19-dev \
         libsndfile1 \
@@ -42,6 +42,7 @@ RUN apt-get update && \
         tesseract-ocr \
         build-essential \
         curl \
+        xz-utils \
         openssh-client \
     && dpkg --configure --pending \
     && apt-get clean \
@@ -49,6 +50,19 @@ RUN apt-get update && \
 
 # ── Restore /dev/random to a real block device node ────────────────────────────
 RUN rm -f /dev/random && mknod -m 0666 /dev/random c 1 8
+
+# ── Static ffmpeg binary — ~80 MB download, no apt deps, no postinst hangs ─────
+# Replaces apt ffmpeg which pulls ~220 MB of gstreamer/codec deps and
+# triggers gio-querymodules postinst hangs in Docker builds.
+RUN curl -fsSL "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz" \
+      -o /tmp/ffmpeg.tar.xz && \
+    tar -xJf /tmp/ffmpeg.tar.xz --strip-components=1 -C /tmp/ \
+      --wildcards '*/ffmpeg' '*/ffprobe' && \
+    mv /tmp/ffmpeg /usr/local/bin/ffmpeg && \
+    mv /tmp/ffprobe /usr/local/bin/ffprobe && \
+    chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe && \
+    rm -f /tmp/ffmpeg.tar.xz && \
+    ffmpeg -version | head -1
 
 RUN groupadd -r jarvis && useradd -r -g jarvis -d /data -s /sbin/nologin jarvis
 
