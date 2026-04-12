@@ -3271,10 +3271,11 @@ class JarvisWebServer:
 
         async def _ollama_status(request):
             """Check if Ollama is running and list models."""
+            _ollama_base = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
             try:
                 import urllib.request
                 def _check():
-                    r = urllib.request.urlopen("http://localhost:11434/api/tags", timeout=3)
+                    r = urllib.request.urlopen(f"{_ollama_base}/api/tags", timeout=5)
                     return json.loads(r.read())
                 data = await asyncio.get_event_loop().run_in_executor(None, _check)
                 models = [m["name"] for m in data.get("models", [])]
@@ -3283,23 +3284,29 @@ class JarvisWebServer:
                 return web.json_response({"online": False, "models": []})
 
         async def _ollama_pull(request):
-            """Pull a model via Ollama."""
+            """Pull a model via Ollama HTTP API (works even without ollama CLI installed)."""
             data = await request.json()
             model = data.get("model", "")
             if not model:
                 return web.json_response({"ok": False, "error": "No model specified"}, status=400)
-            import subprocess
+            _ollama_base = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+            import urllib.request as _ur, urllib.error as _ue
             def _pull():
-                proc = subprocess.Popen(
-                    ["ollama", "pull", model],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                req = _ur.Request(
+                    f"{_ollama_base}/api/pull",
+                    data=json.dumps({"model": model, "stream": False}).encode(),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
                 )
-                stdout, stderr = proc.communicate(timeout=300)
-                return proc.returncode, stderr
-            returncode, stderr = await asyncio.get_event_loop().run_in_executor(None, _pull)
-            if returncode == 0:
-                return web.json_response({"ok": True, "model": model})
-            return web.json_response({"ok": False, "error": stderr.decode()[:200]})
+                with _ur.urlopen(req, timeout=600) as resp:
+                    return json.loads(resp.read())
+            try:
+                result = await asyncio.get_event_loop().run_in_executor(None, _pull)
+                if result.get("status") == "success" or "error" not in result:
+                    return web.json_response({"ok": True, "model": model})
+                return web.json_response({"ok": False, "error": result.get("error", "Unknown")})
+            except Exception as e:
+                return web.json_response({"ok": False, "error": str(e)[:200]})
 
         async def _model_search(request):
             """Search for downloadable models from Ollama library and HuggingFace."""

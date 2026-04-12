@@ -96,6 +96,17 @@ TEMPLATES = {
         "models": ["grok-3", "grok-3-mini"],
         "default_model": "grok-3-mini",
     },
+    "groq": {
+        "type": "openai",
+        "base_url": "https://api.groq.com/openai/v1",
+        "models": [
+            "qwen/qwen3-32b",
+            "llama-3.3-70b-versatile",
+            "meta-llama/llama-4-scout-17b-16e-instruct",
+            "moonshotai/kimi-k2-instruct",
+        ],
+        "default_model": "qwen/qwen3-32b",
+    },
     "openrouter": {
         "type": "openai",
         "base_url": "https://openrouter.ai/api/v1",
@@ -377,11 +388,14 @@ class ProviderRegistry:
             _pinned_p = self._providers[self._pinned]
             providers = [_pinned_p] + [p for p in providers if p.name != self._pinned]
         else:
-            # Ollama (local) only when offline — skip local providers if internet is up
+            # When online: try cloud first, but always keep local as final fallback.
+            # Do NOT drop local entirely — if all cloud providers fail, local Ollama
+            # must be reachable so the user isn't left with no brain.
             if self._has_internet():
-                cloud = [p for p in providers if _is_cloud(p)]
-                if cloud:  # only filter if there are cloud providers to fall back to
-                    providers = cloud
+                cloud  = [p for p in providers if _is_cloud(p)]
+                local  = [p for p in providers if not _is_cloud(p)]
+                if cloud:
+                    providers = cloud + local  # cloud first, local as safety net
 
         def _is_smart(p):
             return any(big in p.model for big in ["70b", "72b", "65b", "mixtral", "32b"])
@@ -851,14 +865,19 @@ class ProviderRegistry:
                 async with session.post(
                     f"{provider.base_url}/api/llm",
                     json=payload,
-                    timeout=aiohttp.ClientTimeout(total=120),
+                    timeout=aiohttp.ClientTimeout(total=25),
                     headers={"Content-Type": "application/json"},
                 ) as resp:
                     if resp.status != 200:
                         raise RuntimeError(f"Remote brain returned {resp.status}")
                     data = await resp.json()
+                    text = data.get("text", "")
+                    # Detect when the remote brain itself has no AI provider — treat as
+                    # a connectivity failure so the local fallback chain is tried instead.
+                    if "can't reach any AI provider" in text or "No AI provider available" in text:
+                        raise RuntimeError("Remote brain has no AI provider configured")
                     return {
-                        "text":       data.get("text", ""),
+                        "text":       text,
                         "tool_calls": data.get("tool_calls", []),
                         "usage":      data.get("usage", {}),
                     }
@@ -1464,13 +1483,13 @@ RULES:
                 or provider.api_key == "ollama"
             )
             # Timeout strategy:
-            # - Local Ollama, NOT pinned: 4s — fail fast and fall through to cloud
+            # - Local Ollama, NOT pinned: 60s — still a meaningful fallback, model may be loading
             # - Local Ollama, pinned by user: 120s — user explicitly chose it, wait for it
             # - Remote Ollama: 120s — user explicitly configured and pinned it
             # - Cloud providers: 60s — standard API timeout
             is_pinned = self._pinned == provider.name
             if is_local and not is_pinned:
-                timeout = 4   # auto-fallback: fail fast to cloud
+                timeout = 60  # last-resort fallback: give model time to load
             elif is_local or is_ollama:
                 timeout = 120  # explicit choice: wait for inference
             else:
@@ -1519,7 +1538,8 @@ RULES:
         """Auto-register providers from .env / environment variables."""
         # Auto-register additional OpenAI-compatible providers from env
         for name, env_key in [("openai", "OPENAI_API_KEY"), ("xai", "XAI_API_KEY"),
-                               ("together", "TOGETHER_API_KEY"), ("openrouter", "OPENROUTER_API_KEY")]:
+                               ("together", "TOGETHER_API_KEY"), ("openrouter", "OPENROUTER_API_KEY"),
+                               ("groq", "GROQ_API_KEY")]:
             key = os.environ.get(env_key, "")
             if key and name not in self._providers:
                 template = TEMPLATES.get(name, {})

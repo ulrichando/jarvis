@@ -339,16 +339,18 @@ class TestGetActiveProviders(unittest.TestCase):
             active = registry.get_active_providers()
         self.assertEqual(active, [])
 
-    def test_internet_filters_local_when_cloud_available(self):
-        """When internet is available and cloud providers exist, local ones are filtered out."""
+    def test_internet_puts_cloud_first_keeps_local_as_fallback(self):
+        """When internet is available, cloud providers come first but local stays as fallback."""
         local = self._local("ollama", priority=0)
         cloud = self._cloud("openai", priority=1)
         registry = self._make_registry([local, cloud])
         with patch.object(registry, "_has_internet", return_value=True):
             active = registry.get_active_providers()
         names = [p.name for p in active]
-        self.assertNotIn("ollama", names)
-        self.assertIn("openai", names)
+        # Cloud is tried first even though ollama has lower priority number
+        self.assertEqual(names[0], "openai")
+        # Local is kept as safety net — never dropped entirely
+        self.assertIn("ollama", names)
 
     def test_no_internet_keeps_local(self):
         """When internet is down, local providers should remain available."""
