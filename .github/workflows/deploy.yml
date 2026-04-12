@@ -14,7 +14,7 @@ jobs:
   # Runs in ~15min only when pyproject.toml or Dockerfile.base change.
   base:
     runs-on: self-hosted
-    timeout-minutes: 25
+    timeout-minutes: 45
     env:
       REGISTRY: 10.10.0.123:3000
       BASE_IMAGE: 10.10.0.123:3000/ulrich/jarvis-base
