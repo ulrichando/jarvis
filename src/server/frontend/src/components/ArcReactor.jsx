@@ -519,9 +519,10 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
       })
 
       // Eye rings — slow independent rotation + status color indicator
-      // green = idle/ready (online) | purple = listening | amber = thinking/booting | blue = speaking | red = offline
+      // green = idle/ready (online) | purple = listening | amber = thinking | blue = speaking | red = offline | booting = transparent
       const eyeTargetColor = st === 'offline'               ? 0xf87171   // red-400    — disconnected
-        : st === 'thinking' || st === 'booting'             ? 0xfbbf24   // amber-400  — processing / starting
+        : st === 'thinking'                                  ? 0xfbbf24   // amber-400  — processing
+        : st === 'booting'                                   ? 0x000000   // transparent — starting up
         : st === 'speaking'                                  ? 0x60a5fa   // blue-400   — talking
         : st === 'listening'                                 ? 0xa78bfa   // violet-400 — hearing input
         : st === 'idle' || st === 'ready'                    ? 0x4ade80   // green-400  — online / ready
@@ -547,7 +548,7 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
         } else if (st === 'offline') {
           ring.material.opacity = 0.2 + 0.15 * Math.sin(time * 1.5 + i)
         } else if (st === 'booting') {
-          ring.material.opacity = 0.3 + 0.2 * Math.sin(time * 2 + i)
+          ring.material.opacity = 0  // fully transparent while booting
         }
       })
 
@@ -561,7 +562,7 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
         : st === 'speaking'             ? 0.55 + 0.35 * Math.sin(time * 7 + 0.5)
         : st === 'thinking'             ? 0.45 + 0.30 * Math.sin(time * 4)
         : st === 'listening'            ? 0.50 + 0.20 * Math.sin(time * 3)
-        : st === 'booting'              ? 0.30 + 0.20 * Math.sin(time * 2)
+        : st === 'booting'              ? 0
         :                                 0.40 + 0.15 * Math.sin(time * 1.5)  // idle
       stateDiscMat.opacity = Math.min(0.95, Math.max(0, discBase + energy * 0.3))
       // Scale pulses slightly with audio/state
