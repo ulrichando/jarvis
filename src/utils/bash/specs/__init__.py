@@ -1,1 +1,0 @@
-"""Command spec definitions."""
