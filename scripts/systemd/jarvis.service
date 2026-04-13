@@ -1,17 +1,18 @@
 [Unit]
-Description=JARVIS Web Server
-After=network.target
+Description=JARVIS AI Assistant (server + desktop)
+After=network.target graphical-session.target
 
 [Service]
 Type=simple
 WorkingDirectory=%h/Documents/Projects/jarvis
 ExecStart=/usr/bin/python3 -m src.server.web_server
 Restart=always
-RestartSec=2
+RestartSec=3
 Environment=PYTHONUNBUFFERED=1
 Environment=JARVIS_HOT_RELOAD=1
 Environment=JARVIS_NO_SANDBOX=1
 Environment=JARVIS_OWNER=ulrich
+Environment=DISPLAY=:0.0
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target
