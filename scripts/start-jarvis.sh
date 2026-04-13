@@ -126,7 +126,7 @@ done
 echo ""
 
 # ── Step 4: Launch desktop (Tauri, only if display available) ──
-TAURI_BIN="$JARVIS_ROOT/src/desktop-tauri/src-tauri/target/debug/jarvis-desktop"
+TAURI_BIN="$JARVIS_ROOT/src/desktop-tauri/src-tauri/target/release/jarvis-desktop"
 if [ "$HAS_DISPLAY" = "True" ] && [ -n "$DISPLAY" ]; then
     echo "[4/4] Launching desktop (Tauri)..."
     pkill -f "jarvis-desktop" 2>/dev/null

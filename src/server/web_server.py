@@ -427,7 +427,7 @@ class JarvisWebServer:
                     f"export DISPLAY=$(cat /tmp/.jarvis-display 2>/dev/null || echo ':0'); "
                     "export JARVIS_NO_SANDBOX=1; export JARVIS_OWNER=ulrich; "
                     f"cd /home/{owner_user}/Documents/Projects/jarvis && "
-                    f"nohup /home/{owner_user}/Documents/Projects/jarvis/src/desktop-tauri/src-tauri/target/debug/jarvis-desktop "
+                    f"nohup /home/{owner_user}/Documents/Projects/jarvis/src/desktop-tauri/src-tauri/target/release/jarvis-desktop "
                     "> /tmp/jarvis-desktop.log 2>&1 &",
                     stdout=_aio.subprocess.DEVNULL,
                     stderr=_aio.subprocess.PIPE,

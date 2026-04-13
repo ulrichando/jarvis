@@ -183,9 +183,9 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
       const speakPulse=st==='speaking'?0.4+0.4*Math.sin(time*8.0)*Math.sin(time*3.0):0
       const energy=Math.max(smoothAudio,speakPulse)
       const lerpColor=(current,target,t)=>{const cr=(current>>16)&0xff,cg=(current>>8)&0xff,cb=current&0xff,tr=(target>>16)&0xff,tg=(target>>8)&0xff,tb=target&0xff;return(Math.round(cr+(tr-cr)*t)<<16)|(Math.round(cg+(tg-cg)*t)<<8)|Math.round(cb+(tb-cb)*t)}
-      const eyeTargetColor=st==='offline'?0xf87171:st==='thinking'?0xfbbf24:st==='booting'?0x000000:st==='speaking'?0x60a5fa:st==='listening'?0xa78bfa:0x4ade80
+      const eyeTargetColor=st==='offline'?0xf87171:st==='thinking'?0xfbbf24:st==='booting'?0x334455:st==='speaking'?0x60a5fa:st==='listening'?0xa78bfa:0x4ade80
       const eyeLerp=st==='speaking'?0.15:st==='thinking'?0.12:st==='offline'?0.2:st==='listening'?0.10:0.06
-      const glowTarget=st==='booting'?0:st==='ready'?1.0:0.7
+      const glowTarget=st==='booting'?0.3:st==='ready'?1.0:0.7
       glowMat.opacity+=(glowTarget-glowMat.opacity)*0.05
       glowMat.color.setHex(lerpColor(glowMat.color.getHex(),eyeTargetColor,eyeLerp))
       if(st==='ready'){const gs=2.2+0.6*Math.sin(time*3.0);glowSprite.scale.set(gs,gs,1)}
@@ -193,9 +193,9 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
       globe.rotation.y+=speed; globe.rotation.x=Math.sin(time*0.3)*0.08
       if(st==='thinking'){scanRingMat.opacity=Math.min(0.8,scanRingMat.opacity+0.05);scanRing.rotation.y+=0.04;scanRing.rotation.x=Math.sin(time*1.5)*Math.PI*0.5;scanRing.scale.setScalar(1.0+0.05*Math.sin(time*6))}else{scanRingMat.opacity=Math.max(0,scanRingMat.opacity-0.03)}
       bands.forEach((b,i)=>{b.rotation.y+=(0.003+i*0.0015)*(i%2===0?1:-1)})
-      eyeRings.forEach((ring,i)=>{ring.rotation.x+=(0.002+i*0.001)*(i%2===0?1:-1);ring.rotation.z+=0.001*(i%2===0?-1:1);const curHex=ring.material.color.getHex();if(curHex!==eyeTargetColor)ring.material.color.setHex(lerpColor(curHex,eyeTargetColor,eyeLerp));if(st==='speaking')ring.material.opacity=0.5+0.4*Math.sin(time*5+i*1.2);else if(st==='thinking')ring.material.opacity=0.4+0.4*Math.sin(time*3+i*0.8);else if(st==='listening')ring.material.opacity=0.55+0.30*Math.sin(time*4.5+i*2.0);else if(st==='idle'||st==='ready')ring.material.opacity=0.5+0.25*Math.sin(time*2+i*1.5);else if(st==='offline')ring.material.opacity=0.2+0.15*Math.sin(time*1.5+i);else ring.material.opacity=0})
+      eyeRings.forEach((ring,i)=>{ring.rotation.x+=(0.002+i*0.001)*(i%2===0?1:-1);ring.rotation.z+=0.001*(i%2===0?-1:1);const curHex=ring.material.color.getHex();if(curHex!==eyeTargetColor)ring.material.color.setHex(lerpColor(curHex,eyeTargetColor,eyeLerp));if(st==='speaking')ring.material.opacity=0.5+0.4*Math.sin(time*5+i*1.2);else if(st==='thinking')ring.material.opacity=0.4+0.4*Math.sin(time*3+i*0.8);else if(st==='listening')ring.material.opacity=0.55+0.30*Math.sin(time*4.5+i*2.0);else if(st==='idle'||st==='ready')ring.material.opacity=0.5+0.25*Math.sin(time*2+i*1.5);else if(st==='offline')ring.material.opacity=0.2+0.15*Math.sin(time*1.5+i);else ring.material.opacity=0.15+0.10*Math.sin(time*1.0+i*1.5)})
       stateDiscMat.color.setHex(lerpColor(stateDiscMat.color.getHex(),eyeTargetColor,eyeLerp*1.5))
-      const discBase=st==='offline'?0.25:st==='speaking'?0.55+0.35*Math.sin(time*7+0.5):st==='thinking'?0.45+0.30*Math.sin(time*4):st==='listening'?0.50+0.20*Math.sin(time*3):st==='booting'?0:0.40+0.15*Math.sin(time*1.5)
+      const discBase=st==='offline'?0.25:st==='speaking'?0.55+0.35*Math.sin(time*7+0.5):st==='thinking'?0.45+0.30*Math.sin(time*4):st==='listening'?0.50+0.20*Math.sin(time*3):st==='booting'?0.15+0.08*Math.sin(time*1.0):0.40+0.15*Math.sin(time*1.5)
       stateDiscMat.opacity=Math.min(0.95,Math.max(0,discBase+energy*0.3))
       const discScale=1.1+0.12*Math.sin(time*2)+energy*0.25; stateDisc.scale.set(discScale,discScale,1)
       const sigSpeed=st==='thinking'?5.0:st==='speaking'?3.5:2.5
