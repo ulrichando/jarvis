@@ -172,7 +172,7 @@ class WebEntrypoint(Entrypoint):
 # ---------------------------------------------------------------------------
 
 class DesktopEntrypoint(Entrypoint):
-    """GTK + WebKit transparent overlay."""
+    """Tauri desktop overlay launcher."""
 
     async def setup(self) -> None:
         await self._load_config()
@@ -182,8 +182,15 @@ class DesktopEntrypoint(Entrypoint):
     async def run(self) -> None:
         self._running = True
         try:
-            from src.desktop.app import main as desktop_main  # type: ignore[import-untyped]
-            desktop_main()
+            import subprocess, os
+            jarvis_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            tauri_bin = os.path.join(jarvis_root, "src", "desktop-tauri", "src-tauri", "target", "debug", "jarvis-desktop")
+            proc = subprocess.Popen(
+                [tauri_bin],
+                cwd=jarvis_root,
+                env={**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0.0")},
+            )
+            proc.wait()
         except Exception:
             log.exception("Desktop app error")
         finally:

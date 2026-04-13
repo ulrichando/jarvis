@@ -161,8 +161,8 @@ TOOL_SCHEMAS = [
                 "and avoiding usage of `cd`. You may use `cd` if the User explicitly requests it.\n"
                 "- You may specify an optional timeout in seconds (default 60, max 600). By default, "
                 "your command will timeout after 60 seconds.\n"
-                "- You can use the `run_in_background` parameter to run the command in the background. Only use "
-                "this if you don't need the result immediately and are OK being notified when the command completes later.\n"
+                "- To run independent commands in parallel, make multiple bash tool calls in one message "
+                "rather than using background processes.\n"
                 "- When issuing multiple commands:\n"
                 "  - If the commands are independent and can run in parallel, make multiple bash tool calls in a single message.\n"
                 "  - If the commands depend on each other and must run sequentially, use a single bash call with '&&' to chain them together.\n"
@@ -232,7 +232,7 @@ TOOL_SCHEMAS = [
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Absolute or relative file path to read",
+                        "description": "Absolute path to the file to read (not relative)",
                     },
                     "offset": {
                         "type": "integer",
@@ -743,7 +743,13 @@ TOOL_SCHEMAS = [
                 "properties": {
                     "agent_type": {
                         "type": "string",
-                        "description": "Type of sub-agent. Built-in: scout, worker, planner. Custom agents by name.",
+                        "description": (
+                            "Type of sub-agent to launch. Core: scout, worker, planner, verifier. "
+                            "Review: reviewer, security-auditor. "
+                            "Security pipeline: sec-orchestrator, file-risk-ranker, vuln-hypothesis-engine, "
+                            "static-analyzer, confirmation-filter, severity-scorer, exploit-builder, report-writer. "
+                            "Defensive: vulnmgmt, secarch, threathunt, threatintel, forensics, devsecops."
+                        ),
                     },
                     "task": {
                         "type": "string",
@@ -931,6 +937,7 @@ TOOL_SCHEMAS = [
             "parameters": {
                 "type": "object",
                 "properties": {},
+                "required": [],
             },
         },
     },
@@ -946,6 +953,7 @@ TOOL_SCHEMAS = [
             "parameters": {
                 "type": "object",
                 "properties": {},
+                "required": [],
             },
         },
     },
@@ -967,6 +975,7 @@ TOOL_SCHEMAS = [
                         "description": "Optional name for the worktree. If not provided, a random name is generated.",
                     },
                 },
+                "required": [],
             },
         },
     },

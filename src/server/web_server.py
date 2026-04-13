@@ -427,7 +427,7 @@ class JarvisWebServer:
                     f"export DISPLAY=$(cat /tmp/.jarvis-display 2>/dev/null || echo ':0'); "
                     "export JARVIS_NO_SANDBOX=1; export JARVIS_OWNER=ulrich; "
                     f"cd /home/{owner_user}/Documents/Projects/jarvis && "
-                    "nohup python3 -c 'from src.desktop.app import main; main()' "
+                    f"nohup /home/{owner_user}/Documents/Projects/jarvis/src/desktop-tauri/src-tauri/target/debug/jarvis-desktop "
                     "> /tmp/jarvis-desktop.log 2>&1 &",
                     stdout=_aio.subprocess.DEVNULL,
                     stderr=_aio.subprocess.PIPE,
@@ -885,7 +885,7 @@ class JarvisWebServer:
                 try: await c.close()
                 except (ConnectionError, RuntimeError): pass
             import subprocess as _sp_kill
-            _sp_kill.run(["pkill", "-f", "src.desktop.app"], capture_output=True)
+            _sp_kill.run(["pkill", "-f", "jarvis-desktop"], capture_output=True)
             # Use signal to trigger clean aiohttp shutdown
             import signal
             os.kill(os.getpid(), signal.SIGTERM)
@@ -911,7 +911,7 @@ class JarvisWebServer:
                 _jarvis_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                 env = {**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0.0")}
                 _sp_dt.Popen(
-                    ["python3", "-c", "from src.desktop.app import main; main()"],
+                    [os.path.join(_jarvis_root, "src", "desktop-tauri", "src-tauri", "target", "debug", "jarvis-desktop")],
                     cwd=_jarvis_root, start_new_session=True,
                     stdout=_sp_dt.DEVNULL, stderr=_sp_dt.DEVNULL, env=env,
                 )
@@ -2261,7 +2261,7 @@ class JarvisWebServer:
                     _jarvis_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                     env = {**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0.0")}
                     _sp_dt2.Popen(
-                        ["python3", "-c", "from src.desktop.app import main; main()"],
+                        [os.path.join(_jarvis_root, "src", "desktop-tauri", "src-tauri", "target", "debug", "jarvis-desktop")],
                         cwd=_jarvis_root, start_new_session=True,
                         stdout=_sp_dt2.DEVNULL, stderr=_sp_dt2.DEVNULL, env=env,
                     )
@@ -3769,7 +3769,7 @@ class JarvisWebServer:
             print("[JARVIS] Restart requested via API — exiting for relaunch")
             await asyncio.sleep(1)
             import subprocess as _sp_k, signal as _sig
-            _sp_k.run(["pkill", "-f", "src.desktop.app"], capture_output=True)
+            _sp_k.run(["pkill", "-f", "jarvis-desktop"], capture_output=True)
             os.kill(os.getpid(), _sig.SIGTERM)
         app.router.add_post("/api/restart", _restart_handler)
 
@@ -4371,7 +4371,7 @@ class JarvisWebServer:
                 # Kill any old desktop app so it picks up new JS/CSS
                 # Use pgrep to find PIDs, then kill only those (avoids killing server)
                 pgrep = _sp_desktop.run(
-                    ["pgrep", "-f", "desktop.app import main"],
+                    ["pgrep", "-f", "jarvis-desktop"],
                     capture_output=True, text=True, timeout=5,
                 )
                 if pgrep.returncode == 0:
@@ -4385,7 +4385,7 @@ class JarvisWebServer:
                 _jarvis_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                 env = {**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0.0")}
                 _sp_desktop.Popen(
-                    ["python3", "-c", "from src.desktop.app import main; main()"],
+                    [os.path.join(_jarvis_root, "src", "desktop-tauri", "src-tauri", "target", "debug", "jarvis-desktop")],
                     cwd=_jarvis_root, start_new_session=True,
                     stdout=_sp_desktop.DEVNULL, stderr=_sp_desktop.DEVNULL, env=env,
                 )

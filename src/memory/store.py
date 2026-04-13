@@ -574,9 +574,12 @@ class MemoryStore:
     def stats(self) -> dict:
         """Get memory system stats."""
         with self._db_lock:
-            conv_count = self.conn.execute(
-                "SELECT COUNT(*) FROM conversations"
-            ).fetchone()[0]
+            if self.conn is None:
+                conv_count = 0
+            else:
+                conv_count = self.conn.execute(
+                    "SELECT COUNT(*) FROM conversations"
+                ).fetchone()[0]
         result = {
             "conversations": conv_count,
             "lattice": self.lattice.stats,
