@@ -14,38 +14,35 @@ if [ -n "$SUDO_USER" ]; then
 else
     REAL_HOME="$HOME"
 fi
-VENV="$REAL_HOME/.jarvis/venv"
 JARVIS="$REAL_HOME/Documents/Projects/jarvis"
+PYTHON3="$(command -v python3)"
 
 echo -e "${CYAN}JARVIS Post-Update Check${RESET}"
 echo ""
 
 ISSUES=0
 
-# 1. Check venv Python exists
-if [ -f "$VENV/bin/python3" ]; then
-    echo -e "  ${GREEN}✓${RESET} Venv Python exists"
+# 1. Check Python exists
+if [ -n "$PYTHON3" ]; then
+    echo -e "  ${GREEN}✓${RESET} Python3: $PYTHON3"
 else
-    echo -e "  ${RED}✗${RESET} Venv Python missing — recreating..."
-    python3 -m venv "$VENV" --system-site-packages
-    "$VENV/bin/pip" install "$JARVIS/" 2>/dev/null
-    "$VENV/bin/pip" install -r "$JARVIS/requirements.pinned" 2>/dev/null
+    echo -e "  ${RED}✗${RESET} python3 not found"
     ISSUES=$((ISSUES + 1))
 fi
 
 # 2. Check critical imports (only actual dependencies — no openai/anthropic SDK needed)
 for mod in src aiohttp msgpack edge_tts numpy pydantic yaml bs4 requests PIL; do
-    if "$VENV/bin/python3" -c "import $mod" 2>/dev/null; then
+    if "$PYTHON3" -c "import $mod" 2>/dev/null; then
         echo -e "  ${GREEN}✓${RESET} $mod"
     else
         echo -e "  ${RED}✗${RESET} $mod missing — installing..."
-        "$VENV/bin/pip" install -r "$JARVIS/requirements.pinned" 2>/dev/null
+        pip install -e "$JARVIS/" 2>/dev/null
         ISSUES=$((ISSUES + 1))
     fi
 done
 
 # 3. Check desktop dependencies (GTK, WebKit)
-if "$VENV/bin/python3" -c "import gi; gi.require_version('Gtk','3.0'); gi.require_version('WebKit2','4.1')" 2>/dev/null; then
+if "$PYTHON3" -c "import gi; gi.require_version('Gtk','3.0'); gi.require_version('WebKit2','4.1')" 2>/dev/null; then
     echo -e "  ${GREEN}✓${RESET} GTK3 + WebKit2"
 else
     echo -e "  ${RED}✗${RESET} GTK/WebKit missing — install: sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-webkit2-4.1"
@@ -74,7 +71,7 @@ else
 fi
 
 # 6. Run quick test
-if "$VENV/bin/python3" -m pytest "$JARVIS/test/" -q --tb=no 2>/dev/null | tail -1 | grep -q "passed"; then
+if "$PYTHON3" -m pytest "$JARVIS/test/" -q --tb=no 2>/dev/null | tail -1 | grep -q "passed"; then
     echo -e "  ${GREEN}✓${RESET} Tests passing"
 else
     echo -e "  ${RED}✗${RESET} Some tests failing"

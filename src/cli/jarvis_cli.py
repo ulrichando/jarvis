@@ -3711,7 +3711,7 @@ async def main(args: types.SimpleNamespace):
                 except Exception:
                     pass
                 subprocess.Popen(
-                    [os.path.join(_jarvis_root, "src", "desktop-tauri", "src-tauri", "target", "debug", "jarvis-desktop")],
+                    [os.path.join(_jarvis_root, "src", "desktop-tauri", "src-tauri", "target", "release", "jarvis-desktop")],
                     cwd=_jarvis_root, start_new_session=True,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env,
                 )

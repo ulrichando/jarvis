@@ -18,19 +18,8 @@ git fetch origin master --quiet 2>/dev/null || {
 LOCAL=$(git rev-parse HEAD)
 REMOTE=$(git rev-parse origin/master)
 
-# Also check if the server has a newer version deployed (even if local is current)
-SERVER_COMMIT=$(curl -sf --max-time 5 "https://jarvis.0wlan.com/api/version" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('commit',''))" 2>/dev/null || echo "")
-KNOWN_SERVER=$(cat /tmp/.jarvis_server_commit 2>/dev/null || echo "")
-
-SERVER_UPDATED=false
-if [ -n "$SERVER_COMMIT" ] && [ "$SERVER_COMMIT" != "$KNOWN_SERVER" ] && [ "$SERVER_COMMIT" != "unknown" ]; then
-  echo "$LOG_PREFIX Server updated: $KNOWN_SERVER → $SERVER_COMMIT"
-  echo "$SERVER_COMMIT" > /tmp/.jarvis_server_commit
-  SERVER_UPDATED=true
-fi
-
 if [ "$LOCAL" = "$REMOTE" ]; then
-  exit 0  # Nothing changed locally — don't restart for remote-only cloud deploys
+  exit 0
 fi
 
 echo "$LOG_PREFIX New version detected: $LOCAL → $REMOTE"
@@ -80,8 +69,6 @@ if pgrep -f "jarvis-desktop" &>/dev/null; then
   else
     echo "$LOG_PREFIX Tauri binary not found — skipping desktop restart"
   fi
-elif [ "$SERVER_UPDATED" = "true" ]; then
-  echo "$LOG_PREFIX Server updated but desktop not running — skipping restart"
 fi
 
 echo "$LOG_PREFIX Update complete → $(git rev-parse --short HEAD)"
