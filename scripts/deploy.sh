@@ -23,7 +23,7 @@ else
     bash "$JARVIS_ROOT/scripts/fix-audio.sh" 2>&1 | tail -1
     PYTHONUNBUFFERED=1 python3 -m src.server.web_server > /tmp/jarvis-web.log 2>&1 &
     sleep 10
-    if curl -s http://localhost:8765/api/mesh/ping > /dev/null 2>&1; then
+    if curl -s http://localhost:8765/api/ready > /dev/null 2>&1; then
         echo "[JARVIS] Full restart successful"
     else
         echo "[JARVIS] Restart failed — check logs: tail /tmp/jarvis-web.log"

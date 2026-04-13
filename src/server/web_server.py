@@ -1352,45 +1352,55 @@ class JarvisWebServer:
                 await asyncio.sleep(0.5)
                 self._server_listener.jarvis_speaking = False
 
-    async def _handle_interrupt(self, ws: web.WebSocketResponse):
-        """Immediate hard interrupt — user spoke over JARVIS or said a stop keyword.
-
-        Priority order:
-          1. Kill server-side TTS audio process instantly
-          2. Set per-connection interrupt event so the streaming loop exits
-          3. Unmute mic immediately so the user's new query can be heard
-          4. Release the query lock
-          5. Log the event for tuning
-        """
-        # Signal the in-flight streaming coroutine to abort
-        if hasattr(ws, '_interrupt_event') and ws._interrupt_event:
-            ws._interrupt_event.set()
-
-        # Kill server-side ffplay / piper process if speaking
-        if hasattr(self, '_current_ffplay') and self._current_ffplay:
-            try:
-                self._current_ffplay.kill()
-            except Exception:
-                pass
+    async def _bare_interrupt(self):
+        """Kill TTS when no WS client is available."""
+        proc = getattr(self, '_current_ffplay', None)
+        if proc:
+            try: proc.kill()
+            except Exception: pass
             self._current_ffplay = None
-
-        # Unmute mic — do NOT wait for the TTS to finish naturally
-        if hasattr(ws, '_ambient'):
-            ws._ambient.set_jarvis_speaking(False)
-            ws._ambient.on_barge_in = None  # Disarm until next TTS
+        self._query_processing = False
         if hasattr(self, '_server_listener'):
             self._server_listener.jarvis_speaking = False
 
-        # Release lock immediately so the next voice query is accepted
+    async def _handle_interrupt(self, ws: web.WebSocketResponse):
+        """Immediate hard interrupt — user spoke over JARVIS or said a stop keyword."""
+        # Kill ffplay immediately — this is the most important step, do it first
+        proc = getattr(self, '_current_ffplay', None)
+        if proc:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            self._current_ffplay = None
+        # Also pkill any orphaned ffplay as a belt-and-suspenders kill
+        try:
+            import subprocess as _sp
+            _sp.run(["pkill", "-f", "ffplay.*jarvis"], capture_output=True)
+        except Exception:
+            pass
+
+        # Signal ALL connected clients' streaming coroutines to abort
+        for _ws in list(self.clients):
+            if hasattr(_ws, '_interrupt_event') and _ws._interrupt_event:
+                _ws._interrupt_event.set()
+            if hasattr(_ws, '_ambient'):
+                _ws._ambient.set_jarvis_speaking(False)
+                _ws._ambient.on_barge_in = None
+
+        # Unmute server mic
+        if hasattr(self, '_server_listener'):
+            self._server_listener.jarvis_speaking = False
+
+        # Release lock immediately
         self._query_processing = False
 
         # Update state machine
         self._conv_intel.mark_interrupted()
 
-        # Notify frontend so it can flush audio and update UI state
+        # Notify frontend
         await self._safe_send(ws, {"type": "interrupted"})
-
-        logging.getLogger("jarvis.voice").info("[JARVIS] ← Interrupted — mic unmuted, queue flushed")
+        logging.getLogger("jarvis.voice").info("[JARVIS] ← Interrupted — ffplay killed, mic unmuted")
 
     async def _handle_audio(self, ws: web.WebSocketResponse, data: bytes):
         """Handle audio — either push-to-talk blob or ambient stream chunk.
@@ -2031,17 +2041,22 @@ class JarvisWebServer:
                     listener = AmbientListener()
                     self._server_listener = listener
 
+                    _last_barge_in_time = [0.0]
+
                     def _server_barge_in():
                         """Called by AmbientListener when user voice detected during TTS."""
-                        print("[JARVIS] Server mic barge-in detected — interrupting")
+                        now = _time.time()
+                        if now - _last_barge_in_time[0] < 2.0:
+                            return  # debounce — don't fire twice in 2 seconds
+                        _last_barge_in_time[0] = now
+                        print("[JARVIS] Server mic barge-in — interrupting TTS")
+                        # Use any connected client ws for the interrupt signal
                         _ws_ref = next(iter(self.clients), None)
-                        if _ws_ref:
-                            asyncio.run_coroutine_threadsafe(
-                                self._handle_interrupt(_ws_ref),
-                                self._loop,
-                            )
-                        # Re-arm for next TTS utterance
-                        listener.on_barge_in = _server_barge_in
+                        asyncio.run_coroutine_threadsafe(
+                            self._handle_interrupt(_ws_ref) if _ws_ref else self._bare_interrupt(),
+                            self._loop,
+                        )
+                        listener.on_barge_in = _server_barge_in  # re-arm
 
                     listener.on_barge_in = _server_barge_in
 
@@ -4419,11 +4434,15 @@ class JarvisWebServer:
                     await asyncio.sleep(1)
                 _jarvis_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                 env = {**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0.0")}
-                _sp_desktop.Popen(
-                    [os.path.join(_jarvis_root, "src", "desktop-tauri", "src-tauri", "target", "debug", "jarvis-desktop")],
-                    cwd=_jarvis_root, start_new_session=True,
-                    stdout=_sp_desktop.DEVNULL, stderr=_sp_desktop.DEVNULL, env=env,
-                )
+                _tauri_bin = os.path.join(_jarvis_root, "src", "desktop-tauri", "src-tauri", "target", "release", "jarvis-desktop")
+                if not os.path.exists(_tauri_bin):
+                    print(f"[JARVIS] Desktop binary not found: {_tauri_bin}")
+                else:
+                    _sp_desktop.Popen(
+                        [_tauri_bin],
+                        cwd=_jarvis_root, start_new_session=True,
+                        stdout=open("/tmp/jarvis-desktop.log", "w"), stderr=_sp_desktop.STDOUT, env=env,
+                    )
                 print("[JARVIS] Desktop UI launched.")
             except Exception as e:
                 print(f"[JARVIS] Desktop UI launch skipped: {e}")

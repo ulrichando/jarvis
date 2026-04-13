@@ -10,6 +10,8 @@ Restart=always
 RestartSec=2
 Environment=PYTHONUNBUFFERED=1
 Environment=JARVIS_HOT_RELOAD=1
+Environment=JARVIS_NO_SANDBOX=1
+Environment=JARVIS_OWNER=ulrich
 
 [Install]
 WantedBy=default.target
