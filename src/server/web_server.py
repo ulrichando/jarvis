@@ -2031,6 +2031,20 @@ class JarvisWebServer:
                     listener = AmbientListener()
                     self._server_listener = listener
 
+                    def _server_barge_in():
+                        """Called by AmbientListener when user voice detected during TTS."""
+                        print("[JARVIS] Server mic barge-in detected — interrupting")
+                        _ws_ref = next(iter(self.clients), None)
+                        if _ws_ref:
+                            asyncio.run_coroutine_threadsafe(
+                                self._handle_interrupt(_ws_ref),
+                                self._loop,
+                            )
+                        # Re-arm for next TTS utterance
+                        listener.on_barge_in = _server_barge_in
+
+                    listener.on_barge_in = _server_barge_in
+
                     stream = pa.open(
                         format=pyaudio.paFloat32, channels=1, rate=16000,
                         input=True, frames_per_buffer=4096,
@@ -2044,7 +2058,7 @@ class JarvisWebServer:
                             data = stream.read(4096, exception_on_overflow=False)
                             audio = np.frombuffer(data, dtype=np.float32)
 
-                            if listener.jarvis_speaking or self._voice_muted:
+                            if self._voice_muted:
                                 continue
 
                             _frame_count += 1
@@ -2072,6 +2086,22 @@ class JarvisWebServer:
 
                             if transcript:
                                 t = transcript.strip()
+
+                                # Hard interrupt check — runs even during TTS
+                                if self._interrupt_det.check(t.lower()):
+                                    print(f"[JARVIS] Stop keyword detected: {t!r}")
+                                    _ws_ref = next(iter(self.clients), None)
+                                    if _ws_ref:
+                                        asyncio.run_coroutine_threadsafe(
+                                            self._handle_interrupt(_ws_ref),
+                                            self._loop,
+                                        )
+                                    continue
+
+                                # If JARVIS was speaking, barge-in already handled above — skip normal dispatch
+                                if listener.jarvis_speaking:
+                                    continue
+
                                 words = t.split()
                                 if len(words) < 2 or len(t) < 5:
                                     continue
