@@ -284,9 +284,9 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
     eyeConfigs.forEach((cfg, i) => {
       const torusGeo = new THREE.TorusGeometry(cfg.radius, cfg.tube, 8, 64)
       const torusMat = new THREE.MeshBasicMaterial({
-        color: glowInt,
+        color: 0x000000,      // Start black — state animation lerps to correct color
         transparent: true,
-        opacity: 0.4 + i * 0.04,
+        opacity: 0,           // Start invisible — avoids cyan flash before first frame
         blending: THREE.AdditiveBlending,
         depthWrite: false,
         side: THREE.DoubleSide,
@@ -403,9 +403,9 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
 
     const glowMat = new THREE.SpriteMaterial({
       map: glowTex,
-      color: primaryInt,
+      color: 0x000000,   // Start black — avoids cyan flash; lerped to theme color in animate
       transparent: true,
-      opacity: 0.7,
+      opacity: 0,        // Start invisible — fades in once reactor exits booting
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     })
@@ -455,13 +455,14 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
     scene.add(stateDisc)  // NOT globe — stays camera-facing, never rotates
 
     // ── Animate ──
-    let time = 0, smoothAudio = 0, animId, lastFrame = 0
+    let time = 0, smoothAudio = 0, animId, lastFrame = -1
     const TARGET_FPS = 30
     const FRAME_MS  = 1000 / TARGET_FPS
 
     function animate(now = 0) {
       animId = requestAnimationFrame(animate)
-      if (now - lastFrame < FRAME_MS) return
+      // Allow first frame to always run (lastFrame=-1) so booting opacity=0 is applied immediately
+      if (lastFrame >= 0 && now - lastFrame < FRAME_MS) return
       lastFrame = now
       time += 0.006  // doubled step to compensate for halved call rate
       const audio = audioRef.current
@@ -491,9 +492,14 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
         return (r << 16) | (g << 8) | b
       }
 
-      // Ready state: boost glow intensity
+      // Glow opacity: fade in when active, off when booting
+      const glowTarget = st === 'booting' ? 0 : st === 'ready' ? 1.0 : 0.7
+      glowMat.opacity += (glowTarget - glowMat.opacity) * 0.05
+      // Center glow color follows eye ring target
+      glowMat.color.setHex(lerpColor(glowMat.color.getHex(), eyeTargetColor, eyeLerp))
+
+      // Ready state: extra scale pulse
       if (st === 'ready') {
-        glowMat.opacity = Math.min(1.0, glowMat.opacity + 0.02)
         const gs = 4.5 + 1.5 * Math.sin(time * 3.0)
         glowSprite.scale.set(gs, gs, 1)
       }
@@ -551,9 +557,6 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
           ring.material.opacity = 0
         }
       })
-
-      // Center glow follows the same state color as the eye rings
-      glowMat.color.setHex(lerpColor(glowMat.color.getHex(), eyeTargetColor, eyeLerp))
 
       // ── State color disc — the clear center circle indicator ──
       stateDiscMat.color.setHex(lerpColor(stateDiscMat.color.getHex(), eyeTargetColor, eyeLerp * 1.5))

@@ -226,15 +226,16 @@ class ReasoningEngine:
         if q in trivial_exact:
             return True
 
-        # Short messages (≤5 words) that aren't complex
+        # Short messages — skip LLM reasoning entirely
+        risk_words = ("delete", "remove", "kill", "sudo", "root", "drop", "format", "wipe")
+        if any(w in q for w in risk_words):
+            return False
+
         if len(words) <= 5:
-            # Not trivial if it has risk words
-            if any(w in q for w in ("delete", "remove", "kill", "sudo", "root", "drop")):
-                return False
             return True
 
-        # Conversational messages (≤10 words) when confidence is high
-        if len(words) <= 10 and self.awareness.confidence > 0.6:
+        # Conversational messages (≤15 words) — no LLM pre-call needed
+        if len(words) <= 15:
             return True
 
         return False

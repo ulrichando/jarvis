@@ -2142,6 +2142,7 @@ class JarvisWebServer:
                 self._server_listener.jarvis_speaking = False
             return
         self._query_processing = True
+        print(f"[JARVIS] Voice query accepted: \"{transcript[:60]}\"")
 
         # Echo detection — ignore if JARVIS hears his own last response
         # Only filter near-exact echoes. The mic muting handles most echo prevention;
@@ -2152,6 +2153,7 @@ class JarvisWebServer:
             # Exact substring match (JARVIS repeated back verbatim)
             if t_lower in r_lower or r_lower in t_lower:
                 print(f"[JARVIS] Echo filtered (substring): \"{transcript[:40]}\"")
+                self._query_processing = False
                 return
             # High word overlap on short transcripts only (likely partial echo, not conversation)
             heard_words = set(t_lower.split())
@@ -2159,6 +2161,7 @@ class JarvisWebServer:
                 overlap = len(heard_words & set(r_lower.split())) / max(len(heard_words), 1)
                 if overlap > 0.7:
                     print(f"[JARVIS] Echo filtered ({overlap:.0%} overlap): \"{transcript[:40]}\"")
+                    self._query_processing = False
                     return
 
         # Mute mic while processing

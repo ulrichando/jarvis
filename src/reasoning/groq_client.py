@@ -174,15 +174,17 @@ class GroqReasoner:
         self,
         messages: list[dict],
         tools: list[dict],
+        force_tool: bool = False,
     ) -> dict:
         """Tool-calling query through providers.
 
         Uses model routing: if no tools needed (empty list), use the
         fastest/cheapest model. With tools, use the primary model.
+        force_tool: if True, set tool_choice="required" so the model must call a tool.
         """
         try:
             result, provider_name = await self.providers.query_with_tools(
-                messages, tools,
+                messages, tools, force_tool=force_tool,
             )
         except Exception as e:
             log.error("Provider tool query failed: %s", e)
