@@ -31,6 +31,7 @@ function App() {
   const offlineTimerRef = useRef(null)
   const [stableWsStatus, setStableWsStatus] = useState('connecting')
   const [alerts, setAlerts] = useState([])  // proactive monitor alerts
+  const [voiceMuted, setVoiceMuted] = useState(false)
 
   const wsUrl = useMemo(() => {
     const clientType = isDesktop ? 'desktop' : 'browser'
@@ -135,31 +136,24 @@ function App() {
     return () => document.removeEventListener('user-speaking', stopSpeaking)
   }, [stopSpeaking])
 
-  // TTS playback — deduplicated. Called from ChatPanel onSpoken AND App WS useEffect.
-  // Dedup is time-based: same text is blocked only if it played within the last 15 seconds.
-  const ttsPlayedRef = useRef({ sig: '', time: 0 })
+  // TTS playback — single owner (App.jsx WS). ChatPanel no longer calls this.
   const playSpoken = useCallback((data) => {
     if (!data.spoken || data.spoken.length <= 3 || data.partial) {
       if (!data.spoken && data.final) setTimeout(() => setReactorState('idle'), 1000)
       else if (data.spoken && data.spoken.length <= 3) setTimeout(() => setReactorState('idle'), 500)
       return
     }
-    // Deduplicate — block same text only within a 15s window (prevents double-fire, not stale-lock)
-    const sig = data.spoken.substring(0, 60)
-    const now = Date.now()
-    if (ttsPlayedRef.current.sig === sig && (now - ttsPlayedRef.current.time) < 15000) return
-
     const isTtsOwner = !isDesktop || showReactor
     if (!isTtsOwner) { setTimeout(() => setReactorState('idle'), 500); return }
 
     // Use fetch + AudioContext for TTS — more reliable than new Audio(url) in WebKit2 GTK
     queueMicrotask(() => {
       stopSpeaking()
+      // Mark speaking internally early — blocks barge-in detection during fetch latency.
+      // Reactor turns blue only right before audio actually plays (no visual gap).
       isSpeakingRef.current = true
-      setReactorState('speaking')
       window.__lastSpokenText = data.spoken  // For echo detection
       document.dispatchEvent(new CustomEvent('jarvis-tts-start'))
-      sendMessage({ type: 'tts_state', speaking: true })
 
       const text = data.spoken.substring(0, 500)
       const ttsUrl = `/api/tts?text=${encodeURIComponent(text)}`
@@ -190,12 +184,14 @@ function App() {
           const decoded = await ctx.decodeAudioData(ab)
           if (audioRef.current !== handle) return  // Interrupted while decoding
           // Mark as played only NOW (after successful decode) so failures don't block retries
-          ttsPlayedRef.current = { sig, time: Date.now() }
           const src = ctx.createBufferSource()
           src.buffer = decoded
           src.connect(ctx.destination)
           src.onended = onDone
           handle._src = src
+          // Turn blue + notify server exactly when audio starts — no visual gap
+          setReactorState('speaking')
+          sendMessage({ type: 'tts_state', speaking: true })
           src.start(0)
         })
         .catch(e => { console.error('[JARVIS TTS] error:', e, ttsUrl); onDone() })
@@ -208,7 +204,6 @@ function App() {
     const last = wsMessages[wsMessages.length - 1]
 
     if (last.type === 'status' && last.status === 'thinking') {
-      ttsPlayedRef.current = { sig: '', time: 0 }  // Reset dedup for next response
       queueMicrotask(() => { stopSpeaking(); setReactorState('thinking') })
     }
     if (last.type === 'status' && last.status === 'listening') {
@@ -238,7 +233,7 @@ function App() {
       setCurrentModel(last.model)
     }
 
-    // Play TTS for voice query responses (dedup handled inside playSpoken)
+    // Play TTS for voice query responses — App.jsx is the single owner, no dedup needed
     if (last.type === 'message' && last.spoken && last.spoken.length > 3 && !last.partial) {
       playSpoken(last)
     }
@@ -302,7 +297,23 @@ function App() {
       setReactorState('ready')
       setTimeout(() => setReactorState('idle'), 3000)
     }
+
+    // Voice mute state sync from server
+    if (last.type === 'voice_muted') {
+      setVoiceMuted(last.muted)
+    }
   }, [wsMessages, stopSpeaking, playSpoken])
+
+  const toggleMute = useCallback(async () => {
+    try {
+      const base = window.__JARVIS_BASE_URL__ || `${window.location.protocol}//${window.location.hostname}:${window.location.port || 8765}`
+      const res = await fetch(`${base}/api/mute`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      const data = await res.json()
+      setVoiceMuted(data.muted)
+    } catch (e) {
+      console.error('[JARVIS] mute toggle failed', e)
+    }
+  }, [])
 
   // Voice: SpeechRecognition (Chrome) or MediaRecorder+Whisper (WebKit/desktop)
   useEffect(() => {
@@ -675,6 +686,35 @@ function App() {
         </div>
       )}
 
+      {/* Mute button — top-left, always visible */}
+      <button
+        onClick={toggleMute}
+        title={voiceMuted ? 'Unmute JARVIS voice' : 'Mute JARVIS voice'}
+        className={`fixed top-4 left-4 z-50 flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-['Share_Tech_Mono',monospace] transition-all ${
+          voiceMuted
+            ? 'bg-[rgba(255,60,60,0.15)] border-red-500/50 text-red-400'
+            : 'bg-[rgba(0,20,40,0.6)] border-[rgba(0,229,255,0.2)] text-jarvis-bright/40 hover:text-jarvis-bright/70 hover:border-[rgba(0,229,255,0.4)]'
+        }`}
+      >
+        {voiceMuted ? (
+          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <line x1="1" y1="1" x2="23" y2="23"/>
+            <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/>
+            <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"/>
+            <line x1="12" y1="19" x2="12" y2="23"/>
+            <line x1="8" y1="23" x2="16" y2="23"/>
+          </svg>
+        ) : (
+          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+            <line x1="12" y1="19" x2="12" y2="23"/>
+            <line x1="8" y1="23" x2="16" y2="23"/>
+          </svg>
+        )}
+        {voiceMuted ? 'MUTED' : 'MIC'}
+      </button>
+
       {/* Brain status is shown via reactor eye ring colors — no text indicators needed */}
 
       {/* Camera feed — streams to server in background, no UI */}
@@ -699,7 +739,6 @@ function App() {
         onMinimize={closeChat}
         setReactorState={setReactorState}
         isDesktop={isDesktop && showReactor}
-        onSpoken={playSpoken}
       />
 
       {/* Settings */}

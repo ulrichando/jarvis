@@ -125,14 +125,19 @@ for i in $(seq 1 90); do
 done
 echo ""
 
-# ── Step 4: Launch desktop (only if display available) ──
+# ── Step 4: Launch desktop (Tauri, only if display available) ──
+TAURI_BIN="$JARVIS_ROOT/src/desktop-tauri/src-tauri/target/debug/jarvis-desktop"
 if [ "$HAS_DISPLAY" = "True" ] && [ -n "$DISPLAY" ]; then
-    echo "[4/4] Launching desktop..."
-    pkill -f "src.desktop" 2>/dev/null
+    echo "[4/4] Launching desktop (Tauri)..."
+    pkill -f "jarvis-desktop" 2>/dev/null
     sleep 1
-    DISPLAY="${DISPLAY:-:0.0}" python3 -c "from src.desktop.app import main; main()" > /tmp/jarvis-desktop.log 2>&1 &
-    DESKTOP_PID=$!
-    echo "  Desktop PID: $DESKTOP_PID"
+    if [ -f "$TAURI_BIN" ]; then
+        DISPLAY="${DISPLAY:-:0.0}" "$TAURI_BIN" > /tmp/jarvis-desktop.log 2>&1 &
+        DESKTOP_PID=$!
+        echo "  Desktop PID: $DESKTOP_PID"
+    else
+        echo "  Tauri binary not found — run: cd src/desktop-tauri && cargo build"
+    fi
 else
     echo "[4/4] No display — running headless (web-only)"
 fi

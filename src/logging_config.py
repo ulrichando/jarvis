@@ -116,5 +116,11 @@ def setup_logging(
         "httpx", "httpcore", "numexpr", "numexpr.utils",
         "anthropic", "anthropic._base_client",
         "urllib3", "urllib3.connectionpool",
+        "aiohttp.access",       # HTTP request/response lines — too verbose
+        "aiohttp.client",       # .netrc parse warnings on every TTS call
+        "aiohttp.server",
+        "aiohttp.web",
+        "charset_normalizer",
+        "asyncio",
     ]:
         logging.getLogger(noisy).setLevel(logging.ERROR)

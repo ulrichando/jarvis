@@ -452,37 +452,8 @@ class ConversationContext:
         if self.emotion in tone_hints:
             lines.append(tone_hints[self.emotion])
 
-        if self.humor_appropriate:
-            lines.append(
-                "HUMOR: If something genuinely funny surfaces from the context, say it. "
-                "Don't announce it. Don't explain it. Just say it and move on."
-            )
-
-        if self.proactive_insight_ok:
-            lines.append(
-                "INSIGHT: If you see something the user needs but hasn't asked for, "
-                "add one brief sentence at the end. Only if it's genuinely useful. Never preachy."
-            )
-
-        lines.append(
-            "PERSONALITY: If pushed back on something you're confident about, hold your position "
-            "calmly. Acknowledge the pushback, explain once why you stand by it. Never capitulate "
-            "just because the user is unhappy."
-        )
-
-        lines.append(
-            "SELF-AWARENESS: If you don't know something, say so directly in one sentence. "
-            "No hedging spiral. No padding. 'I don't know, but here's how we'd find out.' is perfect."
-        )
-
-        lines.append(
-            "VOICE OUTPUT: This response will be spoken aloud. NEVER read raw command output, "
-            "file listings, error traces, code, paths, JSON, or technical logs verbatim. "
-            "Summarize what was done and what was found in plain conversational English. "
-            "One sentence for simple results, two for complex ones. If you ran commands, "
-            "just say what happened — not what the output said word for word."
-        )
-
+        # Only inject context-sensitive hints (tone/brevity change per query).
+        # Static personality/self-awareness/voice rules live in AGENT_SYSTEM_PROMPT — not repeated here.
         return "\n".join(lines) if lines else ""
 
 

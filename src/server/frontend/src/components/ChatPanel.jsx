@@ -3,10 +3,12 @@ import ToolProgress from './ToolProgress'
 import TodoBlock from './TodoBlock'
 import ContextBar from './ContextBar'
 
-export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState, onSpoken, isDesktop }) {
+export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState, isDesktop }) {
   const [messages, setMessages] = useState([
     { role: 'jarvis', text: 'Online. How can I assist you, Ulrich?' },
   ])
+  // Track feedback state per message index: null | 'up' | 'down'
+  const [feedbackState, setFeedbackState] = useState({})
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [streamingMessage, setStreamingMessage] = useState('')
@@ -312,16 +314,13 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
     }
 
     if (type === 'message') {
-      // Trigger TTS via parent callback
-      if (onSpoken) onSpoken(data)
-
+      // TTS and reactor state are owned by App.jsx (single WS path) — ChatPanel only updates chat UI
       const content = data.content || ''
       if (content && !content.startsWith('__')) {
         const tools = { ...currentToolsRef.current }
         const hasTools = Object.keys(tools).length > 0
 
         if (data.partial) {
-          // Partial TTS message -- don't add to chat
           return
         }
 
@@ -342,17 +341,8 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
       setIsLoading(false)
       setToolExecutions({})
       currentToolsRef.current = {}
-
-      if (!data.partial) {
-        // server_tts=true means server is speaking via ffplay — still show blue reactor
-        const willSpeak = data.spoken || data.server_tts
-        setReactorState(willSpeak ? 'speaking' : 'idle')
-        if (!willSpeak) {
-          setTimeout(() => setReactorState('idle'), 1000)
-        }
-      }
     }
-  }, [setReactorState, onSpoken])
+  }, [setReactorState])
 
   // WebSocket connection — stable ref to avoid reconnect storms
   const handleWsMessageRef = useRef(handleWsMessage)
@@ -440,6 +430,14 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
         .finally(() => setIsLoading(false))
     }
   }, [input, isLoading, setReactorState])
+
+  const sendFeedback = useCallback((msgIndex, score) => {
+    setFeedbackState(prev => ({ ...prev, [msgIndex]: score > 0.5 ? 'up' : 'down' }))
+    const ws = wsRef.current
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'feedback', score, comment: '' }))
+    }
+  }, [])
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -633,6 +631,31 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
                   <span className="text-[9px] text-jarvis-bright/30 font-mono mt-1">
                     {msg.model}{msg.latency ? ` \u00B7 ${msg.latency}ms` : ''}
                   </span>
+                )}
+                {/* Thumbs up/down feedback — only on jarvis messages, not the greeting */}
+                {msg.role === 'jarvis' && !msg.thinking && i > 0 && (
+                  <div className="flex gap-1.5 mt-1.5 items-center">
+                    {feedbackState[i] ? (
+                      <span className="text-[9px] text-jarvis-bright/40 font-mono">Thanks!</span>
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => sendFeedback(i, 1.0)}
+                          title="Good response"
+                          className="bg-transparent border-none cursor-pointer text-jarvis-bright/25 hover:text-green-400 transition-colors text-[11px] px-0.5 leading-none"
+                        >
+                          &#128077;
+                        </button>
+                        <button
+                          onClick={() => sendFeedback(i, 0.0)}
+                          title="Bad response"
+                          className="bg-transparent border-none cursor-pointer text-jarvis-bright/25 hover:text-red-400 transition-colors text-[11px] px-0.5 leading-none"
+                        >
+                          &#128078;
+                        </button>
+                      </>
+                    )}
+                  </div>
                 )}
               </div>
               {/* Collapsed tool section for completed messages */}

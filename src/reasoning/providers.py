@@ -15,6 +15,7 @@ import logging
 import os
 from dataclasses import dataclass
 from src.config import JARVIS_HOME
+from src.lc.tracing import trace_call as _trace_llm
 
 log = logging.getLogger("jarvis.providers")
 
@@ -766,7 +767,15 @@ class ProviderRegistry:
                     continue
             return ""
 
-        return await asyncio.to_thread(_call)
+        with _trace_llm("llm:anthropic", {
+            "model": provider.model,
+            "provider": provider.name,
+            "input_preview": user_input[:300],
+            "history_turns": len(history) if history else 0,
+        }, run_type="llm") as _tr:
+            result = await asyncio.to_thread(_call)
+            _tr.end(outputs={"output_len": len(result), "output_preview": result[:200]})
+        return result
 
     async def _stream_anthropic(self, provider: Provider, user_input: str,
                                 system_prompt: str, history: list[dict] | None):
@@ -868,7 +877,15 @@ class ProviderRegistry:
             )
             return chat.choices[0].message.content or ""
 
-        return await asyncio.to_thread(_call)
+        with _trace_llm("llm:openai", {
+            "model": provider.model,
+            "provider": provider.name,
+            "input_preview": user_input[:300],
+            "history_turns": len(history) if history else 0,
+        }, run_type="llm") as _tr:
+            result = await asyncio.to_thread(_call)
+            _tr.end(outputs={"output_len": len(result), "output_preview": result[:200]})
+        return result
 
     async def _query_tools_provider(self, provider: Provider, messages: list[dict],
                                     tools: list[dict], system: str, force_tool: bool = False) -> dict:
@@ -1062,7 +1079,20 @@ class ProviderRegistry:
                     continue
             return {"text": "", "tool_calls": []}
 
-        return await asyncio.to_thread(_call)
+        with _trace_llm("llm:anthropic:tools", {
+            "model": provider.model,
+            "provider": provider.name,
+            "tools_count": len(tools),
+            "messages_count": len(messages),
+        }, run_type="llm") as _tr:
+            result = await asyncio.to_thread(_call)
+            _tr.end(outputs={
+                "text_len": len(result.get("text", "")),
+                "tool_calls": [tc["name"] for tc in result.get("tool_calls", [])],
+                "usage": result.get("usage", {}),
+                "output_preview": result.get("text", "")[:200],
+            })
+        return result
 
     def _convert_messages_for_anthropic(self, messages: list[dict], system: str) -> list[dict]:
         """Convert OpenAI-format messages (with tool_calls/tool roles) to Anthropic format.
@@ -1358,7 +1388,21 @@ class ProviderRegistry:
                 raise last_error
             return {"text": "", "tool_calls": []}
 
-        return await asyncio.to_thread(_call)
+        with _trace_llm("llm:openai:tools", {
+            "model": provider.model,
+            "provider": provider.name,
+            "tools_count": len(tools),
+            "messages_count": len(messages),
+            "is_groq": is_groq,
+        }, run_type="llm") as _tr:
+            result = await asyncio.to_thread(_call)
+            _tr.end(outputs={
+                "text_len": len(result.get("text", "")),
+                "tool_calls": [tc["name"] for tc in result.get("tool_calls", [])],
+                "usage": result.get("usage", {}),
+                "output_preview": result.get("text", "")[:200],
+            })
+        return result
 
     def _prompt_based_tool_call(self, client, provider, messages, tools) -> dict:
         """Prompt-based tool calling for local models that don't support function calling.
