@@ -69,7 +69,7 @@ elif pgrep -f "src.server.web_server" &>/dev/null; then
 fi
 
 # Restart Tauri desktop if running
-TAURI_BIN="$(dirname "$0")/../src/desktop-tauri/src-tauri/target/debug/jarvis-desktop"
+TAURI_BIN="$(dirname "$0")/../src/desktop-tauri/src-tauri/target/release/jarvis-desktop"
 if pgrep -f "jarvis-desktop" &>/dev/null; then
   echo "$LOG_PREFIX Restarting desktop overlay (Tauri)..."
   pkill -f "jarvis-desktop" 2>/dev/null || true
