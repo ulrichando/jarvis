@@ -887,16 +887,23 @@ async def cmd_btw(ctx: CommandContext) -> CommandResult:
 
     # Run the side query asynchronously without adding to main conversation history
     try:
-        # Use a minimal context so we don't disturb the main flow
-        side_messages = [
-            {"role": "system", "content": "You are answering a quick side question. Be brief and direct. This is separate from the main conversation."},
-            {"role": "user", "content": msg},
-        ]
-        # Call the reasoner directly, bypassing memory storage
-        if hasattr(brain.reasoner, 'query'):
-            response = await brain.reasoner.query(side_messages)
-        elif hasattr(brain.reasoner, 'chat'):
-            response = await brain.reasoner.chat(side_messages)
+        _system = "You are answering a quick side question. Be brief and direct."
+        reasoner = getattr(brain, 'reasoner', None)
+        if reasoner and hasattr(reasoner, 'query'):
+            import inspect
+            sig = inspect.signature(reasoner.query)
+            params = list(sig.parameters)
+            # GroqReasoner.query(user_input, system_prompt, history=None)
+            if len(params) >= 3 and params[1] in ('system_prompt', 'system'):
+                response = await reasoner.query(msg, _system)
+            # OpenAI-style query(messages: list)
+            elif params[1] == 'messages':
+                response = await reasoner.query([
+                    {"role": "system", "content": _system},
+                    {"role": "user", "content": msg},
+                ])
+            else:
+                response = await brain.think(msg)
         else:
             # Fallback: just use brain.think but mark as side query
             response = await brain.think(msg)

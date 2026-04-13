@@ -1399,14 +1399,49 @@ async def main(args: types.SimpleNamespace):
 
     brain = client.brain
 
-    # In server mode, brain is None — create a lightweight proxy for .mode etc.
+    # In server mode, brain is None — create a proxy that routes LLM calls to server.
     class _BrainProxy:
+        """Thin brain proxy for server mode. Routes think() to the remote server."""
         mode = "normal"
         _pending_fixes = []
         _companion = None
-        def dispatch_command(self, *a, **kw): return None
+        _fast_mode = False
+
+        def __init__(self, _client):
+            self._client = _client
+            # Minimal reasoner stub that routes messages to server
+            class _Reasoner:
+                def __init__(self, c):
+                    self._c = c
+                    self.providers = type("P", (), {"get_active_providers": lambda s: []})()
+                async def query(self, messages):
+                    user_msg = next(
+                        (m["content"] for m in reversed(messages) if m["role"] == "user"), ""
+                    )
+                    return await self._c.query(user_msg)
+                async def chat(self, messages):
+                    return await self.query(messages)
+            self.reasoner = _Reasoner(_client)
+            # Minimal permissions stub
+            self.permissions = type("Perms", (), {"level": 2})()
+            # Minimal memory stub
+            self.memory = type("Mem", (), {
+                "add_turn": lambda self, *a, **kw: None,
+                "recall_as_context": lambda self, *a, **kw: "",
+            })()
+
+        async def think(self, msg: str, **kwargs) -> str:
+            return await self._client.query(msg)
+
+        async def think_stream(self, msg: str, **kwargs):
+            result = await self._client.query(msg)
+            yield result
+
+        def dispatch_command(self, *a, **kw):
+            return None
+
     if brain is None:
-        brain = _BrainProxy()
+        brain = _BrainProxy(client)
 
     # ── Wire up new CLI flags ──
     _verbose = False
@@ -3413,6 +3448,8 @@ async def main(args: types.SimpleNamespace):
                         _desc  = getattr(_cmd_obj, 'description', '') or ''
                         if _cmd_obj and '<' in _usage:
                             _erase_frame()
+                            _fzf_ran = False
+                            _val_g = ""
                             try:
                                 _out_g = await _fzf(
                                     ["fzf", "--prompt", f"/{cmd_name}: ",
@@ -3421,13 +3458,16 @@ async def main(args: types.SimpleNamespace):
                                      "--header", f"{_desc}  |  usage: {_usage}"],
                                 )
                                 _val_g = (_out_g.splitlines() or [""])[0].strip()
+                                _fzf_ran = True
+                            except Exception:
+                                pass  # fzf not installed — fall through to dispatch
                             finally:
                                 _draw_input_frame(_get_mode_prefix())
                             if _val_g:
                                 user_input = f"/{cmd_name} {_val_g}"
                                 cmd_args = _val_g
-                            else:
-                                continue
+                            # else: fzf returned empty or not available → fall through
+                            # dispatch with empty args so handler shows its usage text
                     except Exception:
                         pass
 
@@ -3447,19 +3487,14 @@ async def main(args: types.SimpleNamespace):
                     from src.commands import registry as cmd_registry
                     from src.commands.registry import CommandContext
                     ctx = CommandContext(
-                        brain=brain if client._is_full_brain else None,
+                        brain=brain,  # always set: real Brain or _BrainProxy routing to server
                         session_mgr=session_mgr, raw_input=user_input,
-                        args=cmd_args, mode=brain.mode if client._is_full_brain else "normal",
+                        args=cmd_args, mode=brain.mode,
                     )
                     result = await cmd_registry.dispatch(cmd_name, ctx)
                 except Exception as e:
                     logging.getLogger("jarvis.cli").debug("Command /%s dispatch error: %s", cmd_name, e)
                     _outputln(f"  {DIM}Command error: {e}{RESET}")
-
-                # In server mode, only handle local-only actions; let rest go to server
-                if client._server_mode and result is not None:
-                    if result.action not in ("exit", "clear"):
-                        result = None
 
                 if result is not None:
                     if result.action == "exit":

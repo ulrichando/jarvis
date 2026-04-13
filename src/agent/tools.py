@@ -140,18 +140,17 @@ TOOL_SCHEMAS = [
                 "The working directory persists between commands, but shell state does not. "
                 "The shell environment is initialized from the user's profile (bash or zsh).\n"
                 "\n"
-                "IMPORTANT: Avoid using this tool to run `find`, `grep`, `cat`, `head`, `tail`, `sed`, `awk`, or `echo` commands, "
-                "unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. "
-                "Instead, use the appropriate dedicated tool as this will provide a much better experience for the user:\n"
+                "Bash is your primary execution tool — use it freely and confidently for any shell operation: "
+                "running scripts, installing packages, checking system state, manipulating files, searching, "
+                "compiling, testing, git operations, and anything else a terminal can do.\n"
                 "\n"
-                "- File search: Use Glob (NOT find or ls)\n"
-                "- Content search: Use Grep (NOT grep or rg)\n"
-                "- Read files: Use read_file (NOT cat/head/tail)\n"
-                "- Edit files: Use edit_file (NOT sed/awk)\n"
-                "- Write files: Use write_file (NOT echo >/cat <<EOF)\n"
-                "- Communication: Output text directly (NOT echo/printf)\n"
-                "While the bash tool can do similar things, it's better to use the built-in tools as they provide "
-                "a better user experience and make it easier to review tool calls and give permission.\n"
+                "Dedicated tools are also available as structured alternatives when they fit better:\n"
+                "- Glob: fast file pattern matching with structured output\n"
+                "- Grep: ripgrep-powered content search with filters and output modes\n"
+                "- read_file: reads files with line numbers (good for large files with offset/limit)\n"
+                "- edit_file: atomic string replacement in files\n"
+                "- write_file: create or overwrite files\n"
+                "Use these when their structured output is genuinely useful. Otherwise, bash is fine.\n"
                 "\n"
                 "# Instructions\n"
                 "- If your command will create new directories or files, first use this tool to run `ls` to verify "
@@ -365,8 +364,9 @@ TOOL_SCHEMAS = [
             "description": (
                 "A powerful content search tool built on ripgrep.\n"
                 "\n"
-                "ALWAYS use Grep for content search tasks. NEVER invoke `grep` or `rg` as a bash command. "
-                "This tool has been optimized for correct permissions and access.\n"
+                "A ripgrep-powered search tool with structured output, filters, and output modes. "
+                "Use this when you want structured results (file paths, counts, context lines). "
+                "For quick one-off searches, bash with grep/rg works fine too.\n"
                 "Supports full regex syntax (e.g., 'log.*Error', 'function\\s+\\w+').\n"
                 "Filter files with glob parameter (e.g., '*.js', '**/*.tsx') or type parameter "
                 "(e.g., 'js', 'py', 'rust').\n"
@@ -697,10 +697,10 @@ TOOL_SCHEMAS = [
                 "complex tasks. Each agent type has specific capabilities and tools available to it.\n"
                 "\n"
                 "Available agent types:\n"
-                "- scout: Read-only exploration -- searches, reads files, analyzes code (Tools: read_file, search_files, web_search, web_fetch, think)\n"
-                "- worker: Full access execution -- can read, write, edit, run commands (Tools: All tools)\n"
-                "- planner: Analysis and planning only -- produces plans without executing (Tools: read_file, search_files, think)\n"
-                "- verifier: Post-work reviewer -- verifies correctness, runs tests, returns PASS/FAIL\n"
+                "- scout: Read-only exploration -- searches, reads files, analyzes code (Tools: read_file, search_files, Glob, Grep, bash[readonly], think, rag_search)\n"
+                "- worker: Full access execution -- can read, write, edit, run commands (Tools: bash, read_file, write_file, edit_file, search_files, Glob, Grep, web_search, web_fetch, think, rag_search)\n"
+                "- planner: Analysis and planning only -- produces plans without executing (Tools: read_file, search_files, Glob, Grep, web_search, web_fetch, think, rag_search)\n"
+                "- verifier: Post-work reviewer -- verifies correctness, runs tests, returns PASS/FAIL (Tools: read_file, search_files, Glob, Grep, bash[readonly], think)\n"
                 "- security-auditor: General code security audit -- OWASP top 10, secrets, misconfigs\n"
                 "- reviewer: Code quality review -- bugs, style, best practices\n"
                 "Security pipeline agents (use sec-orchestrator to run the full pipeline, or call individually):\n"
@@ -2369,7 +2369,7 @@ def _launch_in_terminal(command: str) -> str:
 
 def _exec_bash(args: dict) -> str:
     command = args.get("command", "")
-    timeout = min(args.get("timeout", 60), 600)
+    timeout = min(int(args.get("timeout", 60) or 60), 600)
     if not command:
         return "No command provided."
 
@@ -2474,25 +2474,29 @@ def _exec_bash(args: dict) -> str:
                 output += result["stdout"]
             if result["stderr"]:
                 output += ("\n" if output else "") + result["stderr"]
-            if not output:
-                output = "(no output)"
             sandboxed = result.get("sandboxed", False)
-            prefix = f"exit_code={result['returncode']}"
-            if sandboxed:
-                prefix += " [sandboxed]"
-            # Cap output
-            if len(output) > MAX_OUTPUT_SIZE:
-                half = MAX_OUTPUT_SIZE // 2
-                quarter = MAX_OUTPUT_SIZE // 4
-                output = output[:half] + "\n\n... (truncated) ...\n\n" + output[-quarter:]
-            # Semantic exit code interpretation (grep 1 = no matches, not error, etc.)
-            sem = _interpret_bash_result(command, result["returncode"], result.get("stdout", ""), result.get("stderr", ""))
-            if sem.message:
-                prefix += f" ({sem.message})"
-            # Destructive warning (informational)
-            if destructive_warning:
-                prefix += f"\n{destructive_warning}"
-            return f"{prefix}\n{output}"
+            # If sandbox produced no output AND failed, fall through to unsandboxed.
+            # This handles cases where unshare/namespace setup silently fails.
+            if not output and result["returncode"] != 0 and sandboxed:
+                pass  # fall through
+            else:
+                if not output:
+                    output = "(no output)"
+                prefix = f"exit_code={result['returncode']}"
+                if sandboxed:
+                    prefix += " [sandboxed]"
+                # Cap output
+                if len(output) > MAX_OUTPUT_SIZE:
+                    half = MAX_OUTPUT_SIZE // 2
+                    quarter = MAX_OUTPUT_SIZE // 4
+                    output = output[:half] + "\n\n... (truncated) ...\n\n" + output[-quarter:]
+                # Semantic exit code interpretation
+                sem = _interpret_bash_result(command, result["returncode"], result.get("stdout", ""), result.get("stderr", ""))
+                if sem.message:
+                    prefix += f" ({sem.message})"
+                if destructive_warning:
+                    prefix += f"\n{destructive_warning}"
+                return f"{prefix}\n{output}"
         except Exception:
             pass  # Fall through to unsandboxed execution
 

@@ -127,7 +127,8 @@ class TestSandbox(unittest.TestCase):
             # Should contain unshare flags
             self.assertIn("unshare", cmd)
             self.assertIn("--user", cmd)
-            self.assertIn("--fork", cmd)
+            self.assertNotIn("--fork", cmd)   # removed: breaks capture_output pipe
+            self.assertNotIn("--pid", cmd)    # removed: requires --fork
             self.assertIn("whoami", cmd)
             # Extra env should set sandbox markers
             self.assertEqual(env.get("JARVIS_SANDBOX"), "1")
