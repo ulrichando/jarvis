@@ -90,7 +90,7 @@ class TestCommandDispatch(unittest.TestCase):
     def test_dispatch_help(self):
         from src.commands import registry, CommandContext
         ctx = CommandContext(args="")
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             registry.dispatch("help", ctx)
         )
         self.assertIsNotNone(result)
@@ -101,7 +101,7 @@ class TestCommandDispatch(unittest.TestCase):
     def test_dispatch_version(self):
         from src.commands import registry, CommandContext
         ctx = CommandContext(args="")
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             registry.dispatch("version", ctx)
         )
         self.assertIsNotNone(result)
@@ -111,7 +111,7 @@ class TestCommandDispatch(unittest.TestCase):
     def test_dispatch_unknown(self):
         from src.commands import registry, CommandContext
         ctx = CommandContext(args="")
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             registry.dispatch("nonexistent_command", ctx)
         )
         self.assertIsNone(result)
@@ -119,7 +119,7 @@ class TestCommandDispatch(unittest.TestCase):
     def test_dispatch_clear_action(self):
         from src.commands import registry, CommandContext
         ctx = CommandContext(args="")
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             registry.dispatch("clear", ctx)
         )
         self.assertIsNotNone(result)
@@ -128,7 +128,7 @@ class TestCommandDispatch(unittest.TestCase):
     def test_dispatch_exit_action(self):
         from src.commands import registry, CommandContext
         ctx = CommandContext(args="")
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             registry.dispatch("exit", ctx)
         )
         self.assertIsNotNone(result)
@@ -137,7 +137,7 @@ class TestCommandDispatch(unittest.TestCase):
     def test_dispatch_help_all(self):
         from src.commands import registry, CommandContext
         ctx = CommandContext(args="--all")
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             registry.dispatch("help", ctx)
         )
         self.assertIsNotNone(result)

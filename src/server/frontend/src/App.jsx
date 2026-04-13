@@ -30,6 +30,7 @@ function App() {
   const heardTimerRef = React.useRef(null)
   const offlineTimerRef = useRef(null)
   const [stableWsStatus, setStableWsStatus] = useState('connecting')
+  const [alerts, setAlerts] = useState([])  // proactive monitor alerts
 
   const wsUrl = useMemo(() => {
     const clientType = isDesktop ? 'desktop' : 'browser'
@@ -237,6 +238,13 @@ function App() {
 
     if (last.type === 'camera') setCameraOn(last.enabled)
     if (last.type === 'provider_error') setSetupOpen(true)
+
+    // Proactive monitor alert — show dismissable banner
+    if (last.type === 'alert') {
+      const id = Date.now()
+      setAlerts(prev => [...prev.slice(-4), { id, level: last.level, message: last.message }])
+      setTimeout(() => setAlerts(prev => prev.filter(a => a.id !== id)), 12000)
+    }
 
     // Channel handoff — JARVIS switching to this browser tab
     if (last.type === 'handoff' && last.target === 'browser') {
@@ -586,6 +594,26 @@ function App() {
               'repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,212,255,0.005) 2px, rgba(0,212,255,0.005) 4px)',
           }}
         />
+      )}
+
+      {/* Proactive Monitor Alerts */}
+      {alerts.length > 0 && (
+        <div className="fixed top-4 right-4 z-50 flex flex-col gap-2 max-w-sm">
+          {alerts.map(alert => (
+            <div
+              key={alert.id}
+              className={`flex items-start gap-3 px-4 py-3 rounded-lg border backdrop-blur-sm text-sm cursor-pointer
+                ${alert.level === 'error'
+                  ? 'bg-red-950/80 border-red-500/40 text-red-200'
+                  : 'bg-yellow-950/80 border-yellow-500/40 text-yellow-200'
+                }`}
+              onClick={() => setAlerts(prev => prev.filter(a => a.id !== alert.id))}
+            >
+              <span className="mt-0.5 text-base">{alert.level === 'error' ? '⚠' : '●'}</span>
+              <span className="flex-1 leading-snug">{alert.message}</span>
+            </div>
+          ))}
+        </div>
       )}
 
       {/* Arc Reactor */}

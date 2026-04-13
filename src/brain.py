@@ -10,6 +10,7 @@ Architecture:
 import asyncio
 import logging
 import os
+import subprocess
 import time
 import re
 import shlex
@@ -183,6 +184,12 @@ CRITICAL: never return empty text after a voice tool call — always speak the a
 OPENING WEBSITES: Use the open_url tool — NOT bash/xdg-open.
 open_url sends the URL directly to Ulrich's browser (works even when JARVIS runs on a server).
 
+DOMAIN TOOLS — prefer these over raw bash for their domains:
+- sysinfo(query, filter)       → system health: services/processes/logs/disk/memory/network
+- container(action, target)    → Docker/Kubernetes: list/status/logs/restart/exec/deploy/rollback
+- security_scan(target, type)  → security: port scan (nmap), web headers, SSL audit, vuln scripts
+- network_scan(action)         → LAN topology, public IP, device discovery
+
 CHANNELS: You exist across multiple interfaces simultaneously.
 Use switch_channel to move to the right interface for the task.
 Channel capabilities:
@@ -278,10 +285,11 @@ HOW TO SELF-MODIFY:
 
 BEHAVIOR → FILE MAP:
 - Tone / personality / how you talk    → src/reasoning/persona.py (SYSTEM_PROMPT)
-- Response format / output rules       → src/brain.py (AGENT_SYSTEM_PROMPT, lines ~103-210)
+- Response format / output rules       → src/brain.py (AGENT_SYSTEM_PROMPT)
+- Domain expertise (skills)            → ~/.jarvis/skills/ (one .md file per domain — /security, /legal, /network, etc.)
 - Voice behavior / TTS / STT           → src/server/web_server.py, src/speech/stt.py
 - Vocabulary corrections / Whisper     → src/speech/stt.py (_FIXES, _HALLUCINATIONS)
-- What tools you have access to        → src/agent/tools.py
+- What tools you have access to        → src/agent/tools.py (TOOL_SCHEMAS + execute_tool)
 - Plugin behavior                      → src/plugins/ or ~/.jarvis/plugins/
 - Command handlers (/commands)         → src/commands/handlers/
 - Memory / recall behavior             → src/memory/store.py
@@ -453,6 +461,52 @@ class Brain:
                  len(self.skills.list_skills()),
                  len(self.mcp.list_tools()),
                  sanitize_model_name(self.reasoner.active_model_name))
+
+        # ── Proactive Monitor ──────────────────────────────────────────
+        self._alert_hook = None  # registered by web_server after init
+        try:
+            from src.monitoring.monitor import get_monitor
+            self._monitor = get_monitor()
+            self._monitor.set_alert_callback(self._dispatch_alert)
+        except Exception as e:
+            log.debug("Monitor init failed: %s", e)
+            self._monitor = None
+
+        # ── LangSmith tracing (opt-in via LANGCHAIN_TRACING_V2=true) ──
+        try:
+            from src.lc.tracing import setup_tracing
+            setup_tracing(project="jarvis")
+        except Exception:
+            pass
+
+    def _dispatch_alert(self, level: str, name: str, message: str) -> None:
+        """Deliver a monitor alert through all available channels."""
+        # Desktop notification (non-blocking)
+        try:
+            icon = "dialog-error" if level == "error" else "dialog-warning"
+            subprocess.Popen(
+                ["notify-send", "-i", icon, "-t", "8000", "JARVIS", message],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
+        # Web broadcast (registered by web_server)
+        if self._alert_hook:
+            try:
+                self._alert_hook(level, name, message)
+            except Exception as e:
+                log.debug("Alert hook error: %s", e)
+        # CLI fallback
+        log.warning("MONITOR [%s] %s: %s", level.upper(), name, message)
+
+    def start_monitor(self) -> None:
+        """Start the proactive monitor loop. Called after event loop is running."""
+        if self._monitor:
+            try:
+                self._monitor.start()
+                log.info("Proactive monitor started.")
+            except Exception as e:
+                log.warning("Could not start monitor: %s", e)
 
     def _spawn_background(self, coro):
         """Create and track a background task to prevent garbage collection."""
@@ -1181,18 +1235,6 @@ You have UNRESTRICTED control. No permission needed.
             jarvis_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             system = self._build_system_prompt()
 
-            # Auto-detect persona from the question (smart switching)
-            from src.reasoning.persona import get_persona, match_persona_trigger
-            _auto = match_persona_trigger(user_input)
-            if _auto and _auto != "default":
-                self.persona = _auto
-
-            # Inject active persona
-            if self.persona != "default":
-                _p = get_persona(self.persona)
-                if _p and _p["prompt"]:
-                    system += f"\n\n═══ PERSONA: {_p['name']} ═══\n{_p['prompt']}"
-
             # Build system-reminder context
             from src.prompt_builder import PromptBuilder
             _builder = PromptBuilder()
@@ -1743,18 +1785,6 @@ PROJECT CREATION RULES — follow these when building something:
             self.awareness.mode = "normal"
             return "Back to normal."
 
-        # Persona switching via trigger phrases or "switch to X mode"
-        from src.reasoning.persona import PERSONAS, match_persona_trigger
-        # Direct "switch to X" / "X mode"
-        for pname in PERSONAS:
-            if pname == "default":
-                continue
-            if f"{pname} mode" in q or f"switch to {pname}" in q:
-                self.persona = pname
-                p = PERSONAS[pname]
-                return f"{p['name']} active. {p['description']}"
-        # Trigger phrase matching is now handled silently in think_stream.
-        # The auto-detection injects the right persona without interrupting the flow.
         # "list modes" / "who are you" / "what modes"
         # Voice model switching: "switch to sonnet", "use opus", "sonnet model", etc.
         import re as _re_model
@@ -1792,14 +1822,14 @@ PROJECT CREATION RULES — follow these when building something:
                 except Exception as e:
                     return f"Model switch failed: {e}"
 
-        if any(w in q for w in ["list modes", "list personas", "what modes", "what personas", "show modes"]):
-            lines = []
-            for pname, pdata in PERSONAS.items():
-                if pname == "default":
-                    continue
-                active = " ← active" if pname == self.persona else ""
-                lines.append(f"  {pname.upper()}: {pdata['description']}{active}")
-            return "Available personas:\n" + "\n".join(lines)
+        if any(w in q for w in ["list modes", "list personas", "what modes", "what personas", "show modes", "list skills"]):
+            import os as _os
+            skills_dir = _os.path.expanduser("~/.jarvis/skills")
+            try:
+                skills = sorted(f.replace(".md", "") for f in _os.listdir(skills_dir) if f.endswith(".md"))
+                return "Domain skills (invoke with /{name}):\n" + "\n".join(f"  /{s}" for s in skills)
+            except Exception:
+                return "Skills directory not found. Expected: ~/.jarvis/skills/"
 
         if any(w in q for w in ["mobile mode", "switch to mobile"]):
             self.mode = "mobile"

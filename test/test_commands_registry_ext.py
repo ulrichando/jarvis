@@ -105,7 +105,7 @@ class TestGetSlashCommandToolSkills(unittest.TestCase):
 
     def _run(self, coro):
         """Helper to run async code from sync tests."""
-        return asyncio.get_event_loop().run_until_complete(coro)
+        return asyncio.run(coro)
 
     # -- disable_model_invocation filtering ---------------------------------
 

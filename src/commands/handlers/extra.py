@@ -1365,3 +1365,90 @@ async def cmd_color(ctx: CommandContext) -> CommandResult:
 async def cmd_stickers(ctx: CommandContext) -> CommandResult:
     """Open sticker store."""
     return CommandResult(text="JARVIS stickers coming soon! Check https://github.com/ulrich/jarvis for merch.")
+
+
+# ── RAG — /ingest ────────────────────────────────────────────────────
+
+@command(
+    "ingest",
+    aliases=["rag-add", "learn"],
+    description="Ingest a file, URL, or directory into the local knowledge base (RAG)",
+    usage="/ingest <path|url|.> [--clear] [--stats]",
+    category="memory",
+    permission=PermLevel.READ_ONLY,
+)
+async def cmd_ingest(ctx: CommandContext) -> CommandResult:
+    """Add documents to JARVIS's local vector knowledge base."""
+    args = ctx.args.strip()
+
+    try:
+        from src.rag import get_pipeline
+        pipeline = get_pipeline()
+    except Exception as e:
+        return CommandResult(text=f"RAG unavailable: {e}", success=False)
+
+    # /ingest --stats
+    if args in ("--stats", "stats", ""):
+        stats = pipeline.stats()
+        if not args:
+            return CommandResult(
+                text=(
+                    "Usage: /ingest <path|url|directory>\n\n"
+                    "Examples:\n"
+                    "  /ingest ~/Documents/notes.pdf\n"
+                    "  /ingest https://docs.example.com/api\n"
+                    "  /ingest ./src/  (entire directory)\n\n"
+                    f"Current knowledge base: {stats['chunks']} chunks  "
+                    f"({stats['collection']} via {stats['backend']})"
+                )
+            )
+        return CommandResult(
+            text=(
+                f"RAG knowledge base stats:\n"
+                f"  Chunks:    {stats['chunks']}\n"
+                f"  Collection: {stats['collection']}\n"
+                f"  Backend:    {stats['backend']}"
+            )
+        )
+
+    # /ingest --clear
+    if "--clear" in args:
+        pipeline._store.clear()
+        return CommandResult(text="Knowledge base cleared.")
+
+    # Parse flags
+    target = args.replace("--clear", "").strip()
+    if not target:
+        return CommandResult(text="Provide a path, URL, or directory.", success=False)
+
+    # Determine type and ingest
+    loop = asyncio.get_event_loop()
+
+    if target.startswith("http://") or target.startswith("https://"):
+        n = await loop.run_in_executor(None, pipeline.ingest_url, target)
+        kind = "URL"
+    else:
+        resolved = os.path.expanduser(target)
+        if os.path.isdir(resolved):
+            n = await loop.run_in_executor(None, pipeline.ingest_directory, resolved)
+            kind = "directory"
+        elif os.path.isfile(resolved):
+            n = await loop.run_in_executor(None, pipeline.ingest_file, resolved)
+            kind = "file"
+        else:
+            return CommandResult(
+                text=f"Path not found: {resolved}", success=False
+            )
+
+    if n == 0:
+        return CommandResult(
+            text=f"No content extracted from {kind}: {target}", success=False
+        )
+
+    stats = pipeline.stats()
+    return CommandResult(
+        text=(
+            f"Ingested {n} chunks from {kind}: {target}\n"
+            f"Knowledge base now holds {stats['chunks']} chunks total."
+        )
+    )

@@ -166,14 +166,14 @@ class TestTips:
     def test_get_relevant_tips(self):
         from src.services.tips.tipRegistry import get_relevant_tips
 
-        tips = asyncio.get_event_loop().run_until_complete(get_relevant_tips())
+        tips = asyncio.run(get_relevant_tips())
         # All tips should be relevant on first run (no history)
         assert len(tips) > 0
 
     def test_tip_scheduler(self):
         from src.services.tips.tipScheduler import get_tip_to_show_on_spinner
 
-        tip = asyncio.get_event_loop().run_until_complete(get_tip_to_show_on_spinner())
+        tip = asyncio.run(get_tip_to_show_on_spinner())
         # Should return a tip since none have been shown
         assert tip is not None
         assert tip.id
@@ -239,7 +239,7 @@ class TestSessionMemoryUtils:
         from src.services.SessionMemory.sessionMemoryUtils import get_session_memory_content
 
         # Should return None or string, not raise
-        content = asyncio.get_event_loop().run_until_complete(get_session_memory_content())
+        content = asyncio.run(get_session_memory_content())
         assert content is None or isinstance(content, str)
 
 

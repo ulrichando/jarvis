@@ -427,6 +427,53 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "search_files",
+            "description": (
+                "Unified file search tool — find files by name pattern (glob mode) "
+                "or search file contents (grep mode).\n"
+                "\n"
+                "mode='glob': Find files matching a glob pattern (e.g. '**/*.py', 'src/**/*.ts'). "
+                "Returns matching file paths.\n"
+                "mode='grep': Search file contents using a regex pattern. "
+                "Returns files with matches or matching lines.\n"
+                "\n"
+                "Use Glob or Grep tools directly for more advanced options."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Glob pattern (mode='glob') or regex pattern (mode='grep')",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Directory to search in. Defaults to current directory.",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["glob", "grep"],
+                        "description": "Search mode: 'glob' for filename patterns, 'grep' for content search. Default: 'glob'.",
+                        "default": "glob",
+                    },
+                    "file_glob": {
+                        "type": "string",
+                        "description": "Filter files by glob when mode='grep' (e.g. '*.py')",
+                    },
+                    "output_mode": {
+                        "type": "string",
+                        "enum": ["files_with_matches", "content", "count"],
+                        "description": "Output format when mode='grep'. Default: 'files_with_matches'.",
+                        "default": "files_with_matches",
+                    },
+                },
+                "required": ["pattern"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "web_search",
             "description": (
                 "Search the web and use the results to inform responses.\n"
@@ -1642,6 +1689,170 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    # ── Domain Tools ─────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "sysinfo",
+            "description": (
+                "Get system health and diagnostics — services, processes, logs, disk, memory, network.\n"
+                "\n"
+                "Queries:\n"
+                "- 'services'  : List all systemd services and their status\n"
+                "- 'processes' : Top CPU/memory consuming processes\n"
+                "- 'logs'      : Recent system/journal logs (optionally filtered)\n"
+                "- 'disk'      : Disk usage across all mounts\n"
+                "- 'memory'    : RAM and swap usage\n"
+                "- 'network'   : Active connections, listening ports, interfaces\n"
+                "- 'all'       : Full system snapshot (all of the above)\n"
+                "\n"
+                "Use this instead of raw bash when doing system health checks, "
+                "diagnosing slowdowns, or investigating service failures."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "enum": ["services", "processes", "logs", "disk", "memory", "network", "all"],
+                        "description": "What to check. Default: all",
+                        "default": "all",
+                    },
+                    "filter": {
+                        "type": "string",
+                        "description": "Optional keyword filter (e.g. service name, process name, log keyword)",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "container",
+            "description": (
+                "Docker and Kubernetes operations with smart defaults.\n"
+                "\n"
+                "Actions:\n"
+                "- 'list'      : List containers/pods\n"
+                "- 'status'    : Status of a specific container/deployment\n"
+                "- 'logs'      : Tail logs from a container/pod\n"
+                "- 'restart'   : Restart a container or rollout restart a deployment\n"
+                "- 'exec'      : Run a command inside a container/pod\n"
+                "- 'deploy'    : Apply a k8s manifest or docker-compose\n"
+                "- 'rollback'  : Roll back a k8s deployment to previous revision\n"
+                "\n"
+                "Uses Docker or kubectl depending on context. "
+                "Always shows the command being run. Warns before destructive operations."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "status", "logs", "restart", "exec", "deploy", "rollback"],
+                        "description": "Operation to perform",
+                    },
+                    "target": {
+                        "type": "string",
+                        "description": "Container name, pod name, or deployment name",
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "description": "Kubernetes namespace (default: default)",
+                        "default": "default",
+                    },
+                    "command": {
+                        "type": "string",
+                        "description": "Command to run inside container (for exec action)",
+                    },
+                    "tail": {
+                        "type": "integer",
+                        "description": "Number of log lines to tail (default: 50)",
+                        "default": 50,
+                    },
+                },
+                "required": ["action"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "security_scan",
+            "description": (
+                "Security scanning — port scanning, web fuzzing, SSL/header audit, banner grabbing.\n"
+                "\n"
+                "Scan types:\n"
+                "- 'ports'   : nmap port scan (quick by default, full with all_ports=true)\n"
+                "- 'web'     : HTTP headers, SSL cert, common paths check\n"
+                "- 'vulns'   : nmap vuln scripts against target\n"
+                "- 'ssl'     : SSL/TLS configuration audit\n"
+                "- 'headers' : HTTP security headers audit\n"
+                "\n"
+                "Ulrich is a professional pentester — all targets are authorized. "
+                "Use this for recon, service enumeration, and quick audits. "
+                "For deep exploitation, use the bash tool with specific tools."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "IP address, hostname, or URL to scan",
+                    },
+                    "scan_type": {
+                        "type": "string",
+                        "enum": ["ports", "web", "vulns", "ssl", "headers"],
+                        "description": "Type of scan. Default: ports",
+                        "default": "ports",
+                    },
+                    "ports": {
+                        "type": "string",
+                        "description": "Port spec for port scans (e.g. '80,443,22' or '1-1000'). Default: top 1000",
+                    },
+                    "all_ports": {
+                        "type": "boolean",
+                        "description": "Scan all 65535 ports (slow). Default: false",
+                        "default": False,
+                    },
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "rag_search",
+            "description": (
+                "Search the local knowledge base (RAG) for relevant context.\n"
+                "Use this when the user asks about documents, files, or knowledge that may have been ingested.\n"
+                "Also use before answering questions where local documentation might help.\n"
+                "Returns the top matching chunks with their sources."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Natural language search query",
+                    },
+                    "k": {
+                        "type": "integer",
+                        "description": "Number of results to return (default: 5)",
+                        "default": 5,
+                    },
+                    "source_filter": {
+                        "type": "string",
+                        "description": "Optional: filter results to a specific source file or URL",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
 ]
 
 
@@ -1678,6 +1889,7 @@ READONLY_TOOLS = {
     "TaskList", "TaskGet", "TaskOutput", "ListMcpResources", "LSP",
     "ConfigTool", "BriefTool", "EnterPlanMode", "ExitPlanMode",
     "network_scan",
+    "rag_search",
     # Legacy alias
     "search_files",
 }
@@ -1893,6 +2105,14 @@ def execute_tool(name: str, args: dict, readonly: bool = False) -> str:
             return _exec_send_sms(args)
         elif name == "network_scan":
             return _exec_network_scan(args)
+        elif name == "sysinfo":
+            return _exec_sysinfo(args)
+        elif name == "container":
+            return _exec_container(args)
+        elif name == "security_scan":
+            return _exec_security_scan(args)
+        elif name == "rag_search":
+            return _exec_rag_search(args)
         elif name == "browser":
             return _exec_browser(args)
         elif name.startswith("mcp_"):
@@ -3639,6 +3859,218 @@ def _exec_send_sms(args: dict) -> str:
             "4. Pair from the phone app or: kdeconnect-cli --pair -d <device_id>"
         )
 
+
+# ── Domain Tools ──────────────────────────────────────────────────────
+
+def _exec_sysinfo(args: dict) -> str:
+    """System health diagnostics — services, processes, logs, disk, memory, network."""
+    query = args.get("query", "all")
+    filt = args.get("filter", "")
+    parts = []
+
+    def _run(cmd: str, label: str) -> str:
+        try:
+            r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=15)
+            out = r.stdout.strip() or r.stderr.strip()
+            if filt and filt.lower() not in out.lower():
+                out = "\n".join(l for l in out.splitlines() if filt.lower() in l.lower())
+            return f"── {label} ──\n{out}" if out else f"── {label} ── (no output)"
+        except subprocess.TimeoutExpired:
+            return f"── {label} ── (timeout)"
+        except Exception as e:
+            return f"── {label} ── error: {e}"
+
+    if query in ("services", "all"):
+        cmd = "systemctl list-units --type=service --state=running --no-pager --plain 2>/dev/null | head -40"
+        if filt:
+            cmd = f"systemctl status {filt} --no-pager 2>/dev/null || systemctl list-units --type=service --no-pager --plain 2>/dev/null | grep -i '{filt}'"
+        parts.append(_run(cmd, "Services"))
+
+    if query in ("processes", "all"):
+        parts.append(_run(
+            "ps aux --sort=-%cpu | head -20",
+            "Top Processes (CPU)"
+        ))
+
+    if query in ("logs", "all"):
+        cmd = f"journalctl -n 50 --no-pager 2>/dev/null"
+        if filt:
+            cmd = f"journalctl -n 100 --no-pager -u '{filt}' 2>/dev/null || journalctl -n 100 --no-pager --grep='{filt}' 2>/dev/null"
+        parts.append(_run(cmd, "Recent Logs"))
+
+    if query in ("disk", "all"):
+        parts.append(_run("df -h --output=target,size,used,avail,pcent 2>/dev/null", "Disk Usage"))
+
+    if query in ("memory", "all"):
+        parts.append(_run("free -h 2>/dev/null && echo && cat /proc/meminfo 2>/dev/null | grep -E 'MemTotal|MemFree|MemAvailable|SwapTotal|SwapFree'", "Memory"))
+
+    if query in ("network", "all"):
+        parts.append(_run("ss -tuln 2>/dev/null | head -30", "Listening Ports"))
+        parts.append(_run("ip -brief addr 2>/dev/null", "Interfaces"))
+
+    return "\n\n".join(parts) if parts else "No data collected."
+
+
+def _exec_container(args: dict) -> str:
+    """Docker/Kubernetes operations with smart defaults."""
+    action = args.get("action", "list")
+    target = args.get("target", "")
+    namespace = args.get("namespace", "default")
+    command = args.get("command", "sh")
+    tail = args.get("tail", 50)
+
+    # Detect what's available
+    has_kubectl = shutil.which("kubectl") is not None
+    has_docker = shutil.which("docker") is not None
+
+    def _run(cmd: str) -> str:
+        try:
+            r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+            return (r.stdout.strip() or r.stderr.strip() or "(no output)")
+        except subprocess.TimeoutExpired:
+            return "Command timed out."
+        except Exception as e:
+            return f"Error: {e}"
+
+    if action == "list":
+        results = []
+        if has_kubectl:
+            results.append("── Kubernetes pods ──\n" + _run(f"kubectl get pods -n {namespace} 2>/dev/null"))
+        if has_docker:
+            results.append("── Docker containers ──\n" + _run("docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}' 2>/dev/null"))
+        return "\n\n".join(results) if results else "Neither kubectl nor docker found."
+
+    if action == "status":
+        if not target:
+            return "Target required for status check."
+        results = []
+        if has_kubectl:
+            results.append(_run(f"kubectl get pod {target} -n {namespace} -o wide 2>/dev/null || kubectl get deployment {target} -n {namespace} 2>/dev/null"))
+        if has_docker:
+            results.append(_run(f"docker inspect {target} --format '{{{{.Name}}}} {{{{.State.Status}}}} ({{{{.State.StartedAt}}}})' 2>/dev/null"))
+        return "\n".join(results) if results else f"Target '{target}' not found."
+
+    if action == "logs":
+        if not target:
+            return "Target required for logs."
+        if has_kubectl:
+            return _run(f"kubectl logs {target} -n {namespace} --tail={tail} 2>/dev/null")
+        if has_docker:
+            return _run(f"docker logs {target} --tail {tail} 2>/dev/null")
+        return "Neither kubectl nor docker found."
+
+    if action == "restart":
+        if not target:
+            return "Target required for restart."
+        if has_kubectl:
+            return _run(f"kubectl rollout restart deployment/{target} -n {namespace} 2>/dev/null")
+        if has_docker:
+            return _run(f"docker restart {target} 2>/dev/null")
+        return "Neither kubectl nor docker found."
+
+    if action == "exec":
+        if not target:
+            return "Target required for exec."
+        if has_kubectl:
+            return _run(f"kubectl exec {target} -n {namespace} -- {command} 2>/dev/null")
+        if has_docker:
+            return _run(f"docker exec {target} {command} 2>/dev/null")
+        return "Neither kubectl nor docker found."
+
+    if action == "rollback":
+        if not target:
+            return "Target required for rollback."
+        if has_kubectl:
+            return _run(f"kubectl rollout undo deployment/{target} -n {namespace} 2>/dev/null")
+        return "kubectl not found — rollback only available for Kubernetes."
+
+    if action == "deploy":
+        if not target:
+            return "Target (manifest path or compose file) required for deploy."
+        if target.endswith(".yaml") or target.endswith(".yml"):
+            if has_kubectl and "compose" not in target:
+                return _run(f"kubectl apply -f {target} 2>/dev/null")
+            if has_docker:
+                return _run(f"docker compose -f {target} up -d 2>/dev/null")
+        return f"Unknown deploy target: {target}"
+
+    return f"Unknown action: {action}"
+
+
+def _exec_security_scan(args: dict) -> str:
+    """Security scanning — ports, web headers, SSL, vulns."""
+    target = args.get("target", "")
+    scan_type = args.get("scan_type", "ports")
+    ports = args.get("ports", "")
+    all_ports = args.get("all_ports", False)
+
+    if not target:
+        return "Target required."
+
+    has_nmap = shutil.which("nmap") is not None
+    has_curl = shutil.which("curl") is not None
+
+    def _run(cmd: str, timeout: int = 60) -> str:
+        try:
+            r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+            return (r.stdout.strip() or r.stderr.strip() or "(no output)")
+        except subprocess.TimeoutExpired:
+            return "Scan timed out — try a narrower port range."
+        except Exception as e:
+            return f"Error: {e}"
+
+    # Strip protocol for nmap targets
+    nmap_target = target.replace("https://", "").replace("http://", "").split("/")[0]
+
+    if scan_type == "ports":
+        if not has_nmap:
+            return "nmap not found. Install with: sudo apt install nmap"
+        port_spec = f"-p {ports}" if ports else ("-p-" if all_ports else "--top-ports 1000")
+        cmd = f"nmap -sV --open -T4 {port_spec} {nmap_target}"
+        return f"$ {cmd}\n\n" + _run(cmd, timeout=120)
+
+    if scan_type == "vulns":
+        if not has_nmap:
+            return "nmap not found. Install with: sudo apt install nmap"
+        port_spec = f"-p {ports}" if ports else "--top-ports 100"
+        cmd = f"nmap -sV --script vuln {port_spec} {nmap_target}"
+        return f"$ {cmd}\n\n" + _run(cmd, timeout=180)
+
+    if scan_type == "headers":
+        if not has_curl:
+            return "curl not found."
+        url = target if target.startswith("http") else f"https://{target}"
+        cmd = f"curl -sI --max-time 10 '{url}'"
+        raw = _run(cmd)
+        # Highlight missing security headers
+        security_headers = [
+            "Strict-Transport-Security", "Content-Security-Policy",
+            "X-Frame-Options", "X-Content-Type-Options",
+            "Referrer-Policy", "Permissions-Policy",
+        ]
+        missing = [h for h in security_headers if h.lower() not in raw.lower()]
+        result = f"HTTP Headers for {url}:\n{raw}"
+        if missing:
+            result += f"\n\nMissing security headers: {', '.join(missing)}"
+        return result
+
+    if scan_type == "ssl":
+        if not has_nmap:
+            return "nmap not found. Install with: sudo apt install nmap"
+        cmd = f"nmap -sV --script ssl-enum-ciphers,ssl-cert -p 443,8443 {nmap_target}"
+        return f"$ {cmd}\n\n" + _run(cmd, timeout=60)
+
+    if scan_type == "web":
+        results = []
+        if has_curl:
+            url = target if target.startswith("http") else f"https://{target}"
+            results.append("── HTTP Headers ──\n" + _run(f"curl -sI --max-time 10 '{url}'"))
+        if has_nmap:
+            results.append("── Open Ports ──\n" + _run(f"nmap -sV --open --top-ports 20 -T4 {nmap_target}", timeout=30))
+        return "\n\n".join(results) if results else "No scanning tools found."
+
+    return f"Unknown scan type: {scan_type}"
+
     device_id = devices[0]
 
     # Send the SMS
@@ -3785,6 +4217,49 @@ def _exec_network_scan(args: dict) -> str:
 _pw_instance = None   # playwright sync instance
 _pw_browser  = None   # browser
 _pw_page     = None   # current page
+
+
+def _exec_rag_search(args: dict) -> str:
+    """Search the local RAG knowledge base for relevant context."""
+    query = args.get("query", "").strip()
+    if not query:
+        return "Error: query is required."
+
+    k = int(args.get("k", 5))
+    source_filter = args.get("source_filter", "")
+
+    try:
+        from src.rag import get_pipeline
+        pipeline = get_pipeline()
+
+        stats = pipeline.stats()
+        if stats.get("chunks", 0) == 0:
+            return (
+                "Knowledge base is empty. Use /ingest <path|url> to add documents first.\n"
+                "Example: /ingest ~/Documents/notes.pdf"
+            )
+
+        where = {"source": source_filter} if source_filter else None
+        results = pipeline.query(query, k=k, where=where)
+
+        if not results:
+            return f"No relevant results found for: {query}"
+
+        lines = [f"RAG search: '{query}' — {len(results)} result(s)\n"]
+        for i, (text, meta, dist) in enumerate(results, 1):
+            source = meta.get("source", "unknown")
+            score = 1.0 - dist  # cosine: higher = more similar
+            snippet = text.strip()[:400]
+            lines.append(f"[{i}] Score: {score:.2f} | Source: {source}")
+            lines.append(snippet)
+            lines.append("")
+
+        return "\n".join(lines).strip()
+
+    except RuntimeError as e:
+        return f"RAG unavailable: {e}"
+    except Exception as e:
+        return f"RAG search error: {e}"
 
 
 def _exec_browser(args: dict) -> str:
