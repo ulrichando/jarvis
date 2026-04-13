@@ -1,1 +1,0 @@
-"""FilePermissionDialog package."""

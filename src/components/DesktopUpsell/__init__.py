@@ -1,1 +1,0 @@
-"""DesktopUpsell package."""

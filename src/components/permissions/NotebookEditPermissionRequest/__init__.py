@@ -1,1 +1,0 @@
-"""NotebookEditPermissionRequest package."""

@@ -18,10 +18,13 @@ import asyncio
 import time
 import re
 import subprocess
-import argparse
 import threading
 import logging
 import warnings
+import types
+from typing import Optional, List
+
+import typer
 
 try:
     from wcwidth import wcswidth as _wcswidth
@@ -61,6 +64,9 @@ warnings.filterwarnings("ignore", module="numexpr")
 # Suppress ResourceWarning (unclosed sockets from async HTTP clients) — not
 # actionable by the user and would corrupt the input frame if printed to stderr.
 warnings.filterwarnings("ignore", category=ResourceWarning)
+# Suppress PyGIDeprecationWarning from GTK/GLib bindings (gi package) —
+# "GLib.unix_signal_add_full is deprecated; use GLibUnix.signal_add_full"
+warnings.filterwarnings("ignore", module="gi")
 
 # ── Keybinding System (src/keybindings) ─────────────────────────────
 from src.keybindings import KeybindingResolver, ParsedKeystroke, DEFAULT_BINDINGS
@@ -696,99 +702,100 @@ class StandaloneBrain:
 
 # ── CLI Entry ────────────────────────────────────────────────────────
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="JARVIS — autonomous AI agent",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="Examples:\n"
-               "  jarvis                        Start interactive session\n"
-               "  jarvis -c                     Continue last session\n"
-               "  jarvis -r my-project          Resume named session\n"
-               "  jarvis -p 'list files'        One-shot print mode\n"
-               "  cat log.txt | jarvis -p 'analyze this'\n",
-    )
-    parser.add_argument("-c", "--continue", dest="continue_last", action="store_true",
-                        help="Continue the most recent session")
-    parser.add_argument("-r", "--resume", type=str, metavar="NAME",
-                        help="Resume a session by name or ID")
-    parser.add_argument("-p", "--print", dest="print_mode", type=str, metavar="QUERY",
-                        help="One-shot mode: run query and print result")
-    parser.add_argument("-m", "--mode", type=str, default="normal",
-                        choices=["normal", "agent", "cli", "berbon", "plan"],
-                        help="Starting mode (default: normal)")
-    parser.add_argument("-n", "--name", type=str, default="",
-                        help="Name for the new session")
-    parser.add_argument("--serve", action="store_true",
-                        help="Start as MCP server (stdio mode)")
-    parser.add_argument("--theme", type=str, choices=["dark", "light", "auto"],
-                        help="Color theme (dark/light/auto)")
-    parser.add_argument("query", nargs="*", help="Initial query")
+_app = typer.Typer(
+    name="jarvis",
+    help="JARVIS — autonomous AI agent",
+    add_completion=False,
+    pretty_exceptions_enable=False,
+    epilog=(
+        "Examples:\n"
+        "  jarvis                        Start interactive session\n"
+        "  jarvis -c                     Continue last session\n"
+        "  jarvis -r my-project          Resume named session\n"
+        "  jarvis -p 'list files'        One-shot print mode\n"
+        "  cat log.txt | jarvis -p 'analyze this'"
+    ),
+)
 
-    # ── New flags (ported from JARVIS) ──
 
+@_app.command()
+def _typer_entry(
+    # Session
+    continue_last: bool = typer.Option(False, "-c", "--continue", help="Continue the most recent session"),
+    resume: Optional[str] = typer.Option(None, "-r", "--resume", metavar="NAME", help="Resume a session by name or ID"),
+    name: str = typer.Option("", "-n", "--name", help="Name for the new session"),
+    # Query mode
+    print_mode: Optional[str] = typer.Option(None, "-p", "--print", metavar="QUERY", help="One-shot mode: run query and print result"),
+    mode: str = typer.Option("normal", "-m", "--mode", help="Starting mode: normal/agent/cli/berbon/plan"),
+    # Positional query words
+    query: Optional[List[str]] = typer.Argument(None, help="Initial query"),
+    # Server / theme
+    serve: bool = typer.Option(False, "--serve", help="Start as MCP server (stdio mode)"),
+    theme: Optional[str] = typer.Option(None, "--theme", help="Color theme: dark/light/auto"),
     # Model & effort
-    parser.add_argument("--model", type=str, metavar="MODEL",
-                        help="Override model (aliases: opus, sonnet, haiku, or full name)")
-    parser.add_argument("--effort", type=str, choices=["low", "medium", "high", "max"],
-                        help="Response effort level")
-    parser.add_argument("--fallback-model", type=str, metavar="MODEL",
-                        help="Fallback model on overload")
-
-    # Output formatting
-    parser.add_argument("--output-format", type=str, default="text",
-                        choices=["text", "json", "stream-json"],
-                        help="Output format for print mode")
-    parser.add_argument("--json-schema", type=str, metavar="SCHEMA",
-                        help="JSON schema for structured output validation")
-
+    model: Optional[str] = typer.Option(None, "--model", metavar="MODEL", help="Override model (opus/sonnet/haiku or full name)"),
+    effort: Optional[str] = typer.Option(None, "--effort", help="Response effort: low/medium/high/max"),
+    fallback_model: Optional[str] = typer.Option(None, "--fallback-model", metavar="MODEL", help="Fallback model on overload"),
+    # Output
+    output_format: str = typer.Option("text", "--output-format", help="Output format: text/json/stream-json"),
+    json_schema: Optional[str] = typer.Option(None, "--json-schema", metavar="SCHEMA", help="JSON schema for structured output"),
     # Limits
-    parser.add_argument("--max-turns", type=int, metavar="N",
-                        help="Max agentic turns in non-interactive mode")
-    parser.add_argument("--max-budget-usd", type=float, metavar="USD",
-                        help="Max spend for this session")
-
+    max_turns: Optional[int] = typer.Option(None, "--max-turns", metavar="N", help="Max agentic turns in non-interactive mode"),
+    max_budget_usd: Optional[float] = typer.Option(None, "--max-budget-usd", metavar="USD", help="Max spend for this session"),
     # System prompt
-    parser.add_argument("--system-prompt", type=str, metavar="PROMPT",
-                        help="Custom system prompt")
-    parser.add_argument("--system-prompt-file", type=str, metavar="FILE",
-                        help="Read system prompt from file")
-    parser.add_argument("--append-system-prompt", type=str, metavar="PROMPT",
-                        help="Append to default system prompt")
-
+    system_prompt: Optional[str] = typer.Option(None, "--system-prompt", metavar="PROMPT", help="Custom system prompt"),
+    system_prompt_file: Optional[str] = typer.Option(None, "--system-prompt-file", metavar="FILE", help="Read system prompt from file"),
+    append_system_prompt: Optional[str] = typer.Option(None, "--append-system-prompt", metavar="PROMPT", help="Append to default system prompt"),
     # Advanced
-    parser.add_argument("--bare", action="store_true",
-                        help="Minimal mode: skip hooks, plugins, MCP discovery")
-    parser.add_argument("--verbose", action="store_true",
-                        help="Verbose output (show full tool results)")
-    parser.add_argument("--debug", nargs="?", const="all", metavar="FILTER",
-                        help="Debug mode (filter: api,hooks,tools)")
-    parser.add_argument("--thinking", type=str, choices=["enabled", "adaptive", "disabled"],
-                        help="Thinking mode")
-
-    # Permission
-    parser.add_argument("--permission-mode", type=str,
-                        choices=["default", "bypass", "accept-edits", "plan"],
-                        help="Permission prompting mode")
-    parser.add_argument("--dangerously-skip-permissions", action="store_true",
-                        help="Skip all permission checks")
-
+    bare: bool = typer.Option(False, "--bare", help="Minimal mode: skip hooks, plugins, MCP discovery"),
+    verbose: bool = typer.Option(False, "--verbose", help="Verbose output (show full tool results)"),
+    debug: Optional[str] = typer.Option(None, "--debug", metavar="FILTER", help="Debug mode (all / api,hooks,tools)"),
+    thinking: Optional[str] = typer.Option(None, "--thinking", help="Thinking mode: enabled/adaptive/disabled"),
+    # Permissions
+    permission_mode: Optional[str] = typer.Option(None, "--permission-mode", help="Permission mode: default/bypass/accept-edits/plan"),
+    dangerously_skip_permissions: bool = typer.Option(False, "--dangerously-skip-permissions", help="Skip all permission checks"),
     # Tools
-    parser.add_argument("--tools", nargs="*", metavar="TOOL",
-                        help="Specify available tools")
-    parser.add_argument("--allowed-tools", nargs="*", metavar="TOOL",
-                        help="Tool allowlist")
-    parser.add_argument("--disallowed-tools", nargs="*", metavar="TOOL",
-                        help="Tool denylist")
-
+    tools: Optional[List[str]] = typer.Option(None, "--tools", metavar="TOOL", help="Specify available tools"),
+    allowed_tools: Optional[List[str]] = typer.Option(None, "--allowed-tools", metavar="TOOL", help="Tool allowlist"),
+    disallowed_tools: Optional[List[str]] = typer.Option(None, "--disallowed-tools", metavar="TOOL", help="Tool denylist"),
     # MCP
-    parser.add_argument("--mcp-config", type=str, metavar="FILE",
-                        help="MCP server config file")
-
+    mcp_config: Optional[str] = typer.Option(None, "--mcp-config", metavar="FILE", help="MCP server config file"),
     # Worktree
-    parser.add_argument("-w", "--worktree", nargs="?", const="auto", metavar="NAME",
-                        help="Create git worktree for this session")
-
-    return parser.parse_args()
+    worktree: Optional[str] = typer.Option(None, "-w", "--worktree", metavar="NAME", help="Create git worktree (use 'auto' for automatic name)"),
+):
+    """JARVIS — autonomous AI agent."""
+    args = types.SimpleNamespace(
+        continue_last=continue_last,
+        resume=resume,
+        name=name,
+        print_mode=print_mode,
+        mode=mode,
+        query=query or [],
+        serve=serve,
+        theme=theme,
+        model=model,
+        effort=effort,
+        fallback_model=fallback_model,
+        output_format=output_format,
+        json_schema=json_schema,
+        max_turns=max_turns,
+        max_budget_usd=max_budget_usd,
+        system_prompt=system_prompt,
+        system_prompt_file=system_prompt_file,
+        append_system_prompt=append_system_prompt,
+        bare=bare,
+        verbose=verbose,
+        debug=debug,
+        thinking=thinking,
+        permission_mode=permission_mode,
+        dangerously_skip_permissions=dangerously_skip_permissions,
+        tools=tools,
+        allowed_tools=allowed_tools,
+        disallowed_tools=disallowed_tools,
+        mcp_config=mcp_config,
+        worktree=worktree,
+    )
+    asyncio.run(main(args))
 
 
 # Commands with fixed enumerable options — shown as visual pickers in the CLI
@@ -1344,7 +1351,7 @@ async def _interactive_pick(entries: list[str], title: str = "", current: int = 
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
-async def main():
+async def main(args: types.SimpleNamespace):
     # CLI runs as the owner — no sandbox, full permissions
     os.environ.setdefault("JARVIS_NO_SANDBOX", "1")
     os.environ.setdefault("JARVIS_OWNER", "ulrich")
@@ -1356,8 +1363,6 @@ async def main():
             return  # harmless shutdown race, ignore
         loop.default_exception_handler(context)
     asyncio.get_event_loop().set_exception_handler(_quiet_exception_handler)
-
-    args = parse_args()
 
     # MCP server mode
     if args.serve:
@@ -3667,7 +3672,7 @@ async def main():
 
 def run():
     try:
-        asyncio.run(main())
+        _app()
     except (KeyboardInterrupt, SystemExit, RuntimeError):
         pass  # Handled in finally
     finally:

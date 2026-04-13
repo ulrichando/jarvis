@@ -1,1 +1,0 @@
-"""FeedbackSurvey package."""
