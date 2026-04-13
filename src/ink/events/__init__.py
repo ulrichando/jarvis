@@ -1,1 +1,0 @@
-"""Ink event system."""

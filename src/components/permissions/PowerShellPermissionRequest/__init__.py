@@ -1,1 +1,0 @@
-"""PowerShellPermissionRequest package."""

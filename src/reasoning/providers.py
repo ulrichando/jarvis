@@ -16,6 +16,8 @@ import os
 from dataclasses import dataclass
 from src.config import JARVIS_HOME
 
+log = logging.getLogger("jarvis.providers")
+
 PROVIDERS_FILE = JARVIS_HOME / "providers.json"
 
 # ── Cache hit tracking (accumulated across all LLM calls in this process) ──────
@@ -289,7 +291,8 @@ class ProviderRegistry:
             return self._inet_cache[1]
         try:
             socket.setdefaulttimeout(2)
-            socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect(("8.8.8.8", 53))
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.connect(("8.8.8.8", 53))
             result = True
         except OSError:
             result = False
@@ -516,10 +519,10 @@ class ProviderRegistry:
             # never block the sole option — just try and let it fail naturally.
             if self._cb_is_open(provider) and len(active) > 1:
                 errors.append(f"{provider.name}: circuit breaker open")
-                print(f"[JARVIS] Provider {provider.name}: circuit breaker open, skipping")
+                log.debug("Provider %s: circuit breaker open, skipping", provider.name)
                 continue
             _t0_prov = _time_qwt.time()
-            print(f"[JARVIS] Trying {provider.name} ({provider.model})...")
+            log.debug("Trying %s (%s)...", provider.name, provider.model)
             try:
                 result = await self._query_tools_provider(provider, messages, tools, system, force_tool=force_tool)
                 tc = result.get("tool_calls", [])
@@ -527,18 +530,18 @@ class ProviderRegistry:
                     self._last_working = provider.name
                     self._cb_record_success(provider.name)
                     _lat = int((_time_qwt.time() - _t0_prov) * 1000)
-                    print(f"[JARVIS] {provider.name} OK ({_lat}ms, tools={len(tc)})")
+                    log.debug("%s OK (%dms, tools=%d)", provider.name, _lat, len(tc))
                     return result, f"{provider.name}:{provider.model}"
                 errors.append(f"{provider.name}: no tool result")
                 _lat = int((_time_qwt.time() - _t0_prov) * 1000)
-                print(f"[JARVIS] {provider.name} empty response ({_lat}ms), trying next")
+                log.debug("%s empty response (%dms), trying next", provider.name, _lat)
                 self._cb_record_failure(provider)
             except BaseException as e:
                 # BaseException catches CancelledError (asyncio timeout) in addition to
                 # regular exceptions — without this, asyncio cancellations bypass the
                 # circuit breaker and the slow provider is retried on every query.
                 _lat = int((_time_qwt.time() - _t0_prov) * 1000)
-                print(f"[JARVIS] {provider.name} error ({_lat}ms): {type(e).__name__}: {str(e)[:100]}")
+                log.debug("%s error (%dms): %s: %s", provider.name, _lat, type(e).__name__, str(e)[:100])
                 errors.append(f"{provider.name}: {e}")
                 # Rate limits are temporary — don't open the circuit breaker.
                 # Local timeouts are transient (model loading). Both skip CB failure.
@@ -1321,7 +1324,7 @@ class ProviderRegistry:
                                                     "id": tc2.id, "name": tc2.function.name, "args": args2,
                                                 })
                                         if result2["tool_calls"] or (result2["text"] and len(result2["text"]) > 5):
-                                            print(f"[JARVIS] {provider.name} core-tools retry OK (tools={len(result2['tool_calls'])})")
+                                            log.debug("%s core-tools retry OK (tools=%d)", provider.name, len(result2['tool_calls']))
                                             return result2
                                     except Exception:
                                         pass
@@ -1331,7 +1334,7 @@ class ProviderRegistry:
                                     chat3 = client.chat.completions.create(**kwargs_notool)
                                     msg3 = chat3.choices[0].message
                                     if msg3.content:
-                                        print(f"[JARVIS] {provider.name} plain retry OK after tool error")
+                                        log.debug("%s plain retry OK after tool error", provider.name)
                                         return {"text": msg3.content, "tool_calls": [], "usage": {}}
                                 except Exception:
                                     pass

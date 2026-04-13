@@ -1,1 +1,0 @@
-"""LogoV2 package."""
