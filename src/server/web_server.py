@@ -1352,6 +1352,75 @@ class JarvisWebServer:
                 await asyncio.sleep(0.5)
                 self._server_listener.jarvis_speaking = False
 
+    def _desktop_running(self) -> bool:
+        """Return True if the Tauri desktop process is alive."""
+        try:
+            r = __import__('subprocess').run(
+                ["pgrep", "-f", "jarvis-desktop"],
+                capture_output=True, timeout=3,
+            )
+            return r.returncode == 0
+        except Exception:
+            return False
+
+    async def _launch_desktop(self, force: bool = False) -> None:
+        """Launch (or relaunch) the Tauri desktop UI.
+
+        If force=False, skips launch when a desktop process is already running.
+        Always reads DISPLAY from environment, falling back to :0.0.
+        """
+        import subprocess as _sp
+        _jarvis_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        _tauri_bin = os.path.join(
+            _jarvis_root, "src", "desktop-tauri",
+            "src-tauri", "target", "release", "jarvis-desktop",
+        )
+
+        if not os.path.exists(_tauri_bin):
+            print(f"[JARVIS] Desktop binary not found — skipping: {_tauri_bin}")
+            return
+
+        if not force and self._desktop_running():
+            print("[JARVIS] Desktop already running — skipping launch")
+            return
+
+        # Kill any stale instance first
+        _sp.run(["pkill", "-f", "jarvis-desktop"], capture_output=True)
+        await asyncio.sleep(0.8)
+
+        # Determine DISPLAY — try environment, then query loginctl / xauth
+        display = os.environ.get("DISPLAY", "")
+        if not display:
+            try:
+                r = _sp.run(["loginctl", "show-session", "--value", "-p", "Display"],
+                             capture_output=True, text=True, timeout=3)
+                display = r.stdout.strip() or ":0"
+            except Exception:
+                display = ":0"
+
+        env = {**os.environ, "DISPLAY": display}
+        try:
+            _sp.Popen(
+                [_tauri_bin],
+                cwd=_jarvis_root,
+                start_new_session=True,
+                stdout=open("/tmp/jarvis-desktop.log", "w"),
+                stderr=_sp.STDOUT,
+                env=env,
+            )
+            print(f"[JARVIS] Desktop UI launched (DISPLAY={display})")
+        except Exception as e:
+            print(f"[JARVIS] Desktop launch failed: {e}")
+
+    async def _desktop_watchdog(self) -> None:
+        """Background task — relaunches desktop if it dies unexpectedly."""
+        await asyncio.sleep(15)  # Give initial launch time to settle
+        while True:
+            await asyncio.sleep(30)
+            if not self._desktop_running():
+                print("[JARVIS] Desktop not running — relaunching...")
+                await self._launch_desktop()
+
     async def _bare_interrupt(self):
         """Kill TTS when no WS client is available."""
         proc = getattr(self, '_current_ffplay', None)
@@ -4415,37 +4484,8 @@ class JarvisWebServer:
                 pass
             print("[JARVIS] Brain ready.")
 
-            # Launch desktop UI — kill old instance first to ensure fresh assets
-            try:
-                import subprocess as _sp_desktop
-                # Kill any old desktop app so it picks up new JS/CSS
-                # Use pgrep to find PIDs, then kill only those (avoids killing server)
-                pgrep = _sp_desktop.run(
-                    ["pgrep", "-f", "jarvis-desktop"],
-                    capture_output=True, text=True, timeout=5,
-                )
-                if pgrep.returncode == 0:
-                    for pid in pgrep.stdout.strip().split('\n'):
-                        if pid and pid != str(os.getpid()):
-                            try:
-                                os.kill(int(pid), 15)  # SIGTERM
-                            except (ProcessLookupError, ValueError):
-                                pass
-                    await asyncio.sleep(1)
-                _jarvis_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                env = {**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0.0")}
-                _tauri_bin = os.path.join(_jarvis_root, "src", "desktop-tauri", "src-tauri", "target", "release", "jarvis-desktop")
-                if not os.path.exists(_tauri_bin):
-                    print(f"[JARVIS] Desktop binary not found: {_tauri_bin}")
-                else:
-                    _sp_desktop.Popen(
-                        [_tauri_bin],
-                        cwd=_jarvis_root, start_new_session=True,
-                        stdout=open("/tmp/jarvis-desktop.log", "w"), stderr=_sp_desktop.STDOUT, env=env,
-                    )
-                print("[JARVIS] Desktop UI launched.")
-            except Exception as e:
-                print(f"[JARVIS] Desktop UI launch skipped: {e}")
+            await self._launch_desktop()
+            asyncio.create_task(self._desktop_watchdog())
 
             # Tell connected clients JARVIS is ready — distinct event for UI indicator
             await self._broadcast({
