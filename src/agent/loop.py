@@ -52,6 +52,29 @@ def _tool_call_sig(tool_name: str, tool_args: dict) -> str:
     return _hashlib.md5(key.encode()).hexdigest()
 
 
+_NARRATION_RE = _re.compile(
+    r"\b(I will|I'll|Let me|I'm going to|I am going to|I need to|"
+    r"First[,.]? I('ll| will)|I can do|I should|To (do|create|build|fix|run|check|make|set up|install|write|add|move|copy|delete|remove))\b",
+    _re.IGNORECASE,
+)
+_CLARIFICATION_RE = _re.compile(
+    r"\?|which (folder|file|name|path|directory|project|repo|branch)|"
+    r"what (folder|file|name|path|directory|project|repo|branch|should|would|do you)|"
+    r"(could you|can you|please) (specify|clarify|tell me|provide|share|give)|"
+    r"(what|which) (one|option|choice)",
+    _re.IGNORECASE,
+)
+
+
+def _is_narration(text: str) -> bool:
+    """Return True if a tools=0 response is narrating a plan instead of executing or asking."""
+    if not text or len(text.strip()) < 15:
+        return False
+    if _CLARIFICATION_RE.search(text):
+        return False  # Genuine clarifying question — not narration
+    return bool(_NARRATION_RE.search(text))
+
+
 def _is_tool_failure(result: str) -> bool:
     """Return True if a tool result string indicates a non-zero / error outcome."""
     if not result:
@@ -354,6 +377,8 @@ async def _agent_loop_internal(
     _failed_call_sigs_ns: set[str] = set()  # semantic-retry tracking (non-streaming)
     _write_ops: list[str] = []  # track write/edit/destructive bash operations for verifier
     _ecc_fixer = ToolFixer()   # ECC-L2: per-turn tool parameter mutation
+    _narration_count = 0        # consecutive narration-without-tools retries
+    _loop_state: dict = {}      # shared state between iterations (force_tool, etc.)
 
     while iterations < max_iterations:
         iterations += 1
@@ -372,10 +397,11 @@ async def _agent_loop_internal(
         messages = repair_tool_pairs(messages)
 
         # Call LLM with tools — retry on overflow/rate limit
+        _force_tool = _loop_state.pop("force_tool_next", False)
         response = None
         for attempt in range(3):
             try:
-                response = await reasoner.query_with_tools(messages, tools)
+                response = await reasoner.query_with_tools(messages, tools, force_tool=_force_tool)
                 break
             except Exception as e:
                 err = str(e).lower()
@@ -401,19 +427,37 @@ async def _agent_loop_internal(
             final_text += text_content
 
         if not tool_calls:
-            # Auto-continue if the response suggests more work ahead
+            _tc_lower = text_content.lower() if text_content else ""
+
+            # Narration detection: model describing a plan instead of calling tools
+            if text_content and _is_narration(text_content) and tools:
+                _narration_count += 1
+                if _narration_count <= 2 and iterations < max_iterations:
+                    nudge = (
+                        "Stop describing. Call the tool now — do not output any text."
+                        if _narration_count == 1
+                        else "TOOL CALL REQUIRED. Respond with a tool call only, zero text."
+                    )
+                    _append_assistant_message(messages, text_content, [])
+                    messages.append({"role": "user", "content": nudge})
+                    _loop_state["force_tool_next"] = True
+                    log.debug("Narration retry %d — injecting force-tool nudge", _narration_count)
+                    continue
+                # Gave up after 2 retries
+                log.warning("Narration loop after %d retries — breaking", _narration_count)
+                break
+
+            # Multi-step continuation: model is working through a plan it started
             _forward_signals = (
                 "next", "now i'll", "now i will", "i'll now", "i will now",
-                "then i'll", "then i will", "let me", "i need to", "i'll create",
-                "i'll write", "i'll build", "i'll implement", "i'll add",
-                "moving on", "continuing", "proceeding", "step ", "phase ",
-                "first,", "second,", "third,", "finally,",
+                "then i'll", "then i will", "moving on", "continuing", "proceeding",
+                "step ", "phase ", "first,", "second,", "third,", "finally,",
             )
-            _tc_lower = text_content.lower()
             _should_continue = (
                 tools
                 and any(sig in _tc_lower for sig in _forward_signals)
                 and iterations < max_iterations
+                and _narration_count == 0
             )
             if _should_continue:
                 _append_assistant_message(messages, text_content, [])

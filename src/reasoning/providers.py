@@ -405,7 +405,7 @@ class ProviderRegistry:
 
         def _is_code(p):
             code_names = {"ollama-code", "deepseek", "codestral"}
-            code_models = {"deepseek", "codestral", "starcoder", "codegemma", "qwen2.5:72b"}
+            code_models = {"deepseek", "codestral", "starcoder", "codegemma"}
             return p.name in code_names or any(cm in p.model.lower() for cm in code_models)
 
         if prefer_tool_calling:
@@ -475,7 +475,7 @@ class ProviderRegistry:
                 continue
 
     async def query_with_tools(self, messages: list[dict], tools: list[dict],
-                               system: str = "") -> tuple[dict, str]:
+                               system: str = "", force_tool: bool = False) -> tuple[dict, str]:
         self._auto_reload_if_changed()
         """Tool-calling query across providers. Falls back to plain query if tool calling fails.
 
@@ -492,7 +492,10 @@ class ProviderRegistry:
                     break
 
         is_code = False
+        # Only check user messages — system prompt always contains code keywords
         for m in messages:
+            if m.get("role") not in ("user", "assistant"):
+                continue
             content = (m.get("content") or "").lower()
             if any(kw in content for kw in ["review", "debug", "fix", "refactor",
                                              "function", "class ", ".py", ".rs", ".js",
@@ -503,6 +506,7 @@ class ProviderRegistry:
 
         errors = []
         import asyncio as _asyncio
+        import time as _time_qwt
         active = self.get_active_providers(prefer_code=is_code)
         # Respect user's priority order — prefer_tool_calling would override it by
         # always putting cloud first. Trust priority 0 = highest regardless of local/cloud.
@@ -512,24 +516,37 @@ class ProviderRegistry:
             # never block the sole option — just try and let it fail naturally.
             if self._cb_is_open(provider) and len(active) > 1:
                 errors.append(f"{provider.name}: circuit breaker open")
+                print(f"[JARVIS] Provider {provider.name}: circuit breaker open, skipping")
                 continue
+            _t0_prov = _time_qwt.time()
+            print(f"[JARVIS] Trying {provider.name} ({provider.model})...")
             try:
-                result = await self._query_tools_provider(provider, messages, tools, system)
+                result = await self._query_tools_provider(provider, messages, tools, system, force_tool=force_tool)
                 tc = result.get("tool_calls", [])
                 if tc or (result.get("text") and len(result["text"]) > 5):
                     self._last_working = provider.name
                     self._cb_record_success(provider.name)
+                    _lat = int((_time_qwt.time() - _t0_prov) * 1000)
+                    print(f"[JARVIS] {provider.name} OK ({_lat}ms, tools={len(tc)})")
                     return result, f"{provider.name}:{provider.model}"
                 errors.append(f"{provider.name}: no tool result")
+                _lat = int((_time_qwt.time() - _t0_prov) * 1000)
+                print(f"[JARVIS] {provider.name} empty response ({_lat}ms), trying next")
                 self._cb_record_failure(provider)
             except BaseException as e:
                 # BaseException catches CancelledError (asyncio timeout) in addition to
                 # regular exceptions — without this, asyncio cancellations bypass the
                 # circuit breaker and the slow provider is retried on every query.
+                _lat = int((_time_qwt.time() - _t0_prov) * 1000)
+                print(f"[JARVIS] {provider.name} error ({_lat}ms): {type(e).__name__}: {str(e)[:100]}")
                 errors.append(f"{provider.name}: {e}")
-                # For local providers, timeouts likely mean the model is loading — treat
-                # as transient so the circuit breaker doesn't open and block the fallback.
-                is_transient = provider.is_local and isinstance(e, (_asyncio.TimeoutError, TimeoutError))
+                # Rate limits are temporary — don't open the circuit breaker.
+                # Local timeouts are transient (model loading). Both skip CB failure.
+                _err_str = str(e).lower()
+                is_rate_limit = "rate" in _err_str or "429" in _err_str or "quota" in _err_str
+                is_transient = is_rate_limit or (
+                    provider.is_local and isinstance(e, (_asyncio.TimeoutError, TimeoutError))
+                )
                 self._cb_record_failure(provider, is_transient=is_transient)
                 if isinstance(e, _asyncio.CancelledError):
                     raise  # Re-raise so asyncio cancellation still propagates
@@ -851,13 +868,13 @@ class ProviderRegistry:
         return await asyncio.to_thread(_call)
 
     async def _query_tools_provider(self, provider: Provider, messages: list[dict],
-                                    tools: list[dict], system: str) -> dict:
+                                    tools: list[dict], system: str, force_tool: bool = False) -> dict:
         if provider.type == "remote":
             return await self._query_tools_remote(provider, messages, tools, system)
         if provider.type == "anthropic":
             return await self._query_tools_anthropic(provider, messages, tools, system)
         else:
-            return await self._query_tools_openai(provider, messages, tools, system)
+            return await self._query_tools_openai(provider, messages, tools, system, force_tool=force_tool)
 
     async def _query_tools_remote(self, provider: Provider, messages: list[dict],
                                   tools: list[dict], system: str) -> dict:
@@ -1150,7 +1167,7 @@ class ProviderRegistry:
         return result
 
     async def _query_tools_openai(self, provider: Provider, messages: list[dict],
-                                  tools: list[dict], system: str) -> dict:
+                                  tools: list[dict], system: str, force_tool: bool = False) -> dict:
         client = self._get_openai_client(provider)
         if not client:
             return {"text": "", "tool_calls": []}
@@ -1164,7 +1181,17 @@ class ProviderRegistry:
             or provider.api_key == "ollama"
         )
         is_local_or_ollama = is_local or is_ollama
+        is_groq = "groq.com" in provider.base_url
         max_tok = self._effort_tokens()
+
+        # Groq: cap tools at 20 — llama-3.3-70b throws 400 with too many tools
+        if is_groq and len(tools) > 20:
+            _PRIORITY_TOOLS = {"bash", "read_file", "write_file", "edit_file",
+                               "Glob", "Grep", "web_search", "web_fetch", "think",
+                               "dispatch", "ask_user", "todo_write"}
+            tools = [t for t in tools if t["function"]["name"] in _PRIORITY_TOOLS] + \
+                    [t for t in tools if t["function"]["name"] not in _PRIORITY_TOOLS]
+            tools = tools[:20]
 
         # Inject effort instruction into system message for local models
         if is_local_or_ollama:
@@ -1193,9 +1220,9 @@ class ProviderRegistry:
                                 "temperature": 0.3,
                                 "max_tokens": max_tok,
                             }
-                            # tool_choice: Ollama (local or remote) doesn't always support it
+                            # tool_choice: Ollama doesn't support it; cloud uses required when forced
                             if not is_local_or_ollama:
-                                kwargs["tool_choice"] = "auto"
+                                kwargs["tool_choice"] = "required" if force_tool else "auto"
                             chat = client.chat.completions.create(**kwargs)
                             msg = chat.choices[0].message
                             result = {"text": msg.content or "", "tool_calls": [], "usage": {}}
@@ -1270,6 +1297,44 @@ class ProviderRegistry:
                                 last_error = e
                                 # Rate limited on this model, try next model in list
                                 continue
+                            # Groq/cloud "failed to call a function" — too many tools or bad schema.
+                            # Retry with only the core tools (bash, file ops, search, think).
+                            if not is_local and ("failed to call a function" in err_str or
+                                                 "function_call" in err_str or "400" in err_str):
+                                _CORE_TOOLS = {"bash", "read_file", "write_file", "edit_file",
+                                               "Glob", "Grep", "web_search", "web_fetch", "think"}
+                                core_tools = [t for t in tools if t["function"]["name"] in _CORE_TOOLS]
+                                if core_tools:
+                                    try:
+                                        kwargs_core = dict(kwargs)
+                                        kwargs_core["tools"] = core_tools
+                                        chat2 = client.chat.completions.create(**kwargs_core)
+                                        msg2 = chat2.choices[0].message
+                                        result2 = {"text": msg2.content or "", "tool_calls": [], "usage": {}}
+                                        if msg2.tool_calls:
+                                            for tc2 in msg2.tool_calls:
+                                                try:
+                                                    args2 = json.loads(tc2.function.arguments)
+                                                except json.JSONDecodeError:
+                                                    args2 = {"command": tc2.function.arguments}
+                                                result2["tool_calls"].append({
+                                                    "id": tc2.id, "name": tc2.function.name, "args": args2,
+                                                })
+                                        if result2["tool_calls"] or (result2["text"] and len(result2["text"]) > 5):
+                                            print(f"[JARVIS] {provider.name} core-tools retry OK (tools={len(result2['tool_calls'])})")
+                                            return result2
+                                    except Exception:
+                                        pass
+                                # Core retry also failed — fall back to plain text
+                                try:
+                                    kwargs_notool = {k: v for k, v in kwargs.items() if k not in ("tools", "tool_choice")}
+                                    chat3 = client.chat.completions.create(**kwargs_notool)
+                                    msg3 = chat3.choices[0].message
+                                    if msg3.content:
+                                        print(f"[JARVIS] {provider.name} plain retry OK after tool error")
+                                        return {"text": msg3.content, "tool_calls": [], "usage": {}}
+                                except Exception:
+                                    pass
                             # Local model doesn't support native tool calling — use prompt-based fallback
                             if is_local and tools:
                                 return self._prompt_based_tool_call(client, provider, messages, tools)
@@ -1488,17 +1553,22 @@ RULES:
                 or provider.api_key == "ollama"
             )
             # Timeout strategy:
-            # - Local Ollama, NOT pinned: 60s — still a meaningful fallback, model may be loading
+            # - Local Ollama, NOT pinned, cloud available: 25s — don't block voice queries
+            # - Local Ollama, NOT pinned, no cloud: 90s — only fallback, model may be loading
             # - Local Ollama, pinned by user: 120s — user explicitly chose it, wait for it
             # - Remote Ollama: 120s — user explicitly configured and pinned it
-            # - Cloud providers: 60s — standard API timeout
+            # - Cloud providers: 30s — fast API, fail early rather than blocking
             is_pinned = self._pinned == provider.name
+            _has_cloud = any(
+                "localhost" not in p.base_url and "127.0.0.1" not in p.base_url
+                for p in self._providers.values() if p.enabled and p.name != provider.name
+            )
             if is_local and not is_pinned:
-                timeout = 60  # last-resort fallback: give model time to load
+                timeout = 25 if _has_cloud else 90  # short when cloud is available
             elif is_local or is_ollama:
                 timeout = 120  # explicit choice: wait for inference
             else:
-                timeout = 60   # cloud
+                timeout = 30   # cloud (Groq/OpenAI should respond in < 10s)
             client = OpenAI(api_key=provider.api_key, base_url=provider.base_url,
                             max_retries=0, timeout=timeout)
             self._clients[provider.name] = client

@@ -57,7 +57,7 @@ class AmbientListener:
         self,
         sample_rate: int = 16000,
         energy_threshold: float = 0.005,      # Very low — adaptive calibration raises it
-        silence_duration: float = 0.8,         # Seconds of silence = end of utterance
+        silence_duration: float = 1.5,         # Seconds of silence = end of utterance
         min_speech_duration: float = 0.5,      # Min seconds to be valid speech
         max_speech_duration: float = 15.0,     # Max seconds before forced cutoff
         pre_speech_buffer: float = 0.3,        # Seconds of audio to keep before speech
