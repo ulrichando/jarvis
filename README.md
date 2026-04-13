@@ -3,7 +3,7 @@
 **Just A Rather Very Intelligent System** — An autonomous AI agent that lives on your machine.
 
 ```bash
-curl -fsSL https://ulrichando.github.io/jarvis/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ulrichando/jarvis/master/install.sh | bash
 ```
 
 Reads your files. Runs your commands. Writes your code. Searches the web. Listens to your voice. Works with any LLM — cloud or fully local.
@@ -106,7 +106,7 @@ Smart routing selects the best provider per task — code, tool use, reasoning, 
 
 ### One-liner
 ```bash
-curl -fsSL https://ulrichando.github.io/jarvis/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ulrichando/jarvis/master/install.sh | bash
 ```
 
 ### Manual
