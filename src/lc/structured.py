@@ -46,7 +46,6 @@ async def extract(
 
     # Try LangChain structured output first
     try:
-        from langchain_core.utils.function_calling import convert_to_openai_function
         schema_dict = _pydantic_to_openai_schema(schema)
         enhanced_prompt = (
             f"{prompt}\n\nRespond ONLY with valid JSON matching this schema:\n"

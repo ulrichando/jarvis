@@ -3,15 +3,15 @@
 Activated when env LANGCHAIN_TRACING_V2=true is set.
 Requires LANGCHAIN_API_KEY.
 
-Uses langsmith.RunTree — the stable low-level API that works across versions.
+Uses langsmith.trace() — the context-manager API that properly propagates
+parent context so nested trace_call() spans are correctly nested in the UI.
 
 Usage:
     from src.lc.tracing import setup_tracing, trace_call
     setup_tracing()  # call once at startup
 
-    with trace_call("agent_loop", {"input": query}) as run:
+    with trace_call("agent_loop", {"input": query}, tags=["voice"], metadata={"model": "gpt-4"}) as run:
         result = ...
-        run.end(outputs={"output": result})
 """
 
 import logging
@@ -21,7 +21,6 @@ from typing import Any, Generator
 
 log = logging.getLogger(__name__)
 
-# Valid LangSmith run types
 _VALID_RUN_TYPES = {"tool", "chain", "llm", "retriever", "embedding", "prompt", "parser"}
 
 
@@ -56,6 +55,9 @@ def setup_tracing(project: str | None = None) -> bool:
 
 class _NoopRun:
     """Dummy run object when tracing is off or unavailable."""
+    id = None
+    outputs = None
+
     def end(self, **kwargs): pass
     def patch(self, **kwargs): pass
     def post(self, **kwargs): pass
@@ -66,45 +68,47 @@ def trace_call(
     name: str,
     inputs: dict[str, Any] | None = None,
     run_type: str = "chain",
+    tags: list[str] | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> Generator[Any, None, None]:
     """Context manager that traces a block with LangSmith if enabled.
 
-    Uses langsmith.RunTree which is the stable low-level API.
-    Falls back to a no-op if tracing is disabled or LangSmith is unreachable.
+    Uses langsmith.trace() which sets LangSmith's internal context variables
+    so any nested trace_call() spans are automatically attached as children,
+    producing a properly nested trace tree in the UI.
+
+    Args:
+        name:      Display name for this span in the UI.
+        inputs:    Input data to record on the run.
+        run_type:  One of chain, tool, llm, retriever, etc.
+        tags:      List of string tags for filtering runs in the UI.
+        metadata:  Arbitrary key-value metadata shown in run details.
     """
     if not is_tracing_enabled():
         yield _NoopRun()
         return
 
-    # Normalise run_type
     if run_type not in _VALID_RUN_TYPES:
         run_type = "chain"
 
     try:
-        from langsmith.run_trees import RunTree
+        from langsmith import trace
 
-        run = RunTree(
+        with trace(
             name=name,
             run_type=run_type,
             inputs=inputs or {},
             project_name=os.environ.get("LANGCHAIN_PROJECT", "jarvis"),
-        )
-        run.post()  # sends the run-start event
-
-        try:
-            yield run
-        except Exception as exc:
-            run.end(error=str(exc))
-            run.patch()
-            raise
-        else:
-            # Only call end() if the caller hasn't already done so
-            if not getattr(run, "_end_time", None):
-                run.end(outputs={})
-            run.patch()  # sends the run-end event
+            tags=tags or [],
+            metadata=metadata or {},
+        ) as run:
+            try:
+                yield run
+            except Exception:
+                raise
 
     except ImportError:
-        log.debug("langsmith.run_trees not available — tracing disabled.")
+        log.debug("langsmith not available — tracing disabled.")
         yield _NoopRun()
     except Exception as e:
         log.debug("LangSmith trace_call error: %s", e)

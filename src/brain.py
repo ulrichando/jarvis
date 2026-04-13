@@ -370,6 +370,33 @@ class Brain:
 
     def __init__(self, quiet: bool = False):
         ensure_dirs()
+        # Auto-load .env from project root and ~/.jarvis/.env so
+        # API keys and LANGCHAIN_* vars are available in any entrypoint
+        # (CLI, web server, desktop — regardless of how the shell was started).
+        _env_candidates = [
+            Path(__file__).resolve().parent.parent / ".env",  # project root
+            Path.home() / ".jarvis" / ".env",                 # user home
+        ]
+        try:
+            from dotenv import load_dotenv as _load_dotenv
+            for _env_path in _env_candidates:
+                if _env_path.exists():
+                    _load_dotenv(str(_env_path), override=False)
+        except ImportError:
+            # dotenv not installed — fall back to manual parse
+            for _env_path in _env_candidates:
+                if _env_path.exists():
+                    try:
+                        for _line in _env_path.read_text().splitlines():
+                            _line = _line.strip()
+                            if _line and not _line.startswith("#") and "=" in _line:
+                                _k, _, _v = _line.partition("=")
+                                _k = _k.strip()
+                                if _k and _k not in os.environ:
+                                    os.environ[_k] = _v.strip()
+                    except Exception:
+                        pass
+
         setup_logging(log_file=str(DATA_DIR / "jarvis.log"), quiet=quiet)
         log.info("JARVIS Brain initializing...")
 
@@ -487,10 +514,14 @@ class Brain:
             log.debug("Monitor init failed: %s", e)
             self._monitor = None
 
-        # ── LangSmith tracing (opt-in via LANGCHAIN_TRACING_V2=true) ──
+        # ── LangSmith (opt-in via LANGCHAIN_TRACING_V2=true) ──
         try:
             from src.lc.tracing import setup_tracing
-            setup_tracing(project="jarvis")
+            if setup_tracing(project="jarvis"):
+                from src.lc.feedback import setup_feedback_configs
+                from src.lc.evaluators import setup_annotation_queue
+                setup_feedback_configs()
+                setup_annotation_queue()
         except Exception:
             pass
 

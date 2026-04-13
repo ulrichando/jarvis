@@ -32,6 +32,45 @@ except ImportError:
     _wcswidth = None
 
 
+# ── Enum choices for CLI options ─────────────────────────────────────────────
+from enum import Enum
+
+class ThemeChoice(str, Enum):
+    dark = "dark"
+    light = "light"
+    ghost = "ghost"
+    auto = "auto"
+
+class ModeChoice(str, Enum):
+    normal = "normal"
+    agent = "agent"
+    cli = "cli"
+    berbon = "berbon"
+    plan = "plan"
+
+class EffortChoice(str, Enum):
+    low = "low"
+    medium = "medium"
+    high = "high"
+    max = "max"
+
+class OutputFormat(str, Enum):
+    text = "text"
+    json = "json"
+    stream_json = "stream-json"
+
+class ThinkingMode(str, Enum):
+    enabled = "enabled"
+    adaptive = "adaptive"
+    disabled = "disabled"
+
+class PermissionMode(str, Enum):
+    default = "default"
+    bypass = "bypass"
+    accept_edits = "accept-edits"
+    plan = "plan"
+
+
 def _display_width(text: str) -> int:
     """Get the display width of text, accounting for wide characters (CJK, emoji)."""
     if _wcswidth is not None:
@@ -155,6 +194,18 @@ THEMES = {
         "text": "\033[30m",         # Black — headings
         "code_bg": "\033[48;5;255m",  # Light background for code
         "code_fg": "\033[38;5;235m",  # Dark text in code blocks
+    },
+    "ghost": {
+        "primary":   "\033[38;5;247m",    # Silver — prompts, highlights
+        "success":   "\033[38;5;115m",    # Muted green — completions
+        "warning":   "\033[38;5;179m",    # Muted amber — warnings
+        "error":     "\033[38;5;167m",    # Muted red — errors
+        "accent":    "\033[38;5;111m",    # Slate blue — spinner, info
+        "secondary": "\033[38;5;140m",    # Muted violet — italic text
+        "muted":     "\033[38;5;240m",    # Dark grey — dim text
+        "text":      "\033[38;5;252m",    # Near-white — headings
+        "code_bg":   "\033[48;5;234m",    # Very dark background for code
+        "code_fg":   "\033[38;5;248m",    # Silver text in code blocks
     },
 }
 
@@ -702,10 +753,19 @@ class StandaloneBrain:
 
 # ── CLI Entry ────────────────────────────────────────────────────────
 
+__version__ = "2.0.0"
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"JARVIS v{__version__}")
+        raise typer.Exit()
+
+
 _app = typer.Typer(
     name="jarvis",
     help="JARVIS — autonomous AI agent",
-    add_completion=False,
+    add_completion=True,
     pretty_exceptions_enable=False,
     epilog=(
         "Examples:\n"
@@ -726,33 +786,33 @@ def _typer_entry(
     name: str = typer.Option("", "-n", "--name", help="Name for the new session"),
     # Query mode
     print_mode: Optional[str] = typer.Option(None, "-p", "--print", metavar="QUERY", help="One-shot mode: run query and print result"),
-    mode: str = typer.Option("normal", "-m", "--mode", help="Starting mode: normal/agent/cli/berbon/plan"),
+    mode: Optional[ModeChoice] = typer.Option(None, "-m", "--mode", envvar="JARVIS_MODE", help="Starting mode"),
     # Positional query words
-    query: Optional[List[str]] = typer.Argument(None, help="Initial query"),
+    query: Optional[List[str]] = typer.Argument(None, help="Initial query", envvar="JARVIS_QUERY"),
     # Server / theme
     serve: bool = typer.Option(False, "--serve", help="Start as MCP server (stdio mode)"),
-    theme: Optional[str] = typer.Option(None, "--theme", help="Color theme: dark/light/auto"),
+    theme: Optional[ThemeChoice] = typer.Option(None, "--theme", envvar="JARVIS_THEME", help="Color theme"),
     # Model & effort
-    model: Optional[str] = typer.Option(None, "--model", metavar="MODEL", help="Override model (opus/sonnet/haiku or full name)"),
-    effort: Optional[str] = typer.Option(None, "--effort", help="Response effort: low/medium/high/max"),
+    model: Optional[str] = typer.Option(None, "--model", metavar="MODEL", envvar="JARVIS_MODEL", help="Override model (opus/sonnet/haiku or full name)"),
+    effort: Optional[EffortChoice] = typer.Option(None, "--effort", envvar="JARVIS_EFFORT", help="Response effort level"),
     fallback_model: Optional[str] = typer.Option(None, "--fallback-model", metavar="MODEL", help="Fallback model on overload"),
     # Output
-    output_format: str = typer.Option("text", "--output-format", help="Output format: text/json/stream-json"),
+    output_format: OutputFormat = typer.Option(OutputFormat.text, "--output-format", help="Output format"),
     json_schema: Optional[str] = typer.Option(None, "--json-schema", metavar="SCHEMA", help="JSON schema for structured output"),
     # Limits
     max_turns: Optional[int] = typer.Option(None, "--max-turns", metavar="N", help="Max agentic turns in non-interactive mode"),
     max_budget_usd: Optional[float] = typer.Option(None, "--max-budget-usd", metavar="USD", help="Max spend for this session"),
     # System prompt
     system_prompt: Optional[str] = typer.Option(None, "--system-prompt", metavar="PROMPT", help="Custom system prompt"),
-    system_prompt_file: Optional[str] = typer.Option(None, "--system-prompt-file", metavar="FILE", help="Read system prompt from file"),
+    system_prompt_file: Optional[typer.FileText] = typer.Option(None, "--system-prompt-file", help="Read system prompt from file"),
     append_system_prompt: Optional[str] = typer.Option(None, "--append-system-prompt", metavar="PROMPT", help="Append to default system prompt"),
     # Advanced
     bare: bool = typer.Option(False, "--bare", help="Minimal mode: skip hooks, plugins, MCP discovery"),
     verbose: bool = typer.Option(False, "--verbose", help="Verbose output (show full tool results)"),
     debug: Optional[str] = typer.Option(None, "--debug", metavar="FILTER", help="Debug mode (all / api,hooks,tools)"),
-    thinking: Optional[str] = typer.Option(None, "--thinking", help="Thinking mode: enabled/adaptive/disabled"),
+    thinking: Optional[ThinkingMode] = typer.Option(None, "--thinking", help="Thinking mode"),
     # Permissions
-    permission_mode: Optional[str] = typer.Option(None, "--permission-mode", help="Permission mode: default/bypass/accept-edits/plan"),
+    permission_mode: Optional[PermissionMode] = typer.Option(None, "--permission-mode", envvar="JARVIS_PERMISSION_MODE", help="Permission mode"),
     dangerously_skip_permissions: bool = typer.Option(False, "--dangerously-skip-permissions", help="Skip all permission checks"),
     # Tools
     tools: Optional[List[str]] = typer.Option(None, "--tools", metavar="TOOL", help="Specify available tools"),
@@ -762,32 +822,36 @@ def _typer_entry(
     mcp_config: Optional[str] = typer.Option(None, "--mcp-config", metavar="FILE", help="MCP server config file"),
     # Worktree
     worktree: Optional[str] = typer.Option(None, "-w", "--worktree", metavar="NAME", help="Create git worktree (use 'auto' for automatic name)"),
+    # Version (eager — handled before any other processing)
+    version: Optional[bool] = typer.Option(None, "--version", callback=_version_callback, is_eager=True, help="Show version and exit"),
 ):
     """JARVIS — autonomous AI agent."""
+    # Read file content if system_prompt_file was provided (typer.FileText)
+    _spf_content = system_prompt_file.read() if system_prompt_file else None
     args = types.SimpleNamespace(
         continue_last=continue_last,
         resume=resume,
         name=name,
         print_mode=print_mode,
-        mode=mode,
+        mode=mode.value if mode else "normal",
         query=query or [],
         serve=serve,
-        theme=theme,
+        theme=theme.value if theme else None,
         model=model,
-        effort=effort,
+        effort=effort.value if effort else None,
         fallback_model=fallback_model,
-        output_format=output_format,
+        output_format=output_format.value if output_format else "text",
         json_schema=json_schema,
         max_turns=max_turns,
         max_budget_usd=max_budget_usd,
         system_prompt=system_prompt,
-        system_prompt_file=system_prompt_file,
+        system_prompt_file=_spf_content,   # now a str (file already read)
         append_system_prompt=append_system_prompt,
         bare=bare,
         verbose=verbose,
         debug=debug,
-        thinking=thinking,
-        permission_mode=permission_mode,
+        thinking=thinking.value if thinking else None,
+        permission_mode=permission_mode.value if permission_mode else None,
         dangerously_skip_permissions=dangerously_skip_permissions,
         tools=tools,
         allowed_tools=allowed_tools,
@@ -1513,11 +1577,7 @@ async def main(args: types.SimpleNamespace):
     if args.system_prompt:
         _custom_system_prompt = args.system_prompt
     elif args.system_prompt_file:
-        try:
-            with open(args.system_prompt_file, "r") as f:
-                _custom_system_prompt = f.read()
-        except Exception as e:
-            _writeln(f"  {RED}Failed to read system prompt file: {e}{RESET}")
+        _custom_system_prompt = args.system_prompt_file
 
     if _custom_system_prompt and client._is_full_brain:
         try:
@@ -1754,8 +1814,12 @@ async def main(args: types.SimpleNamespace):
         return False
 
     def _trust_dir(directory):
-        """Mark a directory as trusted."""
+        """Mark a directory as trusted.
+        Config path follows XDG via typer.get_app_dir('jarvis') on all platforms.
+        We use ~/.jarvis for backward compat but fall back to get_app_dir if missing.
+        """
         import json as _json
+        _alt_dir = typer.get_app_dir("jarvis")  # platform-aware: ~/.config/jarvis on Linux
         trusted = []
         try:
             if os.path.exists(trust_file):
@@ -1783,16 +1847,14 @@ async def main(args: types.SimpleNamespace):
         _writeln()
         _writeln(f" {DIM}JARVIS will be able to read, edit, and execute files here.{RESET}")
         _writeln()
-        _writeln(f" {CYAN}❯{RESET} 1. Yes, I trust this folder")
-        _writeln(f"   2. No, exit")
         _writeln()
         try:
-            choice = input(f" {DIM}Enter to confirm · 2 to exit:{RESET} ").strip()
+            trusted = typer.confirm(f" Trust this directory?", default=True)
         except (EOFError, KeyboardInterrupt):
-            choice = "2"
-        if choice == "2":
-            _writeln(f"  {DIM}Exiting. Run jarvis from a trusted directory.{RESET}")
-            return
+            trusted = False
+        if not trusted:
+            typer.echo(typer.style("  Exiting. Run jarvis from a trusted directory.", fg=typer.colors.BRIGHT_BLACK))
+            raise typer.Exit()
         _trust_dir(cwd)
         _writeln()
 
@@ -1989,6 +2051,7 @@ async def main(args: types.SimpleNamespace):
 
     _frame_drawn = False
     _ANSI_ESCAPE_RE = re.compile(r'\033\[[^m]*m')
+    _last_was_question = [False]   # True when JARVIS last response ended with '?'
 
     def _setup_zones():
         pass   # no scroll region needed for inline layout
@@ -2023,7 +2086,10 @@ async def main(args: types.SimpleNamespace):
         mode_str2 = brain.mode if client._is_full_brain else "normal"
         prompt = (f"{vim_indicator}{YELLOW}{mode_str2}{RESET} ❯ "
                   if mode_str2 != "normal" else f"{vim_indicator}❯ ")
-        left = f"  {DIM}? for shortcuts{RESET}"
+        if _last_was_question[0]:
+            left = f"  {DIM}[y] yes  [n] no  · any other key to type freely{RESET}"
+        else:
+            left = f"  {DIM}? for shortcuts{RESET}"
         if right_str:
             vl = _display_width(_ANSI_ESCAPE_RE.sub('', left))
             vr = _display_width(right_str)
@@ -2524,6 +2590,19 @@ async def main(args: types.SimpleNamespace):
                     _draw_search_prompt()
                     return
                 return
+
+            # ── Single-key y/n shortcut when JARVIS asked a question ──
+            if _last_was_question[0] and not buf and ch in ('y', 'Y', 'n', 'N'):
+                answer = 'yes' if ch.lower() == 'y' else 'no'
+                _last_was_question[0] = False
+                buf.extend(answer)
+                if not result_future.done():
+                    result_future.set_result(answer)
+                return
+            # Clear yn hint the moment user starts typing anything else
+            if _last_was_question[0] and ch >= ' ':
+                _last_was_question[0] = False
+                _redraw()
 
             # ── Normal input mode ──
             # Try keybinding resolver first (src/keybindings)
@@ -3092,6 +3171,14 @@ async def main(args: types.SimpleNamespace):
 
         if full_text.strip():
             session_mgr.add_message("jarvis", full_text)
+            # Detect yes/no question — enables single-key y/n shortcut in prompt.
+            # Split on sentence boundaries; check if any sentence ends with '?'.
+            # Strips markdown formatting (**, ``) before checking to avoid false negatives.
+            import re as _re_yn
+            _yn_sentences = _re_yn.split(r'(?<=[.!?])\s+', full_text.strip())
+            _last_was_question[0] = any(
+                s.rstrip('*_` \t').endswith('?') for s in _yn_sentences
+            )
 
             # TTS if voice mode
             if voice_mode and full_text.strip():
@@ -3624,7 +3711,7 @@ async def main(args: types.SimpleNamespace):
                 except Exception:
                     pass
                 subprocess.Popen(
-                    ["python3", "-c", "from src.desktop.app import main; main()"],
+                    [os.path.join(_jarvis_root, "src", "desktop-tauri", "src-tauri", "target", "debug", "jarvis-desktop")],
                     cwd=_jarvis_root, start_new_session=True,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env,
                 )

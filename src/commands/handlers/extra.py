@@ -114,8 +114,9 @@ async def cmd_desktop(ctx: CommandContext) -> CommandResult:
     log_path = "/tmp/jarvis-desktop.log"
 
     with open(log_path, "w") as log_file:
+        tauri_bin = os.path.join(jarvis_root, "src", "desktop-tauri", "src-tauri", "target", "debug", "jarvis-desktop")
         subprocess.Popen(
-            ["python3", "-c", "from src.desktop.app import main; main()"],
+            [tauri_bin],
             cwd=jarvis_root,
             start_new_session=True,
             stdout=log_file,
