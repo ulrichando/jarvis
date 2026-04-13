@@ -568,3 +568,94 @@ async def cmd_self_modify(ctx: CommandContext) -> CommandResult:
         return CommandResult(text=f"Self-modification failed: {e}", success=False)
 
     return CommandResult(text=result_text or "Self-modification complete.")
+
+
+# ── /logs ─────────────────────────────────────────────────────────────────
+
+@command("logs", description="Show recent JARVIS conversation logs and context",
+         usage="/logs [n] [--context | --memory | --screen | --tail]",
+         category="core", permission=PermLevel.READ_ONLY)
+async def cmd_logs(ctx: CommandContext) -> CommandResult:
+    """Show recent conversation history and injected context for debugging."""
+    import sqlite3, os, time
+    args = ctx.args.strip().lower()
+
+    show_context = "--context" in args
+    show_memory  = "--memory" in args
+    show_screen  = "--screen" in args
+    show_tail    = "--tail" in args
+
+    # Parse line count
+    n = 10
+    for part in args.split():
+        if part.isdigit():
+            n = min(int(part), 50)
+
+    lines = []
+
+    # ── Conversation history ──────────────────────────────────────────────
+    db_candidates = [
+        os.path.expanduser("~/.jarvis/data/jarvis.db"),
+        os.path.expanduser("~/.jarvis/data/memory.sqlite"),
+        os.path.expanduser("~/.jarvis/memory.db"),
+    ]
+    db_path = next((p for p in db_candidates if os.path.exists(p)), None)
+
+    if db_path:
+        try:
+            conn = sqlite3.connect(db_path, timeout=5)
+            rows = conn.execute(
+                "SELECT role, content, timestamp FROM conversations "
+                "ORDER BY rowid DESC LIMIT ?", (n,)
+            ).fetchall()
+            conn.close()
+            if rows:
+                lines.append(f"── Last {len(rows)} messages ({'from ' + db_path}) ──")
+                for role, content, ts in reversed(rows):
+                    label = "You" if role == "user" else "JARVIS"
+                    # Truncate long messages
+                    preview = content[:200].replace("\n", " ")
+                    if len(content) > 200:
+                        preview += f"... [{len(content)} chars]"
+                    lines.append(f"  [{label}] {preview}")
+        except Exception as e:
+            lines.append(f"  DB error: {e}")
+    else:
+        lines.append("  No conversation DB found.")
+
+    # ── Screen context ─────────────────────────────────────────────────
+    if show_screen:
+        lines.append("\n── Screen Context ──")
+        brain = ctx.brain
+        if brain and hasattr(brain, "screen"):
+            sc = brain.screen.get_context_for_llm()
+            lines.append(sc if sc else "  (no screen context)")
+        else:
+            lines.append("  (screen observer not available)")
+
+    # ── Memory context ─────────────────────────────────────────────────
+    if show_memory:
+        lines.append("\n── Memory Recall (for 'hello') ──")
+        brain = ctx.brain
+        if brain and hasattr(brain, "memory"):
+            try:
+                mc = brain.memory.recall_as_context("hello", top_k=3)
+                lines.append(mc if mc else "  (no memory context)")
+            except Exception as e:
+                lines.append(f"  Memory error: {e}")
+        else:
+            lines.append("  (memory not available)")
+
+    # ── Web server log tail ────────────────────────────────────────────
+    if show_tail:
+        log_path = "/tmp/jarvis-web.log"
+        if os.path.exists(log_path):
+            lines.append("\n── Web Server Log (last 30 lines) ──")
+            with open(log_path) as f:
+                tail = f.readlines()[-30:]
+            lines.extend(l.rstrip() for l in tail)
+        else:
+            lines.append("\n  No web server log at /tmp/jarvis-web.log")
+
+    lines.append("\nUsage: /logs [n] [--context] [--memory] [--screen] [--tail]")
+    return CommandResult(text="\n".join(lines))

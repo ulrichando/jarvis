@@ -509,9 +509,9 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
       // Center glow color follows eye ring target
       glowMat.color.setHex(lerpColor(glowMat.color.getHex(), eyeTargetColor, eyeLerp))
 
-      // Ready state: extra scale pulse
+      // Ready state: extra scale pulse — capped tighter
       if (st === 'ready') {
-        const gs = 4.5 + 1.5 * Math.sin(time * 3.0)
+        const gs = 2.2 + 0.6 * Math.sin(time * 3.0)
         glowSprite.scale.set(gs, gs, 1)
       }
 
@@ -646,10 +646,10 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
       const sc = 1.0 + 0.03 * Math.sin(time * 1.5) + energy * 0.08
       globe.scale.set(sc, sc, sc)
 
-      // Center glow breathing
-      const glowPulse = 0.4 + 0.35 * breathe + energy * 0.3
+      // Center glow breathing — keep tight so it doesn't bleed outside the sphere
+      const glowPulse = 0.35 + 0.2 * breathe + energy * 0.2
       glowMat.opacity = glowPulse
-      const gs = 3.0 + 1.0 * breathe + energy * 0.8
+      const gs = 1.8 + 0.4 * breathe + energy * 0.4
       glowSprite.scale.set(gs, gs, 1)
 
       renderer.render(scene, camera)

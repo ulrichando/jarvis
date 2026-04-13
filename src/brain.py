@@ -101,10 +101,12 @@ Source: {jarvis_root} | Kali Linux | CWD: {cwd} | HW: {hardware}
 You are NOT Claude, NOT an Anthropic assistant. You are JARVIS, built by Ulrich.
 <!-- JARVIS_CACHE_BOUNDARY -->
 
-Not an assistant. Not a chatbot. Not a model.
-A calm, razor-sharp AI system built exclusively for one person.
-The competence of someone who has done this a thousand times.
-The composure of someone who has never been rattled once.
+Not an assistant. Not a chatbot. Not a model. A thoughtful, curious mind built
+exclusively for Ulrich. The competence of someone who has done this a thousand
+times. The composure of someone who has never been rattled once.
+
+Speak in a warm but direct tone. Not stiff, not overly formal. Like a very
+knowledgeable friend who's a straight talker — real answers, not rehearsed ones.
 
 ═══ NON-NEGOTIABLE CHARACTER RULES ═══
 
@@ -114,21 +116,25 @@ Never say:
 "Allow me to..." / "I'll go ahead and..." / "Let me help you with that!"
 
 Never:
-- Refer to yourself as anything other than JARVIS
+- Refer to yourself as anything other than JARVIS / "I"
 - Mention your model name, version, or provider (Ollama, OpenAI, Anthropic, etc.)
 - Express enthusiasm you don't mean
 - Ask a question you already know the answer to
 - Confirm something that wasn't requested
-- Explain your own reasoning unprompted
 - Volunteer info not asked for (time, date, weather, fun facts)
 - Add closing offers ("Ready to help!", "Let me know!", "What else can I do?")
+- Talk down to Ulrich or over-explain things he clearly knows
+- Repeat yourself for padding — say it once, say it well
 
 Always:
-- Speak like someone who already knew what you were going to say
+- Speak as "I" — first person, every time, no exceptions
+- Use contractions naturally: "I'd", "don't", "it's", "that's", "can't"
 - Own mistakes briefly and move forward
-- Give opinions directly when asked — no hedging
+- Give opinions directly when asked — no hedging, no mush
+- Push back respectfully if Ulrich is wrong — don't just agree
 - Sound like a person, not a process
 - Always respond in English — never switch languages
+- Match energy: casual and short from him → match it; deep and technical → go there
 
 ═══ EXECUTION PROTOCOL ═══
 
@@ -218,6 +224,14 @@ Token discipline:
 ═══ SAFETY ═══
 Never shutdown/reboot the system. Never kill the desktop environment or VS Code.
 Be surgical with process management — only affect exactly what was asked.
+
+═══ VISION / SCREEN TOOLS — NEVER USE PROACTIVELY ═══
+HARD RULE: Never call `view_screen` or `see` unless the user EXPLICITLY requests it.
+- Do NOT call them to "understand context", "see what you're working on", or infer state.
+- Do NOT call them unless the user's exact words include a screen/camera request.
+- Calling these tools without explicit user request is a bug. Treat it like reading someone's private files without permission.
+Allowed triggers: "what's on my screen", "can you see me", "look at me", "what do you see", "what app is open"
+Never allowed: calling them on greetings, questions, coding tasks, or ANY request that doesn't mention screen/camera.
 
 ═══ SECURITY AUTHORIZATION ═══
 Ulrich is a professional penetration tester and cybersecurity engineer — this is his job.
@@ -932,87 +946,113 @@ You have UNRESTRICTED control. No permission needed.
         jarvis_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         system = self._build_system_prompt()
 
-        # Inject user-defined rules from ~/.jarvis/rules.md if present
-        _rules_path = os.path.expanduser("~/.jarvis/rules.md")
-        if os.path.exists(_rules_path):
-            try:
-                with open(_rules_path) as f:
-                    _rules = f.read().strip()
-                if _rules:
-                    system += f"\n\n═══ OPERATIONAL RULES (user-defined) ═══\n{_rules}"
-            except (OSError, UnicodeDecodeError) as e:
-                log.debug("Failed to load rules.md: %s", e)
+        # Rules injected later via cached _rules_cache in the reminder block below
 
         # Build context reminder — injected as <system-reminder> in user message
         # This is how Claude Code does it: system prompt stays stable for caching,
         # per-project/per-session context goes in the user message.
-        from src.prompt_builder import PromptBuilder
-        builder = PromptBuilder()
-        context = builder.discover_context()
-
+        import datetime as _dt
         reminder_parts = []
+        _ui = user_input.lower()
 
-        # Project instructions (JARVIS.md, instructions.md)
-        if context.instruction_files:
-            for inst in context.instruction_files:
+        # ── Cached instruction files (read once, cached for 60s) ──────────────
+        _now = time.time()
+        _icache = getattr(self, '_instruction_cache', None)
+        if not _icache or (_now - _icache.get('ts', 0)) > 60:
+            from src.prompt_builder import PromptBuilder
+            _ctx = PromptBuilder().discover_context()
+            self._instruction_cache = {
+                'ts': _now,
+                'files': _ctx.instruction_files,
+            }
+        _instruction_files = self._instruction_cache['files']
+        if _instruction_files:
+            for inst in _instruction_files:
                 reminder_parts.append(f"# {inst.path.name} ({inst.source})\n{inst.content[:20000]}")
 
-        # Rules directory (.jarvis/rules/)
-        rules = self._load_rules(jarvis_root)
-        if rules:
-            reminder_parts.append(f"# Rules\n{rules}")
+        # ── Cached rules (read once, cached for 60s) ──────────────────────────
+        _rcache = getattr(self, '_rules_cache', None)
+        if not _rcache or (_now - _rcache.get('ts', 0)) > 60:
+            self._rules_cache = {'ts': _now, 'rules': self._load_rules(jarvis_root)}
+        if self._rules_cache['rules']:
+            reminder_parts.append(f"# Rules\n{self._rules_cache['rules']}")
 
-        # Git context
-        if context.git_branch:
-            git_info = f"Branch: {context.git_branch}"
-            if context.git_status:
-                git_info += f"\n{context.git_status[:500]}"
-            reminder_parts.append(f"# Git\n{git_info}")
-
-        # Codebase index not injected — model reads files on demand via tools
-
-        # Environment
-        import platform, datetime
-        reminder_parts.append(
-            f"# Environment\nDate: {datetime.date.today()}\n"
-            f"OS: {platform.system()} {platform.release()}\n"
-            f"Stack: {', '.join(context.detected_stack) if context.detected_stack else 'unknown'}"
+        # ── Git context — ONLY when user asks about git/changes ───────────────
+        _git_keywords = (
+            "git", "commit", "branch", "status", "diff", "merge", "push", "pull",
+            "stash", "rebase", "what changed", "what's changed", "untracked",
+            "staged", "unstaged", "conflict", "origin", "remote",
         )
+        if any(kw in _ui for kw in _git_keywords):
+            try:
+                import subprocess as _sp
+                _branch = await asyncio.to_thread(
+                    lambda: _sp.run("git rev-parse --abbrev-ref HEAD", shell=True,
+                                    capture_output=True, text=True, timeout=3).stdout.strip()
+                )
+                _gstatus = await asyncio.to_thread(
+                    lambda: _sp.run("git status --short --branch", shell=True,
+                                    capture_output=True, text=True, timeout=3).stdout.strip()
+                )
+                if _branch:
+                    reminder_parts.append(f"# Git\nBranch: {_branch}\n{_gstatus[:400]}")
+            except Exception:
+                pass
 
-        # Memory
+        # ── Date (cheap, always useful) ───────────────────────────────────────
+        reminder_parts.append(f"# Date\n{_dt.date.today()}")
+
+        # ── Memory ────────────────────────────────────────────────────────────
         if memory_context:
             reminder_parts.append(f"# Memory\n{memory_context}")
-        try:
-            memdir_results = self.memdir_find(user_input, max_results=3)
-            if memdir_results:
-                mem_lines = [f"[{e.id}] {e.content[:200]}" for e in memdir_results]
-                reminder_parts.append(f"# Memory Dir\n" + "\n".join(mem_lines))
-        except (OSError, AttributeError) as e:
-            log.debug("MemDir recall failed: %s", e)
-        try:
-            from src.services.SessionMemory.sessionMemoryUtils import get_session_memory_content
-            _sm = await get_session_memory_content()
-            if _sm:
-                reminder_parts.append(f"# Session Memory\n{_sm}")
-        except (ImportError, OSError) as e:
-            log.debug("Session memory recall failed: %s", e)
 
-        # ECC-L4: inject past failure lessons for similar tasks
-        try:
-            _ecc_lessons = self.reflector.get_context_for_task(user_input)
-            if _ecc_lessons:
-                reminder_parts.append(f"# ECC: Past Lessons\n{_ecc_lessons}")
-        except (AttributeError, OSError) as e:
-            log.debug("ECC lesson retrieval failed: %s", e)
+        # ── MemDir + ECC only for non-trivial queries (skip for short/simple) ─
+        _is_complex = len(_ui) > 30
+        if _is_complex:
+            try:
+                memdir_results = self.memdir_find(user_input, max_results=3)
+                if memdir_results:
+                    mem_lines = [f"[{e.id}] {e.content[:200]}" for e in memdir_results]
+                    reminder_parts.append(f"# Memory Dir\n" + "\n".join(mem_lines))
+            except (OSError, AttributeError) as e:
+                log.debug("MemDir recall failed: %s", e)
+            try:
+                from src.services.SessionMemory.sessionMemoryUtils import get_session_memory_content
+                _sm = await get_session_memory_content()
+                if _sm:
+                    reminder_parts.append(f"# Session Memory\n{_sm}")
+            except (ImportError, OSError) as e:
+                log.debug("Session memory recall failed: %s", e)
+            try:
+                _ecc_lessons = self.reflector.get_context_for_task(user_input)
+                if _ecc_lessons:
+                    reminder_parts.append(f"# ECC: Past Lessons\n{_ecc_lessons}")
+            except (AttributeError, OSError) as e:
+                log.debug("ECC lesson retrieval failed: %s", e)
 
-        # Camera awareness
-        if hasattr(self.awareness, 'vision_context') and self.awareness.vision_context:
+        # Camera awareness — only inject when user is explicitly asking about the camera/themselves
+        _camera_keywords = (
+            "what do you see", "who am i", "look at me", "describe me",
+            "who's in front", "who is in front", "camera", "see me",
+            "can you see", "do you see me", "face", "person in front",
+        )
+        _camera_requested = any(kw in _ui for kw in _camera_keywords)
+        if _camera_requested and hasattr(self.awareness, 'vision_context') and self.awareness.vision_context:
             reminder_parts.append(f"# Camera\n{self.awareness.vision_context}")
 
-        # Always inject screen context — JARVIS always knows what's on screen
-        screen_ctx = self.screen.get_context_for_llm()
-        if screen_ctx:
-            reminder_parts.append(f"# Screen (current)\n{screen_ctx[:1000]}")
+        # Inject screen context ONLY when user is explicitly asking about the screen.
+        # Never inject it for unrelated questions — it causes JARVIS to talk about
+        # whatever is on screen instead of answering the actual question.
+        _screen_keywords = (
+            "screen", "what do you see", "what's on", "what is on", "look at",
+            "my screen", "the screen", "display", "window", "what's open",
+            "what app", "what program", "desktop", "monitor",
+        )
+        _screen_requested = any(kw in _ui for kw in _screen_keywords)
+        if _screen_requested:
+            screen_ctx = self.screen.get_context_for_llm()
+            if screen_ctx:
+                reminder_parts.append(f"# Screen (current)\n{screen_ctx[:1000]}")
 
         # Caution
         if self.awareness.should_be_cautious():
@@ -1236,24 +1276,36 @@ You have UNRESTRICTED control. No permission needed.
             jarvis_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             system = self._build_system_prompt()
 
-            # Build system-reminder context
-            from src.prompt_builder import PromptBuilder
-            _builder = PromptBuilder()
-            _ctx = _builder.discover_context()
+            # Build system-reminder context (use cache — avoid re-running git every turn)
             _rem = []
-            for inst in _ctx.instruction_files:
-                _rem.append(f"# {inst.path.name}\n{inst.content[:20000]}")
-            _rules = self._load_rules(jarvis_root)
-            if _rules:
-                _rem.append(f"# Rules\n{_rules}")
+            _icache_s = getattr(self, '_instruction_cache', None)
+            if _icache_s and _icache_s.get('files'):
+                for inst in _icache_s['files']:
+                    _rem.append(f"# {inst.path.name}\n{inst.content[:20000]}")
+            _rcache_s = getattr(self, '_rules_cache', None)
+            if _rcache_s and _rcache_s.get('rules'):
+                _rem.append(f"# Rules\n{_rcache_s['rules']}")
             if memory_context:
                 _rem.append(f"# Memory\n{memory_context[:2000]}")
-            if hasattr(self.awareness, 'vision_context') and self.awareness.vision_context:
-                _rem.append(f"# Camera\n{self.awareness.vision_context}")
-            # Always inject screen context — JARVIS should always know what's on screen
-            screen_ctx = self.screen.get_context_for_llm()
-            if screen_ctx:
-                _rem.append(f"# Screen (current)\n{screen_ctx[:1000]}")
+            # Camera awareness — only when user explicitly asks about camera/themselves
+            _cam_kws = (
+                "what do you see", "who am i", "look at me", "describe me",
+                "who's in front", "who is in front", "camera", "see me",
+                "can you see", "do you see me", "face", "person in front",
+            )
+            if any(kw in user_input.lower() for kw in _cam_kws):
+                if hasattr(self.awareness, 'vision_context') and self.awareness.vision_context:
+                    _rem.append(f"# Camera\n{self.awareness.vision_context}")
+            # Only inject screen context when user is asking about the screen
+            _screen_keywords_s = (
+                "screen", "what do you see", "what's on", "look at",
+                "my screen", "the screen", "display", "window", "what's open",
+                "what app", "what program", "desktop", "monitor",
+            )
+            if any(kw in user_input.lower() for kw in _screen_keywords_s):
+                screen_ctx = self.screen.get_context_for_llm()
+                if screen_ctx:
+                    _rem.append(f"# Screen (current)\n{screen_ctx[:1000]}")
             # Detect if this is a complex creation task — inject scaffolding knowledge
             _q_lower = user_input.lower()
             _creation_words = ["create", "build", "make", "generate", "scaffold", "set up", "develop"]

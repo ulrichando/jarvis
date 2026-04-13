@@ -23,10 +23,72 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
   const scrollRAF = useRef(null)
   const wasLoadingRef = useRef(false)
 
+  // ── Drag & resize state ───────────────────────────────────────────
+  const [pos, setPos] = useState(null) // {x, y} from top-left; null = CSS-centered
+  const [size, setSize] = useState({ w: Math.min(window.innerWidth * 0.7, 900), h: Math.max(window.innerHeight * 0.5, 400) })
+  const dragRef = useRef(null) // {startMouseX, startMouseY, startX, startY}
+  const resizeRef = useRef(null) // {startMouseX, startMouseY, startW, startH}
+  const panelRef = useRef(null)
+
+  const onHeaderMouseDown = useCallback((e) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    const rect = panelRef.current?.getBoundingClientRect()
+    if (!rect) return
+    dragRef.current = { startMouseX: e.clientX, startMouseY: e.clientY, startX: rect.left, startY: rect.top }
+    const onMove = (ev) => {
+      const dx = ev.clientX - dragRef.current.startMouseX
+      const dy = ev.clientY - dragRef.current.startMouseY
+      setPos({ x: dragRef.current.startX + dx, y: dragRef.current.startY + dy })
+    }
+    const onUp = () => {
+      dragRef.current = null
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [])
+
+  const onResizeMouseDown = useCallback((e) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    e.stopPropagation()
+    resizeRef.current = { startMouseX: e.clientX, startMouseY: e.clientY, startW: size.w, startH: size.h }
+    const onMove = (ev) => {
+      const dw = ev.clientX - resizeRef.current.startMouseX
+      const dh = ev.clientY - resizeRef.current.startMouseY
+      setSize({
+        w: Math.max(320, resizeRef.current.startW + dw),
+        h: Math.max(300, resizeRef.current.startH + dh),
+      })
+    }
+    const onUp = () => {
+      resizeRef.current = null
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [size.w, size.h])
+
   // ── Conversation sidebar ──────────────────────────────────────────
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sessions, setSessions] = useState([])
   const [deletingId, setDeletingId] = useState(null)
+
+  // Keep panel mounted briefly after close so exit animation can play,
+  // then fully unmount to stop backdrop-filter compositing on the overlay.
+  const [mounted, setMounted] = useState(isOpen)
+  useEffect(() => {
+    if (isOpen) {
+      setMounted(true)
+    } else {
+      // Wait for CSS transition (300ms) then unmount
+      const t = setTimeout(() => setMounted(false), 350)
+      return () => clearTimeout(t)
+    }
+  }, [isOpen])
 
   const fetchSessions = useCallback(async () => {
     try {
@@ -416,20 +478,35 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
     )
   }
 
+  if (!mounted) return null
+
+  const panelStyle = pos
+    ? { left: pos.x, top: pos.y, width: size.w, height: size.h, transform: 'none', boxShadow: '0 0 30px rgba(0,184,212,0.15), inset 0 0 30px rgba(0,184,212,0.03)' }
+    : { width: size.w, height: size.h, boxShadow: '0 0 30px rgba(0,184,212,0.15), inset 0 0 30px rgba(0,184,212,0.03)' }
+
   return (
     <div
-      className={`fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-[50vh] bg-[rgba(2,6,12,0.95)] border border-[rgba(0,229,255,0.25)] rounded-xl flex z-999 overflow-hidden backdrop-blur-[20px] transition-all duration-300 origin-center ${
+      ref={panelRef}
+      className={`fixed bg-[rgba(2,6,12,0.95)] border border-[rgba(0,229,255,0.25)] rounded-xl flex z-999 overflow-hidden backdrop-blur-[20px] transition-[opacity,transform] duration-300 origin-center ${
+        pos ? '' : 'top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2'
+      } ${
         isOpen
           ? 'scale-100 opacity-100 pointer-events-auto'
           : 'scale-[0.8] opacity-0 pointer-events-none'
       }`}
-      style={{
-        boxShadow: '0 0 30px rgba(0,184,212,0.15), inset 0 0 30px rgba(0,184,212,0.03)',
-      }}
+      style={panelStyle}
       onMouseDown={(e) => e.stopPropagation()}
     >
       {/* Spin animation for tool progress */}
       <style>{`@keyframes tool-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
+
+      {/* ── Resize handle (bottom-right corner) ─────────────────────── */}
+      <div
+        onMouseDown={onResizeMouseDown}
+        className="absolute bottom-0 right-0 w-4 h-4 cursor-se-resize z-50"
+        style={{ background: 'linear-gradient(135deg, transparent 50%, rgba(0,229,255,0.3) 50%)' }}
+        title="Drag to resize"
+      />
 
       {/* ── Conversation history sidebar ─────────────────────────────── */}
       <div
@@ -485,9 +562,12 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
       </div>
 
       {/* ── Chat panel ───────────────────────────────────────────────── */}
-      <div className="flex flex-col overflow-hidden" style={{ width: 'min(70vw, 384px)', flexShrink: 0 }}>
-        {/* Header */}
-        <div className="flex justify-between items-center px-4 py-3 bg-jarvis-cyan/8 border-b border-jarvis-border">
+      <div className="flex flex-col overflow-hidden flex-1 min-w-0">
+        {/* Header — drag handle */}
+        <div
+          className="flex justify-between items-center px-4 py-3 bg-jarvis-cyan/8 border-b border-jarvis-border cursor-grab active:cursor-grabbing select-none"
+          onMouseDown={onHeaderMouseDown}
+        >
           <span className="font-['Orbitron'] text-xs font-medium text-jarvis-bright tracking-[2px]">
             &#9670; JARVIS INTERFACE
           </span>

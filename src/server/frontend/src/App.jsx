@@ -85,6 +85,15 @@ function App() {
   // Flushes the entire audio queue with zero trailing words.
   const audioRef = useRef(null)
   const isSpeakingRef = useRef(false)  // Tracks TTS state without causing re-renders
+  // Persistent AudioContext — reused across all TTS plays to avoid per-play init cost
+  const audioCtxRef = useRef(null)
+  const _getAudioCtx = useCallback(async () => {
+    if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
+      audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)()
+    }
+    if (audioCtxRef.current.state === 'suspended') await audioCtxRef.current.resume()
+    return audioCtxRef.current
+  }, [])
 
   // Stable ref so the voice useEffect always calls the latest hardInterrupt
   // without needing to restart the voice system on every render.
@@ -127,17 +136,18 @@ function App() {
   }, [stopSpeaking])
 
   // TTS playback — deduplicated. Called from ChatPanel onSpoken AND App WS useEffect.
-  const ttsPlayedRef = useRef('')
+  // Dedup is time-based: same text is blocked only if it played within the last 15 seconds.
+  const ttsPlayedRef = useRef({ sig: '', time: 0 })
   const playSpoken = useCallback((data) => {
     if (!data.spoken || data.spoken.length <= 3 || data.partial) {
       if (!data.spoken && data.final) setTimeout(() => setReactorState('idle'), 1000)
       else if (data.spoken && data.spoken.length <= 3) setTimeout(() => setReactorState('idle'), 500)
       return
     }
-    // Deduplicate — don't play same text twice
+    // Deduplicate — block same text only within a 15s window (prevents double-fire, not stale-lock)
     const sig = data.spoken.substring(0, 60)
-    if (ttsPlayedRef.current === sig) return
-    ttsPlayedRef.current = sig
+    const now = Date.now()
+    if (ttsPlayedRef.current.sig === sig && (now - ttsPlayedRef.current.time) < 15000) return
 
     const isTtsOwner = !isDesktop || showReactor
     if (!isTtsOwner) { setTimeout(() => setReactorState('idle'), 500); return }
@@ -174,22 +184,23 @@ function App() {
           if (!r.ok) throw new Error(`TTS HTTP ${r.status}`)
           return r.arrayBuffer()
         })
-        .then(ab => {
+        .then(async ab => {
           if (audioRef.current !== handle) return  // Was interrupted — discard
-          const ctx = new (window.AudioContext || window.webkitAudioContext)()
-          return ctx.decodeAudioData(ab).then(decoded => {
-            if (audioRef.current !== handle) return  // Interrupted while decoding
-            const src = ctx.createBufferSource()
-            src.buffer = decoded
-            src.connect(ctx.destination)
-            src.onended = onDone
-            handle._src = src
-            src.start(0)
-          })
+          const ctx = await _getAudioCtx()          // Reuse persistent context — no per-play init
+          const decoded = await ctx.decodeAudioData(ab)
+          if (audioRef.current !== handle) return  // Interrupted while decoding
+          // Mark as played only NOW (after successful decode) so failures don't block retries
+          ttsPlayedRef.current = { sig, time: Date.now() }
+          const src = ctx.createBufferSource()
+          src.buffer = decoded
+          src.connect(ctx.destination)
+          src.onended = onDone
+          handle._src = src
+          src.start(0)
         })
         .catch(e => { console.error('[JARVIS TTS] error:', e, ttsUrl); onDone() })
     })
-  }, [isDesktop, showReactor, stopSpeaking, sendMessage])
+  }, [isDesktop, showReactor, stopSpeaking, sendMessage, _getAudioCtx])
 
   // Handle incoming WebSocket messages — handoff, status, camera, TTS
   useEffect(() => {
@@ -197,6 +208,7 @@ function App() {
     const last = wsMessages[wsMessages.length - 1]
 
     if (last.type === 'status' && last.status === 'thinking') {
+      ttsPlayedRef.current = { sig: '', time: 0 }  // Reset dedup for next response
       queueMicrotask(() => { stopSpeaking(); setReactorState('thinking') })
     }
     if (last.type === 'status' && last.status === 'listening') {
@@ -237,7 +249,7 @@ function App() {
     }
 
     if (last.type === 'camera') setCameraOn(last.enabled)
-    if (last.type === 'provider_error') setSetupOpen(true)
+    if (last.type === 'provider_error' && !isDesktop) setSetupOpen(true)
 
     // Proactive monitor alert — show dismissable banner
     if (last.type === 'alert') {
@@ -523,7 +535,8 @@ function App() {
             if (!silenceTimer) {
               silenceTimer = setTimeout(() => {
                 silenceTimer = null
-                if (Date.now() - _recordStart < 800) {
+                if (Date.now() - _recordStart < 400) {
+                  // Too short — likely noise, discard silently
                   try { mediaRecorder.stop() } catch { /* ignore */ }
                   recording = false
                   chunks = []
@@ -531,7 +544,7 @@ function App() {
                 }
                 try { mediaRecorder.stop() } catch { /* ignore */ }
                 recording = false
-              }, 1200)
+              }, 750)  // 750ms silence → send (was 1200ms)
             }
           }
           setTimeout(checkVoice, 50)
@@ -619,7 +632,7 @@ function App() {
       {/* Arc Reactor */}
       {showReactor && (
         <ArcReactor
-          state={stableWsStatus !== 'connected' ? (stableWsStatus === 'connecting' ? 'booting' : 'offline') : reactorState}
+          state={stableWsStatus === 'disconnected' ? 'offline' : reactorState}
           isDesktop={isDesktop}
           audioLevel={audioLevel}
           theme={theme}
