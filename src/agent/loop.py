@@ -437,6 +437,33 @@ async def _agent_loop_internal(
             text_content = _scrub_identity(text_content)
             final_text += text_content
 
+        # Self-tasking guard — runs regardless of whether tools were called.
+        # Catches "I'll continue enhancing..." even when accompanied by tool calls.
+        if text_content:
+            _tc_lower_early = text_content.lower()
+            _self_task_signals = (
+                "i'll continue enhancing", "i'll continue improving",
+                "i'll continue adding", "i'll continue building",
+                "i'll keep enhancing", "i'll keep adding",
+                "let me continue enhancing", "let me now add more",
+                "let me add more features", "let me also add",
+                "i'll now add", "i will now add",
+                "i'll further enhance", "let me enhance",
+                "let me implement additional",
+            )
+            if any(sig in _tc_lower_early for sig in _self_task_signals):
+                log.debug("Self-tasking signal in response — stopping loop to prevent runaway")
+                # Execute any tool calls in THIS iteration before stopping
+                # (don't discard work already requested), then break after
+                if not tool_calls:
+                    break
+                # If there are tool calls, let them execute, then set a flag to break next iter
+                _loop_state["stop_after_tools"] = True
+
+        # Hard stop requested by self-tasking detection
+        if _loop_state.pop("stop_after_tools", False) and not tool_calls:
+            break
+
         if not tool_calls:
             _tc_lower = text_content.lower() if text_content else ""
 
@@ -538,6 +565,16 @@ async def _agent_loop_internal(
                 if any(p in _cmd for p in _WRITE_BASH_PATTERNS):
                     _write_ops.append(f"bash: {_cmd[:80]}")
 
+        # Write-ops hard cap — stop after 20 file writes to prevent runaway builds.
+        _WRITE_OPS_CAP = 20
+        if len(_write_ops) >= _WRITE_OPS_CAP:
+            log.warning("Write-ops cap reached (%d ops) — stopping loop", len(_write_ops))
+            final_text += (
+                f"\n\n[Stopped: {len(_write_ops)} files written. "
+                f"Task paused — tell me what to do next.]"
+            )
+            break
+
         # Execute regular tools (respect plan mode)
         _readonly = _loop_state.get("plan_mode", False)
         await _execute_tools(messages, regular_calls, tool_executor,
@@ -567,6 +604,11 @@ async def _agent_loop_internal(
             )
             for tool_id, result in dispatch_results:
                 _append_tool_result(messages, tool_id, result, tool_name="dispatch")
+
+        # Break after tools if self-tasking was detected in this iteration's text
+        if _loop_state.pop("stop_after_tools", False):
+            log.debug("Stopping after tool execution — self-tasking was detected")
+            break
 
     # Auto-spawn verifier for non-trivial work (≥3 write/edit/destructive ops)
     _VERIFIER_THRESHOLD = 3
