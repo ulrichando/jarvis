@@ -56,6 +56,7 @@ function useJarvisWS(url) {
 // ── App ───────────────────────────────────────────────────────────────────
 export default function App() {
   const [chatOpen, setChatOpen]       = useState(false)
+  const [reactorVisible, setReactorVisible] = useState(true)
   const [reactorState, setReactorState] = useState('booting')
   const [audioLevel, setAudioLevel]   = useState(0)
   const [voiceMuted, setVoiceMuted]   = useState(false)
@@ -158,10 +159,11 @@ export default function App() {
 
   // ── Tray events from Rust ────────────────────────────────────────────
   useEffect(() => {
-    const unlisten1 = listen('tray-open-chat', () => {
-      chatOpen ? closeChat() : openChat()
-    })
-    const unlisten2 = listen('tray-toggle-mute', () => {
+    // Rust already handles open/close toggle logic and window positioning
+    const unlisten1 = listen('tray-open-chat', () => openChat())
+    const unlisten2 = listen('tray-close-chat', () => closeChat())
+    const unlisten3 = listen('tray-toggle-reactor', () => setReactorVisible(v => !v))
+    const unlisten4 = listen('tray-toggle-mute', () => {
       fetch(`${PYTHON_BASE}/api/mute`, { method: 'POST' })
         .then(r => r.json())
         .then(d => setVoiceMuted(d.muted))
@@ -170,8 +172,10 @@ export default function App() {
     return () => {
       unlisten1.then(f => f())
       unlisten2.then(f => f())
+      unlisten3.then(f => f())
+      unlisten4.then(f => f())
     }
-  }, [chatOpen, openChat, closeChat])
+  }, [openChat, closeChat])
 
   // ── Initial click-through on mount ───────────────────────────────────
   useEffect(() => {
@@ -201,13 +205,15 @@ export default function App() {
 
   return (
     <div style={{ width:'100vw', height:'100vh', background:'transparent', overflow:'hidden', position:'relative' }}>
-      {/* Three.js sphere — always visible, click-through */}
-      <ArcReactor
-        state={stableStatus === 'disconnected' ? 'offline' : reactorState}
-        isDesktop={true}
-        audioLevel={audioLevel}
-        theme={theme}
-      />
+      {/* Three.js sphere — toggleable via tray */}
+      {reactorVisible && (
+        <ArcReactor
+          state={stableStatus === 'disconnected' ? 'offline' : reactorState}
+          isDesktop={true}
+          audioLevel={audioLevel}
+          theme={theme}
+        />
+      )}
 
       {/* Voice caption */}
       {heardText && (

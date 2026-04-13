@@ -137,24 +137,41 @@ class DeepSearch:
     # ── Internal Steps ──
 
     async def _plan_queries(self, ctx: ResearchContext) -> list[str]:
-        """Generate search queries targeting knowledge gaps."""
+        """Generate search queries targeting knowledge gaps.
+
+        Applies DeepAgents efficiency rules:
+        - 2-3 queries for simple questions, up to 5 for complex multi-part ones
+        - Stop if existing findings already answer the question adequately
+        - Never re-query what has already been found
+        """
         gaps_text = "\n".join(f"- {g}" for g in ctx.gaps[:5])
         existing = "\n".join(f"- {f.fact[:100]}" for f in ctx.findings[-10:]) if ctx.findings else "None yet"
         used = ", ".join(ctx.queries_used[-10:]) if ctx.queries_used else "None"
+
+        # Determine complexity: more gaps = more queries allowed
+        is_complex = len(ctx.gaps) > 2 or len(ctx.queries_used) == 0
+        max_queries = 5 if is_complex else 3
 
         prompt = (
             f"Research question: {ctx.question}\n\n"
             f"What we already know:\n{existing}\n\n"
             f"Knowledge gaps to fill:\n{gaps_text}\n\n"
             f"Queries already tried: {used}\n\n"
-            f"Generate 3-5 NEW search queries to fill the gaps. "
-            f"Be specific and targeted. Avoid repeating previous queries.\n\n"
+            f"Generate {2 if not is_complex else 3}-{max_queries} NEW, targeted search queries to fill "
+            f"the remaining gaps. Rules:\n"
+            f"- Only generate queries for gaps NOT already covered by existing findings\n"
+            f"- If existing findings already adequately answer the question, return an empty array []\n"
+            f"- Never repeat a query already tried\n"
+            f"- Be specific — general queries waste rounds\n\n"
             f"Return ONLY a JSON array of strings: [\"query1\", \"query2\", ...]"
         )
         try:
             response, _ = await self.reasoner.query(
                 prompt,
-                system_prompt="You generate targeted web search queries for research. Return ONLY a JSON array of strings.",
+                system_prompt=(
+                    "You generate targeted web search queries for research. "
+                    "Return ONLY a JSON array of strings. Return [] if no more searches are needed."
+                ),
                 history=None,
             )
             response = response.strip()
@@ -165,7 +182,7 @@ class DeepSearch:
             end = response.rfind("]")
             if start != -1 and end != -1:
                 queries = json.loads(response[start:end + 1])
-                return [q for q in queries if isinstance(q, str)][:5]
+                return [q for q in queries if isinstance(q, str)][:max_queries]
         except Exception as e:
             log.debug("Query planning failed: %s", e)
         return []
@@ -268,34 +285,73 @@ class DeepSearch:
         return {"new_facts": [], "remaining_gaps": ctx.gaps}
 
     async def _synthesize(self, ctx: ResearchContext) -> str:
-        """Synthesize all findings into a structured report."""
-        facts_text = "\n".join(
-            f"- {f.fact} (confidence: {f.confidence:.0%}, source: {f.source})"
-            for f in ctx.findings
+        """Synthesize all findings into a structured report.
+
+        Applies DeepAgents report structure rules:
+        - Comparisons: Introduction → Overview A → Overview B → Detailed Comparison → Conclusion
+        - Lists: direct enumeration, no preamble
+        - Summaries: Overview → Key Concepts → Conclusion
+        - Default: text-heavy paragraphs, no meta-commentary
+        - Sequential citation numbering: [1] Title: URL
+        """
+        # Build numbered citation index from visited sources
+        sources_list = list(ctx.sources_visited)[:20]
+        citation_index = {url: i + 1 for i, url in enumerate(sources_list)}
+        citations_block = "\n".join(
+            f"[{i + 1}] {url}" for i, url in enumerate(sources_list)
         )
-        sources_text = "\n".join(f"- {url}" for url in list(ctx.sources_visited)[:20])
+
+        facts_text = "\n".join(
+            f"- {f.fact}" for f in ctx.findings
+        )
+
+        # Detect report type heuristic
+        q_lower = ctx.question.lower()
+        is_comparison = any(w in q_lower for w in ["vs", "versus", "compare", "difference", "better"])
+        is_list = any(w in q_lower for w in ["list", "what are", "types of", "examples of"])
+
+        if is_comparison:
+            structure_hint = (
+                "Structure: Introduction → Overview of first subject → Overview of second subject "
+                "→ Detailed Comparison (table or bullet list) → Conclusion."
+            )
+        elif is_list:
+            structure_hint = (
+                "Structure: Direct enumeration only. No introduction paragraph. No conclusion fluff. "
+                "Just the list with brief explanations."
+            )
+        else:
+            structure_hint = (
+                "Structure: Overview (2-3 sentences) → Key Concepts (grouped by theme) → Conclusion. "
+                "Text-heavy paragraphs. No meta-commentary ('I found that...', 'In this report...')."
+            )
 
         prompt = (
-            f"Write a comprehensive research report answering: {ctx.question}\n\n"
+            f"Write a research report answering: {ctx.question}\n\n"
             f"Findings ({len(ctx.findings)} facts):\n{facts_text}\n\n"
-            f"Sources consulted ({len(ctx.sources_visited)}):\n{sources_text}\n\n"
-            f"Write a clear, structured report with:\n"
-            f"1. Executive summary (2-3 sentences)\n"
-            f"2. Key findings (organized by theme)\n"
-            f"3. Sources\n\n"
-            f"Be factual. Only include information from the findings above."
+            f"Available citations:\n{citations_block}\n\n"
+            f"{structure_hint}\n\n"
+            f"Citation rules:\n"
+            f"- Reference facts inline using [N] notation\n"
+            f"- Number citations sequentially starting from [1]\n"
+            f"- End with a ## Sources section listing all cited references\n\n"
+            f"Be factual. Only include information from the findings above. "
+            f"Do not pad with unverified claims."
         )
 
         report, _ = await self.reasoner.query(
             prompt,
-            system_prompt="You write clear, factual research reports. Cite sources. Be thorough but concise.",
+            system_prompt=(
+                "You write clear, factual research reports with sequential [N] citation numbering. "
+                "Adapt structure to the question type. No meta-commentary. Be thorough but concise."
+            ),
             history=None,
         )
 
-        # Add metadata
+        # Add metadata header
         header = (
             f"# Deep Research: {ctx.question}\n\n"
-            f"*{len(ctx.findings)} facts from {len(ctx.sources_visited)} sources "
-            f"across {ctx.round} search rounds, {len(ctx.queries_used)} queries*\n\n"
+            f"*{len(ctx.findings)} facts · {len(ctx.sources_visited)} sources · "
+            f"{ctx.round} rounds · {len(ctx.queries_used)} queries*\n\n"
         )
         return header + report

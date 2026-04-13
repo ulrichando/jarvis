@@ -163,7 +163,7 @@ class TestCommandAliases(unittest.TestCase):
             ("hist", "history"),
             ("mem", "memory"),
             ("kb", "knowledge"), ("assoc", "associations"),
-            ("cs", "common-sense"), ("profile", "user-profile"),
+            ("profile", "user-profile"),
             ("as", "agent-status"), ("ka", "kill-agent"),
             ("bg", "background"),
             ("ts", "troubleshoot"),

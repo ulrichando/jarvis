@@ -72,6 +72,8 @@ class JarvisWebServer:
     _ALLOWED_ORIGINS = {
         "http://localhost", "http://127.0.0.1", "http://0.0.0.0",
         "https://localhost", "https://127.0.0.1",
+        # Tauri WebView custom scheme (Linux/WebKit2GTK)
+        "tauri://localhost", "http://tauri.localhost", "https://tauri.localhost",
     }
     # Rate limit: max messages per client per second
     _WS_RATE_LIMIT = 10  # messages/sec
@@ -4290,9 +4292,12 @@ class JarvisWebServer:
         app.router.add_route("OPTIONS", "/api/model", model_switch_handler)
 
         # ── Voice mute toggle ──
+        _CORS = {"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type"}
         async def mute_handler(request):
+            if request.method == "OPTIONS":
+                return web.Response(headers=_CORS)
             if request.method == "GET":
-                return web.json_response({"muted": self._voice_muted})
+                return web.json_response({"muted": self._voice_muted}, headers=_CORS)
             # POST — toggle or set explicitly
             body = {}
             try:
@@ -4304,7 +4309,7 @@ class JarvisWebServer:
             else:
                 self._voice_muted = not self._voice_muted
             await self._broadcast({"type": "voice_muted", "muted": self._voice_muted})
-            return web.json_response({"muted": self._voice_muted})
+            return web.json_response({"muted": self._voice_muted}, headers=_CORS)
         app.router.add_get("/api/mute", mute_handler)
         app.router.add_post("/api/mute", mute_handler)
         app.router.add_route("OPTIONS", "/api/mute", mute_handler)

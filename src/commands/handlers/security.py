@@ -753,7 +753,7 @@ async def cmd_pentest(ctx: CommandContext) -> CommandResult:
     if not target:
         return CommandResult(text="Usage: /pentest <target>", success=False)
 
-    if not brain or not hasattr(brain, "agent_loop"):
+    if not brain:
         # Fallback: manual recon without AI
         lines = [f"Pentest Reconnaissance: {target}", "=" * 50]
 
@@ -811,7 +811,7 @@ async def cmd_pentest(ctx: CommandContext) -> CommandResult:
         "Provide actionable commands for each finding."
     )
     try:
-        result = await brain.agent_loop(prompt, max_steps=10)
+        result = await brain.think(prompt)
         return CommandResult(
             text=f"Pentest Report: {target}\n{'=' * 50}\n{result}",
             data={"target": target, "nmap": nmap_out},

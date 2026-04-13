@@ -39,7 +39,7 @@ def _guess_target_file(description: str) -> str | None:
 
 @command(
     "habit",
-    aliases=["self-modify", "selfmod", "change-habit"],
+    aliases=["change-habit"],
     description="Edit JARVIS's own source code to change a behavior or habit",
     usage="/habit <description of what to change>",
     category="core",

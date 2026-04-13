@@ -1117,7 +1117,7 @@ async def cmd_dispatch_all(ctx: CommandContext) -> CommandResult:
 
 @command(
     "orchestrator",
-    aliases=["orch"],
+    aliases=["orch-diag"],
     description="Master Orchestrator diagnostics: analyze routing, view learned weights, reset",
     usage="/orchestrator [analyze <query> | stats | reset | route <query>]",
     category="agent",

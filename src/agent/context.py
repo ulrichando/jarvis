@@ -405,10 +405,24 @@ class AutoCompactor:
 
     When a ``summarizer`` callable is provided, escalates to LLM-based
     ``smart_compact`` instead of the heuristic ``compact_messages``.
+
+    Compact Trigger (``compact_trigger`` parameter)
+    -----------------------------------------------
+    Inspired by DeepAgents' declarative trigger system.  Accepts one of:
+
+    * ``("fraction", F)``  — trigger when *F* fraction of context window used
+                              e.g. ``("fraction", 0.85)`` fires at 85% capacity
+    * ``("tokens", N)``    — trigger when absolute token count exceeds N
+    * ``("messages", N)``  — trigger when message list length exceeds N
+    * ``None``             — use the legacy adaptive chunk-ratio heuristic
+
+    Multiple triggers can be combined by passing a list of tuples:
+    ``[("fraction", 0.85), ("messages", 30)]`` — fires when EITHER is exceeded.
     """
 
     def __init__(self, model: str = "", proactive_threshold: float | None = None,
-                 summarizer=None, consolidate_fn: callable = None):
+                 summarizer=None, consolidate_fn: callable = None,
+                 compact_trigger=None):
         max_tokens = MODEL_LIMITS.get(model, DEFAULT_MAX_TOKENS)
         self.budget = TokenBudget(max_tokens=max_tokens)
         # Adaptive chunk ratio: starts at BASE_CHUNK_RATIO, may shrink toward MIN_CHUNK_RATIO
@@ -423,6 +437,14 @@ class AutoCompactor:
         self._model = model
         self._summarizer = summarizer      # async callable(prompt: str) -> str
         self._consolidate_fn = consolidate_fn  # callable(messages) — save to long-term memory
+
+        # Declarative compact triggers — normalise to list of (type, value) tuples
+        if compact_trigger is None:
+            self._compact_triggers: list[tuple[str, float]] = []
+        elif isinstance(compact_trigger, tuple):
+            self._compact_triggers = [compact_trigger]
+        else:
+            self._compact_triggers = list(compact_trigger)
 
     # -- helpers ----------------------------------------------------------
 
@@ -445,15 +467,42 @@ class AutoCompactor:
             self._chunk_ratio = max(MIN_CHUNK_RATIO, self._chunk_ratio - 0.05)
             self._proactive_threshold = self._chunk_ratio * SAFETY_MARGIN
 
-    def should_compact(self, messages: list[dict]) -> bool:
-        """Return True when usage exceeds the adaptive compaction threshold.
+    def _check_declarative_triggers(self, messages: list[dict]) -> bool:
+        """Evaluate any declarative triggers registered at construction time.
 
-        Threshold = chunk_ratio × context_window × SAFETY_MARGIN.
-        The chunk_ratio itself shrinks toward MIN_CHUNK_RATIO when messages
-        are individually large (adaptive compaction trigger).
+        Returns True if ANY trigger fires:
+        - ``("fraction", 0.85)``  → fires when token usage ≥ 85% of context window
+        - ``("tokens", N)``       → fires when token count ≥ N
+        - ``("messages", N)``     → fires when len(messages) ≥ N
+        """
+        for trigger_type, threshold in self._compact_triggers:
+            if trigger_type == "fraction":
+                fraction = self.budget.used_tokens / max(1, self.budget.max_tokens)
+                if fraction >= threshold:
+                    return True
+            elif trigger_type == "tokens":
+                if self.budget.used_tokens >= threshold:
+                    return True
+            elif trigger_type == "messages":
+                if len(messages) >= threshold:
+                    return True
+        return False
+
+    def should_compact(self, messages: list[dict]) -> bool:
+        """Return True when usage exceeds any registered trigger or the adaptive threshold.
+
+        Evaluation order:
+        1. Declarative triggers (fraction / tokens / messages) if configured
+        2. Legacy adaptive chunk-ratio heuristic (always active as backstop)
         """
         self.update(messages)
         self._update_chunk_ratio(messages)
+
+        # Declarative triggers fire first (they have explicit, predictable semantics)
+        if self._compact_triggers and self._check_declarative_triggers(messages):
+            return True
+
+        # Legacy adaptive threshold (chunk_ratio × max_tokens × safety_margin)
         threshold_tokens = self._chunk_ratio * self.budget.max_tokens * SAFETY_MARGIN
         return self.budget.used_tokens > threshold_tokens
 

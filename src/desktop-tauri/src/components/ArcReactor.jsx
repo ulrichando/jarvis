@@ -36,7 +36,7 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
     const scene = new THREE.Scene()
     const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 200)
     const targetSphereHeight = 280
-    const sphereFraction = 0.28
+    const sphereFraction = 0.22
     const getCamZ = () => 10 * (window.innerHeight * sphereFraction / targetSphereHeight)
     camera.position.z = getCamZ()
     camera.lookAt(0, 0, 0)

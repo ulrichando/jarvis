@@ -82,7 +82,7 @@ async def cmd_commit(ctx: CommandContext) -> CommandResult:
 
     if not msg:
         # Generate message via LLM
-        if brain and hasattr(brain, "agent_loop"):
+        if brain:
             prompt = (
                 "Generate a concise git commit message for these changes. "
                 "First line: imperative summary (max 72 chars). "
@@ -90,7 +90,7 @@ async def cmd_commit(ctx: CommandContext) -> CommandResult:
                 "Return ONLY the commit message, no explanation:\n\n" + diff_text[:4000]
             )
             try:
-                result = await brain.agent_loop(prompt, max_steps=1)
+                result = await brain.think(prompt)
                 msg = result.strip().strip('"').strip("'")
             except Exception:
                 msg = "Update files"
@@ -186,8 +186,8 @@ async def cmd_pr(ctx: CommandContext) -> CommandResult:
     if not log_text.strip():
         return CommandResult(text=f"No commits ahead of {default}. Nothing to PR.", success=False)
 
-    if not brain or not hasattr(brain, "agent_loop"):
-        return CommandResult(text="Agent not available for PR generation.", success=False)
+    if not brain:
+        return CommandResult(text="Brain not available for PR generation.", success=False)
 
     prompt = (
         f"Draft a GitHub pull request for branch '{branch}'.\n"
@@ -198,7 +198,7 @@ async def cmd_pr(ctx: CommandContext) -> CommandResult:
         "- Body with: ## Summary (1-3 bullets), ## Test plan (checklist)"
     )
     try:
-        result = await brain.agent_loop(prompt, max_steps=2)
+        result = await brain.think(prompt)
         return CommandResult(text=f"PR Draft for {branch}\n{'=' * 40}\n{result}")
     except Exception as e:
         return CommandResult(text=f"PR generation failed: {e}", success=False)
@@ -215,14 +215,14 @@ async def cmd_issue(ctx: CommandContext) -> CommandResult:
     if not title:
         return CommandResult(text="Usage: /issue <title or description>", success=False)
 
-    if brain and hasattr(brain, "agent_loop"):
+    if brain:
         prompt = (
             f"Draft a GitHub issue with title: {title}\n"
             "Return structured markdown with: Title, Description, Steps to Reproduce (if bug), "
             "Expected Behavior, Labels suggestion."
         )
         try:
-            result = await brain.agent_loop(prompt, max_steps=1)
+            result = await brain.think(prompt)
             return CommandResult(text=f"Issue Draft\n{'=' * 40}\n{result}")
         except Exception as e:
             return CommandResult(text=f"Issue generation failed: {e}", success=False)
@@ -429,8 +429,8 @@ async def cmd_diff(ctx: CommandContext) -> CommandResult:
          usage="/review [--security] [path]", category="git", permission=PermLevel.STANDARD)
 async def cmd_review(ctx: CommandContext) -> CommandResult:
     brain = ctx.brain
-    if not brain or not hasattr(brain, "agent_loop"):
-        return CommandResult(text="Agent not available for code review.", success=False)
+    if not brain:
+        return CommandResult(text="Brain not available for code review.", success=False)
 
     raw_args = ctx.args.strip()
     security_mode = "--security" in raw_args
@@ -512,7 +512,7 @@ async def cmd_review(ctx: CommandContext) -> CommandResult:
 
     review_type = "Security Review" if security_mode else "Code Review"
     try:
-        result = await brain.agent_loop(prompt, max_steps=3)
+        result = await brain.think(prompt)
         return CommandResult(text=f"{review_type}\n{'=' * 40}\n{result}")
     except Exception as e:
         return CommandResult(text=f"Review failed: {e}", success=False)
@@ -524,8 +524,8 @@ async def cmd_review(ctx: CommandContext) -> CommandResult:
          usage="/bughunter [scope]", category="git", permission=PermLevel.STANDARD)
 async def cmd_bughunter(ctx: CommandContext) -> CommandResult:
     brain = ctx.brain
-    if not brain or not hasattr(brain, "agent_loop"):
-        return CommandResult(text="Agent not available for bug hunting.", success=False)
+    if not brain:
+        return CommandResult(text="Brain not available for bug hunting.", success=False)
 
     scope = ctx.args.strip() or "."
     _, diff, _ = _git("diff", "--no-color")
@@ -539,7 +539,7 @@ async def cmd_bughunter(ctx: CommandContext) -> CommandResult:
         "List each issue with severity (critical/warning/info), location, and fix."
     )
     try:
-        result = await brain.agent_loop(prompt, max_steps=5)
+        result = await brain.think(prompt)
         return CommandResult(text=f"Bug Hunter Report\n{'=' * 40}\n{result}")
     except Exception as e:
         return CommandResult(text=f"Bug hunt failed: {e}", success=False)
@@ -551,8 +551,8 @@ async def cmd_bughunter(ctx: CommandContext) -> CommandResult:
          usage="/explain <path_or_code>", category="git", permission=PermLevel.READ_ONLY)
 async def cmd_explain(ctx: CommandContext) -> CommandResult:
     brain = ctx.brain
-    if not brain or not hasattr(brain, "agent_loop"):
-        return CommandResult(text="Agent not available for code explanation.", success=False)
+    if not brain:
+        return CommandResult(text="Brain not available for code explanation.", success=False)
 
     target = ctx.args.strip()
     if not target:
@@ -572,7 +572,7 @@ async def cmd_explain(ctx: CommandContext) -> CommandResult:
         )
 
     try:
-        result = await brain.agent_loop(prompt, max_steps=2)
+        result = await brain.think(prompt)
         return CommandResult(text=f"Explanation\n{'=' * 40}\n{result}")
     except Exception as e:
         return CommandResult(text=f"Explain failed: {e}", success=False)

@@ -4,7 +4,115 @@ import time
 from pathlib import Path
 
 from src.commands.registry import command, CommandContext, CommandResult, PermLevel
+from src.sessions import Session, SessionManager
 
+
+# ── Helpers ─────────────────────────────────────────────────────────────────
+
+def _get_sessions(ctx: CommandContext) -> SessionManager:
+    """Return the session manager from context, or create a standalone one."""
+    return ctx.session_mgr or SessionManager()
+
+
+def _session_info(s: Session) -> dict:
+    """Convert a Session object to the summary dict used by list/resume returns."""
+    return {
+        "id": s.id,
+        "name": s.name,
+        "turns": s.turn_count,
+        "updated": s.updated_at,
+        "mode": s.mode,
+        "preview": s.display_name,
+        "active": True,
+    }
+
+
+def _import_history(sessions: SessionManager, data) -> int:
+    """Import a list of message dicts into the current (or a new) session."""
+    current = sessions._current
+    if not current:
+        current = sessions.new()
+    count = 0
+    if isinstance(data, list):
+        for entry in data:
+            role = entry.get("role", "user")
+            content = entry.get("content", "")
+            if content:
+                current.add_message(role, str(content))
+                count += 1
+    sessions.save_current()
+    return count
+
+
+def _import_transcript(sessions: SessionManager, content: str):
+    """Parse a plain-text transcript and import it into the current session."""
+    current = sessions._current
+    if not current:
+        current = sessions.new()
+
+    current_role = "user"
+    current_lines: list[str] = []
+
+    def _flush():
+        text = "\n".join(current_lines).strip()
+        if text:
+            current.add_message(current_role, text)
+        current_lines.clear()
+
+    for line in content.splitlines():
+        stripped = line.strip()
+        lower = stripped.lower()
+        if lower.startswith(("[user]", "user:")):
+            _flush()
+            current_role = "user"
+            after = stripped.split(":", 1)[1].strip() if ":" in stripped else ""
+            current_lines.append(after)
+        elif lower.startswith(("[assistant]", "assistant:", "jarvis:", "[jarvis]")):
+            _flush()
+            current_role = "assistant"
+            after = stripped.split(":", 1)[1].strip() if ":" in stripped else ""
+            current_lines.append(after)
+        else:
+            current_lines.append(line)
+
+    _flush()
+    sessions.save_current()
+
+
+def _get_tool_calls(sessions: SessionManager, session_id: str | None = None) -> list[dict]:
+    """Extract tool call summaries from a session's message history."""
+    if session_id:
+        try:
+            session = sessions.find(session_id)
+        except Exception:
+            session = sessions._current
+    else:
+        session = sessions._current
+
+    if not session:
+        return []
+
+    tool_calls = []
+    for msg in session.messages:
+        if msg.get("role") == "assistant" and "tool_calls" in msg:
+            for tc in msg["tool_calls"]:
+                fn = tc.get("function", {})
+                args_raw = fn.get("arguments", "{}")
+                try:
+                    args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+                    summary = ", ".join(f"{k}={str(v)[:30]}" for k, v in args.items())
+                except Exception:
+                    summary = str(args_raw)[:80]
+                tool_calls.append({
+                    "tool": fn.get("name", "unknown"),
+                    "status": "completed",
+                    "summary": summary[:80],
+                    "id": tc.get("id", ""),
+                })
+    return tool_calls
+
+
+# ── Commands ─────────────────────────────────────────────────────────────────
 
 @command("session", aliases=["sess"], description="Manage sessions (list/new/save/delete/info)",
          usage="/session [list|new|save <name>|delete <id>|info]", category="session", permission=PermLevel.STANDARD)
@@ -17,7 +125,7 @@ async def cmd_session(ctx: CommandContext) -> CommandResult:
     sub = args[0].lower() if args else "info"
     rest = args[1].strip() if len(args) > 1 else ""
 
-    sessions = brain.sessions
+    sessions = _get_sessions(ctx)
 
     if sub == "list":
         items = sessions.list_sessions()
@@ -26,7 +134,6 @@ async def cmd_session(ctx: CommandContext) -> CommandResult:
         lines = ["Sessions", "=" * 60]
         for s in items:
             marker = " *" if s.get("active") else ""
-            # Format timestamp
             updated = s.get("updated", 0)
             ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(updated)) if updated else "?"
             turns = s.get("turns", 0)
@@ -37,25 +144,27 @@ async def cmd_session(ctx: CommandContext) -> CommandResult:
         return CommandResult(text="\n".join(lines))
 
     elif sub == "new":
-        name = rest or None
-        session = sessions.create_session(name=name)
-        return CommandResult(text=f"New session created: {session['id'][:8]} ({session.get('name', 'unnamed')})")
+        name = rest or ""
+        session = sessions.new(name=name)
+        return CommandResult(text=f"New session created: {session.id[:8]} ({session.name or 'unnamed'})")
 
     elif sub == "save":
         if not rest:
             return CommandResult(text="Usage: /session save <name>", success=False)
-        sessions.save_current(name=rest)
+        current = sessions.current
+        if current:
+            current.name = rest
+        sessions.save_current()
         return CommandResult(text=f"Session saved as: {rest}")
 
     elif sub == "delete":
         if not rest:
             return CommandResult(text="Usage: /session delete <id>", success=False)
-        sessions.delete_session(rest)
+        sessions.delete(rest)
         return CommandResult(text=f"Session deleted: {rest}")
 
     elif sub == "info":
-        # Show detailed info about current session
-        current = getattr(sessions, 'current', None) or getattr(sessions, '_current', None)
+        current = sessions.current
         if not current:
             return CommandResult(text="No active session. Use /session new to start one.")
 
@@ -68,13 +177,12 @@ async def cmd_session(ctx: CommandContext) -> CommandResult:
         user_turns = len([m for m in current.messages if m.get("role") == "user"])
         assistant_turns = len([m for m in current.messages if m.get("role") == "assistant"])
 
-        # Count tool usage
         tool_calls = []
         for m in current.messages:
             if m.get("role") == "assistant" and "tool_calls" in m:
                 for tc in m["tool_calls"]:
                     tool_calls.append(tc.get("function", {}).get("name", "unknown"))
-        tool_counts = {}
+        tool_counts: dict[str, int] = {}
         for t in tool_calls:
             tool_counts[t] = tool_counts.get(t, 0) + 1
 
@@ -97,7 +205,6 @@ async def cmd_session(ctx: CommandContext) -> CommandResult:
             for tool, count in sorted(tool_counts.items(), key=lambda x: -x[1]):
                 lines.append(f"    {tool}: {count}x")
 
-        # Session cost if tracker is available
         try:
             from src.agent.cost_tracker import get_tracker
             tracker = get_tracker()
@@ -107,7 +214,6 @@ async def cmd_session(ctx: CommandContext) -> CommandResult:
         except Exception:
             pass
 
-        # Tags from metadata
         tags = current.metadata.get("tags", [])
         if tags:
             lines.append(f"  Tags:       {', '.join(tags)}")
@@ -126,15 +232,13 @@ async def cmd_resume(ctx: CommandContext) -> CommandResult:
         return CommandResult(text="Brain not available", success=False)
 
     args = ctx.args.strip()
-    sessions = brain.sessions
+    sessions = _get_sessions(ctx)
 
-    # Search mode: /resume --search <keyword>
     if args.startswith("--search"):
         keyword = args.replace("--search", "").strip()
         if not keyword:
             return CommandResult(text="Usage: /resume --search <keyword>", success=False)
 
-        # Search through sessions for matching content
         all_sessions = sessions.list_sessions(limit=50)
         matches = []
         for s in all_sessions:
@@ -158,13 +262,11 @@ async def cmd_resume(ctx: CommandContext) -> CommandResult:
         lines.append(f"\nUse /resume <id> to resume a session.")
         return CommandResult(text="\n".join(lines))
 
-    # No args: show recent sessions list, then resume latest
     if not args:
         recent = sessions.list_sessions(limit=5)
         if not recent:
             return CommandResult(text="No sessions to resume.", success=False)
 
-        # Show a quick list of recent sessions
         lines = ["Recent sessions:"]
         for s in recent:
             ts = time.strftime("%m-%d %H:%M", time.localtime(s.get("updated", 0))) if s.get("updated") else "?"
@@ -173,24 +275,21 @@ async def cmd_resume(ctx: CommandContext) -> CommandResult:
                 name = name[:37] + "..."
             lines.append(f"  [{s['id'][:8]}] {name:<40s} {s.get('turns', 0)} turns  {ts}")
 
-        # Resume the latest
-        session = sessions.load_latest()
+        session = sessions.get_latest()
         if session:
-            lines.insert(0, f"Resumed session: {session['id'][:8]} ({session.get('name', 'unnamed')})\n")
-            return CommandResult(
-                text="\n".join(lines),
-                data={"session_id": session["id"]},
-            )
+            sessions.resume(session)
+            lines.insert(0, f"Resumed session: {session.id[:8]} ({session.name or 'unnamed'})\n")
+            return CommandResult(text="\n".join(lines), data={"session_id": session.id})
         return CommandResult(text="\n".join(lines), success=False)
 
-    # Specific target
-    session = sessions.load_session(args)
+    session = sessions.find(args)
     if not session:
         return CommandResult(text=f"No session found: {args}", success=False)
 
+    sessions.resume(session)
     return CommandResult(
-        text=f"Resumed session: {session['id'][:8]} ({session.get('name', 'unnamed')})",
-        data={"session_id": session["id"]},
+        text=f"Resumed session: {session.id[:8]} ({session.name or 'unnamed'})",
+        data={"session_id": session.id},
     )
 
 
@@ -204,14 +303,14 @@ async def cmd_history(ctx: CommandContext) -> CommandResult:
     args = ctx.args.strip()
     limit = int(args) if args.isdigit() else 20
 
-    # In relay mode, fetch history from the remote brain (includes browser conversations)
     history = brain.memory.get_history(limit=limit)
     if not history:
         try:
-            import json as _j, urllib.request as _ur
+            import urllib.request as _ur
             from pathlib import Path as _P
             _rfile = _P.home() / ".jarvis" / "remote.json"
             if _rfile.exists():
+                import json as _j
                 _rd = _j.loads(_rfile.read_text())
                 _burl = (_rd.get("brain_url") or "").rstrip("/")
                 if _burl and "localhost" not in _burl and "127.0.0.1" not in _burl:
@@ -247,7 +346,6 @@ async def cmd_export(ctx: CommandContext) -> CommandResult:
     if not history:
         return CommandResult(text="Nothing to export.", success=False)
 
-    # Parse --format flag
     fmt = None
     path_arg = args
     if "--format" in args:
@@ -259,7 +357,6 @@ async def cmd_export(ctx: CommandContext) -> CommandResult:
             if len(fmt_rest) > 1:
                 path_arg = fmt_rest[1].strip()
 
-    # Auto-detect format from extension if not explicit
     if not fmt and path_arg:
         if path_arg.endswith(".json"):
             fmt = "json"
@@ -270,7 +367,6 @@ async def cmd_export(ctx: CommandContext) -> CommandResult:
     elif not fmt:
         fmt = "markdown"
 
-    # Generate output in requested format
     if fmt == "json":
         output = json.dumps(history, indent=2, default=str)
     elif fmt == "text":
@@ -285,7 +381,6 @@ async def cmd_export(ctx: CommandContext) -> CommandResult:
             lines.append("")
         output = "\n".join(lines)
     else:
-        # Markdown (default)
         lines = [
             "# JARVIS Session Export",
             f"*Exported: {time.strftime('%Y-%m-%d %H:%M:%S')}*",
@@ -323,15 +418,14 @@ async def cmd_import(ctx: CommandContext) -> CommandResult:
         return CommandResult(text=f"File not found: {path}", success=False)
 
     content = path.read_text(encoding="utf-8")
+    sessions = _get_sessions(ctx)
 
     if path.suffix == ".json":
         data = json.loads(content)
-        count = len(data) if isinstance(data, list) else 1
-        brain.sessions.import_history(data)
+        count = _import_history(sessions, data)
         return CommandResult(text=f"Imported {count} entries from {path.name}")
     else:
-        # Treat as plain text / markdown transcript
-        brain.sessions.import_transcript(content)
+        _import_transcript(sessions, content)
         return CommandResult(text=f"Imported transcript from {path.name}")
 
 
@@ -343,9 +437,9 @@ async def cmd_replay(ctx: CommandContext) -> CommandResult:
         return CommandResult(text="Brain not available", success=False)
 
     session_id = ctx.args.strip() or None
-    sessions = brain.sessions
+    sessions = _get_sessions(ctx)
 
-    history = sessions.get_tool_calls(session_id=session_id)
+    history = _get_tool_calls(sessions, session_id=session_id)
     if not history:
         return CommandResult(text="No tool calls recorded in this session.")
 
@@ -384,7 +478,6 @@ async def cmd_restore(ctx: CommandContext) -> CommandResult:
     checkpoints = brain.checkpoints
 
     if not snap_id:
-        # Restore most recent
         snap_id = checkpoints.latest_snapshot_id()
         if not snap_id:
             return CommandResult(text="No snapshots available.", success=False)
@@ -415,8 +508,8 @@ async def cmd_tag(ctx: CommandContext) -> CommandResult:
     if not brain:
         return CommandResult(text="Brain not available", success=False)
 
-    sessions = brain.sessions
-    current = getattr(sessions, 'current', None) or getattr(sessions, '_current', None)
+    sessions = _get_sessions(ctx)
+    current = sessions.current
     if not current:
         return CommandResult(text="No active session to tag.", success=False)
 
@@ -424,7 +517,6 @@ async def cmd_tag(ctx: CommandContext) -> CommandResult:
     sub = args[0].lower() if args else "list"
     rest = args[1].strip() if len(args) > 1 else ""
 
-    # Ensure tags list exists in metadata
     if "tags" not in current.metadata:
         current.metadata["tags"] = []
 
@@ -474,7 +566,6 @@ async def cmd_share(ctx: CommandContext) -> CommandResult:
     if not history:
         return CommandResult(text="Nothing to share -- session is empty.", success=False)
 
-    # Extract user/assistant pairs
     pairs = []
     current_user = None
     for entry in history:
@@ -489,7 +580,6 @@ async def cmd_share(ctx: CommandContext) -> CommandResult:
     if not pairs:
         return CommandResult(text="No complete exchanges found in session.")
 
-    # Limit to first 5 exchanges unless --full
     show_pairs = pairs if full_mode else pairs[:5]
     truncated = not full_mode and len(pairs) > 5
 
@@ -502,7 +592,6 @@ async def cmd_share(ctx: CommandContext) -> CommandResult:
     ]
 
     for i, (user_msg, assistant_msg) in enumerate(show_pairs, 1):
-        # Truncate long messages
         user_preview = user_msg[:200] + ("..." if len(user_msg) > 200 else "")
         assist_preview = assistant_msg[:300] + ("..." if len(assistant_msg) > 300 else "")
         lines.append(f"--- Exchange {i} ---")
