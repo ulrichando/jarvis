@@ -36,7 +36,7 @@ from src.commands.registry import CommandRegistry, CommandDef, PermLevel, _fuzzy
 
 def run_async(coro):
     """Run an async coroutine synchronously."""
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -313,7 +313,7 @@ class TestBackgroundRunner(unittest.TestCase):
             self.assertEqual(status["status"], "done")
             self.assertIn("finished", status["result"])
 
-        asyncio.get_event_loop().run_until_complete(main())
+        asyncio.run(main())
 
     def test_cancel(self):
         """Run a long task, cancel it, verify cancelled."""
@@ -331,7 +331,7 @@ class TestBackgroundRunner(unittest.TestCase):
             status = runner.status(task_id)
             self.assertEqual(status["status"], "cancelled")
 
-        asyncio.get_event_loop().run_until_complete(main())
+        asyncio.run(main())
 
     def test_list_running(self):
         """Verify running tasks appear in list."""
@@ -354,7 +354,7 @@ class TestBackgroundRunner(unittest.TestCase):
                     t._task.cancel()
             await asyncio.sleep(0.05)
 
-        asyncio.get_event_loop().run_until_complete(main())
+        asyncio.run(main())
 
 
 # ══════════════════════════════════════════════════════════════════════

@@ -25,6 +25,7 @@ import json
 import logging
 from typing import AsyncGenerator
 from src.agent.tools import TOOL_SCHEMAS, get_active_tools, execute_tool
+from src.lc.tracing import setup_tracing as _setup_tracing, trace_call as _trace_call
 from src.agent.context import (
     compact_messages, estimate_tokens, AutoCompactor,
     repair_tool_pairs, check_context_window,
@@ -270,20 +271,27 @@ async def _run_sub_agent(
         remaining = iteration_budget["max"] - iteration_budget["count"]
         max_iters = min(max_iters, max(1, remaining))
 
-    try:
-        async with _groq_semaphore:
-            result = await _agent_loop_internal(
-                reasoner=reasoner,
-                user_input=task,
-                system_prompt=prompt,
-                history=None,
-                tools=tools,
-                max_iterations=max_iters,
-                tool_executor=tool_executor,
-                iteration_budget=iteration_budget,
-            )
-    except Exception as e:
-        result = f"Sub-agent ({agent_type}) error: {e}"
+    with _trace_call(
+        f"sub_agent:{agent_type}",
+        {"agent": agent_type, "task": task[:300]},
+        run_type="agent",
+    ) as _run:
+        try:
+            async with _groq_semaphore:
+                result = await _agent_loop_internal(
+                    reasoner=reasoner,
+                    user_input=task,
+                    system_prompt=prompt,
+                    history=None,
+                    tools=tools,
+                    max_iterations=max_iters,
+                    tool_executor=tool_executor,
+                    iteration_budget=iteration_budget,
+                    force_first_tool=(agent_type == "planner"),
+                )
+        except Exception as e:
+            result = f"Sub-agent ({agent_type}) error: {e}"
+        _run.end(outputs={"output": result[:300]}); _run.patch()
 
     if len(result) > SUB_AGENT_MAX_RESULT:
         result = result[:SUB_AGENT_MAX_RESULT] + "\n\n... (result truncated)"
@@ -304,6 +312,7 @@ async def _agent_loop_internal(
     iteration_budget: dict | None = None,
     allow_dispatch: bool = True,
     consolidate_fn: callable = None,
+    force_first_tool: bool = False,
 ) -> str:
     """Internal agent loop — shared by parent and sub-agents."""
     if tools is None:
@@ -379,6 +388,8 @@ async def _agent_loop_internal(
     _ecc_fixer = ToolFixer()   # ECC-L2: per-turn tool parameter mutation
     _narration_count = 0        # consecutive narration-without-tools retries
     _loop_state: dict = {}      # shared state between iterations (force_tool, etc.)
+    if force_first_tool and tools:
+        _loop_state["force_tool_next"] = True
 
     while iterations < max_iterations:
         iterations += 1
@@ -808,7 +819,9 @@ async def _execute_tools(messages: list[dict], tool_calls: list[dict],
             if on_call:
                 on_call(name, args)
             try:
-                result = await asyncio.to_thread(executor, name, args)
+                with _trace_call(f"tool:{name}", {"tool": name, "args": str(args)[:200]}, run_type="tool") as _tr:
+                    result = await asyncio.to_thread(executor, name, args)
+                    _tr.end(outputs={"result": str(result)[:200]}); _tr.patch()
             except Exception as exc:
                 result = f"ERROR: {exc}"
             if hooks:
@@ -862,7 +875,9 @@ async def _execute_tools(messages: list[dict], tool_calls: list[dict],
         _is_repeat = _sig in failed_sigs
 
         try:
-            result = await asyncio.to_thread(executor, tool_name, tool_args)
+            with _trace_call(f"tool:{tool_name}", {"tool": tool_name, "args": str(tool_args)[:200]}, run_type="tool") as _tr:
+                result = await asyncio.to_thread(executor, tool_name, tool_args)
+                _tr.end(outputs={"result": str(result)[:200]}); _tr.patch()
         except Exception as exc:
             exc_str = str(exc)
             result = f"ERROR: {exc_str}"
@@ -963,20 +978,23 @@ async def agent_loop(
             return execute_tool(name, args, readonly=True)
         tool_executor = readonly_executor
 
-    return await _agent_loop_internal(
-        reasoner=reasoner,
-        user_input=user_input,
-        system_prompt=system_prompt,
-        history=history,
-        tools=tools,
-        max_iterations=max_iterations,
-        on_tool_call=on_tool_call,
-        on_tool_result=on_tool_result,
-        iteration_budget=iteration_budget,
-        allow_dispatch=True,
-        tool_executor=tool_executor,
-        consolidate_fn=consolidate_fn,
-    )
+    with _trace_call("agent_loop", {"input": user_input[:500]}) as _run:
+        result = await _agent_loop_internal(
+            reasoner=reasoner,
+            user_input=user_input,
+            system_prompt=system_prompt,
+            history=history,
+            tools=tools,
+            max_iterations=max_iterations,
+            on_tool_call=on_tool_call,
+            on_tool_result=on_tool_result,
+            iteration_budget=iteration_budget,
+            allow_dispatch=True,
+            tool_executor=tool_executor,
+            consolidate_fn=consolidate_fn,
+        )
+        _run.end(outputs={"output": result[:500] if result else ""}); _run.patch()
+    return result
 
 
 async def agent_loop_stream(

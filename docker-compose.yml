@@ -103,8 +103,56 @@ services:
     networks:
       - jarvis_net
 
+  # ── PostgreSQL — short-term conversation memory ──────────────────────────────
+  # NOTE: using the system PostgreSQL on port 5432 (already running on host).
+  # This service is kept here for reference / cloud deployments.
+  # Disabled locally to avoid port conflict with the host PostgreSQL instance.
+  # postgres:
+  #   image: postgres:16-alpine
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   environment:
+  #     - POSTGRES_USER=jarvis
+  #     - POSTGRES_PASSWORD=697968751ando
+  #     - POSTGRES_DB=jarvis
+  #   restart: unless-stopped
+  #   networks:
+  #     - jarvis_net
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U jarvis"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+
+  # ── Weaviate — long-term semantic memory + RAG vector store ─────────────────
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:1.30.0
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+    environment:
+      - AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true
+      - PERSISTENCE_DATA_PATH=/var/lib/weaviate
+      - DEFAULT_VECTORIZER_MODULE=none
+      - CLUSTER_HOSTNAME=jarvis-weaviate
+    restart: unless-stopped
+    networks:
+      - jarvis_net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/v1/.well-known/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
 
 volumes:
   jarvis_data:      # JARVIS config, memory, and models
   ollama_data:      # Ollama model weights
   prowlarr_config:  # Prowlarr indexer config and DB
+  postgres_data:    # PostgreSQL conversation history
+  weaviate_data:    # Weaviate vector store

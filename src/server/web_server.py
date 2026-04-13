@@ -186,6 +186,31 @@ class JarvisWebServer:
         except Exception as _e:
             print(f"[JARVIS] channel hooks not registered: {_e}")
 
+        # ── Proactive Monitor — register alert broadcast hook ──────────
+        try:
+            def _alert_sync(level: str, name: str, message: str):
+                import asyncio as _aio
+                _l = _get_loop() if '_get_loop' in dir() else None
+                if _l:
+                    _aio.run_coroutine_threadsafe(
+                        _server._broadcast({
+                            "type": "alert",
+                            "level": level,
+                            "name": name,
+                            "message": message,
+                        }),
+                        _l,
+                    )
+
+            if self.brain and hasattr(self.brain, '_alert_hook'):
+                self.brain._alert_hook = _alert_sync
+
+            # Start monitor loop now that event loop is running
+            if self.brain and hasattr(self.brain, 'start_monitor'):
+                self.brain.start_monitor()
+        except Exception as _e:
+            print(f"[JARVIS] monitor hook not registered: {_e}")
+
         # Pre-load Whisper model so first voice request is fast
         try:
             from src.speech.stt import _get_model

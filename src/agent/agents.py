@@ -66,14 +66,20 @@ PLANNER_PROMPT = """You are a JARVIS Planner agent — an analyst and architect.
 YOUR JOB: Analyze the problem, research if needed, and produce a structured plan.
 You CANNOT execute anything. No bash. No file modifications. Think and plan only.
 
-RULES:
-- Read relevant code and files to understand the current state
-- Search the web if you need external information
-- Use the think tool to reason through complex decisions
-- End with a numbered, actionable plan with clear steps
-- Identify risks, dependencies, and alternatives
+MANDATORY PROTOCOL — follow this order every time:
+1. EXPLORE FIRST — use Glob and read_file to see what actually exists. Never assume file names.
+2. READ the relevant files. Real code, not imagination.
+3. THINK with the think tool to reason through the problem using what you found.
+4. PLAN — write a numbered, actionable plan based on real findings.
 
-PERSONALITY: Methodical, thorough, strategic."""
+RULES:
+- NEVER invent file names, directories, or code that you have not read with read_file or Glob
+- If a path does not exist, say so — do not fabricate an alternative
+- Search the web only for external information (docs, APIs, best practices)
+- Identify risks, dependencies, and alternatives grounded in what you found
+- End with a clear structured plan
+
+PERSONALITY: Methodical, thorough, strategic. Facts first, then plan."""
 
 VERIFIER_PROMPT = """You are a JARVIS Verifier agent — an adversarial post-work reviewer.
 
@@ -96,29 +102,32 @@ AGENT_CONFIGS = {
         name="scout",
         description="Read-only exploration — find files, read code, search the codebase",
         system_prompt=SCOUT_PROMPT,
-        allowed_tools=["read_file", "search_files", "bash", "think"],
+        allowed_tools=["read_file", "search_files", "Glob", "Grep", "bash", "think", "rag_search"],
         max_iterations=999,
+        bash_readonly=True,
     ),
     "worker": AgentConfig(
         name="worker",
         description="Full task execution — install, build, edit files, run commands",
         system_prompt=WORKER_PROMPT,
         allowed_tools=["bash", "read_file", "write_file", "edit_file",
-                        "search_files", "web_search", "web_fetch", "think"],
+                        "search_files", "Glob", "Grep", "web_search", "web_fetch",
+                        "think", "rag_search"],
         max_iterations=999,
     ),
     "planner": AgentConfig(
         name="planner",
         description="Analysis and planning — research, reason, create structured plans",
         system_prompt=PLANNER_PROMPT,
-        allowed_tools=["read_file", "search_files", "web_search", "web_fetch", "think"],
+        allowed_tools=["read_file", "search_files", "Glob", "Grep",
+                        "web_search", "web_fetch", "think", "rag_search"],
         max_iterations=999,
     ),
     "verifier": AgentConfig(
         name="verifier",
         description="Adversarial post-work reviewer — reads modified files, runs checks, gives PASS/FAIL verdict",
         system_prompt=VERIFIER_PROMPT,
-        allowed_tools=["read_file", "search_files", "bash", "think"],
+        allowed_tools=["read_file", "search_files", "Glob", "Grep", "bash", "think"],
         max_iterations=999,
         bash_readonly=True,
     ),
@@ -128,18 +137,60 @@ AGENT_CONFIGS = {
 # ── Bash Read-Only Enforcement ────────────────────────────────────────
 
 _DESTRUCTIVE_PATTERNS = [
-    "rm ", "rm\t", "rmdir ", "mv ", "cp ", "dd ", "mkfs",
+    # File removal / move / copy
+    "rm ", "rm\t", "rmdir ", "mv ", "cp ",
+    # Low-level disk / filesystem ops
+    "dd ", "mkfs", "fdisk", "parted", "mkswap", "swapon", "swapoff",
+    "mount ", "umount ", "fsck",
+    # Permission / ownership changes
     "chmod ", "chown ", "chgrp ",
-    "apt ", "apt-get ", "dpkg ", "pip ", "pip3 ", "npm ", "cargo ",
-    "systemctl ", "service ", "reboot", "shutdown", "poweroff", "halt",
-    "kill ", "killall ", "pkill ",
-    "truncate ", "shred ",
-    " > ", " >> ", " >|",
+    # Package managers — all modify system state
+    "apt ", "apt-get ", "dpkg ", "pip ", "pip3 ",
+    "npm ", "yarn ", "pnpm ", "cargo ", "gem ", "composer ",
+    "brew ", "snap ", "flatpak ", "dnf ", "yum ", "pacman ", "zypper ",
+    # Service / system control — only write sub-commands
+    "systemctl start", "systemctl stop", "systemctl restart",
+    "systemctl reload", "systemctl enable", "systemctl disable",
+    "systemctl mask", "systemctl unmask", "systemctl daemon-reload",
+    "systemctl set-default", "systemctl isolate", "systemctl reset-failed",
+    # service <name> start/stop/restart — blocked via is_bash_readonly logic below
+    "rc-service ",
+    "reboot", "shutdown", "poweroff", "halt", "init ",
+    # Process termination
+    "kill ", "killall ", "pkill ", "fuser ",
+    # Destructive file ops
+    "truncate ", "shred ", "wipe ", "secure-delete ",
+    # Write tools
     "tee ", "install ",
-    "git push", "git commit", "git reset", "git checkout",
+    # Git — state-modifying ops only
+    "git push", "git commit", "git reset", "git rebase",
+    "git checkout", "git merge", "git stash", "git tag",
+    "git branch -d", "git branch -D",
+    # Docker — container lifecycle ops
     "docker rm", "docker stop", "docker kill",
-    "wget ", "curl.*-o", "curl.*--output",
+    "docker rmi", "docker prune", "docker run",
+    # Network downloaders (write to disk)
+    "wget ", "curl -o ", "curl -O ", "curl --output ",
+    "curl --download-dir",
+    # Cron / scheduling
+    "crontab ",
+    # User/group management
+    "useradd ", "userdel ", "usermod ",
+    "groupadd ", "groupdel ", "groupmod ",
+    "passwd ",
+    # SSH key / config writes
+    "ssh-keygen ", "ssh-copy-id ",
+    # Misc dangerous
+    "mkfifo ", "mknod ", "chattr ", "setfacl ",
+    "iptables ", "nftables ", "ufw ", "firewall-cmd ",
+    "visudo", "sudoedit",
 ]
+
+
+_SERVICE_WRITE_ACTIONS = frozenset(
+    ["start", "stop", "restart", "reload", "force-reload",
+     "try-restart", "condrestart", "condstop"]
+)
 
 
 def is_bash_readonly(command: str) -> bool:
@@ -148,9 +199,17 @@ def is_bash_readonly(command: str) -> bool:
     for pattern in _DESTRUCTIVE_PATTERNS:
         if pattern in cmd:
             return False
-    # Block redirects
-    if ">" in cmd and "grep" not in cmd and "awk" not in cmd:
-        return False
+    # service <name> <action> — block only write actions
+    if cmd.startswith("service "):
+        parts = cmd.split()
+        if len(parts) >= 3 and parts[2] in _SERVICE_WRITE_ACTIONS:
+            return False
+    # Block any shell redirect that writes to a file
+    # Allow > inside grep patterns (-e '>'), process substitution <(), and awk comparisons
+    if ">" in cmd:
+        # Heuristic: allow grep/awk/sed that use > for comparison, not redirection
+        if not any(t in cmd for t in ("grep ", "awk ", "sed ", "-e '", '-e "')):
+            return False
     return True
 
 

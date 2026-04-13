@@ -539,9 +539,12 @@ class PersonalityAgentFactory:
         from src.reasoning.persona import PERSONAS
 
         profile = self.detect_profile(persona_key)
-        persona = PERSONAS.get(persona_key)
-        if not profile or not persona:
+        if not profile:
             return None
+        persona = PERSONAS.get(persona_key) or {
+            "description": f"{persona_key} specialist",
+            "prompt": f"You are a {persona_key} specialist operating in the {profile.domain} domain.",
+        }
 
         parts = [profile.domain_prefix]
         if persona.get("prompt"):
@@ -604,7 +607,7 @@ class PersonalityAgentFactory:
         if len(spec.persona_keys) == 1:
             # Single-persona archetype: use persona prompt directly
             persona = PERSONAS.get(spec.persona_keys[0], {})
-            system_prompt = persona.get("prompt", "")
+            system_prompt = persona.get("prompt", "") or f"You are a specialist agent: {spec.description}."
         else:
             # Composite: header + each persona section
             lines = [

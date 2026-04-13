@@ -1,7 +1,7 @@
 """JARVIS Memory Store — unified interface to the Neural Memory Lattice.
 
-SQLite handles raw conversation logs (append-only, fast).
-The Neural Lattice handles knowledge, associations, and learning.
+Short-term (conversation log): PostgreSQL when available, SQLite fallback.
+Long-term (knowledge graph):   NeuralLattice (in-memory + disk persistence).
 The Index provides O(1) recall across all dimensions.
 """
 
@@ -21,7 +21,7 @@ class MemoryStore:
     """JARVIS's complete memory system.
 
     Three layers:
-    - Conversation log (SQLite): raw transcript, never modified
+    - Conversation log (PostgreSQL → SQLite fallback): raw transcript, append-only
     - Neural Lattice: living knowledge graph that learns and evolves
     - Memory Index: inverted indexes for speed-of-light recall
     """
@@ -31,12 +31,26 @@ class MemoryStore:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
             db_path = str(DATA_DIR / "jarvis.db")
 
-        # Conversation log (SQLite — WAL mode for concurrent access)
-        self._db_lock = threading.Lock()
-        self.conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.row_factory = sqlite3.Row
-        self._init_tables()
+        # ── Short-term memory: try PostgreSQL, fall back to SQLite ─────
+        self._pg = None
+        try:
+            from src.memory.pg_backend import get_pg_backend
+            self._pg = get_pg_backend()
+        except Exception as e:
+            log.debug("PG backend init failed: %s", e)
+
+        if self._pg is None:
+            # SQLite fallback (WAL mode for concurrent access)
+            self._db_lock = threading.Lock()
+            self.conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            self.conn.row_factory = sqlite3.Row
+            self._init_tables()
+            log.debug("Using SQLite for short-term memory: %s", db_path)
+        else:
+            # Placeholders so existing code that touches self.conn doesn't crash
+            self._db_lock = threading.Lock()
+            self.conn = None
 
         # Neural Memory Lattice
         self.persistence = LatticePersistence(DATA_DIR / "lattice")
@@ -82,6 +96,16 @@ class MemoryStore:
         except (OSError, ValueError, TypeError) as e:
             log.warning("ActivationMemory failed to initialize: %s", e)
 
+        # ── Weaviate — vector semantic long-term memory ─────────────────
+        self._weaviate = None
+        try:
+            from src.memory.weaviate_backend import get_weaviate
+            wv = get_weaviate()
+            if wv.available:
+                self._weaviate = wv
+        except Exception as e:
+            log.debug("Weaviate init skipped: %s", e)
+
     def _init_tables(self):
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS conversations (
@@ -118,6 +142,9 @@ class MemoryStore:
     def add_turn(self, role: str, content: str):
         """Log a conversation turn. Does NOT absorb into lattice —
         only explicit learn() calls go into the lattice."""
+        if self._pg:
+            self._pg.add_turn(role, content)
+            return
         with self._db_lock:
             self.conn.execute(
                 "INSERT INTO conversations (role, content, timestamp) VALUES (?, ?, ?)",
@@ -149,6 +176,12 @@ class MemoryStore:
         # Voice generates ~150 entries/hour, so 3h = ~450 entries
         # Cap at limit * 4 to stay within LLM context budget
         effective_limit = min(limit * 4, 160)
+
+        if self._pg:
+            return self._pg.get_history(
+                limit=limit, time_cutoff=time_cutoff, effective_limit=effective_limit
+            )
+
         with self._db_lock:
             rows = self.conn.execute(
                 "SELECT role, content, timestamp FROM conversations "
@@ -166,6 +199,9 @@ class MemoryStore:
         each with: id (start_ts), title (first user message), start_ts, end_ts,
         message_count.
         """
+        if self._pg:
+            return self._pg.list_sessions(gap_minutes)
+
         with self._db_lock:
             rows = self.conn.execute(
                 "SELECT id, role, content, timestamp FROM conversations ORDER BY timestamp ASC"
@@ -202,6 +238,8 @@ class MemoryStore:
         """Delete all turns whose timestamp falls within [start_ts, end_ts].
         Returns the number of rows deleted.
         """
+        if self._pg:
+            return self._pg.delete_session(start_ts, end_ts)
         with self._db_lock:
             cur = self.conn.execute(
                 "DELETE FROM conversations WHERE timestamp >= ? AND timestamp <= ?",
@@ -280,6 +318,18 @@ class MemoryStore:
             except (TypeError, ValueError, AttributeError) as e:
                 log.debug("Activation store failed: %s", e)
 
+        # Feed Weaviate semantic long-term memory
+        if self._weaviate:
+            try:
+                self._weaviate.store(
+                    content=content,
+                    node_type=node_type.value,
+                    tags=tags or [],
+                    strength=node.strength,
+                )
+            except Exception as e:
+                log.debug("Weaviate store failed: %s", e)
+
         return node
 
     def recall(self, query: str, top_k: int = 5) -> list[MemoryNode]:
@@ -353,6 +403,29 @@ class MemoryStore:
             except (TypeError, ValueError, AttributeError) as e:
                 log.debug("ACT-R recall failed: %s", e)
 
+        # Weaviate semantic recall — dense vector search over long-term memory
+        if self._weaviate:
+            try:
+                wv_results = self._weaviate.recall(query, top_k=top_k)
+                for item in wv_results:
+                    content = item.get("content", "")
+                    if content and content.lower() not in seen_content:
+                        try:
+                            nt = NodeType(item.get("node_type", "fact"))
+                        except ValueError:
+                            nt = NodeType.FACT
+                        node = MemoryNode(
+                            id=f"wv_{hash(content) & 0xFFFFFFFF:08x}",
+                            content=content,
+                            node_type=nt,
+                            strength=item.get("score", 0.6) * item.get("strength", 1.0),
+                            tags=item.get("tags", []),
+                        )
+                        lattice_results.append(node)
+                        seen_content.add(content.lower())
+            except Exception as e:
+                log.debug("Weaviate recall failed: %s", e)
+
         # Sort by strength and return top_k
         lattice_results.sort(key=lambda n: n.strength, reverse=True)
         return lattice_results[:top_k]
@@ -390,6 +463,20 @@ class MemoryStore:
                     lines.append(f"  - [{entry.id}] {preview}")
         except (OSError, AttributeError) as e:
             log.debug("Memdir search failed: %s", e)
+
+        # RAG knowledge base — injected automatically so the LLM has document
+        # context even before deciding to call the rag_search tool.
+        # Budget: up to 1/3 of max_chars so it doesn't crowd out lattice facts.
+        rag_budget = max_chars // 3
+        try:
+            from src.rag import get_pipeline
+            pipeline = get_pipeline()
+            if pipeline.stats().get("chunks", 0) > 0:
+                rag_ctx = pipeline.query_as_context(query, k=3, max_chars=rag_budget)
+                if rag_ctx:
+                    lines.append(rag_ctx)
+        except Exception as e:
+            log.debug("RAG context injection failed: %s", e)
 
         result = "\n".join(lines) if lines else ""
         if result and len(result) > max_chars:
