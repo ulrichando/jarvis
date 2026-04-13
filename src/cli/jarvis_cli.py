@@ -58,6 +58,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 logging.getLogger("numexpr").setLevel(logging.ERROR)
 logging.getLogger("numexpr.utils").setLevel(logging.ERROR)
 warnings.filterwarnings("ignore", module="numexpr")
+# Suppress ResourceWarning (unclosed sockets from async HTTP clients) — not
+# actionable by the user and would corrupt the input frame if printed to stderr.
+warnings.filterwarnings("ignore", category=ResourceWarning)
 
 # ── Keybinding System (src/keybindings) ─────────────────────────────
 from src.keybindings import KeybindingResolver, ParsedKeystroke, DEFAULT_BINDINGS
@@ -2001,6 +2004,11 @@ async def main():
             footer = left
         return sep, prompt, footer
 
+    # Shared mutable spinner state — must live in main() scope so that
+    # _erase_frame() (also in main() scope) can clear the spinner line.
+    _spin_line_active = [False]   # True while the spinner line is visible above the frame
+    _spin_task_ref = [None]       # current asyncio Task, or None
+
     def _draw_input_frame(mode_prefix="", buf_text=""):
         """Draw the 4-row inline frame. Layout: top-sep | prompt | bot-sep | footer.
         Always erases the existing frame first."""
@@ -2023,12 +2031,22 @@ async def main():
         sys.stdout.flush()
 
     def _erase_frame():
-        """Erase the inline frame. Cursor lands where the frame started (top-sep row)."""
+        """Erase the inline frame (and spinner line if active).
+        Cursor lands where the frame started."""
         nonlocal _frame_drawn
         if not _frame_drawn:
             return
-        # Cursor is at prompt line (row 3 of 5). Go up 2 to blank line, clear to end.
-        _write("\033[2A\r\033[J")
+        if _spin_line_active[0]:
+            # Spinner line sits 1 row above the blank-line separator (3 rows above
+            # the prompt).  Cancel the task and clear it together with the frame.
+            t = _spin_task_ref[0]
+            if t and not t.done():
+                t.cancel()
+            _spin_task_ref[0] = None
+            _spin_line_active[0] = False
+            _write("\033[3A\r\033[J")   # 3 up → spinner line, clear to end
+        else:
+            _write("\033[2A\r\033[J")   # 2 up → blank line, clear to end
         _frame_drawn = False
 
     _output_buf_text = [""]  # current input text, kept for spinner redraws
@@ -2045,6 +2063,39 @@ async def main():
         _draw_input_frame(_output_buf_prefix[0], _output_buf_text[0])
 
     _output_buf_prefix = [""]  # current mode prefix, kept for atomic redraws
+
+    # ── Stderr interceptor: route any raw stderr through the frame-aware output ──
+    class _StderrInterceptor:
+        """Redirect stderr through _outputln so stray prints/warnings don't
+        corrupt the input frame during LLM generation."""
+
+        def __init__(self, real_stderr):
+            self._real = real_stderr
+            self._buf = ""
+
+        def write(self, text: str):
+            # Buffer until we have a complete line
+            self._buf += text
+            while "\n" in self._buf:
+                line, self._buf = self._buf.split("\n", 1)
+                line = line.rstrip("\r")
+                if line:
+                    _outputln(f"\033[2m{line}\033[0m")  # dimmed so it's visually distinct
+
+        def flush(self):
+            # Flush remaining buffer without a trailing newline
+            if self._buf.strip():
+                _outputln(f"\033[2m{self._buf.strip()}\033[0m")
+                self._buf = ""
+
+        def fileno(self):
+            return self._real.fileno()
+
+        def isatty(self):
+            return self._real.isatty()
+
+    _real_stderr = sys.stderr
+    sys.stderr = _StderrInterceptor(_real_stderr)
 
     # Helper to full redraw (used by /clear and resize)
     def _redraw():
@@ -2816,18 +2867,12 @@ async def main():
         _tool_states = []
         _tokens_this_turn = 0
 
-        # Async status dot — JARVIS style (● blinks while working)
-        _spin_task = None
+        # Spinner state lives in main() scope (_spin_line_active, _spin_task_ref)
+        # so _erase_frame() can cancel and clear the spinner atomically.
         _spin_label = ["Thinking..."]
-
-        # Inline spinner: sits on the line immediately above the top separator.
-        # Layout during thinking (cursor stays at prompt row throughout):
-        #   ⠋ Thinking... 4s    ← spinner (2 rows above prompt, updated via save/restore)
-        #   ────────────────────
-        #   ❯                   ← prompt (cursor here)
-        #   ────────────────────
-        #   ? for shortcuts
-        _spin_line_active = [False]
+        # Reset shared state at the start of each query
+        _spin_line_active[0] = False
+        _spin_task_ref[0] = None
 
         async def _spin_loop():
             i = 1
@@ -2848,7 +2893,6 @@ async def main():
                 pass
 
         def _start_spin(label="Thinking..."):
-            nonlocal _spin_task
             _stop_spin()
             _spin_label[0] = label
             # Erase frame, write spinner line + redraw frame — one atomic flush.
@@ -2856,13 +2900,13 @@ async def main():
             _write(f"  {BLUE}{SPINNER_FRAMES[0]}{RESET} {DIM}{label}{RESET}\033[K\n")
             _spin_line_active[0] = True
             _draw_input_frame(_output_buf_prefix[0], _output_buf_text[0])
-            _spin_task = asyncio.get_event_loop().create_task(_spin_loop())
+            _spin_task_ref[0] = asyncio.get_event_loop().create_task(_spin_loop())
 
         def _stop_spin():
-            nonlocal _spin_task
-            if _spin_task and not _spin_task.done():
-                _spin_task.cancel()
-                _spin_task = None
+            t = _spin_task_ref[0]
+            if t and not t.done():
+                t.cancel()
+            _spin_task_ref[0] = None
             if _spin_line_active[0]:
                 # Clear spinner line: save cursor → go to spinner row → erase → restore.
                 _write(f"\0337\033[3A\r\033[K\0338")
@@ -3636,6 +3680,12 @@ def run():
             ):
                 sys.stdout.write("\033[?1049l")
                 sys.stdout.flush()
+        except Exception:
+            pass
+        # Restore real stderr (undo our interceptor) before final devnull redirect
+        try:
+            if hasattr(sys.stderr, "_real"):
+                sys.stderr = sys.stderr._real
         except Exception:
             pass
         # Suppress aiohttp cleanup errors that print after event loop closes
