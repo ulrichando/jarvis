@@ -2409,7 +2409,8 @@ class JarvisWebServer:
                 # Mute mic BEFORE speaking to prevent echo
                 if hasattr(self, '_server_listener'):
                     self._server_listener.jarvis_speaking = True
-                await self._broadcast({"type": "status", "status": "speaking"})
+                # NOTE: status "speaking" is broadcast inside _speak_system,
+                # right before ffplay starts — keeps UI in sync with actual audio.
                 print(f"[JARVIS] Speaking via ffplay: \"{spoken[:60]}\"")
                 try:
                     await self._speak_system(spoken)
@@ -2470,6 +2471,7 @@ class JarvisWebServer:
                     stderr=asyncio.subprocess.DEVNULL,
                 )
                 self._current_ffplay = proc  # track so it can be cancelled
+                await self._broadcast({"type": "status", "status": "speaking"})
                 await asyncio.wait_for(proc.wait(), timeout=15)
             except asyncio.TimeoutError:
                 proc.kill()
@@ -2529,11 +2531,15 @@ class JarvisWebServer:
                     stderr=asyncio.subprocess.DEVNULL,
                 )
                 self._current_ffplay = proc
+                # Broadcast speaking NOW — audio is about to start playing
+                await self._broadcast({"type": "status", "status": "speaking"})
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=60)
                 except asyncio.TimeoutError:
                     proc.kill()
                     print("[JARVIS] TTS playback timed out, killed ffplay")
+                # Audio finished — signal UI immediately
+                await self._broadcast({"type": "tts_done", "server_tts": True})
             except FileNotFoundError:
                 pass
             finally:
