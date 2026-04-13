@@ -3750,6 +3750,16 @@ class JarvisWebServer:
             return web.json_response({"status": "cleared"})
         app.router.add_post("/api/clear-tools", _clear_tools_handler)
 
+        async def _broadcast_handler(request):
+            """Broadcast an arbitrary JSON payload to all WS clients."""
+            try:
+                payload = await request.json()
+            except Exception:
+                return web.json_response({"error": "invalid json"}, status=400)
+            await self._broadcast(payload)
+            return web.json_response({"status": "ok"})
+        app.router.add_post("/api/broadcast", _broadcast_handler)
+
         app.router.add_post("/api/manage", self.manage_handler)
         app.router.add_get("/api/manage", self.manage_handler)
         # Remote session API — makes JARVIS cloud-capable

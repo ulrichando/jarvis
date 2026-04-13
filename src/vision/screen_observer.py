@@ -541,8 +541,9 @@ class ScreenObserver:
                     self._last_vision_time = now
                     log.debug("Vision analysis completed (%d chars)", len(ctx.vision_summary))
 
-        # OCR fallback (always run for text extraction)
-        if ctx.screenshot_path and os.path.exists(ctx.screenshot_path):
+        # OCR — only on explicit on-demand requests (force_vision=True)
+        # Never run automatically; pytesseract can block for up to 10s per frame
+        if force_vision and ctx.screenshot_path and os.path.exists(ctx.screenshot_path):
             try:
                 import pytesseract
                 from PIL import Image

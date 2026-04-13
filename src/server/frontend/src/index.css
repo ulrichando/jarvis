@@ -21,6 +21,10 @@
   font-display: swap;
 }
 
+html, body, #root {
+  background: transparent;
+}
+
 body {
   font-family: 'Share Tech Mono', monospace;
   margin: 0;

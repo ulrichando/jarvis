@@ -523,6 +523,24 @@ def main():
         item_show.connect("activate", _toggle_show)
         menu.append(item_show)
 
+        _chat_open_state = [True]  # track toggle state
+        item_chat = Gtk.MenuItem(label="Open / Close Chat Panel")
+        def _toggle_chat(w):
+            import urllib.request as _ur, json as _j
+            _base = api_base if api_base else f"http://{host}:{port}"
+            _chat_open_state[0] = not _chat_open_state[0]
+            _msg = "__SHOW_TEXT__" if _chat_open_state[0] else "__HIDE_TEXT__"
+            _payload = _j.dumps({"type": "message", "content": _msg}).encode()
+            try:
+                _req = _ur.Request(f"{_base}/api/broadcast",
+                                   data=_payload,
+                                   headers={"Content-Type": "application/json"})
+                _ur.urlopen(_req, timeout=1)
+            except Exception as _e:
+                print(f"[JARVIS] Chat toggle failed: {_e}")
+        item_chat.connect("activate", _toggle_chat)
+        menu.append(item_chat)
+
         menu.append(Gtk.SeparatorMenuItem())
 
         def _save_state():

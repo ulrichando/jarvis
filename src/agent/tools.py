@@ -616,7 +616,7 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "view_screen",
-            "description": "Capture and analyze what's currently on the user's screen. Returns the active window, application name, and visible text via OCR. Use when the user asks what's on their screen, what they're looking at, or what app they're using.",
+            "description": "Capture and analyze what's currently on the user's screen. ONLY call this when the user EXPLICITLY asks about their screen — e.g. 'what's on my screen', 'what am I looking at', 'what app is open'. NEVER call this proactively or to understand context. Do NOT call unless the user said words like 'screen', 'display', 'what do you see on screen'.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -634,7 +634,7 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "see",
-            "description": "Look through the user's webcam. Returns a detailed description of what you see. Use when the user asks 'what do you see', 'look at me', 'what am I holding', 'describe what's in front of you', or any visual question about the physical world. Costs an API call — only use when the user asks.",
+            "description": "Look through the user's webcam. ONLY call this when the user EXPLICITLY asks you to look at them or describes a visual scene — e.g. 'look at me', 'what do you see', 'what am I holding', 'can you see me'. NEVER call this proactively, autonomously, or to infer context. Do NOT call unless the user's message contains an explicit visual request about the camera or themselves.",
             "parameters": {
                 "type": "object",
                 "properties": {

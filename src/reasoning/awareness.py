@@ -234,9 +234,7 @@ class SelfAwareness:
         if self.conversation_depth > 3:
             lines.append(f"We're deep into this topic ({self.conversation_depth} exchanges). I should build on what we've already discussed.")
 
-        # Vision
-        if self.vision_context:
-            lines.append(f"I can see: {self.vision_context}")
+        # Vision — omit from general state summary; injected by brain only on explicit camera queries
 
         # Caution
         if self.should_be_cautious():

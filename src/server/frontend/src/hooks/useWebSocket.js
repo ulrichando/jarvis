@@ -20,10 +20,11 @@ export default function useWebSocket(url) {
 
       ws.onopen = () => {
         console.log('[JARVIS WS] Connected')
-        // Only reload on reconnect for localhost (picks up new assets after local deploy).
-        // Remote URLs (Proxmox brain) must NOT reload — causes infinite loop in WebKit.
+        // Only reload on reconnect for localhost browser tab (picks up new assets after local deploy).
+        // Desktop overlay must NEVER reload on reconnect — it causes a visible flash every restart.
         const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-        if (wasConnected.current && isLocal) {
+        const isDesktop = new URLSearchParams(window.location.search).has('desktop')
+        if (wasConnected.current && isLocal && !isDesktop) {
           console.log('[JARVIS WS] Server restarted — reloading page')
           window.location.reload()
           return
