@@ -101,6 +101,8 @@ class JarvisWebServer:
         self._local_auth_token: str | None = os.environ.get("JARVIS_WS_TOKEN") or remote_config.get("ws_token")
         # Management API token — auto-generated if not configured
         self._manage_token: str = self._load_or_create_manage_token(remote_config)
+        # Voice mute — suppresses TTS output and mic input without stopping the audio hardware
+        self._voice_muted: bool = False
 
     def _check_ws_origin(self, request: web.Request) -> bool:
         """Validate WebSocket origin header against allowed origins."""
@@ -533,10 +535,15 @@ class JarvisWebServer:
             self._active_clients[_client_label] = True
             if self.brain:
                 self.brain._channel_state = self._active_clients
-            # Stop server mic when a browser UI connects (it has its own mic)
+            # Browser has its own mic pipeline — stop server mic when browser connects
             if _client_label == "browser":
                 if hasattr(self, '_server_mic_running') and self._server_mic_running:
                     self._server_mic_running = False
+            # Desktop (Tauri) has no own mic — start server mic so JARVIS can hear
+            elif _client_label == "desktop":
+                import asyncio as _aio
+                if not self._active_clients.get("browser") and not getattr(self, '_server_mic_running', False):
+                    _aio.ensure_future(self._start_server_mic())
 
         # Tell the client who JARVIS thinks they are
         await self._safe_send(ws, {
@@ -551,6 +558,9 @@ class JarvisWebServer:
                 "type": "brain_ready",
                 "tools": len(self.brain.mcp.get_tool_schemas()) + 40,
             })
+
+        # Send current mute state so the UI reflects it on connect
+        await self._safe_send(ws, {"type": "voice_muted", "muted": self._voice_muted})
 
         try:
             async for msg in ws:
@@ -665,6 +675,17 @@ class JarvisWebServer:
                         interval = data.get("interval", 10)
                         if hasattr(ws, '_viewer'):
                             ws._viewer.recognition.enable_ai_vision(enabled, interval)
+                    elif msg_type == "feedback":
+                        # User submitted thumbs up/down on a response
+                        score = float(data.get("score", 0))  # 1.0 = thumbs up, 0.0 = thumbs down
+                        comment = data.get("comment", "")
+                        run_id = data.get("run_id")
+                        try:
+                            from src.lc.feedback import log_feedback
+                            ok = log_feedback(score=score, comment=comment, run_id=run_id)
+                            await ws.send_json({"type": "feedback_ack", "ok": ok})
+                        except Exception as e:
+                            await ws.send_json({"type": "feedback_ack", "ok": False, "error": str(e)})
                 except Exception as _msg_err:
                     # Individual message handling failed — log and continue
                     print(f"[JARVIS] Message error: {_msg_err}")
@@ -700,10 +721,11 @@ class JarvisWebServer:
                     self._active_clients[_lbl] = False
                     if self.brain:
                         self.brain._channel_state = self._active_clients
-                    # Restart server mic if no UI clients remain
-                    has_ui = self._active_clients.get("desktop") or self._active_clients.get("browser")
-                    if not has_ui and hasattr(self, '_server_mic_running') and not self._server_mic_running:
-                        import asyncio as _aio
+                    # Restart server mic if browser disconnects (desktop still needs it)
+                    # or if all UI clients disconnect
+                    import asyncio as _aio
+                    has_browser = self._active_clients.get("browser")
+                    if not has_browser and not getattr(self, '_server_mic_running', False):
                         _aio.ensure_future(self._start_server_mic())
 
         return ws
@@ -1031,8 +1053,8 @@ class JarvisWebServer:
         self._conv_intel.mark_processing()
 
         # ── Inject voice intelligence hints into the query ─────────────────
-        # The hints are wrapped in a hidden context block that the LLM reads
-        # but that never appears verbatim in the spoken response.
+        # Hints are appended to text for the LLM only — raw_text is stored in memory.
+        raw_text = text  # Store this clean version in memory, not the hint-enriched one
         if _voice_ctx is not None and is_voice:
             hints = _voice_ctx.hint_block()
             if hints:
@@ -2020,7 +2042,7 @@ class JarvisWebServer:
                             data = stream.read(4096, exception_on_overflow=False)
                             audio = np.frombuffer(data, dtype=np.float32)
 
-                            if listener.jarvis_speaking:
+                            if listener.jarvis_speaking or self._voice_muted:
                                 continue
 
                             _frame_count += 1
@@ -2448,6 +2470,8 @@ class JarvisWebServer:
 
     async def _speak_short(self, text: str):
         """Quick TTS for short status phrases like 'Let me check'."""
+        if getattr(self, '_voice_muted', False):
+            return
         try:
             import tempfile
             # Mute mic during narration to prevent echo
@@ -2495,59 +2519,63 @@ class JarvisWebServer:
                 self._server_listener.jarvis_speaking = False
 
     async def _speak_system(self, text: str):
-        """Generate TTS and play via ffplay. Tries Groq first, then Edge TTS."""
-        import tempfile
-
-        audio_bytes: bytes | None = None
-        suffix = ".mp3"
-
-        # ── Edge TTS (primary) ────────────────────────────────────────────
-        if not audio_bytes:
-            try:
-                communicate = edge_tts.Communicate(text, TTS_VOICE)
-                buf = io.BytesIO()
-                async def _stream():
-                    async for chunk in communicate.stream():
-                        if chunk["type"] == "audio":
-                            buf.write(chunk["data"])
-                await asyncio.wait_for(_stream(), timeout=30)
-                audio_bytes = buf.getvalue() or None
-            except Exception as e:
-                print(f"[JARVIS] Edge TTS error: {e}")
-                audio_bytes = None
-
-        if not audio_bytes:
+        """Stream TTS chunks directly to ffplay stdin — audio starts on first chunk, no temp file."""
+        if getattr(self, '_voice_muted', False):
             return
-
+        proc = None
         try:
-            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
-                f.write(audio_bytes)
-                tmp_path = f.name
+            communicate = edge_tts.Communicate(text, TTS_VOICE)
+            _announced = False
 
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", tmp_path,
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                )
-                self._current_ffplay = proc
-                # Broadcast speaking NOW — audio is about to start playing
-                await self._broadcast({"type": "status", "status": "speaking"})
+            async for chunk in communicate.stream():
+                if chunk["type"] != "audio":
+                    continue
+                data = chunk["data"]
+                if not data:
+                    continue
+
+                if proc is None:
+                    # Start ffplay reading from stdin pipe — no file write, no startup gap
+                    proc = await asyncio.create_subprocess_exec(
+                        "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet",
+                        "-f", "mp3", "-i", "pipe:0",
+                        stdin=asyncio.subprocess.PIPE,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    self._current_ffplay = proc
+
+                if not _announced:
+                    # Reactor turns blue exactly when first audio bytes hit ffplay
+                    await self._broadcast({"type": "status", "status": "speaking"})
+                    _announced = True
+
+                try:
+                    proc.stdin.write(data)
+                    await proc.stdin.drain()
+                except (BrokenPipeError, ConnectionResetError):
+                    break  # ffplay was killed (interrupt)
+
+            if proc and proc.stdin:
+                try:
+                    proc.stdin.close()
+                except Exception:
+                    pass
+            if proc:
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=60)
                 except asyncio.TimeoutError:
                     proc.kill()
                     print("[JARVIS] TTS playback timed out, killed ffplay")
-                # Audio finished — signal UI immediately
-                await self._broadcast({"type": "tts_done", "server_tts": True})
-            except FileNotFoundError:
-                pass
-            finally:
-                self._current_ffplay = None
-                try: os.unlink(tmp_path)
-                except: pass
+            # Audio finished — signal UI
+            await self._broadcast({"type": "tts_done", "server_tts": True})
+
         except Exception as e:
-            print(f"[JARVIS] TTS playback error: {e}")
+            print(f"[JARVIS] TTS error: {e}")
+            if proc:
+                try: proc.kill()
+                except: pass
+        finally:
             self._current_ffplay = None
 
     # ── Remote Session API ──────────────────────────────────────────
@@ -4260,6 +4288,26 @@ class JarvisWebServer:
         app.router.add_route("OPTIONS", "/api/models", models_list_handler)
         app.router.add_post("/api/model", model_switch_handler)
         app.router.add_route("OPTIONS", "/api/model", model_switch_handler)
+
+        # ── Voice mute toggle ──
+        async def mute_handler(request):
+            if request.method == "GET":
+                return web.json_response({"muted": self._voice_muted})
+            # POST — toggle or set explicitly
+            body = {}
+            try:
+                body = await request.json()
+            except Exception:
+                pass
+            if "muted" in body:
+                self._voice_muted = bool(body["muted"])
+            else:
+                self._voice_muted = not self._voice_muted
+            await self._broadcast({"type": "voice_muted", "muted": self._voice_muted})
+            return web.json_response({"muted": self._voice_muted})
+        app.router.add_get("/api/mute", mute_handler)
+        app.router.add_post("/api/mute", mute_handler)
+        app.router.add_route("OPTIONS", "/api/mute", mute_handler)
 
         # ── Exclusive mode: desktop and browser cannot coexist ──
         # Desktop + CLI = OK.  Browser + CLI = OK.  Desktop + Browser = blocked.

@@ -25,7 +25,7 @@ import json
 import logging
 from typing import AsyncGenerator
 from src.agent.tools import TOOL_SCHEMAS, get_active_tools, execute_tool
-from src.lc.tracing import setup_tracing as _setup_tracing, trace_call as _trace_call
+from src.lc.tracing import trace_call as _trace_call
 from src.agent.context import (
     compact_messages, estimate_tokens, AutoCompactor,
     repair_tool_pairs, check_context_window,
@@ -271,27 +271,35 @@ async def _run_sub_agent(
         remaining = iteration_budget["max"] - iteration_budget["count"]
         max_iters = min(max_iters, max(1, remaining))
 
+    # Sub-agent timeout: planner/scout 60s, worker 120s — prevents runaway 125s+ runs
+    _sub_timeout = 120 if agent_type == "worker" else 60
+
     with _trace_call(
         f"sub_agent:{agent_type}",
-        {"agent": agent_type, "task": task[:300]},
-        run_type="agent",
+        {"agent": agent_type, "task": task[:500]},
+        run_type="chain",
     ) as _run:
         try:
             async with _groq_semaphore:
-                result = await _agent_loop_internal(
-                    reasoner=reasoner,
-                    user_input=task,
-                    system_prompt=prompt,
-                    history=None,
-                    tools=tools,
-                    max_iterations=max_iters,
-                    tool_executor=tool_executor,
-                    iteration_budget=iteration_budget,
-                    force_first_tool=(agent_type == "planner"),
+                result = await asyncio.wait_for(
+                    _agent_loop_internal(
+                        reasoner=reasoner,
+                        user_input=task,
+                        system_prompt=prompt,
+                        history=None,
+                        tools=tools,
+                        max_iterations=max_iters,
+                        tool_executor=tool_executor,
+                        iteration_budget=iteration_budget,
+                        force_first_tool=(agent_type == "planner"),
+                    ),
+                    timeout=_sub_timeout,
                 )
+        except asyncio.TimeoutError:
+            result = f"Sub-agent ({agent_type}) timed out after {_sub_timeout}s"
         except Exception as e:
             result = f"Sub-agent ({agent_type}) error: {e}"
-        _run.end(outputs={"output": result[:300]}); _run.patch()
+        _run.end(outputs={"output": result[:1000]}); _run.patch()
 
     if len(result) > SUB_AGENT_MAX_RESULT:
         result = result[:SUB_AGENT_MAX_RESULT] + "\n\n... (result truncated)"
@@ -881,9 +889,9 @@ async def _execute_tools(messages: list[dict], tool_calls: list[dict],
             if on_call:
                 on_call(name, args)
             try:
-                with _trace_call(f"tool:{name}", {"tool": name, "args": str(args)[:200]}, run_type="tool") as _tr:
+                with _trace_call(f"tool:{name}", {"tool": name, "args": str(args)[:500]}, run_type="tool") as _tr:
                     result = await asyncio.to_thread(executor, name, args)
-                    _tr.end(outputs={"result": str(result)[:200]}); _tr.patch()
+                    _tr.end(outputs={"result": str(result)[:1000], "len": len(str(result))}); _tr.patch()
             except Exception as exc:
                 result = f"ERROR: {exc}"
             if hooks:
@@ -937,9 +945,9 @@ async def _execute_tools(messages: list[dict], tool_calls: list[dict],
         _is_repeat = _sig in failed_sigs
 
         try:
-            with _trace_call(f"tool:{tool_name}", {"tool": tool_name, "args": str(tool_args)[:200]}, run_type="tool") as _tr:
+            with _trace_call(f"tool:{tool_name}", {"tool": tool_name, "args": str(tool_args)[:500]}, run_type="tool") as _tr:
                 result = await asyncio.to_thread(executor, tool_name, tool_args)
-                _tr.end(outputs={"result": str(result)[:200]}); _tr.patch()
+                _tr.end(outputs={"result": str(result)[:1000], "len": len(str(result))}); _tr.patch()
         except Exception as exc:
             exc_str = str(exc)
             result = f"ERROR: {exc_str}"
@@ -1040,22 +1048,43 @@ async def agent_loop(
             return execute_tool(name, args, readonly=True)
         tool_executor = readonly_executor
 
-    with _trace_call("agent_loop", {"input": user_input[:500]}) as _run:
-        result = await _agent_loop_internal(
-            reasoner=reasoner,
-            user_input=user_input,
-            system_prompt=system_prompt,
-            history=history,
-            tools=tools,
-            max_iterations=max_iterations,
-            on_tool_call=on_tool_call,
-            on_tool_result=on_tool_result,
-            iteration_budget=iteration_budget,
-            allow_dispatch=True,
-            tool_executor=tool_executor,
-            consolidate_fn=consolidate_fn,
-        )
-        _run.end(outputs={"output": result[:500] if result else ""}); _run.patch()
+    with _trace_call("agent_loop", {
+        "input": user_input[:500],
+        "is_voice": user_input.startswith("[voice input]"),
+        "history_turns": len(history) if history else 0,
+        "tools_count": len(tools) if tools else 0,
+    }) as _run:
+        # Register current run ID for feedback logging
+        try:
+            from src.lc.feedback import set_current_run_id
+            _run_id = getattr(_run, 'id', None) or getattr(_run, 'run_id', None)
+            if _run_id:
+                set_current_run_id(str(_run_id))
+        except Exception:
+            pass
+        try:
+            result = await _agent_loop_internal(
+                reasoner=reasoner,
+                user_input=user_input,
+                system_prompt=system_prompt,
+                history=history,
+                tools=tools,
+                max_iterations=max_iterations,
+                on_tool_call=on_tool_call,
+                on_tool_result=on_tool_result,
+                iteration_budget=iteration_budget,
+                allow_dispatch=True,
+                tool_executor=tool_executor,
+                consolidate_fn=consolidate_fn,
+            )
+            _run.end(outputs={"output": result[:1000] if result else "", "output_len": len(result) if result else 0})
+            _run.patch()
+        finally:
+            try:
+                from src.lc.feedback import set_current_run_id
+                set_current_run_id(None)
+            except Exception:
+                pass
     return result
 
 

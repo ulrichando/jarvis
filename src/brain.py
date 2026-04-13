@@ -14,7 +14,6 @@ import subprocess
 import time
 import re
 import shlex
-from datetime import datetime, timezone
 from pathlib import Path
 from src.config import ensure_dirs, DATA_DIR
 from src.logging_config import setup_logging
@@ -121,7 +120,8 @@ Never:
 - Express enthusiasm you don't mean
 - Ask a question you already know the answer to
 - Confirm something that wasn't requested
-- Volunteer info not asked for (time, date, weather, fun facts)
+- Volunteer info not asked for (time, date, weather, fun facts, git status)
+- Mention git status, uncommitted files, pending commits, or modified files unless Ulrich explicitly asks about git
 - Add closing offers ("Ready to help!", "Let me know!", "What else can I do?")
 - Talk down to Ulrich or over-explain things he clearly knows
 - Repeat yourself for padding — say it once, say it well
@@ -860,12 +860,8 @@ class Brain:
         # Auto-dream: check if memory consolidation is due
         self._spawn_background(self.auto_dream.maybe_trigger())
 
-        # Curiosity
+        # Curiosity — detect gaps in background only, never auto-append questions to responses
         self._spawn_background(self.curiosity.detect_gaps(user_input, response, memory_context))
-        if self.curiosity.should_ask_question():
-            question = self.curiosity.get_question()
-            if question:
-                response = f"{response}\n\nBy the way — {question}"
 
         return response
 
@@ -1423,7 +1419,6 @@ PROJECT CREATION RULES — follow these when building something:
                 user_wants_action = any(w in user_input.lower() for w in action_words)
 
                 if said_would_act and user_wants_action and self.mode != "plan":
-                    yield {"type": "text", "content": "\n\nSpawning worker agent to handle this..."}
                     try:
                         handle = self._coordinator.spawn_agent(
                             self.reasoner, "worker", user_input,
@@ -1542,7 +1537,6 @@ PROJECT CREATION RULES — follow these when building something:
                 self.awareness.record_action("deep_think", "failed", "failure", 0.2)
 
         # Build enhanced prompt
-        utc_now = datetime.now(timezone.utc)
         enhanced_prompt = SYSTEM_PROMPT
         enhanced_prompt += (
             "\n\n═══ CAPABILITIES ═══\n"
@@ -1552,7 +1546,6 @@ PROJECT CREATION RULES — follow these when building something:
             "Do NOT say 'I don't have filesystem access' — you DO. Just not in this conversation turn.\n"
             "For simple greetings and chat, just be yourself — no need to mention capabilities."
         )
-        enhanced_prompt += f"\n\n═══ CURRENT TIME ═══\nUTC: {utc_now.strftime('%Y-%m-%d %H:%M:%S')}"
         reasoning_context = reasoning_result.to_system_context()
         if reasoning_context:
             enhanced_prompt += f"\n\n═══ YOUR INNER REASONING ═══\n{reasoning_context}"
@@ -1573,18 +1566,6 @@ PROJECT CREATION RULES — follow these when building something:
             enhanced_prompt += "\n\nBe thorough and detailed in your response."
         if strat["be_cautious"]:
             enhanced_prompt += "\n\nBe careful. Hedge if unsure. Verify before acting."
-
-        # Inject user-defined rules from ~/.jarvis/rules.md
-        import os as _os2
-        _rules_path2 = _os2.path.expanduser("~/.jarvis/rules.md")
-        if _os2.path.exists(_rules_path2):
-            try:
-                with open(_rules_path2) as f:
-                    _rules2 = f.read().strip()
-                if _rules2:
-                    enhanced_prompt += f"\n\n═══ OPERATIONAL RULES (user-defined) ═══\n{_rules2}"
-            except (OSError, UnicodeDecodeError) as e:
-                log.debug("Failed to load rules.md for deep think: %s", e)
 
         history = self.memory.get_history(limit=12)
 
@@ -1668,9 +1649,7 @@ PROJECT CREATION RULES — follow these when building something:
                 self.awareness.record_action("deep_think", "failed", "failure", 0.2)
 
         # Build enhanced prompt (same as _standard_response)
-        utc_now = datetime.now(timezone.utc)
         enhanced_prompt = SYSTEM_PROMPT
-        enhanced_prompt += f"\n\n═══ CURRENT TIME ═══\nUTC: {utc_now.strftime('%Y-%m-%d %H:%M:%S')}"
         reasoning_context = reasoning_result.to_system_context()
         if reasoning_context:
             enhanced_prompt += f"\n\n═══ YOUR INNER REASONING ═══\n{reasoning_context}"

@@ -53,27 +53,26 @@ class PromptBuilder:
     def __init__(self, cwd: str = None):
         self.cwd = Path(cwd) if cwd else Path.cwd()
 
-    def discover_context(self) -> ProjectContext:
-        """Discover project context: instructions, git info, stack."""
+    def discover_context(self, include_git: bool = False) -> ProjectContext:
+        """Discover project context: instructions (and optionally git info, stack).
+
+        Git commands are skipped by default — brain.py injects git context only when
+        the user explicitly asks about git. Passing include_git=True enables them for
+        callers that need the full context (e.g. PromptBuilder.build()).
+        """
         ctx = ProjectContext(cwd=self.cwd)
 
-        # Discover instruction files
+        # Discover instruction files (cheap — file system only)
         ctx.instruction_files = self._discover_instructions()
 
-        # Git info
-        ctx.git_branch = self._git("rev-parse --abbrev-ref HEAD")
-        ctx.git_status = self._git("status --short --branch")
-
-        # Only include diff summary (not full diff — too large)
-        diff_stat = self._git("diff --stat")
-        if diff_stat:
-            ctx.git_diff_summary = diff_stat
-
-        # Detect stack
-        ctx.detected_stack = self._detect_stack()
-
-        # Codebase index intentionally not pre-loaded — JARVIS reads files on demand
-        # like Claude Code does. Use read_file/search_files tools instead.
+        if include_git:
+            # Git info — only when the caller needs it
+            ctx.git_branch = self._git("rev-parse --abbrev-ref HEAD")
+            ctx.git_status = self._git("status --short --branch")
+            diff_stat = self._git("diff --stat")
+            if diff_stat:
+                ctx.git_diff_summary = diff_stat
+            ctx.detected_stack = self._detect_stack()
 
         return ctx
 

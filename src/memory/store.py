@@ -139,16 +139,36 @@ class MemoryStore:
 
     # ── Conversation Log ───────────────────────────────────────────────
 
+    # Patterns that should never be stored in conversation memory
+    _STRIP_PATTERNS = [
+        ("[_voice_context_hints", "[/voice_context_hints]"),
+        ("<system-reminder>", "</system-reminder>"),
+    ]
+
     def add_turn(self, role: str, content: str):
         """Log a conversation turn. Does NOT absorb into lattice —
         only explicit learn() calls go into the lattice."""
+        # Strip injected context blocks — store only the clean user/jarvis text
+        clean = content
+        for start_tag, end_tag in self._STRIP_PATTERNS:
+            while start_tag in clean:
+                s = clean.find(start_tag)
+                e = clean.find(end_tag, s)
+                if e == -1:
+                    clean = clean[:s].rstrip()
+                    break
+                clean = clean[:s].rstrip() + clean[e + len(end_tag):]
+        clean = clean.strip()
+        if not clean:
+            return
+
         if self._pg:
-            self._pg.add_turn(role, content)
+            self._pg.add_turn(role, clean)
             return
         with self._db_lock:
             self.conn.execute(
                 "INSERT INTO conversations (role, content, timestamp) VALUES (?, ?, ?)",
-                (role, content, time.time()),
+                (role, clean, time.time()),
             )
             self.conn.commit()
 

@@ -14,7 +14,6 @@ fuser -k -9 8765/tcp 2>/dev/null && echo "  Port 8765 freed"
 
 # Kill by process name
 pkill -9 -f "src.server.web_server" 2>/dev/null
-pkill -9 -f "src.desktop.app" 2>/dev/null
-pkill -9 -f "desktop.app.*main" 2>/dev/null
+pkill -9 -f "jarvis-desktop" 2>/dev/null
 
 echo "JARVIS stopped."

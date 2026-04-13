@@ -29,15 +29,12 @@ if [ -n "$SERVER_COMMIT" ] && [ "$SERVER_COMMIT" != "$KNOWN_SERVER" ] && [ "$SER
   SERVER_UPDATED=true
 fi
 
-if [ "$LOCAL" = "$REMOTE" ] && [ "$SERVER_UPDATED" = "false" ]; then
-  exit 0  # Nothing changed
+if [ "$LOCAL" = "$REMOTE" ]; then
+  exit 0  # Nothing changed locally — don't restart for remote-only cloud deploys
 fi
 
-if [ "$LOCAL" != "$REMOTE" ]; then
-  echo "$LOG_PREFIX New version detected: $LOCAL → $REMOTE"
-  # Pull latest
-  git pull origin master --quiet
-fi
+echo "$LOG_PREFIX New version detected: $LOCAL → $REMOTE"
+git pull origin master --quiet
 
 # Reinstall if dependencies changed (pyproject.toml or requirements)
 if git diff "$LOCAL" HEAD -- pyproject.toml setup.py requirements*.txt &>/dev/null | grep -q .; then
@@ -64,19 +61,25 @@ if systemctl --user is-active --quiet jarvis 2>/dev/null; then
   systemctl --user restart jarvis
   echo "$LOG_PREFIX Web server restarted"
 elif pgrep -f "src.server.web_server" &>/dev/null; then
-  # Fallback: not under systemd — pkill and let the process die cleanly
-  # (JARVIS will restart itself via os.execv if JARVIS_HOT_RELOAD=1 is set)
   echo "$LOG_PREFIX Restarting web server (not managed by systemd)..."
   pkill -f "src.server.web_server" 2>/dev/null || true
+  sleep 2
+  nohup python3 -m src.server.web_server > /tmp/jarvis-web.log 2>&1 &
+  echo "$LOG_PREFIX Web server restarted (pid $!)"
 fi
 
-# Restart desktop overlay if running
-if pgrep -f "jarvis.*desktop\|desktop.*jarvis\|src.desktop.app" &>/dev/null; then
-  echo "$LOG_PREFIX Restarting desktop overlay..."
-  pkill -f "jarvis.*desktop\|desktop.*jarvis\|src.desktop.app" 2>/dev/null || true
+# Restart Tauri desktop if running
+TAURI_BIN="$(dirname "$0")/../src/desktop-tauri/src-tauri/target/debug/jarvis-desktop"
+if pgrep -f "jarvis-desktop" &>/dev/null; then
+  echo "$LOG_PREFIX Restarting desktop overlay (Tauri)..."
+  pkill -f "jarvis-desktop" 2>/dev/null || true
   sleep 1
-  nohup python3 -m src.desktop.app > /tmp/jarvis-desktop.log 2>&1 &
-  echo "$LOG_PREFIX Desktop restarted"
+  if [ -f "$TAURI_BIN" ]; then
+    nohup "$TAURI_BIN" > /tmp/jarvis-desktop.log 2>&1 &
+    echo "$LOG_PREFIX Desktop restarted"
+  else
+    echo "$LOG_PREFIX Tauri binary not found — skipping desktop restart"
+  fi
 elif [ "$SERVER_UPDATED" = "true" ]; then
   echo "$LOG_PREFIX Server updated but desktop not running — skipping restart"
 fi

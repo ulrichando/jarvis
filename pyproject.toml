@@ -52,15 +52,13 @@ dependencies = [
 [project.optional-dependencies]
 vision = ["opencv-python", "mss", "pytesseract"]
 tts = ["piper-tts"]
-desktop = ["PyGObject"]
 dev = ["watchdog"]
 langgraph = ["langgraph>=0.4.0"]
-all = ["jarvis[vision,tts,desktop,dev,langgraph]"]
+all = ["jarvis[vision,tts,dev,langgraph]"]
 
 [project.scripts]
 jarvis = "src.cli.jarvis_cli:run"
 jarvis-web = "src.server.web_server:main"
-jarvis-desktop = "src.desktop.app:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]

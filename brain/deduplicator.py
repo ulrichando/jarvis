@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 # Dedup window per channel (seconds)
 _WINDOW: dict[str, float] = {
-    "voice":  3.0,   # voice can repeat very fast — 3 second suppression
+    "voice":  0.5,   # voice can repeat very fast — reduced from 3.0s to 0.5s for more natural interaction
     "chrome": 1.0,
     "cli":    0.5,
 }

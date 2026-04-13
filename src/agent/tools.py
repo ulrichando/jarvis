@@ -1853,6 +1853,101 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "semantic_recall",
+            "description": (
+                "Query JARVIS's long-term semantic memory (NeuralLattice + associative layers).\n"
+                "Use this to recall facts, past conversations, learned knowledge, skills, or domain context.\n"
+                "Returns the top-K most relevant memory nodes with strength scores.\n"
+                "Prefer this over rag_search when looking for personal/session knowledge rather than documents."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Natural language query to search memory"},
+                    "k": {"type": "integer", "description": "Number of results (default: 5, max: 20)", "default": 5},
+                    "domain": {"type": "string", "description": "Optional: filter to a specific domain (e.g. 'code', 'user', 'task')"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "reflect",
+            "description": (
+                "Critically evaluate your previous output or plan and identify improvements.\n"
+                "Use this before finalizing any important response, code change, or multi-step plan.\n"
+                "Returns a structured critique: what's good, what's wrong/missing, and a revised approach."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "output": {"type": "string", "description": "The output or plan to critique"},
+                    "task": {"type": "string", "description": "The original task or goal"},
+                    "focus": {
+                        "type": "string",
+                        "enum": ["correctness", "completeness", "safety", "efficiency", "clarity"],
+                        "description": "What aspect to focus the critique on (default: correctness)",
+                    },
+                },
+                "required": ["output", "task"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_diagnostics",
+            "description": (
+                "Run static analysis (lint + type check) on a file or directory and return structured errors.\n"
+                "Supports Python (flake8, mypy), JavaScript/TypeScript (eslint), and generic (shellcheck).\n"
+                "Returns a JSON list of {file, line, col, severity, code, message} objects.\n"
+                "Use this after writing or editing code to catch issues before claiming the task is done."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File or directory path to analyze"},
+                    "tool": {
+                        "type": "string",
+                        "enum": ["auto", "flake8", "mypy", "eslint", "shellcheck"],
+                        "description": "Which tool to run (default: auto-detect from file extension)",
+                        "default": "auto",
+                    },
+                    "max_errors": {"type": "integer", "description": "Maximum errors to return (default: 20)", "default": 20},
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "diff_files",
+            "description": (
+                "Compare two files or text strings and return a unified diff.\n"
+                "Use this to show what changed between versions, verify edits were applied correctly,\n"
+                "or compare generated output against expected output.\n"
+                "Returns a unified diff (like 'git diff' output)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path_a": {"type": "string", "description": "Path to the first file (or leave empty if using text_a)"},
+                    "path_b": {"type": "string", "description": "Path to the second file (or leave empty if using text_b)"},
+                    "text_a": {"type": "string", "description": "First text content (alternative to path_a)"},
+                    "text_b": {"type": "string", "description": "Second text content (alternative to path_b)"},
+                    "context_lines": {"type": "integer", "description": "Lines of context around changes (default: 3)", "default": 3},
+                    "label_a": {"type": "string", "description": "Label for the first file in the diff header"},
+                    "label_b": {"type": "string", "description": "Label for the second file in the diff header"},
+                },
+            },
+        },
+    },
 ]
 
 
@@ -1890,6 +1985,10 @@ READONLY_TOOLS = {
     "ConfigTool", "BriefTool", "EnterPlanMode", "ExitPlanMode",
     "network_scan",
     "rag_search",
+    "semantic_recall",
+    "reflect",
+    "get_diagnostics",
+    "diff_files",
     # Legacy alias
     "search_files",
 }
@@ -1971,6 +2070,239 @@ def _exec_open_url(args: dict) -> str:
         return f"Opening {label}."
     except Exception as e:
         return f"Error opening URL: {e}"
+
+
+def _exec_semantic_recall(args: dict) -> str:
+    """Query JARVIS NeuralLattice + associative memory layers."""
+    query = args.get("query", "").strip()
+    k = min(int(args.get("k", 5)), 20)
+    domain = args.get("domain", "")
+    if not query:
+        return "No query provided."
+    try:
+        from src.memory.store import MemoryStore
+        store = MemoryStore()
+        if domain:
+            nodes = store.recall_domain(domain, top_k=k)
+            query_nodes = store.recall(query, top_k=k)
+            seen = {n.id for n in nodes}
+            for n in query_nodes:
+                if n.id not in seen:
+                    nodes.append(n)
+                    seen.add(n.id)
+            nodes = nodes[:k]
+        else:
+            nodes = store.recall(query, top_k=k)
+        if not nodes:
+            return "No memories found for that query."
+        lines = [f"[{i+1}] (strength={getattr(n,'strength',0):.2f}) {n.content}" for i, n in enumerate(nodes)]
+        return "\n".join(lines)
+    except Exception as e:
+        return f"semantic_recall error: {e}"
+
+
+def _exec_reflect(args: dict) -> str:
+    """Self-critique heuristic — no LLM call to avoid recursion."""
+    import json as _json
+    output = args.get("output", "").strip()
+    task = args.get("task", "").strip()
+    focus = args.get("focus", "correctness")
+    if not output or not task:
+        return "Both 'output' and 'task' are required."
+
+    issues = []
+    suggestions = []
+    out_lower = output.lower()
+    task_lower = task.lower()
+
+    # Length check
+    if len(output) < 20:
+        issues.append("Output is very short — may be incomplete")
+        suggestions.append("Expand the response to fully address the task")
+
+    # Code task checks
+    if any(kw in task_lower for kw in ["fix", "debug", "implement", "write", "create", "build"]):
+        if "```" not in output and "def " not in output and focus == "correctness":
+            issues.append("Task requires code but no code block was produced")
+            suggestions.append("Include actual code implementation, not just description")
+        if "error" in task_lower and "try" not in out_lower and "except" not in out_lower:
+            issues.append("Error-handling task may need exception handling")
+
+    # Safety checks
+    if focus == "safety":
+        dangerous = ["rm -rf", "drop table", "delete from", "format c:", "os.remove"]
+        for d in dangerous:
+            if d in out_lower:
+                issues.append(f"Potentially destructive operation: '{d}' — confirm intent")
+
+    # Completeness
+    if focus == "completeness":
+        task_words = set(task_lower.split())
+        output_words = set(out_lower.split())
+        coverage = len(task_words & output_words) / max(len(task_words), 1)
+        if coverage < 0.3:
+            issues.append("Output may not address all parts of the task (low keyword overlap)")
+            suggestions.append("Re-read the full task and ensure each part is addressed")
+
+    result = {
+        "focus": focus,
+        "issues_found": len(issues),
+        "issues": issues if issues else ["No obvious issues detected"],
+        "suggestions": suggestions if suggestions else ["Output looks reasonable — proceed"],
+        "verdict": "REVISE" if issues else "PROCEED",
+    }
+    return _json.dumps(result, indent=2)
+
+
+def _exec_get_diagnostics(args: dict) -> str:
+    """Run static analysis on a file or directory."""
+    import subprocess, json as _json, re as _re
+    path = args.get("path", "").strip()
+    tool = args.get("tool", "auto")
+    max_errors = min(int(args.get("max_errors", 20)), 50)
+
+    if not path:
+        return "No path provided."
+    if not os.path.exists(path):
+        return f"Path not found: {path}"
+
+    if tool == "auto":
+        if path.endswith((".js", ".ts", ".tsx", ".jsx")):
+            tool = "eslint"
+        elif path.endswith(".sh"):
+            tool = "shellcheck"
+        else:
+            tool = "flake8"
+
+    errors = []
+
+    try:
+        if tool == "flake8":
+            result = subprocess.run(
+                ["flake8", "--format=%(path)s:%(row)d:%(col)d: %(code)s %(text)s",
+                 "--max-line-length=120", path],
+                capture_output=True, text=True, timeout=30
+            )
+            for line in (result.stdout + result.stderr).splitlines():
+                m = _re.match(r"(.+?):(\d+):(\d+):\s*([A-Z]\d+)\s+(.+)", line)
+                if m:
+                    errors.append({
+                        "file": m.group(1), "line": int(m.group(2)), "col": int(m.group(3)),
+                        "severity": "warning" if m.group(4).startswith("W") else "error",
+                        "code": m.group(4), "message": m.group(5).strip(),
+                    })
+
+        elif tool == "mypy":
+            result = subprocess.run(
+                ["mypy", "--no-error-summary", "--show-column-numbers", path],
+                capture_output=True, text=True, timeout=60
+            )
+            for line in result.stdout.splitlines():
+                m = _re.match(r"(.+?):(\d+):(\d+):\s*(error|warning|note):\s+(.+)", line)
+                if m:
+                    errors.append({
+                        "file": m.group(1), "line": int(m.group(2)), "col": int(m.group(3)),
+                        "severity": m.group(4), "code": "mypy", "message": m.group(5).strip(),
+                    })
+
+        elif tool == "shellcheck":
+            result = subprocess.run(
+                ["shellcheck", "--format=json", path],
+                capture_output=True, text=True, timeout=30
+            )
+            try:
+                raw = _json.loads(result.stdout)
+                for item in raw:
+                    errors.append({
+                        "file": item.get("file", path), "line": item.get("line", 0),
+                        "col": item.get("column", 0),
+                        "severity": item.get("level", "warning"),
+                        "code": f"SC{item.get('code', 0)}", "message": item.get("message", ""),
+                    })
+            except _json.JSONDecodeError:
+                pass
+
+        elif tool == "eslint":
+            result = subprocess.run(
+                ["eslint", "--format=json", path],
+                capture_output=True, text=True, timeout=30
+            )
+            try:
+                raw = _json.loads(result.stdout)
+                for file_result in raw:
+                    for msg in file_result.get("messages", []):
+                        errors.append({
+                            "file": file_result.get("filePath", path),
+                            "line": msg.get("line", 0), "col": msg.get("column", 0),
+                            "severity": "error" if msg.get("severity") == 2 else "warning",
+                            "code": msg.get("ruleId", "eslint"), "message": msg.get("message", ""),
+                        })
+            except _json.JSONDecodeError:
+                pass
+
+    except FileNotFoundError:
+        return f"Tool '{tool}' not found. Install it: pip install {tool} (or npm install -g eslint)"
+    except subprocess.TimeoutExpired:
+        return f"Diagnostics timed out for {path}"
+
+    errors = errors[:max_errors]
+    if not errors:
+        return _json.dumps({"status": "clean", "tool": tool, "path": path, "errors": []}, indent=2)
+    return _json.dumps({"status": "issues_found", "tool": tool, "path": path,
+                        "error_count": len(errors), "errors": errors}, indent=2)
+
+
+def _exec_diff_files(args: dict) -> str:
+    """Return a unified diff between two files or text strings."""
+    import difflib
+    path_a = args.get("path_a", "").strip()
+    path_b = args.get("path_b", "").strip()
+    text_a = args.get("text_a", "")
+    text_b = args.get("text_b", "")
+    context = min(int(args.get("context_lines", 3)), 10)
+    label_a = args.get("label_a", path_a or "a")
+    label_b = args.get("label_b", path_b or "b")
+
+    lines_a, lines_b = [], []
+
+    if path_a:
+        if not os.path.exists(path_a):
+            return f"File not found: {path_a}"
+        try:
+            with open(path_a) as f:
+                lines_a = f.readlines()
+        except Exception as e:
+            return f"Cannot read {path_a}: {e}"
+    elif text_a:
+        lines_a = [l + "\n" for l in text_a.splitlines()]
+
+    if path_b:
+        if not os.path.exists(path_b):
+            return f"File not found: {path_b}"
+        try:
+            with open(path_b) as f:
+                lines_b = f.readlines()
+        except Exception as e:
+            return f"Cannot read {path_b}: {e}"
+    elif text_b:
+        lines_b = [l + "\n" for l in text_b.splitlines()]
+
+    if not lines_a and not lines_b:
+        return "No input provided. Use path_a/path_b or text_a/text_b."
+
+    diff = list(difflib.unified_diff(
+        lines_a, lines_b,
+        fromfile=label_a, tofile=label_b,
+        n=context,
+    ))
+
+    if not diff:
+        return "Files are identical — no differences found."
+
+    result = "".join(diff)
+    if len(result) > 8000:
+        result = result[:8000] + "\n... (diff truncated)"
+    return result
 
 
 def execute_tool(name: str, args: dict, readonly: bool = False) -> str:
@@ -2113,6 +2445,14 @@ def execute_tool(name: str, args: dict, readonly: bool = False) -> str:
             return _exec_security_scan(args)
         elif name == "rag_search":
             return _exec_rag_search(args)
+        elif name == "semantic_recall":
+            return _exec_semantic_recall(args)
+        elif name == "reflect":
+            return _exec_reflect(args)
+        elif name == "get_diagnostics":
+            return _exec_get_diagnostics(args)
+        elif name == "diff_files":
+            return _exec_diff_files(args)
         elif name == "browser":
             return _exec_browser(args)
         elif name.startswith("mcp_"):
