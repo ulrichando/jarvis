@@ -180,9 +180,9 @@ def _get_hooks():
     return _hooks_mgr
 
 
-MAX_ITERATIONS = 999
+MAX_ITERATIONS = 40
 COMPACT_THRESHOLD = 80000
-GLOBAL_ITERATION_MAX = 999
+GLOBAL_ITERATION_MAX = 60
 _groq_semaphore = asyncio.Semaphore(4)
 SUB_AGENT_MAX_RESULT = 20000
 TOOL_RESULT_MAX = 20000
@@ -458,17 +458,37 @@ async def _agent_loop_internal(
                 log.warning("Narration loop after %d retries — breaking", _narration_count)
                 break
 
-            # Multi-step continuation: model is working through a plan it started
+            # Completion detection: model signalling task is done → always break.
+            # Check this BEFORE continuation signals to avoid self-tasking loops.
+            _completion_signals = (
+                "running at http://", "running at https://", "is now live",
+                "production-ready", "production ready",
+                "is now complete", "has been built", "has been created",
+                "successfully created", "successfully built",
+                "website is now", "app is now", "server is running",
+                "the application is", "is ready at",
+                "i'll continue enhancing", "i'll continue improving",
+                "i'll continue adding", "i'll keep enhancing",
+                "let me continue", "let me now add more",
+            )
+            if any(sig in _tc_lower for sig in _completion_signals):
+                log.debug("Completion/self-continuation signal detected — stopping loop")
+                break
+
+            # Multi-step continuation: model is mid-plan and hasn't finished yet.
+            # Only trigger on clear mid-task signals, not after completion summaries.
             _forward_signals = (
-                "next", "now i'll", "now i will", "i'll now", "i will now",
-                "then i'll", "then i will", "moving on", "continuing", "proceeding",
-                "step ", "phase ", "first,", "second,", "third,", "finally,",
+                "now i'll", "now i will", "i'll now", "i will now",
+                "then i'll", "then i will",
+                "step ", "phase ",
+                "first,", "second,", "third,",
             )
             _should_continue = (
                 tools
                 and any(sig in _tc_lower for sig in _forward_signals)
                 and iterations < max_iterations
                 and _narration_count == 0
+                and iterations <= 15  # cap self-continuation to avoid runaway
             )
             if _should_continue:
                 _append_assistant_message(messages, text_content, [])

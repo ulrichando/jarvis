@@ -156,9 +156,10 @@ def build_sandbox_command(
 
     parts = [status.unshare_path]
 
-    # Namespace flags
+    # Namespace flags — no --pid/--fork: those fork a child process that breaks
+    # subprocess.run's capture_output pipes, causing "(no output)" on every command.
     if config.namespace_isolation and status.namespace_support:
-        parts.extend(["--user", "--map-root-user", "--mount", "--ipc", "--pid", "--uts", "--fork"])
+        parts.extend(["--user", "--map-root-user", "--mount", "--ipc", "--uts"])
 
     # Network isolation
     if config.network_isolation and status.network_support:
