@@ -27,7 +27,7 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
 
   // ── Drag & resize state ───────────────────────────────────────────
   const [pos, setPos] = useState(null) // {x, y} from top-left; null = CSS-centered
-  const [size, setSize] = useState({ w: Math.min(window.innerWidth * 0.7, 900), h: Math.max(window.innerHeight * 0.5, 400) })
+  const [size, setSize] = useState({ w: Math.min(window.innerWidth * 0.85, 1400), h: Math.max(window.innerHeight * 0.82, 800) })
   const dragRef = useRef(null) // {startMouseX, startMouseY, startX, startY}
   const resizeRef = useRef(null) // {startMouseX, startMouseY, startW, startH}
   const panelRef = useRef(null)

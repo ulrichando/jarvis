@@ -88,6 +88,48 @@ async def cmd_memory(ctx: CommandContext) -> CommandResult:
         except ImportError:
             return CommandResult(text="Config module not available.", success=False)
 
+    # ── /memory agents ──
+    if action == "agents":
+        try:
+            from src.memory.agents_memory import get_agents_memory
+            am = get_agents_memory()
+            sub = rest.strip().lower() if rest else "show"
+
+            if sub == "regen" or sub == "regenerate":
+                doc = am.regenerate(save=True)
+                total = sum(len(s.entries) for s in doc.sections.values())
+                return CommandResult(
+                    text=f"AGENTS.md regenerated (v{doc.version}) — {total} entries across "
+                         f"{len([s for s in doc.sections.values() if s.entries])} sections\n"
+                         f"  Saved to: {am._global_path}"
+                )
+
+            if sub == "prompt":
+                block = am.get_system_prompt_block()
+                if not block:
+                    return CommandResult(text="AGENTS.md is empty — run /memory agents regen first.")
+                return CommandResult(text=block)
+
+            # default: show summary
+            doc = am.load()
+            if doc.is_empty():
+                return CommandResult(
+                    text="AGENTS.md is empty.\n  Run /memory agents regen to build from memory files."
+                )
+            lines = [f"AGENTS.md  (v{doc.version}, updated {doc.updated})", "=" * 50]
+            for title, sec in doc.sections.items():
+                if sec.entries:
+                    lines.append(f"\n  {title} ({len(sec.entries)} entries)")
+                    for entry in sec.entries[:5]:
+                        preview = entry[:80].replace("\n", " ")
+                        lines.append(f"    • {preview}")
+                    if len(sec.entries) > 5:
+                        lines.append(f"    ... +{len(sec.entries) - 5} more")
+            return CommandResult(text="\n".join(lines))
+
+        except ImportError:
+            return CommandResult(text="AGENTS.md module not available.", success=False)
+
     # ── /memory stats (default) ──
     mem = brain.memory
     stats = mem.stats if hasattr(mem, 'stats') else {}
@@ -428,33 +470,6 @@ async def cmd_associations(ctx: CommandContext) -> CommandResult:
     return CommandResult(text="\n".join(lines))
 
 
-@command("common-sense", aliases=["cs"], description="Query common sense knowledge base",
-         usage="/common-sense <query>", category="memory", permission=PermLevel.READ_ONLY)
-async def cmd_common_sense(ctx: CommandContext) -> CommandResult:
-    brain = ctx.brain
-    if not brain:
-        return CommandResult(text="Brain not available", success=False)
-
-    query = ctx.args.strip()
-    if not query:
-        return CommandResult(text="Usage: /common-sense <query>", success=False)
-
-    # Check for common sense KB
-    if not hasattr(brain.memory, 'common_sense'):
-        return CommandResult(text="Common sense KB not loaded.", success=False)
-
-    results = brain.memory.common_sense.query(query, top_k=10)
-    if not results:
-        return CommandResult(text=f"No common sense knowledge for: {query}")
-
-    lines = [f"Common Sense: \"{query}\"", "-" * 40]
-    for r in results:
-        relation = r.get("relation", "?")
-        subject = r.get("subject", "?")
-        obj = r.get("object", "?")
-        weight = r.get("weight", 0.0)
-        lines.append(f"  {subject} --[{relation}]--> {obj}  (w={weight:.2f})")
-    return CommandResult(text="\n".join(lines))
 
 
 @command("user-profile", aliases=["profile"], description="View or edit user preferences",
@@ -516,9 +531,6 @@ async def cmd_dream(ctx: CommandContext) -> CommandResult:
         except Exception:
             pass
 
-    if not messages and hasattr(brain, 'conversation_history'):
-        messages = brain.conversation_history[-50:] if brain.conversation_history else []
-
     if not messages:
         return CommandResult(text="No conversation history available to dream on.", success=False)
 
@@ -546,5 +558,15 @@ async def cmd_dream(ctx: CommandContext) -> CommandResult:
             lines.append(f"    [{mtype}] {name}: {desc}")
     else:
         lines.append("\n  No new learnings extracted (existing memories cover this session).")
+
+    # Rebuild AGENTS.md from all memory files (including newly saved ones)
+    try:
+        from src.memory.agents_memory import get_agents_memory
+        am = get_agents_memory()
+        doc = am.regenerate(save=True)
+        total = sum(len(s.entries) for s in doc.sections.values())
+        lines.append(f"\n  AGENTS.md rebuilt — {total} entries (v{doc.version})")
+    except Exception as e:
+        lines.append(f"\n  AGENTS.md rebuild skipped: {e}")
 
     return CommandResult(text="\n".join(lines))

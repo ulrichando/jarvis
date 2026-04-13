@@ -65,6 +65,22 @@ class TaskManager:
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)
             """)
+            # Dependency graph: blocker_id must complete before blocked_id can start
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS task_dependencies (
+                    blocker_id  TEXT NOT NULL,
+                    blocked_id  TEXT NOT NULL,
+                    PRIMARY KEY (blocker_id, blocked_id),
+                    FOREIGN KEY (blocker_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                    FOREIGN KEY (blocked_id) REFERENCES tasks(id) ON DELETE CASCADE
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_dep_blocker ON task_dependencies(blocker_id)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_dep_blocked ON task_dependencies(blocked_id)
+            """)
 
     def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path))
@@ -186,6 +202,75 @@ class TaskManager:
             with self._conn() as conn:
                 row = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()
         return row[0]
+
+    # ── Dependency Graph ─────────────────────────────────────────────
+
+    def add_dependency(self, blocker_id: str, blocked_id: str) -> bool:
+        """Declare that *blocker_id* must complete before *blocked_id* can start.
+
+        Returns False if either task doesn't exist.
+        """
+        if not self.get(blocker_id) or not self.get(blocked_id):
+            return False
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO task_dependencies (blocker_id, blocked_id) VALUES (?, ?)",
+                (blocker_id, blocked_id),
+            )
+        return True
+
+    def remove_dependency(self, blocker_id: str, blocked_id: str) -> bool:
+        """Remove a dependency edge. Returns True if it existed."""
+        with self._conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM task_dependencies WHERE blocker_id = ? AND blocked_id = ?",
+                (blocker_id, blocked_id),
+            )
+        return cur.rowcount > 0
+
+    def get_blockers(self, task_id: str) -> list[Task]:
+        """Return all tasks that must complete before *task_id* can start."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT t.* FROM tasks t "
+                "JOIN task_dependencies d ON d.blocker_id = t.id "
+                "WHERE d.blocked_id = ?",
+                (task_id,),
+            ).fetchall()
+        return [self._row_to_task(r) for r in rows]
+
+    def get_blocked_tasks(self, task_id: str) -> list[Task]:
+        """Return all tasks that are blocked by *task_id*."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT t.* FROM tasks t "
+                "JOIN task_dependencies d ON d.blocked_id = t.id "
+                "WHERE d.blocker_id = ?",
+                (task_id,),
+            ).fetchall()
+        return [self._row_to_task(r) for r in rows]
+
+    def is_blocked(self, task_id: str) -> bool:
+        """Return True if *task_id* has any incomplete blocker tasks."""
+        blockers = self.get_blockers(task_id)
+        return any(b.status != "done" for b in blockers)
+
+    def get_ready_tasks(self, priority_filter: Optional[str] = None) -> list[Task]:
+        """Return pending tasks that have no incomplete blockers (ready to start).
+
+        Excludes tasks already in_progress or done.
+        """
+        pending = self.list_tasks(status_filter="pending", priority_filter=priority_filter)
+        return [t for t in pending if not self.is_blocked(t.id)]
+
+    def can_start(self, task_id: str) -> tuple[bool, list[Task]]:
+        """Check if a task can be started.
+
+        Returns (can_start, list_of_incomplete_blockers).
+        """
+        blockers = self.get_blockers(task_id)
+        incomplete = [b for b in blockers if b.status != "done"]
+        return len(incomplete) == 0, incomplete
 
     # ── Internal ──────────────────────────────────────────────────────
 

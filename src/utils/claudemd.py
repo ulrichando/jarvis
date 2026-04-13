@@ -137,4 +137,18 @@ async def load_memory_files(cwd: Optional[str] = None) -> list[MemoryEntry]:
         except Exception:
             pass
 
+    # AGENTS.md — learned patterns + behavioral rules injected at session start
+    try:
+        from src.memory.agents_memory import get_agents_memory
+        am = get_agents_memory()
+        block = am.get_system_prompt_block()
+        if block:
+            entries.append(MemoryEntry(
+                content=block,
+                source="agents_memory",
+                memory_type="agents",
+            ))
+    except Exception as e:
+        logger.debug("AGENTS.md load failed: %s", e)
+
     return entries

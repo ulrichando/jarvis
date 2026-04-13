@@ -824,6 +824,17 @@ TOOL_SCHEMAS = [
                                     "type": "string",
                                     "description": "Present continuous form shown during execution (e.g., 'Running tests')",
                                 },
+                                "blocks": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": (
+                                        "List of todo IDs that this task must complete BEFORE they can start. "
+                                        "Example: if task 'install-deps' must finish before 'run-tests', "
+                                        "set blocks=['run-tests'] on the 'install-deps' task. "
+                                        "The agent loop enforces this — blocked tasks cannot be set to in_progress "
+                                        "until all their prerequisites are completed."
+                                    ),
+                                },
                             },
                             "required": ["id", "content", "status"],
                         },
@@ -3792,11 +3803,69 @@ _todo_list: list[dict] = []
 
 
 def _exec_todo_write(args: dict) -> str:
-    """Update the session todo list."""
+    """Update the session todo list.
+
+    Enforces task-graph dependencies: if a task is moved to in_progress but
+    one or more of its prerequisite tasks (tasks that list this task's ID in
+    their `blocks` field) are not yet completed, the transition is blocked and
+    the caller is told which tasks must complete first.
+    """
     global _todo_list
     todos = args.get("todos", [])
     if not isinstance(todos, list):
         return "Invalid todos format. Expected a list of todo items."
+
+    # Build a lookup of the *previous* state so we can detect status transitions
+    prev_by_id: dict[str, dict] = {t["id"]: t for t in _todo_list if isinstance(t, dict) and "id" in t}
+
+    # Build reverse dependency map: blocked_by[task_id] = [ids of tasks that must complete first]
+    # A task X is blocked by task Y if Y.blocks contains X.
+    blocked_by: dict[str, list[str]] = {}
+    for t in todos:
+        if not isinstance(t, dict):
+            continue
+        tid = t.get("id", "")
+        for downstream_id in (t.get("blocks") or []):
+            blocked_by.setdefault(downstream_id, []).append(tid)
+
+    # Build content map for human-readable error messages
+    content_by_id: dict[str, str] = {
+        t.get("id", ""): t.get("content", t.get("id", "?"))
+        for t in todos if isinstance(t, dict)
+    }
+
+    # Check for blocked transitions
+    violations: list[str] = []
+    for t in todos:
+        if not isinstance(t, dict):
+            continue
+        tid = t.get("id", "")
+        new_status = t.get("status", "")
+        old_status = prev_by_id.get(tid, {}).get("status", "pending")
+
+        # Only enforce on transitions into in_progress
+        if new_status == "in_progress" and old_status != "in_progress":
+            blockers = blocked_by.get(tid, [])
+            if blockers:
+                # Find any blocker that is not yet completed
+                incomplete_blockers = [
+                    b for b in blockers
+                    if next((x.get("status") for x in todos if isinstance(x, dict) and x.get("id") == b), "pending")
+                    != "completed"
+                ]
+                if incomplete_blockers:
+                    blocker_labels = [f'"{content_by_id.get(b, b)}"' for b in incomplete_blockers]
+                    violations.append(
+                        f'Task "{content_by_id.get(tid, tid)}" is blocked — '
+                        f'complete these first: {", ".join(blocker_labels)}'
+                    )
+
+    if violations:
+        return (
+            "Task graph violation — cannot start blocked tasks:\n"
+            + "\n".join(f"  • {v}" for v in violations)
+            + "\n\nComplete the prerequisite tasks before marking dependents as in_progress."
+        )
 
     _todo_list = todos
 
@@ -3807,9 +3876,20 @@ def _exec_todo_write(args: dict) -> str:
 
     lines = [f"Todo list updated: {pending} pending, {in_progress} in progress, {completed} completed\n"]
     for t in todos:
+        if not isinstance(t, dict):
+            continue
         status_icon = {"pending": "[ ]", "in_progress": "[>]", "completed": "[x]"}.get(t.get("status", ""), "[?]")
         content = t.get("content", "(no description)")
-        lines.append(f"  {status_icon} {content}")
+        dep_indicator = ""
+        tid = t.get("id", "")
+        if tid in blocked_by:
+            blocker_ids = blocked_by[tid]
+            incomplete = [b for b in blocker_ids
+                          if next((x.get("status") for x in todos if isinstance(x, dict) and x.get("id") == b), "pending")
+                          != "completed"]
+            if incomplete:
+                dep_indicator = " [blocked]"
+        lines.append(f"  {status_icon} {content}{dep_indicator}")
 
     return "\n".join(lines)
 

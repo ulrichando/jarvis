@@ -175,8 +175,8 @@ async def cmd_switch(ctx: CommandContext) -> CommandResult:
 # /color -- Change JARVIS theme color globally
 # ---------------------------------------------------------------------------
 
-@command("color", aliases=["theme"], description="Change JARVIS theme color",
-         usage="/color <preset|#hex>  (presets: arc-reactor, iron-man, ultron, stealth, emerald, frost, solar, hotrod, ghost)",
+@command("desktop-theme", description="Change JARVIS desktop theme color",
+         usage="/desktop-theme <preset|#hex>  (presets: arc-reactor, iron-man, ultron, stealth, emerald, frost, solar, hotrod, ghost)",
          category="core", permission=PermLevel.STANDARD)
 async def cmd_color(ctx: CommandContext) -> CommandResult:
     from src.desktop.colors import PRESETS, get_theme, get_colors, set_theme, set_custom_color, generate_icon
@@ -740,19 +740,6 @@ async def cmd_uptime(ctx: CommandContext) -> CommandResult:
                      f"  Turns:  {s.turn_count}"
             )
     return CommandResult(text="No active session.", success=False)
-
-
-@command("alias", description="Create a command alias",
-         usage="/alias <name> <command>", category="core", permission=PermLevel.STANDARD)
-async def cmd_alias(ctx: CommandContext) -> CommandResult:
-    parts = ctx.args.strip().split(None, 1)
-    if len(parts) < 2:
-        return CommandResult(text="Usage: /alias <name> <command>", success=False)
-    name, target = parts
-    return CommandResult(
-        text=f"Alias support coming soon.\n"
-             f"  Would map /{name} -> {target}"
-    )
 
 
 def _colorize_diff(diff_text: str) -> str:
@@ -1368,18 +1355,11 @@ async def cmd_color(ctx: CommandContext) -> CommandResult:
     return CommandResult(text=f"Session color set to: {args}")
 
 
-@command("stickers", description="Get JARVIS stickers", usage="/stickers",
-         category="core", hidden=True)
-async def cmd_stickers(ctx: CommandContext) -> CommandResult:
-    """Open sticker store."""
-    return CommandResult(text="JARVIS stickers coming soon! Check https://github.com/ulrich/jarvis for merch.")
-
-
 # ── RAG — /ingest ────────────────────────────────────────────────────
 
 @command(
     "ingest",
-    aliases=["rag-add", "learn"],
+    aliases=["rag-add"],
     description="Ingest a file, URL, or directory into the local knowledge base (RAG)",
     usage="/ingest <path|url|.> [--clear] [--stats]",
     category="memory",

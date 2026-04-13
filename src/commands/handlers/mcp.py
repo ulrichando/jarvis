@@ -111,7 +111,7 @@ async def cmd_tools(ctx: CommandContext) -> CommandResult:
     return CommandResult(text="\n".join(lines))
 
 
-@command("tool-search", aliases=["ts"], description="Search tools by name or description",
+@command("tool-search", aliases=["tsrch"], description="Search tools by name or description",
          usage="/tool-search <query>", category="mcp", permission=PermLevel.READ_ONLY)
 async def cmd_tool_search(ctx: CommandContext) -> CommandResult:
     query = ctx.args.strip().lower()
