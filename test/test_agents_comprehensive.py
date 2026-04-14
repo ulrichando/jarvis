@@ -61,8 +61,8 @@ class TestBuiltInAgentConfigs(unittest.TestCase):
         cfg = AGENT_CONFIGS["scout"]
         self.assertTrue(cfg.bash_readonly)
         self.assertIn("read_file", cfg.allowed_tools)
-        self.assertIn("Glob", cfg.allowed_tools)
-        self.assertIn("Grep", cfg.allowed_tools)
+        self.assertIn("glob", cfg.allowed_tools)
+        self.assertIn("grep", cfg.allowed_tools)
         self.assertIn("rag_search", cfg.allowed_tools)
         self.assertNotIn("write_file", cfg.allowed_tools)
         self.assertNotIn("edit_file", cfg.allowed_tools)
@@ -78,8 +78,8 @@ class TestBuiltInAgentConfigs(unittest.TestCase):
         self.assertNotIn("write_file", cfg.allowed_tools)
         self.assertNotIn("edit_file", cfg.allowed_tools)
         self.assertNotIn("bash", cfg.allowed_tools)
-        self.assertIn("Glob", cfg.allowed_tools)
-        self.assertIn("Grep", cfg.allowed_tools)
+        self.assertIn("glob", cfg.allowed_tools)
+        self.assertIn("grep", cfg.allowed_tools)
         self.assertIn("rag_search", cfg.allowed_tools)
 
     def test_verifier_is_readonly(self):
@@ -465,7 +465,7 @@ class TestToolExecution(unittest.TestCase):
     # ── Glob ──────────────────────────────────────────────────────────
 
     def test_glob_finds_python_files(self):
-        result = execute_tool("Glob", {
+        result = execute_tool("glob", {
             "pattern": "src/**/*.py",
             "path": "/home/ulrich/Documents/Projects/jarvis",
         })
@@ -473,7 +473,7 @@ class TestToolExecution(unittest.TestCase):
         self.assertNotIn("ERROR", result)
 
     def test_glob_no_matches(self):
-        result = execute_tool("Glob", {
+        result = execute_tool("glob", {
             "pattern": "**/__no_match_xyz__.txt",
             "path": self.tmpdir,
         })
@@ -484,7 +484,7 @@ class TestToolExecution(unittest.TestCase):
 
     def test_grep_finds_pattern(self):
         # Default mode is files_with_matches — returns file paths, not content
-        result = execute_tool("Grep", {
+        result = execute_tool("grep", {
             "pattern": "AgentConfig",
             "path": "/home/ulrich/Documents/Projects/jarvis/src/agent/agents.py",
         })
@@ -492,7 +492,7 @@ class TestToolExecution(unittest.TestCase):
         self.assertNotIn("ERROR", result)
 
     def test_grep_no_match(self):
-        result = execute_tool("Grep", {
+        result = execute_tool("grep", {
             "pattern": "__PATTERN_THAT_NEVER_EXISTS_XYZ__",
             "path": "/home/ulrich/Documents/Projects/jarvis/src/agent/agents.py",
         })
@@ -539,14 +539,14 @@ class TestToolExecution(unittest.TestCase):
     # ── ConfigTool ────────────────────────────────────────────────────
 
     def test_config_tool_get(self):
-        result = execute_tool("ConfigTool", {"action": "get"})
+        result = execute_tool("config", {"action": "get"})
         self.assertIsInstance(result, str)
         self.assertNotIn("Traceback", result)
 
     # ── Sleep (clamped) ───────────────────────────────────────────────
 
     def test_sleep_zero(self):
-        result = execute_tool("Sleep", {"seconds": 0})
+        result = execute_tool("sleep", {"seconds": 0})
         self.assertIsInstance(result, str)
 
 
@@ -576,7 +576,7 @@ class TestToolSchemas(unittest.TestCase):
         # search_files is a legacy alias handled in execute_tool but not a schema
         required = [
             "bash", "read_file", "write_file", "edit_file",
-            "Glob", "Grep", "think",
+            "glob", "grep", "think",
             "web_search", "web_fetch", "dispatch", "rag_search",
         ]
         for name in required:

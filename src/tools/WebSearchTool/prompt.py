@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import datetime
 
-WEB_SEARCH_TOOL_NAME = "WebSearch"
+WEB_SEARCH_TOOL_NAME = "web_search"
 
 
 def _get_local_month_year() -> str:

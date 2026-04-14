@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from src.tools.FileReadTool.prompt import FILE_READ_TOOL_NAME
 
-FILE_WRITE_TOOL_NAME = "Write"
+FILE_WRITE_TOOL_NAME = "write_file"
 DESCRIPTION = "Write a file to the local filesystem."
 
 

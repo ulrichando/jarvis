@@ -1,1 +1,1 @@
-SKILL_TOOL_NAME = "Skill"
+SKILL_TOOL_NAME = "skill"

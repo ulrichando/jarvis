@@ -19,9 +19,9 @@ class SearchOrReadResult:
 
 def check_search_or_read(tool_name: str) -> SearchOrReadResult:
     """Check if a tool use is a search or read operation."""
-    read_tools = {"Read", "read_file", "FileReadTool"}
-    search_tools = {"Grep", "Glob", "search_files", "GrepTool", "GlobTool"}
-    list_tools = {"ListTool", "list_directory"}
+    read_tools = {"read_file"}
+    search_tools = {"grep", "glob", "search_files"}
+    list_tools = {"list_directory"}
 
     result = SearchOrReadResult()
 

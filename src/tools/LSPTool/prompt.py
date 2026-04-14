@@ -1,7 +1,7 @@
 """Prompt for the LSPTool."""
 from __future__ import annotations
 
-LSP_TOOL_NAME = "LSP"
+LSP_TOOL_NAME = "lsp"
 
 DESCRIPTION = "Interact with Language Server Protocol servers for code intelligence"
 

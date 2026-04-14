@@ -141,7 +141,7 @@ TEMPLATES = {
             "lazarevtill/Llama-3-WhiteRabbitNeo-8B-v2.0",
             "nomic-embed-text",
         ],
-        "default_model": "qwen2.5:7b",
+        "default_model": "qwen2.5:72b",  # prefer the smart model; 7b ignores persona instructions
         "api_key": "ollama",  # Ollama doesn't need a real key
     },
 }
@@ -192,9 +192,9 @@ class ProviderRegistry:
 
     # Circuit breaker: skip provider after N failures in WINDOW seconds
     # Cloud providers — calibrated for API rate-limit recovery windows
-    _CB_MAX_FAILURES = 3
+    _CB_MAX_FAILURES = 5      # raised from 3 — occasional slowness shouldn't trip the breaker
     _CB_WINDOW       = 300   # 5 minutes
-    _CB_COOLDOWN     = 120   # 2 minutes before retry
+    _CB_COOLDOWN     = 60    # 1 minute before retry (was 2 min — recover faster)
     # Local providers (Ollama etc.) — much faster recovery (process restart, model load)
     _CB_LOCAL_WINDOW    = 60   # 1 minute — stale failures don't accumulate
     _CB_LOCAL_COOLDOWN  = 15   # 15 seconds — local process recovers in seconds
@@ -548,9 +548,10 @@ class ProviderRegistry:
                 # Local timeouts are transient (model loading). Both skip CB failure.
                 _err_str = str(e).lower()
                 is_rate_limit = "rate" in _err_str or "429" in _err_str or "quota" in _err_str
-                is_transient = is_rate_limit or (
-                    provider.is_local and isinstance(e, (_asyncio.TimeoutError, TimeoutError))
-                )
+                is_timeout = isinstance(e, (_asyncio.TimeoutError, TimeoutError))
+                # Timeouts are transient for both local AND cloud — a slow deepseek response
+                # doesn't mean deepseek is broken, it means it was busy. Don't circuit-break.
+                is_transient = is_rate_limit or is_timeout
                 self._cb_record_failure(provider, is_transient=is_transient)
                 if isinstance(e, _asyncio.CancelledError):
                     raise  # Re-raise so asyncio cancellation still propagates
@@ -1220,7 +1221,7 @@ class ProviderRegistry:
         # Groq: cap tools at 20 — llama-3.3-70b throws 400 with too many tools
         if is_groq and len(tools) > 20:
             _PRIORITY_TOOLS = {"bash", "read_file", "write_file", "edit_file",
-                               "Glob", "Grep", "web_search", "web_fetch", "think",
+                               "glob", "grep", "web_search", "web_fetch", "think",
                                "dispatch", "ask_user", "todo_write"}
             tools = [t for t in tools if t["function"]["name"] in _PRIORITY_TOOLS] + \
                     [t for t in tools if t["function"]["name"] not in _PRIORITY_TOOLS]
@@ -1335,7 +1336,7 @@ class ProviderRegistry:
                             if not is_local and ("failed to call a function" in err_str or
                                                  "function_call" in err_str or "400" in err_str):
                                 _CORE_TOOLS = {"bash", "read_file", "write_file", "edit_file",
-                                               "Glob", "Grep", "web_search", "web_fetch", "think"}
+                                               "glob", "grep", "web_search", "web_fetch", "think"}
                                 core_tools = [t for t in tools if t["function"]["name"] in _CORE_TOOLS]
                                 if core_tools:
                                     try:

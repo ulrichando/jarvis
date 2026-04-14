@@ -3,9 +3,9 @@ from __future__ import annotations
 
 DEFAULT_MAX_AGE_DAYS = 30
 
-CRON_CREATE_TOOL_NAME = "CronCreate"
-CRON_DELETE_TOOL_NAME = "CronDelete"
-CRON_LIST_TOOL_NAME = "CronList"
+CRON_CREATE_TOOL_NAME = "cron_create"
+CRON_DELETE_TOOL_NAME = "cron_delete"
+CRON_LIST_TOOL_NAME = "cron_list"
 
 
 def build_cron_create_description(durable_enabled: bool = False) -> str:

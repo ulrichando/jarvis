@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, Optional
 
-CODE_EDITING_TOOLS = {"Edit", "Write", "NotebookEdit"}
+CODE_EDITING_TOOLS = {"edit_file", "write_file", "notebook_edit"}
 
 
 def is_code_editing_tool(tool_name: str) -> bool:

@@ -80,28 +80,28 @@ def _build_registry() -> None:
             category="system",
             activity_description=lambda _: "Viewing screen",
         ),
-        "Sleep": dict(
+        "sleep": dict(
             is_read_only=True,
             category="system",
             activity_description=lambda args: f"Sleeping {args.get('duration_ms', '?')}ms",
         ),
-        "ConfigTool": dict(
+        "config": dict(
             is_read_only=True,
             is_concurrency_safe=True,
             category="system",
             activity_description=lambda args: f"Config: {args.get('mode', 'get')} {args.get('key', '?')}",
         ),
-        "ListMcpResources": dict(
+        "list_mcp_resources": dict(
             is_read_only=True,
             is_concurrency_safe=True,
             category="system",
             activity_description=lambda _: "Listing MCP resources",
         ),
-        "ScheduleCron": dict(
+        "schedule_cron": dict(
             category="system",
             activity_description=lambda args: f"Cron: {args.get('action', '?')}",
         ),
-        "RemoteTrigger": dict(
+        "remote_trigger": dict(
             category="system",
             activity_description=lambda args: f"Remote: {args.get('action', '?')}",
         ),
@@ -131,13 +131,13 @@ def _build_registry() -> None:
             category="search",
             activity_description=lambda args: f"Searching: {args.get('pattern', '?')}",
         ),
-        "Glob": dict(
+        "glob": dict(
             is_read_only=True,
             is_concurrency_safe=True,
             category="search",
             activity_description=lambda args: f"Glob: {args.get('pattern', '?')}",
         ),
-        "Grep": dict(
+        "grep": dict(
             is_read_only=True,
             is_concurrency_safe=True,
             category="search",
@@ -188,36 +188,36 @@ def _build_registry() -> None:
             category="agent",
             activity_description=lambda args: "Asking user...",
         ),
-        "Skill": dict(
+        "skill": dict(
             category="agent",
             activity_description=lambda args: f"Skill: {args.get('skill', '?')}",
         ),
-        "LSP": dict(
+        "lsp": dict(
             is_read_only=True,
             category="agent",
             activity_description=lambda args: f"LSP: {args.get('action', '?')}",
         ),
-        "BriefTool": dict(
+        "brief": dict(
             is_read_only=True,
             category="agent",
             activity_description=lambda args: "Sending message",
         ),
         # ── Mode tools ────────────────────────────────────────────────
-        "EnterPlanMode": dict(
+        "enter_plan_mode": dict(
             is_read_only=True,
             category="mode",
             activity_description=lambda _: "Entering plan mode",
         ),
-        "ExitPlanMode": dict(
+        "exit_plan_mode": dict(
             is_read_only=True,
             category="mode",
             activity_description=lambda _: "Exiting plan mode",
         ),
-        "EnterWorktree": dict(
+        "enter_worktree": dict(
             category="mode",
             activity_description=lambda _: "Entering worktree",
         ),
-        "ExitWorktree": dict(
+        "exit_worktree": dict(
             category="mode",
             activity_description=lambda _: "Exiting worktree",
         ),
@@ -226,46 +226,46 @@ def _build_registry() -> None:
             category="task",
             activity_description=lambda _: "Updating todos",
         ),
-        "TaskCreate": dict(
+        "task_create": dict(
             category="task",
             activity_description=lambda args: f"Creating task: {args.get('subject', '?')[:40]}",
         ),
-        "TaskGet": dict(
+        "task_get": dict(
             is_read_only=True,
             is_concurrency_safe=True,
             category="task",
             activity_description=lambda args: f"Getting task {args.get('id', '?')}",
         ),
-        "TaskList": dict(
+        "task_list": dict(
             is_read_only=True,
             is_concurrency_safe=True,
             category="task",
             activity_description=lambda _: "Listing tasks",
         ),
-        "TaskStop": dict(
+        "task_stop": dict(
             category="task",
             activity_description=lambda args: f"Stopping task {args.get('id', '?')}",
         ),
-        "TaskUpdate": dict(
+        "task_update": dict(
             category="task",
             activity_description=lambda args: f"Updating task {args.get('id', '?')}",
         ),
-        "TaskOutput": dict(
+        "task_output": dict(
             is_read_only=True,
             is_concurrency_safe=True,
             category="task",
             activity_description=lambda args: f"Task output: {args.get('id', '?')}",
         ),
         # ── Multi-agent / Team tools ──────────────────────────────────
-        "SendMessage": dict(
+        "send_message": dict(
             category="multi-agent",
             activity_description=lambda args: f"Message to {args.get('to', '?')}",
         ),
-        "TeamCreate": dict(
+        "team_create": dict(
             category="team",
             activity_description=lambda args: f"Creating team: {args.get('name', '?')}",
         ),
-        "TeamDelete": dict(
+        "team_delete": dict(
             category="team",
             is_destructive=True,
             activity_description=lambda args: f"Deleting team: {args.get('name', '?')}",

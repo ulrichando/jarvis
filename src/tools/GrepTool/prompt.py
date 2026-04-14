@@ -3,7 +3,7 @@ from __future__ import annotations
 from src.tools.AgentTool.constants import AGENT_TOOL_NAME
 from src.tools.BashTool.toolName import BASH_TOOL_NAME
 
-GREP_TOOL_NAME = "Grep"
+GREP_TOOL_NAME = "grep"
 
 
 def get_description() -> str:
