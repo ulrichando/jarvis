@@ -1,7 +1,7 @@
 """Prompt for the RemoteTriggerTool."""
 from __future__ import annotations
 
-REMOTE_TRIGGER_TOOL_NAME = "RemoteTrigger"
+REMOTE_TRIGGER_TOOL_NAME = "remote_trigger"
 
 DESCRIPTION = (
     "Manage scheduled remote JARVIS agents (triggers) via the JARVIS API. "

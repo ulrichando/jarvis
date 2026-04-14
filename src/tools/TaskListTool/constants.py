@@ -1,1 +1,1 @@
-TASK_LIST_TOOL_NAME = "TaskList"
+TASK_LIST_TOOL_NAME = "task_list"

@@ -39,18 +39,84 @@ def strip_trailing_whitespace(s: str) -> str:
 
 
 def find_actual_string(file_content: str, search_string: str) -> Optional[str]:
-    """Finds the actual string in the file content that matches the search string,
-    accounting for quote normalization.
+    """Find the actual string in file content that matches the search string.
+
+    Uses a 5-layer matching strategy (same as Aider/production tools):
+      1. Exact match
+      2. Quote normalization
+      3. Trailing whitespace normalization
+      4. Relative indentation matching
+      5. difflib block similarity (>0.85 threshold)
     """
+    # Layer 1: exact
     if search_string in file_content:
         return search_string
 
+    # Layer 2: quote normalization
     normalized_search = normalize_quotes(search_string)
     normalized_file = normalize_quotes(file_content)
-
     search_index = normalized_file.find(normalized_search)
     if search_index != -1:
         return file_content[search_index:search_index + len(search_string)]
+
+    # Layer 3: trailing whitespace normalization
+    ws_search = strip_trailing_whitespace(search_string)
+    ws_file = strip_trailing_whitespace(file_content)
+    search_index = ws_file.find(ws_search)
+    if search_index != -1:
+        # Map back to original file content position
+        return file_content[search_index:search_index + len(search_string)]
+
+    # Layer 4: relative indentation matching
+    search_lines = search_string.splitlines()
+    if search_lines:
+        # Extract leading whitespace of first non-empty search line
+        first_nonempty = next((l for l in search_lines if l.strip()), "")
+        base_indent = len(first_nonempty) - len(first_nonempty.lstrip())
+        # Strip that indent prefix from all search lines
+        stripped_search_lines = []
+        for line in search_lines:
+            if line.startswith(" " * base_indent):
+                stripped_search_lines.append(line[base_indent:])
+            else:
+                stripped_search_lines.append(line.lstrip())
+        stripped_search = "\n".join(stripped_search_lines)
+
+        file_lines = file_content.splitlines()
+        for i in range(len(file_lines) - len(search_lines) + 1):
+            window = file_lines[i:i + len(search_lines)]
+            # Detect this window's indent level
+            first_nonempty_w = next((l for l in window if l.strip()), "")
+            window_indent = len(first_nonempty_w) - len(first_nonempty_w.lstrip())
+            # Strip window's base indent
+            stripped_window = "\n".join(
+                l[window_indent:] if l.startswith(" " * window_indent) else l.lstrip()
+                for l in window
+            )
+            if stripped_window == stripped_search:
+                # Return the actual text from the file at this position
+                start = sum(len(l) + 1 for l in file_lines[:i])
+                length = sum(len(l) + 1 for l in file_lines[i:i + len(search_lines)])
+                return file_content[start:start + length - 1]  # -1 to drop trailing \n
+
+    # Layer 5: difflib block similarity (last resort, >0.85 threshold)
+    import difflib as _dl
+    search_lines = search_string.splitlines()
+    file_lines = file_content.splitlines()
+    if len(search_lines) >= 2 and len(file_lines) >= len(search_lines):
+        best_ratio = 0.0
+        best_start = -1
+        window_size = len(search_lines)
+        for i in range(len(file_lines) - window_size + 1):
+            window = file_lines[i:i + window_size]
+            ratio = _dl.SequenceMatcher(None, search_lines, window).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_start = i
+        if best_ratio >= 0.85 and best_start >= 0:
+            start = sum(len(l) + 1 for l in file_lines[:best_start])
+            length = sum(len(l) + 1 for l in file_lines[best_start:best_start + window_size])
+            return file_content[start:start + length - 1]
 
     return None
 

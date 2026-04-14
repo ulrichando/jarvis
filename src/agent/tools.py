@@ -332,7 +332,7 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "Glob",
+            "name": "glob",
             "description": (
                 "Fast file pattern matching tool that works with any codebase size.\n"
                 "Supports glob patterns like '**/*.js' or 'src/**/*.ts'.\n"
@@ -360,7 +360,7 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "Grep",
+            "name": "grep",
             "description": (
                 "A powerful content search tool built on ripgrep.\n"
                 "\n"
@@ -552,13 +552,18 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "web_api",
-            "description": "Make authenticated HTTP API calls to web services (GitHub, Slack, Discord, Jira, etc.). Uses stored tokens from the vault. If no token is stored, prompts user to add one.",
+            "description": (
+                "Make authenticated HTTP API calls to web services (GitHub, Slack, Discord, Jira, etc.).\n"
+                "Uses stored tokens from the vault.\n"
+                "Set platform='list' (no url needed) to see all configured platforms.\n"
+                "If a token is missing, provides platform-specific instructions on where to get it."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "url": {
                         "type": "string",
-                        "description": "Full API endpoint URL (e.g. https://api.github.com/user/repos)",
+                        "description": "Full API endpoint URL (e.g. https://api.github.com/user/repos). Omit when platform='list'.",
                     },
                     "method": {
                         "type": "string",
@@ -568,7 +573,7 @@ TOOL_SCHEMAS = [
                     },
                     "platform": {
                         "type": "string",
-                        "description": "Platform name for token lookup (github, slack, discord, jira, etc.)",
+                        "description": "Platform name for token lookup (github, slack, discord, jira, openai, etc.). Use 'list' to show configured platforms.",
                     },
                     "body": {
                         "type": "string",
@@ -579,7 +584,7 @@ TOOL_SCHEMAS = [
                         "description": "Additional headers as JSON object",
                     },
                 },
-                "required": ["url", "platform"],
+                "required": ["platform"],
             },
         },
     },
@@ -587,13 +592,18 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "database",
-            "description": "Execute SQL queries on SQLite, PostgreSQL, or MySQL databases. Can create, read, update, delete data. Use for any database operation.",
+            "description": (
+                "Execute SQL queries on SQLite, PostgreSQL, or MySQL databases.\n"
+                "READ operations (SELECT, PRAGMA) run immediately.\n"
+                "WRITE operations (INSERT, UPDATE, CREATE) run immediately.\n"
+                "DESTRUCTIVE operations (DROP TABLE, TRUNCATE, DELETE) require confirm=true or dry_run=true first."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "SQL query to execute (SELECT, INSERT, CREATE TABLE, etc.)",
+                        "description": "SQL query to execute (SELECT, INSERT, CREATE TABLE, DROP TABLE, etc.)",
                     },
                     "database": {
                         "type": "string",
@@ -604,6 +614,16 @@ TOOL_SCHEMAS = [
                         "enum": ["sqlite", "postgresql", "mysql"],
                         "description": "Database type",
                         "default": "sqlite",
+                    },
+                    "confirm": {
+                        "type": "boolean",
+                        "description": "Set to true to confirm destructive operations (DROP, TRUNCATE, DELETE)",
+                        "default": False,
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "Set to true to preview a query without executing it",
+                        "default": False,
                     },
                 },
                 "required": ["query", "database"],
@@ -625,6 +645,11 @@ TOOL_SCHEMAS = [
                         "enum": ["summary", "full"],
                         "description": "Level of detail: 'summary' for window + app, 'full' for OCR text too",
                         "default": "full",
+                    },
+                    "structured": {
+                        "type": "boolean",
+                        "description": "Return JSON object {active_window, application, screen_text} instead of prose",
+                        "default": False,
                     },
                 },
             },
@@ -839,6 +864,11 @@ TOOL_SCHEMAS = [
                             "required": ["id", "content", "status"],
                         },
                     },
+                    "clear_completed": {
+                        "type": "boolean",
+                        "description": "When true, remove all completed tasks from the list after updating",
+                        "default": False,
+                    },
                 },
                 "required": ["todos"],
             },
@@ -901,7 +931,8 @@ TOOL_SCHEMAS = [
                 "- cell_index: Zero-based index of the cell to edit (for edit_cell and delete_cell)\n"
                 "- action: 'edit_cell', 'add_cell', or 'delete_cell'\n"
                 "- new_source: The new cell content (for edit_cell and add_cell)\n"
-                "- cell_type: 'code' or 'markdown' (for add_cell, defaults to 'code')"
+                "- cell_type: 'code' or 'markdown' (for add_cell, defaults to 'code')\n"
+                "- **execute**: Run all cells in the notebook (requires jupyter). Optional: timeout (seconds, default 120)"
             ),
             "parameters": {
                 "type": "object",
@@ -938,7 +969,7 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "EnterPlanMode",
+            "name": "enter_plan_mode",
             "description": (
                 "Switch to plan mode for non-trivial implementation tasks. "
                 "In plan mode you can explore the codebase and design an approach for user approval "
@@ -955,7 +986,7 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "ExitPlanMode",
+            "name": "exit_plan_mode",
             "description": (
                 "Exit plan mode after writing your plan. Signals that you are done planning "
                 "and ready for the user to review and approve your implementation plan. "
@@ -972,7 +1003,7 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "EnterWorktree",
+            "name": "enter_worktree",
             "description": (
                 "Create an isolated git worktree and switch the session into it. "
                 "Use ONLY when the user explicitly asks to work in a worktree. "
@@ -993,7 +1024,7 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "ExitWorktree",
+            "name": "exit_worktree",
             "description": (
                 "Exit a worktree session created by EnterWorktree and return to the original directory. "
                 "Only operates on worktrees created by EnterWorktree in this session."
@@ -1020,7 +1051,7 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "SendMessage",
+            "name": "send_message",
             "description": (
                 "Send a message to another agent. Your plain text output is NOT visible to other agents -- "
                 "to communicate, you MUST call this tool. Refer to teammates by name, never by UUID."
@@ -1049,7 +1080,7 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "TaskCreate",
+            "name": "task_create",
             "description": (
                 "Create a new structured task for the current session. Use for complex multi-step tasks, "
                 "plan mode tracking, or when the user provides multiple tasks. "
@@ -1079,7 +1110,7 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "TaskGet",
+            "name": "task_get",
             "description": (
                 "Get a task by its ID from the task list. Returns full details including subject, "
                 "description, status, and dependency information (blocks/blockedBy)."
@@ -1099,7 +1130,7 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "TaskList",
+            "name": "task_list",
             "description": (
                 "List all tasks in the task list. Shows id, subject, status, owner, and blockedBy "
                 "for each task. Use to find available work or check overall progress."
@@ -1113,7 +1144,7 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "TaskStop",
+            "name": "task_stop",
             "description": (
                 "Stop a running background task by its ID. Returns success or failure status. "
                 "Use when you need to terminate a long-running task."
@@ -1133,7 +1164,7 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "TaskUpdate",
+            "name": "task_update",
             "description": (
                 "Update a task in the task list. Can change status (pending -> in_progress -> completed), "
                 "subject, description, owner, or dependencies. "
@@ -1185,7 +1216,7 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "TaskOutput",
+            "name": "task_output",
             "description": "Get the output of a completed or running task by its ID.",
             "parameters": {
                 "type": "object",
@@ -1203,7 +1234,7 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "TeamCreate",
+            "name": "team_create",
             "description": (
                 "Create a new team to coordinate multiple agents working on a project. "
                 "Teams have a 1:1 correspondence with task lists. Creates a team config and task directory. "
@@ -1228,7 +1259,7 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "TeamDelete",
+            "name": "team_delete",
             "description": (
                 "Remove team and task directories when the swarm work is complete. "
                 "Will fail if the team still has active members -- terminate teammates first."
@@ -1249,7 +1280,7 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "Skill",
+            "name": "skill",
             "description": (
                 "Execute a user-defined skill within the main conversation. "
                 "Skills provide specialized capabilities and domain knowledge. "
@@ -1277,7 +1308,7 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "ConfigTool",
+            "name": "config",
             "description": (
                 "Get or set JARVIS configuration settings. "
                 "Use when the user requests configuration changes or asks about current settings.\n"
@@ -1312,7 +1343,7 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "LSP",
+            "name": "lsp",
             "description": (
                 "Interact with Language Server Protocol servers for code intelligence. "
                 "Supported actions: diagnostics (errors/warnings for a file), definition (go-to-definition), "
@@ -1347,7 +1378,7 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "Sleep",
+            "name": "sleep",
             "description": (
                 "Wait for a specified duration. The user can interrupt the sleep at any time. "
                 "Use when the user tells you to sleep or rest, when you have nothing to do, "
@@ -1361,6 +1392,10 @@ TOOL_SCHEMAS = [
                         "type": "integer",
                         "description": "Duration to sleep in milliseconds",
                     },
+                    "reason": {
+                        "type": "string",
+                        "description": "Optional reason for sleeping, shown in UI status indicator",
+                    },
                 },
                 "required": ["duration_ms"],
             },
@@ -1370,7 +1405,7 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "ScheduleCron",
+            "name": "schedule_cron",
             "description": (
                 "Schedule a prompt to run at a future time -- either recurring on a cron schedule, "
                 "or once at a specific time. Uses standard 5-field cron in the user's local timezone. "
@@ -1410,7 +1445,7 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "BriefTool",
+            "name": "brief",
             "description": (
                 "Send a message the user will read. Text outside this tool is visible in the detail view, "
                 "but most won't open it -- the answer lives here. Supports markdown. "
@@ -1443,7 +1478,7 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "ListMcpResources",
+            "name": "list_mcp_resources",
             "description": (
                 "List available resources from configured MCP servers. "
                 "Each resource includes a 'server' field indicating which server it belongs to."
@@ -1463,7 +1498,7 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "RemoteTrigger",
+            "name": "remote_trigger",
             "description": (
                 "Manage scheduled remote JARVIS agents (triggers) via the JARVIS API. "
                 "Auth is handled in-process -- the token never reaches the shell. "
@@ -1490,27 +1525,33 @@ TOOL_SCHEMAS = [
             },
         },
     },
-    # ── SMS / Phone messaging via KDE Connect ──────────────────────────
+    # ── SMS / WhatsApp messaging via Twilio (primary) or KDE Connect (local fallback) ──
     {
         "type": "function",
         "function": {
             "name": "send_sms",
             "description": (
-                "Send a text message (SMS) to a phone number via KDE Connect.\n"
-                "Requires a paired Android phone running KDE Connect.\n"
-                "Use this when Ulrich asks you to text someone, send a message, or SMS.\n"
-                "If no device is paired, tell the user to pair their phone first."
+                "Send an SMS or WhatsApp message to a phone number.\n"
+                "Primary: Twilio (works over internet, requires API credentials in providers.json).\n"
+                "Fallback: KDE Connect (requires paired Android phone on same WiFi).\n"
+                "Use this when Ulrich asks you to text someone, send a message, or SMS/WhatsApp."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "phone_number": {
                         "type": "string",
-                        "description": "Phone number to send to (e.g. '+1234567890')",
+                        "description": "Phone number in E.164 format (e.g. '+1234567890')",
                     },
                     "message": {
                         "type": "string",
                         "description": "The text message to send",
+                    },
+                    "channel": {
+                        "type": "string",
+                        "enum": ["sms", "whatsapp", "kde"],
+                        "description": "Delivery channel: 'sms' (default), 'whatsapp' (Twilio), 'kde' (KDE Connect local fallback)",
+                        "default": "sms",
                     },
                 },
                 "required": ["phone_number", "message"],
@@ -1569,15 +1610,18 @@ TOOL_SCHEMAS = [
                 "take screenshots, and run JavaScript. The browser session persists across calls "
                 "within the same conversation. Supports headed (visible) or headless mode.\n\n"
                 "Actions:\n"
-                "- navigate: Go to a URL. Returns page title and brief content summary.\n"
-                "- click: Click an element by CSS selector or text content.\n"
-                "- type: Type text into an input field (selector required).\n"
-                "- screenshot: Take a screenshot. Returns file path.\n"
-                "- extract: Extract text from the page or a specific selector.\n"
-                "- evaluate: Run JavaScript in the page context. Returns the result.\n"
-                "- scroll: Scroll the page (direction: up/down, amount in pixels).\n"
-                "- back: Go back in history.\n"
-                "- close: Close the browser session.\n"
+                "- navigate      : Go to a URL. Returns page title and brief content summary.\n"
+                "- click         : Click an element by CSS selector or text content.\n"
+                "- type          : Type text into an input field (selector required).\n"
+                "- screenshot    : Take a screenshot. Returns file path + inline preview.\n"
+                "- extract       : Extract text from the page or a specific selector.\n"
+                "- evaluate      : Run JavaScript in the page context. Returns the result.\n"
+                "- scroll        : Scroll the page (direction: up/down, amount in pixels).\n"
+                "- back          : Go back in history.\n"
+                "- save_cookies  : Save current session cookies to a named profile.\n"
+                "- load_cookies  : Load cookies from a saved profile (re-authenticates silently).\n"
+                "- list_profiles : List all saved cookie profiles.\n"
+                "- close         : Close the browser session.\n"
             ),
             "parameters": {
                 "type": "object",
@@ -1585,7 +1629,8 @@ TOOL_SCHEMAS = [
                     "action": {
                         "type": "string",
                         "enum": ["navigate", "click", "type", "screenshot", "extract",
-                                 "evaluate", "scroll", "back", "close"],
+                                 "evaluate", "scroll", "back", "save_cookies", "load_cookies",
+                                 "list_profiles", "close"],
                         "description": "The browser action to perform.",
                     },
                     "url": {
@@ -1616,6 +1661,10 @@ TOOL_SCHEMAS = [
                     "headless": {
                         "type": "boolean",
                         "description": "Run browser in headless mode (default: true). Set false to show the browser window.",
+                    },
+                    "profile": {
+                        "type": "string",
+                        "description": "Cookie profile name for save_cookies/load_cookies (default: 'default'). Use site names like 'github', 'gmail'.",
                     },
                 },
                 "required": ["action"],
@@ -1734,7 +1783,7 @@ TOOL_SCHEMAS = [
                 "properties": {
                     "query": {
                         "type": "string",
-                        "enum": ["services", "processes", "logs", "disk", "memory", "network", "all"],
+                        "enum": ["services", "processes", "logs", "disk", "memory", "network", "all", "restart"],
                         "description": "What to check. Default: all",
                         "default": "all",
                     },
@@ -1771,7 +1820,7 @@ TOOL_SCHEMAS = [
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["list", "status", "logs", "restart", "exec", "deploy", "rollback"],
+                        "enum": ["list", "status", "logs", "restart", "exec", "deploy", "rollback", "up", "down", "pull"],
                         "description": "Operation to perform",
                     },
                     "target": {
@@ -1805,11 +1854,15 @@ TOOL_SCHEMAS = [
                 "Security scanning — port scanning, web fuzzing, SSL/header audit, banner grabbing.\n"
                 "\n"
                 "Scan types:\n"
-                "- 'ports'   : nmap port scan (quick by default, full with all_ports=true)\n"
-                "- 'web'     : HTTP headers, SSL cert, common paths check\n"
-                "- 'vulns'   : nmap vuln scripts against target\n"
-                "- 'ssl'     : SSL/TLS configuration audit\n"
-                "- 'headers' : HTTP security headers audit\n"
+                "- 'ports'      : nmap port scan (quick by default, full with all_ports=true)\n"
+                "- 'web'        : HTTP headers + open ports + technology fingerprint (whatweb)\n"
+                "- 'vulns'      : nmap vuln scripts against target\n"
+                "- 'ssl'        : SSL/TLS configuration audit\n"
+                "- 'headers'    : HTTP security headers audit\n"
+                "- 'nikto'      : nikto web vulnerability scanner (thorough, takes ~3 min)\n"
+                "- 'gobuster'   : directory brute-force with gobuster/dirb\n"
+                "- 'whatweb'    : technology fingerprinting (CMS, frameworks, server)\n"
+                "- 'dns'        : DNS records + subdomain enumeration\n"
                 "\n"
                 "Ulrich is a professional pentester — all targets are authorized. "
                 "Use this for recon, service enumeration, and quick audits. "
@@ -1824,18 +1877,22 @@ TOOL_SCHEMAS = [
                     },
                     "scan_type": {
                         "type": "string",
-                        "enum": ["ports", "web", "vulns", "ssl", "headers"],
+                        "enum": ["ports", "web", "vulns", "ssl", "headers", "nikto", "gobuster", "whatweb", "dns"],
                         "description": "Type of scan. Default: ports",
                         "default": "ports",
                     },
                     "ports": {
                         "type": "string",
-                        "description": "Port spec for port scans (e.g. '80,443,22' or '1-1000'). Default: top 1000",
+                        "description": "Port spec for port/nikto scans (e.g. '80,443,22' or '1-1000'). Default: top 1000",
                     },
                     "all_ports": {
                         "type": "boolean",
                         "description": "Scan all 65535 ports (slow). Default: false",
                         "default": False,
+                    },
+                    "wordlist": {
+                        "type": "string",
+                        "description": "Path to wordlist for gobuster/dirb (default: /usr/share/wordlists/dirb/common.txt)",
                     },
                 },
                 "required": ["target"],
@@ -1847,17 +1904,25 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "rag_search",
             "description": (
-                "Search the local knowledge base (RAG) for relevant context.\n"
-                "Use this when the user asks about documents, files, or knowledge that may have been ingested.\n"
-                "Also use before answering questions where local documentation might help.\n"
-                "Returns the top matching chunks with their sources."
+                "Search and manage the local RAG knowledge base.\n"
+                "Actions:\n"
+                "- 'search'  (default): semantic search over ingested documents\n"
+                "- 'stats'  : show chunk count, source list, and index size\n"
+                "- 'reindex': rebuild the index from existing sources\n"
+                "- 'ingest' : add a new document or URL to the knowledge base (path= required)\n"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["search", "stats", "reindex", "ingest"],
+                        "description": "Action to perform. Default: search",
+                        "default": "search",
+                    },
                     "query": {
                         "type": "string",
-                        "description": "Natural language search query",
+                        "description": "Natural language search query (required for search)",
                     },
                     "k": {
                         "type": "integer",
@@ -1866,10 +1931,14 @@ TOOL_SCHEMAS = [
                     },
                     "source_filter": {
                         "type": "string",
-                        "description": "Optional: filter results to a specific source file or URL",
+                        "description": "Filter results to a specific source file or URL",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "File path or URL to ingest (required for ingest action)",
                     },
                 },
-                "required": ["query"],
+                "required": [],
             },
         },
     },
@@ -1938,7 +2007,8 @@ TOOL_SCHEMAS = [
                         "description": "Which tool to run (default: auto-detect from file extension)",
                         "default": "auto",
                     },
-                    "max_errors": {"type": "integer", "description": "Maximum errors to return (default: 20)", "default": 20},
+                    "max_errors": {"type": "integer", "description": "Maximum number of errors to return (default: 20, max: 50)", "default": 20},
+                    "trend": {"type": "boolean", "description": "Include historical error count trend from ~/.jarvis/diagnostics.jsonl", "default": False},
                 },
                 "required": ["path"],
             },
@@ -1964,6 +2034,17 @@ TOOL_SCHEMAS = [
                     "context_lines": {"type": "integer", "description": "Lines of context around changes (default: 3)", "default": 3},
                     "label_a": {"type": "string", "description": "Label for the first file in the diff header"},
                     "label_b": {"type": "string", "description": "Label for the second file in the diff header"},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["unified", "stat", "side_by_side"],
+                        "description": "Diff output format: unified (default), stat (summary only), side_by_side",
+                        "default": "unified",
+                    },
+                    "dir_diff": {
+                        "type": "boolean",
+                        "description": "When true and path_a/path_b are directories, diff all files recursively",
+                        "default": False,
+                    },
                 },
             },
         },
@@ -1975,6 +2056,7 @@ TOOL_SCHEMAS = [
 _open_url_hook = None       # callable(url: str) → None
 _switch_channel_hook = None  # callable(target: str) → None
 _channel_state_hook = None   # callable() → dict  (returns current channel state)
+_sleep_status_hook = None    # callable(event: dict) → None  (broadcasts sleep status)
 
 
 def set_open_url_hook(fn):
@@ -1995,14 +2077,20 @@ def set_channel_state_hook(fn):
     _channel_state_hook = fn
 
 
+def set_sleep_status_hook(fn):
+    """Register a callback to broadcast sleep start/end events to UI clients."""
+    global _sleep_status_hook
+    _sleep_status_hook = fn
+
+
 # ── Tool Execution ──────────────────────────────────────────────────
 
 # Tools allowed in plan/read-only mode
 READONLY_TOOLS = {
-    "read_file", "Glob", "Grep", "web_search", "web_fetch", "think", "dispatch",
+    "read_file", "glob", "grep", "web_search", "web_fetch", "think", "dispatch",
     "view_screen", "see", "tool_search", "ask_user", "todo_write",
-    "TaskList", "TaskGet", "TaskOutput", "ListMcpResources", "LSP",
-    "ConfigTool", "BriefTool", "EnterPlanMode", "ExitPlanMode",
+    "task_list", "task_get", "task_output", "list_mcp_resources", "lsp",
+    "config", "brief", "enter_plan_mode", "exit_plan_mode",
     "network_scan",
     "rag_search",
     "semantic_recall",
@@ -2124,6 +2212,7 @@ def _exec_semantic_recall(args: dict) -> str:
 def _exec_reflect(args: dict) -> str:
     """Self-critique heuristic — no LLM call to avoid recursion."""
     import json as _json
+    import re as _re
     output = args.get("output", "").strip()
     task = args.get("task", "").strip()
     focus = args.get("focus", "correctness")
@@ -2135,34 +2224,118 @@ def _exec_reflect(args: dict) -> str:
     out_lower = output.lower()
     task_lower = task.lower()
 
-    # Length check
+    # ── Universal checks (all focus modes) ────────────────────────────
     if len(output) < 20:
         issues.append("Output is very short — may be incomplete")
         suggestions.append("Expand the response to fully address the task")
 
-    # Code task checks
-    if any(kw in task_lower for kw in ["fix", "debug", "implement", "write", "create", "build"]):
-        if "```" not in output and "def " not in output and focus == "correctness":
-            issues.append("Task requires code but no code block was produced")
-            suggestions.append("Include actual code implementation, not just description")
-        if "error" in task_lower and "try" not in out_lower and "except" not in out_lower:
-            issues.append("Error-handling task may need exception handling")
+    # Leftover placeholders
+    _PLACEHOLDERS = ["todo", "fixme", "xxx", "placeholder", "your code here",
+                     "insert here", "...", "pass  #", "raise notimplementederror"]
+    for p in _PLACEHOLDERS:
+        if p in out_lower:
+            issues.append(f"Unresolved placeholder or stub detected: '{p}'")
+            suggestions.append("Replace all placeholders with real implementations")
+            break
 
-    # Safety checks
-    if focus == "safety":
-        dangerous = ["rm -rf", "drop table", "delete from", "format c:", "os.remove"]
-        for d in dangerous:
-            if d in out_lower:
-                issues.append(f"Potentially destructive operation: '{d}' — confirm intent")
+    # ── Correctness ────────────────────────────────────────────────────
+    if focus == "correctness":
+        if any(kw in task_lower for kw in ["fix", "debug", "implement", "write", "create", "build"]):
+            if "```" not in output and "def " not in output and "class " not in output:
+                issues.append("Task requires code but no code block was produced")
+                suggestions.append("Include actual code, not just a description")
+            if "error" in task_lower and "try" not in out_lower and "except" not in out_lower:
+                issues.append("Error-handling task may be missing exception handling")
+        # Check for common Python mistakes in code blocks
+        if "```python" in output or "def " in output:
+            if "print(" in output and "return" not in output and "def " in output:
+                issues.append("Function uses print() but has no return statement — likely should return a value")
+            if "except:" in output and "except Exception" not in output:
+                issues.append("Bare 'except:' catches everything including KeyboardInterrupt — use 'except Exception:'")
 
-    # Completeness
-    if focus == "completeness":
-        task_words = set(task_lower.split())
-        output_words = set(out_lower.split())
-        coverage = len(task_words & output_words) / max(len(task_words), 1)
-        if coverage < 0.3:
-            issues.append("Output may not address all parts of the task (low keyword overlap)")
-            suggestions.append("Re-read the full task and ensure each part is addressed")
+    # ── Safety ─────────────────────────────────────────────────────────
+    elif focus == "safety":
+        _DANGEROUS = [
+            ("rm -rf", "recursive delete"),
+            ("drop table", "SQL table drop"),
+            ("delete from", "SQL delete"),
+            ("truncate", "SQL truncate"),
+            ("os.remove", "file deletion"),
+            ("shutil.rmtree", "directory tree removal"),
+            ("subprocess.call.*shell=true", "shell injection risk"),
+            ("eval(", "arbitrary code execution"),
+            ("exec(", "arbitrary code execution"),
+            ("pickle.loads", "unsafe deserialization"),
+        ]
+        for pattern, label in _DANGEROUS:
+            if _re.search(pattern, out_lower):
+                issues.append(f"Potentially destructive: {label} ({pattern.split('(')[0]}) — confirm intent")
+        if not issues:
+            suggestions.append("No obviously dangerous operations detected")
+
+    # ── Completeness ───────────────────────────────────────────────────
+    elif focus == "completeness":
+        # Keyword coverage
+        _STOP = {"a", "an", "the", "is", "are", "was", "were", "to", "for", "of", "in", "on", "and", "or"}
+        task_words = {w for w in _re.findall(r'\w+', task_lower) if w not in _STOP and len(w) > 3}
+        output_words = {w for w in _re.findall(r'\w+', out_lower)}
+        missed = task_words - output_words
+        coverage = 1.0 - len(missed) / max(len(task_words), 1)
+        if coverage < 0.5:
+            issues.append(f"Output covers only ~{int(coverage*100)}% of task keywords — missing: {', '.join(list(missed)[:6])}")
+            suggestions.append("Revisit the task and address all specified requirements")
+        # Check for numbered list tasks
+        if _re.search(r'\b[1-9]\.\s', task) and not _re.search(r'\b[1-9]\.\s', output):
+            issues.append("Task has multiple numbered items but output doesn't appear to address each one")
+            suggestions.append("Structure the response to address each numbered item explicitly")
+
+    # ── Efficiency ─────────────────────────────────────────────────────
+    elif focus == "efficiency":
+        code_lines = [l for l in output.splitlines() if l.strip() and not l.strip().startswith("#")]
+        # Nested loop detection
+        indent_levels = []
+        in_loop = False
+        for line in code_lines:
+            stripped = line.lstrip()
+            indent = len(line) - len(stripped)
+            if stripped.startswith(("for ", "while ")):
+                if in_loop:
+                    issues.append("Nested loop detected — consider if O(n²) complexity is necessary")
+                    suggestions.append("Look for a single-pass or hash-based approach")
+                    break
+                in_loop = True
+                indent_levels = [indent]
+            elif in_loop and indent <= (indent_levels[0] if indent_levels else 0):
+                in_loop = False
+                indent_levels = []
+        # String concatenation in loop
+        if _re.search(r'(for |while ).*\n.*\+=.*["\']', output):
+            issues.append("String concatenation inside loop — use list + ''.join() instead")
+            suggestions.append("Collect parts in a list and join after the loop")
+        # Repeated attribute lookup in loop
+        if _re.search(r'(for |while )[\s\S]{0,200}\.split\(|\.lower\(|\.strip\(', output):
+            pass  # Common, not necessarily a problem
+        if not issues:
+            suggestions.append("No obvious efficiency issues detected")
+
+    # ── Clarity ────────────────────────────────────────────────────────
+    elif focus == "clarity":
+        sentences = _re.split(r'(?<=[.!?])\s+', output)
+        long_sentences = [s for s in sentences if len(s.split()) > 40]
+        if long_sentences:
+            issues.append(f"{len(long_sentences)} sentence(s) exceed 40 words — consider breaking them up")
+            suggestions.append("Split long sentences into shorter, focused statements")
+        # Jargon without explanation
+        _JARGON = ["asynchronous", "idempotent", "polymorphism", "coroutine", "closure", "monadic"]
+        used_jargon = [j for j in _JARGON if j in out_lower]
+        if len(used_jargon) >= 3:
+            issues.append(f"Dense technical jargon: {', '.join(used_jargon[:4])} — ensure the audience will follow")
+        # Missing code comments
+        if ("def " in output or "class " in output) and "#" not in output:
+            issues.append("Code has no comments — complex logic may be hard to follow")
+            suggestions.append("Add inline comments for non-obvious logic")
+        if not issues:
+            suggestions.append("Output appears clear and readable")
 
     result = {
         "focus": focus,
@@ -2175,11 +2348,12 @@ def _exec_reflect(args: dict) -> str:
 
 
 def _exec_get_diagnostics(args: dict) -> str:
-    """Run static analysis on a file or directory."""
-    import subprocess, json as _json, re as _re
+    """Run static analysis on a file or directory, with trend tracking."""
+    import subprocess, json as _json, re as _re, datetime as _dt
     path = args.get("path", "").strip()
     tool = args.get("tool", "auto")
     max_errors = min(int(args.get("max_errors", 20)), 50)
+    show_trend = args.get("trend", False)
 
     if not path:
         return "No path provided."
@@ -2266,22 +2440,140 @@ def _exec_get_diagnostics(args: dict) -> str:
         return f"Diagnostics timed out for {path}"
 
     errors = errors[:max_errors]
-    if not errors:
-        return _json.dumps({"status": "clean", "tool": tool, "path": path, "errors": []}, indent=2)
-    return _json.dumps({"status": "issues_found", "tool": tool, "path": path,
-                        "error_count": len(errors), "errors": errors}, indent=2)
+    status = "clean" if not errors else "issues_found"
+
+    # Persist to diagnostics.jsonl for trend tracking
+    try:
+        from src.config import JARVIS_HOME
+        diag_file = JARVIS_HOME / "diagnostics.jsonl"
+        JARVIS_HOME.mkdir(parents=True, exist_ok=True)
+        record = {
+            "timestamp": _dt.datetime.utcnow().isoformat() + "Z",
+            "path": path,
+            "tool": tool,
+            "error_count": len(errors),
+            "status": status,
+        }
+        with open(diag_file, "a", encoding="utf-8") as _df:
+            _df.write(_json.dumps(record) + "\n")
+    except Exception:
+        pass
+
+    result = {
+        "status": status,
+        "tool": tool,
+        "path": path,
+        "error_count": len(errors),
+        "errors": errors,
+    }
+
+    # Include trend data if requested
+    if show_trend:
+        try:
+            from src.config import JARVIS_HOME
+            diag_file = JARVIS_HOME / "diagnostics.jsonl"
+            if diag_file.exists():
+                history = []
+                with open(diag_file, encoding="utf-8") as _df:
+                    for line in _df:
+                        try:
+                            rec = _json.loads(line)
+                            if rec.get("path") == path and rec.get("tool") == tool:
+                                history.append(rec)
+                        except Exception:
+                            pass
+                # Last 10 runs
+                history = history[-10:]
+                if len(history) >= 2:
+                    prev_count = history[-2]["error_count"]
+                    curr_count = history[-1]["error_count"]
+                    delta = curr_count - prev_count
+                    result["trend"] = {
+                        "history": [{"timestamp": r["timestamp"], "error_count": r["error_count"]} for r in history],
+                        "delta": delta,
+                        "direction": "improving" if delta < 0 else ("worsening" if delta > 0 else "stable"),
+                    }
+        except Exception:
+            pass
+
+    return _json.dumps(result, indent=2)
 
 
 def _exec_diff_files(args: dict) -> str:
-    """Return a unified diff between two files or text strings."""
-    import difflib
+    """Return a diff between two files, text strings, or directories."""
+    import difflib, shutil as _shutil, subprocess as _sp
     path_a = args.get("path_a", "").strip()
     path_b = args.get("path_b", "").strip()
     text_a = args.get("text_a", "")
     text_b = args.get("text_b", "")
-    context = min(int(args.get("context_lines", 3)), 10)
+    context = min(int(args.get("context_lines", 3)), 20)
     label_a = args.get("label_a", path_a or "a")
     label_b = args.get("label_b", path_b or "b")
+    mode = args.get("mode", "unified")
+    dir_diff = args.get("dir_diff", False)
+
+    # ── Directory diff ─────────────────────────────────────────────────────
+    if dir_diff and path_a and path_b:
+        if not os.path.isdir(path_a):
+            return f"Not a directory: {path_a}"
+        if not os.path.isdir(path_b):
+            return f"Not a directory: {path_b}"
+        # Prefer git diff --no-index for pretty output
+        if _shutil.which("git"):
+            try:
+                r = _sp.run(
+                    ["git", "diff", "--no-index", "--stat" if mode == "stat" else "--unified=" + str(context),
+                     path_a, path_b],
+                    capture_output=True, text=True, timeout=30,
+                )
+                out = r.stdout or r.stderr or "No differences found."
+                if len(out) > 16000:
+                    out = out[:16000] + "\n... (diff truncated)"
+                return out
+            except Exception:
+                pass
+        # Fallback: manual file-by-file diff
+        import glob as _g
+        files_a = {os.path.relpath(f, path_a) for f in _g.glob(os.path.join(path_a, "**"), recursive=True) if os.path.isfile(f)}
+        files_b = {os.path.relpath(f, path_b) for f in _g.glob(os.path.join(path_b, "**"), recursive=True) if os.path.isfile(f)}
+        all_files = sorted(files_a | files_b)
+        parts = []
+        for rel in all_files:
+            fa = os.path.join(path_a, rel)
+            fb = os.path.join(path_b, rel)
+            la = open(fa).readlines() if os.path.exists(fa) else []
+            lb = open(fb).readlines() if os.path.exists(fb) else []
+            diff = list(difflib.unified_diff(la, lb, fromfile=f"a/{rel}", tofile=f"b/{rel}", n=context))
+            if diff:
+                parts.append("".join(diff))
+        result = "\n".join(parts) or "Directories are identical."
+        if len(result) > 16000:
+            result = result[:16000] + "\n... (diff truncated)"
+        return result
+
+    # ── File/text diff ─────────────────────────────────────────────────────
+    # Try git diff --no-index for file-to-file comparisons (pretty colors, real paths)
+    if path_a and path_b and _shutil.which("git") and mode in ("unified", "stat"):
+        if not os.path.exists(path_a):
+            return f"File not found: {path_a}"
+        if not os.path.exists(path_b):
+            return f"File not found: {path_b}"
+        try:
+            git_args = ["git", "diff", "--no-index"]
+            if mode == "stat":
+                git_args.append("--stat")
+            else:
+                git_args.append(f"--unified={context}")
+            git_args += [path_a, path_b]
+            r = _sp.run(git_args, capture_output=True, text=True, timeout=30)
+            out = r.stdout
+            if not out and r.returncode == 0:
+                return "Files are identical — no differences found."
+            if len(out) > 16000:
+                out = out[:16000] + "\n... (diff truncated)"
+            return out
+        except Exception:
+            pass  # fall through to Python difflib
 
     lines_a, lines_b = [], []
 
@@ -2289,7 +2581,7 @@ def _exec_diff_files(args: dict) -> str:
         if not os.path.exists(path_a):
             return f"File not found: {path_a}"
         try:
-            with open(path_a) as f:
+            with open(path_a, encoding="utf-8", errors="replace") as f:
                 lines_a = f.readlines()
         except Exception as e:
             return f"Cannot read {path_a}: {e}"
@@ -2300,7 +2592,7 @@ def _exec_diff_files(args: dict) -> str:
         if not os.path.exists(path_b):
             return f"File not found: {path_b}"
         try:
-            with open(path_b) as f:
+            with open(path_b, encoding="utf-8", errors="replace") as f:
                 lines_b = f.readlines()
         except Exception as e:
             return f"Cannot read {path_b}: {e}"
@@ -2310,19 +2602,47 @@ def _exec_diff_files(args: dict) -> str:
     if not lines_a and not lines_b:
         return "No input provided. Use path_a/path_b or text_a/text_b."
 
-    diff = list(difflib.unified_diff(
-        lines_a, lines_b,
-        fromfile=label_a, tofile=label_b,
-        n=context,
-    ))
+    if mode == "stat":
+        # Summary: insertions/deletions count
+        diff = list(difflib.unified_diff(lines_a, lines_b, fromfile=label_a, tofile=label_b, n=0))
+        insertions = sum(1 for l in diff if l.startswith("+") and not l.startswith("+++"))
+        deletions = sum(1 for l in diff if l.startswith("-") and not l.startswith("---"))
+        if not diff:
+            return "Files are identical — no differences found."
+        return f"{label_a} → {label_b}\n+{insertions} insertions, -{deletions} deletions"
 
-    if not diff:
-        return "Files are identical — no differences found."
+    elif mode == "side_by_side":
+        diff = list(difflib.ndiff(lines_a, lines_b))
+        width = 60
+        out_lines = []
+        for line in diff[:200]:
+            tag = line[:2]
+            content = line[2:].rstrip("\n")
+            if tag == "  ":
+                out_lines.append(f"  {content:<{width}}  {content}")
+            elif tag == "- ":
+                out_lines.append(f"< {content:<{width}}  {'':}")
+            elif tag == "+ ":
+                out_lines.append(f"  {'':.<{width}}  > {content}")
+        result = "\n".join(out_lines)
+        if not result:
+            return "Files are identical — no differences found."
+        if len(result) > 16000:
+            result = result[:16000] + "\n... (diff truncated)"
+        return result
 
-    result = "".join(diff)
-    if len(result) > 8000:
-        result = result[:8000] + "\n... (diff truncated)"
-    return result
+    else:  # unified (default)
+        diff = list(difflib.unified_diff(
+            lines_a, lines_b,
+            fromfile=label_a, tofile=label_b,
+            n=context,
+        ))
+        if not diff:
+            return "Files are identical — no differences found."
+        result = "".join(diff)
+        if len(result) > 16000:
+            result = result[:16000] + "\n... (diff truncated)"
+        return result
 
 
 def execute_tool(name: str, args: dict, readonly: bool = False) -> str:
@@ -2354,9 +2674,9 @@ def execute_tool(name: str, args: dict, readonly: bool = False) -> str:
             return _exec_edit(args)
         elif name == "search_files":
             return _exec_search(args)
-        elif name == "Glob":
+        elif name == "glob":
             return _exec_glob(args)
-        elif name == "Grep":
+        elif name == "grep":
             return _exec_grep(args)
         elif name == "web_search":
             return _exec_web_search(args)
@@ -2399,59 +2719,59 @@ def execute_tool(name: str, args: dict, readonly: bool = False) -> str:
         elif name == "dispatch":
             return "__DISPATCH__"  # Handled async by agent loop
         # ── Plan Mode ──────────────────────────────────────────────────
-        elif name == "EnterPlanMode":
+        elif name == "enter_plan_mode":
             return "__PLAN_MODE_ENTER__"  # Handled by agent loop
-        elif name == "ExitPlanMode":
+        elif name == "exit_plan_mode":
             return "__PLAN_MODE_EXIT__"  # Handled by agent loop
         # ── Worktree ───────────────────────────────────────────────────
-        elif name == "EnterWorktree":
+        elif name == "enter_worktree":
             return "__WORKTREE_ENTER__"  # Handled by agent loop
-        elif name == "ExitWorktree":
+        elif name == "exit_worktree":
             return "__WORKTREE_EXIT__"  # Handled by agent loop
         # ── Multi-Agent ────────────────────────────────────────────────
-        elif name == "SendMessage":
+        elif name == "send_message":
             return "__SEND_MESSAGE__"  # Handled by agent loop
         # ── Task Management ────────────────────────────────────────────
-        elif name == "TaskCreate":
+        elif name == "task_create":
             return _exec_task_create(args)
-        elif name == "TaskGet":
+        elif name == "task_get":
             return _exec_task_get(args)
-        elif name == "TaskList":
+        elif name == "task_list":
             return _exec_task_list(args)
-        elif name == "TaskStop":
+        elif name == "task_stop":
             return _exec_task_stop(args)
-        elif name == "TaskUpdate":
+        elif name == "task_update":
             return _exec_task_update(args)
-        elif name == "TaskOutput":
+        elif name == "task_output":
             return _exec_task_output(args)
         # ── Team Tools ─────────────────────────────────────────────────
-        elif name == "TeamCreate":
+        elif name == "team_create":
             return "__TEAM_CREATE__"  # Handled by agent loop
-        elif name == "TeamDelete":
+        elif name == "team_delete":
             return "__TEAM_DELETE__"  # Handled by agent loop
         # ── Skill ──────────────────────────────────────────────────────
-        elif name == "Skill":
+        elif name == "skill":
             return "__SKILL__"  # Handled by agent loop
         # ── Config ─────────────────────────────────────────────────────
-        elif name == "ConfigTool":
+        elif name == "config":
             return _exec_config(args)
         # ── LSP ────────────────────────────────────────────────────────
-        elif name == "LSP":
+        elif name == "lsp":
             return "__LSP__"  # Handled by agent loop (requires LSP server)
         # ── Sleep ──────────────────────────────────────────────────────
-        elif name == "Sleep":
+        elif name == "sleep":
             return _exec_sleep(args)
         # ── Cron/Schedule ──────────────────────────────────────────────
-        elif name == "ScheduleCron":
+        elif name == "schedule_cron":
             return "__CRON__"  # Handled by agent loop
         # ── BriefTool (SendUserMessage) ────────────────────────────────
-        elif name == "BriefTool":
+        elif name == "brief":
             return args.get("message", "")
         # ── MCP Resources ─────────────────────────────────────────────
-        elif name == "ListMcpResources":
+        elif name == "list_mcp_resources":
             return _exec_list_mcp_resources(args)
         # ── Remote Trigger ─────────────────────────────────────────────
-        elif name == "RemoteTrigger":
+        elif name == "remote_trigger":
             return "__REMOTE_TRIGGER__"  # Handled by agent loop
         elif name == "send_sms":
             return _exec_send_sms(args)
@@ -2553,15 +2873,28 @@ def _exec_view_screen(args: dict) -> str:
         from src.vision.screen_observer import ScreenObserver
         obs = ScreenObserver(interval=999)  # One-shot, no loop
         ctx = obs.capture_now()
+        detail = args.get("detail", "full")
+        structured = args.get("structured", False)
+
+        if structured:
+            import json as _json
+            data = {
+                "active_window": ctx.active_window or None,
+                "application": ctx.window_class or None,
+                "screen_text": ctx.screen_text.strip() if ctx.screen_text else None,
+            }
+            return _json.dumps(data, indent=2)
+
         parts = []
         if ctx.active_window:
             parts.append(f"Active window: {ctx.active_window}")
         if ctx.window_class:
             parts.append(f"Application: {ctx.window_class}")
-        detail = args.get("detail", "full")
         if detail == "full" and ctx.screen_text:
-            lines = ctx.screen_text.strip().split("\n")[:20]
-            text = "\n".join(l for l in lines if l.strip())
+            # No arbitrary line cap — return all meaningful text, capped at 8K chars
+            text = "\n".join(l for l in ctx.screen_text.strip().split("\n") if l.strip())
+            if len(text) > 8000:
+                text = text[:8000] + "\n... (screen text truncated)"
             parts.append(f"Visible text on screen:\n{text}")
         if not parts:
             return "Could not capture screen. Display may not be accessible."
@@ -2680,12 +3013,36 @@ _TERMINAL_APPS = {
 
 
 def _get_display_env() -> dict:
-    """Get environment variables needed for GUI/terminal apps."""
+    """Get environment variables needed for GUI/terminal apps.
+
+    Auto-detects DISPLAY and DBUS_SESSION_BUS_ADDRESS when not set in the
+    server process environment (e.g. when JARVIS runs as a systemd service).
+    """
+    display = os.environ.get("DISPLAY", "")
+    if not display:
+        # Find active X display from lock files (/tmp/.X<N>-lock)
+        import glob as _g
+        import re as _re
+        locks = sorted(_g.glob("/tmp/.X*-lock"))
+        if locks:
+            m = _re.search(r"/tmp/\.X(\d+)-lock", locks[0])
+            display = f":{m.group(1)}" if m else ":0"
+        else:
+            display = ":0"
+
+    dbus = os.environ.get("DBUS_SESSION_BUS_ADDRESS", "")
+    if not dbus:
+        # Try systemd user session bus socket (most common on modern Linux)
+        runtime = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+        bus_socket = os.path.join(runtime, "bus")
+        if os.path.exists(bus_socket):
+            dbus = f"unix:path={bus_socket}"
+
     return {
         **os.environ,
-        "DISPLAY": os.environ.get("DISPLAY", ":0.0"),
+        "DISPLAY": display,
         "XAUTHORITY": os.environ.get("XAUTHORITY", os.path.expanduser("~/.Xauthority")),
-        "DBUS_SESSION_BUS_ADDRESS": os.environ.get("DBUS_SESSION_BUS_ADDRESS", ""),
+        "DBUS_SESSION_BUS_ADDRESS": dbus,
     }
 
 
@@ -2861,48 +3218,72 @@ def _exec_bash(args: dict) -> str:
             pass  # Fall through to unsandboxed execution
 
     # Original unsandboxed execution (fallback)
-    try:
-        # Full root access: wrap with sudo when NO_SANDBOX=1 and not already root/sudo
-        _cmd_to_run = command
-        _sudo_available = __import__('shutil').which("sudo") is not None
-        if (os.environ.get("JARVIS_NO_SANDBOX")
-                and _sudo_available
-                and os.geteuid() != 0
-                and not command.strip().startswith("sudo")):
-            _cmd_to_run = f"sudo -E -n sh -c {__import__('shlex').quote(command)}"
+    # Full root access: wrap with sudo when NO_SANDBOX=1 and not already root/sudo
+    _cmd_to_run = command
+    _sudo_available = __import__('shutil').which("sudo") is not None
+    if (os.environ.get("JARVIS_NO_SANDBOX")
+            and _sudo_available
+            and os.geteuid() != 0
+            and not command.strip().startswith("sudo")):
+        _cmd_to_run = f"sudo -E -n sh -c {__import__('shlex').quote(command)}"
 
-        result = subprocess.run(
-            _cmd_to_run, shell=True, capture_output=True, text=True,
-            timeout=timeout, cwd=os.getcwd(),
-            env={**os.environ,
-                 "DISPLAY": os.environ.get("DISPLAY", ":0.0"),
-                 "XAUTHORITY": os.environ.get("XAUTHORITY", os.path.expanduser("~/.Xauthority")),
-                 "DBUS_SESSION_BUS_ADDRESS": os.environ.get("DBUS_SESSION_BUS_ADDRESS", ""),
-                 },
+    # Scrub secrets from subprocess environment
+    _env = _get_display_env()
+    _SECRET_KEYS = {
+        "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GROQ_API_KEY",
+        "BRAVE_SEARCH_API_KEY", "TWILIO_AUTH_TOKEN", "TWILIO_ACCOUNT_SID",
+        "JARVIS_VAULT_KEY", "GITHUB_TOKEN", "GITLAB_TOKEN",
+    }
+    for _k in _SECRET_KEYS:
+        _env.pop(_k, None)
+
+    try:
+        proc = subprocess.Popen(
+            _cmd_to_run, shell=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            cwd=os.getcwd(), env=_env,
+            start_new_session=True,
         )
-        output = ""
-        if result.stdout:
-            output += result.stdout
-        if result.stderr:
-            output += ("\n" if output else "") + result.stderr
-        if not output:
-            output = "(no output)"
-        # Cap output to prevent context overflow
-        if len(output) > MAX_OUTPUT_SIZE:
-            half = MAX_OUTPUT_SIZE // 2
-            output = output[:half] + "\n\n... (truncated) ...\n\n" + output[-(half // 2):]
-        # Semantic exit code interpretation
-        sem = _interpret_bash_result(command, result.returncode, result.stdout or "", result.stderr or "")
-        prefix = f"exit_code={result.returncode}"
-        if sem.message:
-            prefix += f" ({sem.message})"
-        if destructive_warning:
-            prefix += f"\n{destructive_warning}"
-        return f"{prefix}\n{output}"
-    except subprocess.TimeoutExpired:
-        return f"Command timed out after {timeout}s"
-    except Exception as e:
-        return f"Error: {e}"
+        try:
+            _stdout_b, _stderr_b = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # SIGTERM first, then SIGKILL after 5s grace period
+            try:
+                import signal as _signal
+                os.killpg(os.getpgid(proc.pid), _signal.SIGTERM)
+            except Exception:
+                proc.terminate()
+            try:
+                proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)
+                except Exception:
+                    proc.kill()
+                proc.communicate()
+            return f"exit_code=TIMEOUT\nCommand timed out after {timeout}s (killed): {command}"
+        stdout = _stdout_b.decode("utf-8", errors="replace")
+        stderr = _stderr_b.decode("utf-8", errors="replace")
+        exit_code = proc.returncode
+    except Exception as _e:
+        return f"Error: {_e}"
+    output = ""
+    if stdout:
+        output += stdout
+    if stderr:
+        output += ("\n" if output else "") + stderr
+    if not output:
+        output = "(no output)"
+    if len(output) > MAX_OUTPUT_SIZE:
+        half = MAX_OUTPUT_SIZE // 2
+        output = output[:half] + "\n\n... (truncated) ...\n\n" + output[-(half // 2):]
+    sem = _interpret_bash_result(command, exit_code, stdout, stderr)
+    prefix = f"exit_code={exit_code}"
+    if sem.message:
+        prefix += f" ({sem.message})"
+    if destructive_warning:
+        prefix += f"\n{destructive_warning}"
+    return f"{prefix}\n{output}"
 
 
 def _is_blocked_device(path: str) -> bool:
@@ -3156,11 +3537,34 @@ def _exec_ssh(args: dict) -> str:
 
     try:
         client.connect(**connect_kwargs)
-        _stdin, stdout, stderr = client.exec_command(command, timeout=timeout)
-        out = stdout.read().decode("utf-8", errors="replace")
-        err = stderr.read().decode("utf-8", errors="replace")
-        exit_code = stdout.channel.recv_exit_status()
+
+        import threading as _threading
+
+        out_buf: list[str] = []
+        err_buf: list[str] = []
+        exit_buf: list[int] = [0]
+        done_event = _threading.Event()
+
+        def _run_cmd():
+            try:
+                _, stdout, stderr = client.exec_command(command)
+                out_buf.append(stdout.read().decode("utf-8", errors="replace"))
+                err_buf.append(stderr.read().decode("utf-8", errors="replace"))
+                exit_buf[0] = stdout.channel.recv_exit_status()
+            finally:
+                done_event.set()
+
+        t = _threading.Thread(target=_run_cmd, daemon=True)
+        t.start()
+        finished = done_event.wait(timeout=timeout)
         client.close()
+
+        if not finished:
+            return f"SSH command timed out after {timeout}s: {command}"
+
+        out = out_buf[0] if out_buf else ""
+        err = err_buf[0] if err_buf else ""
+        exit_code = exit_buf[0]
 
         result = f"[{username}@{hostname}] $ {command}\n"
         if out:
@@ -3277,21 +3681,41 @@ def _exec_read(args: dict) -> str:
 
     # Text file reading with encoding detection
     try:
+        # 1. BOM detection (zero-cost, deterministic)
         encoding_used = "utf-8"
-        try:
-            with open(resolved, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-        except UnicodeDecodeError:
-            encoding_used = "latin-1"
-            with open(resolved, "r", encoding="latin-1") as f:
-                lines = f.readlines()
+        with open(resolved, "rb") as _rb:
+            _bom_bytes = _rb.read(4)
+        if _bom_bytes[:3] == b"\xef\xbb\xbf":
+            encoding_used = "utf-8-sig"
+        elif _bom_bytes[:2] == b"\xff\xfe":
+            encoding_used = "utf-16-le"
+        elif _bom_bytes[:2] == b"\xfe\xff":
+            encoding_used = "utf-16-be"
+        else:
+            # 2. Try strict UTF-8
+            try:
+                with open(resolved, "r", encoding="utf-8") as _tf:
+                    _tf.read(8192)  # probe first 8KB
+                encoding_used = "utf-8"
+            except UnicodeDecodeError:
+                # 3. charset-normalizer (transitive dep via requests)
+                try:
+                    from charset_normalizer import from_path as _cn_from_path
+                    _cn_result = _cn_from_path(resolved, cp_isolation=["utf-8", "windows-1252", "latin-1", "shift-jis"])
+                    _best = _cn_result.best()
+                    encoding_used = str(_best.encoding) if _best else "latin-1"
+                except Exception:
+                    encoding_used = "latin-1"
+
+        with open(resolved, "r", encoding=encoding_used, errors="replace") as f:
+            lines = f.readlines()
 
         # Track read time for staleness detection
         _file_read_times[resolved] = os.path.getmtime(resolved)
 
         total = len(lines)
         start = max(0, ((offset or 1) - 1))
-        end = min(total, start + (limit or 200))
+        end = min(total, start + (limit or 2000))
         chunk = lines[start:end]
 
         # Add line numbers
@@ -3343,13 +3767,17 @@ def _exec_write(args: dict) -> str:
             except Exception:
                 pass
 
-            # Create .bak backup
-            bak_path = resolved + ".bak"
+            # Write backup to /tmp (not next to source — avoids polluting project)
             try:
-                shutil.copy2(resolved, bak_path)
-                extra_info = f" (backup: {bak_path})"
+                import tempfile as _tf2
+                _bak_dir = os.path.join(_tf2.gettempdir(), "jarvis-backups")
+                os.makedirs(_bak_dir, exist_ok=True)
+                _bak_name = os.path.basename(resolved) + ".bak"
+                _bak_path = os.path.join(_bak_dir, _bak_name)
+                shutil.copy2(resolved, _bak_path)
+                extra_info = f" (backup: {_bak_path})"
             except Exception:
-                pass  # Non-fatal if backup fails
+                pass
 
             # Detect existing line endings and match them
             try:
@@ -3361,8 +3789,24 @@ def _exec_write(args: dict) -> str:
             except Exception:
                 pass
 
-        with open(resolved, "w", encoding="utf-8") as f:
-            f.write(content)
+        # Atomic write: temp file on same filesystem → fsync → os.replace
+        import tempfile as _tf
+        _dir = os.path.dirname(resolved) or "."
+        _fd, _tmp = _tf.mkstemp(dir=_dir, prefix=".jarvis-write-")
+        try:
+            with os.fdopen(_fd, "w", encoding="utf-8") as _f:
+                _f.write(content)
+                _f.flush()
+                os.fsync(_f.fileno())
+            if os.path.exists(resolved):
+                shutil.copystat(resolved, _tmp)  # preserve permissions + timestamps
+            os.replace(_tmp, resolved)
+        except Exception:
+            try:
+                os.unlink(_tmp)
+            except Exception:
+                pass
+            raise
 
         # Track the write time for staleness detection
         _file_read_times[resolved] = os.path.getmtime(resolved)
@@ -3549,6 +3993,8 @@ def _exec_database(args: dict) -> str:
     query = args.get("query", "").strip()
     database = args.get("database", "").strip()
     db_type = args.get("db_type", "sqlite").lower()
+    confirm = bool(args.get("confirm", False))
+    dry_run = bool(args.get("dry_run", False))
 
     if not query:
         return "No SQL query provided."
@@ -3559,6 +4005,30 @@ def _exec_database(args: dict) -> str:
     db_lower = database.lower()
     if any(p in db_lower for p in ["/etc/", "/var/lib/", "/usr/", "system"]):
         return "BLOCKED: Cannot modify system databases."
+
+    # Safety gate: require explicit confirmation for destructive operations
+    _q_upper = query.strip().upper()
+    _DESTRUCTIVE_PATTERNS = (
+        "DROP TABLE", "DROP DATABASE", "DROP SCHEMA", "DROP INDEX", "DROP VIEW",
+        "TRUNCATE", "DELETE FROM", "DELETE ",
+    )
+    _is_destructive = any(_q_upper.startswith(p) or f" {p}" in _q_upper for p in _DESTRUCTIVE_PATTERNS)
+    # Allow safe DELETEs where it's in a subquery context (e.g. CREATE TABLE ... SELECT)
+    if _is_destructive and not _q_upper.startswith("CREATE") and not _q_upper.startswith("INSERT"):
+        if dry_run:
+            return f"DRY RUN — would execute against {database}:\n{query}\n\n(No changes made — pass confirm=true to execute)"
+        if not confirm:
+            # Identify what would be affected
+            _op = next((p for p in _DESTRUCTIVE_PATTERNS if _q_upper.startswith(p) or f" {p}" in _q_upper), "destructive operation")
+            return (
+                f"SAFETY BLOCK: '{_op}' is a destructive operation.\n"
+                f"Query: {query[:120]}\n"
+                f"Database: {database}\n\n"
+                "Re-run with confirm=true to execute, or dry_run=true to preview without changes."
+            )
+
+    if dry_run:
+        return f"DRY RUN — would execute against {database}:\n{query}\n\n(No changes made — pass confirm=true to execute)"
 
     try:
         if db_type == "sqlite":
@@ -3603,7 +4073,10 @@ def _exec_database(args: dict) -> str:
         elif db_type == "postgresql":
             try:
                 import psycopg2
-                conn = psycopg2.connect(database)
+            except ImportError:
+                return "PostgreSQL support requires: pip install psycopg2-binary"
+            conn = psycopg2.connect(database)
+            try:
                 cursor = conn.cursor()
                 cursor.execute(query)
                 if cursor.description:
@@ -3613,36 +4086,35 @@ def _exec_database(args: dict) -> str:
                     lines.append("-" * len(lines[0]))
                     for row in rows:
                         lines.append(" | ".join(str(v) for v in row))
-                    conn.close()
                     return "\n".join(lines)
                 else:
                     conn.commit()
                     affected = cursor.rowcount
-                    conn.close()
                     return f"OK. {affected} row(s) affected."
-            except ImportError:
-                return "PostgreSQL support requires: pip install psycopg2-binary"
+            finally:
+                conn.close()
 
         elif db_type == "mysql":
             try:
                 import mysql.connector
-                import urllib.parse as _urlparse
-                # Parse connection string: mysql://user:pass@host:port/dbname
-                # or fall back to treating it as a host name
-                parsed = _urlparse.urlparse(database) if database.startswith("mysql://") else None
-                if parsed and parsed.hostname:
-                    connect_kwargs: dict = {"host": parsed.hostname}
-                    if parsed.port:
-                        connect_kwargs["port"] = parsed.port
-                    if parsed.username:
-                        connect_kwargs["user"] = parsed.username
-                    if parsed.password:
-                        connect_kwargs["password"] = parsed.password
-                    if parsed.path and parsed.path.lstrip("/"):
-                        connect_kwargs["database"] = parsed.path.lstrip("/")
-                    conn = mysql.connector.connect(**connect_kwargs)
-                else:
-                    conn = mysql.connector.connect(host=database)
+            except ImportError:
+                return "MySQL support requires: pip install mysql-connector-python"
+            import urllib.parse as _urlparse
+            parsed = _urlparse.urlparse(database) if database.startswith("mysql://") else None
+            if parsed and parsed.hostname:
+                connect_kwargs: dict = {"host": parsed.hostname}
+                if parsed.port:
+                    connect_kwargs["port"] = parsed.port
+                if parsed.username:
+                    connect_kwargs["user"] = parsed.username
+                if parsed.password:
+                    connect_kwargs["password"] = parsed.password
+                if parsed.path and parsed.path.lstrip("/"):
+                    connect_kwargs["database"] = parsed.path.lstrip("/")
+                conn = mysql.connector.connect(**connect_kwargs)
+            else:
+                conn = mysql.connector.connect(host=database)
+            try:
                 cursor = conn.cursor()
                 cursor.execute(query)
                 if cursor.description:
@@ -3652,20 +4124,35 @@ def _exec_database(args: dict) -> str:
                     lines.append("-" * len(lines[0]))
                     for row in rows:
                         lines.append(" | ".join(str(v) for v in row))
-                    conn.close()
                     return "\n".join(lines)
                 else:
                     conn.commit()
                     affected = cursor.rowcount
-                    conn.close()
                     return f"OK. {affected} row(s) affected."
-            except ImportError:
-                return "MySQL support requires: pip install mysql-connector-python"
+            finally:
+                conn.close()
         else:
             return f"Unknown db_type: {db_type}. Use sqlite, postgresql, or mysql."
 
     except Exception as e:
         return f"Database error: {e}"
+
+
+_PLATFORM_TOKEN_HELP = {
+    "github":   "github.com → Settings → Developer settings → Personal access tokens → Fine-grained",
+    "gitlab":   "gitlab.com → User Settings → Access Tokens",
+    "slack":    "api.slack.com/apps → Your App → OAuth & Permissions → Bot Token",
+    "discord":  "discord.com/developers/applications → Your App → Bot → Token",
+    "jira":     "your-domain.atlassian.net → Account Settings → Security → API tokens",
+    "notion":   "notion.so/my-integrations → New Integration → Secret",
+    "openai":   "platform.openai.com/api-keys",
+    "anthropic":"console.anthropic.com/keys",
+    "groq":     "console.groq.com/keys",
+    "linear":   "linear.app → Settings → API → Personal API keys",
+    "vercel":   "vercel.com/account/tokens",
+    "cloudflare": "dash.cloudflare.com/profile/api-tokens",
+    "digitalocean": "cloud.digitalocean.com/account/api/tokens",
+}
 
 
 def _exec_web_api(args: dict) -> str:
@@ -3678,6 +4165,22 @@ def _exec_web_api(args: dict) -> str:
     platform = args.get("platform", "").lower()
     body = args.get("body", "")
     extra_headers = args.get("headers", "")
+
+    # List configured platforms
+    if platform == "list" or (not url and not platform):
+        try:
+            from src.vault.tokens import TokenVault
+            vault = TokenVault()
+            platforms = vault.list_platforms() if hasattr(vault, "list_platforms") else []
+        except Exception:
+            platforms = []
+        if not platforms:
+            return "No API tokens stored yet.\nAdd one with: /config vault store <platform> <token>"
+        lines = ["Configured API platforms:"]
+        for p in sorted(platforms):
+            hint = _PLATFORM_TOKEN_HELP.get(p, "")
+            lines.append(f"  {p}" + (f"  ({hint})" if hint else ""))
+        return "\n".join(lines)
 
     if not url:
         return "No URL provided."
@@ -3693,10 +4196,15 @@ def _exec_web_api(args: dict) -> str:
         token_data = None
 
     if not token_data:
-        return (f"No token stored for '{platform}'. "
-                f"Ask the user to provide one, then store it with:\n"
-                f"  /config vault store {platform} <token>\n"
-                f"Or tell the user to add it to ~/.jarvis/vault.json")
+        hint = _PLATFORM_TOKEN_HELP.get(platform, "")
+        token_url = f"\nGet your token at: {hint}" if hint else ""
+        return (
+            f"No token stored for '{platform}'.{token_url}\n\n"
+            f"Store it with:\n"
+            f"  /config vault store {platform} <token>\n"
+            f"For Jira (needs email too):\n"
+            f"  /config vault store jira <token> --email you@example.com"
+        )
 
     token = token_data.get("token", "")
     extra = token_data.get("extra", {})
@@ -3753,14 +4261,55 @@ def _exec_web_api(args: dict) -> str:
 
         return f"HTTP {resp.status}\n{result}"
     except urllib.error.HTTPError as e:
-        body = ""
+        err_body = ""
         try:
-            body = e.read().decode()[:500]
+            err_body = e.read().decode()[:500]
         except Exception:
             pass
-        return f"HTTP {e.code}: {e.reason}\n{body}"
+        _HTTP_HINTS = {
+            401: "Token is invalid or expired — re-run /config vault store to update it.",
+            403: "Token lacks required permissions — check scopes/roles in the platform settings.",
+            404: "Endpoint not found — verify the URL path.",
+            422: "Unprocessable request — check the request body format.",
+            429: "Rate limited — wait a moment and retry.",
+            500: "Server error on the platform side — try again shortly.",
+        }
+        hint = _HTTP_HINTS.get(e.code, "")
+        return f"HTTP {e.code}: {e.reason}{f' — {hint}' if hint else ''}\n{err_body}"
     except Exception as e:
         return f"API error: {e}"
+
+
+def _playwright_fetch(url: str) -> str:
+    """Fetch a JavaScript-heavy page using Playwright headless Chromium.
+
+    Used as fallback when requests+BeautifulSoup returns an empty/minimal shell
+    (React/Vue/Angular SPAs that need JS to render their content).
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            try:
+                page = browser.new_page(
+                    user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                               "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                )
+                page.goto(url, timeout=20000, wait_until="networkidle")
+                html = page.content()
+            finally:
+                browser.close()
+        # Parse rendered HTML with BeautifulSoup
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
+            tag.decompose()
+        lines = [l.strip() for l in soup.get_text(separator="\n", strip=True).splitlines() if l.strip()]
+        return "\n".join(lines[:500])
+    except ImportError:
+        return ""  # Playwright not installed
+    except Exception:
+        return ""
 
 
 def _exec_web_fetch(args: dict) -> str:
@@ -3787,6 +4336,12 @@ def _exec_web_fetch(args: dict) -> str:
     try:
         from src.internet.scraper import fetch_page
         content = fetch_page(url)
+        # If content is sparse (<200 chars), this is likely a JS-rendered SPA shell.
+        # Fall back to Playwright for full JS rendering.
+        if not content or len(content.strip()) < 200:
+            js_content = _playwright_fetch(url)
+            if js_content and len(js_content) > len(content or ""):
+                content = js_content
         if content:
             # Cap at 50 000 chars (matches OpenClaw's 50 KB limit)
             if len(content) > 50000:
@@ -3800,6 +4355,44 @@ def _exec_web_fetch(args: dict) -> str:
 # ── Todo List state (session-scoped) ─────────────────────────────────
 
 _todo_list: list[dict] = []
+
+
+def _load_persisted_todos() -> list[dict]:
+    """Load persisted todos from ~/.jarvis/todos.json."""
+    try:
+        from src.config import JARVIS_HOME
+        todos_path = JARVIS_HOME / "todos.json"
+        if todos_path.exists():
+            import json as _j
+            data = _j.loads(todos_path.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                # Filter out completed todos on load — only restore active work
+                return [t for t in data if isinstance(t, dict) and t.get("status") != "completed"]
+    except Exception:
+        pass
+    return []
+
+
+def _persist_todos(todos: list[dict]) -> None:
+    """Save todos to ~/.jarvis/todos.json (best-effort)."""
+    try:
+        from src.config import JARVIS_HOME
+        import json as _j, tempfile as _tf2
+        todos_path = JARVIS_HOME / "todos.json"
+        JARVIS_HOME.mkdir(parents=True, exist_ok=True)
+        _fd, _tmp = _tf2.mkstemp(dir=str(JARVIS_HOME), prefix=".todos-")
+        try:
+            with os.fdopen(_fd, "w", encoding="utf-8") as _f:
+                _j.dump(todos, _f, indent=2, ensure_ascii=False)
+        except Exception:
+            try:
+                os.unlink(_tmp)
+            except Exception:
+                pass
+            raise
+        os.replace(_tmp, str(todos_path))
+    except Exception:
+        pass  # Never let persistence break the tool
 
 
 def _exec_todo_write(args: dict) -> str:
@@ -3867,7 +4460,12 @@ def _exec_todo_write(args: dict) -> str:
             + "\n\nComplete the prerequisite tasks before marking dependents as in_progress."
         )
 
+    # Optional: strip completed tasks before storing
+    if args.get("clear_completed", False):
+        todos = [t for t in todos if isinstance(t, dict) and t.get("status") != "completed"]
+
     _todo_list = todos
+    _persist_todos(todos)
 
     # Format summary
     pending = sum(1 for t in todos if t.get("status") == "pending")
@@ -3930,9 +4528,7 @@ def _exec_notebook_edit(args: dict) -> str:
                 return "cell_index is required for edit_cell."
             if cell_index < 0 or cell_index >= len(cells):
                 return f"cell_index {cell_index} out of range (notebook has {len(cells)} cells)."
-            cells[cell_index]["source"] = new_source.split("\n") if new_source else []
-            # Normalize source to list of lines with newlines
-            lines = new_source.split("\n")
+            lines = new_source.split("\n") if new_source else []
             cells[cell_index]["source"] = [l + "\n" for l in lines[:-1]] + [lines[-1]] if lines else []
 
         elif action == "add_cell":
@@ -3958,8 +4554,26 @@ def _exec_notebook_edit(args: dict) -> str:
             deleted = cells.pop(cell_index)
             deleted_type = deleted.get("cell_type", "unknown")
 
+        elif action == "execute":
+            # Execute the notebook in-place via jupyter nbconvert
+            import shutil as _shutil
+            if not _shutil.which("jupyter"):
+                return "jupyter not found. Install: pip install jupyter"
+            import subprocess as _sp
+            timeout_s = int(args.get("timeout", 120))
+            r = _sp.run(
+                ["jupyter", "nbconvert", "--to", "notebook", "--execute",
+                 f"--ExecutePreprocessor.timeout={timeout_s}",
+                 "--inplace", notebook_path],
+                capture_output=True, text=True, timeout=timeout_s + 30,
+            )
+            if r.returncode != 0:
+                err = (r.stderr or r.stdout or "unknown error")[:1000]
+                return f"Notebook execution failed:\n{err}"
+            return f"Executed notebook: {notebook_path}"
+
         else:
-            return f"Unknown action: {action}. Use edit_cell, add_cell, or delete_cell."
+            return f"Unknown action: {action}. Use edit_cell, add_cell, delete_cell, or execute."
 
         nb["cells"] = cells
         with open(notebook_path, "w", encoding="utf-8") as f:
@@ -3997,17 +4611,44 @@ def _exec_glob(args: dict) -> str:
 
     try:
         full_pattern = os.path.join(path, pattern)
-        # Verify pattern doesn't escape the search path via ../
         resolved_base = os.path.realpath(path)
-        matches = _glob.glob(full_pattern, recursive=True)
-        # Filter out matches that escape the base path (add sep so /tmp/foo doesn't match /tmp/foobar)
         _base_prefix = resolved_base.rstrip(os.sep) + os.sep
+
+        # Prefer ripgrep --files (gitignore-aware, fast, excludes .git/node_modules/etc)
+        if shutil.which("rg"):
+            try:
+                # Use gitignore for cleaner results
+                cmd = [
+                    "rg", "--files",
+                    "--glob", pattern,
+                    path,
+                ]
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+                matches = [m.strip() for m in r.stdout.splitlines() if m.strip()]
+                # Also filter path escapes
+                matches = [m for m in matches
+                           if os.path.realpath(m) == resolved_base
+                           or os.path.realpath(m).startswith(_base_prefix)]
+                matches.sort(key=lambda f: os.path.getmtime(f) if os.path.exists(f) else 0, reverse=True)
+                matches = matches[:250]
+                if not matches:
+                    return f"No files matching '{pattern}' in {path}"
+                return f"Found {len(matches)} files:\n" + "\n".join(matches)
+            except Exception:
+                pass  # fall through to Python glob
+
+        # Fallback: Python glob with manual .git/ exclusion
+        matches = _glob.glob(full_pattern, recursive=True)
         matches = [m for m in matches
                    if os.path.realpath(m) == resolved_base
                    or os.path.realpath(m).startswith(_base_prefix)]
-        # Sort by modification time (newest first)
+        # Exclude .git internals and common noise dirs
+        _NOISE = {".git", "node_modules", "__pycache__", ".venv", "venv",
+                  "dist", "build", "target", ".eggs"}
+        matches = [m for m in matches
+                   if not any(part in _NOISE for part in m.replace("\\", "/").split("/"))]
         matches.sort(key=lambda f: os.path.getmtime(f) if os.path.exists(f) else 0, reverse=True)
-        matches = matches[:250]  # Cap results
+        matches = matches[:250]
         if not matches:
             return f"No files matching '{pattern}' in {path}"
         return f"Found {len(matches)} files:\n" + "\n".join(matches)
@@ -4040,7 +4681,7 @@ def _exec_grep(args: dict) -> str:
             context=min(args.get("context", 0), 100),
             case_insensitive=args.get("-i", False),
             multiline=args.get("multiline", False),
-            head_limit=min(args.get("head_limit", 250), 10000),
+            head_limit=min(args.get("head_limit", 250), 500),
         )
         result = rg_search(config)
         return result.output
@@ -4209,12 +4850,36 @@ def _exec_config(args: dict) -> str:
 
 
 def _exec_sleep(args: dict) -> str:
-    """Sleep for a specified duration."""
+    """Sleep for a specified duration, broadcasting status to UI if connected."""
     import time
     duration_ms = args.get("duration_ms", 1000)
+    reason = args.get("reason", "")
     duration_s = min(duration_ms / 1000.0, 300)  # Cap at 5 minutes
+
+    # Broadcast sleep status to connected UI clients
+    status_msg = f"Sleeping for {duration_s:.1f}s"
+    if reason:
+        status_msg += f" — {reason}"
+    try:
+        if _open_url_hook is not None:
+            # Re-use the broadcast path: send a __STATUS__ marker that
+            # web_server can intercept and display in the UI
+            pass  # open_url isn't right for this; use event hook below
+        # Broadcast via a registered status hook (set by web_server)
+        if _sleep_status_hook is not None:
+            _sleep_status_hook({"type": "sleep_start", "duration_s": duration_s, "reason": reason})
+    except Exception:
+        pass
+
     time.sleep(duration_s)
-    return f"Slept for {duration_s:.1f}s"
+
+    try:
+        if _sleep_status_hook is not None:
+            _sleep_status_hook({"type": "sleep_end", "duration_s": duration_s})
+    except Exception:
+        pass
+
+    return f"Slept for {duration_s:.1f}s" + (f" ({reason})" if reason else "")
 
 
 # ── MCP Resources ─────────────────────────────────────────────────────
@@ -4245,17 +4910,77 @@ def _exec_list_mcp_resources(args: dict) -> str:
 
 # ── SMS via KDE Connect ───────────────────────────────────────────────
 
+def _get_twilio_config() -> dict:
+    """Read Twilio credentials from providers.json."""
+    try:
+        import json
+        import pathlib
+        data = json.loads((pathlib.Path.home() / ".jarvis" / "providers.json").read_text())
+        twilio = data.get("twilio", {})
+        return {
+            "account_sid": twilio.get("account_sid", os.environ.get("TWILIO_ACCOUNT_SID", "")),
+            "auth_token": twilio.get("auth_token", os.environ.get("TWILIO_AUTH_TOKEN", "")),
+            "from_number": twilio.get("from_number", os.environ.get("TWILIO_FROM_NUMBER", "")),
+        }
+    except Exception:
+        return {
+            "account_sid": os.environ.get("TWILIO_ACCOUNT_SID", ""),
+            "auth_token": os.environ.get("TWILIO_AUTH_TOKEN", ""),
+            "from_number": os.environ.get("TWILIO_FROM_NUMBER", ""),
+        }
+
+
 def _exec_send_sms(args: dict) -> str:
-    """Send SMS via KDE Connect to a paired Android phone."""
+    """Send SMS or WhatsApp message via Twilio (primary) or KDE Connect (local fallback)."""
     phone = args.get("phone_number", "").strip()
     message = args.get("message", "").strip()
+    channel = args.get("channel", "sms").lower()  # "sms", "whatsapp", or "kde"
 
     if not phone:
         return "No phone number provided."
     if not message:
         return "No message provided."
 
-    # Find paired + reachable device
+    # ── Primary: Twilio ────────────────────────────────────────────────
+    if channel != "kde":
+        cfg = _get_twilio_config()
+        if cfg["account_sid"] and cfg["auth_token"] and cfg["from_number"]:
+            try:
+                import requests as _req
+                from_num = cfg["from_number"]
+                to_num = phone
+                # WhatsApp channel prefix
+                if channel == "whatsapp":
+                    if not from_num.startswith("whatsapp:"):
+                        from_num = f"whatsapp:{from_num}"
+                    if not to_num.startswith("whatsapp:"):
+                        to_num = f"whatsapp:{to_num}"
+
+                resp = _req.post(
+                    f"https://api.twilio.com/2010-04-01/Accounts/{cfg['account_sid']}/Messages.json",
+                    auth=(cfg["account_sid"], cfg["auth_token"]),
+                    data={"From": from_num, "To": to_num, "Body": message},
+                    timeout=15,
+                )
+                if resp.status_code in (200, 201):
+                    sid = resp.json().get("sid", "")
+                    return f"Message sent via Twilio ({channel}). SID: {sid}"
+                else:
+                    err = resp.json().get("message", resp.text[:200])
+                    return f"Twilio error {resp.status_code}: {err}"
+            except ImportError:
+                return "Twilio requires: pip install requests (already installed) — check providers.json for credentials"
+            except Exception as e:
+                return f"Twilio error: {e}"
+        else:
+            if channel == "whatsapp":
+                return (
+                    "WhatsApp sending requires Twilio credentials.\n"
+                    "Add to ~/.jarvis/providers.json:\n"
+                    '  "twilio": {"account_sid": "...", "auth_token": "...", "from_number": "whatsapp:+1..."}'
+                )
+
+    # ── Fallback: KDE Connect (local, same WiFi only) ──────────────────
     try:
         result = subprocess.run(
             ["kdeconnect-cli", "-a", "--id-only"],
@@ -4263,7 +4988,12 @@ def _exec_send_sms(args: dict) -> str:
         )
         devices = [d.strip() for d in result.stdout.strip().split("\n") if d.strip()]
     except FileNotFoundError:
-        return "kdeconnect-cli not installed. Install KDE Connect: sudo apt install kdeconnect"
+        return (
+            "No message provider configured.\n"
+            "Options:\n"
+            "1. Twilio (SMS/WhatsApp): add credentials to ~/.jarvis/providers.json\n"
+            "2. KDE Connect: sudo apt install kdeconnect"
+        )
     except Exception as e:
         return f"Error listing KDE Connect devices: {e}"
 
@@ -4285,12 +5015,28 @@ def _exec_send_sms(args: dict) -> str:
         except Exception:
             pass
         return (
-            "No paired phone found. To set up:\n"
-            "1. Install 'KDE Connect' app on your Android phone\n"
-            "2. Make sure phone and PC are on the same WiFi\n"
-            "3. Run: kdeconnect-cli -l   (should show your phone)\n"
-            "4. Pair from the phone app or: kdeconnect-cli --pair -d <device_id>"
+            "No paired phone found and no Twilio credentials configured.\n"
+            "To set up Twilio (SMS/WhatsApp):\n"
+            "  Add to ~/.jarvis/providers.json:\n"
+            '  "twilio": {"account_sid": "ACxxx", "auth_token": "xxx", "from_number": "+1xxx"}\n'
+            "To set up KDE Connect:\n"
+            "  1. Install 'KDE Connect' app on your Android phone\n"
+            "  2. Make sure phone and PC are on the same WiFi\n"
+            "  3. Run: kdeconnect-cli -l"
         )
+
+    # Send via first available KDE Connect device
+    device_id = devices[0]
+    try:
+        result = subprocess.run(
+            ["kdeconnect-cli", "--send-sms", message, "--destination", phone, "-d", device_id],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            return f"SMS sent to {phone} via KDE Connect."
+        return f"KDE Connect error: {result.stderr.strip() or result.stdout.strip() or 'Unknown error'}"
+    except Exception as e:
+        return f"KDE Connect send error: {e}"
 
 
 # ── Domain Tools ──────────────────────────────────────────────────────
@@ -4340,6 +5086,17 @@ def _exec_sysinfo(args: dict) -> str:
     if query in ("network", "all"):
         parts.append(_run("ss -tuln 2>/dev/null | head -30", "Listening Ports"))
         parts.append(_run("ip -brief addr 2>/dev/null", "Interfaces"))
+
+    if query == "restart":
+        if not filt:
+            return "Specify the service name in the 'filter' parameter."
+        r = subprocess.run(
+            f"systemctl restart {filt}",
+            shell=True, capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode == 0:
+            return f"Service '{filt}' restarted."
+        return f"Failed to restart '{filt}': {r.stderr.strip() or r.stdout.strip()}"
 
     return "\n\n".join(parts) if parts else "No data collected."
 
@@ -4427,6 +5184,34 @@ def _exec_container(args: dict) -> str:
                 return _run(f"docker compose -f {target} up -d 2>/dev/null")
         return f"Unknown deploy target: {target}"
 
+    has_compose = shutil.which("docker") is not None
+
+    if action in ("up", "compose_up"):
+        if not target:
+            return "Target (compose file path or directory) required."
+        compose_file = target if target.endswith((".yml", ".yaml")) else os.path.join(target, "docker-compose.yml")
+        if not os.path.exists(os.path.expanduser(compose_file)):
+            compose_file = os.path.join(target, "docker-compose.yaml")
+        if not has_compose:
+            return "docker not found."
+        return _run(f"docker compose -f {compose_file} up -d 2>&1")
+
+    if action in ("down", "compose_down"):
+        if not target:
+            return "Target (compose file path or directory) required."
+        compose_file = target if target.endswith((".yml", ".yaml")) else os.path.join(target, "docker-compose.yml")
+        if not has_compose:
+            return "docker not found."
+        return _run(f"docker compose -f {compose_file} down 2>&1")
+
+    if action in ("pull", "compose_pull"):
+        if not target:
+            return "Target (compose file path or directory) required."
+        compose_file = target if target.endswith((".yml", ".yaml")) else os.path.join(target, "docker-compose.yml")
+        if not has_compose:
+            return "docker not found."
+        return _run(f"docker compose -f {compose_file} pull 2>&1")
+
     return f"Unknown action: {action}"
 
 
@@ -4495,35 +5280,68 @@ def _exec_security_scan(args: dict) -> str:
 
     if scan_type == "web":
         results = []
+        url = target if target.startswith("http") else f"https://{target}"
         if has_curl:
-            url = target if target.startswith("http") else f"https://{target}"
             results.append("── HTTP Headers ──\n" + _run(f"curl -sI --max-time 10 '{url}'"))
         if has_nmap:
             results.append("── Open Ports ──\n" + _run(f"nmap -sV --open --top-ports 20 -T4 {nmap_target}", timeout=30))
+        if shutil.which("whatweb"):
+            results.append("── Technologies ──\n" + _run(f"whatweb -a 1 '{url}' 2>/dev/null", timeout=20))
         return "\n\n".join(results) if results else "No scanning tools found."
 
+    if scan_type in ("nikto", "web_vuln"):
+        has_nikto = shutil.which("nikto") is not None
+        if not has_nikto:
+            return "nikto not found. Install with: sudo apt install nikto"
+        url = target if target.startswith("http") else f"https://{target}"
+        port_flag = f" -p {ports}" if ports else ""
+        cmd = f"nikto -h '{url}'{port_flag} -nointeractive 2>/dev/null"
+        return f"$ {cmd}\n\n" + _run(cmd, timeout=180)
+
+    if scan_type in ("gobuster", "dirbust", "dirs"):
+        has_gobuster = shutil.which("gobuster") is not None
+        has_dirb = shutil.which("dirb") is not None
+        url = target if target.startswith("http") else f"https://{target}"
+        wordlist = args.get("wordlist", "")
+        if not wordlist:
+            # Try common Kali wordlist paths
+            for candidate in (
+                "/usr/share/wordlists/dirb/common.txt",
+                "/usr/share/dirb/wordlists/common.txt",
+                "/usr/share/seclists/Discovery/Web-Content/common.txt",
+            ):
+                if os.path.exists(candidate):
+                    wordlist = candidate
+                    break
+        if has_gobuster:
+            wl_flag = f"-w '{wordlist}'" if wordlist else "-w /usr/share/wordlists/dirb/common.txt"
+            cmd = f"gobuster dir -u '{url}' {wl_flag} -q --no-error -t 20 2>/dev/null"
+            return f"$ {cmd}\n\n" + _run(cmd, timeout=120)
+        if has_dirb:
+            wl_arg = f" '{wordlist}'" if wordlist else ""
+            cmd = f"dirb '{url}'{wl_arg} -S -r 2>/dev/null"
+            return f"$ {cmd}\n\n" + _run(cmd, timeout=120)
+        return "Neither gobuster nor dirb found. Install: sudo apt install gobuster dirb"
+
+    if scan_type in ("whatweb", "tech", "fingerprint"):
+        has_whatweb = shutil.which("whatweb") is not None
+        if not has_whatweb:
+            return "whatweb not found. Install with: sudo apt install whatweb"
+        url = target if target.startswith("http") else f"https://{target}"
+        cmd = f"whatweb -a 3 '{url}' 2>/dev/null"
+        return f"$ {cmd}\n\n" + _run(cmd, timeout=30)
+
+    if scan_type in ("dns", "subdomain"):
+        results = []
+        if shutil.which("dig"):
+            results.append("── DNS Records ──\n" + _run(f"dig +short ANY {nmap_target} 2>/dev/null || dig {nmap_target} 2>/dev/null"))
+        if shutil.which("nslookup"):
+            results.append("── NSLookup ──\n" + _run(f"nslookup {nmap_target} 2>/dev/null"))
+        if shutil.which("subfinder"):
+            results.append("── Subdomains ──\n" + _run(f"subfinder -d {nmap_target} -silent 2>/dev/null", timeout=30))
+        return "\n\n".join(results) if results else _run(f"host {nmap_target} 2>/dev/null")
+
     return f"Unknown scan type: {scan_type}"
-
-    device_id = devices[0]
-
-    # Send the SMS
-    try:
-        result = subprocess.run(
-            [
-                "kdeconnect-cli",
-                "-d", device_id,
-                "--send-sms", message,
-                "--destination", phone,
-            ],
-            capture_output=True, text=True, timeout=15,
-        )
-        if result.returncode == 0:
-            return f"SMS sent to {phone}: \"{message}\""
-        else:
-            err = result.stderr.strip() or result.stdout.strip()
-            return f"Failed to send SMS: {err}"
-    except Exception as e:
-        return f"Error sending SMS: {e}"
 
 
 # ── Network scan / device discovery ───────────────────────────────────
@@ -4653,18 +5471,70 @@ _pw_page     = None   # current page
 
 
 def _exec_rag_search(args: dict) -> str:
-    """Search the local RAG knowledge base for relevant context."""
+    """Search/manage the local RAG knowledge base."""
+    action = args.get("action", "search")
     query = args.get("query", "").strip()
-    if not query:
-        return "Error: query is required."
-
     k = int(args.get("k", 5))
     source_filter = args.get("source_filter", "")
+    ingest_path = args.get("path", "").strip()
 
     try:
         from src.rag import get_pipeline
         pipeline = get_pipeline()
+    except RuntimeError as e:
+        return f"RAG unavailable: {e}"
+    except Exception as e:
+        return f"RAG pipeline error: {e}"
 
+    if action == "stats":
+        try:
+            stats = pipeline.stats()
+            chunks = stats.get("chunks", 0)
+            sources = stats.get("sources", [])
+            size_mb = stats.get("size_mb", 0)
+            lines = [
+                f"RAG knowledge base:",
+                f"  Chunks  : {chunks}",
+                f"  Sources : {len(sources)}",
+            ]
+            if size_mb:
+                lines.append(f"  Size    : {size_mb:.1f} MB")
+            if sources:
+                lines.append("")
+                lines.append("Indexed sources:")
+                for s in sources[:30]:
+                    lines.append(f"  {s}")
+                if len(sources) > 30:
+                    lines.append(f"  ... and {len(sources) - 30} more")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"RAG stats error: {e}"
+
+    if action == "reindex":
+        try:
+            result = pipeline.reindex() if hasattr(pipeline, "reindex") else pipeline.rebuild()
+            chunks = result.get("chunks", "?") if isinstance(result, dict) else "?"
+            return f"Re-index complete. {chunks} chunks indexed."
+        except AttributeError:
+            return "This RAG pipeline does not support reindex — use /ingest <path> to add documents."
+        except Exception as e:
+            return f"Reindex error: {e}"
+
+    if action == "ingest":
+        if not ingest_path:
+            return "path is required for ingest action."
+        try:
+            result = pipeline.ingest(ingest_path)
+            chunks = result.get("chunks", "?") if isinstance(result, dict) else "?"
+            return f"Ingested '{ingest_path}'. {chunks} new chunks added."
+        except Exception as e:
+            return f"Ingest error: {e}"
+
+    # Default: search
+    if not query:
+        return "query is required for search. Use action='stats' to inspect the knowledge base."
+
+    try:
         stats = pipeline.stats()
         if stats.get("chunks", 0) == 0:
             return (
@@ -4681,16 +5551,13 @@ def _exec_rag_search(args: dict) -> str:
         lines = [f"RAG search: '{query}' — {len(results)} result(s)\n"]
         for i, (text, meta, dist) in enumerate(results, 1):
             source = meta.get("source", "unknown")
-            score = 1.0 - dist  # cosine: higher = more similar
+            score = 1.0 - dist
             snippet = text.strip()[:400]
             lines.append(f"[{i}] Score: {score:.2f} | Source: {source}")
             lines.append(snippet)
             lines.append("")
 
         return "\n".join(lines).strip()
-
-    except RuntimeError as e:
-        return f"RAG unavailable: {e}"
     except Exception as e:
         return f"RAG search error: {e}"
 
@@ -4775,10 +5642,16 @@ def _exec_browser(args: dict) -> str:
             return f"Typed into {selector}"
 
         elif action == "screenshot":
+            import base64
             fd, path = tempfile.mkstemp(prefix="jarvis-browser-", suffix=".png")
             os.close(fd)
             _pw_page.screenshot(path=path, full_page=False)
-            return f"Screenshot saved: {path}"
+            try:
+                with open(path, "rb") as _f:
+                    b64 = base64.b64encode(_f.read()).decode()
+                return f"Screenshot saved: {path}\ndata:image/png;base64,{b64[:2000]}... (truncated for context)"
+            except Exception:
+                return f"Screenshot saved: {path}"
 
         elif action == "extract":
             selector = args.get("selector")
@@ -4808,6 +5681,43 @@ def _exec_browser(args: dict) -> str:
         elif action == "back":
             _pw_page.go_back(wait_until="domcontentloaded", timeout=10000)
             return f"Went back. Current URL: {_pw_page.url}"
+
+        elif action == "save_cookies":
+            profile = args.get("profile", "default")
+            cookie_dir = os.path.expanduser("~/.jarvis/browser_cookies")
+            os.makedirs(cookie_dir, exist_ok=True)
+            cookie_path = os.path.join(cookie_dir, f"{profile}.json")
+            cookies = _pw_page.context.cookies()
+            import json as _json
+            with open(cookie_path, "w") as _f:
+                _json.dump(cookies, _f)
+            return f"Saved {len(cookies)} cookies to profile '{profile}' ({cookie_path})"
+
+        elif action == "load_cookies":
+            profile = args.get("profile", "default")
+            cookie_path = os.path.expanduser(f"~/.jarvis/browser_cookies/{profile}.json")
+            if not os.path.exists(cookie_path):
+                return f"No saved cookies for profile '{profile}'. Use save_cookies first."
+            import json as _json
+            with open(cookie_path) as _f:
+                cookies = _json.load(_f)
+            _pw_page.context.add_cookies(cookies)
+            return f"Loaded {len(cookies)} cookies from profile '{profile}'. Navigate to the site to use them."
+
+        elif action == "list_profiles":
+            cookie_dir = os.path.expanduser("~/.jarvis/browser_cookies")
+            if not os.path.isdir(cookie_dir):
+                return "No cookie profiles saved yet."
+            import glob as _g, json as _json
+            profiles = []
+            for f in sorted(_g.glob(os.path.join(cookie_dir, "*.json"))):
+                name = os.path.basename(f).replace(".json", "")
+                try:
+                    cookies = _json.load(open(f))
+                    profiles.append(f"  {name}: {len(cookies)} cookies")
+                except Exception:
+                    profiles.append(f"  {name}: (unreadable)")
+            return "Saved browser profiles:\n" + "\n".join(profiles) if profiles else "No profiles found."
 
         else:
             return f"Unknown action: {action}"

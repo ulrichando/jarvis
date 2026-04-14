@@ -1,1 +1,1 @@
-TOOL_SEARCH_TOOL_NAME = "ToolSearch"
+TOOL_SEARCH_TOOL_NAME = "tool_search"

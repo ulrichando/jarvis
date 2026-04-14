@@ -543,9 +543,9 @@ async def _agent_loop_internal(
         regular_calls = []
         sentinel_calls = []
         _SENTINEL_TOOLS = {
-            "EnterPlanMode", "ExitPlanMode", "EnterWorktree", "ExitWorktree",
-            "SendMessage", "TeamCreate", "TeamDelete", "Skill", "LSP",
-            "ScheduleCron", "RemoteTrigger", "ask_user",
+            "enter_plan_mode", "exit_plan_mode", "enter_worktree", "exit_worktree",
+            "send_message", "team_create", "team_delete", "skill", "lsp",
+            "schedule_cron", "remote_trigger", "ask_user",
         }
         for tc in tool_calls:
             if tc["name"] == "dispatch" and allow_dispatch:
@@ -673,16 +673,16 @@ def _append_assistant_message(messages: list[dict], text: str, tool_calls: list[
 async def _handle_sentinel_tool(name: str, args: dict) -> str:
     """Handle tools that change loop/brain state instead of executing directly."""
 
-    if name == "EnterPlanMode":
+    if name == "enter_plan_mode":
         # Switch tools to read-only set
         _loop_state["plan_mode"] = True
         return "Plan mode activated. I will analyze and suggest changes without executing them."
 
-    elif name == "ExitPlanMode":
+    elif name == "exit_plan_mode":
         _loop_state["plan_mode"] = False
         return "Plan mode deactivated. I can now execute changes."
 
-    elif name == "EnterWorktree":
+    elif name == "enter_worktree":
         worktree_name = args.get("name", "jarvis-worktree")
         try:
             import subprocess
@@ -698,7 +698,7 @@ async def _handle_sentinel_tool(name: str, args: dict) -> str:
         except Exception as e:
             return f"Worktree error: {e}"
 
-    elif name == "ExitWorktree":
+    elif name == "exit_worktree":
         wt = _loop_state.get("worktree")
         if wt:
             try:
@@ -714,7 +714,7 @@ async def _handle_sentinel_tool(name: str, args: dict) -> str:
                 return f"Worktree cleanup error: {e}"
         return "No active worktree."
 
-    elif name == "SendMessage":
+    elif name == "send_message":
         to = args.get("to", "")
         message = args.get("message", "")
         # In single-agent mode, this is a no-op. In multi-agent (swarm), route to target.
@@ -727,16 +727,16 @@ async def _handle_sentinel_tool(name: str, args: dict) -> str:
             pass
         return f"Message queued for '{to}': {message[:100]}"
 
-    elif name == "TeamCreate":
+    elif name == "team_create":
         team_name = args.get("name", "team")
         agents = args.get("agents", [])
         return f"Team '{team_name}' created with agents: {', '.join(agents)}"
 
-    elif name == "TeamDelete":
+    elif name == "team_delete":
         team_name = args.get("name", "")
         return f"Team '{team_name}' deleted."
 
-    elif name == "Skill":
+    elif name == "skill":
         skill_name = args.get("name", "")
         skill_args = args.get("args", "")
         try:
@@ -751,7 +751,7 @@ async def _handle_sentinel_tool(name: str, args: dict) -> str:
         except Exception as e:
             return f"Skill error: {e}"
 
-    elif name == "LSP":
+    elif name == "lsp":
         action = args.get("action", "diagnostics")
         file_path = args.get("file_path", "")
         try:
@@ -773,7 +773,7 @@ async def _handle_sentinel_tool(name: str, args: dict) -> str:
         except Exception as e:
             return f"LSP unavailable: {e}"
 
-    elif name == "ScheduleCron":
+    elif name == "schedule_cron":
         action = args.get("action", "list")
         try:
             from src.config import JARVIS_HOME
@@ -803,7 +803,7 @@ async def _handle_sentinel_tool(name: str, args: dict) -> str:
         except Exception as e:
             return f"Cron error: {e}"
 
-    elif name == "RemoteTrigger":
+    elif name == "remote_trigger":
         action = args.get("action", "list")
         try:
             from src.bridge.bridgeApi import BridgeApi
@@ -1348,9 +1348,9 @@ async def agent_loop_stream(
 
         # Separate dispatch and sentinel tools from regular ones
         _SENTINEL_TOOLS_STREAM = {
-            "EnterPlanMode", "ExitPlanMode", "EnterWorktree", "ExitWorktree",
-            "SendMessage", "TeamCreate", "TeamDelete", "Skill", "LSP",
-            "ScheduleCron", "RemoteTrigger", "ask_user",
+            "enter_plan_mode", "exit_plan_mode", "enter_worktree", "exit_worktree",
+            "send_message", "team_create", "team_delete", "skill", "lsp",
+            "schedule_cron", "remote_trigger", "ask_user",
         }
         dispatch_calls = []
         sentinel_calls = []

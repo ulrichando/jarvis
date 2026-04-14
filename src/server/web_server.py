@@ -14,6 +14,7 @@ import secrets
 import signal
 import time
 import io
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -63,7 +64,7 @@ HOST = "0.0.0.0"
 PORT = 8765
 
 # Edge TTS voice — English-only (monolingual) to prevent auto language-switching
-TTS_VOICE = "en-US-AndrewNeural"
+TTS_VOICE = "en-GB-RyanNeural"
 
 
 class JarvisWebServer:
@@ -237,13 +238,31 @@ class JarvisWebServer:
                 print(f"[JARVIS] Piper TTS unavailable: {e}")
         return self._piper_voice
 
-    # Groq TTS — Orpheus v1 (replaced decommissioned playai-tts)
+    # Groq TTS — Orpheus v1
     GROQ_TTS_MODEL = "canopylabs/orpheus-v1-english"
-    GROQ_TTS_VOICE = "dan"  # male voice
+    GROQ_TTS_VOICE = "austin"  # male voice (Orpheus fallback only)
+
+    _groq_api_key_cache: str | None = None
+
+    def _get_groq_api_key(self) -> str:
+        """Read Groq API key from providers.json (same source as STT)."""
+        if self.__class__._groq_api_key_cache is not None:
+            return self.__class__._groq_api_key_cache
+        key = os.environ.get("GROQ_API_KEY", "")
+        if not key:
+            try:
+                from src.config import JARVIS_HOME
+                import json as _json
+                data = _json.loads((JARVIS_HOME / "providers.json").read_text())
+                key = data.get("groq", {}).get("api_key", "")
+            except Exception:
+                pass
+        self.__class__._groq_api_key_cache = key
+        return key
 
     async def _groq_tts(self, text: str) -> bytes | None:
-        """Generate speech via Groq PlayAI TTS. Returns MP3 bytes or None on failure."""
-        api_key = os.environ.get("GROQ_API_KEY", "")
+        """Generate speech via Groq Orpheus TTS. Returns MP3 bytes or None on failure."""
+        api_key = self._get_groq_api_key()
         if not api_key:
             return None
         try:
@@ -252,7 +271,7 @@ class JarvisWebServer:
                 "model":           self.GROQ_TTS_MODEL,
                 "input":           text,
                 "voice":           self.GROQ_TTS_VOICE,
-                "response_format": "mp3",
+                "response_format": "wav",
             }
             headers = {
                 "Authorization": f"Bearer {api_key}",
@@ -261,12 +280,16 @@ class JarvisWebServer:
             async with _aio.ClientSession() as sess:
                 async with sess.post(
                     "https://api.groq.com/openai/v1/audio/speech",
-                    json=payload, headers=headers, timeout=_aio.ClientTimeout(total=15),
+                    json=payload, headers=headers, timeout=_aio.ClientTimeout(total=20),
                 ) as resp:
                     if resp.status == 200:
                         return await resp.read()
                     err = await resp.text()
-                    print(f"[JARVIS] Groq TTS HTTP {resp.status}: {err[:120]}")
+                    if resp.status == 400 and "terms" in err.lower():
+                        print(f"[JARVIS] Groq TTS: terms not accepted — go to console.groq.com to enable Orpheus. Falling back to Edge TTS.")
+                        self.__class__._groq_api_key_cache = ""  # disable until restart
+                    else:
+                        print(f"[JARVIS] Groq TTS HTTP {resp.status}: {err[:120]}")
                     return None
         except Exception as e:
             print(f"[JARVIS] Groq TTS error: {e}")
@@ -290,7 +313,17 @@ class JarvisWebServer:
 
         engine = request.query.get("engine", "groq")
 
-        # ── 1. Edge TTS (primary — Microsoft neural, no API terms required) ──
+        # ── 1. Groq Orpheus TTS (primary — best quality) ──────────────────
+        if engine != "piper" and engine != "edge":
+            audio_data = await self._groq_tts(text)
+            if audio_data:
+                return web.Response(
+                    body=audio_data,
+                    content_type="audio/wav",
+                    headers={"Cache-Control": "no-cache"},
+                )
+
+        # ── 2. Edge TTS (fallback — Microsoft neural) ─────────────────────
         if engine != "piper":
             voice = request.query.get("voice", TTS_VOICE)
             try:
@@ -1262,6 +1295,10 @@ class JarvisWebServer:
             speech_buffer = full_response
 
         if full_response and full_response.strip():
+            # Strip chatbot-ism openers from the raw response before display or TTS
+            full_response = self._strip_ai_openers(full_response)
+            speech_buffer = self._strip_ai_openers(speech_buffer) if speech_buffer else speech_buffer
+
             model = getattr(self.brain.reasoner, 'active_model_name', '') or getattr(self.brain.reasoner, 'model', '')
             print(f'[JARVIS] Response: "{full_response.strip()[:80]}" (model={model}, {latency}ms)')
 
@@ -1349,8 +1386,7 @@ class JarvisWebServer:
             self._query_processing = False
             self._conv_intel.mark_listening()
             if hasattr(self, '_server_listener'):
-                await asyncio.sleep(0.5)
-                self._server_listener.jarvis_speaking = False
+                self._server_listener.set_jarvis_speaking(False)
 
     def _desktop_running(self) -> bool:
         """Return True if the Tauri desktop process is alive."""
@@ -1428,9 +1464,13 @@ class JarvisWebServer:
             try: proc.kill()
             except Exception: pass
             self._current_ffplay = None
+        # Cancel any in-flight brain.think()
+        if self._current_think_task and not self._current_think_task.done():
+            self._current_think_task.cancel()
+            self._current_think_task = None
         self._query_processing = False
         if hasattr(self, '_server_listener'):
-            self._server_listener.jarvis_speaking = False
+            self._server_listener.set_jarvis_speaking(False)
 
     async def _handle_interrupt(self, ws: web.WebSocketResponse):
         """Immediate hard interrupt — user spoke over JARVIS or said a stop keyword."""
@@ -1457,9 +1497,14 @@ class JarvisWebServer:
                 _ws._ambient.set_jarvis_speaking(False)
                 _ws._ambient.on_barge_in = None
 
+        # Cancel any in-flight brain.think() so it doesn't speak after barge-in
+        if self._current_think_task and not self._current_think_task.done():
+            self._current_think_task.cancel()
+            self._current_think_task = None
+
         # Unmute server mic
         if hasattr(self, '_server_listener'):
-            self._server_listener.jarvis_speaking = False
+            self._server_listener.set_jarvis_speaking(False)
 
         # Release lock immediately
         self._query_processing = False
@@ -1586,6 +1631,85 @@ class JarvisWebServer:
         return voice_style
 
     @staticmethod
+    def _strip_ai_openers(text: str) -> str:
+        """Remove chatbot-ism opener sentences from any response, display or TTS.
+
+        Strategy: check if the response starts with a known filler opener, then
+        drop the ENTIRE first sentence (up to the next capital-letter sentence
+        boundary).  Repeat for stacked openers.  This handles cases where the
+        user's own quoted speech contains punctuation, e.g.:
+          "I understand you're saying "What time is it?" Let me check."
+        → "Let me check."  → (second pass strips "Let me") → ""
+        """
+        import re as _re
+
+        # Lowercase prefixes that identify pure-filler opener sentences.
+        # Matched against the lowercased start of the response.
+        _OPENERS = (
+            "i understand you",
+            "you're asking",
+            "you are asking",
+            "it seems like you",
+            "it seems you",
+            "it sounds like you",
+            "this seems like",
+            "this sounds like",
+            "let me ",
+
+            "to clarify",
+            "to answer your",
+            "to address your",
+            "i see what you",
+            "i hear what you",
+            "great! ",
+            "great, ",
+            "sure! ",
+            "sure, ",
+            "certainly! ",
+            "certainly, ",
+            "absolutely! ",
+            "absolutely, ",
+            "of course! ",
+            "of course, ",
+            "that's a great question",
+            "that is a great question",
+            "good question",
+            "great question",
+            "i'm glad you asked",
+            "i am glad you asked",
+            "i'm happy to",
+            "i am happy to",
+        )
+
+        # Sentence boundary: punctuation optionally followed by a closing quote,
+        # then whitespace + uppercase letter (start of next sentence).
+        _SENT_BOUNDARY = _re.compile(r'[.!?]["\']?\s+(?=[A-Z])')
+
+        t = text.strip()
+        original = t
+
+        for _ in range(4):
+            t_lower = t.lower()
+            matched = False
+            for opener in _OPENERS:
+                if t_lower.startswith(opener):
+                    # Find where the next real sentence begins
+                    m = _SENT_BOUNDARY.search(t)
+                    if m:
+                        # Drop everything up to and including the boundary punctuation
+                        t = t[m.end():].strip()
+                    else:
+                        # Only one sentence — it's pure filler, drop it all
+                        t = ""
+                    matched = True
+                    break
+            if not matched:
+                break
+
+        # If we stripped everything, return original rather than silence
+        return t.strip() if t.strip() else original
+
+    @staticmethod
     def _clean_for_speech(text: str) -> str:
         """Strip everything that shouldn't be spoken aloud.
 
@@ -1614,6 +1738,8 @@ class JarvisWebServer:
             if stripped == t:
                 break
             t = stripped
+        # Strip AI-opener filler phrases (shared logic with _strip_ai_openers)
+        t = JarvisWebServer._strip_ai_openers(t)
         # Remove display/command tags
         t = re.sub(r'\[show:\w+\]', '', t)
         t = re.sub(r'\[/show\]', '', t)
@@ -2167,6 +2293,15 @@ class JarvisWebServer:
                             if listener.is_speaking and _frame_count % 20 == 0:
                                 dur = _time.time() - listener.speech_start if listener.speech_start else 0
                                 print(f"[JARVIS] Hearing speech... ({dur:.1f}s)")
+                                # Watchdog: VAD stuck — reset after 20s when mic is free,
+                                # or after 30s unconditionally (even during TTS echo accumulation).
+                                _stuck = (dur > 20.0 and not listener.jarvis_speaking) or dur > 30.0
+                                if _stuck:
+                                    print("[JARVIS] VAD watchdog: speech stuck, resetting listener state")
+                                    listener.is_speaking = False
+                                    listener.speech_buffer.clear()
+                                    listener.speech_start = 0
+                                    listener.silence_start = 0
 
                             if transcript:
                                 t = transcript.strip()
@@ -2187,7 +2322,7 @@ class JarvisWebServer:
                                     continue
 
                                 words = t.split()
-                                if len(words) < 2 or len(t) < 5:
+                                if len(words) < 3 or len(t) < 8:
                                     continue
                                 filler = {"mm-hmm", "mm", "hmm", "uh", "um", "ah", "oh",
                                           "okay", "ok", "yeah", "yep", "no", "nope",
@@ -2254,6 +2389,7 @@ class JarvisWebServer:
     _current_ffplay = None
     _last_response = ""
     _query_processing = False  # Lock: only one voice query at a time
+    _current_think_task: "asyncio.Task | None" = None  # Cancellable brain.think() task
 
     # Face gate — only respond to voice from the verified owner
     _face_gate_enabled = True
@@ -2302,7 +2438,7 @@ class JarvisWebServer:
             print(f'[JARVIS] Busy, dropping: "{transcript[:40]}"')
             # Unmute mic so listener can pick up next utterance after current finishes
             if hasattr(self, '_server_listener'):
-                self._server_listener.jarvis_speaking = False
+                self._server_listener.set_jarvis_speaking(False)
             return
         self._query_processing = True
         print(f"[JARVIS] Voice query accepted: \"{transcript[:60]}\"")
@@ -2317,6 +2453,8 @@ class JarvisWebServer:
             if t_lower in r_lower or r_lower in t_lower:
                 print(f"[JARVIS] Echo filtered (substring): \"{transcript[:40]}\"")
                 self._query_processing = False
+                if hasattr(self, '_server_listener'):
+                    self._server_listener.set_jarvis_speaking(False)
                 return
             # High word overlap on short transcripts only (likely partial echo, not conversation)
             heard_words = set(t_lower.split())
@@ -2325,6 +2463,8 @@ class JarvisWebServer:
                 if overlap > 0.7:
                     print(f"[JARVIS] Echo filtered ({overlap:.0%} overlap): \"{transcript[:40]}\"")
                     self._query_processing = False
+                    if hasattr(self, '_server_listener'):
+                        self._server_listener.set_jarvis_speaking(False)
                     return
 
         # Mute mic while processing
@@ -2478,16 +2618,26 @@ class JarvisWebServer:
             _filler_task = asyncio.create_task(_voice_filler())
 
             try:
-                response = await asyncio.wait_for(
+                self._current_think_task = asyncio.ensure_future(
                     self.brain.think(f"[voice input] {transcript}",
-                                    on_tool_call=_on_tool, on_tool_result=_on_result),
+                                     on_tool_call=_on_tool, on_tool_result=_on_result)
+                )
+                response = await asyncio.wait_for(
+                    asyncio.shield(self._current_think_task),
                     timeout=120  # 2 min — tool-heavy tasks (scans, builds) need more time
                 )
             except asyncio.TimeoutError:
                 print(f'[JARVIS] Think timed out: "{transcript[:50]}"')
+                if self._current_think_task and not self._current_think_task.done():
+                    self._current_think_task.cancel()
                 response = "That's taking a while — still working on it."
+            except asyncio.CancelledError:
+                # Barge-in cancelled this think — exit silently
+                print(f'[JARVIS] Think cancelled (barge-in): "{transcript[:50]}"')
+                return
             finally:
                 _filler_task.cancel()
+                self._current_think_task = None
 
             latency = int((time.time() - start) * 1000)
 
@@ -2508,6 +2658,9 @@ class JarvisWebServer:
                         response = "Done."
                 else:
                     response = "Done."
+
+            # Strip chatbot-ism openers from the raw response before display or TTS
+            response = self._strip_ai_openers(response)
 
             spoken = self._clean_for_speech(response)
             # If clean_for_speech stripped everything (e.g. the result looked like code),
@@ -2568,7 +2721,7 @@ class JarvisWebServer:
             if hasattr(self, '_server_listener'):
                 # Post-speech cooldown — let residual room audio decay before listening
                 await asyncio.sleep(0.5)
-                self._server_listener.jarvis_speaking = False
+                self._server_listener.set_jarvis_speaking(False)
 
     async def _broadcast(self, data: dict):
         """Send a JSON message to all connected WebSocket clients. Prunes dead ones."""
@@ -2585,22 +2738,32 @@ class JarvisWebServer:
             self.clients.discard(ws)
 
     async def _speak_short(self, text: str):
-        """Quick TTS for short status phrases like 'Let me check'."""
+        """Quick TTS for short status phrases — Edge TTS primary, Groq fallback."""
         if getattr(self, '_voice_muted', False):
             return
         try:
-            import tempfile
-            # Mute mic during narration to prevent echo
             if hasattr(self, '_server_listener'):
                 self._server_listener.jarvis_speaking = True
-            communicate = edge_tts.Communicate(text, TTS_VOICE)
-            audio_data = io.BytesIO()
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    audio_data.write(chunk["data"])
-            audio_bytes = audio_data.getvalue()
+
+            # Edge TTS primary
+            audio_bytes = None
+            try:
+                communicate = edge_tts.Communicate(text, TTS_VOICE)
+                audio_data = io.BytesIO()
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        audio_data.write(chunk["data"])
+                audio_bytes = audio_data.getvalue() or None
+            except Exception as e:
+                print(f"[JARVIS] Edge TTS error: {e}")
+
+            # Groq fallback
+            if not audio_bytes:
+                audio_bytes = await self._groq_tts(text)
+
             if not audio_bytes:
                 return
+
             with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
                 f.write(audio_bytes)
                 tmp_path = f.name
@@ -2610,7 +2773,7 @@ class JarvisWebServer:
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.DEVNULL,
                 )
-                self._current_ffplay = proc  # track so it can be cancelled
+                self._current_ffplay = proc
                 await self._broadcast({"type": "status", "status": "speaking"})
                 await asyncio.wait_for(proc.wait(), timeout=15)
             except asyncio.TimeoutError:
@@ -2632,60 +2795,62 @@ class JarvisWebServer:
             # Post-speech cooldown — let residual room audio decay
             await asyncio.sleep(0.3)
             if hasattr(self, '_server_listener'):
-                self._server_listener.jarvis_speaking = False
+                self._server_listener.set_jarvis_speaking(False)
 
     async def _speak_system(self, text: str):
-        """Stream TTS chunks directly to ffplay stdin — audio starts on first chunk, no temp file."""
+        """Speak text via Edge TTS (primary) → Groq Orpheus (fallback) → ffplay."""
         if getattr(self, '_voice_muted', False):
             return
         proc = None
         try:
-            communicate = edge_tts.Communicate(text, TTS_VOICE)
-            _announced = False
+            # ── 1. Edge TTS — en-GB-RyanNeural (deep British male, Iron Man JARVIS feel)
+            audio_bytes = None
+            try:
+                communicate = edge_tts.Communicate(text, TTS_VOICE)
+                chunks = []
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio" and chunk["data"]:
+                        chunks.append(chunk["data"])
+                audio_bytes = b"".join(chunks) or None
+            except Exception as e:
+                print(f"[JARVIS] Edge TTS error: {e}")
 
-            async for chunk in communicate.stream():
-                if chunk["type"] != "audio":
-                    continue
-                data = chunk["data"]
-                if not data:
-                    continue
+            # ── 2. Fall back to Groq Orpheus if Edge TTS failed ───────────
+            if not audio_bytes:
+                audio_bytes = await self._groq_tts(text)
 
-                if proc is None:
-                    # Start ffplay reading from stdin pipe — no file write, no startup gap
-                    proc = await asyncio.create_subprocess_exec(
-                        "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet",
-                        "-f", "mp3", "-i", "pipe:0",
-                        stdin=asyncio.subprocess.PIPE,
-                        stdout=asyncio.subprocess.DEVNULL,
-                        stderr=asyncio.subprocess.DEVNULL,
-                    )
-                    self._current_ffplay = proc
+            if not audio_bytes:
+                print("[JARVIS] TTS: all engines failed, no audio")
+                return
 
-                if not _announced:
-                    # Reactor turns blue exactly when first audio bytes hit ffplay
-                    await self._broadcast({"type": "status", "status": "speaking"})
-                    _announced = True
+            # Write to temp file and play via ffplay
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+                f.write(audio_bytes)
+                tmp_path = f.name
 
-                try:
-                    proc.stdin.write(data)
-                    await proc.stdin.drain()
-                except (BrokenPipeError, ConnectionResetError):
-                    break  # ffplay was killed (interrupt)
+            await self._broadcast({"type": "status", "status": "speaking"})
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", tmp_path,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                self._current_ffplay = proc
+                await asyncio.wait_for(proc.wait(), timeout=60)
+            except asyncio.TimeoutError:
+                proc.kill()
+                print("[JARVIS] TTS playback timed out, killed ffplay")
+            finally:
+                try: os.unlink(tmp_path)
+                except: pass
 
-            if proc and proc.stdin:
-                try:
-                    proc.stdin.close()
-                except Exception:
-                    pass
-            if proc:
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=60)
-                except asyncio.TimeoutError:
-                    proc.kill()
-                    print("[JARVIS] TTS playback timed out, killed ffplay")
-            # Audio finished — signal UI
             await self._broadcast({"type": "tts_done", "server_tts": True})
 
+        except asyncio.CancelledError:
+            if proc:
+                try: proc.kill()
+                except: pass
+            raise
         except Exception as e:
             print(f"[JARVIS] TTS error: {e}")
             if proc:
@@ -4510,7 +4675,7 @@ class JarvisWebServer:
             async def _unmute_after_startup():
                 await asyncio.sleep(6)  # Wait for startup TTS to finish
                 if hasattr(self, '_server_listener'):
-                    self._server_listener.jarvis_speaking = False
+                    self._server_listener.set_jarvis_speaking(False)
             asyncio.create_task(_unmute_after_startup())
 
         print(f"[JARVIS] Web shell:  http://localhost:{PORT}")

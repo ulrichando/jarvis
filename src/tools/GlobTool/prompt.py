@@ -1,4 +1,4 @@
-GLOB_TOOL_NAME = "Glob"
+GLOB_TOOL_NAME = "glob"
 
 DESCRIPTION = (
     '- Fast file pattern matching tool that works with any codebase size\n'

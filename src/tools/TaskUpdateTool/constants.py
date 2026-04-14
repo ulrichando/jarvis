@@ -1,1 +1,1 @@
-TASK_UPDATE_TOOL_NAME = "TaskUpdate"
+TASK_UPDATE_TOOL_NAME = "task_update"

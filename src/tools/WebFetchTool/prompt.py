@@ -1,7 +1,7 @@
 """Prompt for the WebFetchTool."""
 from __future__ import annotations
 
-WEB_FETCH_TOOL_NAME = "WebFetch"
+WEB_FETCH_TOOL_NAME = "web_fetch"
 
 DESCRIPTION = """
 - Fetches content from a specified URL and processes it using an AI model

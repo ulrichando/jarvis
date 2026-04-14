@@ -56,13 +56,13 @@ class AmbientListener:
     def __init__(
         self,
         sample_rate: int = 16000,
-        energy_threshold: float = 0.005,      # Very low — adaptive calibration raises it
+        energy_threshold: float = 0.035,      # Minimum — calibration may raise further
         silence_duration: float = 1.5,         # Seconds of silence = end of utterance
-        min_speech_duration: float = 0.5,      # Min seconds to be valid speech
-        max_speech_duration: float = 15.0,     # Max seconds before forced cutoff
+        min_speech_duration: float = 0.8,      # Min seconds to be valid speech
+        max_speech_duration: float = 12.0,     # Max seconds before forced cutoff
         pre_speech_buffer: float = 0.3,        # Seconds of audio to keep before speech
-        barge_in_energy_factor: float = 3.5,   # How much louder barge-in must be vs noise
-        min_barge_in_duration: float = 0.25,   # Min speech seconds to count as barge-in
+        barge_in_energy_factor: float = 5.0,   # How much louder barge-in must be vs noise
+        min_barge_in_duration: float = 0.4,    # Min speech seconds to count as barge-in
     ):
         self.sample_rate = sample_rate
         self.energy_threshold = energy_threshold
@@ -74,6 +74,9 @@ class AmbientListener:
         self._noise_floor = 0.0
         self._noise_samples = 0
         self._calibrated = False
+        # Post-TTS cooldown: ignore audio for this many seconds after TTS stops
+        # to let the sound card drain and prevent JARVIS hearing his own voice.
+        self._cooldown_until: float = 0.0
 
         self.min_speech_duration = min_speech_duration
         self.max_speech_duration = max_speech_duration
@@ -122,21 +125,26 @@ class AmbientListener:
         zcr = _compute_zcr(audio_chunk)
         now = time.time()
 
-        # ── Adaptive calibration: first ~1 second of silence ──────────────
+        # ── Adaptive calibration: first ~2 seconds of silence ──────────────
         if not self._calibrated:
             self._noise_floor = (
                 self._noise_floor * self._noise_samples + rms
             ) / (self._noise_samples + 1)
             self._noise_samples += 1
-            cal_frames = int(1.0 * self.sample_rate / max(1, len(audio_chunk)))
+            cal_frames = int(2.0 * self.sample_rate / max(1, len(audio_chunk)))
             if self._noise_samples > cal_frames:
-                self.energy_threshold = max(0.005, self._noise_floor * 2.0)
+                self.energy_threshold = max(0.035, self._noise_floor * 6.0)
                 self._calibrated = True
                 print(
                     f"[JARVIS] Ambient calibrated: "
                     f"noise_floor={self._noise_floor:.6f}, "
                     f"threshold={self.energy_threshold:.6f}"
                 )
+            return None
+
+        # ── Post-TTS cooldown: drain sound card, ignore leaking TTS audio ──
+        if now < self._cooldown_until:
+            self._pre_buffer.append(audio_chunk)
             return None
 
         # ── ZCR gate — reject non-voice sounds ────────────────────────────
@@ -167,8 +175,10 @@ class AmbientListener:
                     self.on_barge_in = None
                     cb()
             else:
-                # Noise / silence during TTS — slowly adapt noise floor
-                self._noise_floor = self._noise_floor * 0.997 + rms * 0.003
+                # During TTS: adapt noise floor quickly to track speaker output level.
+                # This raises the barge-in threshold to match what the mic hears from
+                # the speakers, so JARVIS's own voice doesn't trigger barge-in.
+                self._noise_floor = self._noise_floor * 0.97 + rms * 0.03
                 if rms <= self._noise_floor * 1.2:
                     self._barge_in_consecutive = 0
                     if self._barge_in_start and (now - self._barge_in_start > 0.5):
@@ -249,14 +259,25 @@ class AmbientListener:
         """
         self.jarvis_speaking = speaking
         if not speaking:
-            # Clear barge-in state when TTS ends
+            # TTS ended — discard all audio accumulated during playback.
+            # That audio is JARVIS's own voice or TTS echo; transcribing it
+            # produces hallucinations ("You're terrifying", etc.).  Start fresh
+            # so the next real utterance is captured cleanly.
+            self.is_speaking = False
+            self.speech_buffer.clear()
+            self._pre_buffer.clear()
+            self.speech_start = 0
+            self.silence_start = 0
             self._barge_in_start = 0.0
             self._barge_in_consecutive = 0
-            # Re-arm the barge-in callback for the next TTS session
-            # (caller sets on_barge_in before each TTS start if desired)
+            # Cooldown: ignore all audio for 1.5s so the sound card drains
+            # and any lingering TTS echo doesn't get transcribed as user speech.
+            self._cooldown_until = time.time() + 1.5
+            # Decay noise floor back toward a quiet-room level so the threshold
+            # doesn't stay inflated after TTS ends.
+            self._noise_floor = min(self._noise_floor, self.energy_threshold * 0.3)
         else:
             # TTS starting — clear any leftover speech from before TTS began
-            # (but keep speech_buffer if a barge-in is already in progress)
             if not self.is_speaking:
                 self.speech_buffer.clear()
                 self._pre_buffer.clear()

@@ -281,7 +281,7 @@ class TestSearchFilesTool(unittest.TestCase):
 class TestGlobTool(unittest.TestCase):
 
     def test_finds_python_files(self):
-        r = execute_tool("Glob", {
+        r = execute_tool("glob", {
             "pattern": "src/**/*.py",
             "path": JARVIS_ROOT,
         })
@@ -290,19 +290,19 @@ class TestGlobTool(unittest.TestCase):
         self.assertIn("src/", r.lower() if r == r.upper() else r)
 
     def test_finds_specific_file(self):
-        r = execute_tool("Glob", {
+        r = execute_tool("glob", {
             "pattern": "src/agent/agents.py",
             "path": JARVIS_ROOT,
         })
         self.assertIn("agents.py", r)
 
     def test_no_match_returns_string(self):
-        r = execute_tool("Glob", {"pattern": "**/__nope_xyz__.txt", "path": JARVIS_ROOT})
+        r = execute_tool("glob", {"pattern": "**/__nope_xyz__.txt", "path": JARVIS_ROOT})
         self.assertIsInstance(r, str)
         self.assertNotIn("ERROR", r.upper())
 
     def test_finds_test_files(self):
-        r = execute_tool("Glob", {"pattern": "test/test_*.py", "path": JARVIS_ROOT})
+        r = execute_tool("glob", {"pattern": "test/test_*.py", "path": JARVIS_ROOT})
         self.assertIn("test_", r)
 
 
@@ -313,7 +313,7 @@ class TestGlobTool(unittest.TestCase):
 class TestGrepTool(unittest.TestCase):
 
     def test_files_with_matches_mode(self):
-        r = execute_tool("Grep", {
+        r = execute_tool("grep", {
             "pattern": "execute_tool",
             "path": os.path.join(JARVIS_ROOT, "src/agent/tools.py"),
         })
@@ -321,7 +321,7 @@ class TestGrepTool(unittest.TestCase):
         self.assertGreater(len(r), 0)
 
     def test_content_mode(self):
-        r = execute_tool("Grep", {
+        r = execute_tool("grep", {
             "pattern": "AgentConfig",
             "path": os.path.join(JARVIS_ROOT, "src/agent/agents.py"),
             "output_mode": "content",
@@ -329,7 +329,7 @@ class TestGrepTool(unittest.TestCase):
         self.assertIn("AgentConfig", r)
 
     def test_case_insensitive(self):
-        r = execute_tool("Grep", {
+        r = execute_tool("grep", {
             "pattern": "agentconfig",
             "path": os.path.join(JARVIS_ROOT, "src/agent/agents.py"),
             "output_mode": "content",
@@ -338,14 +338,14 @@ class TestGrepTool(unittest.TestCase):
         self.assertIsInstance(r, str)
 
     def test_no_match_returns_string(self):
-        r = execute_tool("Grep", {
+        r = execute_tool("grep", {
             "pattern": "__NEVER_MATCHES_XYZ_12345__",
             "path": JARVIS_ROOT,
         })
         self.assertIsInstance(r, str)
 
     def test_count_mode(self):
-        r = execute_tool("Grep", {
+        r = execute_tool("grep", {
             "pattern": "def ",
             "path": os.path.join(JARVIS_ROOT, "src/agent/tools.py"),
             "output_mode": "count",
@@ -432,11 +432,11 @@ class TestSysinfoTool(unittest.TestCase):
 class TestSleepTool(unittest.TestCase):
 
     def test_zero_seconds(self):
-        r = execute_tool("Sleep", {"seconds": 0})
+        r = execute_tool("sleep", {"seconds": 0})
         self.assertIsInstance(r, str)
 
     def test_very_short(self):
-        r = execute_tool("Sleep", {"seconds": 0.01})
+        r = execute_tool("sleep", {"seconds": 0.01})
         self.assertIsInstance(r, str)
         self.assertNotIn("Error", r)
 
@@ -448,17 +448,17 @@ class TestSleepTool(unittest.TestCase):
 class TestConfigTool(unittest.TestCase):
 
     def test_get_returns_config(self):
-        r = execute_tool("ConfigTool", {"action": "get"})
+        r = execute_tool("config", {"action": "get"})
         self.assertIsInstance(r, str)
         self.assertNotIn("Traceback", r)
 
     def test_list_action(self):
-        r = execute_tool("ConfigTool", {"action": "list"})
+        r = execute_tool("config", {"action": "list"})
         self.assertIsInstance(r, str)
         self.assertNotIn("Traceback", r)
 
     def test_invalid_action(self):
-        r = execute_tool("ConfigTool", {"action": "nope_xyz"})
+        r = execute_tool("config", {"action": "nope_xyz"})
         self.assertIsInstance(r, str)
 
 
@@ -491,15 +491,15 @@ class TestRagSearchTool(unittest.TestCase):
 class TestBriefTool(unittest.TestCase):
 
     def test_returns_message(self):
-        r = execute_tool("BriefTool", {"message": "Task is complete."})
+        r = execute_tool("brief", {"message": "Task is complete."})
         self.assertEqual(r, "Task is complete.")
 
     def test_empty_message(self):
-        r = execute_tool("BriefTool", {"message": ""})
+        r = execute_tool("brief", {"message": ""})
         self.assertEqual(r, "")
 
     def test_no_message_key(self):
-        r = execute_tool("BriefTool", {})
+        r = execute_tool("brief", {})
         self.assertEqual(r, "")
 
 
@@ -510,7 +510,7 @@ class TestBriefTool(unittest.TestCase):
 class TestListMcpResourcesTool(unittest.TestCase):
 
     def test_returns_string(self):
-        r = execute_tool("ListMcpResources", {})
+        r = execute_tool("list_mcp_resources", {})
         self.assertIsInstance(r, str)
         self.assertNotIn("Traceback", r)
 
@@ -522,12 +522,12 @@ class TestListMcpResourcesTool(unittest.TestCase):
 class TestTaskTools(unittest.TestCase):
 
     def test_task_list_returns_string(self):
-        r = execute_tool("TaskList", {})
+        r = execute_tool("task_list", {})
         self.assertIsInstance(r, str)
         self.assertNotIn("Traceback", r)
 
     def test_task_create_returns_string(self):
-        r = execute_tool("TaskCreate", {
+        r = execute_tool("task_create", {
             "command": "echo test_task",
             "description": "Test task from unit test",
         })
@@ -535,15 +535,15 @@ class TestTaskTools(unittest.TestCase):
         self.assertNotIn("Traceback", r)
 
     def test_task_get_nonexistent(self):
-        r = execute_tool("TaskGet", {"task_id": "nonexistent_task_xyz_999"})
+        r = execute_tool("task_get", {"task_id": "nonexistent_task_xyz_999"})
         self.assertIsInstance(r, str)
 
     def test_task_output_nonexistent(self):
-        r = execute_tool("TaskOutput", {"task_id": "nonexistent_task_xyz_999"})
+        r = execute_tool("task_output", {"task_id": "nonexistent_task_xyz_999"})
         self.assertIsInstance(r, str)
 
     def test_task_stop_nonexistent(self):
-        r = execute_tool("TaskStop", {"task_id": "nonexistent_task_xyz_999"})
+        r = execute_tool("task_stop", {"task_id": "nonexistent_task_xyz_999"})
         self.assertIsInstance(r, str)
 
 
@@ -558,17 +558,17 @@ class TestLoopSentinels(unittest.TestCase):
     _SENTINELS = {
         "dispatch":       "__DISPATCH__",
         "ask_user":       "__ASK_USER__",
-        "EnterPlanMode":  "__PLAN_MODE_ENTER__",
-        "ExitPlanMode":   "__PLAN_MODE_EXIT__",
-        "EnterWorktree":  "__WORKTREE_ENTER__",
-        "ExitWorktree":   "__WORKTREE_EXIT__",
-        "SendMessage":    "__SEND_MESSAGE__",
-        "RemoteTrigger":  "__REMOTE_TRIGGER__",
-        "TeamCreate":     "__TEAM_CREATE__",
-        "TeamDelete":     "__TEAM_DELETE__",
-        "Skill":          "__SKILL__",
-        "LSP":            "__LSP__",
-        "ScheduleCron":   "__CRON__",
+        "enter_plan_mode":  "__PLAN_MODE_ENTER__",
+        "exit_plan_mode":   "__PLAN_MODE_EXIT__",
+        "enter_worktree":  "__WORKTREE_ENTER__",
+        "exit_worktree":   "__WORKTREE_EXIT__",
+        "send_message":    "__SEND_MESSAGE__",
+        "remote_trigger":  "__REMOTE_TRIGGER__",
+        "team_create":     "__TEAM_CREATE__",
+        "team_delete":     "__TEAM_DELETE__",
+        "skill":          "__SKILL__",
+        "lsp":            "__LSP__",
+        "schedule_cron":   "__CRON__",
     }
 
     def test_sentinels_return_expected_strings(self):

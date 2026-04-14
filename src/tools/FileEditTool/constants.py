@@ -1,5 +1,5 @@
 # In its own file to avoid circular dependencies
-FILE_EDIT_TOOL_NAME = "Edit"
+FILE_EDIT_TOOL_NAME = "edit_file"
 
 # Permission pattern for granting session-level access to the project's .jarvis/ folder
 JARVIS_FOLDER_PERMISSION_PATTERN = "/.jarvis/**"

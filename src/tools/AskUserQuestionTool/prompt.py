@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from src.tools.ExitPlanModeTool.constants import EXIT_PLAN_MODE_TOOL_NAME
 
-ASK_USER_QUESTION_TOOL_NAME = "AskUserQuestion"
+ASK_USER_QUESTION_TOOL_NAME = "ask_user"
 
 ASK_USER_QUESTION_TOOL_CHIP_WIDTH = 12
 

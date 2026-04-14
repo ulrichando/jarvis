@@ -55,7 +55,12 @@ def _transcribe_groq(audio: np.ndarray, sample_rate: int = 16000) -> str:
             "https://api.groq.com/openai/v1/audio/transcriptions",
             headers={"Authorization": f"Bearer {key}"},
             files={"file": ("audio.wav", buf, "audio/wav")},
-            data={"model": "whisper-large-v3", "language": "en"},
+            data={
+                "model": "whisper-large-v3",
+                "language": "en",
+                "prompt": "Ulrich speaking to JARVIS his AI assistant.",
+                "temperature": "0",
+            },
             timeout=10,
         )
         resp.raise_for_status()

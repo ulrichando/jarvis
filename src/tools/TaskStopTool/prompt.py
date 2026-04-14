@@ -1,4 +1,4 @@
-TASK_STOP_TOOL_NAME = "TaskStop"
+TASK_STOP_TOOL_NAME = "task_stop"
 
 DESCRIPTION = """
 - Stops a running background task by its ID

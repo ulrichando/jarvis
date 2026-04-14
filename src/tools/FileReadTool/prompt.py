@@ -3,7 +3,7 @@ from __future__ import annotations
 from src.tools.BashTool.toolName import BASH_TOOL_NAME
 
 # Use a string constant for tool names to avoid circular dependencies
-FILE_READ_TOOL_NAME = "Read"
+FILE_READ_TOOL_NAME = "read_file"
 
 FILE_UNCHANGED_STUB = (
     "File unchanged since last read. The content from the earlier Read tool_result "

@@ -159,7 +159,7 @@ def find_ripgrep() -> str | None:
 
 def _build_rg_args(config: RipgrepConfig) -> list[str]:
     """Build the ripgrep argument list from a RipgrepConfig."""
-    args: list[str] = ["--hidden"]
+    args: list[str] = ["--hidden", "--max-filesize=1M"]
 
     # Exclude VCS / junk directories
     for d in VCS_DIRS_TO_EXCLUDE:

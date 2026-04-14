@@ -61,11 +61,11 @@ def get_coordinator_user_context(
     )
 
     if is_simple:
-        worker_tools = ", ".join(sorted(["Bash", "Read", "Edit"]))
+        worker_tools = ", ".join(sorted(["bash", "read_file", "edit_file"]))
     else:
         worker_tools = ", ".join(sorted([
-            "Bash", "Read", "Edit", "Write", "Search", "WebSearch",
-            "WebFetch", "Think", "Dispatch",
+            "bash", "read_file", "edit_file", "write_file", "search_files",
+            "web_search", "web_fetch", "think", "dispatch",
         ]))
 
     content = f"Workers spawned via the Agent tool have access to these tools: {worker_tools}"

@@ -1,7 +1,7 @@
 """Prompt for the ExitPlanModeTool."""
 from __future__ import annotations
 
-ASK_USER_QUESTION_TOOL_NAME = "AskUserQuestion"
+ASK_USER_QUESTION_TOOL_NAME = "ask_user"
 
 EXIT_PLAN_MODE_V2_TOOL_PROMPT = f"""Use this tool when you are in plan mode and have finished writing your plan to the plan file and are ready for user approval.
 

@@ -1,1 +1,1 @@
-ENTER_PLAN_MODE_TOOL_NAME = "EnterPlanMode"
+ENTER_PLAN_MODE_TOOL_NAME = "enter_plan_mode"
