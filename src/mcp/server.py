@@ -222,7 +222,7 @@ class MCPServer:
 
         elif name == "jarvis_learn":
             if self.brain:
-                from src.memory.lattice.node import NodeType
+                from src.memory.store import NodeType
                 type_map = {"fact": NodeType.FACT, "skill": NodeType.SKILL, "concept": NodeType.CONCEPT, "entity": NodeType.ENTITY}
                 nt = type_map.get(args.get("node_type", "fact"), NodeType.FACT)
                 tags = [t.strip() for t in args.get("tags", "").split(",") if t.strip()]

@@ -46,8 +46,7 @@ from src.reasoning.groq_client import GroqReasoner
 from src.reasoning.persona import SYSTEM_PROMPT, TONE_OVERRIDES
 from src.reasoning.awareness import SelfAwareness
 from src.reasoning.reason import ReasoningEngine
-from src.memory.store import MemoryStore
-from src.memory.lattice.node import NodeType
+from src.memory.store import MemoryStore, NodeType
 from src.services.autoDream.autoDream import AutoDreamManager, init_auto_dream
 from src.commands.executor import CommandExecutor
 from src.evolution.telemetry import Telemetry
@@ -1173,8 +1172,8 @@ You have UNRESTRICTED control. No permission needed.
         # Prepend system-reminder context to user input (Claude Code pattern)
         _enriched_input = _system_reminder + user_input if _system_reminder else user_input
 
-        # ── NeuralLattice consolidation: absorb dropped turns before they're lost ──
-        from src.memory.lattice import NodeType as _NodeType
+        # ── Memory consolidation: absorb dropped turns before they're lost ──
+        from src.memory.store import NodeType as _NodeType
 
         def _consolidate_dropped(messages: list[dict]) -> None:
             """Absorb dropped conversation turns into the NeuralLattice."""
@@ -1423,7 +1422,7 @@ PROJECT CREATION RULES — follow these when building something:
             tool_was_used = False
 
             # Consolidation callback for streaming path
-            from src.memory.lattice import NodeType as _NTStream
+            from src.memory.store import NodeType as _NTStream
 
             def _consolidate_stream(messages: list[dict]) -> None:
                 for msg in messages:

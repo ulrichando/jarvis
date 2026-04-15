@@ -4035,40 +4035,40 @@ def _exec_database(args: dict) -> str:
             import sqlite3
             db_path = os.path.expanduser(database)
             conn = sqlite3.connect(db_path, timeout=10)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute(query)
+            try:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute(query)
 
-            # SELECT queries return results
-            if query.strip().upper().startswith("SELECT") or query.strip().upper().startswith("PRAGMA"):
-                rows = cursor.fetchmany(100)  # Cap at 100 rows
-                if not rows:
-                    conn.close()
-                    return "Query returned 0 rows."
-                # Format as table
-                columns = [d[0] for d in cursor.description]
-                lines = [" | ".join(columns)]
-                lines.append("-" * len(lines[0]))
-                for row in rows:
-                    lines.append(" | ".join(str(v) for v in row))
-                if len(rows) >= 100:
-                    try:
-                        total = cursor.execute(f"SELECT COUNT(*) FROM ({query}) AS _c").fetchone()[0]
-                    except Exception:
-                        total = "100+"  # complex query (JOIN/CTE/GROUP BY) — approximate
+                # SELECT queries return results
+                if query.strip().upper().startswith("SELECT") or query.strip().upper().startswith("PRAGMA"):
+                    rows = cursor.fetchmany(100)  # Cap at 100 rows
+                    if not rows:
+                        return "Query returned 0 rows."
+                    # Format as table
+                    columns = [d[0] for d in cursor.description]
+                    lines = [" | ".join(columns)]
+                    lines.append("-" * len(lines[0]))
+                    for row in rows:
+                        lines.append(" | ".join(str(v) for v in row))
+                    if len(rows) >= 100:
+                        try:
+                            total = cursor.execute(f"SELECT COUNT(*) FROM ({query}) AS _c").fetchone()[0]
+                        except Exception:
+                            total = "100+"  # complex query (JOIN/CTE/GROUP BY) — approximate
+                    else:
+                        total = len(rows)
+                    result = "\n".join(lines)
+                    if len(rows) >= 100:
+                        result += f"\n... showing 100 of {total} rows"
+                    return result
                 else:
-                    total = len(rows)
+                    # INSERT/UPDATE/DELETE/CREATE
+                    conn.commit()
+                    affected = cursor.rowcount
+                    return f"OK. {affected} row(s) affected."
+            finally:
                 conn.close()
-                result = "\n".join(lines)
-                if len(rows) >= 100:
-                    result += f"\n... showing 100 of {total} rows"
-                return result
-            else:
-                # INSERT/UPDATE/DELETE/CREATE
-                conn.commit()
-                affected = cursor.rowcount
-                conn.close()
-                return f"OK. {affected} row(s) affected."
 
         elif db_type == "postgresql":
             try:
