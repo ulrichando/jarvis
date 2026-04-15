@@ -31,6 +31,39 @@ try:
 except ImportError:
     _wcswidth = None
 
+# ── prompt_toolkit — proper REPL input ────────────────────────────────────
+try:
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.history import FileHistory
+    from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+    from prompt_toolkit.completion import Completer, Completion
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.formatted_text import HTML
+    from prompt_toolkit.styles import Style as PTStyle
+    _PROMPT_TOOLKIT = True
+except ImportError:
+    _PROMPT_TOOLKIT = False
+
+# ── rich — markdown rendering + syntax highlighting ───────────────────────
+try:
+    from rich.console import Console as _RichConsole
+    from rich.markdown import Markdown as _RichMarkdown
+    from rich.syntax import Syntax as _RichSyntax
+    from rich.theme import Theme as _RichTheme
+    from io import StringIO as _StringIO
+    _RICH = True
+    _rich_theme = _RichTheme({
+        "markdown.h1": "bold cyan",
+        "markdown.h2": "bold blue",
+        "markdown.h3": "bold",
+        "markdown.code": "bold green",
+        "markdown.code_block": "green",
+        "markdown.link": "underline blue",
+        "markdown.item.bullet": "cyan",
+    })
+except ImportError:
+    _RICH = False
+
 
 # ── Enum choices for CLI options ─────────────────────────────────────────────
 from enum import Enum
@@ -412,56 +445,97 @@ def _highlight_code(code: str, lang: str) -> str:
 
 
 def render_markdown(text: str) -> str:
-    """Render markdown to ANSI-styled terminal output."""
+    """Render markdown to ANSI using rich (falls back to legacy if unavailable)."""
+    if not _RICH or not text:
+        return _render_markdown_legacy(text)
+    try:
+        buf = _StringIO()
+        tw = 80
+        try:
+            tw = os.get_terminal_size().columns
+        except OSError:
+            pass
+        console = _RichConsole(
+            file=buf,
+            force_terminal=True,
+            width=tw,
+            theme=_rich_theme,
+            highlight=False,
+        )
+        console.print(_RichMarkdown(text, code_theme="monokai"))
+        result = buf.getvalue()
+        # Strip trailing newline rich always adds — _outputln adds its own
+        return result.rstrip("\n")
+    except Exception:
+        return _render_markdown_legacy(text)
+
+
+def _render_markdown_legacy(text: str) -> str:
+    """Original ANSI-based markdown renderer (fallback when rich is unavailable)."""
+    if not text:
+        return ""
     lines = text.split("\n")
-    output = []
+    out = []
     in_code = False
     code_lang = ""
+    code_lines = []
 
     for line in lines:
-        # Code fence
-        if line.strip().startswith("```"):
+        # Fenced code blocks
+        if line.startswith("```"):
             if not in_code:
-                code_lang = line.strip()[3:].strip()
-                output.append(f"  {GREY}╭─ {code_lang}{RESET}")
                 in_code = True
+                code_lang = line[3:].strip()
+                code_lines = []
             else:
-                output.append(f"  {GREY}╰─{RESET}")
                 in_code = False
+                code_block = "\n".join(code_lines)
+                highlighted = _highlight_code(code_block, code_lang)
+                out.append(f"{BG_DARK}")
+                for cl in highlighted.split("\n"):
+                    out.append(f"  {cl}")
+                out.append(f"{RESET}")
                 code_lang = ""
+                code_lines = []
             continue
 
         if in_code:
-            highlighted = _highlight_code(line, code_lang)
-            output.append(f"  {BG_DARK}  {highlighted}  {RESET}")
+            code_lines.append(line)
             continue
 
         # Headings
         if line.startswith("### "):
-            output.append(f"\n  {BLUE}{line[4:]}{RESET}")
+            out.append(f"{BOLD}{line[4:]}{RESET}")
         elif line.startswith("## "):
-            output.append(f"\n  {WHITE}{BOLD}{line[3:]}{RESET}")
+            out.append(f"{BOLD}{CYAN}{line[3:]}{RESET}")
         elif line.startswith("# "):
-            output.append(f"\n  {CYAN}{BOLD}{line[2:]}{RESET}")
-        # Bullet lists
-        elif line.strip().startswith("- ") or line.strip().startswith("* "):
-            indent = len(line) - len(line.lstrip())
-            content = line.strip()[2:]
-            output.append(f"{'  ' * (indent // 2 + 1)}  • {_inline_format(content)}")
-        # Numbered lists
-        elif re.match(r'\s*\d+\.\s', line):
-            output.append(f"  {_inline_format(line)}")
-        # Block quotes
-        elif line.strip().startswith("> "):
-            output.append(f"  {GREY}│ {line.strip()[2:]}{RESET}")
+            out.append(f"{BOLD}{WHITE}{line[2:]}{RESET}")
         # Horizontal rule
-        elif line.strip() in ("---", "***", "___"):
-            output.append(f"  {GREY}{'─' * 50}{RESET}")
-        # Normal text
+        elif re.match(r'^[-*_]{3,}$', line.strip()):
+            try:
+                tw = os.get_terminal_size().columns
+            except OSError:
+                tw = 80
+            out.append(f"{DIM}{'─' * tw}{RESET}")
+        # Bullet lists
+        elif re.match(r'^\s*[-*+] ', line):
+            indent = len(line) - len(line.lstrip())
+            content = re.sub(r'^\s*[-*+] ', '', line)
+            out.append(" " * indent + f"  {CYAN}•{RESET} {_inline_format(content)}")
+        # Numbered lists
+        elif re.match(r'^\s*\d+\. ', line):
+            m = re.match(r'^(\s*)(\d+)\. (.+)', line)
+            if m:
+                out.append(f"{m.group(1)}  {CYAN}{m.group(2)}.{RESET} {_inline_format(m.group(3))}")
+            else:
+                out.append(_inline_format(line))
+        # Blockquotes
+        elif line.startswith("> "):
+            out.append(f"  {DIM}│{RESET} {_inline_format(line[2:])}")
         else:
-            output.append(f"  {_inline_format(line)}")
+            out.append(_inline_format(line))
 
-    return "\n".join(output)
+    return "\n".join(out)
 
 
 def _inline_format(text: str) -> str:
@@ -2203,6 +2277,10 @@ async def main(args: types.SimpleNamespace):
     _real_stderr = sys.stderr
     sys.stderr = _StderrInterceptor(_real_stderr)
 
+    # Session-level counters exposed to the bottom toolbar
+    _session_turn = 0        # number of completed query turns
+    _session_tokens = 0      # running total of tokens used this session
+
     # Helper to full redraw (used by /clear and resize)
     def _redraw():
         nonlocal model_name, provider_name, cwd_display, session_name, cmd_count, _frame_drawn
@@ -2272,6 +2350,95 @@ async def main(args: types.SimpleNamespace):
             self.description = description
             self.aliases = []
             self.is_model = True
+
+    # ── prompt_toolkit session — replaces raw tty input ─────────────────────
+    _pt_session = None
+    if _PROMPT_TOOLKIT and sys.stdin.isatty():
+        _history_file = os.path.expanduser("~/.jarvis/history")
+        os.makedirs(os.path.dirname(_history_file), exist_ok=True)
+
+        class _SlashCompleter(Completer):
+            def get_completions(self, document, complete_event):
+                text = document.text_before_cursor
+                if not text.startswith("/"):
+                    return
+                prefix = text[1:].lower()
+                try:
+                    from src.commands import registry as _reg
+                    cmds = sorted(_reg.list_commands(include_hidden=False), key=lambda c: c.name)
+                except Exception:
+                    return
+                seen = set()
+                for cmd in cmds:
+                    names = [cmd.name] + [a.lstrip("/") for a in (cmd.aliases or [])]
+                    for n in names:
+                        if n.lower().startswith(prefix) and n not in seen:
+                            seen.add(n)
+                            display_meta = cmd.description[:60] if cmd.description else ""
+                            yield Completion(
+                                "/" + cmd.name,
+                                start_position=-len(text),
+                                display=f"/{cmd.name}",
+                                display_meta=display_meta,
+                            )
+
+        _pt_style = PTStyle.from_dict({
+            "prompt":        "bold cyan",
+            "completion-menu.completion":          "bg:#1e1e2e fg:#cdd6f4",
+            "completion-menu.completion.current":  "bg:#313244 fg:#89b4fa bold",
+            "completion-menu.meta.completion":     "bg:#1e1e2e fg:#6c7086",
+            "completion-menu.meta.completion.current": "bg:#313244 fg:#a6adc8",
+            "auto-suggestion":                     "fg:#6c7086 italic",
+            "bottom-toolbar":                      "bg:#1e1e2e fg:#6c7086",
+        })
+
+        def _pt_bottom_toolbar():
+            mode_str = brain.mode if client._is_full_brain else "normal"
+            parts = []
+            # Session name (truncated)
+            _sname = session_name or "new session"
+            if len(_sname) > 24:
+                _sname = _sname[:22] + "…"
+            parts.append(_sname)
+            # Model
+            if model_name and model_name != "local":
+                parts.append(model_name)
+            # Mode (only when non-normal)
+            if mode_str and mode_str not in ("normal", "cli"):
+                parts.append(mode_str)
+            # Turn counter
+            if _session_turn > 0:
+                parts.append(f"turn {_session_turn}")
+            # Token counter (k-rounded)
+            if _session_tokens > 0:
+                tok_str = f"{_session_tokens / 1000:.1f}k tok" if _session_tokens >= 1000 else f"{_session_tokens} tok"
+                parts.append(tok_str)
+            return "  " + " · ".join(parts)
+
+        _kb = KeyBindings()
+
+        @_kb.add("c-l")
+        def _pt_clear(event):
+            event.app.renderer.clear()
+            event.app.current_buffer.text = ""
+
+        @_kb.add("c-t")
+        def _pt_show_recent(event):
+            """Ctrl+T — print recent history entries."""
+            pass  # handled at result processing level
+
+        _pt_session = PromptSession(
+            history=FileHistory(_history_file),
+            auto_suggest=AutoSuggestFromHistory(),
+            completer=_SlashCompleter(),
+            complete_while_typing=True,
+            style=_pt_style,
+            key_bindings=_kb,
+            vi_mode=False,  # keep our own vim handling; set True to use pt's built-in
+            enable_history_search=True,   # Ctrl+R built-in
+            bottom_toolbar=_pt_bottom_toolbar,
+            mouse_support=False,
+        )
 
     # ── Async input reader with slash command autocomplete ──
     async def _async_read_input(mode_prefix, tw):
@@ -2983,6 +3150,7 @@ async def main(args: types.SimpleNamespace):
         full_text = ""
         tool_count = 0
         _streaming_text = False
+        _stream_rerender_safe = True  # set False on cancel/error mid-stream
         _tool_states = []
         _tokens_this_turn = 0
 
@@ -3108,7 +3276,9 @@ async def main(args: types.SimpleNamespace):
                         _streaming_text = True
                         # Erase frame once, write prefix — cursor now inline in output.
                         _erase_frame()
-                        _write(f"  {CYAN}●{RESET} ")
+                        # Save cursor position here so we can rewind after streaming
+                        # and re-render the full response with rich markdown.
+                        _write(f"\0337  {CYAN}●{RESET} ")
                     full_text += chunk
                     # Write chunk inline — no erase/redraw per token.
                     # Frame is redrawn once after streaming ends.
@@ -3130,8 +3300,10 @@ async def main(args: types.SimpleNamespace):
 
         except asyncio.CancelledError:
             # Keep any text already streamed; don't discard partial response
+            _stream_rerender_safe = False
             _outputln(f"\n  {DIM}Cancelled.{RESET}")
         except Exception as e:
+            _stream_rerender_safe = False
             full_text = f"Error: {str(e)[:80]}"
         finally:
             _stop_spin()
@@ -3150,8 +3322,18 @@ async def main(args: types.SimpleNamespace):
 
         if full_text.strip() and not _streaming_text:
             _outputln(f"  {CYAN}●{RESET} {render_markdown(full_text.strip())}")
+        elif full_text.strip() and _streaming_text and _RICH and _stream_rerender_safe:
+            # Rewind to saved cursor position (before the ● prefix), clear to end of
+            # screen, and re-render the complete response with rich markdown so that
+            # **bold**, `code`, headings, etc. display properly instead of raw symbols.
+            rendered = render_markdown(full_text.strip())
+            _write(f"\0338\033[J  {CYAN}●{RESET} {rendered}\n")
+            sys.stdout.flush()
 
         # ── Turn summary footer ────────────────────────────────────────
+        nonlocal _session_turn, _session_tokens
+        _session_turn += 1
+        _session_tokens += _tokens_this_turn
         elapsed_turn = time.time() - start
         _summary_parts = [f"{elapsed_turn:.1f}s"]
         if tool_count:
@@ -3242,11 +3424,30 @@ async def main(args: types.SimpleNamespace):
                 tw = _tw()
 
                 try:
-                    _draw_input_frame(mode_prefix)
+                    if _pt_session is not None:
+                        try:
+                            _erase_frame()
+                            _mode_str = brain.mode if client._is_full_brain else "normal"
+                            _prompt_str = f"[{_mode_str}] ❯ " if _mode_str != "normal" else "❯ "
+                            user_input = await _pt_session.prompt_async(
+                                _prompt_str,
+                                default="",
+                            )
+                            user_input = (user_input or "").strip()
+                            _output_buf_text[0] = ""
+                        except KeyboardInterrupt:
+                            if _active_task and not _active_task.done():
+                                _active_task.cancel()
+                            user_input = ""
+                        except EOFError:
+                            user_input = None
+                    else:
+                        _draw_input_frame(mode_prefix)
 
-                    _in_input = True
-                    user_input = await _async_read_input(mode_prefix, tw)
-                    _in_input = False
+                        _in_input = True
+                        user_input = await _async_read_input(mode_prefix, tw)
+                        _in_input = False
+
                     if user_input is None:
                         raise EOFError
 

@@ -47,6 +47,9 @@ dependencies = [
     # LangSmith observability (opt-in via LANGCHAIN_TRACING_V2=true)
     "langsmith>=0.2.0",
     # NOTE: chromadb removed — Weaviate handles both RAG docs and long-term memory
+    # CLI — rich terminal rendering + proper REPL
+    "prompt_toolkit>=3.0.0",
+    "rich>=13.0.0",
 ]
 
 [project.optional-dependencies]
