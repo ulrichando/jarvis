@@ -7,8 +7,7 @@ import asyncio
 from src.internet.search import web_search
 from src.internet.scraper import fetch_page
 from src.reasoning.groq_client import GroqReasoner
-from src.memory.store import MemoryStore
-from src.memory.lattice.node import NodeType
+from src.memory.store import MemoryStore, NodeType
 
 
 class InternetLearner:

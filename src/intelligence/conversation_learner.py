@@ -10,7 +10,7 @@ Instead of memorizing every sentence, JARVIS extracts:
 This runs AFTER every response, analyzing the conversation for learnable moments.
 """
 
-from src.memory.lattice.node import NodeType
+from src.memory.store import NodeType
 
 
 EXTRACT_PROMPT = """Analyze this conversation. Extract useful knowledge about Ulrich and how JARVIS should behave.

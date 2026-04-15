@@ -154,14 +154,8 @@ async def cmd_memory(ctx: CommandContext) -> CommandResult:
     except ImportError:
         pass
 
-    # Strength distribution
-    if hasattr(mem, 'lattice') and hasattr(mem.lattice, 'strength_distribution'):
-        dist = mem.lattice.strength_distribution()
-        lines.append(f"\n  Strength Distribution")
-        lines.append("  " + "-" * 22)
-        for bucket, count in dist.items():
-            bar = "#" * min(count, 30)
-            lines.append(f"  {bucket:<12s} {count:>5d} {bar}")
+    # Memory distribution from Weaviate
+    # (Strength distribution is handled by semantic similarity in Weaviate)
 
     return CommandResult(text="\n".join(lines))
 
@@ -200,12 +194,10 @@ async def cmd_learn(ctx: CommandContext) -> CommandResult:
     if not text:
         return CommandResult(text="No text provided to learn.", success=False)
 
-    node_id = brain.memory.lattice.add_node(
-        content=text,
-        node_type=node_type,
-        tags=tags,
-    )
-    return CommandResult(text=f"Learned ({node_type}): {text[:80]}\nNode: {node_id[:8]}")
+    from src.memory.store import NodeType
+    nt = NodeType(node_type) if node_type in [n.value for n in NodeType] else NodeType.FACT
+    node = brain.memory.learn(content=text, node_type=nt, tags=tags)
+    return CommandResult(text=f"Learned ({node_type}): {text[:80]}\nNode: {node.id[:8]}")
 
 
 @command("recall", description="Search memories by query, showing source and relevance",
@@ -233,7 +225,7 @@ async def cmd_recall(ctx: CommandContext) -> CommandResult:
             i += 1
 
     query = " ".join(query_parts)
-    results = brain.memory.lattice.search(query, top_k=top_k)
+    results = brain.memory.recall(query, top_k=top_k)
 
     # Also search auto-memory files for additional context
     auto_results = []

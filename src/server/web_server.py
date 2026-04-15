@@ -18,6 +18,14 @@ import tempfile
 import uuid
 from pathlib import Path
 
+# Load .env file early so PostgreSQL and other config is available
+try:
+    from dotenv import load_dotenv
+    env_path = Path(__file__).parent.parent.parent / ".env"
+    load_dotenv(env_path)
+except Exception:
+    pass  # dotenv not installed or .env not found — ok, use env vars as-is
+
 # Suppress JACK/ALSA noise before any audio library loads
 os.environ.setdefault("JACK_NO_AUDIO_RESERVATION", "1")
 os.environ.setdefault("PYTHONWARNINGS", "ignore")
@@ -2168,15 +2176,22 @@ class JarvisWebServer:
         })
 
     async def mesh_knowledge(self, request: web.Request) -> web.Response:
-        from src.memory.lattice.node import NodeType
+        """Return all learned facts (from Weaviate)."""
+        from src.memory.store import NodeType
         facts = []
-        for nid, node in self.brain.memory.lattice.nodes.items():
-            if node.node_type in (NodeType.FACT, NodeType.SKILL) and node.is_alive:
-                facts.append({"content": node.content, "type": node.node_type.value})
+        # Query Weaviate for recent facts
+        try:
+            results = self.brain.memory.recall("fact", top_k=100)
+            for node in results:
+                if node.node_type in (NodeType.FACT, NodeType.SKILL):
+                    facts.append({"content": node.content, "type": node.node_type.value})
+        except Exception as e:
+            self.logger.debug(f"mesh_knowledge failed: {e}")
         return web.json_response({"facts": facts})
 
     async def mesh_learn(self, request: web.Request) -> web.Response:
-        from src.memory.lattice.node import NodeType
+        """Learn facts from mesh."""
+        from src.memory.store import NodeType
         data = await request.json()
         facts = data.get("facts", [])
         learned = 0
@@ -4737,6 +4752,18 @@ class JarvisWebServer:
             try: await ws.close()
             except (ConnectionError, RuntimeError): pass
         self._server_mic_running = False
+        # Close all database connections before shutdown
+        if self.brain:
+            if hasattr(self.brain, 'memory') and hasattr(self.brain.memory, 'close'):
+                try:
+                    self.brain.memory.close()
+                except Exception as e:
+                    logger.warning("Could not close memory: %s", e)
+            if hasattr(self.brain, 'telemetry') and hasattr(self.brain.telemetry, 'close'):
+                try:
+                    self.brain.telemetry.close()
+                except Exception as e:
+                    logger.warning("Could not close telemetry: %s", e)
         await runner.cleanup()
         # Remove PID file
         try: os.unlink(self._pid_file)

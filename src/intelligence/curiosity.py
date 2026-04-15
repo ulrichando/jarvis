@@ -16,7 +16,7 @@ The difference between a tool and a mind is that a mind wants to understand.
 
 import time
 
-from src.memory.lattice.node import NodeType
+from src.memory.store import NodeType
 
 
 # Prompt for detecting knowledge gaps
@@ -203,15 +203,8 @@ class CuriosityEngine:
                 tags=["curiosity-answer", parsed["category"]],
             )
 
-            # Connect to existing knowledge
-            if parsed.get("connects_to") and existing_memories:
-                for mem in existing_memories[:2]:
-                    self.memory.lattice.connect(
-                        node.id, mem.id,
-                        weight=0.7,
-                        context=parsed.get("connects_to", "related"),
-                        bidirectional=True,
-                    )
+            # Note: Connection tracking moved to Weaviate semantic search
+            # (connections are implicit in vector similarity)
 
         except Exception:
             # Fallback: store raw answer

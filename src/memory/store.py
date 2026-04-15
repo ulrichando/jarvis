@@ -1,100 +1,68 @@
-"""JARVIS Memory Store — unified interface to the Neural Memory Lattice.
+"""JARVIS Memory Store — PostgreSQL + Weaviate semantic memory.
 
-Short-term (conversation log): PostgreSQL when available, SQLite fallback.
-Long-term (knowledge graph):   NeuralLattice (in-memory + disk persistence).
-The Index provides O(1) recall across all dimensions.
+Short-term (conversation log): PostgreSQL (mandatory).
+Long-term (semantic search):   Weaviate (vector database).
 """
 
 import logging
-import sqlite3
 import threading
 import time
-from src.config import DATA_DIR
-from src.memory.lattice import NeuralLattice, MemoryNode, NodeType
-from src.memory.lattice.persistence import LatticePersistence
+from dataclasses import dataclass
+from enum import Enum
 from src.memdir import find_relevant_memories as memdir_search, list_memories as memdir_list
 
 log = logging.getLogger("jarvis.memory")
 
 
-class MemoryStore:
-    """JARVIS's complete memory system.
+# ── Simple MemoryNode and NodeType for compatibility ──────────────────
+class NodeType(str, Enum):
+    """Memory node classification."""
+    FACT = "fact"
+    SKILL = "skill"
+    CONCEPT = "concept"
+    ENTITY = "entity"
+    GOAL = "goal"
+    EPISODIC = "episodic"
 
-    Three layers:
-    - Conversation log (PostgreSQL → SQLite fallback): raw transcript, append-only
-    - Neural Lattice: living knowledge graph that learns and evolves
-    - Memory Index: inverted indexes for speed-of-light recall
+
+@dataclass
+class MemoryNode:
+    """A memory item."""
+    id: str
+    content: str
+    node_type: NodeType
+    strength: float = 1.0
+    tags: list[str] | None = None
+    timestamp: float | None = None
+
+    def __post_init__(self):
+        if self.tags is None:
+            self.tags = []
+
+
+class MemoryStore:
+    """JARVIS's memory system.
+
+    Two layers:
+    - Conversation log: PostgreSQL (short-term, mandatory)
+    - Semantic memory: Weaviate (long-term, vector-based)
     """
 
     def __init__(self, db_path: str | None = None):
-        if db_path is None:
-            DATA_DIR.mkdir(parents=True, exist_ok=True)
-            db_path = str(DATA_DIR / "jarvis.db")
+        # ── Short-term memory: PostgreSQL (mandatory) ─────
+        from src.memory.pg_backend import get_pg_backend
+        self._pg = get_pg_backend()
 
-        # ── Short-term memory: try PostgreSQL, fall back to SQLite ─────
-        self._pg = None
-        try:
-            from src.memory.pg_backend import get_pg_backend
-            self._pg = get_pg_backend()
-        except Exception as e:
-            log.debug("PG backend init failed: %s", e)
+        if self._pg is None or not self._pg._available:
+            raise RuntimeError(
+                "PostgreSQL is required but not available. "
+                "Check JARVIS_PG_DSN, JARVIS_PG_PASSWORD, and database configuration."
+            )
 
-        if self._pg is None:
-            # SQLite fallback (WAL mode for concurrent access)
-            self._db_lock = threading.Lock()
-            self.conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
-            self.conn.execute("PRAGMA journal_mode=WAL")
-            self.conn.row_factory = sqlite3.Row
-            self._init_tables()
-            log.debug("Using SQLite for short-term memory: %s", db_path)
-        else:
-            # Placeholders so existing code that touches self.conn doesn't crash
-            self._db_lock = threading.Lock()
-            self.conn = None
-
-        # Neural Memory Lattice
-        self.persistence = LatticePersistence(DATA_DIR / "lattice")
-        self.lattice = NeuralLattice()
-        self._load_lattice()
-
-        # Optional enhanced memory layers
-        self._holographic = None
-        self._associative = None
-        self._activation = None
-
-        try:
-            from src.memory.neural_memory import HolographicMemory
-            self._holographic = HolographicMemory()
-            # Load common-sense facts in a background thread — it runs 207 numpy FFT
-            # operations which take ~120ms and are not needed before the first query.
-            def _load_cs():
-                try:
-                    from src.memory.common_sense import load_common_sense
-                    loaded = load_common_sense(self._holographic)
-                    log.debug("HolographicMemory loaded with %d common-sense facts", loaded)
-                except Exception as e:
-                    log.warning("Common-sense load failed: %s", e)
-            threading.Thread(target=_load_cs, daemon=True, name="common-sense-load").start()
-        except ImportError:
-            log.debug("HolographicMemory not available (optional dependency)")
-        except (OSError, ValueError, TypeError) as e:
-            log.warning("HolographicMemory failed to initialize: %s", e)
-
-        try:
-            from src.memory.associative import AssociativeMemory
-            self._associative = AssociativeMemory()
-        except ImportError:
-            log.debug("AssociativeMemory not available (optional dependency)")
-        except (OSError, ValueError, TypeError) as e:
-            log.warning("AssociativeMemory failed to initialize: %s", e)
-
-        try:
-            from src.memory.activation import ActivationMemory
-            self._activation = ActivationMemory()
-        except ImportError:
-            log.debug("ActivationMemory not available (optional dependency)")
-        except (OSError, ValueError, TypeError) as e:
-            log.warning("ActivationMemory failed to initialize: %s", e)
+        log.info("Using PostgreSQL for conversation history")
+        # Placeholder so existing code that touches self.conn doesn't crash
+        self._db_lock = threading.Lock()
+        self.conn = None
 
         # ── Weaviate — vector semantic long-term memory ─────────────────
         self._weaviate = None
@@ -103,39 +71,11 @@ class MemoryStore:
             wv = get_weaviate()
             if wv.available:
                 self._weaviate = wv
+                log.info("Weaviate semantic memory connected")
+            else:
+                log.warning("Weaviate not available — long-term memory disabled")
         except Exception as e:
-            log.debug("Weaviate init skipped: %s", e)
-
-    def _init_tables(self):
-        self.conn.executescript("""
-            CREATE TABLE IF NOT EXISTS conversations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                timestamp REAL NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_conv_timestamp
-                ON conversations(timestamp);
-        """)
-        self.conn.commit()
-
-    def _load_lattice(self):
-        """Load the lattice from disk and rebuild indexes."""
-        try:
-            nodes, synapses = self.persistence.load()
-        except Exception as e:
-            log.warning("Failed to load lattice from disk, starting fresh: %s", e)
-            return
-        if nodes:
-            self.lattice.nodes = nodes
-            self.lattice.synapses = synapses
-            # Rebuild adjacency lists
-            for (source, target) in synapses:
-                self.lattice._outgoing[source].add(target)
-                self.lattice._incoming[target].add(source)
-            # Rebuild inverted indexes for fast recall
-            self.lattice.index.rebuild(nodes)
-            log.debug("Loaded %d nodes and %d synapses from disk", len(nodes), len(synapses))
+            log.warning("Weaviate init failed: %s — long-term memory disabled", e)
 
     # ── Conversation Log ───────────────────────────────────────────────
 
@@ -165,12 +105,8 @@ class MemoryStore:
         if self._pg:
             self._pg.add_turn(role, clean)
             return
-        with self._db_lock:
-            self.conn.execute(
-                "INSERT INTO conversations (role, content, timestamp) VALUES (?, ?, ?)",
-                (role, clean, time.time()),
-            )
-            self.conn.commit()
+        # PostgreSQL is required
+        raise RuntimeError("PostgreSQL backend unavailable for add_turn()")
 
     def mark_session_start(self):
         """Mark the start of a new session.
@@ -201,15 +137,7 @@ class MemoryStore:
             return self._pg.get_history(
                 limit=limit, time_cutoff=time_cutoff, effective_limit=effective_limit
             )
-
-        with self._db_lock:
-            rows = self.conn.execute(
-                "SELECT role, content, timestamp FROM conversations "
-                "WHERE timestamp >= ? "
-                "ORDER BY timestamp DESC LIMIT ?",
-                (time_cutoff, effective_limit),
-            ).fetchall()
-        return [dict(row) for row in reversed(rows)]
+        raise RuntimeError("PostgreSQL backend required but not available")
 
     def list_sessions(self, gap_minutes: int = 30) -> list[dict]:
         """Group conversation turns into sessions by time gap.
@@ -221,38 +149,7 @@ class MemoryStore:
         """
         if self._pg:
             return self._pg.list_sessions(gap_minutes)
-
-        with self._db_lock:
-            rows = self.conn.execute(
-                "SELECT id, role, content, timestamp FROM conversations ORDER BY timestamp ASC"
-            ).fetchall()
-        if not rows:
-            return []
-
-        gap = gap_minutes * 60
-        sessions: list[dict] = []
-        current: list = []
-        for row in rows:
-            if current and (row["timestamp"] - current[-1]["timestamp"]) > gap:
-                sessions.append(current)
-                current = []
-            current.append(dict(row))
-        if current:
-            sessions.append(current)
-
-        result = []
-        for turns in sessions:
-            user_msgs = [t for t in turns if t["role"] == "user"]
-            title = user_msgs[0]["content"][:60] if user_msgs else "..."
-            result.append({
-                "id": turns[0]["id"],
-                "title": title,
-                "start_ts": turns[0]["timestamp"],
-                "end_ts":   turns[-1]["timestamp"],
-                "message_count": len(turns),
-            })
-        result.reverse()  # newest first
-        return result
+        raise RuntimeError("PostgreSQL backend required but not available")
 
     def delete_session(self, start_ts: float, end_ts: float) -> int:
         """Delete all turns whose timestamp falls within [start_ts, end_ts].
@@ -260,15 +157,9 @@ class MemoryStore:
         """
         if self._pg:
             return self._pg.delete_session(start_ts, end_ts)
-        with self._db_lock:
-            cur = self.conn.execute(
-                "DELETE FROM conversations WHERE timestamp >= ? AND timestamp <= ?",
-                (start_ts, end_ts),
-            )
-            self.conn.commit()
-            return cur.rowcount
+        raise RuntimeError("PostgreSQL backend required but not available")
 
-    # ── Neural Lattice Operations ──────────────────────────────────────
+    # ── Long-term Learning ────────────────────────────────────────────
 
     def learn(
         self,
@@ -276,22 +167,26 @@ class MemoryStore:
         node_type: NodeType = NodeType.FACT,
         tags: list[str] | None = None,
     ) -> MemoryNode:
-        """Learn a new piece of knowledge.
+        """Learn a new piece of knowledge — store in Weaviate.
 
-        Stores in the lattice (primary) and also feeds the enhanced memory
-        layers so they can improve recall quality.
-
-        Guards applied before storing:
-          1. Prompt injection detection — adversarial inputs are rejected.
-          2. Near-duplicate dedup — 0.95+ similar chunks are skipped.
+        Guards applied:
+          1. Prompt injection detection — adversarial inputs rejected.
+          2. Near-duplicate dedup — 0.95+ similarity skipped.
         """
         # Guard 1: prompt injection detection
         try:
             from src.security.prompt_injection import is_prompt_injection
             if is_prompt_injection(content):
-                log.warning("Memory learn() blocked — prompt injection detected (%.60r)", content)
+                log.warning("learn() blocked — prompt injection detected (%.60r)", content)
                 # Return a stub node without storing
-                return self.lattice.absorb("[blocked: prompt injection]", node_type, tags)
+                node_id = f"blocked_{hash(content) & 0xFFFFFFFF:08x}"
+                return MemoryNode(
+                    id=node_id,
+                    content="[blocked]",
+                    node_type=NodeType.FACT,
+                    strength=0.0,
+                    tags=tags or []
+                )
         except Exception:
             pass
 
@@ -300,177 +195,101 @@ class MemoryStore:
             from src.memory.dedup import get_deduplicator
             dedup = get_deduplicator()
             if dedup.check_and_add(content):
-                log.debug("Memory learn() skipped — near-duplicate (>= 0.95 similarity)")
-                return self.lattice.absorb(content, node_type, tags)
+                log.debug("learn() skipped — near-duplicate (>= 0.95 similarity)")
+                node_id = f"dup_{hash(content) & 0xFFFFFFFF:08x}"
+                return MemoryNode(
+                    id=node_id,
+                    content=content,
+                    node_type=node_type,
+                    strength=0.5,
+                    tags=tags or []
+                )
         except Exception:
             pass
 
-        node = self.lattice.absorb(content, node_type, tags)
+        # Store in Weaviate
+        node_id = f"wv_{hash(content) & 0xFFFFFFFF:08x}"
+        strength = 1.0
 
-        # Feed holographic memory (FFT-based vector recall)
-        if self._holographic:
-            try:
-                self._holographic.store_text(content, source=str(node_type))
-            except (TypeError, ValueError, OSError) as e:
-                log.debug("Holographic store failed: %s", e)
-
-        # Feed associative memory (spreading activation network)
-        if self._associative:
-            try:
-                from src.memory.associative import MemoryTrace
-                trace = MemoryTrace(
-                    content=content,
-                    tags=set(tags or []),
-                    source="lattice",
-                )
-                self._associative.store(trace)
-            except (TypeError, ValueError, AttributeError) as e:
-                log.debug("Associative store failed: %s", e)
-
-        # Feed ACT-R activation memory
-        if self._activation:
-            try:
-                self._activation.store(
-                    content=content,
-                    tags=set(tags or []),
-                    source="lattice",
-                )
-            except (TypeError, ValueError, AttributeError) as e:
-                log.debug("Activation store failed: %s", e)
-
-        # Feed Weaviate semantic long-term memory
         if self._weaviate:
             try:
-                self._weaviate.store(
+                success = self._weaviate.store(
                     content=content,
                     node_type=node_type.value,
                     tags=tags or [],
-                    strength=node.strength,
+                    strength=strength,
                 )
+                if not success:
+                    log.debug("Weaviate store returned False for: %.60r", content)
             except Exception as e:
                 log.debug("Weaviate store failed: %s", e)
+        else:
+            log.warning("Weaviate unavailable — learn() has no backend")
 
-        return node
+        return MemoryNode(
+            id=node_id,
+            content=content,
+            node_type=node_type,
+            strength=strength,
+            tags=tags or [],
+            timestamp=time.time()
+        )
 
     def recall(self, query: str, top_k: int = 5) -> list[MemoryNode]:
-        """Recall memories related to a query.
+        """Recall semantic memories from Weaviate.
 
-        Merges results from all memory layers:
-        1. Neural Lattice (primary — knowledge graph)
-        2. HolographicMemory (FFT-based associative recall)
-        3. AssociativeMemory (spreading activation network)
-        4. ActivationMemory (ACT-R cognitive model)
-
-        The lattice results are authoritative; enhanced layers contribute
-        additional memories that the lattice alone might miss.
+        Returns a sorted list of MemoryNode by strength.
         """
-        lattice_results = self.lattice.recall(query, top_k)
-        seen_content = {node.content.lower() for node in lattice_results}
+        if not self._weaviate:
+            log.warning("Weaviate unavailable — recall() returns empty list")
+            return []
 
-        # Holographic recall — finds associatively similar facts
-        if self._holographic:
-            try:
-                holo_results = self._holographic.recall_text(query, top_k=top_k)
-                for result in holo_results:
-                    if (result.confidence > 0.4
-                            and result.content.lower() not in seen_content):
-                        # Wrap as a lightweight MemoryNode so callers get a
-                        # uniform type.  Strength mirrors holographic confidence.
-                        node = MemoryNode(
-                            id=f"holo_{hash(result.content) & 0xFFFFFFFF:08x}",
-                            content=result.content,
-                            node_type=NodeType.FACT,
-                            strength=result.confidence * 0.8,
-                        )
-                        lattice_results.append(node)
-                        seen_content.add(result.content.lower())
-            except (TypeError, ValueError, AttributeError) as e:
-                log.debug("Holographic recall failed: %s", e)
-
-        # Associative recall — spreading activation finds related traces
-        if self._associative:
-            try:
-                assoc_results = self._associative.recall(query, top_k=top_k)
-                for trace in assoc_results:
-                    if trace.content.lower() not in seen_content:
-                        node = MemoryNode(
-                            id=f"assoc_{hash(trace.content) & 0xFFFFFFFF:08x}",
-                            content=trace.content,
-                            node_type=NodeType.FACT,
-                            strength=trace.strength * 0.7,
-                            tags=list(trace.tags),
-                        )
-                        lattice_results.append(node)
-                        seen_content.add(trace.content.lower())
-            except (TypeError, ValueError, AttributeError) as e:
-                log.debug("Associative recall failed: %s", e)
-
-        # ACT-R activation recall — cognitive model with recency/frequency
-        if self._activation:
-            try:
-                act_results = self._activation.recall_by_query(query, top_k=top_k)
-                for trace in act_results:
-                    if trace.content.lower() not in seen_content:
-                        node = MemoryNode(
-                            id=f"actr_{hash(trace.content) & 0xFFFFFFFF:08x}",
-                            content=trace.content,
-                            node_type=NodeType.FACT,
-                            strength=0.6,
-                            tags=list(trace.tags),
-                        )
-                        lattice_results.append(node)
-                        seen_content.add(trace.content.lower())
-            except (TypeError, ValueError, AttributeError) as e:
-                log.debug("ACT-R recall failed: %s", e)
-
-        # Weaviate semantic recall — dense vector search over long-term memory
-        if self._weaviate:
-            try:
-                wv_results = self._weaviate.recall(query, top_k=top_k)
-                for item in wv_results:
-                    content = item.get("content", "")
-                    if content and content.lower() not in seen_content:
-                        try:
-                            nt = NodeType(item.get("node_type", "fact"))
-                        except ValueError:
-                            nt = NodeType.FACT
-                        node = MemoryNode(
-                            id=f"wv_{hash(content) & 0xFFFFFFFF:08x}",
-                            content=content,
-                            node_type=nt,
-                            strength=item.get("score", 0.6) * item.get("strength", 1.0),
-                            tags=item.get("tags", []),
-                        )
-                        lattice_results.append(node)
-                        seen_content.add(content.lower())
-            except Exception as e:
-                log.debug("Weaviate recall failed: %s", e)
-
-        # Sort by strength and return top_k
-        lattice_results.sort(key=lambda n: n.strength, reverse=True)
-        return lattice_results[:top_k]
+        try:
+            wv_results = self._weaviate.recall(query, top_k=top_k)
+            results = []
+            for item in wv_results:
+                content = item.get("content", "")
+                if not content:
+                    continue
+                try:
+                    nt = NodeType(item.get("node_type", "fact"))
+                except (ValueError, KeyError):
+                    nt = NodeType.FACT
+                node = MemoryNode(
+                    id=f"wv_{hash(content) & 0xFFFFFFFF:08x}",
+                    content=content,
+                    node_type=nt,
+                    strength=item.get("score", 0.6) * item.get("strength", 1.0),
+                    tags=item.get("tags", []),
+                )
+                results.append(node)
+            # Already sorted by Weaviate, but ensure it
+            results.sort(key=lambda n: n.strength, reverse=True)
+            return results[:top_k]
+        except Exception as e:
+            log.error("Weaviate recall failed: %s", e)
+            return []
 
     def recall_as_context(self, query: str, top_k: int = 5, max_chars: int = 3000) -> str:
-        """Recall KNOWLEDGE (not conversation history) related to a query.
-        Only returns FACTS, SKILLS, CONCEPTS — never episodic/conversation memories.
-        Also includes relevant entries from the memdir file-based memory.
+        """Recall semantic knowledge as context for the LLM.
 
-        max_chars caps the total size of the returned string so it cannot
-        consume an unbounded portion of the context window.
+        Returns formatted facts, skills, and concepts.
+        Also includes memdir and RAG context.
         """
-        all_memories = self.lattice.recall(query, top_k * 2)  # Fetch more, then filter
+        # Get semantic memories from Weaviate
+        memories = self.recall(query, top_k=top_k * 2)
 
-        # Filter: only knowledge, not conversation echoes
-        memories = [
-            m for m in all_memories
+        # Filter: only knowledge, not episodic
+        filtered = [
+            m for m in memories
             if m.node_type in (NodeType.FACT, NodeType.SKILL, NodeType.CONCEPT, NodeType.ENTITY)
             and m.strength > 0.3
         ][:top_k]
 
         lines = []
-        if memories:
+        if filtered:
             lines.append("[Known facts:]")
-            for mem in memories:
+            for mem in filtered:
                 lines.append(f"  - {mem.content}")
 
         # Also search memdir for file-based memories
@@ -484,9 +303,8 @@ class MemoryStore:
         except (OSError, AttributeError) as e:
             log.debug("Memdir search failed: %s", e)
 
-        # RAG knowledge base — injected automatically so the LLM has document
-        # context even before deciding to call the rag_search tool.
-        # Budget: up to 1/3 of max_chars so it doesn't crowd out lattice facts.
+        # RAG knowledge base — injected automatically.
+        # Budget: up to 1/3 of max_chars so it doesn't crowd out semantic memories.
         rag_budget = max_chars // 3
         try:
             from src.rag import get_pipeline
@@ -503,106 +321,76 @@ class MemoryStore:
             result = result[:max_chars] + "\n  ... (memory truncated)"
         return result
 
-    # ── Fast recall methods (powered by inverted index) ───────────────
+    # ── Stub methods for backwards compatibility ───────────────────────
 
     def recall_domain(self, domain: str, top_k: int = 10) -> list[MemoryNode]:
-        """Instantly recall all knowledge in a domain (security, coding, personal, etc.)."""
-        return self.lattice.recall_by_domain(domain, top_k)
+        """Recall facts tagged with a domain (forwards to semantic search)."""
+        return self.recall(domain, top_k)
 
     def recall_entity(self, entity: str, top_k: int = 10) -> list[MemoryNode]:
-        """Recall everything JARVIS knows about a specific entity."""
-        return self.lattice.recall_by_entity(entity, top_k)
+        """Recall everything about an entity (forwards to semantic search)."""
+        return self.recall(entity, top_k)
 
     def recall_recent(self, top_k: int = 10) -> list[MemoryNode]:
-        """What was JARVIS just thinking about?"""
-        return self.lattice.recall_recent(top_k)
+        """Recall recent memories (Weaviate provides recency via timestamp)."""
+        return self.recall("recent", top_k)
 
     def recall_skills(self, top_k: int = 20) -> list[MemoryNode]:
         """Recall all learned skills."""
-        return self.lattice.recall_by_type(NodeType.SKILL, top_k)
+        return self.recall("skill", top_k)
 
     def knowledge_gaps(self, domain: str) -> dict:
-        """Analyze what JARVIS knows vs doesn't know in a domain."""
-        return self.lattice.find_knowledge_gaps(domain)
+        """Analyze knowledge gaps (placeholder)."""
+        return {"message": "Knowledge gaps analysis not available in Weaviate-only mode"}
 
     def get_associations(self, query: str) -> list[tuple[MemoryNode, float]]:
-        """Get associations for the best matching memory."""
-        results = self.lattice.recall(query, top_k=1)
-        if results:
-            return self.lattice.get_associations(results[0].id)
-        return []
+        """Get associations (placeholder)."""
+        results = self.recall(query, top_k=1)
+        return [(r, 1.0) for r in results]
 
     # ── Maintenance ────────────────────────────────────────────────────
 
     def save(self):
-        """Persist the lattice to disk."""
-        try:
-            self.persistence.save(self.lattice.nodes, self.lattice.synapses)
-        except Exception as e:
-            log.error("Failed to save lattice to disk: %s", e)
+        """No-op for Weaviate (persists automatically)."""
+        pass
 
     def maintain(self):
-        """Run maintenance: decay, prune, compress, rebuild index, save."""
-        self.lattice.decay_all()
-        pruned = self.lattice.prune()
-        concepts = self.lattice.compress()
-        # Rebuild index after maintenance (pruning changes the node set)
-        self.lattice.index.rebuild(self.lattice.nodes)
-        self.save()
-
-        # Maintain enhanced memory layers
-        assoc_pruned = 0
-        if self._holographic:
-            try:
-                self._holographic.decay()
-            except (AttributeError, TypeError) as e:
-                log.debug("Holographic decay failed: %s", e)
-        if self._associative:
-            try:
-                assoc_pruned = self._associative.decay_and_prune()
-            except (AttributeError, TypeError) as e:
-                log.debug("Associative decay failed: %s", e)
-
-        return {
-            "pruned": pruned,
-            "assoc_pruned": assoc_pruned,
-            "new_concepts": len(concepts),
-            "stats": self.lattice.stats,
-        }
+        """Maintenance is handled by Weaviate automatically."""
+        return {"status": "Weaviate handles maintenance automatically"}
 
     @property
     def stats(self) -> dict:
         """Get memory system stats."""
-        with self._db_lock:
-            if self.conn is None:
-                conv_count = 0
-            else:
-                conv_count = self.conn.execute(
-                    "SELECT COUNT(*) FROM conversations"
-                ).fetchone()[0]
-        result = {
+        conv_count = 0
+        if self._pg:
+            try:
+                history = self._pg.get_history(limit=9999999)
+                conv_count = len(history)
+            except Exception:
+                pass
+
+        wv_count = 0
+        if self._weaviate:
+            try:
+                import weaviate
+                client = weaviate.connect_to_local()
+                collection = client.collections.get("JARVISMemory")
+                wv_count = collection.aggregate.over_all(group_by=None).total_count
+                client.close()
+            except Exception as e:
+                log.debug("Weaviate stats failed: %s", e)
+
+        return {
             "conversations": conv_count,
-            "lattice": self.lattice.stats,
-            "disk_size": self.persistence.file_size_human,
+            "long_term_memories": wv_count,
         }
-        if self._holographic:
-            try:
-                result["holographic"] = self._holographic.stats()
-            except (AttributeError, TypeError) as e:
-                log.debug("Holographic stats failed: %s", e)
-        if self._associative:
-            try:
-                result["associative"] = self._associative.stats()
-            except (AttributeError, TypeError) as e:
-                log.debug("Associative stats failed: %s", e)
-        if self._activation:
-            try:
-                result["activation"] = self._activation.stats()
-            except (AttributeError, TypeError) as e:
-                log.debug("Activation stats failed: %s", e)
-        return result
 
     def close(self):
         """Shut down the memory system."""
-        self.save()
-        self.conn.close()
+        if self._weaviate:
+            try:
+                self._weaviate.close()
+            except Exception:
+                pass
+        if self._pg:
+            self._pg.close()

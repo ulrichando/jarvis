@@ -27,7 +27,7 @@ if str(_jarvis_root) not in sys.path:
     sys.path.insert(0, str(_jarvis_root))
 
 from src.memory.store import MemoryStore
-from src.memory.lattice import NodeType
+from src.memory.store import NodeType
 
 
 NODE_TYPE_MAP = {

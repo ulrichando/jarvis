@@ -10,7 +10,7 @@ When JARVIS doesn't know how to perform a task:
 
 import asyncio
 
-from src.memory.lattice.node import NodeType
+from src.memory.store import NodeType
 
 
 class SelfLearner:
