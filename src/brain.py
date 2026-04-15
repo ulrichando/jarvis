@@ -2235,13 +2235,9 @@ Prefix VISUAL: for long/interactive commands.""",
         self.running = True
         self.hooks.run_session_start()
         stats = self.memory.stats
-        l = stats["lattice"]
-        idx = l.get("index", {})
-        print(f"JARVIS Brain online. Memories: {l['alive_nodes']} nodes, "
-              f"{l['alive_synapses']} synapses, {l['concepts']} concepts.")
-        print(f"Index: {idx.get('unique_words', 0)} words, "
-              f"{idx.get('unique_entities', 0)} entities, "
-              f"{idx.get('unique_keywords', 0)} keywords indexed.")
+        conversations = stats.get("conversations", 0)
+        memories = stats.get("long_term_memories", 0)
+        print(f"JARVIS Brain online. Memories: {memories} semantic entries, {conversations} conversation turns.")
         mcp_count = len(self.mcp.get_tool_schemas()) if hasattr(self, 'mcp') else 0
         total = len(TOOL_SCHEMAS) + mcp_count
         print(f"Agent loop: active. Tools: {total} ({len(TOOL_SCHEMAS)} core + {mcp_count} MCP). Modes: normal/agent/cli/berbon/mobile.")
