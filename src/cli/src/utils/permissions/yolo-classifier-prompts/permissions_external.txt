@@ -1,0 +1,1 @@
+Classify permissions for external users.

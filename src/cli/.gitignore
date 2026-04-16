@@ -1,0 +1,4 @@
+.env.local
+.env.providers
+vendor/bun/linux-x64/
+vendor/bun/windows-x64/
