@@ -48,8 +48,8 @@ export function MemoryFileSelector(t0) {
     onCancel
   } = t0;
   const existingMemoryFiles = use(getMemoryFiles());
-  const userMemoryPath = join(getClaudeConfigHomeDir(), "JARVIS.md");
-  const projectMemoryPath = join(getOriginalCwd(), "JARVIS.md");
+  const userMemoryPath = join(getClaudeConfigHomeDir(), "CLAUDE.md");
+  const projectMemoryPath = join(getOriginalCwd(), "CLAUDE.md");
   const hasUserMemory = existingMemoryFiles.some(f => f.path === userMemoryPath);
   const hasProjectMemory = existingMemoryFiles.some(f_0 => f_0.path === projectMemoryPath);
   const allMemoryFiles = [...existingMemoryFiles.filter(_temp).map(_temp2), ...(hasUserMemory ? [] : [{
@@ -87,10 +87,10 @@ export function MemoryFileSelector(t0) {
     let description;
     const isGit = projectIsInGitRepo(getOriginalCwd());
     if (file.type === "User" && !file.isNested) {
-      description = "Saved in ~/.jarvis/JARVIS.md";
+      description = "Saved in ~/.jarvis/CLAUDE.md";
     } else {
       if (file.type === "Project" && !file.isNested && file.path === projectMemoryPath) {
-        description = `${isGit ? "Checked in at" : "Saved in"} ./JARVIS.md`;
+        description = `${isGit ? "Checked in at" : "Saved in"} ./CLAUDE.md`;
       } else {
         if (file.parent) {
           description = "@-imported";

@@ -60,8 +60,8 @@ export type SettingsSyncUploadResult = {
  */
 export const SYNC_KEYS = {
   USER_SETTINGS: '~/.jarvis/settings.json',
-  USER_MEMORY: '~/.jarvis/JARVIS.md',
+  USER_MEMORY: '~/.jarvis/CLAUDE.md',
   projectSettings: (projectId: string) =>
     `projects/${projectId}/.jarvis/settings.local.json`,
-  projectMemory: (projectId: string) => `projects/${projectId}/JARVIS.local.md`,
+  projectMemory: (projectId: string) => `projects/${projectId}/CLAUDE.local.md`,
 } as const

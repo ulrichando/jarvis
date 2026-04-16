@@ -112,7 +112,7 @@ ${question}`
  *
  * The old code used `.find(m => m.type === 'assistant')` which grabbed the
  * first (thinking-only) message, found no text block, and returned null →
- * "No response received". Repos with large context (many skills, big JARVIS.md)
+ * "No response received". Repos with large context (many skills, big CLAUDE.md)
  * trigger thinking more often, which is why this reproduced in the monorepo
  * but not here.
  *

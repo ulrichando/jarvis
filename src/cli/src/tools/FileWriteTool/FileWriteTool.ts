@@ -336,8 +336,8 @@ export const FileWriteTool = buildTool({
       limit: undefined,
     })
 
-    // Log when writing to JARVIS.md
-    if (fullFilePath.endsWith(`${sep}JARVIS.md`)) {
+    // Log when writing to CLAUDE.md
+    if (fullFilePath.endsWith(`${sep}CLAUDE.md`)) {
       logEvent('tengu_write_claudemd', {})
     }
 

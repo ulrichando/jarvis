@@ -1,10 +1,10 @@
 /**
  * Files are loaded in the following order:
  *
- * 1. Managed memory (eg. /etc/claude-code/JARVIS.md) - Global instructions for all users
- * 2. User memory (~/.claude/JARVIS.md) - Private global instructions for all projects
- * 3. Project memory (JARVIS.md, .claude/JARVIS.md, and .claude/rules/*.md in project roots) - Instructions checked into the codebase
- * 4. Local memory (JARVIS.local.md in project roots) - Private project-specific instructions
+ * 1. Managed memory (eg. /etc/claude-code/CLAUDE.md) - Global instructions for all users
+ * 2. User memory (~/.claude/CLAUDE.md) - Private global instructions for all projects
+ * 3. Project memory (CLAUDE.md, .claude/CLAUDE.md, and .claude/rules/*.md in project roots) - Instructions checked into the codebase
+ * 4. Local memory (CLAUDE.local.md in project roots) - Private project-specific instructions
  *
  * Files are loaded in reverse order of priority, i.e. the latest files are highest priority
  * with the model paying more attention to them.
@@ -13,7 +13,7 @@
  * - User memory is loaded from the user's home directory
  * - Project and Local files are discovered by traversing from the current directory up to root
  * - Files closer to the current directory have higher priority (loaded later)
- * - JARVIS.md, .claude/JARVIS.md, and all .md files in .claude/rules/ are checked in each directory for Project memory
+ * - CLAUDE.md, .claude/CLAUDE.md, and all .md files in .claude/rules/ are checked in each directory for Project memory
  *
  * Memory @include directive:
  * - Memory files can include other files using @ notation
@@ -537,7 +537,7 @@ function extractIncludePathsFromTokens(
 const MAX_INCLUDE_DEPTH = 5
 
 /**
- * Checks whether a JARVIS.md file path is excluded by the claudeMdExcludes setting.
+ * Checks whether a CLAUDE.md file path is excluded by the claudeMdExcludes setting.
  * Only applies to User, Project, and Local memory types.
  * Managed, AutoMem, and TeamMem types are never excluded.
  *
@@ -559,7 +559,7 @@ function isClaudeMdExcluded(filePath: string, type: MemoryType): boolean {
 
   // Build an expanded pattern list that includes realpath-resolved versions of
   // absolute patterns. This handles symlinks like /tmp -> /private/tmp on macOS:
-  // the user writes "/tmp/project/JARVIS.md" in their exclude, but the system
+  // the user writes "/tmp/project/CLAUDE.md" in their exclude, but the system
   // resolves the CWD to "/private/tmp/project/...", so the file path uses the
   // real path. By resolving the patterns too, both sides match.
   const expandedPatterns = resolveExcludePatterns(patterns).filter(
@@ -859,10 +859,10 @@ export const getMemoryFiles = memoize(
     // When running from a git worktree nested inside its main repo (e.g.,
     // .claude/worktrees/<name>/ from `claude -w`), the upward walk passes
     // through both the worktree root and the main repo root. Both contain
-    // checked-in files like JARVIS.md and .claude/rules/*.md, so the same
+    // checked-in files like CLAUDE.md and .claude/rules/*.md, so the same
     // content gets loaded twice. Skip Project-type (checked-in) files from
     // directories above the worktree but within the main repo — the worktree
-    // already has its own checkout. JARVIS.local.md is gitignored so it only
+    // already has its own checkout. CLAUDE.local.md is gitignored so it only
     // exists in the main repo and is still loaded.
     // See: https://github.com/anthropics/claude-code/issues/29599
     const gitRoot = findGitRoot(originalCwd)
@@ -883,9 +883,9 @@ export const getMemoryFiles = memoize(
         pathInWorkingPath(dir, canonicalRoot) &&
         !pathInWorkingPath(dir, gitRoot)
 
-      // Try reading JARVIS.md (Project) - only if projectSettings is enabled
+      // Try reading CLAUDE.md (Project) - only if projectSettings is enabled
       if (isSettingSourceEnabled('projectSettings') && !skipProject) {
-        const projectPath = join(dir, 'JARVIS.md')
+        const projectPath = join(dir, 'CLAUDE.md')
         result.push(
           ...(await processMemoryFile(
             projectPath,
@@ -895,8 +895,8 @@ export const getMemoryFiles = memoize(
           )),
         )
 
-        // Try reading .claude/JARVIS.md (Project)
-        const dotClaudePath = join(dir, '.claude', 'JARVIS.md')
+        // Try reading .claude/CLAUDE.md (Project)
+        const dotClaudePath = join(dir, '.claude', 'CLAUDE.md')
         result.push(
           ...(await processMemoryFile(
             dotClaudePath,
@@ -919,9 +919,9 @@ export const getMemoryFiles = memoize(
         )
       }
 
-      // Try reading JARVIS.local.md (Local) - only if localSettings is enabled
+      // Try reading CLAUDE.local.md (Local) - only if localSettings is enabled
       if (isSettingSourceEnabled('localSettings')) {
-        const localPath = join(dir, 'JARVIS.local.md')
+        const localPath = join(dir, 'CLAUDE.local.md')
         result.push(
           ...(await processMemoryFile(
             localPath,
@@ -933,15 +933,15 @@ export const getMemoryFiles = memoize(
       }
     }
 
-    // Process JARVIS.md from additional directories (--add-dir) if env var is enabled
+    // Process CLAUDE.md from additional directories (--add-dir) if env var is enabled
     // This is controlled by CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD and defaults to off
     // Note: we don't check isSettingSourceEnabled('projectSettings') here because --add-dir
     // is an explicit user action and the SDK defaults settingSources to [] when not specified
     if (isEnvTruthy(process.env.CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD)) {
       const additionalDirs = getAdditionalDirectoriesForClaudeMd()
       for (const dir of additionalDirs) {
-        // Try reading JARVIS.md from the additional directory
-        const projectPath = join(dir, 'JARVIS.md')
+        // Try reading CLAUDE.md from the additional directory
+        const projectPath = join(dir, 'CLAUDE.md')
         result.push(
           ...(await processMemoryFile(
             projectPath,
@@ -951,8 +951,8 @@ export const getMemoryFiles = memoize(
           )),
         )
 
-        // Try reading .claude/JARVIS.md from the additional directory
-        const dotClaudePath = join(dir, '.claude', 'JARVIS.md')
+        // Try reading .claude/CLAUDE.md from the additional directory
+        const dotClaudePath = join(dir, '.claude', 'CLAUDE.md')
         result.push(
           ...(await processMemoryFile(
             dotClaudePath,
@@ -1042,7 +1042,7 @@ export const getMemoryFiles = memoize(
     // Fire InstructionsLoaded hook for each instruction file loaded
     // (fire-and-forget, audit/observability only).
     // AutoMem/TeamMem are intentionally excluded — they're a separate
-    // memory system, not "instructions" in the JARVIS.md/rules sense.
+    // memory system, not "instructions" in the CLAUDE.md/rules sense.
     // Gated on !forceIncludeExternal: the forceIncludeExternal=true variant
     // is only used by getExternalClaudeMdIncludes() for approval checks, not
     // for building context — firing the hook there would double-fire on startup.
@@ -1239,7 +1239,7 @@ export async function getManagedAndUserConditionalRules(
 
 /**
  * Gets memory files for a single nested directory (between CWD and target).
- * Loads JARVIS.md, unconditional rules, and conditional rules for that directory.
+ * Loads CLAUDE.md, unconditional rules, and conditional rules for that directory.
  *
  * @param dir The directory to process
  * @param targetPath The target file path (for conditional rule matching)
@@ -1253,9 +1253,9 @@ export async function getMemoryFilesForNestedDirectory(
 ): Promise<MemoryFileInfo[]> {
   const result: MemoryFileInfo[] = []
 
-  // Process project memory files (JARVIS.md and .claude/JARVIS.md)
+  // Process project memory files (CLAUDE.md and .claude/CLAUDE.md)
   if (isSettingSourceEnabled('projectSettings')) {
-    const projectPath = join(dir, 'JARVIS.md')
+    const projectPath = join(dir, 'CLAUDE.md')
     result.push(
       ...(await processMemoryFile(
         projectPath,
@@ -1264,7 +1264,7 @@ export async function getMemoryFilesForNestedDirectory(
         false,
       )),
     )
-    const dotClaudePath = join(dir, '.claude', 'JARVIS.md')
+    const dotClaudePath = join(dir, '.claude', 'CLAUDE.md')
     result.push(
       ...(await processMemoryFile(
         dotClaudePath,
@@ -1275,9 +1275,9 @@ export async function getMemoryFilesForNestedDirectory(
     )
   }
 
-  // Process local memory file (JARVIS.local.md)
+  // Process local memory file (CLAUDE.local.md)
   if (isSettingSourceEnabled('localSettings')) {
-    const localPath = join(dir, 'JARVIS.local.md')
+    const localPath = join(dir, 'CLAUDE.local.md')
     result.push(
       ...(await processMemoryFile(localPath, 'Local', processedPaths, false)),
     )
@@ -1430,13 +1430,13 @@ export async function shouldShowClaudeMdExternalIncludesWarning(): Promise<boole
 }
 
 /**
- * Check if a file path is a memory file (JARVIS.md, JARVIS.local.md, or .claude/rules/*.md)
+ * Check if a file path is a memory file (CLAUDE.md, CLAUDE.local.md, or .claude/rules/*.md)
  */
 export function isMemoryFilePath(filePath: string): boolean {
   const name = basename(filePath)
 
-  // JARVIS.md or JARVIS.local.md anywhere
-  if (name === 'JARVIS.md' || name === 'JARVIS.local.md') {
+  // CLAUDE.md or CLAUDE.local.md anywhere
+  if (name === 'CLAUDE.md' || name === 'CLAUDE.local.md') {
     return true
   }
 

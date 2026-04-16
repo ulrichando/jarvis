@@ -1356,7 +1356,7 @@ async function run(): Promise<CommanderCommand> {
     )
     .option(
       "--bare",
-      "Minimal mode: skip hooks, LSP, plugin sync, attribution, auto-memory, background prefetches, keychain reads, and JARVIS.md auto-discovery. Sets CLAUDE_CODE_SIMPLE=1. Anthropic auth is strictly ANTHROPIC_API_KEY or apiKeyHelper via --settings (OAuth and keychain are never read). 3P providers (Bedrock/Vertex/Foundry) use their own credentials. Skills still resolve via /skill-name. Explicitly provide context via: --system-prompt[-file], --append-system-prompt[-file], --add-dir (JARVIS.md dirs), --mcp-config, --settings, --agents, --plugin-dir.",
+      "Minimal mode: skip hooks, LSP, plugin sync, attribution, auto-memory, background prefetches, keychain reads, and CLAUDE.md auto-discovery. Sets CLAUDE_CODE_SIMPLE=1. Anthropic auth is strictly ANTHROPIC_API_KEY or apiKeyHelper via --settings (OAuth and keychain are never read). 3P providers (Bedrock/Vertex/Foundry) use their own credentials. Skills still resolve via /skill-name. Explicitly provide context via: --system-prompt[-file], --append-system-prompt[-file], --add-dir (CLAUDE.md dirs), --mcp-config, --settings, --agents, --plugin-dir.",
       () => true,
     )
     .addOption(
@@ -1707,7 +1707,7 @@ async function run(): Promise<CommanderCommand> {
       profileCheckpoint("action_handler_start");
 
       // --bare = one-switch minimal mode. Sets SIMPLE so all the existing
-      // gates fire (JARVIS.md, skills, hooks inside executeHooks, agent
+      // gates fire (CLAUDE.md, skills, hooks inside executeHooks, agent
       // dir-walk). Must be set before setup() / any of the gated work runs.
       if (
         (
@@ -2517,7 +2517,7 @@ async function run(): Promise<CommanderCommand> {
         }
       }
 
-      // Store additional directories for JARVIS.md loading (controlled by env var)
+      // Store additional directories for CLAUDE.md loading (controlled by env var)
       setAdditionalDirectoriesForClaudeMd(addDir);
 
       // Channel server allowlist from --channels flag — servers whose
@@ -2948,7 +2948,7 @@ async function run(): Promise<CommanderCommand> {
         // (same gate as prefetchSystemContextIfSafe).
         void getSystemContext();
         // Kick getUserContext now too — its first await (fs.readFile in
-        // getMemoryFiles) yields naturally, so the JARVIS.md directory walk
+        // getMemoryFiles) yields naturally, so the CLAUDE.md directory walk
         // runs during the ~280ms overlap window before the context
         // Promise.all join in print.ts. The void getUserContext() in
         // startDeferredPrefetches becomes a memoize cache-hit.
@@ -5247,7 +5247,7 @@ async function run(): Promise<CommanderCommand> {
         // knows the session originated externally. Linux xdg-open and
         // browsers with "always allow" set dispatch the link with no OS-level
         // confirmation, so this is the only signal the user gets that the
-        // prompt — and the working directory / JARVIS.md it implies — came
+        // prompt — and the working directory / CLAUDE.md it implies — came
         // from an external source rather than something they typed.
         let deepLinkBanner: ReturnType<typeof createSystemMessage> | null =
           null;
@@ -6294,12 +6294,12 @@ async function run(): Promise<CommanderCommand> {
       await update();
     });
 
-  // claude up — run the project's JARVIS.md "# claude up" setup instructions.
+  // claude up — run the project's CLAUDE.md "# claude up" setup instructions.
   if ("external" === "ant") {
     program
       .command("up")
       .description(
-        '[ANT-ONLY] Initialize or upgrade the local dev environment using the "# claude up" section of the nearest JARVIS.md',
+        '[ANT-ONLY] Initialize or upgrade the local dev environment using the "# claude up" section of the nearest CLAUDE.md',
       )
       .action(async () => {
         const { up } = await import("src/cli/up.js");

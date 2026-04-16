@@ -1054,10 +1054,10 @@ export const SettingsSchema = lazySchema(() =>
         .array(z.string())
         .optional()
         .describe(
-          'Glob patterns or absolute paths of JARVIS.md files to exclude from loading. ' +
+          'Glob patterns or absolute paths of CLAUDE.md files to exclude from loading. ' +
             'Patterns are matched against absolute file paths using picomatch. ' +
             'Only applies to User, Project, and Local memory types (Managed/policy files cannot be excluded). ' +
-            'Examples: "/home/user/monorepo/JARVIS.md", "**/code/JARVIS.md", "**/some-dir/.jarvis/rules/**"',
+            'Examples: "/home/user/monorepo/CLAUDE.md", "**/code/CLAUDE.md", "**/some-dir/.jarvis/rules/**"',
         ),
       pluginTrustMessage: z
         .string()
