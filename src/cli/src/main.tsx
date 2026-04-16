@@ -1036,7 +1036,7 @@ export async function main() {
       }
       // Forward session-resume + model flags to the remote CLI's initial spawn.
       // --continue/-c and --resume <uuid> operate on the REMOTE session history
-      // (which persists under the remote's ~/.claude/projects/<cwd>/).
+      // (which persists under the remote's ~/.jarvis/projects/<cwd>/).
       // --model controls which model the remote uses.
       const extractFlag = (
         flag: string,
@@ -1356,7 +1356,7 @@ async function run(): Promise<CommanderCommand> {
     )
     .option(
       "--bare",
-      "Minimal mode: skip hooks, LSP, plugin sync, attribution, auto-memory, background prefetches, keychain reads, and CLAUDE.md auto-discovery. Sets CLAUDE_CODE_SIMPLE=1. Anthropic auth is strictly ANTHROPIC_API_KEY or apiKeyHelper via --settings (OAuth and keychain are never read). 3P providers (Bedrock/Vertex/Foundry) use their own credentials. Skills still resolve via /skill-name. Explicitly provide context via: --system-prompt[-file], --append-system-prompt[-file], --add-dir (CLAUDE.md dirs), --mcp-config, --settings, --agents, --plugin-dir.",
+      "Minimal mode: skip hooks, LSP, plugin sync, attribution, auto-memory, background prefetches, keychain reads, and JARVIS.md auto-discovery. Sets CLAUDE_CODE_SIMPLE=1. Anthropic auth is strictly ANTHROPIC_API_KEY or apiKeyHelper via --settings (OAuth and keychain are never read). 3P providers (Bedrock/Vertex/Foundry) use their own credentials. Skills still resolve via /skill-name. Explicitly provide context via: --system-prompt[-file], --append-system-prompt[-file], --add-dir (JARVIS.md dirs), --mcp-config, --settings, --agents, --plugin-dir.",
       () => true,
     )
     .addOption(
@@ -1707,7 +1707,7 @@ async function run(): Promise<CommanderCommand> {
       profileCheckpoint("action_handler_start");
 
       // --bare = one-switch minimal mode. Sets SIMPLE so all the existing
-      // gates fire (CLAUDE.md, skills, hooks inside executeHooks, agent
+      // gates fire (JARVIS.md, skills, hooks inside executeHooks, agent
       // dir-walk). Must be set before setup() / any of the gated work runs.
       if (
         (
@@ -1741,7 +1741,7 @@ async function run(): Promise<CommanderCommand> {
         });
       }
 
-      // Assistant mode: when .claude/settings.json has assistant: true AND
+      // Assistant mode: when .jarvis/settings.json has assistant: true AND
       // the tengu_kairos GrowthBook gate is on, force brief on. Permission
       // mode is left to the user — settings defaultMode or --permission-mode
       // apply as normal. REPL-typed messages already default to 'next'
@@ -1751,10 +1751,10 @@ async function run(): Promise<CommanderCommand> {
       // kairosEnabled is computed once here and reused at the
       // getAssistantSystemPromptAddendum() call site further down.
       //
-      // Trust gate: .claude/settings.json is attacker-controllable in an
+      // Trust gate: .jarvis/settings.json is attacker-controllable in an
       // untrusted clone. We run ~1000 lines before showSetupScreens() shows
       // the trust dialog, and by then we've already appended
-      // .claude/agents/assistant.md to the system prompt. Refuse to activate
+      // .jarvis/agents/assistant.md to the system prompt. Refuse to activate
       // until the directory has been explicitly trusted.
       let kairosEnabled = false;
       let assistantTeamContext:
@@ -2517,7 +2517,7 @@ async function run(): Promise<CommanderCommand> {
         }
       }
 
-      // Store additional directories for CLAUDE.md loading (controlled by env var)
+      // Store additional directories for JARVIS.md loading (controlled by env var)
       setAdditionalDirectoriesForClaudeMd(addDir);
 
       // Channel server allowlist from --channels flag — servers whose
@@ -2923,7 +2923,7 @@ async function run(): Promise<CommanderCommand> {
       }
       if (getIsNonInteractiveSession()) {
         // Apply full merged settings env now (including project-scoped
-        // .claude/settings.json PATH/GIT_DIR/GIT_WORK_TREE) so gitExe() and
+        // .jarvis/settings.json PATH/GIT_DIR/GIT_WORK_TREE) so gitExe() and
         // the git spawn below see it. Trust is implicit in -p mode; the
         // docstring at managedEnv.ts:96-97 says this applies "potentially
         // dangerous environment variables such as LD_PRELOAD, PATH" from all
@@ -2948,7 +2948,7 @@ async function run(): Promise<CommanderCommand> {
         // (same gate as prefetchSystemContextIfSafe).
         void getSystemContext();
         // Kick getUserContext now too — its first await (fs.readFile in
-        // getMemoryFiles) yields naturally, so the CLAUDE.md directory walk
+        // getMemoryFiles) yields naturally, so the JARVIS.md directory walk
         // runs during the ~280ms overlap window before the context
         // Promise.all join in print.ts. The void getUserContext() in
         // startDeferredPrefetches becomes a memoize cache-hit.
@@ -3664,7 +3664,7 @@ async function run(): Promise<CommanderCommand> {
       void logPermissionContextForAnts(null, "initialization");
       logManagedSettings();
 
-      // Register PID file for concurrent-session detection (~/.claude/sessions/)
+      // Register PID file for concurrent-session detection (~/.jarvis/sessions/)
       // and fire multi-clauding telemetry. Lives here (not init.ts) so only the
       // REPL path registers — not subcommands like `claude doctor`. Chained:
       // count must run after register's write completes or it misses our own file.
@@ -5247,7 +5247,7 @@ async function run(): Promise<CommanderCommand> {
         // knows the session originated externally. Linux xdg-open and
         // browsers with "always allow" set dispatch the link with no OS-level
         // confirmation, so this is the only signal the user gets that the
-        // prompt — and the working directory / CLAUDE.md it implies — came
+        // prompt — and the working directory / JARVIS.md it implies — came
         // from an external source rather than something they typed.
         let deepLinkBanner: ReturnType<typeof createSystemMessage> | null =
           null;
@@ -6058,7 +6058,7 @@ async function run(): Promise<CommanderCommand> {
     )
     .option(
       "--keep-data",
-      "Preserve the plugin's persistent data directory (~/.claude/plugins/data/{id}/)",
+      "Preserve the plugin's persistent data directory (~/.jarvis/plugins/data/{id}/)",
     )
     .addOption(coworkOption())
     .action(
@@ -6294,12 +6294,12 @@ async function run(): Promise<CommanderCommand> {
       await update();
     });
 
-  // claude up — run the project's CLAUDE.md "# claude up" setup instructions.
+  // claude up — run the project's JARVIS.md "# claude up" setup instructions.
   if ("external" === "ant") {
     program
       .command("up")
       .description(
-        '[ANT-ONLY] Initialize or upgrade the local dev environment using the "# claude up" section of the nearest CLAUDE.md',
+        '[ANT-ONLY] Initialize or upgrade the local dev environment using the "# claude up" section of the nearest JARVIS.md',
       )
       .action(async () => {
         const { up } = await import("src/cli/up.js");

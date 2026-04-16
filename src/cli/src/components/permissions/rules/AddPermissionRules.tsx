@@ -47,7 +47,7 @@ export function optionForPermissionSaveDestination(
     case "userSettings":
       return {
         label: "User settings",
-        description: `Saved in at ~/.claude/settings.json`,
+        description: `Saved in at ~/.jarvis/settings.json`,
         value: saveDestination,
       };
   }
