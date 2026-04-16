@@ -1,4 +1,23 @@
-import { BROWSER_TOOLS } from '@ant/claude-for-chrome-mcp'
+// Inline browser tool names since @ant/claude-for-chrome-mcp is not available
+const BROWSER_TOOLS = [
+  { name: 'javascript_tool' },
+  { name: 'read_page' },
+  { name: 'find' },
+  { name: 'form_input' },
+  { name: 'computer' },
+  { name: 'navigate' },
+  { name: 'resize_window' },
+  { name: 'gif_creator' },
+  { name: 'upload_image' },
+  { name: 'get_page_text' },
+  { name: 'tabs_context_mcp' },
+  { name: 'tabs_create_mcp' },
+  { name: 'update_plan' },
+  { name: 'read_console_messages' },
+  { name: 'read_network_requests' },
+  { name: 'shortcuts_list' },
+  { name: 'shortcuts_execute' },
+] as const
 import { BASE_CHROME_PROMPT } from '../../utils/claudeInChrome/prompt.js'
 import { shouldAutoEnableClaudeInChrome } from '../../utils/claudeInChrome/setup.js'
 import { registerBundledSkill } from '../bundledSkills.js'

@@ -29,6 +29,11 @@ function loadEnvFile(filePath) {
 
 loadEnvFile(join(root, '.env.local'))
 
+// Mark as development so native-install checks are skipped
+if (!process.env.NODE_ENV) {
+  process.env.NODE_ENV = 'development'
+}
+
 // Always disable Anthropic auth — jarvis-cli routes through its own proxy
 process.env.JARVIS_DISABLE_AUTH = '1'
 
