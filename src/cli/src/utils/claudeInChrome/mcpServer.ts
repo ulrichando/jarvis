@@ -1,9 +1,10 @@
-import {
-  type ClaudeForChromeContext,
-  createClaudeForChromeMcpServer,
-  type Logger,
-  type PermissionMode,
-} from '@ant/claude-for-chrome-mcp'
+// Stub types since @ant/claude-for-chrome-mcp is not available
+type ClaudeForChromeContext = Record<string, unknown>
+type Logger = { silly(...args: unknown[]): void; debug(...args: unknown[]): void; info(...args: unknown[]): void; warn(...args: unknown[]): void; error(...args: unknown[]): void }
+type PermissionMode = 'ask' | 'skip_all_permission_checks' | 'follow_a_plan'
+function createClaudeForChromeMcpServer(_context: ClaudeForChromeContext): { connect(transport: unknown): Promise<void> } {
+  throw new Error('Chrome MCP server is not available — @ant/claude-for-chrome-mcp package is missing')
+}
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { format } from 'util'
 import { shutdownDatadog } from '../../services/analytics/datadog.js'
@@ -215,7 +216,7 @@ export function createChromeContext(
         }
       },
     }),
-    trackEvent: (eventName, metadata) => {
+    trackEvent: (eventName: string, metadata?: Record<string, unknown>) => {
       const safeMetadata: {
         [key: string]:
           | boolean

@@ -1072,8 +1072,12 @@ function PromptInput({
 
     // PromptInput UX: Check if suggestions dropdown is showing
     // For directory suggestions, allow submission (Tab is used for completion)
+    // For short non-command inputs (e.g. "1", "yes", "ok"), allow submission
+    // even when suggestions are showing — these are typically confirmations or
+    // option selections, not partial slash commands.
     const hasDirectorySuggestions = suggestionsState.suggestions.length > 0 && suggestionsState.suggestions.every(s => s.description === 'directory');
-    if (suggestionsState.suggestions.length > 0 && !isSubmittingSlashCommand && !hasDirectorySuggestions) {
+    const isShortConfirmation = inputParam.trim().length > 0 && inputParam.trim().length <= 20 && !inputParam.trim().startsWith('/');
+    if (suggestionsState.suggestions.length > 0 && !isSubmittingSlashCommand && !hasDirectorySuggestions && !isShortConfirmation) {
       logForDebugging(`[onSubmit] early return: suggestions showing (count=${suggestionsState.suggestions.length})`);
       return; // Don't submit, user needs to clear suggestions first
     }
