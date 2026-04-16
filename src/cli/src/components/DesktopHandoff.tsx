@@ -86,7 +86,7 @@ export function DesktopHandoff(t0) {
         setState("opening");
         const result = await openCurrentSessionInDesktop();
         if (!result.success) {
-          setError(result.error ?? "Failed to open Claude Desktop");
+          setError(result.error ?? "Failed to open Jarvis Desktop");
           setState("error");
           return;
         }
@@ -162,10 +162,10 @@ export function DesktopHandoff(t0) {
   let t4;
   if ($[17] === Symbol.for("react.memo_cache_sentinel")) {
     t4 = {
-      checking: "Checking for Claude Desktop\u2026",
+      checking: "Checking for Jarvis Desktop\u2026",
       flushing: "Saving session\u2026",
-      opening: "Opening Claude Desktop\u2026",
-      success: "Opening in Claude Desktop\u2026"
+      opening: "Opening Jarvis Desktop\u2026",
+      success: "Opening in Jarvis Desktop\u2026"
     };
     $[17] = t4;
   } else {
@@ -184,7 +184,7 @@ export function DesktopHandoff(t0) {
   return t6;
 }
 async function _temp2(onDone_0) {
-  onDone_0("Session transferred to Claude Desktop", {
+  onDone_0("Session transferred to Jarvis Desktop", {
     display: "system"
   });
   await gracefulShutdown(0, "other");

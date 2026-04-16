@@ -31,8 +31,8 @@ export type Props = {
   /**
    * When true, skip writing effortLevel to userSettings on selection.
    * Used by the assistant installer wizard where the model choice is
-   * project-scoped (written to the assistant's .claude/settings.json via
-   * install.ts) and should not leak to the user's global ~/.claude/settings.
+   * project-scoped (written to the assistant's .jarvis/settings.json via
+   * install.ts) and should not leak to the user's global ~/.jarvis/settings.
    */
   skipSettingsWrite?: boolean;
 };
