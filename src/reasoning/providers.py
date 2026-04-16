@@ -1670,9 +1670,9 @@ RULES:
     def _load_env_providers(self):
         """Auto-register providers from .env / environment variables."""
         # Auto-register additional OpenAI-compatible providers from env
-        for name, env_key in [("openai", "OPENAI_API_KEY"), ("xai", "XAI_API_KEY"),
-                               ("together", "TOGETHER_API_KEY"), ("openrouter", "OPENROUTER_API_KEY"),
-                               ("groq", "GROQ_API_KEY")]:
+        for name, env_key in [("deepseek", "DEEPSEEK_API_KEY"), ("openai", "OPENAI_API_KEY"),
+                               ("xai", "XAI_API_KEY"), ("together", "TOGETHER_API_KEY"),
+                               ("openrouter", "OPENROUTER_API_KEY"), ("groq", "GROQ_API_KEY")]:
             key = os.environ.get(env_key, "")
             if key and name not in self._providers:
                 template = TEMPLATES.get(name, {})

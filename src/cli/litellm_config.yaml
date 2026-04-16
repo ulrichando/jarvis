@@ -1,0 +1,96 @@
+model_list:
+
+  # ── DeepSeek ──────────────────────────────────────────────────
+  - model_name: deepseek-chat
+    litellm_params:
+      model: deepseek/deepseek-chat
+      api_key: os.environ/DEEPSEEK_API_KEY
+
+  - model_name: deepseek-reasoner
+    litellm_params:
+      model: deepseek/deepseek-reasoner
+      api_key: os.environ/DEEPSEEK_API_KEY
+
+  # ── Claude model name aliases → DeepSeek ──────────────────────
+  # Jarvis sends these model names internally — map them all to deepseek-chat
+  - model_name: claude-haiku-4-5-20251001
+    litellm_params:
+      model: deepseek/deepseek-chat
+      api_key: os.environ/DEEPSEEK_API_KEY
+      max_tokens: 8192
+
+  - model_name: claude-sonnet-4-6
+    litellm_params:
+      model: deepseek/deepseek-chat
+      api_key: os.environ/DEEPSEEK_API_KEY
+      max_tokens: 8192
+
+  - model_name: claude-opus-4-6
+    litellm_params:
+      model: deepseek/deepseek-reasoner
+      api_key: os.environ/DEEPSEEK_API_KEY
+      max_tokens: 8192
+
+  - model_name: claude-3-5-sonnet-20241022
+    litellm_params:
+      model: deepseek/deepseek-chat
+      api_key: os.environ/DEEPSEEK_API_KEY
+      max_tokens: 8192
+
+  - model_name: claude-3-5-haiku-20241022
+    litellm_params:
+      model: deepseek/deepseek-chat
+      api_key: os.environ/DEEPSEEK_API_KEY
+      max_tokens: 8192
+
+  # ── Groq ──────────────────────────────────────────────────────
+  - model_name: groq-llama3-70b
+    litellm_params:
+      model: groq/llama-3.3-70b-versatile
+      api_key: os.environ/GROQ_API_KEY
+
+  - model_name: groq-llama3-8b
+    litellm_params:
+      model: groq/llama3-8b-8192
+      api_key: os.environ/GROQ_API_KEY
+
+  - model_name: groq-mixtral
+    litellm_params:
+      model: groq/mixtral-8x7b-32768
+      api_key: os.environ/GROQ_API_KEY
+
+  # ── Google Gemini ─────────────────────────────────────────────
+  - model_name: gemini-2.0-flash
+    litellm_params:
+      model: gemini/gemini-2.0-flash
+      api_key: os.environ/GOOGLE_API_KEY
+
+  - model_name: gemini-2.5-pro
+    litellm_params:
+      model: gemini/gemini-2.5-pro-preview-03-25
+      api_key: os.environ/GOOGLE_API_KEY
+
+  - model_name: gemini-1.5-pro
+    litellm_params:
+      model: gemini/gemini-1.5-pro
+      api_key: os.environ/GOOGLE_API_KEY
+
+  # ── Custom / Localhost (Ollama, vLLM, LM Studio, etc.) ────────
+  - model_name: local-model
+    litellm_params:
+      model: ollama/llama3
+      api_base: os.environ/LOCAL_API_BASE
+
+  - model_name: local-openai
+    litellm_params:
+      model: openai/custom
+      api_base: os.environ/LOCAL_API_BASE
+      api_key: os.environ/LOCAL_API_KEY
+
+litellm_settings:
+  drop_params: true      # Drop unknown params unsupported providers reject
+  modify_params: true    # Normalize/fix message sequences (e.g. orphaned tool_calls)
+  set_verbose: false
+
+general_settings:
+  port: 4000
