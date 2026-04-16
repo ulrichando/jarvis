@@ -538,7 +538,7 @@ export function applyCommandSuggestion(
   }
 }
 
-// Helper function at bottom of file per JARVIS.md
+// Helper function at bottom of file per CLAUDE.md
 function cleanWord(word: string) {
   return word.toLowerCase().replace(/[^a-z0-9]/g, '')
 }

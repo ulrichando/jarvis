@@ -18,7 +18,7 @@ export type Step = {
 
 export function getSteps(): Step[] {
   const hasClaudeMd = getFsImplementation().existsSync(
-    join(getCwd(), 'JARVIS.md'),
+    join(getCwd(), 'CLAUDE.md'),
   )
   const isWorkspaceDirEmpty = isDirEmpty(getCwd())
 
@@ -32,7 +32,7 @@ export function getSteps(): Step[] {
     },
     {
       key: 'claudemd',
-      text: 'Run /init to create a JARVIS.md file with instructions for Jarvis',
+      text: 'Run /init to create a CLAUDE.md file with instructions for Jarvis',
       isComplete: hasClaudeMd,
       isCompletable: true,
       isEnabled: !isWorkspaceDirEmpty,

@@ -1781,13 +1781,13 @@ export function getMemoryPath(memoryType: MemoryType): string {
 
   switch (memoryType) {
     case 'User':
-      return join(getClaudeConfigHomeDir(), 'JARVIS.md')
+      return join(getClaudeConfigHomeDir(), 'CLAUDE.md')
     case 'Local':
-      return join(cwd, 'JARVIS.local.md')
+      return join(cwd, 'CLAUDE.local.md')
     case 'Project':
-      return join(cwd, 'JARVIS.md')
+      return join(cwd, 'CLAUDE.md')
     case 'Managed':
-      return join(getManagedFilePath(), 'JARVIS.md')
+      return join(getManagedFilePath(), 'CLAUDE.md')
     case 'AutoMem':
       return getAutoMemEntrypoint()
   }
