@@ -454,7 +454,7 @@ function isDangerousFilePathToAutoEdit(path: string): boolean {
       }
 
       // Special case: .jarvis/worktrees/ is a structural path (where Claude stores
-      // git worktrees), not a user-created dangerous directory. Skip the .claude
+      // git worktrees), not a user-created dangerous directory. Skip the .jarvis
       // segment when it's followed by 'worktrees'. Any nested .jarvis directories
       // within the worktree (not followed by 'worktrees') are still blocked.
       if (dir === '.jarvis') {
