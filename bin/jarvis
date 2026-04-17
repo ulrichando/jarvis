@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Global launcher for Jarvis CLI
+# Usage: jarvis [args...]
+# Install: ln -sf /home/ulrich/Documents/Projects/jarvis/bin/jarvis ~/.local/bin/jarvis
+
+set -euo pipefail
+
+JARVIS_ROOT="/home/ulrich/Documents/Projects/jarvis/src/cli"
+SCRIPTS="$JARVIS_ROOT/scripts"
+
+exec bash "$SCRIPTS/start.sh" "$@"

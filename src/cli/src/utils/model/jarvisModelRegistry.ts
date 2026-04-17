@@ -115,7 +115,7 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
   {
     id: 'llama-3.3-70b-versatile',
     label: 'Groq Llama 3.3 70B',
-    description: 'Complex reasoning and coding',
+    description: 'Chat & reasoning · limited tool use',
     provider: 'groq',
     upstreamModel: 'llama-3.3-70b-versatile',
     tiers: ['reasoning'],

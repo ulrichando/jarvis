@@ -66,16 +66,60 @@ const server = Bun.serve({
         })
       } catch (e: any) {
         console.error('[jarvis-proxy] Provider fetch error:', e)
+        const errMsg = `Failed to reach ${provider.name}: ${e.message}`
+
+        if (isStream) {
+          const enc = new TextEncoder()
+          const errStream = new ReadableStream<Uint8Array>({
+            start(controller) {
+              const errorEvent = `event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'api_error', message: errMsg } })}\n\n`
+              controller.enqueue(enc.encode(errorEvent))
+              controller.close()
+            },
+          })
+          return new Response(errStream, {
+            headers: {
+              'Content-Type': 'text/event-stream',
+              'Cache-Control': 'no-cache',
+              'Connection': 'keep-alive',
+            },
+          })
+        }
+
         return new Response(JSON.stringify({
-          error: { message: `Failed to reach ${provider.name}: ${e.message}`, type: 'api_error' },
+          type: 'error',
+          error: { message: errMsg, type: 'api_error' },
         }), { status: 502, headers: { 'Content-Type': 'application/json' } })
       }
 
       if (!providerResp.ok) {
         const errText = await providerResp.text()
         console.error(`[jarvis-proxy] Provider error ${providerResp.status}:`, errText)
+        const errMsg = `${provider.name} error (${providerResp.status}): ${errText}`
+
+        if (isStream) {
+          // For streaming requests, return the error as an SSE stream so the
+          // Anthropic SDK doesn't hang waiting for events.
+          const enc = new TextEncoder()
+          const errStream = new ReadableStream<Uint8Array>({
+            start(controller) {
+              const errorEvent = `event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'api_error', message: errMsg } })}\n\n`
+              controller.enqueue(enc.encode(errorEvent))
+              controller.close()
+            },
+          })
+          return new Response(errStream, {
+            headers: {
+              'Content-Type': 'text/event-stream',
+              'Cache-Control': 'no-cache',
+              'Connection': 'keep-alive',
+            },
+          })
+        }
+
         return new Response(JSON.stringify({
-          error: { message: `${provider.name} error: ${errText}`, type: 'api_error', code: providerResp.status },
+          type: 'error',
+          error: { message: errMsg, type: 'api_error' },
         }), { status: providerResp.status, headers: { 'Content-Type': 'application/json' } })
       }
 
