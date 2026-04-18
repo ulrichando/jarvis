@@ -15,6 +15,21 @@ export type Provider = {
   maxOutputTokens: number
 }
 
+function resolveApiKey(name: JarvisProviderName, envVar: string | undefined): string {
+  if (name === 'ollama') return 'ollama'
+  if (!envVar) {
+    throw new Error(`Provider "${name}" has no apiKeyEnvVar configured in the model registry`)
+  }
+  const key = (process.env[envVar] ?? '').trim()
+  if (!key) {
+    throw new Error(
+      `Missing ${envVar} in proxy environment — cannot route to ${name}. ` +
+      `Start via src/cli/scripts/start.sh (or bin/jarvis-desktop) so .env.local is loaded.`,
+    )
+  }
+  return key
+}
+
 function buildProvider(
   name: JarvisProviderName,
   upstreamModel: string,
@@ -23,10 +38,7 @@ function buildProvider(
   return {
     name,
     baseUrl: config.baseUrl,
-    apiKey:
-      name === 'ollama'
-        ? 'ollama'
-        : (config.apiKeyEnvVar && process.env[config.apiKeyEnvVar]) ?? '',
+    apiKey: resolveApiKey(name, config.apiKeyEnvVar),
     model:
       name === 'ollama' && upstreamModel === 'ollama'
         ? (process.env.OLLAMA_MODEL ?? 'llama3')
