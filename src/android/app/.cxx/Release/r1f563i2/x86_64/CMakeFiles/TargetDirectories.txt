@@ -1,0 +1,3 @@
+/home/ulrich/Documents/Projects/jarvis/clients/android/app/.cxx/Release/r1f563i2/x86_64/CMakeFiles/jarvis_pty.dir
+/home/ulrich/Documents/Projects/jarvis/clients/android/app/.cxx/Release/r1f563i2/x86_64/CMakeFiles/edit_cache.dir
+/home/ulrich/Documents/Projects/jarvis/clients/android/app/.cxx/Release/r1f563i2/x86_64/CMakeFiles/rebuild_cache.dir

@@ -1,0 +1,12 @@
+[
+{
+  "directory": "/home/ulrich/Documents/Projects/jarvis/clients/android/app/.cxx/Release/r1f563i2/arm64-v8a",
+  "command": "/home/ulrich/Android/Sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++ --target=aarch64-none-linux-android26 --sysroot=/home/ulrich/Android/Sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Djarvis_pty_EXPORTS -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security  -std=c++17 -D_XOPEN_SOURCE=700 -DANDROID_STL=c++_shared -O3 -DNDEBUG  -fPIC -Wall -Wextra -Wno-unused-parameter -Werror=return-type -fvisibility=hidden -fstack-protector-strong -D_XOPEN_SOURCE=700 -O2 -D_FORTIFY_SOURCE=2 -std=c++17 -o CMakeFiles/jarvis_pty.dir/pty_bridge.cpp.o -c /home/ulrich/Documents/Projects/jarvis/clients/android/app/src/main/cpp/pty_bridge.cpp",
+  "file": "/home/ulrich/Documents/Projects/jarvis/clients/android/app/src/main/cpp/pty_bridge.cpp"
+},
+{
+  "directory": "/home/ulrich/Documents/Projects/jarvis/clients/android/app/.cxx/Release/r1f563i2/arm64-v8a",
+  "command": "/home/ulrich/Android/Sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++ --target=aarch64-none-linux-android26 --sysroot=/home/ulrich/Android/Sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Djarvis_pty_EXPORTS -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security  -std=c++17 -D_XOPEN_SOURCE=700 -DANDROID_STL=c++_shared -O3 -DNDEBUG  -fPIC -Wall -Wextra -Wno-unused-parameter -Werror=return-type -fvisibility=hidden -fstack-protector-strong -D_XOPEN_SOURCE=700 -O2 -D_FORTIFY_SOURCE=2 -std=c++17 -o CMakeFiles/jarvis_pty.dir/vt_parser.cpp.o -c /home/ulrich/Documents/Projects/jarvis/clients/android/app/src/main/cpp/vt_parser.cpp",
+  "file": "/home/ulrich/Documents/Projects/jarvis/clients/android/app/src/main/cpp/vt_parser.cpp"
+}
+]

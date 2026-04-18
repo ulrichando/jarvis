@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Google Fonts provider certificate arrays.
+    NOTE: These font resources are not used — Typography.kt uses FontFamily.SansSerif
+    and FontFamily.Monospace (system fonts). This file is kept as a placeholder
+    to satisfy aapt resource linking. The empty arrays prevent the base-64 parsing
+    crash that occurs with truncated cert strings on emulators without GMS.
+-->
+<resources>
+
+    <array name="com_google_android_gms_fonts_certs">
+        <item>@array/com_google_android_gms_fonts_certs_dev</item>
+        <item>@array/com_google_android_gms_fonts_certs_prod</item>
+    </array>
+
+    <!-- Empty arrays — downloadable fonts disabled; system fonts used instead -->
+    <string-array name="com_google_android_gms_fonts_certs_dev">
+    </string-array>
+
+    <string-array name="com_google_android_gms_fonts_certs_prod">
+    </string-array>
+
+</resources>

@@ -1,0 +1,8 @@
+# ninja log v5
+1595	1610	1775882467748638454	/home/ulrich/Documents/Projects/jarvis/clients/android/app/build/intermediates/cxx/Release/r1f563i2/obj/x86_64/libjarvis_pty.so	244056feef96c76
+3	699	1775882466835137817	CMakeFiles/jarvis_pty.dir/pty_bridge.cpp.o	64e724f4754dec86
+3	1595	1775882467730590925	CMakeFiles/jarvis_pty.dir/vt_parser.cpp.o	ace2e899b8ada301
+0	2	0	clean	2cbe0fd02cd0aed0
+3	22	1775930556655556169	/home/ulrich/Documents/Projects/jarvis/clients/android/app/build/intermediates/cxx/Release/r1f563i2/obj/x86_64/libjarvis_pty.so	244056feef96c76
+3	1299	1775932458209225152	CMakeFiles/jarvis_pty.dir/pty_bridge.cpp.o	64e724f4754dec86
+1299	1326	1775932458251548601	/home/ulrich/Documents/Projects/jarvis/clients/android/app/build/intermediates/cxx/Release/r1f563i2/obj/x86_64/libjarvis_pty.so	244056feef96c76
