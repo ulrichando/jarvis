@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    JetBrains Mono — downloadable font via Google Fonts provider.
+    Used for: Terminal output, code blocks, inline code, system props.
+    Weights: 400 (Regular), 700 (Bold)
+-->
+<font-family xmlns:app="http://schemas.android.com/apk/res-auto"
+    app:fontProviderAuthority="com.google.android.gms.fonts"
+    app:fontProviderPackage="com.google.android.gms"
+    app:fontProviderQuery="name=JetBrains+Mono&amp;weight=400&amp;weight=700"
+    app:fontProviderCerts="@array/com_google_android_gms_fonts_certs">
+</font-family>

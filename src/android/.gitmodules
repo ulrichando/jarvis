@@ -1,0 +1,7 @@
+[submodule "app/src/main/cpp/llama.cpp"]
+	path   = app/src/main/cpp/llama.cpp
+	url    = https://github.com/ggml-org/llama.cpp.git
+	# Pin to a release that has the C API stable + Vulkan backend.
+	# Update by running:  git -C app/src/main/cpp/llama.cpp fetch && git checkout b5801
+	branch = master
+	shallow = true

@@ -114,19 +114,20 @@ export default function useSpeech({
         speakingRef.current = false
         setSpeaking(false)
         if (ttsAudioRef.current === audio) ttsAudioRef.current = null
-        if (resetTimer) clearTimeout(resetTimer)
+        if (resetTimer) { clearTimeout(resetTimer); resetTimer = null }
       }
       audio.onended = done
       audio.onerror = done
-      // Safety: if onended never fires (network stall, decoder issue)
-      // force-release speakingRef after duration+grace so the mic isn't
-      // gated off forever.
+      // Safety ceiling — if onended never fires (streaming stall), this
+      // releases the mic gate after 30 s so voice can't be permanently
+      // bricked by one bad playback.
+      resetTimer = setTimeout(done, 30_000)
       audio.onloadedmetadata = () => {
+        // Tighter budget once we know the real duration.
+        if (resetTimer) clearTimeout(resetTimer)
         const budget = Math.max(5_000, (audio.duration || 15) * 1000 + 3_000)
         resetTimer = setTimeout(done, budget)
       }
-      // Hard ceiling regardless of whether metadata loads.
-      resetTimer = setTimeout(done, 30_000)
 
       try {
         await audio.play()
@@ -161,25 +162,34 @@ export default function useSpeech({
         baseAssetPath:    `${base}/vad/`,
         onnxWASMBasePath: `${base}/vad/`,
         onSpeechStart: () => {
-          // If JARVIS is mid-reply and barge-in is OFF (default), ignore
-          // this event — Silero is almost certainly hearing our own
-          // speakers, not the user. No visual state change.
-          if (speakingRef.current && !bargeInSilero) return
+          // Is JARVIS actually still talking? Trust the audio element's
+          // live state more than speakingRef (which can get stuck if
+          // onended doesn't fire reliably with streaming audio).
+          const a = ttsAudioRef.current
+          const ttsLive = a && !a.paused && !a.ended && a.readyState >= 2
+          if (ttsLive && !bargeInSilero) return
+          // Stale speakingRef — TTS actually ended. Self-heal and treat
+          // this as a normal new utterance.
+          if (speakingRef.current && !ttsLive) {
+            speakingRef.current = false
+            setSpeaking(false)
+          }
           setVoiceActive(true)
-          if (speakingRef.current && bargeInSilero) {
+          if (ttsLive && bargeInSilero) {
             console.log('[speech] barge-in — cutting TTS')
-            try { ttsAudioRef.current?.pause() } catch {}
+            try { a.pause() } catch {}
             speakingRef.current = false
             setSpeaking(false)
           }
           setRecording(true)
         },
         onSpeechEnd: (audio) => {
-          // Ignore end-events if we're mid-reply — the start was filtered.
-          if (speakingRef.current && !bargeInSilero) return
+          const a = ttsAudioRef.current
+          const ttsLive = a && !a.paused && !a.ended && a.readyState >= 2
+          if (ttsLive && !bargeInSilero) return
           setVoiceActive(false)
           setRecording(false)
-          if (speakingRef.current) return
+          if (ttsLive) return
           const wav = floatsToWav(audio, 16000)
           sendUtterance(wav)
         },

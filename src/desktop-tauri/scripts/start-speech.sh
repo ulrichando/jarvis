@@ -15,9 +15,19 @@ if [ -f "$ENV_FILE" ]; then
   set +a
 fi
 
-if ! command -v bun >/dev/null 2>&1; then
-  echo "[speech] bun not found in PATH — install bun or set PATH" >&2
+# Find a bun — check PATH, project-vendored, and ~/.bun/bin in that order.
+# Login sessions (autostart) don't include ~/.bun/bin in PATH, so we must
+# fall back to absolute paths instead of relying on `command -v bun`.
+VENDORED_BUN="$PROJECT_ROOT/src/cli/vendor/bun/linux-x64/bun"
+BUN=""
+if   command -v bun >/dev/null 2>&1;        then BUN="$(command -v bun)"
+elif [ -x "$VENDORED_BUN" ];                then BUN="$VENDORED_BUN"
+elif [ -x "$HOME/.bun/bin/bun" ];           then BUN="$HOME/.bun/bin/bun"
+fi
+
+if [ -z "$BUN" ]; then
+  echo "[speech] bun not found — looked in PATH, $VENDORED_BUN, ~/.bun/bin" >&2
   exit 1
 fi
 
-exec bun "$DESKTOP_DIR/server/speech.ts"
+exec "$BUN" "$DESKTOP_DIR/server/speech.ts"

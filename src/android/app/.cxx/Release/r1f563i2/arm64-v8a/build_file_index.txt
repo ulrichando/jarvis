@@ -1,0 +1,1 @@
+/home/ulrich/Documents/Projects/jarvis/clients/android/app/src/main/cpp/CMakeLists.txt
