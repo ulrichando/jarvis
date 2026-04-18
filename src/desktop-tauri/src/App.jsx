@@ -4,6 +4,7 @@ import { listen }  from '@tauri-apps/api/event'
 import ArcReactor  from './components/ArcReactor.jsx'
 import ChatPanel   from './components/ChatPanel.jsx'
 import useTheme    from './hooks/useTheme.js'
+import useSpeech   from './hooks/useSpeech.js'
 
 const HARD_INTERRUPT_WORDS = new Set([
   'stop','halt','listen','pause','wait','quiet','shush','enough','cancel','nevermind',
@@ -23,15 +24,28 @@ function useJarvisWS(url) {
     try {
       const ws = new WebSocket(url)
       wsRef.current = ws
-      ws.onopen    = () => setStatus('connected')
-      ws.onclose   = () => {
+      ws.onopen    = () => {
+        fetch('http://127.0.0.1:8766/debug/level?tag=ws-open').catch(()=>{})
+        setStatus('connected')
+      }
+      ws.onclose   = (ev) => {
+        fetch(`http://127.0.0.1:8766/debug/level?tag=ws-close-code${ev.code}-reason${encodeURIComponent(ev.reason||'')}`).catch(()=>{})
         setStatus('disconnected')
         reconnectTimer.current = setTimeout(connect, 3000)
       }
-      ws.onerror   = () => ws.close()
+      ws.onerror   = (ev) => {
+        fetch(`http://127.0.0.1:8766/debug/level?tag=ws-error`).catch(()=>{})
+        ws.close()
+      }
       ws.onmessage = (e) => {
-        try { setMessages(prev => [...prev.slice(-50), JSON.parse(e.data)]) }
-        catch { /* ignore */ }
+        try {
+          const parsed = JSON.parse(e.data)
+          // DEBUG via FormData POST (simple request, actually reaches sidecar)
+          const fd = new FormData()
+          fd.append('tag', `ws-recv type=${parsed.type} hasText=${!!parsed.text}`)
+          fetch('http://127.0.0.1:8766/debug/level', { method: 'POST', body: fd }).catch(()=>{})
+          setMessages(prev => [...prev.slice(-50), parsed])
+        } catch { /* ignore */ }
       }
     } catch { setStatus('disconnected') }
   }, [url])
@@ -62,12 +76,40 @@ export default function App() {
   const [voiceMuted, setVoiceMuted]   = useState(false)
   const [heardText, setHeardText]     = useState('')
   const [stableStatus, setStableStatus] = useState('connecting')
+  const [networkOnline, setNetworkOnline] = useState(
+    typeof navigator !== 'undefined' ? navigator.onLine : true,
+  )
   const heardTimer  = useRef(null)
   const offlineTimer= useRef(null)
   const trayLocked  = useRef(false)
 
+  // Track real internet connectivity — the bridge WS lives on localhost
+  // so it stays "connected" even when Wi-Fi drops. navigator.onLine flips
+  // instantly when the OS sees the link go down.
+  useEffect(() => {
+    const up   = () => setNetworkOnline(true)
+    const down = () => setNetworkOnline(false)
+    window.addEventListener('online',  up)
+    window.addEventListener('offline', down)
+    return () => {
+      window.removeEventListener('online',  up)
+      window.removeEventListener('offline', down)
+    }
+  }, [])
+
   const { messages: wsMessages, sendMessage, status: wsStatus } = useJarvisWS(WS_URL)
   const theme = useTheme()
+
+  // Speech: mic → sidecar /turn (STT → LLM → TTS all in one HTTP POST) → play.
+  // onTranscript fires with what Whisper heard so we can show the HEARD caption.
+  const speech = useSpeech({
+    muted: voiceMuted,
+    onTranscript: (text) => {
+      setHeardText(text)
+      clearTimeout(heardTimer.current)
+      heardTimer.current = setTimeout(() => setHeardText(''), 4000)
+    },
+  })
 
   // ── WS status debounce ────────────────────────────────────────────────
   useEffect(() => {
@@ -85,44 +127,40 @@ export default function App() {
   }, [wsStatus])
 
   // ── Handle incoming WS messages ───────────────────────────────────────
+  // Process every new message since the last run, not just the tail, because
+  // the bridge may send several messages (e.g. chat_response then status) in
+  // the same render tick — dispatching only on the last one would drop speak().
+  const lastHandledRef = useRef(0)
   useEffect(() => {
     if (!wsMessages.length) return
+    const start = lastHandledRef.current
+    lastHandledRef.current = wsMessages.length
+
+    for (let i = start; i < wsMessages.length; i++) {
+      const m = wsMessages[i]
+
+      if (m.type === 'status') {
+        if (m.status === 'speaking')  setReactorState('speaking')
+        else if (m.status === 'listening') setReactorState('listening')
+        else if (m.status === 'thinking')  setReactorState('thinking')
+        else if (m.status === '' || m.status === 'idle') setReactorState('idle')
+      }
+      if (m.type === 'tts_done')     setReactorState('idle')
+      if (m.type === 'chat_response' && m.text) speech.speak(m.text)
+      if (m.type === 'interrupted')  setReactorState('idle')
+      if (m.type === 'brain_ready') {
+        setReactorState('ready')
+        setTimeout(() => setReactorState('idle'), 3000)
+      }
+      if (m.type === 'stt_result') {
+        setHeardText(m.text || '')
+        clearTimeout(heardTimer.current)
+        heardTimer.current = setTimeout(() => setHeardText(''), 4000)
+      }
+      if (m.type === 'mic_level')    setAudioLevel(m.level ?? 0)
+      if (m.type === 'voice_muted')  setVoiceMuted(m.muted)
+    }
     const last = wsMessages[wsMessages.length - 1]
-
-    // Reactor state — backend sends {type:"status", status:"speaking"|"listening"|"thinking"|""}
-    if (last.type === 'status') {
-      if (last.status === 'speaking')  setReactorState('speaking')
-      else if (last.status === 'listening') setReactorState('listening')
-      else if (last.status === 'thinking')  setReactorState('thinking')
-      else if (last.status === '')     setReactorState('idle')
-    }
-
-    // Server TTS finished → back to idle
-    if (last.type === 'tts_done')     setReactorState('idle')
-
-    // Interrupt confirmed → idle
-    if (last.type === 'interrupted')  setReactorState('idle')
-
-    // Brain ready flash
-    if (last.type === 'brain_ready') {
-      setReactorState('ready')
-      setTimeout(() => setReactorState('idle'), 3000)
-    }
-
-    // Voice detected — server sends stt_result when it hears the user
-    if (last.type === 'stt_result') {
-      setHeardText(last.text || '')
-      clearTimeout(heardTimer.current)
-      heardTimer.current = setTimeout(() => setHeardText(''), 4000)
-    }
-
-    // Server-side mic level → drive audio reactivity
-    if (last.type === 'mic_level') {
-      setAudioLevel(last.level ?? 0)
-    }
-
-    // Voice muted toggle
-    if (last.type === 'voice_muted') setVoiceMuted(last.muted)
 
     // Live theme change
     if (last.type === 'theme_update' && last.primary) {
@@ -194,6 +232,26 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [chatOpen, openChat, closeChat])
 
+  // Reactor state — tied to actual vocal activity so colour flips the
+  // instant you stop talking rather than waiting for the VAD silence
+  // timeout to finish the recording.
+  //   voiceActive (RMS above threshold)          → listening (green)
+  //   recorder still in tail-silence, or /turn   → thinking  (amber)
+  //   TTS audio playing                          → speaking  (cyan)
+  useEffect(() => {
+    let next = 'idle'
+    if (speech.speaking)                               next = 'speaking'
+    else if (speech.voiceActive)                       next = 'listening'
+    else if (speech.recording || speech.processing)    next = 'thinking'
+    setReactorState(s => (
+      next === 'idle' && !['listening','thinking','speaking'].includes(s)
+    ) ? s : next)
+    // DEBUG → see phase transitions in sidecar log
+    const fd = new FormData()
+    fd.append('tag', `state v=${speech.voiceActive?1:0} r=${speech.recording?1:0} p=${speech.processing?1:0} s=${speech.speaking?1:0} → ${next}`)
+    fetch('http://127.0.0.1:8766/debug/level', { method: 'POST', body: fd }).catch(()=>{})
+  }, [speech.voiceActive, speech.recording, speech.processing, speech.speaking])
+
   // Audio level comes from server via mic_level WS messages (more reliable than
   // browser mic in a transparent overlay). Decay to 0 when no signal received.
   useEffect(() => {
@@ -208,21 +266,11 @@ export default function App() {
       {/* Three.js sphere — toggleable via tray */}
       {reactorVisible && (
         <ArcReactor
-          state={stableStatus === 'disconnected' ? 'offline' : reactorState}
+          state={(!networkOnline || stableStatus === 'disconnected') ? 'offline' : reactorState}
           isDesktop={true}
-          audioLevel={audioLevel}
+          audioLevel={Math.max(speech.audioLevel, audioLevel)}
           theme={theme}
         />
-      )}
-
-      {/* Voice caption */}
-      {heardText && (
-        <div style={{ position:'fixed', bottom:'2rem', left:'50%', transform:'translateX(-50%)', zIndex:50, pointerEvents:'none' }}>
-          <div style={{ display:'flex', alignItems:'center', gap:'0.5rem', padding:'0.5rem 1rem', borderRadius:'9999px', background:'rgba(0,10,20,0.85)', border:'1px solid rgba(0,229,255,0.25)' }}>
-            <span style={{ fontSize:'0.75rem', color:'rgba(0,229,255,0.5)', fontFamily:'monospace', textTransform:'uppercase', letterSpacing:'0.1em' }}>HEARD</span>
-            <span style={{ fontSize:'0.875rem', color:'rgba(255,255,255,0.85)', fontFamily:'monospace' }}>{heardText}</span>
-          </div>
-        </div>
       )}
 
       {/* Mute indicator */}

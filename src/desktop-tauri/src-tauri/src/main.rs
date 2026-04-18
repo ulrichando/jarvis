@@ -95,7 +95,7 @@ fn main() {
         .setup(move |app| {
             let window = app.get_webview_window("main").unwrap();
 
-            // Start on primary monitor (laptop / eDP-1)
+            // Full-screen transparent overlay on primary monitor.
             if let Ok(Some(monitor)) = window.primary_monitor() {
                 let size = monitor.size();
                 let pos  = monitor.position();
@@ -104,8 +104,31 @@ fn main() {
                 let _ = window.set_position(PhysicalPosition::new(pos.x, pos.y));
             }
 
-            // Transparent overlay: start click-through, reactor floats
+            // Transparent overlay: click-through so desktop stays usable.
             let _ = window.set_ignore_cursor_events(true);
+            let _ = window.show();
+
+            // Enable mic / media stream in the WebKit2GTK webview and
+            // auto-grant permission requests so getUserMedia works for the
+            // always-listening voice loop.
+            #[cfg(target_os = "linux")]
+            {
+                use webkit2gtk::{WebViewExt, SettingsExt, PermissionRequestExt};
+                let _ = window.with_webview(|webview| {
+                    let wv = webview.inner();
+                    if let Some(settings) = WebViewExt::settings(&wv) {
+                        settings.set_enable_media_stream(true);
+                        settings.set_enable_webrtc(true);
+                        settings.set_enable_mediasource(true);
+                        // Let TTS audio autoplay without a prior user gesture.
+                        settings.set_media_playback_requires_user_gesture(false);
+                    }
+                    wv.connect_permission_request(|_wv, req| {
+                        req.allow();
+                        true
+                    });
+                });
+            }
 
             // ── System tray ──
             let show_item    = MenuItemBuilder::with_id("toggle_vis",   "Show / Hide JARVIS").build(app)?;
