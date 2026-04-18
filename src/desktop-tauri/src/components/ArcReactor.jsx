@@ -52,12 +52,54 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
     scene.add(globe)
     const R = 1.3
 
+    // ── Glass sphere shell ──
+    // Fresnel rim: transparent in the middle, glowing cyan at the silhouette.
+    // AdditiveBlending so the rim adds light over the wallpaper instead of
+    // occluding it (keeps the sphere interior see-through).
+    const glassGeo = new THREE.SphereGeometry(R * 1.01, 64, 64)
+    const glassMat = new THREE.ShaderMaterial({
+      uniforms: {
+        rimColor: { value: new THREE.Color(glowInt) },
+        rimPower: { value: 2.8 },
+        rimIntensity: { value: 1.2 },
+      },
+      transparent: true,
+      depthWrite: false,
+      depthTest: false,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+      vertexShader: `
+        varying vec3 vNormal;
+        varying vec3 vViewDir;
+        void main() {
+          vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+          vNormal = normalize(normalMatrix * normal);
+          vViewDir = normalize(-mvPosition.xyz);
+          gl_Position = projectionMatrix * mvPosition;
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 rimColor;
+        uniform float rimPower;
+        uniform float rimIntensity;
+        varying vec3 vNormal;
+        varying vec3 vViewDir;
+        void main() {
+          // abs() so BOTH front and back faces show fresnel rim at the silhouette.
+          float fres = pow(1.0 - abs(dot(vNormal, vViewDir)), rimPower);
+          vec3 col = rimColor * fres * rimIntensity;
+          gl_FragColor = vec4(col, fres);
+        }
+      `,
+    })
+    globe.add(new THREE.Mesh(glassGeo, glassMat))
+
     const lineMat = (opacity) => {
       const m = new THREE.LineBasicMaterial({
-        color: structInt, transparent: true, opacity,
-        blending: THREE.NormalBlending, depthWrite: false, linewidth: 1.5,
+        color: glowInt, transparent: true, opacity,
+        blending: THREE.AdditiveBlending, depthWrite: false, linewidth: 1.5,
       })
-      themedMaterials.push({ mat: m, role: 'struct' })
+      themedMaterials.push({ mat: m, role: 'glow' })
       return m
     }
 
@@ -109,7 +151,7 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
         for (let ti=arcRes;ti>=0;ti--){const theta=theta0+(ti/arcRes)*(theta1-theta0);edgePts.push(new THREE.Vector3(puzzleR*Math.sin(phi1)*Math.cos(theta),puzzleR*Math.cos(phi1),puzzleR*Math.sin(phi1)*Math.sin(theta)))}
         for (let pi=phiRes;pi>=0;pi--){const phi=phi0+(pi/phiRes)*(phi1-phi0);edgePts.push(new THREE.Vector3(puzzleR*Math.sin(phi)*Math.cos(theta0),puzzleR*Math.cos(phi),puzzleR*Math.sin(phi)*Math.sin(theta0)))}
         edgePts.push(edgePts[0].clone())
-        const edgeMat = new THREE.LineBasicMaterial({ color: glowInt, transparent: true, opacity: 0.45, blending: THREE.AdditiveBlending })
+        const edgeMat = new THREE.LineBasicMaterial({ color: glowInt, transparent: true, opacity: 0.75, blending: THREE.AdditiveBlending })
         themedMaterials.push({ mat: edgeMat, role: 'glow' })
         globe.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(edgePts), edgeMat))
 
@@ -142,7 +184,7 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
     // ── Eye rings ──
     const eyeRings = []
     const eyeConfigs=[{radius:0.20,tube:0.008,tilt:{x:0.3,y:0,z:0.2}},{radius:0.28,tube:0.010,tilt:{x:-0.4,y:0.5,z:-0.1}},{radius:0.36,tube:0.012,tilt:{x:0.15,y:-0.3,z:0.4}},{radius:0.44,tube:0.010,tilt:{x:-0.2,y:0.4,z:-0.3}},{radius:0.52,tube:0.008,tilt:{x:0.5,y:-0.2,z:0.15}}]
-    eyeConfigs.forEach((cfg,i)=>{const torusGeo=new THREE.TorusGeometry(cfg.radius,cfg.tube,8,64);const torusMat=new THREE.MeshBasicMaterial({color:0x000000,transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});themedMaterials.push({mat:torusMat,role:'glow'});const ring=new THREE.Mesh(torusGeo,torusMat);ring.rotation.x=cfg.tilt.x;ring.rotation.y=cfg.tilt.y;ring.rotation.z=cfg.tilt.z;globe.add(ring);eyeRings.push(ring)})
+    eyeConfigs.forEach((cfg,i)=>{const torusGeo=new THREE.TorusGeometry(cfg.radius,cfg.tube,8,64);const torusMat=new THREE.MeshBasicMaterial({color:glowInt,transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});themedMaterials.push({mat:torusMat,role:'glow'});const ring=new THREE.Mesh(torusGeo,torusMat);ring.rotation.x=cfg.tilt.x;ring.rotation.y=cfg.tilt.y;ring.rotation.z=cfg.tilt.z;globe.add(ring);eyeRings.push(ring)})
 
     // ── Scanning ring ──
     const scanRingGeo=new THREE.TorusGeometry(R*1.05,0.006,4,80)
@@ -153,7 +195,7 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
     const SPARK_N=5000, sparkPos=new Float32Array(SPARK_N*3), sparkPhases=new Float32Array(SPARK_N), sparkBase=new Float32Array(SPARK_N*3), sparkNormals=new Float32Array(SPARK_N*3)
     for(let i=0;i<SPARK_N;i++){const theta=Math.random()*Math.PI*2,phi=Math.acos(2*Math.random()-1),r=R*(0.4+Math.random()*0.8),x=r*Math.sin(phi)*Math.cos(theta),y=r*Math.sin(phi)*Math.sin(theta),z=r*Math.cos(phi),idx=i*3;sparkPos[idx]=x;sparkPos[idx+1]=y;sparkPos[idx+2]=z;sparkBase[idx]=x;sparkBase[idx+1]=y;sparkBase[idx+2]=z;sparkNormals[idx]=Math.sin(phi)*Math.cos(theta);sparkNormals[idx+1]=Math.sin(phi)*Math.sin(theta);sparkNormals[idx+2]=Math.cos(phi);sparkPhases[i]=Math.random()*Math.PI*2}
     const sparkGeo=new THREE.BufferGeometry(); sparkGeo.setAttribute('position',new THREE.BufferAttribute(sparkPos,3))
-    const sparkMat=new THREE.PointsMaterial({size:0.012,color:primaryInt,transparent:true,opacity:0.5,blending:THREE.AdditiveBlending,depthWrite:false})
+    const sparkMat=new THREE.PointsMaterial({size:0.018,color:glowInt,transparent:true,opacity:0.7,blending:THREE.AdditiveBlending,depthWrite:false,sizeAttenuation:true})
     globe.add(new THREE.Points(sparkGeo,sparkMat))
 
     // ── Neural arcs ──
@@ -161,13 +203,55 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
     for(let i=0;i<NEURAL_LINES;i++){const tiltX=Math.random()*Math.PI,tiltZ=Math.random()*Math.PI,tiltY=Math.random()*Math.PI*0.5,orbitR=R*(0.3+Math.random()*0.65),speed=(1.0+Math.random()*2.0)*(Math.random()>0.5?1:-1),arcLen=0.4+Math.random()*1.2,segs=20+Math.floor(Math.random()*20),positions=new Float32Array(segs*3),geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.BufferAttribute(positions,3));const brightness=0.15+Math.random()*0.35,neuralColor=i%5===0?glowInt:i%3===0?primaryInt:structInt,mat=new THREE.LineBasicMaterial({color:neuralColor,transparent:true,opacity:brightness,blending:THREE.AdditiveBlending,depthWrite:false});themedMaterials.push({mat,role:i%5===0?'glow':'struct'});const line=new THREE.Line(geo,mat);globe.add(line);signals.push({angle:Math.random()*Math.PI*2,tiltX,tiltZ,tiltY,orbitR,speed,arcLen,segs,positions,geo,mat,baseBrightness:brightness})}
 
     // ── Center glow ──
-    const glowTex=(()=>{const size=128,c=document.createElement('canvas');c.width=size;c.height=size;const ctx=c.getContext('2d'),grad=ctx.createRadialGradient(size/2,size/2,0,size/2,size/2,size/2);const gr=(glowInt>>16)&0xff,gg=(glowInt>>8)&0xff,gb=glowInt&0xff;grad.addColorStop(0,`rgba(${gr},${gg},${gb},1)`);grad.addColorStop(0.15,`rgba(${pr},${pg},${pb},0.8)`);grad.addColorStop(0.4,`rgba(${pr},${pg},${pb},0.3)`);grad.addColorStop(1,`rgba(${pr},${pg},${pb},0)`);ctx.fillStyle=grad;ctx.fillRect(0,0,size,size);return new THREE.CanvasTexture(c)})()
-    const glowMat=new THREE.SpriteMaterial({map:glowTex,color:0x000000,transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false})
+    // Use arc() + clip to draw only inside the radius so corners stay fully transparent.
+    const glowTex=(()=>{
+      const size=128,c=document.createElement('canvas');c.width=size;c.height=size;
+      const ctx=c.getContext('2d');
+      ctx.clearRect(0,0,size,size);
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(size/2,size/2,size/2,0,Math.PI*2);
+      ctx.clip();
+      const grad=ctx.createRadialGradient(size/2,size/2,0,size/2,size/2,size/2);
+      const gr=(glowInt>>16)&0xff,gg=(glowInt>>8)&0xff,gb=glowInt&0xff;
+      grad.addColorStop(0,`rgba(${gr},${gg},${gb},1)`);
+      grad.addColorStop(0.15,`rgba(${pr},${pg},${pb},0.8)`);
+      grad.addColorStop(0.4,`rgba(${pr},${pg},${pb},0.3)`);
+      grad.addColorStop(1,`rgba(${pr},${pg},${pb},0)`);
+      ctx.fillStyle=grad;
+      ctx.fillRect(0,0,size,size);
+      ctx.restore();
+      const tex = new THREE.CanvasTexture(c);
+      tex.premultiplyAlpha = true;
+      return tex;
+    })()
+    const glowMat=new THREE.SpriteMaterial({map:glowTex,color:glowInt,transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false})
     const glowSprite=new THREE.Sprite(glowMat); glowSprite.scale.set(3.5,3.5,1); globe.add(glowSprite)
 
     // ── State disc ──
-    const stateTexture=(()=>{const size=256,c=document.createElement('canvas');c.width=size;c.height=size;const ctx=c.getContext('2d'),cx=size/2,cy=size/2;const outer=ctx.createRadialGradient(cx,cy,size*0.18,cx,cy,size*0.5);outer.addColorStop(0,'rgba(255,255,255,0)');outer.addColorStop(0.4,'rgba(255,255,255,0.55)');outer.addColorStop(0.75,'rgba(255,255,255,0.25)');outer.addColorStop(1.0,'rgba(255,255,255,0)');ctx.fillStyle=outer;ctx.fillRect(0,0,size,size);const inner=ctx.createRadialGradient(cx,cy,0,cx,cy,size*0.22);inner.addColorStop(0,'rgba(255,255,255,1)');inner.addColorStop(0.5,'rgba(255,255,255,0.7)');inner.addColorStop(1.0,'rgba(255,255,255,0)');ctx.fillStyle=inner;ctx.fillRect(0,0,size,size);return new THREE.CanvasTexture(c)})()
-    const stateDiscMat=new THREE.SpriteMaterial({map:stateTexture,color:0x22c55e,transparent:true,opacity:0.0,blending:THREE.AdditiveBlending,depthWrite:false})
+    const stateTexture=(()=>{
+      const size=256,c=document.createElement('canvas');c.width=size;c.height=size;
+      const ctx=c.getContext('2d'),cx=size/2,cy=size/2;
+      ctx.clearRect(0,0,size,size);
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx,cy,size/2,0,Math.PI*2);
+      ctx.clip();
+      const outer=ctx.createRadialGradient(cx,cy,size*0.18,cx,cy,size*0.5);
+      outer.addColorStop(0,'rgba(255,255,255,0)');
+      outer.addColorStop(0.4,'rgba(255,255,255,0.55)');
+      outer.addColorStop(0.75,'rgba(255,255,255,0.25)');
+      outer.addColorStop(1.0,'rgba(255,255,255,0)');
+      ctx.fillStyle=outer;ctx.fillRect(0,0,size,size);
+      const inner=ctx.createRadialGradient(cx,cy,0,cx,cy,size*0.22);
+      inner.addColorStop(0,'rgba(255,255,255,1)');
+      inner.addColorStop(0.5,'rgba(255,255,255,0.7)');
+      inner.addColorStop(1.0,'rgba(255,255,255,0)');
+      ctx.fillStyle=inner;ctx.fillRect(0,0,size,size);
+      ctx.restore();
+      return new THREE.CanvasTexture(c);
+    })()
+    const stateDiscMat=new THREE.SpriteMaterial({map:stateTexture,color:glowInt,transparent:true,opacity:0.0,blending:THREE.AdditiveBlending,depthWrite:false})
     const stateDisc=new THREE.Sprite(stateDiscMat); stateDisc.scale.set(1.1,1.1,1); stateDisc.position.set(0,0,1.35); scene.add(stateDisc)
 
     // ── Animate ──
@@ -183,7 +267,20 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
       const speakPulse=st==='speaking'?0.4+0.4*Math.sin(time*8.0)*Math.sin(time*3.0):0
       const energy=Math.max(smoothAudio,speakPulse)
       const lerpColor=(current,target,t)=>{const cr=(current>>16)&0xff,cg=(current>>8)&0xff,cb=current&0xff,tr=(target>>16)&0xff,tg=(target>>8)&0xff,tb=target&0xff;return(Math.round(cr+(tr-cr)*t)<<16)|(Math.round(cg+(tg-cg)*t)<<8)|Math.round(cb+(tb-cb)*t)}
-      const eyeTargetColor=st==='offline'?0xf87171:st==='thinking'?0xfbbf24:st==='booting'?0x334455:st==='speaking'?0x60a5fa:st==='listening'?0xa78bfa:0x4ade80
+      // State palette — user-input (green) vs AI-output (cyan) visually distinct.
+      //   idle/ready → theme cyan (glowInt)
+      //   listening  → green    (user is talking — "I hear you")
+      //   thinking   → amber    (cognition)
+      //   speaking   → bright cyan (JARVIS is talking)
+      //   offline    → red
+      //   booting    → dim navy
+      const eyeTargetColor=
+        st==='offline'  ? 0xf87171 :   // red
+        st==='thinking' ? 0xfbbf24 :   // amber
+        st==='booting'  ? 0x0f172a :   // dim navy
+        st==='speaking' ? 0x67e8f9 :   // bright cyan
+        st==='listening'? 0xa78bfa :   // purple  — you talking
+                          glowInt
       const eyeLerp=st==='speaking'?0.15:st==='thinking'?0.12:st==='offline'?0.2:st==='listening'?0.10:0.06
       const glowTarget=st==='booting'?0.3:st==='ready'?1.0:0.7
       glowMat.opacity+=(glowTarget-glowMat.opacity)*0.05
@@ -206,9 +303,26 @@ export default function ArcReactor({ state = 'idle', isDesktop = false, audioLev
       sparkGeo.attributes.position.needsUpdate=true
       for(let c=0;c<cellMeshes.length;c++){const piece=cellMeshes[c],{phase,ringIdx,normal}=piece.userData;const wave=Math.sin(time*2.5-ringIdx*0.7+phase),waveFast=Math.sin(time*5.0+phase*2.0),push=Math.max(0,0.1*wave+0.04*waveFast+energy*0.2);piece.position.set(normal.x*push,normal.y*push,normal.z*push);piece.userData.mat.opacity=0.05+0.15*Math.max(0,wave)+energy*0.12}
       sparkMat.opacity=0.25+0.25*breathe+energy*0.5; sparkMat.size=0.01+0.008*breathe+energy*0.006
-      const sc=1.0+0.03*Math.sin(time*1.5)+energy*0.08; globe.scale.set(sc,sc,sc)
-      const glowPulse=0.35+0.2*breathe+energy*0.2; glowMat.opacity=glowPulse
-      const gs=1.8+0.4*breathe+energy*0.4; glowSprite.scale.set(gs,gs,1)
+      // Voice activity pulse — applies to both 'listening' (user talking)
+      // and 'speaking' (JARVIS talking). Overlaid on top of real-time audio
+      // energy so syllables visibly kick.
+      const speakingActive  = st==='speaking'  ? 1 : 0
+      const listeningActive = st==='listening' ? 1 : 0
+      const voiceActive     = speakingActive || listeningActive
+      const voicePulseFast  = 0.5 + 0.5*Math.sin(time*6.5)
+      const sc = 1.0 + 0.03*Math.sin(time*1.5)
+                 + energy*(0.08 + voiceActive*0.14)
+                 + voiceActive*0.05*voicePulseFast
+      globe.scale.set(sc,sc,sc)
+      const glowPulse = 0.35 + 0.2*breathe + energy*0.25
+                        + voiceActive*0.25*voicePulseFast
+      glowMat.opacity = glowPulse
+      const gs = 1.8 + 0.4*breathe + energy*0.5
+                 + voiceActive*0.6*voicePulseFast
+      glowSprite.scale.set(gs,gs,1)
+      // Fresnel rim breathes during any voice activity.
+      glassMat.uniforms.rimIntensity.value =
+        1.2 + voiceActive*(0.8 + energy*1.2)*voicePulseFast
       renderer.render(scene,camera)
     }
     animate()

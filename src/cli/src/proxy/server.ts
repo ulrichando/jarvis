@@ -155,4 +155,12 @@ const server = Bun.serve({
   },
 })
 
-console.log(`[jarvis-proxy] Ready — provider: ${process.env.JARVIS_PROVIDER ?? 'deepseek'}`)
+// Preflight: build the default provider at boot so missing env fails loud
+// here instead of returning 401s on the first real request.
+try {
+  const p = getProvider()
+  console.log(`[jarvis-proxy] Ready — provider: ${p.name} (${p.baseUrl})`)
+} catch (e: any) {
+  console.error(`[jarvis-proxy] FATAL: ${e?.message ?? e}`)
+  process.exit(1)
+}
