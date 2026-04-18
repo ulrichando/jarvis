@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Space Grotesk — downloadable font via Google Fonts provider.
+    Used for: Display, screen titles, conversation headings.
+    Weights: 400 (Regular), 500 (Medium), 600 (SemiBold), 700 (Bold)
+-->
+<font-family xmlns:app="http://schemas.android.com/apk/res-auto"
+    app:fontProviderAuthority="com.google.android.gms.fonts"
+    app:fontProviderPackage="com.google.android.gms"
+    app:fontProviderQuery="name=Space+Grotesk&amp;weight=400&amp;weight=500&amp;weight=600&amp;weight=700"
+    app:fontProviderCerts="@array/com_google_android_gms_fonts_certs">
+</font-family>

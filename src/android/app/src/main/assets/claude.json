@@ -1,0 +1,32 @@
+{
+  "_comment": "JARVIS Android — AI model configuration. Read at runtime by LoadJarvisConfigUseCase.",
+  "model": "claude-sonnet-4-6",
+  "max_tokens": 8096,
+  "temperature": 0.7,
+  "supported_models": [
+    {
+      "id": "claude-opus-4-6",
+      "label": "Opus 4.6",
+      "description": "Most capable — best for complex reasoning and long-form tasks",
+      "max_tokens": 32000
+    },
+    {
+      "id": "claude-sonnet-4-6",
+      "label": "Sonnet 4.6",
+      "description": "Best balance of speed and intelligence — default",
+      "max_tokens": 16000
+    },
+    {
+      "id": "claude-haiku-4-5-20251001",
+      "label": "Haiku 4.5",
+      "description": "Fastest — best for quick queries and low-latency tool calls",
+      "max_tokens": 8096
+    }
+  ],
+  "tool_calling": {
+    "enabled": true,
+    "max_tool_iterations": 10
+  },
+  "streaming": true,
+  "anthropic_version": "2023-06-01"
+}

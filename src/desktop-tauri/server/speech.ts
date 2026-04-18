@@ -9,6 +9,13 @@
 //   POST /stt  (multipart: audio file)  → { text: string }
 //   POST /tts  ({ text, voice? })       → audio stream (wav)
 
+// Shared conversation DB with the bridge — voice turns land in the same
+// sessions sidebar the chat panel shows. Fresh UUID per sidecar process;
+// each restart = a new voice session on the timeline.
+import { saveTurn as saveTurnToDb } from '../../cli/src/bridge/storage.ts'
+import { randomUUID } from 'node:crypto'
+const VOICE_SESSION_ID = randomUUID()
+
 const PORT      = parseInt(process.env.JARVIS_SPEECH_PORT ?? '8766')
 const GROQ_KEY  = process.env.GROQ_API_KEY ?? ''
 const GROQ_BASE = 'https://api.groq.com/openai/v1'
@@ -156,6 +163,12 @@ const convHistory: Turn[] = []
 function pushTurn(user: string, assistant: string) {
   convHistory.push({ user, assistant })
   while (convHistory.length > HISTORY_MAX_TURNS) convHistory.shift()
+  try {
+    saveTurnToDb(VOICE_SESSION_ID, 'user',      user)
+    saveTurnToDb(VOICE_SESSION_ID, 'assistant', assistant)
+  } catch (e) {
+    console.error('[speech] saveTurn to DB failed:', e)
+  }
 }
 function formatHistory(): string {
   if (!convHistory.length) return ''

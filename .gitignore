@@ -17,7 +17,7 @@ build/
 node_modules/
 
 # Rust/Tauri build cache
-shells/desktop/src-tauri/target/
+src/desktop-tauri/src-tauri/target/
 
 # Runtime data
 *.db
@@ -43,15 +43,15 @@ providers.json
 .vscode/
 *.swp
 
-# Packer/VM outputs
-os/packer/output*/
-os/*.iso
-os/*.img
-os/*.vmdk
-os/*.ova
+# Packer/VM outputs (JARVIS OS)
+src/os/packer/output*/
+src/os/*.iso
+src/os/*.img
+src/os/*.vmdk
+src/os/*.ova
 
 # Frontend dist (built at runtime)
-shells/web/frontend/dist/
+src/desktop-tauri/dist/
 
 # Backup files
 *.py.bak
@@ -62,8 +62,18 @@ jarvis-export-*.json
 # Reference source (Claude Code src — not part of JARVIS)
 resource-info/
 
-# Android client (in-development, remove this line when ready to ship)
-clients/
+# Android client build artifacts (Gradle, APKs, SDK path)
+src/android/build/
+src/android/app/build/
+src/android/.gradle/
+src/android/local.properties
+*.apk
+*.aab
+
+# Browser-extension packaged artifacts + signing keys
+*.crx
+*.xpi
+*.pem
 
 # LLM documentation and claude-code reference
 llm/

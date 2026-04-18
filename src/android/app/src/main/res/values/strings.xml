@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Jarvis</string>
+    <string name="app_description">Personal AI command-and-control system</string>
+
+    <!-- Accessibility service -->
+    <string name="accessibility_service_description">
+        Allows JARVIS to observe screen content and inject gestures on command.
+        Used for AI-driven UI automation via natural language instructions.
+    </string>
+
+    <!-- Notification channel -->
+    <string name="notification_channel_foreground_id">jarvis_foreground</string>
+    <string name="notification_channel_foreground_name">JARVIS Service</string>
+    <string name="notification_channel_foreground_desc">Keeps root shell and terminal sessions alive</string>
+    <string name="notification_channel_alerts_id">jarvis_alerts</string>
+    <string name="notification_channel_alerts_name">JARVIS Alerts</string>
+    <string name="notification_channel_alerts_desc">Important notifications from JARVIS</string>
+
+    <!-- Foreground service notification -->
+    <string name="notification_title_active">JARVIS Active</string>
+    <string name="notification_text_root_connected">Root shell connected</string>
+    <string name="notification_text_no_root">Running without root</string>
+    <string name="notification_action_new_chat">New Chat</string>
+    <string name="notification_action_new_terminal">Terminal</string>
+    <string name="notification_action_kill_all">Kill All</string>
+
+    <!-- Onboarding -->
+    <string name="onboarding_welcome_title">Welcome to JARVIS</string>
+    <string name="onboarding_welcome_body">Your personal AI command-and-control system. Full device access via natural language.</string>
+    <string name="onboarding_api_key_title">Connect to Claude</string>
+    <string name="onboarding_api_key_body">JARVIS uses Anthropic\'s Claude API. Paste your API key below to get started.</string>
+    <string name="onboarding_api_key_hint">sk-ant-…</string>
+    <string name="onboarding_validate_button">Validate &amp; Connect</string>
+    <string name="onboarding_get_key_link">Get an API key at console.anthropic.com</string>
+    <string name="onboarding_validating">Connecting to Claude…</string>
+    <string name="onboarding_success">Connected. JARVIS is ready.</string>
+    <string name="onboarding_error_invalid_key">Invalid API key. Check and try again.</string>
+    <string name="onboarding_error_network">Network error. Check your connection.</string>
+
+    <!-- Chat screen -->
+    <string name="chat_input_hint">Message JARVIS…</string>
+    <string name="chat_empty_title">How can I assist you?</string>
+    <string name="chat_empty_subtitle">Ask anything. Run commands. Control your device.</string>
+    <string name="chat_stop_streaming">Stop</string>
+    <string name="chat_copy_message">Copy</string>
+    <string name="chat_regenerate">Regenerate</string>
+    <string name="chat_delete_message">Delete</string>
+    <string name="chat_new_conversation">New Chat</string>
+
+    <!-- Terminal screen -->
+    <string name="terminal_new_session">New Session</string>
+    <string name="terminal_root_session">Root Shell</string>
+    <string name="terminal_session_prefix_root">⚡</string>
+    <string name="terminal_close_session">Close</string>
+    <string name="terminal_rename_session">Rename</string>
+
+    <!-- File manager -->
+    <string name="files_root_required">Root required for this path</string>
+    <string name="files_copy">Copy</string>
+    <string name="files_move">Move</string>
+    <string name="files_rename">Rename</string>
+    <string name="files_delete">Delete</string>
+    <string name="files_properties">Properties</string>
+    <string name="files_open_terminal">Open in Terminal</string>
+    <string name="files_unsaved_changes">Unsaved changes</string>
+
+    <!-- Permissions -->
+    <string name="permission_rationale_camera">JARVIS uses the camera for the take_screenshot tool and visual AI tasks.</string>
+    <string name="permission_rationale_location">JARVIS uses location for the get_location tool and geofencing tasks.</string>
+    <string name="permission_rationale_microphone">JARVIS uses the microphone for voice input and audio analysis.</string>
+    <string name="permission_rationale_storage">JARVIS needs storage access to read and write files on your device.</string>
+    <string name="permission_rationale_phone">JARVIS reads device and telephony info for the get_device_info tool.</string>
+    <string name="permission_rationale_contacts">JARVIS can read and manage contacts when instructed.</string>
+    <string name="permission_rationale_sms">JARVIS can send and read SMS messages when instructed.</string>
+    <string name="permission_rationale_bluetooth">JARVIS scans Bluetooth devices for the network scan tool.</string>
+    <string name="permission_open_settings">Open Settings</string>
+    <string name="permission_grant">Grant</string>
+    <string name="permission_skip">Skip</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_api_key">API Key</string>
+    <string name="settings_api_key_hint">sk-ant-…</string>
+    <string name="settings_model">Model</string>
+    <string name="settings_temperature">Temperature</string>
+    <string name="settings_max_tokens">Max Tokens</string>
+    <string name="settings_system_prompt_override">Override System Prompt</string>
+    <string name="settings_theme">Theme</string>
+    <string name="settings_theme_dark">Dark</string>
+    <string name="settings_theme_light">Light</string>
+    <string name="settings_theme_system">System</string>
+    <string name="settings_clear_history">Clear Chat History</string>
+    <string name="settings_clear_history_confirm">This will permanently delete all conversations. Continue?</string>
+    <string name="settings_version">JARVIS Android v%1$s · client of JARVIS ecosystem</string>
+
+    <!-- Generic -->
+    <string name="cancel">Cancel</string>
+    <string name="confirm">Confirm</string>
+    <string name="delete">Delete</string>
+    <string name="save">Save</string>
+    <string name="close">Close</string>
+    <string name="error_unknown">Something went wrong. Try again.</string>
+    <string name="copied_to_clipboard">Copied to clipboard</string>
+    <string name="undo">Undo</string>
+</resources>
