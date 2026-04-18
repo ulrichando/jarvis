@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!--
+        Base app theme — no window background; Compose draws everything.
+        windowIsTranslucent + edge-to-edge configured in JarvisTheme.kt.
+    -->
+    <style name="Theme.Jarvis" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+        <item name="android:enforceNavigationBarContrast">false</item>
+        <item name="android:enforceStatusBarContrast">false</item>
+    </style>
+
+    <!--
+        Splash screen theme — shown by the OS before Compose first renders.
+        Uses the core-splashscreen library (SplashScreen compat API).
+        windowSplashScreenBackground: obsidian black
+        windowSplashScreenAnimatedIcon: the JARVIS gold orb icon (vector)
+    -->
+    <style name="Theme.Jarvis.SplashScreen" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">#0A0A0A</item>
+        <!-- Animated icon — place in res/drawable/ic_splash_animated.xml -->
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="windowSplashScreenAnimationDuration">600</item>
+        <item name="postSplashScreenTheme">@style/Theme.Jarvis</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+
+</resources>

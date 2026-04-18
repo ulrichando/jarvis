@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Preloaded fonts declaration.
+    Tells the framework to fetch these downloadable fonts at app install time
+    so they are available synchronously on first launch (no FOUT).
+    Referenced by the <application> tag via android:preloadedFonts (API 26+).
+-->
+<resources>
+    <array name="preloaded_fonts" translatable="false">
+        <item>@font/space_grotesk</item>
+        <item>@font/dm_sans</item>
+        <item>@font/jetbrains_mono</item>
+    </array>
+</resources>

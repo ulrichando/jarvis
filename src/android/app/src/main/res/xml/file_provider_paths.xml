@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    FileProvider path declarations.
+    Used when sharing pcap exports, APK extracts, screenshot files, etc.
+-->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- /sdcard/Download/ — general exports (pcap, screenshots) -->
+    <external-path name="downloads" path="Download/" />
+    <!-- App-private external cache — temporary share targets -->
+    <external-cache-path name="external_cache" path="." />
+    <!-- App-private internal cache — screenshot temp files -->
+    <cache-path name="internal_cache" path="." />
+    <!-- App-private files dir — staged APK installs -->
+    <files-path name="internal_files" path="." />
+</paths>

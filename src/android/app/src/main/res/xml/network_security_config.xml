@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Network security configuration.
+
+    Production traffic (api.anthropic.com) is always TLS — Android's default.
+    Local relay targets (homelab 10.x.x.x, emulator 10.0.2.x) allow cleartext
+    because the relay operates over a trusted LAN without public exposure.
+
+    NEVER add public hostnames to cleartextTrafficPermitted domains.
+-->
+<network-security-config>
+
+    <!-- Default: HTTPS only, certificate pinning via system trust store -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <!-- Homelab relay — 10.10.0.x (Proxmox CT104) -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">10.10.0.50</domain>
+    </domain-config>
+
+    <!-- Android emulator host loopback (10.0.2.2 = host machine) -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+
+    <!-- Localhost for on-device testing -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+
+</network-security-config>

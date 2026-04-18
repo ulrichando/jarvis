@@ -1,0 +1,27 @@
+{
+  "_comment": "JARVIS Android — API endpoint configuration per environment.",
+  "active_environment": "production",
+  "environments": {
+    "production": {
+      "claude_api_base": "https://api.anthropic.com",
+      "claude_messages_path": "/v1/messages",
+      "timeout_connect_seconds": 30,
+      "timeout_read_seconds": 0,
+      "_note_read_timeout": "0 = no read timeout — required for SSE streaming which can last indefinitely"
+    },
+    "local_relay": {
+      "_comment": "Point to JARVIS relay server on the homelab (Proxmox CT104) for on-prem routing.",
+      "claude_api_base": "http://10.10.0.50:8765",
+      "claude_messages_path": "/api/llm",
+      "timeout_connect_seconds": 10,
+      "timeout_read_seconds": 0
+    },
+    "dev": {
+      "_comment": "Local dev — Android emulator uses 10.0.2.2 to reach the host machine.",
+      "claude_api_base": "http://10.0.2.2:8765",
+      "claude_messages_path": "/api/llm",
+      "timeout_connect_seconds": 10,
+      "timeout_read_seconds": 0
+    }
+  }
+}
