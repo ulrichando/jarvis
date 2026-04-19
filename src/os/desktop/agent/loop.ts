@@ -1,6 +1,6 @@
 import type { LLMClient, Message, ContentBlock } from "../providers/types.ts";
 import type { ToolRegistry } from "./types.ts";
-import { gate } from "../risk/gate.ts";
+import { gate, type ConfirmCallback } from "../risk/gate.ts";
 
 const MAX_ITERATIONS = 10;
 
@@ -16,6 +16,7 @@ export type RunOpts = {
   messages: Message[];
   tools: ToolRegistry;
   system?: string;
+  confirm?: ConfirmCallback;
 };
 
 export async function runAgent(opts: RunOpts): Promise<AgentRunResult> {
@@ -47,7 +48,7 @@ export async function runAgent(opts: RunOpts): Promise<AgentRunResult> {
     const toolResults: ContentBlock[] = [];
 
     for (const use of toolUses) {
-      const decision = gate(use.name, use.input);
+      const decision = await gate(use.name, use.input, { confirm: opts.confirm });
       if (!decision.allow) {
         blocked.push({ tool: use.name, input: use.input, reason: decision.reason });
         toolResults.push({

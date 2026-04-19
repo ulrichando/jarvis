@@ -41,19 +41,52 @@ test("classify falls back to 'low' for unknown tool names", () => {
   expect(classify("screen", { region: "full" })).toBe("low");
 });
 
-test("gate allows low-risk", () => {
-  const r = gate("bash", { command: "ls" });
+test("gate allows low-risk", async () => {
+  const r = await gate("bash", { command: "ls" });
   expect(r.allow).toBe(true);
 });
 
-test("gate denies high-risk with informative reason", () => {
-  const r = gate("bash", { command: "sudo rm -rf /" });
+test("gate denies high-risk without a confirm callback", async () => {
+  const r = await gate("bash", { command: "sudo rm -rf /" });
   expect(r.allow).toBe(false);
   if (r.allow === false) {
     expect(r.reason).toContain("high-risk");
     expect(r.reason).toContain("bash");
-    expect(r.reason).toContain("Plan 3");
+    expect(r.reason).toContain("no approval UI");
   }
+});
+
+test("gate allows high-risk when confirm callback returns 'allow'", async () => {
+  let seen = false;
+  const r = await gate("bash", { command: "sudo ls" }, {
+    confirm: async () => {
+      seen = true;
+      return "allow";
+    },
+  });
+  expect(seen).toBe(true);
+  expect(r.allow).toBe(true);
+});
+
+test("gate denies high-risk when confirm callback returns 'deny'", async () => {
+  const r = await gate("bash", { command: "sudo ls" }, {
+    confirm: async () => "deny",
+  });
+  expect(r.allow).toBe(false);
+  if (r.allow === false) {
+    expect(r.reason).toContain("user denied");
+  }
+});
+
+test("gate passes promptText with the command to the confirm callback", async () => {
+  let capturedPrompt = "";
+  await gate("bash", { command: "sudo pacman -Syu" }, {
+    confirm: async (req) => {
+      capturedPrompt = req.promptText;
+      return "deny";
+    },
+  });
+  expect(capturedPrompt).toContain("pacman -Syu");
 });
 
 test("classify returns 'low' for hyprland tool", () => {
