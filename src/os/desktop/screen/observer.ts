@@ -4,7 +4,6 @@
 export type CaptureOpts = {
   monitor?: "focused" | "all" | string;
   quality?: number;
-  maxWidth?: number;
   /** For tests: override the command spawner. */
   spawn?: (cmd: string[]) => Bun.Subprocess;
 };
@@ -16,7 +15,6 @@ export type Capture = {
 };
 
 const DEFAULT_QUALITY = 60;
-const DEFAULT_MAX_WIDTH = 1024;
 
 export async function capture(opts: CaptureOpts = {}): Promise<Capture> {
   const quality = opts.quality ?? DEFAULT_QUALITY;
@@ -41,10 +39,6 @@ export async function capture(opts: CaptureOpts = {}): Promise<Capture> {
   }
 
   const jpeg = new Uint8Array(stdout);
-
-  // maxWidth reserved for future downscaling; acknowledge it to satisfy lint.
-  const _maxWidth = opts.maxWidth ?? DEFAULT_MAX_WIDTH;
-  void _maxWidth;
 
   return { jpeg };
 }

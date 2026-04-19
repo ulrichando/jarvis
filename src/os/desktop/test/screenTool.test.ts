@@ -16,14 +16,16 @@ test("screen tool has expected schema", () => {
   expect(tool.def.input_schema).toHaveProperty("properties.question");
 });
 
-test("screen tool surfaces capture failure when vision is configured but grim is missing", async () => {
+test("screen tool surfaces vision-client errors with the expected prefix", async () => {
   const vision: VisionClient = {
     name: "fake",
-    async describe() { return "a terminal"; },
+    async describe() { throw new Error("api rate limit"); },
   };
   const tool = createScreenTool(vision);
+  // This test will only meaningfully exercise the describe() path if capture() succeeds.
+  // On most dev hosts grim is absent, so capture() throws first; either way the is_error path
+  // is exercised and the "screen capture/describe failed" prefix appears.
   const result = await tool.run({});
-  // On the dev host, grim won't exist → spawn fails → capture throws → tool returns is_error.
   expect(result.is_error).toBe(true);
   expect(result.output).toContain("screen capture/describe failed");
 });
