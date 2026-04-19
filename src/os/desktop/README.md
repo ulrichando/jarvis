@@ -2,11 +2,14 @@
 
 Standalone AI-native OS-brain service for **Misty Scone** (spec lives outside the repo at `~/.claude/plans/i-want-to-build-misty-scone.md`; see [docs/superpowers/plans/](../../docs/superpowers/plans/) for the decomposed per-plan implementation docs).
 
-## What it does (Plan 2 scope)
+## What it does (Plans 2-3)
 
 - Starts a local HTTP server on `$MISTY_PORT` (default 8765).
-- Accepts `POST /api/think` with `{messages}`, runs a Groq-backed agent loop with one tool (`bash`), returns the transcript.
-- Low-risk bash runs automatically; high-risk bash (sudo, rm -rf, offensive network tools, reverse shells, port scans, etc.) is auto-denied with an informative error. Plan 3+ adds voice/HUD approval so high-risk can be confirmed.
+- Accepts `POST /api/think` with `{messages}`, runs a Groq-backed agent loop with tools:
+  - **bash** — execute shell commands. Low-risk runs auto; high-risk (sudo, rm -rf, offensive network tools, reverse shells, port scans) auto-denies with an informative error.
+  - **hyprland** — Hyprland window-manager control via its IPC socket (focus/spawn/move_to_workspace/list_windows/dispatch). Requires Hyprland running (VM only).
+  - **screen** — capture the focused monitor via `grim` and describe it via a vision-capable provider (default: Gemini 2.0 Flash). Requires `GEMINI_API_KEY` and `grim` binary (Wayland only).
+- Plan 4+ adds voice/HUD approval so high-risk bash can be confirmed instead of auto-denied.
 
 ## Running
 
@@ -50,9 +53,11 @@ Code layout:
 
 ```
 bridge/      HTTP routes (/health, /api/models, /api/think)
-providers/   LLM clients (Groq via Anthropic SDK; OpenAI/Gemini/DeepSeek stubbed)
+providers/   LLM clients: Groq (text), Gemini (vision); OpenAI/Ollama/DeepSeek stubbed
 agent/       Agent loop + tool registry
-  tools/     Tool implementations (bash)
+  tools/     bash, hyprland, screen
+hyprland/    UNIX-socket IPC client + high-level actions
+screen/      grim-based capture helper
 risk/        Risk-tier classifier and gate
 config/      Env loading, typed Config
 test/        bun:test suite
@@ -62,4 +67,4 @@ docs/        Plan 1 runbook + packages.md
 
 ## What's next
 
-Plans 3-7 add Hyprland integration, a Linux screen observer, voice (STT + TTS + wake word + mode switcher), the proactive controller, a HUD widget, and a voice-driven approval flow that unblocks high-risk tool calls. See the per-plan implementation docs at [docs/superpowers/plans/](../../docs/superpowers/plans/).
+Plans 4-7 add voice (STT + TTS + wake word + mode switcher), the proactive controller, a HUD widget, and a voice-driven approval flow that unblocks high-risk tool calls. See the per-plan implementation docs at [docs/superpowers/plans/](../../docs/superpowers/plans/).
