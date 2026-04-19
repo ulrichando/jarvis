@@ -16,8 +16,9 @@ const HIGH_RISK_BASH_PATTERNS: RegExp[] = [
   /\baircrack-ng\b/, /\bwifite\b/, /\breaver\b/,
   /\bresponder\b/, /\bcrackmapexec\b/, /\bimpacket-\w+\b/,
   /\bjohn\b/, /\bhashcat\b/,               // password crackers
-  // Network listens / reverse shells
-  /\bnc\s+.*-[a-zA-Z]*l[a-zA-Z]*/, /\bncat\s+.*-[a-zA-Z]*l[a-zA-Z]*/,
+  // Network listens / reverse shells / port scans
+  /\bnc\s+.*-[a-zA-Z]*l[a-zA-Z]*/, /\bncat\s+.*-[a-zA-Z]*l[a-zA-Z]*/,  // -l variations (listens)
+  /\bnc\s+.*-[a-zA-Z]*z[a-zA-Z]*/, /\bncat\s+.*-[a-zA-Z]*z[a-zA-Z]*/,  // -z variations (port scans)
   /\bbash\s+-i\b/,                         // interactive reshells that could be exfil
   // Writing outside home
   />\s*\/(?!home|tmp|dev\/null)/,          // redirect to root-owned paths
