@@ -1,0 +1,47 @@
+;; Misty HUD — approval queue + daemon status.
+;; Started via: eww -c ~/.config/eww/misty daemon && eww -c ~/.config/eww/misty open misty-hud
+
+(defvar misty-url "http://127.0.0.1:8765")
+
+;; Poll status every 1s. Output: {"health":"ok|down","pending":[{...}]}
+(defpoll status :interval "1s"
+  :initial '{"health":"down","pending":[]}'
+  "./bin/fetch-status.sh")
+
+(defwidget misty-header []
+  (box :class "header" :orientation "h" :space-evenly false
+    (label :class "brand" :text "● misty-core")
+    (label :class {status.health == "ok" ? "health ok" : "health down"}
+           :text {status.health == "ok" ? "healthy" : "down"})))
+
+(defwidget pending-entry [entry]
+  (box :class "pending-entry" :orientation "v" :space-evenly false :spacing 4
+    (label :class "tool-name" :text {entry.tool} :halign "start")
+    (label :class "prompt"    :text {entry.promptText} :halign "start" :wrap true)
+    (label :class "reason"    :text {"reason: " + entry.reason} :halign "start" :wrap true)
+    (box :orientation "h" :space-evenly false :spacing 8
+      (button :class "allow" :onclick "./bin/confirm.sh \"${entry.id}\" allow" "✓ allow")
+      (button :class "deny"  :onclick "./bin/confirm.sh \"${entry.id}\" deny"  "✗ deny"))))
+
+(defwidget pending-list []
+  (box :orientation "v" :space-evenly false :spacing 8
+    (label :class "list-header"
+           :text {"pending confirmations (" + arraylength(status.pending) + ")"}
+           :halign "start")
+    (for entry in {status.pending}
+      (pending-entry :entry entry))))
+
+(defwidget misty-hud []
+  (box :class "hud" :orientation "v" :space-evenly false :spacing 12
+    (misty-header)
+    (pending-list)))
+
+(defwindow misty-hud
+  :monitor 0
+  :geometry (geometry :x "16px" :y "16px"
+                      :width "360px"
+                      :anchor "top right")
+  :stacking "overlay"
+  :exclusive false
+  :focusable false
+  (misty-hud))
