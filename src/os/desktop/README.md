@@ -2,14 +2,20 @@
 
 Standalone AI-native OS-brain service for **Misty Scone** (spec lives outside the repo at `~/.claude/plans/i-want-to-build-misty-scone.md`; see [docs/superpowers/plans/](../../docs/superpowers/plans/) for the decomposed per-plan implementation docs).
 
-## What it does (Plans 2-3)
+## What it does (Plans 2-4)
 
 - Starts a local HTTP server on `$MISTY_PORT` (default 8765).
 - Accepts `POST /api/think` with `{messages}`, runs a Groq-backed agent loop with tools:
-  - **bash** — execute shell commands. Low-risk runs auto; high-risk (sudo, rm -rf, offensive network tools, reverse shells, port scans) auto-denies with an informative error.
+  - **bash** — execute shell commands. Low-risk runs auto; high-risk (sudo, rm -rf, offensive network tools, reverse shells, port scans) auto-denies unless an approval callback is attached.
   - **hyprland** — Hyprland window-manager control via its IPC socket (focus/spawn/move_to_workspace/list_windows/dispatch). Requires Hyprland running (VM only).
   - **screen** — capture the focused monitor via `grim` and describe it via a vision-capable provider (default: Gemini 2.0 Flash). Requires `GEMINI_API_KEY` and `grim` binary (Wayland only).
-- Plan 4+ adds voice/HUD approval so high-risk bash can be confirmed instead of auto-denied.
+- Additional endpoints:
+  - `POST /api/speak { text, voice? }` — Groq Orpheus TTS, returns WAV/MP3/etc bytes.
+  - `POST /api/transcribe` — multipart audio upload → `{ text }` via Groq Whisper.
+  - `POST /api/think?interactive=1` — high-risk tool calls pause via the confirmation queue instead of auto-denying.
+  - `POST /api/confirmation/:id { decision }` — resolve a pending confirmation.
+  - `GET /api/confirmation` — list pending confirmations.
+- Plans 5+ add a client (HUD + wake word) that consumes these endpoints to drive real voice interaction.
 
 ## Running
 
@@ -52,13 +58,14 @@ A later plan (3+) will package this as a systemd user service (`misty-core.servi
 Code layout:
 
 ```
-bridge/      HTTP routes (/health, /api/models, /api/think)
+bridge/      HTTP routes (/health, /api/models, /api/think, /api/speak, /api/transcribe, /api/confirmation)
 providers/   LLM clients: Groq (text), Gemini (vision); OpenAI/Ollama/DeepSeek stubbed
-agent/       Agent loop + tool registry
+agent/       Agent loop + tool registry (loop accepts optional confirm callback)
   tools/     bash, hyprland, screen
 hyprland/    UNIX-socket IPC client + high-level actions
 screen/      grim-based capture helper
-risk/        Risk-tier classifier and gate
+voice/       TTS (Groq Orpheus), STT (Groq Whisper), confirmation queue
+risk/        Risk-tier classifier + async gate
 config/      Env loading, typed Config
 test/        bun:test suite
 scripts/     Plan 1 VM provisioning (bash; unrelated to the Bun daemon)
@@ -67,4 +74,4 @@ docs/        Plan 1 runbook + packages.md
 
 ## What's next
 
-Plans 4-7 add voice (STT + TTS + wake word + mode switcher), the proactive controller, a HUD widget, and a voice-driven approval flow that unblocks high-risk tool calls. See the per-plan implementation docs at [docs/superpowers/plans/](../../docs/superpowers/plans/).
+Plans 5-7 add a HUD/desktop client that consumes the voice + confirmation endpoints, a wake-word daemon, and a proactive controller that watches the screen and suggests actions. See the per-plan implementation docs at [docs/superpowers/plans/](../../docs/superpowers/plans/).
