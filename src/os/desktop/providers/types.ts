@@ -23,3 +23,9 @@ export interface LLMClient {
   name: string;
   complete(params: { model: string; messages: Message[]; tools?: ToolDef[]; system?: string }): Promise<LLMResponse>;
 }
+
+export interface VisionClient {
+  name: string;
+  /** Describe/answer about an image. `image` is JPEG bytes base64-encoded. */
+  describe(params: { imageBase64: string; prompt: string; model?: string }): Promise<string>;
+}
