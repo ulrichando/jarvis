@@ -27,3 +27,10 @@ setup() {
   [ "$status" -ne 0 ]
   [[ "$output" == *"must be 'allow' or 'deny'"* ]]
 }
+
+@test "install.sh is readable and chmod +x succeeds" {
+  local f="$HUD_BIN/../install.sh"
+  [ -r "$f" ]
+  chmod +x "$f"
+  [ -x "$f" ]
+}
