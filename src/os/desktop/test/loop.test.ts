@@ -92,3 +92,21 @@ test("runAgent stops at MAX_ITERATIONS when model keeps asking for tools", async
   });
   expect(result.stop_reason).toBe("max_iterations");
 });
+
+test("runAgent allows high-risk when confirm callback returns allow", async () => {
+  const { bashTool } = await import("../agent/tools/bash.ts");
+  const tools: ToolRegistry = { bash: bashTool };
+  const client = stubClient([
+    { content: [{ type: "tool_use", id: "t1", name: "bash", input: { command: "sudo ls /etc" } }], stop_reason: "tool_use" },
+    { content: [{ type: "text", text: "Done." }], stop_reason: "end_turn" },
+  ]);
+  const result = await runAgent({
+    client,
+    model: "m",
+    messages: [{ role: "user", content: "list /etc with sudo" }],
+    tools,
+    confirm: async () => "allow",
+  });
+  expect(result.blocked).toHaveLength(0);
+  expect(result.stop_reason).toBe("end_turn");
+});
