@@ -31,11 +31,14 @@ export function classifyBash(command: string): RiskTier {
   return "low";
 }
 
+const LOW_RISK_TOOLS = new Set<string>(["hyprland", "screen"]);
+
 export function classify(toolName: string, input: unknown): RiskTier {
   if (toolName === "bash") {
     const cmd = (input as { command?: string })?.command ?? "";
     return classifyBash(cmd);
   }
-  // Tools added in later plans default to low; explicit classification per tool as they're added.
+  if (LOW_RISK_TOOLS.has(toolName)) return "low";
+  // Unknown tools default to low. Future-plan tools should be added to LOW_RISK_TOOLS or get dedicated classification.
   return "low";
 }
