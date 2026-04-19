@@ -1,8 +1,6 @@
-// misty-core daemon entry point. Wires config + HTTP bridge.
+import { loadConfig } from "./config/load.ts";
 import { startBridge } from "./bridge/server.ts";
 
-const host = process.env.MISTY_HOST ?? "127.0.0.1";
-const port = Number(process.env.MISTY_PORT ?? 8765);
-
-startBridge({ host, port });
-console.log(`[misty-core] listening on http://${host}:${port}`);
+const cfg = loadConfig();
+startBridge({ host: cfg.host, port: cfg.port });
+console.log(`[misty-core] listening on http://${cfg.host}:${cfg.port} (provider=${cfg.provider} model=${cfg.model})`);
