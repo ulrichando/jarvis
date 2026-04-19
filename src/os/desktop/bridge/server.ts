@@ -35,14 +35,21 @@ export function startBridge(opts: BridgeOpts): ReturnType<typeof Bun.serve> {
         if (!Array.isArray(body.messages)) {
           return Response.json({ error: "messages must be an array" }, { status: 400 });
         }
-        const result = await runAgent({
-          client: opts.client,
-          model: body.model ?? opts.defaultModel,
-          messages: body.messages,
-          tools: opts.tools,
-          system: body.system,
-        });
-        return Response.json(result);
+        try {
+          const result = await runAgent({
+            client: opts.client,
+            model: body.model ?? opts.defaultModel,
+            messages: body.messages,
+            tools: opts.tools,
+            system: body.system,
+          });
+          return Response.json(result);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          // Log with stack for operator; return message-only to caller (no stack trace leak).
+          console.error("[misty-core] /api/think error:", err);
+          return Response.json({ error: message }, { status: 500 });
+        }
       }
 
       return new Response("not found", { status: 404 });
