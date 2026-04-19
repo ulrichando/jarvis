@@ -1,6 +1,6 @@
 # misty-core
 
-Standalone AI-native OS-brain service for [Misty Scone](../../../.claude/plans/i-want-to-build-misty-scone.md).
+Standalone AI-native OS-brain service for **Misty Scone** (spec lives outside the repo at `~/.claude/plans/i-want-to-build-misty-scone.md`; see [docs/superpowers/plans/](../../docs/superpowers/plans/) for the decomposed per-plan implementation docs).
 
 ## What it does (Plan 2 scope)
 
@@ -62,4 +62,4 @@ docs/        Plan 1 runbook + packages.md
 
 ## What's next
 
-Plans 3-7 add Hyprland integration, a Linux screen observer, voice (STT + TTS + wake word + mode switcher), the proactive controller, a HUD widget, and a voice-driven approval flow that unblocks high-risk tool calls. See [the spec](../../../.claude/plans/i-want-to-build-misty-scone.md).
+Plans 3-7 add Hyprland integration, a Linux screen observer, voice (STT + TTS + wake word + mode switcher), the proactive controller, a HUD widget, and a voice-driven approval flow that unblocks high-risk tool calls. See the per-plan implementation docs at [docs/superpowers/plans/](../../docs/superpowers/plans/).
