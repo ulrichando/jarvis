@@ -29,3 +29,12 @@ startBridge({
   queue,
 });
 console.log(`[misty-core] listening on http://${cfg.host}:${cfg.port} (provider=${cfg.provider} model=${cfg.model}, vision=${visionClient?.name ?? "disabled"}, tts_voice=${cfg.ttsVoice})`);
+
+// Graceful shutdown: reject any pending confirmations so the event loop can exit.
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.on(signal, () => {
+    console.log(`[misty-core] received ${signal}, shutting down`);
+    queue.shutdown();
+    process.exit(0);
+  });
+}
