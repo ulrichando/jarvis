@@ -6,7 +6,9 @@ type GroqOpts = { apiKey: string };
 export function createGroqClient(opts: GroqOpts): LLMClient {
   const anthropic = new Anthropic({
     apiKey: opts.apiKey,
-    baseURL: "https://api.groq.com/anthropic/v1",
+    // SDK appends "/v1/messages" to baseURL; keep baseURL at the host root of Groq's
+    // Anthropic-compatible surface (trailing slash not needed).
+    baseURL: "https://api.groq.com/anthropic",
   });
   return {
     name: "groq",
