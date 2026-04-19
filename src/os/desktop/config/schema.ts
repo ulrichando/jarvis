@@ -10,4 +10,5 @@ export type Config = {
   visionProvider: VisionProviderName;
   visionApiKey: string | undefined;
   visionModel: string;
+  ttsVoice: string;
 };
