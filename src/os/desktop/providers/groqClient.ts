@@ -49,5 +49,8 @@ function toAnthropicBlock(b: { type: string } & Record<string, unknown>): Anthro
 function fromAnthropicBlock(b: Anthropic.ContentBlock): LLMResponse["content"][number] {
   if (b.type === "text") return { type: "text", text: b.text };
   if (b.type === "tool_use") return { type: "tool_use", id: b.id, name: b.name, input: b.input };
-  throw new Error(`unexpected anthropic block type: ${b.type}`);
+  // Unknown block type (e.g. future "thinking" blocks from extended-thinking models).
+  // Downgrade to a text block so the loop keeps working; log the unexpected type for debugging.
+  console.warn(`[misty-core] groq client: unexpected block type "${(b as { type: string }).type}"; downgrading to text`);
+  return { type: "text", text: `[unsupported block type: ${(b as { type: string }).type}]` };
 }
