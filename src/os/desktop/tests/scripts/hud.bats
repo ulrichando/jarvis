@@ -16,3 +16,14 @@ setup() {
   run env MISTY_URL="http://bad.invalid" bash "$HUD_BIN/fetch-status.sh"
   [ "$status" -eq 0 ]
 }
+
+@test "confirm.sh requires two arguments" {
+  run bash "$HUD_BIN/confirm.sh"
+  [ "$status" -ne 0 ]
+}
+
+@test "confirm.sh rejects invalid decision" {
+  run bash "$HUD_BIN/confirm.sh" "c_1" "maybe"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"must be 'allow' or 'deny'"* ]]
+}
