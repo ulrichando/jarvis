@@ -3,11 +3,11 @@ import { startBridge } from "./bridge/server.ts";
 import { createClient } from "./providers/registry.ts";
 import { createVisionClient } from "./providers/vision.ts";
 import { defaultTools } from "./agent/tools/index.ts";
+import { ConfirmationQueue } from "./voice/confirmations.ts";
 
 const cfg = loadConfig();
 const client = createClient(cfg);
 
-// Vision client is optional — only required when the screen tool is actually invoked.
 let visionClient;
 try {
   visionClient = createVisionClient(cfg);
@@ -16,6 +16,7 @@ try {
 }
 
 const tools = defaultTools({ visionClient });
+const queue = new ConfirmationQueue();
 
 startBridge({
   host: cfg.host,
@@ -23,5 +24,8 @@ startBridge({
   client,
   defaultModel: cfg.model,
   tools,
+  apiKey: cfg.apiKey,
+  ttsVoice: cfg.ttsVoice,
+  queue,
 });
-console.log(`[misty-core] listening on http://${cfg.host}:${cfg.port} (provider=${cfg.provider} model=${cfg.model}, vision=${visionClient?.name ?? "disabled"})`);
+console.log(`[misty-core] listening on http://${cfg.host}:${cfg.port} (provider=${cfg.provider} model=${cfg.model}, vision=${visionClient?.name ?? "disabled"}, tts_voice=${cfg.ttsVoice})`);

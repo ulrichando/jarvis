@@ -50,5 +50,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     throw new Error(`invalid MISTY_PORT "${env.MISTY_PORT}"`);
   }
 
-  return { host, port, provider, model, apiKey, visionProvider, visionApiKey, visionModel };
+  const ttsVoice = env.JARVIS_TTS_VOICE ?? "daniel";
+
+  return { host, port, provider, model, apiKey, visionProvider, visionApiKey, visionModel, ttsVoice };
 }
