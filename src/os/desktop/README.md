@@ -2,7 +2,7 @@
 
 Standalone AI-native OS-brain service for **Misty Scone** (spec lives outside the repo at `~/.claude/plans/i-want-to-build-misty-scone.md`; see [docs/superpowers/plans/](../../docs/superpowers/plans/) for the decomposed per-plan implementation docs).
 
-## What it does (Plans 2-4)
+## What it does (Plans 2-5)
 
 - Starts a local HTTP server on `$MISTY_PORT` (default 8765).
 - Accepts `POST /api/think` with `{messages}`, runs a Groq-backed agent loop with tools:
@@ -15,7 +15,7 @@ Standalone AI-native OS-brain service for **Misty Scone** (spec lives outside th
   - `POST /api/think?interactive=1` — high-risk tool calls pause via the confirmation queue instead of auto-denying.
   - `POST /api/confirmation/:id { decision }` — resolve a pending confirmation.
   - `GET /api/confirmation` — list pending confirmations.
-- Plans 5+ add a client (HUD + wake word) that consumes these endpoints to drive real voice interaction.
+- The [`hud/`](hud/) subtree contains an eww GTK layer-shell widget that polls `/api/confirmation`, shows pending high-risk requests, and provides Accept/Deny buttons — see [hud/README.md](hud/README.md).
 
 ## Running
 
@@ -68,10 +68,11 @@ voice/       TTS (Groq Orpheus), STT (Groq Whisper), confirmation queue
 risk/        Risk-tier classifier + async gate
 config/      Env loading, typed Config
 test/        bun:test suite
+hud/         eww HUD widget (yuck + scss) + fetch/confirm scripts + install helper
 scripts/     Plan 1 VM provisioning (bash; unrelated to the Bun daemon)
 docs/        Plan 1 runbook + packages.md
 ```
 
 ## What's next
 
-Plans 5-7 add a HUD/desktop client that consumes the voice + confirmation endpoints, a wake-word daemon, and a proactive controller that watches the screen and suggests actions. See the per-plan implementation docs at [docs/superpowers/plans/](../../docs/superpowers/plans/).
+Plans 6-7 add an audio client (hotkey + mic capture + TTS playback), a wake-word daemon, and a proactive controller that watches the screen and suggests actions. See the per-plan implementation docs at [docs/superpowers/plans/](../../docs/superpowers/plans/).
