@@ -38,7 +38,9 @@ export const bashTool: ToolRunner = {
       const truncated = combined.length > MAX_OUTPUT_BYTES
         ? combined.slice(0, MAX_OUTPUT_BYTES) + `\n[truncated; original ${combined.length} bytes]`
         : combined;
-      return { output: truncated, is_error: proc.exitCode !== 0 };
+      // is_error is true when the process failed OR was killed (exitCode null = killed by timeout).
+      const is_error = proc.exitCode === null || proc.exitCode !== 0;
+      return { output: truncated, is_error };
     } finally {
       clearTimeout(timer);
     }
