@@ -60,3 +60,7 @@ test("classify returns 'low' for hyprland tool", () => {
   expect(classify("hyprland", { action: "focus", args: { address: "0xabc" } })).toBe("low");
   expect(classify("hyprland", { action: "spawn", args: { exec: "firefox" } })).toBe("low");
 });
+
+test("classify returns 'low' for screen tool", () => {
+  expect(classify("screen", { monitor: "focused" })).toBe("low");
+});
