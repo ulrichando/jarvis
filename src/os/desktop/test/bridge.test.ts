@@ -33,6 +33,8 @@ beforeEach(() => {
     client: fakeClient(),
     defaultModel: "fake-model",
     tools: defaultTools(),
+    apiKey: "test-key",
+    ttsVoice: "daniel",
   });
 });
 
@@ -83,4 +85,57 @@ test("POST /api/think rejects malformed body", async () => {
     body: "not json",
   });
   expect(r.status).toBe(400);
+});
+
+test("POST /api/speak rejects empty text", async () => {
+  const r = await fetch(`http://127.0.0.1:${PORT}/api/speak`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ text: "" }),
+  });
+  expect(r.status).toBe(400);
+});
+
+test("POST /api/speak rejects missing text", async () => {
+  const r = await fetch(`http://127.0.0.1:${PORT}/api/speak`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  expect(r.status).toBe(400);
+});
+
+test("POST /api/transcribe rejects missing audio field", async () => {
+  const form = new FormData();
+  form.append("wrong", new Blob(["data"]), "x.wav");
+  const r = await fetch(`http://127.0.0.1:${PORT}/api/transcribe`, {
+    method: "POST",
+    body: form,
+  });
+  expect(r.status).toBe(400);
+});
+
+test("POST /api/confirmation/:id with unknown id returns 404", async () => {
+  const r = await fetch(`http://127.0.0.1:${PORT}/api/confirmation/nonexistent`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ decision: "allow" }),
+  });
+  expect(r.status).toBe(404);
+});
+
+test("POST /api/confirmation/:id with invalid decision returns 400", async () => {
+  const r = await fetch(`http://127.0.0.1:${PORT}/api/confirmation/foo`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ decision: "maybe" }),
+  });
+  expect(r.status).toBe(400);
+});
+
+test("GET /api/confirmation returns pending list", async () => {
+  const r = await fetch(`http://127.0.0.1:${PORT}/api/confirmation`);
+  expect(r.status).toBe(200);
+  const body = (await r.json()) as { pending: unknown[] };
+  expect(Array.isArray(body.pending)).toBe(true);
 });
