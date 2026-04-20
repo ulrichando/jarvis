@@ -1,0 +1,38 @@
+[package]
+name = "jarvis-kernel"
+version = "0.1.0"
+edition = "2021"
+description = "JARVIS — from-scratch x86_64 kernel in Rust. Boots a JARVIS banner today; grows into a full AI-native OS."
+authors = ["Ulrich Ando <ulrichando007@gmail.com>"]
+license = "MIT"
+
+# All deps pinned to versions current with the toolchain (nightly-2022-11-03).
+# Upgrading the toolchain later requires refreshing these — see rust-toolchain.toml.
+[dependencies]
+bootloader = "=0.9.23"
+volatile = "=0.2.6"
+spin = "=0.9.2"
+x86_64 = "=0.14.10"
+uart_16550 = "=0.2.18"
+pic8259 = "=0.10.2"
+pc-keyboard = "=0.5.1"
+lazy_static = { version = "=1.4.0", features = ["spin_no_std"] }
+
+[package.metadata.bootimage]
+run-args = [
+    "-serial", "stdio",
+    "-m", "256M",
+]
+test-args = [
+    "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
+    "-serial", "stdio",
+    "-display", "none",
+]
+test-success-exit-code = 33
+test-timeout = 60
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

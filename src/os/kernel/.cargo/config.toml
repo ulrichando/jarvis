@@ -1,0 +1,11 @@
+# Build against our custom bare-metal target spec. Older nightly doesn't
+# ship x86_64-unknown-none as a stable built-in target, so we supply our own.
+[build]
+target = "x86_64-jarvis.json"
+
+[target.'cfg(target_os = "none")']
+runner = "bootimage runner"
+
+[unstable]
+build-std-features = ["compiler-builtins-mem"]
+build-std = ["core", "compiler_builtins"]

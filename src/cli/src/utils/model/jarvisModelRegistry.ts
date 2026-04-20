@@ -133,6 +133,18 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     visibleInPicker: true,
   },
   {
+    // Arbiter / gating model — tiny, fast, cheap. Not exposed in /model
+    // picker since it's a utility target, not meant for main chat.
+    id: 'llama-3.1-8b-instant',
+    label: 'Groq Llama 3.1 8B Instant',
+    description: 'Small · Fast · Gating / classification',
+    provider: 'groq',
+    upstreamModel: 'llama-3.1-8b-instant',
+    tiers: ['fast'],
+    capabilities: [],
+    visibleInPicker: false,
+  },
+  {
     id: 'gemini-flash',
     label: 'Gemini Flash',
     description: 'Gemini 2.0 Flash',

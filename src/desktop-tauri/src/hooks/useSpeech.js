@@ -26,15 +26,24 @@ export default function useSpeech({
   onTranscript,
   muted = false,
   // Silero v5 tuning knobs — see github.com/ricky0123/vad for defaults
-  positiveSpeechThreshold = 0.5,
-  negativeSpeechThreshold = 0.35,
-  redemptionFrames        = 5,   // 5 frames * 32 ms ≈ 160 ms end-of-speech lag
-  minSpeechFrames         = 3,
+  // Low enough to catch quiet / distant speech and short calls like
+  // "Jarvis". Echo from speakers is handled by the server-side echo
+  // reject, so higher sensitivity doesn't cause loops.
+  positiveSpeechThreshold = 0.3,
+  negativeSpeechThreshold = 0.2,
+  // Silence required before VAD declares the utterance over. 160 ms was
+  // too aggressive — it cut Ulrich off mid-thought between sentences.
+  // 640 ms tolerates normal inter-sentence pauses without feeling laggy.
+  redemptionFrames        = 20,  // 20 frames * 32 ms ≈ 640 ms end-of-speech lag
+  // 2 frames (~64 ms) catches short words like "Jarvis" — 3 was too
+  // strict and clipped the start of quick calls.
+  minSpeechFrames         = 2,
   preSpeechPadFrames      = 10,
-  // Barge-in: risk vs. benefit. Default OFF because in practice Silero
-  // classifies JARVIS's own voice through the speakers as speech and
-  // cuts him off mid-reply. Turn on only with a headset.
-  bargeInSilero           = false,
+  // Barge-in: ON. Browser-level echoCancellation in the mic stream (below)
+  // suppresses JARVIS's own voice coming from the speakers so he doesn't
+  // interrupt himself. If you hear him cut himself off on speakers without
+  // AEC hardware, flip this back to false.
+  bargeInSilero           = true,
 } = {}) {
   const [listening,   setListening]   = useState(false)
   const [recording,   setRecording]   = useState(false)
@@ -50,6 +59,11 @@ export default function useSpeech({
   const onTranscriptRef = useRef(onTranscript)
   const audioLevelTimerRef = useRef(null)
   const voiceActiveStateRef = useRef(false)
+  // Deferred barge-in — when TTS is playing and Silero picks up speech,
+  // we arm this timer instead of cutting TTS immediately. If speech is
+  // still active when it fires, it's deliberate interruption. Otherwise
+  // it was echo (a short burst) and we cancel quietly.
+  const bargeInTimerRef = useRef(null)
 
   useEffect(() => { mutedRef.current = muted }, [muted])
   useEffect(() => { onTranscriptRef.current = onTranscript }, [onTranscript])
@@ -118,14 +132,20 @@ export default function useSpeech({
       }
       audio.onended = done
       audio.onerror = done
-      // Safety ceiling — if onended never fires (streaming stall), this
-      // releases the mic gate after 30 s so voice can't be permanently
-      // bricked by one bad playback.
+      // Belt-and-braces: some streaming TTS responses reach the end of
+      // playback without firing `ended`. Treat "played past duration" as
+      // done so the mic re-opens the moment audio actually stops.
+      audio.ontimeupdate = () => {
+        if (audio.duration > 0 && audio.currentTime >= audio.duration - 0.05) done()
+      }
+      // Safety ceiling — if nothing above fires (streaming stall) this
+      // releases the mic gate so voice can't be permanently bricked.
       resetTimer = setTimeout(done, 30_000)
       audio.onloadedmetadata = () => {
-        // Tighter budget once we know the real duration.
+        // Tighter budget once we know the real duration. Keep the padding
+        // small so a silent stall doesn't leave dead air after each reply.
         if (resetTimer) clearTimeout(resetTimer)
-        const budget = Math.max(5_000, (audio.duration || 15) * 1000 + 3_000)
+        const budget = Math.max(1_500, (audio.duration || 15) * 1000 + 500)
         resetTimer = setTimeout(done, budget)
       }
 
@@ -151,6 +171,14 @@ export default function useSpeech({
     try {
       const vad = await MicVAD.new({
         model: 'v5',
+        // Browser-level AEC + noise suppression so speakers → mic echo
+        // doesn't fire Silero. Required for barge-in to work on anything
+        // but a headset. WebKit2GTK honours these constraints.
+        additionalAudioConstraints: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl:  true,
+        },
         positiveSpeechThreshold,
         negativeSpeechThreshold,
         redemptionFrames,
@@ -162,30 +190,52 @@ export default function useSpeech({
         baseAssetPath:    `${base}/vad/`,
         onnxWASMBasePath: `${base}/vad/`,
         onSpeechStart: () => {
-          // Is JARVIS actually still talking? Trust the audio element's
-          // live state more than speakingRef (which can get stuck if
-          // onended doesn't fire reliably with streaming audio).
           const a = ttsAudioRef.current
-          const ttsLive = a && !a.paused && !a.ended && a.readyState >= 2
+          const past = a && a.duration > 0 && a.currentTime >= a.duration - 0.05
+          const ttsLive = a && !a.paused && !a.ended && !past && a.readyState >= 2
+
+          // Barge-in disabled — ignore any speech while TTS plays.
           if (ttsLive && !bargeInSilero) return
-          // Stale speakingRef — TTS actually ended. Self-heal and treat
-          // this as a normal new utterance.
+
+          // Stale speakingRef — TTS actually ended. Self-heal.
           if (speakingRef.current && !ttsLive) {
             speakingRef.current = false
             setSpeaking(false)
           }
           setVoiceActive(true)
-          if (ttsLive && bargeInSilero) {
-            console.log('[speech] barge-in — cutting TTS')
-            try { a.pause() } catch {}
-            speakingRef.current = false
-            setSpeaking(false)
-          }
           setRecording(true)
+
+          // Deferred barge-in: TTS is live, user started talking. Don't
+          // cut TTS yet — wait and see if the "speech" sustains long
+          // enough to be a real interruption rather than speaker echo.
+          if (ttsLive && bargeInSilero) {
+            if (bargeInTimerRef.current) clearTimeout(bargeInTimerRef.current)
+            bargeInTimerRef.current = setTimeout(() => {
+              bargeInTimerRef.current = null
+              const still = ttsAudioRef.current
+              if (!still || still.paused || still.ended) return
+              console.log('[speech] sustained interruption — cutting TTS')
+              try { still.pause() } catch {}
+              speakingRef.current = false
+              setSpeaking(false)
+            }, 700)
+          }
         },
         onSpeechEnd: (audio) => {
           const a = ttsAudioRef.current
-          const ttsLive = a && !a.paused && !a.ended && a.readyState >= 2
+          const past = a && a.duration > 0 && a.currentTime >= a.duration - 0.05
+          const ttsLive = a && !a.paused && !a.ended && !past && a.readyState >= 2
+
+          // Short speech burst during TTS — likely echo. Cancel any armed
+          // barge-in timer and don't upload an utterance.
+          if (bargeInTimerRef.current) {
+            clearTimeout(bargeInTimerRef.current)
+            bargeInTimerRef.current = null
+            setVoiceActive(false)
+            setRecording(false)
+            if (ttsLive) return
+          }
+
           if (ttsLive && !bargeInSilero) return
           setVoiceActive(false)
           setRecording(false)
@@ -194,6 +244,10 @@ export default function useSpeech({
           sendUtterance(wav)
         },
         onVADMisfire: () => {
+          if (bargeInTimerRef.current) {
+            clearTimeout(bargeInTimerRef.current)
+            bargeInTimerRef.current = null
+          }
           setVoiceActive(false)
           setRecording(false)
         },
