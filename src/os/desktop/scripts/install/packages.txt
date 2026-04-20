@@ -1,0 +1,81 @@
+# Misty Scone — Kali-equivalent tool set.
+# Format: one package per line, # starts a comment.
+# Groups follow the attack lifecycle. Sourced by 02-pentools.sh.
+# Repos: (c)=core/extra/community, (b)=blackarch
+
+# --- Recon & enumeration ---
+nmap                    # (c) network scanner
+masscan                 # (c) fast port scanner
+rustscan                # (b) nmap front-end
+whois                   # (c)
+bind-tools              # (c) dig, nslookup (Arch equivalent of Debian dnsutils)
+theharvester            # (b) OSINT email/domain
+recon-ng                # (b) framework
+amass                   # (b) subdomain enum
+enum4linux              # (b) SMB enum
+smbclient               # (c) samba client
+nbtscan                 # (b) NetBIOS scanner
+netdiscover             # (b) ARP reconnaissance
+
+# --- Web application ---
+burpsuite               # (b) proxy (community edition)
+zaproxy                 # (b) OWASP ZAP
+nikto                   # (c) web server scanner
+gobuster                # (b) content discovery
+ffuf                    # (b) fuzzer
+wpscan                  # (b) WordPress scanner
+sqlmap                  # (c) SQL injection
+whatweb                 # (b) web fingerprinting
+wafw00f                 # (b) WAF detection
+
+# --- Wireless ---
+aircrack-ng             # (c) wifi cracking suite
+wifite                  # (b) automated wireless auditor
+reaver                  # (b) WPS attack
+kismet                  # (c) wireless sniffer
+
+# --- Exploitation frameworks ---
+metasploit              # (b) MSF
+exploitdb               # (b) searchsploit + local db
+set                     # (b) Social-Engineer Toolkit
+
+# --- Credential attacks ---
+hydra                   # (c) network login cracker
+john                    # (c) john the ripper
+hashcat                 # (c) GPU password cracking
+medusa                  # (b) parallel login brute-forcer
+crackmapexec            # (b) AD swiss-army knife
+impacket                # (b) network protocol scripts
+responder               # (b) LLMNR/NBT-NS poisoner
+
+# --- Post-exploitation / AD ---
+bloodhound              # (b) AD path-finding
+mimikatz                # (b) credential extraction (Windows)
+powersploit             # (b) PowerShell payloads (for Windows targets)
+evil-winrm              # (b) WinRM shell
+
+# --- Reversing / binary ---
+radare2                 # (c) reverse engineering
+ghidra                  # (b) NSA RE suite
+gdb                     # (c) debugger
+binwalk                 # (b) firmware analysis
+strace                  # (c)
+ltrace                  # (c)
+
+# --- Traffic analysis ---
+wireshark-qt            # (c) GUI packet analyzer
+tshark                  # (c) CLI wireshark
+tcpdump                 # (c)
+mitmproxy               # (c) HTTPS interception
+
+# --- Utilities always used ---
+curl                    # (c)
+wget                    # (c)
+jq                      # (c)
+openbsd-netcat          # (c) provides nc
+socat                   # (c)
+openssh                 # (c)
+tmux                    # (c) terminal multiplexer
+ripgrep                 # (c)
+fd                      # (c)
+bat                     # (c) cat with syntax highlighting
