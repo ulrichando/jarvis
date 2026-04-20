@@ -8,7 +8,7 @@ nmap                    # (c) network scanner
 masscan                 # (c) fast port scanner
 rustscan                # (b) nmap front-end
 whois                   # (c)
-bind-tools              # (c) dig, nslookup (Arch equivalent of Debian dnsutils)
+bind                    # (c) provides dig, nslookup (bind-tools no longer split on Arch)
 theharvester            # (b) OSINT email/domain
 recon-ng                # (b) framework
 amass                   # (b) subdomain enum
@@ -63,8 +63,7 @@ strace                  # (c)
 ltrace                  # (c)
 
 # --- Traffic analysis ---
-wireshark-qt            # (c) GUI packet analyzer
-tshark                  # (c) CLI wireshark
+wireshark-qt            # (c) GUI packet analyzer (includes tshark CLI)
 tcpdump                 # (c)
 mitmproxy               # (c) HTTPS interception
 
