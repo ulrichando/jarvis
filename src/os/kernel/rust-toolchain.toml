@@ -1,0 +1,8 @@
+[toolchain]
+# Pinned to the last nightly that still supports bootloader 0.9 + bootimage's
+# internal -Z json-target-spec flag. Moving to a newer toolchain requires
+# migrating to bootloader 0.11+ (different entry point + separate artifact
+# build), which is a larger refactor. See roadmap milestone "modern
+# bootloader migration".
+channel = "nightly-2022-11-03"
+components = ["rust-src", "llvm-tools-preview", "rustfmt", "clippy"]

@@ -139,3 +139,48 @@ test("GET /api/confirmation returns pending list", async () => {
   const body = (await r.json()) as { pending: unknown[] };
   expect(Array.isArray(body.pending)).toBe(true);
 });
+
+test("POST /api/panel opens a panel, GET lists it, DELETE /:id closes it", async () => {
+  const open = await fetch(`http://127.0.0.1:${PORT}/api/panel`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ kind: "browser", src: "https://example.com" }),
+  });
+  expect(open.status).toBe(200);
+  const spec = (await open.json()) as { id: string; kind: string };
+  expect(spec.kind).toBe("browser");
+
+  const list = await fetch(`http://127.0.0.1:${PORT}/api/panel`);
+  const body = (await list.json()) as { panels: { id: string }[] };
+  expect(body.panels.map((p) => p.id)).toContain(spec.id);
+
+  const close = await fetch(`http://127.0.0.1:${PORT}/api/panel/${encodeURIComponent(spec.id)}`, { method: "DELETE" });
+  expect(close.status).toBe(200);
+
+  const list2 = await fetch(`http://127.0.0.1:${PORT}/api/panel`);
+  const body2 = (await list2.json()) as { panels: unknown[] };
+  expect(body2.panels).toHaveLength(0);
+});
+
+test("POST /api/panel with kind=text and no content returns 400", async () => {
+  const r = await fetch(`http://127.0.0.1:${PORT}/api/panel`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ kind: "text" }),
+  });
+  expect(r.status).toBe(400);
+});
+
+test("POST /api/panel with invalid kind returns 400", async () => {
+  const r = await fetch(`http://127.0.0.1:${PORT}/api/panel`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ kind: "nope", src: "x" }),
+  });
+  expect(r.status).toBe(400);
+});
+
+test("DELETE /api/panel/:id with unknown id returns 404", async () => {
+  const r = await fetch(`http://127.0.0.1:${PORT}/api/panel/does-not-exist`, { method: "DELETE" });
+  expect(r.status).toBe(404);
+});

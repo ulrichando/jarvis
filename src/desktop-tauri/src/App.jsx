@@ -201,12 +201,10 @@ export default function App() {
     const unlisten1 = listen('tray-open-chat', () => openChat())
     const unlisten2 = listen('tray-close-chat', () => closeChat())
     const unlisten3 = listen('tray-toggle-reactor', () => setReactorVisible(v => !v))
-    const unlisten4 = listen('tray-toggle-mute', () => {
-      fetch(`${PYTHON_BASE}/api/mute`, { method: 'POST' })
-        .then(r => r.json())
-        .then(d => setVoiceMuted(d.muted))
-        .catch(console.error)
-    })
+    // Rust already POSTed /api/mute before emitting this event. Don't
+    // re-POST — doing so would toggle twice and cancel out. The bridge
+    // broadcasts `voice_muted` on WS, which drives setVoiceMuted above.
+    const unlisten4 = listen('tray-toggle-mute', () => {})
     return () => {
       unlisten1.then(f => f())
       unlisten2.then(f => f())
