@@ -1,0 +1,22 @@
+[Unit]
+Description=misty-core (AI-native OS-brain daemon)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# %h = $HOME for the user this unit runs under. Install as a USER unit
+# (`systemctl --user`), not system-wide — misty-core expects user-scope env.
+WorkingDirectory=%h/jarvis/src/os/desktop
+EnvironmentFile=%h/jarvis/src/os/desktop/.env
+ExecStart=/usr/bin/bun run daemon.ts
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+# Shut down gracefully so the confirmation queue drains.
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+[Install]
+WantedBy=default.target
