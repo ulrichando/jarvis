@@ -218,15 +218,24 @@ function applyProviderSpecificParams(out: any, req: any, provider: Provider): vo
     }
   }
 
-  if (provider.name === 'groq' && provider.model.includes('gpt-oss')) {
-    // Groq GPT-OSS exposes official reasoning_effort controls.
-    // Hide provider-specific reasoning traces to keep the proxy response
-    // aligned with the Anthropic-shaped UI expectations.
-    out.include_reasoning = false
+  if (provider.name === 'groq') {
+    // Route through the highest service tier the account is entitled to.
+    // Without this, Groq silently buckets every request into `on_demand`
+    // (the strictest TPM cap) even for Dev-tier accounts. `auto` = server
+    // picks best available. Override via JARVIS_GROQ_TIER ("flex",
+    // "on_demand", etc.) if you want to pin one explicitly.
+    out.service_tier = process.env.JARVIS_GROQ_TIER ?? 'auto'
 
-    const reasoningEffort = resolveGroqReasoningEffort(req)
-    if (reasoningEffort) {
-      out.reasoning_effort = reasoningEffort
+    if (provider.model.includes('gpt-oss')) {
+      // Groq GPT-OSS exposes official reasoning_effort controls.
+      // Hide provider-specific reasoning traces to keep the proxy response
+      // aligned with the Anthropic-shaped UI expectations.
+      out.include_reasoning = false
+
+      const reasoningEffort = resolveGroqReasoningEffort(req)
+      if (reasoningEffort) {
+        out.reasoning_effort = reasoningEffort
+      }
     }
   }
 }

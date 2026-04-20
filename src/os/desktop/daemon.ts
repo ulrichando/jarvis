@@ -4,6 +4,8 @@ import { createClient } from "./providers/registry.ts";
 import { createVisionClient } from "./providers/vision.ts";
 import { defaultTools } from "./agent/tools/index.ts";
 import { ConfirmationQueue } from "./voice/confirmations.ts";
+import { EventBus } from "./bridge/events.ts";
+import { PanelState } from "./panels/state.ts";
 
 const cfg = loadConfig();
 const client = createClient(cfg);
@@ -15,7 +17,9 @@ try {
   visionClient = undefined;
 }
 
-const tools = defaultTools({ visionClient });
+const events = new EventBus();
+const panels = new PanelState();
+const tools = defaultTools({ visionClient, panelState: panels, events });
 const queue = new ConfirmationQueue();
 
 startBridge({
@@ -27,6 +31,8 @@ startBridge({
   apiKey: cfg.apiKey,
   ttsVoice: cfg.ttsVoice,
   queue,
+  events,
+  panels,
 });
 console.log(`[misty-core] listening on http://${cfg.host}:${cfg.port} (provider=${cfg.provider} model=${cfg.model}, vision=${visionClient?.name ?? "disabled"}, tts_voice=${cfg.ttsVoice})`);
 

@@ -13,6 +13,8 @@ export type TalkOpts = {
    * press-Enter flow and records for autoRecordMs milliseconds.
    */
   autoRecordMs?: number;
+  /** Pre-recorded audio (WAV bytes). When set, skips the recording step entirely. */
+  audio?: Uint8Array;
   /** Read a line from stdin. Default uses Bun's console reader; tests inject a stub. */
   prompt?: () => Promise<string>;
   /** For tests: swap out the recorder + fetch + player. */
@@ -36,9 +38,11 @@ export async function talkOnce(opts: TalkOpts): Promise<TalkResult> {
   const player = opts.player ?? playAudio;
   const prompt = opts.prompt ?? defaultPrompt;
 
-  // 1) Record — either prompt-driven (press Enter to start/stop) or timed.
+  // 1) Record — either from a pre-recorded buffer, a timed auto-record, or prompt-driven.
   let audio: Uint8Array;
-  if (opts.autoRecordMs && opts.autoRecordMs > 0) {
+  if (opts.audio) {
+    audio = opts.audio;
+  } else if (opts.autoRecordMs && opts.autoRecordMs > 0) {
     const rec = recorder({ maxSeconds: Math.ceil(opts.autoRecordMs / 1000) });
     await new Promise<void>((r) => setTimeout(r, opts.autoRecordMs));
     rec.stop();
