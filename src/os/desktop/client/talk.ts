@@ -8,6 +8,11 @@ export type TalkOpts = {
   messages?: unknown[];            // prior conversation turns to include
   interactive?: boolean;           // pass ?interactive=1 to /api/think
   maxSeconds?: number;             // record cap
+  /**
+   * Record a fixed duration instead of prompting. When set, skips the
+   * press-Enter flow and records for autoRecordMs milliseconds.
+   */
+  autoRecordMs?: number;
   /** Read a line from stdin. Default uses Bun's console reader; tests inject a stub. */
   prompt?: () => Promise<string>;
   /** For tests: swap out the recorder + fetch + player. */
@@ -31,12 +36,20 @@ export async function talkOnce(opts: TalkOpts): Promise<TalkResult> {
   const player = opts.player ?? playAudio;
   const prompt = opts.prompt ?? defaultPrompt;
 
-  // 1) Record.
-  await prompt();  // "press Enter to start recording"
-  const rec = recorder({ maxSeconds: opts.maxSeconds ?? DEFAULT_MAX_SECONDS });
-  await prompt();  // "press Enter to stop"
-  rec.stop();
-  const audio = await rec.done;
+  // 1) Record — either prompt-driven (press Enter to start/stop) or timed.
+  let audio: Uint8Array;
+  if (opts.autoRecordMs && opts.autoRecordMs > 0) {
+    const rec = recorder({ maxSeconds: Math.ceil(opts.autoRecordMs / 1000) });
+    await new Promise<void>((r) => setTimeout(r, opts.autoRecordMs));
+    rec.stop();
+    audio = await rec.done;
+  } else {
+    await prompt();  // "press Enter to start recording"
+    const rec = recorder({ maxSeconds: opts.maxSeconds ?? DEFAULT_MAX_SECONDS });
+    await prompt();  // "press Enter to stop"
+    rec.stop();
+    audio = await rec.done;
+  }
   if (audio.length === 0) throw new Error("no audio captured");
 
   // 2) STT.
