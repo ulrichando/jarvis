@@ -4,6 +4,7 @@ import { runAgent } from "../agent/loop.ts";
 import { synthesize } from "../voice/tts.ts";
 import { transcribe } from "../voice/stt.ts";
 import { ConfirmationQueue } from "../voice/confirmations.ts";
+import { VoiceModeState, isVoiceMode } from "../voice/mode.ts";
 
 export type BridgeOpts = {
   host: string;
@@ -14,10 +15,12 @@ export type BridgeOpts = {
   apiKey: string;
   ttsVoice: string;
   queue?: ConfirmationQueue;
+  voiceMode?: VoiceModeState;
 };
 
 export function startBridge(opts: BridgeOpts) {
   const queue = opts.queue ?? new ConfirmationQueue();
+  const voiceMode = opts.voiceMode ?? new VoiceModeState();
 
   return Bun.serve({
     hostname: opts.host,
@@ -67,6 +70,28 @@ export function startBridge(opts: BridgeOpts) {
           return Response.json({ text });
         } catch (err) {
           console.error("[misty-core] /api/transcribe error:", err);
+          return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
+        }
+      }
+
+      if (url.pathname === "/api/voice/mode" && req.method === "GET") {
+        return Response.json(voiceMode.get());
+      }
+
+      if (url.pathname === "/api/voice/mode" && req.method === "POST") {
+        let body: { mode?: string; cycle?: boolean };
+        try {
+          body = (await req.json()) as { mode?: string; cycle?: boolean };
+        } catch {
+          return Response.json({ error: "invalid JSON body" }, { status: 400 });
+        }
+        try {
+          const next = body.cycle ? voiceMode.cycle() : voiceMode.set(body.mode as "off" | "ptt" | "wake");
+          return Response.json(next);
+        } catch (err) {
+          if (!body.cycle && !isVoiceMode(body.mode)) {
+            return Response.json({ error: `mode must be one of: off, ptt, wake` }, { status: 400 });
+          }
           return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
         }
       }
