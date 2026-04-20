@@ -28,9 +28,9 @@ export function createHyprlandTool(ipcFactory: () => import("../../hyprland/ipc.
       },
     },
     async run(input: unknown): Promise<{ output: string; is_error?: boolean }> {
-      const ipc = ipcFactory();
-      const actions = createActions(ipc);
       try {
+        const ipc = ipcFactory();
+        const actions = createActions(ipc);
         const { action, args } = input as HyprlandInput;
         switch (action) {
           case "focus":
