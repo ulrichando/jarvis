@@ -4,7 +4,8 @@ import { runAgent } from "../agent/loop.ts";
 import { synthesize } from "../voice/tts.ts";
 import { transcribe } from "../voice/stt.ts";
 import { ConfirmationQueue } from "../voice/confirmations.ts";
-import { VoiceModeState, isVoiceMode } from "../voice/mode.ts";
+import { VoiceModeState, isVoiceMode, type VoiceMode } from "../voice/mode.ts";
+import { EventBus } from "./events.ts";
 
 export type BridgeOpts = {
   host: string;
@@ -16,17 +17,54 @@ export type BridgeOpts = {
   ttsVoice: string;
   queue?: ConfirmationQueue;
   voiceMode?: VoiceModeState;
+  events?: EventBus;
 };
 
 export function startBridge(opts: BridgeOpts) {
   const queue = opts.queue ?? new ConfirmationQueue();
   const voiceMode = opts.voiceMode ?? new VoiceModeState();
+  const events = opts.events ?? new EventBus();
 
-  return Bun.serve({
+  // Wrap voiceMode setters so changes publish on the event bus.
+  const setVoiceMode = (mode: VoiceMode) => {
+    const next = voiceMode.set(mode);
+    events.emit({ type: "voice.mode_changed", mode: next.mode, changedAt: next.changedAt });
+    return next;
+  };
+  const cycleVoiceMode = () => {
+    const next = voiceMode.cycle();
+    events.emit({ type: "voice.mode_changed", mode: next.mode, changedAt: next.changedAt });
+    return next;
+  };
+
+  return Bun.serve<{ unsub: () => void }, never>({
     hostname: opts.host,
     port: opts.port,
-    async fetch(req: Request): Promise<Response> {
+    websocket: {
+      open(ws) {
+        const unsub = events.subscribe((event) => {
+          try { ws.send(JSON.stringify(event)); } catch { /* client gone; fine */ }
+        });
+        ws.data = { unsub };
+        // Send a hello with current state so clients don't need to GET first.
+        ws.send(JSON.stringify({ type: "voice.mode_changed", ...voiceMode.get() }));
+      },
+      close(ws) {
+        ws.data?.unsub?.();
+      },
+      message(ws, msg) {
+        // Clients can send ping; we ignore everything else.
+        if (msg === "ping") ws.send("pong");
+      },
+    },
+    async fetch(req: Request, server): Promise<Response | undefined> {
       const url = new URL(req.url);
+
+      if (url.pathname === "/ws") {
+        const upgraded = server.upgrade(req, { data: { unsub: () => {} } });
+        if (upgraded) return undefined; // Bun handles the 101
+        return new Response("websocket upgrade failed", { status: 400 });
+      }
 
       if (url.pathname === "/health" && req.method === "GET") {
         return Response.json({ status: "ok" });
@@ -86,7 +124,7 @@ export function startBridge(opts: BridgeOpts) {
           return Response.json({ error: "invalid JSON body" }, { status: 400 });
         }
         try {
-          const next = body.cycle ? voiceMode.cycle() : voiceMode.set(body.mode as "off" | "ptt" | "wake");
+          const next = body.cycle ? cycleVoiceMode() : setVoiceMode(body.mode as "off" | "ptt" | "wake");
           return Response.json(next);
         } catch (err) {
           if (!body.cycle && !isVoiceMode(body.mode)) {
@@ -94,6 +132,16 @@ export function startBridge(opts: BridgeOpts) {
           }
           return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
         }
+      }
+
+      if (url.pathname === "/api/voice/wake-triggered" && req.method === "POST") {
+        let body: { source?: string } = {};
+        try {
+          body = (await req.json()) as { source?: string };
+        } catch { /* accept empty body */ }
+        const at = Date.now();
+        events.emit({ type: "voice.wake_triggered", source: body.source, at });
+        return Response.json({ ok: true, at });
       }
 
       const confirmMatch = url.pathname.match(/^\/api\/confirmation\/([^/]+)$/);
@@ -110,6 +158,7 @@ export function startBridge(opts: BridgeOpts) {
         }
         const ok = queue.resolve(id, body.decision);
         if (!ok) return Response.json({ error: "unknown or already-resolved confirmation id" }, { status: 404 });
+        events.emit({ type: "confirmation.resolved", id, decision: body.decision });
         return Response.json({ ok: true });
       }
 
@@ -138,6 +187,7 @@ export function startBridge(opts: BridgeOpts) {
             confirm: interactive
               ? async (creq) => {
                   const { id, wait } = queue.open(creq);
+                  events.emit({ type: "confirmation.opened", id, tool: creq.tool });
                   console.log(`[misty-core] awaiting confirmation ${id} for ${creq.tool}`);
                   return wait;
                 }
