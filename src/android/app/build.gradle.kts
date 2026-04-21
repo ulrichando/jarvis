@@ -220,6 +220,9 @@ dependencies {
     implementation(libs.androidx.startup)
     implementation(libs.androidx.window)
     implementation(libs.androidx.work.runtime)
+    // Pulls a 16 KB-aligned libandroidx.graphics.path.so to override the
+    // unaligned transitive version that Compose otherwise brings in.
+    implementation(libs.androidx.graphics.path)
 
     // ── Compose ───────────────────────────────────────────────────────────
     implementation(platform(libs.compose.bom))

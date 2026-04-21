@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { MicVAD } from '@ricky0123/vad-web'
 import * as ort from 'onnxruntime-web'
+import useSpeakerId from './useSpeakerId.js'
 
 // Force the single-threaded, non-SIMD WASM backend. The multi-threaded
 // variant has crashed on WebKit2GTK with "Out of bounds memory access"
@@ -52,6 +53,8 @@ export default function useSpeech({
   const [speaking,    setSpeaking]    = useState(false)
   const [audioLevel,  setAudioLevel]  = useState(0)
 
+  const speakerId = useSpeakerId()
+
   const vadRef      = useRef(null)
   const ttsAudioRef = useRef(null)
   const mutedRef    = useRef(muted)
@@ -68,6 +71,44 @@ export default function useSpeech({
   useEffect(() => { mutedRef.current = muted }, [muted])
   useEffect(() => { onTranscriptRef.current = onTranscript }, [onTranscript])
   useEffect(() => { voiceActiveStateRef.current = voiceActive }, [voiceActive])
+
+  // "Working on it" audio cue — emitted ~800 ms into a processing turn
+  // so Ulrich knows JARVIS heard him when the agent takes longer than a
+  // snappy reply. Uses Web Audio oscillator (no asset download), a soft
+  // two-note chirp that doesn't clash with speech.
+  const processingCueTimerRef = useRef(null)
+  const playProcessingCue = useCallback(() => {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)()
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.connect(gain); gain.connect(ctx.destination)
+      osc.type = 'sine'
+      const now = ctx.currentTime
+      osc.frequency.setValueAtTime(440, now)
+      osc.frequency.setValueAtTime(660, now + 0.09)
+      gain.gain.setValueAtTime(0.0, now)
+      gain.gain.linearRampToValueAtTime(0.06, now + 0.02)
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.22)
+      osc.start(now); osc.stop(now + 0.25)
+    } catch {}
+  }, [])
+  useEffect(() => {
+    if (processing) {
+      processingCueTimerRef.current = setTimeout(playProcessingCue, 800)
+    } else {
+      if (processingCueTimerRef.current) {
+        clearTimeout(processingCueTimerRef.current)
+        processingCueTimerRef.current = null
+      }
+    }
+    return () => {
+      if (processingCueTimerRef.current) {
+        clearTimeout(processingCueTimerRef.current)
+        processingCueTimerRef.current = null
+      }
+    }
+  }, [processing, playProcessingCue])
 
   // ── Encode Silero's Float32Array (16 kHz mono) to a WAV Blob for Groq ───
   const floatsToWav = useCallback((floats, sampleRate = 16000) => {
@@ -96,13 +137,14 @@ export default function useSpeech({
   }, [])
 
   // ── Voice turn: upload utterance, play streamed TTS ────────────────────
-  const sendUtterance = useCallback(async (wavBlob) => {
+  const sendUtterance = useCallback(async (wavBlob, speakerConfidence = null) => {
     if (!wavBlob || wavBlob.size < 600) return
     if (speakingRef.current) { console.warn('[speech] dropped — already speaking'); return }
     setProcessing(true)
     try {
       const fd = new FormData()
       fd.append('audio', wavBlob, 'utter.wav')
+      if (speakerConfidence != null) fd.append('speaker_confidence', String(speakerConfidence))
       const resp = await fetch(`${base}/turn`, { method: 'POST', body: fd })
       if (!resp.ok) { console.error('[speech] /turn', resp.status); setProcessing(false); return }
 
@@ -240,8 +282,18 @@ export default function useSpeech({
           setVoiceActive(false)
           setRecording(false)
           if (ttsLive) return
+          // Score the raw audio buffer for speaker identity BEFORE WAV
+          // encoding. During enrollment (first 3 turns) this just
+          // accumulates samples; after that it returns a confidence in
+          // [0,1] that the arbiter can use.
+          let conf = null
+          try {
+            const { confidence, phase } = speakerId.scoreUtterance(audio)
+            conf = confidence
+            console.log(`[speakerId] phase=${phase} confidence=${confidence.toFixed(3)}`)
+          } catch (e) { console.warn('[speakerId] error:', e) }
           const wav = floatsToWav(audio, 16000)
-          sendUtterance(wav)
+          sendUtterance(wav, conf)
         },
         onVADMisfire: () => {
           if (bargeInTimerRef.current) {
@@ -275,7 +327,7 @@ export default function useSpeech({
     }
   }, [base, positiveSpeechThreshold, negativeSpeechThreshold, redemptionFrames,
       minSpeechFrames, preSpeechPadFrames, bargeInSilero,
-      floatsToWav, sendUtterance])
+      floatsToWav, sendUtterance, speakerId])
 
   const stopVad = useCallback(() => {
     try { vadRef.current?.pause() } catch {}

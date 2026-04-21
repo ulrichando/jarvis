@@ -1,4 +1,4 @@
-                        -H/home/ulrich/Documents/Projects/jarvis/clients/android/app/src/main/cpp
+                        -H/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp
 -DCMAKE_SYSTEM_NAME=Android
 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 -DCMAKE_SYSTEM_VERSION=26
@@ -9,9 +9,9 @@
 -DCMAKE_TOOLCHAIN_FILE=/home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/android.toolchain.cmake
 -DCMAKE_MAKE_PROGRAM=/home/ulrich/Android/Sdk/cmake/3.22.1/bin/ninja
 -DCMAKE_CXX_FLAGS=-std=c++17 -D_XOPEN_SOURCE=700 -DANDROID_STL=c++_shared
--DCMAKE_LIBRARY_OUTPUT_DIRECTORY=/home/ulrich/Documents/Projects/jarvis/clients/android/app/build/intermediates/cxx/Release/r1f563i2/obj/arm64-v8a
--DCMAKE_RUNTIME_OUTPUT_DIRECTORY=/home/ulrich/Documents/Projects/jarvis/clients/android/app/build/intermediates/cxx/Release/r1f563i2/obj/arm64-v8a
--B/home/ulrich/Documents/Projects/jarvis/clients/android/app/.cxx/Release/r1f563i2/arm64-v8a
+-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=/home/ulrich/Documents/Projects/jarvis/src/android/app/build/intermediates/cxx/Release/r1f563i2/obj/arm64-v8a
+-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=/home/ulrich/Documents/Projects/jarvis/src/android/app/build/intermediates/cxx/Release/r1f563i2/obj/arm64-v8a
+-B/home/ulrich/Documents/Projects/jarvis/src/android/app/.cxx/Release/r1f563i2/arm64-v8a
 -GNinja
 -DANDROID_PLATFORM=android-26
 -DANDROID_STL=c++_shared
