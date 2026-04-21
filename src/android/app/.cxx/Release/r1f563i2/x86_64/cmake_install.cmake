@@ -1,4 +1,4 @@
-# Install script for directory: /home/ulrich/Documents/Projects/jarvis/clients/android/app/src/main/cpp
+# Install script for directory: /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)
@@ -50,5 +50,5 @@ endif()
 
 string(REPLACE ";" "\n" CMAKE_INSTALL_MANIFEST_CONTENT
        "${CMAKE_INSTALL_MANIFEST_FILES}")
-file(WRITE "/home/ulrich/Documents/Projects/jarvis/clients/android/app/.cxx/Release/r1f563i2/x86_64/${CMAKE_INSTALL_MANIFEST}"
+file(WRITE "/home/ulrich/Documents/Projects/jarvis/src/android/app/.cxx/Release/r1f563i2/x86_64/${CMAKE_INSTALL_MANIFEST}"
      "${CMAKE_INSTALL_MANIFEST_CONTENT}")

@@ -1,0 +1,21 @@
+# ninja log v5
+0	10	1776764223187910010	opencl-headers-populate-prefix/src/opencl-headers-populate-stamp/opencl-headers-populate-mkdir	4e506d9a0411f8b4
+0	10	1776764223187910010	/home/ulrich/Documents/Projects/jarvis/src/android/app/.cxx/Release/r1f563i2/arm64-v8a/_deps/opencl-headers-subbuild/opencl-headers-populate-prefix/src/opencl-headers-populate-stamp/opencl-headers-populate-mkdir	4e506d9a0411f8b4
+10	705	1776764223885657213	opencl-headers-populate-prefix/src/opencl-headers-populate-stamp/opencl-headers-populate-download	8bd93eddf94247dc
+10	705	1776764223885657213	/home/ulrich/Documents/Projects/jarvis/src/android/app/.cxx/Release/r1f563i2/arm64-v8a/_deps/opencl-headers-subbuild/opencl-headers-populate-prefix/src/opencl-headers-populate-stamp/opencl-headers-populate-download	8bd93eddf94247dc
+705	711	0	opencl-headers-populate-prefix/src/opencl-headers-populate-stamp/opencl-headers-populate-update	fc9b29a858e06ee5
+705	711	0	/home/ulrich/Documents/Projects/jarvis/src/android/app/.cxx/Release/r1f563i2/arm64-v8a/_deps/opencl-headers-subbuild/opencl-headers-populate-prefix/src/opencl-headers-populate-stamp/opencl-headers-populate-update	fc9b29a858e06ee5
+711	714	1776764223891907008	opencl-headers-populate-prefix/src/opencl-headers-populate-stamp/opencl-headers-populate-patch	c5d090b56e03279c
+711	714	1776764223891907008	/home/ulrich/Documents/Projects/jarvis/src/android/app/.cxx/Release/r1f563i2/arm64-v8a/_deps/opencl-headers-subbuild/opencl-headers-populate-prefix/src/opencl-headers-populate-stamp/opencl-headers-populate-patch	c5d090b56e03279c
+714	717	1776764223895906991	opencl-headers-populate-prefix/src/opencl-headers-populate-stamp/opencl-headers-populate-configure	a5d6867295ea5690
+714	717	1776764223895906991	/home/ulrich/Documents/Projects/jarvis/src/android/app/.cxx/Release/r1f563i2/arm64-v8a/_deps/opencl-headers-subbuild/opencl-headers-populate-prefix/src/opencl-headers-populate-stamp/opencl-headers-populate-configure	a5d6867295ea5690
+717	719	1776764223895906991	opencl-headers-populate-prefix/src/opencl-headers-populate-stamp/opencl-headers-populate-build	8fef407384ca91de
+717	719	1776764223895906991	/home/ulrich/Documents/Projects/jarvis/src/android/app/.cxx/Release/r1f563i2/arm64-v8a/_deps/opencl-headers-subbuild/opencl-headers-populate-prefix/src/opencl-headers-populate-stamp/opencl-headers-populate-build	8fef407384ca91de
+719	724	1776764223901643377	opencl-headers-populate-prefix/src/opencl-headers-populate-stamp/opencl-headers-populate-install	24e5f36c19fdd123
+719	724	1776764223901643377	/home/ulrich/Documents/Projects/jarvis/src/android/app/.cxx/Release/r1f563i2/arm64-v8a/_deps/opencl-headers-subbuild/opencl-headers-populate-prefix/src/opencl-headers-populate-stamp/opencl-headers-populate-install	24e5f36c19fdd123
+724	727	1776764223905775622	opencl-headers-populate-prefix/src/opencl-headers-populate-stamp/opencl-headers-populate-test	93d4a306035f10a9
+724	727	1776764223905775622	/home/ulrich/Documents/Projects/jarvis/src/android/app/.cxx/Release/r1f563i2/arm64-v8a/_deps/opencl-headers-subbuild/opencl-headers-populate-prefix/src/opencl-headers-populate-stamp/opencl-headers-populate-test	93d4a306035f10a9
+727	732	1776764223911906923	CMakeFiles/opencl-headers-populate-complete	ef3bed5849b55c59
+727	732	1776764223911906923	opencl-headers-populate-prefix/src/opencl-headers-populate-stamp/opencl-headers-populate-done	ef3bed5849b55c59
+727	732	1776764223911906923	/home/ulrich/Documents/Projects/jarvis/src/android/app/.cxx/Release/r1f563i2/arm64-v8a/_deps/opencl-headers-subbuild/CMakeFiles/opencl-headers-populate-complete	ef3bed5849b55c59
+727	732	1776764223911906923	/home/ulrich/Documents/Projects/jarvis/src/android/app/.cxx/Release/r1f563i2/arm64-v8a/_deps/opencl-headers-subbuild/opencl-headers-populate-prefix/src/opencl-headers-populate-stamp/opencl-headers-populate-done	ef3bed5849b55c59

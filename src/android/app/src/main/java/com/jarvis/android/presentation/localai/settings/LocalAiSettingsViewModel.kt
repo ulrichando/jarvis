@@ -20,9 +20,9 @@ import javax.inject.Inject
 enum class OllamaTestStatus { IDLE, TESTING, OK, FAIL }
 
 data class LocalAiSettingsUiState(
-    val gpuLayers:    Int              = 0,
-    val contextSize:  Int              = 2048,
-    val nThreads:     Int              = 4,
+    val gpuLayers:    Int              = 99,
+    val contextSize:  Int              = 4096,
+    val nThreads:     Int              = 6,
     val ollamaUrl:    String           = "http://10.10.0.50:11434",
     val ollamaToken:  String           = "",
     val ollamaTestStatus: OllamaTestStatus = OllamaTestStatus.IDLE,
@@ -94,9 +94,9 @@ class LocalAiSettingsViewModel @Inject constructor(
     // ── Prefs load ────────────────────────────────────────────────────────────
 
     private fun loadFromPrefs() = LocalAiSettingsUiState(
-        gpuLayers   = prefs.getInt(KEY_GPU_LAYERS,   0),
-        contextSize = prefs.getInt(KEY_CONTEXT_SIZE, 2048),
-        nThreads    = prefs.getInt(KEY_THREADS,      4),
+        gpuLayers   = prefs.getInt(KEY_GPU_LAYERS,   99),
+        contextSize = prefs.getInt(KEY_CONTEXT_SIZE, 4096),
+        nThreads    = prefs.getInt(KEY_THREADS,      6),
         ollamaUrl   = prefs.getString(KEY_OLLAMA_URL,   DEFAULT_OLLAMA_URL)   ?: DEFAULT_OLLAMA_URL,
         ollamaToken = prefs.getString(KEY_OLLAMA_TOKEN, "")                   ?: "",
     )

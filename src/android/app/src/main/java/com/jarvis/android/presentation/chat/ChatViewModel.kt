@@ -8,7 +8,10 @@ import android.speech.SpeechRecognizer
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.jarvis.android.core.network.ApiKeyProvider
 import com.jarvis.android.domain.model.ChatEvent
+import com.jarvis.android.domain.model.CloudModel
+import com.jarvis.android.domain.model.CloudProvider
 import com.jarvis.android.domain.model.RoutingMode
 import com.jarvis.android.domain.repository.ModelRepository
 import com.jarvis.android.domain.usecase.CreateConversationUseCase
@@ -46,6 +49,7 @@ class ChatViewModel @Inject constructor(
     private val toolDispatcher:       JarvisToolDispatcher,
     private val ttsEngine:            JarvisTtsEngine,
     private val modelRepository:      ModelRepository,
+    private val apiKeyProvider:       ApiKeyProvider,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ChatUiState())
@@ -81,13 +85,53 @@ class ChatViewModel @Inject constructor(
             }
         }
 
-        // Observe current routing mode for the input bar label
+        // Observe routing mode + loaded model name + downloaded catalog.
+        // The top bar renders the loaded model's display name when routing is
+        // LOCAL and something is loaded, and exposes the downloaded models so
+        // the home-bar dropdown can list them for one-tap switching.
         viewModelScope.launch {
-            modelRepository.observeRoutingMode().collect { mode ->
-                _uiState.update { it.copy(routingLabel = mode.label) }
+            kotlinx.coroutines.flow.combine(
+                modelRepository.observeRoutingMode(),
+                modelRepository.observeLoadedModelId(),
+                modelRepository.observeDownloaded(),
+            ) { mode, loadedId, downloaded ->
+                val loadedName   = downloaded.firstOrNull { it.id == loadedId }?.name
+                // Recompute the cloud list on every tick — hasApiKey() is a
+                // cheap pref read and user-facing state (API key) can change
+                // via Settings without the ViewModel being recreated.
+                val cloudModels  = CloudModel.CATALOG
+                    .filter { apiKeyProvider.hasApiKey(it.provider) }
+                val cloudSelectedName = cloudModels.firstOrNull {
+                    it.id == _uiState.value.selectedCloudModelId
+                }?.label
+                val label = when {
+                    mode == RoutingMode.LOCAL && loadedName != null -> loadedName
+                    mode == RoutingMode.LOCAL                       -> "Local · no model"
+                    mode == RoutingMode.CLOUD && cloudSelectedName != null ->
+                        cloudSelectedName
+                    else -> mode.label
+                }
+                ResolvedTopBar(label, downloaded, loadedId, cloudModels)
+            }.collect { snap ->
+                _uiState.update {
+                    it.copy(
+                        routingLabel         = snap.label,
+                        downloadedModels     = snap.downloaded,
+                        loadedLocalModelId   = snap.loadedId,
+                        availableCloudModels = snap.cloudModels,
+                    )
+                }
             }
         }
     }
+
+    /** Private carrier for the combine() above so we can return >3 values. */
+    private data class ResolvedTopBar(
+        val label:       String,
+        val downloaded:  List<com.jarvis.android.domain.model.ModelEntry>,
+        val loadedId:    String?,
+        val cloudModels: List<CloudModel>,
+    )
 
     // ── Intent handler ────────────────────────────────────────────────────────
 
@@ -106,6 +150,52 @@ class ChatViewModel @Inject constructor(
             is ChatIntent.ToggleVoice          -> handleToggleVoice()
             is ChatIntent.ToggleTts            -> handleToggleTts()
             is ChatIntent.CycleRoutingMode     -> handleCycleRoutingMode()
+            is ChatIntent.SelectCloudModel     -> handleSelectCloudModel(intent.id)
+            is ChatIntent.SelectLocalModel     -> handleSelectLocalModel(intent.id)
+        }
+    }
+
+    // ── Top-bar model picker ──────────────────────────────────────────────────
+
+    /**
+     * Select a specific cloud model. Flips routing to CLOUD and stores the
+     * model id so subsequent requests use it. The actual wiring from this id
+     * to the outbound request shape is provider-specific — a follow-up will
+     * plumb this through [ChatRepositoryImpl] so DeepSeek/Groq/etc. requests
+     * are shaped for their endpoints. For Anthropic today it's already used
+     * via [ApiKeyInterceptor].
+     */
+    private fun handleSelectCloudModel(modelId: String) {
+        viewModelScope.launch {
+            modelRepository.setRoutingMode(RoutingMode.CLOUD)
+            _uiState.update { it.copy(selectedCloudModelId = modelId) }
+        }
+    }
+
+    /**
+     * Pick a local model from the home-bar dropdown.
+     *
+     * If the model isn't the currently-loaded one, we kick off a load first.
+     * Routing flips to LOCAL immediately so the user gets the right model
+     * name in the top bar without waiting for the load to finish. The
+     * streaming [loadProgress] surface lives on the Local AI screen — here
+     * we just show a lightweight [loadingLocalModelId] so the picker can
+     * spin on the selected row.
+     */
+    private fun handleSelectLocalModel(modelId: String) {
+        viewModelScope.launch {
+            modelRepository.setRoutingMode(RoutingMode.LOCAL)
+            val currentlyLoaded = modelRepository.observeLoadedModelId().value
+            if (currentlyLoaded == modelId) return@launch
+            _uiState.update { it.copy(loadingLocalModelId = modelId) }
+            try {
+                modelRepository.loadModel(modelId).collect { /* ignore status strings */ }
+            } catch (e: Exception) {
+                Log.e(TAG, "loadModel from top-bar failed", e)
+                _uiState.update { it.copy(error = "Load failed: ${e.message}") }
+            } finally {
+                _uiState.update { it.copy(loadingLocalModelId = null) }
+            }
         }
     }
 
@@ -262,12 +352,21 @@ class ChatViewModel @Inject constructor(
     }
 
     // ── Routing mode cycle ────────────────────────────────────────────────────
+    //
+    // The home top-bar toggle only cycles between the two modes the user
+    // actually cares about at send-time: LOCAL (stay on-device) and CLOUD
+    // (hit the API). AUTO/HYBRID still exist for the agent loop and can be
+    // set from the Models screen's routing-mode row, but on the home bar
+    // the binary toggle removes a layer of ambiguity about where a message
+    // is going.
 
     private fun handleCycleRoutingMode() {
         viewModelScope.launch {
             val current = modelRepository.observeRoutingMode().value
-            val modes = RoutingMode.entries
-            val next = modes[(modes.indexOf(current) + 1) % modes.size]
+            val next = when (current) {
+                RoutingMode.LOCAL -> RoutingMode.CLOUD
+                else              -> RoutingMode.LOCAL
+            }
             modelRepository.setRoutingMode(next)
         }
     }

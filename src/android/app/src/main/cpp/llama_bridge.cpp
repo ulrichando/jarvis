@@ -32,13 +32,24 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <algorithm>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-// llama.cpp public C API
-#include "llama.cpp/include/llama.h"
-#include "llama.cpp/include/ggml.h"
+// llama.cpp public C API. These headers are found via the include dirs
+// configured in CMakeLists.txt (${LLAMA_DIR}/include + ${LLAMA_DIR}/ggml/include).
+#include "llama.h"
+#include "ggml.h"
+#include "ggml-backend.h"
+
+#if JARVIS_HAS_OPENCL
+// Direct reference to the OpenCL backend registrar. Having this declaration
+// and calling it in nativeInit() forces the linker to keep ggml-opencl's
+// static-constructor object files — otherwise the whole archive gets
+// stripped and GPU inference is silently disabled.
+extern "C" ggml_backend_reg_t ggml_backend_opencl_reg(void);
+#endif
 
 #define TAG     "JarvisLlama"
 #define LOGI(...)  __android_log_print(ANDROID_LOG_INFO,  TAG, __VA_ARGS__)
@@ -47,8 +58,14 @@
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-static constexpr int  DEFAULT_N_CTX      = 2048;
+// 2048 was too small in practice — our chat history builder produces prompts
+// of 1200-1500 tokens before the user even sees a turn. Bump the default so
+// a typical chat has room for a few rounds before hitting the KV cache wall.
+static constexpr int  DEFAULT_N_CTX      = 4096;
 static constexpr int  DEFAULT_N_THREADS  = 4;
+// llama_decode aborts via ggml_abort when batch.n_tokens > n_batch. We
+// prefill in DEFAULT_N_BATCH-sized chunks (see nativeRunInference) so this
+// can stay at the llama.cpp default rather than scaling with the prompt.
 static constexpr int  DEFAULT_N_BATCH    = 512;
 static constexpr float DEFAULT_TEMP      = 0.8f;
 static constexpr int  DEFAULT_TOP_K      = 40;
@@ -103,14 +120,17 @@ static void releaseModel(const std::string& path) {
 }
 
 // Converts a llama token to its UTF-8 string piece.
+// As of b4631 the token-to-piece function takes a `llama_vocab *` rather than
+// a `llama_model *` — we grab it via llama_model_get_vocab.
 static std::string tokenToPiece(const llama_context * ctx, llama_token token) {
     const llama_model * model = llama_get_model(ctx);
+    const llama_vocab * vocab = llama_model_get_vocab(model);
     char buf[256];
-    int  n = llama_token_to_piece(model, token, buf, sizeof(buf), 0, true);
+    int  n = llama_token_to_piece(vocab, token, buf, sizeof(buf), 0, true);
     if (n < 0) {
         // Buffer too small — use a heap-allocated buffer
         std::vector<char> heap(-(n) + 1);
-        llama_token_to_piece(model, token, heap.data(),
+        llama_token_to_piece(vocab, token, heap.data(),
                              static_cast<int>(heap.size()), 0, true);
         return std::string(heap.data());
     }
@@ -139,7 +159,25 @@ Java_com_jarvis_android_system_llm_LlamaJNI_nativeInit(
     }, nullptr);
 
     llama_backend_init();
-    LOGI("llama backend initialised — build %d", LLAMA_BUILD_NUMBER);
+
+#if JARVIS_HAS_OPENCL
+    // Touch ggml_backend_opencl_reg so the linker keeps the ggml-opencl
+    // archive. ggml's own registry constructor (compiled with GGML_USE_OPENCL)
+    // handles the actual registration; we just need to prevent dead-code
+    // stripping of the symbol it depends on.
+    ggml_backend_reg_t opencl_reg = ggml_backend_opencl_reg();
+    if (opencl_reg) {
+        LOGI("ggml-opencl backend symbol resolved: %s",
+             ggml_backend_reg_name(opencl_reg));
+    } else {
+        LOGW("ggml-opencl reg returned null");
+    }
+#endif
+    // LLAMA_BUILD_NUMBER is only defined when llama.cpp is built via its own
+    // Makefile (which stamps the number). Our CMake-driven build doesn't
+    // define it, so we log a placeholder instead. Not worth wiring a custom
+    // define for one log line.
+    LOGI("llama backend initialised");
 }
 
 /**
@@ -282,10 +320,13 @@ Java_com_jarvis_android_system_llm_LlamaJNI_nativeRunInference(
     llama_model   * model = session->model;
 
     // ── Tokenise prompt ───────────────────────────────────────────────────
-    const int vocab = llama_n_vocab(model);
+    // b4631+ moved token ops off of llama_model and onto llama_vocab; we
+    // grab the vocab once and reuse it for tokenize / eos / is-eog below.
+    const llama_vocab * vocab = llama_model_get_vocab(model);
+    (void) llama_n_vocab(vocab);   // keep tokeniser in cache (deprecated call)
     std::vector<llama_token> promptTokens(promptStr.size() + 8);
     int nTokens = llama_tokenize(
-            model,
+            vocab,
             promptStr.c_str(),
             static_cast<int32_t>(promptStr.size()),
             promptTokens.data(),
@@ -297,7 +338,7 @@ Java_com_jarvis_android_system_llm_LlamaJNI_nativeRunInference(
         // Buffer was too small — resize and retry
         promptTokens.resize(-nTokens + 8);
         nTokens = llama_tokenize(
-                model,
+                vocab,
                 promptStr.c_str(),
                 static_cast<int32_t>(promptStr.size()),
                 promptTokens.data(),
@@ -326,23 +367,55 @@ Java_com_jarvis_android_system_llm_LlamaJNI_nativeRunInference(
     llama_sampler_reset(session->sampler);
 
     // ── Decode prompt (prefill) ───────────────────────────────────────────
-    llama_batch batch = llama_batch_get_one(
-            promptTokens.data(), static_cast<int32_t>(promptTokens.size()));
+    //
+    // Build the batch explicitly via llama_batch_init (b4631 flagged
+    // llama_batch_get_one as "avoid using" — its null seq_id/logits arrays
+    // triggered ggml_abort inside llama_decode on the S26).
+    //
+    // Critically, llama_decode aborts when batch.n_tokens exceeds n_batch
+    // (the context's per-decode batch cap — 512 by default). Chat prompts
+    // routinely exceed that (the system prompt alone can be 1000+ tokens),
+    // so we split the prefill into n_batch-sized chunks and only request
+    // logits on the very last token of the final chunk.
+    const int32_t n_batch_cap = DEFAULT_N_BATCH;
+    llama_batch batch = llama_batch_init(n_batch_cap, /*embd=*/0, /*n_seq_max=*/1);
 
-    if (llama_decode(ctx, batch) != 0) {
-        LOGE("Prompt decode failed");
-        return;
+    const int32_t promptLen = static_cast<int32_t>(promptTokens.size());
+    int32_t n_past = 0;
+
+    for (int32_t offset = 0; offset < promptLen; /* advanced below */) {
+        const int32_t chunk = std::min(n_batch_cap, promptLen - offset);
+        const bool    isLast = (offset + chunk) == promptLen;
+        batch.n_tokens = chunk;
+        for (int32_t i = 0; i < chunk; i++) {
+            batch.token[i]     = promptTokens[offset + i];
+            batch.pos[i]       = n_past + i;
+            batch.n_seq_id[i]  = 1;
+            batch.seq_id[i][0] = 0;
+            // Only the very last prefill token needs logits (for sampling).
+            batch.logits[i]    = isLast && (i == chunk - 1);
+        }
+        if (llama_decode(ctx, batch) != 0) {
+            LOGE("Prompt decode failed at offset %d/%d", offset, promptLen);
+            llama_batch_free(batch);
+            return;
+        }
+        offset += chunk;
+        n_past += chunk;
     }
 
     // ── Autoregressive generation loop ────────────────────────────────────
-    const llama_token eotToken = llama_token_eos(model);
+    //
+    // The vocab-based API (b4631+) means eos / is_eog take a vocab* now.
+    const llama_token eotToken = llama_token_eos(vocab);
+    (void) eotToken;   // reserved for stopping heuristics
     int generated = 0;
 
     while (generated < maxNewTokens && !session->cancelled.load()) {
         llama_token token = llama_sampler_sample(session->sampler, ctx, -1);
         llama_sampler_accept(session->sampler, token);
 
-        if (llama_token_is_eog(model, token)) break;
+        if (llama_token_is_eog(vocab, token)) break;
 
         // Convert token → string piece and fire callback
         std::string piece = tokenToPiece(ctx, token);
@@ -353,15 +426,24 @@ Java_com_jarvis_android_system_llm_LlamaJNI_nativeRunInference(
             if (!cont) break;   // Kotlin returned false → stop
         }
 
-        // Decode the new token for next-step KV cache update
-        llama_batch nextBatch = llama_batch_get_one(&token, 1);
-        if (llama_decode(ctx, nextBatch) != 0) {
+        // Decode the new token for next-step KV cache update. Reuse the
+        // same allocated batch — we just rewrite index 0.
+        batch.n_tokens      = 1;
+        batch.token[0]      = token;
+        batch.pos[0]        = n_past;
+        batch.n_seq_id[0]   = 1;
+        batch.seq_id[0][0]  = 0;
+        batch.logits[0]     = true;
+
+        if (llama_decode(ctx, batch) != 0) {
             LOGE("Decode failed at token %d", generated);
             break;
         }
+        n_past++;
         generated++;
     }
 
+    llama_batch_free(batch);
     LOGI("Generation complete: %d new tokens", generated);
 }
 

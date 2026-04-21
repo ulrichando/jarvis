@@ -47,6 +47,19 @@ sealed class ChatIntent {
     /** Cycle to the next routing mode (Auto → Local → Cloud → Hybrid → Auto). */
     object CycleRoutingMode : ChatIntent()
 
+    /**
+     * Pick a specific cloud (API) model from the home-bar dropdown.
+     * Flips routing to CLOUD and records the chosen provider slug for the
+     * next turn. When [id] is null, selects the provider default.
+     */
+    data class SelectCloudModel(val id: String) : ChatIntent()
+
+    /**
+     * Pick a specific downloaded local model from the home-bar dropdown.
+     * Loads the model if it isn't already loaded, and flips routing to LOCAL.
+     */
+    data class SelectLocalModel(val id: String) : ChatIntent()
+
     // ── Error handling ────────────────────────────────────────────────────────
 
     /** Dismiss the current error Snackbar. */

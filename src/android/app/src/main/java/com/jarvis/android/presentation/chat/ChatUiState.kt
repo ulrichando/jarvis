@@ -1,7 +1,9 @@
 package com.jarvis.android.presentation.chat
 
+import com.jarvis.android.domain.model.CloudModel
 import com.jarvis.android.domain.model.Conversation
 import com.jarvis.android.domain.model.Message
+import com.jarvis.android.domain.model.ModelEntry
 import com.jarvis.android.system.tools.ConfirmationRequest
 
 /**
@@ -35,6 +37,20 @@ data class ChatUiState(
     val isTtsSpeaking:        Boolean              = false,
     val ttsEnabled:           Boolean              = true,
     val routingLabel:         String               = "Auto",
+    /** Downloaded local models, shown as items in the top-bar dropdown. */
+    val downloadedModels:     List<ModelEntry>     = emptyList(),
+    /** Id of the model currently loaded into memory (null = none loaded). */
+    val loadedLocalModelId:   String?              = null,
+    /** Id of the model currently loading (drives the spinner on its menu row). */
+    val loadingLocalModelId:  String?              = null,
+    /**
+     * Cloud models from providers whose API key is configured. Empty until
+     * the user sets at least one provider key in Settings — the top-bar
+     * dropdown only shows what the user can actually call.
+     */
+    val availableCloudModels: List<CloudModel>     = emptyList(),
+    /** Anthropic / DeepSeek / etc. slug the user picked in the home-bar dropdown. */
+    val selectedCloudModelId: String?              = null,
 ) {
     /** True when there is content to display (persisted messages or live streaming). */
     val hasContent: Boolean get() = messages.isNotEmpty() || streamingText.isNotEmpty()

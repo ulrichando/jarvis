@@ -158,6 +158,14 @@
         android:theme="@style/Theme.Jarvis"
         tools:targetApi="33">
 
+        <!-- Vendor public library for Adreno OpenCL GPU inference. Required
+             by Android 12+ (targetSdk 31+) for apps that link against
+             /vendor/lib64/libOpenCL.so. Without this the OpenCL platform
+             list is empty and llama.cpp silently falls back to CPU. -->
+        <uses-native-library
+            android:name="libOpenCL.so"
+            android:required="false" />
+
         <!-- ── Main Activity ─────────────────────────────────────────── -->
         <activity
             android:name=".MainActivity"
