@@ -20,18 +20,14 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.AttachFile
-import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -43,42 +39,50 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
+//
+// Kept deliberately in sync with ChatScreen / HomeHero / VoiceOverlay so the
+// input bar reads as a direct continuation of the screen, not a grafted card.
 
-private val InputBg           = Color(0xFF212121)
-private val InputBorder       = Color(0x1FFFFFFF)   // white 12 %
-private val BubbleBorder      = Color(0xFF2E2E2E)
-private val TextPrimary       = Color(0xFFD9D9D9)
-private val TextHint          = Color(0x7F7E7E7E)   // #7e7e7e at 50 %
-private val TextMuted         = Color(0xFF7E7E7E)
-private val SendActiveBg      = Color(0xFFD9D9D9)   // white-ish fill when text present
-private val SendInactiveBg    = Color(0x14FFFFFF)   // 8 % white
-private val DeepThinkBlue     = Color(0xFF1E7FFF)
-private val DeepThinkBorder   = Color(0xFF1E7FFF)
-private val DeepThinkBg       = Color(0x0A1E7FFF)   // 4 % blue tint
-private val ChipInactiveBorder = Color(0x0DFFFFFF)  // 5 % white
-private val ChipInactiveBg    = Color(0x08FFFFFF)   // 3 % white
+private val ScreenBg   = Color(0xFF0A0A0A)
+private val PillBg     = Color(0xFF1F1F1F)   // lifted one step above the screen
+private val PillBorder = Color(0x12FFFFFF)   // 7 % white — barely visible edge
+private val TextPri    = Color(0xFFECECEC)
+private val TextHint   = Color(0xFF7A7A7A)
+private val TextMuted  = Color(0xFF8A8A8A)
+private val Accent     = Color(0xFF1E7FFF)
+private val VoiceFill  = Color(0xFFECECEC)   // near-white fill for the voice button
+private val IconGhost  = Color(0xFFB0B0B0)
 
 /**
- * JARVIS chat input bar — Figma "Nirmala - AI Assistant" design.
+ * JARVIS chat input bar — minimalist pill inspired by the Claude mobile app.
  *
  * Layout:
  * ```
- * ┌─────────────────────────────────────────────────────┐
- * │  [text field…]             [📎 attach]  [⬆ send]   │
- * │  [🔵 Deep Think] [🔍 Search]      [Claude 3.5  ▾]  │
- * └─────────────────────────────────────────────────────┘
+ *   ┌───────────────────────────────────────────┐
+ *   │  Chat with JARVIS...                      │
+ *   │                                           │
+ *   │  [ + ]                    [🎤]   [ ⬤ ]   │
+ *   └───────────────────────────────────────────┘
  * ```
  *
- * - Send button is white-filled when [text] is non-blank; dim otherwise.
- * - While [isStreaming], the send button becomes a Stop button (red).
- * - "Deep Think" and "Search" are local toggle chips (no ViewModel needed yet).
+ * - `+` on the left is reserved for attachments (wired via [onAttach]).
+ * - The mic icon on the right triggers quick STT → text.
+ * - The filled white circle on the far right opens the **voice overlay** for
+ *   full-screen voice interaction (hands-free mode).
+ * - When the user has typed text, the voice button morphs into a Send button
+ *   so the primary CTA stays in the same physical spot.
+ * - While the AI is streaming, it becomes a Stop button.
  *
  * @param text          Current input field content.
  * @param onTextChange  Called on every keystroke.
  * @param onSend        Called when the user taps the Send button.
  * @param onStop        Called when the user taps Stop during streaming.
- * @param onAttach      Optional attachment callback; hides attach icon when null.
+ * @param onVoice       Tap-to-start dictation (fills the text field).
+ * @param onVoiceMode   Open the full-screen voice overlay — the "phone call with
+ *                      JARVIS" affordance. When null, the voice-mode button is
+ *                      hidden and Send takes its place on the right.
  * @param isStreaming   True while a response turn is in flight.
+ * @param isRecording   True while STT is actively listening (drives mic tint).
  * @param enabled       False disables all interactions.
  */
 @Composable
@@ -91,214 +95,165 @@ fun JarvisInputBar(
     onAttach:       (() -> Unit)? = null,
     isStreaming:    Boolean = false,
     enabled:        Boolean = true,
-    placeholder:    String  = "Let's talk",
+    placeholder:    String  = "Chat with JARVIS…",
     onVoice:        (() -> Unit)? = null,
+    onVoiceMode:    (() -> Unit)? = null,
     isRecording:    Boolean = false,
-    ttsEnabled:     Boolean = true,
-    onToggleTts:    (() -> Unit)? = null,
-    routingLabel:   String  = "Auto",
-    onCycleRouting: (() -> Unit)? = null,
+    // The following params are retained for source compatibility with the old
+    // two-row design but intentionally unused in this minimalist layout — TTS
+    // toggle + routing now live elsewhere (top bar + long-press).
+    @Suppress("UNUSED_PARAMETER") ttsEnabled:     Boolean  = true,
+    @Suppress("UNUSED_PARAMETER") onToggleTts:    (() -> Unit)? = null,
+    @Suppress("UNUSED_PARAMETER") routingLabel:   String   = "Auto",
+    @Suppress("UNUSED_PARAMETER") onCycleRouting: (() -> Unit)? = null,
 ) {
-    var isDeepThink by remember { mutableStateOf(false) }
-    var isSearch    by remember { mutableStateOf(false) }
-
     val hasText = text.isNotBlank()
 
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .background(Color(0xFF0D0D0D)), // match screen background below card
+            .background(ScreenBg),
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 12.dp),
+                .padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 8.dp),
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(InputBg, RoundedCornerShape(20.dp))
-                    .border(1.dp, InputBorder, RoundedCornerShape(20.dp))
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
+                    .background(PillBg, RoundedCornerShape(28.dp))
+                    .border(1.dp, PillBorder, RoundedCornerShape(28.dp))
+                    .padding(horizontal = 18.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                // ── Row 1: text field + action buttons ────────────────────────
+                // ── Row 1: the text field ────────────────────────────────
+                BasicTextField(
+                    value         = text,
+                    onValueChange = onTextChange,
+                    enabled       = enabled && !isStreaming,
+                    textStyle     = MaterialTheme.typography.bodyLarge.copy(
+                        color    = TextPri,
+                        fontSize = 16.sp,
+                    ),
+                    cursorBrush   = SolidColor(Accent),
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.Sentences,
+                        imeAction      = ImeAction.Default,
+                    ),
+                    maxLines = 6,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 28.dp, max = 140.dp),
+                    decorationBox = { inner ->
+                        Box(contentAlignment = Alignment.CenterStart) {
+                            if (text.isEmpty()) {
+                                Text(
+                                    text  = placeholder,
+                                    style = MaterialTheme.typography.bodyLarge.copy(
+                                        fontSize = 16.sp,
+                                    ),
+                                    color = TextHint,
+                                )
+                            }
+                            inner()
+                        }
+                    },
+                )
+
+                // ── Row 2: actions ───────────────────────────────────────
                 Row(
                     modifier          = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    BasicTextField(
-                        value         = text,
-                        onValueChange = onTextChange,
-                        enabled       = enabled && !isStreaming,
-                        textStyle     = MaterialTheme.typography.bodyMedium.copy(
-                            color    = TextPrimary,
-                            fontSize = 14.sp,
-                        ),
-                        cursorBrush = SolidColor(DeepThinkBlue),
-                        keyboardOptions = KeyboardOptions(
-                            capitalization = KeyboardCapitalization.Sentences,
-                            imeAction      = ImeAction.Default,
-                        ),
-                        maxLines = 6,
-                        modifier = Modifier
-                            .weight(1f)
-                            .heightIn(min = 20.dp, max = 120.dp),
-                        decorationBox = { inner ->
-                            Box(contentAlignment = Alignment.CenterStart) {
-                                if (text.isEmpty()) {
-                                    Text(
-                                        text  = placeholder,
-                                        style = MaterialTheme.typography.bodyMedium.copy(
-                                            fontSize = 14.sp,
-                                        ),
-                                        color = TextHint,
-                                    )
-                                }
-                                inner()
-                            }
-                        },
+                    // Attach / plus — left
+                    IconPillButton(
+                        icon             = Icons.Default.Add,
+                        contentDesc      = "Attach",
+                        tint             = IconGhost,
+                        enabled          = enabled && onAttach != null,
+                        onClick          = { onAttach?.invoke() },
                     )
 
-                    // Attach icon
-                    if (onAttach != null) {
-                        Spacer(Modifier.width(12.dp))
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier         = Modifier
-                                .size(28.dp)
-                                .clickable(
-                                    enabled = enabled && !isStreaming,
-                                    role    = Role.Button,
-                                    onClick = onAttach,
-                                ),
-                        ) {
-                            Icon(
-                                imageVector        = Icons.Default.AttachFile,
-                                contentDescription = "Attach file",
-                                tint               = TextMuted,
-                                modifier           = Modifier.size(20.dp),
-                            )
+                    Spacer(Modifier.weight(1f))
+
+                    // Mic — quick dictation (fills the text field).
+                    // Hidden while the user is composing text so the Send button
+                    // stands alone on the right.
+                    if (onVoice != null && !isStreaming && !hasText) {
+                        IconPillButton(
+                            icon        = if (isRecording) Icons.Default.Stop else Icons.Default.Mic,
+                            contentDesc = if (isRecording) "Stop recording" else "Dictate",
+                            tint        = if (isRecording) Accent else IconGhost,
+                            enabled     = enabled,
+                            onClick     = onVoice,
+                        )
+                        Spacer(Modifier.width(6.dp))
+                    }
+
+                    // Primary CTA — filled white circle. Morphs through:
+                    //   no text + voice-mode available → voice mode (waveform)
+                    //   has text                       → send
+                    //   streaming                      → stop
+                    val primaryAction: () -> Unit
+                    val primaryEnabled: Boolean
+                    val primaryIcon: androidx.compose.ui.graphics.vector.ImageVector
+                    val primaryDesc: String
+                    val primaryTint: Color
+                    val primaryBg:   Color
+
+                    when {
+                        isStreaming -> {
+                            primaryAction  = onStop
+                            primaryEnabled = true
+                            primaryIcon    = Icons.Default.Stop
+                            primaryDesc    = "Stop"
+                            primaryTint    = MaterialTheme.colorScheme.error
+                            primaryBg      = MaterialTheme.colorScheme.error.copy(alpha = 0.15f)
+                        }
+                        hasText -> {
+                            primaryAction  = onSend
+                            primaryEnabled = enabled
+                            primaryIcon    = Icons.AutoMirrored.Filled.Send
+                            primaryDesc    = "Send"
+                            primaryTint    = Color(0xFF0A0A0A)
+                            primaryBg      = VoiceFill
+                        }
+                        onVoiceMode != null -> {
+                            primaryAction  = onVoiceMode
+                            primaryEnabled = enabled
+                            primaryIcon    = Icons.Default.GraphicEq
+                            primaryDesc    = "Voice mode"
+                            primaryTint    = Color(0xFF0A0A0A)
+                            primaryBg      = VoiceFill
+                        }
+                        else -> {
+                            primaryAction  = onSend
+                            primaryEnabled = false
+                            primaryIcon    = Icons.AutoMirrored.Filled.Send
+                            primaryDesc    = "Send"
+                            primaryTint    = Color.White.copy(alpha = 0.35f)
+                            primaryBg      = Color(0x14FFFFFF)
                         }
                     }
 
-                    // Mic button — visible when not streaming (hidden while AI is responding)
-                    if (onVoice != null && !isStreaming) {
-                        Spacer(Modifier.width(8.dp))
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier = Modifier
-                                .size(34.dp)
-                                .background(
-                                    color = if (isRecording) Color(0xFF1E7FFF).copy(alpha = 0.18f) else SendInactiveBg,
-                                    shape = CircleShape,
-                                )
-                                .border(
-                                    width = 1.dp,
-                                    color = if (isRecording) Color(0xFF1E7FFF).copy(alpha = 0.6f) else Color(0x0AFFFFFF),
-                                    shape = CircleShape,
-                                )
-                                .clickable(enabled = enabled, role = Role.Button, onClick = onVoice),
-                        ) {
-                            Icon(
-                                imageVector        = if (isRecording) Icons.Default.Stop else Icons.Default.Mic,
-                                contentDescription = if (isRecording) "Stop recording" else "Voice input",
-                                tint               = if (isRecording) Color(0xFF1E7FFF) else TextMuted,
-                                modifier           = Modifier.size(16.dp),
-                            )
-                        }
-                    }
-
-                    Spacer(Modifier.width(8.dp))
-
-                    // Send / Stop button — filled circle
                     Box(
                         contentAlignment = Alignment.Center,
                         modifier = Modifier
-                            .size(34.dp)
-                            .background(
-                                color = when {
-                                    isStreaming -> MaterialTheme.colorScheme.error.copy(alpha = 0.15f)
-                                    hasText     -> SendActiveBg
-                                    else        -> SendInactiveBg
-                                },
-                                shape = CircleShape,
-                            )
-                            .border(
-                                width = 1.dp,
-                                color = Color(0x0AFFFFFF),
-                                shape = CircleShape,
-                            )
+                            .size(40.dp)
+                            .background(color = primaryBg, shape = CircleShape)
                             .clickable(
-                                enabled = enabled && (isStreaming || hasText),
+                                enabled = primaryEnabled,
                                 role    = Role.Button,
-                                onClick = if (isStreaming) onStop else onSend,
+                                onClick = primaryAction,
                             ),
                     ) {
                         Icon(
-                            imageVector        = if (isStreaming) Icons.Default.Stop
-                                                 else Icons.AutoMirrored.Filled.Send,
-                            contentDescription = if (isStreaming) "Stop" else "Send",
-                            tint               = when {
-                                isStreaming -> MaterialTheme.colorScheme.error
-                                hasText     -> Color(0xFF0D0D0D)
-                                else        -> Color.White.copy(alpha = 0.35f)
-                            },
-                            modifier           = Modifier.size(16.dp),
-                        )
-                    }
-                }
-
-                // ── Row 2: mode chips + model selector ────────────────────────
-                Row(
-                    modifier              = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment     = Alignment.CenterVertically,
-                ) {
-                    // Left: Deep Think + Search chips
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        ModeChip(
-                            label   = "Deep Think",
-                            active  = isDeepThink,
-                            onClick = { isDeepThink = !isDeepThink },
-                        )
-                        ModeChip(
-                            label   = "Search",
-                            active  = isSearch,
-                            onClick = { isSearch = !isSearch },
-                        )
-                    }
-
-                    // Right: Model / routing selector
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier          = Modifier.clickable(role = Role.Button) { onCycleRouting?.invoke() },
-                    ) {
-                        // TTS indicator dot
-                        if (onToggleTts != null) {
-                            Box(
-                                modifier = Modifier
-                                    .size(7.dp)
-                                    .background(
-                                        color = if (ttsEnabled) Color(0xFF1E7FFF) else TextMuted.copy(alpha = 0.4f),
-                                        shape = CircleShape,
-                                    )
-                                    .clickable { onToggleTts() }
-                            )
-                            Spacer(Modifier.width(5.dp))
-                        }
-                        Text(
-                            text  = routingLabel,
-                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 13.sp),
-                            color = TextMuted,
-                        )
-                        Spacer(Modifier.width(2.dp))
-                        Icon(
-                            imageVector        = Icons.Default.KeyboardArrowDown,
-                            contentDescription = "Cycle routing mode",
-                            tint               = TextMuted,
-                            modifier           = Modifier.size(16.dp),
+                            imageVector        = primaryIcon,
+                            contentDescription = primaryDesc,
+                            tint               = primaryTint,
+                            modifier           = Modifier.size(20.dp),
                         )
                     }
                 }
@@ -307,33 +262,30 @@ fun JarvisInputBar(
     }
 }
 
-// ── Mode toggle chip ──────────────────────────────────────────────────────────
-
+/**
+ * 36dp circular icon button used for attach / mic. Subtle ghost style so the
+ * primary CTA (send / voice-mode) has visual hierarchy.
+ */
 @Composable
-private fun ModeChip(
-    label:   String,
-    active:  Boolean,
-    onClick: () -> Unit,
+private fun IconPillButton(
+    icon:        androidx.compose.ui.graphics.vector.ImageVector,
+    contentDesc: String,
+    tint:        Color,
+    enabled:     Boolean,
+    onClick:     () -> Unit,
 ) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier          = Modifier
-            .background(
-                color = if (active) DeepThinkBg else ChipInactiveBg,
-                shape = RoundedCornerShape(999.dp),
-            )
-            .border(
-                width = 1.dp,
-                color = if (active) DeepThinkBorder else ChipInactiveBorder,
-                shape = RoundedCornerShape(999.dp),
-            )
-            .clickable(role = Role.Switch, onClick = onClick)
-            .padding(horizontal = 6.dp, vertical = 4.dp),
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .size(36.dp)
+            .background(Color(0x14FFFFFF), CircleShape)
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick),
     ) {
-        Text(
-            text  = label,
-            style = MaterialTheme.typography.labelSmall.copy(fontSize = 13.sp),
-            color = if (active) DeepThinkBlue else Color(0xFFAEAEAE),
+        Icon(
+            imageVector        = icon,
+            contentDescription = contentDesc,
+            tint               = tint.copy(alpha = if (enabled) 1f else 0.4f),
+            modifier           = Modifier.size(18.dp),
         )
     }
 }

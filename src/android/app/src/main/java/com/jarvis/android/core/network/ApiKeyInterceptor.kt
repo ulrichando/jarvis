@@ -65,4 +65,20 @@ interface ApiKeyProvider {
 
     /** Wipes the stored API key. */
     fun clearApiKey()
+
+    /**
+     * Per-provider key accessors — lets the home-bar picker filter its cloud
+     * catalog to "providers the user has actually enabled".
+     *
+     * For now only Anthropic has a plumbed storage slot (the existing
+     * [getApiKey]/[setApiKey] pair), so these forward to that pair when
+     * [provider] is Anthropic and return empty/false otherwise. As we add
+     * Settings rows for DeepSeek / Groq / OpenAI / etc. we wire each to its
+     * own EncryptedSharedPreferences slot here.
+     */
+    fun getApiKey(provider: com.jarvis.android.domain.model.CloudProvider): String =
+        if (provider == com.jarvis.android.domain.model.CloudProvider.ANTHROPIC) getApiKey() else ""
+
+    fun hasApiKey(provider: com.jarvis.android.domain.model.CloudProvider): Boolean =
+        getApiKey(provider).isNotBlank()
 }

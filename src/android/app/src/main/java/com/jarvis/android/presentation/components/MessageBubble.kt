@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
@@ -39,24 +40,33 @@ import com.jarvis.android.domain.model.Message
 import com.jarvis.android.domain.model.MessageContentType
 import com.jarvis.android.domain.model.MessageRole
 
-// Figma-matched bubble colors
-private val UserBubbleBg   = Color(0xFF212121)
-private val AssistBubbleBg = Color(0xFF171717)
-private val BubbleBorder   = Color(0xFF2E2E2E)
-private val UserBubbleShape   = RoundedCornerShape(12.dp)
-private val AssistBubbleShape = RoundedCornerShape(16.dp)
+// ── Local tokens — keep in sync with ChatScreen/HomeHero ──────────────────────
+
+private val Accent          = Color(0xFF1E7FFF)
+private val UserBubbleBg    = Color(0xFF1E2A3D)   // subtle blue tint for user
+private val UserBubbleShape = RoundedCornerShape(
+    topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 4.dp,
+)
+private val TextPrimary     = Color(0xFFECECEC)
+private val TextSecondary   = Color(0xFF8A8A8A)
 
 /**
- * Renders a single conversation turn as a Material3 message bubble.
+ * Renders a single conversation turn.
  *
- * User messages:  right-aligned, primary container colour, flat top-right corner.
- * Assistant messages: left-aligned, surface container colour, flat top-left corner.
+ * **User messages** sit right-aligned in a rounded blue-tinted bubble with a
+ * flattened bottom-right corner — a visual "tail" toward the sender.
+ *
+ * **Assistant messages** are bubble-less and left-aligned, preceded by a small
+ * JARVIS avatar dot. Reading long AI responses in a bubble fights with the
+ * monospace-heavy content they often contain; letting them flow full-width
+ * makes code blocks and tool traces comfortable.
  *
  * For assistant turns that include `tool_use` or `tool_result` content, a
  * collapsible "Tool calls" section is shown below the text body.
  *
  * @param isStreaming   When true, appends a [StreamingCursor] at the text tail.
- * @param streamingText If non-null, overrides [message.content] for in-progress turns.
+ * @param streamingText If non-null, overrides [message.content] for in-progress
+ *                      turns — used by the streaming ghost bubble.
  */
 @Composable
 fun MessageBubble(
@@ -65,30 +75,30 @@ fun MessageBubble(
     isStreaming:   Boolean = false,
     streamingText: String? = null,
 ) {
-    val isUser = message.role == MessageRole.USER
-    val maxWidth = (LocalConfiguration.current.screenWidthDp * 0.82).dp
+    val isUser   = message.role == MessageRole.USER
+    val maxWidth = (LocalConfiguration.current.screenWidthDp * 0.86).dp
+    val bodyText = streamingText ?: message.content
 
     Row(
-        modifier = modifier.fillMaxWidth(),
+        modifier              = modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
     ) {
+        if (!isUser) {
+            AssistantAvatar()
+            Spacer(Modifier.size(8.dp))
+        }
+
         Column(
             modifier = Modifier
                 .widthIn(max = maxWidth)
-                .background(
-                    color = if (isUser) UserBubbleBg else AssistBubbleBg,
-                    shape = if (isUser) UserBubbleShape else AssistBubbleShape,
-                )
-                .border(
-                    width = 1.dp,
-                    color = BubbleBorder,
-                    shape = if (isUser) UserBubbleShape else AssistBubbleShape,
-                )
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .let {
+                    if (isUser) it
+                        .background(UserBubbleBg, UserBubbleShape)
+                        .padding(horizontal = 14.dp, vertical = 10.dp)
+                    else it.padding(vertical = 2.dp)
+                },
         ) {
-            val bodyText = streamingText ?: message.content
-
-            // Main content
+            // ── Body ──────────────────────────────────────────────────────
             when {
                 message.contentType == MessageContentType.TEXT ||
                 message.contentType == MessageContentType.MIXED ||
@@ -101,10 +111,8 @@ fun MessageBubble(
                     }
                     if (isStreaming) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (bodyText.isNotBlank()) {
-                                Spacer(Modifier.size(4.dp, 16.dp))
-                            }
-                            StreamingCursor(visible = isStreaming)
+                            if (bodyText.isNotBlank()) Spacer(Modifier.size(4.dp, 16.dp))
+                            StreamingCursor(visible = true)
                         }
                     }
                 }
@@ -112,17 +120,38 @@ fun MessageBubble(
                     Text(
                         text  = bodyText,
                         style = MaterialTheme.typography.bodyMedium,
+                        color = TextPrimary,
                     )
                 }
             }
 
-            // Tool calls — collapsible section
+            // ── Tool calls — collapsible below the message body ───────────
             if (message.contentType == MessageContentType.TOOL_USE ||
                 message.contentType == MessageContentType.MIXED ||
-                message.contentType == MessageContentType.TOOL_RESULT) {
+                message.contentType == MessageContentType.TOOL_RESULT
+            ) {
                 ToolCallsSection(message = message)
             }
         }
+    }
+}
+
+// ── Assistant avatar — tiny blue dot that reads as JARVIS ────────────────────
+
+@Composable
+private fun AssistantAvatar() {
+    Box(
+        modifier = Modifier
+            .size(26.dp)
+            .background(Accent.copy(alpha = 0.12f), CircleShape)
+            .border(1.dp, Accent.copy(alpha = 0.3f), CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(7.dp)
+                .background(Accent, CircleShape),
+        )
     }
 }
 
@@ -133,31 +162,31 @@ private fun ToolCallsSection(message: Message) {
     var expanded by remember { mutableStateOf(false) }
     val json = message.toolCallsJson ?: return
 
-    Spacer(Modifier.height(4.dp))
+    Spacer(Modifier.height(6.dp))
 
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier          = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
-            imageVector = Icons.Default.Build,
+            imageVector        = Icons.Default.Build,
             contentDescription = null,
-            tint     = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(14.dp),
+            tint               = TextSecondary,
+            modifier           = Modifier.size(14.dp),
         )
         Text(
             text  = if (message.contentType == MessageContentType.TOOL_RESULT)
                         "Tool results" else "Tool calls",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style    = MaterialTheme.typography.labelSmall,
+            color    = TextSecondary,
             modifier = Modifier.weight(1f).padding(start = 4.dp),
         )
         IconButton(onClick = { expanded = !expanded }, modifier = Modifier.size(24.dp)) {
             Icon(
-                imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                imageVector        = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
                 contentDescription = if (expanded) "Collapse" else "Expand",
-                tint     = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(16.dp),
+                tint               = TextSecondary,
+                modifier           = Modifier.size(16.dp),
             )
         }
     }
@@ -172,15 +201,16 @@ private fun ToolCallsSection(message: Message) {
                 .fillMaxWidth()
                 .padding(top = 4.dp)
                 .background(
-                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
-                    shape = MaterialTheme.shapes.small,
+                    color = Color(0xFF121212),
+                    shape = RoundedCornerShape(8.dp),
                 )
-                .padding(8.dp),
+                .border(1.dp, Color(0xFF262626), RoundedCornerShape(8.dp))
+                .padding(10.dp),
         ) {
             Text(
                 text  = json,
                 style = JarvisTheme.typography.codeInline,
-                color = MaterialTheme.colorScheme.onSurface,
+                color = TextPrimary,
             )
         }
     }

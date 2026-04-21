@@ -68,8 +68,26 @@ class ModelsViewModel @Inject constructor(
     val uiState: StateFlow<ModelsUiState> = _uiState.asStateFlow()
 
     init {
+        // Keep track of which models have already been announced as failed —
+        // otherwise the toast would repeat every time the list re-emits.
+        val alreadyToasted = mutableSetOf<String>()
+
         observeModels()
-            .onEach  { list -> _uiState.update { it.copy(models = list) } }
+            .onEach  { list ->
+                // Surface NEW failures as a toast — the inline "Error: …" on
+                // the card is nice but easy to miss when the card is scrolled
+                // off screen while a large download was in flight.
+                list.forEach { m ->
+                    val failed = m.downloadState as? com.jarvis.android.domain.model.DownloadState.Failed
+                    if (failed != null && alreadyToasted.add(m.id)) {
+                        showToast("Download failed — ${m.name}: ${failed.reason}")
+                    }
+                    // Clear the flag once the model is no longer in Failed
+                    // state so a subsequent retry can toast again if it fails.
+                    if (failed == null) alreadyToasted.remove(m.id)
+                }
+                _uiState.update { it.copy(models = list) }
+            }
             .catch   { e -> Log.e(TAG, "models flow error", e) }
             .launchIn(viewModelScope)
 

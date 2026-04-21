@@ -15,12 +15,17 @@ object JarvisPalette {
     val SurfaceElevated  = Color(0xFF1E1E1E)
     val SurfaceOverlay   = Color(0xFF242424)
 
-    // ── Gold ─────────────────────────────────────────────────────────────────
-    val GoldPrimary      = Color(0xFFC9A84C)
-    val GoldGlow         = Color(0xFFF5D680)
-    val GoldMuted        = Color(0xFF7A6530)
-    val GoldBorder       = Color(0xFF3D2E0F)
-    val GoldDim          = Color(0xFF4A3A1E)
+    // ── Gold (legacy name) → Blue ────────────────────────────────────────────
+    //
+    // The names survive as API aliases so existing screens don't need a mass
+    // import rewrite, but the actual colours now match the new JARVIS accent
+    // (Claude-style true-black + accent-blue palette used by Home, Voice,
+    // Drawer, and InputBar). One source of truth for the theme.
+    val GoldPrimary      = Color(0xFF1E7FFF)   // JARVIS accent blue
+    val GoldGlow         = Color(0xFF5BA8FF)   // lighter blue (glow / hover)
+    val GoldMuted        = Color(0xFF4A6A8F)   // muted blue (secondary text)
+    val GoldBorder       = Color(0xFF0E3A70)   // dark blue border
+    val GoldDim          = Color(0xFF1A3A5E)   // dim blue (inactive chip fill)
 
     // ── Semantic ─────────────────────────────────────────────────────────────
     val UserBubble       = Color(0xFF1C2E4A)
@@ -31,15 +36,16 @@ object JarvisPalette {
     val WarningAmber     = Color(0xFFE0A030)
 
     // ── Text ─────────────────────────────────────────────────────────────────
-    val TextPrimary      = Color(0xFFF0EDE8)
-    val TextSecondary    = Color(0xFF8A8070)
-    val TextDisabled     = Color(0xFF4A4540)
-    val TextOnGold       = Color(0xFF0A0A0A)
+    val TextPrimary      = Color(0xFFECECEC)
+    val TextSecondary    = Color(0xFF8A8A8A)
+    val TextDisabled     = Color(0xFF4A4A4A)
+    // On a blue button/fill, white text reads best (was black on yellow gold).
+    val TextOnGold       = Color(0xFFFFFFFF)
 
     // ── Terminal ─────────────────────────────────────────────────────────────
     val TerminalBg       = Color(0xFF050505)
-    val TerminalText     = Color(0xFFC8FFB4)   // classic terminal green
-    val TerminalCursor   = Color(0xFFC9A84C)   // gold cursor
+    val TerminalText     = Color(0xFFC8FFB4)   // classic terminal green (kept for readability)
+    val TerminalCursor   = Color(0xFF1E7FFF)   // accent-blue cursor
     val TerminalDim      = Color(0xFF5A7A50)
 
     // ── Code ─────────────────────────────────────────────────────────────────

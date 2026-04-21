@@ -142,6 +142,41 @@ export async function arbitrate(input: ArbiterInput): Promise<ArbiterDecision> {
 // two-syllable consonant-vowel pattern.
 const WAKE_WORD_REGEX = /^\s*(hey\s+|ok\s+|okay\s+|alright\s+|yo\s+|so\s+|oi\s+)?j(a|e|o)rv(is|ish|es|us)\b/i
 
+// Fuzzy Levenshtein fallback — catches the mishears the regex misses
+// (Jorius, Jarvish, Davis). Only applied to the first 1–2 words of the
+// utterance so we don't accidentally trigger on random sentence middles.
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0
+  if (!a.length) return b.length
+  if (!b.length) return a.length
+  let prev = new Array(b.length + 1).fill(0).map((_, i) => i)
+  for (let i = 1; i <= a.length; i++) {
+    const curr = [i]
+    for (let j = 1; j <= b.length; j++) {
+      curr[j] = Math.min(
+        curr[j - 1] + 1,
+        prev[j] + 1,
+        prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+      )
+    }
+    prev = curr
+  }
+  return prev[b.length]
+}
+
+function fuzzyWakeDetected(text: string): boolean {
+  const tokens = text
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length >= 4 && w.length <= 8)
+    .slice(0, 3)   // only consider the first 3 candidate words
+  for (const t of tokens) {
+    if (levenshtein(t, 'jarvis') <= 2) return true
+  }
+  return false
+}
+
 // Softer anchor used by the single-user permissive mode: if any of these
 // signs are present, assume the user is talking TO the assistant, not
 // ABOUT him. Deliberately broad — false positives cost a wasted LLM
@@ -158,22 +193,31 @@ export function buildArbiterInput(args: {
   secondsSinceJarvisSpoke: number
   history: Array<{ role: 'user' | 'jarvis'; text: string }>
   lastUserIntent?: string | null
+  speakerConfidence?: number | null
 }): ArbiterInput {
   const { transcript } = args
   // In single-user mode, treat direct-address patterns as an implicit
   // wake word. Personal machine, one speaker — the C12d "no address"
   // path was designed for public / multi-speaker environments.
   const explicitWake = WAKE_WORD_REGEX.test(transcript)
+  const fuzzyWake    = fuzzyWakeDetected(transcript)
   const implicitWake = SINGLE_USER && DIRECT_ADDRESS_REGEX.test(transcript)
-  const wakeDetected = explicitWake || implicitWake
+  const wakeDetected = explicitWake || fuzzyWake || implicitWake
+
+  // Map the client-side fingerprint score (0–1) to speaker identity.
+  // If we haven't scored the voice yet (enrollment phase) the client
+  // sends null → fall back to the trust-Ulrich default.
+  const clientConf = typeof args.speakerConfidence === 'number' ? args.speakerConfidence : null
+  const isUlrich = clientConf == null || clientConf >= 0.70
+  const speaker = {
+    id:               isUlrich ? 'ulrich' : 'unknown_human_1',
+    confidence:       clientConf ?? 0.95,
+    is_enrolled_user: isUlrich,
+  }
 
   return {
     transcript,
-    speaker: {
-      id: 'ulrich',
-      confidence: 0.95,
-      is_enrolled_user: true,
-    },
+    speaker,
     audio: {
       tts_playing: args.ttsPlaying,
       tts_remaining_text: args.ttsRemainingText,

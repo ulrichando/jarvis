@@ -26,6 +26,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -35,6 +36,10 @@ import com.jarvis.android.presentation.localai.benchmark.BenchmarkScreen
 import com.jarvis.android.presentation.localai.inference.InferenceScreen
 import com.jarvis.android.presentation.localai.models.ModelsScreen
 import com.jarvis.android.presentation.localai.settings.LocalAiSettingsScreen
+
+// Canonical accent blue — kept locally so theme swaps live in one place per
+// screen and match ChatScreen / HomeHero / VoiceOverlay.
+private val JarvisAccent = Color(0xFF1E7FFF)
 
 /**
  * Root composable for the Local AI section.
@@ -60,14 +65,14 @@ fun LocalAiScreen(
                     title = {
                         Text(
                             text       = "Local AI",
-                            color      = JarvisPalette.GoldGlow,
+                            color      = JarvisAccent,
                             fontWeight = FontWeight.SemiBold,
                             fontSize   = 18.sp,
                         )
                     },
                     navigationIcon = {
                         IconButton(onClick = onBack) {
-                            Icon(Icons.Default.ArrowBack, "Back", tint = JarvisPalette.GoldPrimary)
+                            Icon(Icons.Default.ArrowBack, "Back", tint = JarvisAccent)
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
@@ -78,12 +83,12 @@ fun LocalAiScreen(
                 TabRow(
                     selectedTabIndex  = selectedTab,
                     containerColor    = JarvisPalette.SurfaceDark,
-                    contentColor      = JarvisPalette.GoldPrimary,
+                    contentColor      = JarvisAccent,
                     indicator         = { tabPositions ->
                         if (selectedTab < tabPositions.size) {
                             TabRowDefaults.SecondaryIndicator(
                                 modifier = Modifier.tabIndicatorOffset(tabPositions[selectedTab]),
-                                color    = JarvisPalette.GoldPrimary,
+                                color    = JarvisAccent,
                                 height   = 2.dp,
                             )
                         }
@@ -99,7 +104,7 @@ fun LocalAiScreen(
                                     imageVector = tab.icon,
                                     contentDescription = null,
                                     tint = if (selectedTab == index)
-                                        JarvisPalette.GoldPrimary else JarvisPalette.TextSecondary,
+                                        JarvisAccent else JarvisPalette.TextSecondary,
                                 )
                             },
                             text     = {
@@ -107,7 +112,7 @@ fun LocalAiScreen(
                                     text      = tab.label,
                                     fontSize  = 11.sp,
                                     color     = if (selectedTab == index)
-                                        JarvisPalette.GoldPrimary else JarvisPalette.TextSecondary,
+                                        JarvisAccent else JarvisPalette.TextSecondary,
                                 )
                             },
                         )

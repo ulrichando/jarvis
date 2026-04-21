@@ -35,11 +35,13 @@ wait_port() {
 
 # start_bun_bg <log> <ts-entry>
 # Launches a Bun script in a detached session with .env.local sourced.
+# Appends to the log (>>) so history survives restarts for postmortem.
 start_bun_bg() {
   local log=$1
   local script=$2
+  printf '\n\n=== start %s %s ===\n' "$(date -Iseconds)" "$script" >>"$log"
   nohup bash -c "set -a; [ -f '$ENV_FILE' ] && . '$ENV_FILE'; set +a; exec '$BUN' '$script'" \
-    </dev/null >"$log" 2>&1 &
+    </dev/null >>"$log" 2>&1 &
   disown || true
 }
 
@@ -55,9 +57,22 @@ if ! curl -sS -m 1 http://127.0.0.1:8765/health >/dev/null 2>&1; then
 fi
 
 if ! curl -sS -m 1 http://127.0.0.1:8766/health >/dev/null 2>&1; then
-  setsid bash "$SPEECH_LAUNCH" </dev/null >/tmp/jarvis-speech.log 2>&1 &
+  printf '\n\n=== start %s speech sidecar ===\n' "$(date -Iseconds)" >>/tmp/jarvis-speech.log
+  setsid bash "$SPEECH_LAUNCH" </dev/null >>/tmp/jarvis-speech.log 2>&1 &
   disown || true
   wait_port 8766 || notify-send "JARVIS" "Speech sidecar failed to start (see /tmp/jarvis-speech.log)" 2>/dev/null || true
+fi
+
+# Force the echo-cancel virtual mic/sink as defaults. The pipewire
+# module is auto-loaded via ~/.config/pipewire/pipewire.conf.d/10-echo-cancel.conf
+# on boot, but the default-source/default-sink selection is runtime-only
+# — so we re-apply it here. Without this, the webview grabs the raw
+# hardware mic and JARVIS echoes himself through the speakers.
+if pactl list short sources 2>/dev/null | grep -q '^\S\+\s\+mic_aec\s'; then
+  pactl set-default-source mic_aec 2>/dev/null || true
+fi
+if pactl list short sinks 2>/dev/null | grep -q '^\S\+\s\+sink_aec\s'; then
+  pactl set-default-sink sink_aec 2>/dev/null || true
 fi
 
 # If a desktop instance is already up, confirm it still has mic capture.

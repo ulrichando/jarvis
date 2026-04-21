@@ -1,65 +1,37 @@
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; background: transparent; overflow: hidden; }
-</style>
-</head>
-<body>
-<script src="https://cdn.jsdelivr.net/npm/three@0.150.0/build/three.min.js"></script>
-<script>
-/**
- * JARVIS 3D particle sphere — ghost-silver, voice-reactive.
- *
- * ~3000 points on a sphere surface, each displaced radially in response to
- * voice activity. Ported from the desktop hud/web/reactor-particles.js.
- * Inspired by jeromepl/3D-audio-sphere but driven by a single audioLevel
- * signal (from the Android bridge) rather than an FFT spectrum.
- *
- * Android bridge API (unchanged from the old ArcReactor — drop-in):
- *   window.setJarvisState(state: string, audioLevel: number)
- *   state ∈ { 'idle', 'listening', 'thinking', 'speaking', 'offline', 'booting', 'ready' }
- *   audioLevel ∈ [0, 1]
- */
-// Visible error overlay — fires if any uncaught JS error kills the reactor.
-window.addEventListener('error', function (e) {
-  const d = document.createElement('div');
-  d.style.cssText = 'position:fixed;bottom:0;left:0;right:0;padding:8px;background:#400;color:#fff;font:12px monospace;z-index:9999';
-  d.textContent = 'reactor error: ' + (e.message || e.error) + ' @ ' + (e.filename || '?') + ':' + (e.lineno || '?');
-  document.body.appendChild(d);
-});
+// Particle-sphere reactor — ~3000 points arranged on a sphere surface,
+// each displaced radially in response to voice activity. Inspired by
+// jeromepl/3D-audio-sphere but driven by a single audioLevel signal
+// (our turn.state event) instead of an FFT spectrum.
+//
+// Window globals exposed for the HUD:
+//   setJarvisState(state, audioLevel) — called on every turn.state event
+//   setJarvisAudio(level)             — shortcut for audio-only update
+//
+// Swap with ?reactor=particles in the HUD URL, or make default in index.html.
 
-window.addEventListener('load', function () {
-  if (typeof THREE === 'undefined') {
-    document.body.innerHTML = '<p style="color:#f87171;padding:16px">Three.js failed to load — check network.</p>';
-    return;
-  }
-  console.log('[reactor] THREE loaded, r' + THREE.REVISION);
+(function () {
+  if (typeof THREE === 'undefined') return;
 
-  // --- Android bridge state ---
+  // --- State shared with the HUD event handler ---
   let _state = 'idle';
   let _audioLevel = 0;
   window.setJarvisState = function (state, audioLevel) {
     _state = state;
-    _audioLevel = parseFloat(audioLevel) || 0;
+    if (typeof audioLevel === 'number') _audioLevel = audioLevel;
   };
+  window.setJarvisAudio = function (level) { _audioLevel = level || 0; };
 
-  // Ghost silver palette — matches desktop HUD.
+  // Ghost silver palette — matches desktop + mobile reactor.
   const hexToInt = (h) => parseInt(h.replace('#', ''), 16);
   const SILVER = hexToInt('#e8f4ff');
   const SILVER_DIM = hexToInt('#c4d8e8');
 
-  // --- Scene ---
+  // --- Scene setup ---
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(
     45, window.innerWidth / window.innerHeight, 0.1, 100,
   );
-  // Closer camera + fewer points of the same diameter = each point covers
-  // more pixels. Critical on mobile — particles at z=8 were 1-2px wide.
-  camera.position.z = 5;
+  camera.position.z = 8;
 
   const renderer = new THREE.WebGLRenderer({
     alpha: true, antialias: true, premultipliedAlpha: false,
@@ -68,17 +40,21 @@ window.addEventListener('load', function () {
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setClearColor(0x000000, 0);
   renderer.domElement.style.cssText =
-    'position:fixed;inset:0;width:100%;height:100%;background:transparent;';
+    'position:fixed;inset:0;width:100%;height:100%;background:transparent;pointer-events:none;';
   document.body.appendChild(renderer.domElement);
 
-  // --- Particles ---
-  // Compact orb sized to phone portrait width. Fewer points on mobile than
-  // desktop (3000 → 2000) for fps on integrated GPUs + emulators.
-  const PARTICLE_COUNT = 2000;
-  // Sweet spot: ~20% of phone width at rest, leaves clear margin on the
-  // sides even when speaking pushes particles outward (max reach ≈ 1.85R).
-  const R = 0.35;
+  // --- Particle geometry ---
+  const PARTICLE_COUNT = 3000;
+  const R = 1.8;
 
+  // Per-particle static state, stored flat for speed:
+  // basePos[i*3..i*3+2]  — original unit-sphere position × R
+  // normal[i*3..i*3+2]   — outward direction (== basePos / R)
+  // phase[i]             — random sine phase, per-point wobble
+  // freq[i]              — wobble frequency multiplier
+  // latBand[i]           — cos(phi) ∈ [-1,1], used to modulate intensity
+  //                        by latitude so the bands pulse like the
+  //                        FFT-driven version (low ≈ equator, high ≈ poles)
   const basePos = new Float32Array(PARTICLE_COUNT * 3);
   const normal = new Float32Array(PARTICLE_COUNT * 3);
   const phase = new Float32Array(PARTICLE_COUNT);
@@ -87,7 +63,8 @@ window.addEventListener('load', function () {
   const liveOffset = new Float32Array(PARTICLE_COUNT * 3);
 
   for (let i = 0; i < PARTICLE_COUNT; i++) {
-    // Uniform-on-sphere via inverse-cosine — no polar clumping.
+    // Uniform-on-sphere via inverse cosine. Avoids polar clumping that
+    // random spherical coords produce.
     const u = Math.random();
     const v = Math.random();
     const theta = 2 * Math.PI * u;
@@ -102,7 +79,7 @@ window.addEventListener('load', function () {
     basePos[idx + 2] = nz * R;
     phase[i] = Math.random() * Math.PI * 2;
     freq[i] = 0.6 + Math.random() * 2.4;
-    latBand[i] = ny;
+    latBand[i] = ny; // -1 south pole, +1 north pole
     liveOffset[idx] = basePos[idx];
     liveOffset[idx + 1] = basePos[idx + 1];
     liveOffset[idx + 2] = basePos[idx + 2];
@@ -111,8 +88,8 @@ window.addEventListener('load', function () {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(liveOffset, 3));
 
-  // Circular soft sprite — particles don't look like little squares.
-  const spriteTex = (function () {
+  // Circular sprite so particles don't look like little squares.
+  const spriteTex = (() => {
     const size = 64;
     const c = document.createElement('canvas');
     c.width = c.height = size;
@@ -133,13 +110,11 @@ window.addEventListener('load', function () {
   })();
 
   const mat = new THREE.PointsMaterial({
-    // Proportional to R — particles scale with the sphere so density stays
-    // roughly the same whether the orb is big or small.
-    size: 0.03,
+    size: 0.05,
     map: spriteTex,
     color: SILVER,
     transparent: true,
-    opacity: 0.95,
+    opacity: 0.75,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
     sizeAttenuation: true,
@@ -148,14 +123,13 @@ window.addEventListener('load', function () {
   const points = new THREE.Points(geo, mat);
   scene.add(points);
 
-  // Soft core sprite so the center reads as a reactor.
+  // Inner soft glow sprite, so the middle reads as a reactor core.
   const coreMat = new THREE.SpriteMaterial({
     map: spriteTex, color: SILVER, transparent: true,
     opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false,
   });
   const coreSprite = new THREE.Sprite(coreMat);
-  // Core size follows R (was 2.8 for R=1.8 → same 1.55× ratio now).
-  coreSprite.scale.set(0.52, 0.52, 1);
+  coreSprite.scale.set(2.8, 2.8, 1);
   scene.add(coreSprite);
 
   // --- Animation ---
@@ -172,25 +146,30 @@ window.addEventListener('load', function () {
     lastFrame = now;
     t += 0.016;
 
-    // Smooth audio — fast attack, slow release so it doesn't jitter.
+    // Smooth the audio signal so particles don't jitter on single spikes.
     const raw = Math.min(1, Math.max(0, _audioLevel * 5));
     const sf = raw > smoothAudio ? 0.35 : 0.06;
     smoothAudio += (raw - smoothAudio) * sf;
 
-    // Synthesized pulse when the AI is speaking (no mic signal).
+    // When jarvis is speaking there's no mic level — synthesize a pulse.
     const speakPulse = _state === 'speaking'
       ? 0.35 + 0.25 * Math.sin(t * 7) * Math.sin(t * 2.3)
       : 0;
     const energy = Math.max(smoothAudio, speakPulse);
 
+    // How far particles can push out at full energy.
     const PUSH = 0.55;
+    // Baseline wobble so it's never totally still.
     const BREATHE = 0.04 + 0.04 * Math.sin(t * 0.9);
 
     for (let i = 0; i < PARTICLE_COUNT; i++) {
       const idx = i * 3;
+      // Latitude weighting: when 'speaking', poles light up harder
+      // (mimics how high-frequency energy concentrates at poles in a
+      // real FFT-driven viz). When 'listening', equator pulses harder.
       const lat = latBand[i];
       let bandBoost = 1;
-      if (_state === 'speaking') bandBoost = 0.6 + Math.abs(lat) * 0.8;
+      if (_state === 'speaking')      bandBoost = 0.6 + Math.abs(lat) * 0.8;
       else if (_state === 'listening') bandBoost = 1.0 - Math.abs(lat) * 0.4;
 
       const wobble = Math.sin(t * freq[i] + phase[i]);
@@ -202,29 +181,27 @@ window.addEventListener('load', function () {
     }
     geo.attributes.position.needsUpdate = true;
 
+    // Gentle rotation so it feels alive + unmistakably 3D.
     points.rotation.y += 0.0025;
     points.rotation.x = Math.sin(t * 0.3) * 0.12;
 
-    // Sized for the compact 0.9-radius sphere. Each value is ~half the
-    // full-R tuning (0.14 → 0.07, 2.6 → 1.3, etc.).
-    // Scaled for R=0.35 sphere.
-    mat.size = 0.03 + energy * 0.025;
-    mat.opacity = 0.85 + energy * 0.15;
-    coreMat.opacity = 0.45 + energy * 0.5;
-    const cs = 0.50 + energy * 0.35;
+    // Core + size pulse with energy.
+    mat.size = 0.04 + energy * 0.07;
+    mat.opacity = 0.55 + energy * 0.4;
+    coreMat.opacity = 0.25 + energy * 0.6;
+    const cs = 2.6 + energy * 1.8;
     coreSprite.scale.set(cs, cs, 1);
+
+    // Faint color shift — still ghost silver, but lighter at higher energy.
     mat.color.setHex(energy > 0.3 ? SILVER : SILVER_DIM);
 
     renderer.render(scene, camera);
   }
   animate(0);
 
-  window.addEventListener('resize', function () {
+  window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
   });
-});
-</script>
-</body>
-</html>
+})();
