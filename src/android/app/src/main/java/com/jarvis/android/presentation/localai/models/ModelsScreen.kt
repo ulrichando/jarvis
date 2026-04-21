@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -58,6 +59,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -135,13 +137,62 @@ fun ModelsScreen(viewModel: ModelsViewModel = hiltViewModel()) {
                     CircularProgressIndicator(color = JarvisPalette.GoldPrimary)
                 }
             } else {
+                // Filter the catalog by the selected routing mode so the list
+                // reflects the mental model of each chip:
+                //   Local  → things that live on THIS device already
+                //   Cloud  → things that DON'T live on this device, i.e. the
+                //            download menu (plus Ollama entries which are
+                //            "cloud-local" via your LAN server)
+                //   Auto / Hybrid → everything (no filter)
+                val filtered = when (state.routingMode) {
+                    RoutingMode.LOCAL  -> state.models.filter {
+                        it.downloadState is DownloadState.Downloaded ||
+                        it.downloadState is DownloadState.Loaded     ||
+                        it.downloadState is DownloadState.Downloading
+                    }
+                    RoutingMode.CLOUD  -> state.models.filter {
+                        it.downloadState is DownloadState.NotDownloaded ||
+                        it.downloadState is DownloadState.Failed
+                    }
+                    else -> state.models
+                }
+
+                // Nothing downloaded yet → surface a prominent "get started"
+                // hero so the path "pick a Gemma → tap Download → run it on
+                // your phone" is obvious, matching Google AI Edge's first-run
+                // funnel. Only shown under Cloud / Auto / Hybrid — the Local
+                // filter by definition has nothing to recommend.
+                val nothingDownloaded = state.routingMode != RoutingMode.LOCAL &&
+                    state.models.all { it.downloadState !is DownloadState.Downloaded } &&
+                    state.models.isNotEmpty()
+
                 LazyColumn(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     contentPadding      = androidx.compose.foundation.layout.PaddingValues(
                         start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp,
                     ),
                 ) {
-                    items(state.models, key = { it.id }) { model ->
+                    if (nothingDownloaded) {
+                        item(key = "on_device_hero") {
+                            OnDeviceHeroCard(
+                                recommended = pickRecommendedModel(state.models),
+                                onDownload  = { id -> viewModel.onDownload(id) },
+                                modifier    = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
+
+                    // Empty-state message when the filter hides every card.
+                    if (filtered.isEmpty()) {
+                        item(key = "filter_empty") {
+                            EmptyFilterCard(
+                                mode     = state.routingMode,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
+
+                    items(filtered, key = { it.id }) { model ->
                         ModelCard(
                             model          = model,
                             isLoaded       = model.id == state.loadedModelId,
@@ -326,6 +377,41 @@ private fun ModelCard(
                 color             = JarvisPalette.GoldPrimary,
                 trackColor        = JarvisPalette.GoldBorder,
             )
+        }
+
+        // ── Failure reason ────────────────────────────────────────────────────
+        //
+        // Without this the user just sees a "FAILED" badge and is left
+        // guessing — common causes are 403 from HuggingFace (auth), 404
+        // (moved URL), or out-of-space on /data/media. Surfacing the actual
+        // reason from the DB lets them act on it, and the 'Dismiss' link
+        // resets the card back to NotDownloaded so the error goes away
+        // without requiring a retry.
+        val failed = model.downloadState as? DownloadState.Failed
+        if (failed != null) {
+            Spacer(Modifier.height(8.dp))
+            Row(
+                verticalAlignment = Alignment.Top,
+                modifier          = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    text       = "Error: ${failed.reason}",
+                    color      = JarvisPalette.ErrorRed,
+                    fontSize   = 11.sp,
+                    lineHeight = 15.sp,
+                    modifier   = Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text     = "Dismiss",
+                    color    = JarvisPalette.GoldPrimary,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier
+                        .clickable(onClick = onDelete)
+                        .padding(vertical = 2.dp, horizontal = 4.dp),
+                )
+            }
         }
 
         // ── Action buttons ────────────────────────────────────────────────────
@@ -522,4 +608,169 @@ private fun ImportCustomModelDialog(
             TextButton(onDismiss) { Text("Cancel", color = JarvisPalette.TextSecondary) }
         },
     )
+}
+
+// ── On-device hero ────────────────────────────────────────────────────────────
+
+/**
+ * First-run hero card shown at the top of the models list when the user has
+ * nothing downloaded yet. Models the same pattern as Google AI Edge's
+ * "Download Gemini Nano to run AI on-device" prompt: a short pitch, a hero
+ * model recommendation, and a one-tap CTA that starts the download.
+ *
+ * Falls back gracefully when the catalog has no Gemma family at all — the
+ * card still explains on-device AI and points the user at the list below.
+ */
+@Composable
+private fun OnDeviceHeroCard(
+    recommended: ModelEntry?,
+    onDownload:  (String) -> Unit,
+    modifier:    Modifier = Modifier,
+) {
+    val accent = JarvisPalette.GoldPrimary   // now blue — see JarvisPalette comment
+
+    Column(
+        modifier = modifier
+            .background(
+                color = accent.copy(alpha = 0.08f),
+                shape = RoundedCornerShape(16.dp),
+            )
+            .border(
+                width = 1.dp,
+                color = accent.copy(alpha = 0.35f),
+                shape = RoundedCornerShape(16.dp),
+            )
+            .padding(16.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .background(accent.copy(alpha = 0.14f), RoundedCornerShape(10.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector        = Icons.Default.Memory,
+                    contentDescription = null,
+                    tint               = accent,
+                    modifier           = Modifier.size(20.dp),
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text     = "Run AI on this device",
+                    color    = JarvisPalette.TextPrimary,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text     = "Download a small model and chat offline. GPU-accelerated via MediaPipe / llama.cpp.",
+                    color    = JarvisPalette.TextSecondary,
+                    fontSize = 12.sp,
+                )
+            }
+        }
+
+        if (recommended != null) {
+            Spacer(Modifier.height(12.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(
+                        color = JarvisPalette.SurfaceElevated,
+                        shape = RoundedCornerShape(12.dp),
+                    )
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text       = "Recommended · ${recommended.name}",
+                        color      = JarvisPalette.TextPrimary,
+                        fontSize   = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    Text(
+                        text     = "${recommended.sizeFormatted} · ${recommended.ramLabel}",
+                        color    = JarvisPalette.TextSecondary,
+                        fontSize = 11.sp,
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                FilledTonalButton(
+                    onClick = { onDownload(recommended.id) },
+                    colors  = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = accent,
+                        contentColor   = JarvisPalette.TextOnGold,
+                    ),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                        horizontal = 14.dp, vertical = 6.dp,
+                    ),
+                ) {
+                    Icon(
+                        imageVector        = Icons.Default.Download,
+                        contentDescription = null,
+                        modifier           = Modifier.size(16.dp),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("Download", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Picks the smallest Gemma-family model for the first-run recommendation.
+ * Falls back to the smallest available model regardless of family if no
+ * Gemma model is in the catalog — the hero adapts to what's on offer.
+ */
+private fun pickRecommendedModel(models: List<ModelEntry>): ModelEntry? {
+    if (models.isEmpty()) return null
+    val gemmas = models.filter { it.family.lowercase().contains("gemma") }
+    val pool   = if (gemmas.isNotEmpty()) gemmas else models
+    return pool.minByOrNull { it.sizeBytes }
+}
+
+/**
+ * Shown when the active routing-mode filter hides every card — tells the user
+ * that there's nothing to see in this view rather than leaving a blank canvas.
+ */
+@Composable
+private fun EmptyFilterCard(
+    mode:     RoutingMode,
+    modifier: Modifier = Modifier,
+) {
+    val (title, sub) = when (mode) {
+        RoutingMode.LOCAL -> "No on-device models yet" to
+            "Switch to Cloud to see models you can download, then tap one to pull it to this device."
+        RoutingMode.CLOUD -> "Everything is already on this device" to
+            "Switch to Local to manage your downloaded models."
+        else -> "No models in the catalog" to
+            "Pull-to-refresh to try again."
+    }
+    Column(
+        modifier = modifier
+            .background(
+                color = Color(0xFF141414),
+                shape = RoundedCornerShape(14.dp),
+            )
+            .border(1.dp, Color(0xFF262626), RoundedCornerShape(14.dp))
+            .padding(20.dp),
+    ) {
+        Text(
+            text     = title,
+            color    = JarvisPalette.TextPrimary,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text     = sub,
+            color    = JarvisPalette.TextSecondary,
+            fontSize = 12.sp,
+            lineHeight = 16.sp,
+        )
+    }
 }

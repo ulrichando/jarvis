@@ -6,6 +6,28 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$SCRIPT_DIR/.."
 BUN="$SCRIPT_DIR/bunw.sh"
 
+# Strip env vars that nested Claude Code sessions leak (VSCode extension
+# or Claude Desktop). If present, the inherited CLI detects "nested
+# session" and silently bypasses ANTHROPIC_BASE_URL, hitting
+# api.anthropic.com directly — which hangs for minutes when Ulrich's
+# real Anthropic quota is missing. Wiping them here keeps the proxy
+# route intact.
+unset CLAUDE_CODE_EXECPATH CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING CLAUDECODE
+for _v in $(env | awk -F= '/^CLAUDE_CODE_/{print $1}'); do unset "$_v"; done
+for _v in $(env | awk -F= '/^CLAUDE_DESKTOP_/{print $1}'); do unset "$_v"; done
+
+# Silence non-essential outbound calls to Anthropic / Statsig / Sentry.
+# Main LLM traffic still flows through ANTHROPIC_BASE_URL (proxy).
+# These only touch: update checks, telemetry, error reporting, cost
+# warnings, feature-flag polling, /bug command. Fine to lose all of
+# that in a self-hosted routing setup.
+export DISABLE_TELEMETRY=1
+export DISABLE_ERROR_REPORTING=1
+export DISABLE_BUG_COMMAND=1
+export DISABLE_NON_ESSENTIAL_MODEL_CALLS=1
+export DISABLE_AUTOUPDATER=1
+export DISABLE_COST_WARNINGS=1
+
 # Load API keys
 if [ -f "$ROOT/.env.local" ]; then
   set -a
@@ -26,6 +48,12 @@ esac
 
 JARVIS_PERMISSION_MODE="${JARVIS_PERMISSION_MODE:-bypassPermissions}"
 JARVIS_SANDBOX_ENABLED="${JARVIS_SANDBOX_ENABLED:-0}"
+
+# Force bash for the CLI's Bash tool (and any other shell-out). If
+# SHELL=zsh is inherited, unquoted URLs with "?" or "&" crash with
+# "no matches found" because zsh's NOMATCH glob is enabled by default.
+# Bash treats unmatched globs as literals, which is what URLs need.
+export SHELL=/bin/bash
 
 export ANTHROPIC_BASE_URL=http://localhost:4000
 export ANTHROPIC_API_KEY=jarvis-proxy
@@ -57,15 +85,36 @@ for i in $(seq 1 15); do
 done
 
 # ── Launch CLI ────────────────────────────────────────────────────────────
-"$BUN" \
-  --define 'MACRO.VERSION="2.1.107"' \
-  --define 'MACRO.BUILD_TIME=""' \
-  --define 'MACRO.PACKAGE_URL="@anthropic-ai/claude-code"' \
-  --define 'MACRO.NATIVE_PACKAGE_URL="@anthropic-ai/claude-code-native"' \
-  --define 'MACRO.ISSUES_EXPLAINER="report the issue at https://github.com/anthropics/claude-code/issues"' \
-  --define 'MACRO.FEEDBACK_CHANNEL="https://github.com/anthropics/claude-code/issues"' \
-  --define 'MACRO.VERSION_CHANGELOG=null' \
-  "$ROOT/src/entrypoints/cli.tsx" \
-  --settings "$JARVIS_FLAG_SETTINGS" \
-  --permission-mode "$JARVIS_PERMISSION_MODE" \
-  "$@"
+# Wrap in a transient systemd --user scope with IPAddressDeny for the
+# Anthropic address ranges. The CLI can still reach our proxy on
+# 127.0.0.1:4000 (loopback is allowed by default) but any direct
+# connection attempt to api.anthropic.com / claude.ai / console /
+# bridge.claudeusercontent.com is blocked at the kernel eBPF layer.
+# Only the CLI and its children are contained — doesn't affect the rest
+# of the user session, including VSCode Claude Code.
+CLI_CMD=( "$BUN"
+  --define 'MACRO.VERSION="2.1.107"'
+  --define 'MACRO.BUILD_TIME=""'
+  --define 'MACRO.PACKAGE_URL="@anthropic-ai/claude-code"'
+  --define 'MACRO.NATIVE_PACKAGE_URL="@anthropic-ai/claude-code-native"'
+  --define 'MACRO.ISSUES_EXPLAINER="report the issue at https://github.com/anthropics/claude-code/issues"'
+  --define 'MACRO.FEEDBACK_CHANNEL="https://github.com/anthropics/claude-code/issues"'
+  --define 'MACRO.VERSION_CHANGELOG=null'
+  "$ROOT/src/entrypoints/cli.tsx"
+  --settings "$JARVIS_FLAG_SETTINGS"
+  --permission-mode "$JARVIS_PERMISSION_MODE"
+  "$@" )
+
+if [ -z "${JARVIS_NO_SCOPE:-}" ] && command -v systemd-run >/dev/null 2>&1 && [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+  exec systemd-run --user --scope --quiet \
+    --property=IPAddressDeny=2607:6bc0::/32 \
+    --property=IPAddressDeny=160.79.104.0/22 \
+    --property=IPAddressAllow=127.0.0.0/8 \
+    --property=IPAddressAllow=::1/128 \
+    --property=IPAddressAllow=10.0.0.0/8 \
+    --property=IPAddressAllow=172.16.0.0/12 \
+    --property=IPAddressAllow=192.168.0.0/16 \
+    -- "${CLI_CMD[@]}"
+else
+  exec "${CLI_CMD[@]}"
+fi

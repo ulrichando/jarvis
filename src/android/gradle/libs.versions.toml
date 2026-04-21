@@ -13,6 +13,9 @@ androidxSplashscreen        = "1.0.1"
 androidxStartup             = "1.2.0"
 androidxWindow              = "1.3.0"
 androidxWorkManager         = "2.10.0"
+# Pinned to force a 16 KB-aligned libandroidx.graphics.path.so — otherwise
+# it comes in transitively from Compose at an older, unaligned version.
+androidxGraphicsPath        = "1.0.1"
 
 # ── Jetpack Compose ─────────────────────────────────────────────────────────
 composeBom                  = "2024.12.01"
@@ -33,7 +36,9 @@ retrofitKotlinxSerializer   = "1.0.0"
 room                        = "2.6.1"
 
 # ── DataStore ───────────────────────────────────────────────────────────────
-datastore                   = "1.1.1"
+# 1.1.3 is the first release with 16 KB-aligned libdatastore_shared_counter.so
+# (needed to silence Android 15's page-size warning on Samsung S24/S26 Ultra).
+datastore                   = "1.1.3"
 protobuf                    = "4.28.3"
 protobufPlugin              = "0.9.4"
 
@@ -45,7 +50,8 @@ biometric                   = "1.2.0-alpha05"
 coil                        = "3.0.4"
 
 # ── Camera ──────────────────────────────────────────────────────────────────
-camerax                     = "1.4.1"
+# 1.4.2 ships 16 KB-aligned libimage_processing_util_jni.so.
+camerax                     = "1.4.2"
 
 # ── Location (Play Services — not Firebase) ─────────────────────────────────
 playServicesLocation        = "21.3.0"
@@ -60,7 +66,8 @@ libsu                       = "5.3.0"
 dadb                        = "1.2.7"
 
 # ── Local LLM (MediaPipe AI Edge — Gemma 4) ──────────────────────────────────
-mediapipe-tasks-genai       = "0.10.22"
+# 0.10.24+ ships 16 KB-aligned libllm_inference_engine_jni.so + libsecure_util_jni.so.
+mediapipe-tasks-genai       = "0.10.24"
 
 # ── Markdown / Syntax ───────────────────────────────────────────────────────
 markwon                     = "4.6.2"
@@ -100,6 +107,7 @@ androidx-splashscreen               = { module = "androidx.core:core-splashscree
 androidx-startup                    = { module = "androidx.startup:startup-runtime",                            version.ref = "androidxStartup" }
 androidx-window                     = { module = "androidx.window:window",                                      version.ref = "androidxWindow" }
 androidx-work-runtime               = { module = "androidx.work:work-runtime-ktx",                              version.ref = "androidxWorkManager" }
+androidx-graphics-path              = { module = "androidx.graphics:graphics-path",                             version.ref = "androidxGraphicsPath" }
 
 # ── Compose BOM ─────────────────────────────────────────────────────────────
 compose-bom                         = { module = "androidx.compose:compose-bom",                                version.ref = "composeBom" }
