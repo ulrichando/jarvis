@@ -12,14 +12,21 @@ package com.jarvis.android.domain.model
  *   4. Append its models to [CloudModel.CATALOG].
  */
 enum class CloudProvider(val displayName: String) {
-    ANTHROPIC("Anthropic"),
-    OPENAI   ("OpenAI"),
-    DEEPSEEK ("DeepSeek"),
-    GROQ     ("Groq"),
-    GOOGLE   ("Google"),
-    XAI      ("xAI"),
-    OPENROUTER("OpenRouter"),
-    MISTRAL  ("Mistral"),
+    ANTHROPIC   ("Anthropic"),
+    OPENAI      ("OpenAI"),
+    DEEPSEEK    ("DeepSeek"),
+    GROQ        ("Groq"),
+    GOOGLE      ("Google"),
+    XAI         ("xAI"),
+    OPENROUTER  ("OpenRouter"),
+    MISTRAL     ("Mistral"),
+    /**
+     * Routes through the user's homelab JARVIS brain server, which holds its
+     * own provider keys and decides which upstream to use per request. The
+     * "key" for this provider is the brain server URL — set in Settings,
+     * stored separately from the cloud-provider keys.
+     */
+    JARVIS_BRAIN("JARVIS Brain"),
 }
 
 /**
@@ -96,6 +103,16 @@ data class CloudModel(
             // ── Mistral ──────────────────────────────────────────────────
             CloudModel(CloudProvider.MISTRAL,   "mistral-large-latest",
                 "Mistral Large",   "Mistral's flagship chat + reasoning model."),
+
+            // ── JARVIS Brain ─────────────────────────────────────────────
+            // Single "Auto" entry — the brain server picks the upstream model
+            // based on its own routing rules. Per-provider chips (Groq /
+            // DeepSeek / etc. on the brain) are surfaced separately in the
+            // Settings card; this catalog entry is what shows in the chat
+            // top-bar picker so the user can route to the brain in one tap.
+            CloudModel(CloudProvider.JARVIS_BRAIN, "auto",
+                "Brain (Auto)",
+                "Routes through your homelab brain server's active provider."),
         )
     }
 }

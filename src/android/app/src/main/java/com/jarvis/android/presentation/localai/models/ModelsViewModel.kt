@@ -141,6 +141,27 @@ class ModelsViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Dismiss every Failed download at once. Equivalent to hitting the
+     * per-card "Dismiss" link on each failed model — resets each back to
+     * NotDownloaded so the red "Error: …" banner clears in one shot.
+     */
+    fun onDismissAllErrors() = viewModelScope.launch {
+        val failedIds = _uiState.value.models
+            .filter { it.downloadState is DownloadState.Failed }
+            .map { it.id }
+        failedIds.forEach { id ->
+            try {
+                deleteModel(id)
+            } catch (e: Exception) {
+                Log.w(TAG, "dismiss-all failed for $id: ${e.message}")
+            }
+        }
+        if (failedIds.isNotEmpty()) {
+            showToast("Dismissed ${failedIds.size} error${if (failedIds.size == 1) "" else "s"}")
+        }
+    }
+
     fun onLoad(modelId: String) = viewModelScope.launch {
         _uiState.update { it.copy(loadingModelId = modelId, loadProgress = "Starting…") }
         try {

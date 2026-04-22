@@ -1,4 +1,15 @@
 import com.google.protobuf.gradle.id
+import java.util.Properties
+
+// Personal-use secrets baked into the APK at build time. Read from local.properties
+// (gitignored) so tokens survive an `adb uninstall` without ever hitting git history.
+// Blank if the key is absent — production-safe if local.properties is not shipped.
+val localProps = Properties().apply {
+    rootProject.file("local.properties").takeIf { it.exists() }?.let { f ->
+        f.inputStream().use { load(it) }
+    }
+}
+val defaultHfToken: String = localProps.getProperty("hf.token", "")
 
 plugins {
     alias(libs.plugins.android.application)
@@ -55,6 +66,7 @@ android {
         // ── BuildConfig fields ────────────────────────────────────────────
         buildConfigField("String", "ANTHROPIC_API_BASE", "\"https://api.anthropic.com\"")
         buildConfigField("String", "ANTHROPIC_VERSION",  "\"2023-06-01\"")
+        buildConfigField("String", "DEFAULT_HF_TOKEN",   "\"$defaultHfToken\"")
     }
 
     // ── NDK external build entry point ────────────────────────────────────

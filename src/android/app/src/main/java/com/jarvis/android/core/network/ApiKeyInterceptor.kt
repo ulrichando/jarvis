@@ -27,9 +27,19 @@ class ApiKeyInterceptor @Inject constructor(
 ) : Interceptor {
 
     override fun intercept(chain: Interceptor.Chain): Response {
-        val key = apiKeyProvider.getApiKey()
+        val original = chain.request()
+        // Only attach Anthropic credentials when the request is actually going to
+        // Anthropic. Direct-cloud mode routes OpenAI-compatible providers (Groq,
+        // DeepSeek, xAI, OpenRouter, Mistral, …) through the same shared
+        // OkHttpClient, and we must NOT send the Anthropic key to them. The URL
+        // host is the source of truth — base URLs live in OpenAiCompatApiService.
+        val host = original.url.host
+        val isAnthropic = host.equals("api.anthropic.com", ignoreCase = true) ||
+                          host.endsWith(".anthropic.com", ignoreCase = true)
+        if (!isAnthropic) return chain.proceed(original)
 
-        val request = chain.request().newBuilder()
+        val key = apiKeyProvider.getApiKey()
+        val request = original.newBuilder()
             .header("x-api-key",         key)
             .header("anthropic-version",  ANTHROPIC_VERSION)
             .header("content-type",       "application/json")

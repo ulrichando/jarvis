@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -16,6 +18,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -23,6 +26,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -53,6 +57,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.jarvis.android.domain.model.CloudModel
+import com.jarvis.android.domain.model.CloudProvider
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -86,25 +92,29 @@ fun SettingsScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
         ) {
-            // Connection mode
-            SectionTitle("Connection")
-            ConnectionModeCard(state, viewModel)
+            // Unified provider card. Pick any backend — Anthropic, OpenAI,
+            // Groq, DeepSeek, xAI, OpenRouter, Mistral, or JARVIS Brain — and
+            // configure just that one. Multiple providers can be configured at
+            // the same time; switch live from the chat top-bar picker. There
+            // is no longer a "Connection mode" gate above this card; Brain is
+            // a peer in the dropdown like any other provider.
+            SectionTitle("Provider")
+            DirectCloudCard(state, viewModel)
 
             Spacer(Modifier.height(16.dp))
 
-            if (state.connectionMode == "anthropic") {
-                // API Key section
-                SectionTitle("Claude API Key")
-                ApiKeyCard(state, viewModel)
-
-                Spacer(Modifier.height(16.dp))
-
-                // Endpoint section
-                SectionTitle("Endpoint")
+            if (state.directProvider == CloudProvider.ANTHROPIC) {
+                SectionTitle("Anthropic Endpoint")
                 EndpointCard(state, viewModel)
-
                 Spacer(Modifier.height(16.dp))
             }
+
+            // HuggingFace token — used for gated model downloads (Gemma, Llama, …).
+            // Independent of connection mode — local models work in both modes.
+            SectionTitle("HuggingFace Token")
+            HfTokenCard(state, viewModel)
+
+            Spacer(Modifier.height(16.dp))
 
             // About section
             SectionTitle("About")
@@ -228,6 +238,258 @@ private fun ConnectionModeCard(state: SettingsUiState, viewModel: SettingsViewMo
     }
 }
 
+/**
+ * Provider dropdown + model dropdown + single API-key input that swaps its
+ * contents as the selected provider changes. Only providers with OpenAI-compat
+ * HTTP (OpenAI, Groq, DeepSeek, xAI, OpenRouter, Mistral) plus Anthropic are
+ * listed. Google is omitted until the non-OpenAI Gemini path is wired.
+ */
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun DirectCloudCard(state: SettingsUiState, viewModel: SettingsViewModel) {
+    val supported = remember {
+        listOf(
+            CloudProvider.ANTHROPIC,
+            CloudProvider.OPENAI,
+            CloudProvider.GROQ,
+            CloudProvider.DEEPSEEK,
+            CloudProvider.XAI,
+            CloudProvider.OPENROUTER,
+            CloudProvider.MISTRAL,
+            CloudProvider.JARVIS_BRAIN,
+        )
+    }
+    var providerMenuOpen by remember { mutableStateOf(false) }
+    var modelMenuOpen    by remember { mutableStateOf(false) }
+    var showKey          by remember { mutableStateOf(false) }
+
+    val catalogForProvider = remember(state.directProvider) {
+        CloudModel.CATALOG.filter { it.provider == state.directProvider }
+    }
+
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp)) {
+            // ── Provider dropdown (clickable-row pattern) ─────────────────
+            // ExposedDropdownMenuBox + readOnly TextField is flaky on some
+            // Samsung OneUI builds — the IME intercepts the tap and the menu
+            // never opens. A plain clickable Row + DropdownMenu is bulletproof.
+            Text(
+                "Provider",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Spacer(Modifier.height(4.dp))
+            Box {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { providerMenuOpen = true }
+                        .padding(vertical = 12.dp, horizontal = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(state.directProvider.displayName, style = MaterialTheme.typography.bodyLarge)
+                    Icon(Icons.Default.ArrowDropDown, contentDescription = "Open provider menu")
+                }
+                DropdownMenu(
+                    expanded         = providerMenuOpen,
+                    onDismissRequest = { providerMenuOpen = false },
+                ) {
+                    supported.forEach { p ->
+                        DropdownMenuItem(
+                            text    = { Text(p.displayName) },
+                            onClick = {
+                                viewModel.onIntent(SettingsIntent.SelectDirectProvider(p))
+                                providerMenuOpen = false
+                            },
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            // ── Model dropdown ────────────────────────────────────────────
+            if (catalogForProvider.isNotEmpty()) {
+                val currentModel = catalogForProvider.firstOrNull { it.id == state.directModel }
+                Text(
+                    "Model",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.height(4.dp))
+                Box {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { modelMenuOpen = true }
+                            .padding(vertical = 12.dp, horizontal = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(currentModel?.label ?: state.directModel, style = MaterialTheme.typography.bodyLarge)
+                            currentModel?.description?.let {
+                                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                        Icon(Icons.Default.ArrowDropDown, contentDescription = "Open model menu")
+                    }
+                    DropdownMenu(
+                        expanded         = modelMenuOpen,
+                        onDismissRequest = { modelMenuOpen = false },
+                    ) {
+                        catalogForProvider.forEach { m ->
+                            DropdownMenuItem(
+                                text    = { Column { Text(m.label); Text(m.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } },
+                                onClick = {
+                                    viewModel.onIntent(SettingsIntent.SelectDirectModel(m.id))
+                                    modelMenuOpen = false
+                                },
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+            }
+
+            if (state.directProvider == CloudProvider.JARVIS_BRAIN) {
+                // Brain provider — replace the API-key field with the brain
+                // server URL field + the existing brain-provider chips. The
+                // pref slot is `brain_server_url` (same one Brain mode used
+                // before the Connection toggle was removed) so existing setups
+                // keep working without migration.
+                Text(
+                    "Brain server URL — your homelab JARVIS instance proxies all requests, picks the upstream provider, and streams the response back.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value         = state.brainServerUrl,
+                    onValueChange = { viewModel.onIntent(SettingsIntent.SetBrainServerUrl(it)) },
+                    label         = { Text("Brain server URL") },
+                    placeholder   = { Text("http://10.10.0.50:8765") },
+                    singleLine    = true,
+                    modifier      = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(12.dp))
+                Button(
+                    onClick  = { viewModel.onIntent(SettingsIntent.SaveBrainSettings) },
+                    enabled  = state.brainServerUrl.isNotBlank(),
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Save brain server") }
+
+                Spacer(Modifier.height(16.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "Voice (TTS) — optional. Point this at the brain's /tts server (default port 8766) and voice mode will speak with the same voice your computer uses, instead of Android's local TTS. Leave blank to use Android TTS.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value         = state.brainTtsUrl,
+                    onValueChange = { viewModel.onIntent(SettingsIntent.SetBrainTtsUrl(it)) },
+                    label         = { Text("TTS server URL") },
+                    placeholder   = { Text("http://10.10.0.50:8766") },
+                    singleLine    = true,
+                    modifier      = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick  = { viewModel.onIntent(SettingsIntent.SaveBrainTtsUrl) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Save TTS server") }
+
+                if (state.brainProviders.isNotEmpty() || state.isLoadingProviders) {
+                    Spacer(Modifier.height(16.dp))
+                    HorizontalDivider()
+                    Spacer(Modifier.height(12.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(
+                            "Active brain provider",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        IconButton(
+                            onClick  = { viewModel.onIntent(SettingsIntent.RefreshBrainProviders) },
+                            modifier = Modifier.size(32.dp),
+                        ) {
+                            if (state.isLoadingProviders) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                            } else {
+                                Icon(Icons.Default.Refresh, contentDescription = "Refresh providers", modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    androidx.compose.foundation.layout.FlowRow(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        FilterChip(
+                            selected = state.brainPinnedProvider.isEmpty(),
+                            onClick  = { viewModel.onIntent(SettingsIntent.PinBrainProvider("")) },
+                            label    = { Text("Auto") },
+                        )
+                        state.brainProviders.forEach { provider ->
+                            FilterChip(
+                                selected = state.brainPinnedProvider == provider.name,
+                                onClick  = { viewModel.onIntent(SettingsIntent.PinBrainProvider(provider.name)) },
+                                label    = { Text(provider.name) },
+                            )
+                        }
+                    }
+                }
+            } else {
+                // ── API key for selected cloud provider ───────────────────
+                if (state.hasDirectKey) {
+                    Text(
+                        "Stored key: ${state.directKeyMasked}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
+
+                OutlinedTextField(
+                    value         = state.directProviderKey,
+                    onValueChange = { viewModel.onIntent(SettingsIntent.SetDirectProviderKey(it)) },
+                    label         = { Text(if (state.hasDirectKey) "Replace ${state.directProvider.displayName} key" else "${state.directProvider.displayName} API key") },
+                    singleLine    = true,
+                    visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    trailingIcon = {
+                        IconButton(onClick = { showKey = !showKey }) {
+                            Icon(
+                                if (showKey) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = if (showKey) "Hide" else "Show",
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                Spacer(Modifier.height(12.dp))
+
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick  = { viewModel.onIntent(SettingsIntent.SaveDirectProviderKey) },
+                        enabled  = state.directProviderKey.isNotBlank() && !state.isSaving,
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Save") }
+                    if (state.hasDirectKey) {
+                        OutlinedButton(
+                            onClick  = { viewModel.onIntent(SettingsIntent.ClearDirectProviderKey) },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("Clear") }
+                    }
+                }
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ApiKeyCard(state: SettingsUiState, viewModel: SettingsViewModel) {
@@ -276,6 +538,73 @@ private fun ApiKeyCard(state: SettingsUiState, viewModel: SettingsViewModel) {
                 if (state.hasApiKey) {
                     OutlinedButton(
                         onClick = { viewModel.onIntent(SettingsIntent.ClearApiKey) },
+                        colors  = ButtonDefaults.outlinedButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error,
+                        ),
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Clear") }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HfTokenCard(state: SettingsUiState, viewModel: SettingsViewModel) {
+    var showToken by remember { mutableStateOf(false) }
+
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp)) {
+            Text(
+                "Required for gated models (Gemma, Llama, some Mistral variants). " +
+                    "Create a read token at huggingface.co/settings/tokens after accepting the model license.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+
+            if (state.hasHfToken) {
+                Text(
+                    "Stored token: ${state.hfTokenMasked}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+
+            OutlinedTextField(
+                value         = state.hfToken,
+                onValueChange = { viewModel.onIntent(SettingsIntent.SetHfToken(it)) },
+                label         = { Text(if (state.hasHfToken) "Replace HF token" else "HuggingFace token") },
+                placeholder   = { Text("hf_…") },
+                singleLine    = true,
+                modifier      = Modifier.fillMaxWidth(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                visualTransformation = if (showToken) VisualTransformation.None
+                                       else PasswordVisualTransformation(),
+                trailingIcon = {
+                    IconButton(onClick = { showToken = !showToken }) {
+                        Icon(
+                            if (showToken) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                            if (showToken) "Hide" else "Show",
+                        )
+                    }
+                },
+            )
+
+            Spacer(Modifier.height(12.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick  = { viewModel.onIntent(SettingsIntent.SaveHfToken) },
+                    enabled  = state.hfToken.isNotBlank(),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Save")
+                }
+                if (state.hasHfToken) {
+                    OutlinedButton(
+                        onClick = { viewModel.onIntent(SettingsIntent.ClearHfToken) },
                         colors  = ButtonDefaults.outlinedButtonColors(
                             contentColor = MaterialTheme.colorScheme.error,
                         ),
