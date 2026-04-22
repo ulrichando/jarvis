@@ -78,43 +78,25 @@ if(EXISTS "${LLAMA_DIR}/CMakeLists.txt")
     # OpenCL below gives us Adreno GPU acceleration with a much simpler build.
     set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
 
-    # OpenCL GPU acceleration — arm64 Android only (the emulator build has no
-    # GPU driver to link against).
+    # GPU acceleration — DISABLED.
     #
-    # Strategy: the Khronos ICD loader's clGetPlatformIDs() returns 0 platforms
-    # on Samsung because /vendor/etc/OpenCL/vendors/*.icd isn't populated.
-    # Instead we link directly against the vendor's libOpenCL.so (pulled once
-    # from the device into cpp/opencl-stub/) — at runtime Android's dynamic
-    # linker resolves cl* symbols against /vendor/lib64/libOpenCL.so which is
-    # Qualcomm's driver implementation directly.
+    # We previously linked OpenCL against a stubbed libOpenCL.so so the runtime
+    # linker would resolve cl* symbols against the vendor's GPU driver. That
+    # works in theory; in practice libOpenCL.so on every modern Samsung pulls
+    # in libcutils.so, which Android 11+ namespace isolation blocks for app
+    # code (see https://developer.android.com/about/versions/11/behavior-changes-11
+    # under "Non-public native libraries restricted"). Result: libjarvis_llm.so
+    # fails to dlopen at all — every GGUF load fails with
+    #   dlopen failed: library "libcutils.so" not found
+    # which kills the entire on-device backend.
     #
-    # Headers still come from Khronos OpenCL-Headers via FetchContent — they
-    # are the authoritative C API declarations matching our .so ABI.
-    if (CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
-        include(FetchContent)
-
-        FetchContent_Declare(
-            OpenCL-Headers
-            GIT_REPOSITORY https://github.com/KhronosGroup/OpenCL-Headers.git
-            GIT_TAG        v2024.10.24
-        )
-        FetchContent_MakeAvailable(OpenCL-Headers)
-
-        set(OpenCL_INCLUDE_DIR "${opencl-headers_SOURCE_DIR}" CACHE PATH "" FORCE)
-        set(OpenCL_LIBRARY
-            "${CMAKE_CURRENT_SOURCE_DIR}/opencl-stub/libOpenCL.so"
-            CACHE FILEPATH "" FORCE)
-
-        set(GGML_OPENCL                    ON  CACHE BOOL "" FORCE)
-        set(GGML_OPENCL_USE_ADRENO_KERNELS ON  CACHE BOOL "" FORCE)
-        set(GGML_OPENCL_EMBED_KERNELS      ON  CACHE BOOL "" FORCE)
-        message(STATUS "JARVIS: OpenCL ON (arm64, Adreno kernels + embedded)")
-        set(JARVIS_HAS_OPENCL TRUE)
-    else()
-        set(GGML_OPENCL OFF CACHE BOOL "" FORCE)
-        message(STATUS "JARVIS: OpenCL OFF (${CMAKE_ANDROID_ARCH_ABI} — CPU only)")
-        set(JARVIS_HAS_OPENCL FALSE)
-    endif()
+    # CPU-only via NEON SIMD is fast enough for the catalog's smaller models
+    # (Qwen 0.5B / 1.5B / TinyLlama / Gemma 1B) and avoids the libcutils trap.
+    # If we ever want GPU back, runtime dlopen("libOpenCL.so", RTLD_LAZY) with
+    # a CPU fallback is the right pattern — not link-time linking.
+    set(GGML_OPENCL OFF CACHE BOOL "" FORCE)
+    set(JARVIS_HAS_OPENCL FALSE)
+    message(STATUS "JARVIS: OpenCL OFF on all ABIs (CPU/NEON only — see comment)")
 
     # Use Android-optimised BLAS where available
     # (GGML_BLAS is OFF by default — llama.cpp uses its own SIMD kernels)

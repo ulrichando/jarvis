@@ -48,6 +48,13 @@ if (!process.env.ANTHROPIC_API_KEY) {
   process.env.ANTHROPIC_API_KEY = 'jarvis-proxy'
 }
 
+// Disable tool deferral: non-Claude backends (Groq, DeepSeek) don't know the
+// ToolSearch protocol and fail to load deferred tool schemas. Ship every tool
+// schema up front so any model can call any tool first try.
+if (!process.env.JARVIS_DISABLE_TOOL_DEFERRAL) {
+  process.env.JARVIS_DISABLE_TOOL_DEFERRAL = '1'
+}
+
 // Check if the proxy is already running, start it if not
 async function ensureProxy() {
   try {

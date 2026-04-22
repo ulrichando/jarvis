@@ -36,7 +36,7 @@ export function FallbackToolUseErrorMessage(t0) {
       const withoutSandboxViolations = removeSandboxViolationTags(extractedError);
       const withoutErrorTags = withoutSandboxViolations.replace(/<\/?error>/g, "");
       const trimmed = withoutErrorTags.trim();
-      if (!verbose && trimmed.includes("InputValidationError: ")) {
+      if (false) {
         error = "Invalid tool parameters";
       } else {
         if (trimmed.startsWith("Error: ") || trimmed.startsWith("Cancelled: ")) {

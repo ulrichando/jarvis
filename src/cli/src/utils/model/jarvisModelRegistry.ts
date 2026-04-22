@@ -145,6 +145,16 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     visibleInPicker: false,
   },
   {
+    id: 'openai/gpt-oss-120b',
+    label: 'Groq GPT-OSS 120B',
+    description: 'Open-source GPT · strong reasoning',
+    provider: 'groq',
+    upstreamModel: 'openai/gpt-oss-120b',
+    tiers: ['reasoning'],
+    capabilities: ['effort', 'max_effort'],
+    visibleInPicker: true,
+  },
+  {
     id: 'gemini-flash',
     label: 'Gemini Flash',
     description: 'Gemini 2.0 Flash',

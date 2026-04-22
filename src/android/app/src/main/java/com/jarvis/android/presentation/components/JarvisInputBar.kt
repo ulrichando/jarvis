@@ -178,9 +178,11 @@ fun JarvisInputBar(
 
                     Spacer(Modifier.weight(1f))
 
-                    // Mic — quick dictation (fills the text field).
-                    // Hidden while the user is composing text so the Send button
-                    // stands alone on the right.
+                    // Dictation mic — tap to talk, transcript appears in the
+                    // input field. Hidden while the user is composing text so
+                    // the Send button stands alone on the right. The actual
+                    // mic permission is requested at tap-time (not at app
+                    // launch) — see ChatScreen's onVoice handler.
                     if (onVoice != null && !isStreaming && !hasText) {
                         IconPillButton(
                             icon        = if (isRecording) Icons.Default.Stop else Icons.Default.Mic,

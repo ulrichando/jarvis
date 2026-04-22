@@ -9,6 +9,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jarvis.android.core.network.ApiKeyProvider
+import com.jarvis.android.data.repository.ApiKeyProviderImpl
 import com.jarvis.android.domain.model.ChatEvent
 import com.jarvis.android.domain.model.CloudModel
 import com.jarvis.android.domain.model.CloudProvider
@@ -50,6 +51,7 @@ class ChatViewModel @Inject constructor(
     private val ttsEngine:            JarvisTtsEngine,
     private val modelRepository:      ModelRepository,
     private val apiKeyProvider:       ApiKeyProvider,
+    private val apiKeyProviderImpl:   ApiKeyProviderImpl,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ChatUiState())
@@ -84,6 +86,13 @@ class ChatViewModel @Inject constructor(
                 _uiState.update { it.copy(isTtsSpeaking = speaking) }
             }
         }
+        // Per-word speech tick → drives the voice-mode glow pulse so it
+        // beats in sync with the actual TTS audio output.
+        viewModelScope.launch {
+            ttsEngine.speechTick.collect { tick ->
+                _uiState.update { it.copy(ttsSpeechTick = tick) }
+            }
+        }
 
         // Observe routing mode + loaded model name + downloaded catalog.
         // The top bar renders the loaded model's display name when routing is
@@ -94,11 +103,12 @@ class ChatViewModel @Inject constructor(
                 modelRepository.observeRoutingMode(),
                 modelRepository.observeLoadedModelId(),
                 modelRepository.observeDownloaded(),
-            ) { mode, loadedId, downloaded ->
+                // Tick whenever a provider key is added/removed in Settings so
+                // the picker updates live instead of waiting for one of the
+                // other flows to fire.
+                apiKeyProviderImpl.keyChanges,
+            ) { mode, loadedId, downloaded, _ ->
                 val loadedName   = downloaded.firstOrNull { it.id == loadedId }?.name
-                // Recompute the cloud list on every tick — hasApiKey() is a
-                // cheap pref read and user-facing state (API key) can change
-                // via Settings without the ViewModel being recreated.
                 val cloudModels  = CloudModel.CATALOG
                     .filter { apiKeyProvider.hasApiKey(it.provider) }
                 val cloudSelectedName = cloudModels.firstOrNull {
@@ -149,6 +159,7 @@ class ChatViewModel @Inject constructor(
             is ChatIntent.ClearError           -> _uiState.update { it.copy(error = null) }
             is ChatIntent.ToggleVoice          -> handleToggleVoice()
             is ChatIntent.ToggleTts            -> handleToggleTts()
+            is ChatIntent.SetTtsEnabled        -> handleSetTts(intent.enabled)
             is ChatIntent.CycleRoutingMode     -> handleCycleRoutingMode()
             is ChatIntent.SelectCloudModel     -> handleSelectCloudModel(intent.id)
             is ChatIntent.SelectLocalModel     -> handleSelectLocalModel(intent.id)
@@ -168,6 +179,15 @@ class ChatViewModel @Inject constructor(
     private fun handleSelectCloudModel(modelId: String) {
         viewModelScope.launch {
             modelRepository.setRoutingMode(RoutingMode.CLOUD)
+            // Tell the router which provider+model to use. Without persisting
+            // these to ApiKeyProviderImpl the ChatRepositoryImpl direct-cloud
+            // branch wouldn't know what the user picked and would fall through
+            // to the default Anthropic path.
+            val cloudModel = CloudModel.CATALOG.firstOrNull { it.id == modelId }
+            if (cloudModel != null) {
+                apiKeyProviderImpl.directProvider = cloudModel.provider
+                apiKeyProviderImpl.saveDirectModel(cloudModel.provider, cloudModel.id)
+            }
             _uiState.update { it.copy(selectedCloudModelId = modelId) }
         }
     }
@@ -205,6 +225,10 @@ class ChatViewModel @Inject constructor(
         val text = _uiState.value.inputText.trim()
         if (text.isBlank() || _uiState.value.isStreaming) return
 
+        Log.i(TAG, "send '${text.take(60)}…' tts=${_uiState.value.ttsEnabled}")
+        // Reset the TTS sentence-streaming index for the new turn so chunks
+        // are emitted from the start of the upcoming response.
+        ttsSpokenIndex = 0
         _uiState.update { it.copy(inputText = "", isStreaming = true, streamingText = "") }
 
         streamJob = viewModelScope.launch {
@@ -216,10 +240,34 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Index up to which streaming text has been pushed to TTS. Lets us emit
+     * one TTS chunk per sentence boundary so audio tracks the visible text
+     * in near real time, rather than starting after the whole response lands.
+     */
+    private var ttsSpokenIndex: Int = 0
+
+    /** Match anywhere a clause closes. Conservative — only true sentence ends. */
+    private val sentenceBoundary = Regex("[.!?…]['\"”’)\\]]?\\s+")
+
     private fun handleChatEvent(event: ChatEvent) {
         when (event) {
-            is ChatEvent.TextDelta -> _uiState.update { s ->
-                s.copy(streamingText = s.streamingText + event.text)
+            is ChatEvent.TextDelta -> {
+                _uiState.update { s -> s.copy(streamingText = s.streamingText + event.text) }
+                // Stream TTS sentence-by-sentence while text grows. We only
+                // emit completed sentences (boundary char + trailing space) so
+                // we don't spit half-words at the user.
+                if (_uiState.value.ttsEnabled) {
+                    val full = _uiState.value.streamingText
+                    val matches = sentenceBoundary.findAll(full).toList()
+                    val lastEnd = matches.lastOrNull { it.range.last + 1 > ttsSpokenIndex }
+                        ?.range?.last?.plus(1) ?: -1
+                    if (lastEnd > ttsSpokenIndex) {
+                        val chunk = full.substring(ttsSpokenIndex, lastEnd).trim()
+                        if (chunk.isNotBlank()) ttsEngine.enqueue(chunk)
+                        ttsSpokenIndex = lastEnd
+                    }
+                }
             }
             is ChatEvent.ToolCallStarted -> _uiState.update { s ->
                 s.copy(
@@ -244,13 +292,18 @@ class ChatViewModel @Inject constructor(
                 // Already forwarded via toolDispatcher.confirmationRequests flow
             }
             is ChatEvent.TurnSaved -> {
-                // Real message is now in the Room flow — clear the ghost bubble
+                // Real message is now in the Room flow — clear the ghost bubble.
                 val finalText = _uiState.value.streamingText
                 _uiState.update { it.copy(streamingText = "", activeToolCalls = emptyList()) }
-                // Speak the response if TTS is enabled
-                if (_uiState.value.ttsEnabled && finalText.isNotBlank()) {
-                    ttsEngine.speak(finalText)
+                // Speak any trailing text the sentence-streamer didn't catch
+                // (everything after the last sentence boundary). For non-voice
+                // turns where ttsSpokenIndex is still 0, this speaks the full
+                // text — same behaviour as the old code path.
+                if (_uiState.value.ttsEnabled) {
+                    val tail = finalText.substring(ttsSpokenIndex.coerceAtMost(finalText.length))
+                    if (tail.isNotBlank()) ttsEngine.enqueue(tail)
                 }
+                ttsSpokenIndex = 0
             }
             is ChatEvent.Warning -> Log.w(TAG, "Agent warning: ${event.message}")
             is ChatEvent.Error -> _uiState.update { s ->
@@ -310,15 +363,40 @@ class ChatViewModel @Inject constructor(
             override fun onRmsChanged(rmsdB: Float) {}
             override fun onBufferReceived(buffer: ByteArray?) {}
             override fun onEndOfSpeech() {
-                _uiState.update { it.copy(isRecording = false) }
+                // Don't flip isRecording here — onResults below is the atomic
+                // moment where the final transcript becomes inputText AND the
+                // recording flag flips off together. If we set isRecording
+                // false here, a watcher could fire SendMessage with the latest
+                // partial, clear inputText, then onResults restores the final
+                // text — producing a stuck "ghost" message in the input field.
             }
             override fun onError(error: Int) {
-                _uiState.update { it.copy(isRecording = false) }
-                Log.w(TAG, "STT error: $error")
+                // ERROR_NO_MATCH (7) and ERROR_SPEECH_TIMEOUT (6) are normal
+                // "user paused too long" outcomes — drop the partial that was
+                // sitting in the input field so the auto-restart loop in
+                // ChatScreen will re-arm the mic immediately. For other
+                // errors (network, server, busy) just clear the recording
+                // flag and let the loop try again on the next idle tick.
+                val recoverable = error == 7 /* NO_MATCH */ ||
+                                  error == 6 /* SPEECH_TIMEOUT */
+                _uiState.update {
+                    it.copy(
+                        isRecording = false,
+                        inputText   = if (recoverable) "" else it.inputText,
+                    )
+                }
+                Log.w(TAG, "STT error: $error (recoverable=$recoverable)")
             }
             override fun onResults(results: Bundle?) {
                 val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                val text = matches?.firstOrNull() ?: return
+                val text = matches?.firstOrNull()
+                if (text == null) {
+                    // Recognizer finished with no usable text — release the
+                    // recording flag so the auto-restart loop can re-arm
+                    // without a leftover transcript blocking the next turn.
+                    _uiState.update { it.copy(isRecording = false) }
+                    return
+                }
                 _uiState.update { it.copy(inputText = text, isRecording = false) }
             }
             override fun onPartialResults(partial: Bundle?) {
@@ -349,6 +427,12 @@ class ChatViewModel @Inject constructor(
         val next = !_uiState.value.ttsEnabled
         ttsEngine.setEnabled(next)
         _uiState.update { it.copy(ttsEnabled = next) }
+    }
+
+    private fun handleSetTts(enabled: Boolean) {
+        if (_uiState.value.ttsEnabled == enabled) return
+        ttsEngine.setEnabled(enabled)
+        _uiState.update { it.copy(ttsEnabled = enabled) }
     }
 
     // ── Routing mode cycle ────────────────────────────────────────────────────
