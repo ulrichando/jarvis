@@ -51,8 +51,3 @@ if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_
   file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib" TYPE STATIC_LIBRARY FILES "/home/ulrich/Documents/Projects/jarvis/src/android/app/.cxx/Release/r1f563i2/arm64-v8a/llama_build/ggml/src/libggml-cpu.a")
 endif()
 
-if(NOT CMAKE_INSTALL_LOCAL_ONLY)
-  # Include the install script for the subdirectory.
-  include("/home/ulrich/Documents/Projects/jarvis/src/android/app/.cxx/Release/r1f563i2/arm64-v8a/llama_build/ggml/src/ggml-opencl/cmake_install.cmake")
-endif()
-

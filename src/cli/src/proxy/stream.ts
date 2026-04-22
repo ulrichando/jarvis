@@ -171,34 +171,37 @@ export async function convertOpenAIStreamToAnthropic(
         if (finish) finalFinishReason = finish
       }
     }
+  } catch (e) {
+    console.error('[jarvis-proxy] stream read error:', e)
   } finally {
-    reader.releaseLock()
-  }
+    try { reader.releaseLock() } catch {}
 
-  // Close text block if open
-  if (state.textBlockIndex !== null) {
-    send('content_block_stop', {
-      type: 'content_block_stop',
-      index: state.textBlockIndex,
+    // Always emit closing events so the Anthropic SDK sees message_stop
+    // and the CLI doesn't hang in "assistant is streaming" state, even if
+    // the upstream provider connection was interrupted mid-response.
+    if (state.textBlockIndex !== null) {
+      send('content_block_stop', {
+        type: 'content_block_stop',
+        index: state.textBlockIndex,
+      })
+    }
+
+    for (const [, tb] of state.toolBlocks) {
+      const blockIndex = (tb as any)._contentIndex
+      send('content_block_stop', {
+        type: 'content_block_stop',
+        index: blockIndex,
+      })
+    }
+
+    const stopReason = stopReasonFromFinish(finalFinishReason)
+
+    send('message_delta', {
+      type: 'message_delta',
+      delta: { stop_reason: stopReason, stop_sequence: null },
+      usage: { output_tokens: outputTokens },
     })
+
+    send('message_stop', { type: 'message_stop' })
   }
-
-  // Close all tool blocks
-  for (const [, tb] of state.toolBlocks) {
-    const blockIndex = (tb as any)._contentIndex
-    send('content_block_stop', {
-      type: 'content_block_stop',
-      index: blockIndex,
-    })
-  }
-
-  const stopReason = stopReasonFromFinish(finalFinishReason)
-
-  send('message_delta', {
-    type: 'message_delta',
-    delta: { stop_reason: stopReason, stop_sequence: null },
-    usage: { output_tokens: outputTokens },
-  })
-
-  send('message_stop', { type: 'message_stop' })
 }

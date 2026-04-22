@@ -131,6 +131,22 @@ fun ModelsScreen(viewModel: ModelsViewModel = hiltViewModel()) {
                 )
             }
 
+            // ── Dismiss-all-errors banner ─────────────────────────────────────
+            // Each failed card already has its own "Dismiss" link, but when
+            // several downloads fail together (common after a disk-full event)
+            // clearing them one by one is tedious. This shortcut resets every
+            // Failed card in one tap.
+            val failedCount = state.models.count { it.downloadState is DownloadState.Failed }
+            if (failedCount > 0) {
+                DismissAllErrorsBanner(
+                    count    = failedCount,
+                    onClick  = viewModel::onDismissAllErrors,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                )
+            }
+
             // ── Model list ────────────────────────────────────────────────────
             if (state.isRefreshing && state.models.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -265,6 +281,42 @@ private fun StorageBar(usedBytes: Long, modifier: Modifier = Modifier) {
         Icon(Icons.Default.Memory, null, tint = JarvisPalette.GoldMuted, modifier = Modifier.size(14.dp))
         Spacer(Modifier.width(6.dp))
         Text(label, color = JarvisPalette.TextSecondary, fontSize = 11.sp)
+    }
+}
+
+// ── Dismiss-all-errors banner ─────────────────────────────────────────────────
+
+@Composable
+private fun DismissAllErrorsBanner(
+    count:    Int,
+    onClick:  () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(JarvisPalette.ErrorRed.copy(alpha = 0.15f))
+            .border(1.dp, JarvisPalette.ErrorRed.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text     = "$count download${if (count == 1) "" else "s"} failed",
+            color    = JarvisPalette.ErrorRed,
+            fontSize = 12.sp,
+            modifier = Modifier.weight(1f),
+        )
+        TextButton(
+            onClick = onClick,
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+        ) {
+            Text(
+                text       = "Dismiss all",
+                color      = JarvisPalette.GoldPrimary,
+                fontSize   = 12.sp,
+                fontWeight = FontWeight.Medium,
+            )
+        }
     }
 }
 

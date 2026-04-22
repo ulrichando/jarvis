@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -21,10 +22,16 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AddCircleOutline
 import androidx.compose.material.icons.filled.ChatBubbleOutline
-import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -33,62 +40,67 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jarvis.android.domain.model.Conversation
-import java.text.SimpleDateFormat
-import java.util.Calendar
-import java.util.Date
-import java.util.Locale
 
 // ── Drawer tokens — always dark, independent of the Material scheme ──────────
-private val DrawerBg       = Color(0xFF0D0D0D)
-private val DrawerHeader   = Color(0xFF141414)
-private val DrawerActiveBg = Color(0x1A1E7FFF)   // 10 % blue
-private val DrawerBorder   = Color(0xFF222222)
-private val DrawerTextPri  = Color(0xFFECECEC)
-private val DrawerTextSec  = Color(0xFF8A8A8A)
-private val DrawerMuted    = Color(0xFF5F5F5F)
-private val Accent         = Color(0xFF1E7FFF)
+private val DrawerBg          = Color(0xFF0D0D0D)
+private val DrawerBorder      = Color(0xFF222222)
+private val DrawerTextPri     = Color(0xFFECECEC)
+private val DrawerTextSec     = Color(0xFF8A8A8A)
+private val DrawerMuted       = Color(0xFF6E6E6E)
+private val NewChatAccent     = Color(0xFFE17055)   // Claude-style coral on the New chat CTA
+private val SelectedRowBg     = Color(0xFF1F1F1F)   // pill behind the active nav row
+private val UserAvatarBg      = Color(0xFF7C5CFF)   // Claude's purple "UA" circle
 
 /**
- * Navigation drawer — conversation history, grouped by time bucket.
+ * Navigation drawer modelled on the Claude mobile drawer:
  *
  * ```
- *   ● JARVIS
- *   ┌───────────────────────┐
- *   │ +  New conversation    │   ← always-visible CTA at top
- *   └───────────────────────┘
+ *   Jarvis                       ← large serif title
  *
- *   TODAY
- *     ・ Network scan results
- *     ・ Log triage
+ *   ⊕  New chat                  ← highlighted CTA
+ *   💬  Chats
+ *   🧠  Models
+ *   📁  Files
+ *   ⌨️  Terminal
+ *   </>  Code
+ *   ────────────────────
+ *   RECENTS
+ *     How many S&P 500 ETFs to own
+ *     Greeting exchange
+ *     Untitled
+ *     …
  *
- *   YESTERDAY
- *     ・ Shell script refactor
- *
- *   EARLIER
- *     ・ Fresh install notes
+ *   (UA)  Ulrich                          ⚙
  * ```
  *
- * Long-pressing a conversation raises [onLongClick] so the parent can open a
- * context menu (rename / delete / pin).
+ * The bottom row is the only entry point to Settings — no overflow on the chat
+ * top bar is needed any more.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ConversationDrawer(
-    conversations:     List<Conversation>,
-    activeId:          String?,
-    onSelect:          (Conversation) -> Unit,
-    onNewConversation: () -> Unit,
-    onLongClick:       (Conversation) -> Unit = {},
-    modifier:          Modifier = Modifier,
+    conversations:        List<Conversation>,
+    activeId:             String?,
+    onSelect:             (Conversation) -> Unit,
+    onNewConversation:    () -> Unit,
+    onLongClick:          (Conversation) -> Unit = {},
+    onOpenSettings:       (() -> Unit)? = null,
+    onOpenChats:          (() -> Unit)? = null,
+    onOpenLocalAi:        (() -> Unit)? = null,
+    onOpenFiles:          (() -> Unit)? = null,
+    onOpenTerminal:       (() -> Unit)? = null,
+    onOpenAppBuilder:     (() -> Unit)? = null,
+    userName:             String? = null,
+    activeRoute:          DrawerRoute = DrawerRoute.Chats,
+    modifier:             Modifier = Modifier,
 ) {
-    // Group once per render — cheap even at a few hundred convos.
-    val grouped = remember(conversations) { groupByTime(conversations) }
-
     Column(
         modifier = modifier
             .width(304.dp)
@@ -97,120 +109,189 @@ fun ConversationDrawer(
             .statusBarsPadding(),
     ) {
         // ── Brand header ──────────────────────────────────────────────────
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(DrawerHeader)
-                .padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(26.dp)
-                    .background(Accent.copy(alpha = 0.14f), CircleShape)
-                    .border(1.dp, Accent.copy(alpha = 0.35f), CircleShape),
-                contentAlignment = Alignment.Center,
-            ) {
-                Box(modifier = Modifier.size(7.dp).background(Accent, CircleShape))
-            }
-            Spacer(Modifier.width(10.dp))
-            Text(
-                text  = "JARVIS",
-                style = MaterialTheme.typography.titleMedium.copy(
-                    fontWeight    = FontWeight.Bold,
-                    fontSize      = 15.sp,
-                    letterSpacing = 0.6.sp,
-                ),
-                color = DrawerTextPri,
-            )
-        }
+        Text(
+            text  = "Jarvis",
+            style = MaterialTheme.typography.headlineMedium.copy(
+                fontFamily = FontFamily.Serif,
+                fontWeight = FontWeight.Bold,
+                fontSize   = 30.sp,
+            ),
+            color    = DrawerTextPri,
+            modifier = Modifier.padding(start = 20.dp, end = 16.dp, top = 14.dp, bottom = 12.dp),
+        )
 
-        Spacer(Modifier.height(8.dp))
+        // ── Primary nav items ─────────────────────────────────────────────
+        NavItem(
+            icon       = Icons.Default.AddCircleOutline,
+            label      = "New chat",
+            tint       = NewChatAccent,
+            labelColor = NewChatAccent,
+            onClick    = onNewConversation,
+        )
+        NavItem(
+            icon     = Icons.Default.ChatBubbleOutline,
+            label    = "Chats",
+            selected = activeRoute == DrawerRoute.Chats,
+            onClick  = { onOpenChats?.invoke() },
+        )
+        if (onOpenLocalAi != null) NavItem(
+            icon     = Icons.Default.Memory,
+            label    = "Models",
+            selected = activeRoute == DrawerRoute.Models,
+            onClick  = onOpenLocalAi,
+        )
+        if (onOpenFiles != null) NavItem(
+            icon     = Icons.Default.FolderOpen,
+            label    = "Files",
+            selected = activeRoute == DrawerRoute.Files,
+            onClick  = onOpenFiles,
+        )
+        if (onOpenTerminal != null) NavItem(
+            icon     = Icons.Default.Terminal,
+            label    = "Terminal",
+            selected = activeRoute == DrawerRoute.Terminal,
+            onClick  = onOpenTerminal,
+        )
+        if (onOpenAppBuilder != null) NavItem(
+            icon     = Icons.Default.Code,
+            label    = "Code",
+            selected = activeRoute == DrawerRoute.Code,
+            onClick  = onOpenAppBuilder,
+        )
 
-        // ── New conversation CTA ──────────────────────────────────────────
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp)
-                .background(Accent.copy(alpha = 0.10f), RoundedCornerShape(12.dp))
-                .border(1.dp, Accent.copy(alpha = 0.30f), RoundedCornerShape(12.dp))
-                .clickable(onClick = onNewConversation)
-                .padding(horizontal = 14.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                imageVector        = Icons.Default.Add,
-                contentDescription = null,
-                tint               = Accent,
-                modifier           = Modifier.size(18.dp),
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                text  = "New conversation",
-                style = MaterialTheme.typography.bodyMedium.copy(
-                    fontWeight = FontWeight.Medium,
-                    fontSize   = 14.sp,
-                ),
-                color = Accent,
-            )
-        }
+        Spacer(Modifier.height(10.dp))
+        HorizontalDivider(
+            color     = DrawerBorder,
+            thickness = 1.dp,
+            modifier  = Modifier.padding(horizontal = 16.dp),
+        )
 
-        Spacer(Modifier.height(8.dp))
+        // ── Recents — flat, untimebucketed list (Claude style) ────────────
+        Text(
+            text  = "Recents",
+            style = MaterialTheme.typography.labelMedium.copy(
+                fontWeight    = FontWeight.SemiBold,
+                fontSize      = 12.sp,
+                letterSpacing = 0.4.sp,
+            ),
+            color    = DrawerMuted,
+            modifier = Modifier.padding(start = 20.dp, end = 16.dp, top = 14.dp, bottom = 6.dp),
+        )
 
-        // ── Conversation list, grouped by time bucket ─────────────────────
         if (conversations.isEmpty()) {
             EmptyDrawer(modifier = Modifier.weight(1f))
         } else {
+            // Sort by most-recent-first; flat list, no per-row icons.
+            val ordered = remember(conversations) {
+                conversations.sortedByDescending { it.updatedAt }
+            }
             LazyColumn(
                 modifier            = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(1.dp),
+                verticalArrangement = Arrangement.spacedBy(0.dp),
             ) {
-                grouped.forEach { (label, convos) ->
-                    if (convos.isNotEmpty()) {
-                        item(key = "header_$label") {
-                            SectionHeader(label)
-                        }
-                        items(
-                            count = convos.size,
-                            key   = { idx -> convos[idx].id },
-                        ) { idx ->
-                            val conv = convos[idx]
-                            DrawerRow(
-                                conversation = conv,
-                                isActive     = conv.id == activeId,
-                                onClick      = { onSelect(conv) },
-                                onLongClick  = { onLongClick(conv) },
-                            )
-                        }
-                        item(key = "spacer_$label") { Spacer(Modifier.height(6.dp)) }
-                    }
+                items(
+                    count = ordered.size,
+                    key   = { idx -> ordered[idx].id },
+                ) { idx ->
+                    val conv = ordered[idx]
+                    RecentRow(
+                        conversation = conv,
+                        isActive     = conv.id == activeId,
+                        onClick      = { onSelect(conv) },
+                        onLongClick  = { onLongClick(conv) },
+                    )
                 }
             }
         }
 
-        Spacer(Modifier.height(8.dp))
+        // ── Bottom row: avatar + name + settings gear ─────────────────────
+        if (onOpenSettings != null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp)
+                    .navigationBarsPadding(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(34.dp)
+                        .background(UserAvatarBg, CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text  = (userName?.take(2)?.uppercase() ?: "UA"),
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize   = 12.sp,
+                        ),
+                        color = Color.White,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    text     = userName ?: "Ulrich",
+                    style    = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp),
+                    color    = DrawerTextPri,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(onClick = onOpenSettings) {
+                    Icon(
+                        imageVector        = Icons.Default.Settings,
+                        contentDescription = "Open settings",
+                        tint               = DrawerTextSec,
+                        modifier           = Modifier.size(22.dp),
+                    )
+                }
+            }
+        }
     }
 }
 
+/** Top-level destination the drawer can be sitting on; drives the selected pill. */
+enum class DrawerRoute { Chats, Models, Files, Terminal, Code }
+
 @Composable
-private fun SectionHeader(label: String) {
-    Text(
-        text  = label,
-        style = MaterialTheme.typography.labelSmall.copy(
-            fontWeight    = FontWeight.SemiBold,
-            letterSpacing = 0.8.sp,
-            fontSize      = 11.sp,
-        ),
-        color    = DrawerMuted,
+private fun NavItem(
+    icon:       ImageVector,
+    label:      String,
+    onClick:    () -> Unit,
+    selected:   Boolean = false,
+    tint:       Color   = DrawerTextPri,
+    labelColor: Color   = DrawerTextPri,
+) {
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 20.dp, end = 16.dp, top = 10.dp, bottom = 4.dp),
-    )
+            .padding(horizontal = 12.dp, vertical = 2.dp)
+            .background(
+                color = if (selected) SelectedRowBg else Color.Transparent,
+                shape = RoundedCornerShape(28.dp),
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector        = icon,
+            contentDescription = null,
+            tint               = tint,
+            modifier           = Modifier.size(22.dp),
+        )
+        Spacer(Modifier.width(16.dp))
+        Text(
+            text  = label,
+            style = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp),
+            color = labelColor,
+        )
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun DrawerRow(
+private fun RecentRow(
     conversation: Conversation,
     isActive:     Boolean,
     onClick:      () -> Unit,
@@ -219,40 +300,20 @@ private fun DrawerRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 1.dp)
-            .background(
-                color = if (isActive) DrawerActiveBg else Color.Transparent,
-                shape = RoundedCornerShape(10.dp),
-            )
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .padding(horizontal = 10.dp, vertical = 9.dp),
+            .padding(horizontal = 20.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            imageVector        = Icons.Default.ChatBubbleOutline,
-            contentDescription = null,
-            tint               = if (isActive) Accent else DrawerMuted,
-            modifier           = Modifier.size(14.dp),
+        Text(
+            text     = conversation.title.ifBlank { "Untitled" },
+            style    = MaterialTheme.typography.bodyMedium.copy(
+                fontSize = 14.sp,
+                fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
+            ),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            color    = if (isActive) DrawerTextPri else DrawerTextPri.copy(alpha = 0.92f),
         )
-        Spacer(Modifier.width(10.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text     = conversation.title.ifBlank { "Untitled" },
-                style    = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.5.sp),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                color    = if (isActive) DrawerTextPri else DrawerTextPri.copy(alpha = 0.85f),
-                fontWeight = if (isActive) FontWeight.Medium else FontWeight.Normal,
-            )
-        }
-        if (conversation.isPinned) {
-            Icon(
-                imageVector        = Icons.Default.PushPin,
-                contentDescription = "Pinned",
-                tint               = Accent,
-                modifier           = Modifier.size(13.dp),
-            )
-        }
     }
 }
 
@@ -263,84 +324,16 @@ private fun EmptyDrawer(modifier: Modifier = Modifier) {
         horizontalAlignment   = Alignment.CenterHorizontally,
         verticalArrangement   = Arrangement.Center,
     ) {
-        Icon(
-            imageVector        = Icons.Default.ChatBubbleOutline,
-            contentDescription = null,
-            tint               = DrawerMuted,
-            modifier           = Modifier.size(36.dp),
-        )
-        Spacer(Modifier.height(10.dp))
         Text(
-            text      = "No conversations yet",
-            style     = MaterialTheme.typography.bodyMedium,
-            color     = DrawerTextSec,
+            text  = "No conversations yet",
+            style = MaterialTheme.typography.bodyMedium,
+            color = DrawerTextSec,
         )
         Spacer(Modifier.height(4.dp))
         Text(
-            text      = "Start one above to see it here.",
-            style     = MaterialTheme.typography.bodySmall,
-            color     = DrawerMuted,
+            text  = "Start one above to see it here.",
+            style = MaterialTheme.typography.bodySmall,
+            color = DrawerMuted,
         )
-    }
-}
-
-// ── Time bucketing ───────────────────────────────────────────────────────────
-
-private val BucketOrder = listOf("TODAY", "YESTERDAY", "THIS WEEK", "THIS MONTH", "EARLIER")
-
-/**
- * Groups [conversations] into stable, ordered buckets. Pinned items always
- * surface to the top regardless of timestamp.
- */
-private fun groupByTime(
-    conversations: List<Conversation>,
-): Map<String, List<Conversation>> {
-    val now  = System.currentTimeMillis()
-    val cal  = Calendar.getInstance().apply { timeInMillis = now }
-    val startOfToday     = cal.apply {
-        set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0)
-        set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
-    }.timeInMillis
-    val startOfYesterday = startOfToday - 24L * 3600_000
-    val startOfWeek      = startOfToday - 7L  * 24 * 3600_000
-    val startOfMonth     = startOfToday - 30L * 24 * 3600_000
-
-    val buckets = linkedMapOf<String, MutableList<Conversation>>().apply {
-        BucketOrder.forEach { put(it, mutableListOf()) }
-        put("PINNED", mutableListOf())
-    }
-
-    conversations.sortedByDescending { it.updatedAt }.forEach { conv ->
-        val bucket = when {
-            conv.isPinned                        -> "PINNED"
-            conv.updatedAt >= startOfToday       -> "TODAY"
-            conv.updatedAt >= startOfYesterday   -> "YESTERDAY"
-            conv.updatedAt >= startOfWeek        -> "THIS WEEK"
-            conv.updatedAt >= startOfMonth       -> "THIS MONTH"
-            else                                 -> "EARLIER"
-        }
-        buckets[bucket]?.add(conv)
-    }
-
-    // Emit pinned first, then time buckets in canonical order.
-    val ordered = linkedMapOf<String, List<Conversation>>()
-    buckets["PINNED"]?.takeIf { it.isNotEmpty() }?.let { ordered["PINNED"] = it }
-    BucketOrder.forEach { key ->
-        buckets[key]?.takeIf { it.isNotEmpty() }?.let { ordered[key] = it }
-    }
-    return ordered
-}
-
-// Retained for future use (e.g. accessibility descriptions). Not rendered.
-@Suppress("unused")
-private fun formatTimestamp(ms: Long): String {
-    val now  = System.currentTimeMillis()
-    val diff = now - ms
-    return when {
-        diff < 60_000L       -> "Just now"
-        diff < 3_600_000L    -> "${diff / 60_000}m ago"
-        diff < 86_400_000L   -> "${diff / 3_600_000}h ago"
-        diff < 604_800_000L  -> "${diff / 86_400_000}d ago"
-        else                 -> SimpleDateFormat("MMM d", Locale.getDefault()).format(Date(ms))
     }
 }

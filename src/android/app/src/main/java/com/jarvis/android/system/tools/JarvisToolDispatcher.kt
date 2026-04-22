@@ -626,7 +626,7 @@ class JarvisToolDispatcher @Inject constructor(
 
     // ── Constants ─────────────────────────────────────────────────────────
 
-    private companion object {
+    internal companion object {
         const val TAG             = "JarvisToolDispatcher"
         const val MAX_RESULT_CHARS = 8_000
 

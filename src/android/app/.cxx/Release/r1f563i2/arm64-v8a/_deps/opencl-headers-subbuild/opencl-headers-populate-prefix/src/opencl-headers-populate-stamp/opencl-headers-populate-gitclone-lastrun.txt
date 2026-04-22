@@ -1,3 +1,0 @@
-repository='https://github.com/KhronosGroup/OpenCL-Headers.git'
-module=''
-tag='origin'

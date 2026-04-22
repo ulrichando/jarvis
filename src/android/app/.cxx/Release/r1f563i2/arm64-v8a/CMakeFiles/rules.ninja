@@ -137,25 +137,6 @@ rule CXX_STATIC_LIBRARY_LINKER__ggml-cpu_Release
 #############################################
 # Rule for compiling CXX files.
 
-rule CXX_COMPILER__ggml-opencl_Release
-  depfile = $DEP_FILE
-  deps = gcc
-  command = /home/ulrich/Android/Sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++ --target=aarch64-none-linux-android26 --sysroot=/home/ulrich/Android/Sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/sysroot $DEFINES $INCLUDES $FLAGS -MD -MT $out -MF $DEP_FILE -o $out -c $in
-  description = Building CXX object $out
-
-
-#############################################
-# Rule for linking CXX static library.
-
-rule CXX_STATIC_LIBRARY_LINKER__ggml-opencl_Release
-  command = $PRE_LINK && /home/ulrich/Android/Sdk/cmake/3.22.1/bin/cmake -E rm -f $TARGET_FILE && /home/ulrich/Android/Sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar qc $TARGET_FILE $LINK_FLAGS $in && /home/ulrich/Android/Sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib $TARGET_FILE && $POST_BUILD
-  description = Linking CXX static library $TARGET_FILE
-  restat = $RESTAT
-
-
-#############################################
-# Rule for compiling CXX files.
-
 rule CXX_COMPILER__llama_Release
   depfile = $DEP_FILE
   deps = gcc

@@ -11,6 +11,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.jarvis.android.presentation.builder.AppBuilderScreen
 import com.jarvis.android.presentation.chat.ChatScreen
+import com.jarvis.android.presentation.chat.ChatsScreen
 import com.jarvis.android.presentation.cyber.CyberScreen
 import com.jarvis.android.presentation.filesystem.FileManagerScreen
 import com.jarvis.android.presentation.localai.LocalAiScreen
@@ -85,8 +86,10 @@ fun JarvisNavGraph(
                     defaultValue = "default"
                 },
             ),
-        ) {
+        ) { backStackEntry ->
+            val convId = backStackEntry.arguments?.getString(Screen.Chat.ARG_CONVERSATION_ID)
             ChatScreen(
+                initialConversationId   = convId,
                 onNavigateToTerminal    = { navController.navigate(Screen.Terminal.route) },
                 onNavigateToFiles       = { navController.navigate(Screen.FileManager.route) },
                 onNavigateToSystem      = { navController.navigate(Screen.SystemDashboard.route) },
@@ -97,6 +100,25 @@ fun JarvisNavGraph(
                 onNavigateToLocalAi     = { navController.navigate(Screen.LocalAi.route) },
                 onNavigateToAppBuilder  = { navController.navigate(Screen.AppBuilder.route) },
                 onNavigateToCyberSuite  = { navController.navigate(Screen.CyberSuite.route) },
+                onNavigateToChats       = { navController.navigate(Screen.Chats.route) },
+            )
+        }
+
+        // ── Chats list ─────────────────────────────────────────────────────
+
+        composable(Screen.Chats.route) {
+            ChatsScreen(
+                onBack       = { navController.popBackStack() },
+                onSelectChat = { id ->
+                    // Pop back to the chat host then push the chat with the
+                    // selected id. popUpTo+launchSingleTop avoids stacking
+                    // multiple Chat instances when the user bounces between
+                    // Chats and Chat repeatedly.
+                    navController.navigate(Screen.Chat.route(id)) {
+                        popUpTo(Screen.Chat.route) { inclusive = true }
+                        launchSingleTop = true
+                    }
+                },
             )
         }
 

@@ -22,6 +22,9 @@ sealed class Screen(val route: String) {
         fun route(conversationId: String = "default") = "chat/$conversationId"
     }
 
+    /** Full-screen list of all conversations — search + new chat FAB. */
+    data object Chats : Screen("chats")
+
     /** Full-screen PTY terminal with session tabs. */
     data object Terminal : Screen("terminal")
 

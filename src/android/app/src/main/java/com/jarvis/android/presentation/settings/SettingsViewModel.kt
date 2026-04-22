@@ -5,6 +5,8 @@ import androidx.lifecycle.viewModelScope
 import com.jarvis.android.data.api.BrainApiService
 import com.jarvis.android.data.api.BrainProvider
 import com.jarvis.android.data.repository.ApiKeyProviderImpl
+import com.jarvis.android.domain.model.CloudModel
+import com.jarvis.android.domain.model.CloudProvider
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -22,10 +24,27 @@ data class SettingsUiState(
     // Brain server connection
     val connectionMode:  String  = "anthropic",   // "anthropic" | "brain"
     val brainServerUrl:  String  = "",
+    // Optional remote TTS endpoint on the brain server. When set, voice mode
+    // streams audio from `<brainTtsUrl>/tts` instead of using Android's
+    // local TextToSpeech — same Groq-backed voice as the user's computer.
+    val brainTtsUrl:     String  = "",
     // Brain provider selection
     val brainProviders:      List<BrainProvider> = emptyList(),
     val brainPinnedProvider: String              = "",
     val isLoadingProviders:  Boolean             = false,
+    // HuggingFace token (for gated model downloads — Gemma, Llama, etc.)
+    val hfToken:         String  = "",
+    val hfTokenMasked:   String  = "",
+    val hasHfToken:      Boolean = false,
+    // Direct-cloud multi-provider. Lives under `connectionMode = "anthropic"`
+    // (which the UI labels "Direct Cloud" when anything other than Anthropic
+    // is selected). Only Anthropic stays on its native Claude path; every
+    // other provider hits OpenAiCompatApiService with these settings.
+    val directProvider:     CloudProvider = CloudProvider.ANTHROPIC,
+    val directModel:        String        = "",
+    val directProviderKey:  String        = "",          // in-progress edit value
+    val directKeyMasked:    String        = "",          // shown when a key is stored
+    val hasDirectKey:       Boolean       = false,
     val isSaving:        Boolean = false,
     val savedMessage:    String? = null,
     val error:           String? = null,
@@ -36,11 +55,22 @@ sealed class SettingsIntent {
     data class SetEndpoint(val endpoint: String)       : SettingsIntent()
     data class SetConnectionMode(val mode: String)     : SettingsIntent()
     data class SetBrainServerUrl(val url: String)      : SettingsIntent()
+    data class SetBrainTtsUrl(val url: String)         : SettingsIntent()
+    object SaveBrainTtsUrl                             : SettingsIntent()
     data class PinBrainProvider(val name: String)      : SettingsIntent()
+    data class SetHfToken(val token: String)           : SettingsIntent()
     object SaveApiKey                                  : SettingsIntent()
     object ClearApiKey                                 : SettingsIntent()
     object SaveBrainSettings                           : SettingsIntent()
     object RefreshBrainProviders                       : SettingsIntent()
+    object SaveHfToken                                 : SettingsIntent()
+    object ClearHfToken                                : SettingsIntent()
+    // Direct-cloud provider dropdown
+    data class SelectDirectProvider(val provider: CloudProvider) : SettingsIntent()
+    data class SelectDirectModel(val modelId: String)            : SettingsIntent()
+    data class SetDirectProviderKey(val key: String)             : SettingsIntent()
+    object SaveDirectProviderKey                                 : SettingsIntent()
+    object ClearDirectProviderKey                                : SettingsIntent()
     object DismissMessage                              : SettingsIntent()
 }
 
@@ -51,13 +81,26 @@ class SettingsViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(
-        SettingsUiState(
-            hasApiKey      = apiKeyProvider.hasApiKey(),
-            apiKeyMasked   = maskedKey(apiKeyProvider.getApiKey()),
-            activeEndpoint = apiKeyProvider.activeEndpoint,
-            connectionMode = apiKeyProvider.connectionMode,
-            brainServerUrl = apiKeyProvider.getBrainServerUrl(),
-        )
+        run {
+            val currentDirect = apiKeyProvider.directProvider
+            val currentKey = apiKeyProvider.getProviderKey(currentDirect)
+            val storedModel = apiKeyProvider.getDirectModel(currentDirect)
+            val defaultModel = CloudModel.CATALOG.firstOrNull { it.provider == currentDirect }?.id.orEmpty()
+            SettingsUiState(
+                hasApiKey      = apiKeyProvider.hasApiKey(),
+                apiKeyMasked   = maskedKey(apiKeyProvider.getApiKey()),
+                activeEndpoint = apiKeyProvider.activeEndpoint,
+                connectionMode = apiKeyProvider.connectionMode,
+                brainServerUrl = apiKeyProvider.getBrainServerUrl(),
+                brainTtsUrl    = apiKeyProvider.getBrainTtsUrl(),
+                hasHfToken     = apiKeyProvider.getHfToken().isNotBlank(),
+                hfTokenMasked  = maskedKey(apiKeyProvider.getHfToken()),
+                directProvider = currentDirect,
+                directModel    = storedModel.ifBlank { defaultModel },
+                directKeyMasked = maskedKey(currentKey),
+                hasDirectKey    = currentKey.isNotBlank(),
+            )
+        }
     )
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
 
@@ -85,12 +128,114 @@ class SettingsViewModel @Inject constructor(
             }
             is SettingsIntent.SetBrainServerUrl ->
                 _uiState.update { it.copy(brainServerUrl = intent.url) }
+            is SettingsIntent.SetBrainTtsUrl ->
+                _uiState.update { it.copy(brainTtsUrl = intent.url) }
+            is SettingsIntent.SaveBrainTtsUrl -> {
+                apiKeyProvider.saveBrainTtsUrl(_uiState.value.brainTtsUrl)
+                _uiState.update { it.copy(savedMessage = "TTS server saved") }
+            }
             is SettingsIntent.SaveBrainSettings -> saveBrainSettings()
             is SettingsIntent.RefreshBrainProviders -> fetchProviders()
             is SettingsIntent.PinBrainProvider  -> pinProvider(intent.name)
             is SettingsIntent.SaveApiKey    -> saveKey()
             is SettingsIntent.ClearApiKey   -> clearKey()
+            is SettingsIntent.SetHfToken    -> _uiState.update { it.copy(hfToken = intent.token) }
+            is SettingsIntent.SaveHfToken   -> saveHfToken()
+            is SettingsIntent.ClearHfToken  -> clearHfToken()
+            is SettingsIntent.SelectDirectProvider -> selectDirectProvider(intent.provider)
+            is SettingsIntent.SelectDirectModel    -> selectDirectModel(intent.modelId)
+            is SettingsIntent.SetDirectProviderKey -> _uiState.update { it.copy(directProviderKey = intent.key) }
+            is SettingsIntent.SaveDirectProviderKey -> saveDirectProviderKey()
+            is SettingsIntent.ClearDirectProviderKey -> clearDirectProviderKey()
             is SettingsIntent.DismissMessage -> _uiState.update { it.copy(savedMessage = null, error = null) }
+        }
+    }
+
+    private fun selectDirectProvider(provider: CloudProvider) {
+        apiKeyProvider.directProvider = provider
+        val storedKey = apiKeyProvider.getProviderKey(provider)
+        val storedModel = apiKeyProvider.getDirectModel(provider)
+        val defaultModel = CloudModel.CATALOG.firstOrNull { it.provider == provider }?.id.orEmpty()
+        _uiState.update {
+            it.copy(
+                directProvider    = provider,
+                directModel       = storedModel.ifBlank { defaultModel },
+                directProviderKey = "",
+                directKeyMasked   = maskedKey(storedKey),
+                hasDirectKey      = storedKey.isNotBlank(),
+            )
+        }
+        // Brain needs the upstream-provider list fetched from the configured
+        // server so the user can pin one (or leave it Auto). Cheap call, only
+        // runs when the URL is already saved.
+        if (provider == CloudProvider.JARVIS_BRAIN && apiKeyProvider.getBrainServerUrl().isNotBlank()) {
+            fetchProviders()
+        }
+    }
+
+    private fun selectDirectModel(modelId: String) {
+        val provider = _uiState.value.directProvider
+        apiKeyProvider.saveDirectModel(provider, modelId)
+        _uiState.update { it.copy(directModel = modelId) }
+    }
+
+    private fun saveDirectProviderKey() {
+        val provider = _uiState.value.directProvider
+        val key = _uiState.value.directProviderKey.trim()
+        if (key.isBlank()) {
+            _uiState.update { it.copy(error = "${provider.displayName} key cannot be empty") }
+            return
+        }
+        apiKeyProvider.saveProviderKey(provider, key)
+        _uiState.update {
+            it.copy(
+                directProviderKey = "",
+                directKeyMasked   = maskedKey(key),
+                hasDirectKey      = true,
+                savedMessage      = "${provider.displayName} key saved",
+            )
+        }
+    }
+
+    private fun clearDirectProviderKey() {
+        val provider = _uiState.value.directProvider
+        apiKeyProvider.clearProviderKey(provider)
+        _uiState.update {
+            it.copy(
+                directProviderKey = "",
+                directKeyMasked   = "",
+                hasDirectKey      = false,
+                savedMessage      = "${provider.displayName} key cleared",
+            )
+        }
+    }
+
+    private fun saveHfToken() {
+        val token = _uiState.value.hfToken.trim()
+        if (token.isBlank()) {
+            _uiState.update { it.copy(error = "HF token cannot be empty") }
+            return
+        }
+        apiKeyProvider.saveHfToken(token)
+        _uiState.update {
+            it.copy(
+                hfToken       = "",
+                hfTokenMasked = maskedKey(token),
+                hasHfToken    = true,
+                savedMessage  = "HF token saved",
+            )
+        }
+    }
+
+    private fun clearHfToken() {
+        apiKeyProvider.clearHfToken()
+        _uiState.update {
+            it.copy(
+                hfToken       = "",
+                hfTokenMasked = "",
+                hasHfToken    = false,
+                savedMessage  = "HF token cleared",
+            )
         }
     }
 

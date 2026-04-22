@@ -220,21 +220,6 @@ CMAKE_PROJECT_HOMEPAGE_URL:STATIC=
 //Value Computed by CMake
 CMAKE_PROJECT_NAME:STATIC=jarvis_native
 
-//Value Computed by CMake
-CMAKE_PROJECT_VERSION:STATIC=3.0
-
-//Value Computed by CMake
-CMAKE_PROJECT_VERSION_MAJOR:STATIC=3
-
-//Value Computed by CMake
-CMAKE_PROJECT_VERSION_MINOR:STATIC=0
-
-//Value Computed by CMake
-CMAKE_PROJECT_VERSION_PATCH:STATIC=
-
-//Value Computed by CMake
-CMAKE_PROJECT_VERSION_TWEAK:STATIC=
-
 //Ranlib
 CMAKE_RANLIB:FILEPATH=/home/ulrich/Android/Sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
 
@@ -307,77 +292,6 @@ CMAKE_TOOLCHAIN_FILE:FILEPATH=/home/ulrich/Android/Sdk/ndk/27.2.12479018/build/c
 // during the make.  This is useful for debugging only. With Visual
 // Studio IDE projects all commands are done without /nologo.
 CMAKE_VERBOSE_MAKEFILE:BOOL=FALSE
-
-//Enable to build Debian packages
-CPACK_BINARY_DEB:BOOL=OFF
-
-//Enable to build FreeBSD packages
-CPACK_BINARY_FREEBSD:BOOL=OFF
-
-//Enable to build IFW packages
-CPACK_BINARY_IFW:BOOL=OFF
-
-//Enable to build NSIS packages
-CPACK_BINARY_NSIS:BOOL=OFF
-
-//Enable to build RPM packages
-CPACK_BINARY_RPM:BOOL=OFF
-
-//Enable to build STGZ packages
-CPACK_BINARY_STGZ:BOOL=ON
-
-//Enable to build TBZ2 packages
-CPACK_BINARY_TBZ2:BOOL=OFF
-
-//Enable to build TGZ packages
-CPACK_BINARY_TGZ:BOOL=ON
-
-//Enable to build TXZ packages
-CPACK_BINARY_TXZ:BOOL=OFF
-
-//Enable to build TZ packages
-CPACK_BINARY_TZ:BOOL=ON
-
-//Package name
-CPACK_DEBIAN_PACKAGE_NAME:STRING=opencl-c-headers
-
-//Enable to build RPM source packages
-CPACK_SOURCE_RPM:BOOL=OFF
-
-//Enable to build TBZ2 source packages
-CPACK_SOURCE_TBZ2:BOOL=ON
-
-//Enable to build TGZ source packages
-CPACK_SOURCE_TGZ:BOOL=ON
-
-//Enable to build TXZ source packages
-CPACK_SOURCE_TXZ:BOOL=ON
-
-//Enable to build TZ source packages
-CPACK_SOURCE_TZ:BOOL=ON
-
-//Enable to build ZIP source packages
-CPACK_SOURCE_ZIP:BOOL=OFF
-
-//Directory under which to collect all populated content
-FETCHCONTENT_BASE_DIR:PATH=/home/ulrich/Documents/Projects/jarvis/src/android/app/.cxx/Release/r1f563i2/arm64-v8a/_deps
-
-//Disables all attempts to download or update content and assumes
-// source dirs already exist
-FETCHCONTENT_FULLY_DISCONNECTED:BOOL=OFF
-
-//Enables QUIET option for all content population
-FETCHCONTENT_QUIET:BOOL=ON
-
-//When not empty, overrides where to find pre-populated content
-// for OpenCL-Headers
-FETCHCONTENT_SOURCE_DIR_OPENCL-HEADERS:PATH=
-
-//Enables UPDATE_DISCONNECTED behavior for all content population
-FETCHCONTENT_UPDATES_DISCONNECTED:BOOL=OFF
-
-//Enables UPDATE_DISCONNECTED behavior just for population of OpenCL-Headers
-FETCHCONTENT_UPDATES_DISCONNECTED_OPENCL-HEADERS:BOOL=OFF
 
 //ggml: enable Accelerate framework
 GGML_ACCELERATE:BOOL=ON
@@ -551,7 +465,7 @@ GGML_MUSA:BOOL=OFF
 GGML_NATIVE:BOOL=OFF
 
 //ggml: use OpenCL
-GGML_OPENCL:BOOL=ON
+GGML_OPENCL:BOOL=OFF
 
 //ggml: embed kernels
 GGML_OPENCL_EMBED_KERNELS:BOOL=ON
@@ -682,25 +596,6 @@ LLAMA_SANITIZE_UNDEFINED:BOOL=OFF
 
 //Path to a library.
 MATH_LIBRARY:FILEPATH=/home/ulrich/Android/Sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/26/libm.so
-
-//Enable support for OpenCL C headers testing in C++ mode.
-OPENCL_HEADERS_BUILD_CXX_TESTS:BOOL=ON
-
-//Enable support for OpenCL C headers testing.
-OPENCL_HEADERS_BUILD_TESTING:BOOL=OFF
-
-//Value Computed by CMake
-OpenCLHeaders_BINARY_DIR:STATIC=/home/ulrich/Documents/Projects/jarvis/src/android/app/.cxx/Release/r1f563i2/arm64-v8a/_deps/opencl-headers-build
-
-//Value Computed by CMake
-OpenCLHeaders_IS_TOP_LEVEL:STATIC=OFF
-
-//Value Computed by CMake
-OpenCLHeaders_SOURCE_DIR:STATIC=/home/ulrich/Documents/Projects/jarvis/src/android/app/.cxx/Release/r1f563i2/arm64-v8a/_deps/opencl-headers-src
-
-OpenCL_INCLUDE_DIR:PATH=/home/ulrich/Documents/Projects/jarvis/src/android/app/.cxx/Release/r1f563i2/arm64-v8a/_deps/opencl-headers-src
-
-OpenCL_LIBRARY:FILEPATH=/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/opencl-stub/libOpenCL.so
 
 //CXX compiler flags for OpenMP parallelization
 OpenMP_CXX_FLAGS:STRING=-fopenmp=libomp
@@ -879,7 +774,7 @@ CMAKE_MODULE_LINKER_FLAGS_RELWITHDEBINFO-ADVANCED:INTERNAL=1
 //ADVANCED property for variable: CMAKE_NM
 CMAKE_NM-ADVANCED:INTERNAL=1
 //number of local generators
-CMAKE_NUMBER_OF_MAKEFILES:INTERNAL=8
+CMAKE_NUMBER_OF_MAKEFILES:INTERNAL=6
 //ADVANCED property for variable: CMAKE_OBJCOPY
 CMAKE_OBJCOPY-ADVANCED:INTERNAL=1
 //ADVANCED property for variable: CMAKE_OBJDUMP
@@ -922,64 +817,22 @@ CMAKE_STRIP-ADVANCED:INTERNAL=1
 CMAKE_UNAME:INTERNAL=/usr/bin/uname
 //ADVANCED property for variable: CMAKE_VERBOSE_MAKEFILE
 CMAKE_VERBOSE_MAKEFILE-ADVANCED:INTERNAL=1
-//ADVANCED property for variable: CPACK_BINARY_DEB
-CPACK_BINARY_DEB-ADVANCED:INTERNAL=1
-//ADVANCED property for variable: CPACK_BINARY_FREEBSD
-CPACK_BINARY_FREEBSD-ADVANCED:INTERNAL=1
-//ADVANCED property for variable: CPACK_BINARY_IFW
-CPACK_BINARY_IFW-ADVANCED:INTERNAL=1
-//ADVANCED property for variable: CPACK_BINARY_NSIS
-CPACK_BINARY_NSIS-ADVANCED:INTERNAL=1
-//ADVANCED property for variable: CPACK_BINARY_RPM
-CPACK_BINARY_RPM-ADVANCED:INTERNAL=1
-//ADVANCED property for variable: CPACK_BINARY_STGZ
-CPACK_BINARY_STGZ-ADVANCED:INTERNAL=1
-//ADVANCED property for variable: CPACK_BINARY_TBZ2
-CPACK_BINARY_TBZ2-ADVANCED:INTERNAL=1
-//ADVANCED property for variable: CPACK_BINARY_TGZ
-CPACK_BINARY_TGZ-ADVANCED:INTERNAL=1
-//ADVANCED property for variable: CPACK_BINARY_TXZ
-CPACK_BINARY_TXZ-ADVANCED:INTERNAL=1
-//ADVANCED property for variable: CPACK_BINARY_TZ
-CPACK_BINARY_TZ-ADVANCED:INTERNAL=1
-//ADVANCED property for variable: CPACK_SOURCE_RPM
-CPACK_SOURCE_RPM-ADVANCED:INTERNAL=1
-//ADVANCED property for variable: CPACK_SOURCE_TBZ2
-CPACK_SOURCE_TBZ2-ADVANCED:INTERNAL=1
-//ADVANCED property for variable: CPACK_SOURCE_TGZ
-CPACK_SOURCE_TGZ-ADVANCED:INTERNAL=1
-//ADVANCED property for variable: CPACK_SOURCE_TXZ
-CPACK_SOURCE_TXZ-ADVANCED:INTERNAL=1
-//ADVANCED property for variable: CPACK_SOURCE_TZ
-CPACK_SOURCE_TZ-ADVANCED:INTERNAL=1
-//ADVANCED property for variable: CPACK_SOURCE_ZIP
-CPACK_SOURCE_ZIP-ADVANCED:INTERNAL=1
 //Details about finding Git
 FIND_PACKAGE_MESSAGE_DETAILS_Git:INTERNAL=[/usr/bin/git][v2.53.0()]
-//Details about finding OpenCL
-FIND_PACKAGE_MESSAGE_DETAILS_OpenCL:INTERNAL=[/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/opencl-stub/libOpenCL.so][/home/ulrich/Documents/Projects/jarvis/src/android/app/.cxx/Release/r1f563i2/arm64-v8a/_deps/opencl-headers-src][v2.2()]
 //Details about finding OpenMP
 FIND_PACKAGE_MESSAGE_DETAILS_OpenMP:INTERNAL=[TRUE][TRUE][c ][v()]
 //Details about finding OpenMP_C
 FIND_PACKAGE_MESSAGE_DETAILS_OpenMP_C:INTERNAL=[-fopenmp=libomp][/home/ulrich/Android/Sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/18/lib/linux/aarch64/libomp.so][v()]
 //Details about finding OpenMP_CXX
 FIND_PACKAGE_MESSAGE_DETAILS_OpenMP_CXX:INTERNAL=[-fopenmp=libomp][/home/ulrich/Android/Sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/18/lib/linux/aarch64/libomp.so][v()]
-//Details about finding Python3
-FIND_PACKAGE_MESSAGE_DETAILS_Python3:INTERNAL=[/usr/bin/python3][cfound components: Interpreter ][v3.13.12()]
 //Details about finding Threads
 FIND_PACKAGE_MESSAGE_DETAILS_Threads:INTERNAL=[TRUE][v()]
 //List of backends for cmake package
-GGML_AVAILABLE_BACKENDS:INTERNAL=ggml-cpu;ggml-opencl
+GGML_AVAILABLE_BACKENDS:INTERNAL=ggml-cpu
 //Test GGML_COMPILER_SUPPORTS_FP16_FORMAT_I3E
 GGML_COMPILER_SUPPORTS_FP16_FORMAT_I3E:INTERNAL=
 //ADVANCED property for variable: GIT_EXECUTABLE
 GIT_EXECUTABLE-ADVANCED:INTERNAL=1
-//Have symbol CL_VERSION_2_2
-OPENCL_VERSION_2_2:INTERNAL=1
-//ADVANCED property for variable: OpenCL_INCLUDE_DIR
-OpenCL_INCLUDE_DIR-ADVANCED:INTERNAL=1
-//ADVANCED property for variable: OpenCL_LIBRARY
-OpenCL_LIBRARY-ADVANCED:INTERNAL=1
 //Result of TRY_COMPILE
 OpenMP_COMPILE_RESULT_CXX_fopenmplibomp:INTERNAL=TRUE
 //Result of TRY_COMPILE
@@ -1006,9 +859,4 @@ OpenMP_omp_LIBRARY-ADVANCED:INTERNAL=1
 THREADS_HAVE_PTHREAD_ARG:INTERNAL=TRUE
 //CMAKE_INSTALL_PREFIX during last run
 _GNUInstallDirs_LAST_CMAKE_INSTALL_PREFIX:INTERNAL=/usr/local
-//Path to a program.
-_Python3_EXECUTABLE:INTERNAL=/usr/bin/python3
-//Python3 Properties
-_Python3_INTERPRETER_PROPERTIES:INTERNAL=Python;3;13;12;64;;;/usr/lib/python3.13;/usr/lib/python3.13;/usr/lib/python3/dist-packages;/usr/lib/python3/dist-packages
-_Python3_INTERPRETER_SIGNATURE:INTERNAL=0f3e53742e142b1d9e50e4ca5b901dd8
 

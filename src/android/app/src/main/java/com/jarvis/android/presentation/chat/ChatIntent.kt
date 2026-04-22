@@ -44,6 +44,12 @@ sealed class ChatIntent {
     /** Toggle TTS (text-to-speech) on/off. */
     object ToggleTts : ChatIntent()
 
+    /** Set TTS to a specific value — used by voice mode to auto-enable when the
+     *  overlay opens and auto-disable when it closes, so typed turns get
+     *  text-only replies and voice-mode turns get spoken replies without the
+     *  user manually toggling. */
+    data class SetTtsEnabled(val enabled: Boolean) : ChatIntent()
+
     /** Cycle to the next routing mode (Auto → Local → Cloud → Hybrid → Auto). */
     object CycleRoutingMode : ChatIntent()
 
