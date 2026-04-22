@@ -131,6 +131,8 @@ fun ChatScreen(
     onNavigateToLocalAi:     () -> Unit = {},
     onNavigateToAppBuilder:  () -> Unit = {},
     onNavigateToCyberSuite:  () -> Unit = {},
+    onNavigateToChats:       () -> Unit = {},
+    initialConversationId:   String?    = null,
     viewModel:               ChatViewModel = hiltViewModel(),
 ) {
     val uiState       by viewModel.uiState.collectAsState()
@@ -140,26 +142,100 @@ fun ChatScreen(
     val listState     = rememberLazyListState()
     val ctx           = LocalContext.current
 
-    // Runtime mic permission — shown once at mount so voice never silently fails.
-    val micGranted = rememberMicPermissionOnce()
-
-    // Real-time mic amplitude, drives the reactor / voice-bar pulsing. The
-    // monitor is cheap enough to run for the whole session — ~10 ms buffer
-    // reads + a normalised float flow.
-    val micMonitor = remember { MicAmplitudeMonitor(ctx) }
-    val micLevel   by micMonitor.level.collectAsState()
-
-    DisposableEffect(micGranted) {
-        if (micGranted) micMonitor.start(scope)
-        onDispose { micMonitor.stop() }
+    // Mic permission state — see the on-demand launcher set up below the
+    // voiceOverlayVisible declaration. Defaults to whatever Android currently
+    // grants (no prompt at app launch).
+    var micGranted by remember {
+        mutableStateOf(
+            ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED,
+        )
     }
+
+    // No standalone amplitude monitor — it would compete with the
+    // SpeechRecognizer for the microphone and cause STT to silently capture
+    // zero audio (NO_SPEECH_DETECTED). The voice overlay no longer renders an
+    // amplitude visualization, so micLevel is permanently zero.
+    val micLevel = 0f
 
     // Voice overlay visibility — starts recording when shown.
     var voiceOverlayVisible by remember { mutableStateOf(false) }
 
-    // Long-press delete confirmation
+    // Explicit user-mute toggle for the voice-mode mic. Independent of the
+    // STT engine's recording state, which naturally pauses while the AI is
+    // speaking. Only the user tapping the mic mute button flips this; the
+    // auto-restart loop respects it (stays off while muted).
+    var userMutedMic by remember { mutableStateOf(false) }
+
+    // (MicAmplitudeMonitor lifecycle removed — it stole the mic from
+    // SpeechRecognizer and broke STT. STT owns the mic exclusively now.)
+
+    // Mic + TTS shutdown on EVERY exit path. The Stop button does this in
+    // its onClick, but back-press / swipe-up / app destroy never trigger
+    // that handler. This DisposableEffect runs on Composition leave AND
+    // when voiceOverlayVisible flips false, releasing the microphone so
+    // Android's green mic indicator goes away the instant the user leaves.
+    DisposableEffect(voiceOverlayVisible) {
+        onDispose {
+            // Stop both ends regardless — extra calls to a stopped engine
+            // are no-ops, and missing one means a stuck mic icon.
+            if (uiState.isRecording) viewModel.onIntent(ChatIntent.ToggleVoice)
+            viewModel.onIntent(ChatIntent.SetTtsEnabled(false))
+        }
+    }
+
+    // On-demand mic permission flow. Tapping mic / voice-mode sets a pending
+    // action, then either (a) fires it immediately if already granted, or
+    // (b) launches the system permission prompt and fires it on success.
+    var pendingMicAction by remember { mutableStateOf<MicAction?>(null) }
+    val micPermLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        micGranted = granted
+        if (granted) when (pendingMicAction) {
+            MicAction.Dictate   -> viewModel.onIntent(ChatIntent.ToggleVoice)
+            MicAction.VoiceMode -> {
+                voiceOverlayVisible = true
+                viewModel.onIntent(ChatIntent.SetTtsEnabled(true))
+                viewModel.onIntent(ChatIntent.ToggleVoice)
+            }
+            null -> Unit
+        }
+        pendingMicAction = null
+    }
+    val requestMicThen: (MicAction) -> Unit = { action ->
+        if (micGranted) {
+            // Permission already granted — fire immediately.
+            when (action) {
+                MicAction.Dictate   -> viewModel.onIntent(ChatIntent.ToggleVoice)
+                MicAction.VoiceMode -> {
+                    voiceOverlayVisible = true
+                    viewModel.onIntent(ChatIntent.SetTtsEnabled(true))
+                    viewModel.onIntent(ChatIntent.ToggleVoice)
+                }
+            }
+        } else {
+            // Otherwise stash intent + ask Android. Result handled above.
+            pendingMicAction = action
+            micPermLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    // Long-press delete confirmation (also reused by the top-bar overflow Delete)
     var deleteConvId by remember { mutableStateOf<String?>(null) }
     var deleteConvTitle by remember { mutableStateOf("") }
+    // Top-bar overflow Rename — opens a small text-field dialog
+    var renameConvId by remember { mutableStateOf<String?>(null) }
+    var renameDraft  by remember { mutableStateOf("") }
+
+    // If we got here from the Chats list with a specific conversation id,
+    // tell the VM to switch to it. Guard with the "default" sentinel and a
+    // recompose-stable key so we don't fire on every recomposition.
+    LaunchedEffect(initialConversationId) {
+        if (!initialConversationId.isNullOrBlank() && initialConversationId != "default") {
+            viewModel.onIntent(ChatIntent.SelectConversation(initialConversationId))
+        }
+    }
 
     // Surface errors as a Snackbar
     LaunchedEffect(uiState.error) {
@@ -177,12 +253,28 @@ fun ChatScreen(
         if (total > 0) listState.animateScrollToItem(total - 1)
     }
 
-    // Close the voice overlay when recording stops AND we have a final transcript
-    // in inputText — then auto-send, so "tap mic → speak → done" becomes one flow.
+    // Voice-mode pipeline:
+    //   1. STT finalises  →  auto-send the transcript (don't close the overlay)
+    //   2. Assistant streams + TTS speaks
+    //   3. When BOTH finish  →  re-arm the mic so the conversation continues
+    //      hands-free without the user touching anything.
     LaunchedEffect(uiState.isRecording, voiceOverlayVisible) {
         if (voiceOverlayVisible && !uiState.isRecording && uiState.inputText.isNotBlank()) {
-            voiceOverlayVisible = false
             viewModel.onIntent(ChatIntent.SendMessage())
+        }
+    }
+    LaunchedEffect(uiState.isStreaming, uiState.isTtsSpeaking, voiceOverlayVisible, userMutedMic) {
+        // Both the model's stream AND the spoken playback need to be done
+        // before we re-open the mic, otherwise we'd record our own TTS.
+        // userMutedMic gates the auto-restart so an explicit mute stays muted.
+        if (voiceOverlayVisible &&
+            !userMutedMic &&
+            !uiState.isStreaming &&
+            !uiState.isTtsSpeaking &&
+            !uiState.isRecording &&
+            uiState.inputText.isBlank()
+        ) {
+            viewModel.onIntent(ChatIntent.ToggleVoice)
         }
     }
 
@@ -203,6 +295,30 @@ fun ChatScreen(
                 onLongClick       = { conv ->
                     deleteConvId    = conv.id
                     deleteConvTitle = conv.title
+                },
+                onOpenSettings    = {
+                    scope.launch { drawerState.close() }
+                    onNavigateToSettings()
+                },
+                onOpenChats       = {
+                    scope.launch { drawerState.close() }
+                    onNavigateToChats()
+                },
+                onOpenLocalAi     = {
+                    scope.launch { drawerState.close() }
+                    onNavigateToLocalAi()
+                },
+                onOpenFiles       = {
+                    scope.launch { drawerState.close() }
+                    onNavigateToFiles()
+                },
+                onOpenTerminal    = {
+                    scope.launch { drawerState.close() }
+                    onNavigateToTerminal()
+                },
+                onOpenAppBuilder  = {
+                    scope.launch { drawerState.close() }
+                    onNavigateToAppBuilder()
                 },
             )
         },
@@ -225,16 +341,34 @@ fun ChatScreen(
                         onSelectLocalModel    = { id -> viewModel.onIntent(ChatIntent.SelectLocalModel(id)) },
                         onOpenLocalAi         = onNavigateToLocalAi,
                         onOpenSettings        = onNavigateToSettings,
-                        onTerminal            = onNavigateToTerminal,
-                        onFiles               = onNavigateToFiles,
-                        onSystem              = onNavigateToSystem,
-                        onNetwork             = onNavigateToNetwork,
-                        onSensors             = onNavigateToSensors,
-                        onPermissions         = onNavigateToPermissions,
-                        onSettings            = onNavigateToSettings,
-                        onLocalAi             = onNavigateToLocalAi,
-                        onAppBuilder          = onNavigateToAppBuilder,
-                        onCyberSuite          = onNavigateToCyberSuite,
+                        activeConversation    = uiState.conversations
+                            .firstOrNull { it.id == uiState.activeConversationId },
+                        onRename = {
+                            val active = uiState.conversations
+                                .firstOrNull { it.id == uiState.activeConversationId }
+                            if (active != null) {
+                                renameConvId = active.id
+                                renameDraft  = active.title
+                            }
+                        },
+                        onTogglePin = {
+                            val active = uiState.conversations
+                                .firstOrNull { it.id == uiState.activeConversationId }
+                            if (active != null) {
+                                viewModel.onIntent(
+                                    ChatIntent.PinConversation(active.id, !active.isPinned),
+                                )
+                            }
+                        },
+                        onDelete = {
+                            val active = uiState.conversations
+                                .firstOrNull { it.id == uiState.activeConversationId }
+                            if (active != null) {
+                                deleteConvId    = active.id
+                                deleteConvTitle = active.title
+                            }
+                        },
+                        onNewChat = { viewModel.onIntent(ChatIntent.NewConversation) },
                     )
                 },
                 bottomBar = {
@@ -246,15 +380,13 @@ fun ChatScreen(
                         isStreaming    = uiState.isStreaming,
                         enabled        = true,
                         // Quick dictation — text field fills with the transcript.
-                        onVoice        = { viewModel.onIntent(ChatIntent.ToggleVoice) },
-                        // Full-screen voice mode — opens the reactor overlay and
-                        // starts recording in one gesture.
-                        onVoiceMode    = {
-                            voiceOverlayVisible = true
-                            if (!uiState.isRecording) {
-                                viewModel.onIntent(ChatIntent.ToggleVoice)
-                            }
-                        },
+                        // requestMicThen pops the system permission prompt the
+                        // first time and fires the action the moment it's granted.
+                        onVoice        = { requestMicThen(MicAction.Dictate) },
+                        // Full-screen voice mode — opens the reactor overlay
+                        // and starts recording in one gesture (also flips TTS
+                        // on while the overlay is visible).
+                        onVoiceMode    = { requestMicThen(MicAction.VoiceMode) },
                         isRecording    = uiState.isRecording,
                         modifier       = Modifier.imePadding(),
                     )
@@ -274,16 +406,51 @@ fun ChatScreen(
 
             // ── Voice overlay — sits above everything when active ────────────
             //
-            // Driven by local [voiceOverlayVisible] so the overlay can be
-            // dismissed without cancelling the mic (and vice versa).
+            // Claude-style: scrollable transcript in the middle, gear / mute /
+            // Stop pill at the bottom. Mute toggles the user's mic without
+            // leaving voice mode; Stop cancels recording, kills TTS, and
+            // dismisses the overlay back to text chat.
             VoiceOverlay(
-                isVisible   = voiceOverlayVisible,
-                isRecording = uiState.isRecording,
-                audioLevel  = micLevel,
-                transcript  = uiState.inputText,
-                onToggleMic = { viewModel.onIntent(ChatIntent.ToggleVoice) },
-                onDismiss   = {
+                isVisible      = voiceOverlayVisible,
+                isRecording    = uiState.isRecording,
+                audioLevel     = micLevel,
+                messages       = uiState.messages,
+                streamingText  = uiState.streamingText,
+                liveTranscript = uiState.inputText,
+                isMuted        = userMutedMic,
+                // Drives the bottom glow — only when the model is actually
+                // producing output. `isStreaming` flips true the moment
+                // SendMessage fires (before any API round-trip), which used
+                // to make the glow show during the "waiting" phase. Now we
+                // gate on actual content: tokens arriving (streamingText
+                // non-blank) or TTS audio playing.
+                isAiSpeaking   = uiState.streamingText.isNotBlank() || uiState.isTtsSpeaking,
+                // Per-word tick straight from the TTS engine; pulses the
+                // glow on every actual spoken word.
+                speechTick     = uiState.ttsSpeechTick,
+                onToggleMute   = {
+                    // Flip the user-controlled mute. If we're now muted and
+                    // STT is currently listening, stop it so the mic actually
+                    // releases — otherwise the icon goes red but the mic
+                    // stays open. Unmuting does NOT immediately restart STT;
+                    // the auto-restart guard handles that on the next idle tick.
+                    val nowMuted = !userMutedMic
+                    userMutedMic = nowMuted
+                    if (nowMuted && uiState.isRecording) {
+                        viewModel.onIntent(ChatIntent.ToggleVoice)
+                    }
+                },
+                onOpenSettings = { onNavigateToSettings() },
+                onStop         = {
                     if (uiState.isRecording) viewModel.onIntent(ChatIntent.ToggleVoice)
+                    viewModel.onIntent(ChatIntent.SetTtsEnabled(false))
+                    // Wipe any half-captured STT partial so the chat input
+                    // bar isn't pre-filled with whatever the user trailed
+                    // off saying when they tapped Stop. Also reset the
+                    // user-mute toggle so re-entering voice mode starts
+                    // unmuted, not stuck in the previous session's state.
+                    viewModel.onIntent(ChatIntent.UpdateInput(""))
+                    userMutedMic = false
                     voiceOverlayVisible = false
                 },
             )
@@ -306,6 +473,39 @@ fun ChatScreen(
             },
             dismissButton = {
                 TextButton(onClick = { deleteConvId = null }) {
+                    Text("Cancel", color = TextMuted)
+                }
+            },
+        )
+    }
+
+    // ── Rename conversation dialog ──────────────────────────────────────────
+    renameConvId?.let { convId ->
+        AlertDialog(
+            onDismissRequest = { renameConvId = null },
+            containerColor   = Color(0xFF141414),
+            title = { Text("Rename conversation", color = TextPrimary) },
+            text  = {
+                androidx.compose.material3.OutlinedTextField(
+                    value         = renameDraft,
+                    onValueChange = { renameDraft = it },
+                    singleLine    = true,
+                    label         = { Text("Title") },
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val title = renameDraft.trim()
+                        if (title.isNotBlank()) {
+                            viewModel.onIntent(ChatIntent.RenameConversation(convId, title))
+                        }
+                        renameConvId = null
+                    },
+                ) { Text("Save", color = Accent) }
+            },
+            dismissButton = {
+                TextButton(onClick = { renameConvId = null }) {
                     Text("Cancel", color = TextMuted)
                 }
             },
@@ -417,16 +617,14 @@ private fun HomeTopBar(
     onSelectLocalModel:    (String) -> Unit,
     onOpenLocalAi:         () -> Unit,
     onOpenSettings:        () -> Unit,
-    onTerminal:          () -> Unit,
-    onFiles:             () -> Unit,
-    onSystem:            () -> Unit,
-    onNetwork:           () -> Unit,
-    onSensors:           () -> Unit,
-    onPermissions:       () -> Unit,
-    onSettings:          () -> Unit,
-    onLocalAi:           () -> Unit,
-    onAppBuilder:        () -> Unit,
-    onCyberSuite:        () -> Unit,
+    // Conversation context actions (top-right overflow). All operate on the
+    // currently active conversation when one is selected; New chat is always
+    // active.
+    activeConversation:  com.jarvis.android.domain.model.Conversation?,
+    onRename:            () -> Unit,
+    onTogglePin:         () -> Unit,
+    onDelete:            () -> Unit,
+    onNewChat:           () -> Unit,
 ) {
     var toolMenuOpen  by remember { mutableStateOf(false) }
     var modelMenuOpen by remember { mutableStateOf(false) }
@@ -643,16 +841,37 @@ private fun HomeTopBar(
                 onDismissRequest = { toolMenuOpen = false },
                 modifier         = Modifier.background(Color(0xFF1C1C1E)),
             ) {
-                ToolMenuItem("Terminal",     onTerminal)    { toolMenuOpen = false }
-                ToolMenuItem("File Manager", onFiles)       { toolMenuOpen = false }
-                ToolMenuItem("System",       onSystem)      { toolMenuOpen = false }
-                ToolMenuItem("Network",      onNetwork)     { toolMenuOpen = false }
-                ToolMenuItem("Sensors",      onSensors)     { toolMenuOpen = false }
-                ToolMenuItem("Permissions",  onPermissions) { toolMenuOpen = false }
-                ToolMenuItem("Settings",     onSettings)    { toolMenuOpen = false }
-                ToolMenuItem("Local AI",     onLocalAi)     { toolMenuOpen = false }
-                ToolMenuItem("App Builder",  onAppBuilder)  { toolMenuOpen = false }
-                ToolMenuItem("Cyber Suite",  onCyberSuite)  { toolMenuOpen = false }
+                // Claude-style conversation actions. Rename / Star / Delete
+                // are gated on having an active conversation; New chat is
+                // always available.
+                val hasActive = activeConversation != null
+                if (hasActive) {
+                    DropdownMenuItem(
+                        text    = { Text("Rename", color = TextPrimary) },
+                        onClick = { toolMenuOpen = false; onRename() },
+                    )
+                    DropdownMenuItem(
+                        text    = {
+                            Text(
+                                if (activeConversation?.isPinned == true) "Unstar" else "Star",
+                                color = TextPrimary,
+                            )
+                        },
+                        onClick = { toolMenuOpen = false; onTogglePin() },
+                    )
+                    DropdownMenuItem(
+                        text    = { Text("Delete", color = Color(0xFFEF4444)) },
+                        onClick = { toolMenuOpen = false; onDelete() },
+                    )
+                    androidx.compose.material3.HorizontalDivider(
+                        color     = Color(0xFF2A2A2A),
+                        thickness = 0.5.dp,
+                    )
+                }
+                DropdownMenuItem(
+                    text    = { Text("New chat", color = TextPrimary) },
+                    onClick = { toolMenuOpen = false; onNewChat() },
+                )
             }
         }
     }
@@ -804,25 +1023,9 @@ private fun rememberDrawerStateWithSnapShot() =
     androidx.compose.material3.rememberDrawerState(initialValue = DrawerValue.Closed)
 
 /**
- * Requests the RECORD_AUDIO permission once on first composition and returns
- * the latest grant state. Placed on the root screen so the user is never faced
- * with a dead mic button, and so downstream consumers (the mic monitor) can
- * react when the permission is granted.
+ * Which mic-using action the user just tapped. Held in ChatScreen state while
+ * the system permission prompt is open so we can fire the right intent once
+ * the user grants RECORD_AUDIO. There is no app-launch permission request any
+ * more — see ChatScreen for the on-demand flow.
  */
-@Composable
-private fun rememberMicPermissionOnce(): Boolean {
-    val ctx = LocalContext.current
-    var granted by remember {
-        mutableStateOf(
-            ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
-                PackageManager.PERMISSION_GRANTED,
-        )
-    }
-    val launcher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission(),
-    ) { result -> granted = result }
-    LaunchedEffect(Unit) {
-        if (!granted) launcher.launch(Manifest.permission.RECORD_AUDIO)
-    }
-    return granted
-}
+private enum class MicAction { Dictate, VoiceMode }

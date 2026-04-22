@@ -60,6 +60,12 @@ Query forms:
  * _meta['anthropic/alwaysLoad']). This check runs first, before any other rule.
  */
 export function isDeferredTool(tool: Tool): boolean {
+  // Jarvis override: non-Claude backends (Groq, DeepSeek, etc.) don't know the
+  // ToolSearch protocol and try to call deferred tools directly, which fails
+  // validation. Setting JARVIS_DISABLE_TOOL_DEFERRAL=1 ships every tool schema
+  // up front so any model can call any tool first try.
+  if (process.env.JARVIS_DISABLE_TOOL_DEFERRAL === '1') return false
+
   // Explicit opt-out via _meta['anthropic/alwaysLoad'] — tool appears in the
   // initial prompt with full schema. Checked first so MCP tools can opt out.
   if (tool.alwaysLoad === true) return false

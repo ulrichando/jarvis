@@ -35,7 +35,14 @@ data class ChatUiState(
     val isLoadingHistory:     Boolean              = false,
     val isRecording:          Boolean              = false,
     val isTtsSpeaking:        Boolean              = false,
-    val ttsEnabled:           Boolean              = true,
+    /** Bumps every time the TTS engine starts speaking a new word. Drives
+     *  per-word glow pulse in voice mode, the closest equivalent to real
+     *  audio amplitude without the restricted Visualizer permission. */
+    val ttsSpeechTick:        Long                 = 0L,
+    // Off by default — when the user types they expect a text reply, not the
+    // model talking back through the speaker. Voice-mode (the waveform circle
+    // on the input bar) is the explicit opt-in for hands-free.
+    val ttsEnabled:           Boolean              = false,
     val routingLabel:         String               = "Auto",
     /** Downloaded local models, shown as items in the top-bar dropdown. */
     val downloadedModels:     List<ModelEntry>     = emptyList(),

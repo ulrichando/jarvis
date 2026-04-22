@@ -55,8 +55,6 @@ build CMakeFiles/jarvis_pty.dir/pty_bridge.cpp.o: CXX_COMPILER__jarvis_pty_Relea
   FLAGS = -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security  -std=c++17 -D_XOPEN_SOURCE=700 -DANDROID_STL=c++_shared -O3 -DNDEBUG  -fPIC -Wall -Wextra -Wno-unused-parameter -Werror=return-type -fvisibility=hidden -fstack-protector-strong -D_XOPEN_SOURCE=700 -O2 -D_FORTIFY_SOURCE=2 -std=c++17
   OBJECT_DIR = CMakeFiles/jarvis_pty.dir
   OBJECT_FILE_DIR = CMakeFiles/jarvis_pty.dir
-  TARGET_COMPILE_PDB = CMakeFiles/jarvis_pty.dir/
-  TARGET_PDB = /home/ulrich/Documents/Projects/jarvis/src/android/app/build/intermediates/cxx/Release/r1f563i2/obj/x86_64/libjarvis_pty.pdb
 
 build CMakeFiles/jarvis_pty.dir/vt_parser.cpp.o: CXX_COMPILER__jarvis_pty_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/vt_parser.cpp || cmake_object_order_depends_target_jarvis_pty
   DEFINES = -Djarvis_pty_EXPORTS
@@ -64,8 +62,6 @@ build CMakeFiles/jarvis_pty.dir/vt_parser.cpp.o: CXX_COMPILER__jarvis_pty_Releas
   FLAGS = -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security  -std=c++17 -D_XOPEN_SOURCE=700 -DANDROID_STL=c++_shared -O3 -DNDEBUG  -fPIC -Wall -Wextra -Wno-unused-parameter -Werror=return-type -fvisibility=hidden -fstack-protector-strong -D_XOPEN_SOURCE=700 -O2 -D_FORTIFY_SOURCE=2 -std=c++17
   OBJECT_DIR = CMakeFiles/jarvis_pty.dir
   OBJECT_FILE_DIR = CMakeFiles/jarvis_pty.dir
-  TARGET_COMPILE_PDB = CMakeFiles/jarvis_pty.dir/
-  TARGET_PDB = /home/ulrich/Documents/Projects/jarvis/src/android/app/build/intermediates/cxx/Release/r1f563i2/obj/x86_64/libjarvis_pty.pdb
 
 
 # =============================================================================
@@ -84,9 +80,8 @@ build /home/ulrich/Documents/Projects/jarvis/src/android/app/build/intermediates
   PRE_LINK = :
   SONAME = libjarvis_pty.so
   SONAME_FLAG = -Wl,-soname,
-  TARGET_COMPILE_PDB = CMakeFiles/jarvis_pty.dir/
   TARGET_FILE = /home/ulrich/Documents/Projects/jarvis/src/android/app/build/intermediates/cxx/Release/r1f563i2/obj/x86_64/libjarvis_pty.so
-  TARGET_PDB = /home/ulrich/Documents/Projects/jarvis/src/android/app/build/intermediates/cxx/Release/r1f563i2/obj/x86_64/libjarvis_pty.pdb
+  TARGET_PDB = jarvis_pty.so.dbg
 
 # =============================================================================
 # Object build statements for SHARED_LIBRARY target jarvis_llm
@@ -104,8 +99,6 @@ build CMakeFiles/jarvis_llm.dir/llama_bridge.cpp.o: CXX_COMPILER__jarvis_llm_Rel
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/include -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/include -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../include -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../common -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = CMakeFiles/jarvis_llm.dir
   OBJECT_FILE_DIR = CMakeFiles/jarvis_llm.dir
-  TARGET_COMPILE_PDB = CMakeFiles/jarvis_llm.dir/
-  TARGET_PDB = /home/ulrich/Documents/Projects/jarvis/src/android/app/build/intermediates/cxx/Release/r1f563i2/obj/x86_64/libjarvis_llm.pdb
 
 
 # =============================================================================
@@ -124,9 +117,8 @@ build /home/ulrich/Documents/Projects/jarvis/src/android/app/build/intermediates
   PRE_LINK = :
   SONAME = libjarvis_llm.so
   SONAME_FLAG = -Wl,-soname,
-  TARGET_COMPILE_PDB = CMakeFiles/jarvis_llm.dir/
   TARGET_FILE = /home/ulrich/Documents/Projects/jarvis/src/android/app/build/intermediates/cxx/Release/r1f563i2/obj/x86_64/libjarvis_llm.so
-  TARGET_PDB = /home/ulrich/Documents/Projects/jarvis/src/android/app/build/intermediates/cxx/Release/r1f563i2/obj/x86_64/libjarvis_llm.pdb
+  TARGET_PDB = jarvis_llm.so.dbg
 
 
 #############################################
@@ -354,8 +346,6 @@ build llama_build/ggml/src/CMakeFiles/ggml-base.dir/ggml.c.o: C_COMPILER__ggml-b
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/ggml/src/CMakeFiles/ggml-base.dir
   OBJECT_FILE_DIR = llama_build/ggml/src/CMakeFiles/ggml-base.dir
-  TARGET_COMPILE_PDB = llama_build/ggml/src/CMakeFiles/ggml-base.dir/ggml-base.pdb
-  TARGET_PDB = llama_build/ggml/src/libggml-base.pdb
 
 build llama_build/ggml/src/CMakeFiles/ggml-base.dir/ggml-alloc.c.o: C_COMPILER__ggml-base_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/ggml-alloc.c || cmake_object_order_depends_target_ggml-base
   DEFINES = -DGGML_SCHED_MAX_COPIES=4 -D_GNU_SOURCE -D_XOPEN_SOURCE=600
@@ -364,8 +354,6 @@ build llama_build/ggml/src/CMakeFiles/ggml-base.dir/ggml-alloc.c.o: C_COMPILER__
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/ggml/src/CMakeFiles/ggml-base.dir
   OBJECT_FILE_DIR = llama_build/ggml/src/CMakeFiles/ggml-base.dir
-  TARGET_COMPILE_PDB = llama_build/ggml/src/CMakeFiles/ggml-base.dir/ggml-base.pdb
-  TARGET_PDB = llama_build/ggml/src/libggml-base.pdb
 
 build llama_build/ggml/src/CMakeFiles/ggml-base.dir/ggml-backend.cpp.o: CXX_COMPILER__ggml-base_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/ggml-backend.cpp || cmake_object_order_depends_target_ggml-base
   DEFINES = -DGGML_SCHED_MAX_COPIES=4 -D_GNU_SOURCE -D_XOPEN_SOURCE=600
@@ -374,8 +362,6 @@ build llama_build/ggml/src/CMakeFiles/ggml-base.dir/ggml-backend.cpp.o: CXX_COMP
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/ggml/src/CMakeFiles/ggml-base.dir
   OBJECT_FILE_DIR = llama_build/ggml/src/CMakeFiles/ggml-base.dir
-  TARGET_COMPILE_PDB = llama_build/ggml/src/CMakeFiles/ggml-base.dir/ggml-base.pdb
-  TARGET_PDB = llama_build/ggml/src/libggml-base.pdb
 
 build llama_build/ggml/src/CMakeFiles/ggml-base.dir/ggml-opt.cpp.o: CXX_COMPILER__ggml-base_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/ggml-opt.cpp || cmake_object_order_depends_target_ggml-base
   DEFINES = -DGGML_SCHED_MAX_COPIES=4 -D_GNU_SOURCE -D_XOPEN_SOURCE=600
@@ -384,8 +370,6 @@ build llama_build/ggml/src/CMakeFiles/ggml-base.dir/ggml-opt.cpp.o: CXX_COMPILER
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/ggml/src/CMakeFiles/ggml-base.dir
   OBJECT_FILE_DIR = llama_build/ggml/src/CMakeFiles/ggml-base.dir
-  TARGET_COMPILE_PDB = llama_build/ggml/src/CMakeFiles/ggml-base.dir/ggml-base.pdb
-  TARGET_PDB = llama_build/ggml/src/libggml-base.pdb
 
 build llama_build/ggml/src/CMakeFiles/ggml-base.dir/ggml-threading.cpp.o: CXX_COMPILER__ggml-base_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/ggml-threading.cpp || cmake_object_order_depends_target_ggml-base
   DEFINES = -DGGML_SCHED_MAX_COPIES=4 -D_GNU_SOURCE -D_XOPEN_SOURCE=600
@@ -394,8 +378,6 @@ build llama_build/ggml/src/CMakeFiles/ggml-base.dir/ggml-threading.cpp.o: CXX_CO
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/ggml/src/CMakeFiles/ggml-base.dir
   OBJECT_FILE_DIR = llama_build/ggml/src/CMakeFiles/ggml-base.dir
-  TARGET_COMPILE_PDB = llama_build/ggml/src/CMakeFiles/ggml-base.dir/ggml-base.pdb
-  TARGET_PDB = llama_build/ggml/src/libggml-base.pdb
 
 build llama_build/ggml/src/CMakeFiles/ggml-base.dir/ggml-quants.c.o: C_COMPILER__ggml-base_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/ggml-quants.c || cmake_object_order_depends_target_ggml-base
   DEFINES = -DGGML_SCHED_MAX_COPIES=4 -D_GNU_SOURCE -D_XOPEN_SOURCE=600
@@ -404,8 +386,6 @@ build llama_build/ggml/src/CMakeFiles/ggml-base.dir/ggml-quants.c.o: C_COMPILER_
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/ggml/src/CMakeFiles/ggml-base.dir
   OBJECT_FILE_DIR = llama_build/ggml/src/CMakeFiles/ggml-base.dir
-  TARGET_COMPILE_PDB = llama_build/ggml/src/CMakeFiles/ggml-base.dir/ggml-base.pdb
-  TARGET_PDB = llama_build/ggml/src/libggml-base.pdb
 
 build llama_build/ggml/src/CMakeFiles/ggml-base.dir/gguf.cpp.o: CXX_COMPILER__ggml-base_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/gguf.cpp || cmake_object_order_depends_target_ggml-base
   DEFINES = -DGGML_SCHED_MAX_COPIES=4 -D_GNU_SOURCE -D_XOPEN_SOURCE=600
@@ -414,8 +394,6 @@ build llama_build/ggml/src/CMakeFiles/ggml-base.dir/gguf.cpp.o: CXX_COMPILER__gg
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/ggml/src/CMakeFiles/ggml-base.dir
   OBJECT_FILE_DIR = llama_build/ggml/src/CMakeFiles/ggml-base.dir
-  TARGET_COMPILE_PDB = llama_build/ggml/src/CMakeFiles/ggml-base.dir/ggml-base.pdb
-  TARGET_PDB = llama_build/ggml/src/libggml-base.pdb
 
 
 # =============================================================================
@@ -430,9 +408,8 @@ build llama_build/ggml/src/libggml-base.a: CXX_STATIC_LIBRARY_LINKER__ggml-base_
   OBJECT_DIR = llama_build/ggml/src/CMakeFiles/ggml-base.dir
   POST_BUILD = :
   PRE_LINK = :
-  TARGET_COMPILE_PDB = llama_build/ggml/src/CMakeFiles/ggml-base.dir/ggml-base.pdb
   TARGET_FILE = llama_build/ggml/src/libggml-base.a
-  TARGET_PDB = llama_build/ggml/src/libggml-base.pdb
+  TARGET_PDB = ggml-base.a.dbg
 
 # =============================================================================
 # Object build statements for STATIC_LIBRARY target ggml
@@ -450,8 +427,6 @@ build llama_build/ggml/src/CMakeFiles/ggml.dir/ggml-backend-reg.cpp.o: CXX_COMPI
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/ggml/src/CMakeFiles/ggml.dir
   OBJECT_FILE_DIR = llama_build/ggml/src/CMakeFiles/ggml.dir
-  TARGET_COMPILE_PDB = llama_build/ggml/src/CMakeFiles/ggml.dir/ggml.pdb
-  TARGET_PDB = llama_build/ggml/src/libggml.pdb
 
 
 # =============================================================================
@@ -466,9 +441,8 @@ build llama_build/ggml/src/libggml.a: CXX_STATIC_LIBRARY_LINKER__ggml_Release ll
   OBJECT_DIR = llama_build/ggml/src/CMakeFiles/ggml.dir
   POST_BUILD = :
   PRE_LINK = :
-  TARGET_COMPILE_PDB = llama_build/ggml/src/CMakeFiles/ggml.dir/ggml.pdb
   TARGET_FILE = llama_build/ggml/src/libggml.a
-  TARGET_PDB = llama_build/ggml/src/libggml.pdb
+  TARGET_PDB = ggml.a.dbg
 
 # =============================================================================
 # Object build statements for STATIC_LIBRARY target ggml-cpu
@@ -486,8 +460,6 @@ build llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.c.o: C_COMP
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/.. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/ggml-cpu -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/ggml/src/CMakeFiles/ggml-cpu.dir
   OBJECT_FILE_DIR = llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu
-  TARGET_COMPILE_PDB = llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu.pdb
-  TARGET_PDB = llama_build/ggml/src/libggml-cpu.pdb
 
 build llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.cpp.o: CXX_COMPILER__ggml-cpu_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/ggml-cpu/ggml-cpu.cpp || cmake_object_order_depends_target_ggml-cpu
   DEFINES = -DGGML_SCHED_MAX_COPIES=4 -DGGML_SSE42 -DGGML_USE_CPU_AARCH64 -DGGML_USE_LLAMAFILE -DGGML_USE_OPENMP -D_GNU_SOURCE -D_XOPEN_SOURCE=600
@@ -496,8 +468,6 @@ build llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.cpp.o: CXX_
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/.. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/ggml-cpu -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/ggml/src/CMakeFiles/ggml-cpu.dir
   OBJECT_FILE_DIR = llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu
-  TARGET_COMPILE_PDB = llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu.pdb
-  TARGET_PDB = llama_build/ggml/src/libggml-cpu.pdb
 
 build llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu-aarch64.cpp.o: CXX_COMPILER__ggml-cpu_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/ggml-cpu/ggml-cpu-aarch64.cpp || cmake_object_order_depends_target_ggml-cpu
   DEFINES = -DGGML_SCHED_MAX_COPIES=4 -DGGML_SSE42 -DGGML_USE_CPU_AARCH64 -DGGML_USE_LLAMAFILE -DGGML_USE_OPENMP -D_GNU_SOURCE -D_XOPEN_SOURCE=600
@@ -506,8 +476,6 @@ build llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu-aarch64.cpp
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/.. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/ggml-cpu -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/ggml/src/CMakeFiles/ggml-cpu.dir
   OBJECT_FILE_DIR = llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu
-  TARGET_COMPILE_PDB = llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu.pdb
-  TARGET_PDB = llama_build/ggml/src/libggml-cpu.pdb
 
 build llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu-hbm.cpp.o: CXX_COMPILER__ggml-cpu_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/ggml-cpu/ggml-cpu-hbm.cpp || cmake_object_order_depends_target_ggml-cpu
   DEFINES = -DGGML_SCHED_MAX_COPIES=4 -DGGML_SSE42 -DGGML_USE_CPU_AARCH64 -DGGML_USE_LLAMAFILE -DGGML_USE_OPENMP -D_GNU_SOURCE -D_XOPEN_SOURCE=600
@@ -516,8 +484,6 @@ build llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu-hbm.cpp.o: 
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/.. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/ggml-cpu -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/ggml/src/CMakeFiles/ggml-cpu.dir
   OBJECT_FILE_DIR = llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu
-  TARGET_COMPILE_PDB = llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu.pdb
-  TARGET_PDB = llama_build/ggml/src/libggml-cpu.pdb
 
 build llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu-quants.c.o: C_COMPILER__ggml-cpu_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/ggml-cpu/ggml-cpu-quants.c || cmake_object_order_depends_target_ggml-cpu
   DEFINES = -DGGML_SCHED_MAX_COPIES=4 -DGGML_SSE42 -DGGML_USE_CPU_AARCH64 -DGGML_USE_LLAMAFILE -DGGML_USE_OPENMP -D_GNU_SOURCE -D_XOPEN_SOURCE=600
@@ -526,8 +492,6 @@ build llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu-quants.c.o:
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/.. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/ggml-cpu -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/ggml/src/CMakeFiles/ggml-cpu.dir
   OBJECT_FILE_DIR = llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu
-  TARGET_COMPILE_PDB = llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu.pdb
-  TARGET_PDB = llama_build/ggml/src/libggml-cpu.pdb
 
 build llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu-traits.cpp.o: CXX_COMPILER__ggml-cpu_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/ggml-cpu/ggml-cpu-traits.cpp || cmake_object_order_depends_target_ggml-cpu
   DEFINES = -DGGML_SCHED_MAX_COPIES=4 -DGGML_SSE42 -DGGML_USE_CPU_AARCH64 -DGGML_USE_LLAMAFILE -DGGML_USE_OPENMP -D_GNU_SOURCE -D_XOPEN_SOURCE=600
@@ -536,8 +500,6 @@ build llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu-traits.cpp.
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/.. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/ggml-cpu -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/ggml/src/CMakeFiles/ggml-cpu.dir
   OBJECT_FILE_DIR = llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu
-  TARGET_COMPILE_PDB = llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu.pdb
-  TARGET_PDB = llama_build/ggml/src/libggml-cpu.pdb
 
 build llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/amx.cpp.o: CXX_COMPILER__ggml-cpu_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/ggml-cpu/amx/amx.cpp || cmake_object_order_depends_target_ggml-cpu
   DEFINES = -DGGML_SCHED_MAX_COPIES=4 -DGGML_SSE42 -DGGML_USE_CPU_AARCH64 -DGGML_USE_LLAMAFILE -DGGML_USE_OPENMP -D_GNU_SOURCE -D_XOPEN_SOURCE=600
@@ -546,8 +508,6 @@ build llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/amx.cpp.o: CXX_C
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/.. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/ggml-cpu -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/ggml/src/CMakeFiles/ggml-cpu.dir
   OBJECT_FILE_DIR = llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx
-  TARGET_COMPILE_PDB = llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu.pdb
-  TARGET_PDB = llama_build/ggml/src/libggml-cpu.pdb
 
 build llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/mmq.cpp.o: CXX_COMPILER__ggml-cpu_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/ggml-cpu/amx/mmq.cpp || cmake_object_order_depends_target_ggml-cpu
   DEFINES = -DGGML_SCHED_MAX_COPIES=4 -DGGML_SSE42 -DGGML_USE_CPU_AARCH64 -DGGML_USE_LLAMAFILE -DGGML_USE_OPENMP -D_GNU_SOURCE -D_XOPEN_SOURCE=600
@@ -556,8 +516,6 @@ build llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/mmq.cpp.o: CXX_C
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/.. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/ggml-cpu -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/ggml/src/CMakeFiles/ggml-cpu.dir
   OBJECT_FILE_DIR = llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx
-  TARGET_COMPILE_PDB = llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu.pdb
-  TARGET_PDB = llama_build/ggml/src/libggml-cpu.pdb
 
 build llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/llamafile/sgemm.cpp.o: CXX_COMPILER__ggml-cpu_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/ggml-cpu/llamafile/sgemm.cpp || cmake_object_order_depends_target_ggml-cpu
   DEFINES = -DGGML_SCHED_MAX_COPIES=4 -DGGML_SSE42 -DGGML_USE_CPU_AARCH64 -DGGML_USE_LLAMAFILE -DGGML_USE_OPENMP -D_GNU_SOURCE -D_XOPEN_SOURCE=600
@@ -566,8 +524,6 @@ build llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/llamafile/sgemm.cpp.
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/.. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/ggml-cpu -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/ggml/src/CMakeFiles/ggml-cpu.dir
   OBJECT_FILE_DIR = llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/llamafile
-  TARGET_COMPILE_PDB = llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu.pdb
-  TARGET_PDB = llama_build/ggml/src/libggml-cpu.pdb
 
 
 # =============================================================================
@@ -582,9 +538,8 @@ build llama_build/ggml/src/libggml-cpu.a: CXX_STATIC_LIBRARY_LINKER__ggml-cpu_Re
   OBJECT_DIR = llama_build/ggml/src/CMakeFiles/ggml-cpu.dir
   POST_BUILD = :
   PRE_LINK = :
-  TARGET_COMPILE_PDB = llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu.pdb
   TARGET_FILE = llama_build/ggml/src/libggml-cpu.a
-  TARGET_PDB = llama_build/ggml/src/libggml-cpu.pdb
+  TARGET_PDB = ggml-cpu.a.dbg
 
 
 #############################################
@@ -742,8 +697,6 @@ build llama_build/src/CMakeFiles/llama.dir/llama.cpp.o: CXX_COMPILER__llama_Rele
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../include -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../common -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/src/CMakeFiles/llama.dir
   OBJECT_FILE_DIR = llama_build/src/CMakeFiles/llama.dir
-  TARGET_COMPILE_PDB = llama_build/src/CMakeFiles/llama.dir/llama.pdb
-  TARGET_PDB = llama_build/src/libllama.pdb
 
 build llama_build/src/CMakeFiles/llama.dir/llama-adapter.cpp.o: CXX_COMPILER__llama_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/llama-adapter.cpp || cmake_object_order_depends_target_llama
   DEFINES = -DGGML_USE_CPU
@@ -752,8 +705,6 @@ build llama_build/src/CMakeFiles/llama.dir/llama-adapter.cpp.o: CXX_COMPILER__ll
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../include -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../common -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/src/CMakeFiles/llama.dir
   OBJECT_FILE_DIR = llama_build/src/CMakeFiles/llama.dir
-  TARGET_COMPILE_PDB = llama_build/src/CMakeFiles/llama.dir/llama.pdb
-  TARGET_PDB = llama_build/src/libllama.pdb
 
 build llama_build/src/CMakeFiles/llama.dir/llama-arch.cpp.o: CXX_COMPILER__llama_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/llama-arch.cpp || cmake_object_order_depends_target_llama
   DEFINES = -DGGML_USE_CPU
@@ -762,8 +713,6 @@ build llama_build/src/CMakeFiles/llama.dir/llama-arch.cpp.o: CXX_COMPILER__llama
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../include -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../common -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/src/CMakeFiles/llama.dir
   OBJECT_FILE_DIR = llama_build/src/CMakeFiles/llama.dir
-  TARGET_COMPILE_PDB = llama_build/src/CMakeFiles/llama.dir/llama.pdb
-  TARGET_PDB = llama_build/src/libllama.pdb
 
 build llama_build/src/CMakeFiles/llama.dir/llama-batch.cpp.o: CXX_COMPILER__llama_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/llama-batch.cpp || cmake_object_order_depends_target_llama
   DEFINES = -DGGML_USE_CPU
@@ -772,8 +721,6 @@ build llama_build/src/CMakeFiles/llama.dir/llama-batch.cpp.o: CXX_COMPILER__llam
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../include -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../common -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/src/CMakeFiles/llama.dir
   OBJECT_FILE_DIR = llama_build/src/CMakeFiles/llama.dir
-  TARGET_COMPILE_PDB = llama_build/src/CMakeFiles/llama.dir/llama.pdb
-  TARGET_PDB = llama_build/src/libllama.pdb
 
 build llama_build/src/CMakeFiles/llama.dir/llama-chat.cpp.o: CXX_COMPILER__llama_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/llama-chat.cpp || cmake_object_order_depends_target_llama
   DEFINES = -DGGML_USE_CPU
@@ -782,8 +729,6 @@ build llama_build/src/CMakeFiles/llama.dir/llama-chat.cpp.o: CXX_COMPILER__llama
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../include -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../common -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/src/CMakeFiles/llama.dir
   OBJECT_FILE_DIR = llama_build/src/CMakeFiles/llama.dir
-  TARGET_COMPILE_PDB = llama_build/src/CMakeFiles/llama.dir/llama.pdb
-  TARGET_PDB = llama_build/src/libllama.pdb
 
 build llama_build/src/CMakeFiles/llama.dir/llama-context.cpp.o: CXX_COMPILER__llama_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/llama-context.cpp || cmake_object_order_depends_target_llama
   DEFINES = -DGGML_USE_CPU
@@ -792,8 +737,6 @@ build llama_build/src/CMakeFiles/llama.dir/llama-context.cpp.o: CXX_COMPILER__ll
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../include -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../common -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/src/CMakeFiles/llama.dir
   OBJECT_FILE_DIR = llama_build/src/CMakeFiles/llama.dir
-  TARGET_COMPILE_PDB = llama_build/src/CMakeFiles/llama.dir/llama.pdb
-  TARGET_PDB = llama_build/src/libllama.pdb
 
 build llama_build/src/CMakeFiles/llama.dir/llama-grammar.cpp.o: CXX_COMPILER__llama_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/llama-grammar.cpp || cmake_object_order_depends_target_llama
   DEFINES = -DGGML_USE_CPU
@@ -802,8 +745,6 @@ build llama_build/src/CMakeFiles/llama.dir/llama-grammar.cpp.o: CXX_COMPILER__ll
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../include -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../common -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/src/CMakeFiles/llama.dir
   OBJECT_FILE_DIR = llama_build/src/CMakeFiles/llama.dir
-  TARGET_COMPILE_PDB = llama_build/src/CMakeFiles/llama.dir/llama.pdb
-  TARGET_PDB = llama_build/src/libllama.pdb
 
 build llama_build/src/CMakeFiles/llama.dir/llama-hparams.cpp.o: CXX_COMPILER__llama_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/llama-hparams.cpp || cmake_object_order_depends_target_llama
   DEFINES = -DGGML_USE_CPU
@@ -812,8 +753,6 @@ build llama_build/src/CMakeFiles/llama.dir/llama-hparams.cpp.o: CXX_COMPILER__ll
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../include -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../common -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/src/CMakeFiles/llama.dir
   OBJECT_FILE_DIR = llama_build/src/CMakeFiles/llama.dir
-  TARGET_COMPILE_PDB = llama_build/src/CMakeFiles/llama.dir/llama.pdb
-  TARGET_PDB = llama_build/src/libllama.pdb
 
 build llama_build/src/CMakeFiles/llama.dir/llama-impl.cpp.o: CXX_COMPILER__llama_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/llama-impl.cpp || cmake_object_order_depends_target_llama
   DEFINES = -DGGML_USE_CPU
@@ -822,8 +761,6 @@ build llama_build/src/CMakeFiles/llama.dir/llama-impl.cpp.o: CXX_COMPILER__llama
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../include -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../common -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/src/CMakeFiles/llama.dir
   OBJECT_FILE_DIR = llama_build/src/CMakeFiles/llama.dir
-  TARGET_COMPILE_PDB = llama_build/src/CMakeFiles/llama.dir/llama.pdb
-  TARGET_PDB = llama_build/src/libllama.pdb
 
 build llama_build/src/CMakeFiles/llama.dir/llama-kv-cache.cpp.o: CXX_COMPILER__llama_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/llama-kv-cache.cpp || cmake_object_order_depends_target_llama
   DEFINES = -DGGML_USE_CPU
@@ -832,8 +769,6 @@ build llama_build/src/CMakeFiles/llama.dir/llama-kv-cache.cpp.o: CXX_COMPILER__l
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../include -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../common -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/src/CMakeFiles/llama.dir
   OBJECT_FILE_DIR = llama_build/src/CMakeFiles/llama.dir
-  TARGET_COMPILE_PDB = llama_build/src/CMakeFiles/llama.dir/llama.pdb
-  TARGET_PDB = llama_build/src/libllama.pdb
 
 build llama_build/src/CMakeFiles/llama.dir/llama-mmap.cpp.o: CXX_COMPILER__llama_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/llama-mmap.cpp || cmake_object_order_depends_target_llama
   DEFINES = -DGGML_USE_CPU
@@ -842,8 +777,6 @@ build llama_build/src/CMakeFiles/llama.dir/llama-mmap.cpp.o: CXX_COMPILER__llama
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../include -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../common -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/src/CMakeFiles/llama.dir
   OBJECT_FILE_DIR = llama_build/src/CMakeFiles/llama.dir
-  TARGET_COMPILE_PDB = llama_build/src/CMakeFiles/llama.dir/llama.pdb
-  TARGET_PDB = llama_build/src/libllama.pdb
 
 build llama_build/src/CMakeFiles/llama.dir/llama-model-loader.cpp.o: CXX_COMPILER__llama_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/llama-model-loader.cpp || cmake_object_order_depends_target_llama
   DEFINES = -DGGML_USE_CPU
@@ -852,8 +785,6 @@ build llama_build/src/CMakeFiles/llama.dir/llama-model-loader.cpp.o: CXX_COMPILE
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../include -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../common -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/src/CMakeFiles/llama.dir
   OBJECT_FILE_DIR = llama_build/src/CMakeFiles/llama.dir
-  TARGET_COMPILE_PDB = llama_build/src/CMakeFiles/llama.dir/llama.pdb
-  TARGET_PDB = llama_build/src/libllama.pdb
 
 build llama_build/src/CMakeFiles/llama.dir/llama-model.cpp.o: CXX_COMPILER__llama_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/llama-model.cpp || cmake_object_order_depends_target_llama
   DEFINES = -DGGML_USE_CPU
@@ -862,8 +793,6 @@ build llama_build/src/CMakeFiles/llama.dir/llama-model.cpp.o: CXX_COMPILER__llam
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../include -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../common -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/src/CMakeFiles/llama.dir
   OBJECT_FILE_DIR = llama_build/src/CMakeFiles/llama.dir
-  TARGET_COMPILE_PDB = llama_build/src/CMakeFiles/llama.dir/llama.pdb
-  TARGET_PDB = llama_build/src/libllama.pdb
 
 build llama_build/src/CMakeFiles/llama.dir/llama-quant.cpp.o: CXX_COMPILER__llama_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/llama-quant.cpp || cmake_object_order_depends_target_llama
   DEFINES = -DGGML_USE_CPU
@@ -872,8 +801,6 @@ build llama_build/src/CMakeFiles/llama.dir/llama-quant.cpp.o: CXX_COMPILER__llam
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../include -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../common -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/src/CMakeFiles/llama.dir
   OBJECT_FILE_DIR = llama_build/src/CMakeFiles/llama.dir
-  TARGET_COMPILE_PDB = llama_build/src/CMakeFiles/llama.dir/llama.pdb
-  TARGET_PDB = llama_build/src/libllama.pdb
 
 build llama_build/src/CMakeFiles/llama.dir/llama-sampling.cpp.o: CXX_COMPILER__llama_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/llama-sampling.cpp || cmake_object_order_depends_target_llama
   DEFINES = -DGGML_USE_CPU
@@ -882,8 +809,6 @@ build llama_build/src/CMakeFiles/llama.dir/llama-sampling.cpp.o: CXX_COMPILER__l
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../include -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../common -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/src/CMakeFiles/llama.dir
   OBJECT_FILE_DIR = llama_build/src/CMakeFiles/llama.dir
-  TARGET_COMPILE_PDB = llama_build/src/CMakeFiles/llama.dir/llama.pdb
-  TARGET_PDB = llama_build/src/libllama.pdb
 
 build llama_build/src/CMakeFiles/llama.dir/llama-vocab.cpp.o: CXX_COMPILER__llama_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/llama-vocab.cpp || cmake_object_order_depends_target_llama
   DEFINES = -DGGML_USE_CPU
@@ -892,8 +817,6 @@ build llama_build/src/CMakeFiles/llama.dir/llama-vocab.cpp.o: CXX_COMPILER__llam
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../include -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../common -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/src/CMakeFiles/llama.dir
   OBJECT_FILE_DIR = llama_build/src/CMakeFiles/llama.dir
-  TARGET_COMPILE_PDB = llama_build/src/CMakeFiles/llama.dir/llama.pdb
-  TARGET_PDB = llama_build/src/libllama.pdb
 
 build llama_build/src/CMakeFiles/llama.dir/unicode.cpp.o: CXX_COMPILER__llama_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/unicode.cpp || cmake_object_order_depends_target_llama
   DEFINES = -DGGML_USE_CPU
@@ -902,8 +825,6 @@ build llama_build/src/CMakeFiles/llama.dir/unicode.cpp.o: CXX_COMPILER__llama_Re
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../include -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../common -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/src/CMakeFiles/llama.dir
   OBJECT_FILE_DIR = llama_build/src/CMakeFiles/llama.dir
-  TARGET_COMPILE_PDB = llama_build/src/CMakeFiles/llama.dir/llama.pdb
-  TARGET_PDB = llama_build/src/libllama.pdb
 
 build llama_build/src/CMakeFiles/llama.dir/unicode-data.cpp.o: CXX_COMPILER__llama_Release /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/unicode-data.cpp || cmake_object_order_depends_target_llama
   DEFINES = -DGGML_USE_CPU
@@ -912,8 +833,6 @@ build llama_build/src/CMakeFiles/llama.dir/unicode-data.cpp.o: CXX_COMPILER__lla
   INCLUDES = -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/. -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../include -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/../common -I/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/../include
   OBJECT_DIR = llama_build/src/CMakeFiles/llama.dir
   OBJECT_FILE_DIR = llama_build/src/CMakeFiles/llama.dir
-  TARGET_COMPILE_PDB = llama_build/src/CMakeFiles/llama.dir/llama.pdb
-  TARGET_PDB = llama_build/src/libllama.pdb
 
 
 # =============================================================================
@@ -928,9 +847,8 @@ build llama_build/src/libllama.a: CXX_STATIC_LIBRARY_LINKER__llama_Release llama
   OBJECT_DIR = llama_build/src/CMakeFiles/llama.dir
   POST_BUILD = :
   PRE_LINK = :
-  TARGET_COMPILE_PDB = llama_build/src/CMakeFiles/llama.dir/llama.pdb
   TARGET_FILE = llama_build/src/libllama.a
-  TARGET_PDB = llama_build/src/libllama.pdb
+  TARGET_PDB = llama.a.dbg
 
 
 #############################################
@@ -1076,14 +994,14 @@ build llama_build/src/all: phony llama_build/src/libllama.a
 #############################################
 # Re-run CMake if any of its inputs changed.
 
-build build.ninja: RERUN_CMAKE | /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/BasicConfigVersion-SameMajorVersion.cmake.in /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeCCompiler.cmake.in /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeCCompilerABI.c /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeCInformation.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeCXXCompiler.cmake.in /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeCXXCompilerABI.cpp /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeCXXInformation.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeCheckCompilerFlagCommonPatterns.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeCommonLanguageInclude.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeCompilerIdDetection.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeDetermineCCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeDetermineCXXCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeDetermineCompileFeatures.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeDetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeDetermineCompilerABI.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeDetermineCompilerId.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeDetermineSystem.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeFindBinUtils.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeGenericSystem.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeInitializeConfigs.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeLanguageInformation.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakePackageConfigHelpers.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeParseImplicitIncludeInfo.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeParseImplicitLinkInfo.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeParseLibraryArchitecture.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeSystem.cmake.in /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeSystemSpecificInformation.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeSystemSpecificInitialize.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeTestCCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeTestCXXCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeTestCompilerCommon.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CheckCSourceCompiles.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CheckCXXCompilerFlag.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CheckCXXSourceCompiles.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CheckForPthreads.c /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CheckIncludeFile.c.in /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CheckIncludeFile.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CheckIncludeFileCXX.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CheckLibraryExists.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/ADSP-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/ARMCC-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/ARMClang-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/AppleClang-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Borland-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Bruce-C-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/CMakeCommonCompilerMacros.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Clang-C.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Clang-CXX.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Clang-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Clang-DetermineCompilerInternal.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Clang-FindBinUtils.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Clang.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Comeau-CXX-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Compaq-C-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Compaq-CXX-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Cray-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Embarcadero-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Fujitsu-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/FujitsuClang-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/GHS-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/GNU-C-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/GNU-CXX-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/GNU.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/HP-C-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/HP-CXX-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/IAR-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/IBMCPP-C-DetermineVersionInternal.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/IBMCPP-CXX-DetermineVersionInternal.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Intel-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/IntelLLVM-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/MSVC-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/NVHPC-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/NVIDIA-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/OpenWatcom-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/PGI-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/PathScale-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/SCO-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/SDCC-C-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/SunPro-C-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/SunPro-CXX-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/TI-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/TinyCC-C-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/VisualAge-C-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/VisualAge-CXX-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Watcom-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/XL-C-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/XL-CXX-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/XLClang-C-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/XLClang-CXX-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/zOS-C-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/zOS-CXX-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/FindGit.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/FindOpenMP.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/FindPackageHandleStandardArgs.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/FindPackageMessage.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/FindThreads.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/GNUInstallDirs.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Internal/CheckCompilerFlag.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Internal/CheckSourceCompiles.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Internal/FeatureTesting.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Android-Clang-C.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Android-Clang-CXX.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Android-Clang.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Android-Determine-C.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Android-Determine-CXX.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Android-Determine.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Android-Initialize.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Android.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Android/Determine-Compiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Linux.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/UnixPaths.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/WriteBasicConfigVersionFile.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/abis.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/android-legacy.toolchain.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/android.toolchain.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/flags.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/hooks/pre/Android-Clang.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/hooks/pre/Android-Determine.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/hooks/pre/Android-Initialize.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/hooks/pre/Android.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/hooks/pre/Determine-Compiler.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/platforms.cmake /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/CMakeLists.txt /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/CMakeLists.txt /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/cmake/build-info.cmake /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/cmake/common.cmake /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/cmake/llama-config.cmake.in /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/cmake/llama.pc.in /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/CMakeLists.txt /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/cmake/ggml-config.cmake.in /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/CMakeLists.txt /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/ggml-cpu/CMakeLists.txt /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/CMakeLists.txt CMakeCache.txt CMakeFiles/3.22.1-g37088a8/CMakeCCompiler.cmake CMakeFiles/3.22.1-g37088a8/CMakeCXXCompiler.cmake CMakeFiles/3.22.1-g37088a8/CMakeSystem.cmake CMakeFiles/FindOpenMP/OpenMPCheckVersion.c CMakeFiles/FindOpenMP/OpenMPCheckVersion.cpp CMakeFiles/FindOpenMP/OpenMPTryFlag.c CMakeFiles/FindOpenMP/OpenMPTryFlag.cpp
+build build.ninja: RERUN_CMAKE | /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/BasicConfigVersion-SameMajorVersion.cmake.in /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeCInformation.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeCXXInformation.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeCheckCompilerFlagCommonPatterns.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeCommonLanguageInclude.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeGenericSystem.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeInitializeConfigs.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeLanguageInformation.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakePackageConfigHelpers.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeParseImplicitLinkInfo.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeSystemSpecificInformation.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeSystemSpecificInitialize.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CheckCSourceCompiles.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CheckCXXCompilerFlag.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CheckCXXSourceCompiles.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CheckIncludeFile.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CheckIncludeFileCXX.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CheckLibraryExists.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/CMakeCommonCompilerMacros.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Clang-C.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Clang-CXX.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Clang.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/GNU.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/FindGit.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/FindOpenMP.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/FindPackageHandleStandardArgs.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/FindPackageMessage.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/FindThreads.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/GNUInstallDirs.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Internal/CheckCompilerFlag.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Internal/CheckSourceCompiles.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Android-Clang-C.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Android-Clang-CXX.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Android-Clang.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Android-Initialize.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Android.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Linux.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/UnixPaths.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/WriteBasicConfigVersionFile.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/abis.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/android-legacy.toolchain.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/android.toolchain.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/flags.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/hooks/pre/Android-Clang.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/hooks/pre/Android-Initialize.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/hooks/pre/Android.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/platforms.cmake /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/CMakeLists.txt /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/CMakeLists.txt /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/cmake/build-info.cmake /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/cmake/common.cmake /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/cmake/llama-config.cmake.in /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/cmake/llama.pc.in /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/CMakeLists.txt /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/cmake/ggml-config.cmake.in /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/CMakeLists.txt /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/ggml-cpu/CMakeLists.txt /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/CMakeLists.txt CMakeCache.txt CMakeFiles/3.22.1-g37088a8/CMakeCCompiler.cmake CMakeFiles/3.22.1-g37088a8/CMakeCXXCompiler.cmake CMakeFiles/3.22.1-g37088a8/CMakeSystem.cmake
   pool = console
 
 
 #############################################
 # A missing CMake input file is not an error.
 
-build /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/BasicConfigVersion-SameMajorVersion.cmake.in /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeCCompiler.cmake.in /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeCCompilerABI.c /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeCInformation.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeCXXCompiler.cmake.in /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeCXXCompilerABI.cpp /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeCXXInformation.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeCheckCompilerFlagCommonPatterns.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeCommonLanguageInclude.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeCompilerIdDetection.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeDetermineCCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeDetermineCXXCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeDetermineCompileFeatures.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeDetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeDetermineCompilerABI.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeDetermineCompilerId.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeDetermineSystem.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeFindBinUtils.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeGenericSystem.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeInitializeConfigs.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeLanguageInformation.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakePackageConfigHelpers.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeParseImplicitIncludeInfo.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeParseImplicitLinkInfo.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeParseLibraryArchitecture.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeSystem.cmake.in /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeSystemSpecificInformation.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeSystemSpecificInitialize.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeTestCCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeTestCXXCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeTestCompilerCommon.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CheckCSourceCompiles.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CheckCXXCompilerFlag.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CheckCXXSourceCompiles.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CheckForPthreads.c /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CheckIncludeFile.c.in /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CheckIncludeFile.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CheckIncludeFileCXX.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CheckLibraryExists.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/ADSP-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/ARMCC-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/ARMClang-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/AppleClang-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Borland-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Bruce-C-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/CMakeCommonCompilerMacros.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Clang-C.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Clang-CXX.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Clang-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Clang-DetermineCompilerInternal.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Clang-FindBinUtils.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Clang.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Comeau-CXX-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Compaq-C-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Compaq-CXX-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Cray-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Embarcadero-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Fujitsu-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/FujitsuClang-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/GHS-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/GNU-C-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/GNU-CXX-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/GNU.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/HP-C-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/HP-CXX-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/IAR-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/IBMCPP-C-DetermineVersionInternal.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/IBMCPP-CXX-DetermineVersionInternal.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Intel-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/IntelLLVM-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/MSVC-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/NVHPC-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/NVIDIA-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/OpenWatcom-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/PGI-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/PathScale-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/SCO-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/SDCC-C-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/SunPro-C-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/SunPro-CXX-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/TI-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/TinyCC-C-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/VisualAge-C-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/VisualAge-CXX-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Watcom-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/XL-C-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/XL-CXX-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/XLClang-C-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/XLClang-CXX-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/zOS-C-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/zOS-CXX-DetermineCompiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/FindGit.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/FindOpenMP.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/FindPackageHandleStandardArgs.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/FindPackageMessage.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/FindThreads.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/GNUInstallDirs.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Internal/CheckCompilerFlag.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Internal/CheckSourceCompiles.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Internal/FeatureTesting.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Android-Clang-C.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Android-Clang-CXX.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Android-Clang.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Android-Determine-C.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Android-Determine-CXX.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Android-Determine.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Android-Initialize.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Android.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Android/Determine-Compiler.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Linux.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/UnixPaths.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/WriteBasicConfigVersionFile.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/abis.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/android-legacy.toolchain.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/android.toolchain.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/flags.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/hooks/pre/Android-Clang.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/hooks/pre/Android-Determine.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/hooks/pre/Android-Initialize.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/hooks/pre/Android.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/hooks/pre/Determine-Compiler.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/platforms.cmake /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/CMakeLists.txt /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/CMakeLists.txt /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/cmake/build-info.cmake /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/cmake/common.cmake /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/cmake/llama-config.cmake.in /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/cmake/llama.pc.in /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/CMakeLists.txt /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/cmake/ggml-config.cmake.in /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/CMakeLists.txt /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/ggml-cpu/CMakeLists.txt /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/CMakeLists.txt CMakeCache.txt CMakeFiles/3.22.1-g37088a8/CMakeCCompiler.cmake CMakeFiles/3.22.1-g37088a8/CMakeCXXCompiler.cmake CMakeFiles/3.22.1-g37088a8/CMakeSystem.cmake CMakeFiles/FindOpenMP/OpenMPCheckVersion.c CMakeFiles/FindOpenMP/OpenMPCheckVersion.cpp CMakeFiles/FindOpenMP/OpenMPTryFlag.c CMakeFiles/FindOpenMP/OpenMPTryFlag.cpp: phony
+build /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/BasicConfigVersion-SameMajorVersion.cmake.in /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeCInformation.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeCXXInformation.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeCheckCompilerFlagCommonPatterns.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeCommonLanguageInclude.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeGenericSystem.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeInitializeConfigs.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeLanguageInformation.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakePackageConfigHelpers.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeParseImplicitLinkInfo.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeSystemSpecificInformation.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMakeSystemSpecificInitialize.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CheckCSourceCompiles.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CheckCXXCompilerFlag.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CheckCXXSourceCompiles.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CheckIncludeFile.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CheckIncludeFileCXX.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/CheckLibraryExists.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/CMakeCommonCompilerMacros.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Clang-C.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Clang-CXX.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/Clang.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Compiler/GNU.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/FindGit.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/FindOpenMP.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/FindPackageHandleStandardArgs.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/FindPackageMessage.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/FindThreads.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/GNUInstallDirs.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Internal/CheckCompilerFlag.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Internal/CheckSourceCompiles.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Android-Clang-C.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Android-Clang-CXX.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Android-Clang.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Android-Initialize.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Android.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/Linux.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/Platform/UnixPaths.cmake /home/ulrich/Android/Sdk/cmake/3.22.1/share/cmake-3.22/Modules/WriteBasicConfigVersionFile.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/abis.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/android-legacy.toolchain.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/android.toolchain.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/flags.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/hooks/pre/Android-Clang.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/hooks/pre/Android-Initialize.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/hooks/pre/Android.cmake /home/ulrich/Android/Sdk/ndk/27.2.12479018/build/cmake/platforms.cmake /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/CMakeLists.txt /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/CMakeLists.txt /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/cmake/build-info.cmake /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/cmake/common.cmake /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/cmake/llama-config.cmake.in /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/cmake/llama.pc.in /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/CMakeLists.txt /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/cmake/ggml-config.cmake.in /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/CMakeLists.txt /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/ggml-cpu/CMakeLists.txt /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/CMakeLists.txt CMakeCache.txt CMakeFiles/3.22.1-g37088a8/CMakeCCompiler.cmake CMakeFiles/3.22.1-g37088a8/CMakeCXXCompiler.cmake CMakeFiles/3.22.1-g37088a8/CMakeSystem.cmake: phony
 
 
 #############################################

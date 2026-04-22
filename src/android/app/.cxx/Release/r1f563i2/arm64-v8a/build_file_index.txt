@@ -1,4 +1,3 @@
-/home/ulrich/Documents/Projects/jarvis/src/android/app/.cxx/Release/r1f563i2/arm64-v8a/_deps/opencl-headers-src/CMakeLists.txt
 /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/CMakeLists.txt
 /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/CMakeLists.txt
 /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/cmake/build-info.cmake
@@ -8,5 +7,4 @@
 /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/cmake/ggml-config.cmake.in
 /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/CMakeLists.txt
 /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/ggml-cpu/CMakeLists.txt
-/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/src/ggml-opencl/CMakeLists.txt
 /home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/src/CMakeLists.txt
