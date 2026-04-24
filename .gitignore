@@ -70,6 +70,11 @@ src/android/local.properties
 *.apk
 *.aab
 
+# OpenCL ICD loader stubs — built on demand via
+# src/android/scripts/build-opencl-stub.sh, one per ABI.
+src/android/app/src/main/cpp/opencl-stub/*/libOpenCL.so
+src/android/app/src/main/cpp/third_party/*/build/
+
 # Browser-extension packaged artifacts + signing keys
 *.crx
 *.xpi
@@ -78,3 +83,5 @@ src/android/local.properties
 # LLM documentation and claude-code reference
 llm/
 jarvis-cli/
+.superpowers/
+.worktrees/
