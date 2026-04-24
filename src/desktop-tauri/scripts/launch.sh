@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # JARVIS desktop launcher — used by the .desktop menu entry.
-# Ensures the whole voice stack is running, then starts the desktop:
-#   • Proxy         :4000  — LLM router (Anthropic-compat → Groq/DeepSeek/…)
-#   • Bridge        :8765  — legacy WS for browser UI / model-switch
-#   • Speech sidecar:8766  — STT + agent + TTS for voice
+# Ensures the backend services are running, then starts the desktop.
+# Voice lives in a native LiveKit-peer process (jarvis-voice-client) —
+# not in this launcher. Services:
+#   • Proxy    :4000  — LLM router (Anthropic-compat → Groq/DeepSeek/…)
+#   • Bridge   :8765  — WS + REST API for the Tauri UI
 # Each is only started if not already listening. Idempotent.
 set -u
 
@@ -13,7 +14,6 @@ PROJECT_ROOT="$(cd "$DESKTOP_DIR/../.." && pwd)"
 CLI_DIR="$PROJECT_ROOT/src/cli"
 BUN="$CLI_DIR/vendor/bun/linux-x64/bun"
 BIN="$DESKTOP_DIR/src-tauri/target/release/jarvis-desktop"
-SPEECH_LAUNCH="$DESKTOP_DIR/scripts/start-speech.sh"
 ENV_FILE="$CLI_DIR/.env.local"
 
 if [ ! -x "$BIN" ]; then
@@ -45,35 +45,36 @@ start_bun_bg() {
   disown || true
 }
 
-# ── Bring up the backend stack, in order ──────────────────────────────
-if ! curl -sS -m 1 http://127.0.0.1:4000/health >/dev/null 2>&1; then
-  start_bun_bg /tmp/jarvis-proxy.log "$CLI_DIR/src/proxy/server.ts"
-  wait_port 4000 || notify-send "JARVIS" "Proxy failed to start (see /tmp/jarvis-proxy.log)" 2>/dev/null || true
-fi
-
-if ! curl -sS -m 1 http://127.0.0.1:8765/health >/dev/null 2>&1; then
-  start_bun_bg /tmp/jarvis-bridge.log "$CLI_DIR/src/bridge/server.ts"
-  wait_port 8765 || notify-send "JARVIS" "Bridge failed to start (see /tmp/jarvis-bridge.log)" 2>/dev/null || true
-fi
-
-if ! curl -sS -m 1 http://127.0.0.1:8766/health >/dev/null 2>&1; then
-  printf '\n\n=== start %s speech sidecar ===\n' "$(date -Iseconds)" >>/tmp/jarvis-speech.log
-  setsid bash "$SPEECH_LAUNCH" </dev/null >>/tmp/jarvis-speech.log 2>&1 &
-  disown || true
-  wait_port 8766 || notify-send "JARVIS" "Speech sidecar failed to start (see /tmp/jarvis-speech.log)" 2>/dev/null || true
-fi
-
-# Force the echo-cancel virtual mic/sink as defaults. The pipewire
-# module is auto-loaded via ~/.config/pipewire/pipewire.conf.d/10-echo-cancel.conf
-# on boot, but the default-source/default-sink selection is runtime-only
-# — so we re-apply it here. Without this, the webview grabs the raw
-# hardware mic and JARVIS echoes himself through the speakers.
-if pactl list short sources 2>/dev/null | grep -q '^\S\+\s\+mic_aec\s'; then
-  pactl set-default-source mic_aec 2>/dev/null || true
-fi
-if pactl list short sinks 2>/dev/null | grep -q '^\S\+\s\+sink_aec\s'; then
-  pactl set-default-sink sink_aec 2>/dev/null || true
-fi
+# ── Backend stack is owned by systemd user units ──────────────────────
+# Proxy (4000), bridge (8765), voice agent + voice client, and
+# mic_aec / sink_aec routing are all managed by systemd user units.
+# Install the stack once with:
+#   systemctl --user enable --now \
+#     jarvis-proxy jarvis-bridge jarvis-audio-defaults \
+#     livekit-server jarvis-voice-agent jarvis-voice-client
+#
+# This launcher just confirms the two ports the Tauri UI needs (4000
+# + 8765) are alive; if a unit hasn't come up yet (e.g. cold boot)
+# we nudge it via systemctl. Voice services are handled entirely by
+# their own units — no inline fallback here.
+for port_host in "4000:proxy" "8765:bridge"; do
+  port="${port_host%%:*}"
+  name="${port_host##*:}"
+  wait_port "$port" && continue
+  if systemctl --user cat "jarvis-${name}.service" >/dev/null 2>&1; then
+    systemctl --user start "jarvis-${name}.service" >/dev/null 2>&1 || true
+    wait_port "$port" || notify-send "JARVIS" "jarvis-${name} failed to come up" 2>/dev/null || true
+  else
+    # Pre-systemd fallback — runs inline so a fresh clone still boots
+    # a usable app before the user has run `systemctl enable`. Once
+    # the units are installed this block is skipped (wait_port above
+    # already returned 0).
+    case "$name" in
+      proxy)  start_bun_bg /tmp/jarvis-proxy.log "$CLI_DIR/src/proxy/server.ts"; wait_port 4000 || true ;;
+      bridge) start_bun_bg /tmp/jarvis-bridge.log "$CLI_DIR/src/bridge/server.ts"; wait_port 8765 || true ;;
+    esac
+  fi
+done
 
 # If a desktop instance is already up, confirm it still has mic capture.
 # A silent failure mode we've seen: Tauri process is alive but the WebKit

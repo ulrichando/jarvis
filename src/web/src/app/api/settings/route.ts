@@ -1,0 +1,93 @@
+import { z } from "zod";
+import { loadSettings, redactForClient, saveSettings } from "@/lib/settings/store";
+import { settingsSchema } from "@/lib/settings/schema";
+
+export const runtime = "nodejs";
+
+export async function GET() {
+  const settings = await loadSettings();
+  return Response.json(redactForClient(settings));
+}
+
+/**
+ * PATCH — deep-merged update. Provider apiKey is updated only when a non-empty
+ * string is supplied, so the client can safely omit it to keep the stored one.
+ * Pass `null` to explicitly clear a key.
+ */
+const providerPatchSchema = z
+  .object({
+    apiKey: z.string().or(z.null()).optional(),
+    baseURL: z.string().or(z.null()).optional(),
+  })
+  .optional();
+
+const patchSchema = z.object({
+  user: z.object({ name: z.string().optional() }).partial().optional(),
+  defaults: z
+    .object({
+      model: z.string().optional(),
+      systemPrompt: z.string().optional(),
+      temperature: z.number().optional(),
+    })
+    .partial()
+    .optional(),
+  providers: z
+    .object({
+      anthropic: providerPatchSchema,
+      openai: providerPatchSchema,
+      google: providerPatchSchema,
+      deepseek: providerPatchSchema,
+      groq: providerPatchSchema,
+      kimi: providerPatchSchema,
+    })
+    .partial()
+    .optional(),
+  appearance: z
+    .object({
+      fontSize: z.enum(["sm", "md", "lg"]).optional(),
+      density: z.enum(["compact", "cozy"]).optional(),
+    })
+    .partial()
+    .optional(),
+});
+
+export async function PATCH(req: Request) {
+  const parsed = patchSchema.safeParse(await req.json());
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.flatten() }, { status: 400 });
+  }
+
+  const current = await loadSettings();
+  const patch = parsed.data;
+
+  const nextProviders = { ...current.providers };
+  if (patch.providers) {
+    for (const [provider, patchValue] of Object.entries(patch.providers)) {
+      if (!patchValue) continue;
+      const p = provider as keyof typeof nextProviders;
+      const prev = nextProviders[p];
+      const next = { ...prev };
+      if (patchValue.apiKey !== undefined) {
+        next.apiKey = patchValue.apiKey === null ? undefined : patchValue.apiKey;
+      }
+      if (patchValue.baseURL !== undefined) {
+        next.baseURL =
+          patchValue.baseURL === null || patchValue.baseURL === ""
+            ? undefined
+            : patchValue.baseURL;
+      }
+      nextProviders[p] = next;
+    }
+  }
+
+  const next = settingsSchema.parse({
+    ...current,
+    user: { ...current.user, ...(patch.user ?? {}) },
+    defaults: { ...current.defaults, ...(patch.defaults ?? {}) },
+    providers: nextProviders,
+    appearance: { ...current.appearance, ...(patch.appearance ?? {}) },
+  });
+
+  const saved = await saveSettings(next);
+  return Response.json(redactForClient(saved));
+}

@@ -1,0 +1,121 @@
+import "server-only";
+
+import { createAnthropic } from "@ai-sdk/anthropic";
+import { createOpenAI } from "@ai-sdk/openai";
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { createDeepSeek } from "@ai-sdk/deepseek";
+import { createGroq } from "@ai-sdk/groq";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import type { LanguageModel } from "ai";
+import {
+  DEFAULT_MODEL,
+  MODELS_META,
+  type ModelId,
+  type Provider,
+} from "./models-meta";
+import { loadSettings } from "@/lib/settings/store";
+
+function envFallback(provider: Provider): string | undefined {
+  switch (provider) {
+    case "anthropic":
+      return process.env.ANTHROPIC_API_KEY;
+    case "openai":
+      return process.env.OPENAI_API_KEY;
+    case "google":
+      return (
+        process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? process.env.GOOGLE_API_KEY
+      );
+    case "deepseek":
+      return process.env.DEEPSEEK_API_KEY;
+    case "groq":
+      return process.env.GROQ_API_KEY;
+    case "kimi":
+      return process.env.KIMI_API_KEY;
+  }
+}
+
+export class MissingApiKeyError extends Error {
+  constructor(public provider: Provider) {
+    super(`No API key configured for provider "${provider}"`);
+    this.name = "MissingApiKeyError";
+  }
+}
+
+const MODEL_IDS: Record<string, { provider: Provider; modelId: string }> = {
+  "claude-opus-4-7": { provider: "anthropic", modelId: "claude-opus-4-7" },
+  "claude-sonnet-4-6": { provider: "anthropic", modelId: "claude-sonnet-4-6" },
+  "claude-haiku-4-5": { provider: "anthropic", modelId: "claude-haiku-4-5-20251001" },
+
+  "gpt-5": { provider: "openai", modelId: "gpt-5" },
+  "gpt-5-mini": { provider: "openai", modelId: "gpt-5-mini" },
+  "o3": { provider: "openai", modelId: "o3" },
+
+  "gemini-2.5-pro": { provider: "google", modelId: "gemini-2.5-pro" },
+  "gemini-2.5-flash": { provider: "google", modelId: "gemini-2.5-flash" },
+
+  "deepseek-chat": { provider: "deepseek", modelId: "deepseek-chat" },
+  "deepseek-reasoner": { provider: "deepseek", modelId: "deepseek-reasoner" },
+
+  "kimi-k2-instant": { provider: "kimi", modelId: "kimi-k2-0905-preview" },
+  "kimi-k2-thinking": { provider: "kimi", modelId: "kimi-thinking-preview" },
+  "kimi-k2-agent": { provider: "kimi", modelId: "kimi-k2-0905-preview" },
+  "kimi-k2-swarm": { provider: "kimi", modelId: "kimi-k2-0905-preview" },
+
+  "llama-3.3-70b": { provider: "groq", modelId: "llama-3.3-70b-versatile" },
+  "kimi-k2-groq": { provider: "groq", modelId: "moonshotai/kimi-k2-instruct-0905" },
+  "qwen-qwq-32b": { provider: "groq", modelId: "qwen-qwq-32b" },
+};
+
+function buildProvider(
+  provider: Provider,
+  apiKey: string,
+  baseURL?: string,
+) {
+  switch (provider) {
+    case "anthropic":
+      return createAnthropic({ apiKey });
+    case "openai":
+      return createOpenAI({ apiKey, baseURL });
+    case "google":
+      return createGoogleGenerativeAI({ apiKey });
+    case "deepseek":
+      return createDeepSeek({ apiKey });
+    case "groq":
+      return createGroq({ apiKey });
+    case "kimi":
+      return createOpenAICompatible({
+        name: "kimi",
+        apiKey,
+        baseURL: baseURL ?? "https://api.moonshot.ai/v1",
+      });
+  }
+}
+
+export async function resolveApiKey(provider: Provider): Promise<{
+  apiKey?: string;
+  baseURL?: string;
+}> {
+  const settings = await loadSettings();
+  const p = settings.providers[provider];
+  return {
+    apiKey: p?.apiKey ?? envFallback(provider),
+    baseURL: p?.baseURL,
+  };
+}
+
+export async function getModel(id: string): Promise<{
+  meta: (typeof MODELS_META)[ModelId];
+  model: LanguageModel;
+}> {
+  const resolvedId = MODELS_META[id] ? id : DEFAULT_MODEL;
+  const entry = MODEL_IDS[resolvedId];
+  const { apiKey, baseURL } = await resolveApiKey(entry.provider);
+  if (!apiKey) throw new MissingApiKeyError(entry.provider);
+  const clientFactory = buildProvider(entry.provider, apiKey, baseURL);
+  return {
+    meta: MODELS_META[resolvedId],
+    model: clientFactory(entry.modelId) as LanguageModel,
+  };
+}
+
+export { DEFAULT_MODEL, type ModelId };
