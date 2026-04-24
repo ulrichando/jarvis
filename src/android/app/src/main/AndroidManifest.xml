@@ -195,9 +195,17 @@
             android:name=".service.JarvisForegroundService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="dataSync"
+            android:foregroundServiceType="specialUse"
             android:stopWithTask="false">
-            <!-- specialUse descriptor required by Play Store policy -->
+            <!-- specialUse descriptor required by Play Store policy for the
+                 specialUse FGS type. Android 15 / 16 started enforcing that
+                 the foregroundServiceType matches the property declaration,
+                 and also blocks `dataSync` FGS from starting via BOOT_COMPLETED
+                 / MY_PACKAGE_REPLACED — which fires on every `adb install -r`
+                 and was crashing the process with
+                 ForegroundServiceStartNotAllowedException. `specialUse` is
+                 the right type for a catch-all orchestration service like
+                 this and is allowed to start in those contexts. -->
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="JARVIS AI orchestration service: maintains root shell, PTY terminal sessions, sensor listeners, and network monitors." />

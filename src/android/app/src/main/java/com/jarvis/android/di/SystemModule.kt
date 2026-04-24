@@ -67,7 +67,8 @@ object SystemModule {
     fun provideTerminalSessionManager(
         ptyManager: PtyManager,
         rootManager: RootManager,
-    ): TerminalSessionManager = TerminalSessionManager(ptyManager, rootManager)
+        jarvisCli: com.jarvis.android.system.terminal.JarvisCliBootstrap,
+    ): TerminalSessionManager = TerminalSessionManager(ptyManager, rootManager, jarvisCli)
 
     @Provides @Singleton
     fun provideJarvisToolDispatcher(

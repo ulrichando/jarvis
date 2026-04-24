@@ -25,6 +25,9 @@ data class TerminalUiState(
     val activeSessionId: String?               = null,
     val gridSnapshot:    TerminalGridSnapshot? = null,
     val isCreating:      Boolean               = false,
+    /** Non-null when the last new-session attempt failed — surfaced in UI
+     *  so the user doesn't see a silent no-op when `+` does nothing. */
+    val error:           String?               = null,
 )
 
 sealed class TerminalIntent {
@@ -69,16 +72,25 @@ class TerminalViewModel @Inject constructor(
     fun onIntent(intent: TerminalIntent) {
         when (intent) {
             is TerminalIntent.NewSession -> viewModelScope.launch {
-                _uiState.update { it.copy(isCreating = true) }
-                val s = createSession(asRoot = false)
+                _uiState.update { it.copy(isCreating = true, error = null) }
+                val s = runCatching { createSession(asRoot = false) }.getOrElse { e ->
+                    android.util.Log.e("TerminalViewModel", "createSession failed", e)
+                    _uiState.update { it.copy(isCreating = false, error = "create failed: ${e.message}") }
+                    return@launch
+                }
                 _uiState.update { it.copy(isCreating = false) }
-                s?.let { switchTo(it) }
+                if (s != null) switchTo(s)
+                else _uiState.update { it.copy(error = "PTY create returned null (max sessions reached or /system/bin/sh missing)") }
             }
             is TerminalIntent.NewRootSession -> viewModelScope.launch {
-                _uiState.update { it.copy(isCreating = true) }
-                val s = createSession(asRoot = true)
+                _uiState.update { it.copy(isCreating = true, error = null) }
+                val s = runCatching { createSession(asRoot = true) }.getOrElse { e ->
+                    _uiState.update { it.copy(isCreating = false, error = "root create failed: ${e.message}") }
+                    return@launch
+                }
                 _uiState.update { it.copy(isCreating = false) }
-                s?.let { switchTo(it) }
+                if (s != null) switchTo(s)
+                else _uiState.update { it.copy(error = "PTY root create returned null") }
             }
             is TerminalIntent.SelectSession -> {
                 val s = _uiState.value.sessions.firstOrNull { it.id == intent.id }
@@ -104,5 +116,16 @@ class TerminalViewModel @Inject constructor(
         gridJob = session.gridFlow
             .onEach { snap -> _uiState.update { it.copy(gridSnapshot = snap) } }
             .launchIn(viewModelScope)
+    }
+
+    /**
+     * Pass-through to the session manager's scrollback fetcher. Called by
+     * [com.jarvis.android.presentation.components.TerminalView] when the
+     * user drags the canvas upward to reveal history. Returns null if the
+     * index is out of range or no active session.
+     */
+    fun getScrollbackRow(index: Int): ByteArray? {
+        val id = _uiState.value.activeSessionId ?: return null
+        return sessionManager.getScrollbackRow(id, index)
     }
 }

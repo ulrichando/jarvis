@@ -17,6 +17,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Refresh
@@ -113,6 +114,16 @@ fun SettingsScreen(
             // Independent of connection mode — local models work in both modes.
             SectionTitle("HuggingFace Token")
             HfTokenCard(state, viewModel)
+
+            Spacer(Modifier.height(16.dp))
+
+            // Voice section — always visible regardless of which cloud
+            // provider is active, because Edge TTS works standalone and
+            // users most often switch here specifically to change the
+            // voice (see: user was on Groq and couldn't find the picker
+            // because it was nested in the Brain-only card).
+            SectionTitle("Voice")
+            VoiceCard(state, viewModel)
 
             Spacer(Modifier.height(16.dp))
 
@@ -658,6 +669,337 @@ private fun EndpointCard(state: SettingsUiState, viewModel: SettingsViewModel) {
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * Top-level Voice card, always visible regardless of which cloud provider
+ * or connection mode the user has active. Holds the Edge TTS voice picker;
+ * easy to extend with pitch / rate / volume controls later.
+ */
+@Composable
+private fun VoiceCard(state: SettingsUiState, viewModel: SettingsViewModel) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp)) {
+            // Mirror JarvisTtsEngine.resolveBackend() exactly so the UI's
+            // "active" marker never lies about what you'll actually hear.
+            // Order: BRAIN → GROQ → EDGE → LOCAL.
+            val isActiveBrain = state.brainTtsUrl.isNotBlank()
+            val isActiveGroq  = !isActiveBrain &&
+                state.hasGroqKey && state.groqTtsEnabled
+            val isActiveEdge  = !isActiveBrain && !isActiveGroq &&
+                state.edgeTtsEnabled
+
+            val activeLabel = when {
+                isActiveBrain ->
+                    "Brain TTS (homelab — ${state.brainTtsUrl})"
+                isActiveGroq ->
+                    "Groq PlayAI (${GroqTtsVoice.labelFor(state.groqTtsVoice)})"
+                isActiveEdge ->
+                    "Edge TTS (${EdgeTtsVoice.labelFor(state.edgeTtsVoice)})"
+                else ->
+                    "Android local TTS (built-in)"
+            }
+            // Short name of the backend that's currently winning — used in
+            // the "override" hint shown on inactive voice pickers.
+            val activeShort = when {
+                isActiveBrain -> "Brain TTS"
+                isActiveGroq  -> "Groq"
+                isActiveEdge  -> "Edge"
+                else          -> "Android built-in"
+            }
+            Text(
+                "Active voice: $activeLabel",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "Voice provider priority: Brain TTS (if URL set) → Groq (if key + enabled) → Edge (if enabled) → Android built-in. " +
+                "Groq uses the same API key as chat and is the recommended primary path.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            // ── Groq PlayAI TTS (primary) ─────────────────────────────────
+            Spacer(Modifier.height(20.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "Groq PlayAI TTS",
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Spacer(Modifier.height(4.dp))
+            if (!state.hasGroqKey) {
+                Text(
+                    "Requires a Groq API key — set one in the cloud provider section above to enable.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                Row(
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    modifier          = Modifier.fillMaxWidth(),
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "Use Groq PlayAI",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Text(
+                            if (state.groqTtsEnabled)
+                                "Using ${GroqTtsVoice.labelFor(state.groqTtsVoice)} — neural PlayAI voice"
+                            else
+                                "Off — falls back to Android local TTS",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    androidx.compose.material3.Switch(
+                        checked         = state.groqTtsEnabled,
+                        onCheckedChange = {
+                            viewModel.onIntent(SettingsIntent.SetGroqTtsEnabled(it))
+                        },
+                    )
+                }
+                if (state.groqTtsEnabled) {
+                    Spacer(Modifier.height(12.dp))
+                    GroqVoicePicker(
+                        selected  = state.groqTtsVoice,
+                        onPick    = { viewModel.onIntent(SettingsIntent.SelectGroqTtsVoice(it)) },
+                        onPreview = { viewModel.onIntent(SettingsIntent.PreviewGroqVoice(it)) },
+                    )
+                    if (!isActiveGroq) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Not currently used — $activeShort is serving audio. " +
+                            (if (isActiveBrain) "Clear the Brain TTS URL below to switch to Groq."
+                             else                "Enable Groq above or disable the other backends to hear this voice."),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
+            }
+
+            // ── Edge TTS (secondary / opt-in fallback) ─────────────────────
+            Spacer(Modifier.height(20.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "Edge TTS (opt-in fallback)",
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Microsoft's free Edge Read-Aloud voices. Off by default — the " +
+                "endpoint rotates anti-abuse tokens aggressively and 403s often.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                modifier          = Modifier.fillMaxWidth(),
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "Use Edge TTS",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        if (state.edgeTtsEnabled)
+                            "Using ${EdgeTtsVoice.labelFor(state.edgeTtsVoice)}"
+                        else
+                            "Off",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                androidx.compose.material3.Switch(
+                    checked         = state.edgeTtsEnabled,
+                    onCheckedChange = {
+                        viewModel.onIntent(SettingsIntent.SetEdgeTtsEnabled(it))
+                    },
+                )
+            }
+            if (state.edgeTtsEnabled) {
+                Spacer(Modifier.height(12.dp))
+                EdgeVoicePicker(
+                    selected  = state.edgeTtsVoice,
+                    onPick    = { viewModel.onIntent(SettingsIntent.SelectEdgeTtsVoice(it)) },
+                    onPreview = { viewModel.onIntent(SettingsIntent.PreviewEdgeVoice(it)) },
+                )
+                if (!isActiveEdge) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Not currently used — $activeShort is serving audio. " +
+                        (if (isActiveBrain) "Clear the Brain TTS URL below to fall through to Edge."
+                         else if (isActiveGroq)  "Disable Groq above to fall through to Edge."
+                         else                    "Enable Edge to hear this voice."),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Mirror of [EdgeVoicePicker] for Groq PlayAI voices. Same layout, same
+ * UX — just a different catalog so the user picks from the PlayAI set.
+ */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun GroqVoicePicker(
+    selected:  String,
+    onPick:    (String) -> Unit,
+    onPreview: (String) -> Unit,
+) {
+    var expanded by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    val active      = GroqTtsVoice.CATALOG.firstOrNull { it.id == selected }
+    val activeLabel = active?.label ?: selected
+    Column(Modifier.fillMaxWidth()) {
+        ExposedDropdownMenuBox(
+            expanded         = expanded,
+            onExpandedChange = { expanded = it },
+        ) {
+            OutlinedTextField(
+                value          = activeLabel,
+                onValueChange  = {},
+                readOnly       = true,
+                label          = { Text("Voice") },
+                supportingText = active?.let { { Text(it.description) } },
+                trailingIcon   = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
+                modifier       = Modifier
+                    .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                    .fillMaxWidth(),
+            )
+            ExposedDropdownMenu(
+                expanded         = expanded,
+                onDismissRequest = { expanded = false },
+            ) {
+                GroqTtsVoice.CATALOG.forEach { voice ->
+                    DropdownMenuItem(
+                        text    = {
+                            Column {
+                                Text(voice.label)
+                                Text(
+                                    voice.description,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        },
+                        trailingIcon = {
+                            IconButton(onClick = { onPreview(voice.id) }) {
+                                Icon(
+                                    imageVector        = Icons.Default.PlayArrow,
+                                    contentDescription = "Preview",
+                                )
+                            }
+                        },
+                        onClick = {
+                            onPick(voice.id)
+                            // Auto-preview on selection — same pattern as
+                            // ChatGPT / Claude / Siri. Gives instant audible
+                            // confirmation the voice actually changed.
+                            onPreview(voice.id)
+                            expanded = false
+                        },
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        androidx.compose.material3.TextButton(onClick = { onPreview(selected) }) {
+            Icon(
+                imageVector        = Icons.Default.PlayArrow,
+                contentDescription = null,
+                modifier           = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.size(6.dp))
+            Text("Preview current voice")
+        }
+    }
+}
+
+/**
+ * Dropdown picker for the Edge TTS voice. Shows the friendly label + a short
+ * one-line description so the user can tell the voices apart without hearing
+ * each one first. Males are grouped above females in [EdgeTtsVoice.CATALOG]
+ * so the JARVIS-tone defaults are at the top.
+ */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun EdgeVoicePicker(
+    selected:  String,
+    onPick:    (String) -> Unit,
+    onPreview: (String) -> Unit,
+) {
+    var expanded by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    val active = EdgeTtsVoice.CATALOG.firstOrNull { it.id == selected }
+    val activeLabel = active?.label ?: selected
+    Column(Modifier.fillMaxWidth()) {
+        ExposedDropdownMenuBox(
+            expanded         = expanded,
+            onExpandedChange = { expanded = it },
+        ) {
+            OutlinedTextField(
+                value         = activeLabel,
+                onValueChange = {},
+                readOnly      = true,
+                label         = { Text("Voice") },
+                supportingText = active?.let { { Text(it.description) } },
+                trailingIcon  = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
+                modifier      = Modifier
+                    .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                    .fillMaxWidth(),
+            )
+            ExposedDropdownMenu(
+                expanded         = expanded,
+                onDismissRequest = { expanded = false },
+            ) {
+                EdgeTtsVoice.CATALOG.forEach { voice ->
+                    DropdownMenuItem(
+                        text    = {
+                            Column {
+                                Text(voice.label)
+                                Text(
+                                    voice.description,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        },
+                        trailingIcon = {
+                            IconButton(onClick = { onPreview(voice.id) }) {
+                                Icon(
+                                    imageVector        = Icons.Default.PlayArrow,
+                                    contentDescription = "Preview",
+                                )
+                            }
+                        },
+                        onClick = {
+                            onPick(voice.id)
+                            onPreview(voice.id)
+                            expanded = false
+                        },
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        androidx.compose.material3.TextButton(onClick = { onPreview(selected) }) {
+            Icon(
+                imageVector        = Icons.Default.PlayArrow,
+                contentDescription = null,
+                modifier           = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.size(6.dp))
+            Text("Preview current voice")
         }
     }
 }

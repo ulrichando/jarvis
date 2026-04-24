@@ -2,8 +2,8 @@ package com.jarvis.android.di
 
 import androidx.work.Configuration
 import com.jarvis.android.system.llm.IntelliRouter
+import com.jarvis.android.system.llm.LiteRtLmBackend
 import com.jarvis.android.system.llm.LlamaJNI
-import com.jarvis.android.system.llm.MediaPipeLLM
 import com.jarvis.android.system.llm.ModelDownloader
 import com.jarvis.android.system.llm.ModelRegistry
 import com.jarvis.android.system.llm.OllamaBridge

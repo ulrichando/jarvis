@@ -8,11 +8,19 @@ import kotlinx.coroutines.flow.Flow
 import javax.inject.Inject
 
 class SendMessageUseCase @Inject constructor(private val repo: ChatRepository) {
+    /**
+     * @param content      What the model sees (may include a prepended
+     *                     `[Attached document: …]` block for file uploads).
+     * @param displayText  What gets persisted + shown inside the user
+     *                     bubble. Defaults to [content] when no separate
+     *                     display string is needed.
+     */
     operator fun invoke(
         conversationId: String,
         content:        String,
         image:          String? = null,
-    ): Flow<ChatEvent> = repo.sendMessage(conversationId, content, image)
+        displayText:    String? = null,
+    ): Flow<ChatEvent> = repo.sendMessage(conversationId, content, image, displayText)
 }
 
 class CreateConversationUseCase @Inject constructor(private val repo: ChatRepository) {

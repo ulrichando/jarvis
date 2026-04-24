@@ -28,6 +28,19 @@ data class SettingsUiState(
     // streams audio from `<brainTtsUrl>/tts` instead of using Android's
     // local TextToSpeech — same Groq-backed voice as the user's computer.
     val brainTtsUrl:     String  = "",
+    /** Active Edge TTS voice — "en-GB-RyanNeural" etc. See [EdgeTtsVoice]. */
+    val edgeTtsVoice:    String  = ApiKeyProviderImpl.DEFAULT_EDGE_VOICE,
+    /**
+     * Whether Edge TTS (online) is enabled. Off by default — local Android
+     * TTS is the reliable path, Edge is opt-in.
+     */
+    val edgeTtsEnabled:  Boolean = false,
+    /** Active Groq PlayAI TTS voice — "Fritz-PlayAI" etc. See [GroqTtsVoice]. */
+    val groqTtsVoice:    String  = ApiKeyProviderImpl.DEFAULT_GROQ_VOICE,
+    /** Whether Groq TTS is enabled. On by default when a Groq key is set. */
+    val groqTtsEnabled:  Boolean = true,
+    /** True if a Groq API key is configured — gates the Groq TTS section. */
+    val hasGroqKey:      Boolean = false,
     // Brain provider selection
     val brainProviders:      List<BrainProvider> = emptyList(),
     val brainPinnedProvider: String              = "",
@@ -57,6 +70,12 @@ sealed class SettingsIntent {
     data class SetBrainServerUrl(val url: String)      : SettingsIntent()
     data class SetBrainTtsUrl(val url: String)         : SettingsIntent()
     object SaveBrainTtsUrl                             : SettingsIntent()
+    data class SelectEdgeTtsVoice(val voiceId: String) : SettingsIntent()
+    data class SetEdgeTtsEnabled(val enabled: Boolean) : SettingsIntent()
+    data class SelectGroqTtsVoice(val voiceId: String) : SettingsIntent()
+    data class SetGroqTtsEnabled(val enabled: Boolean) : SettingsIntent()
+    data class PreviewGroqVoice(val voiceId: String)   : SettingsIntent()
+    data class PreviewEdgeVoice(val voiceId: String)   : SettingsIntent()
     data class PinBrainProvider(val name: String)      : SettingsIntent()
     data class SetHfToken(val token: String)           : SettingsIntent()
     object SaveApiKey                                  : SettingsIntent()
@@ -77,6 +96,7 @@ sealed class SettingsIntent {
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val apiKeyProvider: ApiKeyProviderImpl,
+    private val ttsEngine:      com.jarvis.android.presentation.chat.JarvisTtsEngine,
     private val brainApi:       BrainApiService,
 ) : ViewModel() {
 
@@ -93,6 +113,11 @@ class SettingsViewModel @Inject constructor(
                 connectionMode = apiKeyProvider.connectionMode,
                 brainServerUrl = apiKeyProvider.getBrainServerUrl(),
                 brainTtsUrl    = apiKeyProvider.getBrainTtsUrl(),
+                edgeTtsVoice   = apiKeyProvider.getEdgeTtsVoice(),
+                edgeTtsEnabled = apiKeyProvider.isEdgeTtsEnabled(),
+                groqTtsVoice   = apiKeyProvider.getGroqTtsVoice(),
+                groqTtsEnabled = apiKeyProvider.isGroqTtsEnabled(),
+                hasGroqKey     = apiKeyProvider.getProviderKey(CloudProvider.GROQ).isNotBlank(),
                 hasHfToken     = apiKeyProvider.getHfToken().isNotBlank(),
                 hfTokenMasked  = maskedKey(apiKeyProvider.getHfToken()),
                 directProvider = currentDirect,
@@ -133,6 +158,60 @@ class SettingsViewModel @Inject constructor(
             is SettingsIntent.SaveBrainTtsUrl -> {
                 apiKeyProvider.saveBrainTtsUrl(_uiState.value.brainTtsUrl)
                 _uiState.update { it.copy(savedMessage = "TTS server saved") }
+            }
+            is SettingsIntent.SelectEdgeTtsVoice -> {
+                apiKeyProvider.saveEdgeTtsVoice(intent.voiceId)
+                _uiState.update { it.copy(
+                    edgeTtsVoice = intent.voiceId,
+                    savedMessage = "Voice: ${EdgeTtsVoice.labelFor(intent.voiceId)}"
+                ) }
+            }
+            is SettingsIntent.SetEdgeTtsEnabled -> {
+                apiKeyProvider.saveEdgeTtsEnabled(intent.enabled)
+                _uiState.update { it.copy(
+                    edgeTtsEnabled = intent.enabled,
+                    savedMessage = if (intent.enabled)
+                        "Edge TTS enabled — using ${EdgeTtsVoice.labelFor(_uiState.value.edgeTtsVoice)}"
+                    else
+                        "Edge TTS off"
+                ) }
+            }
+            is SettingsIntent.SelectGroqTtsVoice -> {
+                apiKeyProvider.saveGroqTtsVoice(intent.voiceId)
+                _uiState.update { it.copy(
+                    groqTtsVoice = intent.voiceId,
+                    savedMessage = "Voice: ${GroqTtsVoice.labelFor(intent.voiceId)}"
+                ) }
+            }
+            is SettingsIntent.SetGroqTtsEnabled -> {
+                apiKeyProvider.saveGroqTtsEnabled(intent.enabled)
+                _uiState.update { it.copy(
+                    groqTtsEnabled = intent.enabled,
+                    savedMessage = if (intent.enabled)
+                        "Groq TTS enabled — using ${GroqTtsVoice.labelFor(_uiState.value.groqTtsVoice)}"
+                    else
+                        "Groq TTS off"
+                ) }
+            }
+            is SettingsIntent.PreviewGroqVoice -> viewModelScope.launch {
+                _uiState.update { it.copy(savedMessage = "Previewing ${GroqTtsVoice.labelFor(intent.voiceId)}…") }
+                val ok = ttsEngine.previewGroq(intent.voiceId)
+                _uiState.update { it.copy(
+                    savedMessage = if (ok)
+                        "Preview: ${GroqTtsVoice.labelFor(intent.voiceId)}"
+                    else
+                        "Groq preview failed — check your API key / network"
+                ) }
+            }
+            is SettingsIntent.PreviewEdgeVoice -> viewModelScope.launch {
+                _uiState.update { it.copy(savedMessage = "Previewing ${EdgeTtsVoice.labelFor(intent.voiceId)}…") }
+                val ok = ttsEngine.previewEdge(intent.voiceId)
+                _uiState.update { it.copy(
+                    savedMessage = if (ok)
+                        "Preview: ${EdgeTtsVoice.labelFor(intent.voiceId)}"
+                    else
+                        "Edge preview failed (Microsoft 403'd — endpoint rotates tokens; enable Groq instead)"
+                ) }
             }
             is SettingsIntent.SaveBrainSettings -> saveBrainSettings()
             is SettingsIntent.RefreshBrainProviders -> fetchProviders()

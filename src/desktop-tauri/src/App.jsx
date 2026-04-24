@@ -1,14 +1,8 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke }  from '@tauri-apps/api/core'
 import { listen }  from '@tauri-apps/api/event'
-import ArcReactor  from './components/ArcReactor.jsx'
 import ChatPanel   from './components/ChatPanel.jsx'
-import useTheme    from './hooks/useTheme.js'
 import useSpeech   from './hooks/useSpeech.js'
-
-const HARD_INTERRUPT_WORDS = new Set([
-  'stop','halt','listen','pause','wait','quiet','shush','enough','cancel','nevermind',
-])
 
 const PYTHON_BASE = 'http://127.0.0.1:8765'
 const WS_URL      = 'ws://127.0.0.1:8765/ws?client=desktop'
@@ -24,26 +18,15 @@ function useJarvisWS(url) {
     try {
       const ws = new WebSocket(url)
       wsRef.current = ws
-      ws.onopen    = () => {
-        fetch('http://127.0.0.1:8766/debug/level?tag=ws-open').catch(()=>{})
-        setStatus('connected')
-      }
-      ws.onclose   = (ev) => {
-        fetch(`http://127.0.0.1:8766/debug/level?tag=ws-close-code${ev.code}-reason${encodeURIComponent(ev.reason||'')}`).catch(()=>{})
+      ws.onopen    = () => setStatus('connected')
+      ws.onclose   = () => {
         setStatus('disconnected')
         reconnectTimer.current = setTimeout(connect, 3000)
       }
-      ws.onerror   = (ev) => {
-        fetch(`http://127.0.0.1:8766/debug/level?tag=ws-error`).catch(()=>{})
-        ws.close()
-      }
+      ws.onerror   = () => { ws.close() }
       ws.onmessage = (e) => {
         try {
           const parsed = JSON.parse(e.data)
-          // DEBUG via FormData POST (simple request, actually reaches sidecar)
-          const fd = new FormData()
-          fd.append('tag', `ws-recv type=${parsed.type} hasText=${!!parsed.text}`)
-          fetch('http://127.0.0.1:8766/debug/level', { method: 'POST', body: fd }).catch(()=>{})
           setMessages(prev => [...prev.slice(-50), parsed])
         } catch { /* ignore */ }
       }
@@ -69,67 +52,19 @@ function useJarvisWS(url) {
 
 // ── App ───────────────────────────────────────────────────────────────────
 export default function App() {
-  const [chatOpen, setChatOpen]       = useState(false)
-  const [reactorVisible, setReactorVisible] = useState(true)
-  const [reactorState, setReactorState] = useState('booting')
-  const [audioLevel, setAudioLevel]   = useState(0)
-  const [voiceMuted, setVoiceMuted]   = useState(false)
-  const [heardText, setHeardText]     = useState('')
-  const [stableStatus, setStableStatus] = useState('connecting')
-  const [networkOnline, setNetworkOnline] = useState(
-    typeof navigator !== 'undefined' ? navigator.onLine : true,
-  )
-  const heardTimer  = useRef(null)
-  const offlineTimer= useRef(null)
-  const trayLocked  = useRef(false)
+  const [chatOpen, setChatOpen]     = useState(false)
+  const [voiceMuted, setVoiceMuted] = useState(false)
+  // Reply-output mute (item #10): when on, typed-reply TTS is suppressed.
+  // Useful in coding contexts where you want to dictate but read the reply.
+  // Independent of the tray mic-mute above.
+  const [ttsEnabled, setTtsEnabled] = useState(true)
 
-  // Track real internet connectivity — the bridge WS lives on localhost
-  // so it stays "connected" even when Wi-Fi drops. navigator.onLine flips
-  // instantly when the OS sees the link go down.
-  useEffect(() => {
-    const up   = () => setNetworkOnline(true)
-    const down = () => setNetworkOnline(false)
-    window.addEventListener('online',  up)
-    window.addEventListener('offline', down)
-    return () => {
-      window.removeEventListener('online',  up)
-      window.removeEventListener('offline', down)
-    }
-  }, [])
+  const { messages: wsMessages, status: wsStatus } = useJarvisWS(WS_URL)
 
-  const { messages: wsMessages, sendMessage, status: wsStatus } = useJarvisWS(WS_URL)
-  const theme = useTheme()
-
-  // Speech: mic → sidecar /turn (STT → LLM → TTS all in one HTTP POST) → play.
-  // onTranscript fires with what Whisper heard so we can show the HEARD caption.
-  const speech = useSpeech({
-    muted: voiceMuted,
-    onTranscript: (text) => {
-      setHeardText(text)
-      clearTimeout(heardTimer.current)
-      heardTimer.current = setTimeout(() => setHeardText(''), 4000)
-    },
-  })
-
-  // ── WS status debounce ────────────────────────────────────────────────
-  useEffect(() => {
-    if (wsStatus === 'connected') {
-      clearTimeout(offlineTimer.current)
-      setStableStatus('connected')
-      setTimeout(() => setReactorState(s => s === 'booting' ? 'idle' : s), 1500)
-    } else if (wsStatus === 'connecting') {
-      clearTimeout(offlineTimer.current)
-      setStableStatus('connecting')
-    } else {
-      offlineTimer.current = setTimeout(() => setStableStatus('disconnected'), 3000)
-    }
-    return () => clearTimeout(offlineTimer.current)
-  }, [wsStatus])
+  // Speech: mic → sidecar /turn (STT → LLM → TTS) → play.
+  const speech = useSpeech({ muted: voiceMuted })
 
   // ── Handle incoming WS messages ───────────────────────────────────────
-  // Process every new message since the last run, not just the tail, because
-  // the bridge may send several messages (e.g. chat_response then status) in
-  // the same render tick — dispatching only on the last one would drop speak().
   const lastHandledRef = useRef(0)
   useEffect(() => {
     if (!wsMessages.length) return
@@ -138,36 +73,10 @@ export default function App() {
 
     for (let i = start; i < wsMessages.length; i++) {
       const m = wsMessages[i]
-
-      if (m.type === 'status') {
-        if (m.status === 'speaking')  setReactorState('speaking')
-        else if (m.status === 'listening') setReactorState('listening')
-        else if (m.status === 'thinking')  setReactorState('thinking')
-        else if (m.status === '' || m.status === 'idle') setReactorState('idle')
-      }
-      if (m.type === 'tts_done')     setReactorState('idle')
-      if (m.type === 'chat_response' && m.text) speech.speak(m.text)
-      if (m.type === 'interrupted')  setReactorState('idle')
-      if (m.type === 'brain_ready') {
-        setReactorState('ready')
-        setTimeout(() => setReactorState('idle'), 3000)
-      }
-      if (m.type === 'stt_result') {
-        setHeardText(m.text || '')
-        clearTimeout(heardTimer.current)
-        heardTimer.current = setTimeout(() => setHeardText(''), 4000)
-      }
-      if (m.type === 'mic_level')    setAudioLevel(m.level ?? 0)
-      if (m.type === 'voice_muted')  setVoiceMuted(m.muted)
+      if (m.type === 'chat_response' && m.text && ttsEnabled) speech.speak(m.text)
+      if (m.type === 'voice_muted')                           setVoiceMuted(m.muted)
     }
     const last = wsMessages[wsMessages.length - 1]
-
-    // Live theme change
-    if (last.type === 'theme_update' && last.primary) {
-      if (window.__jarvisSetTheme) window.__jarvisSetTheme(last.primary, last.glow)
-    }
-
-    // Chat show/hide from backend
     if (last.type === 'show_chat') openChat()
     if (last.type === 'hide_chat') closeChat()
   }, [wsMessages])
@@ -181,30 +90,60 @@ export default function App() {
     invoke('set_layer', { above }).catch(console.error)
   }, [])
 
+  const syncChatState = useCallback((open) => {
+    invoke('set_chat_state', { open }).catch(console.error)
+  }, [])
+
+  // Report panel bounds to Rust so the hotspot poller can toggle
+  // click-through based on cursor position vs. panel rect.
+  const reportPanelBounds = useCallback((rect) => {
+    const { x = 0, y = 0, w = 0, h = 0 } = rect || {}
+    invoke('set_panel_rect', { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) }).catch(console.error)
+  }, [])
+
+  // Tray icon colour reflects the app's live state.
+  //   offline  → red   (WS to bridge is down)
+  //   thinking → gold  (STT done, LLM generating)
+  //   talking  → blue  (TTS audio playing)
+  //   idle     → green (mic live, nothing else going on)
+  const lastTrayStateRef = useRef('idle')
+  const pushTrayState = useCallback((state) => {
+    if (state === lastTrayStateRef.current) return
+    lastTrayStateRef.current = state
+    invoke('set_tray_state', { state }).catch(console.error)
+  }, [])
+
   const openChat = useCallback(() => {
-    trayLocked.current = true
     setChatOpen(true)
-    setClickThrough(false)
+    setClickThrough(false) // fallback if hotspot poller fails; poller overrides live
     setLayer(true)
-  }, [setClickThrough, setLayer])
+    syncChatState(true)
+  }, [setClickThrough, setLayer, syncChatState])
 
   const closeChat = useCallback(() => {
-    trayLocked.current = false
     setChatOpen(false)
     setClickThrough(true)
     setLayer(false)
-  }, [setClickThrough, setLayer])
+    syncChatState(false)
+    reportPanelBounds({ x: 0, y: 0, w: 0, h: 0 })
+  }, [setClickThrough, setLayer, syncChatState, reportPanelBounds])
+
+  // Ref so the tray-toggle handler always reads the current state
+  // without re-subscribing the listener on every chatOpen change.
+  const chatOpenRef = useRef(chatOpen)
+  useEffect(() => { chatOpenRef.current = chatOpen }, [chatOpen])
 
   // ── Tray events from Rust ────────────────────────────────────────────
   useEffect(() => {
-    // Rust already handles open/close toggle logic and window positioning
-    const unlisten1 = listen('tray-open-chat', () => openChat())
-    const unlisten2 = listen('tray-close-chat', () => closeChat())
-    const unlisten3 = listen('tray-toggle-reactor', () => setReactorVisible(v => !v))
-    // Rust already POSTed /api/mute before emitting this event. Don't
-    // re-POST — doing so would toggle twice and cancel out. The bridge
-    // broadcasts `voice_muted` on WS, which drives setVoiceMuted above.
-    const unlisten4 = listen('tray-toggle-mute', () => {})
+    const unlisten1 = listen('tray-open-chat',   () => openChat())
+    const unlisten2 = listen('tray-close-chat',  () => closeChat())
+    // Rust already POSTed /api/mute before emitting this — don't double-toggle.
+    const unlisten3 = listen('tray-toggle-mute', () => {})
+    // Global hotkey (Ctrl+Space) emits this — toggle based on current state.
+    const unlisten4 = listen('tray-toggle-chat', () => {
+      if (chatOpenRef.current) closeChat()
+      else                     openChat()
+    })
     return () => {
       unlisten1.then(f => f())
       unlisten2.then(f => f())
@@ -219,6 +158,18 @@ export default function App() {
     setLayer(false)
   }, [])
 
+  // ── Tray icon state (item: tray colour indicator) ───────────────────
+  // Order matters: offline > talking > thinking > idle. So an active
+  // response still shows red if the WS drops (signals an actual problem).
+  useEffect(() => {
+    let next = 'idle'
+    if (wsStatus === 'disconnected')       next = 'offline'
+    else if (speech.speaking)              next = 'talking'
+    else if (speech.processing)            next = 'thinking'
+    else                                   next = 'idle' // also "listening"
+    pushTrayState(next)
+  }, [wsStatus, speech.speaking, speech.processing, pushTrayState])
+
   // ── Keyboard shortcuts ────────────────────────────────────────────────
   useEffect(() => {
     const onKey = (e) => {
@@ -230,47 +181,8 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [chatOpen, openChat, closeChat])
 
-  // Reactor state — tied to actual vocal activity so colour flips the
-  // instant you stop talking rather than waiting for the VAD silence
-  // timeout to finish the recording.
-  //   voiceActive (RMS above threshold)          → listening (green)
-  //   recorder still in tail-silence, or /turn   → thinking  (amber)
-  //   TTS audio playing                          → speaking  (cyan)
-  useEffect(() => {
-    let next = 'idle'
-    if (speech.speaking)                               next = 'speaking'
-    else if (speech.voiceActive)                       next = 'listening'
-    else if (speech.recording || speech.processing)    next = 'thinking'
-    setReactorState(s => (
-      next === 'idle' && !['listening','thinking','speaking'].includes(s)
-    ) ? s : next)
-    // DEBUG → see phase transitions in sidecar log
-    const fd = new FormData()
-    fd.append('tag', `state v=${speech.voiceActive?1:0} r=${speech.recording?1:0} p=${speech.processing?1:0} s=${speech.speaking?1:0} → ${next}`)
-    fetch('http://127.0.0.1:8766/debug/level', { method: 'POST', body: fd }).catch(()=>{})
-  }, [speech.voiceActive, speech.recording, speech.processing, speech.speaking])
-
-  // Audio level comes from server via mic_level WS messages (more reliable than
-  // browser mic in a transparent overlay). Decay to 0 when no signal received.
-  useEffect(() => {
-    const decay = setInterval(() => {
-      setAudioLevel(prev => prev > 0.001 ? prev * 0.85 : 0)
-    }, 80)
-    return () => clearInterval(decay)
-  }, [])
-
   return (
     <div style={{ width:'100vw', height:'100vh', background:'transparent', overflow:'hidden', position:'relative' }}>
-      {/* Three.js sphere — toggleable via tray */}
-      {reactorVisible && (
-        <ArcReactor
-          state={(!networkOnline || stableStatus === 'disconnected') ? 'offline' : reactorState}
-          isDesktop={true}
-          audioLevel={Math.max(speech.audioLevel, audioLevel)}
-          theme={theme}
-        />
-      )}
-
       {/* Mute indicator */}
       {voiceMuted && (
         <div style={{ position:'fixed', top:'1rem', left:'1rem', zIndex:50, pointerEvents:'none' }}>
@@ -280,12 +192,14 @@ export default function App() {
         </div>
       )}
 
-      {/* Chat panel */}
+      {/* Chat panel — opened on tray click or Ctrl+H */}
       {chatOpen && (
         <ChatPanel
           isOpen={chatOpen}
           onClose={closeChat}
-          setReactorState={setReactorState}
+          onBoundsChange={reportPanelBounds}
+          ttsEnabled={ttsEnabled}
+          onToggleTts={() => setTtsEnabled(v => !v)}
           isDesktop={true}
         />
       )}

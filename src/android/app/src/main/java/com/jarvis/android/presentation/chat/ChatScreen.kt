@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
@@ -72,7 +73,9 @@ import com.jarvis.android.presentation.components.ConversationDrawer
 import com.jarvis.android.presentation.components.JarvisInputBar
 import com.jarvis.android.presentation.components.MessageBubble
 import com.jarvis.android.presentation.components.StreamingCursor
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 // ── Design tokens — single source of truth, used nowhere else ─────────────────
 //
@@ -161,27 +164,58 @@ fun ChatScreen(
     // Voice overlay visibility — starts recording when shown.
     var voiceOverlayVisible by remember { mutableStateOf(false) }
 
+    // NOTE: we deliberately do NOT flip AudioManager.mode to
+    // MODE_IN_COMMUNICATION here. It engages the hardware AEC loop on
+    // Samsung but it also fights android.speech.SpeechRecognizer — on
+    // this device the recognizer throws ERROR_CLIENT (5) the moment the
+    // overlay opens, so the mic never starts listening. We rely instead
+    // on (a) USAGE_VOICE_COMMUNICATION on all four TTS playback paths
+    // so output sits on the voice-comm stream, and (b) half-duplex +
+    // 350 ms cooldown in the rearm loop below so the mic is off while
+    // JARVIS is speaking. If we ever move to AudioRecord + on-device
+    // ASR (whisper/sherpa), revisit MODE_IN_COMMUNICATION then.
+
     // Explicit user-mute toggle for the voice-mode mic. Independent of the
     // STT engine's recording state, which naturally pauses while the AI is
     // speaking. Only the user tapping the mic mute button flips this; the
     // auto-restart loop respects it (stays off while muted).
     var userMutedMic by remember { mutableStateOf(false) }
 
+    // ── "Add to chat" bottom sheet state (triggered by + in the input bar)
+    var addSheetOpen by remember { mutableStateOf(false) }
+    // Local capability toggles surfaced in the sheet. For now these are
+    // session-scoped — not persisted. Wiring them into the real routing
+    // (e.g. tools disabled on this turn) is a follow-up.
+    var sheetTools     by remember { mutableStateOf(true) }
+    var sheetWebSearch by remember { mutableStateOf(false) }
+    var sheetRootMode  by remember { mutableStateOf(false) }
+
     // (MicAmplitudeMonitor lifecycle removed — it stole the mic from
     // SpeechRecognizer and broke STT. STT owns the mic exclusively now.)
 
-    // Mic + TTS shutdown on EVERY exit path. The Stop button does this in
-    // its onClick, but back-press / swipe-up / app destroy never trigger
-    // that handler. This DisposableEffect runs on Composition leave AND
-    // when voiceOverlayVisible flips false, releasing the microphone so
-    // Android's green mic indicator goes away the instant the user leaves.
-    DisposableEffect(voiceOverlayVisible) {
+    // Mic + TTS shutdown when the ChatScreen leaves the composition tree
+    // (activity destroyed, nav-away). Back-press or swipe-up tends to just
+    // pause the activity, not destroy it — so true "fire and forget on
+    // exit" also needs a lifecycle observer, wired below. Key = Unit so
+    // this only fires on real compose-leave, NOT on every voice-overlay
+    // toggle (which would stop STT as soon as it started).
+    DisposableEffect(Unit) {
         onDispose {
-            // Stop both ends regardless — extra calls to a stopped engine
-            // are no-ops, and missing one means a stuck mic icon.
-            if (uiState.isRecording) viewModel.onIntent(ChatIntent.ToggleVoice)
-            viewModel.onIntent(ChatIntent.SetTtsEnabled(false))
+            viewModel.onIntent(ChatIntent.StopStreaming)
         }
+    }
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            // On STOP (activity backgrounded) make sure we're not holding
+            // the mic. The green indicator in the status bar would
+            // otherwise keep showing after the user leaves the app.
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP && uiState.isRecording) {
+                viewModel.onIntent(ChatIntent.ToggleVoice)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     // On-demand mic permission flow. Tapping mic / voice-mode sets a pending
@@ -263,17 +297,54 @@ fun ChatScreen(
             viewModel.onIntent(ChatIntent.SendMessage())
         }
     }
-    LaunchedEffect(uiState.isStreaming, uiState.isTtsSpeaking, voiceOverlayVisible, userMutedMic) {
-        // Both the model's stream AND the spoken playback need to be done
-        // before we re-open the mic, otherwise we'd record our own TTS.
-        // userMutedMic gates the auto-restart so an explicit mute stays muted.
+    // Tracks whether the previous composition saw TTS speaking, so the
+    // rearm loop below knows to apply the post-TTS cooldown on a real
+    // true→false transition (and not, spuriously, on first composition
+    // where isTtsSpeaking is already false).
+    var wasTtsSpeaking by remember { mutableStateOf(false) }
+
+    LaunchedEffect(
+        uiState.isStreaming,
+        uiState.isTtsSpeaking,
+        uiState.isRecording,
+        uiState.inputText,
+        voiceOverlayVisible,
+        userMutedMic,
+    ) {
+        // Half-duplex: keep the mic off while JARVIS is speaking, and
+        // wait ~350 ms after TTS ends before re-arming the recognizer so
+        // the speaker's tail-end audio has drained. Without the delay,
+        // the recognizer catches trailing words of JARVIS's last
+        // sentence and treats them as a user turn. 350 ms matches
+        // Deepgram's voice-agent cooldown recommendation.
+        //
+        // The delay lives inside this LaunchedEffect so any state change
+        // (isTtsSpeaking flipping back true, overlay closing, user
+        // tapping mute) cancels the pending cooldown cleanly — Compose
+        // cancels LaunchedEffects when any key changes.
+        val justStoppedSpeaking = wasTtsSpeaking && !uiState.isTtsSpeaking
+        wasTtsSpeaking = uiState.isTtsSpeaking
+        if (justStoppedSpeaking) {
+            kotlinx.coroutines.delay(350)
+        }
+
         if (voiceOverlayVisible &&
             !userMutedMic &&
             !uiState.isStreaming &&
-            !uiState.isTtsSpeaking &&
             !uiState.isRecording &&
+            !uiState.isTtsSpeaking &&
             uiState.inputText.isBlank()
         ) {
+            viewModel.onIntent(ChatIntent.ToggleVoice)
+        }
+    }
+
+    // While TTS is speaking, make sure any already-running STT session is
+    // stopped so the recognizer doesn't keep feeding the self-hear loop.
+    // The effect above will re-arm the mic (after the cooldown) the
+    // instant isTtsSpeaking flips back to false.
+    LaunchedEffect(uiState.isTtsSpeaking) {
+        if (uiState.isTtsSpeaking && uiState.isRecording) {
             viewModel.onIntent(ChatIntent.ToggleVoice)
         }
     }
@@ -369,6 +440,9 @@ fun ChatScreen(
                             }
                         },
                         onNewChat = { viewModel.onIntent(ChatIntent.NewConversation) },
+                        ttsEnabled  = uiState.ttsEnabled,
+                        onToggleTts = { viewModel.onIntent(ChatIntent.ToggleTts) },
+                        onOpenModelConfig = { viewModel.onIntent(ChatIntent.ShowModelConfig) },
                     )
                 },
                 bottomBar = {
@@ -379,15 +453,15 @@ fun ChatScreen(
                         onStop         = { viewModel.onIntent(ChatIntent.StopStreaming) },
                         isStreaming    = uiState.isStreaming,
                         enabled        = true,
-                        // Quick dictation — text field fills with the transcript.
-                        // requestMicThen pops the system permission prompt the
-                        // first time and fires the action the moment it's granted.
+                        onAttach       = { addSheetOpen = true },
                         onVoice        = { requestMicThen(MicAction.Dictate) },
-                        // Full-screen voice mode — opens the reactor overlay
-                        // and starts recording in one gesture (also flips TTS
-                        // on while the overlay is visible).
                         onVoiceMode    = { requestMicThen(MicAction.VoiceMode) },
                         isRecording    = uiState.isRecording,
+                        pendingImagePreviewUri = uiState.pendingImagePreviewUri,
+                        pendingFileName        = uiState.pendingFileName,
+                        onRemoveAttachment     = {
+                            viewModel.onIntent(ChatIntent.ClearAttachment)
+                        },
                         modifier       = Modifier.imePadding(),
                     )
                 },
@@ -400,6 +474,18 @@ fun ChatScreen(
                     onSuggestedPrompt = { prompt ->
                         viewModel.onIntent(ChatIntent.UpdateInput(prompt.prompt))
                         viewModel.onIntent(ChatIntent.SendMessage())
+                    },
+                    // Play: force-enable TTS just for this utterance so the
+                    // user can hear any past reply regardless of the global
+                    // ttsEnabled toggle. Regenerate: ChatViewModel deletes
+                    // the last assistant turn via MessageDao and re-streams
+                    // the preceding user prompt.
+                    onPlay = { text ->
+                        viewModel.onIntent(ChatIntent.SetTtsEnabled(true))
+                        viewModel.onIntent(ChatIntent.ReplayResponse(text))
+                    },
+                    onRegenerate = {
+                        viewModel.onIntent(ChatIntent.RegenerateLast)
                     },
                 )
             }
@@ -454,6 +540,178 @@ fun ChatScreen(
                     voiceOverlayVisible = false
                 },
             )
+        }
+    }
+
+    // ── Add-to-chat bottom sheet (triggered by + on the input bar) ─────────
+    if (addSheetOpen) {
+        val ctxForUri  = androidx.compose.ui.platform.LocalContext.current
+        val scope      = rememberCoroutineScope()
+        val toast: (String) -> Unit = { msg ->
+            android.widget.Toast.makeText(
+                ctxForUri, msg, android.widget.Toast.LENGTH_SHORT,
+            ).show()
+        }
+
+        // Shared handler for image pickers (photo + camera). Does the byte
+        // read + base64 encode on Dispatchers.IO so a large camera capture
+        // doesn't block the main thread, then stages the result via
+        // [ChatIntent.StageImage]. The input bar shows a thumbnail chip; the
+        // actual send happens when the user taps the Send button.
+        val stageImageFromUri: (android.net.Uri?) -> Unit = { uri ->
+            if (uri != null) scope.launch {
+                val staged = withContext(Dispatchers.IO) {
+                    runCatching {
+                        val bytes = ctxForUri.contentResolver.openInputStream(uri)?.use {
+                            it.readBytes()
+                        } ?: return@runCatching null
+                        // Cap at 4 MB to keep the base64 payload under ~5.5 MB —
+                        // every OpenAI-compat provider rejects large inline
+                        // images, and a 50 MP S26 shot would easily blow past
+                        // this without compression.
+                        val capped = if (bytes.size <= 4 * 1024 * 1024) bytes else {
+                            val bmp = android.graphics.BitmapFactory.decodeByteArray(
+                                bytes, 0, bytes.size,
+                            ) ?: return@runCatching null
+                            val bos = java.io.ByteArrayOutputStream()
+                            bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, bos)
+                            bos.toByteArray()
+                        }
+                        val previewFile = java.io.File(
+                            ctxForUri.cacheDir,
+                            "attach-${System.currentTimeMillis()}.jpg",
+                        ).apply { writeBytes(capped) }
+                        val mime = ctxForUri.contentResolver.getType(uri) ?: "image/jpeg"
+                        val b64  = android.util.Base64.encodeToString(
+                            capped, android.util.Base64.NO_WRAP,
+                        )
+                        Triple(b64, mime, android.net.Uri.fromFile(previewFile).toString())
+                    }.getOrNull()
+                }
+                if (staged != null) {
+                    viewModel.onIntent(ChatIntent.StageImage(staged.first, staged.second, staged.third))
+                } else {
+                    toast("Couldn't read that image")
+                }
+            }
+        }
+        com.jarvis.android.presentation.components.AddToChatSheet(
+            tools             = sheetTools,
+            webSearch         = sheetWebSearch,
+            rootMode          = sheetRootMode,
+            onToolsChange     = { sheetTools = it },
+            onWebSearchChange = { sheetWebSearch = it },
+            onRootChange      = { sheetRootMode = it },
+            onPickPhoto       = stageImageFromUri,
+            onCapture         = stageImageFromUri,
+            onPickFile        = { uri ->
+                // For generic files: route images to the same image-stage
+                // path, otherwise paste the contents into the input field
+                // (up to 128 KB) and show a filename chip so the user knows
+                // what they attached. Binary non-image files would produce
+                // garbled text, so we reject those loudly.
+                if (uri != null) scope.launch {
+                    val mime = ctxForUri.contentResolver.getType(uri)
+                        ?: "application/octet-stream"
+                    val name = queryDisplayName(ctxForUri, uri) ?: "file"
+                    val ext  = name.substringAfterLast('.', "").lowercase()
+
+                    // Images: route to the image-stage path even when picked
+                    // via Files (content providers sometimes return
+                    // `application/octet-stream` for gallery items).
+                    if (mime.startsWith("image/") || ext in setOf(
+                            "jpg","jpeg","png","webp","heic","heif","gif","bmp",
+                        )) {
+                        stageImageFromUri(uri)
+                        return@launch
+                    }
+
+                    // PDFs: extract text with PDFBox, stash as chip (NOT in
+                    // the input field). Encrypted / scanned-only PDFs
+                    // surface a toast instead.
+                    if (mime == "application/pdf" || ext == "pdf") {
+                        toast("Reading $name…")
+                        val result = com.jarvis.android.util.DocumentExtractor
+                            .extractPdf(ctxForUri, uri)
+                        when (result) {
+                            is com.jarvis.android.util.DocumentExtractResult.Ok -> {
+                                val body = if (result.truncated)
+                                    "${result.text}\n\n[… truncated — $name has ${result.pageCount} pages]"
+                                else result.text
+                                viewModel.onIntent(ChatIntent.StageFile(name, body))
+                            }
+                            is com.jarvis.android.util.DocumentExtractResult.Unsupported ->
+                                toast("$name: ${result.reason}")
+                            is com.jarvis.android.util.DocumentExtractResult.Failed ->
+                                toast("Couldn't read $name: ${result.cause}")
+                        }
+                        return@launch
+                    }
+
+                    // Plain-text allowlist: .txt / .md / .json / source code
+                    // / config files. Binary formats (zip, docx, xlsx, …)
+                    // fall through to the reject path.
+                    if (!isTextLikeFile(mime, name)) {
+                        toast("$name isn't a text file — JARVIS can't read it yet.")
+                        return@launch
+                    }
+                    val text = withContext(Dispatchers.IO) {
+                        runCatching {
+                            val bytes = ctxForUri.contentResolver.openInputStream(uri)
+                                ?.use { it.readBytes() } ?: return@runCatching null
+                            // Byte-density guard for misdeclared MIME types.
+                            // UTF-8 text may legitimately include bytes >=
+                            // 0x80 (French, Japanese, emoji, …) — those are
+                            // fine. Reject only on NUL bytes or a high rate
+                            // of ASCII control chars, the hallmark of
+                            // compressed / binary payloads.
+                            val sample = bytes.take(4096)
+                            val nul = sample.any { it == 0.toByte() }
+                            val ctl = sample.count { b ->
+                                val v = b.toInt() and 0xFF
+                                (v in 1..8) || (v in 14..31)
+                            }
+                            val looksText = sample.isNotEmpty() && !nul &&
+                                (ctl.toDouble() / sample.size) < 0.05
+                            if (!looksText) return@runCatching null
+                            String(
+                                bytes.copyOf(minOf(bytes.size, 128 * 1024)),
+                                Charsets.UTF_8,
+                            )
+                        }.getOrNull()
+                    }
+                    if (text == null) {
+                        toast("$name isn't a text file — JARVIS can't read it yet.")
+                    } else {
+                        viewModel.onIntent(ChatIntent.StageFile(name, text))
+                    }
+                }
+            },
+            onDismiss         = { addSheetOpen = false },
+        )
+    }
+
+    // ── Per-model configurations dialog (gear icon in top bar) ───────────────
+    if (uiState.showModelConfig) {
+        val modelId = uiState.loadedLocalModelId
+        val cfg     = uiState.editingModelConfig
+        if (modelId != null && cfg != null) {
+            val displayName = uiState.downloadedModels
+                .firstOrNull { it.id == modelId }?.name
+                ?: modelId
+            ModelConfigDialog(
+                modelName = displayName,
+                initial   = cfg,
+                onSave    = { saved ->
+                    viewModel.onIntent(ChatIntent.SaveModelConfig(modelId, saved))
+                },
+                onDismiss = { viewModel.onIntent(ChatIntent.DismissModelConfig) },
+            )
+        } else {
+            // Defensive — user shouldn't be able to open this without a
+            // loaded model (gear is only rendered when one exists), but if
+            // state drifted just dismiss silently.
+            LaunchedEffect(Unit) { viewModel.onIntent(ChatIntent.DismissModelConfig) }
         }
     }
 
@@ -555,6 +813,8 @@ private fun HomeBody(
     padding:          PaddingValues,
     micLevel:         Float,
     onSuggestedPrompt: (SuggestedPrompt) -> Unit,
+    onPlay:            ((String) -> Unit)? = null,
+    onRegenerate:      (() -> Unit)? = null,
 ) {
     // With the new minimal empty-state design, the reactor is not on Home any
     // more — it only appears in the [VoiceOverlay]. A small presence indicator
@@ -574,6 +834,10 @@ private fun HomeBody(
                 activeToolCalls = uiState.activeToolCalls,
                 isStreaming     = uiState.isStreaming,
                 listState       = listState,
+                onPlay          = onPlay,
+                onRegenerate    = onRegenerate,
+                sentImagePaths  = uiState.sentImagePaths,
+                sentFileNames   = uiState.sentFileNames,
                 modifier        = Modifier.fillMaxSize(),
             )
         } else {
@@ -625,6 +889,9 @@ private fun HomeTopBar(
     onTogglePin:         () -> Unit,
     onDelete:            () -> Unit,
     onNewChat:           () -> Unit,
+    ttsEnabled:          Boolean = false,
+    onToggleTts:         () -> Unit = {},
+    onOpenModelConfig:   () -> Unit = {},
 ) {
     var toolMenuOpen  by remember { mutableStateOf(false) }
     var modelMenuOpen by remember { mutableStateOf(false) }
@@ -828,6 +1095,20 @@ private fun HomeTopBar(
             }          // close outer Row
         }              // close weight(1f) Box
 
+        // Per-model configuration gear — mirrors Google AI Edge Gallery's
+        // placement. Only rendered when a local model is loaded (cloud models
+        // have their own server-side tuning). Hiding it otherwise avoids
+        // opening a dialog that would have no model to save against.
+        if (loadedLocalModelId != null) {
+            IconButton(onClick = onOpenModelConfig) {
+                Icon(
+                    imageVector        = Icons.Default.Tune,
+                    contentDescription = "Model configurations",
+                    tint               = TextPrimary.copy(alpha = 0.9f),
+                )
+            }
+        }
+
         Box {
             IconButton(onClick = { toolMenuOpen = true }) {
                 Icon(
@@ -868,6 +1149,15 @@ private fun HomeTopBar(
                         thickness = 0.5.dp,
                     )
                 }
+                DropdownMenuItem(
+                    text    = {
+                        Text(
+                            if (ttsEnabled) "Mute voice" else "Speak replies",
+                            color = TextPrimary,
+                        )
+                    },
+                    onClick = { toolMenuOpen = false; onToggleTts() },
+                )
                 DropdownMenuItem(
                     text    = { Text("New chat", color = TextPrimary) },
                     onClick = { toolMenuOpen = false; onNewChat() },
@@ -937,6 +1227,10 @@ private fun MessageList(
     activeToolCalls: List<ActiveToolCall>,
     isStreaming:     Boolean,
     listState:       androidx.compose.foundation.lazy.LazyListState,
+    onPlay:          ((String) -> Unit)? = null,
+    onRegenerate:    (() -> Unit)? = null,
+    sentImagePaths:  Map<Long, String> = emptyMap(),
+    sentFileNames:   Map<Long, String> = emptyMap(),
     modifier:        Modifier = Modifier,
 ) {
     LazyColumn(
@@ -946,7 +1240,18 @@ private fun MessageList(
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         items(items = messages, key = { it.id }) { msg ->
-            MessageBubble(message = msg)
+            // Only the LAST assistant turn gets a regenerate button — it's
+            // the only one we can cleanly re-stream without also replaying
+            // user turns in between.
+            val isLastAssistant = msg.role == MessageRole.ASSISTANT &&
+                                  msg.id == messages.lastOrNull { it.role == MessageRole.ASSISTANT }?.id
+            MessageBubble(
+                message        = msg,
+                onPlay         = onPlay,
+                onRegenerate   = if (isLastAssistant) onRegenerate else null,
+                attachmentUri  = sentImagePaths[msg.id],
+                attachmentFile = sentFileNames[msg.id],
+            )
         }
 
         if (activeToolCalls.isNotEmpty()) {
@@ -1029,3 +1334,54 @@ private fun rememberDrawerStateWithSnapShot() =
  * more — see ChatScreen for the on-demand flow.
  */
 private enum class MicAction { Dictate, VoiceMode }
+
+/**
+ * True when the picked file can plausibly be pasted as UTF-8 text. Rejects
+ * PDFs, Office docs, zips, images, audio, video, and unknown
+ * `application/octet-stream` blobs outright — those all produce replacement
+ * char soup in the input. Allowlist-only by design.
+ */
+private fun isTextLikeFile(mime: String, fileName: String): Boolean {
+    val m = mime.lowercase()
+    if (m.startsWith("text/")) return true
+    val allowedMimes = setOf(
+        "application/json",
+        "application/xml",
+        "application/javascript",
+        "application/ecmascript",
+        "application/x-yaml",
+        "application/x-sh",
+        "application/x-python",
+        "application/x-python-code",
+        "application/toml",
+        "application/x-latex",
+    )
+    if (m in allowedMimes) return true
+    val ext = fileName.substringAfterLast('.', "").lowercase()
+    val allowedExts = setOf(
+        "txt","md","markdown","log","csv","tsv","json","xml","yml","yaml",
+        "toml","ini","conf","cfg","env","sh","bash","zsh","py","js","ts",
+        "tsx","jsx","rs","go","java","kt","kts","c","h","cpp","hpp","cc",
+        "cs","rb","php","swift","m","mm","sql","html","htm","css","scss",
+        "less","gradle","groovy","properties","lock","gitignore","editorconfig",
+    )
+    return ext in allowedExts
+}
+
+/** Resolve a human-readable display name for a content:// or file:// URI.
+ *  Used for the filename chip when the user attaches a text file. */
+private fun queryDisplayName(
+    ctx: android.content.Context,
+    uri: android.net.Uri,
+): String? {
+    if (uri.scheme == "file") return uri.lastPathSegment
+    return runCatching {
+        ctx.contentResolver.query(
+            uri,
+            arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),
+            null, null, null,
+        )?.use { c ->
+            if (c.moveToFirst()) c.getString(0) else null
+        }
+    }.getOrNull()
+}

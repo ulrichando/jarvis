@@ -47,10 +47,18 @@ interface ChatRepository {
      *
      * @param image  Optional base64-encoded JPEG for vision queries.
      */
+    /**
+     * @param content      Full payload sent to the model, including any
+     *                     prepended document context.
+     * @param image        Optional base64-encoded JPEG for vision queries.
+     * @param displayText  Text to persist in the DB + render in the user
+     *                     bubble. Null ⇒ fall back to [content].
+     */
     fun sendMessage(
         conversationId: String,
         content:        String,
         image:          String? = null,
+        displayText:    String? = null,
     ): Flow<ChatEvent>
 }
 

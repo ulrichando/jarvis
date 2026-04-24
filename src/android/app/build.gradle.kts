@@ -290,11 +290,16 @@ dependencies {
     // Wireless Debugging is enabled in Developer Options.
     implementation(libs.dadb)
 
-    // ── Local LLM (MediaPipe AI Edge — Gemma 4 on-device) ────────────────
-    implementation(libs.mediapipe.tasks.genai)
+    // ── Local LLM (LiteRT-LM — Google AI Edge on-device) ─────────────────
+    // Powers the Gemma / Qwen / DeepSeek-R1 Distill entries in the catalog.
+    // CPU / GPU / NPU backends are chosen per-model (see LiteRtLmBackend).
+    implementation(libs.litertlm)
 
     // ── Markdown + Syntax Highlighting ────────────────────────────────────
     implementation(libs.bundles.markwon)
+
+    // ── Document Extraction (PDF → chat input) ───────────────────────────
+    implementation(libs.pdfbox.android)
 
     // ── Accompanist ───────────────────────────────────────────────────────
     implementation(libs.accompanist.systemuicontroller)

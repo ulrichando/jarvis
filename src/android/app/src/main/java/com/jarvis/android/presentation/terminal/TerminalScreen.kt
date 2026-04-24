@@ -1,16 +1,18 @@
 package com.jarvis.android.presentation.terminal
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
@@ -21,41 +23,51 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.jarvis.android.core.designsystem.JarvisPalette
+import com.jarvis.android.presentation.components.TerminalExtraKeys
 import com.jarvis.android.presentation.components.TerminalView
 import com.jarvis.android.system.terminal.TerminalGridSnapshot
 
 /**
- * Full-screen PTY terminal with a scrollable session tab bar at the top.
- *
- * Layout:
- *   [← back] [tab1] [tab2] [+]   ← tab strip
- *   ┌───────────────────────────┐
- *   │  TerminalView (Canvas)    │
- *   └───────────────────────────┘
+ * Full-screen PTY terminal with a scrollable session tab bar on top and the
+ * raw terminal canvas underneath. Tapping anywhere on the canvas opens the
+ * soft keyboard via TerminalInputSink's onCreateInputConnection — same
+ * pattern Termux uses. No more workaround input bar; the phone keyboard
+ * just works.
  */
 @Composable
 fun TerminalScreen(
     onBack:    () -> Unit = {},
     viewModel: TerminalViewModel = hiltViewModel(),
 ) {
-    val state by viewModel.uiState.collectAsState()
+    val state    by viewModel.uiState.collectAsState()
+    val snackbar  = remember { SnackbarHostState() }
 
+    LaunchedEffect(state.error) {
+        state.error?.let { snackbar.showSnackbar(it) }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(JarvisPalette.TerminalBg)
-            .statusBarsPadding(),
+            .statusBarsPadding()
+            .imePadding(),
     ) {
-        // Tab strip
+        // ── Tab strip ─────────────────────────────────────────────────────
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -65,10 +77,8 @@ fun TerminalScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = onBack, modifier = Modifier.size(36.dp)) {
-                Icon(
-                    Icons.Default.ArrowBack, "Back",
-                    tint = MaterialTheme.colorScheme.onSurface,
-                )
+                Icon(Icons.Default.ArrowBack, "Back",
+                    tint = MaterialTheme.colorScheme.onSurface)
             }
 
             state.sessions.forEach { session ->
@@ -87,9 +97,7 @@ fun TerminalScreen(
                         IconButton(
                             onClick  = { viewModel.onIntent(TerminalIntent.KillSession(session.id)) },
                             modifier = Modifier.size(16.dp),
-                        ) {
-                            Icon(Icons.Default.Close, "Close", modifier = Modifier.size(12.dp))
-                        }
+                        ) { Icon(Icons.Default.Close, "Close", modifier = Modifier.size(12.dp)) }
                     },
                     colors = FilterChipDefaults.filterChipColors(
                         selectedContainerColor = JarvisPalette.GoldPrimary.copy(alpha = 0.2f),
@@ -98,24 +106,21 @@ fun TerminalScreen(
                 )
             }
 
-            // New session button
             IconButton(
                 onClick  = { viewModel.onIntent(TerminalIntent.NewSession) },
                 enabled  = !state.isCreating,
                 modifier = Modifier.size(36.dp),
             ) {
                 if (state.isCreating) {
-                    CircularProgressIndicator(
-                        modifier    = Modifier.size(16.dp),
-                        strokeWidth = 2.dp,
-                    )
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                 } else {
-                    Icon(Icons.Default.Add, "New session", tint = MaterialTheme.colorScheme.primary)
+                    Icon(Icons.Default.Add, "New session",
+                        tint = MaterialTheme.colorScheme.primary)
                 }
             }
         }
 
-        // Terminal canvas
+        // ── Terminal canvas (fills the rest of the screen) ───────────────
         val snapshot: TerminalGridSnapshot = state.gridSnapshot
             ?: TerminalGridSnapshot(
                 grid = ByteArray(0), rows = 24, cols = 80,
@@ -124,10 +129,25 @@ fun TerminalScreen(
             )
 
         TerminalView(
-            snapshot = snapshot,
+            snapshot          = snapshot,
+            onInput           = { text -> viewModel.onIntent(TerminalIntent.Write(text)) },
+            onResize          = { rows, cols -> viewModel.onIntent(TerminalIntent.Resize(rows, cols)) },
+            onFetchScrollback = { idx -> viewModel.getScrollbackRow(idx) },
+            modifier          = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+        )
+
+        // Termux-style extra keys bar — pinned just above the IME (imePadding
+        // on the outer Column lifts the whole stack when the keyboard opens).
+        TerminalExtraKeys(
             onInput  = { text -> viewModel.onIntent(TerminalIntent.Write(text)) },
-            onResize = { rows, cols -> viewModel.onIntent(TerminalIntent.Resize(rows, cols)) },
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.navigationBarsPadding(),
+        )
+    }
+        SnackbarHost(
+            hostState = snackbar,
+            modifier  = Modifier.align(Alignment.BottomCenter).navigationBarsPadding(),
         )
     }
 }
