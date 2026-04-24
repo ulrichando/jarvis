@@ -6,10 +6,15 @@
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- /sdcard/Download/ — general exports (pcap, screenshots) -->
     <external-path name="downloads" path="Download/" />
+    <!-- All external storage — file manager Share requires arbitrary paths -->
+    <external-path name="external" path="." />
     <!-- App-private external cache — temporary share targets -->
     <external-cache-path name="external_cache" path="." />
     <!-- App-private internal cache — screenshot temp files -->
     <cache-path name="internal_cache" path="." />
     <!-- App-private files dir — staged APK installs -->
     <files-path name="internal_files" path="." />
+    <!-- Absolute-root mount — required when /sdcard is a symlink target and
+         we receive a path resolved above the emulated storage root. -->
+    <root-path name="root" path="/" />
 </paths>

@@ -1,7 +1,13 @@
 [versions]
 # ── Kotlin & Build ──────────────────────────────────────────────────────────
-kotlin                      = "2.0.21"
-ksp                         = "2.0.21-1.0.27"
+# Bumped to 2.2.0 (from 2.0.21) so LiteRT-LM 0.10+ resolves — Google publishes
+# it compiled against Kotlin 2.2, and the Kotlin compiler refuses to link
+# modules whose binary metadata is newer than its own. KSP revision tracks the
+# Kotlin version; AGP 8.7.3 already supports Kotlin 2.2 runtime so no AGP bump
+# is required. If a plugin fails to resolve after this bump, check its
+# kotlin-embed compatibility matrix before rolling back.
+kotlin                      = "2.2.21"
+ksp                         = "2.2.21-2.0.5"
 agp                         = "8.7.3"
 
 # ── AndroidX Core ───────────────────────────────────────────────────────────
@@ -22,7 +28,7 @@ composeBom                  = "2024.12.01"
 navigationCompose           = "2.8.5"
 
 # ── Hilt ────────────────────────────────────────────────────────────────────
-hilt                        = "2.53.1"
+hilt                        = "2.57.2"
 hiltNavigationCompose       = "1.2.0"
 hiltWork                    = "1.2.0"
 
@@ -33,7 +39,7 @@ kotlinxSerialization        = "1.7.3"
 retrofitKotlinxSerializer   = "1.0.0"
 
 # ── Room ────────────────────────────────────────────────────────────────────
-room                        = "2.6.1"
+room                        = "2.7.2"
 
 # ── DataStore ───────────────────────────────────────────────────────────────
 # 1.1.3 is the first release with 16 KB-aligned libdatastore_shared_counter.so
@@ -65,13 +71,21 @@ libsu                       = "5.3.0"
 # ── ADB on-device client ─────────────────────────────────────────────────────
 dadb                        = "1.2.7"
 
-# ── Local LLM (MediaPipe AI Edge — Gemma 4) ──────────────────────────────────
-# 0.10.24+ ships 16 KB-aligned libllm_inference_engine_jni.so + libsecure_util_jni.so.
-mediapipe-tasks-genai       = "0.10.24"
+# ── Local LLM (LiteRT-LM — Google AI Edge) ───────────────────────────────────
+# Replaces the older MediaPipe Tasks GenAI runtime (libllm_inference_engine_jni.so),
+# which segfaulted inside its `drishti` thread on Samsung devices. LiteRT-LM is
+# Google's current on-device inference stack — it powers the AI Edge Gallery
+# reference app and supports CPU / GPU / NPU / TPU backends for Gemma / Qwen /
+# DeepSeek-R1 distill in the `.litertlm` format.
+litertlm                    = "0.10.2"
 
 # ── Markdown / Syntax ───────────────────────────────────────────────────────
 markwon                     = "4.6.2"
 prism4j                     = "2.0.0"
+
+# ── Document Extraction (PDF text → chat input) ─────────────────────────────
+# Tom Roush's Android port of Apache PDFBox. ~5 MB but fully on-device.
+pdfboxAndroid               = "2.0.27.0"
 
 # ── Accompanist ─────────────────────────────────────────────────────────────
 accompanist                 = "0.36.0"
@@ -172,7 +186,7 @@ play-services-location              = { module = "com.google.android.gms:play-se
 osmdroid-android                    = { module = "org.osmdroid:osmdroid-android",                               version.ref = "osmdroid" }
 
 # ── Root Shell (libsu) ───────────────────────────────────────────────────────
-mediapipe-tasks-genai               = { module = "com.google.mediapipe:tasks-genai",                          version.ref = "mediapipe-tasks-genai" }
+litertlm                            = { module = "com.google.ai.edge.litertlm:litertlm-android",             version.ref = "litertlm" }
 
 # ── Root Shell (libsu) ───────────────────────────────────────────────────────
 libsu-core                          = { module = "com.github.topjohnwu.libsu:core",                             version.ref = "libsu" }
@@ -190,6 +204,9 @@ markwon-html                        = { module = "io.noties.markwon:html",      
 markwon-linkify                     = { module = "io.noties.markwon:linkify",                                   version.ref = "markwon" }
 prism4j                             = { module = "io.noties:prism4j",                                           version.ref = "prism4j" }
 prism4j-bundler                     = { module = "io.noties:prism4j-bundler",                                   version.ref = "prism4j" }
+
+# ── Document Extraction ─────────────────────────────────────────────────────
+pdfbox-android                      = { module = "com.tom-roush:pdfbox-android",                                version.ref = "pdfboxAndroid" }
 
 # ── Accompanist ─────────────────────────────────────────────────────────────
 accompanist-systemuicontroller      = { module = "com.google.accompanist:accompanist-systemuicontroller",       version.ref = "accompanist" }

@@ -5,7 +5,7 @@
 // replaced with ECAPA-TDNN (or similar) ONNX model later without
 // touching the call site in useSpeech.js.
 
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 
 const STORAGE_KEY    = 'jarvis.speakerFingerprint.v1'
 const ENROLL_COUNT   = 3
@@ -210,10 +210,20 @@ export default function useSpeakerId() {
     return () => { delete window.__jarvisResetSpeakerId }
   }, [reset])
 
-  return {
+  // Stabilise the returned object across renders. Without useMemo this
+  // hook returned a fresh `{}` every render, which cascaded through
+  // useSpeech.js: that object was a useCallback dep of `startVad`, so
+  // `startVad` got a new identity every render, so the
+  // `useEffect([muted, startVad, stopVad])` fired continuously, tearing
+  // down and re-creating Silero VAD roughly every 60 ms (driven by the
+  // audio-level timer's setState re-renders). Symptom was "mic keeps
+  // breaking in and out" — Silero never reached steady state. Keep
+  // this memoised. Counts are derived from refs, so they're stable per
+  // render in the parent's view.
+  return useMemo(() => ({
     scoreUtterance,
     enrolledCount: enrolledRef.current ? 1 : pendingRef.current.length,
     isEnrolled: !!enrolledRef.current,
     reset,
-  }
+  }), [scoreUtterance, reset])
 }

@@ -49,14 +49,17 @@ import androidx.compose.ui.unit.sp
 import com.jarvis.android.domain.model.Conversation
 
 // ── Drawer tokens — always dark, independent of the Material scheme ──────────
+// Colours align with the rest of the Jarvis UI (Accent = the blue used in
+// chips, send buttons, the amplitude glow). No coral / orange any more —
+// that was borrowed from Claude's brand and clashed with Jarvis's palette.
 private val DrawerBg          = Color(0xFF0D0D0D)
 private val DrawerBorder      = Color(0xFF222222)
 private val DrawerTextPri     = Color(0xFFECECEC)
 private val DrawerTextSec     = Color(0xFF8A8A8A)
 private val DrawerMuted       = Color(0xFF6E6E6E)
-private val NewChatAccent     = Color(0xFFE17055)   // Claude-style coral on the New chat CTA
-private val SelectedRowBg     = Color(0xFF1F1F1F)   // pill behind the active nav row
-private val UserAvatarBg      = Color(0xFF7C5CFF)   // Claude's purple "UA" circle
+private val Accent            = Color(0xFF1E7FFF)   // same as chat Accent
+private val SelectedRowBg     = Color(0x141E7FFF)   // subtle 8% blue — not the loud dark pill
+private val UserAvatarBg      = Accent
 
 /**
  * Navigation drawer modelled on the Claude mobile drawer:
@@ -98,7 +101,11 @@ fun ConversationDrawer(
     onOpenTerminal:       (() -> Unit)? = null,
     onOpenAppBuilder:     (() -> Unit)? = null,
     userName:             String? = null,
-    activeRoute:          DrawerRoute = DrawerRoute.Chats,
+    // null by default so NOTHING is highlighted on open. Callers that
+    // actually know the current route can pass e.g. DrawerRoute.Models to
+    // light up that row. The previous default (Chats) misled users into
+    // thinking "Chats" was a separate destination they'd navigated to.
+    activeRoute:          DrawerRoute? = null,
     modifier:             Modifier = Modifier,
 ) {
     Column(
@@ -124,8 +131,8 @@ fun ConversationDrawer(
         NavItem(
             icon       = Icons.Default.AddCircleOutline,
             label      = "New chat",
-            tint       = NewChatAccent,
-            labelColor = NewChatAccent,
+            tint       = Accent,
+            labelColor = Accent,
             onClick    = onNewConversation,
         )
         NavItem(

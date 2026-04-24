@@ -15,13 +15,26 @@ enum class ModelBackend(
     val extensions: List<String>,
 ) {
     /**
-     * Google MediaPipe AI Edge — official Gemma 4 support.
-     * Models are `.task` bundles (TensorFlow Lite + metadata).
-     * Accelerated via GPU delegate (OpenCL / OpenGL).
+     * Google MediaPipe AI Edge Tasks GenAI — legacy.
+     * DEPRECATED: segfaults inside `drishti` thread on Samsung. Replaced by
+     * [LITERTLM]. Kept in the enum so older DB rows can still be decoded
+     * (and purged) on app upgrade, never dispatched.
      */
     MEDIAPIPE(
         label      = "MediaPipe",
         extensions = listOf(".task"),
+    ),
+
+    /**
+     * Google AI Edge LiteRT-LM — current on-device inference runtime.
+     * Models are `.litertlm` bundles distributed via HuggingFace
+     * (litert-community and google orgs). Supports CPU, GPU (OpenCL),
+     * and NPU (Hexagon on Snapdragon, Neural Engine on Exynos) backends.
+     * Powers every catalog entry that came from Google's AI Edge Gallery.
+     */
+    LITERTLM(
+        label      = "LiteRT-LM",
+        extensions = listOf(".litertlm", ".task"),
     ),
 
     /**

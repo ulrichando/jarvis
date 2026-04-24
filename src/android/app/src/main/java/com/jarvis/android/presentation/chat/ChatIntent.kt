@@ -5,11 +5,63 @@ sealed class ChatIntent {
 
     // ── Messaging ─────────────────────────────────────────────────────────────
 
-    /** Send the current [inputText] to the active conversation, optionally with a [imageBase64]. */
+    /** Send the current [inputText] to the active conversation, optionally with a [imageBase64].
+     *
+     *  If [imageBase64] is null, the send path will pull any attachment that was
+     *  previously staged via [StageImage] out of the UI state, so the normal
+     *  "user picks image → chip → types prompt → hits send" flow works without
+     *  the caller having to thread the bytes through by hand.
+     */
     data class SendMessage(val imageBase64: String? = null) : ChatIntent()
+
+    // ── Attachments (Claude-style staging) ────────────────────────────────────
+
+    /**
+     * Stage an image the user picked from the gallery / camera. Shows a chip
+     * above the input bar; the image is only actually sent when the user taps
+     * the send button (matches Claude Android behaviour — no surprise autosend).
+     *
+     * @param b64         Base64-encoded JPEG/PNG bytes, ready for the API.
+     * @param mime        Source mime type (`image/jpeg`, `image/png`).
+     * @param previewUri  `file://` URI of a local JPEG the UI can render as the
+     *                    chip thumbnail and later as the inline image inside
+     *                    the user bubble.
+     */
+    data class StageImage(
+        val b64:        String,
+        val mime:       String,
+        val previewUri: String,
+    ) : ChatIntent()
+
+    /**
+     * Stage a text-like file (plain text, source code, or extracted-PDF
+     * text). The [content] stays OUT of the input field — we paste it for
+     * the API only, and render a filename chip above the text field the
+     * same way picture attachments work. The user types their prompt into
+     * the clean input and sends.
+     */
+    data class StageFile(
+        val fileName: String,
+        val content:  String,
+    ) : ChatIntent()
+
+    /** Remove any currently-staged attachment (image or file chip). */
+    object ClearAttachment : ChatIntent()
 
     /** Cancel the current streaming turn. */
     object StopStreaming : ChatIntent()
+
+    /** Open the per-model Configurations dialog (gear icon in top bar). */
+    object ShowModelConfig : ChatIntent()
+
+    /** Close the Configurations dialog without saving. */
+    object DismissModelConfig : ChatIntent()
+
+    /** Save the edited model config back to prefs. */
+    data class SaveModelConfig(
+        val modelId: String,
+        val config:  com.jarvis.android.domain.model.ModelConfig,
+    ) : ChatIntent()
 
     /** Update the draft text in [JarvisInputBar]. */
     data class UpdateInput(val text: String) : ChatIntent()
@@ -49,6 +101,14 @@ sealed class ChatIntent {
      *  text-only replies and voice-mode turns get spoken replies without the
      *  user manually toggling. */
     data class SetTtsEnabled(val enabled: Boolean) : ChatIntent()
+
+    /** Speak [text] through TTS without changing history. Used by the ▶ button
+     *  under an assistant turn so the user can replay a past response aloud. */
+    data class ReplayResponse(val text: String) : ChatIntent()
+
+    /** Delete the last assistant turn and re-stream a reply to the immediately
+     *  preceding user turn. Used by the ⟲ regenerate icon under an assistant turn. */
+    object RegenerateLast : ChatIntent()
 
     /** Cycle to the next routing mode (Auto → Local → Cloud → Hybrid → Auto). */
     object CycleRoutingMode : ChatIntent()

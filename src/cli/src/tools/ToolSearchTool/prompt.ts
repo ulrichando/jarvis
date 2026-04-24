@@ -60,18 +60,22 @@ Query forms:
  * _meta['anthropic/alwaysLoad']). This check runs first, before any other rule.
  */
 export function isDeferredTool(tool: Tool): boolean {
-  // Jarvis override: non-Claude backends (Groq, DeepSeek, etc.) don't know the
-  // ToolSearch protocol and try to call deferred tools directly, which fails
-  // validation. Setting JARVIS_DISABLE_TOOL_DEFERRAL=1 ships every tool schema
-  // up front so any model can call any tool first try.
-  if (process.env.JARVIS_DISABLE_TOOL_DEFERRAL === '1') return false
-
   // Explicit opt-out via _meta['anthropic/alwaysLoad'] — tool appears in the
   // initial prompt with full schema. Checked first so MCP tools can opt out.
   if (tool.alwaysLoad === true) return false
 
-  // MCP tools are always deferred (workflow-specific)
+  // MCP tools are always deferred (workflow-specific). Keep them deferred even
+  // when JARVIS_DISABLE_TOOL_DEFERRAL=1 because their auto-prefixed names
+  // (e.g. mcp__claude_ai_Figma__...) routinely exceed DeepSeek's 64-char
+  // function-name cap, which rejects the whole request.
   if (tool.isMcp === true) return true
+
+  // Jarvis override for non-MCP deferred tools: non-Claude backends (Groq,
+  // DeepSeek) don't know the ToolSearch protocol and try to call deferred
+  // tools directly, which fails validation. Setting JARVIS_DISABLE_TOOL_DEFERRAL=1
+  // ships built-in tool schemas (WebFetch, WebSearch, Task*, Team*, etc.) up
+  // front so any model can call them first try.
+  if (process.env.JARVIS_DISABLE_TOOL_DEFERRAL === '1') return false
 
   // Never defer ToolSearch itself — the model needs it to load everything else
   if (tool.name === TOOL_SEARCH_TOOL_NAME) return false

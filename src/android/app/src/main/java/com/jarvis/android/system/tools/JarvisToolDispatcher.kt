@@ -127,6 +127,13 @@ class JarvisToolDispatcher @Inject constructor(
                 "list_processes"     -> handleListProcesses(block.input)
                 "kill_process"       -> handleKillProcess(block.input)
                 "list_installed_apps"-> handleListInstalledApps(block.input)
+                "launch_app"         -> handleLaunchApp(block.input)
+                "open_intent"        -> handleOpenIntent(block.input)
+                "ui_dump"            -> handleUiDump(block.input)
+                "ui_tap"             -> handleUiTap(block.input)
+                "ui_swipe"           -> handleUiSwipe(block.input)
+                "ui_type"            -> handleUiType(block.input)
+                "ui_action"          -> handleUiAction(block.input)
                 "get_logcat"         -> handleGetLogcat(block.input)
                 "network_scan"       -> handleNetworkScan()
                 "get_sensors"        -> handleGetSensors()
@@ -372,6 +379,211 @@ class JarvisToolDispatcher @Inject constructor(
         }
         if (filtered.size > 200) sb.appendLine("[… ${filtered.size - 200} more]")
         return sb.toString().trimEnd()
+    }
+
+    // ── Tool: launch_app ──────────────────────────────────────────────────
+
+    /**
+     * Open an installed app. Accepts either an exact package name or a
+     * fuzzy label query. Uses PackageManager.getLaunchIntentForPackage so
+     * this works without MANAGE_ACTIVITY_TASKS — the app can launch any
+     * other app it's permitted to see via QUERY_ALL_PACKAGES (already in
+     * the manifest).
+     */
+    private fun handleLaunchApp(input: JsonObject): String {
+        val pkgArg = input.str("package")?.trim().orEmpty()
+        val query  = input.str("query")?.trim().orEmpty()
+        if (pkgArg.isEmpty() && query.isEmpty())
+            return "error: provide 'package' or 'query'"
+
+        val pm = context.packageManager
+
+        // 1. Resolve the target package. Exact wins; otherwise fuzzy label match.
+        val targetPkg: String = if (pkgArg.isNotEmpty()) {
+            pkgArg
+        } else {
+            val flags = PackageManager.GET_META_DATA
+            val apps = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+                pm.getInstalledApplications(PackageManager.ApplicationInfoFlags.of(flags.toLong()))
+            else @Suppress("DEPRECATION") pm.getInstalledApplications(flags)
+
+            val q = query.lowercase()
+            val scored = apps.mapNotNull { info ->
+                val label = runCatching { pm.getApplicationLabel(info).toString() }.getOrNull() ?: info.packageName
+                val l = label.lowercase()
+                val p = info.packageName.lowercase()
+                val score = when {
+                    l == q || p == q                 -> 100
+                    l.startsWith(q) || p.startsWith(q) -> 80
+                    l.contains(q)  || p.contains(q)    -> 50
+                    else                               -> 0
+                }
+                if (score > 0) Triple(score, label, info.packageName) else null
+            }.sortedByDescending { it.first }
+
+            if (scored.isEmpty()) return "error: no installed app matches '$query'"
+            if (scored.size > 1 && scored[0].first == scored[1].first) {
+                // Ambiguous tie — surface candidates so the model can retry.
+                val list = scored.take(6).joinToString("\n") { "  ${it.third}  (${it.second})" }
+                return "ambiguous match for '$query'. Candidates:\n$list"
+            }
+            scored.first().third
+        }
+
+        // 2. Build + fire the launch intent.
+        val intent = pm.getLaunchIntentForPackage(targetPkg)
+            ?: return "error: '$targetPkg' has no launcher activity (not installed or not user-facing)"
+        intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        return try {
+            context.startActivity(intent)
+            val label = runCatching {
+                pm.getApplicationLabel(pm.getApplicationInfo(targetPkg, 0)).toString()
+            }.getOrDefault(targetPkg)
+            "launched: $targetPkg ($label)"
+        } catch (e: Exception) {
+            "error: failed to launch $targetPkg — ${e.message}"
+        }
+    }
+
+    // ── Tools: UI automation via Accessibility Service ───────────────────
+
+    private fun a11y(): com.jarvis.android.service.JarvisAccessibilityService? =
+        com.jarvis.android.service.JarvisAccessibilityService.instance
+
+    private val a11yHelp =
+        "Jarvis Accessibility Service is not enabled. Tell the user to go " +
+        "to Settings → Accessibility → Installed apps → JARVIS → On."
+
+    private fun handleUiDump(input: JsonObject): String {
+        val svc = a11y() ?: return "error: $a11yHelp"
+        val maxDepth = input.int("max_depth") ?: 8
+        return svc.dumpUi(maxDepth)
+    }
+
+    private fun handleUiTap(input: JsonObject): String {
+        val svc = a11y() ?: return "error: $a11yHelp"
+        val text = input.str("text")
+        if (!text.isNullOrBlank()) return svc.tapByText(text)
+        val x = input.doubleOrNull("x")
+        val y = input.doubleOrNull("y")
+        if (x == null || y == null) return "error: provide 'text' or both 'x' and 'y'"
+        val long = input.bool("long") ?: false
+        return if (long) svc.longPressAt(x.toFloat(), y.toFloat())
+               else      svc.tapAt(x.toFloat(), y.toFloat())
+    }
+
+    private fun handleUiSwipe(input: JsonObject): String {
+        val svc = a11y() ?: return "error: $a11yHelp"
+        val dur = (input.long("duration_ms") ?: 300L).coerceIn(50L, 3000L)
+        val x1 = input.doubleOrNull("x1")
+        val y1 = input.doubleOrNull("y1")
+        val x2 = input.doubleOrNull("x2")
+        val y2 = input.doubleOrNull("y2")
+        if (x1 != null && y1 != null && x2 != null && y2 != null) {
+            return svc.swipe(x1.toFloat(), y1.toFloat(), x2.toFloat(), y2.toFloat(), dur)
+        }
+        val dir = input.str("direction")?.lowercase()
+            ?: return "error: provide 'direction' or explicit x1/y1/x2/y2"
+        val dm = context.resources.displayMetrics
+        val w  = dm.widthPixels.toFloat()
+        val h  = dm.heightPixels.toFloat()
+        val cx = w / 2f
+        val cy = h / 2f
+        val pts = when (dir) {
+            "up"    -> floatArrayOf(cx, h * 0.8f, cx, h * 0.2f)
+            "down"  -> floatArrayOf(cx, h * 0.2f, cx, h * 0.8f)
+            "left"  -> floatArrayOf(w * 0.8f, cy, w * 0.2f, cy)
+            "right" -> floatArrayOf(w * 0.2f, cy, w * 0.8f, cy)
+            else -> return "error: direction must be up|down|left|right"
+        }
+        return svc.swipe(pts[0], pts[1], pts[2], pts[3], dur)
+    }
+
+    private fun handleUiType(input: JsonObject): String {
+        val svc = a11y() ?: return "error: $a11yHelp"
+        val text = input.str("text") ?: return "error: missing 'text'"
+        return svc.inputText(text)
+    }
+
+    private fun handleUiAction(input: JsonObject): String {
+        val svc = a11y() ?: return "error: $a11yHelp"
+        val action = input.str("action") ?: return "error: missing 'action'"
+        return svc.globalAction(action)
+    }
+
+    // ── Tool: open_intent ─────────────────────────────────────────────────
+
+    /**
+     * Fire an arbitrary Intent. Unlocks deep links and Settings sub-screens
+     * for any app that advertises them. Refuses dangerous actions (factory
+     * reset, device admin, etc.) without confirmation.
+     */
+    private suspend fun handleOpenIntent(input: JsonObject): String {
+        val uriStr  = input.str("uri")?.trim().orEmpty()
+        val action  = input.str("action")?.trim().orEmpty()
+        val pkg     = input.str("package")?.trim().orEmpty()
+        val mime    = input.str("mime_type")?.trim().orEmpty()
+        val extras  = input["extras"] as? JsonObject
+
+        if (uriStr.isEmpty() && action.isEmpty())
+            return "error: provide at least 'uri' or 'action'"
+
+        // Cheap guardrail — a few Settings actions are destructive/scary and
+        // deserve the same confirmation gate bash_exec uses for `rm -rf`.
+        val scary = action in setOf(
+            "android.settings.ACTION_FACTORY_RESET",
+            "android.settings.DEVICE_INFO_SETTINGS",
+        )
+        if (scary) {
+            val allowed = awaitConfirmation(
+                ConfirmationRequest(
+                    toolName    = "open_intent",
+                    description = "Open potentially destructive Settings screen",
+                    detail      = action,
+                )
+            )
+            if (!allowed) return "blocked: user denied opening: $action"
+        }
+
+        val intent = android.content.Intent().apply {
+            if (action.isNotEmpty()) this.action = action
+            else                     this.action = android.content.Intent.ACTION_VIEW
+            if (uriStr.isNotEmpty()) this.data = android.net.Uri.parse(uriStr)
+            if (mime.isNotEmpty())   setDataAndType(data, mime)
+            if (pkg.isNotEmpty())    setPackage(pkg)
+            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            // Grant read-uri-permission when targeting content:// URIs so the
+            // receiving app can actually open them.
+            if (uriStr.startsWith("content://"))
+                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            extras?.forEach { (k, v) ->
+                when (val prim = v as? kotlinx.serialization.json.JsonPrimitive) {
+                    null -> { /* skip non-primitives silently */ }
+                    else -> when {
+                        prim.isString         -> putExtra(k, prim.content)
+                        prim.booleanOrNull != null -> putExtra(k, prim.booleanOrNull!!)
+                        prim.longOrNull    != null -> putExtra(k, prim.longOrNull!!)
+                        prim.intOrNull     != null -> putExtra(k, prim.intOrNull!!)
+                        else                  -> putExtra(k, prim.content)
+                    }
+                }
+            }
+        }
+
+        return try {
+            // Verify something can handle it before firing — avoids a silent
+            // ANR when no app responds.
+            val resolved = context.packageManager.resolveActivity(intent, 0)
+            if (resolved == null) {
+                "error: no activity can handle this intent (action=${intent.action}, uri=${intent.data})"
+            } else {
+                context.startActivity(intent)
+                val target = resolved.activityInfo?.let { "${it.packageName}/${it.name}" } ?: "resolved"
+                "opened: $target (action=${intent.action}, uri=${intent.data ?: "∅"})"
+            }
+        } catch (e: Exception) {
+            "error: startActivity failed — ${e.message}"
+        }
     }
 
     // ── Tool: get_logcat ──────────────────────────────────────────────────
@@ -620,6 +832,8 @@ class JarvisToolDispatcher @Inject constructor(
     private fun JsonObject.bool(key: String) = this[key]?.jsonPrimitive?.booleanOrNull
     private fun JsonObject.int(key: String)  = this[key]?.jsonPrimitive?.intOrNull
     private fun JsonObject.long(key: String) = this[key]?.jsonPrimitive?.longOrNull
+    private fun JsonObject.doubleOrNull(key: String): Double? =
+        this[key]?.jsonPrimitive?.content?.toDoubleOrNull()
 
     /** Wrap a string in single quotes and escape embedded single quotes for POSIX shells. */
     private fun shellQuote(s: String): String = "'${s.replace("'", "'\\''")}'"

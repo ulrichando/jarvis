@@ -15,6 +15,7 @@ import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import com.jarvis.android.R
+import com.jarvis.android.system.bridge.JarvisLoopbackServer
 import com.jarvis.android.system.root.RootServiceConnection
 import com.jarvis.android.system.terminal.TerminalSessionManager
 import dagger.hilt.android.AndroidEntryPoint
@@ -47,6 +48,7 @@ class JarvisForegroundService : LifecycleService() {
 
     @Inject lateinit var rootServiceConnection: RootServiceConnection
     @Inject lateinit var terminalSessionManager: TerminalSessionManager
+    @Inject lateinit var loopbackServer: JarvisLoopbackServer
 
     private val binder = LocalBinder()
 
@@ -56,19 +58,42 @@ class JarvisForegroundService : LifecycleService() {
         super.onCreate()
         Log.i(TAG, "onCreate")
         createNotificationChannel()
-        // Use dataSync type — no dangerous permission required.
-        // Microphone/camera/location types are added dynamically when those
-        // permissions are granted (Android 14+ allows per-type promotion).
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                buildNotification(),
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, buildNotification())
+        // FGS type MUST match what the manifest declares — Android 14+
+        // enforces that the runtime value is a subset of the manifest
+        // attribute. AndroidManifest declares `specialUse` (with the
+        // PROPERTY_SPECIAL_USE_FGS_SUBTYPE marker), because this is a
+        // catch-all AI orchestration service that doesn't fit any of the
+        // predefined categories — and `specialUse` is also the only FGS
+        // type Android lets us start from BOOT_COMPLETED /
+        // MY_PACKAGE_REPLACED contexts without user interaction.
+        //
+        // SPECIAL_USE was introduced in API 34 (Android 14). Fall back to
+        // DATA_SYNC on 29–33 (still valid there), and to the typeless
+        // overload below 29.
+        when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE /* 34 */ -> {
+                startForeground(
+                    NOTIFICATION_ID,
+                    buildNotification(),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+                )
+            }
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q /* 29 */ -> {
+                startForeground(
+                    NOTIFICATION_ID,
+                    buildNotification(),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+                )
+            }
+            else -> {
+                startForeground(NOTIFICATION_ID, buildNotification())
+            }
         }
         rootServiceConnection.bind()
+        // Loopback HTTP+SSE bridge so the on-device terminal's `jarvis`
+        // command can drive the real agent loop (tools + streaming) by
+        // POSTing to 127.0.0.1:47811/chat. See JarvisLoopbackServer.
+        loopbackServer.start()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -89,6 +114,7 @@ class JarvisForegroundService : LifecycleService() {
 
     override fun onDestroy() {
         Log.i(TAG, "onDestroy — cleaning up sessions and root service")
+        loopbackServer.stop()
         lifecycleScope.launch {
             terminalSessionManager.killAll()
         }

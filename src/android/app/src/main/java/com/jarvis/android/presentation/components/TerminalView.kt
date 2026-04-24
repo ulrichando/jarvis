@@ -2,15 +2,13 @@ package com.jarvis.android.presentation.components
 
 import android.graphics.Paint
 import android.graphics.Typeface
-import android.view.KeyEvent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.focusable
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -18,137 +16,144 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.input.key.onKeyEvent
-import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import com.jarvis.android.core.designsystem.JarvisPalette
+import com.jarvis.android.system.terminal.TerminalCell
 import com.jarvis.android.system.terminal.TerminalGridSnapshot
 import com.jarvis.android.system.terminal.VtParser
 import kotlinx.coroutines.delay
 
 /**
- * Canvas-based PTY terminal renderer.
+ * Composable terminal view backed by a native [TerminalInputSink] for IME
+ * input and a Compose [Canvas] for drawing. Laid out as:
  *
- * Reads [snapshot] (a [TerminalGridSnapshot] from [TerminalSessionManager])
- * and draws each cell character using a monospace [Paint] backed by
- * JetBrains Mono.
+ *   Box
+ *     ├── Canvas           — renders the terminal grid (chars, cursor)
+ *     └── TerminalInputSink — transparent Android View that owns the IME
+ *                              connection; tapping anywhere sends focus to
+ *                              it and opens the soft keyboard.
  *
- * ## Cell layout
- * Cell width is derived from the advance width of a single space character
- * at [FONT_SIZE_SP]. Cell height is the font's `descent - ascent`. On first
- * composition the measured dimensions are forwarded via [onResize] so the
- * PTY knows the actual grid dimensions.
- *
- * ## Input
- * A zero-size [BasicTextField] sits invisibly below the Canvas. Tapping the
- * view requests its focus; keyboard events are forwarded to [onInput].
- *
- * ## Cursor blink
- * A 500 ms coroutine toggles [cursorBlinkOn] independently of new frames so
- * the cursor blinks even when no data arrives from the shell.
+ * The sink's [TerminalInputSink.onInput] forwards every typed character
+ * straight to the PTY through the [onInput] callback — no document, no
+ * local text state.
  */
 @Composable
 fun TerminalView(
-    snapshot:  TerminalGridSnapshot,
-    onInput:   (String) -> Unit,
-    onResize:  (rows: Int, cols: Int) -> Unit,
-    modifier:  Modifier = Modifier,
+    snapshot:          TerminalGridSnapshot,
+    onInput:           (String) -> Unit,
+    onResize:          (rows: Int, cols: Int) -> Unit,
+    onFetchScrollback: (Int) -> ByteArray? = { null },
+    modifier:          Modifier = Modifier,
 ) {
-    val density        = LocalDensity.current
-    val focusRequester = remember { FocusRequester() }
-    var inputBuffer    by remember { mutableStateOf("") }
-    var cursorBlinkOn  by remember { mutableStateOf(true) }
+    val density       = LocalDensity.current
+    var cursorBlinkOn by remember { mutableStateOf(true) }
 
-    // Cursor blink independent of data flow
     LaunchedEffect(Unit) {
-        while (true) {
-            delay(500)
-            cursorBlinkOn = !cursorBlinkOn
-        }
+        while (true) { delay(500); cursorBlinkOn = !cursorBlinkOn }
     }
 
-    // Build paint objects once; rebuild if density changes
-    val (textPaint, cellW, cellH, baseline) = remember(density) {
-        buildPaintMetrics(density.density)
-    }
+    val paints = remember(density) { buildPaintMetrics(density.density) }
 
-    Box(
-        modifier = modifier
-            .background(JarvisPalette.TerminalBg)
-            .pointerInput(Unit) { detectTapGestures { focusRequester.requestFocus() } }
-    ) {
-        // Hidden 1×1 dp input sink — captures hardware keyboard events
-        BasicTextField(
-            value         = inputBuffer,
-            onValueChange = { new ->
-                when {
-                    new.length > inputBuffer.length && new.startsWith(inputBuffer) -> {
-                        // Normal append — send the new characters
-                        val appended = new.substring(inputBuffer.length)
-                            .replace("\n", "\r")   // IME Enter → carriage return
-                        if (appended.isNotEmpty()) onInput(appended)
-                    }
-                    new.length < inputBuffer.length -> {
-                        // Deletion — send DEL
-                        onInput("\u007F")
-                    }
-                    new != inputBuffer -> {
-                        // Full replacement (autocorrect / paste / composition commit)
-                        val replaced = new.replace("\n", "\r")
-                        if (replaced.isNotEmpty()) onInput(replaced)
-                    }
-                }
-                // Keep buffer capped to avoid memory bloat from long pastes
-                inputBuffer = new.takeLast(64)
-            },
-            modifier = Modifier
-                .size(1.dp)
-                .alpha(0f)
-                .focusRequester(focusRequester)
-                .focusable()
-                .onKeyEvent { keyEvent ->
-                    val native = keyEvent.nativeKeyEvent
-                    if (native.action == KeyEvent.ACTION_DOWN) {
-                        val isCtrl = native.isCtrlPressed
-                        val seq = if (isCtrl) ctrlKeyToAnsi(native.keyCode)
-                                  else keyEventToAnsi(native.keyCode)
-                        if (seq != null) { onInput(seq); true } else false
-                    } else false
-                },
-        )
+    // How many rows up the user has scrolled from the bottom. 0 = live view
+    // (bottom), max = snapshot.scrollbackSize (oldest row at top of viewport).
+    var scrollOffset by remember { mutableStateOf(0) }
+    // Pixels accumulator between row-sized steps — the gesture fires at the
+    // Android View level with continuous deltas; we convert to integer rows.
+    var dragAccumPx  by remember { mutableStateOf(0f) }
 
+    // New live data arriving while we're scrolled back: stay pinned to the
+    // user's current position instead of snapping to the bottom.
+    // (We only reset to 0 on explicit input below.)
+
+    Box(modifier = modifier.background(JarvisPalette.TerminalBg)) {
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
                 .onSizeChanged { size ->
-                    if (cellW > 0f && cellH > 0f) {
-                        val cols = (size.width  / cellW).toInt().coerceAtLeast(1)
-                        val rows = (size.height / cellH).toInt().coerceAtLeast(1)
+                    if (paints.cellW > 0f && paints.cellH > 0f) {
+                        val cols = (size.width  / paints.cellW).toInt().coerceAtLeast(1)
+                        val rows = (size.height / paints.cellH).toInt().coerceAtLeast(1)
                         onResize(rows, cols)
                     }
                 },
         ) {
             drawTerminal(
-                snapshot      = snapshot,
-                textPaint     = textPaint,
-                cellW         = cellW,
-                cellH         = cellH,
-                baseline      = baseline,
-                cursorBlinkOn = cursorBlinkOn && snapshot.cursorVisible,
+                snapshot          = snapshot,
+                paints            = paints,
+                cursorBlinkOn     = cursorBlinkOn && snapshot.cursorVisible && scrollOffset == 0,
+                scrollOffset      = scrollOffset.coerceIn(0, snapshot.scrollbackSize),
+                onFetchScrollback = onFetchScrollback,
             )
+        }
+
+        // Transparent input-capture layer. Sits on top of the Canvas so taps
+        // land here, which requests focus and opens the IME. Typing flows
+        // through its InputConnection straight to onInput → PTY. Vertical
+        // drags are captured separately and translated into scrollback rows.
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory  = { ctx ->
+                TerminalInputSink(ctx).apply {
+                    this.onInput = { text ->
+                        // Typing always snaps back to the live bottom — matches
+                        // every standard terminal emulator.
+                        scrollOffset = 0
+                        onInput(text)
+                    }
+                    this.onVerticalDrag = { dy ->
+                        val rowStep = paints.cellH
+                        if (rowStep > 0f) {
+                            dragAccumPx += dy
+                            val steps = (dragAccumPx / rowStep).toInt()
+                            if (steps != 0) {
+                                dragAccumPx -= steps * rowStep
+                                // Finger down (positive dy) = pull newer
+                                // content down = decrease offset (toward
+                                // bottom). Finger up (negative dy) = reveal
+                                // older content = increase offset.
+                                scrollOffset = (scrollOffset - steps)
+                                    .coerceIn(0, snapshot.scrollbackSize)
+                            }
+                        }
+                    }
+                    post {
+                        requestFocus()
+                        showKeyboard()
+                    }
+                }
+            },
+            update = { view ->
+                view.onInput = { text ->
+                    scrollOffset = 0
+                    onInput(text)
+                }
+            },
+        )
+
+        // Small top-right indicator while scrolled back so the user knows
+        // they're looking at history, not the live shell.
+        if (scrollOffset > 0) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(8.dp),
+            ) {
+                Text(
+                    text  = "↑ -$scrollOffset",
+                    color = Color(0xFFFFCC00),
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
         }
     }
 }
@@ -156,137 +161,211 @@ fun TerminalView(
 // ── Drawing ───────────────────────────────────────────────────────────────────
 
 private fun DrawScope.drawTerminal(
-    snapshot:      TerminalGridSnapshot,
-    textPaint:     Paint,
-    cellW:         Float,
-    cellH:         Float,
-    baseline:      Float,
-    cursorBlinkOn: Boolean,
+    snapshot:          TerminalGridSnapshot,
+    paints:            PaintMetrics,
+    cursorBlinkOn:     Boolean,
+    scrollOffset:      Int,
+    onFetchScrollback: (Int) -> ByteArray?,
 ) {
     val grid = snapshot.grid
-    if (grid.isEmpty()) return
-
-    val rows = snapshot.rows
     val cols = snapshot.cols
+    val rows = snapshot.rows
+    if (grid.isEmpty() || cols <= 0 || rows <= 0) return
+
+    val canvas   = drawContext.canvas.nativeCanvas
+    val cellW    = paints.cellW
+    val cellH    = paints.cellH
+    val baseline = paints.baseline
+    val bgPaint  = paints.bgPaint
+    val fgPaint  = paints.fgPaint
+    val defaultBgArgb = JarvisPalette.TerminalBg.toArgb()
+
+    val sb       = snapshot.scrollbackSize
+    // Logical row = (SB - scrollOffset) + row_in_view
+    //   < SB → scrollback row (fetch via callback)
+    //   >= SB → visible grid row (total - SB)
+    val baseLogical = sb - scrollOffset
+
+    val buf = StringBuilder(cols)
 
     for (row in 0 until rows) {
-        for (col in 0 until cols) {
-            val cell  = VtParser.decodeCell(grid, row, col, cols)
-            val left  = col * cellW
-            val top   = row * cellH
+        val y = row * cellH
+        val logical = baseLogical + row
 
-            // Background
-            val isAtCursor = cursorBlinkOn &&
-                             row == snapshot.cursorRow &&
-                             col == snapshot.cursorCol
+        // Pick the source ByteArray + row index for this viewport row.
+        val (sourceGrid, sourceRow) =
+            if (logical < sb) (onFetchScrollback(logical) to 0)
+            else              (grid to (logical - sb))
 
-            val bgColor = if (isAtCursor) Color.White else cell.effectiveBg
-            drawRect(
-                color    = bgColor,
-                topLeft  = Offset(left, top),
-                size     = Size(cellW, cellH),
-            )
+        // If the scrollback fetch missed (old row recycled), skip.
+        if (sourceGrid == null || sourceGrid.isEmpty()) continue
 
-            // Character
-            val charStr = cell.char
-            if (charStr.isNotBlank() && charStr != " ") {
-                val fgColor = if (isAtCursor) Color.Black else cell.effectiveFg
-                textPaint.color = fgColor.toArgb()
-                textPaint.isFakeBoldText = cell.bold
-
-                drawIntoCanvas { canvas ->
-                    canvas.nativeCanvas.drawText(
-                        charStr,
-                        left + cellW * 0.5f,
-                        top  + baseline,
-                        textPaint,
-                    )
-                }
+        // ── Pass 1: background runs ───────────────────────────────────────
+        var runStart = 0
+        var runArgb  = defaultBgArgb
+        var col      = 0
+        while (col < cols) {
+            val cell = VtParser.decodeCell(sourceGrid, sourceRow, col, cols)
+            val argb = cell.effectiveBg.toArgb()
+            if (col == 0) { runStart = 0; runArgb = argb }
+            else if (argb != runArgb) {
+                flushBgRun(canvas, bgPaint, runArgb, defaultBgArgb,
+                           runStart, col, y, cellW, cellH)
+                runStart = col
+                runArgb  = argb
             }
-
-            // Underline decoration
-            if (cell.underline) {
-                drawRect(
-                    color   = cell.effectiveFg,
-                    topLeft = Offset(left, top + cellH - 1.5f),
-                    size    = Size(cellW, 1.5f),
-                )
-            }
-
-            // Strikethrough decoration
-            if (cell.strikethrough) {
-                drawRect(
-                    color   = cell.effectiveFg,
-                    topLeft = Offset(left, top + cellH * 0.5f),
-                    size    = Size(cellW, 1.5f),
-                )
-            }
+            col++
         }
+        flushBgRun(canvas, bgPaint, runArgb, defaultBgArgb,
+                   runStart, cols, y, cellW, cellH)
+
+        // ── Pass 2: text runs ─────────────────────────────────────────────
+        col = 0
+        var tRunStart = 0
+        var tRunFg    = 0
+        var tRunBold  = false
+        var tRunItalic = false
+        var tRunUnder = false
+        var tRunDim   = false
+        buf.setLength(0)
+
+        while (col < cols) {
+            val cell = VtParser.decodeCell(sourceGrid, sourceRow, col, cols)
+            val cp   = cell.codepoint
+            val ch   = if (cell.invisible || cp < 0x20) ' '
+                       else Character.toChars(cp).concatToString().firstOrNull() ?: ' '
+
+            val fgArgb = cell.effectiveFg.toArgb()
+            if (col == 0) {
+                tRunStart  = 0
+                tRunFg     = fgArgb
+                tRunBold   = cell.bold
+                tRunItalic = cell.italic
+                tRunUnder  = cell.underline
+                tRunDim    = cell.dim
+                buf.append(ch)
+            } else if (fgArgb != tRunFg || cell.bold != tRunBold ||
+                       cell.italic != tRunItalic || cell.underline != tRunUnder ||
+                       cell.dim != tRunDim) {
+                flushTextRun(canvas, fgPaint, buf.toString(), tRunFg,
+                             tRunBold, tRunItalic, tRunUnder, tRunDim,
+                             tRunStart, y, cellW, baseline)
+                buf.setLength(0)
+                tRunStart  = col
+                tRunFg     = fgArgb
+                tRunBold   = cell.bold
+                tRunItalic = cell.italic
+                tRunUnder  = cell.underline
+                tRunDim    = cell.dim
+                buf.append(ch)
+            } else {
+                buf.append(ch)
+            }
+            col++
+        }
+        flushTextRun(canvas, fgPaint, buf.toString(), tRunFg,
+                     tRunBold, tRunItalic, tRunUnder, tRunDim,
+                     tRunStart, y, cellW, baseline)
+    }
+
+    if (cursorBlinkOn) {
+        val cursorX = snapshot.cursorCol * cellW
+        val cursorY = snapshot.cursorRow * cellH
+        drawRect(
+            color   = Color(0xFFFFCC00),
+            topLeft = Offset(cursorX, cursorY + cellH * 0.85f),
+            size    = Size(cellW, cellH * 0.15f),
+        )
     }
 }
 
-// ── Paint / metrics ───────────────────────────────────────────────────────────
+private fun flushBgRun(
+    canvas: android.graphics.Canvas,
+    paint:  Paint,
+    argb:   Int,
+    defaultArgb: Int,
+    startCol: Int,
+    endCol:   Int,
+    y:        Float,
+    cellW:    Float,
+    cellH:    Float,
+) {
+    if (argb == defaultArgb || startCol >= endCol) return
+    paint.color = argb
+    canvas.drawRect(
+        startCol * cellW,
+        y,
+        endCol * cellW,
+        y + cellH,
+        paint,
+    )
+}
+
+private fun flushTextRun(
+    canvas: android.graphics.Canvas,
+    paint:  Paint,
+    text:   String,
+    fgArgb: Int,
+    bold:    Boolean,
+    italic:  Boolean,
+    under:   Boolean,
+    dim:     Boolean,
+    startCol: Int,
+    y:        Float,
+    cellW:    Float,
+    baseline: Float,
+) {
+    if (text.isEmpty()) return
+    if (text.all { it == ' ' } && !under) return  // nothing visible
+    // Dim fades the fg 50% toward black (termux pattern)
+    paint.color = if (dim) dimArgb(fgArgb) else fgArgb
+    val style = when {
+        bold && italic -> Typeface.BOLD_ITALIC
+        bold           -> Typeface.BOLD
+        italic         -> Typeface.ITALIC
+        else           -> Typeface.NORMAL
+    }
+    if (paint.typeface.style != style) {
+        paint.typeface = Typeface.create(Typeface.MONOSPACE, style)
+    }
+    val textX = startCol * cellW
+    canvas.drawText(text, textX, y + baseline, paint)
+    if (under) {
+        val uy = y + baseline + 2f
+        canvas.drawLine(textX, uy, textX + text.length * cellW, uy, paint)
+    }
+}
+
+private fun dimArgb(argb: Int): Int {
+    val a = (argb ushr 24) and 0xFF
+    val r = ((argb ushr 16) and 0xFF) / 2
+    val g = ((argb ushr 8)  and 0xFF) / 2
+    val b = (argb and 0xFF) / 2
+    return (a shl 24) or (r shl 16) or (g shl 8) or b
+}
 
 private data class PaintMetrics(
-    val paint:    Paint,
+    val fgPaint:  Paint,
+    val bgPaint:  Paint,
     val cellW:    Float,
     val cellH:    Float,
     val baseline: Float,
 )
 
-private fun buildPaintMetrics(density: Float): PaintMetrics {
-    val paint = Paint().apply {
+private fun buildPaintMetrics(densityFloat: Float): PaintMetrics {
+    val fg = Paint().apply {
         isAntiAlias = true
+        color       = Color(0xFFECECEC).toArgb()
+        textSize    = 13f * densityFloat
         typeface    = Typeface.MONOSPACE
-        textSize    = FONT_SIZE_SP * density
-        textAlign   = Paint.Align.CENTER
     }
-    val fm       = paint.fontMetrics
-    val cellH    = (-fm.ascent + fm.descent) * 1.2f    // add 20% line spacing
-    val baseline = -fm.ascent + (cellH - (-fm.ascent + fm.descent)) * 0.5f
-    val cellW    = paint.measureText("M")               // monospace: any char = same width
-    return PaintMetrics(paint, cellW, cellH, baseline)
+    val bg = Paint().apply {
+        isAntiAlias = false
+        style       = Paint.Style.FILL
+    }
+    val fm       = fg.fontMetrics
+    val cellH    = (fm.descent - fm.ascent) + 2f
+    val cellW    = fg.measureText("M")
+    val baseline = -fm.ascent + 1f
+    return PaintMetrics(fg, bg, cellW, cellH, baseline)
 }
-
-// ── Key mapping ───────────────────────────────────────────────────────────────
-
-private fun keyEventToAnsi(keyCode: Int): String? = when (keyCode) {
-    KeyEvent.KEYCODE_ENTER       -> "\r"
-    KeyEvent.KEYCODE_NUMPAD_ENTER -> "\r"
-    KeyEvent.KEYCODE_DPAD_UP     -> "\u001B[A"
-    KeyEvent.KEYCODE_DPAD_DOWN   -> "\u001B[B"
-    KeyEvent.KEYCODE_DPAD_RIGHT  -> "\u001B[C"
-    KeyEvent.KEYCODE_DPAD_LEFT   -> "\u001B[D"
-    KeyEvent.KEYCODE_MOVE_HOME   -> "\u001B[H"
-    KeyEvent.KEYCODE_MOVE_END    -> "\u001B[F"
-    KeyEvent.KEYCODE_PAGE_UP     -> "\u001B[5~"
-    KeyEvent.KEYCODE_PAGE_DOWN   -> "\u001B[6~"
-    KeyEvent.KEYCODE_DEL         -> "\u007F"
-    KeyEvent.KEYCODE_FORWARD_DEL -> "\u001B[3~"
-    KeyEvent.KEYCODE_TAB         -> "\t"
-    KeyEvent.KEYCODE_ESCAPE      -> "\u001B"
-    else -> null
-}
-
-/** Ctrl+key → control character sequence. */
-private fun ctrlKeyToAnsi(keyCode: Int): String? = when (keyCode) {
-    KeyEvent.KEYCODE_A -> "\u0001"   // Ctrl+A — move to line start
-    KeyEvent.KEYCODE_B -> "\u0002"   // Ctrl+B — move back one char
-    KeyEvent.KEYCODE_C -> "\u0003"   // Ctrl+C — SIGINT
-    KeyEvent.KEYCODE_D -> "\u0004"   // Ctrl+D — EOF / logout
-    KeyEvent.KEYCODE_E -> "\u0005"   // Ctrl+E — move to line end
-    KeyEvent.KEYCODE_F -> "\u0006"   // Ctrl+F — move forward one char
-    KeyEvent.KEYCODE_G -> "\u0007"   // Ctrl+G — bell / cancel search
-    KeyEvent.KEYCODE_K -> "\u000B"   // Ctrl+K — kill to end of line
-    KeyEvent.KEYCODE_L -> "\u000C"   // Ctrl+L — clear screen
-    KeyEvent.KEYCODE_N -> "\u000E"   // Ctrl+N — next history
-    KeyEvent.KEYCODE_P -> "\u0010"   // Ctrl+P — previous history
-    KeyEvent.KEYCODE_R -> "\u0012"   // Ctrl+R — reverse history search
-    KeyEvent.KEYCODE_U -> "\u0015"   // Ctrl+U — kill to start of line
-    KeyEvent.KEYCODE_W -> "\u0017"   // Ctrl+W — kill previous word
-    KeyEvent.KEYCODE_Z -> "\u001A"   // Ctrl+Z — SIGTSTP
-    KeyEvent.KEYCODE_BACKSLASH -> "\u001C"  // Ctrl+\ — SIGQUIT
-    else -> null
-}
-
-private const val FONT_SIZE_SP = 12f

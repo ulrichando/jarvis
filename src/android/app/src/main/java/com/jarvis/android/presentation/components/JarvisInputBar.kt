@@ -21,6 +21,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Stop
@@ -99,6 +100,12 @@ fun JarvisInputBar(
     onVoice:        (() -> Unit)? = null,
     onVoiceMode:    (() -> Unit)? = null,
     isRecording:    Boolean = false,
+    /** `file://` URI of a staged image preview. Non-null → render the chip. */
+    pendingImagePreviewUri: String? = null,
+    /** Display name of a staged text file. Non-null → render the file chip. */
+    pendingFileName:        String? = null,
+    /** Tap on the chip's × — clears the staged attachment. */
+    onRemoveAttachment:     (() -> Unit)? = null,
     // The following params are retained for source compatibility with the old
     // two-row design but intentionally unused in this minimalist layout — TTS
     // toggle + routing now live elsewhere (top bar + long-press).
@@ -128,6 +135,15 @@ fun JarvisInputBar(
                     .padding(horizontal = 18.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                // ── Row 0 (optional): staged attachment chip ─────────────
+                if (pendingImagePreviewUri != null || pendingFileName != null) {
+                    AttachmentChip(
+                        imageUri  = pendingImagePreviewUri,
+                        fileName  = pendingFileName,
+                        onRemove  = onRemoveAttachment ?: {},
+                    )
+                }
+
                 // ── Row 1: the text field ────────────────────────────────
                 BasicTextField(
                     value         = text,
@@ -260,6 +276,71 @@ fun JarvisInputBar(
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * Compact chip shown above the text field when an attachment is staged —
+ * matches Claude's "you picked an image, here it is, type something and
+ * send" affordance. Clicking × calls [onRemove].
+ */
+@Composable
+private fun AttachmentChip(
+    imageUri: String?,
+    fileName: String?,
+    onRemove: () -> Unit,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .background(Color(0x20FFFFFF), RoundedCornerShape(12.dp))
+            .padding(start = 6.dp, top = 6.dp, bottom = 6.dp, end = 4.dp),
+    ) {
+        if (imageUri != null) {
+            // Thumbnail — Coil handles file:// URIs natively.
+            coil3.compose.AsyncImage(
+                model              = imageUri,
+                contentDescription = "Attached image",
+                contentScale       = androidx.compose.ui.layout.ContentScale.Crop,
+                modifier           = Modifier
+                    .size(40.dp)
+                    .background(Color(0xFF101010), RoundedCornerShape(8.dp)),
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                text  = "Image attached",
+                color = TextPri,
+                fontSize = 13.sp,
+            )
+        } else {
+            Icon(
+                imageVector        = Icons.Default.Add,
+                contentDescription = null,
+                tint               = TextMuted,
+                modifier           = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text  = fileName ?: "File attached",
+                color = TextPri,
+                fontSize = 13.sp,
+            )
+        }
+        Spacer(Modifier.weight(1f))
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(28.dp)
+                .background(Color(0x22FFFFFF), CircleShape)
+                .clickable(role = Role.Button, onClick = onRemove),
+        ) {
+            Icon(
+                imageVector        = Icons.Default.Close,
+                contentDescription = "Remove attachment",
+                tint               = TextPri,
+                modifier           = Modifier.size(16.dp),
+            )
         }
     }
 }

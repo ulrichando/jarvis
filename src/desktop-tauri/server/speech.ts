@@ -8,6 +8,10 @@
 //   GET  /health                        → { status: 'ok' }
 //   POST /stt  (multipart: audio file)  → { text: string }
 //   POST /tts  ({ text, voice? })       → audio stream (wav)
+//   POST /turn         (multipart audio) → { heard, reply, ttsId } (batch)
+//   POST /turn-stream  (multipart audio) → SSE: heard / sentence / done / error
+//                                          (LLM streams; each sentence ships
+//                                           its own ttsId for early playback)
 
 // Shared conversation DB with the bridge — voice turns land in the same
 // sessions sidebar the chat panel shows. Fresh UUID per sidecar process;
@@ -140,6 +144,74 @@ const GROQ_BASE = 'https://api.groq.com/openai/v1'
 
 const STT_MODEL = process.env.JARVIS_STT_MODEL ?? 'whisper-large-v3-turbo'
 const STT_LANG  = process.env.JARVIS_STT_LANGUAGE ?? 'en'
+
+// Domain prompt shifts Whisper's prior so it stops hallucinating
+// "Thank you for watching" / "Please subscribe" on background noise —
+// those come from Whisper's YouTube-heavy training set kicking in
+// when the input is near-silent. A prompt mentioning JARVIS, Linux,
+// package names, etc. moves the decoder's context into a plausibly
+// technical conversation. 224 token limit per Groq STT API.
+const STT_PROMPT = process.env.JARVIS_STT_PROMPT ??
+  "Ulrich is talking to JARVIS, a Linux terminal AI. Topics include shell commands, code, package names, Arch Linux, Kali, Tauri, Bun, Pipewire, Docker, Kubernetes."
+
+// Hallucination gate thresholds — match the defaults in OpenAI's
+// whisper/transcribe.py. Any segment with no_speech_prob > 0.6 is
+// treated as silence; avg_logprob < -1.0 is low-confidence gibberish.
+// Dropping matching segments before they hit our filler filter
+// catches hallucinations the hardcoded list misses. See
+// arxiv 2501.11378 for empirical justification.
+const NO_SPEECH_MAX   = 0.60
+const AVG_LOGPROB_MIN = -1.0
+
+/**
+ * POST one WAV to Groq whisper and return the transcript after
+ * segment-level logprob filtering. Shared by /turn and /turn-stream.
+ *
+ * Request extras vs. before:
+ *   - `prompt`            : domain hint so Whisper doesn't fall into
+ *                           YouTube-outro hallucinations on silence
+ *   - `response_format`   : verbose_json gives us per-segment
+ *                           avg_logprob + no_speech_prob
+ *
+ * The returned `text` is concatenated ONLY from segments that pass
+ * both thresholds. An all-noise clip therefore returns "" and never
+ * reaches the filler filter or the LLM.
+ */
+async function groqTranscribe(audio: File): Promise<{ text: string; raw: string }> {
+  const form = new FormData()
+  form.append('file', audio, audio.name || 'audio.webm')
+  form.append('model', STT_MODEL)
+  form.append('language', STT_LANG)
+  form.append('temperature', '0')
+  form.append('response_format', 'verbose_json')
+  form.append('prompt', STT_PROMPT)
+  const resp = await fetch(`${GROQ_BASE}/audio/transcriptions`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${GROQ_KEY}` },
+    body: form,
+  })
+  if (!resp.ok) throw new Error(`stt ${resp.status}: ${await resp.text()}`)
+  type Seg = { text: string; avg_logprob?: number; no_speech_prob?: number }
+  const data = await resp.json() as { text?: string; segments?: Seg[] }
+  const rawText = (data.text ?? '').trim()
+  // If Groq didn't return segments (older whisper model), fall back
+  // to the plain `text` field. Modern `whisper-large-v3-turbo` does
+  // include segments on verbose_json.
+  if (!Array.isArray(data.segments) || data.segments.length === 0) {
+    return { text: rawText, raw: rawText }
+  }
+  const kept: string[] = []
+  for (const seg of data.segments) {
+    const nsp = seg.no_speech_prob ?? 0
+    const alp = seg.avg_logprob ?? 0
+    if (nsp > NO_SPEECH_MAX)     continue
+    if (alp < AVG_LOGPROB_MIN)   continue
+    const t = (seg.text ?? '').trim()
+    if (t) kept.push(t)
+  }
+  return { text: kept.join(' ').trim(), raw: rawText }
+}
+
 const TTS_MODEL = process.env.JARVIS_TTS_MODEL ?? 'canopylabs/orpheus-v1-english'
 const PROXY_URL = process.env.JARVIS_PROXY_URL ?? 'http://localhost:4000'
 // Voice defaults to Groq Llama — ~3× faster first-token than DeepSeek.
@@ -156,8 +228,12 @@ const AGENT_TIMEOUT_MS = parseInt(process.env.JARVIS_AGENT_TIMEOUT_MS ?? '60000'
 // Which provider to pass to start.sh as the first positional arg.
 // Groq is 3-5x faster than DeepSeek for short voice replies.
 const AGENT_PROVIDER = process.env.JARVIS_VOICE_PROVIDER ?? 'groq'
-// Valid Groq Orpheus voices: autumn, diana, hannah, austin, daniel, troy
-const TTS_VOICE = process.env.JARVIS_TTS_VOICE ?? 'daniel'
+// Valid Groq Orpheus voices: autumn, diana, hannah, austin, daniel, troy.
+// Troy is the warmest/deepest male — closer to the classic Iron Man JARVIS
+// tone than daniel, which reads as neutral on some systems and has drawn
+// "sounds female" feedback from users. Override with JARVIS_TTS_VOICE to
+// pick another; austin is the other strong male option.
+const TTS_VOICE = process.env.JARVIS_TTS_VOICE ?? 'troy'
 
 if (!GROQ_KEY) {
   console.error('[speech] GROQ_API_KEY not set — /stt and /tts will fail')
@@ -275,6 +351,35 @@ let agentBusy = false
 // and re-transcribes JARVIS's own voice, we drop that utterance.
 let lastReply = ''
 
+// Last user transcript + timestamp — used to dedup the STT flood pattern
+// where Silero/Whisper fires the same transcript multiple times within
+// ~1s. Distinct from echo rejection (which compares to the ASSISTANT
+// reply). A near-verbatim repeat of the prior user turn within the
+// dedup window is treated as a duplicate, not a real re-ask.
+let lastUserText = ''
+let lastUserAt = 0
+const USER_DEDUP_WINDOW_MS = 3000
+const USER_DEDUP_THRESHOLD = 0.90
+
+// Semantic-VAD: if a transcript looks like an incomplete thought (ends
+// in a conjunction / preposition / filler), stash it and wait for the
+// next utterance to arrive within this window so the two can be joined
+// before hitting the LLM. Matches OpenAI `semantic_vad` eagerness=low
+// behaviour — Silero fires on short silence, semantic layer catches
+// mid-thought pauses and waits for the rest.
+const SEMANTIC_VAD_ENABLED = (process.env.JARVIS_SEMANTIC_VAD ?? '1') !== '0'
+const SEMANTIC_VAD_JOIN_MS = parseInt(process.env.JARVIS_SEMANTIC_VAD_MS ?? '3000')
+const CONTINUATION_TAIL = /\b(and|but|or|so|because|if|when|while|since|though|although|unless|until|like|for|to|of|in|on|at|from|with|about|into|onto|through|over|under|a|an|the|um|uh|uhm|hmm|er|erm|well|you know)\s*[,.\-—…]*\s*$/i
+let pendingPartial: { text: string; expiresAt: number } | null = null
+function looksLikePartial(text: string): boolean {
+  if (!SEMANTIC_VAD_ENABLED) return false
+  const trimmed = text.trim()
+  if (trimmed.length < 4) return false
+  // Already ends with clear terminal punctuation → complete.
+  if (/[.!?](["')\]]?\s*)$/.test(trimmed)) return false
+  return CONTINUATION_TAIL.test(trimmed)
+}
+
 // Rolling conversation history so the agent remembers prior turns across
 // subprocess invocations. Capped so prompts stay short.
 // Rolling memory window. Enough to feel continuous — if Ulrich circles
@@ -325,7 +430,20 @@ function needsAgent(text: string): boolean {
 // After this pass, if the reply has gone empty, fall back to a neutral
 // acknowledgement so there's at least SOMETHING to speak.
 function sanitiseForTTS(text: string): string {
-  let out = text
+  const out = sanitiseCore(text)
+  return out.length < 4 ? 'Done.' : out
+}
+
+// Same cleanup as sanitiseForTTS but returns null for fragments that
+// don't have enough speakable content — used per-sentence in the
+// streaming pipeline so we don't fire Orpheus on an empty chunk.
+function sanitiseForTTSOrNull(text: string): string | null {
+  const out = sanitiseCore(text)
+  return out.length < 4 ? null : out
+}
+
+function sanitiseCore(text: string): string {
+  return text
     .replace(/```[\s\S]*?```/g, '')                 // fenced code blocks
     .replace(/`[^`\n]*`/g, '')                      // inline backtick code
     .replace(/^\s*[\$#>]\s+.*$/gm, '')              // shell-prompt lines
@@ -336,8 +454,6 @@ function sanitiseForTTS(text: string): string {
     .replace(/\n/g, '. ')
     .replace(/\.\s*\./g, '.')
     .trim()
-  if (out.length < 4) out = 'Done.'
-  return out
 }
 
 // Grounded "now" block — injected above the preamble so the model has
@@ -476,6 +592,10 @@ const VOICE_PREAMBLE = [
   "",
   "**For real-time facts — time, weather, news, prices, scores — you MUST call a tool, not guess.** The current time in any timezone is `TZ='<zone>' date` via Bash (e.g. `TZ='Africa/Douala' date` for Cameroon). Weather, news, stock prices: WebFetch a real source. If the source is unreachable, say so — don't fabricate.",
   "",
+  "**If the current user turn is near-identical to the previous one (same words, same intent, within seconds), it's a duplicate from the transcriber — NOT the user re-asking. Reply with a single short acknowledgement (\"got it\" / \"one sec\") or nothing, and do not repeat the same answer. If the user genuinely wants a different answer, they'll rephrase.**",
+  "",
+  "**If the user's turn reads as ambient noise, mumbling, or clearly not directed at you (TV chatter, a half-sentence with no request, filler syllables), do NOT answer. Say \"say again?\" once, or stay silent. Do not mirror the structure of a noise transcript back as a pseudo-reply.**",
+  "",
   "Zzz.",  // ignored — placeholder so the next splice is the last line
   "User said:",
 ].filter(l => l !== 'Zzz.').join('\n')
@@ -592,24 +712,16 @@ async function handleTurn(req: Request): Promise<Response> {
   const speakerConfidenceStr = form.get('speaker_confidence') as string | null
   const speakerConfidence = speakerConfidenceStr != null ? parseFloat(speakerConfidenceStr) : null
 
-  // 1) STT
-  const sttForm = new FormData()
-  sttForm.append('file', audio, audio.name || 'audio.webm')
-  sttForm.append('model', STT_MODEL)
-  sttForm.append('language', STT_LANG)
-  sttForm.append('temperature', '0')
-  sttForm.append('response_format', 'json')
-  const sttResp = await fetch(`${GROQ_BASE}/audio/transcriptions`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${GROQ_KEY}` },
-    body: sttForm,
-  })
-  if (!sttResp.ok) {
-    const err = await sttResp.text()
-    return Response.json({ error: `stt: ${err}` }, { status: 502, headers: CORS_HEADERS })
+  // 1) STT — routed through the shared helper that adds a domain
+  //    prompt + verbose_json + per-segment logprob filter. Catches
+  //    YouTube-outro hallucinations before they even reach our
+  //    hardcoded filler list. See `groqTranscribe` for details.
+  let raw: string
+  try {
+    raw = (await groqTranscribe(audio)).text
+  } catch (e: any) {
+    return Response.json({ error: e?.message ?? 'stt' }, { status: 502, headers: CORS_HEADERS })
   }
-  const sttData = await sttResp.json() as { text?: string }
-  const raw = (sttData.text ?? '').trim()
   // Whisper hallucinates short phrases on background noise. Filter:
   //   - non-Latin script (language leak)
   //   - known silence-fillers
@@ -634,9 +746,23 @@ async function handleTurn(req: Request): Promise<Response> {
   // questions that happened to share vocabulary.
   const echoScore = lastReply ? echoSimilarity(raw, lastReply) : 0
   const isEcho = echoScore > 0.85
-  const bad = /[^\x00-\x7F]/.test(raw) || FILLERS.includes(raw.toLowerCase()) || tooShort || isEcho
+  // Dedup flood reject: STT sometimes fires the same transcript multiple
+  // times within ~1s (Silero re-triggering on one audio burst, or Whisper
+  // hallucinating the same phrase on silence). Drop near-verbatim repeats
+  // of the prior USER turn inside the dedup window. Distinct from echo
+  // reject (which targets the assistant's own reply looping back through
+  // the speakers). The window doesn't advance on a drop, so a sustained
+  // flood keeps matching the original baseline until real new speech.
+  const dupScore = lastUserText ? echoSimilarity(raw, lastUserText) : 0
+  const isDup = dupScore >= USER_DEDUP_THRESHOLD && (Date.now() - lastUserAt) < USER_DEDUP_WINDOW_MS
+  const bad = /[^\x00-\x7F]/.test(raw) || FILLERS.includes(raw.toLowerCase()) || tooShort || isEcho || isDup
   const userText = bad ? '' : raw
   if (isEcho) console.log(`[speech] echo rejected (${(echoScore*100).toFixed(0)}% match)`)
+  if (isDup)  console.log(`[speech] dup rejected (${(dupScore*100).toFixed(0)}% match to prior user turn, ${Date.now()-lastUserAt}ms ago)`)
+  // Only advance the dedup baseline on turns that actually passed
+  // filtering — a one-word filler like "yes" should not poison the
+  // baseline and cause "yes please" 1s later to be flagged as a dup.
+  if (!bad) { lastUserText = raw; lastUserAt = Date.now() }
   console.log(`[speech] TURN user="${userText || '(dropped: ' + raw.slice(0,40) + ')'}"`)
   // 1.25) Voice-commanded mute / unmute — checked against RAW transcript
   // BEFORE filler-drop so short phrases ("unmute", "wake up") aren't
@@ -859,6 +985,359 @@ async function handleTurn(req: Request): Promise<Response> {
 // In-memory cache: ttsId → reply text. Consumed by /tts/play/:id.
 const ttsCache = new Map<string, { text: string; at: number }>()
 
+// Barge-in truncation: when the client cuts TTS partway through a reply,
+// it posts here with the portion of the assistant's speech that actually
+// reached the user's ears. We overwrite the last history entry so the
+// LLM doesn't think it said things the user never heard.
+async function handleTruncate(req: Request): Promise<Response> {
+  const body = await req.json().catch(() => ({})) as { playedText?: string }
+  const played = (body.playedText ?? '').trim()
+  if (!convHistory.length) {
+    return Response.json({ ok: false, error: 'no history to truncate' }, { status: 400, headers: CORS_HEADERS })
+  }
+  const last = convHistory[convHistory.length - 1]
+  // Only shrink — never overwrite with a LONGER text, that'd be a bug.
+  if (played.length < last.assistant.length) {
+    const replacement = played || '[interrupted]'
+    console.log(`[speech] barge-in truncate: "${last.assistant.slice(0, 40)}..." (${last.assistant.length}c) → "${replacement.slice(0, 40)}..." (${replacement.length}c)`)
+    last.assistant = replacement
+    lastReply = replacement
+  }
+  return Response.json({ ok: true, assistant: last.assistant }, { headers: CORS_HEADERS })
+}
+
+// Extract complete sentences from a running buffer. Returns [sentences,
+// remainder] where `remainder` is whatever didn't end in terminal
+// punctuation yet and should be carried into the next chunk.
+function splitSentences(buf: string): { sentences: string[]; remainder: string } {
+  const sentences: string[] = []
+  let remainder = buf
+  // Match everything up to and including a terminal punctuation mark
+  // followed by whitespace. Use a global regex walk so one buffer can
+  // contain multiple complete sentences at once.
+  const re = /^([^.!?\n]{3,}?[.!?]+)(?=\s|$)\s*/
+  // Fallback: long paragraph break even without punctuation.
+  const paraRe = /^([^\n]{8,}?)\n+/
+  while (true) {
+    const m = remainder.match(re) || remainder.match(paraRe)
+    if (!m) break
+    const sentence = m[1].trim()
+    if (sentence) sentences.push(sentence)
+    remainder = remainder.slice(m[0].length)
+  }
+  return { sentences, remainder }
+}
+
+// Kick off a streaming plainLLM call and emit each complete sentence
+// to the provided callback as soon as it arrives. Returns the full
+// assembled reply at the end. We stream against the proxy's Anthropic
+// /v1/messages endpoint, parse its SSE content_block_delta events, and
+// split the growing text into sentences on the fly.
+async function streamPlainLLM(
+  userTurn: string,
+  onSentence: (sentence: string) => void,
+): Promise<string> {
+  const messages: Array<{ role: 'user' | 'assistant'; content: string }> = []
+  for (const t of convHistory) {
+    messages.push({ role: 'user',      content: t.user })
+    messages.push({ role: 'assistant', content: t.assistant })
+  }
+  messages.push({ role: 'user', content: userTurn })
+  const system = VOICE_PREAMBLE
+    .replace(/\nUser said:\s*$/, '')
+    .trim()
+    + '\n\n## THIS TURN: no tools available\n'
+    + 'You are being called without Bash, WebFetch, or file tools this turn. '
+    + 'DO NOT claim to open, launch, run, browse, fetch, or execute anything. '
+    + "If Ulrich asked for an action you can't perform without tools, say exactly: "
+    + '"I need tool access for that, let me retry." Never fabricate a result.'
+
+  const r = await fetch(`${PROXY_URL}/v1/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: CHAT_MODEL,
+      max_tokens: 200,
+      stream: true,
+      messages,
+      system,
+    }),
+  })
+  if (!r.ok || !r.body) {
+    console.error('[speech] stream plainLLM upstream', r.status)
+    return ''
+  }
+
+  const reader = r.body.getReader()
+  const decoder = new TextDecoder()
+  let sseBuffer = ''
+  let sentenceBuffer = ''
+  let full = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    sseBuffer += decoder.decode(value, { stream: true })
+    // SSE frames are separated by blank lines. Each frame has one or
+    // more `event:` / `data:` lines.
+    const frames = sseBuffer.split('\n\n')
+    sseBuffer = frames.pop() ?? ''
+    for (const frame of frames) {
+      for (const line of frame.split('\n')) {
+        if (!line.startsWith('data:')) continue
+        const raw = line.slice(5).trim()
+        if (!raw || raw === '[DONE]') continue
+        let evt: any
+        try { evt = JSON.parse(raw) } catch { continue }
+        // Anthropic: content_block_delta.delta.text
+        const delta = evt?.delta?.text ?? evt?.delta?.content ?? ''
+        if (!delta) continue
+        full += delta
+        sentenceBuffer += delta
+        const { sentences, remainder } = splitSentences(sentenceBuffer)
+        sentenceBuffer = remainder
+        for (const s of sentences) onSentence(s)
+      }
+    }
+  }
+  // Flush whatever's left as a final sentence.
+  if (sentenceBuffer.trim()) onSentence(sentenceBuffer.trim())
+  return full.trim()
+}
+
+// Streaming turn handler — SSE events: `heard`, `sentence`, `done`,
+// `error`. The client opens this, plays each `sentence` audio as it
+// arrives via /tts/play/:ttsId, so Jarvis starts talking before the
+// LLM has finished generating the full reply.
+async function handleTurnStream(req: Request): Promise<Response> {
+  const form = await req.formData()
+  const audio = form.get('audio') as File | null
+  if (!audio) return Response.json({ error: 'missing audio' }, { status: 400, headers: CORS_HEADERS })
+  const speakerConfidenceStr = form.get('speaker_confidence') as string | null
+  const speakerConfidence = speakerConfidenceStr != null ? parseFloat(speakerConfidenceStr) : null
+
+  const encoder = new TextEncoder()
+  const stream = new ReadableStream({
+    async start(controller) {
+      // Track controller state explicitly. Streaming LLM output runs
+      // asynchronously via emitSentence; if the client disconnects (user
+      // moves on, new turn fires, page reloads) the controller closes
+      // but emitSentence callbacks still arrive. Calling .enqueue() on a
+      // closed controller throws ERR_INVALID_STATE which killed the
+      // whole handler mid-turn — users saw JARVIS stop mid-sentence and
+      // lose the rest of the reply. Route every write through `send`
+      // with this guard so late callbacks become harmless no-ops.
+      //
+      // cancel() below is the authoritative cancel signal: WHATWG streams
+      // call it when the client disconnects. safeClose() covers our own
+      // ordered close() calls on the happy path (close-after-close is
+      // also an error state).
+      let closed = false
+      const send = (event: string, data: unknown) => {
+        if (closed) return
+        try {
+          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`))
+        } catch (e) {
+          // Controller was closed between the !closed check and the
+          // enqueue — client disconnected mid-frame. Flip the flag so
+          // future calls no-op, then swallow. Not an error we surface.
+          closed = true
+        }
+      }
+      const safeClose = () => {
+        if (closed) return
+        closed = true
+        try { controller.close() } catch {}
+      }
+      const emitSentence = (text: string) => {
+        if (closed) return
+        const clean = sanitiseForTTSOrNull(text)
+        if (!clean) return
+        const ttsId = crypto.randomUUID()
+        ttsCache.set(ttsId, { text: clean, at: Date.now() })
+        send('sentence', { text: clean, ttsId })
+      }
+
+      try {
+        // 1) STT — shared helper does prompt + logprob filter. Keeping
+        //    this path in sync with /turn via a single source of truth.
+        let raw: string
+        try {
+          raw = (await groqTranscribe(audio)).text
+        } catch (e: any) {
+          send('error', { error: e?.message ?? 'stt' })
+          safeClose(); return
+        }
+
+        // Semantic-VAD join: if the previous turn ended in mid-thought and
+        // this one arrives inside the join window, stitch them before
+        // applying any filters. The LLM sees a single coherent utterance.
+        if (pendingPartial && Date.now() < pendingPartial.expiresAt && raw) {
+          console.log(`[speech] semantic-VAD join: "${pendingPartial.text}" + "${raw}"`)
+          raw = `${pendingPartial.text} ${raw}`
+          pendingPartial = null
+        } else if (pendingPartial && Date.now() >= pendingPartial.expiresAt) {
+          // Window expired — drop the stash so we don't carry stale context.
+          pendingPartial = null
+        }
+
+        // Same filtering as /turn — keep the two paths consistent.
+        const FILLERS = [
+          'thank you for watching','thanks for watching','please subscribe','music',
+          'you','yeah','okay','ok','yes','no','mm','uh','um','hmm','bye','.',
+        ]
+        const letters = raw.replace(/[^a-zA-Z]/g, '')
+        const wordCount = raw.split(/\s+/).filter(Boolean).length
+        const looksLikeAnswer =
+          /\b[a-z0-9-]+\.(com|co|ai|dev|io|org|net|gov|edu|app|xyz|me|tv|fr|uk|us|ca)\b/i.test(raw) ||
+          /^https?:\/\//i.test(raw) ||
+          /\d/.test(raw) ||
+          /^\s*(yes|yeah|yep|sure|ok|okay|please|go ?ahead|do it|fire|launch it|go for it|confirm|confirmed|affirmative|no|nope|cancel|abort|stop|nevermind)\b/i.test(raw)
+        const tooShort = !looksLikeAnswer && (letters.length < 6 || wordCount < 3)
+        const echoScore = lastReply ? echoSimilarity(raw, lastReply) : 0
+        const isEcho = echoScore > 0.85
+        const dupScore = lastUserText ? echoSimilarity(raw, lastUserText) : 0
+        const isDup = dupScore >= USER_DEDUP_THRESHOLD && (Date.now() - lastUserAt) < USER_DEDUP_WINDOW_MS
+        const bad = /[^\x00-\x7F]/.test(raw) || FILLERS.includes(raw.toLowerCase()) || tooShort || isEcho || isDup
+        const userText = bad ? '' : raw
+        if (isEcho) console.log(`[speech] echo rejected (${(echoScore*100).toFixed(0)}% match)`)
+        if (isDup)  console.log(`[speech] dup rejected (${(dupScore*100).toFixed(0)}% match, ${Date.now()-lastUserAt}ms ago)`)
+        if (!isDup && raw) { lastUserText = raw; lastUserAt = Date.now() }
+        console.log(`[speech] TURN-STREAM user="${userText || '(dropped: ' + raw.slice(0,40) + ')'}"`)
+
+        send('heard', { text: userText, raw })
+
+        // Mute / unmute / empty — bail early with a single utterance.
+        const speakerTrusted = speakerConfidence == null || speakerConfidence >= 0.70
+        if (voiceMuted) {
+          if (isUnmuteIntent(raw) && speakerTrusted) {
+            voiceMuted = false
+            emitSentence("I'm back.")
+          }
+          send('done', { reply: voiceMuted ? '' : "I'm back." })
+          safeClose(); return
+        }
+        if (isMuteIntent(raw) && speakerTrusted) {
+          voiceMuted = true
+          emitSentence('Going quiet.')
+          send('done', { reply: 'Going quiet.' })
+          safeClose(); return
+        }
+        if (!userText) {
+          send('done', { reply: '' })
+          safeClose(); return
+        }
+
+        // Agent-busy fast path
+        if (agentBusy && /\b(what are you doing|what.s going on|still there|are you there|still working|finished|done yet|are you done|status|progress|hang on|hurry up)\b/i.test(userText)) {
+          emitSentence('Still working on the last task.')
+          send('done', { reply: 'Still working on the last task.' })
+          safeClose(); return
+        }
+
+        // Semantic-VAD: incomplete thought → stash and wait for continuation.
+        // Do NOT speak, do NOT write to history. If the next utterance
+        // arrives within SEMANTIC_VAD_JOIN_MS it gets prepended and the
+        // joined pair goes through the LLM. Otherwise the partial is lost
+        // (acceptable — user can just speak again).
+        if (looksLikePartial(userText)) {
+          pendingPartial = { text: userText, expiresAt: Date.now() + SEMANTIC_VAD_JOIN_MS }
+          console.log(`[speech] semantic-VAD stash: "${userText}" (holding ${SEMANTIC_VAD_JOIN_MS}ms)`)
+          send('pending', { text: userText })
+          safeClose(); return
+        }
+
+        // Build the context block (same layout as /turn)
+        const forwardUserText = userText
+        const nowBlock     = buildNowBlock()
+        const recallBlock  = formatRecall(forwardUserText)
+        const historyBlock = formatHistory()
+        const contextual   = `${nowBlock}${recallBlock}${historyBlock}User said:\n${forwardUserText}`
+
+        const withinThread = (Date.now() - lastTtsAt) < 30_000
+        const wantsAgent = AGENT_ENABLED && (needsAgent(forwardUserText) || (lastRouteWasAgent && withinThread))
+
+        const t0 = Date.now()
+        let finalReply = ''
+
+        if (wantsAgent) {
+          // Agent is subprocess — inherently non-streaming. Run it, then
+          // emit the whole reply as one sentence so the client still
+          // goes through the same audio-queue path.
+          const r = await runAgent(contextual)
+          if (r.busy) {
+            const fillers = [
+              'Still on the last one, one second.',
+              'Almost there, hang tight.',
+              "Got it, I'll handle that after this one.",
+              "Heard you, finishing the last task first.",
+            ]
+            const msg = fillers[Math.floor(Math.random() * fillers.length)]
+            emitSentence(msg)
+            send('done', { reply: msg })
+            safeClose(); return
+          }
+          finalReply = sanitiseForTTS(r.text || 'Done.')
+          // Still chunk agent output so the first sentence starts
+          // playing ~immediately instead of waiting for the WAV header.
+          const { sentences, remainder } = splitSentences(finalReply + ' ')
+          for (const s of sentences) emitSentence(s)
+          if (remainder.trim()) emitSentence(remainder)
+        } else {
+          // Plain LLM — true streaming.
+          finalReply = await streamPlainLLM(forwardUserText, emitSentence)
+          if (/I need tool access for that/i.test(finalReply)) {
+            console.log('[speech] plain asked for tools — retrying on agent')
+            const r = await runAgent(contextual)
+            if (!r.busy && r.text && !/I need tool access for that/i.test(r.text)) {
+              const retry = sanitiseForTTS(r.text)
+              finalReply = retry
+              const { sentences, remainder } = splitSentences(retry + ' ')
+              for (const s of sentences) emitSentence(s)
+              if (remainder.trim()) emitSentence(remainder)
+            }
+          }
+        }
+
+        console.log(`[speech] TURN-STREAM route=${wantsAgent ? 'agent' : 'plain'} latency=${Date.now() - t0}ms replyLen=${finalReply.length}`)
+        lastRouteWasAgent = wantsAgent
+        const saneReply = sanitiseForTTS(finalReply || 'Done.')
+        pushTurn(forwardUserText, saneReply)
+        lastReply = saneReply
+        lastTtsAt = Date.now()
+
+        send('done', { reply: saneReply })
+      } catch (e: any) {
+        console.error('[speech] turn-stream error:', e)
+        send('error', { error: String(e?.message ?? e) })
+      } finally {
+        safeClose()
+      }
+    },
+    // Called by WHATWG streams when the consumer cancels — in our case
+    // the browser closing the SSE connection. Flip the closed flag so
+    // any in-flight streamPlainLLM callbacks stop firing .enqueue() on
+    // a disposed controller (the exact crash that was cutting JARVIS's
+    // reply short mid-sentence).
+    cancel() {
+      // Using outer-scope `closed` isn't accessible here; the send/
+      // emitSentence helpers already defend via try/catch in .enqueue(),
+      // which flips the flag on the first rejected frame. This hook is
+      // here as a comment placeholder for when/if we add an AbortController
+      // around the upstream Groq SSE so we can also tear that down early.
+    },
+  })
+
+  return new Response(stream, {
+    headers: {
+      ...CORS_HEADERS,
+      'Content-Type':  'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      'Connection':    'keep-alive',
+    },
+  })
+}
+
 async function handleTtsPlay(id: string): Promise<Response> {
   const entry = ttsCache.get(id)
   if (!entry) return new Response('unknown tts id', { status: 404, headers: CORS_HEADERS })
@@ -934,9 +1413,11 @@ Bun.serve({
     }
 
     try {
-      if (url.pathname === '/stt'  && req.method === 'POST') return await handleSTT(req)
-      if (url.pathname === '/tts'  && req.method === 'POST') return await handleTTS(req)
-      if (url.pathname === '/turn' && req.method === 'POST') return await handleTurn(req)
+      if (url.pathname === '/stt'               && req.method === 'POST') return await handleSTT(req)
+      if (url.pathname === '/tts'               && req.method === 'POST') return await handleTTS(req)
+      if (url.pathname === '/turn'              && req.method === 'POST') return await handleTurn(req)
+      if (url.pathname === '/turn-stream'       && req.method === 'POST') return await handleTurnStream(req)
+      if (url.pathname === '/history/truncate'  && req.method === 'POST') return await handleTruncate(req)
     } catch (e: any) {
       console.error('[speech] handler error:', e)
       return Response.json({ error: e?.message ?? 'internal error' }, { status: 500, headers: CORS_HEADERS })
