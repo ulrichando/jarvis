@@ -43,6 +43,13 @@ data class CloudModel(
     val id:          String,
     val label:       String,
     val description: String,
+    /**
+     * True when the model can actually look at attached images. The chat
+     * repo auto-routes image-bearing turns to a vision-capable model from
+     * any configured provider when the user's currently-selected one is
+     * text-only (Groq GPT-OSS, DeepSeek, etc.).
+     */
+    val supportsVision: Boolean = false,
 ) {
     companion object {
 
@@ -55,54 +62,66 @@ data class CloudModel(
          * don't ship slugs that have been retired.
          */
         val CATALOG: List<CloudModel> = listOf(
-            // ── Anthropic ────────────────────────────────────────────────
+            // ── Anthropic (all current Claude models are vision-capable) ─
             CloudModel(CloudProvider.ANTHROPIC, "claude-opus-4-6",
-                "Opus 4.6",        "Most capable Claude — best for complex reasoning."),
+                "Opus 4.6",        "Most capable Claude — best for complex reasoning.",
+                supportsVision = true),
             CloudModel(CloudProvider.ANTHROPIC, "claude-sonnet-4-6",
-                "Sonnet 4.6",      "Best balance of speed and intelligence."),
+                "Sonnet 4.6",      "Best balance of speed and intelligence.",
+                supportsVision = true),
             CloudModel(CloudProvider.ANTHROPIC, "claude-haiku-4-5-20251001",
-                "Haiku 4.5",       "Fastest Claude — low-latency queries + tools."),
+                "Haiku 4.5",       "Fastest Claude — low-latency queries + tools.",
+                supportsVision = true),
 
-            // ── OpenAI ───────────────────────────────────────────────────
+            // ── OpenAI (all vision-capable) ──────────────────────────────
             CloudModel(CloudProvider.OPENAI,    "gpt-5",
-                "GPT-5",           "OpenAI's flagship reasoning model."),
+                "GPT-5",           "OpenAI's flagship reasoning model.",
+                supportsVision = true),
             CloudModel(CloudProvider.OPENAI,    "gpt-5-mini",
-                "GPT-5 Mini",      "Cheaper GPT-5 with most of the capability."),
+                "GPT-5 Mini",      "Cheaper GPT-5 with most of the capability.",
+                supportsVision = true),
             CloudModel(CloudProvider.OPENAI,    "o3",
-                "o3",              "Deep-thinking reasoning chain; slow but strong."),
+                "o3",              "Deep-thinking reasoning chain; slow but strong.",
+                supportsVision = true),
 
-            // ── DeepSeek ─────────────────────────────────────────────────
+            // ── DeepSeek (text-only) ─────────────────────────────────────
             CloudModel(CloudProvider.DEEPSEEK,  "deepseek-chat",
                 "DeepSeek V3",     "General chat + coding; sharp, fast, cheap."),
             CloudModel(CloudProvider.DEEPSEEK,  "deepseek-reasoner",
                 "DeepSeek R1",     "DeepSeek's R1 reasoner — explicit step-by-step chains."),
 
-            // ── Groq (hosts others' weights on LPU hardware) ─────────────
+            // ── Groq (open-weights on LPU hardware — no vision) ──────────
             CloudModel(CloudProvider.GROQ,      "openai/gpt-oss-120b",
                 "GPT-OSS 120B",    "OpenAI's open weights on Groq LPUs — very fast."),
             CloudModel(CloudProvider.GROQ,      "llama-3.3-70b-versatile",
                 "Llama 3.3 70B",   "Meta's 70B on Groq — low-latency general chat."),
 
-            // ── Google Gemini ────────────────────────────────────────────
+            // ── Google Gemini (all vision-capable) ───────────────────────
             CloudModel(CloudProvider.GOOGLE,    "gemini-2.5-pro",
-                "Gemini 2.5 Pro",  "Google's flagship — strong multimodal + long context."),
+                "Gemini 2.5 Pro",  "Google's flagship — strong multimodal + long context.",
+                supportsVision = true),
             CloudModel(CloudProvider.GOOGLE,    "gemini-2.5-flash",
-                "Gemini 2.5 Flash","Fast, cheap Google model; great for tools."),
+                "Gemini 2.5 Flash","Fast, cheap Google model; great for tools.",
+                supportsVision = true),
             CloudModel(CloudProvider.GOOGLE,    "gemini-2.5-flash-preview-native-audio-dialog",
                 "Gemini 2.5 Native Audio",
-                "Native audio in/out — speak to and hear the model directly."),
+                "Native audio in/out — speak to and hear the model directly.",
+                supportsVision = true),
 
-            // ── xAI Grok ─────────────────────────────────────────────────
+            // ── xAI Grok (vision-capable) ────────────────────────────────
             CloudModel(CloudProvider.XAI,       "grok-4",
-                "Grok 4",          "xAI's latest — real-time web knowledge baked in."),
+                "Grok 4",          "xAI's latest — real-time web knowledge baked in.",
+                supportsVision = true),
 
-            // ── OpenRouter (meta-provider routing many of the above) ─────
+            // ── OpenRouter (routes to vision-capable under the hood) ─────
             CloudModel(CloudProvider.OPENROUTER,"openrouter/auto",
-                "OpenRouter Auto", "OpenRouter picks the best model for each query."),
+                "OpenRouter Auto", "OpenRouter picks the best model for each query.",
+                supportsVision = true),
 
-            // ── Mistral ──────────────────────────────────────────────────
+            // ── Mistral (Pixtral-based Large accepts images) ─────────────
             CloudModel(CloudProvider.MISTRAL,   "mistral-large-latest",
-                "Mistral Large",   "Mistral's flagship chat + reasoning model."),
+                "Mistral Large",   "Mistral's flagship chat + reasoning model.",
+                supportsVision = true),
 
             // ── JARVIS Brain ─────────────────────────────────────────────
             // Single "Auto" entry — the brain server picks the upstream model

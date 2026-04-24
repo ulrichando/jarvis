@@ -78,25 +78,39 @@ if(EXISTS "${LLAMA_DIR}/CMakeLists.txt")
     # OpenCL below gives us Adreno GPU acceleration with a much simpler build.
     set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
 
-    # GPU acceleration — DISABLED.
+    # GPU acceleration via OpenCL (Adreno on Snapdragon, Mali on Exynos).
     #
-    # We previously linked OpenCL against a stubbed libOpenCL.so so the runtime
-    # linker would resolve cl* symbols against the vendor's GPU driver. That
-    # works in theory; in practice libOpenCL.so on every modern Samsung pulls
-    # in libcutils.so, which Android 11+ namespace isolation blocks for app
-    # code (see https://developer.android.com/about/versions/11/behavior-changes-11
-    # under "Non-public native libraries restricted"). Result: libjarvis_llm.so
-    # fails to dlopen at all — every GGUF load fails with
+    # The previous attempt linked libjarvis_llm.so against the vendor's
+    # libOpenCL.so directly, which dragged libcutils.so into our DT_NEEDED.
+    # Android 11+ namespace isolation blocks that for app code:
     #   dlopen failed: library "libcutils.so" not found
-    # which kills the entire on-device backend.
+    # (see https://developer.android.com/about/versions/11/behavior-changes-11
+    # under "Non-public native libraries restricted").
     #
-    # CPU-only via NEON SIMD is fast enough for the catalog's smaller models
-    # (Qwen 0.5B / 1.5B / TinyLlama / Gemma 1B) and avoids the libcutils trap.
-    # If we ever want GPU back, runtime dlopen("libOpenCL.so", RTLD_LAZY) with
-    # a CPU fallback is the right pattern — not link-time linking.
-    set(GGML_OPENCL OFF CACHE BOOL "" FORCE)
-    set(JARVIS_HAS_OPENCL FALSE)
-    message(STATUS "JARVIS: OpenCL OFF on all ABIs (CPU/NEON only — see comment)")
+    # The fix — same pattern mybigday/llama.rn uses in production — is to link
+    # against the Khronos OpenCL ICD loader built as a tiny libOpenCL.so stub.
+    # The stub's only cl_* symbols are wrappers that dlopen the vendor driver
+    # lazily, so libcutils stays out of our app's link graph. The manifest
+    # already carries <uses-native-library libOpenCL.so/>, which is what lets
+    # the ICD loader find /vendor/lib64/libOpenCL.so at runtime.
+    #
+    # The stub is produced by src/android/scripts/build-opencl-stub.sh and
+    # lands in opencl-stub/${ANDROID_ABI}/libOpenCL.so. If it's missing we
+    # fall back to CPU-only — so the build never fails because of it, and
+    # the fallback matches the previous behaviour.
+    set(OPENCL_STUB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/opencl-stub/${ANDROID_ABI}")
+    set(OPENCL_STUB_LIB "${OPENCL_STUB_DIR}/libOpenCL.so")
+
+    if(EXISTS "${OPENCL_STUB_LIB}")
+        set(GGML_OPENCL ON  CACHE BOOL "" FORCE)
+        set(JARVIS_HAS_OPENCL TRUE)
+        message(STATUS "JARVIS: OpenCL ON for ${ANDROID_ABI} (stub: ${OPENCL_STUB_LIB})")
+    else()
+        set(GGML_OPENCL OFF CACHE BOOL "" FORCE)
+        set(JARVIS_HAS_OPENCL FALSE)
+        message(STATUS "JARVIS: OpenCL OFF for ${ANDROID_ABI} — stub not built yet")
+        message(STATUS "        Run: src/android/scripts/build-opencl-stub.sh")
+    endif()
 
     # Use Android-optimised BLAS where available
     # (GGML_BLAS is OFF by default — llama.cpp uses its own SIMD kernels)
@@ -127,6 +141,12 @@ if(EXISTS "${LLAMA_DIR}/CMakeLists.txt")
     # ggml-opencl backend (CMake 3.22 on the Android SDK doesn't support the
     # LINK_LIBRARY:WHOLE_ARCHIVE generator expression).
     if (JARVIS_HAS_OPENCL)
+        # Point the linker at our ICD-loader stub before pulling in ggml-opencl.
+        # ggml-opencl's CMake config adds "OpenCL" to its link line — resolving
+        # that to our stub's libOpenCL.so (not the vendor's) is what keeps
+        # libcutils out of DT_NEEDED.
+        target_link_directories(jarvis_llm PRIVATE ${OPENCL_STUB_DIR})
+
         target_link_libraries(jarvis_llm
             llama                                  # llama.cpp core (static)
             ggml-opencl                            # Adreno GPU backend (static)

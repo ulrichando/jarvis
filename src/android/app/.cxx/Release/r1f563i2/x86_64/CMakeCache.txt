@@ -41,14 +41,29 @@ CMAKE_ANDROID_NDK:UNINITIALIZED=/home/ulrich/Android/Sdk/ndk/27.2.12479018
 //Archiver
 CMAKE_AR:FILEPATH=/home/ulrich/Android/Sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
 
+//ASM compiler
+CMAKE_ASM_COMPILER:FILEPATH=/home/ulrich/Android/Sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/clang
+
+//LLVM archiver
+CMAKE_ASM_COMPILER_AR:FILEPATH=/home/ulrich/Android/Sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+
+//Generate index for LLVM archive
+CMAKE_ASM_COMPILER_RANLIB:FILEPATH=/home/ulrich/Android/Sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
+
 //Flags used by the compiler during all build types.
 CMAKE_ASM_FLAGS:STRING=
 
 //Flags used by the compiler during debug builds.
 CMAKE_ASM_FLAGS_DEBUG:STRING=
 
+//Flags used by the ASM compiler during MINSIZEREL builds.
+CMAKE_ASM_FLAGS_MINSIZEREL:STRING=-Os -DNDEBUG
+
 //Flags used by the compiler during release builds.
 CMAKE_ASM_FLAGS_RELEASE:STRING=
+
+//Flags used by the ASM compiler during RELWITHDEBINFO builds.
+CMAKE_ASM_FLAGS_RELWITHDEBINFO:STRING=-O2 -g -DNDEBUG
 
 //Choose the type of build, options are: None Debug Release RelWithDebInfo
 // MinSizeRel ...
@@ -329,6 +344,9 @@ GGML_AVX512_VNNI:BOOL=OFF
 //ggml: enable AVX-VNNI
 GGML_AVX_VNNI:BOOL=OFF
 
+//ggml: directory to load dynamic backends from (requires GGML_BACKEND_DL
+GGML_BACKEND_DIR:PATH=
+
 //ggml: build backends as dynamic libraries (requires BUILD_SHARED_LIBS)
 GGML_BACKEND_DL:BOOL=OFF
 
@@ -340,6 +358,9 @@ GGML_BLAS:BOOL=OFF
 
 //ggml: BLAS library vendor
 GGML_BLAS_VENDOR:STRING=Generic
+
+//ggml: enable BMI2
+GGML_BMI2:BOOL=OFF
 
 //ggml: build examples
 GGML_BUILD_EXAMPLES:BOOL=OFF
@@ -368,11 +389,26 @@ GGML_CPU_ARM_ARCH:STRING=
 //ggml: use memkind for CPU HBM
 GGML_CPU_HBM:BOOL=OFF
 
+//ggml: use KleidiAI optimized kernels if applicable
+GGML_CPU_KLEIDIAI:BOOL=OFF
+
+//ggml: CPU type for PowerPC
+GGML_CPU_POWERPC_CPUTYPE:STRING=
+
+//ggml: use runtime weight conversion of Q4_0 to Q4_X_X
+GGML_CPU_REPACK:BOOL=ON
+
 //ggml: use CUDA
 GGML_CUDA:BOOL=OFF
 
+//ggml: cuda link binary compression mode; requires cuda 12.8+
+GGML_CUDA_COMPRESSION_MODE:STRING=size
+
 //ggml: use 16 bit floats for some calculations
 GGML_CUDA_F16:BOOL=OFF
+
+//ggml: compile ggml FlashAttention CUDA kernels
+GGML_CUDA_FA:BOOL=ON
 
 //ggml: compile all quants for FlashAttention
 GGML_CUDA_FA_ALL_QUANTS:BOOL=OFF
@@ -385,6 +421,9 @@ GGML_CUDA_FORCE_MMQ:BOOL=OFF
 
 //ggml: use CUDA graphs (llama.cpp only)
 GGML_CUDA_GRAPHS:BOOL=ON
+
+//ggml: use NVIDIA Collective Comm. Library
+GGML_CUDA_NCCL:BOOL=ON
 
 //ggml: do not use peer to peer copies
 GGML_CUDA_NO_PEER_COPY:BOOL=OFF
@@ -404,14 +443,32 @@ GGML_FMA:BOOL=OFF
 //ggml: enable gprof
 GGML_GPROF:BOOL=OFF
 
+//ggml: enable Hexagon backend
+GGML_HEXAGON:BOOL=OFF
+
+//ggml: quantize group size (32, 64, or 128)
+GGML_HEXAGON_FP32_QUANTIZE_GROUP_SIZE:STRING=128
+
 //ggml: use HIP
 GGML_HIP:BOOL=OFF
 
-//ggml: use HIP graph, experimental, slow
+//ggml: enable kernel perf metrics output
+GGML_HIP_EXPORT_METRICS:BOOL=OFF
+
+//ggml: use HIP graph
 GGML_HIP_GRAPHS:BOOL=OFF
+
+//ggml: enable MFMA MMA for CDNA in MMQ
+GGML_HIP_MMQ_MFMA:BOOL=ON
 
 //ggml: do not try to use HIP VMM
 GGML_HIP_NO_VMM:BOOL=ON
+
+//ggml: use ROCm Collective Comm. Library
+GGML_HIP_RCCL:BOOL=OFF
+
+//ggml: enable rocWMMA for FlashAttention
+GGML_HIP_ROCWMMA_FATTN:BOOL=OFF
 
 //ggml: use HIP unified memory architecture
 GGML_HIP_UMA:BOOL=OFF
@@ -461,6 +518,12 @@ GGML_METAL_USE_BF16:BOOL=OFF
 //ggml: use MUSA
 GGML_MUSA:BOOL=OFF
 
+//ggml: use MUSA graph, experimental, unstable
+GGML_MUSA_GRAPHS:BOOL=OFF
+
+//ggml: enable muDNN for accelerated copy
+GGML_MUSA_MUDNN_COPY:BOOL=OFF
+
 //ggml: optimize the build for the current system
 GGML_NATIVE:BOOL=OFF
 
@@ -473,17 +536,38 @@ GGML_OPENCL_EMBED_KERNELS:BOOL=ON
 //ggml: use OpenCL profiling (increases overhead)
 GGML_OPENCL_PROFILING:BOOL=OFF
 
+//ggml: OpenCL API version to target
+GGML_OPENCL_TARGET_VERSION:STRING=300
+
 //ggml: use optimized kernels for Adreno
 GGML_OPENCL_USE_ADRENO_KERNELS:BOOL=ON
 
 //ggml: use OpenMP
 GGML_OPENMP:BOOL=ON
 
+//ggml: use OPENVINO
+GGML_OPENVINO:BOOL=OFF
+
 //ggml: use RPC
 GGML_RPC:BOOL=OFF
 
 //ggml: enable rvv
 GGML_RVV:BOOL=ON
+
+//ggml: enable riscv zfh
+GGML_RV_ZFH:BOOL=ON
+
+//ggml: enable riscv zicbop
+GGML_RV_ZICBOP:BOOL=ON
+
+//ggml: enable riscv zihintpause
+GGML_RV_ZIHINTPAUSE:BOOL=ON
+
+//ggml: enable riscv zvfbfwma
+GGML_RV_ZVFBFWMA:BOOL=OFF
+
+//ggml: enable riscv zvfh
+GGML_RV_ZVFH:BOOL=ON
 
 //ggml: enable address sanitizer
 GGML_SANITIZE_ADDRESS:BOOL=OFF
@@ -500,6 +584,12 @@ GGML_SCCACHE_FOUND:FILEPATH=GGML_SCCACHE_FOUND-NOTFOUND
 //ggml: max input copies for pipeline parallelism
 GGML_SCHED_MAX_COPIES:STRING=4
 
+//ggml: disallow reallocations in ggml-alloc (for debugging)
+GGML_SCHED_NO_REALLOC:BOOL=OFF
+
+//ggml: enable SSE 4.2
+GGML_SSE42:BOOL=OFF
+
 //ggml: static link libraries
 GGML_STATIC:BOOL=OFF
 
@@ -509,11 +599,27 @@ GGML_SYCL:BOOL=OFF
 //ggml: sycl device architecture
 GGML_SYCL_DEVICE_ARCH:STRING=
 
+//ggml: enable oneDNN in the SYCL backend
+GGML_SYCL_DNN:BOOL=ON
+
 //ggml: use 16 bit floats for sycl calculations
 GGML_SYCL_F16:BOOL=OFF
 
+//ggml: enable graphs in the SYCL backend
+GGML_SYCL_GRAPH:BOOL=ON
+
+//ggml: allow host memory fallback in SYCL reorder (requires kernel
+// 6.8+)
+GGML_SYCL_HOST_MEM_FALLBACK:BOOL=ON
+
 //ggml: sycl target device
 GGML_SYCL_TARGET:STRING=INTEL
+
+//ggml: use the VirtGPU/Virglrenderer API Remoting frontend
+GGML_VIRTGPU:BOOL=OFF
+
+//ggml: build the VirtGPU/Virglrenderer API Remoting backend
+GGML_VIRTGPU_BACKEND:BOOL=OFF
 
 //ggml: use Vulkan
 GGML_VULKAN:BOOL=OFF
@@ -542,6 +648,33 @@ GGML_VULKAN_SHADER_DEBUG_INFO:BOOL=OFF
 //ggml: enable Vulkan validation
 GGML_VULKAN_VALIDATE:BOOL=OFF
 
+//ggml: enable vxe
+GGML_VXE:BOOL=OFF
+
+//ggml: use WebGPU
+GGML_WEBGPU:BOOL=OFF
+
+//ggml: enable WebGPU profiling (CPU)
+GGML_WEBGPU_CPU_PROFILE:BOOL=OFF
+
+//ggml: enable WebGPU debug output
+GGML_WEBGPU_DEBUG:BOOL=OFF
+
+//ggml: enable WebGPU profiling (GPU)
+GGML_WEBGPU_GPU_PROFILE:BOOL=OFF
+
+//ggml: use JSPI for WebGPU
+GGML_WEBGPU_JSPI:BOOL=ON
+
+//ggml: enable xtheadvector
+GGML_XTHEADVECTOR:BOOL=OFF
+
+//ggml: use zDNN
+GGML_ZDNN:BOOL=OFF
+
+//ggml: use ZenDNN
+GGML_ZENDNN:BOOL=OFF
+
 //Path to a program.
 GIT_EXE:FILEPATH=/usr/bin/git
 
@@ -569,6 +702,12 @@ LLAMA_BUILD_SERVER:BOOL=OFF
 //llama: build tests
 LLAMA_BUILD_TESTS:BOOL=OFF
 
+//llama: build tools
+LLAMA_BUILD_TOOLS:BOOL=OFF
+
+//llama: build the embedded Web UI for server
+LLAMA_BUILD_WEBUI:BOOL=ON
+
 //llama: use libcurl to download model from an URL
 LLAMA_CURL:BOOL=OFF
 
@@ -585,6 +724,9 @@ LLAMA_LIB_INSTALL_DIR:PATH=lib
 // in common utils
 LLAMA_LLGUIDANCE:BOOL=OFF
 
+//llama: use openssl to support HTTPS
+LLAMA_OPENSSL:BOOL=ON
+
 //llama: enable address sanitizer
 LLAMA_SANITIZE_ADDRESS:BOOL=OFF
 
@@ -593,6 +735,18 @@ LLAMA_SANITIZE_THREAD:BOOL=OFF
 
 //llama: enable undefined sanitizer
 LLAMA_SANITIZE_UNDEFINED:BOOL=OFF
+
+//llama: install tests
+LLAMA_TESTS_INSTALL:BOOL=ON
+
+//llama: install tools
+LLAMA_TOOLS_INSTALL:BOOL=OFF
+
+//Use system libggml
+LLAMA_USE_SYSTEM_GGML:BOOL=OFF
+
+//llama: use 64-bit memory in WASM builds
+LLAMA_WASM_MEM64:BOOL=ON
 
 //Path to a library.
 MATH_LIBRARY:FILEPATH=/home/ulrich/Android/Sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/x86_64-linux-android/26/libm.so
@@ -611,6 +765,9 @@ OpenMP_C_LIB_NAMES:STRING=omp
 
 //Path to the omp library for OpenMP
 OpenMP_omp_LIBRARY:FILEPATH=/home/ulrich/Android/Sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/18/lib/linux/x86_64/libomp.so
+
+//ggml: path to ZenDNN installation
+ZENDNN_ROOT:BOOL=OFF
 
 //Value Computed by CMake
 ggml_BINARY_DIR:STATIC=/home/ulrich/Documents/Projects/jarvis/src/android/app/.cxx/Release/r1f563i2/x86_64/llama_build/ggml
@@ -648,6 +805,23 @@ llama.cpp_SOURCE_DIR:STATIC=/home/ulrich/Documents/Projects/jarvis/src/android/a
 CMAKE_ADDR2LINE-ADVANCED:INTERNAL=1
 //ADVANCED property for variable: CMAKE_AR
 CMAKE_AR-ADVANCED:INTERNAL=1
+//ADVANCED property for variable: CMAKE_ASM_COMPILER
+CMAKE_ASM_COMPILER-ADVANCED:INTERNAL=1
+//ADVANCED property for variable: CMAKE_ASM_COMPILER_AR
+CMAKE_ASM_COMPILER_AR-ADVANCED:INTERNAL=1
+//ADVANCED property for variable: CMAKE_ASM_COMPILER_RANLIB
+CMAKE_ASM_COMPILER_RANLIB-ADVANCED:INTERNAL=1
+CMAKE_ASM_COMPILER_WORKS:INTERNAL=1
+//ADVANCED property for variable: CMAKE_ASM_FLAGS
+CMAKE_ASM_FLAGS-ADVANCED:INTERNAL=1
+//ADVANCED property for variable: CMAKE_ASM_FLAGS_DEBUG
+CMAKE_ASM_FLAGS_DEBUG-ADVANCED:INTERNAL=1
+//ADVANCED property for variable: CMAKE_ASM_FLAGS_MINSIZEREL
+CMAKE_ASM_FLAGS_MINSIZEREL-ADVANCED:INTERNAL=1
+//ADVANCED property for variable: CMAKE_ASM_FLAGS_RELEASE
+CMAKE_ASM_FLAGS_RELEASE-ADVANCED:INTERNAL=1
+//ADVANCED property for variable: CMAKE_ASM_FLAGS_RELWITHDEBINFO
+CMAKE_ASM_FLAGS_RELWITHDEBINFO-ADVANCED:INTERNAL=1
 //This is the directory where this CMakeCache.txt was created
 CMAKE_CACHEFILE_DIR:INTERNAL=/home/ulrich/Documents/Projects/jarvis/src/android/app/.cxx/Release/r1f563i2/x86_64
 //Major version of cmake used to create the current loaded cache
@@ -829,6 +1003,9 @@ FIND_PACKAGE_MESSAGE_DETAILS_OpenMP_CXX:INTERNAL=[-fopenmp=libomp][/home/ulrich/
 FIND_PACKAGE_MESSAGE_DETAILS_Threads:INTERNAL=[TRUE][v()]
 //List of backends for cmake package
 GGML_AVAILABLE_BACKENDS:INTERNAL=ggml-cpu
+//STRINGS property for variable: GGML_CUDA_COMPRESSION_MODE
+GGML_CUDA_COMPRESSION_MODE-STRINGS:INTERNAL=none;speed;balance;size
+GGML_OPENMP_ENABLED:INTERNAL=ON
 //ADVANCED property for variable: GIT_EXECUTABLE
 GIT_EXECUTABLE-ADVANCED:INTERNAL=1
 //Result of TRY_COMPILE

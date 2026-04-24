@@ -1,35 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- JARVIS launcher icon foreground — arc-reactor ring (gold on transparent) -->
+<!-- Art must fit within the 66dp safe zone (radius 33 from center 54,54) to survive round/squircle launcher masks. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- Outer ring -->
     <path
         android:fillColor="#00000000"
         android:strokeColor="#C8CDD6"
-        android:strokeWidth="5"
-        android:pathData="M54,16 A38,38 0 1,1 53.99,16 Z" />
+        android:strokeWidth="4"
+        android:pathData="M54,24 A30,30 0 1,1 53.99,24 Z" />
 
-    <!-- Mid ring -->
     <path
         android:fillColor="#00000000"
         android:strokeColor="#C8CDD6"
-        android:strokeWidth="2.5"
-        android:pathData="M54,30 A24,24 0 1,1 53.99,30 Z" />
+        android:strokeWidth="2"
+        android:pathData="M54,35 A19,19 0 1,1 53.99,35 Z" />
 
-    <!-- Inner ring -->
     <path
         android:fillColor="#00000000"
         android:strokeColor="#C8CDD6"
-        android:strokeWidth="1.5"
-        android:pathData="M54,40 A14,14 0 1,1 53.99,40 Z" />
+        android:strokeWidth="1.2"
+        android:pathData="M54,43 A11,11 0 1,1 53.99,43 Z" />
 
-    <!-- Center core dot -->
     <path
         android:fillColor="#C8CDD6"
-        android:pathData="M54,47 A7,7 0 1,1 53.99,47 Z" />
+        android:pathData="M54,48.5 A5.5,5.5 0 1,1 53.99,48.5 Z" />
 
 </vector>

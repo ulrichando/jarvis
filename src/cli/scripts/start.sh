@@ -62,6 +62,9 @@ export JARVIS_MODEL_REGISTRY_ENABLED=1
 export JARVIS_DISABLE_AUTH="${JARVIS_DISABLE_AUTH:-1}"
 export CLAUDE_CODE_MAX_OUTPUT_TOKENS=8000
 export ENABLE_TOOL_SEARCH=true
+# Non-Claude backends (Groq, DeepSeek) don't know the ToolSearch protocol
+# and fail to call deferred tools (WebFetch, etc.) — ship every schema up front.
+export JARVIS_DISABLE_TOOL_DEFERRAL="${JARVIS_DISABLE_TOOL_DEFERRAL:-1}"
 export IS_DEMO=1
 export DISABLE_INSTALLATION_CHECKS=1
 

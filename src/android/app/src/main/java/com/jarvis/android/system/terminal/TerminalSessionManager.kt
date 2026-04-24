@@ -47,6 +47,7 @@ import javax.inject.Singleton
 class TerminalSessionManager @Inject constructor(
     private val ptyManager: PtyManager,
     private val rootManager: RootManager,
+    private val jarvisCli: JarvisCliBootstrap,
 ) {
 
     // ── Single-thread dispatcher for all PTY I/O ──────────────────────────
@@ -127,6 +128,44 @@ class TerminalSessionManager @Inject constructor(
         val parser   = VtParser(rows, cols)
         val id       = UUID.randomUUID().toString()
 
+        // Install / refresh the `jarvis` shell script + env. Safe to call
+        // on every session; it just rewrites the files (picks up a new
+        // Groq key if the user changed it in settings).
+        jarvisCli.install()
+
+        // Belt-and-suspenders shell init. Several things must happen to get
+        // a "real terminal" experience:
+        //   1. termios ECHO + ICANON on       (kernel handles echo)
+        //   2. shell line editing disabled    (mksh editline clears ECHO)
+        //   3. a visible PS1                  (mksh default `$` is cramped)
+        //   4. HOME = /sdcard                 (so cd ~ lands in user files)
+        //   5. PATH includes app's bin/       (so `jarvis` resolves)
+        //   6. start in HOME                  (ls shows real user files)
+        run {
+            // Android's SELinux app domain blocks exec() on files inside
+            // /data/data/<pkg>/files, so we can't chmod +x and just call
+            // `jarvis`. Instead register a shell function that invokes the
+            // script via /system/bin/sh — which IS permitted. The function
+            // is picked up by mksh and behaves identically to a real binary
+            // at interactive use.
+            val jarvisPath = jarvisCli.jarvisScript.absolutePath
+            val init = (
+                "stty sane 2>/dev/null; " +
+                "set +o emacs +o vi 2>/dev/null; " +
+                "export HOME=/sdcard; " +
+                "export PS1='jarvis:\$PWD\$ '; " +
+                "jarvis() { /system/bin/sh '$jarvisPath' \"\$@\"; }; " +
+                "cd \$HOME 2>/dev/null; " +
+                "clear 2>/dev/null; " +
+                "echo 'jarvis terminal — type `jarvis` for the interactive AI REPL'\n"
+            ).toByteArray(Charsets.UTF_8)
+            ptyManager.nativeWriteToPty(fd, init, init.size)
+        }
+        // Force kernel ECHO one more time AFTER the init has been enqueued.
+        // The shell may clear ECHO during its editline init; this is our
+        // hammer that survives whatever it does.
+        ptyManager.nativeForceEcho(fd)
+
         // If root session requested, send "su\n" into the shell immediately
         if (asRoot && rootManager.isRooted) {
             val suCmd = "su\n".toByteArray(Charsets.UTF_8)
@@ -190,11 +229,15 @@ class TerminalSessionManager @Inject constructor(
 
             when {
                 bytes == null -> {
-                    // Timeout — no data; loop and try again
+                    // Timeout — no data. MUST yield() here: the native select()
+                    // is blocking, so without a suspension point, queued writes
+                    // from the UI thread will starve on the single-thread PTY
+                    // dispatcher. That was THE bug where keystrokes logged as
+                    // "write" but never actually reached the PTY.
+                    kotlinx.coroutines.yield()
                     continue
                 }
                 bytes.isEmpty() -> {
-                    // EOF — shell process has exited
                     Log.i(TAG, "Session ${session.id}: shell exited (EOF)")
                     markSessionDead(session.id)
                     break
@@ -207,13 +250,28 @@ class TerminalSessionManager @Inject constructor(
         }
     }
 
+    // Monotonic tick to force StateFlow to always emit even when the
+    // underlying ByteArray reference is reused by the JNI layer. data class
+    // equality on ByteArray is reference-based, which was causing snapshot
+    // "updates" to be silently dropped as duplicates — the shell echoed chars
+    // into the grid but the UI never saw the delta.
+    private var snapshotSeq = 0L
+
     private fun emitGridSnapshot(session: ActiveSession) {
         val parser   = session.vtParser
         val grid     = parser.getGrid() ?: return
         val (cr, cc) = parser.getCursorPos()
+        snapshotSeq++
+
+        // Copy the grid bytes so the snapshot's equals() sees a fresh array
+        // identity on every tick. Without this StateFlow's distinct-by-equals
+        // deduplication suppresses redraws.
+        val gridCopy = grid.copyOf()
+
+        Log.d(TAG, "emit snap seq=$snapshotSeq cursor=($cr,$cc) grid=${gridCopy.size}b")
 
         session.gridFlow.value = TerminalGridSnapshot(
-            grid           = grid,
+            grid           = gridCopy,
             rows           = parser.rows,
             cols           = parser.cols,
             cursorRow      = cr,
@@ -237,8 +295,18 @@ class TerminalSessionManager @Inject constructor(
 
     /** Write raw [bytes] into the session's PTY. */
     fun write(sessionId: String, bytes: ByteArray) {
-        val session = sessionById(sessionId) ?: return
+        val session = sessionById(sessionId) ?: run {
+            Log.w(TAG, "write: session $sessionId not found (${bytes.size} bytes dropped)")
+            return
+        }
+        Log.i(TAG, "write: $sessionId fd=${session.masterFd} bytes=${bytes.size} preview=${
+            bytes.take(8).joinToString("") { "%02x".format(it) }
+        }")
         managerScope.launch {
+            // Defensive re-force: if some previous command (e.g. vim) cleared
+            // ECHO, put it back before every fresh user keystroke. Cheap
+            // ioctl on an already-open fd; no noticeable cost.
+            ptyManager.nativeForceEcho(session.masterFd)
             ptyManager.nativeWriteToPty(session.masterFd, bytes, bytes.size)
         }
     }

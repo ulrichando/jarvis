@@ -21,13 +21,18 @@ import javax.inject.Inject
 data class ChatsUiState(
     val conversations: List<Conversation> = emptyList(),
     val query:         String             = "",
-)
+    /** Non-empty when the user is in multi-select mode (long-pressed a row). */
+    val selectedIds:   Set<String>        = emptySet(),
+) {
+    val selectionMode: Boolean get() = selectedIds.isNotEmpty()
+}
 
 /**
  * View-model for the dedicated Chats screen — Claude-style full-page list
- * of every conversation with search + pin/delete/rename. Reuses the existing
- * ChatRepository use cases so its state stays in lock-step with the drawer
- * and the Chat view (Room flow under the hood).
+ * of every conversation with search + pin/delete/rename, plus a multi-select
+ * mode for bulk deletion. All mutations route through existing use cases
+ * so Room stays the single source of truth (the drawer + chat view
+ * re-render via the same flow).
  */
 @HiltViewModel
 class ChatsViewModel @Inject constructor(
@@ -43,7 +48,16 @@ class ChatsViewModel @Inject constructor(
 
     init {
         observeConversations()
-            .onEach { list -> _uiState.update { it.copy(conversations = list) } }
+            .onEach { list ->
+                _uiState.update { s ->
+                    // Prune selected ids that no longer exist (after a delete).
+                    val live = list.map { it.id }.toSet()
+                    s.copy(
+                        conversations = list,
+                        selectedIds   = s.selectedIds.intersect(live),
+                    )
+                }
+            }
             .launchIn(viewModelScope)
     }
 
@@ -66,5 +80,30 @@ class ChatsViewModel @Inject constructor(
 
     fun delete(id: String) {
         viewModelScope.launch { deleteConversation(id) }
+    }
+
+    // ── Multi-select ──────────────────────────────────────────────────────
+
+    fun toggleSelection(id: String) = _uiState.update { s ->
+        val next = s.selectedIds.toMutableSet().apply {
+            if (contains(id)) remove(id) else add(id)
+        }
+        s.copy(selectedIds = next)
+    }
+
+    fun clearSelection() = _uiState.update { it.copy(selectedIds = emptySet()) }
+
+    /** Select every conversation currently matching the active search query. */
+    fun selectAllVisible(visibleIds: List<String>) = _uiState.update {
+        it.copy(selectedIds = visibleIds.toSet())
+    }
+
+    fun deleteSelected() {
+        val ids = _uiState.value.selectedIds
+        if (ids.isEmpty()) return
+        viewModelScope.launch {
+            ids.forEach { id -> deleteConversation(id) }
+            _uiState.update { it.copy(selectedIds = emptySet()) }
+        }
     }
 }

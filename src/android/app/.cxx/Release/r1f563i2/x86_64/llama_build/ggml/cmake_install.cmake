@@ -59,13 +59,17 @@ if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_
     "/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/include/ggml-backend.h"
     "/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/include/ggml-blas.h"
     "/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/include/ggml-cann.h"
+    "/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/include/ggml-cpp.h"
     "/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/include/ggml-cuda.h"
-    "/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/include/ggml-kompute.h"
     "/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/include/ggml-opt.h"
     "/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/include/ggml-metal.h"
     "/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/include/ggml-rpc.h"
+    "/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/include/ggml-virtgpu.h"
     "/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/include/ggml-sycl.h"
     "/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/include/ggml-vulkan.h"
+    "/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/include/ggml-webgpu.h"
+    "/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/include/ggml-zendnn.h"
+    "/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/include/ggml-openvino.h"
     "/home/ulrich/Documents/Projects/jarvis/src/android/app/src/main/cpp/llama.cpp/ggml/include/gguf.h"
     )
 endif()

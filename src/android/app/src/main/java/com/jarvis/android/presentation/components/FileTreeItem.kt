@@ -1,6 +1,8 @@
 package com.jarvis.android.presentation.components
 
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -22,6 +24,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.jarvis.android.core.designsystem.JarvisTheme
@@ -30,25 +33,35 @@ import com.jarvis.android.domain.model.FileItem
 /**
  * A single row in the file manager's directory listing.
  *
- * Tapping navigates into directories or opens files. Long-press (handled by
- * [FileManagerScreen]) triggers the context menu (rename, delete, share).
+ * Tapping navigates into directories or opens files. Long-press triggers
+ * the context menu (rename, delete, share, properties, copy path). When
+ * [selected] is true the row is highlighted to reflect selection mode.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun FileTreeItem(
-    item:      FileItem,
-    isExpanded:Boolean = false,
-    onClick:   (FileItem) -> Unit,
-    modifier:  Modifier = Modifier,
+    item:         FileItem,
+    isExpanded:   Boolean = false,
+    selected:     Boolean = false,
+    onClick:      (FileItem) -> Unit,
+    onLongClick:  (FileItem) -> Unit = {},
+    modifier:     Modifier = Modifier,
 ) {
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .clickable { onClick(item) }
+            .background(
+                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                else Color.Transparent,
+            )
+            .combinedClickable(
+                onClick     = { onClick(item) },
+                onLongClick = { onLongClick(item) },
+            )
             .padding(horizontal = 16.dp, vertical = 10.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment     = Alignment.CenterVertically,
     ) {
-        // Icon
         Icon(
             imageVector = fileIcon(item, isExpanded),
             contentDescription = null,
@@ -56,7 +69,6 @@ fun FileTreeItem(
             modifier = Modifier.size(20.dp),
         )
 
-        // Name + meta
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text     = item.name,
@@ -77,7 +89,6 @@ fun FileTreeItem(
             }
         }
 
-        // Permissions badge
         Text(
             text  = item.permissions.take(9),
             style = JarvisTheme.typography.filePerms,
@@ -107,7 +118,7 @@ private fun iconTint(item: FileItem) = when {
     else             -> MaterialTheme.colorScheme.onSurfaceVariant
 }
 
-private fun formatSize(bytes: Long) = when {
+internal fun formatSize(bytes: Long) = when {
     bytes >= 1_073_741_824 -> "${"%.1f".format(bytes / 1_073_741_824f)} GB"
     bytes >= 1_048_576     -> "${"%.1f".format(bytes / 1_048_576f)} MB"
     bytes >= 1_024         -> "${"%.0f".format(bytes / 1_024f)} KB"

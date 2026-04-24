@@ -3,11 +3,59 @@ import ToolProgress from './ToolProgress'
 import TodoBlock from './TodoBlock'
 import ContextBar from './ContextBar'
 
-export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState, isDesktop }) {
+// ── Inline SVG icon set ──────────────────────────────────────────────
+const Icon = {
+  History: (p) => (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 7v5l3 2"/>
+    </svg>
+  ),
+  Minimize: (p) => (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M5 12h14"/></svg>
+  ),
+  Close: (p) => (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+  ),
+  Send: (p) => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M22 2 11 13"/><path d="m22 2-7 20-4-9-9-4 20-7Z"/></svg>
+  ),
+  Trash: (p) => (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
+  ),
+  ThumbUp: (p) => (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H7V10l4.34-8.67a1.5 1.5 0 0 1 2.66.17L15 5.88Z"/></svg>
+  ),
+  ThumbDown: (p) => (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M17 14V2"/><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H17v12l-4.34 8.67a1.5 1.5 0 0 1-2.66-.17L9 18.12Z"/></svg>
+  ),
+  Volume: (p) => (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+      <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+    </svg>
+  ),
+  VolumeOff: (p) => (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+      <line x1="22" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="22" y2="15"/>
+    </svg>
+  ),
+}
+
+const SURFACE   = '#0d1117'
+const SURFACE_2 = '#151b23'
+const BORDER    = 'rgba(255,255,255,0.08)'
+const BORDER_STRONG = 'rgba(255,255,255,0.14)'
+const TEXT      = '#e6edf3'
+const TEXT_DIM  = '#8b949e'
+const TEXT_MUTE = '#6e7681'
+const ACCENT    = '#4493f8'
+const ACCENT_BG = 'rgba(68,147,248,0.14)'
+
+export default function ChatPanel({ isOpen, onClose, onBoundsChange, ttsEnabled = true, onToggleTts, isDesktop }) {
   const [messages, setMessages] = useState([
     { role: 'jarvis', text: 'Online. How can I assist you, Ulrich?' },
   ])
-  // Track feedback state per message index: null | 'up' | 'down'
   const [feedbackState, setFeedbackState] = useState({})
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
@@ -15,63 +63,141 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
   const [isStreaming, setIsStreaming] = useState(false)
   const [toolExecutions, setToolExecutions] = useState({})
   const [contextUsage, setContextUsage] = useState(null)
+  const [wsConnected, setWsConnected] = useState(false)
   const messagesContainerRef = useRef(null)
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
   const wsRef = useRef(null)
   const toolIdCounter = useRef(0)
-  // Track tool executions for the current response to embed in the final message
   const currentToolsRef = useRef({})
   const scrollRAF = useRef(null)
   const wasLoadingRef = useRef(false)
 
   // ── Drag & resize state ───────────────────────────────────────────
-  const [pos, setPos] = useState(null) // {x, y} from top-left; null = CSS-centered
-  const [size, setSize] = useState({ w: Math.min(window.innerWidth * 0.85, 1400), h: Math.max(window.innerHeight * 0.82, 800) })
-  const dragRef = useRef(null) // {startMouseX, startMouseY, startX, startY}
-  const resizeRef = useRef(null) // {startMouseX, startMouseY, startW, startH}
+  const [pos, setPos] = useState(null)
+  const [size, setSize] = useState({
+    w: Math.min(window.innerWidth * 0.72, 960),
+    h: Math.min(window.innerHeight * 0.78, 720),
+  })
+  const dragRef = useRef(null)
+  const resizeRef = useRef(null)
   const panelRef = useRef(null)
 
-  const onHeaderMouseDown = useCallback((e) => {
+  // Drag / resize — native pointer-event listeners attached on pointerdown
+  // and released on pointerup. Native listeners bypass React's synthetic
+  // event system (zero per-event React overhead on the hot path) and
+  // setPointerCapture keeps events flowing even when the cursor leaves
+  // the webview. Writes go straight to the DOM via panelRef, coalesced
+  // with requestAnimationFrame. React state is only updated on pointerup.
+  const onHeaderPointerDown = useCallback((e) => {
     if (e.button !== 0) return
+    if (e.target.closest('button, [data-no-drag]')) return
     e.preventDefault()
-    const rect = panelRef.current?.getBoundingClientRect()
-    if (!rect) return
-    dragRef.current = { startMouseX: e.clientX, startMouseY: e.clientY, startX: rect.left, startY: rect.top }
+    const el = panelRef.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    const target = e.currentTarget
+    const pointerId = e.pointerId
+    const state = {
+      pointerId,
+      startMouseX: e.clientX, startMouseY: e.clientY,
+      startX: rect.left, startY: rect.top,
+      currentX: rect.left, currentY: rect.top,
+      raf: 0,
+      w: el.offsetWidth || 0,
+      h: el.offsetHeight || 0,
+    }
+    dragRef.current = state
+    el.style.willChange = 'transform'
+    try { target.setPointerCapture(pointerId) } catch {}
+
     const onMove = (ev) => {
-      const dx = ev.clientX - dragRef.current.startMouseX
-      const dy = ev.clientY - dragRef.current.startMouseY
-      setPos({ x: dragRef.current.startX + dx, y: dragRef.current.startY + dy })
+      if (ev.pointerId !== pointerId) return
+      const margin = 60
+      const minX = margin - state.w
+      const maxX = window.innerWidth  - margin
+      const minY = 0
+      const maxY = window.innerHeight - margin
+      const rawX = state.startX + (ev.clientX - state.startMouseX)
+      const rawY = state.startY + (ev.clientY - state.startMouseY)
+      state.currentX = rawX < minX ? minX : rawX > maxX ? maxX : rawX
+      state.currentY = rawY < minY ? minY : rawY > maxY ? maxY : rawY
+      if (!state.raf) {
+        state.raf = requestAnimationFrame(() => {
+          state.raf = 0
+          if (!panelRef.current) return
+          panelRef.current.style.transform =
+            `translate3d(${state.currentX - state.startX}px, ${state.currentY - state.startY}px, 0)`
+        })
+      }
     }
-    const onUp = () => {
+    const onUp = (ev) => {
+      if (ev.pointerId !== pointerId) return
+      if (state.raf) cancelAnimationFrame(state.raf)
+      target.removeEventListener('pointermove',   onMove)
+      target.removeEventListener('pointerup',     onUp)
+      target.removeEventListener('pointercancel', onUp)
+      try { target.releasePointerCapture(pointerId) } catch {}
+      if (panelRef.current) {
+        panelRef.current.style.transform = ''
+        panelRef.current.style.willChange = ''
+      }
       dragRef.current = null
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
+      setPos({ x: state.currentX, y: state.currentY })
     }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
+    target.addEventListener('pointermove',   onMove)
+    target.addEventListener('pointerup',     onUp)
+    target.addEventListener('pointercancel', onUp)
   }, [])
 
-  const onResizeMouseDown = useCallback((e) => {
+  const onResizePointerDown = useCallback((e) => {
     if (e.button !== 0) return
     e.preventDefault()
     e.stopPropagation()
-    resizeRef.current = { startMouseX: e.clientX, startMouseY: e.clientY, startW: size.w, startH: size.h }
+    const el = panelRef.current
+    if (!el) return
+    const target = e.currentTarget
+    const pointerId = e.pointerId
+    const state = {
+      pointerId,
+      startMouseX: e.clientX, startMouseY: e.clientY,
+      startW: size.w, startH: size.h,
+      currentW: size.w, currentH: size.h,
+      raf: 0,
+    }
+    resizeRef.current = state
+    el.style.willChange = 'width, height'
+    try { target.setPointerCapture(pointerId) } catch {}
+
     const onMove = (ev) => {
-      const dw = ev.clientX - resizeRef.current.startMouseX
-      const dh = ev.clientY - resizeRef.current.startMouseY
-      setSize({
-        w: Math.max(320, resizeRef.current.startW + dw),
-        h: Math.max(300, resizeRef.current.startH + dh),
-      })
+      if (ev.pointerId !== pointerId) return
+      const w = state.startW + (ev.clientX - state.startMouseX)
+      const h = state.startH + (ev.clientY - state.startMouseY)
+      state.currentW = w < 380 ? 380 : w
+      state.currentH = h < 320 ? 320 : h
+      if (!state.raf) {
+        state.raf = requestAnimationFrame(() => {
+          state.raf = 0
+          if (!panelRef.current) return
+          panelRef.current.style.width  = state.currentW + 'px'
+          panelRef.current.style.height = state.currentH + 'px'
+        })
+      }
     }
-    const onUp = () => {
+    const onUp = (ev) => {
+      if (ev.pointerId !== pointerId) return
+      if (state.raf) cancelAnimationFrame(state.raf)
+      target.removeEventListener('pointermove',   onMove)
+      target.removeEventListener('pointerup',     onUp)
+      target.removeEventListener('pointercancel', onUp)
+      try { target.releasePointerCapture(pointerId) } catch {}
+      if (panelRef.current) panelRef.current.style.willChange = ''
       resizeRef.current = null
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
+      setSize({ w: state.currentW, h: state.currentH })
     }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
+    target.addEventListener('pointermove',   onMove)
+    target.addEventListener('pointerup',     onUp)
+    target.addEventListener('pointercancel', onUp)
   }, [size.w, size.h])
 
   // ── Conversation sidebar ──────────────────────────────────────────
@@ -79,18 +205,33 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
   const [sessions, setSessions] = useState([])
   const [deletingId, setDeletingId] = useState(null)
 
-  // Keep panel mounted briefly after close so exit animation can play,
-  // then fully unmount to stop backdrop-filter compositing on the overlay.
   const [mounted, setMounted] = useState(isOpen)
   useEffect(() => {
-    if (isOpen) {
-      setMounted(true)
-    } else {
-      // Wait for CSS transition (300ms) then unmount
-      const t = setTimeout(() => setMounted(false), 350)
+    if (isOpen) setMounted(true)
+    else {
+      const t = setTimeout(() => setMounted(false), 200)
       return () => clearTimeout(t)
     }
   }, [isOpen])
+
+  // Report the panel's current rect to the parent (which forwards it to
+  // Rust for the per-region click-through poller). Called on mount, after
+  // drag end, and after resize end — anytime the rendered rect changes.
+  const reportRect = useCallback(() => {
+    if (!onBoundsChange) return
+    const el = panelRef.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    onBoundsChange({ x: r.left, y: r.top, w: r.width, h: r.height })
+  }, [onBoundsChange])
+
+  // Report rect on mount and whenever size/pos commits (drag/resize end).
+  useEffect(() => {
+    if (!mounted) return
+    // Give the browser one frame to apply new layout before measuring.
+    const id = requestAnimationFrame(reportRect)
+    return () => cancelAnimationFrame(id)
+  }, [mounted, pos, size.w, size.h, reportRect])
 
   const PYTHON_BASE = 'http://127.0.0.1:8765'
 
@@ -102,10 +243,7 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
     } catch {}
   }, [])
 
-  // Load sessions whenever sidebar opens
-  useEffect(() => {
-    if (sidebarOpen) fetchSessions()
-  }, [sidebarOpen, fetchSessions])
+  useEffect(() => { if (sidebarOpen) fetchSessions() }, [sidebarOpen, fetchSessions])
 
   const deleteSession = useCallback(async (session) => {
     setDeletingId(session.id)
@@ -136,29 +274,23 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
       const ctx = new (window.AudioContext || window.webkitAudioContext)()
       const osc = ctx.createOscillator()
       const gain = ctx.createGain()
-      osc.connect(gain)
-      gain.connect(ctx.destination)
+      osc.connect(gain); gain.connect(ctx.destination)
       osc.type = 'sine'
       osc.frequency.setValueAtTime(880, ctx.currentTime)
       osc.frequency.setValueAtTime(1100, ctx.currentTime + 0.08)
-      gain.gain.setValueAtTime(0.08, ctx.currentTime)
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25)
+      gain.gain.setValueAtTime(0.06, ctx.currentTime)
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.22)
       osc.start(ctx.currentTime)
       osc.stop(ctx.currentTime + 0.25)
     } catch {}
   }, [])
 
-  // Faint heartbeat pulse during tool execution — confirms the agent is alive
-  // 220 Hz sine at volume 0.02, a single short tick every 3 s.
   const waitingToneRef = useRef(null)
   const hasActiveTools = Object.values(toolExecutions).some(t => t.status === 'running')
 
   useEffect(() => {
     if (!isLoading || !hasActiveTools) {
-      if (waitingToneRef.current) {
-        clearInterval(waitingToneRef.current)
-        waitingToneRef.current = null
-      }
+      if (waitingToneRef.current) { clearInterval(waitingToneRef.current); waitingToneRef.current = null }
       return
     }
     const playTick = () => {
@@ -166,55 +298,41 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
         const ctx = new (window.AudioContext || window.webkitAudioContext)()
         const osc = ctx.createOscillator()
         const gain = ctx.createGain()
-        osc.connect(gain)
-        gain.connect(ctx.destination)
+        osc.connect(gain); gain.connect(ctx.destination)
         osc.type = 'sine'
         osc.frequency.setValueAtTime(220, ctx.currentTime)
         gain.gain.setValueAtTime(0.0, ctx.currentTime)
-        gain.gain.linearRampToValueAtTime(0.02, ctx.currentTime + 0.04)
+        gain.gain.linearRampToValueAtTime(0.015, ctx.currentTime + 0.04)
         gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18)
         osc.start(ctx.currentTime)
         osc.stop(ctx.currentTime + 0.2)
       } catch {}
     }
-    // First tick after 2 s (don't fire for fast tools), then every 3 s
     const initial = setTimeout(() => {
       playTick()
       waitingToneRef.current = setInterval(playTick, 3000)
     }, 2000)
     return () => {
       clearTimeout(initial)
-      if (waitingToneRef.current) {
-        clearInterval(waitingToneRef.current)
-        waitingToneRef.current = null
-      }
+      if (waitingToneRef.current) { clearInterval(waitingToneRef.current); waitingToneRef.current = null }
     }
   }, [isLoading, hasActiveTools])
 
-  // Detect loading→done transition and notify
   useEffect(() => {
-    if (wasLoadingRef.current && !isLoading) {
-      playDoneChime()
-    }
+    if (wasLoadingRef.current && !isLoading) playDoneChime()
     wasLoadingRef.current = isLoading
   }, [isLoading, playDoneChime])
 
-  // Auto-scroll to bottom on new messages or streaming updates
   useEffect(() => {
     if (scrollRAF.current) cancelAnimationFrame(scrollRAF.current)
     scrollRAF.current = requestAnimationFrame(() => {
       const container = messagesContainerRef.current
-      if (container) {
-        container.scrollTop = container.scrollHeight
-      }
+      if (container) container.scrollTop = container.scrollHeight
     })
   }, [messages, streamingMessage, toolExecutions])
 
-  // Focus input when panel opens
   useEffect(() => {
-    if (isOpen) {
-      setTimeout(() => inputRef.current?.focus(), 100)
-    }
+    if (isOpen) setTimeout(() => inputRef.current?.focus(), 100)
   }, [isOpen])
 
   const handleWsMessage = useCallback((data) => {
@@ -222,7 +340,6 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
 
     if (type === 'status' && data.status === 'thinking') {
       setIsLoading(true)
-      setReactorState('thinking')
       setStreamingMessage('')
       setIsStreaming(false)
       setToolExecutions({})
@@ -237,13 +354,8 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
     if (type === 'tool_call') {
       const id = data.id || `tool-${++toolIdCounter.current}`
       const entry = {
-        name: data.name,
-        args: data.args || {},
-        status: 'running',
-        startTime: Date.now(),
-        result: null,
-        elapsed: 0,
-        id,
+        name: data.name, args: data.args || {}, status: 'running',
+        startTime: Date.now(), result: null, elapsed: 0, id,
       }
       setToolExecutions((prev) => ({ ...prev, [id]: entry }))
       currentToolsRef.current[id] = entry
@@ -254,13 +366,9 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
       const id = data.id
       setToolExecutions((prev) => {
         const updated = { ...prev }
-        // Find by id, or by name (last running one with that name)
         let key = id && updated[id] ? id : null
         if (!key) {
-          // Find the last running tool with this name
-          const candidates = Object.entries(updated).filter(
-            ([, v]) => v.name === name && v.status === 'running'
-          )
+          const candidates = Object.entries(updated).filter(([, v]) => v.name === name && v.status === 'running')
           if (candidates.length > 0) key = candidates[candidates.length - 1][0]
         }
         if (key && updated[key]) {
@@ -308,24 +416,18 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
     }
 
     if (type === 'open_url') {
-      // JARVIS asked to open a URL in the user's browser
-      if (data.url) {
-        window.open(data.url, '_blank', 'noopener,noreferrer')
-      }
+      if (data.url) window.open(data.url, '_blank', 'noopener,noreferrer')
       return
     }
 
-    if (type === 'message') {
-      // TTS and reactor state are owned by App.jsx (single WS path) — ChatPanel only updates chat UI
-      const content = data.content || ''
+    // Bun bridge protocol: { type: 'chat_response', text }
+    // Python backend legacy:  { type: 'message',       content }
+    if (type === 'chat_response' || type === 'message') {
+      const content = data.text ?? data.content ?? ''
       if (content && !content.startsWith('__')) {
         const tools = { ...currentToolsRef.current }
         const hasTools = Object.keys(tools).length > 0
-
-        if (data.partial) {
-          return
-        }
-
+        if (data.partial) return
         setMessages((prev) => {
           const filtered = prev.filter((m) => !m.thinking)
           return [...filtered, {
@@ -337,21 +439,22 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
           }]
         })
       }
-
       setStreamingMessage('')
       setIsStreaming(false)
       setIsLoading(false)
       setToolExecutions({})
       currentToolsRef.current = {}
     }
-  }, [setReactorState])
 
-  // WebSocket connection — stable ref to avoid reconnect storms
+    if (type === 'status' && data.status === 'idle') {
+      setIsLoading(false)
+    }
+  }, [])
+
   const handleWsMessageRef = useRef(handleWsMessage)
   handleWsMessageRef.current = handleWsMessage
 
   useEffect(() => {
-    // In Tauri, connect directly to the Python backend
     const wsUrl = 'ws://127.0.0.1:8765/ws?client=desktop'
     let ws = null
     let reconnectTimer = null
@@ -360,59 +463,42 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
     function connect() {
       ws = new WebSocket(wsUrl)
       wsRef.current = ws
-
       ws.onopen = () => {
         reconnectDelay = 1000
-        // Clear any stuck tool cards from before the disconnect/restart
-        setToolExecutions({})
-        setIsLoading(false)
-        setStreamingMessage('')
-        setIsStreaming(false)
+        setWsConnected(true)
+        setToolExecutions({}); setIsLoading(false); setStreamingMessage(''); setIsStreaming(false)
       }
-
       ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data)
-          handleWsMessageRef.current(data)
-        } catch { /* ignore parse errors */ }
+        try { handleWsMessageRef.current(JSON.parse(event.data)) } catch {}
       }
-
       ws.onclose = () => {
         wsRef.current = null
+        setWsConnected(false)
         reconnectTimer = setTimeout(() => {
           reconnectDelay = Math.min(reconnectDelay * 2, 15000)
           connect()
         }, reconnectDelay)
       }
-
       ws.onerror = () => { ws.close() }
     }
 
     connect()
-    return () => {
-      clearTimeout(reconnectTimer)
-      ws?.close()
-    }
+    return () => { clearTimeout(reconnectTimer); ws?.close() }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const sendMessage = useCallback(() => {
     const text = input.trim()
     if (!text || isLoading) return
-
     setInput('')
     setMessages((prev) => [...prev, { role: 'user', text }])
     setIsLoading(true)
-    setReactorState('thinking')
     setStreamingMessage('')
     setToolExecutions({})
     currentToolsRef.current = {}
-
-    // Send via WebSocket
     const ws = wsRef.current
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'query', text }))
     } else {
-      // Fallback to HTTP
       fetch(`${PYTHON_BASE}/api/think`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -422,15 +508,13 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
         .then((data) => {
           const reply = data.response || data.text || data.answer || 'No response received.'
           setMessages((prev) => [...prev, { role: 'jarvis', text: reply }])
-          setReactorState('idle')
         })
         .catch((err) => {
           setMessages((prev) => [...prev, { role: 'jarvis', text: `Connection error: ${err.message}` }])
-          setReactorState('idle')
         })
         .finally(() => setIsLoading(false))
     }
-  }, [input, isLoading, setReactorState])
+  }, [input, isLoading])
 
   const sendFeedback = useCallback((msgIndex, score) => {
     setFeedbackState(prev => ({ ...prev, [msgIndex]: score > 0.5 ? 'up' : 'down' }))
@@ -441,32 +525,25 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
   }, [])
 
   const handleKeyDown = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      sendMessage()
-    }
-    if (e.key === 'Escape') {
-      onClose()
-    }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage() }
+    if (e.key === 'Escape') onClose()
   }
 
-  // Render tool executions grouped in a collapsible section
   const ToolSection = ({ tools }) => {
     const [collapsed, setCollapsed] = useState(true)
     const entries = Object.entries(tools || {})
     if (entries.length === 0) return null
-
     return (
-      <div style={{ margin: '4px 0' }}>
+      <div style={{ margin: '6px 0 2px' }}>
         <button
           onClick={() => setCollapsed(!collapsed)}
           style={{
-            background: 'none', border: 'none', color: '#64748b',
-            cursor: 'pointer', fontSize: '11px', padding: '2px 0',
-            fontFamily: 'monospace',
+            background: 'none', border: 'none', color: TEXT_MUTE,
+            cursor: 'pointer', fontSize: '12px', padding: '2px 0',
+            fontFamily: 'ui-sans-serif, system-ui', letterSpacing: 0,
           }}
         >
-          {collapsed ? '\u25B8' : '\u25BE'} {entries.length} tool{entries.length !== 1 ? 's' : ''} used
+          {collapsed ? '▸' : '▾'} {entries.length} tool call{entries.length !== 1 ? 's' : ''}
         </button>
         {!collapsed && entries.map(([id, exec]) =>
           exec.name === 'todo_write'
@@ -479,80 +556,128 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
 
   if (!mounted) return null
 
+  // Position is always via inline left/top (no Tailwind transform-based
+  // centering) so drag doesn't fight CSS transforms.
   const panelStyle = pos
-    ? { left: pos.x, top: pos.y, width: size.w, height: size.h, transform: 'none', boxShadow: '0 0 30px rgba(0,184,212,0.15), inset 0 0 30px rgba(0,184,212,0.03)' }
-    : { width: size.w, height: size.h, boxShadow: '0 0 30px rgba(0,184,212,0.15), inset 0 0 30px rgba(0,184,212,0.03)' }
+    ? { left: pos.x, top: pos.y, width: size.w, height: size.h }
+    : {
+        left: `calc(50% - ${size.w / 2}px)`,
+        top:  `calc(50% - ${size.h / 2}px)`,
+        width: size.w, height: size.h,
+      }
+
+  const statusColor = wsConnected ? '#3fb950' : '#d29922'
 
   return (
     <div
       ref={panelRef}
-      className={`fixed bg-[rgba(2,6,12,0.95)] border border-[rgba(0,229,255,0.25)] rounded-xl flex z-999 overflow-hidden backdrop-blur-[20px] transition-[opacity,transform] duration-300 origin-center ${
-        pos ? '' : 'top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2'
-      } ${
-        isOpen
-          ? 'scale-100 opacity-100 pointer-events-auto'
-          : 'scale-[0.8] opacity-0 pointer-events-none'
+      className={`fixed flex z-999 overflow-hidden transition-opacity duration-150 ${
+        isOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
       }`}
-      style={panelStyle}
+      style={{
+        ...panelStyle,
+        background: SURFACE,
+        border: `1px solid ${BORDER}`,
+        borderRadius: '12px',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.02)',
+        fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+        color: TEXT,
+      }}
       onMouseDown={(e) => e.stopPropagation()}
     >
-      {/* Spin animation for tool progress */}
-      <style>{`@keyframes tool-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
+      <style>{`
+        @keyframes tool-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        @keyframes cursor-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+        @keyframes msg-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+      `}</style>
 
-      {/* ── Resize handle (bottom-right corner) ─────────────────────── */}
+      {/* ── Resize handle ─────────────────────────── */}
       <div
-        onMouseDown={onResizeMouseDown}
-        className="absolute bottom-0 right-0 w-4 h-4 cursor-se-resize z-50"
-        style={{ background: 'linear-gradient(135deg, transparent 50%, rgba(0,229,255,0.3) 50%)' }}
+        onPointerDown={onResizePointerDown}
+        data-no-drag
+        style={{
+          position: 'absolute', bottom: 0, right: 0, width: '16px', height: '16px',
+          cursor: 'se-resize', zIndex: 50,
+          background: 'linear-gradient(135deg, transparent 55%, rgba(255,255,255,0.18) 55%)',
+          borderBottomRightRadius: '12px',
+          touchAction: 'none',
+        }}
         title="Drag to resize"
       />
 
-      {/* ── Conversation history sidebar ─────────────────────────────── */}
+      {/* ── Sidebar ─────────────────────────── */}
       <div
-        className="flex flex-col overflow-hidden border-r border-[rgba(0,229,255,0.12)] transition-all duration-300"
-        style={{ width: sidebarOpen ? '210px' : '0', flexShrink: 0 }}
+        style={{
+          display: 'flex', flexDirection: 'column', overflow: 'hidden',
+          borderRight: sidebarOpen ? `1px solid ${BORDER}` : 'none',
+          width: sidebarOpen ? '224px' : '0',
+          flexShrink: 0,
+          transition: 'width 200ms ease',
+          background: SURFACE_2,
+        }}
       >
-        {/* Sidebar header */}
-        <div className="flex justify-between items-center px-3 py-3 bg-jarvis-cyan/8 border-b border-[rgba(0,229,255,0.1)]" style={{ minWidth: '210px' }}>
-          <span className="font-['Orbitron'] text-[9px] tracking-[2px] text-jarvis-bright/60">
-            &#9670; HISTORY
-          </span>
+        <div
+          style={{
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            padding: '12px 14px', borderBottom: `1px solid ${BORDER}`, minWidth: '224px',
+          }}
+        >
+          <span style={{ fontSize: '12px', fontWeight: 600, color: TEXT }}>History</span>
           <button
             onClick={() => setSidebarOpen(false)}
-            className="bg-transparent border-none text-jarvis-bright/40 cursor-pointer text-xs px-1 py-0.5 leading-none hover:text-jarvis-bright transition-colors"
+            data-no-drag
+            style={{
+              background: 'transparent', border: 'none', color: TEXT_DIM,
+              cursor: 'pointer', padding: '4px', borderRadius: '4px',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; e.currentTarget.style.color = TEXT }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = TEXT_DIM }}
             title="Close history"
           >
-            &#x2715;
+            <Icon.Close />
           </button>
         </div>
-        {/* Sessions list */}
         <div
-          className="flex-1 overflow-y-auto"
-          style={{ minWidth: '210px', scrollbarWidth: 'thin', scrollbarColor: 'rgba(0,229,255,0.15) transparent' }}
+          style={{ flex: 1, overflowY: 'auto', minWidth: '224px', scrollbarWidth: 'thin' }}
         >
           {sessions.length === 0 ? (
-            <p className="text-[11px] text-jarvis-bright/30 text-center mt-6 px-3 font-mono">
-              No sessions yet
+            <p style={{ fontSize: '12px', color: TEXT_MUTE, textAlign: 'center', marginTop: '24px', padding: '0 14px' }}>
+              No previous sessions
             </p>
           ) : (
             sessions.map(s => (
               <div
                 key={s.id}
-                className="flex items-start gap-1.5 px-3 py-2.5 border-b border-[rgba(0,229,255,0.06)] hover:bg-[rgba(0,229,255,0.04)] group transition-colors"
+                className="group"
+                style={{
+                  display: 'flex', alignItems: 'flex-start', gap: '8px',
+                  padding: '10px 14px', borderBottom: `1px solid ${BORDER}`,
+                  cursor: 'pointer', transition: 'background 120ms',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.03)' }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
               >
-                <div className="flex-1 min-w-0">
-                  <p className="text-[11px] text-jarvis-text truncate leading-snug">{s.title}</p>
-                  <p className="text-[9px] text-jarvis-bright/30 mt-0.5 font-mono">
-                    {fmtDate(s.start_ts)} &middot; {s.message_count} msg{s.message_count !== 1 ? 's' : ''}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{ fontSize: '13px', color: TEXT, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.35 }}>{s.title}</p>
+                  <p style={{ fontSize: '11px', color: TEXT_MUTE, margin: '2px 0 0', fontFamily: 'ui-monospace, monospace' }}>
+                    {fmtDate(s.start_ts)} · {s.message_count} msg{s.message_count !== 1 ? 's' : ''}
                   </p>
                 </div>
                 <button
-                  onClick={() => deleteSession(s)}
+                  onClick={(e) => { e.stopPropagation(); deleteSession(s) }}
                   disabled={deletingId === s.id}
-                  className="shrink-0 bg-transparent border-none text-jarvis-bright/20 cursor-pointer text-[10px] px-1 py-0.5 leading-none rounded opacity-0 group-hover:opacity-100 transition-all hover:text-red-400 hover:bg-red-400/10 disabled:opacity-40"
+                  style={{
+                    flexShrink: 0, background: 'transparent', border: 'none',
+                    color: TEXT_MUTE, cursor: 'pointer', padding: '4px',
+                    borderRadius: '4px', opacity: deletingId === s.id ? 0.4 : 0.6,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.color = '#f85149'; e.currentTarget.style.background = 'rgba(248,81,73,0.1)' }}
+                  onMouseLeave={e => { e.currentTarget.style.color = TEXT_MUTE; e.currentTarget.style.background = 'transparent' }}
                   title="Delete session"
                 >
-                  {deletingId === s.id ? '...' : 'x'}
+                  <Icon.Trash />
                 </button>
               </div>
             ))
@@ -560,117 +685,111 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
         </div>
       </div>
 
-      {/* ── Chat panel ───────────────────────────────────────────────── */}
-      <div className="flex flex-col overflow-hidden flex-1 min-w-0">
-        {/* Header — drag handle */}
+      {/* ── Main chat column ─────────────────────────── */}
+      <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', flex: 1, minWidth: 0 }}>
+
+        {/* Header */}
         <div
-          className="flex justify-between items-center px-4 py-3 bg-jarvis-cyan/8 border-b border-jarvis-border cursor-grab active:cursor-grabbing select-none"
-          onMouseDown={onHeaderMouseDown}
+          onPointerDown={onHeaderPointerDown}
+          style={{
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            padding: '12px 16px', borderBottom: `1px solid ${BORDER}`,
+            cursor: 'grab', userSelect: 'none',
+            touchAction: 'none',
+          }}
         >
-          <span className="font-['Orbitron'] text-xs font-medium text-jarvis-bright tracking-[2px]">
-            &#9670; JARVIS INTERFACE
-          </span>
-          <div className="flex gap-2 items-center">
-            {/* History toggle */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
             <span
-              className={`cursor-pointer text-sm px-1.5 py-0.5 transition-colors leading-none ${
-                sidebarOpen ? 'text-jarvis-bright' : 'text-jarvis-bright/50 hover:text-jarvis-bright'
-              }`}
-              onClick={() => setSidebarOpen(v => !v)}
-              title="Conversation history"
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
-              </svg>
-            </span>
-            <span
-              className="cursor-pointer text-jarvis-bright/50 text-sm px-1.5 py-0.5 transition-colors hover:text-jarvis-bright"
-              onClick={onMinimize}
-              title="Minimize"
-            >
-              &#x2500;
-            </span>
-            <span
-              className="cursor-pointer text-jarvis-bright/50 text-sm px-1.5 py-0.5 transition-colors hover:text-jarvis-bright"
-              onClick={onClose}
-              title="Close"
-            >
-              &#x2715;
-            </span>
+              style={{
+                width: '8px', height: '8px', borderRadius: '50%',
+                background: statusColor,
+                boxShadow: `0 0 6px ${statusColor}80`,
+              }}
+              title={wsConnected ? 'Connected' : 'Reconnecting…'}
+            />
+            <span style={{ fontSize: '14px', fontWeight: 600, color: TEXT, letterSpacing: '-0.01em' }}>Jarvis</span>
+          </div>
+          <div style={{ display: 'flex', gap: '2px', alignItems: 'center' }}>
+            <HeaderButton title="History" onClick={() => setSidebarOpen(v => !v)} active={sidebarOpen}>
+              <Icon.History />
+            </HeaderButton>
+            {onToggleTts && (
+              <HeaderButton
+                title={ttsEnabled ? 'Mute replies (voice)' : 'Unmute replies (voice)'}
+                onClick={onToggleTts}
+                active={!ttsEnabled}
+              >
+                {ttsEnabled ? <Icon.Volume /> : <Icon.VolumeOff />}
+              </HeaderButton>
+            )}
+            <HeaderButton title="Close (Esc)" onClick={onClose}>
+              <Icon.Close />
+            </HeaderButton>
           </div>
         </div>
 
         {/* Messages */}
         <div
           ref={messagesContainerRef}
-          className="flex-1 overflow-y-auto p-3 flex flex-col gap-2.5"
-          style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(0,229,255,0.2) transparent' }}
+          style={{
+            flex: 1, overflowY: 'auto', padding: '18px 20px',
+            display: 'flex', flexDirection: 'column', gap: '14px',
+            scrollbarWidth: 'thin',
+          }}
         >
           {messages.map((msg, i) => (
-            <div key={i}>
-              <div
-                className={`flex flex-col gap-1 px-3 py-2 rounded-lg max-w-[90%] animate-[msg-in_0.3s_ease] ${
-                  msg.role === 'user'
-                    ? 'self-end bg-jarvis-cyan/12 border border-jarvis-border'
-                    : 'self-start bg-[rgba(0,40,60,0.5)] border border-[rgba(0,229,255,0.08)]'
-                }`}
-              >
-                <span
-                  className={`font-['Orbitron'] text-[9px] tracking-[1.5px] uppercase ${
-                    msg.role === 'user' ? 'text-jarvis-bright/70' : 'text-jarvis-bright/50'
-                  }`}
+            <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: msg.role === 'user' ? 'flex-end' : 'flex-start', animation: 'msg-in 200ms ease' }}>
+              {msg.role === 'user' ? (
+                <div
+                  style={{
+                    maxWidth: '78%',
+                    padding: '10px 14px', borderRadius: '14px 14px 4px 14px',
+                    background: ACCENT_BG, border: `1px solid ${BORDER}`,
+                    fontSize: '14px', lineHeight: 1.55, color: TEXT,
+                    whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                  }}
                 >
-                  {msg.role === 'user' ? 'YOU' : 'JARVIS'}
-                </span>
-                {msg.thinking ? (
-                  <span className="text-[13px] leading-relaxed text-jarvis-bright/40 italic">Thinking...</span>
-                ) : (
-                  <span className="text-[13px] leading-relaxed text-jarvis-text whitespace-pre-wrap">{msg.text}</span>
-                )}
-                {/* Metadata line for JARVIS messages */}
-                {msg.role === 'jarvis' && msg.model && (
-                  <span className="text-[9px] text-jarvis-bright/30 font-mono mt-1">
-                    {msg.model}{msg.latency ? ` \u00B7 ${msg.latency}ms` : ''}
-                  </span>
-                )}
-                {/* Thumbs up/down feedback — only on jarvis messages, not the greeting */}
-                {msg.role === 'jarvis' && !msg.thinking && i > 0 && (
-                  <div className="flex gap-1.5 mt-1.5 items-center">
-                    {feedbackState[i] ? (
-                      <span className="text-[9px] text-jarvis-bright/40 font-mono">Thanks!</span>
-                    ) : (
-                      <>
-                        <button
-                          onClick={() => sendFeedback(i, 1.0)}
-                          title="Good response"
-                          className="bg-transparent border-none cursor-pointer text-jarvis-bright/25 hover:text-green-400 transition-colors text-[11px] px-0.5 leading-none"
-                        >
-                          &#128077;
-                        </button>
-                        <button
-                          onClick={() => sendFeedback(i, 0.0)}
-                          title="Bad response"
-                          className="bg-transparent border-none cursor-pointer text-jarvis-bright/25 hover:text-red-400 transition-colors text-[11px] px-0.5 leading-none"
-                        >
-                          &#128078;
-                        </button>
-                      </>
-                    )}
-                  </div>
-                )}
-              </div>
-              {/* Collapsed tool section for completed messages */}
-              {msg.tools && (
-                <div className="self-start max-w-[90%] px-1">
-                  <ToolSection tools={msg.tools} />
+                  {msg.text}
+                </div>
+              ) : (
+                <div style={{ maxWidth: '92%', width: '100%' }}>
+                  {msg.thinking ? (
+                    <span style={{ fontSize: '14px', color: TEXT_MUTE, fontStyle: 'italic' }}>Thinking…</span>
+                  ) : (
+                    <div style={{ fontSize: '14px', lineHeight: 1.6, color: TEXT, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                      {msg.text}
+                    </div>
+                  )}
+                  {msg.model && (
+                    <div style={{ fontSize: '11px', color: TEXT_MUTE, marginTop: '6px', fontFamily: 'ui-monospace, monospace' }}>
+                      {msg.model}{msg.latency ? ` · ${msg.latency}ms` : ''}
+                    </div>
+                  )}
+                  {!msg.thinking && i > 0 && (
+                    <div style={{ display: 'flex', gap: '6px', alignItems: 'center', marginTop: '6px' }}>
+                      {feedbackState[i] ? (
+                        <span style={{ fontSize: '11px', color: TEXT_MUTE }}>Thanks for the feedback</span>
+                      ) : (
+                        <>
+                          <FeedbackButton onClick={() => sendFeedback(i, 1.0)} title="Good response">
+                            <Icon.ThumbUp />
+                          </FeedbackButton>
+                          <FeedbackButton onClick={() => sendFeedback(i, 0.0)} title="Bad response">
+                            <Icon.ThumbDown />
+                          </FeedbackButton>
+                        </>
+                      )}
+                    </div>
+                  )}
+                  {msg.tools && <ToolSection tools={msg.tools} />}
                 </div>
               )}
             </div>
           ))}
 
-          {/* Active tool executions (during streaming) */}
+          {/* Active tool executions */}
           {Object.keys(toolExecutions).length > 0 && (
-            <div className="self-start max-w-[90%] px-1">
+            <div style={{ alignSelf: 'flex-start', width: '92%' }}>
               {Object.entries(toolExecutions).map(([id, exec]) =>
                 exec.name === 'todo_write'
                   ? <TodoBlock key={id} execution={exec} />
@@ -679,28 +798,24 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
             </div>
           )}
 
-          {/* Streaming message with blinking cursor */}
+          {/* Streaming */}
           {isStreaming && streamingMessage && (
-            <div
-              className="flex flex-col gap-1 px-3 py-2 rounded-lg max-w-[90%] self-start bg-[rgba(0,40,60,0.5)] border border-[rgba(0,229,255,0.08)]"
-            >
-              <span className="font-['Orbitron'] text-[9px] tracking-[1.5px] uppercase text-jarvis-bright/50">
-                JARVIS
-              </span>
-              <span className="text-[13px] leading-relaxed text-jarvis-text whitespace-pre-wrap">
+            <div style={{ alignSelf: 'flex-start', maxWidth: '92%' }}>
+              <div style={{ fontSize: '14px', lineHeight: 1.6, color: TEXT, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
                 {streamingMessage}
-                <span className="inline-block w-0.5 h-3.5 bg-jarvis-bright/70 ml-px align-middle" style={{ animation: 'cursor-blink 1s step-end infinite' }} />
-              </span>
+                <span style={{
+                  display: 'inline-block', width: '2px', height: '14px',
+                  background: TEXT_DIM, marginLeft: '2px', verticalAlign: 'text-bottom',
+                  animation: 'cursor-blink 1s step-end infinite',
+                }} />
+              </div>
             </div>
           )}
 
-          {/* Loading indicator when waiting but not streaming yet */}
+          {/* Loading indicator */}
           {isLoading && !isStreaming && Object.keys(toolExecutions).length === 0 && (
-            <div className="flex flex-col gap-1 px-3 py-2 rounded-lg max-w-[90%] self-start bg-[rgba(0,40,60,0.5)] border border-[rgba(0,229,255,0.08)]">
-              <span className="font-['Orbitron'] text-[9px] tracking-[1.5px] uppercase text-jarvis-bright/50">
-                JARVIS
-              </span>
-              <span className="text-[13px] leading-relaxed text-jarvis-bright/40 italic">Thinking...</span>
+            <div style={{ alignSelf: 'flex-start' }}>
+              <TypingDots />
             </div>
           )}
 
@@ -710,38 +825,121 @@ export default function ChatPanel({ isOpen, onClose, onMinimize, setReactorState
         {/* Context bar */}
         <ContextBar usage={contextUsage} />
 
-        {/* Cursor blink animation */}
-        <style>{`@keyframes cursor-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }`}</style>
-
-        {/* Input area */}
-        <div className="p-3 border-t border-[rgba(0,229,255,0.1)]">
-          <div className="flex items-center gap-2 bg-[rgba(0,20,40,0.6)] border border-[rgba(0,229,255,0.2)] rounded-lg px-2 py-1 transition-all focus-within:border-[rgba(0,229,255,0.5)] focus-within:shadow-[0_0_10px_rgba(0,229,255,0.1)]">
+        {/* Input */}
+        <div style={{ padding: '12px 16px', borderTop: `1px solid ${BORDER}` }}>
+          <div
+            style={{
+              display: 'flex', alignItems: 'center', gap: '8px',
+              background: SURFACE_2, border: `1px solid ${BORDER_STRONG}`,
+              borderRadius: '10px', padding: '6px 6px 6px 14px',
+              transition: 'border-color 120ms, box-shadow 120ms',
+            }}
+            onFocusCapture={e => { e.currentTarget.style.borderColor = ACCENT; e.currentTarget.style.boxShadow = `0 0 0 3px ${ACCENT_BG}` }}
+            onBlurCapture={e => { e.currentTarget.style.borderColor = BORDER_STRONG; e.currentTarget.style.boxShadow = 'none' }}
+          >
             <input
               ref={inputRef}
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Type a message..."
+              placeholder="Send a message…"
               autoComplete="off"
-              className="flex-1 bg-transparent border-none outline-none text-jarvis-text font-['Share_Tech_Mono',monospace] text-[13px] py-2 px-1 placeholder:text-jarvis-cyan/30"
+              style={{
+                flex: 1, background: 'transparent', border: 'none', outline: 'none',
+                color: TEXT, fontSize: '14px',
+                fontFamily: 'inherit',
+                padding: '8px 0',
+              }}
             />
             <button
               onClick={sendMessage}
-              disabled={isLoading}
-              className="bg-transparent border-none text-jarvis-bright/50 cursor-pointer text-base px-2 py-1 rounded transition-all hover:text-jarvis-bright hover:bg-jarvis-bright/10 disabled:opacity-30"
+              disabled={isLoading || !input.trim()}
+              data-no-drag
+              style={{
+                background: input.trim() && !isLoading ? ACCENT : 'transparent',
+                border: 'none',
+                color: input.trim() && !isLoading ? '#fff' : TEXT_MUTE,
+                cursor: input.trim() && !isLoading ? 'pointer' : 'default',
+                padding: '8px 10px', borderRadius: '8px',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                transition: 'background 120ms, color 120ms',
+                opacity: isLoading ? 0.5 : 1,
+              }}
+              title="Send message"
             >
-              &#x25B6;
-            </button>
-            <button
-              className="bg-transparent border-none text-jarvis-bright/50 cursor-pointer text-base px-2 py-1 rounded transition-all hover:text-jarvis-bright hover:bg-jarvis-bright/10"
-              title="Voice input"
-            >
-              &#x1F3A4;
+              <Icon.Send />
             </button>
           </div>
         </div>
       </div>
+    </div>
+  )
+}
+
+// ── Small presentational helpers ──────────────────────────────────────
+function HeaderButton({ children, onClick, title, active }) {
+  const [hover, setHover] = useState(false)
+  const bg = active
+    ? 'rgba(68,147,248,0.14)'
+    : hover ? 'rgba(255,255,255,0.06)' : 'transparent'
+  const color = active ? '#4493f8' : hover ? TEXT : TEXT_DIM
+  return (
+    <button
+      data-no-drag
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title={title}
+      style={{
+        background: bg, border: 'none', color, cursor: 'pointer',
+        padding: '6px 8px', borderRadius: '6px',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        transition: 'background 120ms, color 120ms',
+      }}
+    >
+      {children}
+    </button>
+  )
+}
+
+function FeedbackButton({ children, onClick, title }) {
+  const [hover, setHover] = useState(false)
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title={title}
+      style={{
+        background: hover ? 'rgba(255,255,255,0.06)' : 'transparent',
+        border: 'none', color: hover ? TEXT : TEXT_MUTE,
+        cursor: 'pointer', padding: '4px', borderRadius: '4px',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        transition: 'background 120ms, color 120ms',
+      }}
+    >
+      {children}
+    </button>
+  )
+}
+
+function TypingDots() {
+  return (
+    <div style={{ display: 'flex', gap: '4px', padding: '10px 4px' }}>
+      <style>{`
+        @keyframes td-bounce {
+          0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+          30% { transform: translateY(-4px); opacity: 1; }
+        }
+      `}</style>
+      {[0, 1, 2].map(i => (
+        <span key={i} style={{
+          width: '6px', height: '6px', borderRadius: '50%',
+          background: TEXT_DIM,
+          animation: `td-bounce 1.2s ease-in-out ${i * 0.15}s infinite`,
+        }} />
+      ))}
     </div>
   )
 }

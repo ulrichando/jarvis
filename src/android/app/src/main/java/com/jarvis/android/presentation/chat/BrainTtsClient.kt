@@ -136,15 +136,24 @@ class BrainTtsClient @Inject constructor(
     }
 
     private suspend fun playOne(wav: File) = withContext(Dispatchers.Main) {
-        val mp = MediaPlayer().apply {
-            setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build(),
-            )
-            setDataSource(wav.absolutePath)
-            prepare()
+        // See GroqTtsClient.playOne for why prepare() needs try/catch —
+        // a corrupt WAV body or a torn-down MediaPlayer mid-prepare was
+        // crashing the whole app.
+        val mp = try {
+            MediaPlayer().apply {
+                setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build(),
+                )
+                setDataSource(wav.absolutePath)
+                prepare()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "MediaPlayer.prepare failed: ${e.message}")
+            runCatching { wav.delete() }
+            return@withContext
         }
         current = mp
 
