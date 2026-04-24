@@ -39,6 +39,7 @@ import {
 } from './storage.js'
 import { randomUUID } from 'node:crypto'
 import { execSync } from 'node:child_process'
+import { AccessToken } from 'livekit-server-sdk'
 
 const PORT       = parseInt(process.env.JARVIS_BRIDGE_PORT ?? '8765')
 const PROXY_URL  = process.env.JARVIS_PROXY_URL ?? 'http://localhost:4000'
@@ -54,6 +55,16 @@ const THEME_GLOW    = process.env.JARVIS_THEME_GLOW    ?? '#a5f3fc'
 const GROQ_KEY       = process.env.GROQ_API_KEY ?? ''
 const VISION_MODEL   = process.env.JARVIS_VISION_MODEL ?? 'meta-llama/llama-4-scout-17b-16e-instruct'
 const VISION_BASEURL = process.env.JARVIS_VISION_BASEURL ?? 'https://api.groq.com/openai/v1'
+
+// LiveKit JWT minting. Client (Tauri webview / Android app) hits
+// /api/livekit/token to trade its identity for a short-lived token
+// that authorises joining a specific SFU room. Secret never leaves
+// this process — the client only ever sees the JWT. Env values come
+// from voice-agent/.env which systemd includes via EnvironmentFile
+// (or via cli/.env.local for ad-hoc bun invocations).
+const LIVEKIT_URL        = process.env.LIVEKIT_URL        ?? 'ws://127.0.0.1:7880'
+const LIVEKIT_API_KEY    = process.env.LIVEKIT_API_KEY    ?? ''
+const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET ?? ''
 
 let COMMIT = 'unknown'
 try {
@@ -283,6 +294,68 @@ async function handleAnalyzeScreen(req: Request): Promise<Response> {
   }
 }
 
+/**
+ * Mint a short-lived LiveKit JWT for the given identity + room. Grants
+ * the caller microphone-publish + subscribe rights so they can hold a
+ * conversation with the jarvis-voice-agent worker that's registered
+ * against the same SFU.
+ *
+ * Why not put this on the agent side? The Python agent is a *worker*
+ * that reacts to jobs, not a gateway. We need a stable HTTP endpoint
+ * the frontend can call at any time — the bridge is that endpoint for
+ * every other UI concern, so it's natural to host token minting here
+ * too. Client flow:
+ *   1. Tauri webview POSTs /api/livekit/token with {identity, room}
+ *   2. Bridge signs a 1-hour JWT with LIVEKIT_API_SECRET
+ *   3. Webview uses the JWT + LIVEKIT_URL to connect via livekit-client
+ *   4. Server sees the client, spawns a job → the pre-warmed Python
+ *      agent worker picks it up and joins the same room
+ *
+ * Identity is client-supplied because a single user might have multiple
+ * simultaneous clients (desktop + phone). Room defaults to "jarvis" so
+ * the agent always knows which room to listen on; override per-client
+ * if we ever want separate contexts.
+ */
+async function handleLiveKitToken(req: Request): Promise<Response> {
+  // Permissive CORS so the Tauri webview's cross-origin POST isn't
+  // blocked at preflight. Same reasoning as the OPTIONS handler in
+  // the main fetch dispatcher.
+  const cors = {
+    'Access-Control-Allow-Origin':  '*',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  }
+  if (!LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
+    return Response.json(
+      { error: 'LIVEKIT_API_KEY / LIVEKIT_API_SECRET not configured on bridge' },
+      { status: 503, headers: cors },
+    )
+  }
+  let body: any
+  try { body = await req.json() } catch { body = {} }
+  const identity = (body?.identity ?? 'desktop-ulrich').toString().slice(0, 64)
+  const room     = (body?.room     ?? 'jarvis'         ).toString().slice(0, 64)
+  const token = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
+    identity,
+    // TTL — one hour is enough for any realistic voice session; clients
+    // can re-mint if they leave and re-join.
+    ttl:  60 * 60,
+  })
+  token.addGrant({
+    room,
+    roomJoin:     true,
+    canPublish:   true,
+    canSubscribe: true,
+    // Can publish plain audio; we don't need video for voice mode.
+    canPublishData: true,
+  })
+  const jwt = await token.toJwt()
+  return Response.json(
+    { token: jwt, url: LIVEKIT_URL, room, identity },
+    { headers: cors },
+  )
+}
+
 const server = Bun.serve({
   port: PORT,
   async fetch(req, server) {
@@ -292,6 +365,31 @@ const server = Bun.serve({
       if (server.upgrade(req)) return
       return new Response('WebSocket upgrade failed', { status: 400 })
     }
+
+    // Blanket CORS for /api/* — the Tauri webview runs at tauri://localhost
+    // (or app:// depending on version) and fetches to http://127.0.0.1:8765
+    // are cross-origin. For non-simple requests (POST w/ application/json)
+    // WebKit sends a preflight OPTIONS first. Without these headers every
+    // preflight fails with "Load failed" and the real request is blocked.
+    // Matches the permissive policy already in place on the speech sidecar.
+    const cors = {
+      'Access-Control-Allow-Origin':  '*',
+      'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      'Access-Control-Max-Age':       '86400',
+    }
+    if (req.method === 'OPTIONS' && url.pathname.startsWith('/api/')) {
+      return new Response(null, { status: 204, headers: cors })
+    }
+    // Response.json returns with its own headers — we wrap it at the
+    // end of each route's return. Simplest path: intercept the final
+    // response once we've built it. We do this by wrapping dispatch
+    // below and walking back up to add cors. But the least-invasive
+    // change is: attach cors to the default response helper used by
+    // the endpoints that need it. Only the new /api/livekit/token is
+    // exercised by the webview's fetch today — for others, the
+    // existing GET routes are CORS-safe without headers (simple
+    // requests don't preflight). Apply cors to /api/livekit/token.
 
     if (url.pathname === '/health')      return Response.json({ status: 'ok' })
     if (url.pathname === '/api/ready')   return Response.json({ status: 'ready', model: ACTIVE_MODEL })
@@ -339,6 +437,7 @@ const server = Bun.serve({
 
     if (url.pathname === '/api/page-query'     && req.method === 'POST') return handlePageQuery(req)
     if (url.pathname === '/api/analyze-screen' && req.method === 'POST') return handleAnalyzeScreen(req)
+    if (url.pathname === '/api/livekit/token'  && req.method === 'POST') return handleLiveKitToken(req)
 
     if (url.pathname === '/api/conversations/sessions' && req.method === 'GET') {
       return Response.json({ sessions: listSessions() })

@@ -2,7 +2,12 @@ import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke }  from '@tauri-apps/api/core'
 import { listen }  from '@tauri-apps/api/event'
 import ChatPanel   from './components/ChatPanel.jsx'
-import useSpeech   from './hooks/useSpeech.js'
+// Voice lives OUT of the webview — jarvis-voice-client.service is
+// the LiveKit peer that owns the mic + speaker, reached over HTTP
+// on :8767 through useVoiceClient. Imported under the `useSpeech`
+// name so consumers that still destructure `speech.speak` /
+// `speech.speaking` stay unchanged.
+import useSpeech   from './hooks/useVoiceClient.js'
 
 const PYTHON_BASE = 'http://127.0.0.1:8765'
 const WS_URL      = 'ws://127.0.0.1:8765/ws?client=desktop'
@@ -61,7 +66,10 @@ export default function App() {
 
   const { messages: wsMessages, status: wsStatus } = useJarvisWS(WS_URL)
 
-  // Speech: mic → sidecar /turn (STT → LLM → TTS) → play.
+  // Speech: native LiveKit voice-client owns mic → SFU → agent.
+  // `speech.speak(text)` below asks the agent to voice arbitrary text
+  // via its TTS (used by the WS chat_response handler to read out
+  // typed CLI messages aloud).
   const speech = useSpeech({ muted: voiceMuted })
 
   // ── Handle incoming WS messages ───────────────────────────────────────
@@ -192,6 +200,13 @@ export default function App() {
         </div>
       )}
 
+      {/* LiveKit voice-client status pill — reflects the native
+          jarvis-voice-client process (not the webview's legacy sidecar).
+          Dot colour: red=offline, gold=connecting, green=idle,
+          blue=agent speaking, cyan=user speaking. Purely informative
+          for now; full UI takeover is a future step. */}
+      <VoiceClientPill />
+
       {/* Chat panel — opened on tray click or Ctrl+H */}
       {chatOpen && (
         <ChatPanel
@@ -203,6 +218,52 @@ export default function App() {
           isDesktop={true}
         />
       )}
+    </div>
+  )
+}
+
+
+/**
+ * Polls http://127.0.0.1:8767/status every second and renders a
+ * small corner pill. Separate component so its 1 Hz re-renders don't
+ * drag the whole App tree.
+ */
+function VoiceClientPill() {
+  const [s, setS] = useState(null)
+  useEffect(() => {
+    let alive = true
+    let t
+    const tick = async () => {
+      try {
+        const r = await fetch('http://127.0.0.1:8767/status', { cache: 'no-store' })
+        if (!r.ok) throw 0
+        const data = await r.json()
+        if (alive) setS(data)
+      } catch {
+        if (alive) setS({ connected: false })
+      }
+      if (alive) t = setTimeout(tick, 1000)
+    }
+    tick()
+    return () => { alive = false; clearTimeout(t) }
+  }, [])
+  const { color, label } =
+      !s?.connected ? { color: '#ef4444', label: 'Voice offline'  }
+    :  s.speaking   ? { color: '#4493f8', label: 'JARVIS speaking' }
+    :  s.listening  ? { color: '#22d3ee', label: 'You speaking'    }
+    :  s.muted      ? { color: '#a1a1aa', label: 'Mic muted'       }
+    :                 { color: '#3fb950', label: 'Voice ready'     }
+  return (
+    <div style={{ position:'fixed', top:'1rem', right:'1rem', zIndex:50, pointerEvents:'none' }}>
+      <div style={{ display:'flex', alignItems:'center', gap:'0.375rem',
+                    padding:'0.25rem 0.625rem', borderRadius:'9999px',
+                    background:'rgba(10,10,14,0.55)', border:`1px solid ${color}55`,
+                    color:'#d1d5db', fontSize:'0.7rem', fontFamily:'monospace',
+                    backdropFilter:'blur(6px)' }}>
+        <span style={{ width:'6px', height:'6px', borderRadius:'9999px',
+                       background: color, boxShadow:`0 0 6px ${color}` }} />
+        {label}
+      </div>
     </div>
   )
 }

@@ -22,7 +22,14 @@
 }
 
 html, body, #root {
-  background: transparent;
+  /* Near-invisible background (α ≈ 1/256) on the root surface. Pure
+     `transparent` lets WebKitGTK's compositor treat the whole window
+     as "nothing to paint", which caused residual pixel trails when the
+     chat panel was dragged or faded — old frames weren't being
+     overdrawn. An almost-zero alpha forces the compositor to clear
+     and repaint the entire window each frame, removing ghosts. The
+     color is visually indistinguishable from true transparent. */
+  background: rgba(0, 0, 0, 0.004);
 }
 
 body {
