@@ -30,7 +30,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -52,6 +54,7 @@ class ChatViewModel @Inject constructor(
     private val modelRepository:      ModelRepository,
     private val apiKeyProvider:       ApiKeyProvider,
     private val apiKeyProviderImpl:   ApiKeyProviderImpl,
+    private val messageDao:           com.jarvis.android.data.local.dao.MessageDao,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ChatUiState())
@@ -67,6 +70,29 @@ class ChatViewModel @Inject constructor(
     private var speechRecognizer: SpeechRecognizer? = null
 
     init {
+        // ── Pre-select the user's default model so the chat picker shows
+        //     something chosen on cold launch, instead of "no model" until
+        //     they tap. directProvider defaults to GROQ after the one-time
+        //     migration in ApiKeyProviderImpl; getDirectModel(GROQ) returns
+        //     "openai/gpt-oss-120b" unless the user has explicitly saved a
+        //     different model. Also flips routing to CLOUD so the first
+        //     message goes to the cloud path without requiring a manual pick.
+        run {
+            val provider = apiKeyProviderImpl.directProvider
+            val model    = apiKeyProviderImpl.getDirectModel(provider).ifBlank {
+                com.jarvis.android.domain.model.CloudModel.CATALOG
+                    .firstOrNull { it.provider == provider }?.id
+            }
+            if (model != null) {
+                _uiState.update { it.copy(selectedCloudModelId = model) }
+                viewModelScope.launch {
+                    modelRepository.setRoutingMode(
+                        com.jarvis.android.domain.model.RoutingMode.CLOUD,
+                    )
+                }
+            }
+        }
+
         // Observe conversation list
         observeConversations()
             .onEach  { list -> _uiState.update { it.copy(conversations = list) } }
@@ -103,16 +129,26 @@ class ChatViewModel @Inject constructor(
                 modelRepository.observeRoutingMode(),
                 modelRepository.observeLoadedModelId(),
                 modelRepository.observeDownloaded(),
-                // Tick whenever a provider key is added/removed in Settings so
-                // the picker updates live instead of waiting for one of the
-                // other flows to fire.
                 apiKeyProviderImpl.keyChanges,
-            ) { mode, loadedId, downloaded, _ ->
+                // Watch the user's selected model too — tapping a new model
+                // in the picker updates _uiState.selectedCloudModelId, which
+                // must re-fire this combine so the top-bar label re-renders
+                // with the new model's display name.
+                _uiState.map { it.selectedCloudModelId }.distinctUntilChanged(),
+            ) { args ->
+                @Suppress("UNCHECKED_CAST")
+                val mode       = args[0] as RoutingMode
+                @Suppress("UNCHECKED_CAST")
+                val loadedId   = args[1] as String?
+                @Suppress("UNCHECKED_CAST")
+                val downloaded = args[2] as List<com.jarvis.android.domain.model.ModelEntry>
+                val selectedId = args[4] as String?
+
                 val loadedName   = downloaded.firstOrNull { it.id == loadedId }?.name
                 val cloudModels  = CloudModel.CATALOG
                     .filter { apiKeyProvider.hasApiKey(it.provider) }
                 val cloudSelectedName = cloudModels.firstOrNull {
-                    it.id == _uiState.value.selectedCloudModelId
+                    it.id == selectedId
                 }?.label
                 val label = when {
                     mode == RoutingMode.LOCAL && loadedName != null -> loadedName
@@ -149,7 +185,56 @@ class ChatViewModel @Inject constructor(
         when (intent) {
             is ChatIntent.SendMessage          -> handleSendMessage(intent.imageBase64)
             is ChatIntent.StopStreaming        -> handleStop()
+            is ChatIntent.ShowModelConfig      -> {
+                // Load the currently active local model's config so the
+                // dialog opens populated with the saved values (or defaults
+                // if nothing is loaded / the model has never been tuned).
+                val modelId = _uiState.value.loadedLocalModelId
+                val cfg = if (modelId != null)
+                    apiKeyProviderImpl.getModelConfig(modelId)
+                else
+                    com.jarvis.android.domain.model.ModelConfig()
+                _uiState.update {
+                    it.copy(showModelConfig = true, editingModelConfig = cfg)
+                }
+            }
+            is ChatIntent.DismissModelConfig   -> _uiState.update {
+                it.copy(showModelConfig = false, editingModelConfig = null)
+            }
+            is ChatIntent.SaveModelConfig      -> {
+                apiKeyProviderImpl.saveModelConfig(intent.modelId, intent.config)
+                _uiState.update {
+                    it.copy(showModelConfig = false, editingModelConfig = null)
+                }
+                Log.i(TAG, "Saved model config for ${intent.modelId}: ${intent.config}")
+            }
             is ChatIntent.UpdateInput          -> _uiState.update { it.copy(inputText = intent.text) }
+            is ChatIntent.StageImage           -> _uiState.update {
+                it.copy(
+                    pendingImageB64         = intent.b64,
+                    pendingImageMime        = intent.mime,
+                    pendingImagePreviewUri  = intent.previewUri,
+                    // An image and a file chip are mutually exclusive — the
+                    // user is attaching one thing at a time in this flow.
+                    pendingFileName         = null,
+                )
+            }
+            is ChatIntent.StageFile            -> _uiState.update {
+                it.copy(
+                    pendingFileName         = intent.fileName,
+                    pendingFileContent      = intent.content,
+                    pendingImageB64         = null,
+                    pendingImagePreviewUri  = null,
+                )
+            }
+            is ChatIntent.ClearAttachment      -> _uiState.update {
+                it.copy(
+                    pendingImageB64        = null,
+                    pendingImagePreviewUri = null,
+                    pendingFileName        = null,
+                    pendingFileContent     = null,
+                )
+            }
             is ChatIntent.SelectConversation   -> handleSelectConversation(intent.id)
             is ChatIntent.NewConversation      -> handleNewConversation()
             is ChatIntent.DeleteConversation   -> handleDeleteConversation(intent.id)
@@ -160,6 +245,8 @@ class ChatViewModel @Inject constructor(
             is ChatIntent.ToggleVoice          -> handleToggleVoice()
             is ChatIntent.ToggleTts            -> handleToggleTts()
             is ChatIntent.SetTtsEnabled        -> handleSetTts(intent.enabled)
+            is ChatIntent.ReplayResponse       -> ttsEngine.speak(intent.text)
+            is ChatIntent.RegenerateLast       -> handleRegenerate()
             is ChatIntent.CycleRoutingMode     -> handleCycleRoutingMode()
             is ChatIntent.SelectCloudModel     -> handleSelectCloudModel(intent.id)
             is ChatIntent.SelectLocalModel     -> handleSelectLocalModel(intent.id)
@@ -188,6 +275,14 @@ class ChatViewModel @Inject constructor(
                 apiKeyProviderImpl.directProvider = cloudModel.provider
                 apiKeyProviderImpl.saveDirectModel(cloudModel.provider, cloudModel.id)
             }
+            // Unload whatever local model was loaded so the picker doesn't
+            // show two "selected" chips at once (one on each side). Routing
+            // is now CLOUD — keeping the local model in memory just wastes
+            // RAM.
+            val loadedId = modelRepository.observeLoadedModelId().value
+            if (loadedId != null) {
+                runCatching { modelRepository.unloadModel(loadedId) }
+            }
             _uiState.update { it.copy(selectedCloudModelId = modelId) }
         }
     }
@@ -205,6 +300,11 @@ class ChatViewModel @Inject constructor(
     private fun handleSelectLocalModel(modelId: String) {
         viewModelScope.launch {
             modelRepository.setRoutingMode(RoutingMode.LOCAL)
+            // Mirror handleSelectCloudModel: clear the cloud-side selection so
+            // the UI shows a single "selected" chip instead of one on each
+            // side. Routing is now LOCAL — the remembered cloud model would
+            // otherwise still show highlighted in the cloud picker.
+            _uiState.update { it.copy(selectedCloudModelId = null) }
             val currentlyLoaded = modelRepository.observeLoadedModelId().value
             if (currentlyLoaded == modelId) return@launch
             _uiState.update { it.copy(loadingLocalModelId = modelId) }
@@ -222,23 +322,80 @@ class ChatViewModel @Inject constructor(
     // ── Send message ──────────────────────────────────────────────────────────
 
     private fun handleSendMessage(imageBase64: String?) {
-        val text = _uiState.value.inputText.trim()
-        if (text.isBlank() || _uiState.value.isStreaming) return
+        val state = _uiState.value
+        val rawText = state.inputText.trim()
 
-        Log.i(TAG, "send '${text.take(60)}…' tts=${_uiState.value.ttsEnabled}")
-        // Reset the TTS sentence-streaming index for the new turn so chunks
-        // are emitted from the start of the upcoming response.
+        // Pull any staged image / file if the caller didn't pass one
+        // explicitly. The normal flow is now: picker stages via
+        // [StageImage] / [StageFile], user types a prompt, hits Send —
+        // this reads from state. The [imageBase64] param stays as a legacy
+        // escape hatch.
+        val effectiveB64 = imageBase64 ?: state.pendingImageB64
+        val previewUri   = state.pendingImagePreviewUri
+        val fileName     = state.pendingFileName
+        val fileContent  = state.pendingFileContent
+
+        val hasImage = !effectiveB64.isNullOrBlank()
+        val hasFile  = !fileName.isNullOrBlank()
+        // Allow image-only and file-only sends — if the user didn't type
+        // anything, pick a safe default prompt based on what they attached.
+        if (rawText.isBlank() && !hasImage && !hasFile) return
+        if (state.isStreaming) return
+
+        val displayText = when {
+            rawText.isNotBlank() -> rawText
+            hasImage             -> "Describe this image."
+            hasFile              -> "Read this document and tell me what it says."
+            else                 -> return
+        }
+        // What actually goes to the model. For attached text files we
+        // prepend a clearly-delimited block so the model treats the
+        // document as context instead of the user's literal prompt.
+        val apiText = if (hasFile && !fileContent.isNullOrBlank()) {
+            """[Attached document: $fileName]
+
+$fileContent
+
+---
+$displayText"""
+        } else displayText
+
+        Log.i(TAG, "send '${displayText.take(60)}…' tts=${state.ttsEnabled} image=$hasImage file=$hasFile")
         ttsSpokenIndex = 0
-        _uiState.update { it.copy(inputText = "", isStreaming = true, streamingText = "") }
+        // Stash preview + filename so the incoming message-list flow can
+        // attach them to the freshly-inserted user row once its id arrives.
+        pendingPreviewForNextUserTurn  = previewUri
+        pendingFileNameForNextUserTurn = fileName
+        _uiState.update {
+            it.copy(
+                inputText              = "",
+                isStreaming            = true,
+                streamingText          = "",
+                pendingImageB64        = null,
+                pendingImagePreviewUri = null,
+                pendingFileName        = null,
+                pendingFileContent     = null,
+            )
+        }
 
         streamJob = viewModelScope.launch {
-            // Auto-create conversation on first message
             val convId = ensureActiveConversation()
-
-            sendMessage(convId, text, imageBase64)
+            // Push the enriched apiText to the repo — the user's bubble
+            // shows [displayText] only, but the LLM sees the document
+            // context prepended for this single turn.
+            sendMessage(convId, apiText, effectiveB64, displayText)
                 .collect { event -> handleChatEvent(event) }
         }
     }
+
+    /**
+     * Holds the local preview URI between [handleSendMessage] and the
+     * messages-flow update that surfaces the newly-persisted user row.
+     */
+    private var pendingPreviewForNextUserTurn: String? = null
+
+    /** Same idea, for text/file chips (bubble renders a filename chip). */
+    private var pendingFileNameForNextUserTurn: String? = null
 
     /**
      * Index up to which streaming text has been pushed to TTS. Lets us emit
@@ -349,7 +506,12 @@ class ChatViewModel @Inject constructor(
             return
         }
 
-        ttsEngine.stop() // don't record our own TTS output
+        // Don't pre-emptively stop TTS here — we want duplex audio: JARVIS can
+        // be mid-sentence and the mic can still be hot. The Android recognizer
+        // uses VOICE_RECOGNITION audio source, which enables acoustic echo
+        // cancellation on Samsung / Pixel hardware, so speaker output rarely
+        // triggers a false onBeginningOfSpeech. If the user actually speaks
+        // while TTS is playing, onBeginningOfSpeech below fires the barge-in.
 
         val recognizer = speechRecognizer ?: SpeechRecognizer.createSpeechRecognizer(context).also {
             speechRecognizer = it
@@ -359,7 +521,14 @@ class ChatViewModel @Inject constructor(
             override fun onReadyForSpeech(params: Bundle?) {
                 _uiState.update { it.copy(isRecording = true) }
             }
-            override fun onBeginningOfSpeech() {}
+            override fun onBeginningOfSpeech() {
+                // Intentionally NOT a barge-in trigger. On this device the mic
+                // (even with the VOICE_RECOGNITION source) picks up JARVIS's
+                // own TTS playing through the media channel and fires this
+                // immediately after TTS starts — that used to kill the audio
+                // ~1s in with no actual user speech. See onPartialResults
+                // below for the real barge-in, which needs transcribed words.
+            }
             override fun onRmsChanged(rmsdB: Float) {}
             override fun onBufferReceived(buffer: ByteArray?) {}
             override fun onEndOfSpeech() {
@@ -403,6 +572,14 @@ class ChatViewModel @Inject constructor(
                 val matches = partial?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 val text = matches?.firstOrNull() ?: return
                 _uiState.update { it.copy(inputText = text) }
+                // Real barge-in: the recognizer produced an actual partial
+                // transcript, which means words were matched (not just noise
+                // / echo from our own TTS). Stop TTS so the user is heard.
+                // Guarded on length to ignore single-char false positives.
+                if (text.length >= 2 && ttsEngine.isSpeaking.value) {
+                    Log.i(TAG, "Barge-in: partial='${text.take(20)}' — stopping TTS")
+                    ttsEngine.stop()
+                }
             }
             override fun onEvent(eventType: Int, params: Bundle?) {}
         })
@@ -412,6 +589,39 @@ class ChatViewModel @Inject constructor(
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            // Samsung's default silence-end threshold is ~1.5 s, so if the
+            // user takes a breath between "hey" and the rest of the
+            // sentence, the recognizer ends with NO_MATCH and the overlay
+            // feels unresponsive. Widen the timeouts so the recognizer
+            // waits long enough for natural speech.
+            //
+            //   - MINIMUM_LENGTH         = keep listening at least this long
+            //   - POSSIBLY_COMPLETE_...  = soft cutoff after a trailing pause
+            //   - COMPLETE_SILENCE_...   = hard cutoff after trailing silence
+            putExtra(
+                RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS,
+                2_000L,
+            )
+            putExtra(
+                RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,
+                2_000L,
+            )
+            putExtra(
+                RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS,
+                3_500L,
+            )
+            // Force Google's online recognizer — on-device recognition on
+            // Samsung is noticeably less sensitive and misses softly-spoken
+            // prompts, which is exactly the failure mode NO_MATCH-spam was
+            // pointing at. Online recognition trades latency for accuracy,
+            // which is the right call in voice-mode.
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
+            // Some Samsung builds require a calling-package hint, otherwise
+            // the recognizer silently downgrades.
+            putExtra(
+                "calling_package",
+                context.packageName,
+            )
         }
         recognizer.startListening(intent)
     }
@@ -433,6 +643,36 @@ class ChatViewModel @Inject constructor(
         if (_uiState.value.ttsEnabled == enabled) return
         ttsEngine.setEnabled(enabled)
         _uiState.update { it.copy(ttsEnabled = enabled) }
+    }
+
+    /**
+     * Delete the most-recent assistant turn and re-stream a reply to the
+     * preceding user turn. The streaming API sees the conversation minus the
+     * assistant reply, so it produces a new one. Works for any provider that
+     * ChatRepository.sendMessage already supports.
+     */
+    private fun handleRegenerate() {
+        val convId = _uiState.value.activeConversationId ?: return
+        if (_uiState.value.isStreaming) return
+        viewModelScope.launch {
+            // Room returns newest-first already via conversation_id index, but
+            // we sort defensively since callers may have changed the DAO.
+            val recent = messageDao.getRecentByConversation(convId, limit = 20)
+                .sortedByDescending { it.timestamp }
+            val lastAssistant = recent.firstOrNull { it.role == "assistant" }
+                ?: return@launch
+            val lastUser = recent.firstOrNull {
+                it.role == "user" && it.timestamp < lastAssistant.timestamp
+            } ?: return@launch
+
+            messageDao.deleteById(lastAssistant.id)
+            _uiState.update { it.copy(isStreaming = true, streamingText = "") }
+            ttsSpokenIndex = 0
+            streamJob = viewModelScope.launch {
+                sendMessage(convId, lastUser.content, null)
+                    .collect { event -> handleChatEvent(event) }
+            }
+        }
     }
 
     // ── Routing mode cycle ────────────────────────────────────────────────────
@@ -511,7 +751,49 @@ class ChatViewModel @Inject constructor(
     private fun observeMessagesFor(conversationId: String) {
         messagesJob?.cancel()
         messagesJob = observeMessages(conversationId)
-            .onEach  { list -> _uiState.update { it.copy(messages = list) } }
+            .onEach  { list ->
+                // Bind any pending preview URI / filename (stashed by
+                // [handleSendMessage]) to the latest unmapped user row so
+                // the bubble can render the image inline and/or the
+                // filename chip above the prompt.
+                val currentImages = _uiState.value.sentImagePaths
+                val currentFiles  = _uiState.value.sentFileNames
+
+                val updatedImages: Map<Long, String> =
+                    pendingPreviewForNextUserTurn?.let { previewUri ->
+                        val target = list.lastOrNull {
+                            it.role == com.jarvis.android.domain.model.MessageRole.USER &&
+                            it.contentType == com.jarvis.android.domain.model.MessageContentType.IMAGE &&
+                            currentImages[it.id] == null
+                        }
+                        if (target != null) {
+                            pendingPreviewForNextUserTurn = null
+                            currentImages + (target.id to previewUri)
+                        } else currentImages
+                    } ?: currentImages
+
+                val updatedFiles: Map<Long, String> =
+                    pendingFileNameForNextUserTurn?.let { name ->
+                        val highestMapped = currentFiles.keys.maxOrNull() ?: Long.MIN_VALUE
+                        val target = list.lastOrNull {
+                            it.role == com.jarvis.android.domain.model.MessageRole.USER &&
+                            it.id > highestMapped &&
+                            currentFiles[it.id] == null
+                        }
+                        if (target != null) {
+                            pendingFileNameForNextUserTurn = null
+                            currentFiles + (target.id to name)
+                        } else currentFiles
+                    } ?: currentFiles
+
+                _uiState.update {
+                    it.copy(
+                        messages       = list,
+                        sentImagePaths = updatedImages,
+                        sentFileNames  = updatedFiles,
+                    )
+                }
+            }
             .catch   { e -> Log.e(TAG, "messages flow error", e) }
             .launchIn(viewModelScope)
     }

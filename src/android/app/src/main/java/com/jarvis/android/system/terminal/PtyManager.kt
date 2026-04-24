@@ -74,6 +74,14 @@ class PtyManager @Inject constructor() {
      */
     external fun nativeGetChildPid(fd: Int): Int
 
+    /**
+     * Force kernel-level ECHO + ICANON on the given master PTY fd. Needed
+     * on some Android builds where the shell or its editline clears these
+     * silently after exec, producing the "I type but nothing appears" bug.
+     * Safe to call repeatedly.
+     */
+    external fun nativeForceEcho(fd: Int)
+
     companion object {
         /** Timeout passed to [nativeReadFromPty] — keeps the reader loop responsive. */
         const val READ_TIMEOUT_MS = 50

@@ -1,10 +1,10 @@
 prefix=/usr/local
-exec_prefix=${prefix}
-libdir=${exec_prefix}/lib
-includedir=${prefix}/include
+exec_prefix=/usr/local
+libdir=/usr/local/lib
+includedir=/usr/local/include
 
 Name: llama
 Description: Port of Facebook's LLaMA model in C/C++
-Version: 
-Libs: -L${libdir} -lggml  -lggml-base -lllama
+Version: 0.0.8895
+Libs: -L${libdir} -lggml -lggml-base -lllama
 Cflags: -I${includedir}

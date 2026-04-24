@@ -621,7 +621,7 @@ private fun ImportCustomModelDialog(
                 OutlinedTextField(
                     value          = url,
                     onValueChange  = { url = it },
-                    label          = { Text("Download URL (.gguf / .task)") },
+                    label          = { Text("Download URL (.gguf)") },
                     singleLine     = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                     modifier       = Modifier.fillMaxWidth(),
@@ -640,12 +640,17 @@ private fun ImportCustomModelDialog(
                         onDismissRequest = { expanded = false },
                         containerColor  = JarvisPalette.SurfaceElevated,
                     ) {
-                        ModelBackend.entries.forEach { b ->
-                            DropdownMenuItem(
-                                text    = { Text(b.label, color = JarvisPalette.TextPrimary) },
-                                onClick = { backend = b; expanded = false },
-                            )
-                        }
+                        // MediaPipe is hidden — the .task runtime (libllm_inference_engine_jni.so)
+                        // crashes in its drishti thread on Samsung devices and is no longer
+                        // supported. The catalog and custom-import flow are both GGUF-only.
+                        ModelBackend.entries
+                            .filter { it != ModelBackend.MEDIAPIPE }
+                            .forEach { b ->
+                                DropdownMenuItem(
+                                    text    = { Text(b.label, color = JarvisPalette.TextPrimary) },
+                                    onClick = { backend = b; expanded = false },
+                                )
+                            }
                     }
                 }
             }
@@ -717,7 +722,7 @@ private fun OnDeviceHeroCard(
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
-                    text     = "Download a small model and chat offline. GPU-accelerated via MediaPipe / llama.cpp.",
+                    text     = "Download a small GGUF model and chat offline. Runs locally via llama.cpp.",
                     color    = JarvisPalette.TextSecondary,
                     fontSize = 12.sp,
                 )

@@ -1,6 +1,12 @@
 import { convertRequest, convertResponse } from './convert.js'
 import { convertOpenAIStreamToAnthropic } from './stream.js'
 import { getProvider, getProviderForModel } from './providers.js'
+import {
+  buildSyntheticWebSearchResponse,
+  extractWebSearchQuery,
+  searchDuckDuckGo,
+  writeSyntheticWebSearchStream,
+} from './webSearch.js'
 
 const PORT = parseInt(process.env.JARVIS_PROXY_PORT ?? '4000')
 
@@ -29,6 +35,51 @@ const server = Bun.serve({
         })
       }
 
+      const isStream = anthropicReq.stream === true
+
+      // Intercept the first-party web_search server tool — Groq/DeepSeek can't
+      // execute it, so we run DuckDuckGo ourselves and synthesize the
+      // server_tool_use + web_search_tool_result blocks the client expects.
+      const webSearchQuery = extractWebSearchQuery(anthropicReq)
+      if (webSearchQuery !== null) {
+        const model = anthropicReq.model ?? 'jarvis-web-search'
+        console.log(`[jarvis-proxy] web_search intercept: "${webSearchQuery}"`)
+
+        if (isStream) {
+          const stream = new ReadableStream<Uint8Array>({
+            async start(controller) {
+              try {
+                await writeSyntheticWebSearchStream(webSearchQuery, model, controller)
+              } catch (e) {
+                console.error('[jarvis-proxy] web_search stream error:', e)
+              } finally {
+                controller.close()
+              }
+            },
+          })
+          return new Response(stream, {
+            headers: {
+              'Content-Type': 'text/event-stream',
+              'Cache-Control': 'no-cache',
+              'Connection': 'keep-alive',
+            },
+          })
+        }
+
+        let hits: Awaited<ReturnType<typeof searchDuckDuckGo>> = []
+        let failed = false
+        try {
+          hits = await searchDuckDuckGo(webSearchQuery)
+        } catch (e) {
+          console.error('[jarvis-proxy] DuckDuckGo search failed:', e)
+          failed = true
+        }
+        return new Response(
+          JSON.stringify(buildSyntheticWebSearchResponse(webSearchQuery, model, hits, failed)),
+          { headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+
       let provider
       try {
         // If the CLI sent a known model name (e.g. via /model), route by that.
@@ -39,8 +90,6 @@ const server = Bun.serve({
           status: 400, headers: { 'Content-Type': 'application/json' },
         })
       }
-
-      const isStream = anthropicReq.stream === true
       let openaiReq: any
       try {
         openaiReq = convertRequest(anthropicReq, provider)

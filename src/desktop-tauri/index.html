@@ -16,6 +16,19 @@
   </head>
   <body>
     <div id="root"></div>
+    <div id="__err" style="position:fixed;left:12px;right:12px;bottom:12px;z-index:99999;background:rgba(120,0,0,0.95);color:#fff;padding:10px 14px;font:12px ui-monospace,monospace;white-space:pre-wrap;max-height:40vh;overflow:auto;border-radius:8px;display:none;pointer-events:auto;"></div>
+    <script>
+      (function () {
+        var el = document.getElementById('__err');
+        function show(s) { el.style.display = 'block'; el.textContent += s + '\n'; }
+        window.addEventListener('error', function (e) {
+          show('ERROR ' + (e.message || e.error) + ' @ ' + (e.filename || '?') + ':' + (e.lineno || '?'));
+        });
+        window.addEventListener('unhandledrejection', function (e) {
+          show('REJECT ' + (e.reason && e.reason.message ? e.reason.message : e.reason));
+        });
+      })();
+    </script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

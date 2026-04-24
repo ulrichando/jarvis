@@ -114,6 +114,47 @@ Java_com_jarvis_android_system_terminal_PtyManager_nativeCreatePty(
     set_cloexec(master_fd);
     // slave_fd does NOT get CLOEXEC — the child needs to inherit it via dup2
 
+    // Force sane termios on the slave BEFORE fork — some Android ROMs ship
+    // PTYs with ECHO cleared, which makes keystrokes vanish silently (user
+    // types and nothing appears). Set canonical mode, ECHO, ICRNL, OPOST,
+    // ONLCR so the shell behaves like a normal interactive terminal.
+    {
+        struct termios t{};
+        if (tcgetattr(slave_fd, &t) == 0) {
+            t.c_iflag |= (ICRNL | IXON | IUTF8);
+            t.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR);
+            t.c_oflag |= (OPOST | ONLCR);
+            t.c_cflag |= (CS8 | CREAD | HUPCL);
+            t.c_cflag &= ~(PARENB | CSIZE);
+            t.c_cflag |= CS8;
+            t.c_lflag |= (ECHO | ECHOE | ECHOK | ECHOKE | ECHOCTL | ICANON | ISIG | IEXTEN);
+            t.c_cc[VINTR]  = 0x03;   // Ctrl-C
+            t.c_cc[VQUIT]  = 0x1C;   // Ctrl-\
+            t.c_cc[VERASE] = 0x7F;   // DEL
+            t.c_cc[VKILL]  = 0x15;   // Ctrl-U
+            t.c_cc[VEOF]   = 0x04;   // Ctrl-D
+            t.c_cc[VSUSP]  = 0x1A;   // Ctrl-Z
+            t.c_cc[VMIN]   = 1;
+            t.c_cc[VTIME]  = 0;
+            cfsetispeed(&t, B38400);
+            cfsetospeed(&t, B38400);
+            if (tcsetattr(slave_fd, TCSANOW, &t) != 0) {
+                LOGE("tcsetattr on slave fd=%d failed: %s", slave_fd, strerror(errno));
+            } else {
+                LOGI("termios on slave fd=%d: ECHO=%d ICANON=%d OPOST=%d",
+                     slave_fd,
+                     (t.c_lflag & ECHO) ? 1 : 0,
+                     (t.c_lflag & ICANON) ? 1 : 0,
+                     (t.c_oflag & OPOST) ? 1 : 0);
+            }
+            // ALSO set via master fd — same tty, defensive in case an early
+            // read/write before the shell runs steps on it.
+            (void)tcsetattr(master_fd, TCSANOW, &t);
+        } else {
+            LOGE("tcgetattr on slave fd=%d failed: %s", slave_fd, strerror(errno));
+        }
+    }
+
     LOGI("Forking shell: %s (pty master=%d slave=%d rows=%d cols=%d)",
          shell, master_fd, slave_fd, rows, cols);
 
@@ -160,12 +201,21 @@ Java_com_jarvis_android_system_terminal_PtyManager_nativeCreatePty(
             const_cast<char*>("HOME=/data/local/tmp"),
             const_cast<char*>("USER=shell"),
             const_cast<char*>("LOGNAME=shell"),
+            // Explicit prompt so the shell is visible even if $HOME/.mkshrc
+            // isn't present (which is the default on unrooted devices).
+            const_cast<char*>("PS1=jarvis:\\w\\$ "),
             const_cast<char*>(shell_env_str.c_str()),
             nullptr
         };
         // clang-format on
 
-        execle(shell, shell, nullptr, child_env);
+        // Run the shell as plain interactive (no login-shell dash trick —
+        // mksh's editline mode disables kernel-level echo when invoked as
+        // a login shell, which is exactly the "I type but see nothing" bug).
+        // `-i` forces interactive even if isatty() falls back.
+        const char* slash = strrchr(shell, '/');
+        const char* base  = slash ? slash + 1 : shell;
+        execle(shell, base, "-i", nullptr, child_env);
         // execle only returns on failure
         LOGE("execle(%s) failed: %s", shell, strerror(errno));
         _exit(127);
@@ -326,6 +376,39 @@ Java_com_jarvis_android_system_terminal_PtyManager_nativeClosePty(
 
     close(fd);
     LOGI("PTY closed: fd=%d child_pid=%d", fd, child_pid);
+}
+
+/**
+ * void nativeForceEcho(fd: Int)
+ *
+ * Hammer: re-enable kernel-level ECHO + ICANON on the PTY, and log the
+ * current lflag. Some Android shell builds silently clear ECHO after exec
+ * (or their editline disables it); calling this after session creation is
+ * a reliable "can you just show me what I type" fix.
+ */
+JNIEXPORT void JNICALL
+Java_com_jarvis_android_system_terminal_PtyManager_nativeForceEcho(
+        JNIEnv* /* env */, jobject /* thiz */, jint fd) {
+
+    if (fd < 0) return;
+    struct termios t{};
+    if (tcgetattr(fd, &t) != 0) {
+        LOGE("nativeForceEcho: tcgetattr fd=%d failed: %s", fd, strerror(errno));
+        return;
+    }
+    LOGI("nativeForceEcho fd=%d before: ECHO=%d ICANON=%d OPOST=%d",
+         fd,
+         (t.c_lflag & ECHO) ? 1 : 0,
+         (t.c_lflag & ICANON) ? 1 : 0,
+         (t.c_oflag & OPOST) ? 1 : 0);
+    t.c_lflag |= (ECHO | ECHOE | ECHOK | ECHOCTL | ICANON | ISIG | IEXTEN);
+    t.c_iflag |= (ICRNL | IXON);
+    t.c_oflag |= (OPOST | ONLCR);
+    if (tcsetattr(fd, TCSANOW, &t) != 0) {
+        LOGE("nativeForceEcho: tcsetattr fd=%d failed: %s", fd, strerror(errno));
+    } else {
+        LOGI("nativeForceEcho fd=%d after: ECHO=1 ICANON=1 OPOST=1 applied", fd);
+    }
 }
 
 /**

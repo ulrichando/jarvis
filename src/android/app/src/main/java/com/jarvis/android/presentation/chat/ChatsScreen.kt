@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -19,9 +18,13 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -48,6 +51,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.activity.compose.BackHandler
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.jarvis.android.domain.model.Conversation
 import java.text.SimpleDateFormat
@@ -59,19 +63,13 @@ private val SurfaceCard  = Color(0xFF1A1A1A)
 private val TextPrimary  = Color(0xFFECECEC)
 private val TextMuted    = Color(0xFF8A8A8A)
 private val MutedBorder  = Color(0xFF222222)
-private val NewChatColor = Color(0xFFE17055)
+private val NewChatColor = Color(0xFF1E7FFF)
 private val DangerRed    = Color(0xFFEF4444)
 
 /**
- * Dedicated Chats list — Claude-style. Top: hamburger + "Chats" serif title.
- * Below: search field, then a flat list of every conversation sorted
- * most-recent-first, each row = title + relative time. Tapping a row navigates
- * to the chat with that conversation selected. A coral "+ New chat" FAB sits
- * bottom-right.
- *
- * Long-pressing a row opens a context menu (Rename / Star / Delete) so the
- * full set of conversation actions stays one gesture away even when the chat
- * top-bar overflow isn't reachable from this screen.
+ * Dedicated Chats list — Claude-style. Long-press a row to enter multi-select
+ * mode: the top bar flips to a contextual action bar with select-all and
+ * bulk-delete. Tap rows to toggle selection; tap close / press back to exit.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -83,11 +81,12 @@ fun ChatsScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
 
-    var renameId    by remember { mutableStateOf<String?>(null) }
-    var renameDraft by remember { mutableStateOf("") }
-    var deleteId    by remember { mutableStateOf<String?>(null) }
-    var deleteTitle by remember { mutableStateOf("") }
-    var menuForId   by remember { mutableStateOf<String?>(null) }
+    var renameId        by remember { mutableStateOf<String?>(null) }
+    var renameDraft     by remember { mutableStateOf("") }
+    var deleteId        by remember { mutableStateOf<String?>(null) }
+    var deleteTitle     by remember { mutableStateOf("") }
+    var menuForId       by remember { mutableStateOf<String?>(null) }
+    var confirmBulkDel  by remember { mutableStateOf(false) }
 
     val filtered = remember(state.conversations, state.query) {
         val q = state.query.trim()
@@ -95,67 +94,94 @@ fun ChatsScreen(
         if (q.isEmpty()) sorted else sorted.filter { it.title.contains(q, ignoreCase = true) }
     }
 
+    // Back button exits selection mode first, before navigating away.
+    BackHandler(enabled = state.selectionMode) { viewModel.clearSelection() }
+
     Scaffold(
         containerColor = ScreenBg,
         floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick       = { viewModel.newConversation { c -> onSelectChat(c.id) } },
-                containerColor = NewChatColor,
-                contentColor   = Color.White,
-                icon          = { Icon(Icons.Default.Add, contentDescription = null) },
-                text          = { Text("New chat", fontWeight = FontWeight.Medium) },
-            )
+            if (!state.selectionMode) {
+                ExtendedFloatingActionButton(
+                    onClick        = { viewModel.newConversation { c -> onSelectChat(c.id) } },
+                    containerColor = NewChatColor,
+                    contentColor   = Color.White,
+                    icon           = { Icon(Icons.Default.Add, contentDescription = null) },
+                    text           = { Text("New chat", fontWeight = FontWeight.Medium) },
+                )
+            }
         },
     ) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize().background(ScreenBg)) {
 
-            // ── Top bar: hamburger + title ────────────────────────────────
+            // ── Top bar ───────────────────────────────────────────────────
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(start = 4.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconButton(onClick = onOpenDrawer) {
-                    Icon(Icons.Default.Menu, contentDescription = "Open drawer", tint = TextPrimary)
+                if (state.selectionMode) {
+                    // Contextual action bar — close / count / select-all / delete
+                    IconButton(onClick = { viewModel.clearSelection() }) {
+                        Icon(Icons.Default.Close, contentDescription = "Cancel selection", tint = TextPrimary)
+                    }
+                    Text(
+                        text  = "${state.selectedIds.size} selected",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = TextPrimary,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    IconButton(onClick = {
+                        viewModel.selectAllVisible(filtered.map { it.id })
+                    }) {
+                        Icon(Icons.Default.SelectAll, contentDescription = "Select all", tint = TextPrimary)
+                    }
+                    IconButton(onClick = { confirmBulkDel = true }) {
+                        Icon(Icons.Default.Delete, contentDescription = "Delete selected", tint = DangerRed)
+                    }
+                } else {
+                    IconButton(onClick = onOpenDrawer) {
+                        Icon(Icons.Default.Menu, contentDescription = "Open drawer", tint = TextPrimary)
+                    }
+                    Spacer(Modifier.weight(1f))
                 }
-                Spacer(Modifier.weight(1f))
             }
 
-            Text(
-                text  = "Chats",
-                style = MaterialTheme.typography.headlineMedium.copy(
-                    fontFamily = FontFamily.Serif,
-                    fontWeight = FontWeight.Bold,
-                    fontSize   = 32.sp,
-                ),
-                color    = TextPrimary,
-                modifier = Modifier.padding(start = 20.dp, end = 16.dp, top = 4.dp, bottom = 14.dp),
-            )
+            if (!state.selectionMode) {
+                Text(
+                    text  = "Chats",
+                    style = MaterialTheme.typography.headlineMedium.copy(
+                        fontFamily = FontFamily.Serif,
+                        fontWeight = FontWeight.Bold,
+                        fontSize   = 32.sp,
+                    ),
+                    color    = TextPrimary,
+                    modifier = Modifier.padding(start = 20.dp, end = 16.dp, top = 4.dp, bottom = 14.dp),
+                )
 
-            // ── Search field ──────────────────────────────────────────────
-            OutlinedTextField(
-                value         = state.query,
-                onValueChange = viewModel::onQueryChange,
-                placeholder   = { Text("Search Chats", color = TextMuted) },
-                singleLine    = true,
-                leadingIcon   = { Icon(Icons.Default.Search, contentDescription = null, tint = TextMuted) },
-                shape         = RoundedCornerShape(12.dp),
-                colors        = TextFieldDefaults.colors(
-                    focusedContainerColor   = SurfaceCard,
-                    unfocusedContainerColor = SurfaceCard,
-                    focusedIndicatorColor   = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent,
-                    cursorColor             = TextPrimary,
-                    focusedTextColor        = TextPrimary,
-                    unfocusedTextColor      = TextPrimary,
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-            )
+                OutlinedTextField(
+                    value         = state.query,
+                    onValueChange = viewModel::onQueryChange,
+                    placeholder   = { Text("Search Chats", color = TextMuted) },
+                    singleLine    = true,
+                    leadingIcon   = { Icon(Icons.Default.Search, contentDescription = null, tint = TextMuted) },
+                    shape         = RoundedCornerShape(12.dp),
+                    colors        = TextFieldDefaults.colors(
+                        focusedContainerColor   = SurfaceCard,
+                        unfocusedContainerColor = SurfaceCard,
+                        focusedIndicatorColor   = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        cursorColor             = TextPrimary,
+                        focusedTextColor        = TextPrimary,
+                        unfocusedTextColor      = TextPrimary,
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                )
 
-            Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(6.dp))
+            }
 
             // ── Conversation list ─────────────────────────────────────────
             if (filtered.isEmpty()) {
@@ -175,42 +201,64 @@ fun ChatsScreen(
                     verticalArrangement = Arrangement.spacedBy(0.dp),
                 ) {
                     items(items = filtered, key = { it.id }) { conv ->
+                        val selected = state.selectedIds.contains(conv.id)
                         Box {
                             ConversationRow(
                                 conversation = conv,
-                                onClick      = { onSelectChat(conv.id) },
-                                onLongClick  = { menuForId = conv.id },
+                                selected     = selected,
+                                selectionMode = state.selectionMode,
+                                onClick      = {
+                                    if (state.selectionMode) viewModel.toggleSelection(conv.id)
+                                    else                     onSelectChat(conv.id)
+                                },
+                                onLongClick  = {
+                                    // Long-press always toggles selection. First long-press
+                                    // enters selection mode; subsequent ones add/remove rows
+                                    // (or tap does the same once mode is active).
+                                    if (!state.selectionMode) viewModel.toggleSelection(conv.id)
+                                    else                      menuForId = conv.id
+                                },
                             )
-                            DropdownMenu(
-                                expanded         = menuForId == conv.id,
-                                onDismissRequest = { menuForId = null },
-                                modifier         = Modifier.background(Color(0xFF1C1C1E)),
-                            ) {
-                                DropdownMenuItem(
-                                    text    = { Text("Rename", color = TextPrimary) },
-                                    onClick = {
-                                        menuForId   = null
-                                        renameId    = conv.id
-                                        renameDraft = conv.title
-                                    },
-                                )
-                                DropdownMenuItem(
-                                    text    = {
-                                        Text(if (conv.isPinned) "Unstar" else "Star", color = TextPrimary)
-                                    },
-                                    onClick = {
-                                        menuForId = null
-                                        viewModel.togglePin(conv.id, !conv.isPinned)
-                                    },
-                                )
-                                DropdownMenuItem(
-                                    text    = { Text("Delete", color = DangerRed) },
-                                    onClick = {
-                                        menuForId   = null
-                                        deleteId    = conv.id
-                                        deleteTitle = conv.title
-                                    },
-                                )
+                            // Per-row overflow menu only available when NOT in selection mode.
+                            if (!state.selectionMode) {
+                                DropdownMenu(
+                                    expanded         = menuForId == conv.id,
+                                    onDismissRequest = { menuForId = null },
+                                    modifier         = Modifier.background(Color(0xFF1C1C1E)),
+                                ) {
+                                    DropdownMenuItem(
+                                        text    = { Text("Rename", color = TextPrimary) },
+                                        onClick = {
+                                            menuForId   = null
+                                            renameId    = conv.id
+                                            renameDraft = conv.title
+                                        },
+                                    )
+                                    DropdownMenuItem(
+                                        text    = {
+                                            Text(if (conv.isPinned) "Unstar" else "Star", color = TextPrimary)
+                                        },
+                                        onClick = {
+                                            menuForId = null
+                                            viewModel.togglePin(conv.id, !conv.isPinned)
+                                        },
+                                    )
+                                    DropdownMenuItem(
+                                        text    = { Text("Select", color = TextPrimary) },
+                                        onClick = {
+                                            menuForId = null
+                                            viewModel.toggleSelection(conv.id)
+                                        },
+                                    )
+                                    DropdownMenuItem(
+                                        text    = { Text("Delete", color = DangerRed) },
+                                        onClick = {
+                                            menuForId   = null
+                                            deleteId    = conv.id
+                                            deleteTitle = conv.title
+                                        },
+                                    )
+                                }
                             }
                         }
                     }
@@ -218,7 +266,7 @@ fun ChatsScreen(
             }
         }
 
-        // ── Rename dialog ──────────────────────────────────────────────────
+        // ── Rename dialog ─────────────────────────────────────────────────
         renameId?.let { id ->
             AlertDialog(
                 onDismissRequest = { renameId = null },
@@ -247,7 +295,7 @@ fun ChatsScreen(
             )
         }
 
-        // ── Delete confirmation ───────────────────────────────────────────
+        // ── Delete single ─────────────────────────────────────────────────
         deleteId?.let { id ->
             AlertDialog(
                 onDismissRequest = { deleteId = null },
@@ -272,23 +320,85 @@ fun ChatsScreen(
                 },
             )
         }
+
+        // ── Delete bulk ───────────────────────────────────────────────────
+        if (confirmBulkDel) {
+            val n = state.selectedIds.size
+            AlertDialog(
+                onDismissRequest = { confirmBulkDel = false },
+                containerColor   = Color(0xFF141414),
+                title = { Text("Delete $n conversation${if (n == 1) "" else "s"}?", color = TextPrimary) },
+                text  = {
+                    Text(
+                        "This cannot be undone.",
+                        color = TextMuted,
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        viewModel.deleteSelected()
+                        confirmBulkDel = false
+                    }) { Text("Delete $n", color = DangerRed) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmBulkDel = false }) {
+                        Text("Cancel", color = TextMuted)
+                    }
+                },
+            )
+        }
     }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ConversationRow(
-    conversation: Conversation,
-    onClick:      () -> Unit,
-    onLongClick:  () -> Unit,
+    conversation:  Conversation,
+    selected:      Boolean,
+    selectionMode: Boolean,
+    onClick:       () -> Unit,
+    onLongClick:   () -> Unit,
 ) {
+    val rowBg = if (selected) NewChatColor.copy(alpha = 0.18f) else Color.Transparent
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .background(rowBg)
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 20.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (selectionMode) {
+            // Leading checkbox circle so the selection is legible at a glance.
+            val tick = if (selected) NewChatColor else Color(0xFF333333)
+            Box(
+                modifier = Modifier
+                    .size(22.dp)
+                    .background(
+                        color = if (selected) NewChatColor else Color.Transparent,
+                        shape = RoundedCornerShape(11.dp),
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (selected) {
+                    Icon(
+                        imageVector        = Icons.Default.Check,
+                        contentDescription = null,
+                        tint               = Color.White,
+                        modifier           = Modifier.size(14.dp),
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .size(20.dp)
+                            .background(Color.Transparent, RoundedCornerShape(10.dp))
+                            .padding(1.dp)
+                            .background(Color(0xFF0D0D0D), RoundedCornerShape(10.dp)),
+                    )
+                }
+            }
+            Spacer(Modifier.size(12.dp))
+        }
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text     = conversation.title.ifBlank { "Untitled" },

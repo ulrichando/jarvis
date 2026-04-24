@@ -58,6 +58,47 @@ data class ChatUiState(
     val availableCloudModels: List<CloudModel>     = emptyList(),
     /** Anthropic / DeepSeek / etc. slug the user picked in the home-bar dropdown. */
     val selectedCloudModelId: String?              = null,
+
+    /**
+     * When true, the ModelConfigDialog is rendered. `editingModelConfig`
+     * holds the values currently shown/edited. Set by [ChatIntent.ShowModelConfig]
+     * from the gear icon in the chat top bar; cleared on dismiss/save.
+     */
+    val showModelConfig:      Boolean              = false,
+    val editingModelConfig:   com.jarvis.android.domain.model.ModelConfig? = null,
+
+    // ── Attachments ────────────────────────────────────────────────────────
+    //
+    // Picking a photo or file no longer auto-sends — it stages into the state
+    // below. The input bar renders a chip off [pendingImagePreviewUri] /
+    // [pendingFileName] so the user actually sees what they attached, and
+    // then hits Send when they're ready.
+    /** Base64 JPEG/PNG payload staged for the next send, null if none. */
+    val pendingImageB64:        String?            = null,
+    /** Mime type of the staged image, `image/jpeg` by default. */
+    val pendingImageMime:       String             = "image/jpeg",
+    /** `file://` URI of the locally cached preview, loaded by Coil for the chip. */
+    val pendingImagePreviewUri: String?            = null,
+    /** Display name of a staged file attachment — drives the filename chip. */
+    val pendingFileName:        String?            = null,
+    /** Full text extracted from the staged file. Prepended to the next
+     *  outgoing request as context and never shown in the input field. */
+    val pendingFileContent:     String?            = null,
+
+    /**
+     * After a user turn with an image is persisted, we record its DB row id
+     * against the local preview URI here. [MessageBubble] reads this map at
+     * render time and shows the image inline above its text. Transient —
+     * populated per session; images do not survive a process restart yet.
+     */
+    val sentImagePaths:         Map<Long, String>  = emptyMap(),
+
+    /**
+     * Same idea as [sentImagePaths] but for text/file attachments: DB row
+     * id → filename. Lets the bubble render a file-chip above the user's
+     * typed prompt.
+     */
+    val sentFileNames:          Map<Long, String>  = emptyMap(),
 ) {
     /** True when there is content to display (persisted messages or live streaming). */
     val hasContent: Boolean get() = messages.isNotEmpty() || streamingText.isNotEmpty()

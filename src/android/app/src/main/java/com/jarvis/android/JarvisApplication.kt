@@ -38,6 +38,10 @@ class JarvisApplication : Application(), Configuration.Provider {
     override fun onCreate() {
         super.onCreate()
         configureLibsu()
+        // PDFBox needs a one-shot resource loader init before any parsing,
+        // otherwise its font + cmap assets (bundled as raw resources) can't
+        // be located and every extraction throws on the first page.
+        com.tom_roush.pdfbox.android.PDFBoxResourceLoader.init(applicationContext)
     }
 
     private fun configureLibsu() {

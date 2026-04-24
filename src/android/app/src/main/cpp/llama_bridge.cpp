@@ -237,7 +237,23 @@ Java_com_jarvis_android_system_llm_LlamaJNI_nativeLoadModel(
     cparams.n_ctx       = static_cast<uint32_t>(contextSize > 0 ? contextSize : DEFAULT_N_CTX);
     cparams.n_batch     = DEFAULT_N_BATCH;
     cparams.n_threads   = DEFAULT_N_THREADS;
-    cparams.flash_attn  = true;   // available on Android GPU via Vulkan
+
+    // Quantize the KV cache to Q8_0 (1 byte/value) instead of the default f16
+    // (2 bytes/value). This halves the KV cache footprint — for a 7B model at
+    // n_ctx=4096 that's 1 GB instead of 2 GB. Q8_0 KV quality is
+    // indistinguishable from f16 in practice; Q4_0 is more aggressive but has
+    // noticeable quality loss on some shapes, so Q8_0 is the recommended
+    // default for on-device inference on phones with < 16 GB RAM.
+    cparams.type_k = GGML_TYPE_Q8_0;
+    cparams.type_v = GGML_TYPE_Q8_0;
+
+    // llama.cpp requires flash attention whenever V is quantized — the default
+    // attention kernel only reads f16 V tensors, so without it context
+    // creation fails with "V cache quantization requires flash_attn".
+    // As of llama.cpp b8000+ the bool `flash_attn` was replaced with an enum
+    // `flash_attn_type` (AUTO / DISABLED / ENABLED). Force ENABLED here for
+    // the same reason the old bool was true.
+    cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
 
     llama_context * ctx = llama_new_context_with_model(model, cparams);
     if (!ctx) {
@@ -363,7 +379,10 @@ Java_com_jarvis_android_system_llm_LlamaJNI_nativeRunInference(
     }
 
     // ── Reset context & sampler ───────────────────────────────────────────
-    llama_kv_cache_clear(ctx);
+    // b8000+ replaced llama_kv_cache_clear(ctx) with a generic memory API.
+    // Passing `true` wipes both metadata and the backing tensors so each
+    // generate() call starts from a clean KV — same semantics as the old call.
+    llama_memory_clear(llama_get_memory(ctx), /*data=*/true);
     llama_sampler_reset(session->sampler);
 
     // ── Decode prompt (prefill) ───────────────────────────────────────────
@@ -445,6 +464,79 @@ Java_com_jarvis_android_system_llm_LlamaJNI_nativeRunInference(
 
     llama_batch_free(batch);
     LOGI("Generation complete: %d new tokens", generated);
+}
+
+/**
+ * Format a {system?, user} pair into the model's own chat template, as stored
+ * in the GGUF's `tokenizer.chat_template` metadata. Replaces the hardcoded
+ * Gemma `<start_of_turn>` wrapping that was baking wrong control tokens into
+ * every non-Gemma model's prompt (and producing incoherent replies).
+ *
+ * Returns the formatted prompt string, ready to be tokenised and fed to
+ * nativeRunInference. If the model has no template metadata or something else
+ * goes wrong, returns an empty string and the caller is expected to fall back
+ * to a sensible default.
+ */
+JNIEXPORT jstring JNICALL
+Java_com_jarvis_android_system_llm_LlamaJNI_nativeApplyChatTemplate(
+        JNIEnv * env,
+        jclass  /* cls */,
+        jlong    handle,
+        jstring  systemPrompt,
+        jstring  userPrompt)
+{
+    LlamaSession * session = getSession(handle);
+    if (!session) return env->NewStringUTF("");
+
+    const char * sys = env->GetStringUTFChars(systemPrompt, nullptr);
+    const char * usr = env->GetStringUTFChars(userPrompt,   nullptr);
+    std::string sysStr(sys ? sys : "");
+    std::string usrStr(usr ? usr : "");
+    env->ReleaseStringUTFChars(systemPrompt, sys);
+    env->ReleaseStringUTFChars(userPrompt,   usr);
+
+    // Build the message list. llama_chat_apply_template holds borrowed C
+    // pointers into these strings, so they must outlive the call.
+    std::vector<llama_chat_message> messages;
+    if (!sysStr.empty()) {
+        messages.push_back({"system", sysStr.c_str()});
+    }
+    messages.push_back({"user", usrStr.c_str()});
+
+    // NULL name → default template
+    const char * tmpl = llama_model_chat_template(session->model, nullptr);
+    if (!tmpl) {
+        LOGW("Model has no chat template metadata — returning empty");
+        return env->NewStringUTF("");
+    }
+
+    // First call: ask llama.cpp how big a buffer we need (or let it write as
+    // much as fits and return the full size if truncated). Docs suggest
+    // 2× total chars of all messages as a safe starting capacity.
+    const size_t totalChars = sysStr.size() + usrStr.size() + 256;
+    std::vector<char> buf(totalChars * 2 + 128);
+    int32_t n = llama_chat_apply_template(
+        tmpl,
+        messages.data(),
+        messages.size(),
+        /*add_ass=*/true,   // append the assistant-turn marker so the model picks up from there
+        buf.data(),
+        static_cast<int32_t>(buf.size()));
+
+    if (n < 0) {
+        LOGE("llama_chat_apply_template failed (n=%d)", n);
+        return env->NewStringUTF("");
+    }
+    if (static_cast<size_t>(n) > buf.size()) {
+        // Buffer was too small — reallocate exactly and retry.
+        buf.assign(n + 1, 0);
+        n = llama_chat_apply_template(
+            tmpl, messages.data(), messages.size(), true,
+            buf.data(), static_cast<int32_t>(buf.size()));
+        if (n < 0) return env->NewStringUTF("");
+    }
+
+    return env->NewStringUTF(std::string(buf.data(), n).c_str());
 }
 
 /**
