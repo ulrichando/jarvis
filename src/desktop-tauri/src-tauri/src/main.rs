@@ -25,11 +25,34 @@ struct PanelRect(Arc<Mutex<PanelRectData>>);
 /// `set_tray_state` command can swap colours based on the app state.
 struct TrayHandle(Mutex<Option<TrayIcon<Wry>>>);
 
-/// Build a 32×32 RGBA buffer of a filled circle in the given colour with
-/// 1px anti-alias edge. Tauri's `Image::new` takes the raw RGBA bytes.
-const TRAY_SIZE: u32 = 32;
-fn make_tray_rgba(r: u8, g: u8, b: u8) -> Vec<u8> {
-    let size = TRAY_SIZE;
+/// The source tray artwork (icons/tray.png — the concentric-ring /
+/// reactor design). Embedded into the binary at compile time so the
+/// icon can be tinted per-state at runtime without touching disk.
+const TRAY_SRC_PNG: &[u8] = include_bytes!("../icons/tray.png");
+
+/// Cached decoded source: (width, height, rgba). Decoded once on first
+/// call by tray_image_for — decoding a 48×48 PNG is trivially fast but
+/// there's no reason to repeat it on every state transition.
+use std::sync::OnceLock;
+static TRAY_SRC: OnceLock<(u32, u32, Vec<u8>)> = OnceLock::new();
+
+fn decode_tray_source() -> (u32, u32, Vec<u8>) {
+    // Tauri 2's Image::from_bytes decodes PNG when the `image-png`
+    // feature is enabled on the tauri crate (it is — see Cargo.toml).
+    // We fall back to a plain green disk if decode fails so the tray
+    // never disappears on a broken build.
+    match Image::from_bytes(TRAY_SRC_PNG) {
+        Ok(img) => (img.width(), img.height(), img.rgba().to_vec()),
+        Err(e)  => {
+            eprintln!("[JARVIS] tray.png decode failed ({e}); falling back to solid circle");
+            (32, 32, solid_circle_rgba(32, 63, 185, 80))
+        }
+    }
+}
+
+/// Fallback filled circle for the error path above. Kept minimal — in
+/// practice the decode always succeeds because the PNG is embedded.
+fn solid_circle_rgba(size: u32, r: u8, g: u8, b: u8) -> Vec<u8> {
     let mut buf = vec![0u8; (size * size * 4) as usize];
     let center = size as f32 / 2.0;
     let radius = center - 1.5;
@@ -38,29 +61,53 @@ fn make_tray_rgba(r: u8, g: u8, b: u8) -> Vec<u8> {
             let dx = x as f32 + 0.5 - center;
             let dy = y as f32 + 0.5 - center;
             let d  = (dx * dx + dy * dy).sqrt();
-            let alpha: u8 = if d <= radius {
-                255
-            } else if d <= radius + 1.0 {
-                ((radius + 1.0 - d) * 255.0).clamp(0.0, 255.0) as u8
-            } else {
-                0
-            };
+            let a: u8 = if d <= radius { 255 }
+                        else if d <= radius + 1.0 { ((radius + 1.0 - d) * 255.0).clamp(0.0, 255.0) as u8 }
+                        else { 0 };
             let i = ((y * size + x) * 4) as usize;
-            buf[i    ] = r;
-            buf[i + 1] = g;
-            buf[i + 2] = b;
-            buf[i + 3] = alpha;
+            buf[i]=r; buf[i+1]=g; buf[i+2]=b; buf[i+3]=a;
         }
     }
     buf
 }
-fn tray_image_for(state: &str) -> Vec<u8> {
+
+/// Tint the source RGBA by a target colour, preserving the source's
+/// alpha (so the artwork's shape is unchanged) and using the source's
+/// luminance as a brightness multiplier (so inner detail stays visible
+/// — bright pixels stay near the tint colour, darker pixels stay
+/// darker). This is what the user asked for: keep the existing icon,
+/// just change its colour.
+fn tint_source(r: u8, g: u8, b: u8) -> (u32, u32, Vec<u8>) {
+    let (w, h, src) = TRAY_SRC.get_or_init(decode_tray_source).clone();
+    let mut out = Vec::with_capacity(src.len());
+    let mut i = 0;
+    while i < src.len() {
+        let sr = src[i]     as f32;
+        let sg = src[i + 1] as f32;
+        let sb = src[i + 2] as f32;
+        let sa = src[i + 3];
+        // ITU-R BT.709 luma; kept in [0,1]. Pixels that were pure-white
+        // in the source come out at full tint colour; near-black pixels
+        // stay dim.
+        let lum = (0.2126 * sr + 0.7152 * sg + 0.0722 * sb) / 255.0;
+        out.push((r as f32 * lum).clamp(0.0, 255.0) as u8);
+        out.push((g as f32 * lum).clamp(0.0, 255.0) as u8);
+        out.push((b as f32 * lum).clamp(0.0, 255.0) as u8);
+        out.push(sa);
+        i += 4;
+    }
+    (w, h, out)
+}
+
+/// Return (width, height, rgba) for the given state. Tauri wraps the
+/// buffer in Image::new_owned at the call site.
+fn tray_image_for(state: &str) -> (u32, u32, Vec<u8>) {
     // Colours tuned to read clearly against dark + light panels on XFCE.
     match state {
-        "talking"  => make_tray_rgba(68, 147, 248),   // blue
-        "thinking" => make_tray_rgba(250, 180, 50),   // gold / amber
-        "offline"  => make_tray_rgba(239, 68, 68),    // red
-        _          => make_tray_rgba(63, 185, 80),    // idle / listening — green
+        "talking"  => tint_source( 68, 147, 248),   // blue
+        "thinking" => tint_source(250, 180,  50),   // gold / amber
+        "offline"  => tint_source(239,  68,  68),   // red
+        _          => tint_source( 63, 185,  80),   // idle / listening — green
     }
 }
 
@@ -151,8 +198,8 @@ fn set_panel_rect(x: i32, y: i32, w: i32, h: i32, state: State<PanelRect>) -> Re
 /// "idle" and "listening" both render green (the mic is live either way).
 #[tauri::command]
 fn set_tray_state(state: &str, tray: State<TrayHandle>) -> Result<(), String> {
-    let rgba = tray_image_for(state);
-    let image = Image::new_owned(rgba, TRAY_SIZE, TRAY_SIZE);
+    let (w, h, rgba) = tray_image_for(state);
+    let image = Image::new_owned(rgba, w, h);
     let guard = tray.0.lock().map_err(|e| e.to_string())?;
     if let Some(t) = guard.as_ref() {
         t.set_icon(Some(image)).map_err(|e| e.to_string())?;
@@ -222,20 +269,48 @@ fn main() {
             let _ = window.set_ignore_cursor_events(true);
             let _ = window.show();
 
-            // Enable mic / media stream in the WebKit2GTK webview and
-            // auto-grant permission requests so getUserMedia works for the
-            // always-listening voice loop.
+            // Enable mic / media stream / WebRTC in the WebKit2GTK webview
+            // and auto-grant permission requests so getUserMedia + LiveKit
+            // WebRTC work for the always-listening voice loop.
+            //
+            // Note on `enable-webrtc`: the webkit2gtk Rust crate 2.0's
+            // `set_enable_webrtc()` targets the GObject property of the
+            // same name but on some WebKitGTK versions the typed setter
+            // short-circuits if a runtime-feature gate is off. Setting
+            // the property directly via `ObjectExt::set_property` is the
+            // bulletproof path — it's what `g_object_set(settings,
+            // "enable-webrtc", TRUE, NULL)` does in C, and matches the
+            // names the Python probe just showed: enable-webrtc /
+            // enable-media-stream / enable-media-capabilities.
+            //
+            // After we set it, we read it back via `get_property` and
+            // println! the result so a reboot/relaunch immediately shows
+            // in the launch log whether WebRTC is actually ON.
             #[cfg(target_os = "linux")]
             {
                 use webkit2gtk::{WebViewExt, SettingsExt, PermissionRequestExt};
+                use webkit2gtk::gio::prelude::ObjectExt;
                 let _ = window.with_webview(|webview| {
                     let wv = webview.inner();
                     if let Some(settings) = WebViewExt::settings(&wv) {
                         settings.set_enable_media_stream(true);
-                        settings.set_enable_webrtc(true);
                         settings.set_enable_mediasource(true);
-                        // Let TTS audio autoplay without a prior user gesture.
                         settings.set_media_playback_requires_user_gesture(false);
+                        // WebRTC — set via both the typed setter and the raw
+                        // property to cover bindings that don't route through
+                        // each other.
+                        settings.set_enable_webrtc(true);
+                        settings.set_property("enable-webrtc",           &true);
+                        settings.set_property("enable-media-capabilities", &true);
+                        settings.set_property("enable-media-stream",      &true);
+                        // Confirm post-set — prints to /tmp/jarvis-launch.log.
+                        let webrtc_on = settings.property::<bool>("enable-webrtc");
+                        let mstream_on = settings.property::<bool>("enable-media-stream");
+                        let mcap_on    = settings.property::<bool>("enable-media-capabilities");
+                        println!(
+                            "[JARVIS] WebKit settings post-set: webrtc={} mediastream={} mediacap={}",
+                            webrtc_on, mstream_on, mcap_on,
+                        );
                     }
                     wv.connect_permission_request(|_wv, req| {
                         req.allow();
@@ -282,8 +357,8 @@ fn main() {
             // Start the tray on the green "idle" indicator — React will
             // push state updates via set_tray_state as soon as the webview
             // boots and the WS reports status.
-            let idle_rgba = tray_image_for("idle");
-            let idle_icon = Image::new_owned(idle_rgba, TRAY_SIZE, TRAY_SIZE);
+            let (iw, ih, idle_rgba) = tray_image_for("idle");
+            let idle_icon = Image::new_owned(idle_rgba, iw, ih);
             let tray = TrayIconBuilder::new()
                 .icon(idle_icon)
                 .menu(&menu)
@@ -312,9 +387,26 @@ fn main() {
                             }
                         }
                         "mute" => {
-                            // Call mute API directly from Rust (avoids Tauri CORS restrictions on fetch)
+                            // Two voice paths exist in parallel: the legacy
+                            // sidecar on :8765/api/mute (toggles useSpeech)
+                            // and the LiveKit native client on :8767/mute
+                            // (toggles the PipeWire mic track). Fire both so
+                            // the tray mute button does the intuitive thing
+                            // regardless of which pipeline the user is on.
+                            // curl invocation mirrors the pre-existing
+                            // pattern — Tauri webview CORS doesn't apply to
+                            // subprocess calls out of the webview.
                             let _ = std::process::Command::new("curl")
                                 .args(["-s", "-X", "POST", "http://127.0.0.1:8765/api/mute"])
+                                .spawn();
+                            // Toggle the voice-client by POSTing with no
+                            // body — the Python handler defaults to "flip
+                            // current state" when `mute` is absent.
+                            let _ = std::process::Command::new("curl")
+                                .args(["-s", "-X", "POST",
+                                       "http://127.0.0.1:8767/mute",
+                                       "-H", "Content-Type: application/json",
+                                       "-d", "{}"])
                                 .spawn();
                             if let Some(w) = app.get_webview_window("main") {
                                 let _ = w.emit("tray-toggle-mute", ());

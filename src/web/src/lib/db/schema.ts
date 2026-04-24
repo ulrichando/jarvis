@@ -1,0 +1,213 @@
+import { relations } from "drizzle-orm";
+import {
+  pgTable,
+  text,
+  timestamp,
+  uuid,
+  integer,
+  jsonb,
+  boolean,
+  index,
+} from "drizzle-orm/pg-core";
+
+export const users = pgTable("users", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  email: text("email").notNull().unique(),
+  name: text("name"),
+  image: text("image"),
+  emailVerified: boolean("email_verified").notNull().default(false),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const sessions = pgTable("sessions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  token: text("token").notNull().unique(),
+  expiresAt: timestamp("expires_at").notNull(),
+  ipAddress: text("ip_address"),
+  userAgent: text("user_agent"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const accounts = pgTable("accounts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  providerId: text("provider_id").notNull(),
+  accountId: text("account_id").notNull(),
+  password: text("password"),
+  accessToken: text("access_token"),
+  refreshToken: text("refresh_token"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const verifications = pgTable("verifications", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  identifier: text("identifier").notNull(),
+  value: text("value").notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const conversations = pgTable(
+  "conversations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    title: text("title").notNull().default("New chat"),
+    model: text("model").notNull().default("claude-sonnet-4-6"),
+    systemPrompt: text("system_prompt"),
+    pinned: boolean("pinned").notNull().default(false),
+    archived: boolean("archived").notNull().default(false),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("conversations_user_idx").on(table.userId),
+    index("conversations_updated_idx").on(table.updatedAt),
+  ],
+);
+
+export const messages = pgTable(
+  "messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    conversationId: uuid("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    role: text("role", { enum: ["user", "assistant", "system", "tool"] })
+      .notNull(),
+    content: jsonb("content").notNull(),
+    parentId: uuid("parent_id"),
+    tokensIn: integer("tokens_in"),
+    tokensOut: integer("tokens_out"),
+    stopReason: text("stop_reason"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [index("messages_conversation_idx").on(table.conversationId)],
+);
+
+export const attachments = pgTable("attachments", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  messageId: uuid("message_id")
+    .notNull()
+    .references(() => messages.id, { onDelete: "cascade" }),
+  fileUrl: text("file_url").notNull(),
+  fileName: text("file_name").notNull(),
+  mimeType: text("mime_type").notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  extractedText: text("extracted_text"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const artifacts = pgTable(
+  "artifacts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    conversationId: uuid("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    slug: text("slug").notNull(),
+    title: text("title").notNull(),
+    kind: text("kind", {
+      enum: ["code", "markdown", "html", "react", "svg", "mermaid"],
+    }).notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [index("artifacts_conversation_idx").on(table.conversationId)],
+);
+
+export const artifactVersions = pgTable("artifact_versions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  artifactId: uuid("artifact_id")
+    .notNull()
+    .references(() => artifacts.id, { onDelete: "cascade" }),
+  version: integer("version").notNull(),
+  content: text("content").notNull(),
+  language: text("language"),
+  messageId: uuid("message_id").references(() => messages.id, {
+    onDelete: "set null",
+  }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const toolCalls = pgTable("tool_calls", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  messageId: uuid("message_id")
+    .notNull()
+    .references(() => messages.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  input: jsonb("input").notNull(),
+  output: jsonb("output"),
+  error: text("error"),
+  durationMs: integer("duration_ms"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const usageEvents = pgTable(
+  "usage_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    conversationId: uuid("conversation_id").references(() => conversations.id, {
+      onDelete: "set null",
+    }),
+    model: text("model").notNull(),
+    tokensIn: integer("tokens_in").notNull().default(0),
+    tokensOut: integer("tokens_out").notNull().default(0),
+    cacheReadTokens: integer("cache_read_tokens").notNull().default(0),
+    cacheWriteTokens: integer("cache_write_tokens").notNull().default(0),
+    costUsd: text("cost_usd"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [index("usage_user_idx").on(table.userId, table.createdAt)],
+);
+
+export const usersRelations = relations(users, ({ many }) => ({
+  conversations: many(conversations),
+  sessions: many(sessions),
+  accounts: many(accounts),
+}));
+
+export const conversationsRelations = relations(
+  conversations,
+  ({ one, many }) => ({
+    user: one(users, {
+      fields: [conversations.userId],
+      references: [users.id],
+    }),
+    messages: many(messages),
+    artifacts: many(artifacts),
+  }),
+);
+
+export const messagesRelations = relations(messages, ({ one, many }) => ({
+  conversation: one(conversations, {
+    fields: [messages.conversationId],
+    references: [conversations.id],
+  }),
+  attachments: many(attachments),
+  toolCalls: many(toolCalls),
+}));
+
+export const artifactsRelations = relations(artifacts, ({ one, many }) => ({
+  conversation: one(conversations, {
+    fields: [artifacts.conversationId],
+    references: [conversations.id],
+  }),
+  versions: many(artifactVersions),
+}));
+
+export type User = typeof users.$inferSelect;
+export type Conversation = typeof conversations.$inferSelect;
+export type Message = typeof messages.$inferSelect;
+export type Artifact = typeof artifacts.$inferSelect;
+export type ArtifactVersion = typeof artifactVersions.$inferSelect;

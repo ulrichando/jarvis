@@ -582,6 +582,13 @@ export default function ChatPanel({ isOpen, onClose, onBoundsChange, ttsEnabled 
         boxShadow: '0 20px 60px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.02)',
         fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
         color: TEXT,
+        // Promote to its own compositing layer so WebKitGTK redraws
+        // this subtree cleanly during drag + fade. Without these the
+        // panel would smear trails across a transparent window
+        // because the compositor was reusing stale backing pixels.
+        isolation: 'isolate',
+        willChange: 'transform, opacity',
+        transform: 'translateZ(0)',
       }}
       onMouseDown={(e) => e.stopPropagation()}
     >
