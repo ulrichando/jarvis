@@ -1,0 +1,9 @@
+# LiveKit Agents + Groq voice stack. Pinned to minor versions that
+# were live when the agent was first wired; bump these deliberately.
+#
+# Install:
+#   python3 -m venv .venv
+#   source .venv/bin/activate
+#   pip install -r requirements.txt
+
+livekit-agents[silero,openai,groq]~=1.5

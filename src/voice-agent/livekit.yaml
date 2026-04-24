@@ -1,0 +1,34 @@
+# LiveKit server config for local JARVIS voice agent.
+# Single-node, single-port-multiplexed setup — simplest possible.
+# Clients (Tauri webview, Android app on the LAN) connect to :7880 for
+# WebSocket signaling; media flows over UDP :7882 (multiplexed via TURN
+# fallback on TCP :7881 if UDP is blocked).
+#
+# Keys are dev-style — fine for local LAN / Tailscale. If this ever
+# gets exposed to a public network, regenerate with
+# `./livekit-server.bin generate-keys` and rotate.
+
+port: 7880
+log_level: info
+
+rtc:
+  # TCP fallback for media (used when UDP is blocked by NAT or by
+  # browser WebRTC when it decides to prefer TCP).
+  tcp_port: 7881
+  # Single UDP port for all media — LiveKit's SFU multiplexes all
+  # peer connections through here. No 50000-60000 range required on
+  # modern LiveKit (1.7+). Phone-on-cellular later will need either
+  # use_external_ip: true + port-forward, or a TURN server.
+  udp_port: 7882
+  # Don't advertise external IPs — this is a LAN-only deployment for
+  # now. When we add WAN (Tailscale / Wireguard), this flips to true
+  # and we add stun_servers.
+  use_external_ip: false
+
+# API keypair. Generated with `./livekit-server.bin generate-keys`.
+# The agent AND every client use these to mint short-lived JWT tokens
+# authorising a client to join a specific room. Separate key for each
+# deployment when we add phone/WAN. Do not commit this file if this
+# tree ever becomes a public repo.
+keys:
+  APIveRsdNgLskjE: KliwnenjqBuzWcjPDCrbo5aLbvTyz2pQZp490L7SjdT
