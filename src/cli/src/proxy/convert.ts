@@ -5,7 +5,17 @@ import type { Provider } from './providers.js'
 type OpenAIMessage =
   | { role: 'system'; content: string }
   | { role: 'user'; content: string }
-  | { role: 'assistant'; content: string | null; tool_calls?: OpenAIToolCall[] }
+  | {
+      role: 'assistant'
+      content: string | null
+      tool_calls?: OpenAIToolCall[]
+      // DeepSeek thinking-mode requires the prior assistant turn's
+      // chain-of-thought to be echoed back on follow-up turns. We
+      // round-trip it through Anthropic's `thinking` content block
+      // (see convertResponse / convertMessages). Other OpenAI-compat
+      // providers silently ignore the extra field.
+      reasoning_content?: string
+    }
   | { role: 'tool'; tool_call_id: string; content: string }
 
 type OpenAIToolCall = {
@@ -69,22 +79,30 @@ export function convertMessages(anthropicMessages: any[]): OpenAIMessage[] {
 
       const textBlocks = content.filter((b: any) => b.type === 'text')
       const toolUseBlocks = content.filter((b: any) => b.type === 'tool_use')
-      // Skip thinking blocks entirely
+      // Concat thinking blocks back into reasoning_content. DeepSeek's
+      // thinking-mode API rejects multi-turn requests if the prior
+      // assistant turn omits this field (error: "The reasoning_content
+      // in the thinking mode must be passed back to the API."). We
+      // store it on the Anthropic side as a `thinking` block on
+      // egress (convertResponse) and re-attach here on ingress.
+      const thinkingBlocks = content.filter((b: any) => b.type === 'thinking')
+      const reasoning = thinkingBlocks.map((b: any) => b.thinking ?? '').join('')
       const text = textBlocks.map((b: any) => b.text ?? '').join('') || null
 
+      const assistantMsg: any = { role: 'assistant', content: text ?? '' }
+      if (reasoning) assistantMsg.reasoning_content = reasoning
       if (toolUseBlocks.length > 0) {
-        const tool_calls: OpenAIToolCall[] = toolUseBlocks.map((b: any) => ({
+        assistantMsg.content = text
+        assistantMsg.tool_calls = toolUseBlocks.map((b: any) => ({
           id: b.id,
           type: 'function' as const,
           function: {
             name: b.name,
             arguments: typeof b.input === 'string' ? b.input : JSON.stringify(b.input ?? {}),
           },
-        }))
-        out.push({ role: 'assistant', content: text, tool_calls })
-      } else {
-        out.push({ role: 'assistant', content: text ?? '' })
+        })) as OpenAIToolCall[]
       }
+      out.push(assistantMsg)
     } else if (msg.role === 'user') {
       const content = msg.content
       if (typeof content === 'string') {
@@ -289,6 +307,19 @@ export function convertResponse(openaiResp: any, model: string): any {
 
   const msg = choice.message
   const content: any[] = []
+
+  // Thinking block FIRST so the round-trip through Anthropic schema
+  // preserves DeepSeek's reasoning_content. convertMessages will
+  // re-extract it on the next turn. Empty signature is fine — we
+  // control both sides of this round trip; Anthropic-style signature
+  // verification doesn't run against the proxy.
+  if (msg.reasoning_content) {
+    content.push({
+      type: 'thinking',
+      thinking: msg.reasoning_content,
+      signature: '',
+    })
+  }
 
   if (msg.content) {
     content.push({ type: 'text', text: msg.content })

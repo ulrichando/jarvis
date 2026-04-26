@@ -47,7 +47,9 @@ import logging
 import os
 import signal
 import sys
+import time
 from dataclasses import dataclass, asdict
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -81,6 +83,145 @@ FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000  # 480
 # so we don't collide with bridge (8765) / speech sidecar (8766).
 STATUS_PORT   = int(os.environ.get("JARVIS_VOICE_CLIENT_PORT", "8767"))
 
+# CLI-model switching. The tray POSTs to /cli-model; we write the
+# chosen model ID to this file. The voice-agent's run_jarvis_cli
+# reads the file on every spawn and exports JARVIS_PROVIDER +
+# JARVIS_MODEL to the CLI subprocess — so switching takes effect on
+# the very next tool call, no restart required. start.sh also reads
+# this file so interactive terminal sessions stay in sync.
+CLI_MODEL_FILE      = Path.home() / ".jarvis" / "cli-model"
+DEFAULT_CLI_MODEL   = "deepseek-chat"
+
+# Speech-LLM (voice-side) switching. Same file/endpoint pattern as
+# CLI model but a switch DOES require a restart of the agent unit
+# (its LLM is built once at session start; can't hot-swap). voice-
+# client kicks `systemctl --user restart jarvis-voice-agent` after
+# writing the file. The voice-client itself stays up — the SFU
+# preserves the room while the agent rejoins.
+SPEECH_MODEL_FILE      = Path.home() / ".jarvis" / "voice-model"
+
+# Same path as jarvis_agent.py's _TOOL_BUSY_FILE — written when a
+# tool starts, deleted when it ends. Voice-client polls existence
+# (cheap stat call) on every /status hit.
+TOOL_BUSY_FILE         = Path.home() / ".jarvis" / ".tool-running"
+
+# Agent's LLM-thinking flag. Same pattern: present means LLM is
+# generating. Has a staleness check below — if the file is older
+# than AGENT_THINKING_MAX_AGE we ignore it. This also handles the
+# "agent decided to stay silent" case (the directed-at-me filter
+# rejects an ambient mic trigger): no assistant turn ever lands to
+# clear the flag, but it goes stale within a few seconds and the
+# tray drops gold automatically. 10 s is generous for real LLM
+# thinking; long-running TOOL calls use the separate tool_running
+# flag (no time limit on that one).
+AGENT_THINKING_FILE    = Path.home() / ".jarvis" / ".agent-thinking"
+AGENT_THINKING_MAX_AGE = 10   # seconds
+
+
+def _agent_is_thinking() -> bool:
+    """True if the thinking flag file exists AND is recent enough."""
+    try:
+        # Use mtime — the agent rewrites the file on each new turn,
+        # so stat is enough; we don't need to read the contents.
+        age = time.time() - AGENT_THINKING_FILE.stat().st_mtime
+        return age < AGENT_THINKING_MAX_AGE
+    except FileNotFoundError:
+        return False
+    except Exception:
+        return False
+DEFAULT_SPEECH_MODEL   = "llama-3.3-70b-versatile"
+SPEECH_MODELS_AVAILABLE = (
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "qwen/qwen3-32b",
+    "openai/gpt-oss-120b",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    # DeepSeek removed — see comment in jarvis_agent.py SPEECH_MODELS:
+    # the openai plugin doesn't echo `reasoning_content` so multi-
+    # turn DeepSeek conversations 400 every turn after the first.
+)
+
+
+def _read_speech_model() -> str:
+    try:
+        name = SPEECH_MODEL_FILE.read_text(encoding="utf-8").strip()
+        if name in SPEECH_MODELS_AVAILABLE:
+            return name
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        log.warning(f"could not read {SPEECH_MODEL_FILE}: {e}")
+    return DEFAULT_SPEECH_MODEL
+
+
+async def _restart_agent_unit() -> None:
+    """Bounce both jarvis-voice-agent (to rebuild the LLM with the
+    new voice-model) AND ourselves a moment later (so the voice-
+    client's preflight delete_room forces LiveKit to dispatch a
+    FRESH job into the freshly-restarted agent — without this, the
+    SFU keeps the existing room, no new dispatch fires, and JARVIS
+    sits silent with the old LLM in memory).
+
+    Order matters: agent first → wait for it to re-register (~3 s)
+    → then restart self. The HTTP response to the original POST may
+    get cut short when self dies; that's expected and harmless,
+    the tray's optimistic label update already covered the UX gap.
+    """
+    try:
+        agent_proc = await asyncio.create_subprocess_exec(
+            "systemctl", "--user", "restart", "jarvis-voice-agent",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, err = await agent_proc.communicate()
+        if agent_proc.returncode != 0:
+            log.warning(
+                f"agent restart returned {agent_proc.returncode}: "
+                f"{err.decode('utf-8', 'ignore').strip()}"
+            )
+            return
+        log.info("agent unit restart kicked, waiting before bouncing self")
+    except Exception as e:
+        log.warning(f"could not restart agent: {e}")
+        return
+
+    # 4 s is enough on this host for Silero VAD prewarm + worker
+    # registration; tune up if the agent log shows "registered worker"
+    # arrives later.
+    await asyncio.sleep(4)
+
+    try:
+        await asyncio.create_subprocess_exec(
+            "systemctl", "--user", "restart", "jarvis-voice-client",
+        )
+    except Exception as e:
+        log.warning(f"could not restart self: {e}")
+# Whitelist mirroring CLI_MODELS in jarvis_agent.py — duplicated as a
+# literal tuple so the voice-client doesn't have to import heavy
+# livekit plugin machinery just to validate a string.
+CLI_MODELS_AVAILABLE = (
+    "deepseek-chat",
+    "deepseek-reasoner",
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
+    "qwen/qwen3-32b",
+    "llama-3.3-70b-versatile",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "openai/gpt-oss-120b",
+)
+
+
+def _read_cli_model() -> str:
+    try:
+        name = CLI_MODEL_FILE.read_text(encoding="utf-8").strip()
+        if name in CLI_MODELS_AVAILABLE:
+            return name
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        log.warning(f"could not read {CLI_MODEL_FILE}: {e}")
+    return DEFAULT_CLI_MODEL
+
 
 @dataclass
 class ClientState:
@@ -89,15 +230,40 @@ class ClientState:
     mic mute toggles. Deliberately flat so the JSON is trivial to
     reason about on the UI side.
     """
-    connected: bool = False           # SFU connection alive
-    muted:     bool = False           # local mic track muted
-    listening: bool = False           # local speaker (us) is talking
-    speaking:  bool = False           # remote agent is talking
+    connected:     bool = False       # SFU connection alive
+    # True once a remote agent participant has actually joined the
+    # room. The SFU connection (`connected`) comes up in ~100 ms but
+    # the agent worker takes another second or two to accept the job
+    # and join. Until `agent_present` flips true, JARVIS can't hear
+    # the user. The UI pill uses this to distinguish "voice booting"
+    # (amber) from "voice ready" (green).
+    agent_present: bool = False
+    muted:         bool = False       # local mic track muted
+    listening:     bool = False       # local speaker (us) is talking
+    speaking:      bool = False       # remote agent is talking
+    # Active CLI model ID (e.g., "deepseek-chat", "qwen/qwen3-32b").
+    # Read straight from CLI_MODEL_FILE on every /status hit, so the
+    # tray sees changes the same instant they're written.
+    cli_model:     str = ""
+    # Active speech (voice LLM) model ID. Same dynamic-read pattern.
+    speech_model:  str = ""
+    # True while a tool (run_jarvis_cli) is in flight in the agent.
+    # Drives the tray's "thinking" amber for the full duration of
+    # background work — without this signal, the inferred-thinking
+    # TTL on the desktop side gives up after 12 s and the tray
+    # flickers back to green even though JARVIS is still working.
+    tool_running:  bool = False
+    # True while the agent's LLM is generating a reply. Touched by
+    # the agent on user_input_transcribed, removed when the assistant
+    # turn lands. Definitive signal — replaces the prior heuristic
+    # of inferring thinking from listening→quiet transitions, which
+    # gave false positives on every ambient mic trigger.
+    agent_thinking: bool = False
     # Informative only — lets the UI show "jarvis@ws://..." if it
     # wants. Populated once on connect.
-    url:       Optional[str] = None
-    identity:  Optional[str] = None
-    room:      Optional[str] = None
+    url:           Optional[str] = None
+    identity:      Optional[str] = None
+    room:          Optional[str] = None
 
 
 state = ClientState()
@@ -114,6 +280,20 @@ _room_ref: Optional[rtc.Room] = None
 
 async def _h_status(_: web.Request) -> web.Response:
     """GET /status — snapshot of the current client state."""
+    # Refresh cli_model + speech_model from disk on every poll. The
+    # files are small, reads are cheap, and this avoids any sync-with-
+    # tray race.
+    state.cli_model    = _read_cli_model()
+    state.speech_model = _read_speech_model()
+    # Cheap stat call — flag file is touched/removed by the agent's
+    # tool wrappers around every run_jarvis_cli call.
+    state.tool_running = TOOL_BUSY_FILE.exists()
+    # Definitive thinking signal — but only when the agent isn't
+    # actively speaking. If TTS is playing we know the agent finished
+    # its LLM phase, so suppress agent_thinking even if the file
+    # hasn't been cleared yet (avoids gold→blue→gold flicker between
+    # `conversation_item_added` and the speaking-track event).
+    state.agent_thinking = _agent_is_thinking() and not state.speaking
     return web.json_response(asdict(state), headers={
         # Permissive CORS so the Tauri webview can poll us from its
         # tauri://localhost origin without preflight headaches.
@@ -201,6 +381,87 @@ async def _h_stop(_: web.Request) -> web.Response:
         return web.json_response({"error": str(e)}, status=500)
 
 
+async def _h_cli_model(req: web.Request) -> web.Response:
+    """
+    GET  /cli-model                          → {"model": "<id>", "available": [...]}
+    POST /cli-model {"model": "deepseek-chat"} → write the choice
+
+    The model ID is whatever the CLI's jarvisModelRegistry.ts knows
+    about. The voice-agent's run_jarvis_cli reads the file on every
+    spawn, so the change takes effect on the next CLI invocation
+    without restarting any process.
+    """
+    cors = {"Access-Control-Allow-Origin": "*"}
+    if req.method == "GET":
+        return web.json_response({
+            "model":     _read_cli_model(),
+            "available": list(CLI_MODELS_AVAILABLE),
+        }, headers=cors)
+
+    # POST
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    name = (body.get("model") or body.get("name") or "").strip()
+    if name not in CLI_MODELS_AVAILABLE:
+        return web.json_response(
+            {"error": f"unknown CLI model: {name!r}",
+             "available": list(CLI_MODELS_AVAILABLE)},
+            status=400, headers=cors,
+        )
+    try:
+        CLI_MODEL_FILE.parent.mkdir(parents=True, exist_ok=True)
+        CLI_MODEL_FILE.write_text(name + "\n", encoding="utf-8")
+        state.cli_model = name
+        return web.json_response({"model": name}, headers=cors)
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500, headers=cors)
+
+
+async def _h_speech_model(req: web.Request) -> web.Response:
+    """
+    GET  /voice-model                   → {"model": "<id>", "available": [...]}
+    POST /voice-model {"model": "X"}    → write the choice + restart agent
+
+    Switching speech model requires a quick agent restart (~5 s amber
+    "JARVIS booting" in the pill) because AgentSession's LLM is built
+    once at session start. The voice-client itself stays up — the
+    SFU keeps the room alive and the new agent rejoins automatically.
+    """
+    cors = {"Access-Control-Allow-Origin": "*"}
+    if req.method == "GET":
+        return web.json_response({
+            "model":     _read_speech_model(),
+            "available": list(SPEECH_MODELS_AVAILABLE),
+        }, headers=cors)
+
+    # POST
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    name = (body.get("model") or body.get("name") or "").strip()
+    if name not in SPEECH_MODELS_AVAILABLE:
+        return web.json_response(
+            {"error": f"unknown speech model: {name!r}",
+             "available": list(SPEECH_MODELS_AVAILABLE)},
+            status=400, headers=cors,
+        )
+    try:
+        SPEECH_MODEL_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SPEECH_MODEL_FILE.write_text(name + "\n", encoding="utf-8")
+        state.speech_model = name
+        # Fire-and-forget — agent restart takes ~3-5 s; the user sees
+        # the pill flip to amber "JARVIS booting" and back to green.
+        asyncio.create_task(_restart_agent_unit())
+        return web.json_response(
+            {"model": name, "restarting": True}, headers=cors,
+        )
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500, headers=cors)
+
+
 async def _h_cors(_: web.Request) -> web.Response:
     """OPTIONS preflight for any /... route."""
     return web.Response(status=204, headers={
@@ -218,6 +479,10 @@ def _build_app() -> web.Application:
     app.router.add_post("/mute",   _h_mute)
     app.router.add_post("/speak",  _h_speak)
     app.router.add_post("/stop",   _h_stop)
+    app.router.add_get("/cli-model",   _h_cli_model)
+    app.router.add_post("/cli-model",  _h_cli_model)
+    app.router.add_get("/voice-model", _h_speech_model)
+    app.router.add_post("/voice-model", _h_speech_model)
     app.router.add_route("OPTIONS", "/{tail:.*}", _h_cors)
     return app
 
@@ -335,13 +600,61 @@ async def run_once(shutdown: asyncio.Event) -> None:
         state.listening = local_active
         state.speaking  = remote_active
 
+    @room.on("participant_connected")
+    def _on_participant_connected(participant: rtc.RemoteParticipant) -> None:
+        # The agent worker joins as a remote participant with an
+        # `agent-…` identity. Flip agent_present on so the UI pill
+        # can switch from "booting" (amber) to "ready" (green).
+        # We don't filter by kind — in this setup the only remote
+        # that should ever join is the agent.
+        log.info(f"[room] participant joined: {participant.identity}")
+        state.agent_present = True
+
+    @room.on("participant_disconnected")
+    def _on_participant_disconnected(participant: rtc.RemoteParticipant) -> None:
+        log.info(f"[room] participant left: {participant.identity}")
+        # Re-evaluate: if no remote participants remain, we're solo.
+        remaining = [p for p in room.remote_participants.values()]
+        state.agent_present = len(remaining) > 0
+
     @room.on("disconnected")
     def _on_disc(reason: rtc.DisconnectReason) -> None:
         log.warning(f"[room] disconnected reason={reason}")
-        state.connected = False
-        state.listening = False
-        state.speaking  = False
+        state.connected     = False
+        state.agent_present = False
+        state.listening     = False
+        state.speaking      = False
         shutdown.set()
+
+    # Pre-flight: delete any leftover "jarvis" room from a previous
+    # process life. Why this is necessary: when the agent worker is
+    # restarted (reboot, systemctl restart), its session ends abruptly
+    # and the SFU keeps a ghost agent-participant in the room for a
+    # TTL. On reconnect the client joins the EXISTING room, no fresh
+    # agent dispatch fires, and JARVIS appears silent forever. A
+    # delete-and-recreate on startup sidesteps this entirely — the
+    # client then joins a brand-new room, LiveKit dispatches a worker,
+    # greeting/tool/voice loop all come up clean.
+    #
+    # Safe because the voice-client is the ONLY long-lived participant
+    # we run today (the phone client is future work). If you add
+    # concurrent participants, gate this on "room exists but has no
+    # live humans" instead.
+    try:
+        lkapi = api.LiveKitAPI(
+            URL.replace("ws://", "http://").replace("wss://", "https://"),
+            API_KEY,
+            API_SECRET,
+        )
+        try:
+            await lkapi.room.delete_room(api.DeleteRoomRequest(room=ROOM_NAME))
+            log.info(f"[preflight] cleared stale room {ROOM_NAME}")
+        except Exception as e:
+            # Room didn't exist — that's the happy path, ignore.
+            log.debug(f"[preflight] room delete (expected if fresh): {e}")
+        await lkapi.aclose()
+    except Exception as e:
+        log.warning(f"[preflight] room cleanup skipped: {e}")
 
     log.info(f"connecting url={URL} room={ROOM_NAME} identity={IDENTITY}")
     await room.connect(URL, token, options=rtc.RoomOptions(auto_subscribe=True))
@@ -350,6 +663,11 @@ async def run_once(shutdown: asyncio.Event) -> None:
     state.url       = URL
     state.identity  = IDENTITY
     state.room      = ROOM_NAME
+    # Seed agent_present in case the agent was already in the room
+    # when we connected (unlikely with the preflight-delete above,
+    # but a participant_connected event is only delivered for joins
+    # AFTER our connection, not for pre-existing participants).
+    state.agent_present = len(room.remote_participants) > 0
     # Expose the room so the /speak + /stop handlers can publish
     # data packets to it. Cleared in the finally: block below.
     _room_ref = room
