@@ -40,6 +40,8 @@ import sqlite3
 import subprocess as _subprocess
 import time
 import concurrent.futures
+import urllib.error
+import urllib.request
 import uuid
 from pathlib import Path
 
@@ -79,7 +81,7 @@ logger = logging.getLogger("jarvis-agent")
 # regardless. That's a latency optimisation and not surfaced to the
 # user — the tray controls only the CLI's model.
 CLI_MODEL_FILE   = Path.home() / ".jarvis" / "cli-model"
-DEFAULT_CLI_MODEL = "deepseek-chat"
+DEFAULT_CLI_MODEL = "deepseek-v4-pro"
 
 # ── Speech (voice) LLM selection ──────────────────────────────────────
 #
@@ -319,17 +321,59 @@ Authority rules:
     against anything real, dd to a disk, dropping production
     databases, revoking production API keys.
 
-You have FOUR tools:
+You have NINE tools, split into three groups by purpose:
 
-1. `run_jarvis_cli` — invisible. Spawns the JARVIS CLI in a hidden
-   subprocess; output is captured and returned to you. Use this for
-   anything where the user just wants the RESULT — shell commands,
-   file reads/writes, git, opening apps, real-time info (time,
-   weather, news, prices), web fetches. The user does NOT see the
-   command or its progress. Pass the user's request verbatim; the
-   CLI agent has its own tool set and will do the actual work.
+═══ GROUP A — Direct primitives (FAST, ATOMIC) ═══
 
-2. `type_in_terminal` — visible. Finds the user's open terminal
+These execute in-process. ~100-500 ms round trip. Pick these for
+single-step asks the user wants the result of immediately.
+
+A1. `bash` — run a shell command, return stdout+stderr (~3 KB cap).
+    Examples:
+      - "what time is it"          → bash("date")
+      - "free disk"                → bash("df -h /")
+      - "open Firefox"             → bash("setsid -f firefox >/dev/null 2>&1")
+      - "what's running on 4000"   → bash("ss -tlnp | grep :4000")
+      - "is jarvis-bridge running" → bash("systemctl --user is-active jarvis-bridge")
+
+A2. `read_file` — read one file (8 KB cap). Examples:
+      - "what's in /etc/hostname"      → read_file("/etc/hostname")
+      - "show me .gitignore"           → read_file("~/Documents/Projects/jarvis/.gitignore")
+
+A3. `web_fetch` — GET a URL, strip HTML to plain text (3 KB cap).
+    Examples:
+      - "what's at example.com"        → web_fetch("https://example.com")
+      - "fetch the weather"            → web_fetch("https://wttr.in/?format=4")
+
+A4. `glob_files` — list files matching a glob under a path.
+    Examples:
+      - "find all Python files in voice-agent" →
+            glob_files("*.py", "~/Documents/Projects/jarvis/src/voice-agent")
+
+A5. `grep_files` — regex search across files. Examples:
+      - "where is JARVIS_INSTRUCTIONS used" →
+            grep_files("JARVIS_INSTRUCTIONS", "~/Documents/Projects/jarvis/src")
+
+═══ GROUP B — The dispatcher ═══
+
+B1. `run_jarvis_cli` — invisible. Spawns the JARVIS CLI in a hidden
+   subprocess; output is captured and returned to you. Use ONLY when
+   the request needs the CLI's full agent loop:
+     - MULTI-step tasks (e.g. "audit the codebase for X")
+     - Sub-agent dispatch ("research these in parallel")
+     - Plan mode (think-then-execute on a complex change)
+     - MCP tools (Figma / Vercel / Gmail / etc.)
+     - Skills (auto-invoked from ~/.jarvis/skills/)
+     - Long workflows (refactor across 5 files; install + verify)
+
+   Do NOT use run_jarvis_cli for atomic asks Group A can handle —
+   it adds 1-2 s of subprocess startup for no reason. Pass the
+   user's request verbatim when you do invoke it; the CLI's own LLM
+   will pick the right downstream tools.
+
+═══ GROUP C — Specialized ergonomics ═══
+
+C1. `type_in_terminal` — visible. Finds the user's open terminal
    window, focuses it, and TYPES the command literally so the user
    watches it run in their own shell. Use this — NOT
    run_jarvis_cli — when the user explicitly says any of:
@@ -341,7 +385,7 @@ You have FOUR tools:
    calling, say something like "typed it into your terminal — running
    now", NOT "I installed it" (you didn't see the result).
 
-3. `recall_conversation` — search prior turns from previous voice
+C2. `recall_conversation` — search prior turns from previous voice
    sessions. Use this when the user asks about something from
    earlier that's NOT in your current chat history (your chat
    history is auto-seeded with the last ~30 turns, so most "what
@@ -351,7 +395,7 @@ You have FOUR tools:
    thing about Z". Pass a keyword to search for. NEVER claim "I
    have no memory of past conversations" — you do; use the tool.
 
-4. `media_control` — direct music / video playback control via
+C3. `media_control` — direct music / video playback control via
    playerctl. ALWAYS use this — NOT run_jarvis_cli — for any
    media command:
      - "play music" / "resume" / "play Spotify"  → action="play"
@@ -855,14 +899,21 @@ async def run_jarvis_cli(request: str) -> str:
         # features (BASH_SOURCE, arrays, `[[`). The executable bit is
         # already set, so exec'ing the path directly picks up the right
         # interpreter.
-        # Build argv. `--append-system-prompt-file` is what lets us keep
-        # `--bare` (no project context leakage) while still telling the
-        # CLI "this is voice — act, don't explain."
+        # Build argv. `--append-system-prompt-file` is what lets us tell
+        # the CLI "this is voice — act, don't explain." We previously
+        # also passed `--bare`, but `--bare` sets CLAUDE_CODE_SIMPLE=1
+        # which strips the tool pool down to [Bash, Read, Edit] and
+        # blocks the Agent / Skill / Plan tools. Voice users couldn't
+        # dispatch subagents, and the CLI model would hallucinate
+        # "subagent results" by role-playing with backgrounded Bash —
+        # confirmed by parallel-dispatch tests on deepseek-v4-pro.
+        # Tradeoff: full mode adds ~1-2 s of plugin/skill/LSP startup
+        # to each tool-using voice turn. Worth it to unlock real agent
+        # dispatch and the fuller tool surface.
         argv = [
             JARVIS_CLI_SCRIPT,
             cli_provider,    # start.sh accepts the provider name as argv[1]
             "-p",
-            "--bare",
         ]
         if os.path.exists(JARVIS_CLI_VOICE_PROMPT):
             argv += ["--append-system-prompt-file", JARVIS_CLI_VOICE_PROMPT]
@@ -1400,6 +1451,257 @@ async def recall_conversation(query: str) -> str:
     return "\n".join(lines)
 
 
+# ── Direct primitive tools ────────────────────────────────────────────
+#
+# These five live alongside `run_jarvis_cli` and shave 1–2 s of CLI
+# subprocess startup off the SIMPLE / ATOMIC voice asks ("what time is
+# it", "how much disk space is left", "what's in /etc/hostname"). They
+# duplicate functionality the CLI also has, but the speech LLM hits
+# them in-process — no subprocess spawn, no double-LLM hop.
+#
+# Discrimination rule (reinforced in JARVIS_INSTRUCTIONS):
+#   - ATOMIC single-step ask  → bash / read_file / web_fetch / glob_files / grep_files
+#   - MULTI-step / agent-loop / sub-agent / plan / MCP / skills → run_jarvis_cli
+# When in doubt, prefer run_jarvis_cli — its CLI agent loop will pick
+# the right tool itself. The cost of a wrong direct-tool pick is a
+# wrong answer; the cost of an unnecessary CLI hop is a few seconds.
+
+# Output cap mirrors the CLI's BashTool behaviour. Voice-LLM context
+# can't usefully carry more than this without truncation showing up in
+# the spoken reply.
+_DIRECT_TOOL_OUTPUT_CAP = 3_000
+
+
+def _truncate(text: str, cap: int = _DIRECT_TOOL_OUTPUT_CAP) -> str:
+    if len(text) <= cap:
+        return text
+    return text[:cap] + f"\n…[truncated {len(text) - cap} bytes]"
+
+
+@function_tool
+async def bash(command: str, timeout: int = 30) -> str:
+    """Run a one-shot shell command and return its stdout+stderr.
+
+    Use this for ATOMIC single-step asks the user wants the result of
+    immediately:
+      - "what time is it"                   → date
+      - "how much disk space"               → df -h /
+      - "what's my IP"                      → ip route get 1
+      - "open Firefox"                      → setsid -f firefox >/dev/null 2>&1
+      - "kill spotify"                      → pkill spotify
+      - "what's running on port 4000"       → ss -tlnp | grep :4000
+
+    Do NOT use for:
+      - Music control                       → use media_control
+      - Visible terminal work               → use type_in_terminal
+      - Multi-step / multi-tool tasks       → use run_jarvis_cli
+
+    Output is capped at ~3 KB. Long-running commands are killed at
+    `timeout` seconds (default 30, max 90).
+    """
+    command = (command or "").strip()
+    if not command:
+        return "(no command supplied)"
+    timeout = max(1, min(int(timeout or 30), 90))
+    logger.info(f"bash → {command[:100]}")
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            stdin=asyncio.subprocess.DEVNULL,
+            cwd=str(Path.home()),
+        )
+    except Exception as e:
+        return f"(spawn failed: {e})"
+    try:
+        out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=2.0)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+        return f"(killed after {timeout}s)"
+    text = out_b.decode("utf-8", errors="replace").rstrip()
+    return _truncate(text or f"(no output, exit={proc.returncode})")
+
+
+@function_tool
+async def read_file(path: str, max_bytes: int = 8_192) -> str:
+    """Read a file from disk and return its contents (capped).
+
+    Use when the user asks "what's in <file>" / "read me <file>" / "show
+    me the contents of <file>". Atomic single-step — for editing or
+    multi-file analysis use run_jarvis_cli.
+
+    Args:
+        path:      Absolute or ~-prefixed file path.
+        max_bytes: Cap the read at this many bytes (default 8 KB).
+    """
+    path = (path or "").strip()
+    if not path:
+        return "(no path supplied)"
+    p = Path(path).expanduser()
+    if not p.exists():
+        return f"(no such file: {p})"
+    if p.is_dir():
+        return f"(is a directory: {p})"
+    try:
+        with open(p, "rb") as f:
+            data = f.read(max(1, int(max_bytes or 8_192)))
+        text = data.decode("utf-8", errors="replace")
+    except Exception as e:
+        return f"(read failed: {e})"
+    logger.info(f"read_file → {p} ({len(data)} bytes)")
+    return _truncate(text)
+
+
+@function_tool
+async def web_fetch(url: str, timeout: int = 15) -> str:
+    """GET a URL and return its body as text (HTML stripped to plain).
+
+    Use for atomic "fetch <url> and tell me what it says" asks. For
+    structured search-and-summarize across multiple sources, use
+    run_jarvis_cli (the CLI has a richer WebFetch + WebSearch pair
+    plus the agent loop to compose them).
+
+    Caps response at ~3 KB after stripping. Times out at `timeout` s
+    (default 15).
+    """
+    url = (url or "").strip()
+    if not url:
+        return "(no url supplied)"
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    timeout = max(1, min(int(timeout or 15), 60))
+    logger.info(f"web_fetch → {url}")
+    try:
+        # Run the blocking urllib call in a thread so it doesn't pin
+        # the agent's event loop on slow hosts.
+        def _fetch() -> str:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "JARVIS-voice/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                ct = resp.headers.get("Content-Type", "")
+                raw = resp.read(64 * 1024)  # cap network read at 64 KB
+                if "text" not in ct and "json" not in ct and "html" not in ct:
+                    return f"(non-text content-type: {ct or 'unknown'})"
+                return raw.decode("utf-8", errors="replace")
+        body = await asyncio.to_thread(_fetch)
+    except urllib.error.HTTPError as e:
+        return f"(HTTP {e.code}: {e.reason})"
+    except urllib.error.URLError as e:
+        return f"(network error: {e.reason})"
+    except Exception as e:
+        return f"(fetch failed: {e})"
+    # Strip HTML to plain-ish text. Not perfect, but good enough for
+    # voice-side summarisation.
+    body = re.sub(r"<script\b.*?</script>", "", body, flags=re.DOTALL | re.IGNORECASE)
+    body = re.sub(r"<style\b.*?</style>", "", body, flags=re.DOTALL | re.IGNORECASE)
+    body = re.sub(r"<[^>]+>", " ", body)
+    body = re.sub(r"\s+", " ", body).strip()
+    return _truncate(body)
+
+
+@function_tool
+async def glob_files(pattern: str, path: str = "~") -> str:
+    """List files matching a glob pattern under `path`, recursively.
+
+    Use for atomic "find all <kind> files in <dir>" asks. Returns one
+    path per line, capped at 100 entries.
+
+    Args:
+        pattern: e.g. "*.py", "**/*.ts", "src/**/test_*.py".
+        path:    Root to search under (default = home).
+    """
+    pattern = (pattern or "").strip()
+    if not pattern:
+        return "(no pattern supplied)"
+    root = Path(path or "~").expanduser()
+    if not root.exists():
+        return f"(no such root: {root})"
+    try:
+        # `**` in pattern means recursive — pathlib handles it.
+        # If user gave a non-recursive pattern, glob it as-is.
+        matches = list(root.rglob(pattern) if "**" not in pattern else root.glob(pattern))
+    except Exception as e:
+        return f"(glob failed: {e})"
+    matches = [str(m) for m in matches if m.is_file()]
+    total = len(matches)
+    matches = matches[:100]
+    logger.info(f"glob_files → pattern={pattern!r} root={root} matched={total}")
+    head = "\n".join(matches)
+    if total > 100:
+        head += f"\n…[+{total - 100} more]"
+    return head or f"(no matches under {root})"
+
+
+@function_tool
+async def grep_files(pattern: str, path: str = ".", glob: str = "") -> str:
+    """Search for a regex `pattern` across files under `path`.
+
+    Use for atomic "where is X used" / "find every TODO" asks. Wraps
+    ripgrep if installed (fast), else falls back to grep -R. Returns
+    `file:line:match` lines, capped at 50.
+
+    Args:
+        pattern: Regex (POSIX ERE / PCRE2 depending on rg vs grep).
+        path:    Root to search under (default = cwd).
+        glob:    Optional file glob filter, e.g. "*.py".
+    """
+    pattern = (pattern or "").strip()
+    if not pattern:
+        return "(no pattern supplied)"
+    root = Path(path or ".").expanduser()
+    if not root.exists():
+        return f"(no such root: {root})"
+    # Prefer ripgrep — bundled into many distros and into bun's embedded
+    # tools. Fast and handles binary-skipping by default.
+    has_rg = shutil_which("rg")
+    if has_rg:
+        argv = ["rg", "--no-heading", "--line-number", "--max-count", "5", "--max-columns", "300"]
+        if glob:
+            argv += ["-g", glob]
+        argv += ["--", pattern, str(root)]
+    else:
+        argv = ["grep", "-RHn", "--max-count=5"]
+        if glob:
+            argv += [f"--include={glob}"]
+        argv += ["--", pattern, str(root)]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.DEVNULL,
+        )
+        out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+    except asyncio.TimeoutError:
+        proc.terminate()
+        return "(grep timed out after 30s)"
+    except Exception as e:
+        return f"(grep failed: {e})"
+    text = out_b.decode("utf-8", errors="replace").strip().splitlines()
+    total = len(text)
+    text = text[:50]
+    logger.info(f"grep_files → pattern={pattern!r} hits={total}")
+    head = "\n".join(text)
+    if total > 50:
+        head += f"\n…[+{total - 50} more matches]"
+    return head or "(no matches)"
+
+
+def shutil_which(name: str) -> str | None:
+    """Cheap stdlib `which` (avoids importing shutil at module top to
+    keep the import block stable)."""
+    import shutil
+    return shutil.which(name)
+
+
 # ── TTS guard: strip function-call leakage ────────────────────────────
 #
 # llama-3.3-70b on Groq sometimes emits a tool call as raw TEXT in the
@@ -1857,13 +2159,31 @@ async def entrypoint(ctx: JobContext) -> None:
             # LLM sees what was discussed before this job started.
             # Without this, every voice-client reconnect = amnesia.
             chat_ctx=_seed_chat_ctx(),
-            # Give the LLM access to the CLI-agent bridge so it can
-            # run shell / files / web / real-time queries when the
-            # user asks for them. See run_jarvis_cli's docstring for
-            # when the LLM should invoke it. recall_conversation
-            # covers deeper memory queries that go past the auto-
-            # seeded recent window.
-            tools=[run_jarvis_cli, type_in_terminal, recall_conversation, media_control],
+            # Tool surface explanation:
+            #   bash / read_file / web_fetch / glob_files / grep_files
+            #     — direct primitives. Atomic single-step asks. ~3 KB
+            #     output cap. No CLI subprocess hop, ~1-2 s faster
+            #     than going via run_jarvis_cli.
+            #   run_jarvis_cli — the dispatcher. Multi-step / agent-
+            #     loop / sub-agent / plan / MCP / skills work goes
+            #     here. The CLI's own LLM picks the right downstream
+            #     tools.
+            #   type_in_terminal / media_control / recall_conversation
+            #     — specialized ergonomics. Direct in-process tools
+            #     for things where Bash equivalents are awkward (xdotool
+            #     window dance, playerctl player targeting, SQL over
+            #     conversations.db).
+            tools=[
+                run_jarvis_cli,
+                bash,
+                read_file,
+                web_fetch,
+                glob_files,
+                grep_files,
+                type_in_terminal,
+                media_control,
+                recall_conversation,
+            ],
         ),
         # Critical: keep the agent session alive when the voice-
         # client disconnects. Default is True — session closes on
