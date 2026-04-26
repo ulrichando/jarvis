@@ -36,13 +36,38 @@ if [ -f "$ROOT/.env.local" ]; then
 fi
 
 # ── Internal wiring (users never set these) ───────────────────────────────
+# Resolve the active CLI model. Precedence:
+#   1) explicit argv[1] (e.g. `jarvis groq`)
+#   2) JARVIS_PROVIDER from .env.local
+#   3) ~/.jarvis/cli-model — written by the desktop tray's "CLI Model"
+#      submenu (see jarvis_voice_client.py /cli-model). Stores a model
+#      ID like "deepseek-chat" or "qwen/qwen3-32b"; we map it to the
+#      provider name start.sh expects.
 case "${1:-}" in
   deepseek|groq|openai|gemini|ollama)
     SELECTED_PROVIDER="$1"
+    SELECTED_MODEL=""
     shift
     ;;
   *)
-    SELECTED_PROVIDER="${JARVIS_PROVIDER:-deepseek}"
+    SELECTED_PROVIDER=""
+    SELECTED_MODEL=""
+    # Tray pick wins over .env.local's JARVIS_PROVIDER so the desktop
+    # menu is the source of truth for "what model is JARVIS using".
+    if [ -r "$HOME/.jarvis/cli-model" ]; then
+      _cli_model="$(tr -d '[:space:]' < "$HOME/.jarvis/cli-model")"
+      case "$_cli_model" in
+        deepseek-chat|deepseek-reasoner|deepseek-v4-flash|deepseek-v4-pro)
+          SELECTED_PROVIDER="deepseek"
+          SELECTED_MODEL="$_cli_model"
+          ;;
+        qwen/qwen3-32b|llama-3.3-70b-versatile|meta-llama/llama-4-scout-17b-16e-instruct|openai/gpt-oss-120b)
+          SELECTED_PROVIDER="groq"
+          SELECTED_MODEL="$_cli_model"
+          ;;
+      esac
+    fi
+    SELECTED_PROVIDER="${SELECTED_PROVIDER:-${JARVIS_PROVIDER:-deepseek}}"
     ;;
 esac
 
@@ -58,6 +83,12 @@ export SHELL=/bin/bash
 export ANTHROPIC_BASE_URL=http://localhost:4000
 export ANTHROPIC_API_KEY=jarvis-proxy
 export JARVIS_PROVIDER="$SELECTED_PROVIDER"   # proxy default — /model overrides per-request
+# When the cli-model file pinned a specific upstream model, surface
+# it so the proxy uses that exact model rather than the provider's
+# default. JARVIS_MODEL is empty when the user passed `jarvis groq`
+# without a cli-model preference, in which case the registry default
+# applies.
+[ -n "$SELECTED_MODEL" ] && export JARVIS_MODEL="$SELECTED_MODEL"
 export JARVIS_MODEL_REGISTRY_ENABLED=1
 export JARVIS_DISABLE_AUTH="${JARVIS_DISABLE_AUTH:-1}"
 export CLAUDE_CODE_MAX_OUTPUT_TOKENS=8000

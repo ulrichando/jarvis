@@ -29,10 +29,6 @@ src/desktop-tauri/src-tauri/target/
 data/
 screenshots/
 
-# User config (created at runtime)
-.env
-providers.json
-
 # Sandbox
 .sandbox-home/
 .sandbox-tmp/

@@ -1,5 +1,8 @@
 import { c as _c } from "react/compiler-runtime";
 import chalk from 'chalk';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import * as React from 'react';
 import type { CommandResultDisplay } from '../../commands.js';
 import { ModelPicker } from '../../components/ModelPicker.js';
@@ -55,6 +58,10 @@ function ModelPickerWrapper(t0) {
         mainLoopModel: model,
         mainLoopModelForSession: null
       }));
+      // Mirror the pick into ~/.jarvis/cli-model so the desktop tray
+      // and voice (run_jarvis_cli) see it. Same call as in the
+      // /model <name> code path inside SetModelAndClose.setModel.
+      persistTrayCliModel(model);
       let message = `Set model to ${chalk.bold(renderModelLabel(model))}`;
       if (effort !== undefined) {
         message = message + ` with ${chalk.bold(effort)} effort`;
@@ -201,6 +208,11 @@ function SetModelAndClose({
         mainLoopModel: modelValue,
         mainLoopModelForSession: null
       }));
+      // Sync the tray's CLI Model menu so voice (run_jarvis_cli) and
+      // the next terminal session see the same pick. No-op for picks
+      // outside the 5-item tray whitelist (e.g. claude aliases) so
+      // the file stays in a state both ends can interpret.
+      persistTrayCliModel(modelValue);
       let message = `Set model to ${chalk.bold(renderModelLabel(modelValue))}`;
       let wasFastModeToggledOn = undefined;
       if (isFastModeEnabled()) {
@@ -232,6 +244,38 @@ function SetModelAndClose({
 }
 function isKnownAlias(model: string): boolean {
   return (MODEL_ALIASES as readonly string[]).includes(model.toLowerCase().trim());
+}
+
+// Mirror the 5 model IDs the desktop tray exposes (CLI_MODELS in
+// jarvis_agent.py + CLI_MODELS_AVAILABLE in jarvis_voice_client.py).
+// /model picks outside this set are session-local and intentionally
+// don't touch the file — voice's run_jarvis_cli would just fall back
+// to the default if it found an unknown ID, so silently ignoring
+// non-tray picks here is correct and avoids surprises.
+const TRAY_TRACKED_MODELS = new Set([
+  'deepseek-chat',
+  'deepseek-reasoner',
+  'deepseek-v4-flash',
+  'deepseek-v4-pro',
+  'qwen/qwen3-32b',
+  'llama-3.3-70b-versatile',
+  'meta-llama/llama-4-scout-17b-16e-instruct',
+  'openai/gpt-oss-120b',
+]);
+
+// Write the user's /model pick into ~/.jarvis/cli-model so voice
+// (run_jarvis_cli) and the next terminal session pick up the same
+// model. Best-effort — any write failure is swallowed; it's a UX
+// nicety, not load-bearing.
+function persistTrayCliModel(modelValue: string | null): void {
+  if (!modelValue || !TRAY_TRACKED_MODELS.has(modelValue)) return;
+  try {
+    const dir = join(homedir(), '.jarvis');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'cli-model'), modelValue + '\n', { encoding: 'utf-8' });
+  } catch {
+    /* tray sync is best-effort — swallow */
+  }
 }
 function isOpus1mUnavailable(model: string): boolean {
   const m = model.toLowerCase();

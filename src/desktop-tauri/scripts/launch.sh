@@ -21,6 +21,32 @@ if [ ! -x "$BIN" ]; then
   exit 1
 fi
 
+# ── Concurrency guard ─────────────────────────────────────────────────
+# When the user clicks the launcher icon several times in quick
+# succession, each invocation can race past the "is instance running?"
+# check below before any has spawned the binary, ending in 2-3
+# jarvis-desktop processes. flock with non-blocking mode means the
+# first launcher grabs the lock and runs; concurrent ones exit
+# immediately.
+#
+# IMPORTANT: the fd holding the lock MUST be closed before we exec
+# the desktop binary, otherwise the exec inherits the fd and the
+# desktop process holds the lock for its entire lifetime — blocking
+# every subsequent launcher click "forever". `exec {LOCK_FD}>&-`
+# at the end of the script (and before the final `exec "$BIN"`)
+# closes it cleanly. flock(2) drops the lock when no fd references
+# the file anymore.
+LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/jarvis-launcher.lock"
+exec 200>"$LOCK_FILE"
+if ! flock -n 200; then
+  echo "[launch] another launcher in progress; exiting" >&2
+  exit 0
+fi
+release_lock() {
+  flock -u 200 2>/dev/null || true
+  exec 200>&-
+}
+
 # ── Helpers ───────────────────────────────────────────────────────────
 # wait_port <port> — return 0 as soon as /health on the given port answers,
 # up to ~8 s. Used after spawning a backend so we only move on once live.
@@ -53,10 +79,12 @@ start_bun_bg() {
 #     jarvis-proxy jarvis-bridge jarvis-audio-defaults \
 #     livekit-server jarvis-voice-agent jarvis-voice-client
 #
-# This launcher just confirms the two ports the Tauri UI needs (4000
-# + 8765) are alive; if a unit hasn't come up yet (e.g. cold boot)
-# we nudge it via systemctl. Voice services are handled entirely by
-# their own units — no inline fallback here.
+# This launcher confirms the HTTP ports the Tauri UI needs are alive
+# (4000 = proxy, 8765 = bridge) and nudges any stopped units via
+# systemctl. After the proxy/bridge nudge it also (re)starts the
+# voice agent + voice client since the tray's "Quit JARVIS" stops
+# them — without this block, clicking the launcher icon after a
+# previous Quit would bring up the window but leave JARVIS deaf.
 for port_host in "4000:proxy" "8765:bridge"; do
   port="${port_host%%:*}"
   name="${port_host##*:}"
@@ -75,6 +103,24 @@ for port_host in "4000:proxy" "8765:bridge"; do
     esac
   fi
 done
+
+# ── Voice services ────────────────────────────────────────────────────
+# Started in pairs because the voice-client races the voice-agent on
+# fresh starts: LiveKit dispatches a job only when a participant joins,
+# so if the client connects before the agent has registered with the
+# SFU, no dispatch fires and the pill is stuck on "JARVIS booting".
+# Avoid the race by starting the agent FIRST, giving it a moment to
+# register, THEN starting the voice-client whose preflight room-delete
+# forces a fresh dispatch into the now-ready agent.
+if ! systemctl --user is-active --quiet jarvis-voice-agent; then
+  systemctl --user start jarvis-voice-agent >/dev/null 2>&1 || true
+  sleep 3   # let the worker register with LiveKit before client connects
+fi
+# Always (re)start the voice-client when the launcher fires — a restart
+# is ~1 s and its preflight delete_room shakes loose any zombie agent
+# participants left over from a prior session.
+systemctl --user restart jarvis-voice-client >/dev/null 2>&1 || true
+wait_port 8767 || true
 
 # If a desktop instance is already up, confirm it still has mic capture.
 # A silent failure mode we've seen: Tauri process is alive but the WebKit
@@ -99,7 +145,17 @@ if pgrep -x jarvis-desktop >/dev/null 2>&1; then
     [ "$MIC_OK" = 1 ] && break
   done
   if [ "$MIC_OK" = 1 ]; then
-    command -v xdotool >/dev/null && xdotool search --name "J.A.R.V.I.S." windowactivate 2>/dev/null || true
+    # An instance is already up and the mic is alive. Just raising the
+    # window is invisible (the overlay is transparent + click-through
+    # everywhere except the chat panel), so the user clicks the launcher
+    # and "nothing happens". Instead, fire the same global hotkey the
+    # tray uses (Ctrl+Shift+Space) to toggle the chat panel — that's
+    # what they actually want when re-clicking the launcher icon.
+    if command -v xdotool >/dev/null; then
+      xdotool search --name "J.A.R.V.I.S." windowactivate 2>/dev/null || true
+      xdotool key --clearmodifiers ctrl+shift+space 2>/dev/null || true
+    fi
+    release_lock
     exit 0
   fi
   echo "[launch] mic session dead on existing desktop — relaunching" >&2
@@ -107,4 +163,5 @@ if pgrep -x jarvis-desktop >/dev/null 2>&1; then
   sleep 1
 fi
 
+release_lock
 exec "$BIN"
