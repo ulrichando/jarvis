@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "user": {},
+  "defaults": {
+    "model": "claude-sonnet-4-6",
+    "temperature": 0.7
+  },
+  "providers": {
+    "anthropic": {},
+    "openai": {},
+    "google": {},
+    "deepseek": {},
+    "groq": {},
+    "kimi": {}
+  },
+  "appearance": {
+    "fontSize": "lg",
+    "density": "cozy"
+  }
+}
