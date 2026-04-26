@@ -47,7 +47,7 @@ const JARVIS_PROVIDER_DEFINITIONS: Record<
   deepseek: {
     baseUrl: 'https://api.deepseek.com/v1',
     apiKeyEnvVar: 'DEEPSEEK_API_KEY',
-    defaultModel: 'deepseek-chat',
+    defaultModel: 'deepseek-v4-pro',
     supportsToolChoice: true,
     maxOutputTokens: 8000,
   },
