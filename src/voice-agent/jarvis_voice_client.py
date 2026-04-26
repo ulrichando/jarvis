@@ -90,7 +90,7 @@ STATUS_PORT   = int(os.environ.get("JARVIS_VOICE_CLIENT_PORT", "8767"))
 # the very next tool call, no restart required. start.sh also reads
 # this file so interactive terminal sessions stay in sync.
 CLI_MODEL_FILE      = Path.home() / ".jarvis" / "cli-model"
-DEFAULT_CLI_MODEL   = "deepseek-chat"
+DEFAULT_CLI_MODEL   = "deepseek-v4-pro"
 
 # Speech-LLM (voice-side) switching. Same file/endpoint pattern as
 # CLI model but a switch DOES require a restart of the agent unit
