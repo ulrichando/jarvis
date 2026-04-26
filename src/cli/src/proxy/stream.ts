@@ -6,6 +6,7 @@ type StreamState = {
   model: string
   inputTokens: number
   // Track content blocks by index
+  thinkingBlockIndex: number | null
   textBlockIndex: number | null
   toolBlocks: Map<number, { id: string; name: string; argsAccum: string }>
   nextContentIndex: number
@@ -36,6 +37,7 @@ export async function convertOpenAIStreamToAnthropic(
     messageId,
     model,
     inputTokens: 0,
+    thinkingBlockIndex: null,
     textBlockIndex: null,
     toolBlocks: new Map(),
     nextContentIndex: 0,
@@ -101,8 +103,47 @@ export async function convertOpenAIStreamToAnthropic(
           outputTokens = chunk.usage.completion_tokens ?? 0
         }
 
+        // Reasoning (DeepSeek thinking-mode chain-of-thought). Streamed
+        // BEFORE the actual content per DeepSeek's protocol. Surface as
+        // an Anthropic `thinking` content block so the round-trip
+        // through Anthropic schema preserves it for the next turn
+        // (see convert.ts convertMessages).
+        if (delta.reasoning_content) {
+          if (state.thinkingBlockIndex === null) {
+            state.thinkingBlockIndex = state.nextContentIndex++
+            send('content_block_start', {
+              type: 'content_block_start',
+              index: state.thinkingBlockIndex,
+              content_block: { type: 'thinking', thinking: '', signature: '' },
+            })
+          }
+          send('content_block_delta', {
+            type: 'content_block_delta',
+            index: state.thinkingBlockIndex,
+            delta: { type: 'thinking_delta', thinking: delta.reasoning_content },
+          })
+        }
+
         // Text content
         if (delta.content) {
+          // Close thinking block on first content token — DeepSeek
+          // streams reasoning in full before any actual content
+          // arrives, so this is where the cut belongs.
+          if (state.thinkingBlockIndex !== null) {
+            // Anthropic spec requires a signature_delta on thinking
+            // blocks before stop. Empty string is fine for proxy
+            // round-tripping (we don't verify upstream).
+            send('content_block_delta', {
+              type: 'content_block_delta',
+              index: state.thinkingBlockIndex,
+              delta: { type: 'signature_delta', signature: '' },
+            })
+            send('content_block_stop', {
+              type: 'content_block_stop',
+              index: state.thinkingBlockIndex,
+            })
+            state.thinkingBlockIndex = null
+          }
           if (state.textBlockIndex === null) {
             state.textBlockIndex = state.nextContentIndex++
             send('content_block_start', {
@@ -130,6 +171,21 @@ export async function convertOpenAIStreamToAnthropic(
                 name: tc.function?.name ?? '',
                 argsAccum: '',
               })
+              // We might need to close the thinking block first
+              // (DeepSeek can go reasoning → tool_use with no text
+              // in between).
+              if (state.thinkingBlockIndex !== null) {
+                send('content_block_delta', {
+                  type: 'content_block_delta',
+                  index: state.thinkingBlockIndex,
+                  delta: { type: 'signature_delta', signature: '' },
+                })
+                send('content_block_stop', {
+                  type: 'content_block_stop',
+                  index: state.thinkingBlockIndex,
+                })
+                state.thinkingBlockIndex = null
+              }
               // We might need to close the text block first
               if (state.textBlockIndex !== null) {
                 send('content_block_stop', {
@@ -179,6 +235,17 @@ export async function convertOpenAIStreamToAnthropic(
     // Always emit closing events so the Anthropic SDK sees message_stop
     // and the CLI doesn't hang in "assistant is streaming" state, even if
     // the upstream provider connection was interrupted mid-response.
+    if (state.thinkingBlockIndex !== null) {
+      send('content_block_delta', {
+        type: 'content_block_delta',
+        index: state.thinkingBlockIndex,
+        delta: { type: 'signature_delta', signature: '' },
+      })
+      send('content_block_stop', {
+        type: 'content_block_stop',
+        index: state.thinkingBlockIndex,
+      })
+    }
     if (state.textBlockIndex !== null) {
       send('content_block_stop', {
         type: 'content_block_stop',

@@ -29,21 +29,39 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 const BASE_URL = 'http://127.0.0.1:8767'
 
 export default function useVoiceClient({ muted = false } = {}) {
-  const [listening,   setListening]   = useState(false)
-  const [recording,   setRecording]   = useState(false)
-  const [voiceActive, setVoiceActive] = useState(false)
-  const [processing,  setProcessing]  = useState(false)
-  const [speaking,    setSpeaking]    = useState(false)
+  const [listening,    setListening]    = useState(false)
+  const [recording,    setRecording]    = useState(false)
+  const [voiceActive,  setVoiceActive]  = useState(false)
+  const [processing,   setProcessing]   = useState(false)
+  const [speaking,     setSpeaking]     = useState(false)
+  // True once the agent worker has joined the room AND the SFU link
+  // is up. The SFU connection reports `connected` ~100 ms after
+  // boot; the agent takes another 1-2 s to accept the job. The tray
+  // should NOT show "ready" green until both are true — we map this
+  // into `processing=true` below so the tray goes gold during that
+  // window. Exposed here in case a future consumer wants the raw flag.
+  const [agentPresent, setAgentPresent] = useState(false)
   // Kept for useSpeech interface compatibility. No per-frame animation
   // driven from here anymore (see module header).
-  const [audioLevel]                  = useState(0)
+  const [audioLevel]                    = useState(0)
 
   // ── Status poll loop ───────────────────────────────────────────────
   // 1 Hz is fine for tray + pill. Any faster and we risk the render
   // cascade that caused the useSpeech Silero churn. The VoiceClientPill
   // in App.jsx also polls /status — duplicate calls are trivially
   // cheap at this rate and neither path blocks on the other.
-  const prevActiveRef = useRef(false)   // used to infer processing
+  // Direct "processing" state. Driven entirely by definitive flags
+  // the agent writes: `tool_running` (a function tool is in flight)
+  // and `agent_thinking` (the LLM is generating tokens). Plus the
+  // booting case (s.connected && !s.agent_present). No more
+  // heuristics, no TTL safety net needed — the agent owns clearing
+  // the flags, and the voice-client has its own staleness guard
+  // (file mtime older than 60 s = ignore).
+  //
+  // Kept lastActiveRef purely for backwards-compat; nothing reads
+  // it from this module anymore but external consumers might.
+  const lastActiveRef = useRef(/** @type {'user'|'agent'|null} */ (null))
+
   useEffect(() => {
     let alive = true
     let t
@@ -53,34 +71,47 @@ export default function useVoiceClient({ muted = false } = {}) {
         if (!r.ok) throw 0
         const s = await r.json()
         if (!alive) return
-        // Map the client's flat state onto useSpeech's ref names.
         setListening(!!s.connected)
         setRecording(!!s.connected && !s.muted)
-        setVoiceActive(!!s.listening)   // LiveKit says "local is an active speaker"
-        setSpeaking(!!s.speaking)       // remote agent active speaker
-        // Inferred: when connected + neither party active, treat that
-        // transient gap (right after user stops, before TTS starts) as
-        // "processing" so the tray shows gold instead of green.
-        // Debounce: only flip on after 300 ms of quiescent idle.
-        const anyActive = !!s.listening || !!s.speaking
-        if (anyActive) {
-          setProcessing(false)
-          prevActiveRef.current = true
-        } else if (prevActiveRef.current && s.connected) {
-          // Was active, now neither — likely LLM is thinking
+        setVoiceActive(!!s.listening)
+        setSpeaking(!!s.speaking)
+        setAgentPresent(!!s.agent_present)
+
+        // ── Definitive thinking signals ────────────────────────────
+        // We dropped the prior heuristic (inferring "thinking" from
+        // listening→quiet transitions) because it false-positived on
+        // every ambient mic trigger. The agent now writes flag files
+        // at exact lifecycle moments — voice-client surfaces them as
+        // `tool_running` and `agent_thinking` in /status. Tray gold
+        // is set iff one of these is true (or the agent is booting).
+        if (s.connected && !s.agent_present) {
+          // Agent restarting — "JARVIS booting" gold.
           setProcessing(true)
-          prevActiveRef.current = false
+        } else if (s.tool_running || s.agent_thinking) {
+          // Agent told us directly: tool subprocess running OR LLM
+          // generating tokens. Either way → gold.
+          setProcessing(true)
+        } else {
+          setProcessing(false)
         }
+        // Track last-active speaker for any external consumer; the
+        // tray no longer reads this but it's cheap to maintain.
+        if (s.listening)      lastActiveRef.current = 'user'
+        else if (s.speaking)  lastActiveRef.current = 'agent'
       } catch {
         if (alive) {
           setListening(false); setRecording(false)
           setVoiceActive(false); setSpeaking(false); setProcessing(false)
+          lastActiveRef.current = null
         }
       }
       if (alive) t = setTimeout(tick, 1000)
     }
     tick()
-    return () => { alive = false; clearTimeout(t) }
+    return () => {
+      alive = false
+      clearTimeout(t)
+    }
   }, [])
 
   // ── Mute cross-wire ────────────────────────────────────────────────

@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{
     Manager, State, WebviewWindow, PhysicalSize, PhysicalPosition,
     image::Image,
-    menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
+    menu::{MenuBuilder, MenuItem, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder},
     tray::{TrayIcon, TrayIconBuilder},
     Emitter, Wry,
 };
@@ -24,6 +24,16 @@ struct PanelRect(Arc<Mutex<PanelRectData>>);
 /// Handle to the system-tray icon, kept alive in Tauri state so the
 /// `set_tray_state` command can swap colours based on the app state.
 struct TrayHandle(Mutex<Option<TrayIcon<Wry>>>);
+
+/// Handle to the "Tool: …" line inside the Models submenu.
+/// Stashed in state so the `set_provider_label` command can rewrite
+/// the label whenever the agent reports its active CLI model via
+/// the voice-client `/status` endpoint.
+struct ProviderLabel(Mutex<Option<MenuItem<Wry>>>);
+
+/// Handle to the "Speech: …" line inside the Models submenu.
+/// Same pattern as ProviderLabel but for the voice-LLM tier.
+struct SpeechLabel(Mutex<Option<MenuItem<Wry>>>);
 
 /// The source tray artwork (icons/tray.png — the concentric-ring /
 /// reactor design). Embedded into the binary at compile time so the
@@ -102,12 +112,17 @@ fn tint_source(r: u8, g: u8, b: u8) -> (u32, u32, Vec<u8>) {
 /// Return (width, height, rgba) for the given state. Tauri wraps the
 /// buffer in Image::new_owned at the call site.
 fn tray_image_for(state: &str) -> (u32, u32, Vec<u8>) {
-    // Colours tuned to read clearly against dark + light panels on XFCE.
+    // Colours chosen to match the VoiceClientPill (top-right of the
+    // overlay) 1:1 so the tray and the pill never tell you different
+    // stories. Tuned to read clearly against both dark and light XFCE
+    // panels.
     match state {
-        "talking"  => tint_source( 68, 147, 248),   // blue
-        "thinking" => tint_source(250, 180,  50),   // gold / amber
-        "offline"  => tint_source(239,  68,  68),   // red
-        _          => tint_source( 63, 185,  80),   // idle / listening — green
+        "talking"   => tint_source( 68, 147, 248),   // blue  — JARVIS speaking
+        "listening" => tint_source( 34, 211, 238),   // cyan  — you speaking
+        "thinking"  => tint_source(250, 180,  50),   // amber — LLM thinking / booting
+        "muted"     => tint_source(161, 161, 170),   // gray  — mic muted
+        "offline"   => tint_source(239,  68,  68),   // red   — voice client down
+        _           => tint_source( 63, 185,  80),   // green — idle / ready
     }
 }
 
@@ -207,6 +222,133 @@ fn set_tray_state(state: &str, tray: State<TrayHandle>) -> Result<(), String> {
     Ok(())
 }
 
+/// Map a CLI model ID to a short pretty label for the tray.
+/// IDs and labels mirror jarvis_agent.py's CLI_MODELS dict.
+fn cli_model_pretty(id: &str) -> Option<&'static str> {
+    match id {
+        "deepseek-chat"                                  => Some("DeepSeek · chat"),
+        "deepseek-reasoner"                              => Some("DeepSeek · reasoner"),
+        "deepseek-v4-flash"                              => Some("DeepSeek · v4 flash"),
+        "deepseek-v4-pro"                                => Some("DeepSeek · v4 pro"),
+        "qwen/qwen3-32b"                                 => Some("Groq · qwen3-32b"),
+        "llama-3.3-70b-versatile"                        => Some("Groq · llama 3.3 70B"),
+        "meta-llama/llama-4-scout-17b-16e-instruct"      => Some("Groq · llama 4 scout"),
+        "openai/gpt-oss-120b"                            => Some("Groq · gpt-oss-120b"),
+        _ => None,
+    }
+}
+
+/// Map a speech model ID to a short pretty label.
+/// Mirrors jarvis_agent.py's SPEECH_MODELS dict.
+fn speech_model_pretty(id: &str) -> Option<&'static str> {
+    match id {
+        "llama-3.3-70b-versatile"                        => Some("Groq · llama 3.3 70B"),
+        "llama-3.1-8b-instant"                           => Some("Groq · llama 3.1 8B instant"),
+        "qwen/qwen3-32b"                                 => Some("Groq · qwen3-32b"),
+        "openai/gpt-oss-120b"                            => Some("Groq · gpt-oss-120b"),
+        "meta-llama/llama-4-scout-17b-16e-instruct"      => Some("Groq · llama 4 scout"),
+        _ => None,
+    }
+}
+
+/// Switch the active CLI model by POSTing to the voice-client. The
+/// voice-client persists the choice in `~/.jarvis/cli-model`; the
+/// next run_jarvis_cli call picks it up via env vars. No process
+/// restarts needed. Spawned via curl to avoid pulling reqwest.
+fn switch_cli_model(app: &tauri::AppHandle, id: &'static str) {
+    let body = format!(r#"{{"model":"{id}"}}"#);
+    let _ = std::process::Command::new("curl")
+        .args([
+            "-s", "-X", "POST",
+            "http://127.0.0.1:8767/cli-model",
+            "-H", "Content-Type: application/json",
+            "-d", &body,
+        ])
+        .spawn();
+
+    // Optimistic label update so the menu reflects the click without
+    // waiting for the next /status poll.
+    if let Some(pretty) = cli_model_pretty(id) {
+        let label: State<ProviderLabel> = app.state();
+        let guard = match label.0.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        if let Some(item) = guard.as_ref() {
+            let _ = item.set_text(format!("Tool: {pretty}"));
+        }
+    }
+}
+
+/// Switch the active speech model by POSTing to the voice-client.
+/// Voice-client persists the choice in `~/.jarvis/voice-model` AND
+/// triggers `systemctl --user restart jarvis-voice-agent` so the
+/// new LLM is built on the next session start. The pill flips to
+/// amber "JARVIS booting" for ~5 s then back to green.
+fn switch_speech_model(app: &tauri::AppHandle, id: &'static str) {
+    let body = format!(r#"{{"model":"{id}"}}"#);
+    let _ = std::process::Command::new("curl")
+        .args([
+            "-s", "-X", "POST",
+            "http://127.0.0.1:8767/voice-model",
+            "-H", "Content-Type: application/json",
+            "-d", &body,
+        ])
+        .spawn();
+
+    if let Some(pretty) = speech_model_pretty(id) {
+        let label: State<SpeechLabel> = app.state();
+        let guard = match label.0.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        if let Some(item) = guard.as_ref() {
+            let _ = item.set_text(format!("Speech: {pretty}"));
+        }
+    }
+}
+
+/// Update the "Speech: …" line inside the Models tray submenu.
+/// React calls this whenever the voice-client `/status` reports a
+/// new speech_model field. Empty string = "no choice yet".
+#[tauri::command]
+fn set_speech_label(name: &str, label: State<SpeechLabel>) -> Result<(), String> {
+    let text: String = if name.is_empty() {
+        "Speech: (loading…)".to_string()
+    } else {
+        match speech_model_pretty(name) {
+            Some(pretty) => format!("Speech: {pretty}"),
+            None         => return Err(format!("unknown speech model: {name}")),
+        }
+    };
+    let guard = label.0.lock().map_err(|e| e.to_string())?;
+    if let Some(item) = guard.as_ref() {
+        item.set_text(text).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Update the "Tool: …" line inside the Models tray submenu.
+/// React calls this whenever the voice-client `/status` reports a new
+/// model ID. Empty string = "no choice yet". Speech model is static
+/// in the menu (Llama 3.3 70B on Groq) so no setter for it.
+#[tauri::command]
+fn set_provider_label(name: &str, label: State<ProviderLabel>) -> Result<(), String> {
+    let text: String = if name.is_empty() {
+        "Tool: (loading…)".to_string()
+    } else {
+        match cli_model_pretty(name) {
+            Some(pretty) => format!("Tool: {pretty}"),
+            None         => return Err(format!("unknown CLI model: {name}")),
+        }
+    };
+    let guard = label.0.lock().map_err(|e| e.to_string())?;
+    if let Some(item) = guard.as_ref() {
+        item.set_text(text).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn get_primary_monitor_info(window: WebviewWindow) -> Result<serde_json::Value, String> {
     let monitor = window
@@ -252,6 +394,8 @@ fn main() {
         .manage(ChatOpen(chat_open_state))
         .manage(PanelRect(panel_rect_state))
         .manage(TrayHandle(Mutex::new(None)))
+        .manage(ProviderLabel(Mutex::new(None)))
+        .manage(SpeechLabel(Mutex::new(None)))
         .setup(move |app| {
             let window = app.get_webview_window("main").unwrap();
             let window_for_poll = window.clone();
@@ -340,6 +484,95 @@ fn main() {
             let mute_item    = MenuItemBuilder::with_id("mute",         "Mute / Unmute Voice").build(app)?;
             let sep1         = PredefinedMenuItem::separator(app)?;
             let browser_item = MenuItemBuilder::with_id("open_browser", "Open in Browser").build(app)?;
+            let sep_prov     = PredefinedMenuItem::separator(app)?;
+
+            // ── Models submenu ──
+            // Two layers of models, surfaced clearly in the menu:
+            //
+            //   1) SPEECH model (the voice LLM that composes spoken
+            //      replies). Hard-coded to llama-3.3-70b on Groq for
+            //      latency reasons — informational only, not switchable.
+            //
+            //   2) TOOL model (run_jarvis_cli's underlying LLM). Live-
+            //      switchable via the items below. Currently 8 options
+            //      (DeepSeek×4, Groq×4) mirroring the CLI's /model
+            //      picker. IDs match jarvis_agent.py's CLI_MODELS dict.
+            //
+            // The "Tool: …" line is dynamic — set_provider_label
+            // rewrites it as the voice-client /status poll surfaces
+            // the active tool model, and switch_cli_model also pokes
+            // it optimistically on click.
+            // Two dynamic header lines, both labeled live by JS as
+            // /status reports each tier's active model.
+            let speech_current = MenuItemBuilder::with_id("speech_current", "Speech: (loading…)")
+                .enabled(false)
+                .build(app)?;
+            let provider_current = MenuItemBuilder::with_id("provider_current", "Tool: (loading…)")
+                .enabled(false)
+                .build(app)?;
+            let header_sep   = PredefinedMenuItem::separator(app)?;
+
+            // ── SPEECH submenu (nested under Models) ──
+            // Switching speech requires an agent restart (~5 s amber).
+            // Items mirror jarvis_agent.py's SPEECH_MODELS dict.
+            let v_llama33   = MenuItemBuilder::with_id("speech_llama-3.3-70b-versatile",                       "Use Groq · llama 3.3 70B").build(app)?;
+            let v_llama8b   = MenuItemBuilder::with_id("speech_llama-3.1-8b-instant",                          "Use Groq · llama 3.1 8B instant").build(app)?;
+            let v_qwen      = MenuItemBuilder::with_id("speech_qwen/qwen3-32b",                                "Use Groq · qwen3-32b").build(app)?;
+            let v_gptoss    = MenuItemBuilder::with_id("speech_openai/gpt-oss-120b",                           "Use Groq · gpt-oss-120b").build(app)?;
+            let v_llama4    = MenuItemBuilder::with_id("speech_meta-llama/llama-4-scout-17b-16e-instruct",     "Use Groq · llama 4 scout").build(app)?;
+            // (DeepSeek removed from speech — openai plugin can't
+            // round-trip the reasoning_content field; see SPEECH_MODELS
+            // in jarvis_agent.py. Still available as a Tool model.)
+            let speech_submenu = SubmenuBuilder::new(app, "Speech model ▸")
+                .item(&v_llama33)
+                .item(&v_llama8b)
+                .item(&v_qwen)
+                .item(&v_gptoss)
+                .item(&v_llama4)
+                .build()?;
+
+            // ── TOOL submenu (nested under Models) ──
+            // No restart needed — every run_jarvis_cli call re-reads
+            // ~/.jarvis/cli-model and exports JARVIS_PROVIDER+MODEL.
+            let m_ds_chat      = MenuItemBuilder::with_id("model_deepseek-chat",                              "Use DeepSeek · chat").build(app)?;
+            let m_ds_reason    = MenuItemBuilder::with_id("model_deepseek-reasoner",                          "Use DeepSeek · reasoner").build(app)?;
+            let m_ds_v4_flash  = MenuItemBuilder::with_id("model_deepseek-v4-flash",                          "Use DeepSeek · v4 flash").build(app)?;
+            let m_ds_v4_pro    = MenuItemBuilder::with_id("model_deepseek-v4-pro",                            "Use DeepSeek · v4 pro").build(app)?;
+            let m_qwen         = MenuItemBuilder::with_id("model_qwen/qwen3-32b",                             "Use Groq · qwen3-32b").build(app)?;
+            let m_llama33      = MenuItemBuilder::with_id("model_llama-3.3-70b-versatile",                    "Use Groq · llama 3.3 70B").build(app)?;
+            let m_llama4       = MenuItemBuilder::with_id("model_meta-llama/llama-4-scout-17b-16e-instruct",  "Use Groq · llama 4 scout").build(app)?;
+            let m_gptoss       = MenuItemBuilder::with_id("model_openai/gpt-oss-120b",                        "Use Groq · gpt-oss-120b").build(app)?;
+            let tool_submenu = SubmenuBuilder::new(app, "Tool model ▸")
+                .item(&m_ds_chat)
+                .item(&m_ds_reason)
+                .item(&m_ds_v4_flash)
+                .item(&m_ds_v4_pro)
+                .item(&m_qwen)
+                .item(&m_llama33)
+                .item(&m_llama4)
+                .item(&m_gptoss)
+                .build()?;
+
+            let provider_submenu = SubmenuBuilder::new(app, "Models")
+                .item(&speech_current)
+                .item(&provider_current)
+                .item(&header_sep)
+                .item(&speech_submenu)
+                .item(&tool_submenu)
+                .build()?;
+
+            // Hand both dynamic header items to managed state so
+            // set_provider_label and set_speech_label can rewrite
+            // them later as /status polls report active models.
+            {
+                let pl: State<ProviderLabel> = app.state();
+                *pl.0.lock().unwrap() = Some(provider_current);
+            }
+            {
+                let sl: State<SpeechLabel> = app.state();
+                *sl.0.lock().unwrap() = Some(speech_current);
+            }
+
             let sep2         = PredefinedMenuItem::separator(app)?;
             let quit_item    = MenuItemBuilder::with_id("quit",         "Quit JARVIS").build(app)?;
 
@@ -348,6 +581,8 @@ fn main() {
                 .item(&mute_item)
                 .item(&sep1)
                 .item(&browser_item)
+                .item(&sep_prov)
+                .item(&provider_submenu)
                 .item(&sep2)
                 .item(&quit_item)
                 .build()?;
@@ -417,7 +652,45 @@ fn main() {
                                 .arg("http://127.0.0.1:8765/")
                                 .spawn();
                         }
-                        "quit" => app.exit(0),
+                        "model_deepseek-chat"                              => switch_cli_model(app, "deepseek-chat"),
+                        "model_deepseek-reasoner"                          => switch_cli_model(app, "deepseek-reasoner"),
+                        "model_deepseek-v4-flash"                          => switch_cli_model(app, "deepseek-v4-flash"),
+                        "model_deepseek-v4-pro"                            => switch_cli_model(app, "deepseek-v4-pro"),
+                        "model_qwen/qwen3-32b"                             => switch_cli_model(app, "qwen/qwen3-32b"),
+                        "model_llama-3.3-70b-versatile"                    => switch_cli_model(app, "llama-3.3-70b-versatile"),
+                        "model_meta-llama/llama-4-scout-17b-16e-instruct"  => switch_cli_model(app, "meta-llama/llama-4-scout-17b-16e-instruct"),
+                        "model_openai/gpt-oss-120b"                        => switch_cli_model(app, "openai/gpt-oss-120b"),
+                        // Speech-model picks (these trigger an agent restart)
+                        "speech_llama-3.3-70b-versatile"                   => switch_speech_model(app, "llama-3.3-70b-versatile"),
+                        "speech_llama-3.1-8b-instant"                      => switch_speech_model(app, "llama-3.1-8b-instant"),
+                        "speech_qwen/qwen3-32b"                            => switch_speech_model(app, "qwen/qwen3-32b"),
+                        "speech_openai/gpt-oss-120b"                       => switch_speech_model(app, "openai/gpt-oss-120b"),
+                        "speech_meta-llama/llama-4-scout-17b-16e-instruct" => switch_speech_model(app, "meta-llama/llama-4-scout-17b-16e-instruct"),
+                        "quit" => {
+                            // "Quit JARVIS" must stop everything the user
+                            // perceives as JARVIS — not just the overlay.
+                            // The voice agent + voice client run as
+                            // separate systemd user units and would
+                            // happily keep listening if we only called
+                            // app.exit(0). Stop them first, then exit.
+                            //
+                            // Spawn detached so we don't block the tray
+                            // event handler. Failure is non-fatal — if
+                            // the units were already stopped or systemctl
+                            // isn't available, the desktop still exits.
+                            let _ = std::process::Command::new("systemctl")
+                                .args([
+                                    "--user", "stop",
+                                    "jarvis-voice-agent",
+                                    "jarvis-voice-client",
+                                ])
+                                .spawn();
+                            // Give systemctl ~500 ms to issue the SIGTERM
+                            // before we kill the desktop, so the agent
+                            // gets a chance to clean up SFU room state.
+                            std::thread::sleep(std::time::Duration::from_millis(500));
+                            app.exit(0);
+                        }
                         _ => {}
                     }
                 })
@@ -532,6 +805,8 @@ fn main() {
             set_chat_state,
             set_panel_rect,
             set_tray_state,
+            set_provider_label,
+            set_speech_label,
             get_primary_monitor_info,
         ])
         .run(tauri::generate_context!())
