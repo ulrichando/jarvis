@@ -109,11 +109,14 @@ export default function App() {
     invoke('set_panel_rect', { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) }).catch(console.error)
   }, [])
 
-  // Tray icon colour reflects the app's live state.
-  //   offline  → red   (WS to bridge is down)
-  //   thinking → gold  (STT done, LLM generating)
-  //   talking  → blue  (TTS audio playing)
-  //   idle     → green (mic live, nothing else going on)
+  // Tray icon colour — mirrors the VoiceClientPill so both surfaces
+  // agree on what JARVIS is doing.
+  //   offline   → red    (bridge WS down)
+  //   muted     → gray   (user flipped the mic off)
+  //   talking   → blue   (agent TTS playing)
+  //   listening → cyan   (user's voice is active)
+  //   thinking  → amber  (booting / LLM generating)
+  //   idle      → green  (ready, nothing active)
   const lastTrayStateRef = useRef('idle')
   const pushTrayState = useCallback((state) => {
     if (state === lastTrayStateRef.current) return
@@ -166,17 +169,21 @@ export default function App() {
     setLayer(false)
   }, [])
 
-  // ── Tray icon state (item: tray colour indicator) ───────────────────
-  // Order matters: offline > talking > thinking > idle. So an active
-  // response still shows red if the WS drops (signals an actual problem).
+  // ── Tray icon state ─────────────────────────────────────────────────
+  // Priority (highest first): offline > muted > talking > listening >
+  // thinking > idle. Matches the pill's mapping in VoiceClientPill so
+  // the two indicators always agree. A dropped bridge WS still wins
+  // over everything else — that's a real problem the user needs to see.
   useEffect(() => {
     let next = 'idle'
     if (wsStatus === 'disconnected')       next = 'offline'
+    else if (voiceMuted)                   next = 'muted'
     else if (speech.speaking)              next = 'talking'
+    else if (speech.voiceActive)           next = 'listening'
     else if (speech.processing)            next = 'thinking'
-    else                                   next = 'idle' // also "listening"
+    else                                   next = 'idle'
     pushTrayState(next)
-  }, [wsStatus, speech.speaking, speech.processing, pushTrayState])
+  }, [wsStatus, voiceMuted, speech.speaking, speech.voiceActive, speech.processing, pushTrayState])
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────
   useEffect(() => {
@@ -202,10 +209,11 @@ export default function App() {
 
       {/* LiveKit voice-client status pill — reflects the native
           jarvis-voice-client process (not the webview's legacy sidecar).
-          Dot colour: red=offline, gold=connecting, green=idle,
-          blue=agent speaking, cyan=user speaking. Purely informative
-          for now; full UI takeover is a future step. */}
-      <VoiceClientPill />
+          Dot colour: red=offline, gold=thinking/booting, green=idle,
+          blue=agent speaking, cyan=user speaking, gray=muted. Synced
+          with the tray icon: same `processing` flag drives both, so
+          when the tray is gold the pill says "JARVIS thinking" too. */}
+      <VoiceClientPill processing={speech.processing} />
 
       {/* Chat panel — opened on tray click or Ctrl+H */}
       {chatOpen && (
@@ -228,8 +236,12 @@ export default function App() {
  * small corner pill. Separate component so its 1 Hz re-renders don't
  * drag the whole App tree.
  */
-function VoiceClientPill() {
+function VoiceClientPill({ processing = false }) {
   const [s, setS] = useState(null)
+  // Last IDs pushed to the tray, so we don't fire the Tauri commands
+  // on every 1 Hz poll when nothing changed.
+  const lastToolRef   = useRef(null)
+  const lastSpeechRef = useRef(null)
   useEffect(() => {
     let alive = true
     let t
@@ -239,6 +251,17 @@ function VoiceClientPill() {
         if (!r.ok) throw 0
         const data = await r.json()
         if (alive) setS(data)
+        // Push both active model IDs into their respective tray
+        // header lines. Empty string is a valid signal — renders as
+        // "Tool: (loading…)" / "Speech: (loading…)".
+        if (alive && lastToolRef.current !== data.cli_model) {
+          lastToolRef.current = data.cli_model
+          invoke('set_provider_label', { name: data.cli_model || '' }).catch(console.error)
+        }
+        if (alive && lastSpeechRef.current !== data.speech_model) {
+          lastSpeechRef.current = data.speech_model
+          invoke('set_speech_label', { name: data.speech_model || '' }).catch(console.error)
+        }
       } catch {
         if (alive) setS({ connected: false })
       }
@@ -247,12 +270,33 @@ function VoiceClientPill() {
     tick()
     return () => { alive = false; clearTimeout(t) }
   }, [])
+  // Short pill label per CLI model — kept terse so the corner pill
+  // doesn't grow unbounded.
+  const cliModelShort = ({
+    'deepseek-chat':                                  'ds-chat',
+    'deepseek-reasoner':                              'ds-reason',
+    'deepseek-v4-flash':                              'ds-v4-flash',
+    'deepseek-v4-pro':                                'ds-v4-pro',
+    'qwen/qwen3-32b':                                 'qwen3-32b',
+    'llama-3.3-70b-versatile':                        'llama 3.3',
+    'meta-llama/llama-4-scout-17b-16e-instruct':      'llama 4 scout',
+    'openai/gpt-oss-120b':                            'gpt-oss-120b',
+  })[s?.cli_model] || null
+  // Pill state priority — matches the tray icon priority in App's
+  // useEffect so the two surfaces always agree:
+  //   offline > muted > talking > listening > thinking > booting > ready
+  // "thinking" comes from the same `processing` flag the tray reads,
+  // passed in as a prop. So gold tray ⇔ "JARVIS thinking" pill, every
+  // time. Booting still has its own label so the user knows the
+  // difference between "we're warming up" and "LLM is generating".
   const { color, label } =
-      !s?.connected ? { color: '#ef4444', label: 'Voice offline'  }
-    :  s.speaking   ? { color: '#4493f8', label: 'JARVIS speaking' }
-    :  s.listening  ? { color: '#22d3ee', label: 'You speaking'    }
-    :  s.muted      ? { color: '#a1a1aa', label: 'Mic muted'       }
-    :                 { color: '#3fb950', label: 'Voice ready'     }
+      !s?.connected        ? { color: '#ef4444', label: 'Voice offline'  }
+    :  s.muted             ? { color: '#a1a1aa', label: 'Mic muted'       }
+    :  s.speaking          ? { color: '#4493f8', label: 'JARVIS speaking' }
+    :  s.listening         ? { color: '#22d3ee', label: 'You speaking'    }
+    : !s.agent_present     ? { color: '#fab432', label: 'JARVIS booting'  }
+    :  processing          ? { color: '#fab432', label: 'JARVIS thinking' }
+    :                        { color: '#3fb950', label: 'Voice ready'     }
   return (
     <div style={{ position:'fixed', top:'1rem', right:'1rem', zIndex:50, pointerEvents:'none' }}>
       <div style={{ display:'flex', alignItems:'center', gap:'0.375rem',
@@ -263,6 +307,11 @@ function VoiceClientPill() {
         <span style={{ width:'6px', height:'6px', borderRadius:'9999px',
                        background: color, boxShadow:`0 0 6px ${color}` }} />
         {label}
+        {cliModelShort && (
+          <span style={{ opacity: 0.55, marginLeft: '0.25rem' }}>
+            · {cliModelShort}
+          </span>
+        )}
       </div>
     </div>
   )
