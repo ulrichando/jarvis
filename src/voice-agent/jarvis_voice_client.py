@@ -47,6 +47,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -77,6 +78,98 @@ SAMPLE_RATE   = 48_000
 NUM_CHANNELS  = 1
 FRAME_MS      = 10
 FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000  # 480
+
+# ── Asyncio loop watchdog ────────────────────────────────────────────
+# We've seen the asyncio loop stall every few hours: HTTP server on
+# :8767 stops responding (curl times out), tray + UI pill desync from
+# the actual room state, and the only fix is `systemctl restart
+# jarvis-voice-client`. Root causes vary (LiveKit FFI callbacks doing
+# heavy work synchronously, sounddevice GIL contention, …) but the
+# symptom is always: the loop stops servicing tasks.
+#
+# Fix: an OS-thread watchdog (NOT an asyncio task — those wouldn't run
+# either when the loop is stuck). The asyncio side updates a shared
+# timestamp every WATCHDOG_HEARTBEAT_SEC; the OS thread polls that
+# timestamp every WATCHDOG_POLL_SEC. If the heartbeat goes stale by
+# more than WATCHDOG_STALE_SEC, the thread os._exit(1)'s the process
+# so systemd's Restart=on-failure brings up a fresh, leak-free copy.
+WATCHDOG_HEARTBEAT_SEC = 5.0
+WATCHDOG_POLL_SEC      = 10.0
+WATCHDOG_STALE_SEC     = 60.0
+
+_last_heartbeat: float = time.monotonic()
+_heartbeat_lock = threading.Lock()
+
+
+async def _heartbeat_loop(shutdown: asyncio.Event) -> None:
+    """Asyncio task: stamps the shared timestamp every few seconds.
+    The watchdog OS thread checks this timestamp; if it goes stale,
+    it kills the process."""
+    global _last_heartbeat
+    while not shutdown.is_set():
+        with _heartbeat_lock:
+            _last_heartbeat = time.monotonic()
+        try:
+            await asyncio.wait_for(shutdown.wait(), timeout=WATCHDOG_HEARTBEAT_SEC)
+        except asyncio.TimeoutError:
+            pass
+
+
+# How long to wait for agent_present before assuming the agent worker
+# missed the dispatch (race: client connected before worker registered).
+# Self-heal by restarting so the preflight delete_room forces a fresh
+# dispatch into the now-registered worker.
+AGENT_DISPATCH_TIMEOUT_SEC = 45.0
+
+
+async def _agent_presence_watchdog(shutdown: asyncio.Event) -> None:
+    """If we're connected but agent_present stays False for too long,
+    the SFU never dispatched a job (timing race between agent restart
+    and our room connection). Restart ourselves to force a fresh dispatch."""
+    # Give a grace window from startup — the SFU can take a few seconds
+    # to route the job even under normal conditions.
+    await asyncio.sleep(AGENT_DISPATCH_TIMEOUT_SEC)
+    while not shutdown.is_set():
+        if state.connected and not state.agent_present:
+            log.warning(
+                f"[presence-watchdog] connected but no agent after "
+                f"{AGENT_DISPATCH_TIMEOUT_SEC:.0f}s — restarting to force dispatch"
+            )
+            try:
+                await asyncio.create_subprocess_exec(
+                    "systemctl", "--user", "restart", "jarvis-voice-client",
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+            except Exception as e:
+                log.warning(f"[presence-watchdog] restart failed: {e}")
+            return
+        try:
+            await asyncio.wait_for(shutdown.wait(), timeout=15.0)
+        except asyncio.TimeoutError:
+            pass
+
+
+def _watchdog_thread() -> None:
+    """OS thread: kills the process if the asyncio loop stops
+    updating the heartbeat. Daemon so it doesn't block normal exit."""
+    # First update happens after the heartbeat task starts; give it
+    # a generous grace window before we'd ever consider firing.
+    grace_until = time.monotonic() + WATCHDOG_STALE_SEC + 30
+    while True:
+        time.sleep(WATCHDOG_POLL_SEC)
+        if time.monotonic() < grace_until:
+            continue
+        with _heartbeat_lock:
+            age = time.monotonic() - _last_heartbeat
+        if age > WATCHDOG_STALE_SEC:
+            log.error(
+                f"[watchdog] asyncio loop heartbeat stale ({age:.0f}s old) — "
+                f"killing process so systemd restarts us"
+            )
+            # os._exit (not sys.exit) — the loop is dead, atexit
+            # handlers would deadlock waiting on it.
+            os._exit(1)
 
 # Small HTTP control plane the Tauri UI (and any future client) polls
 # to know what this voice session is doing. Kept on a distinct port
@@ -381,6 +474,41 @@ async def _h_stop(_: web.Request) -> web.Response:
         return web.json_response({"error": str(e)}, status=500)
 
 
+async def _h_user_input(req: web.Request) -> web.Response:
+    """
+    POST /user-input {text} → inject `text` as a synthetic user turn
+    into the active voice session.
+
+    Distinct from /speak: /speak makes JARVIS read text aloud (TTS
+    only, no LLM). /user-input feeds the text into the AgentSession
+    as if it had come from STT — JARVIS's LLM processes it, generates
+    a reply, and the reply gets voiced via TTS. Both the user turn
+    and the agent's reply land in conversations.db (and hence Convex
+    via the mirror) so a web client subscribed to that session sees
+    the round trip live.
+
+    Used by the web voice-transcript page to let the user follow up
+    via typing without breaking out a mic.
+    """
+    if _room_ref is None or not state.connected:
+        return web.json_response({"error": "not connected"}, status=503)
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    text = (body.get("text") or "").strip()
+    if not text:
+        return web.json_response({"error": "missing text"}, status=400)
+    try:
+        payload = json.dumps({"type": "user_input", "text": text}).encode("utf-8")
+        await _room_ref.local_participant.publish_data(payload, reliable=True)
+        return web.json_response({"queued": True, "chars": len(text)}, headers={
+            "Access-Control-Allow-Origin": "*",
+        })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
 async def _h_cli_model(req: web.Request) -> web.Response:
     """
     GET  /cli-model                          → {"model": "<id>", "available": [...]}
@@ -477,8 +605,9 @@ def _build_app() -> web.Application:
     app.router.add_get("/status",  _h_status)
     app.router.add_get("/health",  _h_status)   # so systemd / launch.sh can probe
     app.router.add_post("/mute",   _h_mute)
-    app.router.add_post("/speak",  _h_speak)
-    app.router.add_post("/stop",   _h_stop)
+    app.router.add_post("/speak",      _h_speak)
+    app.router.add_post("/stop",       _h_stop)
+    app.router.add_post("/user-input", _h_user_input)
     app.router.add_get("/cli-model",   _h_cli_model)
     app.router.add_post("/cli-model",  _h_cli_model)
     app.router.add_get("/voice-model", _h_speech_model)
@@ -626,6 +755,52 @@ async def run_once(shutdown: asyncio.Event) -> None:
         state.speaking      = False
         shutdown.set()
 
+    # ── Stream drain handlers ───────────────────────────────────────
+    # The agent publishes two streams the voice-client doesn't
+    # consume directly:
+    #   • lk.agent.session   (byte) — session state / token chunks
+    #   • lk.transcription   (text) — STT/TTS transcripts (UI gets
+    #                                 these from the agent's chat
+    #                                 channel instead, not here)
+    #
+    # With no handler registered, the LiveKit FFI logs
+    # `ignoring byte stream with topic '…', no callback attached`
+    # for every chunk and drops it. The log line + drop runs on the
+    # asyncio loop. Under heavy traffic (long replies = many chunks
+    # per turn, long sessions = more turns) the queue grows faster
+    # than the loop drains, the HTTP server on :8767 stops
+    # responding, and the desktop pill desyncs from the tray icon
+    # while curl times out — the recurring ~30-45 min hang.
+    #
+    # Fix: register sync wrappers that schedule the actual async drain
+    # via asyncio.create_task. The SDK calls byte/text stream handlers
+    # synchronously (room.py:979 invokes `handler(reader, identity)`
+    # without await), so handing it a coroutine directly leaks it
+    # uncawaited and never reads the buffer. Wrapping in create_task
+    # both satisfies the sync-call contract AND drains the reader.
+    async def _drain_byte_stream(reader, participant_identity: str) -> None:
+        try:
+            async for _ in reader:
+                pass
+        except Exception as e:
+            log.debug(f"[stream-drain] byte stream from {participant_identity} ended: {e}")
+
+    async def _drain_text_stream(reader, participant_identity: str) -> None:
+        try:
+            async for _ in reader:
+                pass
+        except Exception as e:
+            log.debug(f"[stream-drain] text stream from {participant_identity} ended: {e}")
+
+    def _byte_stream_handler(reader, participant_identity: str) -> None:
+        loop.create_task(_drain_byte_stream(reader, participant_identity))
+
+    def _text_stream_handler(reader, participant_identity: str) -> None:
+        loop.create_task(_drain_text_stream(reader, participant_identity))
+
+    room.register_byte_stream_handler("lk.agent.session", _byte_stream_handler)
+    room.register_text_stream_handler("lk.transcription", _text_stream_handler)
+
     # Pre-flight: delete any leftover "jarvis" room from a previous
     # process life. Why this is necessary: when the agent worker is
     # restarted (reboot, systemctl restart), its session ends abruptly
@@ -729,6 +904,18 @@ async def main() -> None:
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, shutdown.set)
+
+    # Asyncio loop watchdog. The OS thread runs forever (daemon=True
+    # so it doesn't block exit); the asyncio task heartbeats every
+    # few seconds. If the loop stalls, the thread kills the process
+    # and systemd Restart=on-failure brings us back fresh.
+    threading.Thread(target=_watchdog_thread, name="loop-watchdog", daemon=True).start()
+    asyncio.create_task(_heartbeat_loop(shutdown), name="heartbeat")
+    asyncio.create_task(_agent_presence_watchdog(shutdown), name="presence-watchdog")
+    log.info(
+        f"[watchdog] enabled — heartbeat every {WATCHDOG_HEARTBEAT_SEC}s, "
+        f"kill if stale > {WATCHDOG_STALE_SEC}s"
+    )
 
     # HTTP control plane runs for the whole process lifetime — survives
     # LiveKit reconnects so the Tauri UI gets a quick "connected=false"

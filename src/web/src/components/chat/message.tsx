@@ -2,7 +2,7 @@
 
 import { motion } from "motion/react";
 import type { UIMessage } from "ai";
-import { Copy, Globe, ThumbsUp, ThumbsDown, RotateCcw, type LucideIcon } from "lucide-react";
+import { Copy, ThumbsUp, ThumbsDown, RotateCcw, type LucideIcon } from "lucide-react";
 import { Markdown } from "@/components/markdown/markdown";
 import { cn } from "@/lib/utils";
 
@@ -34,9 +34,12 @@ export function Message({
       ) : (
         <div className="w-full">
           {text ? (
-            <Markdown content={text} />
+            <>
+              <Markdown content={text} />
+              {isStreaming && <StreamingCursor />}
+            </>
           ) : isStreaming ? (
-            <ResearchPanel />
+            <ThinkingIndicator />
           ) : null}
           {text && !isStreaming && <MessageActions text={text} />}
         </div>
@@ -45,72 +48,54 @@ export function Message({
   );
 }
 
-// ── Streaming / research panel ────────────────────────────────────────────────
+// ── Thinking indicator ────────────────────────────────────────────────────────
 
-const SHIMMER_ROWS = [
-  [52, 28, 64],   // widths (%) for each row's title + spacer + domain
-  [44, 28, 72],
-  [58, 28, 56],
-] as const;
-
-function ShimmerRow({ widths }: { widths: readonly [number, number, number] }) {
+function ThinkingIndicator() {
   return (
-    <div className="flex items-center gap-2 px-3 py-1.75">
-      <div className="size-3.5 shrink-0 rounded-sm bg-muted-foreground/12" />
-      <div
-        className="h-2.25 rounded-full bg-muted-foreground/12 animate-pulse"
-        style={{ width: `${widths[0]}%` }}
-      />
-      <div className="flex-1" />
-      <div
-        className="h-2.25 shrink-0 rounded-full bg-muted-foreground/8 animate-pulse"
-        style={{ width: `${widths[2]}px` }}
-      />
-    </div>
-  );
-}
-
-function SearchCard({ queryWidth, delay }: { queryWidth: number; delay: string }) {
-  return (
-    <div className="overflow-hidden rounded-xl border border-border/40 bg-card/30">
-      <div className="flex items-center justify-between px-3 py-2">
-        <div className="flex items-center gap-2">
-          <Globe className="size-3.5 shrink-0 text-muted-foreground/50" />
-          <div
-            className="h-2.25 rounded-full bg-muted-foreground/15 animate-pulse"
-            style={{ width: `${queryWidth}px`, animationDelay: delay }}
-          />
-        </div>
+    <div className="flex items-center gap-3 py-1">
+      {/* JARVIS concentric rings — pulsing with staggered delays */}
+      <div className="relative size-8 shrink-0">
+        <div className="absolute inset-0 rounded-full border-2 border-primary/25 animate-pulse" />
         <div
-          className="h-2.25 w-14 shrink-0 rounded-full bg-muted-foreground/10 animate-pulse"
-          style={{ animationDelay: delay }}
+          className="absolute inset-1.5 rounded-full border border-primary/50 animate-pulse"
+          style={{ animationDelay: "0.35s" }}
+        />
+        <div
+          className="absolute inset-3 rounded-full bg-primary/80 animate-pulse"
+          style={{ animationDelay: "0.7s" }}
         />
       </div>
-      <div className="max-h-28 divide-y divide-border/25 overflow-y-auto border-t border-border/30">
-        {SHIMMER_ROWS.map((w, i) => (
-          <ShimmerRow key={i} widths={w} />
-        ))}
-      </div>
+      <ThinkingDots />
     </div>
   );
 }
 
-function ResearchPanel() {
+function ThinkingDots() {
   return (
-    <div className="space-y-3 max-w-2xl">
-      <div className="flex items-center gap-2">
+    <span className="flex items-center gap-1" aria-label="Thinking">
+      {[0, 1, 2].map((i) => (
         <span
-          className="inline-block text-[18px] leading-none text-primary"
-          style={{ animation: "spin 3s linear infinite" }}
-        >
-          {"✻"}
-        </span>
-        <span className="text-[14px] text-foreground/75">Searching sources…</span>
-      </div>
-      <div className="space-y-2.5 pl-1">
-        <SearchCard queryWidth={220} delay="0ms" />
-        <SearchCard queryWidth={180} delay="150ms" />
-      </div>
+          key={i}
+          className="size-1.5 rounded-full bg-muted-foreground/60 animate-bounce"
+          style={{ animationDelay: `${i * 0.18}s`, animationDuration: "1s" }}
+        />
+      ))}
+    </span>
+  );
+}
+
+// ── Streaming cursor ─────────────────────────────────────────────────────
+
+function StreamingCursor() {
+  return (
+    <div className="mt-3 flex items-center gap-1" aria-hidden>
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          className="size-1.5 rounded-full bg-primary/60 animate-bounce"
+          style={{ animationDelay: `${i * 0.18}s`, animationDuration: "1s" }}
+        />
+      ))}
     </div>
   );
 }

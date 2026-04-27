@@ -22,7 +22,27 @@ const providerPatchSchema = z
   .optional();
 
 const patchSchema = z.object({
-  user: z.object({ name: z.string().optional() }).partial().optional(),
+  user: z
+    .object({
+      name: z.string().optional(),
+      callName: z.string().optional(),
+      jobTitle: z.string().optional(),
+      preferences: z.string().optional(),
+    })
+    .partial()
+    .optional(),
+  notifications: z
+    .object({ responseCompletions: z.boolean() })
+    .partial()
+    .optional(),
+  capabilities: z
+    .object({
+      markdown: z.boolean(),
+      codeHighlight: z.boolean(),
+      streaming: z.boolean(),
+    })
+    .partial()
+    .optional(),
   defaults: z
     .object({
       model: z.string().optional(),
@@ -83,6 +103,8 @@ export async function PATCH(req: Request) {
   const next = settingsSchema.parse({
     ...current,
     user: { ...current.user, ...(patch.user ?? {}) },
+    notifications: { ...current.notifications, ...(patch.notifications ?? {}) },
+    capabilities: { ...current.capabilities, ...(patch.capabilities ?? {}) },
     defaults: { ...current.defaults, ...(patch.defaults ?? {}) },
     providers: nextProviders,
     appearance: { ...current.appearance, ...(patch.appearance ?? {}) },

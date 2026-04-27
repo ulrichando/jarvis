@@ -21,8 +21,7 @@ export function CodeBlock({ code, language = "text", className }: CodeBlockProps
       try {
         const out = await codeToHtml(code, {
           lang: language,
-          themes: { light: "github-light", dark: "github-dark" },
-          defaultColor: false,
+          theme: "one-dark-pro",
         });
         if (!cancelled) setHtml(out);
       } catch {
@@ -73,7 +72,7 @@ export function CodeBlock({ code, language = "text", className }: CodeBlockProps
         </button>
       </div>
       <div
-        className="overflow-x-auto text-sm [&_pre]:!bg-transparent [&_pre]:p-4 [&_code]:!bg-transparent"
+        className="overflow-x-auto text-sm [&_pre]:bg-transparent! [&_pre]:p-4 [&_pre]:m-0! [&_code]:bg-transparent!"
         dangerouslySetInnerHTML={{ __html: html || `<pre><code>${code}</code></pre>` }}
       />
     </div>
