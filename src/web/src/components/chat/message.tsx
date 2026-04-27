@@ -47,9 +47,12 @@ export function Message({
 
 function StreamingSpark() {
   return (
-    <span className="inline-block animate-pulse text-[22px] leading-none text-primary">
-{"✻"}
-    </span>
+    <div className="flex items-center gap-2">
+      <span className="animate-spin text-[18px] leading-none text-primary" style={{ animationDuration: "3s" }}>
+        {"✻"}
+      </span>
+      <span className="text-[14px] text-muted-foreground">Thinking</span>
+    </div>
   );
 }
 
