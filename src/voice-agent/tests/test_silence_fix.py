@@ -48,3 +48,33 @@ class TestQuietHoursConstants:
             assert jarvis_agent.QUIET_HOURS_WINDOW_SEC == 600.0, (
                 f"Expected QUIET_HOURS_WINDOW_SEC=600.0 (from env), got {jarvis_agent.QUIET_HOURS_WINDOW_SEC}"
             )
+
+
+class TestSessionWatchdog:
+    """_restart_voice_client_after_crash calls Popen with the right systemctl command."""
+
+    def test_restart_calls_popen(self):
+        import importlib
+        import jarvis_agent
+        importlib.reload(jarvis_agent)
+
+        with patch("jarvis_agent._subprocess.Popen") as mock_popen, \
+             patch("asyncio.sleep", new=AsyncMock()):
+            asyncio.run(jarvis_agent._restart_voice_client_after_crash())
+            mock_popen.assert_called_once_with(
+                ["systemctl", "--user", "restart", "jarvis-voice-client"],
+                stdout=jarvis_agent._subprocess.DEVNULL,
+                stderr=jarvis_agent._subprocess.DEVNULL,
+            )
+
+    def test_restart_is_nonblocking_popen(self):
+        """Must use Popen (fire-and-forget), NOT check_call/run which would block."""
+        import importlib
+        import jarvis_agent
+        importlib.reload(jarvis_agent)
+
+        with patch("jarvis_agent._subprocess.Popen") as mock_popen, \
+             patch("asyncio.sleep", new=AsyncMock()):
+            asyncio.run(jarvis_agent._restart_voice_client_after_crash())
+            # Popen called once — not check_call, not run
+            assert mock_popen.call_count == 1
