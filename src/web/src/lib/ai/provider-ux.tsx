@@ -315,6 +315,7 @@ const DEFAULT_UX: ProviderUX = {
     {
       label: "Claude's choice",
       icon: Apple,
+      // prompt is a complete, self-contained question — no sub-tasks needed
       prompt:
         "Ask me three questions that'll get me unstuck on whatever I'm working on.",
       description: "Let the AI surprise you",
