@@ -108,7 +108,7 @@ export function Composer({
           onKeyDown={handleKey}
           rows={1}
           placeholder={ux.placeholder}
-          className="resize-none bg-transparent px-5 pt-4 pb-2 text-[15px] leading-6 outline-none placeholder:text-muted-foreground/70"
+          className="resize-none bg-transparent px-5 pt-5 pb-3 text-[15px] leading-7 outline-none placeholder:text-muted-foreground/70 min-h-18"
         />
         <div className="flex items-center justify-between gap-2 px-2 pb-2">
           <div className="flex items-center gap-1">
