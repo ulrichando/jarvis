@@ -3,6 +3,9 @@
 import { useRef, useEffect } from "react";
 import { CircleDot, Plus, CornerDownLeft, ChevronDown, Circle, Loader2 } from "lucide-react";
 
+const TOOLBAR_ICON_BTN =
+  "flex size-6 items-center justify-center rounded text-foreground/50 hover:bg-accent/40 hover:text-foreground transition-colors";
+
 export function CodeComposer({
   value,
   onChange,
@@ -67,20 +70,17 @@ export function CodeComposer({
 
       <div className="flex items-center justify-between px-3 py-2">
         <div className="flex items-center gap-1">
-          <button type="button" aria-disabled="true"
-            className="rounded px-2 py-1 text-[12px] text-foreground/60 hover:bg-accent/40 hover:text-foreground transition-colors">
+          <button type="button" disabled
+            className="rounded px-2 py-1 text-[12px] text-foreground/60 hover:bg-accent/40 hover:text-foreground transition-colors disabled:opacity-50 disabled:pointer-events-none">
             Accept edits
           </button>
-          <button type="button" aria-label="Attach" aria-disabled="true"
-            className="flex size-6 items-center justify-center rounded text-foreground/50 hover:bg-accent/40 hover:text-foreground transition-colors">
+          <button type="button" aria-label="Attach" disabled className={`${TOOLBAR_ICON_BTN} disabled:opacity-50 disabled:pointer-events-none`}>
             <Plus className="size-3.5" />
           </button>
-          <button type="button" aria-label="Record" aria-disabled="true"
-            className="flex size-6 items-center justify-center rounded text-foreground/50 hover:bg-accent/40 hover:text-foreground transition-colors">
+          <button type="button" aria-label="Record" disabled className={`${TOOLBAR_ICON_BTN} disabled:opacity-50 disabled:pointer-events-none`}>
             <Circle className="size-3.5" />
           </button>
-          <button type="button" aria-label="More options" aria-disabled="true"
-            className="flex size-6 items-center justify-center rounded text-foreground/50 hover:bg-accent/40 hover:text-foreground transition-colors">
+          <button type="button" aria-label="More options" disabled className={`${TOOLBAR_ICON_BTN} disabled:opacity-50 disabled:pointer-events-none`}>
             <ChevronDown className="size-3.5" />
           </button>
         </div>
