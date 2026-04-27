@@ -117,12 +117,13 @@ fn tray_image_for(state: &str) -> (u32, u32, Vec<u8>) {
     // stories. Tuned to read clearly against both dark and light XFCE
     // panels.
     match state {
-        "talking"   => tint_source( 68, 147, 248),   // blue  — JARVIS speaking
-        "listening" => tint_source( 34, 211, 238),   // cyan  — you speaking
-        "thinking"  => tint_source(250, 180,  50),   // amber — LLM thinking / booting
-        "muted"     => tint_source(161, 161, 170),   // gray  — mic muted
-        "offline"   => tint_source(239,  68,  68),   // red   — voice client down
-        _           => tint_source( 63, 185,  80),   // green — idle / ready
+        "talking"   => tint_source( 68, 147, 248),   // blue   — JARVIS speaking
+        "listening" => tint_source( 34, 211, 238),   // cyan   — you speaking
+        "booting"   => tint_source(168,  85, 247),   // purple — service cold-starting
+        "thinking"  => tint_source(250, 180,  50),   // amber  — LLM generating / tool running
+        "muted"     => tint_source(161, 161, 170),   // gray   — mic muted
+        "offline"   => tint_source(239,  68,  68),   // red    — voice client down
+        _           => tint_source( 63, 185,  80),   // green  — idle / ready
     }
 }
 
@@ -209,7 +210,7 @@ fn set_panel_rect(x: i32, y: i32, w: i32, h: i32, state: State<PanelRect>) -> Re
 }
 
 /// Set the system-tray icon colour to reflect the current app state.
-/// Accepted values: "idle" | "listening" | "talking" | "thinking" | "offline".
+/// Accepted values: "idle" | "listening" | "talking" | "booting" | "thinking" | "offline".
 /// "idle" and "listening" both render green (the mic is live either way).
 #[tauri::command]
 fn set_tray_state(state: &str, tray: State<TrayHandle>) -> Result<(), String> {
@@ -648,8 +649,46 @@ fn main() {
                             }
                         }
                         "open_browser" => {
+                            // Pick the first port that responds AND
+                            // is the JARVIS web (Next.js). Probe
+                            // checks for a JARVIS-specific marker
+                            // header / path so we don't accidentally
+                            // open Open-WebUI on :3000 or some other
+                            // app the user has running. Override
+                            // with JARVIS_WEB_URL to skip detection.
+                            let url = std::env::var("JARVIS_WEB_URL").ok()
+                                .or_else(|| {
+                                    for port in [3001u16, 3002, 3000, 8765] {
+                                        let probe_url = format!("http://127.0.0.1:{port}/api/conversations");
+                                        if let Ok(mut stream) = std::net::TcpStream::connect_timeout(
+                                            &format!("127.0.0.1:{port}").parse().unwrap(),
+                                            std::time::Duration::from_millis(150),
+                                        ) {
+                                            use std::io::{Read, Write};
+                                            let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(300)));
+                                            let req = format!(
+                                                "GET /api/conversations HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n",
+                                            );
+                                            let _ = stream.write_all(req.as_bytes());
+                                            let mut buf = [0u8; 256];
+                                            if let Ok(n) = stream.read(&mut buf) {
+                                                let head = String::from_utf8_lossy(&buf[..n]);
+                                                // JARVIS web has /api/conversations → 200 with json content-type;
+                                                // open-webui returns 404 / different shape.
+                                                if head.starts_with("HTTP/1.1 200")
+                                                    && head.contains("application/json")
+                                                {
+                                                    let _ = probe_url;
+                                                    return Some(format!("http://127.0.0.1:{port}/"));
+                                                }
+                                            }
+                                        }
+                                    }
+                                    None
+                                })
+                                .unwrap_or_else(|| "http://127.0.0.1:3001/".to_string());
                             let _ = std::process::Command::new("xdg-open")
-                                .arg("http://127.0.0.1:8765/")
+                                .arg(&url)
                                 .spawn();
                         }
                         "model_deepseek-chat"                              => switch_cli_model(app, "deepseek-chat"),
