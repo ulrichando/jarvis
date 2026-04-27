@@ -38,7 +38,7 @@ export function Message({
           ) : isStreaming ? (
             <StreamingSpark />
           ) : null}
-          {text && !isStreaming && <MessageActions />}
+          {text && !isStreaming && <MessageActions text={text} />}
         </div>
       )}
     </motion.div>
@@ -48,15 +48,15 @@ export function Message({
 function StreamingSpark() {
   return (
     <span className="inline-block animate-pulse text-[22px] leading-none text-primary">
-      ✻
+{"✻"}
     </span>
   );
 }
 
-function MessageActions() {
+function MessageActions({ text }: { text: string }) {
   return (
     <div className="mt-2 flex items-center gap-0.5">
-      <ActionBtn aria-label="Copy" icon={Copy} onClick={() => {}} />
+      <ActionBtn aria-label="Copy" icon={Copy} onClick={() => navigator.clipboard.writeText(text)} />
       <ActionBtn aria-label="Like" icon={ThumbsUp} onClick={() => {}} />
       <ActionBtn aria-label="Dislike" icon={ThumbsDown} onClick={() => {}} />
       <ActionBtn aria-label="Regenerate" icon={RotateCcw} onClick={() => {}} />
