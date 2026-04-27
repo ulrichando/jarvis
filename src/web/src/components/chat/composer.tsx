@@ -36,10 +36,14 @@ export function Composer({
 }: ComposerProps) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const isBusy = status === "streaming" || status === "submitted";
-  const ux = getProviderUX(provider);
+  // Layout and common features are locked to anthropic style — stable across all models.
+  const ux = getProviderUX("anthropic");
+  // Extras (toggles, pre-composer) come from the real provider and render
+  // below the box, not inside it.
+  const providerUX = getProviderUX(provider);
 
   const initialToggles: Record<string, boolean> = {};
-  for (const t of ux.inlineToggles ?? []) {
+  for (const t of providerUX.inlineToggles ?? []) {
     initialToggles[t.id] = !!t.defaultOn;
   }
   const [toggles, setToggles] = useState(initialToggles);
@@ -84,12 +88,11 @@ export function Composer({
       description: "File upload pipeline is not wired yet.",
     });
 
-  const hasInlineToggles =
-    ux.inlineToggles && ux.inlineToggles.length > 0;
+  const inlineToggles = providerUX.inlineToggles ?? [];
 
   return (
     <div className="mx-auto w-full max-w-3xl px-4 pb-4">
-      {ux.renderPreComposer && ux.renderPreComposer()}
+      {providerUX.renderPreComposer && providerUX.renderPreComposer()}
 
       <div
         className={cn(
@@ -109,57 +112,20 @@ export function Composer({
         />
         <div className="flex items-center justify-between gap-2 px-2 pb-2">
           <div className="flex items-center gap-1">
-            {hasInlineToggles ? (
-              <>
-                {ux.inlineToggles!.map((t) => {
-                  const on = toggles[t.id] ?? false;
-                  return (
-                    <button
-                      key={t.id}
-                      type="button"
-                      onClick={() =>
-                        setToggles((s) => ({ ...s, [t.id]: !s[t.id] }))
-                      }
-                      className={cn(
-                        "flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12px] font-medium transition-colors",
-                        on
-                          ? "border-primary/60 bg-primary/15 text-primary"
-                          : "border-border/70 text-muted-foreground hover:border-border hover:text-foreground",
-                      )}
-                    >
-                      <t.icon className="size-3.5" />
-                      {t.label}
-                    </button>
-                  );
-                })}
-              </>
-            ) : (
-              <>
-                <PlusMenu groups={ux.plus} />
-                {ux.secondary && (
-                  <SecondaryMenu
-                    label={ux.secondary.label}
-                    icon={ux.secondary.icon}
-                    groups={ux.secondary.groups}
-                  />
-                )}
-              </>
-            )}
+            <PlusMenu groups={ux.plus} />
           </div>
           <div className="flex items-center gap-1">
-            {hasInlineToggles && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                onClick={attach}
-                className="size-8 rounded-lg text-muted-foreground hover:text-foreground"
-                aria-label="Attach"
-              >
-                <Paperclip className="size-4" />
-              </Button>
-            )}
-            {!ux.hideComposerModelPicker && <ComposerModelPicker />}
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={attach}
+              className="size-8 rounded-lg text-muted-foreground hover:text-foreground"
+              aria-label="Attach"
+            >
+              <Paperclip className="size-4" />
+            </Button>
+            <ComposerModelPicker />
             {!hideWorkspacePicker && <ComposerWorkspacePicker />}
             {value.trim().length === 0 && !isBusy ? (
               <Button
@@ -196,6 +162,31 @@ export function Composer({
           </div>
         </div>
       </div>
+
+      {/* Provider-specific extras — appear below the box, never change its layout */}
+      {inlineToggles.length > 0 && (
+        <div className="mt-2 flex items-center gap-2 px-1">
+          {inlineToggles.map((t) => {
+            const on = toggles[t.id] ?? false;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => setToggles((s) => ({ ...s, [t.id]: !s[t.id] }))}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12px] font-medium transition-colors",
+                  on
+                    ? "border-primary/60 bg-primary/15 text-primary"
+                    : "border-border/70 text-muted-foreground hover:border-border hover:text-foreground",
+                )}
+              >
+                <t.icon className="size-3.5" />
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
