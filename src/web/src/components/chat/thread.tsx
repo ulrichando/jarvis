@@ -7,9 +7,11 @@ import { Message } from "./message";
 export function Thread({
   messages,
   isStreaming,
+  artifactPanel,
 }: {
   messages: UIMessage[];
   isStreaming: boolean;
+  artifactPanel?: React.ReactNode;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -28,6 +30,7 @@ export function Thread({
           }
         />
       ))}
+      {artifactPanel}
       <div ref={bottomRef} className="h-4" />
     </div>
   );
