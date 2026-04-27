@@ -12,25 +12,29 @@ export default function CodePage() {
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground overflow-hidden">
-      <header className="flex h-11 shrink-0 items-center justify-between border-b border-border/50 px-4">
+      <header className="grid grid-cols-3 h-11 shrink-0 items-center border-b border-border/50 px-4">
         <Link href="/chat" className="font-bold text-[14px] text-foreground">
           Jarvis CLI
         </Link>
-        <span className="rounded-full border border-border/60 px-2.5 py-0.5 text-[11px] text-foreground/60">
-          Research preview
-        </span>
-        <div className="flex items-center gap-1">
+        <div className="flex justify-center">
+          <span className="rounded-full border border-border/60 px-2.5 py-0.5 text-[11px] text-foreground/60">
+            Research preview
+          </span>
+        </div>
+        <div className="flex items-center justify-end gap-1">
           <button
             type="button"
             aria-label="New window"
-            className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
+            disabled
+            className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors disabled:opacity-50 disabled:pointer-events-none"
           >
             <Square className="size-4" />
           </button>
           <button
             type="button"
             aria-label="Search"
-            className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
+            disabled
+            className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors disabled:opacity-50 disabled:pointer-events-none"
           >
             <Search className="size-4" />
           </button>
