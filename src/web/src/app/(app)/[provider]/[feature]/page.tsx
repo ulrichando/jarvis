@@ -58,6 +58,7 @@ export default async function FeaturePage(
           <div className="mt-10 flex flex-wrap items-center gap-2">
             <Button
               render={<Link href="/chat" />}
+              nativeButton={false}
               size="sm"
               className="rounded-md"
             >

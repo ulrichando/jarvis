@@ -121,7 +121,7 @@ fn tray_image_for(state: &str) -> (u32, u32, Vec<u8>) {
         "listening" => tint_source( 34, 211, 238),   // cyan   — you speaking
         "booting"   => tint_source(168,  85, 247),   // purple — service cold-starting
         "thinking"  => tint_source(250, 180,  50),   // amber  — LLM generating / tool running
-        "muted"     => tint_source(161, 161, 170),   // gray   — mic muted
+        "muted"     => tint_source( 20,  20,  20),   // black  — mic muted
         "offline"   => tint_source(239,  68,  68),   // red    — voice client down
         _           => tint_source( 63, 185,  80),   // green  — idle / ready
     }

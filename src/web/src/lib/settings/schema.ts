@@ -20,8 +20,23 @@ export const settingsSchema = z.object({
   user: z
     .object({
       name: z.string().max(80).optional(),
+      callName: z.string().max(40).optional(),
+      jobTitle: z.string().max(100).optional(),
+      preferences: z.string().max(2000).optional(),
     })
     .default({}),
+  notifications: z
+    .object({
+      responseCompletions: z.boolean().default(false),
+    })
+    .default({ responseCompletions: false }),
+  capabilities: z
+    .object({
+      markdown: z.boolean().default(true),
+      codeHighlight: z.boolean().default(true),
+      streaming: z.boolean().default(true),
+    })
+    .default({ markdown: true, codeHighlight: true, streaming: true }),
   defaults: z
     .object({
       model: z

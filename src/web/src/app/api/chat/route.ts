@@ -7,22 +7,38 @@ import {
   saveAssistantMessage,
   saveUserMessage,
 } from "@/lib/chat/persist";
+import { getWorkspace } from "@/lib/workspace/storage";
+import { buildWorkbenchPrompt } from "@/lib/actions/jarvis-prompt";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 600;
 
-const DEFAULT_SYSTEM_PROMPT =
-  "You are Jarvis, a personal AI assistant for a power user. Be direct, technical, and concise. Use fenced code blocks with language hints. Use KaTeX ($...$ or $$...$$) for math. Skip pleasantries.";
+const DEFAULT_SYSTEM_PROMPT = `You are JARVIS, an advanced AI assistant for a power user. Your output is rendered in a markdown environment that supports tables, code blocks, math, and all standard formatting.
+
+Formatting rules — follow these exactly:
+- Use headings (## / ###) to organize responses longer than a few paragraphs
+- Use **bold** for key terms, important values, and warnings
+- Use tables for comparisons, multi-dimensional data, or side-by-side information
+- Use numbered lists for steps/procedures; bullet lists for unordered items
+- Use fenced code blocks with the correct language identifier (e.g. \`\`\`python) for ALL code
+- Use \`inline code\` for commands, filenames, identifiers, and short snippets
+- Use KaTeX for math: $...$ inline, $$...$$ block
+- Use --- to separate major sections in long responses
+- Do NOT truncate code or lists — always complete what you start
+
+Tone: direct, technical, no filler. Skip greetings. Get straight to the answer.
+Depth: match response depth to question complexity — simple questions get concise answers, complex multi-part questions get thorough structured answers.`;
 
 type Body = {
   id?: string;
   messages: UIMessage[];
   model?: string;
   system?: string;
+  workspaceId?: string;
 };
 
 export async function POST(req: Request) {
-  const { id, messages, model, system }: Body = await req.json();
+  const { id, messages, model, system, workspaceId }: Body = await req.json();
   const settings = await loadSettings();
   const modelId = model ?? settings.defaults.model;
 
@@ -61,11 +77,27 @@ export async function POST(req: Request) {
 
   const modelMessages = await convertToModelMessages(messages);
 
+  // If the chat is targeting a workspace, append the bolt-style artifact
+  // instructions so the model emits <boltArtifact>/<boltAction> blocks
+  // that our streaming parser (lib/actions/message-parser.ts) can route
+  // into file writes and shell execs.
+  let finalSystem = system ?? settings.defaults.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
+  if (workspaceId) {
+    const ws = await getWorkspace(workspaceId);
+    if (ws) {
+      finalSystem += buildWorkbenchPrompt({
+        workspaceName: ws.name,
+        cwd: "/workspace",
+      });
+    }
+  }
+
   const result = streamText({
     model: selected.model,
-    system: system ?? settings.defaults.systemPrompt ?? DEFAULT_SYSTEM_PROMPT,
+    system: finalSystem,
     messages: modelMessages,
     temperature: settings.defaults.temperature ?? 0.7,
+    abortSignal: req.signal,
     onFinish: async ({ text, totalUsage, finishReason }) => {
       if (!conversation) return;
       try {
