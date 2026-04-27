@@ -33,6 +33,7 @@ export default function useVoiceClient({ muted = false } = {}) {
   const [recording,    setRecording]    = useState(false)
   const [voiceActive,  setVoiceActive]  = useState(false)
   const [processing,   setProcessing]   = useState(false)
+  const [booting,      setBooting]      = useState(false)
   const [speaking,     setSpeaking]     = useState(false)
   // True once the agent worker has joined the room AND the SFU link
   // is up. The SFU connection reports `connected` ~100 ms after
@@ -84,16 +85,11 @@ export default function useVoiceClient({ muted = false } = {}) {
         // at exact lifecycle moments — voice-client surfaces them as
         // `tool_running` and `agent_thinking` in /status. Tray gold
         // is set iff one of these is true (or the agent is booting).
-        if (s.connected && !s.agent_present) {
-          // Agent restarting — "JARVIS booting" gold.
-          setProcessing(true)
-        } else if (s.tool_running || s.agent_thinking) {
-          // Agent told us directly: tool subprocess running OR LLM
-          // generating tokens. Either way → gold.
-          setProcessing(true)
-        } else {
-          setProcessing(false)
-        }
+        const isBooting = s.connected && !s.agent_present
+        setBooting(isBooting)
+        // Thinking is only active once the agent is present — don't
+        // show amber while purple booting is already covering the state.
+        setProcessing(!isBooting && !!(s.tool_running || s.agent_thinking))
         // Track last-active speaker for any external consumer; the
         // tray no longer reads this but it's cheap to maintain.
         if (s.listening)      lastActiveRef.current = 'user'
@@ -105,7 +101,7 @@ export default function useVoiceClient({ muted = false } = {}) {
           lastActiveRef.current = null
         }
       }
-      if (alive) t = setTimeout(tick, 1000)
+      if (alive) t = setTimeout(tick, 500)
     }
     tick()
     return () => {
@@ -164,7 +160,7 @@ export default function useVoiceClient({ muted = false } = {}) {
   const closeMic = useCallback(() => {}, [])
 
   return {
-    listening, recording, voiceActive, processing, speaking, audioLevel,
+    listening, recording, voiceActive, processing, booting, speaking, audioLevel,
     startRecording: () => {},
     stopRecording:  () => {},
     speak,
