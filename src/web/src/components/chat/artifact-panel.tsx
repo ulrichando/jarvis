@@ -11,6 +11,7 @@ import {
   Terminal,
   Play,
   ExternalLink,
+  Download,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
@@ -26,6 +27,16 @@ import { cn } from "@/lib/utils";
 
 // Avoid SSR for CodeMirror — it touches `document`.
 const CodeMirror = dynamic(() => import("@uiw/react-codemirror"), { ssr: false });
+
+function downloadFile(filename: string, content: string) {
+  const blob = new Blob([content], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 type ArtifactCard = {
   artifact: ArtifactData;
@@ -136,6 +147,12 @@ function ArtifactCardView({
           ))}
         </div>
       )}
+      {(() => {
+        const completedFiles = card.actions.filter(
+          (a) => a.action.type === "file" && a.status === "success"
+        );
+        return <FileDownloadSection files={completedFiles} />;
+      })()}
     </div>
   );
 }
@@ -284,4 +301,69 @@ function describeAction(a: Action): string {
   if (a.type === "start")
     return `▶ ${a.content.split("\n")[0]?.slice(0, 80)}`;
   return "(action)";
+}
+
+function FileCard({ filePath, content }: { filePath: string; content: string }) {
+  const filename = filePath.split("/").pop() ?? filePath;
+  const ext = filename.split(".").pop()?.toUpperCase() ?? "";
+  const basename = ext ? filename.slice(0, -(ext.length + 1)) : filename;
+
+  return (
+    <div className="flex items-center gap-3 rounded-xl border border-border/50 bg-card/50 px-4 py-3">
+      <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-background/60 border border-border/40">
+        <FileCode className="size-5 text-muted-foreground/70" />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="text-[13.5px] font-medium text-foreground truncate">{basename}</div>
+        <div className="text-[11px] text-muted-foreground uppercase tracking-wide">{ext}</div>
+      </div>
+      <button
+        type="button"
+        onClick={() => downloadFile(filename, content)}
+        className="shrink-0 rounded-lg border border-border/60 bg-accent/30 px-3 py-1.5 text-[12.5px] font-medium text-foreground hover:bg-accent/60 transition-colors"
+      >
+        Download
+      </button>
+    </div>
+  );
+}
+
+function FileDownloadSection({ files }: { files: TrackedAction[] }) {
+  if (files.length === 0) return null;
+
+  const downloadAll = () => {
+    files.forEach((f, i) => {
+      if (f.action.type !== "file") return;
+      const action = f.action;
+      setTimeout(
+        () =>
+          downloadFile(
+            action.filePath.split("/").pop() ?? action.filePath,
+            action.content,
+          ),
+        i * 50,
+      );
+    });
+  };
+
+  return (
+    <div className="border-t border-border/40 px-4 py-3 space-y-2">
+      {files.map(
+        (f) =>
+          f.action.type === "file" && (
+            <FileCard key={f.actionId} filePath={f.action.filePath} content={f.action.content} />
+          ),
+      )}
+      {files.length > 1 && (
+        <button
+          type="button"
+          onClick={downloadAll}
+          className="flex items-center gap-1.5 rounded-lg border border-border/50 px-3 py-1.5 text-[12.5px] text-muted-foreground hover:bg-accent/30 hover:text-foreground transition-colors"
+        >
+          <Download className="size-3.5" />
+          Download all
+        </button>
+      )}
+    </div>
+  );
 }
