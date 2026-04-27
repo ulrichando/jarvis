@@ -98,77 +98,114 @@ Claude.ai homepage (user-provided screenshots):
 ## Part 2 — Code Page (`/code`)
 
 ### Reference
-Claude Code interface (user-provided screenshot) — exact replica adapted for Jarvis CLI.
+Claude Code screenshot provided by user — pixel-accurate replica, adapted for Jarvis CLI.
 
-### Layout
+### Full-page layout
+
+The `/code` route is a **full-page replacement** — the Jarvis app sidebar and topbar are hidden (same pattern as `/workbench`). The page renders its own two-column layout: a narrow sidebar on the left and a main area on the right.
 
 ```
-┌─────────────────────────────────────────────────────┐
-│ [Sidebar]            │ [Main area]                   │
-│                      │                               │
-│  "Jarvis CLI"        │  ✻ What's up next, Ulrich?   │
-│  ─────────────       │                               │
-│  + New session       │   (empty — sessions go in     │
-│  ⟳ Routines         │    sidebar recents)            │
-│  ≡ Customize         │                               │
-│  ∨ More              │                               │
-│                      │                               │
-│  📌 Pinned           │                               │
-│  Drag to pin         │                               │
-│                      │                               │
-│  🕐 Recents          │                               │
-│  Set up Tailscale    │                               │
-│  Review codebase     │                               │
-│                      │                               │
-│  ───────────────     │                               │
-│  [UA] Ulrich Ando    │  ┌────────────────────────┐  │
-│  [⊞] [←]            │  │ Default  + Select mach…│  │
-│                      │  ├────────────────────────┤  │
-│                      │  │ Describe a task or ask…│  │
-│                      │  ├────────────────────────┤  │
-│                      │  │Accept edits [+][◎][∨]  │  │
-│                      │  │              Opus 4.7 1M│  │
-│                      │  └────────────────────────┘  │
-└─────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│ Jarvis CLI  [Research preview]              [□] [🔍]         │ ← topbar
+├──────────────┬───────────────────────────────────────────────┤
+│ + New session│ ✻ What's up next, Ulrich?                     │
+│ ⟳ Routines  │                                               │
+│ ≡ Customize  │  (large empty space)                          │
+│ ∨ More       │                                               │
+│              │                                               │
+│ Pinned       │                                               │
+│ 📌 Drag pin  │                                               │
+│              │                                               │
+│ Recents      │                                               │
+│ ○ Session 1  │                                               │
+│ ⚡ Session 2  │                                               │
+│              │                                               │
+│ (spacer)     │  ┌─────────────────────────────────────────┐  │
+│              │  │ ⊙ Default   + Select machine…           │  │ ← context row
+│              │  ├─────────────────────────────────────────┤  │
+│ [UA] Ulrich  │  │ Describe a task or ask a question    [↵]│  │ ← input
+│ [⊞]  [←]    │  ├─────────────────────────────────────────┤  │
+│              │  │ Accept edits  [+] [◎] [∨]  Jarvis 4.7 1M│ │ ← toolbar
+│              │  └─────────────────────────────────────────┘  │
+└──────────────┴───────────────────────────────────────────────┘
 ```
 
-### Sidebar (Code page — its own layout, not the app sidebar)
+### Topbar (full-width, above both columns)
 
-Exact Claude Code sidebar structure:
-- **Top**: "Jarvis CLI" branding + "Research preview" badge (or omit badge initially)
-- **Nav items**: `+ New session`, `⟳ Routines` (placeholder), `≡ Customize` (placeholder), `∨ More`
-- **Pinned section**: "Drag to pin" empty state
-- **Recents section**: list of recent session titles (from server)
-- **Footer**: user avatar + name, two icon buttons (layout toggle + back/collapse)
+Exact Claude Code topbar:
+- **Left**: `Jarvis CLI` in bold (replaces "Claude Code"), clickable → goes to homepage
+- **Center**: `Research preview` outlined badge pill (keep for now, matches reference exactly)
+- **Right**: two icon buttons — `□` (new window / layout toggle) + `🔍` (search)
+
+### Sidebar (~230px wide, dark background)
+
+Exact Claude Code sidebar, item for item:
+
+**Nav section (top):**
+- `+ New session` — `Plus` icon, clicking clears the main input (UI only)
+- `⟳ Routines` — `RotateCw` icon, placeholder (no action)
+- `≡ Customize` — `SlidersHorizontal` icon, placeholder (no action)
+- `∨ More` — `ChevronDown` icon, collapsed by default (no action)
+
+**Pinned section:**
+- Section label: `Pinned` (small, muted)
+- Empty state: `📌 Drag to pin` — `Pin` icon + muted text
+
+**Recents section:**
+- Section label: `Recents` (small, muted)
+- List of recent session items — each shows a small status icon + truncated session title
+- Empty state: no recents message (omit if empty rather than showing placeholder text)
+
+**Footer (pinned to bottom):**
+- Left: user avatar circle (`UA` initials) + `Ulrich Ando` name
+- Right: two icon buttons — `⊞` (layout grid toggle) + `←` (back / collapse)
 
 ### Main area
 
-- **Greeting**: `✻ What's up next, {name}?` — centered, large, same font as homepage
-- **Body**: empty space (sessions are in sidebar, not shown as cards in main)
-- **Bottom composer** (three-row structure, exact Claude Code):
-  1. **Context bar**: `Default` pill (active machine/context) + `+ Select machine…` pill
-  2. **Input**: `Describe a task or ask a question` placeholder, full-width textarea
-  3. **Toolbar bar**: left = `Accept edits` button + `+` + `◎` + `∨` dropdown; right = model name + token count + spinner
+**Greeting (top-left, NOT centered):**
+- `✻ What's up next, Ulrich?` — left-aligned, top of the main area, same ✻ spark and serif font as homepage greeting
+- Below it: completely empty dark space
+
+**Bottom composer (3-row, fixed to bottom of main area):**
+
+Row 1 — Context bar (outside/above the input box):
+- `⊙ Default` pill — active machine context (placeholder)
+- `+ Select machine…` pill — opens placeholder modal on click (replaces Claude's "Select repo…")
+
+Row 2 — Input:
+- Full-width textarea, placeholder: `Describe a task or ask a question`
+- Send/return icon `↵` on the far right
+
+Row 3 — Toolbar:
+- Left: `Accept edits` button (placeholder) + `+` icon button + `◎` icon button + `∨` dropdown button
+- Right: model name + context size (e.g. `Jarvis 4.7  1M`) + loading spinner icon
 
 ### Routing and navigation
 
-- Route: `/code` — new Next.js page
-- Sidebar nav: add `Code` item (between Chats and Workbench) with `Code2` icon, `href: "/code"`
-- The Code page has its **own full-page layout** — it does NOT use the app shell's `<Sidebar>` or `<TopBar>`. It renders its own sidebar (matching Claude Code's structure) and hides the app sidebar automatically (same pattern as `/workbench`).
+- Route: `/code` — new Next.js page under `src/app/(app)/code/page.tsx`
+- App sidebar (`sidebar.tsx`): add `Code` nav item with `Code2` icon, `href: "/code"`, positioned between Chats and Workbench
+- App sidebar suppress: same `pathname.startsWith("/code")` check used for `/workbench`
+- App topbar suppress: same check — `TopBar` returns null on `/code`
 
-### Functionality scope (design only — not implemented yet)
+### Functionality scope (UI shell only — no backend)
 
-The input, "Select machine", and session management are **UI shells** only. No backend wiring in this design phase. Clicking "New session" clears the input. "Select machine…" opens a placeholder modal. Sessions in recents are static placeholders.
+All interactive elements are shells:
+- "New session" → clears the textarea
+- "Select machine…" → opens an empty modal (no machine list yet)
+- "Routines" / "Customize" / "More" → no-op clicks
+- Recents → hardcoded placeholder sessions for now
+- "Accept edits" / `+` / `◎` / `∨` → no-op
 
 ### Files touched (Part 2)
 
 | File | Change |
 |---|---|
-| `src/app/(app)/code/page.tsx` | New page — full Code page layout |
-| `src/components/code/code-sidebar.tsx` | New — Claude Code-style sidebar |
-| `src/components/code/code-composer.tsx` | New — three-row bottom composer |
-| `src/components/layout/sidebar.tsx` | Add "Code" nav item |
-| `src/app/(app)/layout.tsx` (or equivalent) | Suppress app sidebar on `/code` |
+| `src/app/(app)/code/page.tsx` | New — full Code page (own layout, suppresses app shell) |
+| `src/components/code/code-sidebar.tsx` | New — left sidebar matching Claude Code exactly |
+| `src/components/code/code-composer.tsx` | New — 3-row bottom composer (context bar + input + toolbar) |
+| `src/components/layout/sidebar.tsx` | Add `Code` nav item between Chats and Workbench |
+| `src/components/layout/topbar.tsx` | Suppress on `/code` (already suppressed on `/workbench`) |
+| `src/components/layout/sidebar.tsx` | Suppress open-sidebar button on `/code` |
 
 ---
 
