@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import { useState } from "react";
 import {
   ChevronDown,
+  Code2,
   MessagesSquare,
   MoreHorizontal,
   PanelLeftClose,
@@ -27,6 +28,8 @@ const CORE_NAV = [
   { href: "/chat", label: "New chat", icon: Plus },
   { href: "/search", label: "Search", icon: Search },
   { href: "/chats", label: "Chats", icon: MessagesSquare },
+  { href: "/code", label: "Code", icon: Code2 },
+  { href: "/workbench", label: "Workbench", icon: Code2 },
 ] as const;
 
 function initials(name?: string | null) {
@@ -318,7 +321,7 @@ export function Sidebar() {
           </motion.aside>
         )}
       </AnimatePresence>
-      {!sidebarOpen && (
+      {!sidebarOpen && !pathname.startsWith("/workbench") && !pathname.startsWith("/code") && (
         <div className="absolute left-2 top-2 z-10">
           <Button
             variant="ghost"
