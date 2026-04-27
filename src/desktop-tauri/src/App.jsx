@@ -171,19 +171,19 @@ export default function App() {
 
   // ── Tray icon state ─────────────────────────────────────────────────
   // Priority (highest first): offline > muted > talking > listening >
-  // thinking > idle. Matches the pill's mapping in VoiceClientPill so
-  // the two indicators always agree. A dropped bridge WS still wins
-  // over everything else — that's a real problem the user needs to see.
+  // booting > thinking > idle. Booting (purple) and thinking (amber) are
+  // now distinct states so the tray and pill always tell the same story.
   useEffect(() => {
     let next = 'idle'
     if (wsStatus === 'disconnected')       next = 'offline'
     else if (voiceMuted)                   next = 'muted'
-    else if (speech.speaking)              next = 'talking'
-    else if (speech.voiceActive)           next = 'listening'
-    else if (speech.processing)            next = 'thinking'
-    else                                   next = 'idle'
+    else if (speech.speaking)             next = 'talking'
+    else if (speech.voiceActive)          next = 'listening'
+    else if (speech.booting)             next = 'booting'
+    else if (speech.processing)          next = 'thinking'
+    else                                  next = 'idle'
     pushTrayState(next)
-  }, [wsStatus, voiceMuted, speech.speaking, speech.voiceActive, speech.processing, pushTrayState])
+  }, [wsStatus, voiceMuted, speech.speaking, speech.voiceActive, speech.booting, speech.processing, pushTrayState])
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────
   useEffect(() => {
@@ -265,7 +265,7 @@ function VoiceClientPill({ processing = false }) {
       } catch {
         if (alive) setS({ connected: false })
       }
-      if (alive) t = setTimeout(tick, 1000)
+      if (alive) t = setTimeout(tick, 500)
     }
     tick()
     return () => { alive = false; clearTimeout(t) }
@@ -294,7 +294,7 @@ function VoiceClientPill({ processing = false }) {
     :  s.muted             ? { color: '#a1a1aa', label: 'Mic muted'       }
     :  s.speaking          ? { color: '#4493f8', label: 'JARVIS speaking' }
     :  s.listening         ? { color: '#22d3ee', label: 'You speaking'    }
-    : !s.agent_present     ? { color: '#fab432', label: 'JARVIS booting'  }
+    : !s.agent_present     ? { color: '#a855f7', label: 'JARVIS booting'  }
     :  processing          ? { color: '#fab432', label: 'JARVIS thinking' }
     :                        { color: '#3fb950', label: 'Voice ready'     }
   return (
