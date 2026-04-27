@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ComposerModelPicker } from "./model-picker";
+import { ComposerWorkspacePicker } from "./workspace-picker";
 import { PlusMenu, SecondaryMenu } from "./plus-menu";
 import type { Provider } from "@/lib/ai/models-meta";
 import { getProviderUX } from "@/lib/ai/provider-ux";
@@ -17,6 +18,11 @@ type ComposerProps = {
   onStop?: () => void;
   status: "ready" | "submitted" | "streaming" | "error";
   provider: Provider;
+  // When the chat is embedded inside a workbench page the workspace
+  // is already pinned by the page itself — showing the picker would
+  // be confusing because changing it would point chat at a different
+  // workspace than the editor next to it.
+  hideWorkspacePicker?: boolean;
 };
 
 export function Composer({
@@ -26,6 +32,7 @@ export function Composer({
   onStop,
   status,
   provider,
+  hideWorkspacePicker = false,
 }: ComposerProps) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const isBusy = status === "streaming" || status === "submitted";
@@ -48,6 +55,20 @@ export function Composer({
 
   const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
+      // DEBUG instrumentation — remove with chat.tsx's dbg() once
+      // the chat-flow bug is found.
+      try {
+        fetch("/api/dbg", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            stage: "composer:enter-pressed",
+            isBusy,
+            valueLen: value.trim().length,
+            t: Date.now(),
+          }),
+        }).catch(() => {});
+      } catch {}
       e.preventDefault();
       if (!isBusy && value.trim().length > 0) onSubmit();
     }
@@ -139,6 +160,7 @@ export function Composer({
               </Button>
             )}
             {!ux.hideComposerModelPicker && <ComposerModelPicker />}
+            {!hideWorkspacePicker && <ComposerWorkspacePicker />}
             {value.trim().length === 0 && !isBusy ? (
               <Button
                 type="button"
