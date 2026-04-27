@@ -50,41 +50,62 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-/* Jarvis dark — blue-tinted black with electric blue accent */
+/*
+ * JARVIS — Stark Industries HUD
+ *
+ * Design rules:
+ *  • Three visible surface layers: sidebar (darkest) → background → card
+ *  • Primary = arc-reactor cyan, in-sRGB-gamut (chroma 0.155 at L 0.80)
+ *  • All text levels pass WCAG AA: foreground ~17:1, muted ~5.5:1
+ *  • Borders tinted with the primary so structure is always legible
+ */
 :root {
   color-scheme: dark;
-  --background: oklch(0.15 0.012 255);
-  --foreground: oklch(0.95 0.012 245);
-  --card: oklch(0.19 0.016 255);
-  --card-foreground: oklch(0.95 0.012 245);
-  --popover: oklch(0.19 0.016 255);
-  --popover-foreground: oklch(0.95 0.012 245);
-  --primary: oklch(0.7 0.17 240);
-  --primary-foreground: oklch(0.14 0.015 255);
-  --secondary: oklch(0.24 0.02 255);
-  --secondary-foreground: oklch(0.95 0.012 245);
-  --muted: oklch(0.21 0.015 255);
-  --muted-foreground: oklch(0.67 0.025 240);
-  --accent: oklch(0.3 0.04 245);
-  --accent-foreground: oklch(0.95 0.012 245);
-  --destructive: oklch(0.65 0.22 25);
-  --border: oklch(1 0 0 / 8%);
-  --input: oklch(1 0 0 / 10%);
-  --ring: oklch(0.7 0.17 240);
-  --chart-1: oklch(0.7 0.17 240);
-  --chart-2: oklch(0.75 0.15 200);
-  --chart-3: oklch(0.65 0.2 280);
-  --chart-4: oklch(0.6 0.15 220);
-  --chart-5: oklch(0.55 0.18 260);
+
+  /* ── Surfaces (three distinct layers) ── */
+  --background:          oklch(0.11 0.014 252);
+  --foreground:          oklch(0.97 0.007 240);
+  --card:                oklch(0.16 0.022 250);
+  --card-foreground:     oklch(0.97 0.007 240);
+  --popover:             oklch(0.15 0.020 250);
+  --popover-foreground:  oklch(0.97 0.007 240);
+
+  /* ── Arc-reactor electric cyan ── */
+  --primary:             oklch(0.80 0.155 198);
+  --primary-foreground:  oklch(0.09 0.012 252);
+
+  /* ── Supporting surfaces ── */
+  --secondary:           oklch(0.21 0.026 250);
+  --secondary-foreground:oklch(0.97 0.007 240);
+  --muted:               oklch(0.18 0.020 250);
+  --muted-foreground:    oklch(0.74 0.032 235);
+  --accent:              oklch(0.23 0.030 248);
+  --accent-foreground:   oklch(0.97 0.007 240);
+  --destructive:         oklch(0.65 0.22 25);
+
+  /* ── Clearly visible, cyan-tinted borders ── */
+  --border:              oklch(0.75 0.10 200 / 22%);
+  --input:               oklch(0.75 0.10 200 / 16%);
+  --ring:                oklch(0.80 0.155 198);
+
+  /* ── Charts ── */
+  --chart-1:             oklch(0.80 0.155 198);
+  --chart-2:             oklch(0.74 0.145 218);
+  --chart-3:             oklch(0.70 0.165 178);
+  --chart-4:             oklch(0.66 0.140 238);
+  --chart-5:             oklch(0.62 0.160 258);
+
   --radius: 0.75rem;
-  --sidebar: oklch(0.13 0.012 255);
-  --sidebar-foreground: oklch(0.9 0.012 245);
-  --sidebar-primary: oklch(0.7 0.17 240);
-  --sidebar-primary-foreground: oklch(0.14 0.015 255);
-  --sidebar-accent: oklch(0.22 0.02 255);
-  --sidebar-accent-foreground: oklch(0.95 0.012 245);
-  --sidebar-border: oklch(1 0 0 / 6%);
-  --sidebar-ring: oklch(0.7 0.17 240);
+
+  /* ── Sidebar — visibly the darkest layer ── */
+  --sidebar:                   oklch(0.08 0.012 252);
+  --sidebar-foreground:        oklch(0.92 0.009 238);
+  --sidebar-primary:           oklch(0.80 0.155 198);
+  --sidebar-primary-foreground:oklch(0.09 0.012 252);
+  --sidebar-accent:            oklch(0.14 0.020 250);
+  --sidebar-accent-foreground: oklch(0.97 0.007 240);
+  --sidebar-border:            oklch(0.75 0.10 200 / 13%);
+  --sidebar-ring:              oklch(0.80 0.155 198);
 }
 
 @layer base {
@@ -98,21 +119,21 @@
     @apply font-sans;
   }
   ::selection {
-    background: oklch(0.7 0.17 240 / 35%);
-    color: oklch(0.98 0.012 245);
+    background: oklch(0.80 0.155 198 / 30%);
+    color: oklch(0.97 0.007 240);
   }
   ::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
+    width: 8px;
+    height: 8px;
   }
   ::-webkit-scrollbar-track {
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: oklch(1 0 0 / 8%);
+    background: oklch(0.75 0.10 200 / 22%);
     border-radius: 6px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: oklch(0.7 0.17 240 / 35%);
+    background: oklch(0.80 0.155 198 / 50%);
   }
 }

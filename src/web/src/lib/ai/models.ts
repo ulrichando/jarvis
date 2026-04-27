@@ -55,6 +55,8 @@ const MODEL_IDS: Record<string, { provider: Provider; modelId: string }> = {
 
   "deepseek-chat": { provider: "deepseek", modelId: "deepseek-chat" },
   "deepseek-reasoner": { provider: "deepseek", modelId: "deepseek-reasoner" },
+  "deepseek-v4-pro": { provider: "deepseek", modelId: "deepseek-v4-pro" },
+  "deepseek-v4-flash": { provider: "deepseek", modelId: "deepseek-v4-flash" },
 
   "kimi-k2-instant": { provider: "kimi", modelId: "kimi-k2-0905-preview" },
   "kimi-k2-thinking": { provider: "kimi", modelId: "kimi-thinking-preview" },
@@ -62,6 +64,10 @@ const MODEL_IDS: Record<string, { provider: Provider; modelId: string }> = {
   "kimi-k2-swarm": { provider: "kimi", modelId: "kimi-k2-0905-preview" },
 
   "llama-3.3-70b": { provider: "groq", modelId: "llama-3.3-70b-versatile" },
+  "gpt-oss-120b": { provider: "groq", modelId: "openai/gpt-oss-120b" },
+  "qwen3-32b": { provider: "groq", modelId: "qwen/qwen3-32b" },
+  "llama-4-scout-17b": { provider: "groq", modelId: "meta-llama/llama-4-scout-17b-16e-instruct" },
+  "llama-3.1-8b-instant": { provider: "groq", modelId: "llama-3.1-8b-instant" },
   "kimi-k2-groq": { provider: "groq", modelId: "moonshotai/kimi-k2-instruct-0905" },
   "qwen-qwq-32b": { provider: "groq", modelId: "qwen-qwq-32b" },
 };

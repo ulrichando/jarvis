@@ -26,7 +26,18 @@ export function useSettings() {
 }
 
 export type SettingsPatch = {
-  user?: { name?: string };
+  user?: {
+    name?: string;
+    callName?: string;
+    jobTitle?: string;
+    preferences?: string;
+  };
+  notifications?: { responseCompletions?: boolean };
+  capabilities?: {
+    markdown?: boolean;
+    codeHighlight?: boolean;
+    streaming?: boolean;
+  };
   defaults?: {
     model?: string;
     systemPrompt?: string;

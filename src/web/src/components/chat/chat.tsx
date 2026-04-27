@@ -21,11 +21,12 @@
 //   2. flush input clear
 //   3. POST /api/chat with the new history
 //   4. Read response.body via ReadableStream reader
-//   5. For each `text-delta` SSE event, flushSync(setMessages append)
+//   5. For each `text-delta`, write to a ref + schedule one rAF flush
+//      (rAF calls setMessages at most once per animation frame — no blocking)
 //   6. On finish/[DONE] flip status back to ready
 
 import { type UIMessage } from "ai";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, startTransition } from "react";
 import { flushSync } from "react-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -145,10 +146,20 @@ export function Chat({
   }, [model, setModel]);
 
   const abortRef = useRef<AbortController | null>(null);
+  // rAF-based streaming flush: the hot loop writes here; a scheduled
+  // animation-frame reads it and calls setMessages once per frame.
+  // This never blocks the event loop (unlike flushSync).
+  const streamPending = useRef<{ id: string; text: string } | null>(null);
+  const rafId = useRef<number | null>(null);
 
   const stop = () => {
     abortRef.current?.abort();
     abortRef.current = null;
+    if (rafId.current !== null) {
+      cancelAnimationFrame(rafId.current);
+      rafId.current = null;
+    }
+    streamPending.current = null;
     setStatus("ready");
   };
 
@@ -304,13 +315,42 @@ export function Chat({
       const decoder = new TextDecoder();
       let buf = "";
 
+      // Schedule one rAF flush. The hot loop only writes to the ref —
+      // never calling setState directly. The rAF callback fires at most
+      // once per animation frame (~60fps) and does the actual setState.
+      // This keeps the event loop free (no flushSync blocking).
+      const scheduleFlush = () => {
+        if (rafId.current !== null) return;
+        rafId.current = requestAnimationFrame(() => {
+          rafId.current = null;
+          const p = streamPending.current;
+          if (!p) return;
+          // startTransition marks this as a low-priority, interruptible
+          // render. If new tokens arrive while React is mid-render (markdown
+          // parsing a large string), React abandons the in-progress render
+          // and restarts with the latest text. This prevents render backlog
+          // and is how Claude.ai / Copilot handle fast streaming.
+          startTransition(() => {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === p.id
+                  ? { ...m, parts: [{ type: "text", text: p.text } as never] }
+                  : m,
+              ),
+            );
+          });
+        });
+      };
+
       while (true) {
+        if (ctrl.signal.aborted) break;
         const { done, value } = await reader.read();
         if (done) break;
         buf += decoder.decode(value, { stream: true });
         const lines = buf.split("\n");
         buf = lines.pop() ?? "";
         for (const line of lines) {
+          if (ctrl.signal.aborted) break;
           if (!line.startsWith("data: ")) continue;
           const raw = line.slice(6);
           if (raw === "[DONE]") continue;
@@ -326,33 +366,32 @@ export function Chat({
           // if shown verbatim.
           if (evt.type === "text-delta" && typeof evt.delta === "string") {
             assistantText += evt.delta;
-            // Run the cumulative text through the bolt-style parser. It
-            // returns only the NEW visible characters this call (i.e. the
-            // delta minus anything inside <boltArtifact>...</boltArtifact>),
-            // so we accumulate the result into `parsedSoFar` for the
-            // chat bubble. Tag content gets surfaced through the
-            // onActionOpen/Stream/Close callbacks instead.
             parsedSoFar += parser.parse(assistantId, assistantText);
-            const visible = parsedSoFar;
-            // flushSync forces React to commit this update before
-            // we read the next chunk — without it, the loop's setState
-            // calls batch into one render at the very end and the user
-            // sees no streaming.
-            flushSync(() => {
-              setMessages((prev) =>
-                prev.map((m) =>
-                  m.id === assistantId
-                    ? {
-                        ...m,
-                        parts: [{ type: "text", text: visible } as never],
-                      }
-                    : m,
-                ),
-              );
-            });
+            streamPending.current = { id: assistantId, text: parsedSoFar };
+            scheduleFlush();
           }
         }
       }
+
+      // Cancel any in-flight rAF and do a direct final commit so the
+      // last batch of tokens is always visible.
+      if (rafId.current !== null) {
+        cancelAnimationFrame(rafId.current);
+        rafId.current = null;
+      }
+      if (parsedSoFar) {
+        const finalText = parsedSoFar;
+        startTransition(() => {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId
+                ? { ...m, parts: [{ type: "text", text: finalText } as never] }
+                : m,
+            ),
+          );
+        });
+      }
+      streamPending.current = null;
 
       setStatus("ready");
       qc.invalidateQueries({ queryKey: ["conversations"] });
