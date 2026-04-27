@@ -49,6 +49,8 @@ export type Chip = {
   label: string;
   icon?: LucideIcon;
   prompt: string;
+  description?: string;
+  tasks?: string[];
 };
 
 export type MenuItem = {
@@ -260,15 +262,62 @@ const DEFAULT_UX: ProviderUX = {
   placeholder: "How can I help you today?",
   renderGreeting: ClaudeGreeting,
   chips: [
-    { label: "Write", icon: PenLine, prompt: "Help me write " },
-    { label: "Learn", icon: GraduationCap, prompt: "Teach me about " },
-    { label: "Code", icon: Code2, prompt: "Write a function that " },
-    { label: "Life stuff", icon: Coffee, prompt: "Help me think through " },
+    {
+      label: "Write",
+      icon: PenLine,
+      prompt: "Help me write ",
+      description: "Draft, edit, or improve text",
+      tasks: [
+        "Draft a blog post",
+        "Write a professional email",
+        "Edit my writing for clarity",
+        "Write a cover letter",
+        "Summarize this for me",
+      ],
+    },
+    {
+      label: "Learn",
+      icon: GraduationCap,
+      prompt: "Teach me about ",
+      description: "Explain concepts and ideas",
+      tasks: [
+        "Explain this concept simply",
+        "Teach me how this works",
+        "Quiz me on a topic",
+        "Compare two things for me",
+      ],
+    },
+    {
+      label: "Code",
+      icon: Code2,
+      prompt: "Write a function that ",
+      description: "Functions, scripts, debug",
+      tasks: [
+        "Write a function that…",
+        "Debug my code",
+        "Create a script to…",
+        "Explain this code",
+        "Write tests for…",
+      ],
+    },
+    {
+      label: "Life stuff",
+      icon: Coffee,
+      prompt: "Help me think through ",
+      description: "Plans, decisions, ideas",
+      tasks: [
+        "Help me make a decision",
+        "Think through a problem with me",
+        "Help me plan my week",
+        "Brainstorm ideas with me",
+      ],
+    },
     {
       label: "Claude's choice",
       icon: Apple,
       prompt:
         "Ask me three questions that'll get me unstuck on whatever I'm working on.",
+      description: "Let the AI surprise you",
     },
   ],
   plus: [
@@ -310,9 +359,42 @@ const OPENAI_UX: ProviderUX = {
   placeholder: "Ask anything",
   renderGreeting: OpenAIGreeting,
   chips: [
-    { label: "Create image", icon: Images, prompt: "Create an image of " },
-    { label: "Write or edit", icon: PenLine, prompt: "Help me write " },
-    { label: "Look something up", icon: Search, prompt: "Look up " },
+    {
+      label: "Create image",
+      icon: Images,
+      prompt: "Create an image of ",
+      description: "Generate images from text",
+      tasks: [
+        "Create a logo for…",
+        "Illustrate a scene where…",
+        "Draw a portrait of…",
+        "Make a wallpaper that…",
+      ],
+    },
+    {
+      label: "Write or edit",
+      icon: PenLine,
+      prompt: "Help me write ",
+      description: "Draft, edit, or improve text",
+      tasks: [
+        "Draft a blog post",
+        "Write a professional email",
+        "Edit my writing for clarity",
+        "Write a cover letter",
+      ],
+    },
+    {
+      label: "Look something up",
+      icon: Search,
+      prompt: "Look up ",
+      description: "Research and summarize",
+      tasks: [
+        "Summarize recent news on…",
+        "What is the current status of…",
+        "Find me resources about…",
+        "Compare options for…",
+      ],
+    },
   ],
   plus: [
     {
@@ -347,11 +429,61 @@ const GEMINI_UX: ProviderUX = {
   placeholder: "Ask Gemini",
   renderGreeting: GeminiGreeting,
   chips: [
-    { label: "Create image", icon: Images, prompt: "Create an image of " },
-    { label: "Create music", icon: Music4, prompt: "Create music that " },
-    { label: "Boost my day", icon: Sparkles, prompt: "Help me plan a great day. " },
-    { label: "Write anything", icon: PenLine, prompt: "Help me write " },
-    { label: "Help me learn", icon: BookOpen, prompt: "Teach me about " },
+    {
+      label: "Create image",
+      icon: Images,
+      prompt: "Create an image of ",
+      description: "Generate images from text",
+      tasks: [
+        "Create a logo for…",
+        "Illustrate a scene where…",
+        "Make a wallpaper that…",
+      ],
+    },
+    {
+      label: "Create music",
+      icon: Music4,
+      prompt: "Create music that ",
+      description: "Compose AI-generated music",
+      tasks: [
+        "Create a calm background track",
+        "Make an upbeat workout playlist intro",
+        "Compose a melody that feels like…",
+      ],
+    },
+    {
+      label: "Boost my day",
+      icon: Sparkles,
+      prompt: "Help me plan a great day. ",
+      description: "Plans and productivity",
+      tasks: [
+        "Help me plan my morning routine",
+        "Suggest a productive schedule for today",
+        "Give me a motivational boost",
+      ],
+    },
+    {
+      label: "Write anything",
+      icon: PenLine,
+      prompt: "Help me write ",
+      description: "Draft, edit, or improve text",
+      tasks: [
+        "Draft a blog post",
+        "Write a professional email",
+        "Edit my writing for clarity",
+      ],
+    },
+    {
+      label: "Help me learn",
+      icon: BookOpen,
+      prompt: "Teach me about ",
+      description: "Explain concepts and ideas",
+      tasks: [
+        "Explain this concept simply",
+        "Teach me how this works",
+        "Quiz me on a topic",
+      ],
+    },
   ],
   plus: [
     {
@@ -457,9 +589,41 @@ const GROQ_UX: ProviderUX = {
   placeholder: "Ask — instantly",
   renderGreeting: GroqGreeting,
   chips: [
-    { label: "Compound", icon: AudioLines, prompt: "Use Compound to " },
-    { label: "Code", icon: Code2, prompt: "Write a function that " },
-    { label: "Summarize", icon: FileText, prompt: "Summarize this: " },
+    {
+      label: "Compound",
+      icon: AudioLines,
+      prompt: "Use Compound to ",
+      description: "Multi-step AI workflows",
+      tasks: [
+        "Use Compound to research and summarize…",
+        "Use Compound to analyze and report on…",
+        "Use Compound to plan and execute…",
+      ],
+    },
+    {
+      label: "Code",
+      icon: Code2,
+      prompt: "Write a function that ",
+      description: "Functions, scripts, debug",
+      tasks: [
+        "Write a function that…",
+        "Debug my code",
+        "Create a script to…",
+        "Explain this code",
+      ],
+    },
+    {
+      label: "Summarize",
+      icon: FileText,
+      prompt: "Summarize this: ",
+      description: "Condense any content",
+      tasks: [
+        "Summarize this article",
+        "Give me the key points of…",
+        "TL;DR this for me",
+        "Extract the action items from…",
+      ],
+    },
   ],
   plus: DEFAULT_UX.plus,
 };
