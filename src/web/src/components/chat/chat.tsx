@@ -130,7 +130,9 @@ export function Chat({
 
   const activeMeta = MODELS_META[model] ?? MODELS_META[DEFAULT_MODEL];
   const provider = activeMeta.provider;
-  const ux = getProviderUX(provider);
+  // UX is locked to a single stable interface regardless of which model is
+  // selected — switching models changes the backend, not the homepage layout.
+  const ux = getProviderUX("anthropic");
 
   // If the persisted model id is no longer in the registry (renamed
   // or removed between sessions), reset to default — otherwise every
