@@ -3,14 +3,25 @@
 import { cn } from "@/lib/utils";
 import type { Chip } from "@/lib/ai/provider-ux";
 
-type Props = {
+/**
+ * Grid of function shortcut cards shown on the homepage empty state.
+ *
+ * Controlled component — parent owns `activeLabel`. When a card with tasks is
+ * clicked, `onSetActive(label)` is called and the parent is responsible for
+ * rendering a `<TaskPanel>` for that chip (see chat.tsx). Clicking a chip with
+ * no tasks calls `onPick(prompt)` directly.
+ */
+export function FunctionGrid({
+  chips,
+  onPick,
+  activeLabel,
+  onSetActive,
+}: {
   chips: Chip[];
   onPick: (prompt: string) => void;
   activeLabel: string | null;
   onSetActive: (label: string | null) => void;
-};
-
-export function FunctionGrid({ chips, onPick, activeLabel, onSetActive }: Props) {
+}) {
   if (chips.length === 0) return null;
 
   return (
