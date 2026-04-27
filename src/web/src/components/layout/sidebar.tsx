@@ -52,11 +52,13 @@ export function Sidebar() {
   const modelId = useChatStore((s) => s.model);
   const activeModel = MODELS_META[modelId] ?? MODELS_META[DEFAULT_MODEL];
   const provider = activeModel.provider;
-  const features = PROVIDER_FEATURES[provider];
+  // Sidebar layout is locked to Anthropic — model switches only change the
+  // backend, not which nav sections appear.
+  const features = PROVIDER_FEATURES["anthropic"];
   const primary = features.filter((f) => !f.overflow);
   const overflow = features.filter((f) => f.overflow);
-  const sections = PROVIDER_SECTIONS[provider] ?? [];
-  const ux = getProviderUX(provider);
+  const sections = PROVIDER_SECTIONS["anthropic"] ?? [];
+  const ux = getProviderUX("anthropic");
   const recentsLabel = ux.recentsLabel ?? "Recents";
 
   const displayName = settings?.user?.name ?? "You";
@@ -119,17 +121,9 @@ export function Sidebar() {
                 </nav>
 
                 {/* Provider features */}
-                <AnimatePresence mode="wait" initial={false}>
-                  <motion.nav
-                    key={provider}
-                    initial={{ opacity: 0, y: -4 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -4 }}
-                    transition={{ duration: 0.15, ease: "easeOut" }}
-                    className="mt-1 space-y-px"
-                  >
+                <nav className="mt-1 space-y-px">
                     {primary.map((f) => {
-                      const href = `/${provider}/${f.slug}`;
+                      const href = `/anthropic/${f.slug}`;
                       const active = pathname === href;
                       return (
                         <Link
@@ -152,8 +146,7 @@ export function Sidebar() {
                         </Link>
                       );
                     })}
-                  </motion.nav>
-                </AnimatePresence>
+                </nav>
 
                 {/* More */}
                 {overflow.length > 0 && (
@@ -181,7 +174,7 @@ export function Sidebar() {
                           className="overflow-hidden"
                         >
                           {overflow.map((f) => {
-                            const href = `/${provider}/${f.slug}`;
+                            const href = `/anthropic/${f.slug}`;
                             const active = pathname === href;
                             return (
                               <Link
