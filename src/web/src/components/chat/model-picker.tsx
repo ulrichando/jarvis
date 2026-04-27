@@ -1,7 +1,9 @@
 "use client";
 
-import { ChevronDown, Check } from "lucide-react";
+import { ChevronDown, Check, KeyRound } from "lucide-react";
 import { Fragment } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -17,9 +19,30 @@ import {
   MODELS_META,
   modelsByProvider,
   type ModelId,
+  type Provider,
 } from "@/lib/ai/models-meta";
 import { getProviderUX } from "@/lib/ai/provider-ux";
 import { useChatStore } from "@/stores/chat";
+import { cn } from "@/lib/utils";
+
+// Reads /api/providers/available — server tells us which provider keys
+// are configured in env. Picker dims models from providers without
+// keys (still visible, click shows a toast). Once a key is added in
+// .env.local + dev restarted, this query reflects it within the
+// staleTime window (60 s).
+type AvailableMap = Record<Provider, boolean>;
+function useAvailableProviders() {
+  return useQuery<AvailableMap>({
+    queryKey: ["providers", "available"],
+    queryFn: async () => {
+      const r = await fetch("/api/providers/available");
+      if (!r.ok) throw new Error("provider availability fetch failed");
+      return r.json();
+    },
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+}
 
 /**
  * Strips redundant brand prefixes so the picker reads like claude.ai's
@@ -58,6 +81,14 @@ export function ComposerModelPicker() {
   const primaryLabel =
     ux.modelShortLabel?.(active.label, active.id) ?? shortLabel(active.label);
   const showSub = !ux.modelShortLabel?.(active.label, active.id);
+  const { data: available } = useAvailableProviders();
+
+  const isProviderAvailable = (p: Provider): boolean => {
+    // Until the availability map loads, optimistically allow everything
+    // — avoids one render flash where every model looks dim.
+    if (!available) return true;
+    return available[p] ?? false;
+  };
 
   return (
     <DropdownMenu>
@@ -80,9 +111,15 @@ export function ComposerModelPicker() {
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="end"
+        // Drop downward — matches Claude's behaviour. Base UI
+        // auto-flips to "top" if there isn't enough room below,
+        // so this is a hint, not a hard pin.
         side="bottom"
         sideOffset={6}
-        className="w-64 p-1"
+        // max-h matches Claude.ai's compact picker height. The list
+        // grows past it as more providers/models land, so the inner
+        // scroll keeps the popover from running off-screen.
+        className="w-64 max-h-100 overflow-y-auto p-1"
       >
         {groups.map((g, gi) => (
           <Fragment key={g.provider}>
@@ -93,11 +130,27 @@ export function ComposerModelPicker() {
               </DropdownMenuLabel>
               {g.models.map((m) => {
                 const isActive = m.id === model;
+                const enabled = isProviderAvailable(g.provider);
                 return (
                   <DropdownMenuItem
                     key={m.id}
-                    onClick={() => setModel(m.id as ModelId)}
-                    className="gap-1.5 py-1 text-[12.5px]"
+                    onClick={() => {
+                      if (!enabled) {
+                        toast.error(
+                          `${g.label} key not set`,
+                          {
+                            description:
+                              `Add the API key in src/web/.env.local and restart the dev server to enable ${shortLabel(m.label)}.`,
+                          },
+                        );
+                        return;
+                      }
+                      setModel(m.id as ModelId);
+                    }}
+                    className={cn(
+                      "gap-1.5 py-1 text-[13px]",
+                      !enabled && "opacity-50",
+                    )}
                   >
                     <Check
                       className={
@@ -111,6 +164,12 @@ export function ComposerModelPicker() {
                       <span className="ml-auto rounded-sm bg-primary/15 px-1.5 py-px text-[9px] font-medium uppercase tracking-wide text-primary">
                         {m.badge}
                       </span>
+                    )}
+                    {!enabled && (
+                      <KeyRound
+                        className="ml-auto size-3 text-muted-foreground/70"
+                        aria-label="API key required"
+                      />
                     )}
                   </DropdownMenuItem>
                 );
