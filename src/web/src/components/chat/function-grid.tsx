@@ -4,12 +4,11 @@ import { cn } from "@/lib/utils";
 import type { Chip } from "@/lib/ai/provider-ux";
 
 /**
- * Grid of function shortcut cards shown on the homepage empty state.
+ * Horizontal pill row of function shortcuts shown on the homepage empty state.
  *
- * Controlled component — parent owns `activeLabel`. When a card with tasks is
- * clicked, `onSetActive(label)` is called and the parent is responsible for
- * rendering a `<TaskPanel>` for that chip (see chat.tsx). Clicking a chip with
- * no tasks calls `onPick(prompt)` directly.
+ * Controlled component — parent owns `activeLabel`. Clicking a chip with tasks
+ * calls `onSetActive(label)` and the parent renders a `<TaskPanel>` below.
+ * Clicking a chip with no tasks calls `onPick(prompt)` directly.
  */
 export function FunctionGrid({
   chips,
@@ -25,8 +24,8 @@ export function FunctionGrid({
   if (chips.length === 0) return null;
 
   return (
-    <div className="mt-6 w-full max-w-2xl mx-auto">
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+    <div className="mt-4 w-full max-w-3xl mx-auto">
+      <div className="flex flex-wrap justify-center gap-2">
         {chips.map((c) => {
           const isActive = activeLabel === c.label;
           const hasTasks = (c.tasks?.length ?? 0) > 0;
@@ -44,28 +43,21 @@ export function FunctionGrid({
                 }
               }}
               className={cn(
-                "flex flex-col gap-2.5 rounded-2xl border p-4 text-left transition-colors",
+                "flex items-center gap-2 rounded-full border px-4 py-2 text-[13px] transition-colors",
                 isActive
                   ? "border-border bg-card text-foreground"
-                  : "border-border/50 bg-card/40 text-foreground/85 hover:bg-card/70 hover:border-border/80",
+                  : "border-border/50 bg-card/30 text-foreground/75 hover:bg-card/60 hover:border-border/80 hover:text-foreground",
               )}
             >
               {c.icon && (
                 <c.icon
                   className={cn(
-                    "size-4 transition-colors",
+                    "size-3.5 shrink-0 transition-colors",
                     isActive ? "text-primary" : "text-muted-foreground",
                   )}
                 />
               )}
-              <div>
-                <div className="text-[13px] font-semibold leading-snug">{c.label}</div>
-                {c.description && (
-                  <div className="text-[11.5px] text-muted-foreground mt-0.5 leading-snug">
-                    {c.description}
-                  </div>
-                )}
-              </div>
+              <span>{c.label}</span>
             </button>
           );
         })}
