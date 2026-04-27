@@ -112,18 +112,13 @@ export type ProviderUX = {
 
 // ─── Shared text greetings ────────────────────────────────────────────────
 
-function ClaudeGreeting({ name, hour }: GreetingCtx) {
-  const tod =
-    hour < 5
-      ? "Still up"
-      : hour < 12
-        ? "Good morning"
-        : hour < 18
-          ? "Good afternoon"
-          : "Good evening";
-  const main = name ? `${tod}, ${name}` : tod;
+const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"] as const;
+
+function ClaudeGreeting({ name }: GreetingCtx) {
+  const day = DAYS[new Date().getDay()];
+  const main = name ? `Happy ${day}, ${name}` : `Happy ${day}`;
   return (
-    <div className="flex flex-col items-start">
+    <div className="flex flex-col items-center">
       <h1 className="font-serif text-4xl font-normal tracking-tight text-foreground md:text-5xl">
         <span className="text-primary">✻</span> <span>{main}</span>
       </h1>
