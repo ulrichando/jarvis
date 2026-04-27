@@ -1,6 +1,6 @@
 import { relations } from "drizzle-orm";
 import {
-  pgTable,
+  pgSchema,
   text,
   timestamp,
   uuid,
@@ -9,6 +9,13 @@ import {
   boolean,
   index,
 } from "drizzle-orm/pg-core";
+
+// Web-specific tables live in their own Postgres schema so they
+// don't collide with the existing JARVIS memory store (which uses
+// `public.conversations` for a totally different shape — role/text
+// turns, 5K+ rows). All web tables get created under `web.*`.
+const webSchema = pgSchema("web");
+const pgTable = webSchema.table.bind(webSchema);
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),

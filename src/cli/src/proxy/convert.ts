@@ -355,9 +355,21 @@ export function convertResponse(openaiResp: any, model: string): any {
     content,
     stop_reason: stopReason,
     stop_sequence: null,
-    usage: {
-      input_tokens: openaiResp.usage?.prompt_tokens ?? 0,
-      output_tokens: openaiResp.usage?.completion_tokens ?? 0,
-    },
+    usage: (() => {
+      // DeepSeek returns `prompt_cache_hit_tokens` for the subset of
+      // input tokens served from cache (billed at the cheaper rate).
+      // Map that → Anthropic `cache_read_input_tokens` and subtract
+      // from `input_tokens` so the CLI cost-tracker bills cache hits
+      // at the cache-read rate, not the full input rate. Groq has no
+      // cache field; cacheHit stays 0 and input_tokens equals
+      // prompt_tokens.
+      const promptTokens = openaiResp.usage?.prompt_tokens ?? 0
+      const cacheHit = openaiResp.usage?.prompt_cache_hit_tokens ?? 0
+      return {
+        input_tokens: Math.max(0, promptTokens - cacheHit),
+        output_tokens: openaiResp.usage?.completion_tokens ?? 0,
+        cache_read_input_tokens: cacheHit,
+      }
+    })(),
   }
 }

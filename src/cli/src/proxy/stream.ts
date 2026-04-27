@@ -5,6 +5,11 @@ type StreamState = {
   messageId: string
   model: string
   inputTokens: number
+  // Subset of inputTokens that hit DeepSeek's prompt cache. Surfaces
+  // in the final message_delta as Anthropic's cache_read_input_tokens
+  // so the CLI cost-tracker bills them at the cheap cache rate.
+  // Always 0 for Groq (no cache).
+  cacheReadTokens: number
   // Track content blocks by index
   thinkingBlockIndex: number | null
   textBlockIndex: number | null
@@ -37,6 +42,7 @@ export async function convertOpenAIStreamToAnthropic(
     messageId,
     model,
     inputTokens: 0,
+    cacheReadTokens: 0,
     thinkingBlockIndex: null,
     textBlockIndex: null,
     toolBlocks: new Map(),
@@ -89,6 +95,7 @@ export async function convertOpenAIStreamToAnthropic(
           // Capture usage from top-level (some providers send usage here)
           if (chunk.usage) {
             state.inputTokens = chunk.usage.prompt_tokens ?? 0
+            state.cacheReadTokens = chunk.usage.prompt_cache_hit_tokens ?? 0
             outputTokens = chunk.usage.completion_tokens ?? 0
           }
           continue
@@ -100,6 +107,7 @@ export async function convertOpenAIStreamToAnthropic(
         // Usage in choice
         if (chunk.usage) {
           state.inputTokens = chunk.usage.prompt_tokens ?? 0
+          state.cacheReadTokens = chunk.usage.prompt_cache_hit_tokens ?? 0
           outputTokens = chunk.usage.completion_tokens ?? 0
         }
 
@@ -263,10 +271,20 @@ export async function convertOpenAIStreamToAnthropic(
 
     const stopReason = stopReasonFromFinish(finalFinishReason)
 
+    // Usage breakdown sent here so the CLI cost-tracker sees the
+    // final input/output/cache split. Anthropic's spec puts
+    // input_tokens in message_start, but proxy doesn't know prompt
+    // size at that point — DeepSeek/Groq report it in the LAST chunk.
+    // The CLI's parser tolerates input_tokens arriving in
+    // message_delta.
     send('message_delta', {
       type: 'message_delta',
       delta: { stop_reason: stopReason, stop_sequence: null },
-      usage: { output_tokens: outputTokens },
+      usage: {
+        input_tokens: Math.max(0, state.inputTokens - state.cacheReadTokens),
+        output_tokens: outputTokens,
+        cache_read_input_tokens: state.cacheReadTokens,
+      },
     })
 
     send('message_stop', { type: 'message_stop' })

@@ -56,9 +56,16 @@ export async function ensureConversation({
 
   const title = firstUserText.slice(0, 80).trim() || "New chat";
 
+  // Don't pass `id` when it's null/undefined — postgres rejects it as
+  // a not-null violation. Omitting lets the column's gen_random_uuid()
+  // default fill in. When id IS provided (e.g. existing chat), pass
+  // it through so the row is created with the caller's id.
+  const values = id
+    ? { id, userId: LOCAL_USER_ID, title, model }
+    : { userId: LOCAL_USER_ID, title, model };
   const [created] = await db
     .insert(schema.conversations)
-    .values({ id, userId: LOCAL_USER_ID, title, model })
+    .values(values)
     .returning();
   return created;
 }

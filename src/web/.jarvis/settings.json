@@ -1,6 +1,16 @@
 {
   "version": 1,
-  "user": {},
+  "user": {
+    "name": "Ulrich"
+  },
+  "notifications": {
+    "responseCompletions": false
+  },
+  "capabilities": {
+    "markdown": true,
+    "codeHighlight": true,
+    "streaming": true
+  },
   "defaults": {
     "model": "claude-sonnet-4-6",
     "temperature": 0.7

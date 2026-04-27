@@ -25,23 +25,48 @@ fi
 # When the user clicks the launcher icon several times in quick
 # succession, each invocation can race past the "is instance running?"
 # check below before any has spawned the binary, ending in 2-3
-# jarvis-desktop processes. flock with non-blocking mode means the
-# first launcher grabs the lock and runs; concurrent ones exit
-# immediately.
+# jarvis-desktop processes. flock prevents this.
+#
+# Staleness detection: the lock file stores the holder's PID. We read
+# it BEFORE opening for write (which would truncate it). If we can't
+# acquire the lock after 5 s AND the stored PID is no longer alive,
+# the lock is stale (left by a killed launcher). We clear and retry.
+# This self-heals the failure mode where "the tray icon disappeared
+# and clicking the launcher icon does nothing" — caused by a stuck
+# launcher process that held the lock without ever reaching the binary.
 #
 # IMPORTANT: the fd holding the lock MUST be closed before we exec
 # the desktop binary, otherwise the exec inherits the fd and the
 # desktop process holds the lock for its entire lifetime — blocking
-# every subsequent launcher click "forever". `exec {LOCK_FD}>&-`
-# at the end of the script (and before the final `exec "$BIN"`)
-# closes it cleanly. flock(2) drops the lock when no fd references
-# the file anymore.
+# every subsequent launcher click "forever". `exec 200>&-` at the end
+# of the script (and before the final `exec "$BIN"`) closes it cleanly.
+# flock(2) drops the lock when no fd references the file anymore.
 LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/jarvis-launcher.lock"
+
+# Snapshot the prior holder's PID BEFORE we truncate the file on open.
+_prior_holder=$(head -1 "$LOCK_FILE" 2>/dev/null | tr -d '[:space:]')
 exec 200>"$LOCK_FILE"
-if ! flock -n 200; then
-  echo "[launch] another launcher in progress; exiting" >&2
-  exit 0
+if ! flock -w 5 200; then
+  # Still locked after 5 s. Check if the recorded holder is alive.
+  if [ -n "$_prior_holder" ] && kill -0 "$_prior_holder" 2>/dev/null; then
+    echo "[launch] another launcher already running (pid=$_prior_holder); exiting" >&2
+    exec 200>&-
+    exit 0
+  fi
+  # Holder PID is gone — stale lock. Clear the file and try once more.
+  echo "[launch] stale lock (holder pid=${_prior_holder:-unknown} is dead); clearing" >&2
+  exec 200>&-
+  rm -f "$LOCK_FILE"
+  exec 200>"$LOCK_FILE"
+  if ! flock -w 3 200; then
+    echo "[launch] could not acquire lock after clearing stale; exiting" >&2
+    exec 200>&-
+    exit 0
+  fi
 fi
+# Record our PID so future launchers can detect our liveness.
+printf '%s\n' "$$" >&200
+
 release_lock() {
   flock -u 200 2>/dev/null || true
   exec 200>&-
@@ -164,4 +189,12 @@ if pgrep -x jarvis-desktop >/dev/null 2>&1; then
 fi
 
 release_lock
-exec "$BIN"
+
+# Capture stdout+stderr to a persistent log so we can postmortem
+# crashes. XDG autostart pipes the launcher's outputs to /dev/null,
+# so without this redirect a Tauri panic / GTK fault leaves no trace
+# (the tray just disappears with no log). Append mode preserves
+# history across launches; the startup marker delineates runs.
+DESKTOP_LOG=/tmp/jarvis-desktop.log
+printf '\n\n=== launch %s pid=%s ===\n' "$(date -Iseconds)" "$$" >>"$DESKTOP_LOG"
+exec "$BIN" >>"$DESKTOP_LOG" 2>&1

@@ -291,7 +291,7 @@ function VoiceClientPill({ processing = false }) {
   // difference between "we're warming up" and "LLM is generating".
   const { color, label } =
       !s?.connected        ? { color: '#ef4444', label: 'Voice offline'  }
-    :  s.muted             ? { color: '#a1a1aa', label: 'Mic muted'       }
+    :  s.muted             ? { color: '#111111', label: 'Mic muted'       }
     :  s.speaking          ? { color: '#4493f8', label: 'JARVIS speaking' }
     :  s.listening         ? { color: '#22d3ee', label: 'You speaking'    }
     : !s.agent_present     ? { color: '#a855f7', label: 'JARVIS booting'  }
