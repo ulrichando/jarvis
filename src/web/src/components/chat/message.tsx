@@ -2,6 +2,7 @@
 
 import { motion } from "motion/react";
 import type { UIMessage } from "ai";
+import { Copy, ThumbsUp, ThumbsDown, RotateCcw, type LucideIcon } from "lucide-react";
 import { Markdown } from "@/components/markdown/markdown";
 import { cn } from "@/lib/utils";
 
@@ -27,33 +28,59 @@ export function Message({
       className={cn("group w-full", isUser ? "flex justify-end" : "flex")}
     >
       {isUser ? (
-        <div className="max-w-[85%] rounded-2xl rounded-br-sm border border-primary/30 bg-primary/12 px-4 py-2.5 text-foreground shadow-[inset_0_1px_0_0_oklch(1_0_0_/6%)]">
+        <div className="max-w-[85%] rounded-2xl bg-card px-4 py-2.5 text-foreground">
           <p className="whitespace-pre-wrap text-[14.5px] leading-6">{text}</p>
         </div>
       ) : (
-        <div className="flex w-full gap-3">
-          <div className="shrink-0 flex size-7 items-center justify-center rounded-md border border-primary/40 bg-primary/10 font-mono text-[10px] font-semibold uppercase tracking-wider text-primary">
-            J
-          </div>
-          <div className="min-w-0 flex-1 pt-0.5">
-            {text ? (
-              <Markdown content={text} />
-            ) : isStreaming ? (
-              <ThinkingDots />
-            ) : null}
-          </div>
+        <div className="w-full">
+          {text ? (
+            <Markdown content={text} />
+          ) : isStreaming ? (
+            <StreamingSpark />
+          ) : null}
+          {text && !isStreaming && <MessageActions />}
         </div>
       )}
     </motion.div>
   );
 }
 
-function ThinkingDots() {
+function StreamingSpark() {
   return (
-    <div className="flex items-center gap-1.5 py-2">
-      <span className="size-1.5 animate-pulse rounded-full bg-primary [animation-delay:-0.3s]" />
-      <span className="size-1.5 animate-pulse rounded-full bg-primary [animation-delay:-0.15s]" />
-      <span className="size-1.5 animate-pulse rounded-full bg-primary" />
+    <span className="inline-block animate-pulse text-[22px] leading-none text-primary">
+      ✻
+    </span>
+  );
+}
+
+function MessageActions() {
+  return (
+    <div className="mt-2 flex items-center gap-0.5">
+      <ActionBtn aria-label="Copy" icon={Copy} onClick={() => {}} />
+      <ActionBtn aria-label="Like" icon={ThumbsUp} onClick={() => {}} />
+      <ActionBtn aria-label="Dislike" icon={ThumbsDown} onClick={() => {}} />
+      <ActionBtn aria-label="Regenerate" icon={RotateCcw} onClick={() => {}} />
     </div>
+  );
+}
+
+function ActionBtn({
+  icon: Icon,
+  onClick,
+  ...props
+}: {
+  icon: LucideIcon;
+  onClick: () => void;
+  "aria-label": string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex size-7 items-center justify-center rounded-md text-muted-foreground/50 hover:bg-accent/40 hover:text-muted-foreground transition-colors"
+      {...props}
+    >
+      <Icon className="size-3.5" />
+    </button>
   );
 }
