@@ -104,6 +104,20 @@ export const MODELS_META: Record<string, ModelMeta> = {
     provider: "deepseek",
     contextWindow: 128_000,
   },
+  "deepseek-v4-pro": {
+    id: "deepseek-v4-pro",
+    label: "DeepSeek V4 Pro",
+    description: "Top reasoning. Used as the JARVIS CLI tool model.",
+    provider: "deepseek",
+    contextWindow: 128_000,
+  },
+  "deepseek-v4-flash": {
+    id: "deepseek-v4-flash",
+    label: "DeepSeek V4 Flash",
+    description: "Fast variant for low-latency work.",
+    provider: "deepseek",
+    contextWindow: 128_000,
+  },
 
   "kimi-k2-instant": {
     id: "kimi-k2-instant",
@@ -142,6 +156,34 @@ export const MODELS_META: Record<string, ModelMeta> = {
     provider: "groq",
     contextWindow: 128_000,
   },
+  "gpt-oss-120b": {
+    id: "gpt-oss-120b",
+    label: "GPT-OSS 120B (Groq)",
+    description: "Largest Groq model. Used as the JARVIS voice LLM.",
+    provider: "groq",
+    contextWindow: 128_000,
+  },
+  "qwen3-32b": {
+    id: "qwen3-32b",
+    label: "Qwen 3 32B (Groq)",
+    description: "Mid-tier reasoning on Groq.",
+    provider: "groq",
+    contextWindow: 128_000,
+  },
+  "llama-4-scout-17b": {
+    id: "llama-4-scout-17b",
+    label: "Llama 4 Scout 17B (Groq)",
+    description: "Small multimodal MoE. Vision-capable.",
+    provider: "groq",
+    contextWindow: 128_000,
+  },
+  "llama-3.1-8b-instant": {
+    id: "llama-3.1-8b-instant",
+    label: "Llama 3.1 8B Instant (Groq)",
+    description: "Smallest, fastest. Limited tool reasoning.",
+    provider: "groq",
+    contextWindow: 128_000,
+  },
   "kimi-k2-groq": {
     id: "kimi-k2-groq",
     label: "Kimi K2 (Groq)",
@@ -159,7 +201,10 @@ export const MODELS_META: Record<string, ModelMeta> = {
 };
 
 export type ModelId = keyof typeof MODELS_META;
-export const DEFAULT_MODEL: ModelId = "claude-sonnet-4-6";
+// Default = Llama 3.3 70B on Groq. Real, free, works without
+// requiring keys you may not have. Was claude-sonnet-4-6 which
+// errored on every fresh session because there's no Anthropic key.
+export const DEFAULT_MODEL: ModelId = "llama-3.3-70b";
 
 export function modelsByProvider(): Array<{
   provider: Provider;

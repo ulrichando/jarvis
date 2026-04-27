@@ -87,6 +87,100 @@ export const COST_HAIKU_45 = {
 
 const DEFAULT_UNKNOWN_MODEL_COST = COST_TIER_5_25
 
+// ── JARVIS proxy-routed model rates ──────────────────────────────────
+// Verified 2026-04-26 from groq.com/pricing and api-docs.deepseek.com.
+// Update in-file when either provider publishes new rates.
+//
+// DeepSeek bills cache hits at a much lower rate than cache misses.
+// We map DeepSeek's `prompt_cache_hit_tokens` → Anthropic's
+// `cache_read_input_tokens`; the proxy splits `prompt_tokens` so the
+// remainder lands in `input_tokens`. So `promptCacheReadTokens` here
+// is the DeepSeek cache-hit price.
+//
+// Groq doesn't bill prompt cache separately — set both cache rates
+// equal to the input rate so any stray cache_* tokens are charged
+// at the regular price (no distortion).
+//
+// `deepseek-v4-pro` is currently on a 75% limited-time DeepSeek
+// discount. Restore the non-discounted figures (~$0.014 cache hit /
+// $1.74 input / $3.48 output per Mtok) when the promo ends.
+const COST_DEEPSEEK_V4_FLASH = {
+  inputTokens: 0.14,
+  outputTokens: 0.28,
+  promptCacheWriteTokens: 0.14,
+  promptCacheReadTokens: 0.0028,
+  webSearchRequests: 0,
+} as const satisfies ModelCosts
+
+const COST_DEEPSEEK_V4_PRO = {
+  inputTokens: 0.435,
+  outputTokens: 0.87,
+  promptCacheWriteTokens: 0.435,
+  promptCacheReadTokens: 0.003625,
+  webSearchRequests: 0,
+} as const satisfies ModelCosts
+
+const COST_GROQ_LLAMA_33_70B = {
+  inputTokens: 0.59,
+  outputTokens: 0.79,
+  promptCacheWriteTokens: 0.59,
+  promptCacheReadTokens: 0.59,
+  webSearchRequests: 0,
+} as const satisfies ModelCosts
+
+const COST_GROQ_LLAMA_31_8B_INSTANT = {
+  inputTokens: 0.05,
+  outputTokens: 0.08,
+  promptCacheWriteTokens: 0.05,
+  promptCacheReadTokens: 0.05,
+  webSearchRequests: 0,
+} as const satisfies ModelCosts
+
+const COST_GROQ_QWEN3_32B = {
+  inputTokens: 0.29,
+  outputTokens: 0.59,
+  promptCacheWriteTokens: 0.29,
+  promptCacheReadTokens: 0.29,
+  webSearchRequests: 0,
+} as const satisfies ModelCosts
+
+const COST_GROQ_GPT_OSS_120B = {
+  inputTokens: 0.15,
+  outputTokens: 0.60,
+  promptCacheWriteTokens: 0.15,
+  promptCacheReadTokens: 0.15,
+  webSearchRequests: 0,
+} as const satisfies ModelCosts
+
+const COST_GROQ_LLAMA_4_SCOUT = {
+  inputTokens: 0.11,
+  outputTokens: 0.34,
+  promptCacheWriteTokens: 0.11,
+  promptCacheReadTokens: 0.11,
+  webSearchRequests: 0,
+} as const satisfies ModelCosts
+
+// Literal-keyed lookup. Consulted BEFORE the canonical-name table in
+// getModelCosts(). DeepSeek and Groq models aren't in Anthropic's
+// first-party canonical namespace, so getCanonicalName() can't reach
+// them — but the proxy returns the upstream model id verbatim in the
+// response (server.ts → convert.ts), which we match here.
+//
+// `deepseek-chat` and `deepseek-reasoner` are aliases for v4-flash
+// non-thinking and thinking modes per DeepSeek's docs; they share
+// pricing.
+const JARVIS_MODEL_COSTS: Record<string, ModelCosts> = {
+  'deepseek-chat':                              COST_DEEPSEEK_V4_FLASH,
+  'deepseek-reasoner':                          COST_DEEPSEEK_V4_FLASH,
+  'deepseek-v4-flash':                          COST_DEEPSEEK_V4_FLASH,
+  'deepseek-v4-pro':                            COST_DEEPSEEK_V4_PRO,
+  'llama-3.3-70b-versatile':                    COST_GROQ_LLAMA_33_70B,
+  'llama-3.1-8b-instant':                       COST_GROQ_LLAMA_31_8B_INSTANT,
+  'qwen/qwen3-32b':                             COST_GROQ_QWEN3_32B,
+  'openai/gpt-oss-120b':                        COST_GROQ_GPT_OSS_120B,
+  'meta-llama/llama-4-scout-17b-16e-instruct':  COST_GROQ_LLAMA_4_SCOUT,
+}
+
 /**
  * Get the cost tier for Opus 4.6 based on fast mode.
  */
@@ -140,6 +234,13 @@ function tokensToUSDCost(modelCosts: ModelCosts, usage: Usage): number {
 }
 
 export function getModelCosts(model: string, usage: Usage): ModelCosts {
+  // JARVIS proxy-routed models (DeepSeek, Groq) live outside Anthropic's
+  // canonical namespace, so getCanonicalName() returns nothing useful
+  // for them. Match by literal model id first — that's what the proxy
+  // returns verbatim in the response.
+  const jarvisCosts = JARVIS_MODEL_COSTS[model]
+  if (jarvisCosts) return jarvisCosts
+
   const shortName = getCanonicalName(model)
 
   // Check if this is an Opus 4.6 model with fast mode active.
