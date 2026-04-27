@@ -69,6 +69,169 @@ from livekit.plugins import groq, openai as lk_openai, silero
 logger = logging.getLogger("jarvis-agent")
 
 
+# ── Groq TTS error-body logging shim ──────────────────────────────────
+# Diagnostic: the upstream livekit-plugins-groq adapter constructs
+# APIStatusError with body=None on non-2xx, so /tmp/jarvis-voice-agent.log
+# only shows "Bad Request" with no detail on what Groq actually rejected
+# (voice name? model id? payload field?). Subclass the plugin's
+# ChunkedStream to read and log resp.text() before raising the same
+# error — preserves FallbackAdapter behaviour, just adds visibility.
+# Remove once the underlying 400 is identified and fixed.
+import aiohttp as _aiohttp
+from livekit.agents import APIConnectionError as _APIConnectionError
+from livekit.agents import APIError as _APIError
+from livekit.agents import APIStatusError as _APIStatusError
+from livekit.agents import APITimeoutError as _APITimeoutError
+from livekit.agents import utils as _lk_utils
+from livekit.plugins.groq.tts import ChunkedStream as _GroqChunkedStream
+
+
+class _LoggingGroqChunkedStream(_GroqChunkedStream):
+    async def _run(self, output_emitter) -> None:
+        # Groq Orpheus rejects synth requests where the input contains
+        # no letters or digits — returns 400 "Input must contain at
+        # least one letter or digit" (verified by the response-body
+        # logger on 2026-04-26). LLMs occasionally emit punctuation-
+        # only chunks ("...", "—", "  ", a single emoji); we'd burn a
+        # round-trip + retry budget on each one, then fall through to
+        # EdgeTTS late. Short-circuit here: empty audio is the correct
+        # output for letterless input anyway.
+        if not re.search(r"[A-Za-z0-9]", self._input_text or ""):
+            # Push a tiny silent WAV so the FallbackAdapter sees a
+            # successful (but inaudible) stream and does NOT cascade
+            # to EdgeTTS. An empty flush() (no frames pushed) triggers
+            # "no audio frames were pushed" warnings and a retry loop
+            # that spams errors for hours — verified 2026-04-27.
+            import struct as _struct
+            _n = 480  # 10ms of silence at 48 kHz mono 16-bit
+            _wav = (
+                b"RIFF" + _struct.pack("<I", 36 + _n * 2) + b"WAVE"
+                + b"fmt " + _struct.pack("<IHHIIHH", 16, 1, 1, 48000, 96000, 2, 16)
+                + b"data" + _struct.pack("<I", _n * 2)
+                + b"\x00" * (_n * 2)
+            )
+            output_emitter.initialize(
+                request_id=_lk_utils.shortuuid(),
+                sample_rate=48000,
+                num_channels=1,
+                mime_type="audio/wav",
+            )
+            output_emitter.push(_wav)
+            output_emitter.flush()
+            return
+        api_url = f"{self._opts.base_url}/audio/speech"
+        payload = {
+            "model": self._opts.model,
+            "voice": self._opts.voice,
+            "input": self._input_text,
+            "response_format": "wav",
+        }
+        try:
+            async with self._tts._ensure_session().post(
+                api_url,
+                headers={
+                    "Authorization": f"Bearer {self._opts.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=_aiohttp.ClientTimeout(
+                    total=30, sock_connect=self._conn_options.timeout
+                ),
+            ) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    logger.error(
+                        "Groq TTS %d (model=%s voice=%s): %s",
+                        resp.status,
+                        payload["model"],
+                        payload["voice"],
+                        body[:600].replace("\n", " "),
+                    )
+                    raise _APIStatusError(
+                        message=f"Groq TTS {resp.status}: {body[:200]}",
+                        status_code=resp.status,
+                        request_id=None,
+                        body=body,
+                    )
+                if not resp.content_type.startswith("audio"):
+                    content = await resp.text()
+                    logger.error(
+                        "Groq TTS returned non-audio (%s): %s",
+                        resp.content_type,
+                        content[:300],
+                    )
+                    raise _APIError(
+                        message="Groq returned non-audio data", body=content
+                    )
+                output_emitter.initialize(
+                    request_id=_lk_utils.shortuuid(),
+                    sample_rate=48000,
+                    num_channels=1,
+                    mime_type="audio/wav",
+                )
+                async for data, _ in resp.content.iter_chunks():
+                    output_emitter.push(data)
+                output_emitter.flush()
+        except asyncio.TimeoutError:
+            raise _APITimeoutError() from None
+        except _APIError:
+            raise
+        except _aiohttp.ClientResponseError as e:
+            raise _APIStatusError(
+                message=e.message, status_code=e.status, request_id=None, body=None
+            ) from None
+        except Exception as e:
+            raise _APIConnectionError() from e
+
+
+class _LoggingGroqTTS(groq.TTS):
+    """groq.TTS that logs Groq's response body on non-2xx."""
+
+    def synthesize(self, text, *, conn_options=None):
+        from livekit.agents.types import DEFAULT_API_CONNECT_OPTIONS
+
+        return _LoggingGroqChunkedStream(
+            tts=self,
+            input_text=text,
+            conn_options=conn_options or DEFAULT_API_CONNECT_OPTIONS,
+        )
+
+
+# ── Quiet hours ───────────────────────────────────────────────────────
+# Between JARVIS_QUIET_START and JARVIS_QUIET_END (local time, 24h),
+# ambient VAD picks up sleeping household noise and JARVIS acts on it
+# (opening Spotify, Chrome, etc. at 3am — confirmed 2026-04-27).
+# During quiet hours, the gate requires either:
+#   a) an explicit "Jarvis" vocative, OR
+#   b) a recent real interaction (within QUIET_HOURS_WINDOW_SEC)
+# This allows normal multi-turn conversation ("jarvis, time?" → "what
+# about tomorrow?" works) while blocking idle 3am ambient triggers
+# (no recent exchange → vocative required). Wake phrases always pass.
+QUIET_HOURS_START      = int(os.environ.get("JARVIS_QUIET_START",      "1"))    # 1am
+QUIET_HOURS_END        = int(os.environ.get("JARVIS_QUIET_END",        "6"))    # 6am
+QUIET_HOURS_WINDOW_SEC = float(os.environ.get("JARVIS_QUIET_WINDOW_SEC", "1200"))  # 20 min
+_JARVIS_NAME_RE        = re.compile(r"\bj[ae]r?vis\b", re.IGNORECASE)
+_last_real_interaction = 0.0     # monotonic timestamp of last accepted turn
+
+
+def _in_quiet_hours() -> bool:
+    if QUIET_HOURS_START == QUIET_HOURS_END:
+        return False
+    hour = time.localtime().tm_hour
+    if QUIET_HOURS_START > QUIET_HOURS_END:
+        return hour >= QUIET_HOURS_START or hour < QUIET_HOURS_END
+    return QUIET_HOURS_START <= hour < QUIET_HOURS_END
+
+
+def _touch_interaction() -> None:
+    global _last_real_interaction
+    _last_real_interaction = time.monotonic()
+
+
+def _recent_interaction() -> bool:
+    return (time.monotonic() - _last_real_interaction) < QUIET_HOURS_WINDOW_SEC
+
+
 # ── CLI model selection ────────────────────────────────────────────────
 # The system tray exposes 5 CLI-model choices (mirroring the CLI's own
 # /model picker — DeepSeek×2, Groq×3). The user's pick is written to
@@ -289,6 +452,29 @@ kids. Use judgement before acting:
    open Firefox?" → reply "You asked me to a moment ago" — do
    NOT call run_jarvis_cli to open Firefox again.
 
+4. **NEVER deny an action you took without checking your tool
+   history first.** Real failure mode captured 2026-04-26: Ulrich
+   asked you to "bring up everything on Spider-Man", you fired
+   `run_jarvis_cli → Open Google Chrome and search for Spider-Man
+   information`, the user then asked "are you opening the browser?"
+   and you replied "No, I haven't opened a browser." — twice. That
+   was a lie. The tool call was in your chat history as a tool_use
+   block; you just didn't consult it before answering.
+
+   Rule: when the user asks "did you do X / are you doing X / why
+   did you open Y / what just happened" — SCAN your chat history
+   for tool_use blocks from the last few turns BEFORE answering.
+   If you find one matching what they're asking about, own it ("Yes
+   — I dispatched a search on Spider-Man because you asked me to
+   bring up info on him"). If you find nothing, then it's safe to
+   say "I haven't done that — could you clarify what you saw?"
+
+   Why this matters: the user observes the world (browser opened,
+   file appeared, sound played). When they ask, it's because
+   reality already shows the answer. Denying makes you look broken,
+   not innocent. Interruptions can break the post-tool narration
+   flow — that's exactly when this rule is most important.
+
 ═══ FORMATTING ═══
 
 This channel is VOICE. Your replies are spoken aloud by a TTS engine,
@@ -453,6 +639,62 @@ the actual silencing — your job is just to acknowledge briefly:
 
 Don't call any tool for these — they're handled outside the LLM.
 
+═══ NO HEDGING. ACT, OR STAY SILENT. ═══
+
+Your dominant failure mode is filling silence with empty hedges
+instead of either acting or shutting up. Ulrich's complaint, in
+his own words: "JARVIS keeps asking me what I need — why can't
+he be smart like Claude?"
+
+The following replies are FORBIDDEN unless they directly answer
+a question the user just asked you (e.g. user: "are you there?"
+→ "yes, what do you need?" is fine, because they asked):
+
+  - "How can I help?"  /  "What can I help with?"
+  - "What would you like me to do?"  /  "What do you need?"
+  - "Anything specific you'd like me to do?"
+  - "Just let me know if anything comes up."
+  - "Let me know if you need anything."
+  - "Sure thing — just say the word whenever you need something."
+  - "I'm here if you need me."  /  "I'm at your service."
+  - Any closer of the form "if there's anything else…" /
+    "feel free to ask" / "happy to help" appended to a reply
+    that already answered the question.
+
+By case:
+
+1. **Audio garbled / didn't catch the words.** Say "didn't catch
+   that" ONCE, period. Do NOT append "what would you like me to
+   help with". The user heard you and will repeat if it was for
+   you. Two hedge-questions in two sentences is the worst case.
+
+2. **Words are clear, request is read-only or unambiguous.**
+   Just do it. Don't preamble with "Sure, let me…", don't ask
+   "are you sure?", don't end with "let me know if anything
+   else." Run the tool, voice the answer, end the turn.
+
+3. **Words are clear but probably NOT directed at you** (per
+   "IS THIS DIRECTED AT YOU?" above) → stay silent. Do NOT reply
+   with "let me know if you need me" — that is still a reply.
+
+4. **You just finished a task** → voice the result and stop. No
+   "anything else?" closer. Ulrich speaks again if he wants more.
+
+5. **User says something nice / agrees / acknowledges** → a short
+   "yep" / "got it" / "cool" is fine, OR stay silent. Do NOT add
+   "anything specific you'd like me to do?" — that's hedging.
+
+6. **The transcript IS ambiguous AND the action would modify
+   system state** → and ONLY then → use the AMBIGUOUS REQUESTS
+   rule below: voice ONE specific clarifier ("did you mean X or
+   Y?"). Not a generic "what would you like me to do?".
+
+The bar: every reply you voice must EITHER answer a question,
+deliver a result, deliver one specific clarifier, or be a brief
+acknowledgment. If your draft reply is asking the user to tell
+you what to do — and they didn't just ask you that question —
+you are hedging. Delete the reply and stay silent instead.
+
 ═══ AMBIGUOUS REQUESTS — CONFIRM, DON'T SPECULATE ═══
 
 When the user's transcribed request is GARBLED, INCOMPLETE, or
@@ -528,6 +770,28 @@ still running. To keep them oriented:
    Honest failures use the same prefix ("Couldn't... / Tried but..."),
    not a fake-success.
 
+   **NARRATE PARTIAL SUCCESS — DON'T COLLAPSE TO "DONE".** Tool
+   outputs sometimes contain explicit uncertainty: phrases like
+   "give it a moment", "ask again", "(launched ... not yet on the
+   bus)", "may need to wait", "couldn't confirm", "not yet ready",
+   "(not running)". When you see those, voice the uncertainty
+   faithfully — do NOT shorten to "Done."
+
+   Real failure 2026-04-26: media_control returned `"opened spotify
+   (it wasn't running yet — give it a moment, then ask again)"`. You
+   voiced "Done — Spotify's open and playing a chill playlist." The
+   "playing" was unverified, the "chill playlist" was invented, and
+   the user caught the lie. Faithful narration would have been "I
+   started Spotify — give it a moment to load, then ask me again."
+
+   Bias toward the tool's exact wording. You can shorten a 100-char
+   tool output to 20 chars, but KEEP its uncertainty markers.
+   "Done" is reserved for tool returns that unambiguously confirm
+   completion (e.g. "play sent to spotify", "closed 3 windows",
+   "muted system audio"). Never invent details the tool didn't
+   return — no fake song titles, no fake file counts, no fake
+   playlist names.
+
 **3. If the user asked something NEW while you were working**, the
    chat history shows their interim turn after your tool call.
    Address the ORIGINAL task first ("Done with X."), THEN handle
@@ -587,6 +851,36 @@ Speak in the FIRST person about yourself — "I", "me", "my". Never
 refer to yourself as "JARVIS" in the third person ("JARVIS will
 open Chrome", "JARVIS doesn't think so"). You ARE JARVIS; that's
 your name, not a separate entity you describe.
+
+═══ BEHAVIORAL LEARNING ═══
+
+You can learn from corrections and remember them permanently.
+
+**remember_this — when to call it:**
+Call this tool whenever the user:
+  - Says "remember that" / "remember this" / "note for future"
+  - Says "that was wrong, don't do X" / "never do X again"
+  - Corrects a pattern you keep repeating ("you keep doing X, stop")
+  - Says "add a rule" / "write that down" / "make note of that"
+
+When called, JARVIS confirms briefly: "Got it — saved." or
+"Noted, I'll stop doing that." Don't over-explain.
+The rule takes effect in this conversation from context; it's also
+stored permanently for all future sessions.
+
+**Reviewing log-analysis proposals:**
+When the user says "review pending rules" / "any suggestions from
+the logs" / "what rule proposals do you have":
+  1. Call list_pending_proposals() and read the results aloud.
+  2. For each PENDING proposal, read the rule and ask:
+     "Accept or reject?"
+  3. Call accept_proposal(n) or reject_proposal(n) based on answer.
+  4. Confirm each decision with a single sentence.
+  5. After all proposals, say how many were accepted.
+
+If the startup notification told you there are pending proposals,
+proactively offer: "I have N rule proposals from my logs — want to
+review them now or later?"
 """
 
 
@@ -725,6 +1019,21 @@ _WAKE_PATTERNS = tuple(re.compile(r"\b" + p + r"\b") for p in (
     r"are you there",
     r"are you back",
     r"jarvis you there",
+    # Natural recovery phrases — when the user notices JARVIS has
+    # gone silent and tries to get a response. These are easy to
+    # miss but they're THE signal that silent mode was a false
+    # positive and the user wants out. Keep the patterns narrow
+    # (anchored on "you" + a verb of attention) so they don't fire
+    # on ambient chatter.
+    r"are you listening",
+    r"are you broken",
+    r"why are(n't| not) you responding",
+    r"why aren't you talking",
+    r"respond to me",
+    r"answer me",
+    r"jarvis answer",
+    r"hello jarvis",
+    r"hey jarvis",
 ))
 
 
@@ -764,8 +1073,11 @@ def _is_command(text: str, patterns: tuple[re.Pattern, ...]) -> bool:
         body = sentence.strip().lower()
         if not body:
             continue
-        # Strip a leading "jarvis" / "jervis" / "javis" vocative.
-        body = re.sub(r"^j[ae]r?vis[,.:!\s]+", "", body)
+        # Strip a leading "jarvis" / "jervis" / "javis" vocative,
+        # remembering whether one was actually present.
+        stripped = re.sub(r"^j[ae]r?vis[,.:!\s]+", "", body)
+        had_vocative = stripped != body
+        body = stripped
         if len(body.split()) > _COMMAND_MAX_WORDS:
             continue
         # If we're checking for a MUTE trigger and the user is
@@ -773,9 +1085,88 @@ def _is_command(text: str, patterns: tuple[re.Pattern, ...]) -> bool:
         # music), let media_control handle it instead.
         if is_mute_check and _MEDIA_OBJECT_RE.search(body):
             continue
+        # Mute commands MUST address JARVIS by name. False positive
+        # captured 2026-04-26: "i'm leaving. go on mute." (user
+        # speaking to a third party) silenced JARVIS for two hours.
+        # Wake commands stay permissive — when JARVIS is already
+        # silent, false-positive un-silencing is a much lower-cost
+        # mistake than false-positive silencing.
+        if is_mute_check and not had_vocative:
+            continue
         if any(p.search(body) for p in patterns):
             return True
     return False
+# ── Behavioral learning: rule store ──────────────────────────────────
+#
+# Learned rules live in ~/.jarvis/learned_rules.md as plain bullet
+# lines. They are injected into the system prompt at each session
+# start so JARVIS's LLM treats them as binding constraints —
+# effectively a user-editable extension of JARVIS_INSTRUCTIONS that
+# grows over time without touching the source code.
+#
+# Two sources populate the file:
+#   1. Voice corrections — the `remember_this` tool, called when the
+#      user says "remember that" / "that was wrong" / "note for future".
+#      Written immediately; JARVIS treats them as in-effect for the
+#      rest of the current session via its conversation context.
+#   2. Log analysis — jarvis_log_analyzer.run_analysis(), which runs
+#      as a background task on startup and stages candidate rules into
+#      learned_rules.proposals.md for human review. Proposals never
+#      auto-apply; the user reviews them by voice.
+#
+# Design constraints:
+#   - Rules are append-only; old entries are never auto-deleted.
+#   - Cap at MAX_LEARNED_RULES (100) to prevent context-window bloat;
+#     the oldest entries beyond the cap are silently dropped from the
+#     injected block (the file itself is untouched).
+#   - _load_learned_rules() is called in entrypoint() — once per job,
+#     not at module load — so a rule added mid-session is picked up on
+#     the next voice-client reconnect / agent restart.
+MAX_LEARNED_RULES    = 100
+_LEARNED_RULES_PATH  = Path.home() / ".jarvis" / "learned_rules.md"
+_PROPOSALS_PATH      = Path.home() / ".jarvis" / "learned_rules.proposals.md"
+
+
+def _load_learned_rules() -> str:
+    """
+    Read ~/.jarvis/learned_rules.md and return a system-prompt block.
+    Returns "" if the file is missing or empty — caller appends this
+    to the instruction string so an empty return is harmless.
+    """
+    try:
+        content = _LEARNED_RULES_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ""
+    except Exception as e:
+        logger.warning(f"[learned-rules] read failed: {e}")
+        return ""
+    # Only lines that look like bullet points (start with '-')
+    lines = [l for l in content.splitlines() if l.strip().startswith("-")]
+    if not lines:
+        return ""
+    # Keep the most recent MAX_LEARNED_RULES; oldest are silently dropped
+    # from the injection (not from the file).
+    if len(lines) > MAX_LEARNED_RULES:
+        lines = lines[-MAX_LEARNED_RULES:]
+    rules_text = "\n".join(lines)
+    return (
+        "\n\n═══ LEARNED BEHAVIORAL RULES ═══\n\n"
+        "These rules were added by Ulrich via voice corrections or confirmed\n"
+        "from log analysis. They are BINDING — treat them as higher priority\n"
+        "than any default behavior described elsewhere in this prompt:\n\n"
+        + rules_text
+    )
+
+
+def _count_pending_proposals() -> int:
+    """Return the number of PENDING rule proposals. 0 on any error."""
+    try:
+        from jarvis_log_analyzer import count_pending
+        return count_pending()
+    except Exception:
+        return 0
+
+
 # System-prompt appendix fed to the CLI for every voice invocation.
 # Without it, `--bare` strips all project context and the CLI gives
 # advice/tutorials instead of actually running things ("open
@@ -1102,6 +1493,61 @@ _MEDIA_VALID_ACTIONS = {
     "play", "pause", "play_pause", "next", "previous", "status", "open",
 }
 
+# How long to wait after a player launch for it to register on the
+# DBus / MPRIS bus. Spotify on this box typically takes 1–2 s; we
+# poll every 200 ms up to MEDIA_LAUNCH_VERIFY_SEC. If it never shows
+# up, the tool tells the LLM the launch is unverified — preventing
+# the "Done — playing chill playlist" hallucination from media_control
+# saying nothing useful (the failure mode logged 2026-04-26).
+MEDIA_LAUNCH_VERIFY_SEC = 3.0
+MEDIA_LAUNCH_POLL_SEC   = 0.2
+
+
+async def _player_on_bus(player: str) -> bool:
+    """Quick check: is `player` registered on MPRIS / responsive to
+    playerctl right now? Returns True if yes, False on any failure
+    (process missing, timeout, bus not yet ready, etc)."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "playerctl", "-p", player, "status",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=1.0)
+        return proc.returncode == 0
+    except Exception:
+        return False
+
+
+async def _launch_and_verify(player: str) -> str:
+    """Popen-launch `player`, then poll the bus for up to
+    MEDIA_LAUNCH_VERIFY_SEC. Return a string the LLM should narrate
+    as-is — either confirming the launch worked or signalling
+    "fired but unverified" so the LLM doesn't claim "Done."""
+    try:
+        _subprocess.Popen(
+            [player],
+            stdout=_subprocess.DEVNULL,
+            stderr=_subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except FileNotFoundError:
+        return f"({player} isn't installed)"
+    except Exception as e:
+        return f"(could not launch {player}: {e})"
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + MEDIA_LAUNCH_VERIFY_SEC
+    while loop.time() < deadline:
+        await asyncio.sleep(MEDIA_LAUNCH_POLL_SEC)
+        if await _player_on_bus(player):
+            return f"opened {player} and verified it's running"
+    return (
+        f"launched {player} but it isn't on the bus yet — may need "
+        f"~10 seconds to finish loading, or the launch failed silently. "
+        f"Tell the user it's starting; ask again if they want playback."
+    )
+
 
 @function_tool
 async def media_control(action: str, player: str = "spotify") -> str:
@@ -1140,21 +1586,13 @@ async def media_control(action: str, player: str = "spotify") -> str:
         return f"(unknown action: {action!r}; valid: {sorted(_MEDIA_VALID_ACTIONS)})"
     logger.info(f"media_control: action={action} player={player}")
 
-    # "open" — just launch the app. spotify -> `spotify &`. Other
-    # players we trust the user named correctly.
+    # "open" — launch the app and verify it actually shows up on the
+    # MPRIS bus before claiming success. Without verification the
+    # tool would return "opened spotify" even if the binary spawned
+    # then immediately died (the failure mode that produced the
+    # 2026-04-26 "playing chill playlist" hallucination).
     if action == "open":
-        try:
-            _subprocess.Popen(
-                [player],
-                stdout=_subprocess.DEVNULL,
-                stderr=_subprocess.DEVNULL,
-                start_new_session=True,
-            )
-            return f"opened {player}"
-        except FileNotFoundError:
-            return f"({player} isn't installed)"
-        except Exception as e:
-            return f"(could not open {player}: {e})"
+        return await _launch_and_verify(player)
 
     # For all other actions, talk to playerctl. Build argv per action.
     if action == "status":
@@ -1186,20 +1624,14 @@ async def media_control(action: str, player: str = "spotify") -> str:
 
     # playerctl exits non-zero when the named player isn't on the
     # bus. If the user asked to PLAY and the player isn't running,
-    # try to launch it instead of returning a sad error.
+    # launch it via _launch_and_verify so the caller learns whether
+    # the launch actually stuck (vs the old code path that just
+    # Popen'd and returned "give it a moment" — which the LLM
+    # consistently shortened to "Done", lying to the user).
     if proc.returncode != 0:
         if "no players" in err.lower() or "no such" in err.lower():
             if action in ("play", "play_pause"):
-                try:
-                    _subprocess.Popen(
-                        [player],
-                        stdout=_subprocess.DEVNULL,
-                        stderr=_subprocess.DEVNULL,
-                        start_new_session=True,
-                    )
-                    return f"opened {player} (it wasn't running yet — give it a moment, then ask again)"
-                except FileNotFoundError:
-                    return f"({player} isn't running and isn't installed)"
+                return await _launch_and_verify(player)
             return f"({player} isn't running)"
         return f"(playerctl error: {err[:120]})"
 
@@ -1329,7 +1761,7 @@ def _save_turn(session_id: str, role: str, text: str) -> None:
 # token latency, and chat_ctx tokens cost on every turn. 30 turns ≈
 # 5-10 minutes of conversation, which is what "what did we just
 # discuss" generally means.
-RECENT_TURNS_LIMIT = 10
+RECENT_TURNS_LIMIT = 30
 RECALL_SEARCH_LIMIT = 8
 
 
@@ -1449,6 +1881,150 @@ async def recall_conversation(query: str) -> str:
         lines.append(f"{when} [{role}]: {text}")
     logger.info(f"[recall] query={query!r} hits={len(rows)}")
     return "\n".join(lines)
+
+
+# ── Behavioral learning tools ─────────────────────────────────────────
+
+@function_tool
+async def remember_this(rule: str) -> str:
+    """Store a behavioral rule that persists across all future sessions.
+
+    Call this when the user says any of:
+      - "remember that" / "remember this" / "make a note of that"
+      - "note for future" / "add a rule" / "write that down"
+      - "that was wrong, don't do X" / "stop doing X"
+      - "never do X" / "always do X instead"
+
+    The rule is appended to ~/.jarvis/learned_rules.md immediately and
+    injected into your system prompt on the next session start.
+    For the remainder of this conversation, honor the rule from context.
+
+    Args:
+        rule: The behavioral rule in plain English. Be specific and
+              actionable. Bad: "be more careful". Good: "Do not open
+              Spotify between midnight and 6am unless the user says
+              'Jarvis' explicitly in the same turn."
+    """
+    rule = (rule or "").strip()
+    if not rule:
+        return "(no rule text provided)"
+    if len(rule) > 500:
+        rule = rule[:500]
+
+    today = time.strftime("%Y-%m-%d")
+    entry = f"- [{today}] {rule}\n"
+    try:
+        _LEARNED_RULES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _LEARNED_RULES_PATH.open("a", encoding="utf-8") as f:
+            f.write(entry)
+        logger.info(f"[learned-rules] saved: {rule[:100]}")
+        return (
+            f"Saved. Rule: '{rule}'. "
+            "I'll follow this for the rest of our conversation and in all "
+            "future sessions."
+        )
+    except Exception as e:
+        logger.warning(f"[learned-rules] save failed: {e}")
+        return f"(failed to save rule: {e})"
+
+
+@function_tool
+async def list_pending_proposals() -> str:
+    """List pending behavioral rule proposals generated from log analysis.
+
+    Call this when the user says:
+      - "review pending rules" / "review proposals" / "what rules are pending"
+      - "show me the pending rules" / "any suggestions from the logs"
+
+    Returns a numbered list of PENDING proposals. Read each one aloud and
+    ask the user: "Accept, reject, or skip?" Then call accept_proposal(n)
+    or reject_proposal(n) accordingly.
+    """
+    try:
+        if not _PROPOSALS_PATH.exists():
+            return "(no proposals file yet — run analysis first)"
+        from jarvis_log_analyzer import _load_existing_proposals
+        proposals = _load_existing_proposals()
+        pending = [(i + 1, p) for i, p in enumerate(proposals)
+                   if p.get("status") == "PENDING"]
+        if not pending:
+            return "(no pending proposals — all have been reviewed)"
+        lines = [f"Found {len(pending)} pending proposal(s):\n"]
+        for n, p in pending:
+            lines.append(
+                f"Proposal {n}: {p.get('rule', '(no rule text)')}"
+                + (f" — based on: {p.get('pattern', '')}" if p.get("pattern") else "")
+            )
+        return "\n".join(lines)
+    except Exception as e:
+        logger.warning(f"[proposals] list failed: {e}")
+        return f"(failed to load proposals: {e})"
+
+
+@function_tool
+async def accept_proposal(proposal_number: int) -> str:
+    """Accept a pending rule proposal and move it to the live rules file.
+
+    Call this after the user says 'accept' or 'yes' for a specific proposal
+    shown by list_pending_proposals. The rule is appended to
+    ~/.jarvis/learned_rules.md and takes effect from the next session start.
+
+    Args:
+        proposal_number: The 1-based proposal number from list_pending_proposals.
+    """
+    try:
+        from jarvis_log_analyzer import _load_existing_proposals, _write_proposals
+        proposals = _load_existing_proposals()
+        pending_indices = [i for i, p in enumerate(proposals)
+                           if p.get("status") == "PENDING"]
+        # proposal_number is 1-based among PENDING proposals
+        if proposal_number < 1 or proposal_number > len(pending_indices):
+            return f"(proposal {proposal_number} not found — use list_pending_proposals to see what's available)"
+        real_idx = pending_indices[proposal_number - 1]
+        rule = proposals[real_idx].get("rule", "").strip()
+        if not rule:
+            return "(proposal has no rule text — rejecting instead)"
+        # Mark accepted in file
+        proposals[real_idx]["status"] = "ACCEPTED"
+        await asyncio.to_thread(_write_proposals, proposals)
+        # Append to live rules
+        today = time.strftime("%Y-%m-%d")
+        entry = f"- [{today}] {rule}\n"
+        _LEARNED_RULES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _LEARNED_RULES_PATH.open("a", encoding="utf-8") as f:
+            f.write(entry)
+        logger.info(f"[learned-rules] accepted proposal {proposal_number}: {rule[:80]}")
+        return f"Accepted. Rule added: '{rule}'. Takes full effect from next session."
+    except Exception as e:
+        logger.warning(f"[proposals] accept failed: {e}")
+        return f"(accept failed: {e})"
+
+
+@function_tool
+async def reject_proposal(proposal_number: int) -> str:
+    """Reject a pending rule proposal (marks it rejected, does not add to rules).
+
+    Call this after the user says 'reject' or 'no' for a specific proposal.
+
+    Args:
+        proposal_number: The 1-based proposal number from list_pending_proposals.
+    """
+    try:
+        from jarvis_log_analyzer import _load_existing_proposals, _write_proposals
+        proposals = _load_existing_proposals()
+        pending_indices = [i for i, p in enumerate(proposals)
+                           if p.get("status") == "PENDING"]
+        if proposal_number < 1 or proposal_number > len(pending_indices):
+            return f"(proposal {proposal_number} not found)"
+        real_idx = pending_indices[proposal_number - 1]
+        rule = proposals[real_idx].get("rule", "")
+        proposals[real_idx]["status"] = "REJECTED"
+        await asyncio.to_thread(_write_proposals, proposals)
+        logger.info(f"[learned-rules] rejected proposal {proposal_number}: {rule[:80]}")
+        return f"Rejected. Proposal {proposal_number} won't be applied."
+    except Exception as e:
+        logger.warning(f"[proposals] reject failed: {e}")
+        return f"(reject failed: {e})"
 
 
 # ── Direct primitive tools ────────────────────────────────────────────
@@ -1832,13 +2408,36 @@ class JarvisAgent(Agent):
         # Not silent. Check for mute trigger.
         if _is_command(text, _MUTE_PATTERNS):
             _set_silent(True)
-            logger.info("[silent-mode] mute phrase detected → entering silent mode")
+            # Log the actual trigger phrase so false positives can be
+            # diagnosed. Without this we only see "entering silent mode"
+            # and have to guess what the matcher caught.
+            logger.info(
+                f"[silent-mode] mute phrase detected → entering silent mode "
+                f"(trigger: {text[:120]!r})"
+            )
             # Don't drop — let the LLM voice a brief "going silent"
             # so the user gets confirmation. Future turns will be
             # suppressed by the silent-mode branch above.
             return
 
-        # Not silent, not a mute trigger → normal LLM path.
+        # Quiet-hours gate. During 11pm–7am, drop turns that have no
+        # "Jarvis" vocative AND no recent real interaction. This catches
+        # idle 3am ambient noise (Spotify/Chrome opened while sleeping)
+        # while preserving normal multi-turn conversation: once the user
+        # says "Jarvis, X", follow-up turns within 5 minutes pass freely.
+        if _in_quiet_hours() and not _JARVIS_NAME_RE.search(text):
+            if not _is_command(text, _WAKE_PATTERNS) and not _recent_interaction():
+                logger.info(
+                    f"[quiet-hours] dropping ambient turn (no vocative, "
+                    f"no recent interaction): {text[:80]!r}"
+                )
+                raise StopResponse()
+
+        # Turn accepted — stamp the interaction time so follow-ups within
+        # the quiet-hours window don't need a vocative.
+        _touch_interaction()
+
+        # Not silent, not a mute trigger, passed quiet-hours gate → LLM.
         return
 
 
@@ -1917,7 +2516,7 @@ async def entrypoint(ctx: JobContext) -> None:
         #   JARVIS_EDGE_VOICE — Microsoft fallback voice. Defaults to
         #     en-US-GuyNeural. `python -m edge_tts --list-voices` for more.
         tts=tts.FallbackAdapter([
-            groq.TTS(
+            _LoggingGroqTTS(
                 model="canopylabs/orpheus-v1-english",
                 voice=os.getenv("JARVIS_TTS_VOICE", "troy"),
             ),
@@ -2012,6 +2611,12 @@ async def entrypoint(ctx: JobContext) -> None:
     convo_session_id = str(uuid.uuid4())
     logger.info(f"[convo-db] session {convo_session_id}  → {CONVO_DB_PATH}")
 
+    # Trim chat_ctx after every assistant turn so long sessions don't
+    # blow past Groq's context window. Keep the most recent CTX_MAX_TURNS
+    # message objects (user+assistant pairs → 80 items ≈ 40 exchanges).
+    # Trim only on assistant turns so we never cut a pair mid-exchange.
+    CTX_MAX_TURNS = 80
+
     @session.on("conversation_item_added")
     def _on_item(ev) -> None:
         try:
@@ -2024,6 +2629,21 @@ async def entrypoint(ctx: JobContext) -> None:
             # tray drops gold the next /status poll.
             if role == "assistant":
                 _mark_thinking_end()
+                # Trim chat_ctx if it has grown too long. Access via
+                # session.chat_ctx.messages — the live list the agent's
+                # LLM receives on every turn. Keep the most recent
+                # CTX_MAX_TURNS items; excess head items are discarded.
+                try:
+                    msgs = session.chat_ctx.messages
+                    if len(msgs) > CTX_MAX_TURNS:
+                        drop = len(msgs) - CTX_MAX_TURNS
+                        del msgs[:drop]
+                        logger.info(
+                            f"[ctx-compact] dropped {drop} oldest messages "
+                            f"({len(msgs)} remaining)"
+                        )
+                except Exception as ce:
+                    logger.debug(f"[ctx-compact] could not trim: {ce}")
         except Exception as e:
             logger.warning(f"[convo-db] save failed: {e}")
 
@@ -2151,10 +2771,36 @@ async def entrypoint(ctx: JobContext) -> None:
         "Don't say you don't know — you do, it's right here."
     )
 
+    # ── Learned rules injection ────────────────────────────────────────
+    # Load ~/.jarvis/learned_rules.md and append to the system prompt.
+    # Done here (not at module load) so rules added mid-session are
+    # picked up on the next job dispatch without a full process restart.
+    learned_rules_block = _load_learned_rules()
+
+    # Check for pending log-analysis proposals. If there are any,
+    # add a brief notice to the system prompt so JARVIS can offer to
+    # review them without having to call list_pending_proposals first.
+    pending_count = _count_pending_proposals()
+    pending_block = ""
+    if pending_count > 0:
+        pending_block = (
+            f"\n\n[STARTUP NOTE: there are {pending_count} pending rule "
+            f"proposal(s) from log analysis in "
+            f"~/.jarvis/learned_rules.proposals.md. On first opportunity "
+            f"offer: \"I have {pending_count} rule proposal(s) from my "
+            f"logs — want to review them now or later?\"]"
+        )
+        logger.info(f"[learned-rules] {pending_count} pending proposal(s) at startup")
+
     await session.start(
         room=ctx.room,
         agent=JarvisAgent(
-            instructions=JARVIS_INSTRUCTIONS + runtime_id_block,
+            instructions=(
+                JARVIS_INSTRUCTIONS
+                + runtime_id_block
+                + learned_rules_block
+                + pending_block
+            ),
             # Pre-load recent prior turns from conversations.db so the
             # LLM sees what was discussed before this job started.
             # Without this, every voice-client reconnect = amnesia.
@@ -2183,6 +2829,11 @@ async def entrypoint(ctx: JobContext) -> None:
                 type_in_terminal,
                 media_control,
                 recall_conversation,
+                # Behavioral learning
+                remember_this,
+                list_pending_proposals,
+                accept_proposal,
+                reject_proposal,
             ],
         ),
         # Critical: keep the agent session alive when the voice-
@@ -2196,6 +2847,28 @@ async def entrypoint(ctx: JobContext) -> None:
         # -Output- variants were deprecated in livekit-agents 1.5.)
         room_options=RoomOptions(close_on_disconnect=False),
     )
+
+    # ── Background log analysis ───────────────────────────────────────
+    # Run the behavioral analyzer as a detached background task.
+    # It scans the last 7 days of conversations.db + agent log for
+    # repeated failure patterns and stages candidate rules in
+    # learned_rules.proposals.md. Bounded to 30s; all errors caught.
+    # A cooldown (12 h) prevents re-running on every client reconnect.
+    async def _run_analyzer_bg() -> None:
+        try:
+            # Delay 10 s so the session is fully active before we
+            # fire any network calls (Groq API for LLM proposal gen).
+            await asyncio.sleep(10)
+            from jarvis_log_analyzer import run_analysis
+            n = await asyncio.wait_for(run_analysis(), timeout=60.0)
+            if n > 0:
+                logger.info(f"[analyzer] {n} new proposal(s) staged")
+        except asyncio.TimeoutError:
+            logger.warning("[analyzer] analysis timed out after 60s")
+        except Exception as e:
+            logger.warning(f"[analyzer] background task error: {e}")
+
+    asyncio.create_task(_run_analyzer_bg())
 
     # Handle one-shot "speak this text" requests from any client in
     # the room. session.say() voices the text directly without an
@@ -2233,6 +2906,30 @@ async def entrypoint(ctx: JobContext) -> None:
             f"session.say unavailable after 3s wait — dropping: {text[:60]}"
         )
 
+    async def _user_input_when_ready(text: str) -> None:
+        """
+        Inject `text` as a synthetic user turn. Same activity-readiness
+        guard as _speak_when_ready — generate_reply also requires an
+        active AgentSession activity. Polls up to 3 s for readiness
+        before giving up. The agent's existing `conversation_item_added`
+        handler picks up both the synthetic user turn AND the assistant
+        reply, persisting both to conversations.db (and onward to
+        Convex via the mirror) — so the web transcript shows the round
+        trip without any extra wiring on this side.
+        """
+        for _ in range(30):
+            if session._activity is not None:
+                try:
+                    session.generate_reply(user_input=text)
+                    return
+                except RuntimeError as e:
+                    if "isn't running" not in str(e):
+                        raise
+            await _asyncio.sleep(0.1)
+        logger.warning(
+            f"session.generate_reply unavailable after 3s — dropping: {text[:60]}"
+        )
+
     @ctx.room.on("data_received")
     def _on_data(packet) -> None:
         try:
@@ -2247,6 +2944,11 @@ async def entrypoint(ctx: JobContext) -> None:
             if text:
                 logger.info(f"data-speak: {text[:60]}…")
                 _asyncio.create_task(_speak_when_ready(text))
+        elif t == "user_input":
+            text = (msg.get("text") or "").strip()
+            if text:
+                logger.info(f"data-user-input: {text[:60]}…")
+                _asyncio.create_task(_user_input_when_ready(text))
         elif t == "stop":
             # interrupt() has the same activity guard. Swallow its
             # RuntimeError if the session is idle — there's nothing
