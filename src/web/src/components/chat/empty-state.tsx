@@ -11,11 +11,11 @@ export function EmptyState({
   name?: string;
   provider: Provider;
 }) {
-  const ux = getProviderUX(provider);
+  const ux = getProviderUX("anthropic");
 
   return (
     <motion.div
-      key={provider}
+      key="greeting"
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3 }}
