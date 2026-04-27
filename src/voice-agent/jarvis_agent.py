@@ -232,6 +232,21 @@ def _recent_interaction() -> bool:
     return (time.monotonic() - _last_real_interaction) < QUIET_HOURS_WINDOW_SEC
 
 
+async def _restart_voice_client_after_crash() -> None:
+    """3-second debounce then restart jarvis-voice-client via systemd.
+
+    Called by _on_session_close when AgentSession dies with a non-None error.
+    The voice client's _agent_presence_watchdog handles room deletion and
+    fresh dispatch — we only need to trigger the restart.
+    """
+    await asyncio.sleep(3)
+    _subprocess.Popen(
+        ["systemctl", "--user", "restart", "jarvis-voice-client"],
+        stdout=_subprocess.DEVNULL,
+        stderr=_subprocess.DEVNULL,
+    )
+
+
 # ── CLI model selection ────────────────────────────────────────────────
 # The system tray exposes 5 CLI-model choices (mirroring the CLI's own
 # /model picker — DeepSeek×2, Groq×3). The user's pick is written to
@@ -2744,6 +2759,24 @@ async def entrypoint(ctx: JobContext) -> None:
             logger.warning(f"TTS error logged to {_tts_fail_marker}: {err}")
         except Exception as e:
             logger.debug(f"_on_error handler hiccup: {e}")
+
+    # ── Session crash watchdog ────────────────────────────────────────
+    # When Groq STT has a transient network failure, the framework
+    # retries 3 times then marks the session "unrecoverable". The worker
+    # process stays alive but the AgentSession is dead — JARVIS goes
+    # silent with no feedback. Detect this via CloseEvent.error and
+    # trigger a voice-client restart so _agent_presence_watchdog forces
+    # a fresh room + new AgentSession (~5-8 s total recovery time).
+    @session.on("close")
+    def _on_session_close(ev) -> None:
+        error = getattr(ev, "error", None)
+        if error is None:
+            return  # clean shutdown (model switch, tray quit) — don't restart
+        logger.error(
+            f"[session-watchdog] AgentSession died with error: {error}. "
+            "Scheduling voice-client restart in 3s."
+        )
+        asyncio.create_task(_restart_voice_client_after_crash())
 
     # Build the system prompt with current model info appended, so the
     # LLM can answer "what model are you?" correctly. Without this it
