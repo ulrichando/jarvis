@@ -78,3 +78,23 @@ class TestSessionWatchdog:
             asyncio.run(jarvis_agent._restart_voice_client_after_crash())
             # Popen called once — not check_call, not run
             assert mock_popen.call_count == 1
+
+    def test_no_restart_on_clean_shutdown(self):
+        """CloseEvent with error=None must NOT schedule a restart."""
+        import importlib
+        import jarvis_agent
+        importlib.reload(jarvis_agent)
+
+        mock_ev = MagicMock()
+        mock_ev.error = None
+        assert not jarvis_agent._session_close_needs_restart(mock_ev)
+
+    def test_restart_on_crash_error(self):
+        """CloseEvent with a non-None error MUST schedule a restart."""
+        import importlib
+        import jarvis_agent
+        importlib.reload(jarvis_agent)
+
+        mock_ev = MagicMock()
+        mock_ev.error = Exception("Connection error")
+        assert jarvis_agent._session_close_needs_restart(mock_ev)

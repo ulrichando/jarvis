@@ -212,6 +212,7 @@ QUIET_HOURS_END        = int(os.environ.get("JARVIS_QUIET_END",        "6"))    
 QUIET_HOURS_WINDOW_SEC = float(os.environ.get("JARVIS_QUIET_WINDOW_SEC", "1200"))  # 20 min
 _JARVIS_NAME_RE        = re.compile(r"\bj[ae]r?vis\b", re.IGNORECASE)
 _last_real_interaction = 0.0     # monotonic timestamp of last accepted turn
+_bg_tasks: set = set()  # keeps create_task refs alive until done
 
 
 def _in_quiet_hours() -> bool:
@@ -230,6 +231,11 @@ def _touch_interaction() -> None:
 
 def _recent_interaction() -> bool:
     return (time.monotonic() - _last_real_interaction) < QUIET_HOURS_WINDOW_SEC
+
+
+def _session_close_needs_restart(ev) -> bool:
+    """True if the CloseEvent represents a crash (non-None error), False for clean shutdown."""
+    return getattr(ev, "error", None) is not None
 
 
 async def _restart_voice_client_after_crash() -> None:
@@ -2769,14 +2775,17 @@ async def entrypoint(ctx: JobContext) -> None:
     # a fresh room + new AgentSession (~5-8 s total recovery time).
     @session.on("close")
     def _on_session_close(ev) -> None:
-        error = getattr(ev, "error", None)
-        if error is None:
+        if not _session_close_needs_restart(ev):
             return  # clean shutdown (model switch, tray quit) — don't restart
         logger.error(
-            f"[session-watchdog] AgentSession died with error: {error}. "
+            f"[session-watchdog] AgentSession died with error: {getattr(ev, 'error', '?')}. "
             "Scheduling voice-client restart in 3s."
         )
-        asyncio.create_task(_restart_voice_client_after_crash())
+        t = asyncio.create_task(
+            _restart_voice_client_after_crash(), name="session-watchdog-restart"
+        )
+        _bg_tasks.add(t)
+        t.add_done_callback(_bg_tasks.discard)
 
     # Build the system prompt with current model info appended, so the
     # LLM can answer "what model are you?" correctly. Without this it
