@@ -81,6 +81,8 @@ from jarvis_computer_use import (
     key_press,
     wait,
     screenshot,
+    webcam_capture,
+    watch_screen,
 )
 
 
@@ -3001,6 +3003,8 @@ async def entrypoint(ctx: JobContext) -> None:
                 key_press,
                 wait,
                 screenshot,
+                webcam_capture,
+                watch_screen,
             ],
         ),
         # Critical: keep the agent session alive when the voice-
