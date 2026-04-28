@@ -30,7 +30,10 @@ from livekit.agents import function_tool
 
 logger = logging.getLogger("jarvis-computer-use")
 
-GEMINI_MODEL = "gemini-2.0-flash"
+# gemini-2.5-flash — current production Flash model with vision.
+# 2.0-flash returns 429 RESOURCE_EXHAUSTED on the free tier (limit 0)
+# for new projects; 2.5-flash is the supported successor.
+GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_SCREEN_PROMPT = (
     "You are helping a voice assistant control a desktop computer. "
     "Describe the current screen state: what application is open, all "
@@ -73,17 +76,26 @@ def _get_gemini_client():
 
 def _take_screenshot() -> bytes:
     """Take a full-screen PNG via scrot, return the bytes."""
+    # NamedTemporaryFile pre-creates the file; without `-o` scrot
+    # refuses to overwrite and silently writes to <name>_000.png
+    # instead, leaving the path we read empty (0 bytes).
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
         path = f.name
-    subprocess.run(
-        ["scrot", "-z", path],
-        check=True,
-        timeout=5,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    with open(path, "rb") as f:
-        return f.read()
+    try:
+        subprocess.run(
+            ["scrot", "-o", path],
+            check=True,
+            timeout=5,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        with open(path, "rb") as f:
+            return f.read()
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 async def _gemini_describe(png_bytes: bytes) -> str:
