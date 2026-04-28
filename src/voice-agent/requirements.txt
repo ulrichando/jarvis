@@ -19,8 +19,15 @@ convex~=0.7
 # UI description, then Groq/DeepSeek decides the next click/type.
 google-genai~=1.73
 
-# Face ID — dlib's HOG face detector + ResNet 128-d encoder, used by
-# the face_register / face_identify tools. dlib compiles from source
-# (~5 min, needs cmake). face_recognition_models is a 100 MB weights
-# bundle pulled in transitively.
-face_recognition~=1.3
+# Face ID — InsightFace buffalo_l (RetinaFace + ArcFace ResNet-50),
+# the production-grade open-source face stack used by AWS Rekognition
+# clones, ID-verification SaaS, etc. 512-d L2-normalized embeddings,
+# cosine distance, ~99.83% LFW. ONNX Runtime executes the models on CPU.
+# Models (~280 MB) auto-download to ~/.insightface/ on first use.
+# Multi-frame averaged enrollment + IR/RGB cross-camera anti-spoof are
+# implemented in jarvis_computer_use.py:face_register/face_identify.
+insightface~=0.7
+onnxruntime~=1.20
+# pkg_resources (transitively required by older deps); pin to a setuptools
+# version that still ships it (82+ removed pkg_resources).
+setuptools<70
