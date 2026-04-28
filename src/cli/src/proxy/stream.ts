@@ -1,6 +1,15 @@
 // Converts an OpenAI SSE stream (fetch Response) to Anthropic SSE format
 // and writes it to a ReadableStream controller.
 
+import { Buffer } from 'node:buffer'
+
+const REASONING_PREFIX = '​​​'
+const REASONING_SUFFIX = '​​​'
+
+function encodeReasoningMarker(reasoning: string): string {
+  return REASONING_PREFIX + Buffer.from(reasoning, 'utf-8').toString('base64') + REASONING_SUFFIX
+}
+
 type StreamState = {
   messageId: string
   model: string
@@ -10,11 +19,13 @@ type StreamState = {
   // so the CLI cost-tracker bills them at the cheap cache rate.
   // Always 0 for Groq (no cache).
   cacheReadTokens: number
-  // Track content blocks by index
-  thinkingBlockIndex: number | null
   textBlockIndex: number | null
   toolBlocks: Map<number, { id: string; name: string; argsAccum: string }>
   nextContentIndex: number
+  // Accumulated reasoning_content for the marker round-trip.
+  // The marker is prepended to the first text delta (or emitted as a
+  // standalone text block when reasoning → tool_use with no text).
+  reasoningBuffer: string
 }
 
 function sseEvent(event: string, data: unknown): string {
@@ -43,10 +54,10 @@ export async function convertOpenAIStreamToAnthropic(
     model,
     inputTokens: 0,
     cacheReadTokens: 0,
-    thinkingBlockIndex: null,
     textBlockIndex: null,
     toolBlocks: new Map(),
     nextContentIndex: 0,
+    reasoningBuffer: '',
   }
 
   // Send message_start
@@ -111,53 +122,27 @@ export async function convertOpenAIStreamToAnthropic(
           outputTokens = chunk.usage.completion_tokens ?? 0
         }
 
-        // Reasoning (DeepSeek thinking-mode chain-of-thought). Streamed
-        // BEFORE the actual content per DeepSeek's protocol. Surface as
-        // an Anthropic `thinking` content block so the round-trip
-        // through Anthropic schema preserves it for the next turn
-        // (see convert.ts convertMessages).
+        // Reasoning (DeepSeek thinking-mode chain-of-thought). Buffered for
+        // the text-marker round-trip: the marker is prepended to the first
+        // text block so reasoning_content survives the SDK serialization.
         if (delta.reasoning_content) {
-          if (state.thinkingBlockIndex === null) {
-            state.thinkingBlockIndex = state.nextContentIndex++
-            send('content_block_start', {
-              type: 'content_block_start',
-              index: state.thinkingBlockIndex,
-              content_block: { type: 'thinking', thinking: '', signature: '' },
-            })
-          }
-          send('content_block_delta', {
-            type: 'content_block_delta',
-            index: state.thinkingBlockIndex,
-            delta: { type: 'thinking_delta', thinking: delta.reasoning_content },
-          })
+          state.reasoningBuffer += delta.reasoning_content
         }
 
         // Text content
         if (delta.content) {
-          // Close thinking block on first content token — DeepSeek
-          // streams reasoning in full before any actual content
-          // arrives, so this is where the cut belongs.
-          if (state.thinkingBlockIndex !== null) {
-            // Anthropic spec requires a signature_delta on thinking
-            // blocks before stop. Empty string is fine for proxy
-            // round-tripping (we don't verify upstream).
-            send('content_block_delta', {
-              type: 'content_block_delta',
-              index: state.thinkingBlockIndex,
-              delta: { type: 'signature_delta', signature: '' },
-            })
-            send('content_block_stop', {
-              type: 'content_block_stop',
-              index: state.thinkingBlockIndex,
-            })
-            state.thinkingBlockIndex = null
-          }
           if (state.textBlockIndex === null) {
             state.textBlockIndex = state.nextContentIndex++
+            // Prepend reasoning marker to carry reasoning_content
+            // through the SDK round-trip.
+            const prefix = state.reasoningBuffer
+              ? encodeReasoningMarker(state.reasoningBuffer)
+              : ''
+            state.reasoningBuffer = ''
             send('content_block_start', {
               type: 'content_block_start',
               index: state.textBlockIndex,
-              content_block: { type: 'text', text: '' },
+              content_block: { type: 'text', text: prefix },
             })
           }
           send('content_block_delta', {
@@ -179,22 +164,23 @@ export async function convertOpenAIStreamToAnthropic(
                 name: tc.function?.name ?? '',
                 argsAccum: '',
               })
-              // We might need to close the thinking block first
-              // (DeepSeek can go reasoning → tool_use with no text
-              // in between).
-              if (state.thinkingBlockIndex !== null) {
-                send('content_block_delta', {
-                  type: 'content_block_delta',
-                  index: state.thinkingBlockIndex,
-                  delta: { type: 'signature_delta', signature: '' },
+              // Reasoning → tool_use with no text: emit a marker-only
+              // text block to carry reasoning_content through the round-trip.
+              if (state.reasoningBuffer && state.textBlockIndex === null) {
+                const markerIdx = state.nextContentIndex++
+                const markerText = encodeReasoningMarker(state.reasoningBuffer)
+                state.reasoningBuffer = ''
+                send('content_block_start', {
+                  type: 'content_block_start',
+                  index: markerIdx,
+                  content_block: { type: 'text', text: markerText },
                 })
                 send('content_block_stop', {
                   type: 'content_block_stop',
-                  index: state.thinkingBlockIndex,
+                  index: markerIdx,
                 })
-                state.thinkingBlockIndex = null
               }
-              // We might need to close the text block first
+              // Close the text block before opening a tool block
               if (state.textBlockIndex !== null) {
                 send('content_block_stop', {
                   type: 'content_block_stop',
@@ -212,7 +198,6 @@ export async function convertOpenAIStreamToAnthropic(
                   input: {},
                 },
               })
-              // Store the content block index alongside the tool block
               ;(state.toolBlocks.get(tcIndex) as any)._contentIndex = blockIndex
             }
 
@@ -243,17 +228,23 @@ export async function convertOpenAIStreamToAnthropic(
     // Always emit closing events so the Anthropic SDK sees message_stop
     // and the CLI doesn't hang in "assistant is streaming" state, even if
     // the upstream provider connection was interrupted mid-response.
-    if (state.thinkingBlockIndex !== null) {
-      send('content_block_delta', {
-        type: 'content_block_delta',
-        index: state.thinkingBlockIndex,
-        delta: { type: 'signature_delta', signature: '' },
+
+    // Stream interrupted during reasoning with no text or tools yet:
+    // emit a marker-only text block so reasoning survives the round-trip.
+    if (state.reasoningBuffer && state.textBlockIndex === null && state.toolBlocks.size === 0) {
+      const markerIdx = state.nextContentIndex++
+      const markerText = encodeReasoningMarker(state.reasoningBuffer)
+      send('content_block_start', {
+        type: 'content_block_start',
+        index: markerIdx,
+        content_block: { type: 'text', text: markerText },
       })
       send('content_block_stop', {
         type: 'content_block_stop',
-        index: state.thinkingBlockIndex,
+        index: markerIdx,
       })
     }
+
     if (state.textBlockIndex !== null) {
       send('content_block_stop', {
         type: 'content_block_stop',

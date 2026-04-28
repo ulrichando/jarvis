@@ -121,6 +121,21 @@ async def _heartbeat_loop(shutdown: asyncio.Event) -> None:
 # dispatch into the now-registered worker.
 AGENT_DISPATCH_TIMEOUT_SEC = 45.0
 
+# How long after voice activity with no DB update before we declare
+# the Groq STT connection dead and restart both services.  The failure
+# mode: TCP CLOSE-WAIT on the Groq HTTPS socket — the agent looks
+# healthy (connected, agent_present) but audio frames go into a dead
+# socket, so STT transcripts never arrive and no turns get saved.
+# 4 minutes is long enough to cover a legitimate long tool call (those
+# do update the DB mid-run) but short enough that the user doesn't
+# wait half an hour before JARVIS self-heals.
+STALE_STT_SEC = 4 * 60
+
+# Updated whenever the local participant becomes an active speaker.
+# Written from the asyncio event loop; read from the same loop in the
+# watchdog — no lock needed.
+_last_voice_active_ts: float = 0.0
+
 
 async def _agent_presence_watchdog(shutdown: asyncio.Event) -> None:
     """If we're connected but agent_present stays False for too long,
@@ -148,6 +163,73 @@ async def _agent_presence_watchdog(shutdown: asyncio.Event) -> None:
             await asyncio.wait_for(shutdown.wait(), timeout=15.0)
         except asyncio.TimeoutError:
             pass
+
+
+async def _stale_stt_watchdog(shutdown: asyncio.Event) -> None:
+    """Detect and self-heal a dead Groq STT connection.
+
+    Failure mode: after several hours the HTTPS socket to Groq enters
+    CLOSE-WAIT — the agent appears healthy (connected, agent_present)
+    but audio frames go into a dead socket and STT transcripts never
+    arrive.  Symptom: user speaks, VAD fires (listening=True), but no
+    turn lands in conversations.db and JARVIS stays silent forever.
+
+    Detection: if voice was active recently but conversations.db hasn't
+    been updated since before the voice ended, the STT pipeline is
+    stuck.  We restart both jarvis-voice-agent (drops the dead socket)
+    and jarvis-voice-client (forces a fresh LiveKit room + job
+    dispatch).
+    """
+    # Wait past the first STALE_STT_SEC window before starting checks
+    # so a fresh startup doesn't false-fire before the first turn.
+    await asyncio.sleep(STALE_STT_SEC + 30)
+    _restart_fired = False
+    db_path = Path.home() / ".jarvis" / "conversations.db"
+    while not shutdown.is_set():
+        try:
+            if not _restart_fired:
+                _check_stale_stt(db_path)
+        except Exception as e:
+            log.debug(f"[turn-watchdog] check error: {e}")
+        try:
+            await asyncio.wait_for(shutdown.wait(), timeout=30.0)
+        except asyncio.TimeoutError:
+            pass
+
+
+def _check_stale_stt(db_path: Path) -> None:
+    """Fire once if the STT connection appears dead; schedule a restart."""
+    global _last_voice_active_ts
+    if _last_voice_active_ts == 0.0:
+        return  # no voice activity this session yet
+    now = time.time()
+    voice_age = now - _last_voice_active_ts
+    # Only care about voice that ended between 90 s and STALE_STT_SEC ago.
+    # <90 s: may still be processing (LLM + TTS can take a moment).
+    # >STALE_STT_SEC: too old to blame on a stale STT connection.
+    if voice_age < 90 or voice_age > STALE_STT_SEC:
+        return
+    # Don't fire if the agent is actively doing something — those
+    # update the DB at the end, so we'd false-positive mid-tool.
+    if state.listening or state.speaking or state.tool_running or state.agent_thinking:
+        return
+    # Check whether conversations.db was updated after the voice ended.
+    try:
+        db_mtime = db_path.stat().st_mtime
+    except FileNotFoundError:
+        return
+    if db_mtime >= _last_voice_active_ts:
+        return  # DB was updated after voice ended — turn landed, all good
+    # Voice ended but no DB update — STT is dead.
+    log.warning(
+        f"[turn-watchdog] voice active {voice_age:.0f}s ago, "
+        f"DB last updated {now - db_mtime:.0f}s ago — "
+        "Groq STT connection appears dead, restarting agent"
+    )
+    # Clear the timestamp so the check doesn't re-fire while the
+    # restart is in progress (takes ~5 s before this process exits).
+    _last_voice_active_ts = 0.0
+    asyncio.create_task(_restart_agent_unit(), name="stale-stt-restart")
 
 
 def _watchdog_thread() -> None:
@@ -193,10 +275,34 @@ DEFAULT_CLI_MODEL   = "deepseek-v4-pro"
 # preserves the room while the agent rejoins.
 SPEECH_MODEL_FILE      = Path.home() / ".jarvis" / "voice-model"
 
+# TTS provider switching. Format: "<provider>:<voice_id_or_name>"
+# e.g. "elevenlabs:JBFqnCBsd6RMkjVDRZzb" or "groq:troy".
+# If absent, agent falls back to env-var logic (ELEVENLABS_API_KEY present
+# → ElevenLabs, else Groq Orpheus).
+TTS_PROVIDER_FILE      = Path.home() / ".jarvis" / "tts-provider"
+
+def _default_tts_provider() -> str:
+    return ("elevenlabs:JBFqnCBsd6RMkjVDRZzb"
+            if os.getenv("ELEVENLABS_API_KEY") else "groq:troy")
+
+def _ensure_tts_provider_file() -> None:
+    if not TTS_PROVIDER_FILE.exists():
+        TTS_PROVIDER_FILE.parent.mkdir(parents=True, exist_ok=True)
+        TTS_PROVIDER_FILE.write_text(_default_tts_provider() + "\n", encoding="utf-8")
+
+TTS_PROVIDERS_AVAILABLE = {
+    "elevenlabs:JBFqnCBsd6RMkjVDRZzb": "ElevenLabs · George",
+    "elevenlabs:pNInz6obpgDQGcFmaJgB": "ElevenLabs · Adam",
+    "elevenlabs:nPczCjzI2devNBz1zQrb": "ElevenLabs · Brian",
+    "groq:troy":                         "Groq Orpheus · Troy",
+    "groq:austin":                        "Groq Orpheus · Austin",
+}
+
 # Same path as jarvis_agent.py's _TOOL_BUSY_FILE — written when a
 # tool starts, deleted when it ends. Voice-client polls existence
 # (cheap stat call) on every /status hit.
 TOOL_BUSY_FILE         = Path.home() / ".jarvis" / ".tool-running"
+SILENT_MODE_FILE       = Path.home() / ".jarvis" / ".silent-mode"
 
 # Agent's LLM-thinking flag. Same pattern: present means LLM is
 # generating. Has a staleness check below — if the file is older
@@ -352,6 +458,14 @@ class ClientState:
     # of inferring thinking from listening→quiet transitions, which
     # gave false positives on every ambient mic trigger.
     agent_thinking: bool = False
+    # True when the agent has entered soft-mute / silent mode
+    # ("go quiet", "stop listening"). Mic stays on so wake commands
+    # still work, but JARVIS won't respond. Distinct from `muted`
+    # (hardware track mute). UI maps this to the black indicator.
+    silent_mode:   bool = False
+    # Active TTS provider spec (e.g., "elevenlabs:JBFqnCBsd6RMkjVDRZzb").
+    # Read from TTS_PROVIDER_FILE on every /status hit.
+    tts_provider:  str = ""
     # Informative only — lets the UI show "jarvis@ws://..." if it
     # wants. Populated once on connect.
     url:           Optional[str] = None
@@ -378,9 +492,14 @@ async def _h_status(_: web.Request) -> web.Response:
     # tray race.
     state.cli_model    = _read_cli_model()
     state.speech_model = _read_speech_model()
+    try:
+        state.tts_provider = TTS_PROVIDER_FILE.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        state.tts_provider = ""
     # Cheap stat call — flag file is touched/removed by the agent's
     # tool wrappers around every run_jarvis_cli call.
-    state.tool_running = TOOL_BUSY_FILE.exists()
+    state.tool_running  = TOOL_BUSY_FILE.exists()
+    state.silent_mode   = SILENT_MODE_FILE.exists()
     # Definitive thinking signal — but only when the agent isn't
     # actively speaking. If TTS is playing we know the agent finished
     # its LLM phase, so suppress agent_thinking even if the file
@@ -590,6 +709,43 @@ async def _h_speech_model(req: web.Request) -> web.Response:
         return web.json_response({"error": str(e)}, status=500, headers=cors)
 
 
+async def _h_tts_provider(req: web.Request) -> web.Response:
+    """
+    GET  /tts-provider                              → current provider + available list
+    POST /tts-provider {"provider": "groq:troy"}    → write choice + restart agent
+    """
+    cors = {"Access-Control-Allow-Origin": "*"}
+    if req.method == "GET":
+        try:
+            current = TTS_PROVIDER_FILE.read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            current = ""
+        return web.json_response({
+            "provider":  current,
+            "available": TTS_PROVIDERS_AVAILABLE,
+        }, headers=cors)
+
+    # POST
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    provider = (body.get("provider") or "").strip()
+    if provider not in TTS_PROVIDERS_AVAILABLE:
+        return web.json_response(
+            {"error": f"unknown TTS provider: {provider!r}",
+             "available": TTS_PROVIDERS_AVAILABLE},
+            status=400, headers=cors,
+        )
+    try:
+        TTS_PROVIDER_FILE.parent.mkdir(parents=True, exist_ok=True)
+        TTS_PROVIDER_FILE.write_text(provider + "\n", encoding="utf-8")
+        asyncio.create_task(_restart_agent_unit())
+        return web.json_response({"provider": provider, "restarting": True}, headers=cors)
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500, headers=cors)
+
+
 async def _h_cors(_: web.Request) -> web.Response:
     """OPTIONS preflight for any /... route."""
     return web.Response(status=204, headers={
@@ -610,8 +766,10 @@ def _build_app() -> web.Application:
     app.router.add_post("/user-input", _h_user_input)
     app.router.add_get("/cli-model",   _h_cli_model)
     app.router.add_post("/cli-model",  _h_cli_model)
-    app.router.add_get("/voice-model", _h_speech_model)
-    app.router.add_post("/voice-model", _h_speech_model)
+    app.router.add_get("/voice-model",   _h_speech_model)
+    app.router.add_post("/voice-model",  _h_speech_model)
+    app.router.add_get("/tts-provider",  _h_tts_provider)
+    app.router.add_post("/tts-provider", _h_tts_provider)
     app.router.add_route("OPTIONS", "/{tail:.*}", _h_cors)
     return app
 
@@ -724,10 +882,13 @@ async def run_once(shutdown: asyncio.Event) -> None:
         # VU crosses a threshold. Use this for the listening/speaking
         # indicator on the Tauri UI side — no need for a separate VAD
         # in-client because the SFU already computes it centrally.
+        global _last_voice_active_ts
         local_active  = any(p.identity == IDENTITY for p in speakers)
         remote_active = any(p.identity != IDENTITY for p in speakers)
         state.listening = local_active
         state.speaking  = remote_active
+        if local_active:
+            _last_voice_active_ts = time.time()
 
     @room.on("participant_connected")
     def _on_participant_connected(participant: rtc.RemoteParticipant) -> None:
@@ -912,10 +1073,15 @@ async def main() -> None:
     threading.Thread(target=_watchdog_thread, name="loop-watchdog", daemon=True).start()
     asyncio.create_task(_heartbeat_loop(shutdown), name="heartbeat")
     asyncio.create_task(_agent_presence_watchdog(shutdown), name="presence-watchdog")
+    asyncio.create_task(_stale_stt_watchdog(shutdown), name="stale-stt-watchdog")
     log.info(
         f"[watchdog] enabled — heartbeat every {WATCHDOG_HEARTBEAT_SEC}s, "
         f"kill if stale > {WATCHDOG_STALE_SEC}s"
     )
+
+    # Ensure the TTS provider file exists so the Tauri desktop can read
+    # the current voice at startup without waiting for a user interaction.
+    _ensure_tts_provider_file()
 
     # HTTP control plane runs for the whole process lifetime — survives
     # LiveKit reconnects so the Tauri UI gets a quick "connected=false"
