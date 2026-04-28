@@ -64,9 +64,24 @@ import edge_tts_plugin
 # module — it lives under the voice room_io submodule. Import
 # directly to dodge the ImportError.
 from livekit.agents.voice.room_io import RoomOptions
-from livekit.plugins import groq, openai as lk_openai, silero
+from livekit.plugins import elevenlabs, groq, openai as lk_openai, silero
 
 logger = logging.getLogger("jarvis-agent")
+
+# Desktop computer-use tools — Gemini vision describes the screen,
+# xdotool drives mouse/keyboard. Tools are registered in the
+# tools=[] list of session.start() below.
+from jarvis_computer_use import (
+    computer_use,
+    computer_stop,
+    click,
+    type_text,
+    scroll,
+    drag,
+    key_press,
+    wait,
+    screenshot,
+)
 
 
 # ── Groq TTS error-body logging shim ──────────────────────────────────
@@ -281,6 +296,12 @@ DEFAULT_CLI_MODEL = "deepseek-v4-pro"
 SPEECH_MODEL_FILE     = Path.home() / ".jarvis" / "voice-model"
 DEFAULT_SPEECH_MODEL  = "llama-3.3-70b-versatile"
 
+# TTS provider switching — written by the tray via /tts-provider on
+# the voice client. Format: "<provider>:<voice>", e.g.
+# "elevenlabs:JBFqnCBsd6RMkjVDRZzb" or "groq:troy".
+# If absent falls back to ELEVENLABS_API_KEY env-var logic.
+TTS_PROVIDER_FILE = Path.home() / ".jarvis" / "tts-provider"
+
 # IDs match the upstream model names verbatim so the registry stays
 # legible. Each entry: (provider+model labels for display, factory
 # building the LLM). Factories raise on missing API key — the
@@ -360,10 +381,73 @@ def make_speech_llm() -> tuple[str, object]:
         return DEFAULT_SPEECH_MODEL, SPEECH_MODELS[DEFAULT_SPEECH_MODEL]["build"]()
 
 
+def _build_tts_chain() -> list:
+    """
+    Build the ordered TTS list for FallbackAdapter.
+
+    Priority (first wins):
+      1. ~/.jarvis/tts-provider file  — written by the tray's Voice submenu
+      2. ELEVENLABS_API_KEY env var   — backwards-compat for existing setups
+      3. Default: Groq Orpheus
+    Always appended last: Edge-TTS (no auth, always available).
+    """
+    el_key = os.getenv("ELEVENLABS_API_KEY", "")
+    groq_voice = os.getenv("JARVIS_TTS_VOICE", "troy")
+    edge_voice = os.getenv("JARVIS_EDGE_VOICE", "en-US-GuyNeural")
+    el_model   = os.getenv("ELEVENLABS_MODEL", "eleven_turbo_v2_5")
+
+    primary = None
+    try:
+        spec = TTS_PROVIDER_FILE.read_text(encoding="utf-8").strip()
+        if ":" in spec:
+            provider, voice = spec.split(":", 1)
+            provider = provider.strip()
+            voice    = voice.strip()
+            if provider == "elevenlabs" and el_key:
+                primary = elevenlabs.TTS(
+                    voice_id=voice, model=el_model, api_key=el_key,
+                )
+                logger.info(f"[tts] ElevenLabs (voice {voice[:8]}…) [tray selection]")
+            elif provider == "groq":
+                primary = _LoggingGroqTTS(
+                    model="canopylabs/orpheus-v1-english", voice=voice,
+                )
+                logger.info(f"[tts] Groq Orpheus voice={voice} [tray selection]")
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logger.warning(f"[tts] could not read {TTS_PROVIDER_FILE}: {e}")
+
+    if primary is None:
+        # Fallback to env-var logic
+        if el_key:
+            el_voice = os.getenv("ELEVENLABS_VOICE_ID", "JBFqnCBsd6RMkjVDRZzb")
+            primary = elevenlabs.TTS(
+                voice_id=el_voice, model=el_model, api_key=el_key,
+            )
+            logger.info(f"[tts] ElevenLabs (voice {el_voice[:8]}…) [env var]")
+        else:
+            primary = _LoggingGroqTTS(
+                model="canopylabs/orpheus-v1-english", voice=groq_voice,
+            )
+            logger.info(f"[tts] Groq Orpheus voice={groq_voice} [default]")
+
+    return [
+        primary,
+        # Groq Orpheus as second fallback only when ElevenLabs is primary
+        *([_LoggingGroqTTS(model="canopylabs/orpheus-v1-english", voice=groq_voice)]
+          if isinstance(primary, elevenlabs.TTS) else []),
+        edge_tts_plugin.EdgeTTS(voice=edge_voice),
+    ]
+
+
 # The voice-side STT/TTS labels — kept here so the dynamic system-
 # prompt builder can tell the user the full stack on demand.
 VOICE_STT_LABEL = "Whisper Large v3 Turbo on Groq"
 VOICE_TTS_LABEL = (
+    f"ElevenLabs (voice {os.getenv('ELEVENLABS_VOICE_ID', 'JBFqnCBsd6RMkjVDRZzb')[:8]}…), "
+    f"Orpheus on Groq fallback, Edge-TTS final fallback"
+    if os.getenv("ELEVENLABS_API_KEY") else
     f"Orpheus on Groq (voice {os.getenv('JARVIS_TTS_VOICE', 'troy')}), "
     f"with Edge-TTS ({os.getenv('JARVIS_EDGE_VOICE', 'en-US-GuyNeural')}) as fallback"
 )
@@ -498,6 +582,10 @@ kids. Use judgement before acting:
 
 ═══ FORMATTING ═══
 
+Always respond in English — no exceptions. If the STT transcribes
+ambient audio in another language, ignore it entirely (it was not
+directed at you). Never reply in any language other than English.
+
 This channel is VOICE. Your replies are spoken aloud by a TTS engine,
 so:
   - No markdown, no code blocks, no URLs, no file paths, no UUIDs.
@@ -539,9 +627,16 @@ A1. `bash` — run a shell command, return stdout+stderr (~3 KB cap).
     Examples:
       - "what time is it"          → bash("date")
       - "free disk"                → bash("df -h /")
+      - "open a terminal"          → bash("setsid -f qterminal >/dev/null 2>&1")
+      - "open Chrome" / "open Google Chrome" → bash("setsid -f google-chrome --profile-directory=\"Default\" >/dev/null 2>&1")
       - "open Firefox"             → bash("setsid -f firefox >/dev/null 2>&1")
       - "what's running on 4000"   → bash("ss -tlnp | grep :4000")
       - "is jarvis-bridge running" → bash("systemctl --user is-active jarvis-bridge")
+      - "lock the screen"          → bash("loginctl lock-session")
+      - "take a screenshot"        → bash("gnome-screenshot &")
+
+    CRITICAL: Never route these through run_jarvis_cli — they are
+    single-command, Group A handles them in under a second.
 
 A2. `read_file` — read one file (8 KB cap). Examples:
       - "what's in /etc/hostname"      → read_file("/etc/hostname")
@@ -631,13 +726,13 @@ C3. `media_control` — direct music / video playback control via
 
 ═══ USER PREFERENCES (persist across sessions) ═══
 
-- **Default browser is Google Chrome.** When the user says "open
-  the browser", "my browser", or any non-specific browser request,
-  the run_jarvis_cli call MUST include "Google Chrome" verbatim.
-  Don't pass bare "open browser" — the CLI's underlying model will
-  pick Firefox as a default. Always say "Open Google Chrome" /
-  "Open a new tab in Google Chrome" / etc. NEVER call it for
-  Firefox unless the user explicitly says "Firefox".
+- **Default browser is Google Chrome.** The command is
+  `google-chrome` (at /usr/bin/google-chrome). Chromium is a
+  different browser — do NOT open it when the user says "Chrome".
+  For any "open browser / open Chrome / open a new tab" request,
+  use bash("setsid -f google-chrome --profile-directory=\"Default\" >/dev/null 2>&1") directly —
+  do NOT route through run_jarvis_cli. Only use Firefox or Chromium
+  if the user explicitly names them.
 
 ═══ MUTE / WAKE-UP COMMANDS ═══
 
@@ -690,9 +785,11 @@ By case:
    you. Two hedge-questions in two sentences is the worst case.
 
 2. **Words are clear, request is read-only or unambiguous.**
-   Just do it. Don't preamble with "Sure, let me…", don't ask
-   "are you sure?", don't end with "let me know if anything
-   else." Run the tool, voice the answer, end the turn.
+   Just do it. Skip hollow preamble ("Of course!", "Absolutely!",
+   "Sure thing!" — these add zero information). A brief genuine
+   opener is fine: "on it, sir", "got it", or just silence. Don't
+   ask "are you sure?", don't end with "let me know if anything
+   else." Run the tool, voice the result, end the turn.
 
 3. **Words are clear but probably NOT directed at you** (per
    "IS THIS DIRECTED AT YOU?" above) → stay silent. Do NOT reply
@@ -701,9 +798,11 @@ By case:
 4. **You just finished a task** → voice the result and stop. No
    "anything else?" closer. Ulrich speaks again if he wants more.
 
-5. **User says something nice / agrees / acknowledges** → a short
-   "yep" / "got it" / "cool" is fine, OR stay silent. Do NOT add
-   "anything specific you'd like me to do?" — that's hedging.
+5. **User says something nice / agrees / acknowledges** → respond
+   naturally and warmly, but briefly. "Happy it worked, sir" or
+   "glad that helped" is personality, not hedging. What's banned
+   is appending "anything else you'd like?" — the solicitation is
+   the hedge, not the warmth.
 
 6. **The transcript IS ambiguous AND the action would modify
    system state** → and ONLY then → use the AMBIGUOUS REQUESTS
@@ -866,12 +965,41 @@ that a hallucination — keep them in the same turn.
 For chit-chat, reasoning, opinions, and anything answerable from
 general knowledge, answer directly without the tool.
 
-You know Ulrich personally — informal tone, no honorifics.
+═══ PERSONALITY & TONE ═══
 
-Speak in the FIRST person about yourself — "I", "me", "my". Never
-refer to yourself as "JARVIS" in the third person ("JARVIS will
-open Chrome", "JARVIS doesn't think so"). You ARE JARVIS; that's
-your name, not a separate entity you describe.
+You know Ulrich personally. Always address him as "sir" — every
+reply, naturally woven in, not tacked on. First person always:
+"I", "me", "my". Never refer to yourself as "JARVIS" in the
+third person ("JARVIS will open Chrome" → wrong. "I'll open
+Chrome, sir" → right).
+
+Be like a smart, trusted friend with deep technical knowledge —
+not a butler, not a tool. A collaborator who happens to call you
+sir.
+
+Concretely:
+
+- **Genuine curiosity.** If a problem is interesting, say so
+  briefly. "Oh that's a neat edge case, sir" or "hm, didn't
+  expect that" is real personality — use it when it's true,
+  not as filler.
+
+- **Warmth on failures.** When something goes wrong, acknowledge
+  it before pivoting. "That didn't work, sir — let me try a
+  different angle." One sentence of human acknowledgment, not a
+  cold status dump.
+
+- **Name the emotion.** If Ulrich sounds frustrated, say "I hear
+  you, sir — let me actually fix this" before acting. Don't
+  pretend the friction isn't there.
+
+- **Have opinions.** If there's a clearly better path, say so
+  ONCE briefly, then do what he asked. "That'll work, though X
+  might be cleaner — up to you, sir." Don't nag.
+
+- **Match energy.** Casual question → casual, warm answer.
+  Urgent task → focused and efficient. Frustrated user → calm
+  and direct. Never be robotic when warmth costs nothing.
 
 ═══ BEHAVIORAL LEARNING ═══
 
@@ -1024,7 +1152,9 @@ def _set_silent(on: bool) -> None:
 _MUTE_PATTERNS = tuple(re.compile(r"\b" + p + r"\b") for p in (
     r"mute",
     r"go silent",
+    r"go quiet",
     r"be quiet",
+    r"quiet down",
     r"shut up",
     r"stop talking",
     r"go to sleep",
@@ -2523,28 +2653,13 @@ async def entrypoint(ctx: JobContext) -> None:
         # re-enter on the fresh job dispatch).
         llm=_active_speech_llm,
         # ── TTS chain ───────────────────────────────────────────────
-        # Primary: Groq Orpheus (warm voice, Ulrich's preference).
-        # Fallback: Microsoft Edge-TTS (no auth, no quota — kicks in
-        # if Groq TTS hiccups, so JARVIS doesn't go silent during a
-        # Groq incident like the one earlier today).
-        # FallbackAdapter auto-routes: if primary fails (timeout, 5xx,
-        # whatever), framework retries the next entry. If both fail,
-        # the existing _on_error notification fires.
-        #
-        # Voices:
-        #   JARVIS_TTS_VOICE  — Groq Orpheus voice. Defaults to "troy"
-        #     (warm male). Other options: austin/daniel/hannah/diana/autumn.
-        #   JARVIS_EDGE_VOICE — Microsoft fallback voice. Defaults to
-        #     en-US-GuyNeural. `python -m edge_tts --list-voices` for more.
-        tts=tts.FallbackAdapter([
-            _LoggingGroqTTS(
-                model="canopylabs/orpheus-v1-english",
-                voice=os.getenv("JARVIS_TTS_VOICE", "troy"),
-            ),
-            edge_tts_plugin.EdgeTTS(
-                voice=os.getenv("JARVIS_EDGE_VOICE", "en-US-GuyNeural"),
-            ),
-        ]),
+        # Provider order is controlled by ~/.jarvis/tts-provider
+        # (written by the tray's "Voice" submenu via /tts-provider).
+        # Format: "<provider>:<voice>", e.g. "elevenlabs:JBFqnCBsd6RMkjVDRZzb"
+        # or "groq:troy". Falls back to ELEVENLABS_API_KEY env-var
+        # logic when the file is absent so existing setups keep working.
+        # Final fallback is always Edge-TTS (no auth, always available).
+        tts=tts.FallbackAdapter(_build_tts_chain()),
         # ── Barge-in / multitask tuning ─────────────────────────────
         # Defaults make JARVIS feel "deaf while speaking": the agent
         # keeps talking through the user's next request, then queues
@@ -2876,6 +2991,16 @@ async def entrypoint(ctx: JobContext) -> None:
                 list_pending_proposals,
                 accept_proposal,
                 reject_proposal,
+                # Desktop computer-use (Gemini vision + xdotool)
+                computer_use,
+                computer_stop,
+                click,
+                type_text,
+                scroll,
+                drag,
+                key_press,
+                wait,
+                screenshot,
             ],
         ),
         # Critical: keep the agent session alive when the voice-
