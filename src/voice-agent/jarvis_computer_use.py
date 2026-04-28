@@ -45,9 +45,30 @@ logger = logging.getLogger("jarvis-computer-use")
 # tricky UIs, at ~2x latency.
 GEMINI_MODEL = "gemini-2.5-flash-lite"
 
-# Default video device for webcam_capture. Override via JARVIS_WEBCAM_DEVICE.
-WEBCAM_DEVICE = os.environ.get("JARVIS_WEBCAM_DEVICE", "/dev/video0")
+# Default video device for webcam_capture. Resolution order (first wins):
+#   1. ~/.jarvis/webcam-device  (written by tray Camera-source submenu)
+#   2. JARVIS_WEBCAM_DEVICE env var
+#   3. /dev/video0
+WEBCAM_DEVICE_FILE = Path.home() / ".jarvis" / "webcam-device"
+_WEBCAM_DEVICE_DEFAULT = os.environ.get("JARVIS_WEBCAM_DEVICE", "/dev/video0")
 WEBCAM_RESOLUTION = os.environ.get("JARVIS_WEBCAM_RES", "1280x720")
+
+
+def _current_webcam_device() -> str:
+    """Read ~/.jarvis/webcam-device if present; fall back to env/default."""
+    try:
+        if WEBCAM_DEVICE_FILE.exists():
+            v = WEBCAM_DEVICE_FILE.read_text(encoding="utf-8").strip()
+            if v.startswith("/dev/video"):
+                return v
+    except Exception:
+        pass
+    return _WEBCAM_DEVICE_DEFAULT
+
+
+# Backwards-compat: callers that imported WEBCAM_DEVICE statically still work,
+# but new captures should call _current_webcam_device().
+WEBCAM_DEVICE = _WEBCAM_DEVICE_DEFAULT
 WEBCAM_PROMPT = (
     "You are JARVIS's eyes via the webcam. Describe what you see: "
     "people present (count, posture, facing direction, expression), "
@@ -194,11 +215,12 @@ def _take_webcam_frame() -> bytes:
     # Use a unique path so concurrent captures don't collide; also lets
     # us avoid scrot's overwrite footgun.
     path = f"/tmp/jarvis-cam-{os.getpid()}-{time.time_ns()}.jpg"
+    device = _current_webcam_device()
     try:
         subprocess.run(
             [
                 "fswebcam",
-                "-d", WEBCAM_DEVICE,
+                "-d", device,
                 "-r", WEBCAM_RESOLUTION,
                 "--no-banner",
                 "-q",

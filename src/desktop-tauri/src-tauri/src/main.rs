@@ -599,6 +599,26 @@ fn main() {
             // next action and raises ComputerUseError so the LLM exits the
             // session and reports back. No-op if no session is active.
             let stop_cu_item = MenuItemBuilder::with_id("stop_computer_use", "Stop Computer Use").build(app)?;
+
+            // ── 📷 Camera source submenu ──
+            // Picks which video device the webcam_* / face_* tools capture
+            // from. Selection persists to ~/.jarvis/webcam-device which
+            // jarvis_computer_use.py reads on each capture. The Dell laptop
+            // exposes RGB at /dev/video0 (visible) and IR at /dev/video2
+            // (Windows-Hello-style, works in low light).
+            let cam_rgb = MenuItemBuilder::with_id("camera_rgb", "RGB · /dev/video0 (default webcam)").build(app)?;
+            let cam_ir  = MenuItemBuilder::with_id("camera_ir",  "IR · /dev/video2 (Windows Hello camera, low-light)").build(app)?;
+            let cam_submenu = SubmenuBuilder::new(app, "📷 Camera source ▸")
+                .item(&cam_rgb)
+                .item(&cam_ir)
+                .build()?;
+
+            // ── 🖥 Start Screen Sharing ──
+            // Writes ~/.jarvis/start-screen-share with a duration in
+            // seconds; jarvis_agent.py's screen-share watcher picks it up
+            // and calls live_screen(N) which streams to Gemini Live API.
+            let share_screen_item = MenuItemBuilder::with_id("start_screen_share", "🖥 Start Screen Sharing (30s)").build(app)?;
+
             let sep1         = PredefinedMenuItem::separator(app)?;
             let browser_item = MenuItemBuilder::with_id("open_browser", "Open in Browser").build(app)?;
             let sep_prov     = PredefinedMenuItem::separator(app)?;
@@ -746,6 +766,8 @@ fn main() {
                 .item(&chat_item)
                 .item(&mute_item)
                 .item(&stop_cu_item)
+                .item(&cam_submenu)
+                .item(&share_screen_item)
                 .item(&sep1)
                 .item(&browser_item)
                 .item(&sep_prov)
@@ -812,6 +834,40 @@ fn main() {
                                 .spawn();
                             if let Some(w) = app.get_webview_window("main") {
                                 let _ = w.emit("tray-toggle-mute", ());
+                            }
+                        }
+                        "camera_rgb" => {
+                            if let Ok(home) = std::env::var("HOME") {
+                                let p = std::path::PathBuf::from(home).join(".jarvis/webcam-device");
+                                let _ = std::fs::create_dir_all(p.parent().unwrap());
+                                match std::fs::write(&p, "/dev/video0\n") {
+                                    Ok(_)  => println!("[JARVIS] camera source → RGB (/dev/video0)"),
+                                    Err(e) => eprintln!("[JARVIS] failed to write {}: {e}", p.display()),
+                                }
+                            }
+                        }
+                        "camera_ir" => {
+                            if let Ok(home) = std::env::var("HOME") {
+                                let p = std::path::PathBuf::from(home).join(".jarvis/webcam-device");
+                                let _ = std::fs::create_dir_all(p.parent().unwrap());
+                                match std::fs::write(&p, "/dev/video2\n") {
+                                    Ok(_)  => println!("[JARVIS] camera source → IR (/dev/video2)"),
+                                    Err(e) => eprintln!("[JARVIS] failed to write {}: {e}", p.display()),
+                                }
+                            }
+                        }
+                        "start_screen_share" => {
+                            // Write ~/.jarvis/start-screen-share with duration.
+                            // jarvis_agent.py's screen-share watcher polls
+                            // for this file, calls live_screen(N), and voices
+                            // the result. Default 30s.
+                            if let Ok(home) = std::env::var("HOME") {
+                                let p = std::path::PathBuf::from(home).join(".jarvis/start-screen-share");
+                                let _ = std::fs::create_dir_all(p.parent().unwrap());
+                                match std::fs::write(&p, "30\n") {
+                                    Ok(_)  => println!("[JARVIS] screen-share requested (30s)"),
+                                    Err(e) => eprintln!("[JARVIS] failed to write {}: {e}", p.display()),
+                                }
                             }
                         }
                         "stop_computer_use" => {
