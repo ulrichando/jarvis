@@ -35,6 +35,16 @@ struct ProviderLabel(Mutex<Option<MenuItem<Wry>>>);
 /// Same pattern as ProviderLabel but for the voice-LLM tier.
 struct SpeechLabel(Mutex<Option<MenuItem<Wry>>>);
 
+/// Handle to the "TTS: …" line inside the Models submenu.
+/// Rewritten by set_tts_label / switch_tts_provider as the active
+/// TTS voice changes.
+struct TtsLabel(Mutex<Option<MenuItem<Wry>>>);
+
+/// All five TTS voice menu items, stored so switch_tts_provider can
+/// add/remove the "✓ " prefix to reflect the active selection.
+/// Ordered to match TTS_VOICES.
+struct TtsVoiceItems(Mutex<Vec<MenuItem<Wry>>>);
+
 /// The source tray artwork (icons/tray.png — the concentric-ring /
 /// reactor design). Embedded into the binary at compile time so the
 /// icon can be tinted per-state at runtime without touching disk.
@@ -281,6 +291,66 @@ fn switch_cli_model(app: &tauri::AppHandle, id: &'static str) {
     }
 }
 
+/// Ordered list of (provider_spec, display_label) pairs.
+/// Must match the order items are pushed into TtsVoiceItems.
+const TTS_VOICES: &[(&str, &str)] = &[
+    ("elevenlabs:JBFqnCBsd6RMkjVDRZzb", "ElevenLabs · George"),
+    ("elevenlabs:pNInz6obpgDQGcFmaJgB", "ElevenLabs · Adam"),
+    ("elevenlabs:nPczCjzI2devNBz1zQrb", "ElevenLabs · Brian"),
+    ("groq:troy",                        "Groq Orpheus · Troy"),
+    ("groq:austin",                      "Groq Orpheus · Austin"),
+];
+
+/// Map a TTS provider:voice spec to a short pretty label for the tray.
+/// Mirrors TTS_PROVIDERS_AVAILABLE in jarvis_voice_client.py.
+fn tts_provider_pretty(spec: &str) -> Option<&'static str> {
+    TTS_VOICES.iter().find(|(s, _)| *s == spec).map(|(_, l)| *l)
+}
+
+/// Switch the active TTS voice by POSTing to the voice-client.
+/// Voice-client writes `~/.jarvis/tts-provider`; the agent reads it
+/// on the next session start (or via _build_tts_chain on each call).
+/// No agent restart needed — ElevenLabs and Groq Orpheus are both
+/// in the FallbackAdapter chain; order shifts on next utterance.
+fn switch_tts_provider(app: &tauri::AppHandle, spec: &'static str) {
+    let body = format!(r#"{{"provider":"{spec}"}}"#);
+    let _ = std::process::Command::new("curl")
+        .args([
+            "-s", "-X", "POST",
+            "http://127.0.0.1:8767/tts-provider",
+            "-H", "Content-Type: application/json",
+            "-d", &body,
+        ])
+        .spawn();
+
+    // Update ✓ prefix on all voice submenu items.
+    {
+        let items_state: State<TtsVoiceItems> = app.state();
+        if let Ok(items) = items_state.0.lock() {
+            for (i, (s, label)) in TTS_VOICES.iter().enumerate() {
+                if let Some(item) = items.get(i) {
+                    let text = if *s == spec {
+                        format!("✓  {label}")
+                    } else {
+                        (*label).to_string()
+                    };
+                    let _ = item.set_text(text);
+                }
+            }
+        };
+    }
+
+    // Update the "TTS: …" header line.
+    if let Some(pretty) = tts_provider_pretty(spec) {
+        let label: State<TtsLabel> = app.state();
+        if let Ok(guard) = label.0.lock() {
+            if let Some(item) = guard.as_ref() {
+                let _ = item.set_text(format!("TTS: {pretty}"));
+            }
+        };
+    }
+}
+
 /// Switch the active speech model by POSTing to the voice-client.
 /// Voice-client persists the choice in `~/.jarvis/voice-model` AND
 /// triggers `systemctl --user restart jarvis-voice-agent` so the
@@ -325,6 +395,45 @@ fn set_speech_label(name: &str, label: State<SpeechLabel>) -> Result<(), String>
     let guard = label.0.lock().map_err(|e| e.to_string())?;
     if let Some(item) = guard.as_ref() {
         item.set_text(text).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Update the "TTS: …" header line AND the ✓ checkmarks in the voice
+/// submenu. Called from JS on every /status poll when tts_provider
+/// changes — keeps the tray in sync even when the switch happens via
+/// the Python endpoint rather than a tray click.
+#[tauri::command]
+fn set_tts_label(name: &str, label: State<TtsLabel>, items: State<TtsVoiceItems>) -> Result<(), String> {
+    let text: String = if name.is_empty() {
+        "TTS: (loading…)".to_string()
+    } else {
+        match tts_provider_pretty(name) {
+            Some(pretty) => format!("TTS: {pretty}"),
+            None         => format!("TTS: {name}"),
+        }
+    };
+    // Update the header line.
+    {
+        let guard = label.0.lock().map_err(|e| e.to_string())?;
+        if let Some(item) = guard.as_ref() {
+            item.set_text(text).map_err(|e| e.to_string())?;
+        }
+    };
+    // Sync ✓ checkmarks on the voice submenu items.
+    if !name.is_empty() {
+        if let Ok(voice_items) = items.0.lock() {
+            for (i, (spec, lbl)) in TTS_VOICES.iter().enumerate() {
+                if let Some(item) = voice_items.get(i) {
+                    let t = if *spec == name {
+                        format!("✓  {lbl}")
+                    } else {
+                        (*lbl).to_string()
+                    };
+                    let _ = item.set_text(t);
+                }
+            }
+        };
     }
     Ok(())
 }
@@ -397,6 +506,8 @@ fn main() {
         .manage(TrayHandle(Mutex::new(None)))
         .manage(ProviderLabel(Mutex::new(None)))
         .manage(SpeechLabel(Mutex::new(None)))
+        .manage(TtsLabel(Mutex::new(None)))
+        .manage(TtsVoiceItems(Mutex::new(Vec::new())))
         .setup(move |app| {
             let window = app.get_webview_window("main").unwrap();
             let window_for_poll = window.clone();
@@ -483,6 +594,11 @@ fn main() {
             // ── System tray ──
             let chat_item    = MenuItemBuilder::with_id("open_chat",    "Open Chat Panel").build(app)?;
             let mute_item    = MenuItemBuilder::with_id("mute",         "Mute / Unmute Voice").build(app)?;
+            // Computer-use kill switch. Writes ~/.jarvis/computer-use-stop;
+            // jarvis_computer_use.py's _check_guards picks it up on the
+            // next action and raises ComputerUseError so the LLM exits the
+            // session and reports back. No-op if no session is active.
+            let stop_cu_item = MenuItemBuilder::with_id("stop_computer_use", "Stop Computer Use").build(app)?;
             let sep1         = PredefinedMenuItem::separator(app)?;
             let browser_item = MenuItemBuilder::with_id("open_browser", "Open in Browser").build(app)?;
             let sep_prov     = PredefinedMenuItem::separator(app)?;
@@ -532,6 +648,44 @@ fn main() {
                 .item(&v_llama4)
                 .build()?;
 
+            // ── TTS VOICE submenu (nested under Models) ──
+            // Switches the synthesis voice without restarting the agent.
+            // Voice-client writes ~/.jarvis/tts-provider; agent's
+            // _build_tts_chain reads it on next utterance. ElevenLabs
+            // items require ELEVENLABS_API_KEY in env; Groq Orpheus is
+            // the offline fallback.
+
+            // Read the current selection from disk so we can pre-mark
+            // it with ✓ immediately — no wait for a /status poll.
+            let saved_tts = std::env::var("HOME").ok()
+                .map(|h| std::path::PathBuf::from(h).join(".jarvis/tts-provider"))
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
+
+            let tts_item_label = |spec: &str, label: &str| -> String {
+                if spec == saved_tts.as_str() { format!("✓  {label}") } else { label.to_string() }
+            };
+            let init_tts_header = tts_provider_pretty(&saved_tts)
+                .map(|p| format!("TTS: {p}"))
+                .unwrap_or_else(|| "TTS: (loading…)".to_string());
+
+            let tts_current = MenuItemBuilder::with_id("tts_current", &init_tts_header)
+                .enabled(false)
+                .build(app)?;
+            let tts_el_george = MenuItemBuilder::with_id("tts_el_george", &tts_item_label("elevenlabs:JBFqnCBsd6RMkjVDRZzb", "ElevenLabs · George")).build(app)?;
+            let tts_el_adam   = MenuItemBuilder::with_id("tts_el_adam",   &tts_item_label("elevenlabs:pNInz6obpgDQGcFmaJgB", "ElevenLabs · Adam")).build(app)?;
+            let tts_el_brian  = MenuItemBuilder::with_id("tts_el_brian",  &tts_item_label("elevenlabs:nPczCjzI2devNBz1zQrb", "ElevenLabs · Brian")).build(app)?;
+            let tts_gr_troy   = MenuItemBuilder::with_id("tts_gr_troy",   &tts_item_label("groq:troy",                        "Groq Orpheus · Troy")).build(app)?;
+            let tts_gr_austin = MenuItemBuilder::with_id("tts_gr_austin", &tts_item_label("groq:austin",                      "Groq Orpheus · Austin")).build(app)?;
+            let tts_submenu = SubmenuBuilder::new(app, "TTS voice ▸")
+                .item(&tts_el_george)
+                .item(&tts_el_adam)
+                .item(&tts_el_brian)
+                .item(&tts_gr_troy)
+                .item(&tts_gr_austin)
+                .build()?;
+
             // ── TOOL submenu (nested under Models) ──
             // No restart needed — every run_jarvis_cli call re-reads
             // ~/.jarvis/cli-model and exports JARVIS_PROVIDER+MODEL.
@@ -554,17 +708,20 @@ fn main() {
                 .item(&m_gptoss)
                 .build()?;
 
+            let tts_sep = PredefinedMenuItem::separator(app)?;
             let provider_submenu = SubmenuBuilder::new(app, "Models")
                 .item(&speech_current)
                 .item(&provider_current)
+                .item(&tts_current)
                 .item(&header_sep)
                 .item(&speech_submenu)
                 .item(&tool_submenu)
+                .item(&tts_sep)
+                .item(&tts_submenu)
                 .build()?;
 
-            // Hand both dynamic header items to managed state so
-            // set_provider_label and set_speech_label can rewrite
-            // them later as /status polls report active models.
+            // Hand dynamic header items to managed state so the label
+            // commands can rewrite them as /status polls report changes.
             {
                 let pl: State<ProviderLabel> = app.state();
                 *pl.0.lock().unwrap() = Some(provider_current);
@@ -573,6 +730,14 @@ fn main() {
                 let sl: State<SpeechLabel> = app.state();
                 *sl.0.lock().unwrap() = Some(speech_current);
             }
+            {
+                let tl: State<TtsLabel> = app.state();
+                *tl.0.lock().unwrap() = Some(tts_current);
+            }
+            {
+                let vi: State<TtsVoiceItems> = app.state();
+                *vi.0.lock().unwrap() = vec![tts_el_george, tts_el_adam, tts_el_brian, tts_gr_troy, tts_gr_austin];
+            }
 
             let sep2         = PredefinedMenuItem::separator(app)?;
             let quit_item    = MenuItemBuilder::with_id("quit",         "Quit JARVIS").build(app)?;
@@ -580,6 +745,7 @@ fn main() {
             let menu = MenuBuilder::new(app)
                 .item(&chat_item)
                 .item(&mute_item)
+                .item(&stop_cu_item)
                 .item(&sep1)
                 .item(&browser_item)
                 .item(&sep_prov)
@@ -648,6 +814,23 @@ fn main() {
                                 let _ = w.emit("tray-toggle-mute", ());
                             }
                         }
+                        "stop_computer_use" => {
+                            // Touch ~/.jarvis/computer-use-stop. The voice
+                            // agent's _check_guards reads + unlinks this on
+                            // the next action and raises ComputerUseError,
+                            // which the action tool returns as success=False
+                            // so the LLM stops and reports back.
+                            if let Ok(home) = std::env::var("HOME") {
+                                let p = std::path::PathBuf::from(home).join(".jarvis/computer-use-stop");
+                                if let Some(parent) = p.parent() {
+                                    let _ = std::fs::create_dir_all(parent);
+                                }
+                                match std::fs::write(&p, "stop\n") {
+                                    Ok(_)  => println!("[JARVIS] computer-use stop signaled at {}", p.display()),
+                                    Err(e) => eprintln!("[JARVIS] failed to write {}: {e}", p.display()),
+                                }
+                            }
+                        }
                         "open_browser" => {
                             // Pick the first port that responds AND
                             // is the JARVIS web (Next.js). Probe
@@ -705,6 +888,12 @@ fn main() {
                         "speech_qwen/qwen3-32b"                            => switch_speech_model(app, "qwen/qwen3-32b"),
                         "speech_openai/gpt-oss-120b"                       => switch_speech_model(app, "openai/gpt-oss-120b"),
                         "speech_meta-llama/llama-4-scout-17b-16e-instruct" => switch_speech_model(app, "meta-llama/llama-4-scout-17b-16e-instruct"),
+                        // TTS-voice picks (no agent restart — file written, read on next utterance)
+                        "tts_el_george" => switch_tts_provider(app, "elevenlabs:JBFqnCBsd6RMkjVDRZzb"),
+                        "tts_el_adam"   => switch_tts_provider(app, "elevenlabs:pNInz6obpgDQGcFmaJgB"),
+                        "tts_el_brian"  => switch_tts_provider(app, "elevenlabs:nPczCjzI2devNBz1zQrb"),
+                        "tts_gr_troy"   => switch_tts_provider(app, "groq:troy"),
+                        "tts_gr_austin" => switch_tts_provider(app, "groq:austin"),
                         "quit" => {
                             // "Quit JARVIS" must stop everything the user
                             // perceives as JARVIS — not just the overlay.
@@ -846,6 +1035,7 @@ fn main() {
             set_tray_state,
             set_provider_label,
             set_speech_label,
+            set_tts_label,
             get_primary_monitor_info,
         ])
         .run(tauri::generate_context!())

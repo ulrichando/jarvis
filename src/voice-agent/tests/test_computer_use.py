@@ -373,6 +373,18 @@ class TestSafetyGuards:
 
         cu._check_guards()  # should not raise
 
+    def test_check_guards_raises_on_tray_stop_signal(self, tmp_path):
+        import jarvis_computer_use as cu
+        cu._active_session = cu._Session(task="test")
+        signal_file = tmp_path / "computer-use-stop"
+        signal_file.write_text("stop\n")
+
+        with patch.object(cu, "_STOP_SIGNAL_FILE", str(signal_file)):
+            with pytest.raises(cu.ComputerUseError, match="Stop Computer Use"):
+                cu._check_guards()
+            # The guard must consume the signal so the next action doesn't trip again.
+            assert not signal_file.exists()
+
     def test_record_success_resets_failures(self):
         import jarvis_computer_use as cu
         cu._active_session = cu._Session(task="test")
