@@ -2674,14 +2674,20 @@ async def entrypoint(ctx: JobContext) -> None:
                 # min_words and min_duration are AND-gated in the
                 # framework: interrupt fires only after VAD has crossed
                 # min_duration AND STT has produced ≥ min_words words.
-                # Setting min_words: 1 was making barge-in wait for
-                # Groq Whisper to land a partial transcript on top of
-                # the VAD window — total ~550–800 ms before the agent
-                # would stop talking. Use VAD-only (min_words: 0) so
-                # interrupt fires the instant min_duration of speech
-                # is seen.
+                # History on this knob:
+                #   - min_words=1 added ~550–800 ms before barge-in
+                #     fired (Whisper partial transcript latency on top
+                #     of the VAD window). Felt laggy.
+                #   - VAD-only (min_words=0) was instant but killed
+                #     replies on any 400 ms of room noise — verified
+                #     2026-04-28 when "Anyway, bro" cut the screenshot
+                #     description mid-utterance.
+                #   - min_words=2 (current): single-word ambient bursts
+                #     ("yeah", "uh", "no") slip past, intentional
+                #     multi-word interrupts still fire. Adds ~600 ms
+                #     latency to deliberate barge-ins — acceptable.
                 "min_duration": 0.4,
-                "min_words": 0,
+                "min_words": 2,
                 # resume_false_interruption / false_interruption_timeout
                 # OFF on purpose. Why: the framework's "false interrupt"
                 # path replaces the real interrupt() with audio_output
