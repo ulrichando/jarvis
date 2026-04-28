@@ -30,18 +30,19 @@ from livekit.agents import function_tool
 
 logger = logging.getLogger("jarvis-computer-use")
 
-# gemini-3.1-flash-lite-preview — Gemini 3.1 Flash family with vision.
-# Model selection rationale (verified 2026-04-28):
-#   - gemini-3.1-flash-live-preview: returns 1011 INTERNAL_ERROR on
-#     the Live websocket regardless of config/api-version. Model is
-#     listed but its backend is not serving requests yet on this key.
-#     Swap back here when Google fixes it — call shape is the same as
-#     the regular Live API flow.
-#   - gemini-3-flash-preview: works with generate_content but ~2x slower
-#     than the lite variant.
-#   - gemini-2.0-flash: returns 429 RESOURCE_EXHAUSTED (free-tier limit 0).
-#   - gemini-2.5-flash / gemini-2.5-flash-lite: work but are an older family.
-GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
+# gemini-2.5-flash-lite — chosen for speed (verified 2026-04-28).
+# Latency benchmark (one-shot screenshot describe, 70 KB JPEG, quick prompt):
+#   gemini-2.5-flash-lite           ~11.5s  ← chosen
+#   gemini-2.5-flash                503 (overloaded that day)
+#   gemini-3-flash-preview          ~20.1s
+#   gemini-3.1-flash-lite-preview   ~20.9s  (was the default — too slow)
+#   gemini-3.1-flash-live-preview   1011 quota (free-tier paid-only)
+#   gemini-2.0-flash                429 (free-tier limit 0)
+# The 2.5-lite output quality is more than sufficient for "describe what
+# the user sees" and "list UI elements with coordinates" tasks. Swap to
+# gemini-2.5-flash (full) when it's not 503ing for higher accuracy on
+# tricky UIs, at ~2x latency.
+GEMINI_MODEL = "gemini-2.5-flash-lite"
 
 # Default video device for webcam_capture. Override via JARVIS_WEBCAM_DEVICE.
 WEBCAM_DEVICE = os.environ.get("JARVIS_WEBCAM_DEVICE", "/dev/video0")
@@ -57,6 +58,15 @@ GEMINI_SCREEN_PROMPT = (
     "visible UI elements (buttons, text fields, menus, links), and their "
     "approximate pixel coordinates (x, y from top-left corner). "
     "Be specific and concise — the assistant will decide what to click or type."
+)
+# Casual "what's on my screen" prompt — used by the one-shot screenshot()
+# tool. No coordinates, no element list — just 1-2 sentences. The detailed
+# prompt above adds 10-15s to Gemini latency because it produces a long
+# structured response; this one returns in 1-3s.
+GEMINI_QUICK_SCREEN_PROMPT = (
+    "In one or two sentences, describe what's on this screen — what app "
+    "is open, what the user appears to be doing. No coordinates, no "
+    "element list. Speak naturally as if telling someone over the phone."
 )
 
 _FAILURE_LIMIT = 3
@@ -94,8 +104,17 @@ def _get_gemini_client():
     return genai.Client(api_key=key)
 
 
-def _take_screenshot() -> bytes:
-    """Take a full-screen PNG via scrot, return the bytes."""
+# Max edge length for screenshots sent to Gemini. 2560x1600 PNGs are
+# ~400 KB and the upload dominates round-trip latency (~15s observed).
+# Downscaling to 1280 max + JPEG at quality 75 cuts payload to ~60 KB
+# without losing readable UI text. Gemini's vision encoder uses tiles
+# either way — extra resolution past ~1024 is mostly wasted.
+_SCREENSHOT_MAX_EDGE = int(os.environ.get("JARVIS_SCREENSHOT_MAX_EDGE", "1280"))
+_SCREENSHOT_JPEG_QUALITY = int(os.environ.get("JARVIS_SCREENSHOT_JPEG_Q", "75"))
+
+
+def _take_screenshot() -> tuple[bytes, str]:
+    """Take a screenshot, downscale + JPEG-encode, return (bytes, mime_type)."""
     # NamedTemporaryFile pre-creates the file; without `-o` scrot
     # refuses to overwrite and silently writes to <name>_000.png
     # instead, leaving the path we read empty (0 bytes).
@@ -109,8 +128,18 @@ def _take_screenshot() -> bytes:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        with open(path, "rb") as f:
-            return f.read()
+        # Downscale + re-encode as JPEG to shrink the upload.
+        from PIL import Image
+        import io
+        with Image.open(path) as im:
+            im = im.convert("RGB")
+            w, h = im.size
+            scale = min(1.0, _SCREENSHOT_MAX_EDGE / max(w, h))
+            if scale < 1.0:
+                im = im.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+            buf = io.BytesIO()
+            im.save(buf, format="JPEG", quality=_SCREENSHOT_JPEG_QUALITY, optimize=True)
+            return buf.getvalue(), "image/jpeg"
     finally:
         try:
             os.unlink(path)
@@ -142,9 +171,21 @@ async def _gemini_describe(
 
 
 async def _screenshot_and_describe() -> str:
-    """Take screenshot, send to Gemini, return description."""
-    png = _take_screenshot()
-    return await _gemini_describe(png)
+    """Take screenshot, send to Gemini, return description.
+
+    Logs per-stage timing so latency regressions are visible.
+    """
+    t0 = time.monotonic()
+    img_bytes, mime = _take_screenshot()
+    t_capture = time.monotonic() - t0
+    t1 = time.monotonic()
+    desc = await _gemini_describe(img_bytes, mime_type=mime)
+    t_gemini = time.monotonic() - t1
+    logger.info(
+        f"[computer-use] screenshot+describe: capture={t_capture*1000:.0f}ms "
+        f"gemini={t_gemini*1000:.0f}ms img={len(img_bytes)/1024:.0f}KB ({mime})"
+    )
+    return desc
 
 
 def _take_webcam_frame() -> bytes:
@@ -495,15 +536,30 @@ async def wait(ms: int = 500) -> str:
 
 @function_tool
 async def screenshot() -> str:
-    """Take a screenshot and return a Gemini description of the screen.
+    """Take a screenshot and return a brief Gemini description of the screen.
 
     Does NOT require an active computer_use session — use this for one-off
-    "what's on the screen right now?" questions, or to orient yourself
-    before starting a computer_use session.
+    "what's on the screen right now?" voice questions. Returns 1-2 sentences
+    suitable for speaking aloud (no coordinates, no UI element list).
+
+    For computer-use action loops where coordinates are needed, the
+    computer_use → click/type tools use the detailed prompt automatically.
     """
     try:
-        desc = await _screenshot_and_describe()
-        logger.info("[computer-use] one-shot screenshot")
+        t0 = time.monotonic()
+        img_bytes, mime = _take_screenshot()
+        t_capture = time.monotonic() - t0
+        t1 = time.monotonic()
+        desc = await _gemini_describe(
+            img_bytes,
+            mime_type=mime,
+            prompt=GEMINI_QUICK_SCREEN_PROMPT,
+        )
+        t_gemini = time.monotonic() - t1
+        logger.info(
+            f"[computer-use] one-shot screenshot: capture={t_capture*1000:.0f}ms "
+            f"gemini={t_gemini*1000:.0f}ms img={len(img_bytes)/1024:.0f}KB"
+        )
         return desc
     except Exception as e:
         return f"(screenshot failed: {e})"
@@ -552,9 +608,9 @@ async def watch_screen(seconds: int = 10) -> str:
     """
     seconds = max(1, min(int(seconds), 60))
     try:
-        first = _take_screenshot()
+        first, mime = _take_screenshot()
         await asyncio.sleep(seconds)
-        last = _take_screenshot()
+        last, _ = _take_screenshot()
         # Send both frames in one Gemini call so the model can diff them
         from google.genai import types as genai_types
         client = _get_gemini_client()
@@ -564,8 +620,8 @@ async def watch_screen(seconds: int = 10) -> str:
             response = client.models.generate_content(
                 model=GEMINI_MODEL,
                 contents=[
-                    genai_types.Part.from_bytes(data=first, mime_type="image/png"),
-                    genai_types.Part.from_bytes(data=last, mime_type="image/png"),
+                    genai_types.Part.from_bytes(data=first, mime_type=mime),
+                    genai_types.Part.from_bytes(data=last, mime_type=mime),
                     f"These are two screenshots of the same display, "
                     f"taken {seconds} seconds apart. Describe what changed "
                     f"between them — new windows, content updates, animations, "
