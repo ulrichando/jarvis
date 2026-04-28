@@ -535,6 +535,136 @@ async def wait(ms: int = 500) -> str:
         return _fmt_result(False, error=str(e))
 
 
+async def _gemini_live_describe(
+    duration_s: int,
+    instruction: str,
+    frame_interval_s: float = 1.5,
+) -> str:
+    """Open a Gemini Live websocket session, stream screenshot frames
+    for duration_s seconds, return the concatenated text response.
+
+    Uses gemini-3.1-flash-live-preview (matching the Google AI Studio
+    sample). Returns text-only output (audio modality not used because
+    JARVIS has its own TTS pipeline). Raises ComputerUseError on quota
+    exhaustion (1011) — Live API needs paid Gemini billing.
+    """
+    from google import genai
+    from google.genai import types as genai_types
+    key = os.environ.get("GOOGLE_API_KEY", "")
+    if not key:
+        raise ComputerUseError("GOOGLE_API_KEY not set")
+
+    client = genai.Client(api_key=key)
+    config = genai_types.LiveConnectConfig(
+        response_modalities=["TEXT"],
+        media_resolution=genai_types.MediaResolution.MEDIA_RESOLUTION_MEDIUM,
+        context_window_compression=genai_types.ContextWindowCompressionConfig(
+            trigger_tokens=104857,
+            sliding_window=genai_types.SlidingWindow(target_tokens=52428),
+        ),
+        system_instruction=genai_types.Content(
+            parts=[genai_types.Part(text=(
+                "You are JARVIS's eyes via continuous screen share. "
+                "Describe what changes between frames as a stream of "
+                "short observations. No preamble, no closer."
+            ))],
+        ),
+    )
+
+    chunks: list[str] = []
+    try:
+        async with client.aio.live.connect(
+            model="models/gemini-3.1-flash-live-preview",
+            config=config,
+        ) as session:
+            # Send the user's instruction as the opening turn
+            await session.send_client_content(
+                turns=[genai_types.Content(
+                    role="user",
+                    parts=[genai_types.Part(text=instruction)],
+                )],
+                turn_complete=False,  # we'll keep the turn open with frames
+            )
+
+            # Background task: capture and send screen frames
+            stop_at = time.monotonic() + duration_s
+            async def _stream_frames():
+                while time.monotonic() < stop_at:
+                    img_bytes, mime = _take_screenshot()
+                    await session.send_realtime_input(
+                        video=genai_types.Blob(data=img_bytes, mime_type=mime),
+                    )
+                    await asyncio.sleep(frame_interval_s)
+
+            frame_task = asyncio.create_task(_stream_frames())
+            try:
+                async for msg in session.receive():
+                    if msg.text:
+                        chunks.append(msg.text)
+                    sc = getattr(msg, "server_content", None)
+                    if sc and sc.model_turn:
+                        for part in sc.model_turn.parts or []:
+                            if part.text:
+                                chunks.append(part.text)
+                    if time.monotonic() >= stop_at:
+                        break
+            finally:
+                frame_task.cancel()
+                try:
+                    await frame_task
+                except asyncio.CancelledError:
+                    pass
+    except Exception as e:
+        msg = str(e)
+        if "1011" in msg or "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower():
+            raise ComputerUseError(
+                "Gemini Live API needs paid billing on this project. "
+                "Free tier returns 1011 quota errors immediately. "
+                "Enable billing at console.cloud.google.com → APIs & Services → Billing, "
+                "then this tool will work."
+            ) from e
+        raise
+
+    return "".join(chunks).strip() or "(no description from Live session)"
+
+
+@function_tool
+async def live_screen(duration_s: int = 10, focus: str = "") -> str:
+    """Open a real Gemini Live screen-share session for N seconds.
+
+    Streams screenshot frames at ~1.5s intervals to Gemini Live, returns
+    the concatenated description of what changed. This is the actual
+    "watch my screen continuously" capability the user asked for.
+
+    REQUIREMENT: Gemini paid billing on this project. Free tier returns
+    1011 quota errors. The tool gives a clear message in that case.
+
+    For one-shot "what's on my screen right now" questions, use
+    screenshot() instead — it works on the free tier.
+
+    Args:
+        duration_s: How long to stream (1..60, default 10).
+        focus:      Optional focus for Gemini ("watch for any errors",
+                    "describe what the user is editing"). Empty = "describe
+                    what's happening continuously".
+    """
+    duration_s = max(1, min(int(duration_s), 60))
+    instruction = focus.strip() or (
+        "Describe what's happening on the user's screen as it changes. "
+        "Short observations only — no preamble, no closer."
+    )
+    try:
+        t0 = time.monotonic()
+        desc = await _gemini_live_describe(duration_s, instruction)
+        elapsed = time.monotonic() - t0
+        logger.info(f"[computer-use] live_screen({duration_s}s) → {len(desc)} chars in {elapsed:.1f}s")
+        return desc
+    except ComputerUseError as e:
+        return str(e)
+    except Exception as e:
+        return f"(live_screen failed: {e})"
+
+
 @function_tool
 async def screenshot() -> str:
     """Take a screenshot and return a brief Gemini description of the screen.
