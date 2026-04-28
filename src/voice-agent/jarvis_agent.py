@@ -83,6 +83,10 @@ from jarvis_computer_use import (
     screenshot,
     webcam_capture,
     watch_screen,
+    face_register,
+    face_identify,
+    face_list,
+    face_delete,
 )
 
 
@@ -3058,6 +3062,11 @@ async def entrypoint(ctx: JobContext) -> None:
                 screenshot,
                 webcam_capture,
                 watch_screen,
+                # Face ID (dlib + face_recognition)
+                face_register,
+                face_identify,
+                face_list,
+                face_delete,
             ],
         ),
         # Critical: keep the agent session alive when the voice-
