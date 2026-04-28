@@ -231,7 +231,16 @@ class _LoggingGroqTTS(groq.TTS):
 QUIET_HOURS_START      = int(os.environ.get("JARVIS_QUIET_START",      "1"))    # 1am
 QUIET_HOURS_END        = int(os.environ.get("JARVIS_QUIET_END",        "6"))    # 6am
 QUIET_HOURS_WINDOW_SEC = float(os.environ.get("JARVIS_QUIET_WINDOW_SEC", "1200"))  # 20 min
-_JARVIS_NAME_RE        = re.compile(r"\bj[ae]r?vis\b", re.IGNORECASE)
+# Whisper transcribes "Jarvis" as many things depending on accent and
+# noise — verified 2026-04-28 from convo db: jarvis, jervis, javis,
+# joris, yarvis, garvis. We match the common phonetic variants. The
+# pattern is permissive on purpose: false-positive vocative just means
+# JARVIS responds to a similar-sounding word; false-negative means the
+# user has to repeat themselves.
+_JARVIS_NAME_RE        = re.compile(
+    r"\b(?:j[aeo]r?vis|joris|jervis|jarvest|jaravis|y[aeo]rvis|g[aeo]rvis|h[aeo]rvis|jorvis|jarbis)\b",
+    re.IGNORECASE,
+)
 _last_real_interaction = 0.0     # monotonic timestamp of last accepted turn
 _bg_tasks: set = set()  # keeps create_task refs alive until done
 
@@ -1378,9 +1387,14 @@ def _is_command(text: str, patterns: tuple[re.Pattern, ...]) -> bool:
         body = sentence.strip().lower()
         if not body:
             continue
-        # Strip a leading "jarvis" / "jervis" / "javis" vocative,
-        # remembering whether one was actually present.
-        stripped = re.sub(r"^j[ae]r?vis[,.:!\s]+", "", body)
+        # Strip a leading "jarvis" / "jervis" / "javis" / "joris" / etc.
+        # vocative, remembering whether one was actually present.
+        # See _JARVIS_NAME_RE above for the full list of Whisper variants.
+        stripped = re.sub(
+            r"^(?:j[aeo]r?vis|joris|jervis|jarvest|jaravis|y[aeo]rvis|g[aeo]rvis|h[aeo]rvis|jorvis|jarbis)[,.:!\s]+",
+            "",
+            body,
+        )
         had_vocative = stripped != body
         body = stripped
         if len(body.split()) > _COMMAND_MAX_WORDS:
@@ -3179,6 +3193,19 @@ async def entrypoint(ctx: JobContext) -> None:
             # tray drops gold the next /status poll.
             if role == "assistant":
                 _mark_thinking_end()
+                # Auto-flip silent mode when the model voiced a mute
+                # confirmation but the gate didn't trigger (e.g. user
+                # said "Go on mute" without a vocative — gate rejects,
+                # but the LLM correctly inferred the intent and replied
+                # "Going quiet"). Honor the LLM's interpretation so
+                # behavior matches what was acknowledged out loud.
+                lower = (text or "").lower()
+                if not _is_silent() and any(p in lower for p in (
+                    "going quiet", "going silent", "muting myself",
+                    "going to sleep", "i'll be quiet", "be quiet now",
+                )):
+                    _set_silent(True)
+                    logger.info(f"[silent-mode] auto-engaged from assistant text: {text[:80]!r}")
                 # Trim chat_ctx if it has grown too long. Access via
                 # session.chat_ctx.messages — the live list the agent's
                 # LLM receives on every turn. Keep the most recent
