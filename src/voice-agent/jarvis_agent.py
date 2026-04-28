@@ -2709,6 +2709,46 @@ def _comma_thousands(match: re.Match) -> str:
     return match.group(0).replace(" ", ",")
 
 
+# Strip chatty progress-narration prefixes that gpt-oss-120b emits
+# before the actual answer. Heard 2026-04-28 — "what time is it"
+# returned: "Let me try again from scratch. I'll fetch the current
+# time in Cameroon. Checking the internet... Okay, I have the
+# current time. The current time in Cameroon is twenty-one forty-
+# five." That's 15s of speech for a 2s answer. Strip the preambles.
+_PREAMBLE_RE = re.compile(
+    r"^\s*(?:"
+    r"let me (?:try (?:again )?(?:from scratch|once more)?|"
+        r"check (?:that|on that|for you|on it)|"
+        r"fetch (?:that|the [\w\s]+?)|"
+        r"see|look (?:that up|into that)|"
+        r"do that (?:for you|now)|"
+        r"grab (?:that|the [\w\s]+?))[^.!?]*[.!?]\s*|"
+    r"i[’'`]?ll (?:fetch|check|grab|look|find|get|pull) [^.!?]*[.!?]\s*|"
+    r"(?:checking|fetching|looking|searching|grabbing|pulling|loading|querying|polling)"
+        r"[^.!?]*\.{2,}\s*|"
+    r"okay,? i (?:have|got|found|fetched|checked) [^.!?]*[.!?]\s*|"
+    r"alright,? (?:here's|here is) [^.!?]*[.!?]\s*|"
+    r"one (?:moment|second|sec)[,.]?\s*(?:please[,.]?)?\s*[.!?]?\s*|"
+    r"give me (?:a|one) (?:moment|second|sec)[,.]?\s*[.!?]?\s*"
+    r")+",
+    re.IGNORECASE,
+)
+
+
+async def strip_preambles(text):
+    """Strip 'Let me check...', 'Okay I have...', 'Checking the internet...' filler."""
+    buffer = ""
+    async for chunk in text:
+        buffer += chunk
+    if not buffer:
+        return
+    cleaned = _PREAMBLE_RE.sub("", buffer).lstrip()
+    if cleaned != buffer:
+        logger.info(f"[preamble-strip] cut {len(buffer) - len(cleaned)} chars of filler")
+    if cleaned:
+        yield cleaned
+
+
 async def normalize_numbers(text):
     """Replace space-thousands ('4 000') with comma-thousands ('4,000')."""
     buffer = ""
@@ -3029,6 +3069,10 @@ async def entrypoint(ctx: JobContext) -> None:
             # silent than to voice "Sorry, I missed that, did you want
             # me to set up an OAuth flow?" to a podcast.
             drop_pure_hedge,
+            # Cut "Let me check...", "I'll fetch...", "Checking the
+            # internet...", "Okay, I have..." filler. Heard 2026-04-28:
+            # 5-clause preamble before "the time is X" added 15s of speech.
+            strip_preambles,
             # Convert "4 000" → "4,000" so TTS reads "four thousand"
             # instead of mispronouncing as "forty" or "four-oh".
             normalize_numbers,
