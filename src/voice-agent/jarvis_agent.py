@@ -2521,6 +2521,68 @@ async def strip_function_call_leakage(text):
         yield buffer
 
 
+# Closer phrases the speech LLM habitually appends. Split into two
+# pattern sets so we don't over-strip:
+#
+#   _HEDGE_RE — pure hedges that are NEVER a legitimate standalone
+#     reply. Strip whether they're at start-of-text or appended.
+#   _APPEND_RE — terminators that CAN be legitimate standalone replies
+#     ("Glad it helped" in response to "thanks", "Done." after a task).
+#     Only strip when they trail other content (whitespace boundary,
+#     not start-of-text). Single-word reply "Done." stays.
+#
+# Both are anchored to end-of-stream — applied in strip_voice_closers
+# only after the LLM has finished generating, so "Done." mid-answer
+# can't trigger.
+
+_HEDGE_RE = re.compile(
+    r"(?:^|\s+)("
+    r"anything else[^.!?]*?(?:[,.\s]+sir)?|"
+    r"how can i help(?:\s+you)?(?:[,.\s]+sir)?|"
+    r"what (?:can|would) i (?:do|help)(?:\s+for you|\s+with)?(?:[,.\s]+sir)?|"
+    r"what would you like me to do(?:\s+next)?(?:[,.\s]+sir)?|"
+    r"let me know if [^.!?]*?(?:[,.\s]+sir)?|"
+    r"just let me know(?:[,.\s]+sir)?|"
+    r"i[’'`]?m here if you need me(?:[,.\s]+sir)?"
+    r")[.!?,]?\s*$",
+    re.IGNORECASE,
+)
+
+_APPEND_RE = re.compile(
+    r"\s+("                                           # whitespace boundary REQUIRED — never matches at start
+    r"done|"
+    r"glad(?:\s+(?:it helped|to help|i could help))?(?:[,.\s]+sir)?|"
+    r"that[’'`]s what i (?:see|saw)(?:[,.\s]+sir)?|"
+    r"(?:i[’'`]?m\s+)?happy to help(?:[,.\s]+sir)?"
+    r")[.!?,]?\s*$",
+    re.IGNORECASE,
+)
+
+
+async def strip_voice_closers(text):
+    """Strip trailing hedge-closer phrases the speech LLM appends.
+
+    Runs ONLY on end-of-stream — closers anchored at $ would never match
+    mid-stream anyway. Applies repeatedly to peel multiple stacked
+    closers ("Done. Anything else you need, sir?" → "").
+    """
+    buffer = ""
+    KEEP_TAIL = 250
+    async for chunk in text:
+        buffer += chunk
+        if len(buffer) > KEEP_TAIL:
+            yield buffer[:-KEEP_TAIL]
+            buffer = buffer[-KEEP_TAIL:]
+    if buffer:
+        prev = None
+        while buffer != prev:
+            prev = buffer
+            buffer = _HEDGE_RE.sub("", buffer).rstrip()
+            buffer = _APPEND_RE.sub("", buffer).rstrip()
+        if buffer:
+            yield buffer
+
+
 def _flatten_chat_content(content: object) -> str:
     """ChatMessage.content can be a string, a list of mixed parts
     (strings + ImageContent + etc), or None. Flatten to a plain
@@ -2792,6 +2854,12 @@ async def entrypoint(ctx: JobContext) -> None:
         # which sounds completely broken.
         tts_text_transforms=[
             strip_function_call_leakage,
+            # Strip "Done.", "Anything else, sir?", "Happy to help", etc.
+            # gpt-oss-120b habitually appends these despite the system
+            # prompt forbidding them; cheaper to peel post-LLM than to
+            # swap to a smaller model. Verified 2026-04-28 vs convo db
+            # (the user heard "Done." as a trailing dot).
+            strip_voice_closers,
             "filter_markdown",
             "filter_emoji",
         ],
