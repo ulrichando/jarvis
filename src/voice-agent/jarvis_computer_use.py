@@ -52,6 +52,9 @@ GEMINI_SCREEN_PROMPT = (
 
 _FAILURE_LIMIT = 3
 _STALL_TIMEOUT_S = 30.0
+# Tray writes this file when the user clicks "Stop Computer Use".
+# _check_guards reads + unlinks it on the next action.
+_STOP_SIGNAL_FILE = os.path.expanduser("~/.jarvis/computer-use-stop")
 
 
 class ComputerUseError(RuntimeError):
@@ -138,6 +141,16 @@ def _check_guards() -> None:
     """Raise ComputerUseError if a safety limit is exceeded."""
     if _active_session is None:
         return
+    # Tray kill switch — wins over everything else.
+    if os.path.exists(_STOP_SIGNAL_FILE):
+        try:
+            os.unlink(_STOP_SIGNAL_FILE)
+        except OSError:
+            pass
+        raise ComputerUseError(
+            "Stopping: user clicked 'Stop Computer Use' in the tray. "
+            "Tell the user the session was halted at their request."
+        )
     if _active_session.consecutive_failures >= _FAILURE_LIMIT:
         raise ComputerUseError(
             f"Stopping after {_FAILURE_LIMIT} consecutive failures. "
