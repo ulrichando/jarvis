@@ -2663,6 +2663,38 @@ async def strip_voice_closers(text):
 _SIR_RE = re.compile(r",?\s*\bsir\b", re.IGNORECASE)
 
 
+# If the ENTIRE reply is a hedge — "Sorry, I missed that...", "I'm
+# here to help", "I'm listening, sir", or just "..." — drop it
+# wholesale. These fire when STT picks up ambient room conversation
+# the user isn't directing at JARVIS; gpt-oss-120b can't tell so it
+# replies with a clarification instead of staying silent. Empty TTS
+# output = JARVIS stays quiet, which is what we want for ambient.
+_PURE_HEDGE_REPLY_RE = re.compile(
+    r"^\s*(?:"
+    r"\.{2,}|"                                                       # "..." only
+    r"sorry,?\s+i\s+missed\s+that[\s\S]*|"                           # "Sorry, I missed that — ..."
+    r"i[’'`]?m\s+(?:listening|here)\b[\s\S]*?(?:let\s+me\s+know[\s\S]*)?|"  # "I'm listening, sir, let me know..."
+    r"i[’'`]?m\s+here\s+to\s+help[\s\S]*|"
+    r"what\s+would\s+you\s+like\s+me\s+to\s+do[\s\S]*|"              # bare hedge question
+    r"how\s+can\s+i\s+(?:help|assist)[\s\S]*"
+    r")\s*$",
+    re.IGNORECASE,
+)
+
+
+async def drop_pure_hedge(text):
+    """Suppress reply if it's nothing but a clarifying hedge."""
+    buffer = ""
+    async for chunk in text:
+        buffer += chunk
+    if not buffer:
+        return
+    if _PURE_HEDGE_REPLY_RE.match(buffer.strip()):
+        logger.info(f"[hedge-drop] suppressing pure-hedge reply: {buffer[:80]!r}")
+        return  # no yield → TTS receives nothing → silence
+    yield buffer
+
+
 async def cap_sir_count(text):
     # Buffer the whole reply, then emit once. Progressive chunk-then-tail
     # buffering was tried first but cut "sir" across the chunk boundary
@@ -2964,6 +2996,11 @@ async def entrypoint(ctx: JobContext) -> None:
             # swap to a smaller model. Verified 2026-04-28 vs convo db
             # (the user heard "Done." as a trailing dot).
             strip_voice_closers,
+            # Drop reply entirely if it's nothing but hedge — happens
+            # when STT picks up ambient room conversation. Better to be
+            # silent than to voice "Sorry, I missed that, did you want
+            # me to set up an OAuth flow?" to a podcast.
+            drop_pure_hedge,
             # Cap "sir" to once per reply — gpt-oss-120b says it every
             # sentence which sounds robotic.
             cap_sir_count,
