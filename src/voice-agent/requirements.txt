@@ -13,3 +13,8 @@ livekit-agents[silero,openai,groq]~=1.5
 # agent logs a warning and continues SQLite-only. See _get_convex_client
 # in jarvis_agent.py.
 convex~=0.7
+
+# Gemini vision for desktop computer-use (screen description). The
+# voice agent calls Gemini Flash with a screenshot to get a structured
+# UI description, then Groq/DeepSeek decides the next click/type.
+google-genai~=1.73
