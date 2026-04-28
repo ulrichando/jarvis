@@ -31,6 +31,39 @@ from livekit.agents import function_tool
 
 logger = logging.getLogger("jarvis-computer-use")
 
+# Vision backend selection. "ollama" runs entirely on-device (free,
+# private, no API quota) but slower (~5-15s/frame on RTX 2060 6GB).
+# "gemini" uses Gemini Flash via API (faster, free tier covers normal
+# usage but requires internet + Google account).
+# Default: ollama if reachable on localhost:11434, else gemini.
+VISION_BACKEND = os.environ.get("JARVIS_VISION_BACKEND", "auto")
+OLLAMA_VISION_MODEL = os.environ.get("JARVIS_OLLAMA_VISION_MODEL", "qwen2.5vl:3b")
+OLLAMA_URL = os.environ.get("JARVIS_OLLAMA_URL", "http://localhost:11434")
+
+
+def _ollama_reachable() -> bool:
+    """Quick TCP probe — Ollama running on localhost?"""
+    import socket
+    try:
+        host_port = OLLAMA_URL.replace("http://", "").replace("https://", "")
+        host, port_s = host_port.split(":", 1)
+        port = int(port_s.split("/")[0])
+        with socket.create_connection((host, port), timeout=0.5):
+            return True
+    except Exception:
+        return False
+
+
+def _resolved_vision_backend() -> str:
+    """Decide which backend to use this call. 'auto' picks ollama first."""
+    if VISION_BACKEND == "ollama":
+        return "ollama"
+    if VISION_BACKEND == "gemini":
+        return "gemini"
+    # auto
+    return "ollama" if _ollama_reachable() else "gemini"
+
+
 # gemini-2.5-flash-lite — chosen for speed (verified 2026-04-28).
 # Latency benchmark (one-shot screenshot describe, 70 KB JPEG, quick prompt):
 #   gemini-2.5-flash-lite           ~11.5s  ← chosen
@@ -169,12 +202,47 @@ def _take_screenshot() -> tuple[bytes, str]:
             pass
 
 
-async def _gemini_describe(
+async def _ollama_describe(
     image_bytes: bytes,
     mime_type: str = "image/png",
     prompt: str = GEMINI_SCREEN_PROMPT,
 ) -> str:
-    """Send image bytes to Gemini vision, return description string."""
+    """Send image bytes to local Ollama vision model. Free, on-device."""
+    import base64
+    import json
+    import urllib.request
+    b64 = base64.b64encode(image_bytes).decode("ascii")
+    payload = json.dumps({
+        "model": OLLAMA_VISION_MODEL,
+        "prompt": prompt,
+        "images": [b64],
+        "stream": False,
+        "options": {"temperature": 0.2},
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        f"{OLLAMA_URL}/api/generate",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    loop = asyncio.get_running_loop()
+
+    def _call() -> str:
+        # 180s timeout — first call loads ~3-5GB of model weights to GPU
+        # which can take 30-90s. Subsequent calls are 1-5s once warm.
+        with urllib.request.urlopen(req, timeout=180) as resp:
+            data = json.loads(resp.read())
+        text = (data.get("response") or "").strip()
+        return text or "(no description returned)"
+
+    return await loop.run_in_executor(None, _call)
+
+
+async def _gemini_describe_raw(
+    image_bytes: bytes,
+    mime_type: str = "image/png",
+    prompt: str = GEMINI_SCREEN_PROMPT,
+) -> str:
+    """Direct Gemini call, no backend routing. Used when backend=gemini."""
     from google.genai import types as genai_types
     client = _get_gemini_client()
     loop = asyncio.get_running_loop()
@@ -190,6 +258,28 @@ async def _gemini_describe(
         return response.text or "(no description returned)"
 
     return await loop.run_in_executor(None, _call)
+
+
+async def _gemini_describe(
+    image_bytes: bytes,
+    mime_type: str = "image/png",
+    prompt: str = GEMINI_SCREEN_PROMPT,
+) -> str:
+    """Describe an image — routes to Ollama (local) or Gemini (cloud).
+
+    Backend chosen by JARVIS_VISION_BACKEND env (auto/ollama/gemini).
+    Default is "auto": Ollama if reachable on localhost, else Gemini.
+    Falls back to Gemini if Ollama call fails for any reason — so a
+    misbehaving local model never breaks voice replies.
+    """
+    backend = _resolved_vision_backend()
+    if backend == "ollama":
+        try:
+            return await _ollama_describe(image_bytes, mime_type, prompt)
+        except Exception as e:
+            logger.warning(f"[vision] ollama failed ({e}); falling back to gemini")
+            return await _gemini_describe_raw(image_bytes, mime_type, prompt)
+    return await _gemini_describe_raw(image_bytes, mime_type, prompt)
 
 
 async def _screenshot_and_describe() -> str:
