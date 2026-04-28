@@ -650,39 +650,83 @@ async def _gemini_live_describe(
     return "".join(chunks).strip() or "(no description from Live session)"
 
 
+async def _live_screen_polling(
+    duration_s: int,
+    interval_s: float = 2.0,
+    on_frame=None,
+):
+    """Free-tier streaming: poll screenshot+describe every interval_s.
+
+    Each frame's description is yielded via on_frame callback (if given)
+    AND collected into the final return string. Uses Gemini Flash
+    one-shot calls — works on the free tier. No Live API needed.
+
+    The `focus` is baked into a per-frame prompt that emphasizes brevity
+    and only-what-changed.
+    """
+    POLL_PROMPT = (
+        "In ONE short sentence, what is happening on this screen right "
+        "now? No preamble, no closer, no 'the screen shows'. Just the "
+        "key state or change."
+    )
+    descriptions = []
+    last_desc = ""
+    stop_at = time.monotonic() + duration_s
+    while time.monotonic() < stop_at:
+        try:
+            img_bytes, mime = _take_screenshot()
+            desc = await _gemini_describe(
+                img_bytes, mime_type=mime, prompt=POLL_PROMPT,
+            )
+            desc = desc.strip()
+            # Skip frames where the description is a duplicate — saves
+            # voicing redundant lines when the screen hasn't changed.
+            if desc and desc != last_desc:
+                descriptions.append(desc)
+                last_desc = desc
+                if on_frame is not None:
+                    try:
+                        result = on_frame(desc)
+                        if asyncio.iscoroutine(result):
+                            await result
+                    except Exception as e:
+                        logger.warning(f"[live_screen] on_frame error: {e}")
+        except Exception as e:
+            logger.warning(f"[live_screen] frame failed: {e}")
+        # Wait until next poll, but don't overshoot the stop time.
+        remaining = stop_at - time.monotonic()
+        if remaining > 0:
+            await asyncio.sleep(min(interval_s, remaining))
+    return "\n".join(descriptions)
+
+
 @function_tool
 async def live_screen(duration_s: int = 10, focus: str = "") -> str:
-    """Open a real Gemini Live screen-share session for N seconds.
+    """Stream screen observations for N seconds via polling Gemini Flash.
 
-    Streams screenshot frames at ~1.5s intervals to Gemini Live, returns
-    the concatenated description of what changed. This is the actual
-    "watch my screen continuously" capability the user asked for.
+    Free-tier compatible — captures a screenshot every ~2 seconds, asks
+    Gemini Flash for a one-sentence description, returns the joined
+    descriptions. Works on the free Google API tier (no Live API,
+    no paid billing required).
 
-    REQUIREMENT: Gemini paid billing on this project. Free tier returns
-    1011 quota errors. The tool gives a clear message in that case.
-
-    For one-shot "what's on my screen right now" questions, use
-    screenshot() instead — it works on the free tier.
+    For one-shot "what's on my screen right now", use screenshot()
+    instead — single frame, one Gemini call.
 
     Args:
         duration_s: How long to stream (1..60, default 10).
-        focus:      Optional focus for Gemini ("watch for any errors",
-                    "describe what the user is editing"). Empty = "describe
-                    what's happening continuously".
+        focus:      Currently unused; the polling prompt is fixed for
+                    brevity. Kept for API compat with prior signature.
     """
     duration_s = max(1, min(int(duration_s), 60))
-    instruction = focus.strip() or (
-        "Describe what's happening on the user's screen as it changes. "
-        "Short observations only — no preamble, no closer."
-    )
     try:
         t0 = time.monotonic()
-        desc = await _gemini_live_describe(duration_s, instruction)
+        desc = await _live_screen_polling(duration_s)
         elapsed = time.monotonic() - t0
-        logger.info(f"[computer-use] live_screen({duration_s}s) → {len(desc)} chars in {elapsed:.1f}s")
-        return desc
-    except ComputerUseError as e:
-        return str(e)
+        logger.info(
+            f"[computer-use] live_screen({duration_s}s polling) → "
+            f"{len(desc)} chars in {elapsed:.1f}s"
+        )
+        return desc or "(nothing visible changed during the session)"
     except Exception as e:
         return f"(live_screen failed: {e})"
 
