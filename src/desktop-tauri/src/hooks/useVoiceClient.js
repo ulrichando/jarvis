@@ -34,6 +34,7 @@ export default function useVoiceClient({ muted = false } = {}) {
   const [voiceActive,  setVoiceActive]  = useState(false)
   const [processing,   setProcessing]   = useState(false)
   const [booting,      setBooting]      = useState(false)
+  const [silentMode,   setSilentMode]   = useState(false)
   const [speaking,     setSpeaking]     = useState(false)
   // True once the agent worker has joined the room AND the SFU link
   // is up. The SFU connection reports `connected` ~100 ms after
@@ -73,7 +74,7 @@ export default function useVoiceClient({ muted = false } = {}) {
         const s = await r.json()
         if (!alive) return
         setListening(!!s.connected)
-        setRecording(!!s.connected && !s.muted)
+        setRecording(!!s.connected && !s.muted && !s.silent_mode)
         setVoiceActive(!!s.listening)
         setSpeaking(!!s.speaking)
         setAgentPresent(!!s.agent_present)
@@ -85,6 +86,7 @@ export default function useVoiceClient({ muted = false } = {}) {
         // at exact lifecycle moments — voice-client surfaces them as
         // `tool_running` and `agent_thinking` in /status. Tray gold
         // is set iff one of these is true (or the agent is booting).
+        setSilentMode(!!s.silent_mode)
         const isBooting = s.connected && !s.agent_present
         setBooting(isBooting)
         // Thinking is only active once the agent is present — don't
@@ -160,7 +162,7 @@ export default function useVoiceClient({ muted = false } = {}) {
   const closeMic = useCallback(() => {}, [])
 
   return {
-    listening, recording, voiceActive, processing, booting, speaking, audioLevel,
+    listening, recording, voiceActive, processing, booting, silentMode, speaking, audioLevel,
     startRecording: () => {},
     stopRecording:  () => {},
     speak,

@@ -1,4 +1,47 @@
 import type { Provider } from './providers.js'
+import { Buffer } from 'node:buffer'
+
+// ── Reasoning-content text-marker round-trip ────────────────────────────────
+//
+// DeepSeek's thinking-mode API requires the prior assistant turn's
+// reasoning_content to be echoed back on follow-up turns. We round-trip it
+// through Anthropic-format messages, but the Anthropic SDK strips `thinking`
+// content blocks from outgoing requests (they are valid only in API
+// responses). So we embed reasoning_content as an invisible base64 prefix in
+// the first text block — text survives SDK serialization, and convertMessages
+// strips the marker before forwarding to DeepSeek.
+//
+// Three zero-width spaces (​) as delimiters — invisible in chat UIs,
+// statistically impossible in natural text.
+
+const REASONING_PREFIX = '​​​'
+const REASONING_SUFFIX = '​​​'
+
+export function encodeReasoningInText(reasoning: string, text: string): string {
+  const encoded = Buffer.from(reasoning, 'utf-8').toString('base64')
+  return `${REASONING_PREFIX}${encoded}${REASONING_SUFFIX}${text}`
+}
+
+export function makeReasoningOnlyMarker(reasoning: string): string {
+  const encoded = Buffer.from(reasoning, 'utf-8').toString('base64')
+  return `${REASONING_PREFIX}${encoded}${REASONING_SUFFIX}`
+}
+
+function extractReasoningFromText(text: string): { reasoning: string | null; cleanText: string } {
+  const prefixIdx = text.indexOf(REASONING_PREFIX)
+  if (prefixIdx !== 0) return { reasoning: null, cleanText: text }
+  const contentStart = REASONING_PREFIX.length
+  const suffixIdx = text.indexOf(REASONING_SUFFIX, contentStart)
+  if (suffixIdx === -1) return { reasoning: null, cleanText: text }
+  const encoded = text.slice(contentStart, suffixIdx)
+  try {
+    const reasoning = Buffer.from(encoded, 'base64').toString('utf-8')
+    const cleanText = text.slice(suffixIdx + REASONING_SUFFIX.length)
+    return { reasoning, cleanText }
+  } catch {
+    return { reasoning: null, cleanText: text }
+  }
+}
 
 // ── OpenAI message types ───────────────────────────────────────────────────
 
@@ -79,15 +122,22 @@ export function convertMessages(anthropicMessages: any[]): OpenAIMessage[] {
 
       const textBlocks = content.filter((b: any) => b.type === 'text')
       const toolUseBlocks = content.filter((b: any) => b.type === 'tool_use')
-      // Concat thinking blocks back into reasoning_content. DeepSeek's
-      // thinking-mode API rejects multi-turn requests if the prior
-      // assistant turn omits this field (error: "The reasoning_content
-      // in the thinking mode must be passed back to the API."). We
-      // store it on the Anthropic side as a `thinking` block on
-      // egress (convertResponse) and re-attach here on ingress.
       const thinkingBlocks = content.filter((b: any) => b.type === 'thinking')
-      const reasoning = thinkingBlocks.map((b: any) => b.thinking ?? '').join('')
-      const text = textBlocks.map((b: any) => b.text ?? '').join('') || null
+      // Reconstitute reasoning_content. Two sources, in priority order:
+      // 1. Embedded text marker (survives SDK stripping of thinking blocks).
+      // 2. Thinking blocks (legacy path, kept for non-SDK callers).
+      let reasoning = ''
+      let text = textBlocks.map((b: any) => b.text ?? '').join('') || null
+      if (text) {
+        const extracted = extractReasoningFromText(text)
+        if (extracted.reasoning) {
+          reasoning = extracted.reasoning
+          text = extracted.cleanText || null
+        }
+      }
+      if (!reasoning) {
+        reasoning = thinkingBlocks.map((b: any) => b.thinking ?? '').join('')
+      }
 
       const assistantMsg: any = { role: 'assistant', content: text ?? '' }
       if (reasoning) assistantMsg.reasoning_content = reasoning
@@ -308,21 +358,15 @@ export function convertResponse(openaiResp: any, model: string): any {
   const msg = choice.message
   const content: any[] = []
 
-  // Thinking block FIRST so the round-trip through Anthropic schema
-  // preserves DeepSeek's reasoning_content. convertMessages will
-  // re-extract it on the next turn. Empty signature is fine — we
-  // control both sides of this round trip; Anthropic-style signature
-  // verification doesn't run against the proxy.
-  if (msg.reasoning_content) {
-    content.push({
-      type: 'thinking',
-      thinking: msg.reasoning_content,
-      signature: '',
-    })
-  }
-
-  if (msg.content) {
-    content.push({ type: 'text', text: msg.content })
+  if (msg.content || msg.reasoning_content) {
+    // Embed reasoning_content as an invisible prefix in the first text
+    // block. Text survives SDK serialization, so convertMessages can
+    // reliably extract it on the next turn.
+    const textBody = msg.content || ''
+    const text = msg.reasoning_content
+      ? encodeReasoningInText(msg.reasoning_content, textBody)
+      : textBody
+    content.push({ type: 'text', text })
   }
 
   if (msg.tool_calls) {

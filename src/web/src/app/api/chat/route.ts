@@ -1,4 +1,4 @@
-import { convertToModelMessages, streamText, type UIMessage } from "ai";
+import { convertToModelMessages, streamText, stepCountIs, type UIMessage } from "ai";
 import { getModel, MissingApiKeyError } from "@/lib/ai/models";
 import { loadSettings } from "@/lib/settings/store";
 import {
@@ -9,25 +9,24 @@ import {
 } from "@/lib/chat/persist";
 import { getWorkspace } from "@/lib/workspace/storage";
 import { buildWorkbenchPrompt } from "@/lib/actions/jarvis-prompt";
+import { webSearchTool } from "@/lib/tools/web-search";
 
 export const runtime = "nodejs";
 export const maxDuration = 600;
 
-const DEFAULT_SYSTEM_PROMPT = `You are JARVIS, an advanced AI assistant for a power user. Your output is rendered in a markdown environment that supports tables, code blocks, math, and all standard formatting.
+function buildDefaultSystemPrompt(): string {
+  const now = new Date();
+  const dateStr = now.toUTCString(); // e.g. "Mon, 27 Apr 2026 14:32:00 GMT"
+  return `You are JARVIS, an advanced AI assistant. Current date/time: ${dateStr}.
 
-Formatting rules — follow these exactly:
-- Use headings (## / ###) to organize responses longer than a few paragraphs
-- Use **bold** for key terms, important values, and warnings
-- Use tables for comparisons, multi-dimensional data, or side-by-side information
-- Use numbered lists for steps/procedures; bullet lists for unordered items
-- Use fenced code blocks with the correct language identifier (e.g. \`\`\`python) for ALL code
-- Use \`inline code\` for commands, filenames, identifiers, and short snippets
-- Use KaTeX for math: $...$ inline, $$...$$ block
-- Use --- to separate major sections in long responses
-- Do NOT truncate code or lists — always complete what you start
+Simple questions → short answers. "What time is it in X?" → one line with the actual time calculated from UTC. "What's 2+2?" → "4". No preamble, no caveats, no restating the question.
 
-Tone: direct, technical, no filler. Skip greetings. Get straight to the answer.
-Depth: match response depth to question complexity — simple questions get concise answers, complex multi-part questions get thorough structured answers.`;
+Complex questions → structured answers using markdown: headings (##/###), **bold**, tables, numbered lists, fenced code blocks with language tags, \`inline code\`. Complete all code and lists — never truncate.
+
+KaTeX ($...$ or $$...$$) for mathematical expressions ONLY. Never use math notation for text, timezone names, abbreviations, or anything non-mathematical.
+
+Skip greetings and filler. Never start with "Certainly", "Of course", "Great question", or any opener. Just answer.`;
+}
 
 type Body = {
   id?: string;
@@ -81,7 +80,7 @@ export async function POST(req: Request) {
   // instructions so the model emits <boltArtifact>/<boltAction> blocks
   // that our streaming parser (lib/actions/message-parser.ts) can route
   // into file writes and shell execs.
-  let finalSystem = system ?? settings.defaults.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
+  let finalSystem = system ?? settings.defaults.systemPrompt ?? buildDefaultSystemPrompt();
   if (workspaceId) {
     const ws = await getWorkspace(workspaceId);
     if (ws) {
@@ -98,6 +97,8 @@ export async function POST(req: Request) {
     messages: modelMessages,
     temperature: settings.defaults.temperature ?? 0.7,
     abortSignal: req.signal,
+    tools: { webSearch: webSearchTool },
+    stopWhen: stepCountIs(5),
     onFinish: async ({ text, totalUsage, finishReason }) => {
       if (!conversation) return;
       try {
