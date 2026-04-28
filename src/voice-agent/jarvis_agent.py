@@ -3495,7 +3495,10 @@ async def entrypoint(ctx: JobContext) -> None:
     # without going through the LLM (saves a round-trip).
     SCREEN_SHARE_FILE = Path.home() / ".jarvis" / "start-screen-share"
     async def _watch_screen_share() -> None:
-        from jarvis_computer_use import live_screen as _live_screen_tool
+        # Use the polling helper directly so we can stream each frame's
+        # description via session.say() as it arrives, instead of waiting
+        # for the full session to end.
+        from jarvis_computer_use import _live_screen_polling
         while True:
             try:
                 await asyncio.sleep(1.0)
@@ -3510,21 +3513,30 @@ async def entrypoint(ctx: JobContext) -> None:
                     SCREEN_SHARE_FILE.unlink(missing_ok=True)
                 except Exception:
                     pass
-                logger.info(f"[screen-share] tray-triggered live_screen({duration}s)")
+                logger.info(f"[screen-share] tray-triggered, {duration}s polling")
                 try:
-                    await session.say(f"Sharing your screen for {duration} seconds.")
+                    await session.say(f"Watching your screen for {duration} seconds.")
                 except Exception:
                     pass
-                # live_screen is a function_tool; the underlying coroutine
-                # is callable directly.
+
+                async def _voice_frame(desc: str) -> None:
+                    try:
+                        await session.say(desc)
+                    except Exception as e:
+                        logger.warning(f"[screen-share] frame say() failed: {e}")
+
                 try:
-                    result = await _live_screen_tool(duration_s=duration)
+                    await _live_screen_polling(
+                        duration_s=duration,
+                        interval_s=2.5,
+                        on_frame=_voice_frame,
+                    )
                 except Exception as e:
-                    result = f"Screen-share failed: {e}"
-                try:
-                    await session.say(result[:600])
-                except Exception as e:
-                    logger.warning(f"[screen-share] say() failed: {e}")
+                    logger.warning(f"[screen-share] polling error: {e}")
+                    try:
+                        await session.say(f"Screen-share failed: {e}")
+                    except Exception:
+                        pass
             except asyncio.CancelledError:
                 raise
             except Exception as e:
