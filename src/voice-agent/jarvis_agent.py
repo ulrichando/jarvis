@@ -600,19 +600,66 @@ so:
   - Skip filler openings like "Certainly!" or "As an AI…". Just
     answer.
 
-Response length — match the request:
-  - Quick questions → short answer (one or two sentences).
-  - Explanations, "tell me about X", or open-ended prompts → medium
-    answer (three to six sentences). Don't reflexively trim to one
-    line; Ulrich asked because he wants to hear something.
-  - "Tell me more", "elaborate", "go on", "keep going", "explain in
-    detail", "in depth" → LONG answer. Aim for eight to fifteen
-    sentences. Convey actual substance from the tool output or your
-    own knowledge — don't just rephrase your previous reply shorter.
-    If you just called the tool, read through the tool's output and
-    voice the genuinely interesting parts, not a summary.
-  - If you already gave a short summary and the user asks for more,
-    go deeper — do NOT give the same summary again.
+═══ BREVITY IS THE WHOLE GAME ═══
+
+EVERY second of speech is a second of waiting. TTS at ~3 words/sec
+means a 30-word filler sentence is 10 seconds of audio. Your job
+is to MINIMIZE total audio time without losing the answer.
+
+Concrete rules — apply without exception:
+
+1. **NEVER narrate your process.** All of these are BANNED:
+     - "Let me check that for you."           (filler before tool)
+     - "I'll fetch the current time."         (filler before tool)
+     - "Checking the internet…"               (filler during tool)
+     - "Okay, I have the result."             (filler after tool)
+     - "Let me try again from scratch."       (filler before retry)
+     - "One moment, please."                  (filler period)
+     - "Give me a second."                    (filler period)
+     - "As you mentioned…"                    (re-stating the question)
+     - "To answer your question…"             (re-stating the question)
+     - "Based on what I found…"               (filler preamble)
+     - "Here's what I found:"                 (filler preamble)
+     - "The answer is:"                       (filler preamble)
+   Skip ALL of these. Call the tool, voice the answer in one
+   sentence, stop. Past failure 2026-04-28: "what time is it" was
+   answered in 5 sentences (15 seconds of speech) instead of one
+   ("nine forty-five PM" — 1.5 seconds).
+
+2. **Aim for ONE sentence whenever possible.** Match the question:
+     - Yes/no question → "Yes." or "No." plus optional one-clause
+       qualifier. NOT "Yes, that is correct, the answer to your
+       question is yes because..."
+     - Fact lookup ("what time", "what's the weather", "what's my
+       IP", "is X running") → ONE sentence with the value. No setup,
+       no closer, no follow-up offer.
+     - Action confirmation ("did you open Chrome?") → "Yes" or
+       "Done" or "Failed because X". One sentence.
+     - Tool result → just voice the result. The user asked for the
+       result, not for you to describe what you did.
+
+3. **For open-ended ("tell me about X" / "explain Y"):** 2-3
+   sentences MAX in the first reply. The user can ask for more
+   if they want depth ("tell me more" → expand). Defaulting to
+   long answers wastes time on every casual question.
+
+4. **For "tell me more" / "elaborate" / "go on" / "in depth"** →
+   THEN you can go to 5-10 sentences. Substance, not filler.
+   Re-stating your previous answer doesn't count as elaboration.
+
+5. **Lists are slow.** "First, X. Second, Y. Third, Z." takes 3x
+   the time of "X, Y, and Z." Use comma-joined inline lists unless
+   the user asked for "step by step".
+
+6. **Tool output is for YOU to summarize, not to read aloud.** When
+   a tool returns a long structured response (screenshot
+   description, file contents, web fetch), voice the GIST in one
+   sentence. Reading the raw tool output is the worst latency
+   sink — heard 2026-04-28 with the screenshot tool returning a
+   500-word UI inventory and JARVIS reading every menu item.
+
+The user can always ask "tell me more" if they want depth. They
+cannot un-hear 30 seconds of preamble.
 
 Authority rules:
   - Power operations on THIS workstation (reboot, shutdown, suspend,
@@ -2717,19 +2764,40 @@ def _comma_thousands(match: re.Match) -> str:
 # five." That's 15s of speech for a 2s answer. Strip the preambles.
 _PREAMBLE_RE = re.compile(
     r"^\s*(?:"
+    # "Let me X" — process narration before tool calls
     r"let me (?:try (?:again )?(?:from scratch|once more)?|"
         r"check (?:that|on that|for you|on it)|"
         r"fetch (?:that|the [\w\s]+?)|"
         r"see|look (?:that up|into that)|"
         r"do that (?:for you|now)|"
         r"grab (?:that|the [\w\s]+?))[^.!?]*[.!?]\s*|"
-    r"i[’'`]?ll (?:fetch|check|grab|look|find|get|pull) [^.!?]*[.!?]\s*|"
-    r"(?:checking|fetching|looking|searching|grabbing|pulling|loading|querying|polling)"
+    # "I'll X" — first-person process narration
+    r"i[’'`]?ll (?:fetch|check|grab|look|find|get|pull|see|try|do) [^.!?]*[.!?]\s*|"
+    # "Checking..." / "Fetching..." — gerund filler with ellipsis
+    r"(?:checking|fetching|looking|searching|grabbing|pulling|loading|querying|polling|"
+        r"reading|scanning|finding|computing|processing|analyzing)"
         r"[^.!?]*\.{2,}\s*|"
-    r"okay,? i (?:have|got|found|fetched|checked) [^.!?]*[.!?]\s*|"
-    r"alright,? (?:here's|here is) [^.!?]*[.!?]\s*|"
-    r"one (?:moment|second|sec)[,.]?\s*(?:please[,.]?)?\s*[.!?]?\s*|"
-    r"give me (?:a|one) (?:moment|second|sec)[,.]?\s*[.!?]?\s*"
+    # "Okay, I X" — post-tool acknowledgment
+    r"(?:okay|alright|right|ok),?\s+i (?:have|got|found|fetched|checked|see|see\s+that) [^.!?]*[.!?]\s*|"
+    # "Alright, here's the result" — only matches when prefixed by alright/okay/etc.
+    r"(?:alright|okay|ok|so),? (?:here[’'`]?s|here is)[^.!?,:]*[,:.!?]\s*|"
+    # (Removed bare "here's what i/you ..." catchall — the more specific
+    # pattern below handles it without eating the answer past the colon.)
+    # "One moment / second"
+    r"(?:one|just (?:a|one)|give me (?:a|one)) (?:moment|second|sec|minute)[,.]?\s*(?:please[,.]?)?\s*[.!?]?\s*|"
+    # "Sure!" / "Of course!" / "Absolutely!" — sycophantic acknowledgers
+    r"(?:sure|of course|absolutely|certainly|definitely|gotcha|got it|on it|will do|copy that)"
+        r"[!.,]?\s*(?:thing|sir)?[!.,]?\s*|"
+    # "To answer your question" / "As you mentioned" / "Based on..." — re-stating
+    # Use [^.!?,]* (excludes commas) so the match ENDS at the comma
+    # before the actual answer, not at the answer's terminal period.
+    r"(?:to answer your question|as you (?:mentioned|asked|noted)|based on (?:what|your)|"
+        r"regarding your (?:question|request))[^.!?,]*[,.!?]\s*|"
+    # "Here's what I found: ..." / "Here's what I found, ..."
+    # Exclude colon from wildcard so the match stops AT the colon.
+    r"here[’'`]?s what (?:i|you) (?:found|got|see|have)[^.!?,:]*[,:.!?]\s*|"
+    # "The answer is:" / "Here's the answer:"
+    r"(?:the answer is|here[’'`]?s the answer)[:,.]?\s*"
     r")+",
     re.IGNORECASE,
 )
