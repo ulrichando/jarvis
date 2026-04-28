@@ -26,13 +26,14 @@ class TestTakeScreenshot:
     def test_calls_scrot_with_overwrite_flag(self):
         import jarvis_computer_use as cu
 
-        mock_open = MagicMock()
-        mock_open.return_value.__enter__.return_value.read.return_value = b"\x89PNG"
-        mock_open.return_value.__exit__.return_value = False
-
+        # Mock PIL to skip image processing — we only care that scrot is invoked
         with patch("jarvis_computer_use.subprocess.run") as mock_run, \
-             patch("builtins.open", mock_open), \
+             patch("PIL.Image.open") as mock_im_open, \
              patch("jarvis_computer_use.os.unlink"):
+            fake_im = MagicMock()
+            fake_im.convert.return_value = fake_im
+            fake_im.size = (100, 100)
+            mock_im_open.return_value.__enter__.return_value = fake_im
             cu._take_screenshot()
 
         argv = mock_run.call_args.args[0]
@@ -41,20 +42,25 @@ class TestTakeScreenshot:
         # writing to <name>_000.png and leaving the original empty.
         assert "-o" in argv
 
-    def test_returns_bytes(self):
+    def test_returns_bytes_and_jpeg_mime(self):
         import jarvis_computer_use as cu
 
-        mock_open = MagicMock()
-        mock_open.return_value.__enter__.return_value.read.return_value = b"\x89PNG"
-        mock_open.return_value.__exit__.return_value = False
-
         with patch("jarvis_computer_use.subprocess.run"), \
-             patch("builtins.open", mock_open), \
+             patch("PIL.Image.open") as mock_im_open, \
              patch("jarvis_computer_use.os.unlink"):
-            result = cu._take_screenshot()
+            fake_im = MagicMock()
+            fake_im.convert.return_value = fake_im
+            fake_im.size = (100, 100)
+            # When .save() is called, write some fake JPEG bytes into the buffer
+            def fake_save(buf, **kw):
+                buf.write(b"\xff\xd8\xff\xe0FAKEJPEG")
+            fake_im.save.side_effect = fake_save
+            mock_im_open.return_value.__enter__.return_value = fake_im
+            data, mime = cu._take_screenshot()
 
-        assert isinstance(result, bytes)
-        assert result == b"\x89PNG"
+        assert isinstance(data, bytes)
+        assert data.startswith(b"\xff\xd8\xff")  # JPEG magic
+        assert mime == "image/jpeg"
 
 
 # ── Gemini describe ───────────────────────────────────────────────────
@@ -333,7 +339,9 @@ class TestActionTools:
         import jarvis_computer_use as cu
         cu._active_session = None
 
-        with patch.object(cu, "_screenshot_and_describe",
+        with patch.object(cu, "_take_screenshot",
+                          return_value=(b"\xff\xd8\xff", "image/jpeg")), \
+             patch.object(cu, "_gemini_describe",
                           AsyncMock(return_value="bare desktop")):
             result = run(cu.screenshot())
 
