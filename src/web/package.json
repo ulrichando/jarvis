@@ -38,6 +38,7 @@
     "codemirror": "^6.0.2",
     "convex": "^1.36.1",
     "drizzle-orm": "^0.45.2",
+    "duck-duck-scrape": "^2.2.7",
     "katex": "^0.16.45",
     "lucide-react": "^1.11.0",
     "motion": "^12.38.0",
