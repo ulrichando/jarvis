@@ -18,3 +18,9 @@ convex~=0.7
 # voice agent calls Gemini Flash with a screenshot to get a structured
 # UI description, then Groq/DeepSeek decides the next click/type.
 google-genai~=1.73
+
+# Face ID — dlib's HOG face detector + ResNet 128-d encoder, used by
+# the face_register / face_identify tools. dlib compiles from source
+# (~5 min, needs cmake). face_recognition_models is a 100 MB weights
+# bundle pulled in transitively.
+face_recognition~=1.3

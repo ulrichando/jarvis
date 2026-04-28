@@ -25,6 +25,7 @@ import subprocess
 import tempfile
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from livekit.agents import function_tool
 
@@ -563,6 +564,158 @@ async def screenshot() -> str:
         return desc
     except Exception as e:
         return f"(screenshot failed: {e})"
+
+
+# ── Face recognition ──────────────────────────────────────────────────
+# Stores 128-dim face encodings as JSON files under ~/.jarvis/faces/.
+# Each registered name = one file = one reference face. Recognition runs
+# all encodings vs the new frame's encoding, picks the closest match
+# inside FACE_TOLERANCE.
+
+FACES_DIR = Path.home() / ".jarvis" / "faces"
+# Lower = stricter. dlib's face_recognition default is 0.6; we use 0.5
+# to reduce false-positives in single-user scenarios.
+FACE_TOLERANCE = float(os.environ.get("JARVIS_FACE_TOLERANCE", "0.5"))
+
+
+def _load_face_encodings() -> list[tuple[str, list[float]]]:
+    """Return [(name, encoding128), ...] for every registered face."""
+    if not FACES_DIR.exists():
+        return []
+    out = []
+    for p in sorted(FACES_DIR.glob("*.json")):
+        try:
+            import json
+            data = json.loads(p.read_text(encoding="utf-8"))
+            name = data.get("name") or p.stem
+            enc = data.get("encoding")
+            if isinstance(enc, list) and len(enc) == 128:
+                out.append((name, enc))
+        except Exception as e:
+            logger.warning(f"[face] failed to load {p.name}: {e}")
+    return out
+
+
+def _extract_face_encoding(jpeg_bytes: bytes) -> list[float] | None:
+    """Run dlib HOG detector + ResNet encoder, return 128-dim embedding."""
+    import face_recognition
+    from PIL import Image
+    import io
+    import numpy as np
+    img = np.array(Image.open(io.BytesIO(jpeg_bytes)).convert("RGB"))
+    encodings = face_recognition.face_encodings(img)
+    if not encodings:
+        return None
+    # Multiple faces → use the largest/first detected (face_encodings
+    # returns them in detection order). For single-user setups this is
+    # fine; multi-user groups would need a per-face loop.
+    return encodings[0].tolist()
+
+
+@function_tool
+async def face_register(name: str) -> str:
+    """Register the user's face under a name for future identification.
+
+    Captures one webcam frame, extracts the face encoding, saves it under
+    ~/.jarvis/faces/<name>.json. Overwrites any existing entry with the
+    same name. Asks the user to look at the camera.
+
+    Args:
+        name: The name to register this face as (e.g. "ulrich", "alice").
+              Saved as a filename, so use simple lowercase letters/dashes.
+    """
+    name = (name or "").strip().lower()
+    if not name or not all(c.isalnum() or c in "-_" for c in name):
+        return "(invalid name — use lowercase letters, digits, '-', '_' only)"
+    try:
+        loop = asyncio.get_running_loop()
+        frame = await loop.run_in_executor(None, _take_webcam_frame)
+        enc = await loop.run_in_executor(None, _extract_face_encoding, frame)
+        if enc is None:
+            return ("No face detected in the webcam frame. Make sure your "
+                    "face is centered and well-lit, then try again.")
+        FACES_DIR.mkdir(parents=True, exist_ok=True)
+        import json
+        path = FACES_DIR / f"{name}.json"
+        path.write_text(json.dumps({
+            "name": name,
+            "encoding": enc,
+            "created_at": time.time(),
+        }), encoding="utf-8")
+        logger.info(f"[face] registered '{name}' → {path}")
+        return f"Registered face for '{name}'. JARVIS will recognize this face from now on."
+    except Exception as e:
+        return f"(face_register failed: {e})"
+
+
+@function_tool
+async def face_identify() -> str:
+    """Identify whoever's currently in front of the webcam.
+
+    Captures one frame, extracts the face encoding, compares against all
+    registered faces under ~/.jarvis/faces/. Returns the matched name +
+    confidence, or "unknown" if no match within tolerance.
+    """
+    try:
+        known = _load_face_encodings()
+        if not known:
+            return ("No faces are registered yet. Ask the user to say "
+                    "'register my face as <name>' first.")
+        loop = asyncio.get_running_loop()
+        frame = await loop.run_in_executor(None, _take_webcam_frame)
+        enc = await loop.run_in_executor(None, _extract_face_encoding, frame)
+        if enc is None:
+            return "No face detected in the webcam frame."
+
+        # Compute distances vs every known face; pick the closest.
+        import face_recognition
+        import numpy as np
+        target = np.array(enc)
+        distances = []
+        for name, ref in known:
+            d = float(np.linalg.norm(target - np.array(ref)))
+            distances.append((d, name))
+        distances.sort()
+        best_d, best_name = distances[0]
+        if best_d <= FACE_TOLERANCE:
+            confidence = max(0.0, 1.0 - best_d)
+            logger.info(f"[face] match '{best_name}' (distance={best_d:.3f})")
+            return f"That's {best_name} (distance={best_d:.3f}, confidence~{confidence:.0%})."
+        else:
+            logger.info(f"[face] no match (best distance={best_d:.3f} → {best_name})")
+            return (f"Unknown face. Closest match was {best_name} but the "
+                    f"distance ({best_d:.3f}) exceeds tolerance ({FACE_TOLERANCE}).")
+    except Exception as e:
+        return f"(face_identify failed: {e})"
+
+
+@function_tool
+async def face_list() -> str:
+    """List all registered face names."""
+    known = _load_face_encodings()
+    if not known:
+        return "No faces are registered."
+    names = sorted({name for name, _ in known})
+    return f"Registered faces: {', '.join(names)}"
+
+
+@function_tool
+async def face_delete(name: str) -> str:
+    """Delete a registered face by name.
+
+    Args:
+        name: The registered name to remove.
+    """
+    name = (name or "").strip().lower()
+    path = FACES_DIR / f"{name}.json"
+    if not path.exists():
+        return f"No face registered under '{name}'."
+    try:
+        path.unlink()
+        logger.info(f"[face] deleted '{name}'")
+        return f"Deleted '{name}' from registered faces."
+    except Exception as e:
+        return f"(face_delete failed: {e})"
 
 
 @function_tool
