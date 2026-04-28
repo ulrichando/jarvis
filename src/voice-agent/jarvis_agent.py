@@ -3487,6 +3487,51 @@ async def entrypoint(ctx: JobContext) -> None:
 
     asyncio.create_task(_run_analyzer_bg())
 
+    # ── Tray screen-share watcher ─────────────────────────────────────
+    # Polls ~/.jarvis/start-screen-share every second. When the file
+    # appears (written by the tray's "Start Screen Sharing" menu), reads
+    # the duration, deletes the sentinel, and runs live_screen(N). The
+    # description is voiced via session.say() so the user hears it
+    # without going through the LLM (saves a round-trip).
+    SCREEN_SHARE_FILE = Path.home() / ".jarvis" / "start-screen-share"
+    async def _watch_screen_share() -> None:
+        from jarvis_computer_use import live_screen as _live_screen_tool
+        while True:
+            try:
+                await asyncio.sleep(1.0)
+                if not SCREEN_SHARE_FILE.exists():
+                    continue
+                try:
+                    raw = SCREEN_SHARE_FILE.read_text(encoding="utf-8").strip()
+                    duration = int(raw) if raw.isdigit() else 30
+                except Exception:
+                    duration = 30
+                try:
+                    SCREEN_SHARE_FILE.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                logger.info(f"[screen-share] tray-triggered live_screen({duration}s)")
+                try:
+                    await session.say(f"Sharing your screen for {duration} seconds.")
+                except Exception:
+                    pass
+                # live_screen is a function_tool; the underlying coroutine
+                # is callable directly.
+                try:
+                    result = await _live_screen_tool(duration_s=duration)
+                except Exception as e:
+                    result = f"Screen-share failed: {e}"
+                try:
+                    await session.say(result[:600])
+                except Exception as e:
+                    logger.warning(f"[screen-share] say() failed: {e}")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"[screen-share] watcher error: {e}")
+
+    asyncio.create_task(_watch_screen_share())
+
     # Handle one-shot "speak this text" requests from any client in
     # the room. session.say() voices the text directly without an
     # LLM round-trip — used by the Tauri UI to voice typed-chat
