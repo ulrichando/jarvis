@@ -30,10 +30,18 @@ from livekit.agents import function_tool
 
 logger = logging.getLogger("jarvis-computer-use")
 
-# gemini-2.5-flash — current production Flash model with vision.
-# 2.0-flash returns 429 RESOURCE_EXHAUSTED on the free tier (limit 0)
-# for new projects; 2.5-flash is the supported successor.
-GEMINI_MODEL = "gemini-2.5-flash"
+# gemini-3.1-flash-lite-preview — Gemini 3.1 Flash family with vision.
+# Model selection rationale (verified 2026-04-28):
+#   - gemini-3.1-flash-live-preview: returns 1011 INTERNAL_ERROR on
+#     the Live websocket regardless of config/api-version. Model is
+#     listed but its backend is not serving requests yet on this key.
+#     Swap back here when Google fixes it — call shape is the same as
+#     the regular Live API flow.
+#   - gemini-3-flash-preview: works with generate_content but ~2x slower
+#     than the lite variant.
+#   - gemini-2.0-flash: returns 429 RESOURCE_EXHAUSTED (free-tier limit 0).
+#   - gemini-2.5-flash / gemini-2.5-flash-lite: work but are an older family.
+GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
 GEMINI_SCREEN_PROMPT = (
     "You are helping a voice assistant control a desktop computer. "
     "Describe the current screen state: what application is open, all "
