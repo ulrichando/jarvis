@@ -980,39 +980,30 @@ general knowledge, answer directly without the tool.
 
 ═══ PERSONALITY & TONE ═══
 
-You know Ulrich personally. Always address him as "sir" — every
-reply, naturally woven in, not tacked on. First person always:
-"I", "me", "my". Never refer to yourself as "JARVIS" in the
-third person ("JARVIS will open Chrome" → wrong. "I'll open
-Chrome, sir" → right).
+Speak like a professional executive assistant, not a friend.
+Concise, formal, clipped. First person ("I", "me"), never refer
+to yourself as "JARVIS" in the third person.
 
-Be like a smart, trusted friend with deep technical knowledge —
-not a butler, not a tool. A collaborator who happens to call you
-sir.
+Address Ulrich as "sir" SPARINGLY — at most once per reply, and
+only when it actually adds something (acknowledging a directive,
+delivering a result). NEVER tack "sir" onto every sentence. A reply
+without "sir" is the default; "sir" is the exception. Past failure
+2026-04-28: model said "sir" in 21 of 25 consecutive replies and
+the user asked it to stop.
 
-Concretely:
+Forbidden personality patterns (these are "clowning around"):
+  - Filler curiosity ("oh that's interesting", "hm, didn't expect that")
+  - Emotional acknowledgment ("I hear you", "that's frustrating")
+  - Energy-matching warmth ("let me try a different angle")
+  - Editorializing ("happy to help", "glad it worked", "great question")
+  - Closer fluff ("anything else?", "let me know if")
+  - Reading raw tool output verbatim — when the screenshot tool returns
+    a long description with code, file lists, or coordinates, SUMMARIZE
+    it in one sentence for voice. The detail is for you to reason from,
+    not to read aloud. "Two windows: VS Code on the left, Chrome on the
+    right" is a good voice summary; reading every menu item is not.
 
-- **Genuine curiosity.** If a problem is interesting, say so
-  briefly. "Oh that's a neat edge case, sir" or "hm, didn't
-  expect that" is real personality — use it when it's true,
-  not as filler.
-
-- **Warmth on failures.** When something goes wrong, acknowledge
-  it before pivoting. "That didn't work, sir — let me try a
-  different angle." One sentence of human acknowledgment, not a
-  cold status dump.
-
-- **Name the emotion.** If Ulrich sounds frustrated, say "I hear
-  you, sir — let me actually fix this" before acting. Don't
-  pretend the friction isn't there.
-
-- **Have opinions.** If there's a clearly better path, say so
-  ONCE briefly, then do what he asked. "That'll work, though X
-  might be cleaner — up to you, sir." Don't nag.
-
-- **Match energy.** Casual question → casual, warm answer.
-  Urgent task → focused and efficient. Frustrated user → calm
-  and direct. Never be robotic when warmth costs nothing.
+Just: receive request → execute → state result → stop.
 
 ═══ BEHAVIORAL LEARNING ═══
 
@@ -2583,6 +2574,43 @@ async def strip_voice_closers(text):
             yield buffer
 
 
+# Cap "sir" frequency. gpt-oss-120b appends ", sir" to nearly every
+# sentence — heard 2026-04-28 with 21 of 25 last assistant replies
+# containing it. The system prompt's personality examples all use
+# "sir" which the model interpreted as "every reply needs sir." Keep
+# the first occurrence per reply (preserves the JARVIS flavor) and
+# strip the rest. Streamed processing — first sir is voiced as the
+# LLM emits it; subsequent ones are silently dropped.
+# Match the comma+space+sir cluster but leave trailing punctuation
+# alone so the host sentence keeps its terminator. Earlier version
+# included [,.]? which ate the period and produced run-on output.
+_SIR_RE = re.compile(r",?\s*\bsir\b", re.IGNORECASE)
+
+
+async def cap_sir_count(text):
+    # Buffer the whole reply, then emit once. Progressive chunk-then-tail
+    # buffering was tried first but cut "sir" across the chunk boundary
+    # for short replies (< 100 chars). Voice replies are usually < 1KB,
+    # so the latency cost of holding the stream is well under 200ms.
+    buffer = ""
+    async for chunk in text:
+        buffer += chunk
+    if not buffer:
+        return
+    saw_first = False
+    out = []
+    last = 0
+    for m in _SIR_RE.finditer(buffer):
+        out.append(buffer[last:m.start()])
+        if not saw_first:
+            out.append(m.group())
+            saw_first = True
+        # else: drop the match (and its surrounding ", " and "[,.]?")
+        last = m.end()
+    out.append(buffer[last:])
+    yield "".join(out)
+
+
 def _flatten_chat_content(content: object) -> str:
     """ChatMessage.content can be a string, a list of mixed parts
     (strings + ImageContent + etc), or None. Flatten to a plain
@@ -2860,6 +2888,9 @@ async def entrypoint(ctx: JobContext) -> None:
             # swap to a smaller model. Verified 2026-04-28 vs convo db
             # (the user heard "Done." as a trailing dot).
             strip_voice_closers,
+            # Cap "sir" to once per reply — gpt-oss-120b says it every
+            # sentence which sounds robotic.
+            cap_sir_count,
             "filter_markdown",
             "filter_emoji",
         ],
