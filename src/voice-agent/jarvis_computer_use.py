@@ -42,6 +42,15 @@ logger = logging.getLogger("jarvis-computer-use")
 #   - gemini-2.0-flash: returns 429 RESOURCE_EXHAUSTED (free-tier limit 0).
 #   - gemini-2.5-flash / gemini-2.5-flash-lite: work but are an older family.
 GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
+
+# Default video device for webcam_capture. Override via JARVIS_WEBCAM_DEVICE.
+WEBCAM_DEVICE = os.environ.get("JARVIS_WEBCAM_DEVICE", "/dev/video0")
+WEBCAM_RESOLUTION = os.environ.get("JARVIS_WEBCAM_RES", "1280x720")
+WEBCAM_PROMPT = (
+    "You are JARVIS's eyes via the webcam. Describe what you see: "
+    "people present (count, posture, facing direction, expression), "
+    "the room/environment, anything notable. Be specific and concise."
+)
 GEMINI_SCREEN_PROMPT = (
     "You are helping a voice assistant control a desktop computer. "
     "Describe the current screen state: what application is open, all "
@@ -109,8 +118,12 @@ def _take_screenshot() -> bytes:
             pass
 
 
-async def _gemini_describe(png_bytes: bytes) -> str:
-    """Send PNG bytes to Gemini vision, return UI description string."""
+async def _gemini_describe(
+    image_bytes: bytes,
+    mime_type: str = "image/png",
+    prompt: str = GEMINI_SCREEN_PROMPT,
+) -> str:
+    """Send image bytes to Gemini vision, return description string."""
     from google.genai import types as genai_types
     client = _get_gemini_client()
     loop = asyncio.get_running_loop()
@@ -119,8 +132,8 @@ async def _gemini_describe(png_bytes: bytes) -> str:
         response = client.models.generate_content(
             model=GEMINI_MODEL,
             contents=[
-                genai_types.Part.from_bytes(data=png_bytes, mime_type="image/png"),
-                GEMINI_SCREEN_PROMPT,
+                genai_types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+                prompt,
             ],
         )
         return response.text or "(no description returned)"
@@ -132,6 +145,36 @@ async def _screenshot_and_describe() -> str:
     """Take screenshot, send to Gemini, return description."""
     png = _take_screenshot()
     return await _gemini_describe(png)
+
+
+def _take_webcam_frame() -> bytes:
+    """Capture a single JPEG frame from the webcam, return the bytes."""
+    # Use a unique path so concurrent captures don't collide; also lets
+    # us avoid scrot's overwrite footgun.
+    path = f"/tmp/jarvis-cam-{os.getpid()}-{time.time_ns()}.jpg"
+    try:
+        subprocess.run(
+            [
+                "fswebcam",
+                "-d", WEBCAM_DEVICE,
+                "-r", WEBCAM_RESOLUTION,
+                "--no-banner",
+                "-q",
+                "--jpeg", "85",
+                path,
+            ],
+            check=True,
+            timeout=10,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        with open(path, "rb") as f:
+            return f.read()
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 # ── Session safety guards ─────────────────────────────────────────────
@@ -464,3 +507,75 @@ async def screenshot() -> str:
         return desc
     except Exception as e:
         return f"(screenshot failed: {e})"
+
+
+@function_tool
+async def webcam_capture(prompt: str = "") -> str:
+    """Capture a frame from the webcam and return a Gemini description.
+
+    Use when the user asks what JARVIS sees, who's in the room, what
+    they look like, what they're wearing, what's on their face, etc.
+    Does NOT require an active computer_use session.
+
+    Args:
+        prompt: Optional override for the description focus
+                (e.g. "is the user smiling?"). Empty = default
+                "describe people + room" prompt.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+        frame = await loop.run_in_executor(None, _take_webcam_frame)
+        desc = await _gemini_describe(
+            frame,
+            mime_type="image/jpeg",
+            prompt=prompt.strip() or WEBCAM_PROMPT,
+        )
+        logger.info(f"[computer-use] webcam_capture ({len(frame)} bytes)")
+        return desc
+    except Exception as e:
+        return f"(webcam_capture failed: {e})"
+
+
+@function_tool
+async def watch_screen(seconds: int = 10) -> str:
+    """Sample the screen over a time window and describe what changed.
+
+    Use for "what just happened on my screen?" / "watch this video for
+    a few seconds and tell me what you saw" / "is anything updating?".
+    Captures the start frame and the end frame, sends both to Gemini,
+    returns a comparative description.
+
+    Does NOT require an active computer_use session.
+
+    Args:
+        seconds: How long to wait between the two frames (1..60, default 10).
+    """
+    seconds = max(1, min(int(seconds), 60))
+    try:
+        first = _take_screenshot()
+        await asyncio.sleep(seconds)
+        last = _take_screenshot()
+        # Send both frames in one Gemini call so the model can diff them
+        from google.genai import types as genai_types
+        client = _get_gemini_client()
+        loop = asyncio.get_running_loop()
+
+        def _call() -> str:
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=[
+                    genai_types.Part.from_bytes(data=first, mime_type="image/png"),
+                    genai_types.Part.from_bytes(data=last, mime_type="image/png"),
+                    f"These are two screenshots of the same display, "
+                    f"taken {seconds} seconds apart. Describe what changed "
+                    f"between them — new windows, content updates, animations, "
+                    f"user actions visible in the diff. Be specific.",
+                ],
+            )
+            return response.text or "(no description returned)"
+
+        desc = await loop.run_in_executor(None, _call)
+        logger.info(f"[computer-use] watch_screen({seconds}s)")
+        return desc
+    except Exception as e:
+        return f"(watch_screen failed: {e})"
