@@ -23,7 +23,7 @@ def run(coro):
 
 
 class TestTakeScreenshot:
-    def test_calls_scrot_with_z_flag(self):
+    def test_calls_scrot_with_overwrite_flag(self):
         import jarvis_computer_use as cu
 
         mock_open = MagicMock()
@@ -31,12 +31,15 @@ class TestTakeScreenshot:
         mock_open.return_value.__exit__.return_value = False
 
         with patch("jarvis_computer_use.subprocess.run") as mock_run, \
-             patch("builtins.open", mock_open):
+             patch("builtins.open", mock_open), \
+             patch("jarvis_computer_use.os.unlink"):
             cu._take_screenshot()
 
         argv = mock_run.call_args.args[0]
         assert argv[0] == "scrot"
-        assert "-z" in argv
+        # -o is required so scrot overwrites the temp file rather than
+        # writing to <name>_000.png and leaving the original empty.
+        assert "-o" in argv
 
     def test_returns_bytes(self):
         import jarvis_computer_use as cu
@@ -46,7 +49,8 @@ class TestTakeScreenshot:
         mock_open.return_value.__exit__.return_value = False
 
         with patch("jarvis_computer_use.subprocess.run"), \
-             patch("builtins.open", mock_open):
+             patch("builtins.open", mock_open), \
+             patch("jarvis_computer_use.os.unlink"):
             result = cu._take_screenshot()
 
         assert isinstance(result, bytes)
