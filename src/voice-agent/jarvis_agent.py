@@ -1184,7 +1184,7 @@ _WAKE_PATTERNS = tuple(re.compile(r"\b" + p + r"\b") for p in (
     r"you can talk",
     r"are you there",
     r"are you back",
-    r"jarvis you there",
+    r"you there",  # was "jarvis you there"; vocative is stripped before match
     # Natural recovery phrases — when the user notices JARVIS has
     # gone silent and tries to get a response. These are easy to
     # miss but they're THE signal that silent mode was a false
@@ -1197,7 +1197,6 @@ _WAKE_PATTERNS = tuple(re.compile(r"\b" + p + r"\b") for p in (
     r"why aren't you talking",
     r"respond to me",
     r"answer me",
-    r"jarvis answer",
     r"hello jarvis",
     r"hey jarvis",
 ))
@@ -1205,6 +1204,28 @@ _WAKE_PATTERNS = tuple(re.compile(r"\b" + p + r"\b") for p in (
 
 def _matches_any(text: str, patterns: tuple[re.Pattern, ...]) -> bool:
     return any(p.search(text) for p in patterns)
+
+
+# Wake patterns that are dangerous in noisy multi-person rooms —
+# they collide with everyday speech ("answer me!" between people,
+# "are you there?" on a phone call). For these, _is_command requires
+# the "Jarvis," vocative. The remaining wake patterns stay permissive
+# (uniquely-commanding phrases like "wake up", or already-vocative
+# phrases like "hey jarvis").
+_WAKE_STRICT_PATTERNS = tuple(re.compile(r"\b" + p + r"\b") for p in (
+    r"are you there",
+    r"are you back",
+    r"you there",
+    r"are you listening",
+    r"are you broken",
+    r"why are(n't| not) you responding",
+    r"why aren't you talking",
+    r"respond to me",
+    r"answer me",
+    r"talk again",
+    r"you can talk",
+    r"come back",  # common as "come back here, kid" — needs vocative
+))
 
 
 # Wake/mute commands are short imperatives ("wake up", "Jarvis,
@@ -1254,10 +1275,20 @@ def _is_command(text: str, patterns: tuple[re.Pattern, ...]) -> bool:
         # Mute commands MUST address JARVIS by name. False positive
         # captured 2026-04-26: "i'm leaving. go on mute." (user
         # speaking to a third party) silenced JARVIS for two hours.
-        # Wake commands stay permissive — when JARVIS is already
-        # silent, false-positive un-silencing is a much lower-cost
-        # mistake than false-positive silencing.
+        # Wake commands stay permissive on a per-pattern basis (see
+        # _WAKE_STRICT_PATTERNS below) — the loose phrases that
+        # collide with everyday speech ("are you listening", "answer
+        # me", etc.) require the vocative; uniquely-commanding ones
+        # ("wake up", "hey jarvis") stay permissive.
         if is_mute_check and not had_vocative:
+            continue
+        if (not is_mute_check) and (not had_vocative) and any(
+            p.search(body) for p in _WAKE_STRICT_PATTERNS
+        ):
+            # The matched pattern is in the strict set → require vocative.
+            # Skip this sentence entirely; another sentence in the same
+            # transcript can still wake (e.g. "are you there. jarvis
+            # wake up." — the second sentence has the vocative).
             continue
         if any(p.search(body) for p in patterns):
             return True
@@ -2564,7 +2595,10 @@ class JarvisAgent(Agent):
             # mention in a long sentence — doesn't count as a wake.
             if _is_command(text, _WAKE_PATTERNS):
                 _set_silent(False)
-                logger.info("[silent-mode] wake phrase detected → exiting silent mode")
+                logger.info(
+                    f"[silent-mode] wake phrase detected → exiting silent mode "
+                    f"(trigger: {text[:120]!r})"
+                )
                 # Fall through so the LLM voices a quick "I'm back".
                 return
             # Anything else while silent → drop turn, no reply.
