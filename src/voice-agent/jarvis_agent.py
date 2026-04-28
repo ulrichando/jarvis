@@ -81,6 +81,7 @@ from jarvis_computer_use import (
     key_press,
     wait,
     screenshot,
+    live_screen,
     webcam_capture,
     watch_screen,
     face_register,
@@ -3442,6 +3443,7 @@ async def entrypoint(ctx: JobContext) -> None:
                 key_press,
                 wait,
                 screenshot,
+                live_screen,
                 webcam_capture,
                 watch_screen,
                 # Face ID (dlib + face_recognition)
