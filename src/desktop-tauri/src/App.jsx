@@ -177,13 +177,14 @@ export default function App() {
     let next = 'idle'
     if (wsStatus === 'disconnected')       next = 'offline'
     else if (voiceMuted)                   next = 'muted'
+    else if (speech.silentMode)            next = 'muted'
     else if (speech.speaking)             next = 'talking'
     else if (speech.voiceActive)          next = 'listening'
     else if (speech.booting)             next = 'booting'
     else if (speech.processing)          next = 'thinking'
     else                                  next = 'idle'
     pushTrayState(next)
-  }, [wsStatus, voiceMuted, speech.speaking, speech.voiceActive, speech.booting, speech.processing, pushTrayState])
+  }, [wsStatus, voiceMuted, speech.speaking, speech.voiceActive, speech.silentMode, speech.booting, speech.processing, pushTrayState])
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────
   useEffect(() => {
@@ -242,6 +243,7 @@ function VoiceClientPill({ processing = false }) {
   // on every 1 Hz poll when nothing changed.
   const lastToolRef   = useRef(null)
   const lastSpeechRef = useRef(null)
+  const lastTtsRef    = useRef(null)
   useEffect(() => {
     let alive = true
     let t
@@ -261,6 +263,10 @@ function VoiceClientPill({ processing = false }) {
         if (alive && lastSpeechRef.current !== data.speech_model) {
           lastSpeechRef.current = data.speech_model
           invoke('set_speech_label', { name: data.speech_model || '' }).catch(console.error)
+        }
+        if (alive && lastTtsRef.current !== data.tts_provider) {
+          lastTtsRef.current = data.tts_provider
+          invoke('set_tts_label', { name: data.tts_provider || '' }).catch(console.error)
         }
       } catch {
         if (alive) setS({ connected: false })
@@ -292,6 +298,7 @@ function VoiceClientPill({ processing = false }) {
   const { color, label } =
       !s?.connected        ? { color: '#ef4444', label: 'Voice offline'  }
     :  s.muted             ? { color: '#111111', label: 'Mic muted'       }
+    :  s.silent_mode       ? { color: '#111111', label: 'JARVIS quiet'    }
     :  s.speaking          ? { color: '#4493f8', label: 'JARVIS speaking' }
     :  s.listening         ? { color: '#22d3ee', label: 'You speaking'    }
     : !s.agent_present     ? { color: '#a855f7', label: 'JARVIS booting'  }
