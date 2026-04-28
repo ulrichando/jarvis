@@ -2695,6 +2695,34 @@ async def drop_pure_hedge(text):
     yield buffer
 
 
+# Convert European space-thousands ("4 000", "1 234 567") to comma
+# notation ("4,000", "1,234,567"). gpt-oss-120b habitually writes
+# numbers with space separators; Groq Orpheus mis-pronounces those
+# (heard 2026-04-28: "4 000" voiced as "forty"). Standard "4,000"
+# is voiced cleanly as "four thousand".
+# Pattern: 1-3 digits, then one+ groups of "<space>3-digits", with
+# negative-lookarounds to avoid eating partial digits in IPv4 / dates.
+_SPACED_NUMBER_RE = re.compile(r"(?<!\d)(\d{1,3})((?:\s+\d{3})+)(?!\d)")
+
+
+def _comma_thousands(match: re.Match) -> str:
+    return match.group(0).replace(" ", ",")
+
+
+async def normalize_numbers(text):
+    """Replace space-thousands ('4 000') with comma-thousands ('4,000')."""
+    buffer = ""
+    KEEP_TAIL = 20  # max number length we care about
+    async for chunk in text:
+        buffer += chunk
+        if len(buffer) > KEEP_TAIL:
+            ready = _SPACED_NUMBER_RE.sub(_comma_thousands, buffer[:-KEEP_TAIL])
+            yield ready
+            buffer = buffer[-KEEP_TAIL:]
+    if buffer:
+        yield _SPACED_NUMBER_RE.sub(_comma_thousands, buffer)
+
+
 async def cap_sir_count(text):
     # Buffer the whole reply, then emit once. Progressive chunk-then-tail
     # buffering was tried first but cut "sir" across the chunk boundary
@@ -3001,6 +3029,9 @@ async def entrypoint(ctx: JobContext) -> None:
             # silent than to voice "Sorry, I missed that, did you want
             # me to set up an OAuth flow?" to a podcast.
             drop_pure_hedge,
+            # Convert "4 000" → "4,000" so TTS reads "four thousand"
+            # instead of mispronouncing as "forty" or "four-oh".
+            normalize_numbers,
             # Cap "sir" to once per reply — gpt-oss-120b says it every
             # sentence which sounds robotic.
             cap_sir_count,
