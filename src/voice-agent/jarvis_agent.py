@@ -1169,6 +1169,12 @@ _MUTE_PATTERNS = tuple(re.compile(r"\b" + p + r"\b") for p in (
     r"go to sleep",
     r"silence yourself",
     r"silent mode",
+    # Bare "quiet" — "Jarvis, quiet" is a natural way to ask for
+    # silence and the prior pattern set missed it. Safe because the
+    # _COMMAND_MAX_WORDS=6 gate (below) restricts matches to short
+    # imperative sentences; "I'd like some quiet please" is fine but
+    # only triggers because it fits a quiet-request shape anyway.
+    r"quiet",
 ))
 _WAKE_PATTERNS = tuple(re.compile(r"\b" + p + r"\b") for p in (
     r"wake up",
