@@ -3896,6 +3896,28 @@ async def entrypoint(ctx: JobContext) -> None:
             except Exception as e:
                 logger.warning(f"[dispatch] swap failed for route={route}: {e}; will use fallback inner")
 
+            # Per-route interruption tuning. session.options.interruption is
+            # a mutable TypedDict read fresh per turn by agent_activity at
+            # min_words/min_duration check sites (verified). Defaults from
+            # entrypoint are min_words=2 / min_duration=0.4. Per-route:
+            #   BANTER     — snappy interrupts OK (min_words=1, min_dur=0.3)
+            #   TASK       — current default (2 / 0.4)
+            #   REASONING  — don't kill explanations on a stray "yeah" (3 / 0.5)
+            #   EMOTIONAL  — let the user keep flowing through pauses (3 / 0.6)
+            try:
+                interrupt_tuning = {
+                    "BANTER":    (1, 0.3),
+                    "TASK":      (2, 0.4),
+                    "REASONING": (3, 0.5),
+                    "EMOTIONAL": (3, 0.6),
+                }.get(route, (2, 0.4))
+                opts = getattr(session, "options", None)
+                if opts is not None and hasattr(opts, "interruption"):
+                    opts.interruption["min_words"]    = interrupt_tuning[0]
+                    opts.interruption["min_duration"] = interrupt_tuning[1]
+            except Exception as ie:
+                logger.debug(f"[dispatch] interrupt-tune skipped: {ie}")
+
         task = asyncio.create_task(_classify_and_swap())
         _bg_tasks.add(task)
         task.add_done_callback(_bg_tasks.discard)
