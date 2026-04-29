@@ -1,13 +1,15 @@
 // Converts an OpenAI SSE stream (fetch Response) to Anthropic SSE format
 // and writes it to a ReadableStream controller.
 
-import { Buffer } from 'node:buffer'
+import { setReasoning } from './reasoning-cache.js'
 
-const REASONING_PREFIX = '​​​'
-const REASONING_SUFFIX = '​​​'
+const HEARTBEAT_INTERVAL_MS = 5000
 
-function encodeReasoningMarker(reasoning: string): string {
-  return REASONING_PREFIX + Buffer.from(reasoning, 'utf-8').toString('base64') + REASONING_SUFFIX
+export type StreamStats = {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  stopReason: string
 }
 
 type StreamState = {
@@ -22,9 +24,9 @@ type StreamState = {
   textBlockIndex: number | null
   toolBlocks: Map<number, { id: string; name: string; argsAccum: string }>
   nextContentIndex: number
-  // Accumulated reasoning_content for the marker round-trip.
-  // The marker is prepended to the first text delta (or emitted as a
-  // standalone text block when reasoning → tool_use with no text).
+  // Accumulated reasoning_content for the server-side cache. Saved against
+  // each tool_call.id as it's observed; the cache is consulted on the
+  // follow-up turn to repopulate the OpenAI request's reasoning_content.
   reasoningBuffer: string
 }
 
@@ -42,11 +44,25 @@ export async function convertOpenAIStreamToAnthropic(
   openaiResponse: Response,
   model: string,
   controller: ReadableStreamDefaultController<Uint8Array>,
-) {
+): Promise<StreamStats> {
   const enc = new TextEncoder()
   const send = (event: string, data: unknown) => {
     controller.enqueue(enc.encode(sseEvent(event, data)))
   }
+  // Defensive variant for the heartbeat — if the client has disconnected
+  // mid-stream the controller throws on enqueue, and we don't want a stray
+  // ping tick to surface that as a noisy unhandled rejection.
+  const safeSend = (event: string, data: unknown) => {
+    try { send(event, data) } catch {}
+  }
+
+  // Heartbeat: emit a ping every 5s for the duration of the upstream
+  // stream. Anthropic SDK treats pings as no-ops, but their presence
+  // keeps intermediaries (load balancers, the CLI's own UI) from
+  // declaring the connection dead during long thinking-mode pauses.
+  const heartbeat = setInterval(() => {
+    safeSend('ping', { type: 'ping' })
+  }, HEARTBEAT_INTERVAL_MS)
 
   const messageId = 'msg_' + Math.random().toString(36).slice(2)
   const state: StreamState = {
@@ -83,6 +99,12 @@ export async function convertOpenAIStreamToAnthropic(
   let buffer = ''
   let finalFinishReason: string | null = null
   let outputTokens = 0
+  let stats: StreamStats = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    stopReason: 'end_turn',
+  }
 
   try {
     while (true) {
@@ -122,9 +144,8 @@ export async function convertOpenAIStreamToAnthropic(
           outputTokens = chunk.usage.completion_tokens ?? 0
         }
 
-        // Reasoning (DeepSeek thinking-mode chain-of-thought). Buffered for
-        // the text-marker round-trip: the marker is prepended to the first
-        // text block so reasoning_content survives the SDK serialization.
+        // Reasoning (DeepSeek thinking-mode chain-of-thought). Buffered;
+        // saved to the reasoning cache against each tool_call.id below.
         if (delta.reasoning_content) {
           state.reasoningBuffer += delta.reasoning_content
         }
@@ -133,16 +154,10 @@ export async function convertOpenAIStreamToAnthropic(
         if (delta.content) {
           if (state.textBlockIndex === null) {
             state.textBlockIndex = state.nextContentIndex++
-            // Prepend reasoning marker to carry reasoning_content
-            // through the SDK round-trip.
-            const prefix = state.reasoningBuffer
-              ? encodeReasoningMarker(state.reasoningBuffer)
-              : ''
-            state.reasoningBuffer = ''
             send('content_block_start', {
               type: 'content_block_start',
               index: state.textBlockIndex,
-              content_block: { type: 'text', text: prefix },
+              content_block: { type: 'text', text: '' },
             })
           }
           send('content_block_delta', {
@@ -164,22 +179,6 @@ export async function convertOpenAIStreamToAnthropic(
                 name: tc.function?.name ?? '',
                 argsAccum: '',
               })
-              // Reasoning → tool_use with no text: emit a marker-only
-              // text block to carry reasoning_content through the round-trip.
-              if (state.reasoningBuffer && state.textBlockIndex === null) {
-                const markerIdx = state.nextContentIndex++
-                const markerText = encodeReasoningMarker(state.reasoningBuffer)
-                state.reasoningBuffer = ''
-                send('content_block_start', {
-                  type: 'content_block_start',
-                  index: markerIdx,
-                  content_block: { type: 'text', text: markerText },
-                })
-                send('content_block_stop', {
-                  type: 'content_block_stop',
-                  index: markerIdx,
-                })
-              }
               // Close the text block before opening a tool block
               if (state.textBlockIndex !== null) {
                 send('content_block_stop', {
@@ -202,7 +201,12 @@ export async function convertOpenAIStreamToAnthropic(
             }
 
             const tb = state.toolBlocks.get(tcIndex)!
-            if (tc.id) tb.id = tc.id
+            if (tc.id) {
+              tb.id = tc.id
+              if (state.reasoningBuffer) {
+                setReasoning(tc.id, state.reasoningBuffer)
+              }
+            }
             if (tc.function?.name) tb.name = tc.function.name
 
             if (tc.function?.arguments) {
@@ -223,27 +227,12 @@ export async function convertOpenAIStreamToAnthropic(
   } catch (e) {
     console.error('[jarvis-proxy] stream read error:', e)
   } finally {
+    clearInterval(heartbeat)
     try { reader.releaseLock() } catch {}
 
     // Always emit closing events so the Anthropic SDK sees message_stop
     // and the CLI doesn't hang in "assistant is streaming" state, even if
     // the upstream provider connection was interrupted mid-response.
-
-    // Stream interrupted during reasoning with no text or tools yet:
-    // emit a marker-only text block so reasoning survives the round-trip.
-    if (state.reasoningBuffer && state.textBlockIndex === null && state.toolBlocks.size === 0) {
-      const markerIdx = state.nextContentIndex++
-      const markerText = encodeReasoningMarker(state.reasoningBuffer)
-      send('content_block_start', {
-        type: 'content_block_start',
-        index: markerIdx,
-        content_block: { type: 'text', text: markerText },
-      })
-      send('content_block_stop', {
-        type: 'content_block_stop',
-        index: markerIdx,
-      })
-    }
 
     if (state.textBlockIndex !== null) {
       send('content_block_stop', {
@@ -279,5 +268,14 @@ export async function convertOpenAIStreamToAnthropic(
     })
 
     send('message_stop', { type: 'message_stop' })
+
+    stats = {
+      inputTokens: state.inputTokens,
+      outputTokens,
+      cacheReadTokens: state.cacheReadTokens,
+      stopReason,
+    }
   }
+
+  return stats
 }
