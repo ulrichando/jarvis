@@ -12,7 +12,7 @@ import { db, schema } from "@/lib/db";
 import { getWorkspace } from "@/lib/workspace/storage";
 import { buildWorkbenchPrompt, buildDesignPrompt } from "@/lib/actions/jarvis-prompt";
 import { getBrand } from "@/lib/design/brand";
-import type { Format } from "@/lib/design/format";
+import { type Format, inferFormat } from "@/lib/design/format";
 import { webSearchTool } from "@/lib/tools/web-search";
 
 function buildProjectPrompt(p: {
@@ -114,10 +114,15 @@ export async function POST(req: Request) {
     if (ws) {
       if (mode === "design") {
         const brand = await getBrand(workspaceId);
+        // The design tab doesn't show format chips (matching Claude Design's
+        // "describe and we'll figure out the shape" UX) so when the client
+        // doesn't pass `format`, infer it from the user's latest message.
+        const resolvedFormat: Format =
+          format ?? inferFormat(firstUserText);
         finalSystem += buildDesignPrompt({
           workspaceName: ws.name,
           cwd: "/workspace",
-          format,
+          format: resolvedFormat,
           brand,
         });
       } else {

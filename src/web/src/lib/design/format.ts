@@ -19,6 +19,19 @@ export const FORMAT_FILE: Record<Format, string> = {
   infographic: "infographic.html",
 };
 
+/**
+ * Pulls the format out of a workspace filename. The playbook names files by
+ * format ("slides.html", "prototype.html", etc.) so the basename round-trips.
+ * Used by the export menu to pick the right PDF page size without needing a
+ * format chip selector in the UI.
+ */
+export function formatFromFilename(name: string): Format | null {
+  const base = name.replace(/^.*\//, "").replace(/\.html?$/i, "").toLowerCase();
+  // Strip variant suffixes like "slides-v2" → "slides"
+  const stem = base.replace(/-v\d+$/, "");
+  return (FORMATS as readonly string[]).includes(stem) ? (stem as Format) : null;
+}
+
 export type FontPairing = {
   id: string;
   display: { family: string; weights: string };
@@ -70,4 +83,61 @@ export function googleFontsUrl(p: FontPairing): string {
   const display = `family=${encodeURIComponent(p.display.family).replace(/%20/g, "+")}:${p.display.weights}`;
   const body = `family=${encodeURIComponent(p.body.family).replace(/%20/g, "+")}:${p.body.weights}`;
   return `https://fonts.googleapis.com/css2?${display}&${body}&display=swap`;
+}
+
+/**
+ * Heuristic format classifier — picks a format from natural-language text.
+ * Used when the client doesn't pass an explicit `format` (the design tab
+ * doesn't show format chips by default, matching Claude Design's "describe
+ * and we'll figure out the shape" UX). Patterns are ordered by specificity:
+ * more-specific terms first so "infographic" wins over "page", etc.
+ *
+ * Returns `slides` as the safe default when nothing matches — slides are the
+ * most common ask and have the broadest layout vocabulary in the playbook.
+ */
+export function inferFormat(text: string | null | undefined): Format {
+  if (!text) return DEFAULT_FORMAT;
+  const t = text.toLowerCase();
+
+  if (
+    /\b(infographic|poster|data\s*viz|data\s*visuali[sz]ation|stats?\s+(card|sheet|poster)|chart\s+poster)\b/.test(
+      t,
+    )
+  ) {
+    return "infographic";
+  }
+
+  if (
+    /\b(prototype|wireframe|app|ios|iphone|android|mobile|tablet|kiosk|screen\s+flow|ui\s+flow|screens?\s+for|tap\s+target|click[- ]through)\b/.test(
+      t,
+    )
+  ) {
+    return "prototype";
+  }
+
+  if (
+    /\b(one[- ]?pager|brief(?:ing)?|board\s+report|memo|a4|brief\s+sheet|status\s+update)\b/.test(
+      t,
+    )
+  ) {
+    return "onepager";
+  }
+
+  if (
+    /\b(landing|homepage|home\s+page|marketing\s+page|product\s+page|launch\s+page|hero\s+page)\b/.test(
+      t,
+    )
+  ) {
+    return "landing";
+  }
+
+  if (
+    /\b(slide|deck|presentation|pitch\s*(deck)?|kickoff|pptx?|keynote|all-?hands)\b/.test(
+      t,
+    )
+  ) {
+    return "slides";
+  }
+
+  return DEFAULT_FORMAT;
 }
