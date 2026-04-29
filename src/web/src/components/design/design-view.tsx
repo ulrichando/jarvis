@@ -13,6 +13,7 @@ import { formatFromFilename } from "@/lib/design/format";
 import { extractTweaks, type Tweak } from "@/lib/design/tweaks";
 import { useQuery } from "@tanstack/react-query";
 import { apiReadFile } from "@/lib/workspace/client";
+import { useDesignComments, type DesignCommentRecord } from "@/hooks/use-design-comments";
 import { BrandPanel } from "./brand-panel";
 import { DesignFilesPanel } from "./design-files-panel";
 import { DesignPreview, type DesignComment } from "./design-preview";
@@ -53,6 +54,11 @@ export function DesignView({
   const [prefillPrompt, setPrefillPrompt] = useState<{ id: string; text: string } | undefined>(undefined);
   const [showTweaks, setShowTweaks] = useState(false);
   const [tweakOverrides, setTweakOverrides] = useState<Record<string, Tweak["value"]>>({});
+  const [chatTab, setChatTab] = useState<"chat" | "comments">("chat");
+  // Bumping `chatKey` remounts <Chat>, throwing away its in-memory messages so
+  // the user starts a fresh thread (the + button in the chat header).
+  const [chatKey, setChatKey] = useState(0);
+  const designComments = useDesignComments(workspaceId);
   const { data: settings } = useSettings();
 
   // Fetch the selected file's content so we can extract its declared tweaks.
@@ -114,9 +120,35 @@ export function DesignView({
   };
 
   const handleComment = (c: DesignComment) => {
+    designComments.add({
+      filePath: c.filePath,
+      selector: c.selector,
+      tag: c.tag,
+      text: c.text,
+      comment: c.comment,
+    });
     setPrefillPrompt({
       id: `${Date.now()}`,
       text: buildEditPrompt(c),
+    });
+  };
+
+  const handleNewThread = () => {
+    setChatKey((k) => k + 1);
+    setChatTab("chat");
+  };
+
+  const handleReuseComment = (c: DesignCommentRecord) => {
+    setChatTab("chat");
+    setPrefillPrompt({
+      id: `${Date.now()}`,
+      text: buildEditPrompt({
+        filePath: c.filePath,
+        selector: c.selector,
+        tag: c.tag,
+        text: c.text,
+        comment: c.comment,
+      }),
     });
   };
 
@@ -314,27 +346,39 @@ export function DesignView({
           className="flex shrink-0 flex-col border-r border-border/60"
           style={{ width: chatColumn.width }}
         >
-          <ChatTabsHeader />
+          <ChatTabsHeader
+            tab={chatTab}
+            onTabChange={setChatTab}
+            commentsCount={designComments.items.length}
+            onNewThread={handleNewThread}
+          />
           <div className="flex-1 min-h-0">
-            <Chat
-              embedded
-              mode="design"
-              workspaceId={workspaceId}
-              workspaceName={workspaceName}
-              composerPlaceholder="Describe what you want to create — slides, prototype, landing, one-pager, infographic…"
-              onStreamingFile={(filePath, content) =>
-                setStreaming({ filePath, content })
-              }
-              onFileComplete={(filePath) => {
-                // Keep the streaming preview up briefly so the user sees the
-                // final state, then clear it so the iframe falls back to the
-                // file on disk (which the existing parser has now written).
-                setStreaming((cur) =>
-                  cur && cur.filePath === filePath ? null : cur,
-                );
-              }}
-              prefillPrompt={prefillPrompt}
-            />
+            {chatTab === "chat" ? (
+              <Chat
+                key={chatKey}
+                embedded
+                mode="design"
+                workspaceId={workspaceId}
+                workspaceName={workspaceName}
+                composerPlaceholder="Describe what you want to create — slides, prototype, landing, one-pager, infographic…"
+                onStreamingFile={(filePath, content) =>
+                  setStreaming({ filePath, content })
+                }
+                onFileComplete={(filePath) => {
+                  setStreaming((cur) =>
+                    cur && cur.filePath === filePath ? null : cur,
+                  );
+                }}
+                prefillPrompt={prefillPrompt}
+              />
+            ) : (
+              <CommentsList
+                items={designComments.items}
+                onReuse={handleReuseComment}
+                onRemove={designComments.remove}
+                onClear={designComments.clear}
+              />
+            )}
           </div>
         </aside>
 
@@ -424,30 +468,162 @@ export function DesignView({
   );
 }
 
-function ChatTabsHeader() {
-  const [tab, setTab] = useState<"chat" | "comments">("chat");
+function ChatTabsHeader({
+  tab,
+  onTabChange,
+  commentsCount,
+  onNewThread,
+}: {
+  tab: "chat" | "comments";
+  onTabChange: (t: "chat" | "comments") => void;
+  commentsCount: number;
+  onNewThread: () => void;
+}) {
   return (
     <div className="flex h-11 shrink-0 items-center justify-between border-b border-border/60 px-2">
       <div className="flex items-center">
-        {(["chat", "comments"] as const).map((t) => (
-          <button
-            key={t}
-            type="button"
-            onClick={() => setTab(t)}
-            className={cn(
-              "px-2.5 py-1.5 text-[13px] font-medium capitalize transition-colors",
-              tab === t
-                ? "text-foreground"
-                : "text-muted-foreground hover:text-foreground",
-            )}
-          >
-            {t}
-          </button>
-        ))}
+        {(["chat", "comments"] as const).map((t) => {
+          const active = t === tab;
+          return (
+            <button
+              key={t}
+              type="button"
+              onClick={() => onTabChange(t)}
+              className={cn(
+                "flex items-center gap-1.5 px-2.5 py-1.5 text-[13px] font-medium capitalize transition-colors",
+                active
+                  ? "text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {t}
+              {t === "comments" && commentsCount > 0 && (
+                <span
+                  className={cn(
+                    "rounded px-1.5 py-0 font-mono text-[10px]",
+                    active ? "bg-foreground text-background" : "bg-muted text-muted-foreground",
+                  )}
+                >
+                  {commentsCount}
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
-      <Button variant="ghost" size="icon-sm" aria-label="New thread">
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        aria-label="New thread"
+        title="New thread (start a fresh chat in this workspace)"
+        onClick={onNewThread}
+      >
         <Plus className="size-3.5" />
       </Button>
     </div>
   );
+}
+
+function CommentsList({
+  items,
+  onReuse,
+  onRemove,
+  onClear,
+}: {
+  items: DesignCommentRecord[];
+  onReuse: (c: DesignCommentRecord) => void;
+  onRemove: (id: string) => void;
+  onClear: () => void;
+}) {
+  if (items.length === 0) {
+    return (
+      <div className="flex h-full flex-col items-start justify-start px-4 py-6 text-[13px] leading-5 text-muted-foreground">
+        <p>No comments yet.</p>
+        <p className="mt-2 max-w-xs">
+          Open a design, click <strong>Comment</strong> in the preview toolbar,
+          point at any element, type a change request. It&apos;ll show up here
+          and prefill the chat.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex items-center justify-between px-3 py-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+        <span>{items.length} comments</span>
+        <button
+          type="button"
+          onClick={() => {
+            if (window.confirm(`Clear all ${items.length} comments?`)) onClear();
+          }}
+          className="hover:text-foreground"
+        >
+          Clear all
+        </button>
+      </div>
+      <div className="flex-1 space-y-1 overflow-y-auto px-2 pb-3">
+        {items.map((c) => (
+          <CommentRow key={c.id} item={c} onReuse={onReuse} onRemove={onRemove} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CommentRow({
+  item,
+  onReuse,
+  onRemove,
+}: {
+  item: DesignCommentRecord;
+  onReuse: (c: DesignCommentRecord) => void;
+  onRemove: (id: string) => void;
+}) {
+  const ago = relativeTime(item.createdAt);
+  return (
+    <div className="group rounded-md border border-transparent px-2 py-2 transition-colors hover:border-border/60 hover:bg-muted/30">
+      <div className="mb-1 flex items-center gap-2 text-[11px] text-muted-foreground">
+        <span className="rounded bg-muted px-1.5 py-0 font-mono text-[10px] text-foreground">
+          {item.tag}
+        </span>
+        <span className="truncate">{item.filePath}</span>
+        <span className="ml-auto whitespace-nowrap">{ago}</span>
+      </div>
+      {item.text && (
+        <div className="mb-1 line-clamp-1 text-[12px] text-muted-foreground/90">
+          &ldquo;{item.text}&rdquo;
+        </div>
+      )}
+      <div className="text-[13px] leading-5 text-foreground">{item.comment}</div>
+      <div className="mt-1.5 flex gap-2 opacity-0 transition-opacity group-hover:opacity-100">
+        <button
+          type="button"
+          onClick={() => onReuse(item)}
+          className="text-[11px] text-primary hover:underline"
+        >
+          Re-send
+        </button>
+        <button
+          type="button"
+          onClick={() => onRemove(item.id)}
+          className="text-[11px] text-muted-foreground hover:text-destructive"
+        >
+          Remove
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function relativeTime(ts: number): string {
+  const diff = Math.max(0, Date.now() - ts);
+  const sec = Math.floor(diff / 1000);
+  if (sec < 60) return "just now";
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h`;
+  const day = Math.floor(hr / 24);
+  if (day < 7) return `${day}d`;
+  return new Date(ts).toLocaleDateString();
 }
