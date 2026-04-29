@@ -2,13 +2,14 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { ChevronDown, Palette, Play, Plus, Share2, X } from "lucide-react";
+import { ChevronDown, Palette, Play, Plus, Share2, Sparkles, X } from "lucide-react";
 import type { TreeEntry } from "@/lib/workspace/client";
 import { Chat } from "@/components/chat/chat";
 import { Button } from "@/components/ui/button";
 import { useSettings } from "@/hooks/use-settings";
 import { cn } from "@/lib/utils";
 import { DEFAULT_FORMAT, FORMAT_LABEL, type Format } from "@/lib/design/format";
+import { BrandPanel } from "./brand-panel";
 import { DesignFilesPanel } from "./design-files-panel";
 import { DesignPreview } from "./design-preview";
 import { FormatSelector } from "./format-selector";
@@ -30,6 +31,7 @@ export function DesignView({
   const [activeKey, setActiveKey] = useState<string>("__files");
   const [selected, setSelected] = useState<TreeEntry | null>(null);
   const [format, setFormat] = useState<Format>(DEFAULT_FORMAT);
+  const [showBrand, setShowBrand] = useState(false);
   const { data: settings } = useSettings();
 
   const openFile = (entry: TreeEntry) => {
@@ -115,6 +117,15 @@ export function DesignView({
         </div>
 
         <div className="flex shrink-0 items-center gap-2 px-3">
+          <Button
+            variant={showBrand ? "secondary" : "ghost"}
+            size="sm"
+            className="rounded-md"
+            onClick={() => setShowBrand((v) => !v)}
+          >
+            <Sparkles className="size-3.5" />
+            Brand
+          </Button>
           {selected && (
             <Button
               variant="ghost"
@@ -170,9 +181,18 @@ export function DesignView({
           </div>
         </aside>
 
-        {/* Center: files when on Design Files tab; otherwise the preview
-            takes the whole right area below. */}
-        {showFiles ? (
+        {/* Center: brand editor when toggled; otherwise files+preview or
+            preview-only depending on the active tab. */}
+        {showBrand ? (
+          <div className="flex flex-1 min-w-0">
+            <div className="flex flex-1 min-w-0 flex-col border-r border-border/60">
+              <BrandPanel workspaceId={workspaceId} />
+            </div>
+            <div className="flex w-[42%] min-w-80 shrink-0 flex-col">
+              <DesignPreview workspaceId={workspaceId} selected={selected} />
+            </div>
+          </div>
+        ) : showFiles ? (
           <div className="flex flex-1 min-w-0">
             <div className="flex flex-1 min-w-0 flex-col">
               <DesignFilesPanel
