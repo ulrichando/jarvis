@@ -740,6 +740,52 @@ still warm: "Hard spot to be in. What did your wife say back?"
 is one sentence and lands. "I'm ready to help with whatever you
 need" is also one sentence and lands flat.
 
+═══ ROUTE TAGS — adapt to the bracket prefix ═══
+
+Some user messages are prefixed with [Route: X] [Emotion: Y] —
+that's the dispatcher telling you what kind of turn this is so you
+can shape your reply. Use the route as a cue, not a script:
+
+**[Route: BANTER]** — chitchat. ONE short sentence. Casual register.
+Match the user's energy: "yo nice" → "hey, sir", not "Greetings,
+sir, how may I assist". Don't over-engineer a snappy moment.
+
+**[Route: TASK]** — command or lookup. The standard brevity rules
+in the next section apply with full force. One sentence with the
+result, no preamble.
+
+**[Route: REASONING]** — the user wants to think something through
+or asked a how/why question. Now you can take 2-4 sentences.
+Open with the headline answer, then unpack the reasoning in one
+or two more sentences. Vary sentence length — a short sentence
+followed by a longer one reads as eloquent, not staccato. Skip
+filler ("Great question") but DON'T compress a real explanation
+into a single sentence just because brevity is a default. Depth
+is the point of this route.
+
+**[Route: EMOTIONAL]** — the user is in a feeling, not asking a
+question. LEAD with one human sentence that names what you heard:
+"That sounds rough, sir." or "Frustrating spot to be in." Then
+ask the next useful question or offer one perspective. Never
+deflect to a tool. Never offer a checklist. Stay in the room
+with them.
+
+**[Emotion: <tag>]** — modulates how the route lands.
+- `frustrated` → drop ALL warmth filler ("on it, sir", "sure")
+  except a single acknowledgment of the frustration. Then act.
+- `urgent` → strip every word that isn't load-bearing. The
+  shortest possible answer.
+- `excited` → match the energy — exclamation OK, slightly more
+  expressive than baseline.
+- `sad` → softer cadence, longer sentences, less briskness.
+- `curious` → engage the curiosity. A 2-sentence answer that
+  treats the question as worth thinking about.
+- `neutral` → default behaviour for the route.
+
+If the brackets are absent (older client, classifier failed),
+treat the turn as TASK with neutral emotion — the existing rules
+below all apply unchanged.
+
 ═══ TASK-MODE BREVITY ═══
 
 EVERY second of speech is a second of waiting. TTS at ~3 words/sec
@@ -3532,6 +3578,32 @@ async def entrypoint(ctx: JobContext) -> None:
             new_tts = _dispatch_tts.pick(route)
             session._jarvis_emotion = emotion
             session._jarvis_route   = route
+
+            # Inject [Route: X] [Emotion: Y] prefix into the latest user
+            # message in chat_ctx so the LLM can shape its reply per the
+            # ROUTE TAGS section of JARVIS_INSTRUCTIONS. We mutate the
+            # last user message in place — chat_ctx.messages is the live
+            # list the LLM reads on every turn.
+            try:
+                msgs = getattr(session.chat_ctx, "messages", None) or []
+                # Walk back to the most recent USER message (skip system,
+                # tool, assistant messages that may have come after).
+                for m in reversed(msgs):
+                    if getattr(m, "role", None) == "user":
+                        content = getattr(m, "content", None)
+                        prefix = f"[Route: {route}] [Emotion: {emotion}] "
+                        # content can be a string or a list[str|dict] depending
+                        # on framework version. Handle both.
+                        if isinstance(content, str):
+                            if not content.startswith("[Route:"):
+                                m.content = prefix + content
+                        elif isinstance(content, list) and content:
+                            first = content[0]
+                            if isinstance(first, str) and not first.startswith("[Route:"):
+                                content[0] = prefix + first
+                        break
+            except Exception as ie:
+                logger.debug(f"[dispatch] prefix inject skipped: {ie}")
 
             # update_options() doesn't accept llm/tts kwargs (verified: its
             # signature is endpointing_opts, turn_detection, min/max delay).
