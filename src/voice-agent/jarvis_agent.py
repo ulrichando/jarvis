@@ -475,25 +475,25 @@ def _build_dispatching_llm() -> DispatchingLLM:
     Anthropic + DeepSeek not available with current livekit plugin set.
     """
     main = groq.LLM(model="llama-3.3-70b-versatile", temperature=0.6)
-    main.label = "groq:llama-3.3-70b-versatile"
+    main._jarvis_label = "groq:llama-3.3-70b-versatile"
 
     try:
         banter = groq.LLM(model="llama-3.1-8b-instant", temperature=0.6)
-        banter.label = "groq:llama-3.1-8b-instant"
+        banter._jarvis_label = "groq:llama-3.1-8b-instant"
     except Exception as e:
         logger.warning(f"[dispatch] BANTER LLM construction failed: {e}; using main")
         banter = main
 
     try:
         reasoning = groq.LLM(model="qwen/qwen3-32b", temperature=0.6)
-        reasoning.label = "groq:qwen3-32b"
+        reasoning._jarvis_label = "groq:qwen3-32b"
     except Exception as e:
         logger.warning(f"[dispatch] REASONING LLM construction failed: {e}; using main")
         reasoning = main
 
     try:
         emotional = groq.LLM(model="meta-llama/llama-4-scout-17b-16e-instruct", temperature=0.7)
-        emotional.label = "groq:llama-4-scout"
+        emotional._jarvis_label = "groq:llama-4-scout"
     except Exception as e:
         logger.warning(f"[dispatch] EMOTIONAL LLM construction failed: {e}; using main")
         emotional = main
@@ -3495,7 +3495,7 @@ async def entrypoint(ctx: JobContext) -> None:
             llm_arg = _dispatch_llm.fallback   # default; per-turn callback overrides
             tts_arg = _dispatch_tts.fallback
             logger.info("[dispatch] LLM dispatcher resolved: " + ", ".join(
-                f"{r}={getattr(llm, 'label', repr(llm))}"
+                f"{r}={getattr(llm, "_jarvis_label", repr(llm))}"
                 for r, llm in _dispatch_llm.inners.items()
             ))
             logger.info("[dispatch] TTS dispatcher resolved: " + ", ".join(
@@ -3918,7 +3918,7 @@ async def entrypoint(ctx: JobContext) -> None:
                 session._tts = new_tts
                 logger.debug(
                     f"[dispatch] route={route} emotion={emotion} "
-                    f"llm={getattr(new_llm, 'label', repr(new_llm))} "
+                    f"llm={getattr(new_llm, "_jarvis_label", repr(new_llm))} "
                     f"voice={getattr(new_tts, 'voice_id', '?')}"
                 )
             except Exception as e:

@@ -5,7 +5,12 @@ from dispatching_llm import DispatchingLLM
 
 
 def _stub_inner(label: str):
-    inner = MagicMock(name=f"inner-{label}")
+    # spec=[] makes MagicMock not auto-generate attributes — getattr returns
+    # the default for missing attrs instead of a fresh MagicMock. This mirrors
+    # the real livekit.plugins.groq.LLM where `label` is a read-only property
+    # so production code uses `_jarvis_label` to avoid the collision.
+    inner = MagicMock(name=f"inner-{label}", spec=["_jarvis_label", "label"])
+    inner._jarvis_label = label
     inner.label = label
     return inner
 
