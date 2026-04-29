@@ -8,11 +8,10 @@ import { Chat } from "@/components/chat/chat";
 import { Button } from "@/components/ui/button";
 import { useSettings } from "@/hooks/use-settings";
 import { cn } from "@/lib/utils";
-import { DEFAULT_FORMAT, FORMAT_LABEL, type Format } from "@/lib/design/format";
+import { formatFromFilename } from "@/lib/design/format";
 import { BrandPanel } from "./brand-panel";
 import { DesignFilesPanel } from "./design-files-panel";
 import { DesignPreview, type DesignComment } from "./design-preview";
-import { FormatSelector } from "./format-selector";
 
 type DesignTab = { kind: "files" } | { kind: "file"; entry: TreeEntry };
 
@@ -44,7 +43,6 @@ export function DesignView({
   const [tabs, setTabs] = useState<DesignTab[]>([{ kind: "files" }]);
   const [activeKey, setActiveKey] = useState<string>("__files");
   const [selected, setSelected] = useState<TreeEntry | null>(null);
-  const [format, setFormat] = useState<Format>(DEFAULT_FORMAT);
   const [showBrand, setShowBrand] = useState(false);
   const [streaming, setStreaming] = useState<{ filePath: string; content: string } | null>(null);
   const [prefillPrompt, setPrefillPrompt] = useState<{ id: string; text: string } | undefined>(undefined);
@@ -175,7 +173,11 @@ export function DesignView({
                   Download HTML
                 </a>
                 <a
-                  href={`/api/design/export?workspaceId=${encodeURIComponent(workspaceId)}&path=${encodeURIComponent(selected.path)}&format=${format}`}
+                  href={(() => {
+                    const f = formatFromFilename(selected.name);
+                    const q = `workspaceId=${encodeURIComponent(workspaceId)}&path=${encodeURIComponent(selected.path)}`;
+                    return `/api/design/export?${q}${f ? `&format=${f}` : ""}`;
+                  })()}
                   className="flex items-center gap-2 px-3 py-2 text-[13px] hover:bg-muted"
                 >
                   <Download className="size-3.5" />
@@ -205,15 +207,13 @@ export function DesignView({
         {/* Left: chat */}
         <aside className="flex w-95 shrink-0 flex-col border-r border-border/60">
           <ChatTabsHeader />
-          <FormatSelector value={format} onChange={setFormat} />
           <div className="flex-1 min-h-0">
             <Chat
               embedded
               mode="design"
-              format={format}
               workspaceId={workspaceId}
               workspaceName={workspaceName}
-              composerPlaceholder={`Describe the ${FORMAT_LABEL[format].toLowerCase()} you want to create…`}
+              composerPlaceholder="Describe what you want to create — slides, prototype, landing, one-pager, infographic…"
               onStreamingFile={(filePath, content) =>
                 setStreaming({ filePath, content })
               }
@@ -248,7 +248,6 @@ export function DesignView({
                 workspaceId={workspaceId}
                 selectedPath={selected?.path ?? null}
                 onSelectFile={openFile}
-                format={format}
                 onStarter={(prompt) =>
                   setPrefillPrompt({ id: `${Date.now()}`, text: prompt })
                 }
