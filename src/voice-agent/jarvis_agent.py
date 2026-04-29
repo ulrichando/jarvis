@@ -3219,8 +3219,14 @@ async def entrypoint(ctx: JobContext) -> None:
             _dispatch_tts = _build_dispatching_tts()
             llm_arg = _dispatch_llm.fallback   # default; per-turn callback overrides
             tts_arg = _dispatch_tts.fallback
-            logger.info(f"[dispatch] LLM dispatcher: {list(_dispatch_llm.inners.keys())}")
-            logger.info(f"[dispatch] TTS dispatcher: {list(_dispatch_tts.inners.keys())}")
+            logger.info("[dispatch] LLM dispatcher resolved: " + ", ".join(
+                f"{r}={getattr(llm, 'label', repr(llm))}"
+                for r, llm in _dispatch_llm.inners.items()
+            ))
+            logger.info("[dispatch] TTS dispatcher resolved: " + ", ".join(
+                f"{r}={getattr(t, 'voice_id', repr(t))}"
+                for r, t in _dispatch_tts.inners.items()
+            ))
         except Exception as e:
             logger.error(f"[dispatch] dispatcher build failed: {e}; reverting to single-LLM")
             _dispatch_llm = None
@@ -3409,9 +3415,8 @@ async def entrypoint(ctx: JobContext) -> None:
                 # Maya-class telemetry: log turn outcome to SQLite.
                 if _dispatch_llm is not None:
                     try:
-                        import time as _t
                         start = getattr(session, "_jarvis_turn_start_monotonic", None)
-                        ttfw_ms = int((_t.monotonic() - start) * 1000) if start else 0
+                        ttfw_ms = int((time.monotonic() - start) * 1000) if start else 0
                         log_turn(
                             user_text=getattr(session, "_jarvis_turn_user_text", "") or "",
                             jarvis_text=text or "",
@@ -3470,9 +3475,12 @@ async def entrypoint(ctx: JobContext) -> None:
         if not transcript.strip():
             return
         # Stash turn-start timestamp so _on_item can compute approximate TTFW.
+        # Note: a re-fired is_final from STT will overwrite this; the second
+        # _classify_and_swap task wins the swap but the dispatcher's
+        # last_route may reflect the first task when telemetry reads it.
+        # Acceptable for v1 — log noise on a rare race.
         try:
-            import time as _t
-            session._jarvis_turn_start_monotonic = _t.monotonic()
+            session._jarvis_turn_start_monotonic = time.monotonic()
             session._jarvis_turn_user_text = transcript
         except Exception:
             pass
@@ -3484,14 +3492,12 @@ async def entrypoint(ctx: JobContext) -> None:
 
         async def _classify_and_swap():
             async def _groq_call(prompt: str) -> str:
-                # Use Groq main for the tiny classifier pass via direct HTTP, not via lk LLM.
-                # Reason: lk's groq.LLM expects a chat_ctx + tool config, heavyweight for one-shot
-                # classification. We use the same GROQ_API_KEY and a raw POST.
-                import aiohttp, json
+                # Reuse the top-level _aiohttp import so a missing dependency
+                # surfaces at agent startup, not silently per-turn.
                 api_key = os.environ.get("GROQ_API_KEY", "")
                 if not api_key:
                     return "TASK"
-                async with aiohttp.ClientSession() as s:
+                async with _aiohttp.ClientSession() as s:
                     async with s.post(
                         "https://api.groq.com/openai/v1/chat/completions",
                         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -3501,7 +3507,7 @@ async def entrypoint(ctx: JobContext) -> None:
                             "temperature": 0.0,
                             "max_tokens": 6,
                         },
-                        timeout=aiohttp.ClientTimeout(total=2.0),
+                        timeout=_aiohttp.ClientTimeout(total=2.0),
                     ) as r:
                         if r.status != 200:
                             return "TASK"
