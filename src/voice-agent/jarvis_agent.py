@@ -512,28 +512,64 @@ def _build_dispatching_tts() -> DispatchingTTS:
     """Per-route inner Groq Orpheus TTS instances with different voices.
 
     Voices are env-overridable via JARVIS_VOICE_{BANTER,TASK,REASONING,EMOTIONAL}.
-    Defaults pick voices that exist in Groq Orpheus.
+    BANTER and TASK use Groq Orpheus (fast, cheap). EMOTIONAL and REASONING
+    optionally use ElevenLabs for higher voice quality + cross-provider
+    timbre variety, falling back to Orpheus if ELEVENLABS_API_KEY is missing
+    or construction fails.
     """
-    voices = {
-        "BANTER":    os.environ.get("JARVIS_VOICE_BANTER",    "austin"),
-        "TASK":      os.environ.get("JARVIS_VOICE_TASK",      "troy"),
+    el_key   = os.environ.get("ELEVENLABS_API_KEY", "")
+    el_model = os.environ.get("ELEVENLABS_MODEL", "eleven_turbo_v2_5")
+    # Voice IDs: env override → public ElevenLabs voice IDs as defaults.
+    # Defaults chosen for tone fit; user can swap to any voice in their
+    # ElevenLabs account by setting the env var.
+    el_emotional_voice = os.environ.get(
+        "JARVIS_EL_VOICE_EMOTIONAL", "JBFqnCBsd6RMkjVDRZzb"  # "George" — warm British
+    )
+    el_reasoning_voice = os.environ.get(
+        "JARVIS_EL_VOICE_REASONING", "TX3LPaxmHKxFdv7VOQHJ"  # "Liam" — clear American
+    )
+
+    # Orpheus voices for BANTER + TASK (and as fallback for the EL routes).
+    orph = {
+        "BANTER":    os.environ.get("JARVIS_VOICE_BANTER", "austin"),
+        "TASK":      os.environ.get("JARVIS_VOICE_TASK",   "troy"),
         "REASONING": os.environ.get("JARVIS_VOICE_REASONING", "troy"),
         "EMOTIONAL": os.environ.get("JARVIS_VOICE_EMOTIONAL", "daniel"),
     }
-    inners = {}
+
+    inners: dict[str, object] = {}
     fallback = None
-    for route, vid in voices.items():
+
+    for route in ("BANTER", "TASK", "REASONING", "EMOTIONAL"):
+        # Try ElevenLabs first for EMOTIONAL/REASONING when the key is set.
+        # Skipping when JARVIS_EL_DISPATCH_DISABLED=1 lets users opt out
+        # cheaply (e.g. ElevenLabs quota burn during dogfood).
+        use_el = (
+            el_key
+            and os.environ.get("JARVIS_EL_DISPATCH_DISABLED", "0") != "1"
+            and route in ("EMOTIONAL", "REASONING")
+        )
+        if use_el:
+            voice_id = el_emotional_voice if route == "EMOTIONAL" else el_reasoning_voice
+            try:
+                t = elevenlabs.TTS(voice_id=voice_id, model=el_model, api_key=el_key)
+                t.voice_id = f"el:{voice_id[:8]}…"
+                inners[route] = t
+                continue
+            except Exception as e:
+                logger.warning(f"[dispatch] EL tts for {route} failed ({e}); falling back to Orpheus")
+
+        # Orpheus path
+        vid = orph[route]
         try:
             t = _LoggingGroqTTS(model="canopylabs/orpheus-v1-english", voice=vid)
             t.voice_id = vid
             inners[route] = t
-            if route == "TASK":
-                fallback = t
         except Exception as e:
-            logger.warning(f"[dispatch] tts {route}={vid} failed, will inherit TASK: {e}")
+            logger.warning(f"[dispatch] orph tts {route}={vid} failed: {e}; will inherit TASK")
 
+    fallback = inners.get("TASK")
     if fallback is None:
-        # TASK voice itself failed — last-ditch use troy
         fallback = _LoggingGroqTTS(model="canopylabs/orpheus-v1-english", voice="troy")
         fallback.voice_id = "troy"
         inners["TASK"] = fallback
