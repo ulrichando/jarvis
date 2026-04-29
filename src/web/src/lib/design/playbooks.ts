@@ -26,6 +26,7 @@ export function buildPlaybookPrompt({
     formatBlock(format),
     brand ? brandBlock(brand) : pairingBlock(pairing!),
     sharedBaseBlock(),
+    tweaksBlock(format),
     antiSlopBlock(),
     artifactRulesBlock(format),
     examplesBlock(format),
@@ -185,6 +186,41 @@ function sharedBaseBlock(): string {
   - NEVER use placeholder.com, via.placeholder.com, lorem.space, or any \`src="image.jpg"\` / \`src="placeholder.png"\` style stub.
   - For thumbnails / avatars: use a colored circle with initials, not a fake image URL.
 </base_rules>`;
+}
+
+function tweaksBlock(format: Format): string {
+  // Suggest a focused set of tweaks per format. The model can extend or
+  // narrow this list, but every design MUST declare an "accent" color tweak
+  // at minimum so the right-side Tweaks panel always has at least one knob.
+  const suggestions: Record<Format, string> = {
+    slides: `accent (color), density (segmented: comp/comf/room), scanlines (toggle, optional)`,
+    prototype: `accent (color), corner_radius (range 0–24px), reduced_motion (toggle)`,
+    landing: `accent (color), hero_intensity (range 0–1, controls overlay/shade), serif_display (toggle)`,
+    onepager: `accent (color), paper_tone (segmented: warm/neutral/cool)`,
+    infographic: `accent (color), chart_density (segmented: lite/regular/dense), grid_lines (toggle)`,
+  };
+  return `
+<tweaks>
+  Every design MUST declare its tweakable parameters via a JSON block placed at the END of <body>:
+
+    <script type="application/json" id="jarvis-tweaks">
+    [
+      {"id":"accent","label":"Accent","type":"color-swatches","value":"#22d3ee",
+       "options":["#22d3ee","#10b981","#a78bfa","#f97316","#ec4899","#84cc16"]},
+      {"id":"density","label":"Density","type":"segmented","value":"comf",
+       "options":[{"value":"comp","label":"Comp"},{"value":"comf","label":"Comf"},{"value":"room","label":"Room"}]}
+    ]
+    </script>
+
+  Suggested tweaks for "${format}": ${suggestions[format]}.
+
+  Wire each tweak so live updates from the panel actually affect the design:
+    - color-swatches and range tweaks → reference as CSS variables \`var(--<id>)\` (e.g. \`color: var(--accent)\`). Set the initial value on \`html { --<id>: <value>; }\`.
+    - segmented and toggle tweaks → write to body data-attributes; switch styles with \`body[data-<id>="<value>"] { … }\`. Initialize via inline \`<body data-<id>="<value>">\`.
+    - text tweaks → wrap each target element in \`<span data-tweak-text="<id>">…</span>\` so the panel can swap the text live.
+
+  Pick 3–6 tweaks that meaningfully change the feel. Required at minimum: an "accent" color tweak with 5–6 options. The id MUST be lowercase letters/numbers/underscores.
+</tweaks>`;
 }
 
 function antiSlopBlock(): string {
