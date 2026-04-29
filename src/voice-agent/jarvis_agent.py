@@ -3746,6 +3746,34 @@ async def entrypoint(ctx: JobContext) -> None:
             # accumulate tool calls and trip the limit prematurely.
             _reset_tool_call_count()
 
+    # Kill-phrase fast interrupt. Per-route min_words=2-3 means single-word
+    # "stop" or "wait" won't fire the framework's interrupt under REASONING
+    # or EMOTIONAL turns. We watch partial transcripts for explicit kill
+    # phrases and call session.interrupt() directly — bypassing min_words.
+    # Only fires when JARVIS is currently speaking (user_state hasn't
+    # flipped to "speaking" yet because partial transcripts don't always
+    # imply the framework has decided to interrupt).
+    _KILL_PHRASES = re.compile(
+        r"\b(stop|wait|hold on|shut up|hush|pause|quiet|enough|cancel|nevermind|never mind)\b",
+        re.IGNORECASE,
+    )
+
+    @session.on("user_input_transcribed")
+    def _on_user_input_kill_phrase(ev) -> None:
+        try:
+            text = (getattr(ev, "transcript", "") or "").strip()
+            if not text or not _KILL_PHRASES.search(text):
+                return
+            # Only act if JARVIS is currently speaking — otherwise the user
+            # is just saying "wait" as part of normal conversation.
+            agent_state = getattr(session, "agent_state", "")
+            if agent_state != "speaking":
+                return
+            logger.info(f"[kill-phrase] '{text[:60]!r}' detected mid-speech → forcing interrupt")
+            session.interrupt()
+        except Exception as e:
+            logger.debug(f"[kill-phrase] check skipped: {e}")
+
     @session.on("user_input_transcribed")
     def _on_user_input_for_dispatch(ev) -> None:
         """Maya-class router: pick LLM + TTS per turn based on emotion + classifier."""
