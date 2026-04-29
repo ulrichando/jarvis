@@ -157,28 +157,16 @@ export async function convertOpenAIStreamToAnthropic(
           for (const tc of delta.tool_calls) {
             const tcIndex = tc.index ?? 0
             if (!state.toolBlocks.has(tcIndex)) {
-              // BUG FIX 2026-04-29: previously reserved the tool block
-              // index BEFORE the reasoning marker, then emitted the
-              // marker at a higher index than the tool. Anthropic SDK
-              // requires content_block indices in monotonic order, so
-              // the out-of-order marker got dropped → reasoning_content
-              // never round-tripped → DeepSeek 400 on next turn.
-              // Now: emit the marker block FIRST (at the next free index)
-              // so the tool gets the higher index and order is preserved.
-
-              // Close the text block before opening a tool block
-              if (state.textBlockIndex !== null) {
-                send('content_block_stop', {
-                  type: 'content_block_stop',
-                  index: state.textBlockIndex,
-                })
-                state.textBlockIndex = null
-              }
-
+              // New tool block — need id and name
+              const blockIndex = state.nextContentIndex++
+              state.toolBlocks.set(tcIndex, {
+                id: tc.id ?? '',
+                name: tc.function?.name ?? '',
+                argsAccum: '',
+              })
               // Reasoning → tool_use with no text: emit a marker-only
-              // text block at the NEXT index so reasoning_content survives
-              // the round-trip.
-              if (state.reasoningBuffer) {
+              // text block to carry reasoning_content through the round-trip.
+              if (state.reasoningBuffer && state.textBlockIndex === null) {
                 const markerIdx = state.nextContentIndex++
                 const markerText = encodeReasoningMarker(state.reasoningBuffer)
                 state.reasoningBuffer = ''
@@ -192,14 +180,14 @@ export async function convertOpenAIStreamToAnthropic(
                   index: markerIdx,
                 })
               }
-
-              // NOW reserve the tool's index — guaranteed > markerIdx.
-              const blockIndex = state.nextContentIndex++
-              state.toolBlocks.set(tcIndex, {
-                id: tc.id ?? '',
-                name: tc.function?.name ?? '',
-                argsAccum: '',
-              })
+              // Close the text block before opening a tool block
+              if (state.textBlockIndex !== null) {
+                send('content_block_stop', {
+                  type: 'content_block_stop',
+                  index: state.textBlockIndex,
+                })
+                state.textBlockIndex = null
+              }
               send('content_block_start', {
                 type: 'content_block_start',
                 index: blockIndex,
