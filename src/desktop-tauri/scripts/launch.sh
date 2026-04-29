@@ -8,6 +8,21 @@
 # Each is only started if not already listening. Idempotent.
 set -u
 
+# Maya-class speech intelligence defaults — override by setting in env.
+: "${JARVIS_DISPATCH_DISABLED:=0}"
+: "${JARVIS_ROUTER_ENABLED:=1}"
+: "${JARVIS_ROUTER_TIMEOUT_MS:=500}"
+: "${JARVIS_ROUTER_MODEL:=llama-3.1-8b-instant}"
+: "${JARVIS_VOICE_BANTER:=austin}"
+: "${JARVIS_VOICE_TASK:=troy}"
+: "${JARVIS_VOICE_REASONING:=troy}"
+: "${JARVIS_VOICE_EMOTIONAL:=daniel}"
+: "${JARVIS_TELEMETRY_PATH:=$HOME/.local/share/jarvis/turn_telemetry.db}"
+export JARVIS_DISPATCH_DISABLED JARVIS_ROUTER_ENABLED JARVIS_ROUTER_TIMEOUT_MS \
+       JARVIS_ROUTER_MODEL \
+       JARVIS_VOICE_BANTER JARVIS_VOICE_TASK JARVIS_VOICE_REASONING JARVIS_VOICE_EMOTIONAL \
+       JARVIS_TELEMETRY_PATH
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DESKTOP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROJECT_ROOT="$(cd "$DESKTOP_DIR/../.." && pwd)"
