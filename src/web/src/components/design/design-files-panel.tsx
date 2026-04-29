@@ -2,15 +2,14 @@
 
 import {
   ChevronUp,
-  Clipboard,
   File as FileIcon,
   FileCode,
   FileText,
   Folder,
   Loader2,
   Palette,
-  Pencil,
   RefreshCw,
+  Sparkles,
   Trash2,
   Upload,
 } from "lucide-react";
@@ -45,6 +44,8 @@ export function DesignFilesPanel({
   refetchKey,
   format,
   onStarter,
+  onToggleBrand,
+  brandActive,
 }: {
   workspaceId: string;
   selectedPath: string | null;
@@ -53,6 +54,10 @@ export function DesignFilesPanel({
   refetchKey?: number;
   format?: Format;
   onStarter?: (prompt: string) => void;
+  /** Toggle the brand-editor panel from inside this toolbar. The header
+   *  no longer carries a Brand button — Present is the only header action. */
+  onToggleBrand?: () => void;
+  brandActive?: boolean;
 }) {
   const qc = useQueryClient();
   const { data: entries = [], isLoading, refetch } = useQuery({
@@ -93,14 +98,19 @@ export function DesignFilesPanel({
         </Button>
         <span className="text-[13px] text-muted-foreground/80">project</span>
         <div className="ml-auto flex items-center gap-1">
-          <Button variant="ghost" size="sm" className="rounded-md">
-            <Pencil className="size-3.5" />
-            New sketch
-          </Button>
-          <Button variant="ghost" size="sm" className="rounded-md">
-            <Clipboard className="size-3.5" />
-            Paste
-          </Button>
+          {onToggleBrand && (
+            <Button
+              variant={brandActive ? "secondary" : "ghost"}
+              size="sm"
+              className="rounded-md"
+              aria-pressed={brandActive}
+              onClick={onToggleBrand}
+              title="Brand — colors, fonts, voice that apply to every generation"
+            >
+              <Sparkles className="size-3.5" />
+              Brand
+            </Button>
+          )}
         </div>
       </div>
 
