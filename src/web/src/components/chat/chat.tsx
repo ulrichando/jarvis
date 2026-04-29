@@ -69,6 +69,13 @@ type ChatProps = {
   mode?: "design";
   // Selects the design playbook the API uses. Only meaningful when mode === "design".
   format?: import("@/lib/design/format").Format;
+  // Fires on each chunk of a file action while it streams. Lets a parent
+  // (e.g. DesignView) pipe partial content into a live iframe preview so the
+  // canvas updates as Claude generates. `partial` includes everything written
+  // so far for this file in this turn.
+  onStreamingFile?: (filePath: string, partial: string) => void;
+  // Fires when a file action finishes streaming. Used to clear streaming state.
+  onFileComplete?: (filePath: string) => void;
 };
 
 type ChatStatus = "ready" | "submitted" | "streaming" | "error";
@@ -122,6 +129,8 @@ export function Chat({
   composerPlaceholder,
   mode,
   format,
+  onStreamingFile,
+  onFileComplete,
 }: ChatProps) {
   const qc = useQueryClient();
   const [input, setInput] = useState("");
@@ -276,9 +285,15 @@ export function Chat({
       },
       onActionStream: (a) => {
         runner?.onStream(a.artifactId, a.actionId, a.action);
+        if (a.action.type === "file" && onStreamingFile) {
+          onStreamingFile(a.action.filePath, a.action.content);
+        }
       },
       onActionClose: (a) => {
         runner?.onClose(a.artifactId, a.actionId, a.action);
+        if (a.action.type === "file" && onFileComplete) {
+          onFileComplete(a.action.filePath);
+        }
       },
     });
 
