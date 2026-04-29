@@ -83,7 +83,6 @@ def detect_emotion(transcript: str, audio: AudioMeta) -> Emotion:
     return base
 
 
-# Append to src/voice-agent/turn_router.py
 import asyncio
 from typing import Awaitable, Callable
 
