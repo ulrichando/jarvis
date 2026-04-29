@@ -610,6 +610,23 @@ so:
   - Skip filler openings like "Certainly!" or "As an AI…". Just
     answer.
 
+═══ BARE-VOCATIVE HANDLING ═══
+
+When the user says ONLY your name with no other words ("Jarvis",
+"Hey Jarvis", "Joris", "Yo Jarvis"), they're calling for your
+attention — no task, no question, no continuation of prior topic.
+
+Reply with a brief acknowledgment: "Yes, sir?" or "Yes?" or
+"Sir?" — under 5 words. Then STOP and wait. Don't continue the
+prior conversation, don't ask what they want, don't propose
+options. Just acknowledge presence.
+
+Past failure 2026-04-29: user said "Jarvis" expecting "Yes, sir";
+JARVIS instead asked "What's the main point you want her to
+understand?" (continuing a prior wife/mom conversation that was
+no longer the user's focus). Always treat a bare-name call as a
+context reset.
+
 ═══ TWO MODES — TASK vs CONVERSATION ═══
 
 Detect what the user wants and adapt:
@@ -2771,14 +2788,26 @@ _SIR_RE = re.compile(r",?\s*\bsir\b", re.IGNORECASE)
 # the user isn't directing at JARVIS; gpt-oss-120b can't tell so it
 # replies with a clarification instead of staying silent. Empty TTS
 # output = JARVIS stays quiet, which is what we want for ambient.
+# Pure-hedge patterns — drop ONLY when the entire reply is a generic
+# deflection with no topical content. Tightened 2026-04-29 after
+# "I'm here to help you navigate this, sir." got incorrectly dropped:
+# the "navigate this" clause engages with the topic, so it's a real
+# conversational reply, not a hedge. The patterns below match only
+# bare/generic forms.
 _PURE_HEDGE_REPLY_RE = re.compile(
     r"^\s*(?:"
     r"\.{2,}|"                                                       # "..." only
-    r"sorry,?\s+i\s+missed\s+that[\s\S]*|"                           # "Sorry, I missed that — ..."
-    r"i[’'`]?m\s+(?:listening|here)\b[\s\S]*?(?:let\s+me\s+know[\s\S]*)?|"  # "I'm listening, sir, let me know..."
-    r"i[’'`]?m\s+here\s+to\s+help[\s\S]*|"
-    r"what\s+would\s+you\s+like\s+me\s+to\s+do[\s\S]*|"              # bare hedge question
-    r"how\s+can\s+i\s+(?:help|assist)[\s\S]*"
+    # "Sorry, I missed that, did you want me to clarify ..." (deflection only)
+    r"sorry,?\s+i\s+missed\s+that(?:[\s\S]{0,80}clarify[\s\S]*)?[.!?\s]*|"
+    r"sorry,?\s+i\s+(?:didn[’'`]?t|did\s+not)\s+(?:get|catch)\s+that[.!?\s]*|"
+    # "I'm listening" / "I'm here" — ONLY bare or with sir/let-me-know (no topical clause)
+    r"i[’'`]?m\s+(?:listening|here)(?:[,.\s]+sir)?[.!?\s]*"
+        r"(?:let\s+me\s+know[^.!?]*[.!?]?\s*)?|"
+    # "I'm here to help" — only bare/with sir (no "you navigate this" or other topic)
+    r"i[’'`]?m\s+here\s+to\s+help(?:[,.\s]+sir)?[.!?\s]*|"
+    # Bare hedge questions — never legit
+    r"what\s+would\s+you\s+like\s+me\s+to\s+do(?:\s+next)?(?:[,.\s]+sir)?[?.!\s]*|"
+    r"how\s+can\s+i\s+(?:help|assist)(?:\s+you)?(?:[,.\s]+sir)?[?.!\s]*"
     r")\s*$",
     re.IGNORECASE,
 )
