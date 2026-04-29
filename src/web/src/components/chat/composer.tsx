@@ -23,6 +23,14 @@ type ComposerProps = {
   // be confusing because changing it would point chat at a different
   // workspace than the editor next to it.
   hideWorkspacePicker?: boolean;
+  // Override the textarea placeholder for context-specific surfaces
+  // (e.g. /design uses "Describe what you want to create…").
+  placeholder?: string;
+  // Force a model-agnostic composer: same shell, no provider pre-block, no
+  // provider inline toggles, regardless of which model is selected. Used in
+  // surfaces like /design where the composer is a means to an end and should
+  // not flicker between Anthropic / Groq / DeepSeek visual variants.
+  unifiedUX?: boolean;
 };
 
 export function Composer({
@@ -33,6 +41,8 @@ export function Composer({
   status,
   provider,
   hideWorkspacePicker = false,
+  placeholder,
+  unifiedUX = false,
 }: ComposerProps) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const isBusy = status === "streaming" || status === "submitted";
@@ -92,7 +102,7 @@ export function Composer({
 
   return (
     <div className="mx-auto w-full max-w-3xl px-4 pb-4">
-      {providerUX.renderPreComposer && providerUX.renderPreComposer()}
+      {!unifiedUX && providerUX.renderPreComposer && providerUX.renderPreComposer()}
 
       <div
         className={cn(
@@ -107,7 +117,7 @@ export function Composer({
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={handleKey}
           rows={1}
-          placeholder={ux.placeholder}
+          placeholder={placeholder ?? ux.placeholder}
           className="resize-none bg-transparent px-5 pt-5 pb-3 text-[15px] leading-7 outline-none placeholder:text-muted-foreground/70 min-h-18"
         />
         <div className="flex items-center justify-between gap-2 px-2 pb-2">
@@ -164,7 +174,7 @@ export function Composer({
       </div>
 
       {/* Provider-specific extras — appear below the box, never change its layout */}
-      {inlineToggles.length > 0 && (
+      {!unifiedUX && inlineToggles.length > 0 && (
         <div className="mt-2 flex items-center gap-2 px-1">
           {inlineToggles.map((t) => {
             const on = toggles[t.id] ?? false;
