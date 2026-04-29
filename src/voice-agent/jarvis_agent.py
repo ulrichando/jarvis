@@ -66,6 +66,12 @@ import edge_tts_plugin
 from livekit.agents.voice.room_io import RoomOptions
 from livekit.plugins import elevenlabs, groq, openai as lk_openai, silero
 
+# ── Maya-class speech intelligence ────────────────────────────────────
+from turn_router    import detect_emotion, classify_turn, AudioMeta
+from dispatching_llm import DispatchingLLM
+from dispatching_tts import DispatchingTTS
+from turn_telemetry import init_db, log_turn, DEFAULT_DB_PATH
+
 logger = logging.getLogger("jarvis-agent")
 
 # Desktop computer-use tools — Gemini vision describes the screen,
@@ -455,6 +461,86 @@ def _build_tts_chain() -> list:
           if isinstance(primary, elevenlabs.TTS) else []),
         edge_tts_plugin.EdgeTTS(voice=edge_voice),
     ]
+
+
+def _build_dispatching_llm() -> DispatchingLLM:
+    """Construct route → inner-LLM mapping using Groq variants only.
+
+    BANTER     → llama-3.1-8b-instant (fastest)
+    TASK       → llama-3.3-70b-versatile (current default, tools)
+    REASONING  → qwen/qwen3-32b (structured reasoning)
+    EMOTIONAL  → llama-4-scout (warmer temperament, temp 0.7)
+
+    Anthropic + DeepSeek not available with current livekit plugin set.
+    """
+    main = groq.LLM(model="llama-3.3-70b-versatile", temperature=0.6)
+    main.label = "groq:llama-3.3-70b-versatile"
+
+    try:
+        banter = groq.LLM(model="llama-3.1-8b-instant", temperature=0.6)
+        banter.label = "groq:llama-3.1-8b-instant"
+    except Exception as e:
+        logger.warning(f"[dispatch] BANTER LLM construction failed: {e}; using main")
+        banter = main
+
+    try:
+        reasoning = groq.LLM(model="qwen/qwen3-32b", temperature=0.6)
+        reasoning.label = "groq:qwen3-32b"
+    except Exception as e:
+        logger.warning(f"[dispatch] REASONING LLM construction failed: {e}; using main")
+        reasoning = main
+
+    try:
+        emotional = groq.LLM(model="meta-llama/llama-4-scout-17b-16e-instruct", temperature=0.7)
+        emotional.label = "groq:llama-4-scout"
+    except Exception as e:
+        logger.warning(f"[dispatch] EMOTIONAL LLM construction failed: {e}; using main")
+        emotional = main
+
+    return DispatchingLLM(
+        inners={
+            "BANTER":    banter,
+            "TASK":      main,
+            "REASONING": reasoning,
+            "EMOTIONAL": emotional,
+        },
+        fallback=main,
+    )
+
+
+def _build_dispatching_tts() -> DispatchingTTS:
+    """Per-route inner Groq Orpheus TTS instances with different voices.
+
+    Voices are env-overridable via JARVIS_VOICE_{BANTER,TASK,REASONING,EMOTIONAL}.
+    Defaults pick voices that exist in Groq Orpheus.
+    """
+    voices = {
+        "BANTER":    os.environ.get("JARVIS_VOICE_BANTER",    "austin"),
+        "TASK":      os.environ.get("JARVIS_VOICE_TASK",      "troy"),
+        "REASONING": os.environ.get("JARVIS_VOICE_REASONING", "troy"),
+        "EMOTIONAL": os.environ.get("JARVIS_VOICE_EMOTIONAL", "daniel"),
+    }
+    inners = {}
+    fallback = None
+    for route, vid in voices.items():
+        try:
+            t = _LoggingGroqTTS(model="canopylabs/orpheus-v1-english", voice=vid)
+            t.voice_id = vid
+            inners[route] = t
+            if route == "TASK":
+                fallback = t
+        except Exception as e:
+            logger.warning(f"[dispatch] tts {route}={vid} failed, will inherit TASK: {e}")
+
+    if fallback is None:
+        # TASK voice itself failed — last-ditch use troy
+        fallback = _LoggingGroqTTS(model="canopylabs/orpheus-v1-english", voice="troy")
+        fallback.voice_id = "troy"
+        inners["TASK"] = fallback
+    for route in ("BANTER", "REASONING", "EMOTIONAL"):
+        inners.setdefault(route, fallback)
+
+    return DispatchingTTS(inners=inners, fallback=fallback)
 
 
 # The voice-side STT/TTS labels — kept here so the dynamic system-
@@ -3105,6 +3191,12 @@ async def entrypoint(ctx: JobContext) -> None:
     await ctx.connect()
     logger.info(f"joined room: {ctx.room.name}")
 
+    # Initialize Maya-class telemetry SQLite. Failures are silent.
+    try:
+        init_db(DEFAULT_DB_PATH)
+    except Exception as e:
+        logger.warning(f"[telemetry] init_db failed: {e}")
+
     # Clear any stale thinking/tool flags from a prior crashed agent.
     # If we leave them, the new fresh agent reports "thinking" forever
     # until the next user turn fires user_input_transcribed.
@@ -3119,6 +3211,27 @@ async def entrypoint(ctx: JobContext) -> None:
     # Done HERE rather than at module load so a /voice-model POST +
     # systemctl restart picks up the new file on the very next job.
     active_speech_id, _active_speech_llm = make_speech_llm()
+
+    # Maya-class dispatcher build. JARVIS_DISPATCH_DISABLED=1 reverts.
+    if os.environ.get("JARVIS_DISPATCH_DISABLED", "0") != "1":
+        try:
+            _dispatch_llm = _build_dispatching_llm()
+            _dispatch_tts = _build_dispatching_tts()
+            llm_arg = _dispatch_llm.fallback   # default; per-turn callback overrides
+            tts_arg = _dispatch_tts.fallback
+            logger.info(f"[dispatch] LLM dispatcher: {list(_dispatch_llm.inners.keys())}")
+            logger.info(f"[dispatch] TTS dispatcher: {list(_dispatch_tts.inners.keys())}")
+        except Exception as e:
+            logger.error(f"[dispatch] dispatcher build failed: {e}; reverting to single-LLM")
+            _dispatch_llm = None
+            _dispatch_tts = None
+            llm_arg = _active_speech_llm
+            tts_arg = tts.FallbackAdapter(_build_tts_chain())
+    else:
+        _dispatch_llm = None
+        _dispatch_tts = None
+        llm_arg = _active_speech_llm
+        tts_arg = tts.FallbackAdapter(_build_tts_chain())
 
     session = AgentSession(
         vad=ctx.proc.userdata["vad"],
@@ -3136,7 +3249,9 @@ async def entrypoint(ctx: JobContext) -> None:
         # the agent unit, so the new LLM is built on next startup
         # (read_speech_model() fires below as we exit entrypoint and
         # re-enter on the fresh job dispatch).
-        llm=_active_speech_llm,
+        # When Maya dispatcher is active, llm_arg is the TASK fallback;
+        # per-turn callback swaps to route-specific inner.
+        llm=llm_arg,
         # ── TTS chain ───────────────────────────────────────────────
         # Provider order is controlled by ~/.jarvis/tts-provider
         # (written by the tray's "Voice" submenu via /tts-provider).
@@ -3144,7 +3259,8 @@ async def entrypoint(ctx: JobContext) -> None:
         # or "groq:troy". Falls back to ELEVENLABS_API_KEY env-var
         # logic when the file is absent so existing setups keep working.
         # Final fallback is always Edge-TTS (no auth, always available).
-        tts=tts.FallbackAdapter(_build_tts_chain()),
+        # When Maya dispatcher is active, tts_arg is the TASK voice.
+        tts=tts_arg,
         # ── Barge-in / multitask tuning ─────────────────────────────
         # Defaults make JARVIS feel "deaf while speaking": the agent
         # keeps talking through the user's next request, then queues
@@ -3322,6 +3438,85 @@ async def entrypoint(ctx: JobContext) -> None:
             # turn gets a fresh budget. Otherwise long sessions slowly
             # accumulate tool calls and trip the limit prematurely.
             _reset_tool_call_count()
+
+    @session.on("user_input_transcribed")
+    def _on_user_input_for_dispatch(ev) -> None:
+        """Maya-class router: pick LLM + TTS per turn based on emotion + classifier."""
+        if _dispatch_llm is None:
+            return
+        if not getattr(ev, "is_final", False):
+            return
+        transcript = getattr(ev, "transcript", "") or ""
+        if not transcript.strip():
+            return
+        audio = AudioMeta(
+            speech_rate_wpm=float(getattr(ev, "speech_rate_wpm", 0.0) or 0.0),
+            baseline_wpm=float(getattr(ev, "baseline_wpm", 0.0) or 0.0),
+        )
+        emotion = detect_emotion(transcript, audio)
+
+        async def _classify_and_swap():
+            async def _groq_call(prompt: str) -> str:
+                # Use Groq main for the tiny classifier pass via direct HTTP, not via lk LLM.
+                # Reason: lk's groq.LLM expects a chat_ctx + tool config, heavyweight for one-shot
+                # classification. We use the same GROQ_API_KEY and a raw POST.
+                import aiohttp, json
+                api_key = os.environ.get("GROQ_API_KEY", "")
+                if not api_key:
+                    return "TASK"
+                async with aiohttp.ClientSession() as s:
+                    async with s.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                        json={
+                            "model": os.environ.get("JARVIS_ROUTER_MODEL", "llama-3.1-8b-instant"),
+                            "messages": [{"role": "user", "content": prompt}],
+                            "temperature": 0.0,
+                            "max_tokens": 6,
+                        },
+                        timeout=aiohttp.ClientTimeout(total=2.0),
+                    ) as r:
+                        if r.status != 200:
+                            return "TASK"
+                        data = await r.json()
+                        return data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+
+            try:
+                history = [(m.role, getattr(m, "content", "") or "") for m in (session.chat_ctx.messages[-5:] if hasattr(session, "chat_ctx") and session.chat_ctx else [])]
+            except Exception:
+                history = []
+            history.append(("user", transcript))
+
+            timeout_ms = int(os.environ.get("JARVIS_ROUTER_TIMEOUT_MS", "500"))
+            route = await classify_turn(
+                history=history,
+                emotion=emotion,
+                groq_call=_groq_call,
+                timeout_ms=timeout_ms,
+            )
+
+            new_llm = _dispatch_llm.pick(route)
+            new_tts = _dispatch_tts.pick(route)
+            session._jarvis_emotion = emotion
+            session._jarvis_route   = route
+
+            # Try update_options first (cleaner API), then attribute swap
+            try:
+                if hasattr(session, "update_options"):
+                    try:
+                        session.update_options(llm=new_llm, tts=new_tts)
+                        return
+                    except TypeError:
+                        pass  # update_options doesn't accept llm/tts kwargs
+                # Fallback: direct attribute assignment
+                session.llm = new_llm
+                session.tts = new_tts
+            except Exception as e:
+                logger.warning(f"[dispatch] swap failed for route={route}: {e}; will use fallback inner")
+
+        task = asyncio.create_task(_classify_and_swap())
+        _bg_tasks.add(task)
+        task.add_done_callback(_bg_tasks.discard)
 
     # ── TTS-error surfacing ────────────────────────────────────────
     # Groq Orpheus has tight free-tier limits; on rate-limit the
