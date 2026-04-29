@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { ChevronDown, Palette, Play, Plus, Share2, Sparkles, X } from "lucide-react";
+import { ChevronDown, Download, Palette, Play, Plus, Share2, Sparkles, X } from "lucide-react";
 import type { TreeEntry } from "@/lib/workspace/client";
 import { Chat } from "@/components/chat/chat";
 import { Button } from "@/components/ui/button";
@@ -126,26 +126,40 @@ export function DesignView({
             <Sparkles className="size-3.5" />
             Brand
           </Button>
-          {selected && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="rounded-md text-muted-foreground"
-              render={
+          {selected && selected.type !== "dir" && (
+            <details className="relative">
+              <summary className="flex cursor-pointer list-none items-center gap-1 rounded-md px-2 py-1 text-[13px] text-muted-foreground hover:bg-muted">
+                <Play className="size-3.5" />
+                Present
+                <ChevronDown className="size-3" />
+              </summary>
+              <div className="absolute right-0 top-full z-20 mt-1 w-52 overflow-hidden rounded-md border border-border/60 bg-popover shadow-md">
                 <a
-                  href={`/api/workspace/${workspaceId}/file?path=${encodeURIComponent(
-                    selected.path,
-                  )}&raw=1`}
+                  href={`/api/workspace/${workspaceId}/file?path=${encodeURIComponent(selected.path)}&raw=1`}
                   target="_blank"
                   rel="noreferrer"
-                />
-              }
-              nativeButton={false}
-            >
-              <Play className="size-3.5" />
-              Present
-              <ChevronDown className="size-3" />
-            </Button>
+                  className="flex items-center gap-2 px-3 py-2 text-[13px] hover:bg-muted"
+                >
+                  <Play className="size-3.5" />
+                  Open in new tab
+                </a>
+                <a
+                  href={`/api/workspace/${workspaceId}/file?path=${encodeURIComponent(selected.path)}&raw=1`}
+                  download={selected.name}
+                  className="flex items-center gap-2 px-3 py-2 text-[13px] hover:bg-muted"
+                >
+                  <Download className="size-3.5" />
+                  Download HTML
+                </a>
+                <a
+                  href={`/api/design/export?workspaceId=${encodeURIComponent(workspaceId)}&path=${encodeURIComponent(selected.path)}&format=${format}`}
+                  className="flex items-center gap-2 px-3 py-2 text-[13px] hover:bg-muted"
+                >
+                  <Download className="size-3.5" />
+                  Download PDF
+                </a>
+              </div>
+            </details>
           )}
           <Button
             size="sm"
