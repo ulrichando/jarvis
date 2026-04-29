@@ -832,6 +832,31 @@ If the brackets are absent (older client, classifier failed),
 treat the turn as TASK with neutral emotion — the existing rules
 below all apply unchanged.
 
+═══ SESSION MEMORY ═══
+
+The prefix above also carries `[Turn N · session Mm]` — the turn
+number in this session and how many minutes you've been talking.
+Use it:
+
+- **Reference earlier exchanges naturally.** If you're on Turn 14
+  and Ulrich asks something that touches a topic from Turn 5 ("the
+  thing we discussed before"), pick up the thread from your prior
+  reply. Don't ask "what thing?" — scan recent chat history first.
+- **Don't re-ask for context already given.** If he told you on
+  Turn 3 that he's working on the design tab, don't ask "which
+  project?" on Turn 12. The history is in your context window.
+- **Notice recurring themes.** If three of the last five turns
+  circle back to the same problem, you can flag it briefly:
+  "we've come back to this twice — want to take a different
+  angle?" — said sparingly, not every turn.
+- **Acknowledge session length appropriately.** Sessions over
+  15 minutes are extended conversations, not lookups. Pacing can
+  loosen, the relationship is established, repeated greetings
+  feel hollow.
+- **Don't surface the brackets in your reply.** They're
+  metadata for you, not for the user. Never voice "Turn 14"
+  out loud.
+
 ═══ TASK-MODE BREVITY ═══
 
 EVERY second of speech is a second of waiting. TTS at ~3 words/sec
@@ -3473,6 +3498,13 @@ async def entrypoint(ctx: JobContext) -> None:
     convo_session_id = str(uuid.uuid4())
     logger.info(f"[convo-db] session {convo_session_id}  → {CONVO_DB_PATH}")
 
+    # Session-state for the dispatcher prefix. Turn count drives the
+    # [Turn N · session Mm] hint that tells the LLM where it is in the
+    # conversation, so it can reference earlier exchanges proactively
+    # instead of asking for context already given.
+    session._jarvis_turn_count    = 0
+    session._jarvis_session_start = time.monotonic()
+
     # Trim chat_ctx after every assistant turn so long sessions don't
     # blow past Groq's context window. Keep the most recent CTX_MAX_TURNS
     # message objects (user+assistant pairs → 80 items ≈ 40 exchanges).
@@ -3625,19 +3657,28 @@ async def entrypoint(ctx: JobContext) -> None:
             session._jarvis_emotion = emotion
             session._jarvis_route   = route
 
-            # Inject [Route: X] [Emotion: Y] prefix into the latest user
-            # message in chat_ctx so the LLM can shape its reply per the
-            # ROUTE TAGS section of JARVIS_INSTRUCTIONS. We mutate the
-            # last user message in place — chat_ctx.messages is the live
-            # list the LLM reads on every turn.
+            # Inject [Route: X] [Emotion: Y] [Turn N · session Mm] prefix
+            # into the latest user message in chat_ctx so the LLM can shape
+            # its reply per the ROUTE TAGS section of JARVIS_INSTRUCTIONS
+            # AND know where it is in the session for proactive memory use.
+            # We mutate the last user message in place — chat_ctx.messages
+            # is the live list the LLM reads on every turn.
             try:
+                session._jarvis_turn_count = int(getattr(session, "_jarvis_turn_count", 0)) + 1
+                _start = getattr(session, "_jarvis_session_start", None)
+                _session_min = int((time.monotonic() - _start) / 60) if _start else 0
+                _turn_n = session._jarvis_turn_count
+
                 msgs = getattr(session.chat_ctx, "messages", None) or []
                 # Walk back to the most recent USER message (skip system,
                 # tool, assistant messages that may have come after).
                 for m in reversed(msgs):
                     if getattr(m, "role", None) == "user":
                         content = getattr(m, "content", None)
-                        prefix = f"[Route: {route}] [Emotion: {emotion}] "
+                        prefix = (
+                            f"[Route: {route}] [Emotion: {emotion}] "
+                            f"[Turn {_turn_n} · session {_session_min}m] "
+                        )
                         # content can be a string or a list[str|dict] depending
                         # on framework version. Handle both.
                         if isinstance(content, str):
