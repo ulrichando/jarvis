@@ -3406,6 +3406,26 @@ async def entrypoint(ctx: JobContext) -> None:
                 )):
                     _set_silent(True)
                     logger.info(f"[silent-mode] auto-engaged from assistant text: {text[:80]!r}")
+                # Maya-class telemetry: log turn outcome to SQLite.
+                if _dispatch_llm is not None:
+                    try:
+                        import time as _t
+                        start = getattr(session, "_jarvis_turn_start_monotonic", None)
+                        ttfw_ms = int((_t.monotonic() - start) * 1000) if start else 0
+                        log_turn(
+                            user_text=getattr(session, "_jarvis_turn_user_text", "") or "",
+                            jarvis_text=text or "",
+                            emotion=getattr(session, "_jarvis_emotion", None),
+                            route=getattr(session, "_jarvis_route", None),
+                            llm_used=_dispatch_llm.last_llm_label,
+                            voice_used=_dispatch_tts.last_voice_id,
+                            ttfw_ms=ttfw_ms,
+                            total_audio_ms=0,  # not measured in v1
+                            user_followup_30s=False,  # backfilled at report-time
+                            route_fallback=False,
+                        )
+                    except Exception as te:
+                        logger.debug(f"[telemetry] write skipped: {te}")
                 # Trim chat_ctx if it has grown too long. Access via
                 # session.chat_ctx.messages — the live list the agent's
                 # LLM receives on every turn. Keep the most recent
@@ -3449,6 +3469,13 @@ async def entrypoint(ctx: JobContext) -> None:
         transcript = getattr(ev, "transcript", "") or ""
         if not transcript.strip():
             return
+        # Stash turn-start timestamp so _on_item can compute approximate TTFW.
+        try:
+            import time as _t
+            session._jarvis_turn_start_monotonic = _t.monotonic()
+            session._jarvis_turn_user_text = transcript
+        except Exception:
+            pass
         audio = AudioMeta(
             speech_rate_wpm=float(getattr(ev, "speech_rate_wpm", 0.0) or 0.0),
             baseline_wpm=float(getattr(ev, "baseline_wpm", 0.0) or 0.0),
