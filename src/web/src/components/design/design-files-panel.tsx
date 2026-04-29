@@ -7,15 +7,16 @@ import {
   FileCode,
   FileText,
   Folder,
-  MoreHorizontal,
+  Loader2,
   Palette,
   Pencil,
   RefreshCw,
+  Trash2,
   Upload,
 } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
-import { apiTree, type TreeEntry } from "@/lib/workspace/client";
+import { apiDeleteEntry, apiTree, type TreeEntry } from "@/lib/workspace/client";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { type Format, FORMAT_LABEL } from "@/lib/design/format";
@@ -53,9 +54,17 @@ export function DesignFilesPanel({
   format?: Format;
   onStarter?: (prompt: string) => void;
 }) {
+  const qc = useQueryClient();
   const { data: entries = [], isLoading, refetch } = useQuery({
     queryKey: ["design-tree", workspaceId, refetchKey ?? 0],
     queryFn: () => apiTree(workspaceId, ""),
+  });
+
+  const del = useMutation({
+    mutationFn: (path: string) => apiDeleteEntry(workspaceId, path),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["design-tree", workspaceId] });
+    },
   });
 
   const groups = useMemo(() => groupEntries(entries), [entries]);
@@ -115,6 +124,8 @@ export function DesignFilesPanel({
                   entries={items}
                   selectedPath={selectedPath}
                   onSelectFile={onSelectFile}
+                  onDelete={(path) => del.mutate(path)}
+                  deletingPath={del.isPending ? (del.variables ?? null) : null}
                 />
               );
             })}
@@ -133,11 +144,15 @@ function FileSection({
   entries,
   selectedPath,
   onSelectFile,
+  onDelete,
+  deletingPath,
 }: {
   label: string;
   entries: TreeEntry[];
   selectedPath: string | null;
   onSelectFile: (entry: TreeEntry) => void;
+  onDelete: (path: string) => void;
+  deletingPath: string | null;
 }) {
   return (
     <div>
@@ -151,6 +166,8 @@ function FileSection({
             entry={e}
             selected={selectedPath === e.path}
             onClick={() => onSelectFile(e)}
+            onDelete={() => onDelete(e.path)}
+            deleting={deletingPath === e.path}
           />
         ))}
       </div>
@@ -162,19 +179,41 @@ function FileRow({
   entry,
   selected,
   onClick,
+  onDelete,
+  deleting,
 }: {
   entry: TreeEntry;
   selected: boolean;
   onClick: () => void;
+  onDelete: () => void;
+  deleting: boolean;
 }) {
   // We don't have per-file mtime in the tree response yet; placeholder.
   const updated = "—";
+
+  const handleDelete = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (deleting) return;
+    if (typeof window !== "undefined") {
+      const ok = window.confirm(`Delete ${entry.name}? This can't be undone.`);
+      if (!ok) return;
+    }
+    onDelete();
+  };
+
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onClick();
+        }
+      }}
       className={cn(
-        "group flex w-full items-center gap-3 rounded-md px-3 py-2 text-left transition-colors",
+        "group flex w-full cursor-pointer items-center gap-3 rounded-md px-3 py-2 text-left transition-colors",
         selected
           ? "bg-primary/10 text-foreground"
           : "hover:bg-muted/40 text-foreground/90",
@@ -197,16 +236,26 @@ function FileRow({
       <div className="hidden shrink-0 text-[11px] text-muted-foreground/70 md:block">
         {updated}
       </div>
-      <span
-        role="button"
-        tabIndex={-1}
-        aria-label="More"
-        className="ml-1 hidden text-muted-foreground/70 transition-colors hover:text-foreground group-hover:block"
-        onClick={(e) => e.stopPropagation()}
+      <button
+        type="button"
+        aria-label={`Delete ${entry.name}`}
+        title="Delete"
+        onClick={handleDelete}
+        disabled={deleting}
+        className={cn(
+          "ml-1 rounded-md p-1 text-muted-foreground/60 transition-colors",
+          "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
+          "hover:bg-destructive/10 hover:text-destructive",
+          deleting && "opacity-100",
+        )}
       >
-        <MoreHorizontal className="size-3.5" />
-      </span>
-    </button>
+        {deleting ? (
+          <Loader2 className="size-3.5 animate-spin" />
+        ) : (
+          <Trash2 className="size-3.5" />
+        )}
+      </button>
+    </div>
   );
 }
 
