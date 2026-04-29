@@ -559,10 +559,17 @@ def _build_dispatching_tts() -> DispatchingTTS:
             except Exception as e:
                 logger.warning(f"[dispatch] EL tts for {route} failed ({e}); falling back to Orpheus")
 
-        # Orpheus path
+        # Orpheus path. Orpheus capability is streaming=False (whole-reply
+        # synthesis), so wrap in StreamAdapter to make the framework
+        # synthesize sentence-by-sentence — first sentence's audio plays
+        # while later sentences are still generating. text_pacing=True
+        # paces playback to match the LLM's text rate, hiding any TTS
+        # synthesis-side jitter. Cuts TTFW from full-synth latency to
+        # first-sentence latency.
         vid = orph[route]
         try:
-            t = _LoggingGroqTTS(model="canopylabs/orpheus-v1-english", voice=vid)
+            raw = _LoggingGroqTTS(model="canopylabs/orpheus-v1-english", voice=vid)
+            t = tts.StreamAdapter(tts=raw, text_pacing=True)
             t.voice_id = vid
             inners[route] = t
         except Exception as e:
@@ -570,7 +577,10 @@ def _build_dispatching_tts() -> DispatchingTTS:
 
     fallback = inners.get("TASK")
     if fallback is None:
-        fallback = _LoggingGroqTTS(model="canopylabs/orpheus-v1-english", voice="troy")
+        # Last-ditch path: also wrap in StreamAdapter so even the panic
+        # fallback gets sentence-streaming.
+        raw = _LoggingGroqTTS(model="canopylabs/orpheus-v1-english", voice="troy")
+        fallback = tts.StreamAdapter(tts=raw, text_pacing=True)
         fallback.voice_id = "troy"
         inners["TASK"] = fallback
     for route in ("BANTER", "REASONING", "EMOTIONAL"):
