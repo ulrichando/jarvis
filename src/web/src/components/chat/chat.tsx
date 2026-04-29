@@ -76,6 +76,10 @@ type ChatProps = {
   onStreamingFile?: (filePath: string, partial: string) => void;
   // Fires when a file action finishes streaming. Used to clear streaming state.
   onFileComplete?: (filePath: string) => void;
+  // Programmatic prefill of the composer input. Bumping `id` to a new value
+  // sets the input to `text` (does NOT auto-send). Used by Design starter
+  // cards to prefill an example prompt the user can review and submit.
+  prefillPrompt?: { id: string; text: string };
 };
 
 type ChatStatus = "ready" | "submitted" | "streaming" | "error";
@@ -131,6 +135,7 @@ export function Chat({
   format,
   onStreamingFile,
   onFileComplete,
+  prefillPrompt,
 }: ChatProps) {
   const qc = useQueryClient();
   const [input, setInput] = useState("");
@@ -464,6 +469,16 @@ export function Chat({
     // this to run once when the seed arrives.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seed]);
+
+  // Programmatic composer prefill (does NOT auto-send) — bump id to write
+  // a new value to the input. Used by Design starter cards.
+  const prefillIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!prefillPrompt) return;
+    if (prefillIdRef.current === prefillPrompt.id) return;
+    prefillIdRef.current = prefillPrompt.id;
+    setInput(prefillPrompt.text);
+  }, [prefillPrompt]);
 
   const isEmpty = messages.length === 0;
 
