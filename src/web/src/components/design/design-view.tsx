@@ -33,6 +33,7 @@ export function DesignView({
   const [format, setFormat] = useState<Format>(DEFAULT_FORMAT);
   const [showBrand, setShowBrand] = useState(false);
   const [streaming, setStreaming] = useState<{ filePath: string; content: string } | null>(null);
+  const [prefillPrompt, setPrefillPrompt] = useState<{ id: string; text: string } | undefined>(undefined);
   const { data: settings } = useSettings();
 
   const openFile = (entry: TreeEntry) => {
@@ -203,6 +204,7 @@ export function DesignView({
                   cur && cur.filePath === filePath ? null : cur,
                 );
               }}
+              prefillPrompt={prefillPrompt}
             />
           </div>
         </aside>
@@ -225,6 +227,10 @@ export function DesignView({
                 workspaceId={workspaceId}
                 selectedPath={selected?.path ?? null}
                 onSelectFile={openFile}
+                format={format}
+                onStarter={(prompt) =>
+                  setPrefillPrompt({ id: `${Date.now()}`, text: prompt })
+                }
               />
             </div>
             <div className="flex w-[42%] min-w-80 shrink-0 flex-col border-l border-border/60">

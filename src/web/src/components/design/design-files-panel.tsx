@@ -18,6 +18,8 @@ import { useMemo } from "react";
 import { apiTree, type TreeEntry } from "@/lib/workspace/client";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { type Format, FORMAT_LABEL } from "@/lib/design/format";
+import { STARTERS } from "@/lib/design/starters";
 import {
   GROUP_LABEL,
   classify,
@@ -40,12 +42,16 @@ export function DesignFilesPanel({
   onSelectFile,
   onUpClick,
   refetchKey,
+  format,
+  onStarter,
 }: {
   workspaceId: string;
   selectedPath: string | null;
   onSelectFile: (entry: TreeEntry) => void;
   onUpClick?: () => void;
   refetchKey?: number;
+  format?: Format;
+  onStarter?: (prompt: string) => void;
 }) {
   const { data: entries = [], isLoading, refetch } = useQuery({
     queryKey: ["design-tree", workspaceId, refetchKey ?? 0],
@@ -96,7 +102,7 @@ export function DesignFilesPanel({
             loading…
           </div>
         ) : total === 0 ? (
-          <EmptyDesign />
+          <EmptyDesign format={format} onStarter={onStarter} />
         ) : (
           <div className="space-y-5 px-3 py-4">
             {SECTION_ORDER.map((key) => {
@@ -237,16 +243,51 @@ function DropZone() {
   );
 }
 
-function EmptyDesign() {
+function EmptyDesign({
+  format,
+  onStarter,
+}: {
+  format?: Format;
+  onStarter?: (prompt: string) => void;
+}) {
+  const starters = format ? STARTERS[format] : null;
+  const label = format ? FORMAT_LABEL[format].toLowerCase() : "design";
+
   return (
-    <div className="flex flex-col items-center justify-center px-8 py-16 text-center text-muted-foreground">
-      <div className="flex size-12 items-center justify-center rounded-xl border border-dashed border-border/60">
-        <FileText className="size-5 text-muted-foreground/70" />
+    <div className="flex flex-col px-6 py-10">
+      <div className="flex flex-col items-start gap-2">
+        <div className="flex size-10 items-center justify-center rounded-xl border border-dashed border-border/60">
+          <FileText className="size-4 text-muted-foreground/70" />
+        </div>
+        <p className="max-w-md text-[13px] leading-5 text-muted-foreground">
+          No {label} files yet. Pick a starter below to prefill the chat — review,
+          edit if you want, then send. Or describe what you want directly in the
+          composer.
+        </p>
       </div>
-      <p className="mt-4 max-w-xs text-[13px] leading-5">
-        No design files yet. Ask Jarvis in the chat to scaffold your first
-        sketch, or drop files below.
-      </p>
+
+      {starters && onStarter && (
+        <div className="mt-5 grid gap-2">
+          {starters.map((s) => (
+            <button
+              key={s.title}
+              type="button"
+              onClick={() => onStarter(s.prompt)}
+              className={cn(
+                "group flex flex-col items-start gap-1 rounded-lg border border-border/60 bg-background/60 px-3 py-2.5 text-left",
+                "transition-colors hover:border-foreground/30 hover:bg-background",
+              )}
+            >
+              <span className="text-[13px] font-semibold text-foreground">
+                {s.title}
+              </span>
+              <span className="line-clamp-2 text-[12px] leading-4 text-muted-foreground">
+                {s.prompt}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
