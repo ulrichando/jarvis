@@ -2745,13 +2745,27 @@ _PURE_HEDGE_REPLY_RE = re.compile(
 
 
 async def drop_pure_hedge(text):
-    """Suppress reply if it's nothing but a clarifying hedge."""
+    """Suppress reply if it's nothing but a clarifying hedge.
+
+    Special case: bare "..." gets SWAPPED to "Sir?" rather than dropped,
+    so the user still hears an audible acknowledgment when they ping
+    JARVIS's name with nothing specific to follow up. Verified failure
+    2026-04-29: user said "Jarvis" repeatedly, LLM emitted "..." each
+    time, filter dropped → silence → user thought JARVIS was stuck.
+    """
     buffer = ""
     async for chunk in text:
         buffer += chunk
     if not buffer:
         return
-    if _PURE_HEDGE_REPLY_RE.match(buffer.strip()):
+    stripped = buffer.strip()
+    # Bare ellipsis = LLM has nothing concrete but the user is engaging.
+    # Voice a short attention-ack so they know JARVIS heard them.
+    if re.fullmatch(r"\.{2,}", stripped):
+        logger.info("[hedge-drop] swapped bare '...' → 'Sir?'")
+        yield "Sir?"
+        return
+    if _PURE_HEDGE_REPLY_RE.match(stripped):
         logger.info(f"[hedge-drop] suppressing pure-hedge reply: {buffer[:80]!r}")
         return  # no yield → TTS receives nothing → silence
     yield buffer
