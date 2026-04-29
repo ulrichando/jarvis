@@ -58,46 +58,70 @@ function formatBlock(format: Format): string {
   Type: presentation deck.
   File path: "${file}"
   Canvas: 1920×1080, fixed aspect.
-  Anatomy: cover slide, agenda (optional), 5–10 content slides, ending slide. Each slide is a \`<section class="slide">\` taking the full canvas.
-  Navigation: arrow keys advance/retreat (left/right + up/down + space). Show a small "1 / N" indicator bottom-right.
-  Per-slide layout: vary aggressively — full-bleed image slide, two-column slide, big-number slide, quote slide. Never 8 identical bullet slides in a row.
-  Forbidden: 8-tile feature grid, "thank you" slide as the only ending, bullet lists with >5 items.
+  Anatomy: cover slide → 5–8 content slides → ending slide. Each slide is a \`<section class="slide">\` taking the full canvas.
+  Navigation: arrow keys advance/retreat (Left/Right/Up/Down/Space). Show a small "n / N" indicator bottom-right.
+
+  LAYOUT VARIETY (mandatory — pick 4+ distinct types, never two adjacent slides with the same layout):
+    A. Cover — large display headline, optional subhead, brand mark or accent block. NOT centered.
+    B. Big-number — one giant statistic (300–600px), small caption above and below.
+    C. Two-column split — text left, visual or list right. Asymmetric ratio (e.g. 2:3 or 3:5).
+    D. Full-bleed image — image fills the canvas, headline overlay top-left or bottom-right with contrast scrim.
+    E. Quote — pull-quote treatment, attribution small below, large negative space.
+    F. Diagram / sequence — 3–4 stage flow with arrows or numbered chips.
+    G. Comparison — two-column "before / after" or "us / them" with clear visual contrast.
+
+  Forbidden: 8-tile feature grid; bullet lists >5 items; "thank you" as the only ending slide; identical layouts on consecutive slides.
 </format>`,
     prototype: `
 <format>
   Type: interactive product prototype.
   File path: "${file}"
   Canvas: device frame at the right aspect ratio. Default iPhone (390×844). For Android use 412×915.
-  Anatomy: minimum 3 screens. Each screen is a \`<section data-screen="<name>">\`. Buttons with \`data-route="<screen-name>"\` switch screens via a small JS controller.
-  Visual: status bar, content, optional bottom nav. Real iconography (Lucide via CDN or inline SVG). Real product copy.
-  Forbidden: blurry placeholder rectangles, "Lorem ipsum" copy, placeholder.com images.
+  Anatomy: minimum 3 screens with DISTINCT purposes (e.g. home / list / detail / settings — not three home variants). Each screen is a \`<section data-screen="<name>">\`. Buttons with \`data-route="<screen-name>"\` switch screens via a small JS controller.
+  Visual: realistic status bar (time + signal + battery), content, optional bottom tab nav. Real iconography (inline SVG paths or lucide.dev CDN). Real product copy from the brief.
+  Tap targets: minimum 44×44px. No hover-only affordances.
+  Forbidden: blurry placeholder rectangles; "Lorem ipsum" copy; three near-identical screens; placeholder.com or via.placeholder URLs.
 </format>`,
     landing: `
 <format>
   Type: landing page mock.
   File path: "${file}"
   Canvas: fluid width, scrollable.
-  Anatomy: hero (NOT centered, NOT "Welcome to X"), 2–4 content sections each with a distinct layout (split, full-bleed, card grid, testimonial, pricing), footer.
-  Imagery: use \`images.unsplash.com\` URLs you know exist. Skip imagery rather than guessing.
-  Forbidden: centered hero with one CTA, "Trusted by" logo bar with fictional company names, lavender→teal gradient hero.
+  Anatomy: hero → 3–4 content sections → footer. Each section MUST use a DIFFERENT layout (don't repeat card grid four times).
+  Section layout catalog (pick 3–4 distinct):
+    1. Hero — content-led, NOT centered "Welcome to X". Asymmetric: text + visual, or text + product mock.
+    2. Split — alternating left/right text+image rows.
+    3. Stat band — 3–4 big numbers in a horizontal band, contrasting background.
+    4. Feature list — typographic, NOT 8 emoji-icon cards.
+    5. Quote / testimonial — single strong quote, named attribution.
+    6. CTA band — single strong call to action, generous whitespace.
+  Forbidden: centered "Welcome to [Product]" hero; "Trusted by" logo bar with fictional companies; identical card grid in every section; lavender→teal gradient hero; "Ready to get started?" CTA.
 </format>`,
     onepager: `
 <format>
   Type: A4 print-grade one-pager.
   File path: "${file}"
-  Canvas: A4 portrait (210mm × 297mm). \`<body>\` is exactly one page, no scroll.
-  Anatomy: masthead with title and date, 2–3 content blocks with distinct hierarchy, footer with credit/source line.
-  Typography: deliberate scale (e.g., 96pt display headline, 14pt body, 10pt caption). Print-grade leading.
-  Forbidden: scroll, web nav menus, anything that wouldn't print well.
+  Canvas: A4 portrait (210mm × 297mm). \`<body>\` is exactly one page, no scroll. Use \`@page { size: A4; margin: 0 }\` and \`html, body { width: 210mm; height: 297mm }\`.
+  Anatomy: masthead (title + date + optional issue/edition number) → 2–3 content blocks separated by horizontal bands of contrasting tone → footer with source/credit line.
+  Typography: print-grade scale — display 72–96pt, h2 24–32pt, body 11–13pt, caption 9–10pt. Leading 1.3–1.4 for body.
+  Color: at most 2 backgrounds; 1 accent. Use the bands of tone to separate sections, not boxes/cards.
+  Forbidden: scroll; web nav menus; sticky headers; anything that wouldn't print well; decorative shadows.
 </format>`,
     infographic: `
 <format>
   Type: vertical infographic / poster.
   File path: "${file}"
   Canvas: 1080×1920 (vertical), fixed.
-  Anatomy: title, 3–6 data sections each with a different visualization (bar, donut, sparkline, pictogram), source line at bottom.
-  Data: invent specific, plausible numbers if not given. Cite a source line ("Source: …") even if invented; mark invented data with "(illustrative)" near the source.
-  Forbidden: decorative emoji, flat icon clipart, generic clip-art treatments.
+  Anatomy: title block → 3–6 data sections → source line at bottom. Each data section MUST use a DIFFERENT visualization type (don't put 4 bar charts in a row).
+  Visualization catalog (pick 3+ distinct):
+    – Bar / column (horizontal or vertical)
+    – Donut / pie (use sparingly, only for parts-of-whole)
+    – Pictogram (icon repetition for ratios, e.g. "4 out of 10")
+    – Sparkline (trend over time)
+    – Stat callout (big number + label + small context)
+    – Comparison pair (us vs them, before vs after)
+  Data: if not given, invent SPECIFIC, plausible numbers (named cities, real product names, named years). Cite "Source: …" at the bottom — even if invented, mark "(illustrative)" near the source.
+  Forbidden: decorative emoji; clip-art icons; generic stock illustrations; the same chart type repeated.
 </format>`,
   };
   return map[format];
@@ -106,15 +130,17 @@ function formatBlock(format: Format): string {
 function pairingBlock(p: FontPairing): string {
   return `
 <typography>
-  Use these fonts (load via Google Fonts):
+  Use these EXACT fonts — do not substitute:
     Display: "${p.display.family}"
     Body:    "${p.body.family}"
+  Both fonts MUST appear in the file. The body font is NOT optional — every \`p\`, \`li\`, \`td\`, \`small\` must use it.
   Embed in <head>:
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="${googleFontsUrl(p)}" rel="stylesheet">
   Default scale: display 96/72/48px (h1/h2/h3), body 16px, caption 13px. Vary aggressively, not by 1px.
   Inter, Roboto, Open Sans, Lato, Montserrat are FORBIDDEN as the display font.
+  Inter is allowed as a body font ONLY when paired with a strong display.
 </typography>`;
 }
 
@@ -152,20 +178,30 @@ function sharedBaseBlock(): string {
   Default easing for any motion: cubic-bezier(0.22, 1, 0.36, 1). Never 'linear' unless intentional.
   Self-contained: <style> and <script> inline. External assets only via fonts.googleapis.com, cdn.jsdelivr.net, esm.sh, images.unsplash.com.
   No package.json, no npm, no Vite, no dev server.
+
+  IMAGE POLICY (read carefully):
+  - Prefer SVG illustrations or geometric shapes you compose in HTML/CSS.
+  - If you use an Unsplash image: the URL MUST be \`https://images.unsplash.com/photo-<id>?w=1920&q=80\` AND you must be confident the photo ID exists. If you are uncertain, do NOT use the image — replace with a colored block, gradient, or composed SVG instead.
+  - NEVER use placeholder.com, via.placeholder.com, lorem.space, or any \`src="image.jpg"\` / \`src="placeholder.png"\` style stub.
+  - For thumbnails / avatars: use a colored circle with initials, not a fake image URL.
 </base_rules>`;
 }
 
 function antiSlopBlock(): string {
   return `
 <anti_slop>
-  Avoid these defaults — they're how AI design gets caught:
-  - Centered "Welcome to [Product]" hero with one CTA. Replace with content-led layouts.
-  - 8 identical feature cards in a 4×2 grid with emoji icons.
-  - Generic stock photos of laptops on white desks.
-  - "Trusted by" logo bar with fictional company names.
-  - Lavender/teal gradient backgrounds.
-  - Lorem ipsum. "Company X". "Lorem Solutions". Use specific, plausible names and numbers.
-  - More than one orchestrated entrance animation per file. Restraint > sparkle.
+  These are the most common AI-design tells. Avoid every one:
+  - Centered "Welcome to [Product]" hero with a single CTA button. Replace with content-led, asymmetric layouts.
+  - 4-up or 8-up emoji-icon feature cards. Use typographic feature lists or one strong visual instead.
+  - "Ready to get started?" / "Let's get started" / "Start your journey" CTA copy. Write a specific verb ("Schedule a demo", "Try it on a hearing", "Open the dashboard").
+  - 3-card pricing tables when pricing was not asked for. Don't invent pricing.
+  - "Trusted by" logo bar with fictional company names. Skip unless real logos provided.
+  - Generic stock photos of laptops on white desks, or "team smiling at whiteboard". Use SVG, color blocks, or skip.
+  - Lavender→teal, purple→blue, or pastel rainbow gradient hero. Pick a palette that fits the brief and stick to it.
+  - Lorem ipsum. "Company X". "Lorem Solutions". "Acme". Use plausible specifics — invent named cities, named years, real-looking product names.
+  - More than ONE orchestrated entrance animation per file. Restraint beats sparkle.
+  - Floating action buttons in places that aren't apps.
+  - Drop-shadows on every card. Use one elevation pattern, not five.
 </anti_slop>`;
 }
 
