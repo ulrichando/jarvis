@@ -38,6 +38,12 @@ export type JarvisModelDefinition = {
   tiers: readonly JarvisModelTier[]
   capabilities: readonly JarvisModelCapability[]
   visibleInPicker?: boolean
+  // Models to try (in order) if this one's upstream is unreachable or
+  // returns 5xx/429 after retries. Entries are jarvis model ids.
+  // Capabilities may differ across the chain (e.g. thinking → non-thinking)
+  // — that's accepted as a graceful-degradation tradeoff vs. surfacing a
+  // hard error to the CLI.
+  fallback?: readonly string[]
 }
 
 const JARVIS_PROVIDER_DEFINITIONS: Record<
@@ -49,7 +55,11 @@ const JARVIS_PROVIDER_DEFINITIONS: Record<
     apiKeyEnvVar: 'DEEPSEEK_API_KEY',
     defaultModel: 'deepseek-v4-pro',
     supportsToolChoice: true,
-    maxOutputTokens: 8000,
+    // 32K to give thinking-mode models headroom for long reasoning_content
+    // plus visible output. v4-pro routinely burns 8-16K on chain-of-thought
+    // before emitting tool_call args; lower caps cause args to truncate
+    // mid-stream and tools land with empty input.
+    maxOutputTokens: 32768,
   },
   groq: {
     baseUrl: 'https://api.groq.com/openai/v1',
@@ -110,6 +120,7 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     upstreamModel: 'deepseek-v4-flash',
     tiers: ['fast', 'balanced'],
     capabilities: [],
+    fallback: ['qwen/qwen3-32b'],
     visibleInPicker: true,
   },
   {
@@ -121,6 +132,7 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     tiers: ['reasoning', 'long_context'],
     capabilities: ['effort', 'thinking'],
     visibleInPicker: true,
+    fallback: ['deepseek-v4-flash', 'qwen/qwen3-32b'],
   },
   {
     id: 'qwen/qwen3-32b',
@@ -131,6 +143,7 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     tiers: ['default', 'balanced', 'orchestration'],
     capabilities: [],
     visibleInPicker: true,
+    fallback: ['deepseek-v4-flash'],
   },
   {
     id: 'llama-3.3-70b-versatile',

@@ -1,47 +1,17 @@
 import type { Provider } from './providers.js'
-import { Buffer } from 'node:buffer'
+import { getReasoning, setReasoning, REASONING_PLACEHOLDER } from './reasoning-cache.js'
 
-// ── Reasoning-content text-marker round-trip ────────────────────────────────
+// ── Reasoning-content round-trip ────────────────────────────────────────────
 //
 // DeepSeek's thinking-mode API requires the prior assistant turn's
-// reasoning_content to be echoed back on follow-up turns. We round-trip it
-// through Anthropic-format messages, but the Anthropic SDK strips `thinking`
-// content blocks from outgoing requests (they are valid only in API
-// responses). So we embed reasoning_content as an invisible base64 prefix in
-// the first text block — text survives SDK serialization, and convertMessages
-// strips the marker before forwarding to DeepSeek.
+// reasoning_content to be echoed back on follow-up turns. Anthropic's
+// protocol has no field for this. The proxy caches reasoning_content
+// server-side keyed by tool_use_id (which round-trips faithfully through
+// Claude Code) and re-attaches it to the outgoing OpenAI request.
 //
-// Three zero-width spaces (​) as delimiters — invisible in chat UIs,
-// statistically impossible in natural text.
-
-const REASONING_PREFIX = '​​​'
-const REASONING_SUFFIX = '​​​'
-
-export function encodeReasoningInText(reasoning: string, text: string): string {
-  const encoded = Buffer.from(reasoning, 'utf-8').toString('base64')
-  return `${REASONING_PREFIX}${encoded}${REASONING_SUFFIX}${text}`
-}
-
-export function makeReasoningOnlyMarker(reasoning: string): string {
-  const encoded = Buffer.from(reasoning, 'utf-8').toString('base64')
-  return `${REASONING_PREFIX}${encoded}${REASONING_SUFFIX}`
-}
-
-function extractReasoningFromText(text: string): { reasoning: string | null; cleanText: string } {
-  const prefixIdx = text.indexOf(REASONING_PREFIX)
-  if (prefixIdx !== 0) return { reasoning: null, cleanText: text }
-  const contentStart = REASONING_PREFIX.length
-  const suffixIdx = text.indexOf(REASONING_SUFFIX, contentStart)
-  if (suffixIdx === -1) return { reasoning: null, cleanText: text }
-  const encoded = text.slice(contentStart, suffixIdx)
-  try {
-    const reasoning = Buffer.from(encoded, 'base64').toString('utf-8')
-    const cleanText = text.slice(suffixIdx + REASONING_SUFFIX.length)
-    return { reasoning, cleanText }
-  } catch {
-    return { reasoning: null, cleanText: text }
-  }
-}
+// See ./reasoning-cache.ts for the storage layer. Cache writes happen in
+// stream.ts (streaming path) and convertResponse below (non-streaming);
+// cache reads happen in convertMessages below.
 
 // ── OpenAI message types ───────────────────────────────────────────────────
 
@@ -108,14 +78,19 @@ function contentToText(content: unknown): string {
 
 // ── Convert Anthropic messages → OpenAI messages ──────────────────────────
 
-export function convertMessages(anthropicMessages: any[]): OpenAIMessage[] {
+export function convertMessages(
+  anthropicMessages: any[],
+  requiresReasoning = false,
+): OpenAIMessage[] {
   const out: OpenAIMessage[] = []
 
   for (const msg of anthropicMessages) {
     if (msg.role === 'assistant') {
       const content = msg.content
       if (typeof content === 'string') {
-        out.push({ role: 'assistant', content })
+        const m: any = { role: 'assistant', content }
+        if (requiresReasoning) m.reasoning_content = REASONING_PLACEHOLDER
+        out.push(m)
         continue
       }
       if (!Array.isArray(content)) continue
@@ -124,19 +99,24 @@ export function convertMessages(anthropicMessages: any[]): OpenAIMessage[] {
       const toolUseBlocks = content.filter((b: any) => b.type === 'tool_use')
       const thinkingBlocks = content.filter((b: any) => b.type === 'thinking')
       // Reconstitute reasoning_content. Two sources, in priority order:
-      // 1. Embedded text marker (survives SDK stripping of thinking blocks).
-      // 2. Thinking blocks (legacy path, kept for non-SDK callers).
+      // 1. Server-side cache keyed by tool_use_id.
+      // 2. Thinking blocks (kept for clients that pass them through).
+      // Falls back to a placeholder when requiresReasoning is true so
+      // thinking-mode upstreams don't 400 on cache miss.
       let reasoning = ''
-      let text = textBlocks.map((b: any) => b.text ?? '').join('') || null
-      if (text) {
-        const extracted = extractReasoningFromText(text)
-        if (extracted.reasoning) {
-          reasoning = extracted.reasoning
-          text = extracted.cleanText || null
+      const text = textBlocks.map((b: any) => b.text ?? '').join('') || null
+      for (const tu of toolUseBlocks) {
+        const cached = getReasoning(tu.id)
+        if (cached) {
+          reasoning = cached
+          break
         }
       }
       if (!reasoning) {
         reasoning = thinkingBlocks.map((b: any) => b.thinking ?? '').join('')
+      }
+      if (!reasoning && requiresReasoning) {
+        reasoning = REASONING_PLACEHOLDER
       }
 
       const assistantMsg: any = { role: 'assistant', content: text ?? '' }
@@ -318,7 +298,7 @@ export function convertRequest(req: any, provider: Provider): any {
     messages.push({ role: 'system', content: systemText })
   }
 
-  const converted = convertMessages(req.messages ?? [])
+  const converted = convertMessages(req.messages ?? [], provider.requiresReasoning)
   messages.push(...converted)
 
   const repairedMessages = repairMessageSequence(messages)
@@ -327,7 +307,15 @@ export function convertRequest(req: any, provider: Provider): any {
     ? convertTools(req.tools, provider)
     : undefined
 
-  const maxTokens = Math.min(req.max_tokens ?? provider.maxOutputTokens, provider.maxOutputTokens)
+  // For thinking-mode upstreams the client's max_tokens budget covers BOTH
+  // reasoning_content and visible output, but Claude Code sets it assuming
+  // visible-only. A long chain-of-thought then exhausts the cap and tool
+  // arguments stream truncates mid-emission, landing with empty input.
+  // Always grant the provider max for thinking models so reasoning has
+  // headroom and tool args fit.
+  const maxTokens = provider.requiresReasoning
+    ? provider.maxOutputTokens
+    : Math.min(req.max_tokens ?? provider.maxOutputTokens, provider.maxOutputTokens)
 
   const out: any = {
     model: provider.model,
@@ -358,15 +346,8 @@ export function convertResponse(openaiResp: any, model: string): any {
   const msg = choice.message
   const content: any[] = []
 
-  if (msg.content || msg.reasoning_content) {
-    // Embed reasoning_content as an invisible prefix in the first text
-    // block. Text survives SDK serialization, so convertMessages can
-    // reliably extract it on the next turn.
-    const textBody = msg.content || ''
-    const text = msg.reasoning_content
-      ? encodeReasoningInText(msg.reasoning_content, textBody)
-      : textBody
-    content.push({ type: 'text', text })
+  if (msg.content) {
+    content.push({ type: 'text', text: msg.content })
   }
 
   if (msg.tool_calls) {
@@ -383,6 +364,9 @@ export function convertResponse(openaiResp: any, model: string): any {
         name: tc.function.name,
         input,
       })
+      if (msg.reasoning_content) {
+        setReasoning(tc.id, msg.reasoning_content)
+      }
     }
   }
 
