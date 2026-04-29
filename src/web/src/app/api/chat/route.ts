@@ -1,4 +1,5 @@
 import { convertToModelMessages, streamText, stepCountIs, type UIMessage } from "ai";
+import { eq } from "drizzle-orm";
 import { getModel, MissingApiKeyError } from "@/lib/ai/models";
 import { loadSettings } from "@/lib/settings/store";
 import {
@@ -7,9 +8,32 @@ import {
   saveAssistantMessage,
   saveUserMessage,
 } from "@/lib/chat/persist";
+import { db, schema } from "@/lib/db";
 import { getWorkspace } from "@/lib/workspace/storage";
-import { buildWorkbenchPrompt } from "@/lib/actions/jarvis-prompt";
+import { buildWorkbenchPrompt, buildDesignPrompt } from "@/lib/actions/jarvis-prompt";
+import { getBrand } from "@/lib/design/brand";
+import type { Format } from "@/lib/design/format";
 import { webSearchTool } from "@/lib/tools/web-search";
+
+function buildProjectPrompt(p: {
+  name: string;
+  description: string;
+  instructions: string;
+}): string {
+  const lines: string[] = [];
+  lines.push(
+    `\n\n# Project context\n\nThis chat lives inside the project "${p.name}".`,
+  );
+  if (p.description.trim()) {
+    lines.push(`\nProject goal: ${p.description.trim()}`);
+  }
+  if (p.instructions.trim()) {
+    lines.push(
+      `\nProject instructions (always honor these for this project's chats):\n${p.instructions.trim()}`,
+    );
+  }
+  return lines.join("\n");
+}
 
 export const runtime = "nodejs";
 export const maxDuration = 600;
@@ -28,16 +52,20 @@ KaTeX ($...$ or $$...$$) for mathematical expressions ONLY. Never use math notat
 Skip greetings and filler. Never start with "Certainly", "Of course", "Great question", or any opener. Just answer.`;
 }
 
+type ChatMode = "design";
+
 type Body = {
   id?: string;
   messages: UIMessage[];
   model?: string;
   system?: string;
   workspaceId?: string;
+  mode?: ChatMode;
+  format?: Format;
 };
 
 export async function POST(req: Request) {
-  const { id, messages, model, system, workspaceId }: Body = await req.json();
+  const { id, messages, model, system, workspaceId, mode, format }: Body = await req.json();
   const settings = await loadSettings();
   const modelId = model ?? settings.defaults.model;
 
@@ -84,11 +112,36 @@ export async function POST(req: Request) {
   if (workspaceId) {
     const ws = await getWorkspace(workspaceId);
     if (ws) {
-      finalSystem += buildWorkbenchPrompt({
-        workspaceName: ws.name,
-        cwd: "/workspace",
-      });
+      if (mode === "design") {
+        const brand = await getBrand(workspaceId);
+        finalSystem += buildDesignPrompt({
+          workspaceName: ws.name,
+          cwd: "/workspace",
+          format,
+          brand,
+        });
+      } else {
+        finalSystem += buildWorkbenchPrompt({
+          workspaceName: ws.name,
+          cwd: "/workspace",
+        });
+      }
     }
+  }
+
+  // If this chat belongs to a Project, mix in the project's name,
+  // description, and instructions so every turn shares that context.
+  if (db && conversation?.projectId) {
+    const [project] = await db
+      .select({
+        name: schema.projects.name,
+        description: schema.projects.description,
+        instructions: schema.projects.instructions,
+      })
+      .from(schema.projects)
+      .where(eq(schema.projects.id, conversation.projectId))
+      .limit(1);
+    if (project) finalSystem += buildProjectPrompt(project);
   }
 
   const result = streamText({
