@@ -31,8 +31,10 @@ import {
 const SECTION_ORDER: FileGroupKey[] = [
   "folders",
   "pages",
+  "components",
   "stylesheets",
   "scripts",
+  "references",
   "other",
 ];
 
@@ -144,6 +146,7 @@ export function DesignFilesPanel({
       </div>
 
       {/* Drop zone */}
+      <TipBanner />
       <DropZone
         workspaceId={workspaceId}
         onUploaded={() =>
@@ -278,8 +281,10 @@ function FileIconFor({ entry }: { entry: TreeEntry }) {
   if (entry.type === "dir") return <Folder className="size-3.5" />;
   const k = classify(entry);
   if (k === "pages") return <FileText className="size-3.5" />;
+  if (k === "components") return <FileCode className="size-3.5" />;
   if (k === "stylesheets") return <Palette className="size-3.5" />;
   if (k === "scripts") return <FileCode className="size-3.5" />;
+  if (k === "references") return <FileIcon className="size-3.5" />;
   return <FileIcon className="size-3.5" />;
 }
 
@@ -287,9 +292,41 @@ function tintFor(entry: TreeEntry): string {
   const k = classify(entry);
   if (k === "folders") return "bg-amber-500/15 text-amber-400";
   if (k === "pages") return "bg-orange-500/15 text-orange-400";
+  if (k === "components") return "bg-emerald-500/15 text-emerald-400";
   if (k === "stylesheets") return "bg-sky-500/15 text-sky-400";
   if (k === "scripts") return "bg-violet-500/15 text-violet-400";
+  if (k === "references") return "bg-rose-500/15 text-rose-400";
   return "bg-muted text-muted-foreground";
+}
+
+// Rotating tips shown above the dropzone. Refresh-cycles through the list so
+// repeat users see different ones without a "next tip" affordance to manage.
+const TIPS = [
+  "Drop an image into the file panel — Jarvis can use it as a visual reference.",
+  "Click 'Comment' in the preview toolbar to leave a targeted edit on any element.",
+  "Hit 'Tweaks' to live-tune the accent, density, and toggles your design declared.",
+  "Save a brand and every future generation in this workspace stays on-brand.",
+  "Press Cmd/Ctrl+Enter in the comment popover to send.",
+  "Press the format chip in starter prompts to skip the typing — review before sending.",
+  "The Present menu has Fullscreen — hand the iframe over for a real demo.",
+  "Drag the divider between chat and the file panel to give yourself more room.",
+];
+
+function TipBanner() {
+  // Pick once per mount so the tip stays stable while you read it. A timed
+  // rotation would be too anxious — the dropzone right below already moves.
+  const [tip] = useState(() => TIPS[Math.floor(Math.random() * TIPS.length)]);
+  return (
+    <div className="flex items-start gap-2 border-t border-border/50 bg-orange-500/5 px-5 py-3 text-[12px] leading-5 text-foreground/85">
+      <Sparkles className="mt-0.5 size-3.5 shrink-0 text-orange-400" />
+      <div>
+        <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-orange-400">
+          Tip
+        </span>
+        <p className="mt-0.5 text-muted-foreground">{tip}</p>
+      </div>
+    </div>
+  );
 }
 
 function DropZone({
