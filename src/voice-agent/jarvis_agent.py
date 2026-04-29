@@ -3500,17 +3500,18 @@ async def entrypoint(ctx: JobContext) -> None:
             session._jarvis_emotion = emotion
             session._jarvis_route   = route
 
-            # Try update_options first (cleaner API), then attribute swap
+            # update_options() doesn't accept llm/tts kwargs (verified: its
+            # signature is endpointing_opts, turn_detection, min/max delay).
+            # session.llm / session.tts are read-only properties backed by
+            # session._llm / session._tts — write the backing attrs directly.
             try:
-                if hasattr(session, "update_options"):
-                    try:
-                        session.update_options(llm=new_llm, tts=new_tts)
-                        return
-                    except TypeError:
-                        pass  # update_options doesn't accept llm/tts kwargs
-                # Fallback: direct attribute assignment
-                session.llm = new_llm
-                session.tts = new_tts
+                session._llm = new_llm
+                session._tts = new_tts
+                logger.debug(
+                    f"[dispatch] route={route} emotion={emotion} "
+                    f"llm={getattr(new_llm, 'label', repr(new_llm))} "
+                    f"voice={getattr(new_tts, 'voice_id', '?')}"
+                )
             except Exception as e:
                 logger.warning(f"[dispatch] swap failed for route={route}: {e}; will use fallback inner")
 
