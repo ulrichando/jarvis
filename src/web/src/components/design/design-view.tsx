@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { ChevronDown, Download, ExternalLink, Maximize, Palette, Play, Plus, Share2, X } from "lucide-react";
+import { ChevronDown, Download, ExternalLink, Maximize, Palette, Play, Plus, Share2, Sliders, X } from "lucide-react";
 import type { TreeEntry } from "@/lib/workspace/client";
 import { Chat } from "@/components/chat/chat";
 import { Button } from "@/components/ui/button";
@@ -10,9 +10,13 @@ import { useSettings } from "@/hooks/use-settings";
 import { useResizableColumn } from "@/hooks/use-resizable-column";
 import { cn } from "@/lib/utils";
 import { formatFromFilename } from "@/lib/design/format";
+import { extractTweaks, type Tweak } from "@/lib/design/tweaks";
+import { useQuery } from "@tanstack/react-query";
+import { apiReadFile } from "@/lib/workspace/client";
 import { BrandPanel } from "./brand-panel";
 import { DesignFilesPanel } from "./design-files-panel";
 import { DesignPreview, type DesignComment } from "./design-preview";
+import { TweaksPanel } from "./tweaks-panel";
 
 type DesignTab = { kind: "files" } | { kind: "file"; entry: TreeEntry };
 
@@ -47,7 +51,30 @@ export function DesignView({
   const [showBrand, setShowBrand] = useState(false);
   const [streaming, setStreaming] = useState<{ filePath: string; content: string } | null>(null);
   const [prefillPrompt, setPrefillPrompt] = useState<{ id: string; text: string } | undefined>(undefined);
+  const [showTweaks, setShowTweaks] = useState(false);
+  const [tweakOverrides, setTweakOverrides] = useState<Record<string, Tweak["value"]>>({});
   const { data: settings } = useSettings();
+
+  // Fetch the selected file's content so we can extract its declared tweaks.
+  // Same queryKey as HtmlPreview's useQuery — react-query dedupes the fetch.
+  const isHtmlFile =
+    selected?.type === "file" && /\.html?$/i.test(selected.name);
+  const { data: fileContent = "" } = useQuery({
+    queryKey: ["design-file", workspaceId, selected?.path],
+    queryFn: () =>
+      selected ? apiReadFile(workspaceId, selected.path) : Promise.resolve(""),
+    enabled: Boolean(isHtmlFile && selected),
+  });
+  const tweaks = useMemo<Tweak[]>(
+    () => (isHtmlFile && fileContent ? extractTweaks(fileContent) : []),
+    [isHtmlFile, fileContent],
+  );
+
+  // Reset overrides when the selected file changes — overrides are per-file
+  // and we don't want last file's accent applied to the next one.
+  useEffect(() => {
+    setTweakOverrides({});
+  }, [selected?.path]);
 
   const chatColumn = useResizableColumn({
     storageKey: "design.chatColumnWidth",
@@ -179,6 +206,37 @@ export function DesignView({
         </div>
 
         <div className="flex shrink-0 items-center gap-2 px-3">
+          {isHtmlFile && (
+            <button
+              type="button"
+              role="switch"
+              aria-checked={showTweaks}
+              onClick={() => setShowTweaks((v) => !v)}
+              className={cn(
+                "flex items-center gap-2 rounded-md px-2 py-1 text-[13px] transition-colors",
+                showTweaks
+                  ? "text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+              title="Tweaks — live knobs the design declared"
+            >
+              <Sliders className="size-3.5" />
+              Tweaks
+              <span
+                className={cn(
+                  "relative inline-flex h-4 w-7 items-center rounded-full transition-colors",
+                  showTweaks ? "bg-primary" : "bg-muted",
+                )}
+              >
+                <span
+                  className={cn(
+                    "inline-block size-3 rounded-full bg-background shadow transition-transform",
+                    showTweaks ? "translate-x-3.5" : "translate-x-0.5",
+                  )}
+                />
+              </span>
+            </button>
+          )}
           {selected && selected.type !== "dir" && (
             <details className="relative">
               <summary className="flex cursor-pointer list-none items-center gap-1 rounded-md px-2 py-1 text-[13px] text-muted-foreground hover:bg-muted">
@@ -250,7 +308,7 @@ export function DesignView({
       </header>
 
       {/* ── Body: chat | files-or-preview-only | preview ──── */}
-      <div className="flex flex-1 min-h-0">
+      <div className="relative flex flex-1 min-h-0">
         {/* Left: chat — width is user-resizable via the divider below */}
         <aside
           className="flex shrink-0 flex-col border-r border-border/60"
@@ -304,7 +362,13 @@ export function DesignView({
               <BrandPanel workspaceId={workspaceId} />
             </div>
             <div className="flex w-[42%] min-w-80 shrink-0 flex-col">
-              <DesignPreview workspaceId={workspaceId} selected={selected} streaming={streaming} />
+              <DesignPreview
+                workspaceId={workspaceId}
+                selected={selected}
+                streaming={streaming}
+                tweaks={tweaks}
+                tweakOverrides={tweakOverrides}
+              />
             </div>
           </div>
         ) : showFiles ? (
@@ -322,7 +386,13 @@ export function DesignView({
               />
             </div>
             <div className="flex w-[42%] min-w-80 shrink-0 flex-col border-l border-border/60">
-              <DesignPreview workspaceId={workspaceId} selected={selected} streaming={streaming} />
+              <DesignPreview
+                workspaceId={workspaceId}
+                selected={selected}
+                streaming={streaming}
+                tweaks={tweaks}
+                tweakOverrides={tweakOverrides}
+              />
             </div>
           </div>
         ) : (
@@ -333,8 +403,21 @@ export function DesignView({
               streaming={streaming}
               showToolbar
               onComment={handleComment}
+              tweaks={tweaks}
+              tweakOverrides={tweakOverrides}
             />
           </div>
+        )}
+
+        {showTweaks && isHtmlFile && (
+          <TweaksPanel
+            tweaks={tweaks}
+            values={tweakOverrides}
+            onChange={(id, value) =>
+              setTweakOverrides((o) => ({ ...o, [id]: value }))
+            }
+            onClose={() => setShowTweaks(false)}
+          />
         )}
       </div>
     </div>

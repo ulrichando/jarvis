@@ -15,6 +15,7 @@ import {
 import { apiReadFile, type TreeEntry } from "@/lib/workspace/client";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { type Tweak, tweakToMessage } from "@/lib/design/tweaks";
 import { ext, IMAGE_EXT } from "./file-classify";
 
 export type DesignComment = {
@@ -31,6 +32,8 @@ export function DesignPreview({
   showToolbar = false,
   streaming = null,
   onComment,
+  tweaks,
+  tweakOverrides,
 }: {
   workspaceId: string;
   selected: TreeEntry | null;
@@ -45,6 +48,10 @@ export function DesignPreview({
    *  chat composer with a structured prompt that asks the model to edit
    *  ONLY the picked element. */
   onComment?: (c: DesignComment) => void;
+  /** Tweak declarations parsed from the file by the parent. */
+  tweaks?: Tweak[];
+  /** Current panel-side override values keyed by tweak id. */
+  tweakOverrides?: Record<string, Tweak["value"]>;
 }) {
   if (streaming && streaming.content) {
     return (
@@ -70,6 +77,8 @@ export function DesignPreview({
       selected={selected}
       showToolbar={showToolbar}
       onComment={onComment}
+      tweaks={tweaks}
+      tweakOverrides={tweakOverrides}
     />
   );
 }
@@ -108,11 +117,15 @@ function PreviewContainer({
   selected,
   showToolbar,
   onComment,
+  tweaks,
+  tweakOverrides,
 }: {
   workspaceId: string;
   selected: TreeEntry;
   showToolbar: boolean;
   onComment?: (c: DesignComment) => void;
+  tweaks?: Tweak[];
+  tweakOverrides?: Record<string, Tweak["value"]>;
 }) {
   const qc = useQueryClient();
   const [iframeKey, setIframeKey] = useState(0);
@@ -162,6 +175,8 @@ function PreviewContainer({
             commentMode={commentMode}
             onCommentModeOff={() => setCommentMode(false)}
             onComment={onComment}
+            tweaks={tweaks}
+            tweakOverrides={tweakOverrides}
           />
         ) : isImage ? (
           <ImagePreview
@@ -376,11 +391,28 @@ const PICKER_SCRIPT = `
     }, '*');
   }, true);
 
+  function snakeToCamel(s){ return s.replace(/_([a-z])/g, function(_, c){ return c.toUpperCase(); }); }
+
+  function applyTweak(id, kind, value) {
+    if (kind === 'color-swatches' || kind === 'range') {
+      document.documentElement.style.setProperty('--' + id, String(value));
+    } else if (kind === 'segmented' || kind === 'toggle') {
+      // dataset uses camelCase keys, the CSS [data-foo_bar="x"] selector uses
+      // the literal id, so set the attribute directly to keep both happy.
+      document.body.setAttribute('data-' + id, String(value));
+      document.body.dataset[snakeToCamel(id)] = String(value);
+    } else if (kind === 'text') {
+      var nodes = document.querySelectorAll('[data-tweak-text="' + id + '"]');
+      for (var i = 0; i < nodes.length; i++) nodes[i].textContent = String(value);
+    }
+  }
+
   window.addEventListener('message', function(e){
     if (!e.data || typeof e.data !== 'object') return;
     if (e.data.type === 'jarvis:design:enable') { enabled = true; }
     if (e.data.type === 'jarvis:design:disable') { enabled = false; clearHover(); clearPick(); }
     if (e.data.type === 'jarvis:design:clear-pick') { clearPick(); }
+    if (e.data.type === 'jarvis:design:tweak') { applyTweak(e.data.id, e.data.kind, e.data.value); }
   });
 })();
 `;
@@ -400,6 +432,8 @@ function HtmlPreview({
   commentMode,
   onCommentModeOff,
   onComment,
+  tweaks = [],
+  tweakOverrides,
 }: {
   workspaceId: string;
   path: string;
@@ -408,6 +442,12 @@ function HtmlPreview({
   commentMode: boolean;
   onCommentModeOff: () => void;
   onComment?: (c: DesignComment) => void;
+  /** Tweak declarations parsed from the file. Used to look up the kind for
+   *  postMessage when we apply overrides. */
+  tweaks?: Tweak[];
+  /** Current panel-side override values keyed by tweak id. When this object
+   *  changes (or the iframe reloads) we replay every override into the iframe. */
+  tweakOverrides?: Record<string, Tweak["value"]>;
 }) {
   const { data: content = "", isLoading, isError } = useQuery({
     queryKey: ["design-file", workspaceId, path],
@@ -422,12 +462,24 @@ function HtmlPreview({
   } | null>(null);
   const [comment, setComment] = useState("");
 
-  // Inject the picker script only when commentMode is on so a clean iframe
-  // is the default for users not commenting.
-  const html = useMemo(
-    () => (commentMode ? injectPickerScript(content) : content),
-    [content, commentMode],
-  );
+  // Always inject the picker script. Selection (highlight + click-to-comment)
+  // is gated by an enable/disable message so users not commenting see a clean
+  // iframe; tweak-application listeners run unconditionally so the right-side
+  // panel can drive live changes regardless of comment mode.
+  const html = useMemo(() => injectPickerScript(content), [content]);
+
+  // Replay every tweak override whenever they change. Posting again is
+  // idempotent (setting a CSS variable to the same value is a no-op) so we
+  // don't track which messages were already delivered.
+  useEffect(() => {
+    const win = iframeRef.current?.contentWindow;
+    if (!win || !tweakOverrides) return;
+    for (const [id, value] of Object.entries(tweakOverrides)) {
+      const t = tweaks.find((x) => x.id === id);
+      if (!t) continue;
+      win.postMessage(tweakToMessage(t, value), "*");
+    }
+  }, [tweakOverrides, tweaks, iframeKey, html]);
 
   // Listen for picks coming out of the iframe.
   useEffect(() => {
@@ -512,11 +564,20 @@ function HtmlPreview({
             sandbox="allow-scripts"
             className="h-full w-full border-0 bg-white"
             onLoad={() => {
+              const win = iframeRef.current?.contentWindow;
+              if (!win) return;
               if (commentMode) {
-                iframeRef.current?.contentWindow?.postMessage(
-                  { type: "jarvis:design:enable" },
-                  "*",
-                );
+                win.postMessage({ type: "jarvis:design:enable" }, "*");
+              }
+              // Replay every override so the iframe matches the panel state
+              // immediately on (re)load — without this the file would render
+              // with its declared defaults until the user touched a control.
+              if (tweakOverrides) {
+                for (const [id, value] of Object.entries(tweakOverrides)) {
+                  const t = tweaks?.find((x) => x.id === id);
+                  if (!t) continue;
+                  win.postMessage(tweakToMessage(t, value), "*");
+                }
               }
             }}
           />
