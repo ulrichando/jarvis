@@ -389,6 +389,7 @@ export function DesignView({
                 key={chatKey}
                 embedded
                 hideSidebarToggle
+                unifiedUX
                 mode="design"
                 workspaceId={workspaceId}
                 workspaceName={workspaceName}

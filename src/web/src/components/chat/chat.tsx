@@ -84,6 +84,10 @@ type ChatProps = {
   // default. The Design tab has its own chrome, so the global-sidebar opener
   // would just be a confusing duplicate.
   hideSidebarToggle?: boolean;
+  // Force the composer into a model-agnostic shell — same shape regardless of
+  // which provider is selected. Used by the Design tab so switching models
+  // doesn't shift the composer's pre-block / inline toggles.
+  unifiedUX?: boolean;
 };
 
 type ChatStatus = "ready" | "submitted" | "streaming" | "error";
@@ -141,6 +145,7 @@ export function Chat({
   onFileComplete,
   prefillPrompt,
   hideSidebarToggle,
+  unifiedUX,
 }: ChatProps) {
   const qc = useQueryClient();
   const [input, setInput] = useState("");
@@ -505,6 +510,7 @@ export function Chat({
               status={status}
               provider={provider}
               hideWorkspacePicker={embedded}
+              unifiedUX={unifiedUX}
               placeholder={composerPlaceholder}
             />
           </div>
@@ -560,6 +566,7 @@ export function Chat({
           status={status}
           provider={provider}
           hideWorkspacePicker={embedded}
+          unifiedUX={unifiedUX}
         />
       </div>
     );
@@ -603,6 +610,7 @@ export function Chat({
         status={status}
         provider={provider}
         hideWorkspacePicker={embedded}
+        unifiedUX={unifiedUX}
         placeholder={composerPlaceholder}
       />
     </div>
