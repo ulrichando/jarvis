@@ -388,6 +388,7 @@ export function DesignView({
               <Chat
                 key={chatKey}
                 embedded
+                hideSidebarToggle
                 mode="design"
                 workspaceId={workspaceId}
                 workspaceName={workspaceName}

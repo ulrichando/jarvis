@@ -80,6 +80,10 @@ type ChatProps = {
   // sets the input to `text` (does NOT auto-send). Used by Design starter
   // cards to prefill an example prompt the user can review and submit.
   prefillPrompt?: { id: string; text: string };
+  // Suppress the sidebar-toggle button that the embedded chat renders by
+  // default. The Design tab has its own chrome, so the global-sidebar opener
+  // would just be a confusing duplicate.
+  hideSidebarToggle?: boolean;
 };
 
 type ChatStatus = "ready" | "submitted" | "streaming" | "error";
@@ -136,6 +140,7 @@ export function Chat({
   onStreamingFile,
   onFileComplete,
   prefillPrompt,
+  hideSidebarToggle,
 }: ChatProps) {
   const qc = useQueryClient();
   const [input, setInput] = useState("");
@@ -527,7 +532,7 @@ export function Chat({
   if (isEmpty && embedded) {
     return (
       <div className="flex h-full flex-col">
-        {!sidebarOpen && (
+        {!sidebarOpen && !hideSidebarToggle && (
           <div className="flex h-10 shrink-0 items-center px-2">
             <button
               onClick={toggleSidebar}
@@ -562,7 +567,7 @@ export function Chat({
 
   return (
     <div className="flex h-full flex-col">
-      {embedded && !sidebarOpen && (
+      {embedded && !sidebarOpen && !hideSidebarToggle && (
         <div className="flex h-10 shrink-0 items-center px-2 border-b border-border/30">
           <button
             onClick={toggleSidebar}
