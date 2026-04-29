@@ -81,3 +81,51 @@ def detect_emotion(transcript: str, audio: AudioMeta) -> Emotion:
             return "sad"
 
     return base
+
+
+# Append to src/voice-agent/turn_router.py
+import asyncio
+from typing import Awaitable, Callable
+
+_VALID_ROUTES = {"BANTER", "TASK", "REASONING", "EMOTIONAL"}
+
+ROUTER_PROMPT_TEMPLATE = """\
+You are a turn-router for a voice assistant. Read the conversation
+history and the most recent user emotion tag. Output exactly ONE word
+naming the best route for the assistant's reply:
+
+  BANTER     — chitchat, jokes, idle conversation
+  TASK       — actionable command or fact lookup
+  REASONING  — multi-step thinking, planning, debugging
+  EMOTIONAL  — feelings, frustration, support, hard decisions
+
+Recent conversation:
+{history}
+
+User emotion: {emotion}
+
+Output ONLY the word. No punctuation, no explanation."""
+
+
+def route_from_classifier_output(raw: str) -> Route:
+    if not raw:
+        return "TASK"
+    cleaned = re.split(r"[^A-Za-z]", raw.strip())[0].upper()
+    return cleaned if cleaned in _VALID_ROUTES else "TASK"  # type: ignore
+
+
+async def classify_turn(
+    *,
+    history: list[tuple[str, str]],
+    emotion: Emotion,
+    groq_call: Callable[[str], Awaitable[str]],
+    timeout_ms: int = 500,
+) -> Route:
+    """Run the router LLM with timeout fallback."""
+    pretty = "\n".join(f"{role}: {text}" for role, text in history[-5:])
+    prompt = ROUTER_PROMPT_TEMPLATE.format(history=pretty, emotion=emotion)
+    try:
+        raw = await asyncio.wait_for(groq_call(prompt), timeout=timeout_ms / 1000)
+    except (asyncio.TimeoutError, Exception):
+        return "TASK"
+    return route_from_classifier_output(raw)
