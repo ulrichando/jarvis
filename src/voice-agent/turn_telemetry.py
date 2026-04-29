@@ -89,13 +89,13 @@ def report(db_path: Path = DEFAULT_DB_PATH) -> str:
     with sqlite3.connect(db_path) as conn:
         n = conn.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
         out.append(f"total turns: {n}")
-        for route, count, p50, p95 in conn.execute(
+        for route, count, avg_ttfw, max_ttfw in conn.execute(
             """SELECT route, COUNT(*),
                       CAST(AVG(ttfw_ms) AS INT),
                       MAX(ttfw_ms)
                FROM turns GROUP BY route ORDER BY count DESC"""
         ):
-            out.append(f"  {route or '?'}: {count} turns, avg_ttfw={p50}ms, max_ttfw={p95}ms")
+            out.append(f"  {route or '?'}: {count} turns, avg_ttfw={avg_ttfw}ms, max_ttfw={max_ttfw}ms")
         emo_followup = conn.execute(
             "SELECT AVG(user_followup_30s) FROM turns WHERE route='EMOTIONAL'"
         ).fetchone()[0]
