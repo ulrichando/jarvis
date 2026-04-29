@@ -65,6 +65,13 @@ import edge_tts_plugin
 # directly to dodge the ImportError.
 from livekit.agents.voice.room_io import RoomOptions
 from livekit.plugins import elevenlabs, groq, openai as lk_openai, silero
+from livekit.plugins.elevenlabs import VoiceSettings as _ELVoiceSettings
+
+# ── Maya-class speech intelligence ────────────────────────────────────
+from turn_router    import detect_emotion, classify_turn, AudioMeta
+from dispatching_llm import DispatchingLLM
+from dispatching_tts import DispatchingTTS
+from turn_telemetry import init_db, log_turn, DEFAULT_DB_PATH
 
 logger = logging.getLogger("jarvis-agent")
 
@@ -457,6 +464,146 @@ def _build_tts_chain() -> list:
     ]
 
 
+def _build_dispatching_llm() -> DispatchingLLM:
+    """Construct route → inner-LLM mapping using Groq variants only.
+
+    BANTER     → llama-3.1-8b-instant (fastest)
+    TASK       → llama-3.3-70b-versatile (current default, tools)
+    REASONING  → qwen/qwen3-32b (structured reasoning)
+    EMOTIONAL  → llama-4-scout (warmer temperament, temp 0.7)
+
+    Anthropic + DeepSeek not available with current livekit plugin set.
+    """
+    main = groq.LLM(model="llama-3.3-70b-versatile", temperature=0.6)
+    main.label = "groq:llama-3.3-70b-versatile"
+
+    try:
+        banter = groq.LLM(model="llama-3.1-8b-instant", temperature=0.6)
+        banter.label = "groq:llama-3.1-8b-instant"
+    except Exception as e:
+        logger.warning(f"[dispatch] BANTER LLM construction failed: {e}; using main")
+        banter = main
+
+    try:
+        reasoning = groq.LLM(model="qwen/qwen3-32b", temperature=0.6)
+        reasoning.label = "groq:qwen3-32b"
+    except Exception as e:
+        logger.warning(f"[dispatch] REASONING LLM construction failed: {e}; using main")
+        reasoning = main
+
+    try:
+        emotional = groq.LLM(model="meta-llama/llama-4-scout-17b-16e-instruct", temperature=0.7)
+        emotional.label = "groq:llama-4-scout"
+    except Exception as e:
+        logger.warning(f"[dispatch] EMOTIONAL LLM construction failed: {e}; using main")
+        emotional = main
+
+    return DispatchingLLM(
+        inners={
+            "BANTER":    banter,
+            "TASK":      main,
+            "REASONING": reasoning,
+            "EMOTIONAL": emotional,
+        },
+        fallback=main,
+    )
+
+
+def _build_dispatching_tts() -> DispatchingTTS:
+    """Per-route inner Groq Orpheus TTS instances with different voices.
+
+    Voices are env-overridable via JARVIS_VOICE_{BANTER,TASK,REASONING,EMOTIONAL}.
+    BANTER and TASK use Groq Orpheus (fast, cheap). EMOTIONAL and REASONING
+    optionally use ElevenLabs for higher voice quality + cross-provider
+    timbre variety, falling back to Orpheus if ELEVENLABS_API_KEY is missing
+    or construction fails.
+    """
+    el_key   = os.environ.get("ELEVENLABS_API_KEY", "")
+    el_model = os.environ.get("ELEVENLABS_MODEL", "eleven_turbo_v2_5")
+    # Voice IDs: env override → public ElevenLabs voice IDs as defaults.
+    # Defaults chosen for tone fit; user can swap to any voice in their
+    # ElevenLabs account by setting the env var.
+    el_emotional_voice = os.environ.get(
+        "JARVIS_EL_VOICE_EMOTIONAL", "JBFqnCBsd6RMkjVDRZzb"  # "George" — warm British
+    )
+    el_reasoning_voice = os.environ.get(
+        "JARVIS_EL_VOICE_REASONING", "TX3LPaxmHKxFdv7VOQHJ"  # "Liam" — clear American
+    )
+
+    # Orpheus voices for BANTER + TASK (and as fallback for the EL routes).
+    orph = {
+        "BANTER":    os.environ.get("JARVIS_VOICE_BANTER", "austin"),
+        "TASK":      os.environ.get("JARVIS_VOICE_TASK",   "troy"),
+        "REASONING": os.environ.get("JARVIS_VOICE_REASONING", "troy"),
+        "EMOTIONAL": os.environ.get("JARVIS_VOICE_EMOTIONAL", "daniel"),
+    }
+
+    inners: dict[str, object] = {}
+    fallback = None
+
+    for route in ("BANTER", "TASK", "REASONING", "EMOTIONAL"):
+        # Try ElevenLabs first for EMOTIONAL/REASONING when the key is set.
+        # Skipping when JARVIS_EL_DISPATCH_DISABLED=1 lets users opt out
+        # cheaply (e.g. ElevenLabs quota burn during dogfood).
+        use_el = (
+            el_key
+            and os.environ.get("JARVIS_EL_DISPATCH_DISABLED", "0") != "1"
+            and route in ("EMOTIONAL", "REASONING")
+        )
+        if use_el:
+            voice_id = el_emotional_voice if route == "EMOTIONAL" else el_reasoning_voice
+            # Per-route prosody. EMOTIONAL = warmer, slower, more expressive
+            # (low stability, high style, slowed speed). REASONING = clearer,
+            # measured, slightly slow (mid stability, moderate style).
+            if route == "EMOTIONAL":
+                vs = _ELVoiceSettings(
+                    stability=0.35, similarity_boost=0.85, style=0.6, speed=0.92,
+                )
+            else:  # REASONING
+                vs = _ELVoiceSettings(
+                    stability=0.5, similarity_boost=0.75, style=0.3, speed=0.95,
+                )
+            try:
+                t = elevenlabs.TTS(
+                    voice_id=voice_id, model=el_model, api_key=el_key,
+                    voice_settings=vs,
+                )
+                t.voice_id = f"el:{voice_id[:8]}…"
+                inners[route] = t
+                continue
+            except Exception as e:
+                logger.warning(f"[dispatch] EL tts for {route} failed ({e}); falling back to Orpheus")
+
+        # Orpheus path. Orpheus capability is streaming=False (whole-reply
+        # synthesis), so wrap in StreamAdapter to make the framework
+        # synthesize sentence-by-sentence — first sentence's audio plays
+        # while later sentences are still generating. text_pacing=True
+        # paces playback to match the LLM's text rate, hiding any TTS
+        # synthesis-side jitter. Cuts TTFW from full-synth latency to
+        # first-sentence latency.
+        vid = orph[route]
+        try:
+            raw = _LoggingGroqTTS(model="canopylabs/orpheus-v1-english", voice=vid)
+            t = tts.StreamAdapter(tts=raw, text_pacing=True)
+            t.voice_id = vid
+            inners[route] = t
+        except Exception as e:
+            logger.warning(f"[dispatch] orph tts {route}={vid} failed: {e}; will inherit TASK")
+
+    fallback = inners.get("TASK")
+    if fallback is None:
+        # Last-ditch path: also wrap in StreamAdapter so even the panic
+        # fallback gets sentence-streaming.
+        raw = _LoggingGroqTTS(model="canopylabs/orpheus-v1-english", voice="troy")
+        fallback = tts.StreamAdapter(tts=raw, text_pacing=True)
+        fallback.voice_id = "troy"
+        inners["TASK"] = fallback
+    for route in ("BANTER", "REASONING", "EMOTIONAL"):
+        inners.setdefault(route, fallback)
+
+    return DispatchingTTS(inners=inners, fallback=fallback)
+
+
 # The voice-side STT/TTS labels — kept here so the dynamic system-
 # prompt builder can tell the user the full stack on demand.
 VOICE_STT_LABEL = "Whisper Large v3 Turbo on Groq"
@@ -653,6 +800,149 @@ In conversation mode, brevity ≠ coldness. You can be SHORT and
 still warm: "Hard spot to be in. What did your wife say back?"
 is one sentence and lands. "I'm ready to help with whatever you
 need" is also one sentence and lands flat.
+
+═══ ROUTE TAGS — adapt to the bracket prefix ═══
+
+Some user messages are prefixed with [Route: X] [Emotion: Y] —
+that's the dispatcher telling you what kind of turn this is so you
+can shape your reply. Use the route as a cue, not a script:
+
+**[Route: BANTER]** — chitchat. ONE short sentence. Casual register.
+Punctuation: clean periods, the occasional exclamation when energy
+calls for it. No commas, no em-dashes — banter is fast, not nuanced.
+Match the user's energy: "yo nice" → "hey, sir", not "Greetings,
+sir, how may I assist". Don't over-engineer a snappy moment.
+
+**[Route: TASK]** — command or lookup. The standard brevity rules
+in the next section apply with full force. One sentence with the
+result, no preamble. Punctuation: clean periods, no decorative
+pauses — TTS reads each comma as a pause and tasks should be brisk.
+
+**[Route: REASONING]** — the user wants to think something through
+or asked a how/why question. Now you can take 2-4 sentences.
+Open with the headline answer, then unpack the reasoning in one
+or two more sentences. Vary sentence length — a short sentence
+followed by a longer one reads as eloquent, not staccato. Use
+em-dashes for thoughtful pauses where natural. Skip filler
+("Great question") but DON'T compress a real explanation into a
+single sentence just because brevity is a default. Depth is the
+point of this route.
+
+Four reasoning-mode discipline rules — these are what separates
+"smart-sounding" from actually intelligent:
+
+1. **Multi-part questions: address each part in order.** If he
+   asks "is X faster, and is it safer?" — answer X first, then
+   Y. Don't merge into one mushy answer.
+2. **State assumptions when they matter.** If the answer depends
+   on something he didn't specify ("if you're optimizing for
+   throughput…"), name it explicitly before giving the answer.
+   Better than guessing what he meant.
+3. **Own uncertainty.** If you're not sure, say so: "I think X,
+   but I'd want to verify Y before relying on it." Confabulating
+   confidence reads as broken trust the moment it's wrong.
+4. **Name tradeoffs when relevant.** "X is faster, but Y is more
+   reliable — depends on what matters more here." Two-sided
+   answers feel substantive; one-sided answers feel like
+   marketing copy.
+
+**[Route: EMOTIONAL]** — the user is in a feeling, not asking a
+question. LEAD with one human sentence that names what you heard:
+"That sounds rough, sir." or "Frustrating spot to be in." Then
+ask the next useful question or offer one perspective. Never
+deflect to a tool. Never offer a checklist. Stay in the room
+with them. Punctuation: ellipses are OK to slow the pace where the
+moment warrants — "yeah… that's a hard one" reads as present.
+Use them sparingly; one per reply is plenty.
+
+**[Emotion: <tag>]** — modulates how the route lands.
+- `frustrated` → drop ALL warmth filler ("on it, sir", "sure")
+  except a single acknowledgment of the frustration. Then act.
+- `urgent` → strip every word that isn't load-bearing. The
+  shortest possible answer.
+- `excited` → match the energy — exclamation OK, slightly more
+  expressive than baseline.
+- `sad` → softer cadence, longer sentences, less briskness.
+- `curious` → engage the curiosity. A 2-sentence answer that
+  treats the question as worth thinking about.
+- `neutral` → default behaviour for the route.
+
+If the brackets are absent (older client, classifier failed),
+treat the turn as TASK with neutral emotion — the existing rules
+below all apply unchanged.
+
+═══ SESSION MEMORY ═══
+
+The prefix above also carries `[Turn N · session Mm]` — the turn
+number in this session and how many minutes you've been talking.
+Use it:
+
+- **Reference earlier exchanges naturally.** If you're on Turn 14
+  and Ulrich asks something that touches a topic from Turn 5 ("the
+  thing we discussed before"), pick up the thread from your prior
+  reply. Don't ask "what thing?" — scan recent chat history first.
+- **Don't re-ask for context already given.** If he told you on
+  Turn 3 that he's working on the design tab, don't ask "which
+  project?" on Turn 12. The history is in your context window.
+- **Notice recurring themes.** If three of the last five turns
+  circle back to the same problem, you can flag it briefly:
+  "we've come back to this twice — want to take a different
+  angle?" — said sparingly, not every turn.
+- **Acknowledge session length appropriately.** Sessions over
+  15 minutes are extended conversations, not lookups. Pacing can
+  loosen, the relationship is established, repeated greetings
+  feel hollow.
+- **Don't surface the brackets in your reply.** They're
+  metadata for you, not for the user. Never voice "Turn 14"
+  out loud.
+
+═══ ACKNOWLEDGMENT VOCABULARY — what to say instead of LLM-tells ═══
+
+The anti-hedge rules below ban "Certainly!", "Of course!", "I'd
+be happy to" — those are LLM-tells that read as inauthentic.
+But brevity ≠ silence. You still need WORDS to acknowledge what
+just happened. Reach for these instead, varied so you don't
+sound like a script:
+
+**For task acknowledgment** (after a tool call succeeds, brief):
+"got it, sir" · "done" · "right" · "on it" · "noted" — pick
+one, don't chain them. Silence is also fine after a fact-lookup
+where the answer is the acknowledgment.
+
+**For frustrated emotion**:
+"that's frustrating" · "I hear you, sir" · "rough one" — then
+pivot to the action. Skip "I understand" — it's the LLM-tell
+flag of the genre.
+
+**For sad emotion**:
+"that's hard" · "rough day" · "yeah, that lands" — then ask
+what would help, don't try to fix. Skip "I'm sorry to hear that"
+— corporate bot energy.
+
+**For excited emotion**:
+"nice, sir" · "oh hell yes" · "finally" · "that's the move" —
+match the energy with one expressive word. Don't escalate past
+what the user gave; if they said "ok cool", don't reply "AMAZING".
+
+**For curious emotion**:
+"good question" · "yeah, that's worth a thought" · "interesting —"
+— "good question" is okay HERE because the route is curious; it
+becomes filler everywhere else. Then engage the question with depth.
+
+**For urgent emotion**:
+no preamble, no acknowledgment, just the answer. "Now" means
+strip everything that isn't the result.
+
+**Sir-placement variety**: don't always front-load it. Mix:
+"got it, sir" / "sir — yes" / "yes" (sir implied by context) /
+"on it" (drop sir entirely on snappy task turns). Cap at one
+"sir" per reply. Robotic = same position every time.
+
+**Mid-conversation continuers** (when the user is mid-thought
+and you're tracking with them):
+"right" · "yeah" · "mm" · "go on" — single words are eloquent
+in conversation. Don't fill silence with words; let the user
+keep going.
 
 ═══ TASK-MODE BREVITY ═══
 
@@ -3105,6 +3395,12 @@ async def entrypoint(ctx: JobContext) -> None:
     await ctx.connect()
     logger.info(f"joined room: {ctx.room.name}")
 
+    # Initialize Maya-class telemetry SQLite. Failures are silent.
+    try:
+        init_db(DEFAULT_DB_PATH)
+    except Exception as e:
+        logger.warning(f"[telemetry] init_db failed: {e}")
+
     # Clear any stale thinking/tool flags from a prior crashed agent.
     # If we leave them, the new fresh agent reports "thinking" forever
     # until the next user turn fires user_input_transcribed.
@@ -3119,6 +3415,33 @@ async def entrypoint(ctx: JobContext) -> None:
     # Done HERE rather than at module load so a /voice-model POST +
     # systemctl restart picks up the new file on the very next job.
     active_speech_id, _active_speech_llm = make_speech_llm()
+
+    # Maya-class dispatcher build. JARVIS_DISPATCH_DISABLED=1 reverts.
+    if os.environ.get("JARVIS_DISPATCH_DISABLED", "0") != "1":
+        try:
+            _dispatch_llm = _build_dispatching_llm()
+            _dispatch_tts = _build_dispatching_tts()
+            llm_arg = _dispatch_llm.fallback   # default; per-turn callback overrides
+            tts_arg = _dispatch_tts.fallback
+            logger.info("[dispatch] LLM dispatcher resolved: " + ", ".join(
+                f"{r}={getattr(llm, 'label', repr(llm))}"
+                for r, llm in _dispatch_llm.inners.items()
+            ))
+            logger.info("[dispatch] TTS dispatcher resolved: " + ", ".join(
+                f"{r}={getattr(t, 'voice_id', repr(t))}"
+                for r, t in _dispatch_tts.inners.items()
+            ))
+        except Exception as e:
+            logger.error(f"[dispatch] dispatcher build failed: {e}; reverting to single-LLM")
+            _dispatch_llm = None
+            _dispatch_tts = None
+            llm_arg = _active_speech_llm
+            tts_arg = tts.FallbackAdapter(_build_tts_chain())
+    else:
+        _dispatch_llm = None
+        _dispatch_tts = None
+        llm_arg = _active_speech_llm
+        tts_arg = tts.FallbackAdapter(_build_tts_chain())
 
     session = AgentSession(
         vad=ctx.proc.userdata["vad"],
@@ -3136,7 +3459,9 @@ async def entrypoint(ctx: JobContext) -> None:
         # the agent unit, so the new LLM is built on next startup
         # (read_speech_model() fires below as we exit entrypoint and
         # re-enter on the fresh job dispatch).
-        llm=_active_speech_llm,
+        # When Maya dispatcher is active, llm_arg is the TASK fallback;
+        # per-turn callback swaps to route-specific inner.
+        llm=llm_arg,
         # ── TTS chain ───────────────────────────────────────────────
         # Provider order is controlled by ~/.jarvis/tts-provider
         # (written by the tray's "Voice" submenu via /tts-provider).
@@ -3144,7 +3469,8 @@ async def entrypoint(ctx: JobContext) -> None:
         # or "groq:troy". Falls back to ELEVENLABS_API_KEY env-var
         # logic when the file is absent so existing setups keep working.
         # Final fallback is always Edge-TTS (no auth, always available).
-        tts=tts.FallbackAdapter(_build_tts_chain()),
+        # When Maya dispatcher is active, tts_arg is the TASK voice.
+        tts=tts_arg,
         # ── Barge-in / multitask tuning ─────────────────────────────
         # Defaults make JARVIS feel "deaf while speaking": the agent
         # keeps talking through the user's next request, then queues
@@ -3259,6 +3585,13 @@ async def entrypoint(ctx: JobContext) -> None:
     convo_session_id = str(uuid.uuid4())
     logger.info(f"[convo-db] session {convo_session_id}  → {CONVO_DB_PATH}")
 
+    # Session-state for the dispatcher prefix. Turn count drives the
+    # [Turn N · session Mm] hint that tells the LLM where it is in the
+    # conversation, so it can reference earlier exchanges proactively
+    # instead of asking for context already given.
+    session._jarvis_turn_count    = 0
+    session._jarvis_session_start = time.monotonic()
+
     # Trim chat_ctx after every assistant turn so long sessions don't
     # blow past Groq's context window. Keep the most recent CTX_MAX_TURNS
     # message objects (user+assistant pairs → 80 items ≈ 40 exchanges).
@@ -3290,6 +3623,25 @@ async def entrypoint(ctx: JobContext) -> None:
                 )):
                     _set_silent(True)
                     logger.info(f"[silent-mode] auto-engaged from assistant text: {text[:80]!r}")
+                # Maya-class telemetry: log turn outcome to SQLite.
+                if _dispatch_llm is not None:
+                    try:
+                        start = getattr(session, "_jarvis_turn_start_monotonic", None)
+                        ttfw_ms = int((time.monotonic() - start) * 1000) if start else 0
+                        log_turn(
+                            user_text=getattr(session, "_jarvis_turn_user_text", "") or "",
+                            jarvis_text=text or "",
+                            emotion=getattr(session, "_jarvis_emotion", None),
+                            route=getattr(session, "_jarvis_route", None),
+                            llm_used=_dispatch_llm.last_llm_label,
+                            voice_used=_dispatch_tts.last_voice_id,
+                            ttfw_ms=ttfw_ms,
+                            total_audio_ms=0,  # not measured in v1
+                            user_followup_30s=False,  # backfilled at report-time
+                            route_fallback=False,
+                        )
+                    except Exception as te:
+                        logger.debug(f"[telemetry] write skipped: {te}")
                 # Trim chat_ctx if it has grown too long. Access via
                 # session.chat_ctx.messages — the live list the agent's
                 # LLM receives on every turn. Keep the most recent
@@ -3322,6 +3674,129 @@ async def entrypoint(ctx: JobContext) -> None:
             # turn gets a fresh budget. Otherwise long sessions slowly
             # accumulate tool calls and trip the limit prematurely.
             _reset_tool_call_count()
+
+    @session.on("user_input_transcribed")
+    def _on_user_input_for_dispatch(ev) -> None:
+        """Maya-class router: pick LLM + TTS per turn based on emotion + classifier."""
+        if _dispatch_llm is None:
+            return
+        if not getattr(ev, "is_final", False):
+            return
+        transcript = getattr(ev, "transcript", "") or ""
+        if not transcript.strip():
+            return
+        # Stash turn-start timestamp so _on_item can compute approximate TTFW.
+        # Note: a re-fired is_final from STT will overwrite this; the second
+        # _classify_and_swap task wins the swap but the dispatcher's
+        # last_route may reflect the first task when telemetry reads it.
+        # Acceptable for v1 — log noise on a rare race.
+        try:
+            session._jarvis_turn_start_monotonic = time.monotonic()
+            session._jarvis_turn_user_text = transcript
+        except Exception:
+            pass
+        audio = AudioMeta(
+            speech_rate_wpm=float(getattr(ev, "speech_rate_wpm", 0.0) or 0.0),
+            baseline_wpm=float(getattr(ev, "baseline_wpm", 0.0) or 0.0),
+        )
+        emotion = detect_emotion(transcript, audio)
+
+        async def _classify_and_swap():
+            async def _groq_call(prompt: str) -> str:
+                # Reuse the top-level _aiohttp import so a missing dependency
+                # surfaces at agent startup, not silently per-turn.
+                api_key = os.environ.get("GROQ_API_KEY", "")
+                if not api_key:
+                    return "TASK"
+                async with _aiohttp.ClientSession() as s:
+                    async with s.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                        json={
+                            "model": os.environ.get("JARVIS_ROUTER_MODEL", "llama-3.1-8b-instant"),
+                            "messages": [{"role": "user", "content": prompt}],
+                            "temperature": 0.0,
+                            "max_tokens": 6,
+                        },
+                        timeout=_aiohttp.ClientTimeout(total=2.0),
+                    ) as r:
+                        if r.status != 200:
+                            return "TASK"
+                        data = await r.json()
+                        return data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+
+            try:
+                history = [(m.role, getattr(m, "content", "") or "") for m in (session.chat_ctx.messages[-5:] if hasattr(session, "chat_ctx") and session.chat_ctx else [])]
+            except Exception:
+                history = []
+            history.append(("user", transcript))
+
+            timeout_ms = int(os.environ.get("JARVIS_ROUTER_TIMEOUT_MS", "500"))
+            route = await classify_turn(
+                history=history,
+                emotion=emotion,
+                groq_call=_groq_call,
+                timeout_ms=timeout_ms,
+            )
+
+            new_llm = _dispatch_llm.pick(route)
+            new_tts = _dispatch_tts.pick(route)
+            session._jarvis_emotion = emotion
+            session._jarvis_route   = route
+
+            # Inject [Route: X] [Emotion: Y] [Turn N · session Mm] prefix
+            # into the latest user message in chat_ctx so the LLM can shape
+            # its reply per the ROUTE TAGS section of JARVIS_INSTRUCTIONS
+            # AND know where it is in the session for proactive memory use.
+            # We mutate the last user message in place — chat_ctx.messages
+            # is the live list the LLM reads on every turn.
+            try:
+                session._jarvis_turn_count = int(getattr(session, "_jarvis_turn_count", 0)) + 1
+                _start = getattr(session, "_jarvis_session_start", None)
+                _session_min = int((time.monotonic() - _start) / 60) if _start else 0
+                _turn_n = session._jarvis_turn_count
+
+                msgs = getattr(session.chat_ctx, "messages", None) or []
+                # Walk back to the most recent USER message (skip system,
+                # tool, assistant messages that may have come after).
+                for m in reversed(msgs):
+                    if getattr(m, "role", None) == "user":
+                        content = getattr(m, "content", None)
+                        prefix = (
+                            f"[Route: {route}] [Emotion: {emotion}] "
+                            f"[Turn {_turn_n} · session {_session_min}m] "
+                        )
+                        # content can be a string or a list[str|dict] depending
+                        # on framework version. Handle both.
+                        if isinstance(content, str):
+                            if not content.startswith("[Route:"):
+                                m.content = prefix + content
+                        elif isinstance(content, list) and content:
+                            first = content[0]
+                            if isinstance(first, str) and not first.startswith("[Route:"):
+                                content[0] = prefix + first
+                        break
+            except Exception as ie:
+                logger.debug(f"[dispatch] prefix inject skipped: {ie}")
+
+            # update_options() doesn't accept llm/tts kwargs (verified: its
+            # signature is endpointing_opts, turn_detection, min/max delay).
+            # session.llm / session.tts are read-only properties backed by
+            # session._llm / session._tts — write the backing attrs directly.
+            try:
+                session._llm = new_llm
+                session._tts = new_tts
+                logger.debug(
+                    f"[dispatch] route={route} emotion={emotion} "
+                    f"llm={getattr(new_llm, 'label', repr(new_llm))} "
+                    f"voice={getattr(new_tts, 'voice_id', '?')}"
+                )
+            except Exception as e:
+                logger.warning(f"[dispatch] swap failed for route={route}: {e}; will use fallback inner")
+
+        task = asyncio.create_task(_classify_and_swap())
+        _bg_tasks.add(task)
+        task.add_done_callback(_bg_tasks.discard)
 
     # ── TTS-error surfacing ────────────────────────────────────────
     # Groq Orpheus has tight free-tier limits; on rate-limit the
