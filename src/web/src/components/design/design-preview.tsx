@@ -1,25 +1,36 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ExternalLink,
   FileText,
   Maximize2,
+  MessageSquarePlus,
   Minus,
   Plus,
   RefreshCw,
+  X,
 } from "lucide-react";
 import { apiReadFile, type TreeEntry } from "@/lib/workspace/client";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ext, IMAGE_EXT } from "./file-classify";
 
+export type DesignComment = {
+  filePath: string;
+  selector: string;
+  tag: string;
+  text: string;
+  comment: string;
+};
+
 export function DesignPreview({
   workspaceId,
   selected,
   showToolbar = false,
   streaming = null,
+  onComment,
 }: {
   workspaceId: string;
   selected: TreeEntry | null;
@@ -27,12 +38,14 @@ export function DesignPreview({
    *  above the content. Used when a file tab is the active center view. */
   showToolbar?: boolean;
   /** Live partial HTML being streamed by the LLM. When present, render this
-   *  over the selected-file view so the canvas updates as Claude generates.
-   *  Cleared by the parent when the file action closes. */
+   *  over the selected-file view so the canvas updates as Claude generates. */
   streaming?: { filePath: string; content: string } | null;
+  /** Fired when the user clicks an element on the canvas in comment mode and
+   *  submits a targeted change request. The parent (DesignView) prefills the
+   *  chat composer with a structured prompt that asks the model to edit
+   *  ONLY the picked element. */
+  onComment?: (c: DesignComment) => void;
 }) {
-  // Streaming wins over selection: the user is watching their design build
-  // right now, that's more interesting than whatever was previously selected.
   if (streaming && streaming.content) {
     return (
       <div className="flex h-full flex-col">
@@ -56,14 +69,12 @@ export function DesignPreview({
       workspaceId={workspaceId}
       selected={selected}
       showToolbar={showToolbar}
+      onComment={onComment}
     />
   );
 }
 
 function StreamingPreview({ content, filePath }: { content: string; filePath: string }) {
-  // The model is mid-stream so the HTML may be incomplete. Append the
-  // closing tags an iframe needs so the partial content still renders.
-  // (If the closing tags are already present they're harmless.)
   const safe = content.includes("</html>")
     ? content
     : `${content}\n</body></html>`;
@@ -96,14 +107,17 @@ function PreviewContainer({
   workspaceId,
   selected,
   showToolbar,
+  onComment,
 }: {
   workspaceId: string;
   selected: TreeEntry;
   showToolbar: boolean;
+  onComment?: (c: DesignComment) => void;
 }) {
   const qc = useQueryClient();
   const [iframeKey, setIframeKey] = useState(0);
   const [zoom, setZoom] = useState(100);
+  const [commentMode, setCommentMode] = useState(false);
 
   const refresh = () => {
     qc.invalidateQueries({
@@ -134,6 +148,8 @@ function PreviewContainer({
             setZoom((z) => [...ZOOM_STEPS].reverse().find((s) => s < z) ?? z)
           }
           onZoomReset={() => setZoom(100)}
+          commentMode={isHtml ? commentMode : undefined}
+          onCommentModeChange={isHtml ? setCommentMode : undefined}
         />
       )}
       <div className="flex-1 min-h-0">
@@ -143,6 +159,9 @@ function PreviewContainer({
             path={selected.path}
             iframeKey={iframeKey}
             zoom={zoom}
+            commentMode={commentMode}
+            onCommentModeOff={() => setCommentMode(false)}
+            onComment={onComment}
           />
         ) : isImage ? (
           <ImagePreview
@@ -167,6 +186,8 @@ function PreviewToolbar({
   onZoomOut,
   onZoomReset,
   disabled = false,
+  commentMode,
+  onCommentModeChange,
 }: {
   onRefresh?: () => void;
   presentHref?: string | null;
@@ -175,7 +196,10 @@ function PreviewToolbar({
   onZoomOut?: () => void;
   onZoomReset?: () => void;
   disabled?: boolean;
+  commentMode?: boolean;
+  onCommentModeChange?: (next: boolean) => void;
 }) {
+  const showComment = onCommentModeChange != null;
   return (
     <div
       className={cn(
@@ -193,6 +217,21 @@ function PreviewToolbar({
       >
         <RefreshCw className="size-3.5" />
       </Button>
+
+      {showComment && (
+        <Button
+          variant={commentMode ? "secondary" : "ghost"}
+          size="sm"
+          className="rounded-md"
+          aria-pressed={commentMode}
+          title="Comment on an element — click to highlight, then type a change request"
+          onClick={() => onCommentModeChange?.(!commentMode)}
+          disabled={disabled}
+        >
+          <MessageSquarePlus className="size-3.5" />
+          Comment
+        </Button>
+      )}
 
       <div className="ml-auto flex items-center gap-1">
         <Button
@@ -259,43 +298,312 @@ function PreviewToolbar({
   );
 }
 
+// Selection-layer JS injected into the iframe when comment mode is enabled.
+// Adds hover outlines, captures clicks, and posts a structured payload back
+// to the parent. Disabled by default — the parent posts an "enable" message
+// to activate. All listeners are passive when disabled, so this is safe to
+// inject unconditionally; we only inject when commentMode flips on so users
+// not commenting see clean iframes.
+const PICKER_SCRIPT = `
+(function(){
+  const ACCENT = '#FF6A00';
+  const STYLE = 'jarvis-pick-' + Math.random().toString(36).slice(2,8);
+  const css = '.' + STYLE + '_hover{outline:2px solid ' + ACCENT + ';outline-offset:-2px;cursor:crosshair;}'
+    + '.' + STYLE + '_picked{outline:2px solid ' + ACCENT + ';outline-offset:-2px;box-shadow:0 0 0 9999px rgba(0,0,0,.18);}';
+  const styleEl = document.createElement('style');
+  styleEl.textContent = css;
+  document.head.appendChild(styleEl);
+
+  let enabled = false;
+  let lastHover = null;
+  let lastPicked = null;
+
+  function selectorFor(el){
+    const parts = [];
+    let cur = el;
+    let depth = 0;
+    while (cur && cur !== document.body && cur !== document.documentElement && depth < 6) {
+      let part = cur.tagName.toLowerCase();
+      if (cur.id) { parts.unshift('#' + cur.id); return parts.join(' > '); }
+      const cn = (typeof cur.className === 'string' ? cur.className : '').trim();
+      const cls = cn.split(/\\s+/).filter(c => c && !c.startsWith(STYLE)).slice(0, 2);
+      if (cls.length) part += '.' + cls.join('.');
+      const parent = cur.parentElement;
+      if (parent) {
+        const sibs = Array.prototype.filter.call(parent.children, s => s.tagName === cur.tagName);
+        if (sibs.length > 1) part += ':nth-of-type(' + (sibs.indexOf(cur) + 1) + ')';
+      }
+      parts.unshift(part);
+      cur = parent;
+      depth++;
+    }
+    return parts.join(' > ');
+  }
+
+  function clearHover(){ if (lastHover) { lastHover.classList.remove(STYLE + '_hover'); lastHover = null; } }
+  function clearPick(){ if (lastPicked) { lastPicked.classList.remove(STYLE + '_picked'); lastPicked = null; } }
+
+  document.addEventListener('mousemove', function(e){
+    if (!enabled) return;
+    const t = e.target;
+    if (lastHover === t) return;
+    clearHover();
+    if (t && t !== document.body && !t.classList.contains(STYLE + '_picked')) {
+      t.classList.add(STYLE + '_hover');
+      lastHover = t;
+    }
+  }, true);
+
+  document.addEventListener('mouseleave', clearHover, true);
+
+  document.addEventListener('click', function(e){
+    if (!enabled) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const t = e.target;
+    clearHover();
+    clearPick();
+    t.classList.add(STYLE + '_picked');
+    lastPicked = t;
+    const text = (t.innerText || t.textContent || '').replace(/\\s+/g,' ').trim().slice(0, 200);
+    const html = (t.outerHTML || '').slice(0, 400);
+    parent.postMessage({
+      type: 'jarvis:design:select',
+      selector: selectorFor(t),
+      tag: t.tagName.toLowerCase(),
+      text: text,
+      html: html
+    }, '*');
+  }, true);
+
+  window.addEventListener('message', function(e){
+    if (!e.data || typeof e.data !== 'object') return;
+    if (e.data.type === 'jarvis:design:enable') { enabled = true; }
+    if (e.data.type === 'jarvis:design:disable') { enabled = false; clearHover(); clearPick(); }
+    if (e.data.type === 'jarvis:design:clear-pick') { clearPick(); }
+  });
+})();
+`;
+
+function injectPickerScript(html: string): string {
+  const tag = `<script>${PICKER_SCRIPT}</script>`;
+  if (html.includes("</body>")) return html.replace("</body>", `${tag}</body>`);
+  if (html.includes("</html>")) return html.replace("</html>", `${tag}</html>`);
+  return html + tag;
+}
+
 function HtmlPreview({
   workspaceId,
   path,
   iframeKey,
   zoom,
+  commentMode,
+  onCommentModeOff,
+  onComment,
 }: {
   workspaceId: string;
   path: string;
   iframeKey: number;
   zoom: number;
+  commentMode: boolean;
+  onCommentModeOff: () => void;
+  onComment?: (c: DesignComment) => void;
 }) {
   const { data: content = "", isLoading, isError } = useQuery({
     queryKey: ["design-file", workspaceId, path],
     queryFn: () => apiReadFile(workspaceId, path),
   });
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const [picked, setPicked] = useState<{
+    selector: string;
+    tag: string;
+    text: string;
+    html: string;
+  } | null>(null);
+  const [comment, setComment] = useState("");
+
+  // Inject the picker script only when commentMode is on so a clean iframe
+  // is the default for users not commenting.
+  const html = useMemo(
+    () => (commentMode ? injectPickerScript(content) : content),
+    [content, commentMode],
+  );
+
+  // Listen for picks coming out of the iframe.
+  useEffect(() => {
+    const handler = (event: MessageEvent) => {
+      if (event.source !== iframeRef.current?.contentWindow) return;
+      const data = event.data as { type?: string } | null;
+      if (!data || data.type !== "jarvis:design:select") return;
+      const { selector, tag, text, html } = data as unknown as {
+        selector: string;
+        tag: string;
+        text: string;
+        html: string;
+      };
+      setPicked({ selector, tag, text, html });
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, []);
+
+  // Tell the iframe when commentMode flips. The iframe is reloaded via
+  // srcDoc when html changes, so on re-mount we send 'enable' once it's ready.
+  useEffect(() => {
+    const win = iframeRef.current?.contentWindow;
+    if (!win) return;
+    win.postMessage(
+      { type: commentMode ? "jarvis:design:enable" : "jarvis:design:disable" },
+      "*",
+    );
+    if (!commentMode) {
+      setPicked(null);
+      setComment("");
+    }
+  }, [commentMode, html]);
+
+  const cancel = () => {
+    setPicked(null);
+    setComment("");
+    iframeRef.current?.contentWindow?.postMessage(
+      { type: "jarvis:design:clear-pick" },
+      "*",
+    );
+  };
+
+  const submit = () => {
+    if (!picked || !comment.trim()) return;
+    onComment?.({
+      filePath: path,
+      selector: picked.selector,
+      tag: picked.tag,
+      text: picked.text,
+      comment: comment.trim(),
+    });
+    setPicked(null);
+    setComment("");
+    iframeRef.current?.contentWindow?.postMessage(
+      { type: "jarvis:design:clear-pick" },
+      "*",
+    );
+    onCommentModeOff();
+  };
+
   if (isLoading) return <PreviewLoading />;
   if (isError) return <PreviewError />;
-  // Width-compensated zoom: scale the iframe and grow its layout box by
-  // the inverse ratio so 50% doesn't leave half the surface blank.
+
   const scale = zoom / 100;
   return (
-    <div className="h-full w-full overflow-hidden bg-white">
-      <div
-        className="origin-top-left"
-        style={{
-          width: `${100 / scale}%`,
-          height: `${100 / scale}%`,
-          transform: `scale(${scale})`,
-        }}
-      >
-        <iframe
-          key={iframeKey}
-          title={path}
-          srcDoc={content}
-          sandbox="allow-scripts"
-          className="h-full w-full border-0 bg-white"
+    <div className="flex h-full w-full flex-col overflow-hidden bg-white">
+      <div className="relative flex-1 min-h-0">
+        <div
+          className="origin-top-left h-full w-full"
+          style={{
+            width: `${100 / scale}%`,
+            height: `${100 / scale}%`,
+            transform: `scale(${scale})`,
+          }}
+        >
+          <iframe
+            key={iframeKey}
+            ref={iframeRef}
+            title={path}
+            srcDoc={html}
+            sandbox="allow-scripts"
+            className="h-full w-full border-0 bg-white"
+            onLoad={() => {
+              if (commentMode) {
+                iframeRef.current?.contentWindow?.postMessage(
+                  { type: "jarvis:design:enable" },
+                  "*",
+                );
+              }
+            }}
+          />
+        </div>
+
+        {commentMode && !picked && (
+          <div className="pointer-events-none absolute left-1/2 top-3 z-10 -translate-x-1/2 rounded-full bg-black/75 px-3 py-1 text-[11px] font-medium text-white">
+            Comment mode — click any element to leave a change request
+          </div>
+        )}
+      </div>
+
+      {picked && commentMode && (
+        <CommentPopover
+          tag={picked.tag}
+          text={picked.text || picked.selector}
+          comment={comment}
+          onCommentChange={setComment}
+          onCancel={cancel}
+          onSubmit={submit}
         />
+      )}
+    </div>
+  );
+}
+
+function CommentPopover({
+  tag,
+  text,
+  comment,
+  onCommentChange,
+  onCancel,
+  onSubmit,
+}: {
+  tag: string;
+  text: string;
+  comment: string;
+  onCommentChange: (next: string) => void;
+  onCancel: () => void;
+  onSubmit: () => void;
+}) {
+  return (
+    <div className="shrink-0 border-t border-border/60 bg-background p-3">
+      <div className="mb-2 flex items-center gap-2 text-[11px] text-muted-foreground">
+        <span className="rounded bg-muted px-2 py-0.5 font-mono text-foreground">
+          {tag}
+        </span>
+        <span className="line-clamp-1 max-w-[60ch]">{text}</span>
+      </div>
+      <div className="flex items-end gap-2">
+        <textarea
+          value={comment}
+          onChange={(e) => onCommentChange(e.target.value)}
+          placeholder="What should change about this element? (e.g. 'make this bigger and warmer in tone')"
+          rows={2}
+          autoFocus
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              onSubmit();
+            }
+            if (e.key === "Escape") {
+              e.preventDefault();
+              onCancel();
+            }
+          }}
+          className="flex-1 resize-none rounded-md border border-border/60 bg-background px-3 py-1.5 text-[13px] focus:border-foreground/40 focus:outline-none"
+        />
+        <div className="flex gap-1">
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            aria-label="Cancel"
+            title="Cancel (Esc)"
+            onClick={onCancel}
+          >
+            <X className="size-3.5" />
+          </Button>
+          <Button
+            size="sm"
+            onClick={onSubmit}
+            disabled={!comment.trim()}
+            title="Send (Cmd/Ctrl+Enter)"
+          >
+            Send
+          </Button>
+        </div>
       </div>
     </div>
   );
@@ -315,8 +623,6 @@ function ImagePreview({
   const scale = zoom / 100;
   return (
     <div className="flex h-full items-center justify-center overflow-auto bg-muted/20">
-      {/* Workspace-served bytes — next/image can't optimize a private
-          local API route, so plain <img> is the right tool here. */}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src={`/api/workspace/${workspaceId}/file?path=${encodeURIComponent(
