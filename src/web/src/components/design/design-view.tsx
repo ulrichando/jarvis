@@ -11,10 +11,24 @@ import { cn } from "@/lib/utils";
 import { DEFAULT_FORMAT, FORMAT_LABEL, type Format } from "@/lib/design/format";
 import { BrandPanel } from "./brand-panel";
 import { DesignFilesPanel } from "./design-files-panel";
-import { DesignPreview } from "./design-preview";
+import { DesignPreview, type DesignComment } from "./design-preview";
 import { FormatSelector } from "./format-selector";
 
 type DesignTab = { kind: "files" } | { kind: "file"; entry: TreeEntry };
+
+function buildEditPrompt(c: DesignComment): string {
+  const text = c.text ? `, current content: "${c.text}"` : "";
+  return [
+    `Edit ONLY this element in ${c.filePath} — leave every other element identical, byte-for-byte.`,
+    ``,
+    `Element: <${c.tag}>${text}`,
+    `CSS path (best-effort): ${c.selector}`,
+    ``,
+    `Change requested: ${c.comment}`,
+    ``,
+    `Return the FULL updated ${c.filePath} as a single boltAction file write.`,
+  ].join("\n");
+}
 
 function tabKey(t: DesignTab): string {
   return t.kind === "files" ? "__files" : `f:${t.entry.path}`;
@@ -35,6 +49,13 @@ export function DesignView({
   const [streaming, setStreaming] = useState<{ filePath: string; content: string } | null>(null);
   const [prefillPrompt, setPrefillPrompt] = useState<{ id: string; text: string } | undefined>(undefined);
   const { data: settings } = useSettings();
+
+  const handleComment = (c: DesignComment) => {
+    setPrefillPrompt({
+      id: `${Date.now()}`,
+      text: buildEditPrompt(c),
+    });
+  };
 
   const openFile = (entry: TreeEntry) => {
     if (entry.type === "dir") return;
@@ -244,6 +265,7 @@ export function DesignView({
               selected={selected}
               streaming={streaming}
               showToolbar
+              onComment={handleComment}
             />
           </div>
         )}
