@@ -32,6 +32,7 @@ export function DesignView({
   const [selected, setSelected] = useState<TreeEntry | null>(null);
   const [format, setFormat] = useState<Format>(DEFAULT_FORMAT);
   const [showBrand, setShowBrand] = useState(false);
+  const [streaming, setStreaming] = useState<{ filePath: string; content: string } | null>(null);
   const { data: settings } = useSettings();
 
   const openFile = (entry: TreeEntry) => {
@@ -191,6 +192,17 @@ export function DesignView({
               workspaceId={workspaceId}
               workspaceName={workspaceName}
               composerPlaceholder={`Describe the ${FORMAT_LABEL[format].toLowerCase()} you want to create…`}
+              onStreamingFile={(filePath, content) =>
+                setStreaming({ filePath, content })
+              }
+              onFileComplete={(filePath) => {
+                // Keep the streaming preview up briefly so the user sees the
+                // final state, then clear it so the iframe falls back to the
+                // file on disk (which the existing parser has now written).
+                setStreaming((cur) =>
+                  cur && cur.filePath === filePath ? null : cur,
+                );
+              }}
             />
           </div>
         </aside>
@@ -203,7 +215,7 @@ export function DesignView({
               <BrandPanel workspaceId={workspaceId} />
             </div>
             <div className="flex w-[42%] min-w-80 shrink-0 flex-col">
-              <DesignPreview workspaceId={workspaceId} selected={selected} />
+              <DesignPreview workspaceId={workspaceId} selected={selected} streaming={streaming} />
             </div>
           </div>
         ) : showFiles ? (
@@ -216,7 +228,7 @@ export function DesignView({
               />
             </div>
             <div className="flex w-[42%] min-w-80 shrink-0 flex-col border-l border-border/60">
-              <DesignPreview workspaceId={workspaceId} selected={selected} />
+              <DesignPreview workspaceId={workspaceId} selected={selected} streaming={streaming} />
             </div>
           </div>
         ) : (
@@ -224,6 +236,7 @@ export function DesignView({
             <DesignPreview
               workspaceId={workspaceId}
               selected={selected}
+              streaming={streaming}
               showToolbar
             />
           </div>
