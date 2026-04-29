@@ -23,5 +23,8 @@ class DispatchingLLM:
     def pick(self, route: str) -> Any:
         inner = self.inners.get(route, self.fallback)
         self.last_route = route
-        self.last_llm_label = getattr(inner, "label", repr(inner))
+        # Prefer our private attribute (_jarvis_label) — `label` collides
+        # with a read-only property on livekit.plugins.groq.LLM that raises
+        # AttributeError on assignment, so we use _jarvis_label everywhere.
+        self.last_llm_label = getattr(inner, "_jarvis_label", None) or getattr(inner, "label", repr(inner))
         return inner
