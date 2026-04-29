@@ -57,6 +57,18 @@ type ChatProps = {
   workspaceId?: string;
   workspaceName?: string;
   embedded?: boolean;
+  // First message to send automatically on mount — used when a chat is
+  // launched from a Project composer that pre-creates the conversation
+  // and forwards the prompt via the URL.
+  seed?: string;
+  // Override the composer placeholder for context-specific surfaces.
+  composerPlaceholder?: string;
+  // Selects which workspace prompt the API attaches. Default is the
+  // coding workbench; "design" swaps in the single-file HTML designer
+  // prompt for the Design tab.
+  mode?: "design";
+  // Selects the design playbook the API uses. Only meaningful when mode === "design".
+  format?: import("@/lib/design/format").Format;
 };
 
 type ChatStatus = "ready" | "submitted" | "streaming" | "error";
@@ -106,6 +118,10 @@ export function Chat({
   workspaceId: workspaceIdProp,
   workspaceName: workspaceNameProp,
   embedded = false,
+  seed,
+  composerPlaceholder,
+  mode,
+  format,
 }: ChatProps) {
   const qc = useQueryClient();
   const [input, setInput] = useState("");
@@ -282,6 +298,8 @@ export function Chat({
           model,
           messages: historyForApi,
           workspaceId: targetWorkspaceId ?? undefined,
+          mode,
+          format,
         }),
         signal: ctrl.signal,
       });
@@ -411,6 +429,27 @@ export function Chat({
     }
   };
 
+  // Auto-fire the seed prompt once on mount when launched from a Project
+  // composer (the conversation is pre-created server-side, the prompt
+  // arrives via ?seed=). Ref-guarded so React 19 strict-mode mounting
+  // doesn't double-submit. queueMicrotask defers the setState chain
+  // off the effect body — submit() does an optimistic flushSync, which
+  // the lint rule (correctly) flags as cascading-render-prone if called
+  // inline.
+  const seedFiredRef = useRef(false);
+  useEffect(() => {
+    if (seedFiredRef.current) return;
+    if (!seed?.trim()) return;
+    if (messages.length > 0) return;
+    seedFiredRef.current = true;
+    queueMicrotask(() => {
+      void submit(seed);
+    });
+    // submit closes over latest state via refs/setters; we only want
+    // this to run once when the seed arrives.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seed]);
+
   const isEmpty = messages.length === 0;
 
   // When embedded in the workbench we always want the composer pinned
@@ -431,6 +470,7 @@ export function Chat({
               status={status}
               provider={provider}
               hideWorkspacePicker={embedded}
+              placeholder={composerPlaceholder}
             />
           </div>
           <FunctionGrid
@@ -528,6 +568,7 @@ export function Chat({
         status={status}
         provider={provider}
         hideWorkspacePicker={embedded}
+        placeholder={composerPlaceholder}
       />
     </div>
   );
