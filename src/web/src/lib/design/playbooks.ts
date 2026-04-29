@@ -102,7 +102,7 @@ function formatBlock(format: Format): string {
   Type: A4 print-grade one-pager.
   File path: "${file}"
   Canvas: A4 portrait (210mm × 297mm). \`<body>\` is exactly one page, no scroll. Use \`@page { size: A4; margin: 0 }\` and \`html, body { width: 210mm; height: 297mm }\`.
-  Anatomy: masthead (title + date + optional issue/edition number) → 2–3 content blocks separated by horizontal bands of contrasting tone → footer with source/credit line.
+  Anatomy: masthead (title + date + optional issue/edition number) → 2–3 content blocks (each MUST use a DISTINCT treatment — e.g. one "big stat band", one two-column text, one quote/callout) separated by horizontal bands of contrasting tone → footer with source/credit line.
   Typography: print-grade scale — display 72–96pt, h2 24–32pt, body 11–13pt, caption 9–10pt. Leading 1.3–1.4 for body.
   Color: at most 2 backgrounds; 1 accent. Use the bands of tone to separate sections, not boxes/cards.
   Forbidden: scroll; web nav menus; sticky headers; anything that wouldn't print well; decorative shadows.
