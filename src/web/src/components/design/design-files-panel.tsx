@@ -14,7 +14,7 @@ import {
   Upload,
 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo } from "react";
+import { useMemo, useRef, useState } from "react";
 import { apiDeleteEntry, apiTree, type TreeEntry } from "@/lib/workspace/client";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -144,7 +144,12 @@ export function DesignFilesPanel({
       </div>
 
       {/* Drop zone */}
-      <DropZone />
+      <DropZone
+        workspaceId={workspaceId}
+        onUploaded={() =>
+          qc.invalidateQueries({ queryKey: ["design-tree", workspaceId] })
+        }
+      />
     </div>
   );
 }
@@ -287,19 +292,137 @@ function tintFor(entry: TreeEntry): string {
   return "bg-muted text-muted-foreground";
 }
 
-function DropZone() {
+function DropZone({
+  workspaceId,
+  onUploaded,
+}: {
+  workspaceId: string;
+  onUploaded: () => void;
+}) {
+  const [active, setActive] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [lastUploaded, setLastUploaded] = useState<string[] | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const upload = async (files: FileList | File[]) => {
+    setBusy(true);
+    setError(null);
+    const arr = Array.from(files);
+    const uploadedNames: string[] = [];
+    try {
+      for (const f of arr) {
+        if (f.size === 0) continue;
+        if (f.size > 10 * 1024 * 1024) {
+          setError(`${f.name} > 10MB`);
+          continue;
+        }
+        const dataUrl = await readAsDataUrl(f);
+        const base64 = dataUrl.split(",")[1] ?? "";
+        const safeName = f.name.replace(/[/\\]/g, "_");
+        const target = looksLikeReference(f) ? `references/${safeName}` : safeName;
+        const r = await fetch(`/api/workspace/${workspaceId}/upload`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: target, base64 }),
+        });
+        if (!r.ok) {
+          const j = await r.json().catch(() => ({}));
+          setError(j?.error ?? `upload failed (${r.status})`);
+          continue;
+        }
+        uploadedNames.push(target);
+      }
+      if (uploadedNames.length > 0) {
+        setLastUploaded(uploadedNames);
+        onUploaded();
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
-    <div className="border-t border-border/50 bg-background/40 px-5 py-4">
-      <div className="flex items-center gap-2 text-[13px] font-medium text-foreground/80">
-        <Upload className="size-3.5 text-muted-foreground" />
+    <div
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+        if (!active) setActive(true);
+      }}
+      onDragLeave={(e) => {
+        // Only deactivate when leaving the dropzone itself, not its children.
+        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+        setActive(false);
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        setActive(false);
+        if (e.dataTransfer.files.length > 0) void upload(e.dataTransfer.files);
+      }}
+      className={cn(
+        "border-t bg-background/40 px-5 py-4 transition-colors",
+        active
+          ? "border-primary/50 bg-primary/5"
+          : "border-border/50",
+      )}
+    >
+      <button
+        type="button"
+        onClick={() => inputRef.current?.click()}
+        disabled={busy}
+        className="flex items-center gap-2 text-[13px] font-medium text-foreground/80 hover:text-foreground"
+      >
+        {busy ? (
+          <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
+        ) : (
+          <Upload className="size-3.5 text-muted-foreground" />
+        )}
         DROP FILES HERE
-      </div>
+      </button>
+      <input
+        ref={inputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          if (e.target.files && e.target.files.length > 0) {
+            void upload(e.target.files);
+            e.target.value = "";
+          }
+        }}
+      />
       <p className="mt-1 text-[12px] leading-5 text-muted-foreground">
-        Images, docs, references, Figma links, or folders — Jarvis will use
-        them as context.
+        Images, docs, references — Jarvis can use them as context. Click to
+        browse, or drop them here.
       </p>
+      {error && (
+        <p className="mt-1 text-[11px] leading-4 text-red-500">{error}</p>
+      )}
+      {lastUploaded && lastUploaded.length > 0 && !error && (
+        <p className="mt-1 text-[11px] leading-4 text-emerald-500">
+          Uploaded {lastUploaded.length === 1 ? lastUploaded[0] : `${lastUploaded.length} files`}
+        </p>
+      )}
     </div>
   );
+}
+
+function readAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+function looksLikeReference(f: File): boolean {
+  // Images and PDFs are most useful as visual references — bucket them under
+  // references/ so they don't pollute the top-level project tree.
+  if (f.type.startsWith("image/")) return true;
+  if (f.type === "application/pdf") return true;
+  if (/\.(png|jpe?g|gif|webp|svg|pdf|sketch|fig)$/i.test(f.name)) return true;
+  return false;
 }
 
 function EmptyDesign({
