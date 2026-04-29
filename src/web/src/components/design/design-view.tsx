@@ -2,11 +2,12 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { ChevronDown, Download, Palette, Play, Plus, Share2, Sparkles, X } from "lucide-react";
+import { ChevronDown, Download, ExternalLink, Maximize, Palette, Play, Plus, Share2, X } from "lucide-react";
 import type { TreeEntry } from "@/lib/workspace/client";
 import { Chat } from "@/components/chat/chat";
 import { Button } from "@/components/ui/button";
 import { useSettings } from "@/hooks/use-settings";
+import { useResizableColumn } from "@/hooks/use-resizable-column";
 import { cn } from "@/lib/utils";
 import { formatFromFilename } from "@/lib/design/format";
 import { BrandPanel } from "./brand-panel";
@@ -48,6 +49,43 @@ export function DesignView({
   const [prefillPrompt, setPrefillPrompt] = useState<{ id: string; text: string } | undefined>(undefined);
   const { data: settings } = useSettings();
 
+  const chatColumn = useResizableColumn({
+    storageKey: "design.chatColumnWidth",
+    defaultWidth: 380,
+    min: 280,
+    max: 640,
+  });
+
+  const closeDetails = (e: React.MouseEvent) => {
+    e.currentTarget.closest("details")?.removeAttribute("open");
+  };
+
+  const presentInThisTab = () => {
+    if (!selected) return;
+    window.location.href = `/api/workspace/${workspaceId}/file?path=${encodeURIComponent(selected.path)}&raw=1`;
+  };
+  const presentFullscreen = () => {
+    // Put the live preview iframe into fullscreen — works because the iframe
+    // is in our document, not a cross-origin doc. Fall back to a new tab if
+    // the browser blocks the request.
+    const iframe = document.querySelector<HTMLIFrameElement>(
+      "iframe[title]:not([sandbox=''])",
+    );
+    if (iframe?.requestFullscreen) {
+      iframe.requestFullscreen().catch(() => presentInNewTab());
+    } else {
+      presentInNewTab();
+    }
+  };
+  const presentInNewTab = () => {
+    if (!selected) return;
+    window.open(
+      `/api/workspace/${workspaceId}/file?path=${encodeURIComponent(selected.path)}&raw=1`,
+      "_blank",
+      "noopener",
+    );
+  };
+
   const handleComment = (c: DesignComment) => {
     setPrefillPrompt({
       id: `${Date.now()}`,
@@ -85,7 +123,10 @@ export function DesignView({
     <div className="flex h-full flex-col bg-background">
       {/* ── Top bar ─────────────────────────────────────────── */}
       <header className="flex h-12 shrink-0 items-stretch border-b border-border/60">
-        <div className="flex w-95 shrink-0 items-center gap-2 border-r border-border/60 px-3">
+        <div
+          className="flex shrink-0 items-center gap-2 border-r border-border/60 px-3"
+          style={{ width: chatColumn.width }}
+        >
           <span className="flex size-7 items-center justify-center rounded-md bg-orange-500/15 text-orange-400">
             <Palette className="size-3.5" />
           </span>
@@ -138,40 +179,38 @@ export function DesignView({
         </div>
 
         <div className="flex shrink-0 items-center gap-2 px-3">
-          <Button
-            variant={showBrand ? "secondary" : "ghost"}
-            size="sm"
-            className="rounded-md"
-            onClick={() => setShowBrand((v) => !v)}
-          >
-            <Sparkles className="size-3.5" />
-            Brand
-          </Button>
           {selected && selected.type !== "dir" && (
             <details className="relative">
               <summary className="flex cursor-pointer list-none items-center gap-1 rounded-md px-2 py-1 text-[13px] text-muted-foreground hover:bg-muted">
-                <Play className="size-3.5" />
                 Present
                 <ChevronDown className="size-3" />
               </summary>
               <div className="absolute right-0 top-full z-20 mt-1 w-52 overflow-hidden rounded-md border border-border/60 bg-popover shadow-md">
-                <a
-                  href={`/api/workspace/${workspaceId}/file?path=${encodeURIComponent(selected.path)}&raw=1`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex items-center gap-2 px-3 py-2 text-[13px] hover:bg-muted"
+                <button
+                  type="button"
+                  onClick={(e) => { closeDetails(e); presentInThisTab(); }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] hover:bg-muted"
+                >
+                  <ExternalLink className="size-3.5" />
+                  In this tab
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => { closeDetails(e); presentFullscreen(); }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] hover:bg-muted"
+                >
+                  <Maximize className="size-3.5" />
+                  Fullscreen
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => { closeDetails(e); presentInNewTab(); }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] hover:bg-muted"
                 >
                   <Play className="size-3.5" />
-                  Open in new tab
-                </a>
-                <a
-                  href={`/api/workspace/${workspaceId}/file?path=${encodeURIComponent(selected.path)}&raw=1`}
-                  download={selected.name}
-                  className="flex items-center gap-2 px-3 py-2 text-[13px] hover:bg-muted"
-                >
-                  <Download className="size-3.5" />
-                  Download HTML
-                </a>
+                  New tab
+                </button>
+                <div className="my-1 h-px bg-border/60" />
                 <a
                   href={(() => {
                     const f = formatFromFilename(selected.name);
@@ -181,7 +220,15 @@ export function DesignView({
                   className="flex items-center gap-2 px-3 py-2 text-[13px] hover:bg-muted"
                 >
                   <Download className="size-3.5" />
-                  Download PDF
+                  Export PDF
+                </a>
+                <a
+                  href={`/api/workspace/${workspaceId}/file?path=${encodeURIComponent(selected.path)}&raw=1`}
+                  download={selected.name}
+                  className="flex items-center gap-2 px-3 py-2 text-[13px] hover:bg-muted"
+                >
+                  <Download className="size-3.5" />
+                  Export HTML
                 </a>
               </div>
             </details>
@@ -204,8 +251,11 @@ export function DesignView({
 
       {/* ── Body: chat | files-or-preview-only | preview ──── */}
       <div className="flex flex-1 min-h-0">
-        {/* Left: chat */}
-        <aside className="flex w-95 shrink-0 flex-col border-r border-border/60">
+        {/* Left: chat — width is user-resizable via the divider below */}
+        <aside
+          className="flex shrink-0 flex-col border-r border-border/60"
+          style={{ width: chatColumn.width }}
+        >
           <ChatTabsHeader />
           <div className="flex-1 min-h-0">
             <Chat
@@ -230,6 +280,22 @@ export function DesignView({
           </div>
         </aside>
 
+        {/* Draggable splitter — drag horizontally to resize the chat column.
+            The hit-target is wider than the visible bar for easier grabbing. */}
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize chat column"
+          onMouseDown={chatColumn.startDrag}
+          className={cn(
+            "group relative w-1 shrink-0 cursor-col-resize select-none",
+            "before:absolute before:inset-y-0 before:-left-1 before:-right-1 before:content-['']",
+            chatColumn.dragging
+              ? "bg-primary/40"
+              : "bg-transparent hover:bg-primary/20",
+          )}
+        />
+
         {/* Center: brand editor when toggled; otherwise files+preview or
             preview-only depending on the active tab. */}
         {showBrand ? (
@@ -251,6 +317,8 @@ export function DesignView({
                 onStarter={(prompt) =>
                   setPrefillPrompt({ id: `${Date.now()}`, text: prompt })
                 }
+                onToggleBrand={() => setShowBrand((v) => !v)}
+                brandActive={showBrand}
               />
             </div>
             <div className="flex w-[42%] min-w-80 shrink-0 flex-col border-l border-border/60">
