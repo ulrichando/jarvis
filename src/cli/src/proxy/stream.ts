@@ -133,23 +133,17 @@ export async function convertOpenAIStreamToAnthropic(
         if (delta.content) {
           if (state.textBlockIndex === null) {
             state.textBlockIndex = state.nextContentIndex++
-            // Open empty (SDK ignores inline text in start).
+            // Prepend reasoning marker to carry reasoning_content
+            // through the SDK round-trip.
+            const prefix = state.reasoningBuffer
+              ? encodeReasoningMarker(state.reasoningBuffer)
+              : ''
+            state.reasoningBuffer = ''
             send('content_block_start', {
               type: 'content_block_start',
               index: state.textBlockIndex,
-              content_block: { type: 'text', text: '' },
+              content_block: { type: 'text', text: prefix },
             })
-            // Emit reasoning marker as the FIRST delta so reasoning_content
-            // survives the round-trip, ahead of the actual content.
-            if (state.reasoningBuffer) {
-              const markerText = encodeReasoningMarker(state.reasoningBuffer)
-              state.reasoningBuffer = ''
-              send('content_block_delta', {
-                type: 'content_block_delta',
-                index: state.textBlockIndex,
-                delta: { type: 'text_delta', text: markerText },
-              })
-            }
           }
           send('content_block_delta', {
             type: 'content_block_delta',
@@ -182,11 +176,8 @@ export async function convertOpenAIStreamToAnthropic(
               }
 
               // Reasoning → tool_use with no text: emit a marker-only
-              // text block so reasoning_content survives the round-trip.
-              // BUG FIX 2026-04-29 (round 2): the Anthropic SDK ignores
-              // non-empty `text` in content_block_start and only assembles
-              // text from text_delta events. Emit start (empty), delta
-              // (marker), then stop.
+              // text block at the NEXT index so reasoning_content survives
+              // the round-trip.
               if (state.reasoningBuffer) {
                 const markerIdx = state.nextContentIndex++
                 const markerText = encodeReasoningMarker(state.reasoningBuffer)
@@ -194,12 +185,7 @@ export async function convertOpenAIStreamToAnthropic(
                 send('content_block_start', {
                   type: 'content_block_start',
                   index: markerIdx,
-                  content_block: { type: 'text', text: '' },
-                })
-                send('content_block_delta', {
-                  type: 'content_block_delta',
-                  index: markerIdx,
-                  delta: { type: 'text_delta', text: markerText },
+                  content_block: { type: 'text', text: markerText },
                 })
                 send('content_block_stop', {
                   type: 'content_block_stop',
@@ -257,19 +243,13 @@ export async function convertOpenAIStreamToAnthropic(
 
     // Stream interrupted during reasoning with no text or tools yet:
     // emit a marker-only text block so reasoning survives the round-trip.
-    // Empty start + delta + stop (SDK ignores text in start).
     if (state.reasoningBuffer && state.textBlockIndex === null && state.toolBlocks.size === 0) {
       const markerIdx = state.nextContentIndex++
       const markerText = encodeReasoningMarker(state.reasoningBuffer)
       send('content_block_start', {
         type: 'content_block_start',
         index: markerIdx,
-        content_block: { type: 'text', text: '' },
-      })
-      send('content_block_delta', {
-        type: 'content_block_delta',
-        index: markerIdx,
-        delta: { type: 'text_delta', text: markerText },
+        content_block: { type: 'text', text: markerText },
       })
       send('content_block_stop', {
         type: 'content_block_stop',
