@@ -65,6 +65,7 @@ import edge_tts_plugin
 # directly to dodge the ImportError.
 from livekit.agents.voice.room_io import RoomOptions
 from livekit.plugins import elevenlabs, groq, openai as lk_openai, silero
+from livekit.plugins.elevenlabs import VoiceSettings as _ELVoiceSettings
 
 # ── Maya-class speech intelligence ────────────────────────────────────
 from turn_router    import detect_emotion, classify_turn, AudioMeta
@@ -551,8 +552,22 @@ def _build_dispatching_tts() -> DispatchingTTS:
         )
         if use_el:
             voice_id = el_emotional_voice if route == "EMOTIONAL" else el_reasoning_voice
+            # Per-route prosody. EMOTIONAL = warmer, slower, more expressive
+            # (low stability, high style, slowed speed). REASONING = clearer,
+            # measured, slightly slow (mid stability, moderate style).
+            if route == "EMOTIONAL":
+                vs = _ELVoiceSettings(
+                    stability=0.35, similarity_boost=0.85, style=0.6, speed=0.92,
+                )
+            else:  # REASONING
+                vs = _ELVoiceSettings(
+                    stability=0.5, similarity_boost=0.75, style=0.3, speed=0.95,
+                )
             try:
-                t = elevenlabs.TTS(voice_id=voice_id, model=el_model, api_key=el_key)
+                t = elevenlabs.TTS(
+                    voice_id=voice_id, model=el_model, api_key=el_key,
+                    voice_settings=vs,
+                )
                 t.voice_id = f"el:{voice_id[:8]}…"
                 inners[route] = t
                 continue
@@ -793,28 +808,34 @@ that's the dispatcher telling you what kind of turn this is so you
 can shape your reply. Use the route as a cue, not a script:
 
 **[Route: BANTER]** — chitchat. ONE short sentence. Casual register.
+Punctuation: clean periods, the occasional exclamation when energy
+calls for it. No commas, no em-dashes — banter is fast, not nuanced.
 Match the user's energy: "yo nice" → "hey, sir", not "Greetings,
 sir, how may I assist". Don't over-engineer a snappy moment.
 
 **[Route: TASK]** — command or lookup. The standard brevity rules
 in the next section apply with full force. One sentence with the
-result, no preamble.
+result, no preamble. Punctuation: clean periods, no decorative
+pauses — TTS reads each comma as a pause and tasks should be brisk.
 
 **[Route: REASONING]** — the user wants to think something through
 or asked a how/why question. Now you can take 2-4 sentences.
 Open with the headline answer, then unpack the reasoning in one
 or two more sentences. Vary sentence length — a short sentence
-followed by a longer one reads as eloquent, not staccato. Skip
-filler ("Great question") but DON'T compress a real explanation
-into a single sentence just because brevity is a default. Depth
-is the point of this route.
+followed by a longer one reads as eloquent, not staccato. Use
+em-dashes for thoughtful pauses where natural. Skip filler
+("Great question") but DON'T compress a real explanation into a
+single sentence just because brevity is a default. Depth is the
+point of this route.
 
 **[Route: EMOTIONAL]** — the user is in a feeling, not asking a
 question. LEAD with one human sentence that names what you heard:
 "That sounds rough, sir." or "Frustrating spot to be in." Then
 ask the next useful question or offer one perspective. Never
 deflect to a tool. Never offer a checklist. Stay in the room
-with them.
+with them. Punctuation: ellipses are OK to slow the pace where the
+moment warrants — "yeah… that's a hard one" reads as present.
+Use them sparingly; one per reply is plenty.
 
 **[Emotion: <tag>]** — modulates how the route lands.
 - `frustrated` → drop ALL warmth filler ("on it, sir", "sure")
