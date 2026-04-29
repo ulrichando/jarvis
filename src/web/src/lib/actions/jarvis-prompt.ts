@@ -4,9 +4,20 @@
 // rewritten for our environment: full Linux Docker container, native
 // binaries fine, git available, real package managers.
 
+import { buildPlaybookPrompt } from "@/lib/design/playbooks";
+import type { Format } from "@/lib/design/format";
+import type { Brand } from "@/lib/design/brand";
+
 export type WorkbenchPromptArgs = {
   workspaceName: string;
   cwd: string;
+};
+
+export type DesignPromptArgs = {
+  workspaceName: string;
+  cwd: string;
+  format?: Format;
+  brand?: Brand | null;
 };
 
 export function buildWorkbenchPrompt({ workspaceName, cwd }: WorkbenchPromptArgs): string {
@@ -119,4 +130,13 @@ export default function App() {
   </boltArtifact>
 </example>
 `;
+}
+
+export function buildDesignPrompt({
+  workspaceName,
+  cwd,
+  format = "slides",
+  brand = null,
+}: DesignPromptArgs): string {
+  return "\n\n" + buildPlaybookPrompt({ format, brand, workspaceName, cwd });
 }
