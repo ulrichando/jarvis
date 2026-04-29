@@ -1007,6 +1007,12 @@ mid-sentence (no period, hanging clause, abrupt cut), you were
 interrupted. Treat the next user turn as continuation context,
 not a clean slate.
 
+The dispatcher also tags this explicitly: when you see
+`[Interrupted]` in the bracket prefix of the user message, your
+prior reply was cut off mid-sentence. The rules above all apply
+unconditionally on that turn — no "as I was saying", no repeat
+of voiced text, follow the per-route etiquette.
+
 ═══ TASK-MODE BREVITY ═══
 
 EVERY second of speech is a second of waiting. TTS at ~3 words/sec
@@ -3822,14 +3828,42 @@ async def entrypoint(ctx: JobContext) -> None:
                 _turn_n = session._jarvis_turn_count
 
                 msgs = getattr(session.chat_ctx, "messages", None) or []
+
+                # Detect interrupt: did the LLM's prior assistant message end
+                # mid-sentence? If yes, the framework cut its TTS off and the
+                # user spoke over it. Surfacing this as [Interrupted] in the
+                # prefix lets the LLM follow the INTERRUPTION HANDLING rules
+                # (no "as I was saying", no repeat of earlier voiced text).
+                interrupted = False
+                for m in reversed(msgs):
+                    role = getattr(m, "role", None)
+                    if role == "assistant":
+                        c = getattr(m, "content", None)
+                        text = c if isinstance(c, str) else (
+                            c[0] if isinstance(c, list) and c and isinstance(c[0], str) else ""
+                        )
+                        text = (text or "").rstrip()
+                        # Truncated heuristic: non-empty, doesn't end on
+                        # sentence-final punctuation, and is at least 4 words
+                        # (rules out clean acks like "got it" or "yes, sir?").
+                        if text and not text.endswith((".", "!", "?", '"')) and len(text.split()) >= 4:
+                            interrupted = True
+                        break
+                    if role == "user":
+                        # Walked past a user turn before finding an assistant
+                        # one — the assistant hasn't spoken yet this session.
+                        break
+
                 # Walk back to the most recent USER message (skip system,
                 # tool, assistant messages that may have come after).
                 for m in reversed(msgs):
                     if getattr(m, "role", None) == "user":
                         content = getattr(m, "content", None)
+                        interrupt_tag = "[Interrupted] " if interrupted else ""
                         prefix = (
                             f"[Route: {route}] [Emotion: {emotion}] "
                             f"[Turn {_turn_n} · session {_session_min}m] "
+                            f"{interrupt_tag}"
                         )
                         # content can be a string or a list[str|dict] depending
                         # on framework version. Handle both.
@@ -3841,6 +3875,9 @@ async def entrypoint(ctx: JobContext) -> None:
                             if isinstance(first, str) and not first.startswith("[Route:"):
                                 content[0] = prefix + first
                         break
+
+                if interrupted:
+                    logger.info(f"[dispatch] turn {_turn_n} preceded by interrupt — tagged")
             except Exception as ie:
                 logger.debug(f"[dispatch] prefix inject skipped: {ie}")
 
