@@ -48,6 +48,7 @@ export function DesignFilesPanel({
   onStarter,
   onToggleBrand,
   brandActive,
+  onRefine,
 }: {
   workspaceId: string;
   selectedPath: string | null;
@@ -60,6 +61,9 @@ export function DesignFilesPanel({
    *  no longer carries a Brand button — Present is the only header action. */
   onToggleBrand?: () => void;
   brandActive?: boolean;
+  /** Open the structured "Refine the brief" form. When set, the empty state
+   *  shows it as a primary CTA above the starter cards. */
+  onRefine?: () => void;
 }) {
   const qc = useQueryClient();
   const { data: entries = [], isLoading, refetch } = useQuery({
@@ -123,7 +127,7 @@ export function DesignFilesPanel({
             loading…
           </div>
         ) : total === 0 ? (
-          <EmptyDesign format={format} onStarter={onStarter} />
+          <EmptyDesign format={format} onStarter={onStarter} onRefine={onRefine} />
         ) : (
           <div className="space-y-5 px-3 py-4">
             {SECTION_ORDER.map((key) => {
@@ -465,9 +469,11 @@ function looksLikeReference(f: File): boolean {
 function EmptyDesign({
   format,
   onStarter,
+  onRefine,
 }: {
   format?: Format;
   onStarter?: (prompt: string) => void;
+  onRefine?: () => void;
 }) {
   // When format is given (rare — chips are removed by default), show only
   // that format's starters. Otherwise mix one starter per format so the
@@ -491,6 +497,18 @@ function EmptyDesign({
           out the format. Or pick a starter below to prefill the composer.
         </p>
       </div>
+
+      {onRefine && (
+        <button
+          type="button"
+          onClick={onRefine}
+          className="mt-4 flex items-center gap-2 self-start rounded-md bg-foreground px-3 py-1.5 text-[12px] font-medium text-background transition-opacity hover:opacity-90"
+        >
+          <Sparkles className="size-3.5" />
+          Refine the brief
+          <span className="text-[11px] opacity-70">— answer a few questions</span>
+        </button>
+      )}
 
       {onStarter && (
         <div className="mt-5 grid gap-2">

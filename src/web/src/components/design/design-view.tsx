@@ -18,8 +18,12 @@ import { BrandPanel } from "./brand-panel";
 import { DesignFilesPanel } from "./design-files-panel";
 import { DesignPreview, type DesignComment } from "./design-preview";
 import { TweaksPanel } from "./tweaks-panel";
+import { RefineForm } from "./refine-form";
 
-type DesignTab = { kind: "files" } | { kind: "file"; entry: TreeEntry };
+type DesignTab =
+  | { kind: "files" }
+  | { kind: "refine" }
+  | { kind: "file"; entry: TreeEntry };
 
 function buildEditPrompt(c: DesignComment): string {
   const text = c.text ? `, current content: "${c.text}"` : "";
@@ -36,7 +40,15 @@ function buildEditPrompt(c: DesignComment): string {
 }
 
 function tabKey(t: DesignTab): string {
-  return t.kind === "files" ? "__files" : `f:${t.entry.path}`;
+  if (t.kind === "files") return "__files";
+  if (t.kind === "refine") return "__refine";
+  return `f:${t.entry.path}`;
+}
+
+function tabLabel(t: DesignTab): string {
+  if (t.kind === "files") return "Design Files";
+  if (t.kind === "refine") return "Refine the brief";
+  return t.entry.name;
 }
 
 export function DesignView({
@@ -152,6 +164,24 @@ export function DesignView({
     });
   };
 
+  const openRefine = () => {
+    setTabs((prev) =>
+      prev.some((t) => t.kind === "refine") ? prev : [...prev, { kind: "refine" }],
+    );
+    setActiveKey("__refine");
+  };
+
+  const closeRefine = () => {
+    setTabs((prev) => prev.filter((t) => t.kind !== "refine"));
+    setActiveKey("__files");
+  };
+
+  const handleRefineContinue = (structuredPrompt: string) => {
+    setPrefillPrompt({ id: `${Date.now()}`, text: structuredPrompt });
+    setChatTab("chat");
+    closeRefine();
+  };
+
   const openFile = (entry: TreeEntry) => {
     if (entry.type === "dir") return;
     setSelected(entry);
@@ -177,6 +207,7 @@ export function DesignView({
 
   const initials = (settings?.user?.name ?? "U").slice(0, 1).toUpperCase();
   const showFiles = activeKey === "__files";
+  const showRefine = activeKey === "__refine";
 
   return (
     <div className="flex h-full flex-col bg-background">
@@ -198,7 +229,7 @@ export function DesignView({
           {tabs.map((t) => {
             const k = tabKey(t);
             const active = activeKey === k;
-            const label = t.kind === "files" ? "Design Files" : t.entry.name;
+            const label = tabLabel(t);
             return (
               <button
                 key={k}
@@ -415,6 +446,13 @@ export function DesignView({
               />
             </div>
           </div>
+        ) : showRefine ? (
+          <div className="flex flex-1 min-w-0">
+            <RefineForm
+              onContinue={handleRefineContinue}
+              onCancel={closeRefine}
+            />
+          </div>
         ) : showFiles ? (
           <div className="flex flex-1 min-w-0">
             <div className="flex flex-1 min-w-0 flex-col">
@@ -427,6 +465,7 @@ export function DesignView({
                 }
                 onToggleBrand={() => setShowBrand((v) => !v)}
                 brandActive={showBrand}
+                onRefine={openRefine}
               />
             </div>
             <div className="flex w-[42%] min-w-80 shrink-0 flex-col border-l border-border/60">
