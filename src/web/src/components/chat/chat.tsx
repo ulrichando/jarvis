@@ -500,6 +500,8 @@ export function Chat({
       // button so the user doesn't have to manually click Send after answering.
       // Defer to next microtask so submit() runs after this render commits.
       const text = prefillPrompt.text;
+      // eslint-disable-next-line no-console
+      console.log("[chat] auto-sending prefilled brief:", text.slice(0, 80) + "…");
       queueMicrotask(() => {
         void submit(text);
       });
