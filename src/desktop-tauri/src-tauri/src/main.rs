@@ -679,15 +679,25 @@ fn main() {
             let v_qwen      = MenuItemBuilder::with_id("speech_qwen/qwen3-32b",                                "Use Groq · qwen3-32b").build(app)?;
             let v_gptoss    = MenuItemBuilder::with_id("speech_openai/gpt-oss-120b",                           "Use Groq · gpt-oss-120b").build(app)?;
             let v_llama4    = MenuItemBuilder::with_id("speech_meta-llama/llama-4-scout-17b-16e-instruct",     "Use Groq · llama 4 scout").build(app)?;
-            // (DeepSeek removed from speech — openai plugin can't
-            // round-trip the reasoning_content field; see SPEECH_MODELS
-            // in jarvis_agent.py. Still available as a Tool model.)
+            // DeepSeek added back to speech 2026-04-30: V3 (deepseek-chat)
+            // is non-thinking so the openai plugin round-trips it cleanly;
+            // V4 entries pass enable_thinking=false via extra_body to
+            // suppress reasoning_content emission. V4-pro has the best
+            // tool-call discipline but is slower (~600-1000ms TTFW),
+            // recommended for tool-heavy turns. V3 is the fast everyday
+            // pick; V4-flash is the middle ground.
+            let v_dschat    = MenuItemBuilder::with_id("speech_deepseek-chat",                                  "Use DeepSeek · chat (V3, fast)").build(app)?;
+            let v_dsv4flash = MenuItemBuilder::with_id("speech_deepseek-v4-flash",                              "Use DeepSeek · v4 flash (no-think)").build(app)?;
+            let v_dsv4pro   = MenuItemBuilder::with_id("speech_deepseek-v4-pro",                                "Use DeepSeek · v4 pro (no-think, best tools)").build(app)?;
             let speech_submenu = SubmenuBuilder::new(app, "Speech model ▸")
                 .item(&v_llama33)
                 .item(&v_llama8b)
                 .item(&v_qwen)
                 .item(&v_gptoss)
                 .item(&v_llama4)
+                .item(&v_dschat)
+                .item(&v_dsv4flash)
+                .item(&v_dsv4pro)
                 .build()?;
 
             // ── TTS VOICE submenu (nested under Models) ──
@@ -918,6 +928,9 @@ fn main() {
                         "speech_qwen/qwen3-32b"                            => switch_speech_model(app, "qwen/qwen3-32b"),
                         "speech_openai/gpt-oss-120b"                       => switch_speech_model(app, "openai/gpt-oss-120b"),
                         "speech_meta-llama/llama-4-scout-17b-16e-instruct" => switch_speech_model(app, "meta-llama/llama-4-scout-17b-16e-instruct"),
+                        "speech_deepseek-chat"                             => switch_speech_model(app, "deepseek-chat"),
+                        "speech_deepseek-v4-flash"                         => switch_speech_model(app, "deepseek-v4-flash"),
+                        "speech_deepseek-v4-pro"                           => switch_speech_model(app, "deepseek-v4-pro"),
                         // TTS-voice picks (no agent restart — file written, read on next utterance)
                         "tts_el_george" => switch_tts_provider(app, "elevenlabs:JBFqnCBsd6RMkjVDRZzb"),
                         "tts_el_adam"   => switch_tts_provider(app, "elevenlabs:pNInz6obpgDQGcFmaJgB"),
