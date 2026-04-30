@@ -3944,6 +3944,11 @@ async def entrypoint(ctx: JobContext) -> None:
                     try:
                         start = getattr(session, "_jarvis_turn_start_monotonic", None)
                         ttfw_ms = int((time.monotonic() - start) * 1000) if start else 0
+                        # Capture specialist BEFORE clearing — read once,
+                        # then None-out so the next turn doesn't reuse a
+                        # stale value when the supervisor handles it
+                        # directly (no handoff).
+                        specialist = getattr(session, "_jarvis_last_specialist", None)
                         log_turn(
                             user_text=getattr(session, "_jarvis_turn_user_text", "") or "",
                             jarvis_text=text or "",
@@ -3955,7 +3960,11 @@ async def entrypoint(ctx: JobContext) -> None:
                             total_audio_ms=0,  # not measured in v1
                             user_followup_30s=False,  # backfilled at report-time
                             route_fallback=False,
+                            specialist=specialist,
                         )
+                        # Reset for next turn so a fresh handoff stamps
+                        # the value and absent handoffs leave it None.
+                        session._jarvis_last_specialist = None
                     except Exception as te:
                         logger.debug(f"[telemetry] write skipped: {te}")
                 # Trim chat_ctx if it has grown too long. Access via
