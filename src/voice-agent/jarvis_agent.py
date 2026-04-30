@@ -1148,6 +1148,34 @@ Authority rules:
     against anything real, dd to a disk, dropping production
     databases, revoking production API keys.
 
+═══ MULTI-AGENT HANDOFF — when to delegate ═══
+
+You can hand off to specialist sub-agents for focused work. Hand off
+INSTEAD of trying to do the work yourself when one matches:
+
+**transfer_to_desktop(request)** — for any desktop UI action: opening
+apps (Chrome, VS Code, terminal, file manager), screenshots, clicks,
+drags, multi-step UI manipulation. The specialist has tighter
+instructions specifically about TOOL EXECUTION DISCIPLINE (no narration
+mode, always uses --new-window for Chrome, etc.). When the specialist
+finishes, control comes back to you with a one-sentence summary that
+you can voice or build on.
+
+**WHEN TO HANDOFF vs handle inline:**
+  user: "open Chrome"          → transfer_to_desktop  (tool work)
+  user: "take a screenshot"    → transfer_to_desktop  (tool work)
+  user: "what's on my screen"  → transfer_to_desktop  (specialist
+                                                        screenshot tool)
+  user: "open two Chrome"      → transfer_to_desktop
+  user: "what time is it"      → handle inline (no desktop tool needed)
+  user: "remember I prefer X"  → handle inline (memory tool)
+  user: "what did we discuss"  → handle inline (recall_conversation)
+  user: "I'm tired"            → handle inline (conversation)
+
+If you're unsure whether a request needs a desktop tool, default to
+transfer_to_desktop — better to delegate than to refuse the action
+with a "you'll need a terminal" excuse.
+
 ═══ FORBIDDEN: NARRATING ACTIONS INSTEAD OF TAKING THEM ═══
 
 When the user asks you to DO something on the system (open Chrome,
@@ -3513,6 +3541,56 @@ def _flatten_chat_content(content: object) -> str:
 #     "I'm back" acknowledgment; mute phrases also pass through so
 #     it can voice "going silent" once before suppressing.
 class JarvisAgent(Agent):
+    @function_tool()
+    async def transfer_to_desktop(self, context, request: str) -> tuple[Agent, str]:
+        """Hand off to the desktop-action specialist.
+
+        Use whenever the user wants something done on the Linux desktop:
+        open an app (Chrome / VS Code / terminal / file manager), launch
+        N copies, take a screenshot, click somewhere on screen, drag
+        something, type into a focused window, or any multi-step UI
+        manipulation.
+
+        After the specialist completes the task, control returns here
+        automatically with a one-sentence summary.
+
+        Args:
+            request: The user's desktop request, verbatim or paraphrased.
+                     E.g. "open two Chrome windows" or "take a screenshot
+                     of the current screen". The specialist reads chat
+                     context too, so this is a hint, not the only signal.
+        """
+        # Lazy import — avoids circular dependency. The specialist agent
+        # gets the same tool subset JarvisAgent already has, scoped to
+        # desktop work.
+        from jarvis_specialist_agents import DesktopActionsAgent
+        from jarvis_computer_use import (
+            computer_use, computer_stop, click, type_text, scroll, drag,
+            key_press, wait, screenshot, live_screen, watch_screen,
+        )
+        desktop_tools = [
+            bash, computer_use, computer_stop, click, type_text, scroll,
+            drag, key_press, wait, screenshot, live_screen, watch_screen,
+        ]
+        # Carry chat history forward (LiveKit's recommended pattern) so
+        # the specialist sees the user's request without us having to
+        # re-state it. exclude_instructions=True strips the supervisor's
+        # 1,400-line system prompt — the specialist has its own focused
+        # one (~120 lines).
+        try:
+            ctx = self.chat_ctx.copy(exclude_instructions=True).truncate(max_items=12)
+        except Exception:
+            ctx = None
+        logger.info(f"[handoff] → DesktopActionsAgent (request: {request[:80]!r})")
+        return (
+            DesktopActionsAgent(
+                supervisor=self,
+                tools=desktop_tools,
+                chat_ctx=ctx,
+            ),
+            "On it, sir.",
+        )
+
     async def on_user_turn_completed(
         self, turn_ctx: ChatContext, new_message: ChatMessage,
     ) -> None:
