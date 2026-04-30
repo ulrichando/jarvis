@@ -144,6 +144,46 @@ def route_from_classifier_output(raw: str) -> Route:
     return cleaned if cleaned in _VALID_ROUTES else "TASK"  # type: ignore
 
 
+# Per-route + per-emotion interrupt tuning. The route picks a base
+# (min_words, min_duration); emotion overlays an adjustment.
+#
+# Why per-emotion: a frustrated user shouldn't be cut off mid-vent on a
+# cough or "uh-huh" — that compounds the frustration. An urgent user
+# wants a snappier response. A sad user often pauses mid-thought —
+# don't reward that with an interrupt.
+#
+# All three dispatch sites (LangGraph node, BANTER fast-path, legacy
+# async classifier path) call this helper so behaviour stays uniform.
+_ROUTE_BASE = {
+    "BANTER":    (1, 0.3),
+    "TASK":      (2, 0.4),
+    "REASONING": (3, 0.5),
+    "EMOTIONAL": (3, 0.6),
+}
+_EMOTION_OVERLAY = {
+    "frustrated": (+1, +0.2),  # don't kill them mid-vent
+    "sad":        (+1, +0.3),  # let them pause without losing the floor
+    "urgent":     (-1, -0.1),  # snappier — they want quick
+    "excited":    (0, 0.0),
+    "curious":    (0, 0.0),
+    "neutral":    (0, 0.0),
+}
+
+
+def compute_interrupt_tuning(route: str, emotion: str) -> tuple[int, float]:
+    """Return (min_words, min_duration) for the given route + emotion.
+
+    Floors at min_words=1 and min_duration=0.2 so an aggressive overlay
+    can't disable interrupts entirely (LiveKit's framework wants both
+    > 0).
+    """
+    base_w, base_d = _ROUTE_BASE.get(route, _ROUTE_BASE["TASK"])
+    adj_w, adj_d = _EMOTION_OVERLAY.get(emotion, (0, 0.0))
+    mw = max(1, base_w + adj_w)
+    md = max(0.2, round(base_d + adj_d, 2))
+    return mw, md
+
+
 async def classify_turn(
     *,
     history: list[tuple[str, str]],

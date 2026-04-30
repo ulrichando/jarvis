@@ -217,3 +217,48 @@ The remaining 6 points to ≥90 are concentrated in three axes that need either 
 Cumulative reachable: +5 to +6 → 89 to 90.
 
 The honest ceiling without paid voice models or substantially more work appears to be ~90 — and the architectural changes shipped in Phases 1-6 are the foundation the remaining axes need.
+
+### 2026-04-30 — Phase 7 (TTFW measurement + per-emotion overlay)
+
+Three small, additive improvements directly from the Phase 7+ candidate list. All three were tagged "low-risk single-axis +1" — implemented as one commit.
+
+**1 · True TTFW measurement (axis 1).**
+Added `stamp_first_token` async-generator filter at the head of `tts_text_transforms`. It marks `session._jarvis_first_token_at_monotonic` on the first non-empty/non-whitespace chunk crossing the LLM stream — the moment text starts flowing to TTS, which is what the user perceives as "JARVIS started talking." The legacy `_on_item` metric (assistant message landed in chat_ctx) effectively measured whole-LLM-completion. `_on_item` now prefers the first-token timestamp and falls back to the legacy measurement only if the filter didn't fire (empty / hedge-dropped reply).
+
+Late-bind via a module-level container (`_active_session_for_telemetry`) because `tts_text_transforms` is set at AgentSession construction and the filter list can't reach back into the session via closure capture. Container is set in `entrypoint()` right after the session is built.
+
+**2 · Per-emotion interrupt overlay (axis 7).**
+New pure-function helper `compute_interrupt_tuning(route, emotion) → (min_words, min_duration)` in `turn_router.py`. Returns the route's base, then adjusts:
+
+| Emotion    | Δ min_words | Δ min_duration | Why                                       |
+|---         |---          |---             |---                                        |
+| frustrated | +1          | +0.2           | Don't cut them off mid-vent.              |
+| sad        | +1          | +0.3           | Sad users pause; let them keep the floor. |
+| urgent     | -1          | -0.1           | They want snappy.                         |
+| excited / curious / neutral | 0 | 0 | No adjustment.                       |
+
+Floors at `min_words=1`, `min_duration=0.2` — an aggressive overlay can't disable interrupts entirely (LiveKit needs both > 0).
+
+Three call sites updated to use the helper for uniform behaviour: the LangGraph `_node_tune_interrupt`, the inline BANTER fast-path in `jarvis_agent.py`, and the legacy async classifier path.
+
+**3 · BANTER fast-path overlay (axis 5).**
+The synchronous BANTER fast-path used to hardcode `(1, 0.3)` interrupt tuning regardless of emotion. It now calls the same `compute_interrupt_tuning` helper, so a fast-path BANTER turn from an urgent user gets snappier interrupts than from a sad user — uniform with the LangGraph dispatcher's behaviour.
+
+**Tests:** 7 new in `test_turn_router.py` (route base, unknown route → TASK base, frustrated/urgent/sad overlays, floor invariants) + 1 new in `test_turn_graph.py` (BANTER fast-path applies urgent overlay → floors to (1, 0.2)). One existing test updated to use unseeded baseline so it tests route swap in isolation. Full suite: 106/106 green (99 prior + 7 new).
+
+**Re-score after Phase 7:**
+
+| # | Axis | Before | After | Delta |
+|---|---|---|---|---|
+| 1 | Streaming TTS / TTFW | 9 | 10 | +1 — true first-token measurement (real-data verification still needed; will tell us whether the perceived TTFW is actually < 1s in practice). |
+| 5 | Voice swap by route | 8 | 9 | +1 — BANTER fast-path now respects per-emotion overlay. |
+| 7 | Interruption handling | 8 | 9 | +1 — per-emotion adjustment overlaid on per-route tuning. |
+
+**New total: 84 → 87 / 100.**
+
+Distance to 90: 3 points. The remaining axes:
+- Axis 2 (emotion detection 8) — acoustic prosody (pitch + energy from VAD frames). Not implemented; needs design + code.
+- Axis 4 (LLM dispatch by route 8) — currently uses Groq variants for all routes; using DeepSeek-Reasoner for REASONING (paid) or measuring whether the current Groq fallback delivers reasoning quality on real REASONING turns would push to 9.
+- Axis 6 (acknowledgment vocabulary 8) — varied bare-vocative responses (currently fixed at "Yes, sir?" by user preference).
+
+The closest +1 is axis 4 — once we have a few REASONING-tagged turns in the live telemetry (zero so far), we can either decide the current Groq path is fine (+0) or wire DeepSeek (+1). Axis 2 is the bigger investment but also higher-leverage. Axis 6 is constrained by user preference — the canonical "Yes, sir?" stays.
