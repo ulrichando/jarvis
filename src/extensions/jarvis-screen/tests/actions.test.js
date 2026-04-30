@@ -73,3 +73,57 @@ describe('page reading actions', () => {
     expect(r.delegated_to_background).toBe(true);
   });
 });
+
+describe('mouse actions', () => {
+  beforeEach(() => {
+    document.body.innerHTML = `
+      <button id="b1">B1</button>
+      <select id="s1">
+        <option value="a">A</option>
+        <option value="b">B</option>
+      </select>
+      <div id="src" draggable="true">Source</div>
+      <div id="tgt">Target</div>
+    `;
+  });
+
+  test('ext_click hits the element', () => {
+    let clicked = false;
+    document.getElementById('b1').addEventListener('click', () => { clicked = true; });
+    const r = actions.ext_click({ selector: '#b1' });
+    expect(r.ok).toBe(true);
+    expect(clicked).toBe(true);
+  });
+
+  test('ext_click selector not found', () => {
+    expect(actions.ext_click({ selector: '#nope' }).ok).toBe(false);
+  });
+
+  test('ext_right_click fires contextmenu', () => {
+    let fired = false;
+    document.getElementById('b1').addEventListener('contextmenu', () => { fired = true; });
+    expect(actions.ext_right_click({ selector: '#b1' }).ok).toBe(true);
+    expect(fired).toBe(true);
+  });
+
+  test('ext_hover fires mouseover', () => {
+    let fired = false;
+    document.getElementById('b1').addEventListener('mouseover', () => { fired = true; });
+    expect(actions.ext_hover({ selector: '#b1' }).ok).toBe(true);
+    expect(fired).toBe(true);
+  });
+
+  test('ext_select sets dropdown value', () => {
+    expect(actions.ext_select({ selector: '#s1', value: 'b' }).ok).toBe(true);
+    expect(document.getElementById('s1').value).toBe('b');
+  });
+
+  test('ext_drag fires dragstart and drop', () => {
+    const events = [];
+    ['dragstart','dragend','drop'].forEach(ev =>
+      document.getElementById(ev === 'drop' ? 'tgt' : 'src')
+        .addEventListener(ev, () => events.push(ev)));
+    expect(actions.ext_drag({ from_selector: '#src', to_selector: '#tgt' }).ok).toBe(true);
+    expect(events).toContain('dragstart');
+  });
+});
