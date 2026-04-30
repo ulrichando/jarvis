@@ -154,19 +154,6 @@ export function DesignFilesPanel({
               Clear
             </Button>
           )}
-          {onToggleBrand && (
-            <Button
-              variant={brandActive ? "secondary" : "ghost"}
-              size="sm"
-              className="rounded-md"
-              aria-pressed={brandActive}
-              onClick={onToggleBrand}
-              title="Brand — colors, fonts, voice that apply to every generation"
-            >
-              <Sparkles className="size-3.5" />
-              Brand
-            </Button>
-          )}
         </div>
       </div>
 
@@ -177,7 +164,7 @@ export function DesignFilesPanel({
             loading…
           </div>
         ) : total === 0 ? (
-          <EmptyDesign format={format} onStarter={onStarter} onRefine={onRefine} />
+          <EmptyDesign />
         ) : (
           <div className="space-y-5 px-3 py-4">
             {SECTION_ORDER.map((key) => {
@@ -690,77 +677,16 @@ function looksLikeReference(f: File): boolean {
   return false;
 }
 
-function EmptyDesign({
-  format,
-  onStarter,
-  onRefine,
-}: {
-  format?: Format;
-  onStarter?: (prompt: string) => void;
-  onRefine?: () => void;
-}) {
-  // When format is given (rare — chips are removed by default), show only
-  // that format's starters. Otherwise mix one starter per format so the
-  // user sees the full range of what's possible.
-  const items: { format: Format; title: string; prompt: string }[] = format
-    ? STARTERS[format].map((s) => ({ format, ...s }))
-    : (Object.keys(STARTERS) as Format[]).map((f) => ({
-        format: f,
-        ...STARTERS[f][0],
-      }));
-
+function EmptyDesign() {
   return (
-    <div className="flex flex-col px-6 py-10">
-      <div className="flex flex-col items-start gap-2">
-        <div className="flex size-10 items-center justify-center rounded-xl border border-dashed border-border/60">
-          <FileText className="size-4 text-muted-foreground/70" />
-        </div>
-        <p className="max-w-md text-[13px] leading-5 text-muted-foreground">
-          No design files yet. Describe what you want in the chat — slides, a
-          prototype, a landing page, a one-pager, an infographic — Jarvis figures
-          out the format. Or pick a starter below to prefill the composer.
-        </p>
+    <div className="flex flex-col items-start px-6 py-10">
+      <div className="flex size-10 items-center justify-center rounded-xl border border-dashed border-border/60">
+        <FileText className="size-4 text-muted-foreground/70" />
       </div>
-
-      {onRefine && (
-        <button
-          type="button"
-          onClick={onRefine}
-          className="mt-4 flex items-center gap-2 self-start rounded-md bg-foreground px-3 py-1.5 text-[12px] font-medium text-background transition-opacity hover:opacity-90"
-        >
-          <Sparkles className="size-3.5" />
-          Refine the brief
-          <span className="text-[11px] opacity-70">— answer a few questions</span>
-        </button>
-      )}
-
-      {onStarter && (
-        <div className="mt-5 grid gap-2">
-          {items.map((s) => (
-            <button
-              key={`${s.format}:${s.title}`}
-              type="button"
-              onClick={() => onStarter(s.prompt)}
-              className={cn(
-                "group flex flex-col items-start gap-1.5 rounded-lg border border-border/60 bg-background/60 px-3 py-2.5 text-left",
-                "transition-colors hover:border-foreground/30 hover:bg-background",
-              )}
-            >
-              <div className="flex w-full items-center gap-2">
-                <span className="text-[13px] font-semibold text-foreground">
-                  {s.title}
-                </span>
-                <span className="ml-auto rounded bg-muted/70 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
-                  {FORMAT_LABEL[s.format]}
-                </span>
-              </div>
-              <span className="line-clamp-2 text-[12px] leading-4 text-muted-foreground">
-                {s.prompt}
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
+      <p className="mt-3 max-w-md text-[13px] leading-5 text-muted-foreground">
+        No files yet. Describe what you want in the chat — Jarvis will ask a few
+        questions if the brief is sparse, then generate.
+      </p>
     </div>
   );
 }
