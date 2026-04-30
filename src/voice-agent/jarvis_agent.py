@@ -70,7 +70,7 @@ from livekit.plugins.elevenlabs import VoiceSettings as _ELVoiceSettings
 # ── Maya-class speech intelligence ────────────────────────────────────
 from turn_router    import (
     detect_emotion, classify_turn, AudioMeta,
-    compute_speech_rate, update_baseline,
+    compute_speech_rate, update_baseline, compute_interrupt_tuning,
 )
 from dispatching_llm import DispatchingLLM
 from dispatching_tts import DispatchingTTS
@@ -3339,6 +3339,41 @@ _PURE_HEDGE_REPLY_RE = re.compile(
 )
 
 
+# Phase-7 TTFW measurement: stamp the moment the first non-empty
+# chunk of LLM output reaches the TTS pipeline. The legacy `_on_item`
+# metric measured the time the assistant message landed in chat_ctx
+# (post whole-LLM-completion); this filter gives a TRUE first-token
+# latency since it sits at the head of tts_text_transforms — i.e. the
+# moment text starts streaming to TTS, which is what the user
+# perceives as "JARVIS started talking".
+#
+# The session reference is late-bound via _active_session_for_telemetry
+# because tts_text_transforms is set at AgentSession construction time
+# and the filter list itself can't reach back into the session via
+# closure capture. The container is set in entrypoint() right after
+# the session is built.
+_active_session_for_telemetry: list = [None]
+
+
+async def stamp_first_token(text):
+    """Mark `session._jarvis_first_token_at_monotonic` on the FIRST
+    non-empty/non-whitespace chunk of an LLM stream. MUST be the first
+    filter in tts_text_transforms so we time pre-filter LLM output
+    rather than post-filter; otherwise hedge-drops or preamble-strips
+    would mask early tokens that DID reach this pipeline."""
+    first = True
+    async for chunk in text:
+        if first and chunk and chunk.strip():
+            sess = _active_session_for_telemetry[0]
+            if sess is not None:
+                try:
+                    sess._jarvis_first_token_at_monotonic = time.monotonic()
+                except Exception:
+                    pass
+            first = False
+        yield chunk
+
+
 async def drop_pure_hedge(text):
     """Suppress reply if it's nothing but a clarifying hedge.
 
@@ -3865,6 +3900,10 @@ async def entrypoint(ctx: JobContext) -> None:
         # the TTS voices "function run_jarvis_cli request open Chrome"
         # which sounds completely broken.
         tts_text_transforms=[
+            # Phase-7 TTFW: time the FIRST non-empty chunk leaving
+            # the LLM stream. Must be first so hedge-drop / preamble-
+            # strip don't mask the early tokens.
+            stamp_first_token,
             strip_function_call_leakage,
             # Strip "Done.", "Anything else, sir?", "Happy to help", etc.
             # gpt-oss-120b habitually appends these despite the system
@@ -3908,6 +3947,12 @@ async def entrypoint(ctx: JobContext) -> None:
     session._jarvis_turn_count    = 0
     session._jarvis_session_start = time.monotonic()
 
+    # Bind the session for the stamp_first_token TTS filter (Phase 7).
+    # The filter list was built at session-construction time and can't
+    # reach back into the session via closure capture; this container
+    # gives it late-bound access for true TTFW measurement.
+    _active_session_for_telemetry[0] = session
+
     # Trim chat_ctx after every assistant turn so long sessions don't
     # blow past Groq's context window. Keep the most recent CTX_MAX_TURNS
     # message objects (user+assistant pairs → 80 items ≈ 40 exchanges).
@@ -3943,7 +3988,19 @@ async def entrypoint(ctx: JobContext) -> None:
                 if _dispatch_llm is not None:
                     try:
                         start = getattr(session, "_jarvis_turn_start_monotonic", None)
-                        ttfw_ms = int((time.monotonic() - start) * 1000) if start else 0
+                        # Phase-7 TTFW: prefer the first-token timestamp
+                        # stamped by the stamp_first_token TTS filter (true
+                        # latency from STT-final to first audible word).
+                        # Fall back to "assistant message landed in
+                        # chat_ctx" timing only if the filter didn't fire
+                        # (e.g. an empty / hedge-dropped reply).
+                        first_tok = getattr(session, "_jarvis_first_token_at_monotonic", None)
+                        if start and first_tok and first_tok >= start:
+                            ttfw_ms = int((first_tok - start) * 1000)
+                        elif start:
+                            ttfw_ms = int((time.monotonic() - start) * 1000)
+                        else:
+                            ttfw_ms = 0
                         # Capture specialist BEFORE clearing — read once,
                         # then None-out so the next turn doesn't reuse a
                         # stale value when the supervisor handles it
@@ -3965,6 +4022,9 @@ async def entrypoint(ctx: JobContext) -> None:
                         # Reset for next turn so a fresh handoff stamps
                         # the value and absent handoffs leave it None.
                         session._jarvis_last_specialist = None
+                        # Reset first-token marker too so the next
+                        # turn measures from its own stream start.
+                        session._jarvis_first_token_at_monotonic = None
                     except Exception as te:
                         logger.debug(f"[telemetry] write skipped: {te}")
                 # Trim chat_ctx if it has grown too long. Access via
@@ -4157,12 +4217,16 @@ async def entrypoint(ctx: JobContext) -> None:
                 session._jarvis_emotion = emotion
                 session._jarvis_route   = "BANTER"
 
-                # Per-route interrupt tuning (BANTER = snappy)
+                # Per-route + per-emotion interrupt tuning (Phase 7).
+                # BANTER base is snappy; the overlay picks up urgent
+                # speech (snappier still) or sad/frustrated (let them
+                # pause without losing the floor).
                 try:
+                    mw, md = compute_interrupt_tuning("BANTER", emotion)
                     opts = getattr(session, "options", None)
                     if opts is not None and hasattr(opts, "interruption"):
-                        opts.interruption["min_words"]    = 1
-                        opts.interruption["min_duration"] = 0.3
+                        opts.interruption["min_words"]    = mw
+                        opts.interruption["min_duration"] = md
                 except Exception as ie:
                     logger.debug(f"[fast-path-banter] interrupt-tune skipped: {ie}")
 
@@ -4407,16 +4471,14 @@ async def entrypoint(ctx: JobContext) -> None:
             #   REASONING  — don't kill explanations on a stray "yeah" (3 / 0.5)
             #   EMOTIONAL  — let the user keep flowing through pauses (3 / 0.6)
             try:
-                interrupt_tuning = {
-                    "BANTER":    (1, 0.3),
-                    "TASK":      (2, 0.4),
-                    "REASONING": (3, 0.5),
-                    "EMOTIONAL": (3, 0.6),
-                }.get(route, (2, 0.4))
+                # Per-route + per-emotion overlay (Phase 7) — same
+                # helper used by the LangGraph dispatcher and the
+                # BANTER fast-path so behaviour is uniform.
+                mw, md = compute_interrupt_tuning(route, emotion)
                 opts = getattr(session, "options", None)
                 if opts is not None and hasattr(opts, "interruption"):
-                    opts.interruption["min_words"]    = interrupt_tuning[0]
-                    opts.interruption["min_duration"] = interrupt_tuning[1]
+                    opts.interruption["min_words"]    = mw
+                    opts.interruption["min_duration"] = md
             except Exception as ie:
                 logger.debug(f"[dispatch] interrupt-tune skipped: {ie}")
 
