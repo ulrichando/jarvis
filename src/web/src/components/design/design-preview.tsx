@@ -542,6 +542,83 @@ const PICKER_SCRIPT = `
     if (e.data.type === 'jarvis:design:edit:enable') { enableEdit(); }
     if (e.data.type === 'jarvis:design:edit:disable') { disableEdit(); }
   });
+
+  // ── Defensive wiring for questions.html ──────────────────────────────
+  // The model's own <script> in questions.html sometimes doesn't execute
+  // (wrong button types, broken syntax, model dropped it entirely). The
+  // parent side guarantees the form works as long as the model got the
+  // structural attributes right (form id, [data-question] groups,
+  // [data-value] chips, [data-other-for] inputs, a submit button).
+  function wireQuestionsForm(){
+    var form = document.getElementById('jarvis-questions');
+    if (!form) return;
+    if (form.getAttribute('data-jarvis-wired') === '1') return;
+    form.setAttribute('data-jarvis-wired', '1');
+
+    var selected = {};
+    var groups = form.querySelectorAll('[data-question]');
+
+    function wireGroup(group){
+      var qid = group.getAttribute('data-question');
+      var chips = group.querySelectorAll('[data-value]');
+      for (var j = 0; j < chips.length; j++) {
+        chips[j].addEventListener('click', function(e){
+          e.preventDefault();
+          for (var k = 0; k < chips.length; k++) chips[k].removeAttribute('data-selected');
+          this.setAttribute('data-selected', 'true');
+          selected[qid] = this.getAttribute('data-value');
+        });
+      }
+    }
+    for (var i = 0; i < groups.length; i++) wireGroup(groups[i]);
+
+    function collectAndPost(e){
+      if (e && e.preventDefault) e.preventDefault();
+      var answers = {};
+      for (var i = 0; i < groups.length; i++) {
+        var qid = groups[i].getAttribute('data-question');
+        var input = form.querySelector('[data-other-for="' + qid + '"]');
+        if (input && input.value && input.value.trim()) {
+          answers[qid] = input.value.trim();
+        } else if (selected[qid]) {
+          answers[qid] = selected[qid];
+        }
+      }
+      try {
+        parent.postMessage({ type: 'jarvis:design:questions:submit', answers: answers }, '*');
+      } catch (err) { /* sandboxed — best effort */ }
+    }
+
+    // Catch the form's submit event AND a direct click on any submit-button
+    // OR a button with data-jarvis-submit. Belt-and-braces because the model
+    // sometimes forgets type="submit".
+    form.addEventListener('submit', collectAndPost);
+    var submits = form.querySelectorAll('button[type="submit"], [data-jarvis-submit]');
+    for (var s = 0; s < submits.length; s++) {
+      submits[s].addEventListener('click', collectAndPost);
+    }
+    // Fallback: ANY button inside the form whose text matches /continue|submit|generate|done/i
+    var allBtns = form.querySelectorAll('button');
+    for (var b = 0; b < allBtns.length; b++) {
+      var btn = allBtns[b];
+      if (btn.getAttribute('data-value')) continue; // skip chip buttons
+      if (btn.getAttribute('type') === 'submit') continue; // already wired
+      var label = (btn.textContent || '').toLowerCase();
+      if (/continue|submit|generate|done|next|go/.test(label)) {
+        btn.addEventListener('click', collectAndPost);
+      }
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', wireQuestionsForm);
+  } else {
+    wireQuestionsForm();
+  }
+  // Also retry once on a delay — covers the case where the form is added
+  // late by the model's own script. The data-jarvis-wired guard prevents
+  // double-wiring.
+  setTimeout(wireQuestionsForm, 200);
 })();
 `;
 
