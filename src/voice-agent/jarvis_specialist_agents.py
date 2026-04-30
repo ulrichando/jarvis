@@ -1,4 +1,18 @@
-"""Specialist sub-agents for JARVIS — handoff targets from JarvisAgent.
+"""DEPRECATED — DesktopActionsAgent class.
+
+Phase 4 of the SpecialistSpec registry migration (2026-04-30) replaced
+the live use of `DesktopActionsAgent` with `RegistrySpecialist` driven
+by `specialists/desktop.py`. The class below is preserved for any
+external scripts that still import it; new specialist work goes through
+the registry pattern (see `specialists/HOW_TO_ADD_A_SPECIALIST.md`).
+
+When safe to remove this file: once `git log --grep=DesktopActionsAgent`
+shows no recent imports outside this module, delete it.
+
+Original module docstring follows for historical reference.
+─────────────────────────────────────────────────────────────────────
+
+Specialist sub-agents for JARVIS — handoff targets from JarvisAgent.
 
 This file is the start of a multi-agent migration. Phase 1: extract
 desktop-action work (open apps, screenshot, click, drag) into a

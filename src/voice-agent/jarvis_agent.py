@@ -1303,12 +1303,29 @@ hand off to a specialist via the handoff tools below.
 
 What you can do directly:
 
-**1. ANY action / desktop / browser / media / multi-step work**
-   → call `transfer_to_desktop(request)`. The specialist has the
-   full action toolset (bash, computer_use, run_jarvis_cli,
-   media_control, browser_task, screenshot, click, drag, type,
-   etc.) and a focused prompt for tool execution discipline.
-   This is the ONLY path for anything the user wants DONE.
+**1a. Desktop / UI / browser / media work**
+   → call `transfer_to_desktop(request)`. The desktop specialist has
+   bash, computer_use, click, type, drag, screenshot, media_control,
+   browser_task, and a focused prompt for direct UI manipulation.
+   Use for: opening apps, taking screenshots, clicking on screen,
+   playing music, browser automation, anything that's "do this thing
+   on the screen / in an app."
+
+**1b. Multi-step plan / refactor / agentic work**
+   → call `transfer_to_planner(request)`. The planner specialist has
+   `run_jarvis_cli` — the CLI's plan engine — and is for coordinated
+   multi-file work: "refactor the dispatcher", "find all TODOs and
+   group them", "generate the X module", "debug this loop end-to-end".
+   Use when the work isn't on a screen but is a coordinated change
+   across the codebase or a long thinking loop.
+
+   How to choose between 1a and 1b:
+     - "open Chrome"                     → desktop  (UI action)
+     - "refactor X to use Y"             → planner  (multi-file plan)
+     - "take a screenshot"               → desktop  (UI action)
+     - "find all TODOs in the project"   → planner  (search-and-organize)
+     - "play that song"                  → desktop  (media)
+     - "scaffold a new component"        → planner  (code generation)
 
 **2. Conversational / informational** (user asks something you can
    answer from your own knowledge — what time is it, what's a
@@ -1330,23 +1347,27 @@ What you can do directly:
    → face_register, face_identify, face_list, face_delete.
 
 **You CANNOT directly:**
-  - Open Chrome / any app  → transfer_to_desktop
+  - Open Chrome / any app   → transfer_to_desktop
   - Take a screenshot       → transfer_to_desktop
   - Run a bash command      → transfer_to_desktop (or read_file/grep/glob if read-only)
   - Click / type / drag     → transfer_to_desktop
   - Play music              → transfer_to_desktop
   - Browser automation      → transfer_to_desktop
-  - Run a plan via the CLI  → transfer_to_desktop
+  - Run a plan via the CLI  → transfer_to_planner
+  - Refactor across files   → transfer_to_planner
+  - Generate / scaffold     → transfer_to_planner
 
 If the user asks to DO something on their machine — handoff is
-the ONLY answer. There is no "let me try bash" or "I'll use
-media_control" path for you. transfer_to_desktop, period.
+the ONLY answer. Pick desktop for screen-level work, planner for
+multi-step CLI plans. There is no "let me try bash" or "I'll use
+media_control" path for you.
 
 **The narration trap.** If you find yourself about to type "I've
-opened Chrome, sir." / "I've played the song." / "Done, sir."
-WITHOUT having called transfer_to_desktop in this turn — STOP.
-You haven't done it. You're hallucinating success. Re-emit the
-turn as a transfer_to_desktop tool call instead.
+opened Chrome, sir." / "I've played the song." / "Plan complete."
+WITHOUT having called transfer_to_desktop or transfer_to_planner
+in this turn — STOP. You haven't done it. You're hallucinating
+success. Re-emit the turn as the right transfer_to_X tool call
+instead.
 
 ═══ USER PREFERENCES (persist across sessions) ═══
 
@@ -3478,64 +3499,15 @@ def _flatten_chat_content(content: object) -> str:
 #     "I'm back" acknowledgment; mute phrases also pass through so
 #     it can voice "going silent" once before suppressing.
 class JarvisAgent(Agent):
-    @function_tool()
-    async def transfer_to_desktop(self, context: RunContext, request: str) -> tuple[Agent, str]:
-        """Hand off to the desktop-action specialist.
-
-        Use whenever the user wants something done on the Linux desktop:
-        open an app (Chrome / VS Code / terminal / file manager), launch
-        N copies, take a screenshot, click somewhere on screen, drag
-        something, type into a focused window, or any multi-step UI
-        manipulation.
-
-        After the specialist completes the task, control returns here
-        automatically with a one-sentence summary.
-
-        Args:
-            request: The user's desktop request, verbatim or paraphrased.
-                     E.g. "open two Chrome windows" or "take a screenshot
-                     of the current screen". The specialist reads chat
-                     context too, so this is a hint, not the only signal.
-        """
-        # Lazy import — avoids circular dependency. The specialist agent
-        # gets the same tool subset JarvisAgent already has, scoped to
-        # desktop work.
-        from jarvis_specialist_agents import DesktopActionsAgent
-        from jarvis_computer_use import (
-            computer_use, computer_stop, click, type_text, scroll, drag,
-            key_press, wait, screenshot, live_screen, watch_screen,
-            webcam_capture,
-        )
-        # Specialist gets the full action toolset. The supervisor has
-        # NONE of these (intentional, see tools list above) — every
-        # action funnels through this handoff.
-        desktop_tools = [
-            bash, computer_use, computer_stop, click, type_text, scroll,
-            drag, key_press, wait, screenshot, live_screen, watch_screen,
-            webcam_capture,
-            # Multi-step + media + browser also routed here. Specialist
-            # decides whether to fire bash directly, computer_use loop,
-            # run_jarvis_cli plan, media_control, or browser_task.
-            run_jarvis_cli, type_in_terminal, media_control, browser_task,
-        ]
-        # Carry chat history forward (LiveKit's recommended pattern) so
-        # the specialist sees the user's request without us having to
-        # re-state it. exclude_instructions=True strips the supervisor's
-        # 1,400-line system prompt — the specialist has its own focused
-        # one (~120 lines).
-        try:
-            ctx = self.chat_ctx.copy(exclude_instructions=True).truncate(max_items=12)
-        except Exception:
-            ctx = None
-        logger.info(f"[handoff] → DesktopActionsAgent (request: {request[:80]!r})")
-        return (
-            DesktopActionsAgent(
-                supervisor=self,
-                tools=desktop_tools,
-                chat_ctx=ctx,
-            ),
-            "On it, sir.",
-        )
+    # Specialist handoffs (transfer_to_desktop, transfer_to_planner, …)
+    # are now supplied via the `specialists/` registry — see
+    # `build_all_transfer_tools()` in the JarvisAgent instantiation
+    # below. Adding a new specialist is one file under specialists/,
+    # one register() call, no edits here.
+    #
+    # The legacy class-method `transfer_to_desktop` was removed in
+    # Phase 4 of the registry migration (2026-04-30); the registry's
+    # RegistrySpecialist + DESKTOP_INSTRUCTIONS reproduces it 1:1.
 
     async def on_user_turn_completed(
         self, turn_ctx: ChatContext, new_message: ChatMessage,
