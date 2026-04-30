@@ -171,8 +171,76 @@ function ext_select(args = {}) {
   return ok();
 }
 
+// ── Keyboard / input ──────────────────────────────────────────────────
+
+function ext_type(args = {}) {
+  const el = _findOne(args.selector);
+  if (!el) return err(`selector not found: ${args.selector}`);
+  el.focus();
+  el.value = args.text || '';
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+  return ok();
+}
+
+function ext_fill_form(args = {}) {
+  const fields = args.fields || {};
+  let filled_count = 0;
+  const missing = [];
+  const escape = (s) => typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(s) : s.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+  for (const [name, value] of Object.entries(fields)) {
+    const el =
+      document.querySelector(`[name="${escape(name)}"]`) ||
+      document.querySelector(`#${escape(name)}`) ||
+      document.querySelector(`[aria-label="${name.replace(/"/g,'\\"')}"]`) ||
+      Array.from(document.querySelectorAll('input,textarea,select'))
+        .find(e => (e.placeholder||'').toLowerCase() === name.toLowerCase());
+    if (!el) { missing.push(name); continue; }
+    el.focus();
+    el.value = value;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    filled_count++;
+  }
+  return ok({ filled_count, missing });
+}
+
+function ext_keypress(args = {}) {
+  const key = args.key;
+  if (!key) return err('key arg required');
+  const parts = key.split('+');
+  const mainKey = parts.pop();
+  const opts = {
+    bubbles: true, cancelable: true,
+    key: mainKey,
+    ctrlKey:  parts.includes('Ctrl'),
+    shiftKey: parts.includes('Shift'),
+    altKey:   parts.includes('Alt'),
+    metaKey:  parts.includes('Meta'),
+  };
+  const target = document.activeElement || document;
+  target.dispatchEvent(new KeyboardEvent('keydown', opts));
+  target.dispatchEvent(new KeyboardEvent('keyup', opts));
+  return ok();
+}
+
+function ext_submit(args = {}) {
+  const form = _findOne(args.form_selector);
+  if (!form) return err(`form not found: ${args.form_selector}`);
+  if (form.tagName !== 'FORM') return err('not a <form> element');
+  if (typeof form.requestSubmit === 'function') {
+    form.requestSubmit();
+  } else {
+    const ev = new Event('submit', { bubbles: true, cancelable: true });
+    form.dispatchEvent(ev);
+    if (!ev.defaultPrevented) form.submit();
+  }
+  return ok();
+}
+
 module.exports = Object.assign(module.exports || {}, {
   ext_get_url, ext_close_tab,
   ext_extract_text, ext_find_by_text, ext_dom_summary, ext_screenshot,
   ext_click, ext_right_click, ext_hover, ext_drag, ext_select,
+  ext_type, ext_fill_form, ext_keypress, ext_submit,
 });

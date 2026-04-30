@@ -127,3 +127,59 @@ describe('mouse actions', () => {
     expect(events).toContain('dragstart');
   });
 });
+
+describe('keyboard / input actions', () => {
+  beforeEach(() => {
+    document.body.innerHTML = `
+      <input type="text" id="email" name="email" placeholder="email">
+      <input type="text" id="name" name="name" placeholder="name">
+      <textarea id="msg"></textarea>
+      <form id="f1">
+        <input type="text" name="q" id="q">
+      </form>
+    `;
+  });
+
+  test('ext_type fills the input', () => {
+    expect(actions.ext_type({selector: '#email', text: 'a@b.com'}).ok).toBe(true);
+    expect(document.getElementById('email').value).toBe('a@b.com');
+  });
+
+  test('ext_type fires input event', () => {
+    let fired = false;
+    document.getElementById('email').addEventListener('input', () => { fired = true; });
+    actions.ext_type({selector: '#email', text: 'x'});
+    expect(fired).toBe(true);
+  });
+
+  test('ext_fill_form by name', () => {
+    const r = actions.ext_fill_form({fields: { email: 'a@b.com', name: 'Bob' }});
+    expect(r.ok).toBe(true);
+    expect(r.filled_count).toBe(2);
+    expect(document.getElementById('email').value).toBe('a@b.com');
+    expect(document.getElementById('name').value).toBe('Bob');
+  });
+
+  test('ext_fill_form reports missing fields', () => {
+    const r = actions.ext_fill_form({fields: { unknownX: 'v' }});
+    expect(r.ok).toBe(true);
+    expect(r.missing).toEqual(['unknownX']);
+  });
+
+  test('ext_keypress dispatches keydown+keyup', () => {
+    const events = [];
+    document.addEventListener('keydown', e => events.push(['down', e.key]));
+    document.addEventListener('keyup',   e => events.push(['up',   e.key]));
+    actions.ext_keypress({key: 'Enter'});
+    expect(events).toEqual([['down', 'Enter'], ['up', 'Enter']]);
+  });
+
+  test('ext_submit submits the form', () => {
+    let submitted = false;
+    document.getElementById('f1').addEventListener('submit', e => {
+      e.preventDefault(); submitted = true;
+    });
+    expect(actions.ext_submit({form_selector: '#f1'}).ok).toBe(true);
+    expect(submitted).toBe(true);
+  });
+});
