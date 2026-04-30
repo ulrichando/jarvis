@@ -44,17 +44,30 @@ export function ProjectPicker({
   };
 
   const remove = async (id: string, name: string) => {
-    if (id === current.id) {
-      window.alert(
-        "Can't delete the project you're currently in. Switch to another first.",
-      );
-      return;
-    }
-    if (!window.confirm(`Delete project "${name}"? Files inside it will be removed.`)) {
-      return;
-    }
+    const isCurrent = id === current.id;
+    const others = projects.filter((p) => p.id !== id);
+    const willAutoCreate = isCurrent && others.length === 0;
+
+    const promptMsg = isCurrent
+      ? willAutoCreate
+        ? `Delete "${name}"? It's your only project — a fresh "Untitled design" will be created and opened.`
+        : `Delete "${name}"? You'll switch to "${others[0].name}" automatically.`
+      : `Delete project "${name}"? Files inside it will be removed.`;
+
+    if (!window.confirm(promptMsg)) return;
+
     setBusy(id);
     try {
+      // For current-project deletion we must move the user to a target before
+      // wiping the workspace they're sitting in — otherwise the design view
+      // unmounts mid-delete and we'd refetch a 404.
+      if (isCurrent) {
+        const target = others[0] ?? (await apiCreateWorkspace("Untitled design"));
+        await apiDeleteWorkspace(id);
+        onChanged?.();
+        router.push(`/design?ws=${encodeURIComponent(target.id)}`);
+        return;
+      }
       await apiDeleteWorkspace(id);
       onChanged?.();
       router.refresh();
@@ -115,13 +128,13 @@ export function ProjectPicker({
                   type="button"
                   aria-label={`Delete ${p.name}`}
                   onClick={() => remove(p.id, p.name)}
-                  disabled={removing || active}
-                  title={active ? "Switch projects first" : "Delete project"}
+                  disabled={removing}
+                  title="Delete project"
                   className={cn(
                     "rounded p-1 text-muted-foreground/60 transition-colors",
                     "opacity-0 group-hover:opacity-100",
                     "hover:bg-destructive/10 hover:text-destructive",
-                    (removing || active) && "opacity-30 pointer-events-none",
+                    removing && "opacity-30 pointer-events-none",
                   )}
                 >
                   {removing ? (
