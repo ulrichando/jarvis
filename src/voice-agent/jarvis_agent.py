@@ -2319,22 +2319,28 @@ async def _launch_and_verify(player: str) -> str:
 
 @function_tool
 async def media_control(action: str, player: str = "spotify") -> str:
-    """Control music / video playback (Spotify by default) — NOT via run_jarvis_cli.
+    """Control music / video MEDIA PLAYBACK — Spotify, VLC, mpv,
+    Rhythmbox. NOT for browsers (Chrome / Firefox) — use
+    transfer_to_desktop for those.
 
-    Use this for any media playback command, instead of run_jarvis_cli.
-    Examples of when this is the right tool:
+    Use for playback commands like:
       - "play music" / "play Spotify" / "resume"     → action="play"
-      - "pause" / "stop the music" / "shut the music up" → action="pause"
+      - "pause" / "stop the music"                   → action="pause"
       - "play / pause" / "toggle music"              → action="play_pause"
       - "next song" / "skip" / "next track"          → action="next"
       - "previous song" / "go back a song"           → action="previous"
-      - "what's playing" / "current song" / "name of this song" → action="status"
-      - "open Spotify" / "launch Spotify"            → action="open"
+      - "what's playing" / "current song"            → action="status"
+      - "open Spotify" / "launch VLC"                → action="open"
 
-    Default player is Spotify. The user almost always means Spotify
-    when they say "music"; only override `player` if they explicitly
-    name a different one ("play in Chrome", "pause VLC"). Common
-    player names: spotify, chromium, firefox, vlc, mpv.
+    Default player is Spotify. Only override `player` for explicit
+    media-player named requests ("pause VLC", "skip in mpv"). Common
+    valid player names: spotify, vlc, mpv, rhythmbox, totem.
+
+    NEVER use this tool for opening Chrome / Firefox / a browser. Even
+    though they technically appear on MPRIS, launching them this way
+    skips the user's required Chrome flags (--profile-directory,
+    --new-window) and opens a guest profile. Browsers go through
+    transfer_to_desktop which uses bash with the proper flags.
 
     If the player isn't running and the action is "play" or "open",
     we'll launch it. If it isn't running for any other action,
@@ -2352,6 +2358,24 @@ async def media_control(action: str, player: str = "spotify") -> str:
     player = (player or "spotify").strip().lower()
     if action not in _MEDIA_VALID_ACTIONS:
         return f"(unknown action: {action!r}; valid: {sorted(_MEDIA_VALID_ACTIONS)})"
+
+    # Reject browser-as-player. media_control's _launch_and_verify uses
+    # bare Popen([player]) which doesn't apply the user's required flags
+    # (--profile-directory="Default", --new-window). Without those, Chrome
+    # opens as a guest / fresh first-run profile — which the user has
+    # complained about repeatedly. Browsers belong on transfer_to_desktop
+    # (which uses bash with the proper flags). Reject and redirect.
+    _BROWSER_NAMES = {
+        "google-chrome", "chrome", "chromium", "chromium-browser",
+        "firefox", "firefox-esr", "brave", "brave-browser",
+        "edge", "microsoft-edge", "opera", "vivaldi",
+    }
+    if player in _BROWSER_NAMES:
+        return (
+            f"(media_control is for media players — Spotify / VLC / mpv / "
+            f"Rhythmbox. For browsers, use transfer_to_desktop instead so "
+            f"Chrome opens with --profile-directory=\"Default\" --new-window.)"
+        )
     logger.info(f"media_control: action={action} player={player}")
 
     # "open" — launch the app and verify it actually shows up on the
