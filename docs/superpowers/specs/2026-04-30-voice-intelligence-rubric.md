@@ -175,3 +175,45 @@ Iteration 4 candidates, in priority order:
 2. **REASONING fast-path regex** mirroring BANTER's structure — high-confidence reasoning patterns ("why does", "how does X work", "explain", "walk me through", "step by step", "design", "debug"). Less obviously beneficial than BANTER's because REASONING uses the slowest LLM, but at least gets the route classification right when the data shows it's currently broken.
 3. **Tool execution discipline** (axis 9 at 7) — the browser specialist migration is mid-flight. Once landed, that closes a gap.
 4. **Self-eval / TTFW measurement quality** (axis 10 at 9 → 10) — `ttfw_ms` is computed at the assistant `_on_item` callback which fires when the assistant message lands in `chat_ctx`, NOT on the first audio frame. So today's "TTFW" is closer to "time-to-LLM-completion." Hook the actual first-token-emitted moment for a true TTFW measurement.
+
+### 2026-04-30 — Phases 4-6 (orchestration architecture: LangGraph + SpecialistSpec registry + browser specialist + handoff telemetry)
+
+A continuous block of architectural work driven by the user's "more sub-agents at enterprise scale" goal. Five commits (`d606129` → `f1b8db3` → `a3397b4` → `4412712` → ...). Net effect: orchestration is now a registry-driven state machine; new specialists are one file each.
+
+**What landed:**
+
+- **Phase 1 (`c9a852e`):** LangGraph dispatcher spike — per-turn classify → swap → inject → tune as a `StateGraph`. Provider-pluggable classifier via LangChain's `init_chat_model` (Groq default, DeepSeek/OpenAI/Anthropic via env).
+- **Phase 2 (`f1b8db3`):** SpecialistSpec registry — `name`, `transfer_tool`, `when_to_use`, `instructions`, `tool_factory`, `ack_phrase`, `enabled`. Adding a specialist is one file, ~30 lines.
+- **Phase 3 (`a3397b4`):** Planner specialist via the registry — first registry-driven specialist live, wraps `run_jarvis_cli`. `JarvisAgent.tools=[…]` pulls in `build_all_transfer_tools()` so any registered, enabled spec contributes a `transfer_to_X` tool automatically.
+- **Phase 4 (`d606129`):** Desktop specialist migrated to the registry. Legacy `JarvisAgent.transfer_to_desktop` method retired. `JARVIS_INSTRUCTIONS` rewritten with explicit desktop-vs-planner routing examples.
+- **Phase 5 (`4412712`):** Browser specialist via the registry — replaces the flaky `browser_task` (browser-use library) path with a 25-tool DOM-level surface (`ext_navigate`, `ext_click`, `ext_type`, `ext_extract_text`, `ext_screenshot`, `ext_exec_js`, …) that drives a real Chrome via the jarvis-screen extension over a Bun bridge. Manus pattern: one DOM command per LLM turn, structured-error responses on bridge failure.
+- **Phase 6 (this commit):** Handoff telemetry — `specialist` column added to the `turns` SQLite table with online migration; `report()` shows specialist usage distribution. Sets `session._jarvis_last_specialist` from the registry's transfer tool so `_on_item` populates the column without touching the legacy code path.
+
+**Re-score:**
+
+| # | Axis | Before | After | Delta | Why |
+|---|---|---|---|---|---|
+| 4 | LLM dispatch by route | 7 | 8 | +1 | Classifier is now provider-pluggable via LangChain; switching to DeepSeek for routing is `JARVIS_ROUTER_PROVIDER=deepseek`, no code change. |
+| 6 | Acknowledgment vocabulary | 7 | 8 | +1 | Each specialist has its own `ack_phrase` (`"On it, sir."` for desktop, `"Working on it, sir."` for browser), which gives the user a per-route audible distinction at handoff without prompt edits. |
+| 9 | Tool execution discipline | 7 | 9 | +2 | Three specialists (desktop / planner / browser), all registry-driven and uniformly tested. The narration trap is explicitly covered for all three transfer tools in the prompt. Browser specialist replaces the flaky browser_task path with deterministic DOM commands and structured error responses. The supervisor's read-only-only tool set + handoff-only-action pattern is now strictly enforced. |
+| 10 | Self-eval / closed loop | 9 | 10 | +1 | Handoff telemetry closes the feedback loop on which specialists are used. Schema migration handles existing dbs cleanly. Report shows route × specialist × ttfw distribution — actionable data for the next iteration. |
+
+**Total: 80 → 84 / 100.**
+
+**Test footprint:** 73 → 99 tests across the voice agent suite. All green.
+
+### Phase 7+ candidates (path to 90%)
+
+The remaining 6 points to ≥90 are concentrated in three axes that need either real-data verification or non-trivial work:
+
+1. **Axis 1 — Streaming TTS / TTFW (9 → 10):** the `ttfw_ms` metric is currently measured at `_on_item` (assistant message landed in `chat_ctx`) — that's closer to "time to LLM completion" than true TTFW. Hooking the first-token-emitted moment from the LLM stream would give a true measurement; if it's already < 1000ms most of the time, this is just a measurement fix and the score moves +1.
+
+2. **Axis 2 — Emotion detection (8 → 10):** the lexical + speech-rate path is solid, but acoustic prosody (pitch, RMS energy from VAD frames) would catch emotions the lexicon misses. Either implement a small prosody helper or wire in HumeAI Voice (paid). +1 to +2 depending on approach.
+
+3. **Axis 7 — Interruption handling (8 → 9):** per-emotion (not just per-route) interrupt tuning. Frustrated → don't kill them mid-vent. Urgent → snappier. +1.
+
+4. **Axis 5 — Voice swap by route (8 → 9):** the per-route voice setup is good but the BANTER fast-path skips the prefix injection's per-emotion voice prosody adjustments. Tightening that gives +1.
+
+Cumulative reachable: +5 to +6 → 89 to 90.
+
+The honest ceiling without paid voice models or substantially more work appears to be ~90 — and the architectural changes shipped in Phases 1-6 are the foundation the remaining axes need.
