@@ -36,6 +36,13 @@ export default function useVoiceClient({ muted = false } = {}) {
   const [booting,      setBooting]      = useState(false)
   const [silentMode,   setSilentMode]   = useState(false)
   const [speaking,     setSpeaking]     = useState(false)
+  // Active model IDs surfaced by the voice-client's /status. Used by
+  // App.jsx's tray-menu label sync — exposed here so the consolidated
+  // poll loop is the single source of truth (the legacy TrayLabelSync
+  // component was deleted to remove its duplicate /status fetch).
+  const [cliModel,     setCliModel]     = useState(null)
+  const [speechModel,  setSpeechModel]  = useState(null)
+  const [ttsProvider,  setTtsProvider]  = useState(null)
   // True once the agent worker has joined the room AND the SFU link
   // is up. The SFU connection reports `connected` ~100 ms after
   // boot; the agent takes another 1-2 s to accept the job. The tray
@@ -48,10 +55,10 @@ export default function useVoiceClient({ muted = false } = {}) {
   const [audioLevel]                    = useState(0)
 
   // ── Status poll loop ───────────────────────────────────────────────
-  // 1 Hz is fine for tray + pill. Any faster and we risk the render
-  // cascade that caused the useSpeech Silero churn. The VoiceClientPill
-  // in App.jsx also polls /status — duplicate calls are trivially
-  // cheap at this rate and neither path blocks on the other.
+  // 2 Hz (500 ms tick). Single source of truth for everything driven
+  // by /status — App.jsx reads from this hook for both tray-icon
+  // colour and tray-menu label sync. The duplicate poll inside the
+  // legacy VoiceClientPill / TrayLabelSync was removed 2026-04-30.
   // Direct "processing" state. Driven entirely by definitive flags
   // the agent writes: `tool_running` (a function tool is in flight)
   // and `agent_thinking` (the LLM is generating tokens). Plus the
@@ -78,6 +85,9 @@ export default function useVoiceClient({ muted = false } = {}) {
         setVoiceActive(!!s.listening)
         setSpeaking(!!s.speaking)
         setAgentPresent(!!s.agent_present)
+        setCliModel(s.cli_model || null)
+        setSpeechModel(s.speech_model || null)
+        setTtsProvider(s.tts_provider || null)
 
         // ── Definitive thinking signals ────────────────────────────
         // We dropped the prior heuristic (inferring "thinking" from
@@ -163,6 +173,7 @@ export default function useVoiceClient({ muted = false } = {}) {
 
   return {
     listening, recording, voiceActive, processing, booting, silentMode, speaking, audioLevel,
+    cliModel, speechModel, ttsProvider,
     startRecording: () => {},
     stopRecording:  () => {},
     speak,
