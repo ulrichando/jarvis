@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { ChevronDown, Download, ExternalLink, Maximize, Palette, Play, Plus, Share2, Sliders, X } from "lucide-react";
 import type { TreeEntry } from "@/lib/workspace/client";
@@ -66,6 +66,24 @@ export function DesignView({
   const [selected, setSelected] = useState<TreeEntry | null>(null);
   const [showBrand, setShowBrand] = useState(false);
   const [streaming, setStreaming] = useState<{ filePath: string; content: string } | null>(null);
+  // Streaming chunks arrive 10–30+ per second on long files. Setting state
+  // (and therefore rebuilding the iframe srcDoc) on every chunk thrashes the
+  // browser badly enough to crash the tab. Coalesce updates: keep the latest
+  // chunk in a ref, flush at most every 300ms via a single timer.
+  const pendingStreamingRef = useRef<{ filePath: string; content: string } | null>(null);
+  const streamingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushStreaming = () => {
+    if (pendingStreamingRef.current) {
+      setStreaming(pendingStreamingRef.current);
+      pendingStreamingRef.current = null;
+    }
+    streamingTimerRef.current = null;
+  };
+  const queueStreaming = (filePath: string, content: string) => {
+    pendingStreamingRef.current = { filePath, content };
+    if (streamingTimerRef.current) return; // an update is already scheduled
+    streamingTimerRef.current = setTimeout(flushStreaming, 300);
+  };
   const [prefillPrompt, setPrefillPrompt] = useState<{ id: string; text: string } | undefined>(undefined);
   const [showTweaks, setShowTweaks] = useState(false);
   const [tweakOverrides, setTweakOverrides] = useState<Record<string, Tweak["value"]>>({});
@@ -395,10 +413,19 @@ export function DesignView({
                 workspaceId={workspaceId}
                 workspaceName={workspaceName}
                 composerPlaceholder="Describe what you want to create — slides, prototype, landing, one-pager, infographic…"
-                onStreamingFile={(filePath, content) =>
-                  setStreaming({ filePath, content })
-                }
+                onStreamingFile={queueStreaming}
                 onFileComplete={(filePath) => {
+                  // Flush any pending throttled update so the user sees the
+                  // final state, then clear streaming after a tick so the
+                  // iframe falls back to the file on disk.
+                  if (streamingTimerRef.current) {
+                    clearTimeout(streamingTimerRef.current);
+                    streamingTimerRef.current = null;
+                  }
+                  if (pendingStreamingRef.current) {
+                    setStreaming(pendingStreamingRef.current);
+                    pendingStreamingRef.current = null;
+                  }
                   setStreaming((cur) =>
                     cur && cur.filePath === filePath ? null : cur,
                   );
