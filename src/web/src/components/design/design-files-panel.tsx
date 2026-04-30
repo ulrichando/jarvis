@@ -16,7 +16,7 @@ import {
   Upload,
 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { apiDeleteEntry, apiTree, type TreeEntry } from "@/lib/workspace/client";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -536,9 +536,14 @@ const TIPS = [
 ];
 
 function TipBanner() {
-  // Pick once per mount so the tip stays stable while you read it. A timed
-  // rotation would be too anxious — the dropzone right below already moves.
-  const [tip] = useState(() => TIPS[Math.floor(Math.random() * TIPS.length)]);
+  // SSR renders the first tip deterministically; the client re-rolls on mount
+  // for variety. Doing the random pick in useState's lazy init causes a
+  // hydration mismatch (server picks a different index than the client), so
+  // the random pick is gated to a useEffect that only runs after hydration.
+  const [tip, setTip] = useState(TIPS[0]);
+  useEffect(() => {
+    setTip(TIPS[Math.floor(Math.random() * TIPS.length)]);
+  }, []);
   return (
     <div className="flex items-start gap-2 border-t border-border/50 bg-orange-500/5 px-5 py-3 text-[12px] leading-5 text-foreground/85">
       <Sparkles className="mt-0.5 size-3.5 shrink-0 text-orange-400" />
