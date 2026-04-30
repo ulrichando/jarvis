@@ -56,6 +56,7 @@ from langgraph.graph import END, START, StateGraph
 from turn_router import (
     AudioMeta,
     classify_turn,
+    compute_interrupt_tuning,
     compute_speech_rate,
     detect_emotion,
     update_baseline,
@@ -150,11 +151,12 @@ def _node_apply_banter_swap(state: TurnState, config: Optional[RunnableConfig] =
         new_tts = tts_dispatcher.pick("BANTER")
         session._llm = new_llm
         session._tts = new_tts
-        # BANTER interrupt tuning: snappier barge-in
+        # BANTER interrupt tuning with per-emotion overlay (Phase 7)
+        mw, md = compute_interrupt_tuning("BANTER", state.get("emotion", "neutral"))
         opts = getattr(session, "options", None)
         if opts is not None and hasattr(opts, "interruption"):
-            opts.interruption["min_words"] = 1
-            opts.interruption["min_duration"] = 0.3
+            opts.interruption["min_words"] = mw
+            opts.interruption["min_duration"] = md
         return {
             "route": "BANTER",
             "classifier_skipped": True,
@@ -264,25 +266,28 @@ def _node_inject_prefix(state: TurnState, config: Optional[RunnableConfig] = Non
 
 
 def _node_tune_interrupt(state: TurnState, config: Optional[RunnableConfig] = None) -> dict:
-    """Per-route interrupt tuning. BANTER already tuned in its fast-path
-    node; for non-fast-path turns, set the params here."""
+    """Per-route + per-emotion interrupt tuning. BANTER already tuned
+    in its fast-path node; for non-fast-path turns, set the params here.
+
+    Phase-7 update: emotion overlay applied on top of the route base.
+    A frustrated/sad user gets a longer min_duration so a pause doesn't
+    let JARVIS cut them off; an urgent user gets snappier interrupts.
+    """
     if state.get("classifier_skipped"):
         return {}
     cfg = (config or {}).get("configurable", {}) or {}
     session = cfg.get("session")
     if session is None:
         return {}
-    tuning = {
-        "BANTER":    (1, 0.3),
-        "TASK":      (2, 0.4),
-        "REASONING": (3, 0.5),
-        "EMOTIONAL": (3, 0.6),
-    }.get(state.get("route", "TASK"), (2, 0.4))
+    mw, md = compute_interrupt_tuning(
+        state.get("route", "TASK"),
+        state.get("emotion", "neutral"),
+    )
     try:
         opts = getattr(session, "options", None)
         if opts is not None and hasattr(opts, "interruption"):
-            opts.interruption["min_words"]    = tuning[0]
-            opts.interruption["min_duration"] = tuning[1]
+            opts.interruption["min_words"]    = mw
+            opts.interruption["min_duration"] = md
     except Exception as e:
         logger.debug(f"[turn-graph:tune-interrupt] skipped: {e}")
     return {}
