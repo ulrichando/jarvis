@@ -3326,11 +3326,16 @@ _PURE_HEDGE_REPLY_RE = re.compile(
     # "Sorry, I missed that, did you want me to clarify ..." (deflection only)
     r"sorry,?\s+i\s+missed\s+that(?:[\s\S]{0,80}clarify[\s\S]*)?[.!?\s]*|"
     r"sorry,?\s+i\s+(?:didn[’'`]?t|did\s+not)\s+(?:get|catch)\s+that[.!?\s]*|"
-    # "I'm listening" / "I'm here" — ONLY bare or with sir/let-me-know (no topical clause)
-    r"i[’'`]?m\s+(?:listening|here)(?:[,.\s]+sir)?[.!?\s]*"
+    # "I'm listening" — bare or with sir, no topical clause. We DO drop
+    # this because it's almost never a real reply; the LLM emits it as
+    # a deflection when STT picked up ambient noise.
+    r"i[’'`]?m\s+listening(?:[,.\s]+sir)?[.!?\s]*"
         r"(?:let\s+me\s+know[^.!?]*[.!?]?\s*)?|"
-    # "I'm here to help" — only bare/with sir (no "you navigate this" or other topic)
-    r"i[’'`]?m\s+here\s+to\s+help(?:[,.\s]+sir)?[.!?\s]*|"
+    # NOTE 2026-04-30: removed "I'm here" from the drop set. It triggered
+    # on legitimate replies like 'I'm here, sir.' (perfectly valid answer
+    # to 'are you there?' or 'how are you?'). False-positive on ambient
+    # noise is rare enough to tolerate in exchange for not eating real
+    # responses. Same for "I'm here to help" with topical clause.
     # Bare hedge questions — never legit
     r"what\s+would\s+you\s+like\s+me\s+to\s+do(?:\s+next)?(?:[,.\s]+sir)?[?.!\s]*|"
     r"how\s+can\s+i\s+(?:help|assist)(?:\s+you)?(?:[,.\s]+sir)?[?.!\s]*"
