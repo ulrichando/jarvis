@@ -79,7 +79,7 @@ type ChatProps = {
   // Programmatic prefill of the composer input. Bumping `id` to a new value
   // sets the input to `text` (does NOT auto-send). Used by Design starter
   // cards to prefill an example prompt the user can review and submit.
-  prefillPrompt?: { id: string; text: string };
+  prefillPrompt?: { id: string; text: string; autoSend?: boolean };
   // Suppress the sidebar-toggle button that the embedded chat renders by
   // default. The Design tab has its own chrome, so the global-sidebar opener
   // would just be a confusing duplicate.
@@ -495,7 +495,17 @@ export function Chat({
     if (!prefillPrompt) return;
     if (prefillIdRef.current === prefillPrompt.id) return;
     prefillIdRef.current = prefillPrompt.id;
-    setInput(prefillPrompt.text);
+    if (prefillPrompt.autoSend) {
+      // Auto-submit the prefilled text — used by the questions.html Continue
+      // button so the user doesn't have to manually click Send after answering.
+      // Defer to next microtask so submit() runs after this render commits.
+      const text = prefillPrompt.text;
+      queueMicrotask(() => {
+        void submit(text);
+      });
+    } else {
+      setInput(prefillPrompt.text);
+    }
   }, [prefillPrompt]);
 
   const isEmpty = messages.length === 0;
