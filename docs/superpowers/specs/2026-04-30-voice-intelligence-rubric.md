@@ -100,3 +100,43 @@ Iteration 2 should attack the BANTER median TTFW of 4.8s revealed above. The str
 - Is the `_classify_and_swap` background task swapping the LLM after the LLM has already started generating? (race condition: the swap may land too late to affect the current turn)
 - Are BANTER turns hitting the fallback (`llama-3.3-70b`) instead of the fast `llama-3.1-8b-instant`? `route_fallback` is 0% in the data, but the fallback is recorded in a way that might not catch the timing race.
 - Is the LLM-classifier itself eating 500ms before the LLM even starts?
+
+### 2026-04-30 — Iteration 2 (BANTER fast-path)
+
+**Root cause confirmed.** Reading `_on_user_input_for_dispatch`:
+
+1. `user_input_transcribed` (final) fires.
+2. The framework's reply pipeline reads `session._llm` and dispatches the LLM call **immediately** in parallel with registered listeners.
+3. `_on_user_input_for_dispatch` kicks off `_classify_and_swap()` as an `asyncio.create_task` — which posts to Groq with a 500ms timeout.
+4. The classifier returns ~500ms later, swaps `session._llm = banter_inner`.
+5. Too late: the framework's LLM call from step 2 is already in flight on the *previous turn's* `session._llm`.
+
+So BANTER turns ran on whatever inner the prior turn finalized to (usually `llama-3.3-70b` for TASK), giving ~3-5s LLM completion latency. The fast inner (`llama-3.1-8b-instant`) only took effect on the *next* turn, by which point the user had already moved on.
+
+**Targeted improvement:** Synchronous BANTER fast-path. Added `_BANTER_FAST_PATH_RE` matching high-confidence chitchat (greetings, "how are you", thanks, sign-offs, "tell me a joke"). When matched and the transcript is ≤6 words:
+- Skip the 500ms classifier round-trip entirely.
+- Synchronously swap `session._llm` and `session._tts` to the BANTER inners *inside* the listener — listeners run synchronously inside the event emitter, so the swap lands before the framework reads `session._llm`.
+- Inject `[Route: BANTER] [Emotion: …]` prefix synchronously.
+- Apply BANTER interrupt tuning (min_words=1, min_duration=0.3) for snappier barge-in.
+
+Falls through to the async classifier on regex miss or any exception.
+
+**Tests:** New `tests/test_banter_fast_path.py` — 13 cases covering greetings, "how are you" family, casual affirmations, sign-offs, chitchat openers, punctuation tolerance, case-insensitivity, plus negative cases (action requests, reasoning questions, emotional content, long sentences, bare vocative). All 13 pass; full voice-agent suite of 55 tests stays green.
+
+**Re-score after iteration 2:**
+
+| # | Axis | Before | After | Delta |
+|---|---|---|---|---|
+| 1 | Streaming TTS / TTFW | 7 | 9 | +2 — high-confidence BANTER turns now skip 500ms classifier RTT and run on the fast inner from word one |
+| 3 | Turn routing | 8 | 9 | +1 — regex pre-classifier reduces classifier-fallback risk on the most common turn type |
+
+**New total: 78/100 = 78%.**
+
+Reality check: the score bump is partially predictive. Real TTFW improvement only confirmed when the next batch of telemetry is collected. If iteration-3 telemetry shows BANTER median still > 1500ms, the issue is elsewhere (likely TTS RTF or LLM completion time, not the dispatcher race) and we adjust scoring down.
+
+### Next-iteration target
+
+Iteration 3 candidates, in priority order:
+1. **REASONING route never picked** (axis 3 still capped at 9 because the data shows zero REASONING turns ever). Investigate whether the classifier is collapsing reasoning-class turns into TASK because the classifier model (`llama-3.1-8b-instant`) is too small to reliably tag REASONING. Try `llama-3.3-70b-versatile` for the classifier or strengthen the classifier prompt with examples.
+2. **Acoustic emotion signal** (axis 2 at 6). `AudioMeta.speech_rate_wpm` is plumbed but never populated — the `user_input_transcribed` event has no rate attr. Wire utterance start/end timestamps from STT events, compute words/duration, maintain a rolling baseline.
+3. **EMOTIONAL follow-up rate of 0%** (axis 4 at 7) — if telemetry stays at 0% over the next 30 emotional turns, the EMOTIONAL inner (`llama-4-scout`) isn't landing emotionally; consider a router-prompt change that nudges it warmer, or different voice prosody.
