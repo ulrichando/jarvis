@@ -2,8 +2,13 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronDown, Loader2, Palette, Plus, Trash2 } from "lucide-react";
-import { apiCreateWorkspace, apiDeleteWorkspace, type Workspace } from "@/lib/workspace/client";
+import { ChevronDown, Loader2, Palette, Pencil, Plus, Trash2 } from "lucide-react";
+import {
+  apiCreateWorkspace,
+  apiDeleteWorkspace,
+  apiRenameWorkspace,
+  type Workspace,
+} from "@/lib/workspace/client";
 import { cn } from "@/lib/utils";
 
 export function ProjectPicker({
@@ -38,6 +43,21 @@ export function ProjectPicker({
       router.push(`/design?ws=${encodeURIComponent(ws.id)}`);
     } catch (err) {
       window.alert(`Create failed: ${err instanceof Error ? err.message : err}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const rename = async (id: string, currentName: string) => {
+    const next = window.prompt("Rename project", currentName);
+    if (!next || next.trim() === currentName) return;
+    setBusy(id);
+    try {
+      await apiRenameWorkspace(id, next.trim());
+      onChanged?.();
+      router.refresh();
+    } catch (err) {
+      window.alert(`Rename failed: ${err instanceof Error ? err.message : err}`);
     } finally {
       setBusy(null);
     }
@@ -123,6 +143,21 @@ export function ProjectPicker({
                     )}
                   />
                   <span className="truncate text-[13px]">{p.name}</span>
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Rename ${p.name}`}
+                  onClick={() => rename(p.id, p.name)}
+                  disabled={removing}
+                  title="Rename project"
+                  className={cn(
+                    "rounded p-1 text-muted-foreground/60 transition-colors",
+                    "opacity-0 group-hover:opacity-100",
+                    "hover:bg-muted hover:text-foreground",
+                    removing && "opacity-30 pointer-events-none",
+                  )}
+                >
+                  <Pencil className="size-3" />
                 </button>
                 <button
                   type="button"
