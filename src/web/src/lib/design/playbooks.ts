@@ -26,6 +26,7 @@ export function buildPlaybookPrompt({
     formatBlock(format),
     brand ? brandBlock(brand) : pairingBlock(pairing!),
     sharedBaseBlock(),
+    stackBlock(format),
     tweaksBlock(format),
     antiSlopBlock(),
     artifactRulesBlock(format),
@@ -221,6 +222,101 @@ function sharedBaseBlock(): string {
   - NEVER use placeholder.com, via.placeholder.com, lorem.space, or any \`src="image.jpg"\` / \`src="placeholder.png"\` style stub.
   - For thumbnails / avatars: use a colored circle with initials, not a fake image URL.
 </base_rules>`;
+}
+
+// Per-format guidance on the JARVIS design stack: React + Tailwind +
+// shadcn-pattern + motion, all loaded via CDN/esm.sh, no build step. Heavier
+// formats (prototype, landing, slides) get the full stack. Static formats
+// (onepager, infographic) skip it — plain HTML + Tailwind is enough.
+function stackBlock(format: Format): string {
+  if (format === "onepager" || format === "infographic") {
+    return `
+<stack>
+  This format is static print-grade. Plain HTML + Tailwind via CDN is enough — don't pull in React. Load Tailwind once in <head>:
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  Use Tailwind classes everywhere; declare custom tokens via inline <script>tailwind.config = { theme: { extend: { colors: { accent: 'var(--accent)' } } } }</script>.
+</stack>`;
+  }
+
+  return `
+<stack>
+  Build with the JARVIS design stack: React + Tailwind + shadcn-pattern + motion. Everything loads via CDN/esm.sh — NO build step, NO package.json. The user opens the entry HTML directly and it just works.
+
+  ENTRY HTML SCAFFOLD (the entry-point file the user opens):
+    <!doctype html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8">
+      <title>...</title>
+      <link rel="preconnect" href="https://fonts.googleapis.com">
+      <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+      <link href="...Google Fonts URL..." rel="stylesheet">
+      <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+      <script>tailwind.config = { theme: { extend: { colors: { accent: 'var(--accent)' } } } };</script>
+      <script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
+      <style>:root { --bg: #0B0B0F; --fg: #F4F4F5; --accent: #FF6A00; }</style>
+    </head>
+    <body class="bg-[var(--bg)] text-[var(--fg)]">
+      <div id="root"></div>
+      <script type="text/babel" data-type="module" data-presets="react">
+        import { createRoot } from "https://esm.sh/react-dom@18/client";
+        import App from "./App.jsx";
+        createRoot(document.getElementById("root")).render(<App />);
+      </script>
+    </body>
+    </html>
+
+  WHY \`type="text/babel" data-type="module"\`: Babel standalone fetches each \`./*.jsx\` import, transforms the JSX, and re-evaluates as an ES module. This is what makes multi-file JSX work without a build.
+
+  COMPONENT FILES (.jsx):
+    // App.jsx
+    import React from "https://esm.sh/react@18";
+    import { motion, AnimatePresence } from "https://esm.sh/motion@12/react";
+    import Button from "./components/Button.jsx";
+    import Home from "./screens/Home.jsx";
+
+    export default function App() {
+      return (
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.6 }}>
+          <Home />
+          <Button>Reserve</Button>
+        </motion.div>
+      );
+    }
+
+  LIBRARY IMPORTS (use these exact specifiers):
+    React:        \`import React from "https://esm.sh/react@18"\`
+    React DOM:    \`import { createRoot } from "https://esm.sh/react-dom@18/client"\`
+    Motion:       \`import { motion, AnimatePresence } from "https://esm.sh/motion@12/react"\`
+    Radix Dialog: \`import * as Dialog from "https://esm.sh/@radix-ui/react-dialog@1"\`
+    Radix Tabs:   \`import * as Tabs from "https://esm.sh/@radix-ui/react-tabs@1"\`
+    Lucide icons: \`import { ArrowRight, Check, X } from "https://esm.sh/lucide-react@0.469"\`
+    clsx:         \`import clsx from "https://esm.sh/clsx@2"\`
+    cva:          \`import { cva } from "https://esm.sh/class-variance-authority@0"\`
+
+  SHADCN PATTERN (NOT npm install):
+  shadcn isn't a runtime library — it's a pattern of inlining unstyled Radix primitives + Tailwind class variants into your own components. You write the components yourself in \`components/\`. Don't try to npm install. Don't use \`npx shadcn\`.
+  Each component is a plain JSX file using Tailwind classes that match the shadcn aesthetic + Radix primitives via esm.sh when interactivity needs them.
+  Common shadcn-pattern components: Button (cva variants — default/outline/ghost/destructive), Card, Input, Label, Dialog, Tabs, Tooltip, Sheet, Command, Switch, Select.
+  Helper: \`src/cn.js\` exports \`cn = (...classes) => clsx(...classes)\`.
+
+  FOLDER LAYOUT (REQUIRED for multi-file React projects):
+    \`<entry>.html\`               — the format's entry-point HTML (loads Tailwind + Babel standalone)
+    \`App.jsx\`                    — root React component
+    \`components/Button.jsx\`      — shadcn-pattern components (Button, Card, etc.)
+    \`components/Card.jsx\`
+    \`screens/Home.jsx\`           — for prototype: each route gets its own file
+    \`screens/Detail.jsx\`
+    \`scenes/Intro.jsx\`           — for animated slides: each scene gets its own file
+    \`src/cn.js\`                  — \`cn()\` helper
+    \`src/palette.js\`             — color/space tokens as constants (optional)
+    \`tailwind.config.json\`       — custom tokens, OPTIONAL (declared inline in HTML works too)
+    \`references/\`                — uploaded assets
+
+  TWO HARD RULES STILL APPLY:
+    1. NO \`package.json\`, no \`npm/bun/pnpm install\` instructions, no \`bun dev\`. The user opens the HTML directly.
+    2. NO real backend, no real auth, no CRUD. Visual mocks only — interactivity inside the design is great, deployed software is not the goal.
+</stack>`;
 }
 
 function tweaksBlock(format: Format): string {
