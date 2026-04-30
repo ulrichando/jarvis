@@ -37,9 +37,10 @@ from .registry import SpecialistSpec, register, all_specs, get, clear
 # register_X() helper is idempotent (re-registration overwrites), so
 # importing this package twice is safe.
 def _register_builtins() -> None:
-    from . import desktop, planner
+    from . import desktop, planner, browser
     desktop.register_desktop()
     planner.register_planner()
+    browser.register_browser()
 
 _register_builtins()
 
