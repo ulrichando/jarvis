@@ -44,6 +44,12 @@ _REASONING_BY_CALL_ID: dict[str, str] = {}
 # Cleared per stream as soon as finish_reason fires.
 _STREAMING_STATE: dict[str, dict[str, Any]] = {}
 
+# Stub injected on assistant tool-call messages we don't have a real
+# reasoning_content for (recalled from DB, produced before the patch
+# loaded, or by a non-thinking model in a prior session). DeepSeek
+# accepts arbitrary non-empty text in this field.
+_PLACEHOLDER_REASONING = "(prior turn — reasoning not captured)"
+
 
 def _patch_parse_choice() -> None:
     from livekit.agents.inference import llm as inf_llm
@@ -104,7 +110,8 @@ def _patch_to_chat_ctx() -> None:
         messages, extra = orig_to_chat_ctx(
             chat_ctx, inject_dummy_user_message=inject_dummy_user_message
         )
-        injected = 0
+        injected_real = 0
+        injected_placeholder = 0
         for msg in messages:
             if msg.get("role") != "assistant":
                 continue
@@ -115,11 +122,23 @@ def _patch_to_chat_ctx() -> None:
             rc = _REASONING_BY_CALL_ID.get(first_id) if first_id else None
             if rc:
                 msg["reasoning_content"] = rc
-                injected += 1
-        if injected:
+                injected_real += 1
+            else:
+                # No cached reasoning — happens for tool-call messages
+                # recalled from the conversations DB (prior session,
+                # different speech model) or messages produced before
+                # the patch was installed. The DeepSeek thinking-mode
+                # API demands reasoning_content on EVERY prior
+                # assistant tool-call message regardless of origin, so
+                # we synthesize a stub. Other providers (Groq, OpenAI
+                # proper) accept the extra field as a no-op.
+                msg["reasoning_content"] = _PLACEHOLDER_REASONING
+                injected_placeholder += 1
+        if injected_real or injected_placeholder:
             logger.debug(
-                "injected reasoning_content into %d assistant tool-call message(s)",
-                injected,
+                "injected reasoning_content: %d real, %d placeholder",
+                injected_real,
+                injected_placeholder,
             )
         return messages, extra
 
