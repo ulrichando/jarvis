@@ -238,9 +238,63 @@ function ext_submit(args = {}) {
   return ok();
 }
 
+// ── Scroll / wait / dialog / iframe ──────────────────────────────────
+
+function ext_scroll(args = {}) {
+  const dir = (args.direction || 'down').toLowerCase();
+  let amt = args.amount;
+  if (amt === 'page') amt = window.innerHeight;
+  if (typeof amt !== 'number') amt = 500;
+  let dx = 0, dy = 0;
+  if (dir === 'down')  dy =  amt;
+  if (dir === 'up')    dy = -amt;
+  if (dir === 'right') dx =  amt;
+  if (dir === 'left')  dx = -amt;
+  window.scrollTo(window.scrollX + dx, window.scrollY + dy);
+  return ok();
+}
+
+async function ext_wait_for(args = {}) {
+  const sel = args.selector;
+  if (!sel) return err('selector required');
+  const timeoutSec = args.timeout || 10;
+  const deadline = Date.now() + timeoutSec * 1000;
+  while (Date.now() < deadline) {
+    const el = _findOne(sel);
+    if (el) {
+      // Check if element is visible: either offsetParent !== null (real DOM)
+      // or getComputedStyle shows it's not hidden (test environments)
+      const isVisible = el.offsetParent !== null ||
+        (typeof getComputedStyle !== 'undefined' &&
+         getComputedStyle(el).display !== 'none');
+      if (isVisible) return ok({ found: true });
+    }
+    await new Promise(r => setTimeout(r, 100));
+  }
+  return ok({ found: false });
+}
+
+function ext_accept_dialog(args = {}) {
+  return ok({ delegated_to_background: true, accept: !!args.accept });
+}
+
+function ext_switch_iframe(args = {}) {
+  const sel = args.selector_or_index;
+  if (sel === undefined || sel === null) return err('selector_or_index required');
+  let frame;
+  if (typeof sel === 'number') {
+    frame = document.querySelectorAll('iframe')[sel];
+  } else {
+    frame = _findOne(sel);
+  }
+  if (!frame) return err('iframe not found');
+  return ok({ frame_id: frame.id || null, frame_src: frame.src || null });
+}
+
 module.exports = Object.assign(module.exports || {}, {
   ext_get_url, ext_close_tab,
   ext_extract_text, ext_find_by_text, ext_dom_summary, ext_screenshot,
   ext_click, ext_right_click, ext_hover, ext_drag, ext_select,
   ext_type, ext_fill_form, ext_keypress, ext_submit,
+  ext_scroll, ext_wait_for, ext_accept_dialog, ext_switch_iframe,
 });
