@@ -76,6 +76,14 @@ from dispatching_llm import DispatchingLLM
 from dispatching_tts import DispatchingTTS
 from turn_telemetry import init_db, log_turn, DEFAULT_DB_PATH
 
+# Specialist registry — auto-registers built-in specs on import
+# (see specialists/__init__.py). build_all_transfer_tools() returns
+# the @function_tool list for every enabled spec; gets attached to
+# JarvisAgent's tools=[…] at construction. No circular import: the
+# specialists' tool_factories are lazy callables that import from
+# jarvis_agent only when a specialist is actually instantiated.
+from specialists.agent import build_all_transfer_tools
+
 logger = logging.getLogger("jarvis-agent")
 
 # Desktop computer-use tools — Gemini vision describes the screen,
@@ -4630,6 +4638,14 @@ async def entrypoint(ctx: JobContext) -> None:
             face_identify,
             face_list,
             face_delete,
+            # Registry-supplied specialist handoffs. The legacy
+            # `transfer_to_desktop` on this class still owns the
+            # desktop spec (registered with enabled=False to avoid the
+            # name collision); the registry contributes additional
+            # transfer tools (planner, browser when shipped, etc.).
+            # Adding a new specialist = one file under specialists/,
+            # one register() call, no edits here.
+            *build_all_transfer_tools(),
         ],
     )
 
