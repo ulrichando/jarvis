@@ -258,6 +258,9 @@ fn speech_model_pretty(id: &str) -> Option<&'static str> {
         "qwen/qwen3-32b"                                 => Some("Groq · qwen3-32b"),
         "openai/gpt-oss-120b"                            => Some("Groq · gpt-oss-120b"),
         "meta-llama/llama-4-scout-17b-16e-instruct"      => Some("Groq · llama 4 scout"),
+        "deepseek-chat"                                  => Some("DeepSeek · chat"),
+        "deepseek-v4-flash"                              => Some("DeepSeek · v4 flash"),
+        "deepseek-v4-pro"                                => Some("DeepSeek · v4 pro"),
         _ => None,
     }
 }
