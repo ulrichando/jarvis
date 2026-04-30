@@ -29,6 +29,15 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 const BASE_URL = 'http://127.0.0.1:8767'
 
 export default function useVoiceClient({ muted = false } = {}) {
+  // True iff the native voice-client's HTTP server (:8767) responds
+  // — i.e. the LiveKit-peer process is alive. NOT to be confused with
+  // `listening` (mic capture is active) or `voiceActive` (user is
+  // currently speaking). Pre-2026-04-30 the floating pill checked
+  // `s.connected` from /status directly; the tray-icon useEffect in
+  // App.jsx mistakenly read `speech.connected` (undefined) so the
+  // tray was permanently red until the pill was removed and the bug
+  // surfaced. Exposing it here as a real field fixes that.
+  const [connected,    setConnected]    = useState(false)
   const [listening,    setListening]    = useState(false)
   const [recording,    setRecording]    = useState(false)
   const [voiceActive,  setVoiceActive]  = useState(false)
@@ -80,6 +89,7 @@ export default function useVoiceClient({ muted = false } = {}) {
         if (!r.ok) throw 0
         const s = await r.json()
         if (!alive) return
+        setConnected(!!s.connected)
         setListening(!!s.connected)
         setRecording(!!s.connected && !s.muted && !s.silent_mode)
         setVoiceActive(!!s.listening)
@@ -108,6 +118,7 @@ export default function useVoiceClient({ muted = false } = {}) {
         else if (s.speaking)  lastActiveRef.current = 'agent'
       } catch {
         if (alive) {
+          setConnected(false)
           setListening(false); setRecording(false)
           setVoiceActive(false); setSpeaking(false); setProcessing(false)
           lastActiveRef.current = null
@@ -172,6 +183,7 @@ export default function useVoiceClient({ muted = false } = {}) {
   const closeMic = useCallback(() => {}, [])
 
   return {
+    connected,
     listening, recording, voiceActive, processing, booting, silentMode, speaking, audioLevel,
     cliModel, speechModel, ttsProvider,
     startRecording: () => {},
