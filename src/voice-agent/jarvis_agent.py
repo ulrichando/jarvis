@@ -581,10 +581,56 @@ SPEECH_MODELS: dict[str, dict] = {
     # on the next turn. livekit-plugins-openai doesn't do that, so
     # multi-turn calls hard-fail with HTTP 400 ("`reasoning_content`
     # in the thinking mode must be passed back to the API"). Until
-    # the plugin grows that round-trip support, DeepSeek isn't safe
-    # to use as a SPEECH model. It still works fine as the CLI tool
-    # model because the CLI's proxy + bun-side tooling handles the
+    # the plugin grows that round-trip support, V4 isn't safe to use
+    # as a SPEECH model. It still works fine as the CLI tool model
+    # because the CLI's proxy + bun-side tooling handles the
     # reasoning_content echo correctly.
+    #
+    # deepseek-chat (V3) is the non-thinking model — no
+    # reasoning_content emitted, so the plugin round-trips it
+    # cleanly. Wired below 2026-04-30 after Groq llama-3.3-70b
+    # and qwen3-32b both produced malformed tool calls
+    # ('tool_name{json_args}' jammed into the name field) more
+    # often than acceptable. DeepSeek's models historically have
+    # cleaner tool-call discipline; ~400 ms first-token latency
+    # vs Groq's ~200 ms is an acceptable trade for fewer "JARVIS
+    # not responding" turns. Requires DEEPSEEK_API_KEY in env.
+    "deepseek-chat": {
+        "label": "DeepSeek · chat (V3)",
+        "build": lambda: lk_openai.LLM(
+            model="deepseek-chat",
+            api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
+            base_url="https://api.deepseek.com/v1",
+            temperature=0.6,
+        ),
+    },
+    # V4 family with thinking DISABLED — `enable_thinking: false`
+    # passed via extra_body suppresses reasoning_content emission,
+    # so the openai plugin's plain round-trip works AND we get V4's
+    # stronger tool-call discipline. v4-pro is preferred when accuracy
+    # matters more than latency; v4-flash for snappier replies.
+    # If this stops working (DeepSeek changes the API contract), fall
+    # back to deepseek-chat above.
+    "deepseek-v4-flash": {
+        "label": "DeepSeek · v4 flash (no-think)",
+        "build": lambda: lk_openai.LLM(
+            model="deepseek-v4-flash",
+            api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
+            base_url="https://api.deepseek.com/v1",
+            temperature=0.6,
+            extra_body={"enable_thinking": False},
+        ),
+    },
+    "deepseek-v4-pro": {
+        "label": "DeepSeek · v4 pro (no-think)",
+        "build": lambda: lk_openai.LLM(
+            model="deepseek-v4-pro",
+            api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
+            base_url="https://api.deepseek.com/v1",
+            temperature=0.6,
+            extra_body={"enable_thinking": False},
+        ),
+    },
 }
 
 
