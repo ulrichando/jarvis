@@ -82,6 +82,59 @@ def test_acoustic_signal_can_signal_sad_with_neutral_words():
     assert detect_emotion("i just don't know", slow_audio) == "sad"
 
 
+# ── compute_interrupt_tuning (Phase 7) ────────────────────────────────
+
+
+from turn_router import compute_interrupt_tuning
+
+
+def test_route_base_neutral_emotion():
+    """With neutral emotion, the route base values should pass through
+    unchanged — verifies overlay doesn't perturb the baseline."""
+    assert compute_interrupt_tuning("BANTER",    "neutral") == (1, 0.3)
+    assert compute_interrupt_tuning("TASK",      "neutral") == (2, 0.4)
+    assert compute_interrupt_tuning("REASONING", "neutral") == (3, 0.5)
+    assert compute_interrupt_tuning("EMOTIONAL", "neutral") == (3, 0.6)
+
+
+def test_unknown_route_defaults_to_task_base():
+    assert compute_interrupt_tuning("BLARG", "neutral") == (2, 0.4)
+
+
+def test_frustrated_overlay_adds_padding():
+    """A frustrated user shouldn't get cut off mid-vent. Both
+    min_words and min_duration go UP."""
+    base = compute_interrupt_tuning("TASK", "neutral")
+    frust = compute_interrupt_tuning("TASK", "frustrated")
+    assert frust[0] > base[0]
+    assert frust[1] > base[1]
+
+
+def test_urgent_overlay_makes_interrupts_snappier():
+    """Urgent → user wants quick replies; min_words/min_duration go DOWN."""
+    base = compute_interrupt_tuning("TASK", "neutral")
+    urg = compute_interrupt_tuning("TASK", "urgent")
+    assert urg[0] <= base[0]
+    assert urg[1] <= base[1]
+
+
+def test_sad_overlay_increases_min_duration_most():
+    """Sad users pause; we should give them lots of pause room."""
+    base = compute_interrupt_tuning("EMOTIONAL", "neutral")
+    sad = compute_interrupt_tuning("EMOTIONAL", "sad")
+    assert sad[1] > base[1]
+
+
+def test_floor_prevents_disabling_interrupts():
+    """An aggressive overlay can't push min_words below 1 or
+    min_duration below 0.2 — LiveKit needs both > 0."""
+    # Hypothetical: BANTER (1, 0.3) + urgent (-1, -0.1) → would be (0, 0.2)
+    # but the floor on min_words clamps to 1.
+    mw, md = compute_interrupt_tuning("BANTER", "urgent")
+    assert mw >= 1
+    assert md >= 0.2
+
+
 
 
 

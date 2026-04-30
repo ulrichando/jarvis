@@ -92,6 +92,10 @@ def _invoke(g, state, *, session, dispatcher, tts_dispatcher, classifier, histor
 def test_fast_path_skips_classifier_and_swaps_banter():
     g = build_turn_graph()
     session = _mk_session("hey jarvis")
+    # Unseed baseline so the speech-rate emotion path is skipped —
+    # isolates this test to "fast-path swap" without picking up an
+    # incidental urgent/sad refinement from the rate signal.
+    session._jarvis_baseline_wpm = 0.0
     dispatcher, tts_dispatcher = _mk_dispatcher(), _mk_tts_dispatcher()
     classifier = _mk_classifier(reply="TASK")  # would be wrong if invoked
 
@@ -105,7 +109,28 @@ def test_fast_path_skips_classifier_and_swaps_banter():
     assert result["classifier_skipped"] is True
     classifier.ainvoke.assert_not_called()
     assert session._llm is dispatcher._inners["BANTER"]
+    # BANTER neutral: route base (1, 0.3) + neutral overlay (0, 0) = (1, 0.3)
     assert session.options.interruption == {"min_words": 1, "min_duration": 0.3}
+
+
+def test_fast_path_applies_urgent_emotion_overlay():
+    """Phase-7: BANTER fast-path with urgent speech (high WPM relative
+    to baseline) should snap interrupts down — the overlay floors at
+    (1, 0.2) since BANTER's base (1, 0.3) + urgent (-1, -0.1) = (0, 0.2)
+    pre-floor."""
+    g = build_turn_graph()
+    session = _mk_session("hey jarvis")
+    dispatcher, tts_dispatcher = _mk_dispatcher(), _mk_tts_dispatcher()
+    classifier = _mk_classifier(reply="TASK")
+
+    # 2 words / 0.5s → 240 wpm vs 140 baseline → urgent
+    _invoke(
+        g, {"transcript": "hey jarvis", "fast_path": True, "duration_s": 0.5},
+        session=session, dispatcher=dispatcher,
+        tts_dispatcher=tts_dispatcher, classifier=classifier,
+    )
+    assert session.options.interruption["min_words"] == 1   # floor
+    assert session.options.interruption["min_duration"] == 0.2  # floor
 
 
 def test_non_fast_path_runs_classifier_and_picks_its_route():
