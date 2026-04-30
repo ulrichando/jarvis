@@ -3670,11 +3670,15 @@ class JarvisAgent(Agent):
             # answer" symptom (verified 2026-04-30 08:03 — fast-path fired
             # but next user turn never reached on_user_turn_completed).
             try:
-                _t = asyncio.create_task(
-                    self.session.say("Yes, sir?", allow_interruptions=True)
-                )
-                _bg_tasks.add(_t)
-                _t.add_done_callback(_bg_tasks.discard)
+                # `session.say(…)` in livekit-agents 1.5+ returns a
+                # SpeechHandle synchronously and dispatches the
+                # synthesis on its own task internally — wrapping it
+                # in asyncio.create_task() raises "a coroutine was
+                # expected, got SpeechHandle". Calling it directly
+                # gives the same fire-and-forget behaviour we want
+                # (control returns immediately; synthesis runs in the
+                # background; next user turn isn't blocked).
+                self.session.say("Yes, sir?", allow_interruptions=True)
                 logger.info(f"[bare-vocative] fast-path 'Yes, sir?' (heard: {text!r})")
                 raise StopResponse()
             except StopResponse:
