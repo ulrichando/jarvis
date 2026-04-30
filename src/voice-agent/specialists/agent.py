@@ -100,6 +100,20 @@ def build_transfer_tool(spec: SpecialistSpec):
                 ctx = ctx.truncate(max_items=spec.max_history_items)
         except Exception:
             ctx = None
+
+        # Stash the specialist name on the session so the assistant
+        # `_on_item` telemetry hook in jarvis_agent.py can record it
+        # alongside route/emotion. Best-effort — `session` may not be
+        # available depending on how LiveKit binds context; the
+        # telemetry value falls back to None and the report shows
+        # those turns as `supervisor`.
+        try:
+            session = getattr(context, "session", None) or getattr(self, "session", None)
+            if session is not None:
+                session._jarvis_last_specialist = spec.name
+        except Exception:
+            pass
+
         logger.info(
             f"[handoff] → {spec.name} specialist (request: {request[:80]!r})"
         )
