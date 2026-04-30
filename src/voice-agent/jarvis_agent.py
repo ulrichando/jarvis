@@ -67,6 +67,15 @@ from livekit.agents.voice.room_io import RoomOptions
 from livekit.plugins import elevenlabs, groq, openai as lk_openai, silero
 from livekit.plugins.elevenlabs import VoiceSettings as _ELVoiceSettings
 
+# Round-trip DeepSeek's reasoning_content field. livekit-plugins-openai
+# 1.5.x doesn't track it, which makes V4-flash / V4-pro reject any
+# multi-turn request whose prior assistant message contained tool_calls
+# (HTTP 400 "reasoning_content must be passed back"). install() patches
+# inference.llm._parse_choice and provider_format.openai.to_chat_ctx;
+# no-op for non-DeepSeek providers.
+import deepseek_roundtrip
+deepseek_roundtrip.install()
+
 # ── Maya-class speech intelligence ────────────────────────────────────
 from turn_router    import (
     detect_emotion, classify_turn, AudioMeta,
@@ -576,83 +585,38 @@ SPEECH_MODELS: dict[str, dict] = {
             temperature=0.6,
         ),
     },
-    # NB: DeepSeek's V4 family is a thinking/reasoning model — it
-    # returns a `reasoning_content` field that has to be echoed back
-    # on the next turn. livekit-plugins-openai doesn't do that, so
-    # multi-turn calls hard-fail with HTTP 400 ("`reasoning_content`
-    # in the thinking mode must be passed back to the API"). Until
-    # the plugin grows that round-trip support, V4 isn't safe to use
-    # as a SPEECH model. It still works fine as the CLI tool model
-    # because the CLI's proxy + bun-side tooling handles the
-    # reasoning_content echo correctly.
-    #
-    # deepseek-chat (V3) is the non-thinking model — no
-    # reasoning_content emitted, so the plugin round-trips it
-    # cleanly. Wired below 2026-04-30 after Groq llama-3.3-70b
-    # and qwen3-32b both produced malformed tool calls
-    # ('tool_name{json_args}' jammed into the name field) more
-    # often than acceptable. DeepSeek's models historically have
-    # cleaner tool-call discipline; ~400 ms first-token latency
-    # vs Groq's ~200 ms is an acceptable trade for fewer "JARVIS
-    # not responding" turns. Requires DEEPSEEK_API_KEY in env.
+    # DeepSeek family — needs reasoning_content round-trip on
+    # assistant tool-call messages, handled by deepseek_roundtrip.install()
+    # at the top of this file. v4-pro is best at tools; v4-flash trades
+    # accuracy for ~30% latency reduction; deepseek-chat (V3) is the
+    # non-thinking baseline (probe shows it never emits
+    # reasoning_content even with the flag absent, so the patch's
+    # capture path is dead for it).
     "deepseek-chat": {
-        # ⚠ KNOWN-BROKEN for multi-turn handoffs as of 2026-04-30.
-        #
-        # DeepSeek's API aliases `deepseek-chat` to `v4-flash` and ALL
-        # current DeepSeek models are thinking-capable: assistant
-        # responses include a `reasoning_content` field. The openai
-        # plugin (livekit-plugins-openai) doesn't echo this back on
-        # subsequent requests, so DeepSeek rejects with HTTP 400
-        # 'The reasoning_content in the thinking mode must be passed
-        # back to the API.'
-        #
-        # `enable_thinking: false` doesn't help once any prior turn
-        # in the chat_ctx already has reasoning_content — and it
-        # leaks through despite the flag in some scenarios.
-        #
-        # First handoff after agent restart works (chat_ctx is clean
-        # from db seed). Second handoff hangs silently. Verified live
-        # 21:41:09 (deepseek-chat) and 21:51:30 (v4-flash explicit) —
-        # same error each time.
-        #
-        # Proper fix: fork the openai plugin to round-trip
-        # reasoning_content. Until then: prefer qwen3-32b or
-        # llama-3.3-70b for speech; keep DeepSeek as the CLI tool
-        # model where the bun-side proxy handles round-trip.
-        "label": "DeepSeek · chat (no-think) ⚠ multi-turn broken",
+        "label": "DeepSeek · chat (V3, non-thinking)",
         "build": lambda: lk_openai.LLM(
             model="deepseek-chat",
             api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
             base_url="https://api.deepseek.com/v1",
             temperature=0.6,
-            extra_body={"enable_thinking": False},
         ),
     },
-    # V4 family with thinking DISABLED — `enable_thinking: false`
-    # passed via extra_body suppresses reasoning_content emission,
-    # so the openai plugin's plain round-trip works AND we get V4's
-    # stronger tool-call discipline. v4-pro is preferred when accuracy
-    # matters more than latency; v4-flash for snappier replies.
-    # If this stops working (DeepSeek changes the API contract), fall
-    # back to deepseek-chat above.
     "deepseek-v4-flash": {
-        "label": "DeepSeek · v4 flash (no-think) ⚠ multi-turn broken",
+        "label": "DeepSeek · v4 flash",
         "build": lambda: lk_openai.LLM(
             model="deepseek-v4-flash",
             api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
             base_url="https://api.deepseek.com/v1",
             temperature=0.6,
-            extra_body={"enable_thinking": False},
         ),
     },
     "deepseek-v4-pro": {
-        "label": "DeepSeek · v4 pro (no-think) ⚠ multi-turn broken",
+        "label": "DeepSeek · v4 pro",
         "build": lambda: lk_openai.LLM(
             model="deepseek-v4-pro",
             api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
             base_url="https://api.deepseek.com/v1",
             temperature=0.6,
-            extra_body={"enable_thinking": False},
         ),
     },
 }
