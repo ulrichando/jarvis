@@ -3468,8 +3468,20 @@ class JarvisAgent(Agent):
         #   "jarvis open the browser"  — actual command after name
         #   "jarvis what time is it"   — actual question
         if _BARE_VOCATIVE_RE.match(text):
+            # Fire-and-forget: schedule the say() as a background task and
+            # return from this handler IMMEDIATELY via StopResponse. If we
+            # `await session.say(...)` here, the handler blocks until the
+            # whole utterance is queued/synthesized, during which the
+            # framework can't process the user's NEXT turn — leading to
+            # the "I said something after 'Yes, sir?' and JARVIS didn't
+            # answer" symptom (verified 2026-04-30 08:03 — fast-path fired
+            # but next user turn never reached on_user_turn_completed).
             try:
-                await self.session.say("Yes, sir?", allow_interruptions=True)
+                _t = asyncio.create_task(
+                    self.session.say("Yes, sir?", allow_interruptions=True)
+                )
+                _bg_tasks.add(_t)
+                _t.add_done_callback(_bg_tasks.discard)
                 logger.info(f"[bare-vocative] fast-path 'Yes, sir?' (heard: {text!r})")
                 raise StopResponse()
             except StopResponse:
