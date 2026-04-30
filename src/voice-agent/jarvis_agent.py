@@ -68,7 +68,10 @@ from livekit.plugins import elevenlabs, groq, openai as lk_openai, silero
 from livekit.plugins.elevenlabs import VoiceSettings as _ELVoiceSettings
 
 # ── Maya-class speech intelligence ────────────────────────────────────
-from turn_router    import detect_emotion, classify_turn, AudioMeta
+from turn_router    import (
+    detect_emotion, classify_turn, AudioMeta,
+    compute_speech_rate, update_baseline,
+)
 from dispatching_llm import DispatchingLLM
 from dispatching_tts import DispatchingTTS
 from turn_telemetry import init_db, log_turn, DEFAULT_DB_PATH
@@ -3949,6 +3952,26 @@ async def entrypoint(ctx: JobContext) -> None:
         except Exception as e:
             logger.warning(f"[convo-db] save failed: {e}")
 
+    # ── Acoustic emotion signal ────────────────────────────────────
+    # Stamp utterance start/end timestamps off user_state_changed so
+    # the dispatcher can compute speech_rate_wpm and feed AudioMeta
+    # for the speech-rate path in detect_emotion. Iteration-3 of /loop
+    # voice-intelligence: the rate path was plumbed but never populated
+    # because user_input_transcribed has no rate attr. We derive it
+    # from VAD state transitions instead.
+    @session.on("user_state_changed")
+    def _on_user_state(ev) -> None:
+        try:
+            new_state = getattr(ev, "new_state", None)
+            old_state = getattr(ev, "old_state", None)
+            now = time.monotonic()
+            if new_state == "speaking" and old_state != "speaking":
+                session._jarvis_speech_started_at = now
+            elif old_state == "speaking" and new_state != "speaking":
+                session._jarvis_speech_ended_at = now
+        except Exception as e:
+            logger.debug(f"[acoustic] state-change skipped: {e}")
+
     # STT finalised a user turn — LLM is about to start generating
     # (or the agent will decide to stay silent if the directed-at-me
     # filter rejects it). Touch the thinking flag so the tray goes
@@ -4046,11 +4069,43 @@ async def entrypoint(ctx: JobContext) -> None:
         except Exception as e:
             logger.debug(f"[learned-rules] mtime check skipped: {e}")
 
+        # Derive speech_rate_wpm from VAD start/end timestamps the
+        # `_on_user_state` listener stamps. Falls back to 0 if the VAD
+        # transitions weren't seen (e.g. push-to-talk modes, or a fast
+        # interim transcript that beat the state change). Maintain a
+        # rolling baseline (EMA) on the session so the rate-vs-baseline
+        # ratio in detect_emotion can flag urgent / sad turns.
+        _start = getattr(session, "_jarvis_speech_started_at", None)
+        _end   = getattr(session, "_jarvis_speech_ended_at", None)
+        if _start and _end and _end > _start:
+            duration_s = _end - _start
+        elif _start:
+            duration_s = max(0.0, time.monotonic() - _start)
+        else:
+            duration_s = 0.0
+        current_wpm  = compute_speech_rate(transcript, duration_s)
+        prior_base   = float(getattr(session, "_jarvis_baseline_wpm", 0.0) or 0.0)
+        new_baseline = update_baseline(current_wpm, prior_base)
+        # Stash the updated baseline for next turn. Use prior baseline
+        # for the ratio in detect_emotion so the FIRST non-zero sample
+        # doesn't compare to itself (ratio always = 1.0).
+        session._jarvis_baseline_wpm = new_baseline
+
         audio = AudioMeta(
-            speech_rate_wpm=float(getattr(ev, "speech_rate_wpm", 0.0) or 0.0),
-            baseline_wpm=float(getattr(ev, "baseline_wpm", 0.0) or 0.0),
+            speech_rate_wpm=current_wpm,
+            baseline_wpm=prior_base,
         )
         emotion = detect_emotion(transcript, audio)
+        if current_wpm > 0:
+            logger.debug(
+                f"[acoustic] wpm={current_wpm:.0f} baseline={prior_base:.0f} → emotion={emotion}"
+            )
+
+        # Reset the per-utterance markers so the next turn starts fresh
+        # — without this, a transcript that arrives after the user has
+        # already started speaking again would carry stale stamps.
+        session._jarvis_speech_started_at = None
+        session._jarvis_speech_ended_at   = None
 
         # Synchronous BANTER fast-path. If the transcript is high-
         # confidence chitchat, skip the 500ms Groq classifier and swap
