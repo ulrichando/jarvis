@@ -528,25 +528,36 @@ def _build_dispatching_llm() -> DispatchingLLM:
 
     Anthropic + DeepSeek not available with current livekit plugin set.
     """
-    main = groq.LLM(model="llama-3.3-70b-versatile", temperature=0.6)
+    # Tight retry profile across all dispatcher LLMs. Default is
+    # max_retries=3 which means up to 4 attempts × ~2 s backoff = ~10 s
+    # of silence on a 4xx-but-classified-retryable error (e.g. tool-call
+    # validation failure). User reports "have to ask twice" caused by
+    # that silence. Cap at 1 retry → fail in ~3 s → user retries once
+    # via voice instead of waiting forever.
+    LLM_KWARGS = {"max_retries": 1, "timeout": 8.0}
+
+    main = groq.LLM(model="llama-3.3-70b-versatile", temperature=0.6, **LLM_KWARGS)
     main._jarvis_label = "groq:llama-3.3-70b-versatile"
 
     try:
-        banter = groq.LLM(model="llama-3.1-8b-instant", temperature=0.6)
+        banter = groq.LLM(model="llama-3.1-8b-instant", temperature=0.6, **LLM_KWARGS)
         banter._jarvis_label = "groq:llama-3.1-8b-instant"
     except Exception as e:
         logger.warning(f"[dispatch] BANTER LLM construction failed: {e}; using main")
         banter = main
 
     try:
-        reasoning = groq.LLM(model="qwen/qwen3-32b", temperature=0.6)
+        reasoning = groq.LLM(model="qwen/qwen3-32b", temperature=0.6, **LLM_KWARGS)
         reasoning._jarvis_label = "groq:qwen3-32b"
     except Exception as e:
         logger.warning(f"[dispatch] REASONING LLM construction failed: {e}; using main")
         reasoning = main
 
     try:
-        emotional = groq.LLM(model="meta-llama/llama-4-scout-17b-16e-instruct", temperature=0.7)
+        emotional = groq.LLM(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            temperature=0.7, **LLM_KWARGS,
+        )
         emotional._jarvis_label = "groq:llama-4-scout"
     except Exception as e:
         logger.warning(f"[dispatch] EMOTIONAL LLM construction failed: {e}; using main")

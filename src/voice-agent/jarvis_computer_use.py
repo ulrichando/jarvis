@@ -1247,7 +1247,7 @@ async def face_delete(name: str) -> str:
 
 
 @function_tool
-async def webcam_capture(prompt: str = "") -> str:
+async def webcam_capture(prompt: str | None = None) -> str:
     """Capture a frame from the webcam and return a Gemini description.
 
     Use when the user asks what JARVIS sees, who's in the room, what
@@ -1256,16 +1256,24 @@ async def webcam_capture(prompt: str = "") -> str:
 
     Args:
         prompt: Optional override for the description focus
-                (e.g. "is the user smiling?"). Empty = default
+                (e.g. "is the user smiling?"). Omit / null for default
                 "describe people + room" prompt.
     """
+    # Signature note: `str | None = None` rather than `str = ""` so the
+    # JSON-Schema generated for tool-call validation marks `prompt` as
+    # nullable rather than as a required string. Groq's tool-call
+    # validator treated the prior `str = ""` schema as required, which
+    # caused 4xx APIErrors when the LLM omitted the field — those errors
+    # cascaded into 4× retry storms (~10s of silence per turn) and were
+    # the actual reason the user had to ask questions twice.
+    p = (prompt or "").strip() or WEBCAM_PROMPT
     try:
         loop = asyncio.get_running_loop()
         frame = await loop.run_in_executor(None, _take_webcam_frame)
         desc = await _gemini_describe(
             frame,
             mime_type="image/jpeg",
-            prompt=prompt.strip() or WEBCAM_PROMPT,
+            prompt=p,
         )
         logger.info(f"[computer-use] webcam_capture ({len(frame)} bytes)")
         return desc
