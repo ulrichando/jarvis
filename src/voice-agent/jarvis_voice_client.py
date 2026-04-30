@@ -335,9 +335,12 @@ SPEECH_MODELS_AVAILABLE = (
     "qwen/qwen3-32b",
     "openai/gpt-oss-120b",
     "meta-llama/llama-4-scout-17b-16e-instruct",
-    # DeepSeek removed — see comment in jarvis_agent.py SPEECH_MODELS:
-    # the openai plugin doesn't echo `reasoning_content` so multi-
-    # turn DeepSeek conversations 400 every turn after the first.
+    # DeepSeek family — re-enabled after deepseek_roundtrip.install()
+    # patches livekit-plugins-openai to echo reasoning_content on
+    # assistant tool-call messages.
+    "deepseek-chat",
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
 )
 
 
