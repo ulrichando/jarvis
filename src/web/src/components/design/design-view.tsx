@@ -84,7 +84,9 @@ export function DesignView({
     if (streamingTimerRef.current) return; // an update is already scheduled
     streamingTimerRef.current = setTimeout(flushStreaming, 300);
   };
-  const [prefillPrompt, setPrefillPrompt] = useState<{ id: string; text: string } | undefined>(undefined);
+  const [prefillPrompt, setPrefillPrompt] = useState<
+    { id: string; text: string; autoSend?: boolean } | undefined
+  >(undefined);
   const [showTweaks, setShowTweaks] = useState(false);
   const [tweakOverrides, setTweakOverrides] = useState<Record<string, Tweak["value"]>>({});
   const [chatTab, setChatTab] = useState<"chat" | "comments">("chat");
@@ -168,7 +170,9 @@ export function DesignView({
       // sometimes echoes the answers back as another questions form.
       const bullets = cleaned.map(([k, v]) => `- ${k}: ${v}`).join("\n");
       const text = `Use my answers below to generate the design now. Don't ask more questions — these are the brief.\n\n${bullets}`;
-      setPrefillPrompt({ id: `${Date.now()}`, text });
+      // autoSend: true → Chat fires submit() immediately instead of just
+      // prefilling. The user clicked Continue, that's their commit.
+      setPrefillPrompt({ id: `${Date.now()}`, text, autoSend: true });
       setChatTab("chat");
     };
     window.addEventListener("message", handler);
