@@ -8,6 +8,7 @@ import {
   Maximize2,
   MessageSquarePlus,
   Minus,
+  Pencil,
   Plus,
   RefreshCw,
   X,
@@ -131,6 +132,17 @@ function PreviewContainer({
   const [iframeKey, setIframeKey] = useState(0);
   const [zoom, setZoom] = useState(100);
   const [commentMode, setCommentMode] = useState(false);
+  const [editMode, setEditMode] = useState(false);
+
+  // Comment and Edit are mutually exclusive — turning one on disables the other.
+  const setCommentModeExclusive = (next: boolean) => {
+    setCommentMode(next);
+    if (next) setEditMode(false);
+  };
+  const setEditModeExclusive = (next: boolean) => {
+    setEditMode(next);
+    if (next) setCommentMode(false);
+  };
 
   const refresh = () => {
     qc.invalidateQueries({
@@ -162,7 +174,9 @@ function PreviewContainer({
           }
           onZoomReset={() => setZoom(100)}
           commentMode={isHtml ? commentMode : undefined}
-          onCommentModeChange={isHtml ? setCommentMode : undefined}
+          onCommentModeChange={isHtml ? setCommentModeExclusive : undefined}
+          editMode={isHtml ? editMode : undefined}
+          onEditModeChange={isHtml ? setEditModeExclusive : undefined}
         />
       )}
       <div className="flex-1 min-h-0">
@@ -175,6 +189,7 @@ function PreviewContainer({
             commentMode={commentMode}
             onCommentModeOff={() => setCommentMode(false)}
             onComment={onComment}
+            editMode={editMode}
             tweaks={tweaks}
             tweakOverrides={tweakOverrides}
           />
@@ -203,6 +218,8 @@ function PreviewToolbar({
   disabled = false,
   commentMode,
   onCommentModeChange,
+  editMode,
+  onEditModeChange,
 }: {
   onRefresh?: () => void;
   presentHref?: string | null;
@@ -213,8 +230,11 @@ function PreviewToolbar({
   disabled?: boolean;
   commentMode?: boolean;
   onCommentModeChange?: (next: boolean) => void;
+  editMode?: boolean;
+  onEditModeChange?: (next: boolean) => void;
 }) {
   const showComment = onCommentModeChange != null;
+  const showEdit = onEditModeChange != null;
   return (
     <div
       className={cn(
@@ -245,6 +265,21 @@ function PreviewToolbar({
         >
           <MessageSquarePlus className="size-3.5" />
           Comment
+        </Button>
+      )}
+
+      {showEdit && (
+        <Button
+          variant={editMode ? "secondary" : "ghost"}
+          size="sm"
+          className="rounded-md"
+          aria-pressed={editMode}
+          title="Edit text inline — click any text to edit. Enter to commit, Esc to revert."
+          onClick={() => onEditModeChange?.(!editMode)}
+          disabled={disabled}
+        >
+          <Pencil className="size-3.5" />
+          Edit
         </Button>
       )}
 
@@ -407,12 +442,96 @@ const PICKER_SCRIPT = `
     }
   }
 
+  // ── Edit mode: contentEditable on text-leaf elements, postMessage on commit.
+  let editEnabled = false;
+  let editFocused = null;
+  let editOriginal = '';
+  const EDIT_TARGETS = ['p','h1','h2','h3','h4','h5','h6','li','span','figcaption','blockquote','dt','dd','td','th','caption','summary'];
+
+  function enableEdit() {
+    editEnabled = true;
+    document.body.setAttribute('data-jarvis-edit', '1');
+    EDIT_TARGETS.forEach(function(tag){
+      const nodes = document.getElementsByTagName(tag);
+      for (let i = 0; i < nodes.length; i++) {
+        const el = nodes[i];
+        // Only mark leaves so a heading containing an icon/span doesn't become a single editable block.
+        if (el.children.length === 0 && (el.textContent || '').trim().length > 0) {
+          el.setAttribute('contenteditable', 'plaintext-only');
+          el.classList.add(STYLE + '_edit');
+        }
+      }
+    });
+    if (!document.getElementById(STYLE + '-editstyle')) {
+      const s = document.createElement('style');
+      s.id = STYLE + '-editstyle';
+      s.textContent = '.' + STYLE + '_edit{cursor:text;}'
+        + '.' + STYLE + '_edit:hover{outline:1px dashed ' + ACCENT + ';outline-offset:2px;}'
+        + '.' + STYLE + '_edit:focus{outline:2px solid ' + ACCENT + ';outline-offset:2px;background:rgba(255,170,0,0.06);}';
+      document.head.appendChild(s);
+    }
+  }
+
+  function disableEdit() {
+    editEnabled = false;
+    document.body.removeAttribute('data-jarvis-edit');
+    const marked = document.getElementsByClassName(STYLE + '_edit');
+    // Snapshot to a static array — removing classes mutates the live HTMLCollection.
+    const arr = Array.prototype.slice.call(marked);
+    for (let i = 0; i < arr.length; i++) {
+      arr[i].removeAttribute('contenteditable');
+      arr[i].classList.remove(STYLE + '_edit');
+    }
+  }
+
+  document.addEventListener('focusin', function(e){
+    if (!editEnabled) return;
+    const t = e.target;
+    if (t && t.classList && t.classList.contains(STYLE + '_edit')) {
+      editFocused = t;
+      editOriginal = t.textContent || '';
+    }
+  }, true);
+
+  document.addEventListener('focusout', function(e){
+    if (!editEnabled) return;
+    const t = e.target;
+    if (t === editFocused) {
+      const next = (t.textContent || '').replace(/\\s+$/g, '');
+      const prev = editOriginal.replace(/\\s+$/g, '');
+      if (next !== prev) {
+        parent.postMessage({
+          type: 'jarvis:design:edit:commit',
+          selector: selectorFor(t),
+          tag: t.tagName.toLowerCase(),
+          oldText: editOriginal,
+          newText: t.textContent || '',
+        }, '*');
+      }
+      editFocused = null;
+      editOriginal = '';
+    }
+  }, true);
+
+  document.addEventListener('keydown', function(e){
+    if (!editEnabled || !editFocused) return;
+    if (e.key === 'Escape') {
+      editFocused.textContent = editOriginal;
+      editFocused.blur();
+    } else if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      editFocused.blur();
+    }
+  }, true);
+
   window.addEventListener('message', function(e){
     if (!e.data || typeof e.data !== 'object') return;
     if (e.data.type === 'jarvis:design:enable') { enabled = true; }
     if (e.data.type === 'jarvis:design:disable') { enabled = false; clearHover(); clearPick(); }
     if (e.data.type === 'jarvis:design:clear-pick') { clearPick(); }
     if (e.data.type === 'jarvis:design:tweak') { applyTweak(e.data.id, e.data.kind, e.data.value); }
+    if (e.data.type === 'jarvis:design:edit:enable') { enableEdit(); }
+    if (e.data.type === 'jarvis:design:edit:disable') { disableEdit(); }
   });
 })();
 `;
@@ -432,6 +551,7 @@ function HtmlPreview({
   commentMode,
   onCommentModeOff,
   onComment,
+  editMode = false,
   tweaks = [],
   tweakOverrides,
 }: {
@@ -442,6 +562,10 @@ function HtmlPreview({
   commentMode: boolean;
   onCommentModeOff: () => void;
   onComment?: (c: DesignComment) => void;
+  /** When true, the iframe-injected picker script makes leaf text elements
+   *  contentEditable; commits flow back via the jarvis:design:edit:commit
+   *  postMessage handled below. */
+  editMode?: boolean;
   /** Tweak declarations parsed from the file. Used to look up the kind for
    *  postMessage when we apply overrides. */
   tweaks?: Tweak[];
