@@ -67,12 +67,28 @@ export function DesignFilesPanel({
 }) {
   const qc = useQueryClient();
   const { data: entries = [], isLoading, refetch } = useQuery({
-    queryKey: ["design-tree", workspaceId, refetchKey ?? 0],
+    queryKey: ["design-tree", workspaceId, "", refetchKey ?? 0],
     queryFn: () => apiTree(workspaceId, ""),
   });
 
   const del = useMutation({
     mutationFn: (path: string) => apiDeleteEntry(workspaceId, path),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["design-tree", workspaceId] });
+    },
+  });
+
+  const clearWs = useMutation({
+    mutationFn: async () => {
+      const r = await fetch(`/api/workspace/${workspaceId}/clear`, {
+        method: "POST",
+      });
+      if (!r.ok && r.status !== 207) {
+        const j = await r.json().catch(() => ({}));
+        throw new Error(j.error ?? `clear failed (${r.status})`);
+      }
+      return (await r.json()) as { ok: boolean; cleared: number };
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["design-tree", workspaceId] });
     },
@@ -104,6 +120,29 @@ export function DesignFilesPanel({
         </Button>
         <span className="text-[13px] text-muted-foreground/80">project</span>
         <div className="ml-auto flex items-center gap-1">
+          {total > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="rounded-md text-muted-foreground hover:text-destructive"
+              onClick={() => {
+                if (clearWs.isPending) return;
+                const ok = window.confirm(
+                  `Clear all ${total} item${total === 1 ? "" : "s"} in this workspace? Brand settings will be kept.`,
+                );
+                if (ok) clearWs.mutate();
+              }}
+              disabled={clearWs.isPending}
+              title="Clear workspace — wipe all files (brand settings preserved)"
+            >
+              {clearWs.isPending ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <Trash2 className="size-3.5" />
+              )}
+              Clear
+            </Button>
+          )}
           {onToggleBrand && (
             <Button
               variant={brandActive ? "secondary" : "ghost"}
