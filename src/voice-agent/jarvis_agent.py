@@ -282,6 +282,59 @@ _BARE_VOCATIVE_RE = re.compile(
     re.IGNORECASE,
 )
 
+
+# ── STT-confidence gate (Phase 1: transcript-shape) ─────────────────
+# Pure non-content fillers that are 100% noise when alone. NOT in the
+# set: "yes", "no", "yeah", "yep", "okay", "right" — those are valid
+# confirmations / acknowledgements when standing alone in context.
+_FILLER_TOKENS = frozenset({
+    "uh", "uhh", "uhm", "um", "umm",
+    "hm", "hmm", "hmmm",
+    "ah", "ahh", "oh", "ohh",
+    "eh", "huh", "mhm", "mmhm",
+})
+
+
+def _is_garbage_transcript(text: str) -> tuple[bool, str]:
+    """Return (is_garbage, reason).
+
+    Conservative upstream gate: only the most obvious noise patterns
+    return True. Designed to replace the post-LLM `drop_pure_hedge`
+    filter that was eating legitimate replies (e.g. 'I'm here, sir.'
+    → matched the regex → user heard silence). Filtering BEFORE the
+    LLM is unambiguous because user transcripts have obvious noise
+    shapes (filler tokens, repetition, pure punctuation), whereas LLM
+    replies overlap with valid responses.
+
+    Returns the rule that fired so the caller can log it for tuning.
+    """
+    if text is None:
+        return True, "none"
+    s = text.strip().lower()
+    if not s:
+        return True, "empty"
+
+    # Pure punctuation / ellipsis / "..." — no alphanumeric content
+    if not re.search(r"[a-z0-9]", s):
+        return True, "punctuation-only"
+
+    # Single bare filler token alone — drop. (Punctuation stripped.)
+    only_word = re.sub(r"[^a-z]", "", s)
+    if only_word and only_word in _FILLER_TOKENS:
+        return True, f"filler:{only_word}"
+
+    # Repeated-word stutter: "uh uh uh", "la la la", "yeah yeah" —
+    # ≥2 words, all identical. Real speech rarely has this shape.
+    words = s.split()
+    if len(words) >= 2 and len(set(words)) == 1:
+        return True, f"repeated:{words[0]}"
+
+    # Single-character noise.
+    if len(only_word) == 1:
+        return True, "single-char"
+
+    return False, ""
+
 # High-confidence BANTER patterns. When the user's turn matches one of
 # these, we skip the 500ms Groq router round-trip and swap to the fast
 # BANTER inner LLM synchronously, before the framework's LLM dispatch
@@ -3314,34 +3367,15 @@ _SIR_RE = re.compile(r",?\s*\bsir\b", re.IGNORECASE)
 # the user isn't directing at JARVIS; gpt-oss-120b can't tell so it
 # replies with a clarification instead of staying silent. Empty TTS
 # output = JARVIS stays quiet, which is what we want for ambient.
-# Pure-hedge patterns — drop ONLY when the entire reply is a generic
-# deflection with no topical content. Tightened 2026-04-29 after
-# "I'm here to help you navigate this, sir." got incorrectly dropped:
-# the "navigate this" clause engages with the topic, so it's a real
-# conversational reply, not a hedge. The patterns below match only
-# bare/generic forms.
-_PURE_HEDGE_REPLY_RE = re.compile(
-    r"^\s*(?:"
-    r"\.{2,}|"                                                       # "..." only
-    # "Sorry, I missed that, did you want me to clarify ..." (deflection only)
-    r"sorry,?\s+i\s+missed\s+that(?:[\s\S]{0,80}clarify[\s\S]*)?[.!?\s]*|"
-    r"sorry,?\s+i\s+(?:didn[’'`]?t|did\s+not)\s+(?:get|catch)\s+that[.!?\s]*|"
-    # "I'm listening" — bare or with sir, no topical clause. We DO drop
-    # this because it's almost never a real reply; the LLM emits it as
-    # a deflection when STT picked up ambient noise.
-    r"i[’'`]?m\s+listening(?:[,.\s]+sir)?[.!?\s]*"
-        r"(?:let\s+me\s+know[^.!?]*[.!?]?\s*)?|"
-    # NOTE 2026-04-30: removed "I'm here" from the drop set. It triggered
-    # on legitimate replies like 'I'm here, sir.' (perfectly valid answer
-    # to 'are you there?' or 'how are you?'). False-positive on ambient
-    # noise is rare enough to tolerate in exchange for not eating real
-    # responses. Same for "I'm here to help" with topical clause.
-    # Bare hedge questions — never legit
-    r"what\s+would\s+you\s+like\s+me\s+to\s+do(?:\s+next)?(?:[,.\s]+sir)?[?.!\s]*|"
-    r"how\s+can\s+i\s+(?:help|assist)(?:\s+you)?(?:[,.\s]+sir)?[?.!\s]*"
-    r")\s*$",
-    re.IGNORECASE,
-)
+# Removed 2026-04-30: `_PURE_HEDGE_REPLY_RE` and the `drop_pure_hedge`
+# filter that consumed it. Post-LLM hedge filtering kept eating
+# legitimate replies (most recently 'I'm here, sir.') because the
+# regex couldn't tell a deflection from a valid short answer to
+# 'are you there?'. Replaced with `_is_garbage_transcript()` upstream
+# in JarvisAgent.on_user_turn_completed — filtering BEFORE the LLM
+# call is unambiguous (user transcripts have obvious noise shapes;
+# LLM replies are open-ended prose where the same string can be
+# valid OR a hedge depending on context).
 
 
 # Phase-7 TTFW measurement: stamp the moment the first non-empty
@@ -3377,35 +3411,6 @@ async def stamp_first_token(text):
                     pass
             first = False
         yield chunk
-
-
-async def drop_pure_hedge(text):
-    """Suppress reply if it's nothing but a clarifying hedge.
-
-    Special case: bare "..." gets SWAPPED to "Yes, sir?" rather than
-    dropped, so the user still hears the canonical acknowledgment when
-    they ping JARVIS's name with nothing specific to follow up. Verified
-    failure 2026-04-29: user said "Jarvis" repeatedly, LLM emitted "..."
-    each time, filter dropped → silence → user thought JARVIS was stuck.
-    The user has explicitly chosen "Yes, sir?" as the canonical ack
-    phrase — keep this in lockstep with the system-prompt instruction.
-    """
-    buffer = ""
-    async for chunk in text:
-        buffer += chunk
-    if not buffer:
-        return
-    stripped = buffer.strip()
-    # Bare ellipsis = LLM has nothing concrete but the user is engaging.
-    # Voice the canonical ack so they know JARVIS heard them.
-    if re.fullmatch(r"\.{2,}", stripped):
-        logger.info("[hedge-drop] swapped bare '...' → 'Yes, sir?'")
-        yield "Yes, sir?"
-        return
-    if _PURE_HEDGE_REPLY_RE.match(stripped):
-        logger.info(f"[hedge-drop] suppressing pure-hedge reply: {buffer[:80]!r}")
-        return  # no yield → TTS receives nothing → silence
-    yield buffer
 
 
 # Convert European space-thousands ("4 000", "1 234 567") to comma
@@ -3601,6 +3606,20 @@ class JarvisAgent(Agent):
         text = (raw or "").lower().strip()
         if not text:
             return
+
+        # ── STT-confidence gate ────────────────────────────────────────
+        # Drop obvious-garbage transcripts BEFORE waking the LLM —
+        # cheaper and less ambiguous than the post-LLM hedge filter
+        # that used to do this and ate legitimate replies. Only the
+        # most obvious noise patterns trip this (single-token fillers
+        # like 'uh' / 'hmm', repeated stutter, pure punctuation).
+        # Wake-vocative shapes like 'jarvis' / 'hey jarvis' aren't in
+        # the filler set so they pass through to the bare-vocative
+        # fast-path below as before.
+        is_garbage, gr = _is_garbage_transcript(text)
+        if is_garbage:
+            logger.info(f"[stt-gate] dropped: {text[:80]!r} reason={gr}")
+            raise StopResponse()
 
         if _is_silent():
             # Silent mode: only the wake-up family unblocks JARVIS.
@@ -3920,11 +3939,12 @@ async def entrypoint(ctx: JobContext) -> None:
             # swap to a smaller model. Verified 2026-04-28 vs convo db
             # (the user heard "Done." as a trailing dot).
             strip_voice_closers,
-            # Drop reply entirely if it's nothing but hedge — happens
-            # when STT picks up ambient room conversation. Better to be
-            # silent than to voice "Sorry, I missed that, did you want
-            # me to set up an OAuth flow?" to a podcast.
-            drop_pure_hedge,
+            # NOTE 2026-04-30: drop_pure_hedge removed. The post-LLM
+            # hedge filter ate legitimate replies like 'I'm here, sir.'
+            # Replaced by the upstream STT-confidence gate in
+            # JarvisAgent.on_user_turn_completed which drops obvious-
+            # garbage transcripts BEFORE the LLM is called — cheaper
+            # and less ambiguous than filtering open-ended LLM prose.
             # Cut "Let me check...", "I'll fetch...", "Checking the
             # internet...", "Okay, I have..." filler. Heard 2026-04-28:
             # 5-clause preamble before "the time is X" added 15s of speech.
