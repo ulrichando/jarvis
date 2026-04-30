@@ -699,6 +699,15 @@ async def _h_speech_model(req: web.Request) -> web.Response:
             status=400, headers=cors,
         )
     try:
+        # No-op if value unchanged. Without this guard a stray re-POST
+        # (e.g. the tray re-syncing on launch) would tear down a live
+        # agent session — including any in-flight specialist handoff.
+        current = _read_speech_model()
+        if current == name:
+            return web.json_response(
+                {"model": name, "restarting": False, "unchanged": True},
+                headers=cors,
+            )
         SPEECH_MODEL_FILE.parent.mkdir(parents=True, exist_ok=True)
         SPEECH_MODEL_FILE.write_text(name + "\n", encoding="utf-8")
         state.speech_model = name
@@ -741,6 +750,16 @@ async def _h_tts_provider(req: web.Request) -> web.Response:
             status=400, headers=cors,
         )
     try:
+        # No-op if value unchanged — same rationale as /voice-model.
+        try:
+            current = TTS_PROVIDER_FILE.read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            current = ""
+        if current == provider:
+            return web.json_response(
+                {"provider": provider, "restarting": False, "unchanged": True},
+                headers=cors,
+            )
         TTS_PROVIDER_FILE.parent.mkdir(parents=True, exist_ok=True)
         TTS_PROVIDER_FILE.write_text(provider + "\n", encoding="utf-8")
         asyncio.create_task(_restart_agent_unit())
