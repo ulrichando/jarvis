@@ -54,7 +54,16 @@ export function DesignPreview({
   /** Current panel-side override values keyed by tweak id. */
   tweakOverrides?: Record<string, Tweak["value"]>;
 }) {
-  if (streaming && streaming.content) {
+  // Streaming preview only takes over the canvas when the user hasn't
+  // explicitly selected a different file. Otherwise the user can't pull up
+  // the source of an already-finished file while a *new* file is mid-write.
+  const userPickedDifferentFile =
+    streaming &&
+    selected &&
+    selected.type === "file" &&
+    selected.path !== streaming.filePath;
+
+  if (streaming && streaming.content && !userPickedDifferentFile) {
     return (
       <div className="flex h-full flex-col">
         {showToolbar && <PreviewToolbar disabled />}
