@@ -231,3 +231,23 @@ describe('scroll/wait/dialog actions', () => {
     expect(actions.ext_switch_iframe({selector_or_index: 0}).ok).toBe(false);
   });
 });
+
+describe('power tools', () => {
+  test('ext_exec_js runs the code and returns result', () => {
+    const r = actions.ext_exec_js({code: '1 + 2'});
+    expect(r.ok).toBe(true);
+    expect(r.result).toBe(3);
+  });
+  test('ext_exec_js returns error on bad code', () => {
+    const r = actions.ext_exec_js({code: 'this.does.not.exist'});
+    expect(r.ok).toBe(false);
+  });
+  test('ext_get_cookies delegated to background', () => {
+    const r = actions.ext_get_cookies({domain: 'example.com'});
+    expect(r.delegated_to_background).toBe(true);
+  });
+  test('ext_set_cookies delegated to background', () => {
+    const r = actions.ext_set_cookies({domain: 'example.com', cookies: []});
+    expect(r.delegated_to_background).toBe(true);
+  });
+});

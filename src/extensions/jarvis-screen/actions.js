@@ -291,10 +291,34 @@ function ext_switch_iframe(args = {}) {
   return ok({ frame_id: frame.id || null, frame_src: frame.src || null });
 }
 
+// ── Power tools (always gated upstream by safety.js) ─────────────────
+
+function ext_exec_js(args = {}) {
+  const code = args.code;
+  if (!code) return err('code required');
+  try {
+    // eslint-disable-next-line no-new-func
+    const fn = new Function(`return (${code})`);
+    return ok({ result: fn() });
+  } catch (e) {
+    return err(`exec failed: ${e.message}`);
+  }
+}
+
+function ext_get_cookies(args = {}) {
+  // chrome.cookies API only available in background context
+  return ok({ delegated_to_background: true, domain: args.domain });
+}
+
+function ext_set_cookies(args = {}) {
+  return ok({ delegated_to_background: true, domain: args.domain });
+}
+
 module.exports = Object.assign(module.exports || {}, {
   ext_get_url, ext_close_tab,
   ext_extract_text, ext_find_by_text, ext_dom_summary, ext_screenshot,
   ext_click, ext_right_click, ext_hover, ext_drag, ext_select,
   ext_type, ext_fill_form, ext_keypress, ext_submit,
   ext_scroll, ext_wait_for, ext_accept_dialog, ext_switch_iframe,
+  ext_exec_js, ext_get_cookies, ext_set_cookies,
 });
