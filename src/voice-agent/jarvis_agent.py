@@ -271,6 +271,54 @@ _BARE_VOCATIVE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# High-confidence BANTER patterns. When the user's turn matches one of
+# these, we skip the 500ms Groq router round-trip and swap to the fast
+# BANTER inner LLM synchronously, before the framework's LLM dispatch
+# reads `session._llm`. Iteration-2 of /loop voice-intelligence: the
+# async classifier was landing AFTER the framework had already started
+# the LLM call on the previous turn's _llm, so BANTER turns ran on the
+# 70b inner instead of the 8b-instant inner — median TTFW 4.8 s.
+#
+# Match criteria:
+#   - Length ≤ 6 words (chitchat is short by definition)
+#   - Anchors at start AND end so we don't pre-empt the classifier on a
+#     long sentence that just happens to begin with "hey jarvis"
+#   - Greetings, casual affirmations, throwaway pleasantries
+#
+# Out: anything with an action verb (open, find, run, send, ...) — those
+# are TASK and stay on the default inner. The classifier handles them.
+_BANTER_FAST_PATH_RE = re.compile(
+    r"^\s*"
+    r"(?:"
+    # Greetings — optional vocative either side
+    r"(?:hey|hi|hello|yo|sup|hola|howdy|wassup|"
+    r"good\s+(?:morning|night|afternoon|evening))"
+    r"(?:[\s,]+(?:there|jarvis|sir|man|buddy|dude))?|"
+    # "How are you" family
+    r"how(?:'?s|\s+are|\s+have|\s+you|\s+'?ve)\s+"
+    r"(?:it\s+going|you|things|life|yourself|been|doing)"
+    r"(?:\s+(?:doing|been|going|today|now))?|"
+    # Casual affirmations / thanks / sign-offs
+    r"(?:thanks|thank\s+you|cool|nice|awesome|great|"
+    r"perfect|cheers|gotcha|got\s+it|right|alright|"
+    r"sounds\s+good|sweet|excellent|fantastic|wonderful|"
+    r"bye|goodbye|see\s+(?:you|ya)(?:\s+later)?|later|catch\s+you\s+later|"
+    r"good\s+night|night\s+night)"
+    r"(?:[\s,]+(?:jarvis|sir|man|buddy|dude|then|now))?|"
+    # Common chitchat openers / fillers
+    r"(?:tell\s+me\s+(?:a|another)\s+(?:joke|story)|"
+    r"i'?m\s+(?:back|here|good|fine|ok|okay|tired|bored)|"
+    r"any(?:thing|\s+news|\s+updates)|"
+    r"what's\s+(?:up|new|happening|going\s+on))"
+    r")"
+    # Optional trailing vocative — added at the regex tail so every branch
+    # accepts "<chitchat> jarvis" / "<chitchat>, sir" without each branch
+    # needing its own vocative slot.
+    r"(?:[\s,]+(?:jarvis|sir|man|buddy|dude|there))?"
+    r"\s*[?!.,]*\s*$",
+    re.IGNORECASE,
+)
+
 # Tool-call leakage sanitization. When the speech LLM regresses and emits
 # a tool call as TEXT inside content (e.g. `<function/bash{"command": ...}>`)
 # instead of as a structured tool_call, the framework's dispatcher misses
@@ -4003,6 +4051,70 @@ async def entrypoint(ctx: JobContext) -> None:
             baseline_wpm=float(getattr(ev, "baseline_wpm", 0.0) or 0.0),
         )
         emotion = detect_emotion(transcript, audio)
+
+        # Synchronous BANTER fast-path. If the transcript is high-
+        # confidence chitchat, skip the 500ms Groq classifier and swap
+        # to the fast inner immediately so the framework's upcoming
+        # LLM dispatch picks up `session._llm = banter_inner` instead
+        # of last turn's leftover. Listeners run synchronously inside
+        # the event emitter so the swap lands before the framework's
+        # reply pipeline reads session._llm.
+        word_count = len(transcript.split())
+        if word_count <= 6 and _BANTER_FAST_PATH_RE.match(transcript):
+            try:
+                fast_llm = _dispatch_llm.pick("BANTER")
+                fast_tts = _dispatch_tts.pick("BANTER")
+                session._llm = fast_llm
+                session._tts = fast_tts
+                session._jarvis_emotion = emotion
+                session._jarvis_route   = "BANTER"
+
+                # Per-route interrupt tuning (BANTER = snappy)
+                try:
+                    opts = getattr(session, "options", None)
+                    if opts is not None and hasattr(opts, "interruption"):
+                        opts.interruption["min_words"]    = 1
+                        opts.interruption["min_duration"] = 0.3
+                except Exception as ie:
+                    logger.debug(f"[fast-path-banter] interrupt-tune skipped: {ie}")
+
+                # Inject the route prefix synchronously too — keeps the
+                # LLM aware it's BANTER without us having to wait for
+                # the classifier task. Mirror the prefix shape used by
+                # _classify_and_swap so the LLM sees a consistent format.
+                try:
+                    session._jarvis_turn_count = int(getattr(session, "_jarvis_turn_count", 0)) + 1
+                    _start = getattr(session, "_jarvis_session_start", None)
+                    _session_min = int((time.monotonic() - _start) / 60) if _start else 0
+                    _turn_n = session._jarvis_turn_count
+                    msgs = getattr(session.chat_ctx, "messages", None) or []
+                    for m in reversed(msgs):
+                        if getattr(m, "role", None) == "user":
+                            content = getattr(m, "content", None)
+                            prefix = (
+                                f"[Route: BANTER] [Emotion: {emotion}] "
+                                f"[Turn {_turn_n} · session {_session_min}m] "
+                            )
+                            if isinstance(content, str) and not content.startswith("[Route:"):
+                                m.content = prefix + content
+                            elif isinstance(content, list) and content:
+                                first = content[0]
+                                if isinstance(first, str) and not first.startswith("[Route:"):
+                                    content[0] = prefix + first
+                            break
+                except Exception as pe:
+                    logger.debug(f"[fast-path-banter] prefix inject skipped: {pe}")
+
+                logger.info(
+                    f"[fast-path-banter] sync swap (no classifier): "
+                    f"emotion={emotion} llm={getattr(fast_llm, '_jarvis_label', '?')} "
+                    f"transcript={transcript[:60]!r}"
+                )
+                return  # Skip the classifier task entirely
+            except Exception as e:
+                logger.warning(
+                    f"[fast-path-banter] swap failed; falling back to classifier: {e}"
+                )
 
         async def _classify_and_swap():
             async def _groq_call(prompt: str) -> str:
