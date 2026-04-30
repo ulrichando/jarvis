@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getWorkspace, deleteWorkspace } from "@/lib/workspace/storage";
+import { getWorkspace, deleteWorkspace, renameWorkspace } from "@/lib/workspace/storage";
 import { destroyRuntime, dockerStatus } from "@/lib/workspace/docker";
 
 export const runtime = "nodejs";
@@ -7,6 +7,18 @@ export const runtime = "nodejs";
 export async function GET(_req: Request, ctx: RouteContext<"/api/workspace/[id]">) {
   const { id } = await ctx.params;
   const ws = await getWorkspace(id);
+  if (!ws) return NextResponse.json({ error: "not_found" }, { status: 404 });
+  return NextResponse.json({ workspace: ws });
+}
+
+export async function PATCH(req: Request, ctx: RouteContext<"/api/workspace/[id]">) {
+  const { id } = await ctx.params;
+  const body = (await req.json().catch(() => ({}))) as { name?: unknown };
+  const name = typeof body.name === "string" ? body.name : "";
+  if (!name.trim() || name.length > 80) {
+    return NextResponse.json({ error: "invalid name" }, { status: 400 });
+  }
+  const ws = await renameWorkspace(id, name);
   if (!ws) return NextResponse.json({ error: "not_found" }, { status: 404 });
   return NextResponse.json({ workspace: ws });
 }

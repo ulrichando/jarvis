@@ -36,6 +36,23 @@ export async function apiDeleteWorkspace(id: string): Promise<void> {
   await fetch(`/api/workspace/${id}`, { method: "DELETE" });
 }
 
+export async function apiRenameWorkspace(
+  id: string,
+  name: string,
+): Promise<Workspace> {
+  const r = await fetch(`/api/workspace/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error(j?.error ?? `rename failed (${r.status})`);
+  }
+  const j = await r.json();
+  return j.workspace;
+}
+
 export async function apiTree(id: string, path = ""): Promise<TreeEntry[]> {
   const r = await fetch(
     `/api/workspace/${id}/tree?path=${encodeURIComponent(path)}`,
