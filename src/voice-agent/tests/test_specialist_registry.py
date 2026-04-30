@@ -155,3 +155,28 @@ def test_package_autoregisters_desktop():
     )
     register(desktop_spec)
     assert get("desktop") is not None
+
+
+# ── Phase 3: planner specialist ────────────────────────────────────────
+
+
+def test_planner_spec_is_registered_and_enabled():
+    """Phase 3 added the planner specialist via the registry pattern.
+    Unlike desktop (disabled, legacy method owns it), planner is the
+    first registry-driven specialist that ships enabled=True."""
+    from specialists import planner as planner_mod
+    planner_mod.register_planner()
+
+    spec = get("planner")
+    assert spec is not None
+    assert spec.transfer_tool == "transfer_to_planner"
+    assert "run_jarvis_cli" in spec.instructions  # references the right primary tool
+    assert spec.enabled is True
+
+
+def test_planner_appears_in_all_specs():
+    from specialists import planner as planner_mod
+    planner_mod.register_planner()
+
+    names = [s.name for s in all_specs()]
+    assert "planner" in names
