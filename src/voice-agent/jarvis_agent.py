@@ -717,8 +717,37 @@ def _build_dispatching_tts() -> DispatchingTTS:
         "EMOTIONAL": os.environ.get("JARVIS_VOICE_EMOTIONAL", "daniel"),
     }
 
+    # Single shared edge_tts instance used as the fallback inside every
+    # route's FallbackAdapter. Microsoft's Edge TTS is auth-free, has no
+    # practical quota, and survives Groq Orpheus's intermittent "no
+    # audio frames pushed" failures (which were leaving JARVIS silent
+    # mid-conversation as of 2026-04-30). Voice id is the SAME en-US
+    # neural voice the legacy chain uses.
+    edge_voice = os.environ.get("JARVIS_EDGE_VOICE", "en-US-ChristopherNeural")
+    try:
+        _edge_fallback = edge_tts_plugin.EdgeTTS(voice=edge_voice)
+        _edge_fallback.voice_id = f"edge:{edge_voice[:10]}…"
+    except Exception as e:
+        logger.warning(f"[dispatch] edge_tts construction failed ({e}); routes will have no fallback")
+        _edge_fallback = None
+
     inners: dict[str, object] = {}
     fallback = None
+
+    def _wrap_with_edge_fallback(primary):
+        """Wrap a per-route TTS in a FallbackAdapter so when the primary
+        returns no audio frames (Orpheus or ElevenLabs intermittent),
+        edge_tts takes over. Preserves the .voice_id attribute the
+        DispatchingTTS exposes for telemetry."""
+        if _edge_fallback is None:
+            return primary
+        try:
+            wrapped = tts.FallbackAdapter([primary, _edge_fallback])
+            wrapped.voice_id = getattr(primary, "voice_id", "?")
+            return wrapped
+        except Exception as e:
+            logger.warning(f"[dispatch] FallbackAdapter wrap failed ({e}); using primary alone")
+            return primary
 
     for route in ("BANTER", "TASK", "REASONING", "EMOTIONAL"):
         # Try ElevenLabs first for EMOTIONAL/REASONING when the key is set.
@@ -748,7 +777,13 @@ def _build_dispatching_tts() -> DispatchingTTS:
                     voice_settings=vs,
                 )
                 t.voice_id = f"el:{voice_id[:8]}…"
-                inners[route] = t
+                # Wrap in FallbackAdapter([elevenlabs, edge_tts]) so when
+                # ElevenLabs hits its quota or returns 0 frames, edge_tts
+                # takes over. Both quota-exhaustion (HTTP 401) and the
+                # "no audio frames pushed" symptom we saw 2026-04-30
+                # were leaving JARVIS silent mid-conversation; the
+                # fallback fixes both.
+                inners[route] = _wrap_with_edge_fallback(t)
                 continue
             except Exception as e:
                 logger.warning(f"[dispatch] EL tts for {route} failed ({e}); falling back to Orpheus")
@@ -765,17 +800,21 @@ def _build_dispatching_tts() -> DispatchingTTS:
             raw = _LoggingGroqTTS(model="canopylabs/orpheus-v1-english", voice=vid)
             t = tts.StreamAdapter(tts=raw, text_pacing=True)
             t.voice_id = vid
-            inners[route] = t
+            # Wrap with edge_tts fallback (see EL block above for
+            # rationale — Orpheus has the same intermittent failure mode).
+            inners[route] = _wrap_with_edge_fallback(t)
         except Exception as e:
             logger.warning(f"[dispatch] orph tts {route}={vid} failed: {e}; will inherit TASK")
 
     fallback = inners.get("TASK")
     if fallback is None:
-        # Last-ditch path: also wrap in StreamAdapter so even the panic
-        # fallback gets sentence-streaming.
+        # Last-ditch path: also wrap in StreamAdapter + edge_tts fallback
+        # so even the panic fallback gets sentence-streaming and
+        # auto-recovery.
         raw = _LoggingGroqTTS(model="canopylabs/orpheus-v1-english", voice="troy")
-        fallback = tts.StreamAdapter(tts=raw, text_pacing=True)
-        fallback.voice_id = "troy"
+        primary_panic = tts.StreamAdapter(tts=raw, text_pacing=True)
+        primary_panic.voice_id = "troy"
+        fallback = _wrap_with_edge_fallback(primary_panic)
         inners["TASK"] = fallback
     for route in ("BANTER", "REASONING", "EMOTIONAL"):
         inners.setdefault(route, fallback)
