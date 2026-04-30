@@ -512,11 +512,48 @@ fn main() {
             let window = app.get_webview_window("main").unwrap();
             let window_for_poll = window.clone();
 
-            // Full-screen transparent overlay on primary monitor.
-            if let Ok(Some(monitor)) = window.primary_monitor() {
+            // Full-screen transparent overlay. Pick the LAPTOP screen (smallest
+            // monitor by area) rather than primary_monitor() — primary is the
+            // external display in a docked setup, but the user expects JARVIS
+            // on the laptop screen they're actually looking at.
+            //
+            // Override path: if JARVIS_DISPLAY is set and matches a monitor's
+            // (width)x(height) at startup (e.g. "5120x1440"), use that instead.
+            // Lets the user pin to a specific external if they prefer.
+            let target_mon = (|| -> Option<(PhysicalSize<u32>, PhysicalPosition<i32>)> {
+                let monitors = window.available_monitors().ok()?;
+                if monitors.is_empty() {
+                    return None;
+                }
+                if let Ok(spec) = std::env::var("JARVIS_DISPLAY") {
+                    if let Some((w, h)) = spec.split_once('x') {
+                        if let (Ok(w), Ok(h)) = (w.parse::<u32>(), h.parse::<u32>()) {
+                            if let Some(m) = monitors.iter().find(|m| {
+                                let s = m.size();
+                                s.width == w && s.height == h
+                            }) {
+                                return Some((*m.size(), *m.position()));
+                            }
+                        }
+                    }
+                }
+                // Smallest-by-area heuristic = laptop built-in display.
+                let m = monitors.iter().min_by_key(|m| {
+                    let s = m.size();
+                    (s.width as u64) * (s.height as u64)
+                })?;
+                Some((*m.size(), *m.position()))
+            })();
+
+            if let Some((size, pos)) = target_mon {
+                println!("[JARVIS] Target monitor (laptop heuristic): {}x{}+{}+{}", size.width, size.height, pos.x, pos.y);
+                let _ = window.set_size(PhysicalSize::new(size.width, size.height));
+                let _ = window.set_position(PhysicalPosition::new(pos.x, pos.y));
+            } else if let Ok(Some(monitor)) = window.primary_monitor() {
+                // Last-ditch fallback if available_monitors() failed.
                 let size = monitor.size();
                 let pos  = monitor.position();
-                println!("[JARVIS] Target monitor (primary): {}x{}+{}+{}", size.width, size.height, pos.x, pos.y);
+                println!("[JARVIS] Target monitor (primary fallback): {}x{}+{}+{}", size.width, size.height, pos.x, pos.y);
                 let _ = window.set_size(PhysicalSize::new(size.width, size.height));
                 let _ = window.set_position(PhysicalPosition::new(pos.x, pos.y));
             }
@@ -594,30 +631,15 @@ fn main() {
             // ── System tray ──
             let chat_item    = MenuItemBuilder::with_id("open_chat",    "Open Chat Panel").build(app)?;
             let mute_item    = MenuItemBuilder::with_id("mute",         "Mute / Unmute Voice").build(app)?;
-            // Computer-use kill switch. Writes ~/.jarvis/computer-use-stop;
-            // jarvis_computer_use.py's _check_guards picks it up on the
-            // next action and raises ComputerUseError so the LLM exits the
-            // session and reports back. No-op if no session is active.
-            let stop_cu_item = MenuItemBuilder::with_id("stop_computer_use", "Stop Computer Use").build(app)?;
 
-            // ── 📷 Camera source submenu ──
-            // Picks which video device the webcam_* / face_* tools capture
-            // from. Selection persists to ~/.jarvis/webcam-device which
-            // jarvis_computer_use.py reads on each capture. The Dell laptop
-            // exposes RGB at /dev/video0 (visible) and IR at /dev/video2
-            // (Windows-Hello-style, works in low light).
-            let cam_rgb = MenuItemBuilder::with_id("camera_rgb", "RGB · /dev/video0 (default webcam)").build(app)?;
-            let cam_ir  = MenuItemBuilder::with_id("camera_ir",  "IR · /dev/video2 (Windows Hello camera, low-light)").build(app)?;
-            let cam_submenu = SubmenuBuilder::new(app, "📷 Camera source ▸")
-                .item(&cam_rgb)
-                .item(&cam_ir)
-                .build()?;
-
-            // ── 🖥 Start Screen Sharing ──
-            // Writes ~/.jarvis/start-screen-share with a duration in
-            // seconds; jarvis_agent.py's screen-share watcher picks it up
-            // and calls live_screen(N) which streams to Gemini Live API.
-            let share_screen_item = MenuItemBuilder::with_id("start_screen_share", "🖥 Start Screen Sharing (30s)").build(app)?;
+            // Removed 2026-04-30 (tray-trim Phase 1): Stop Computer Use,
+            // 📷 Camera source submenu, and 🖥 Start Screen Sharing
+            // shortcuts. The underlying file-watcher mechanisms in
+            // jarvis_agent.py / jarvis_computer_use.py are unchanged —
+            // only the always-visible tray entries went. CU is killable
+            // by voice ("stop"); screen-share is reachable by voice
+            // ("share my screen"); camera source is a one-time setup
+            // that can live in ~/.jarvis/webcam-device directly.
 
             let sep1         = PredefinedMenuItem::separator(app)?;
             let browser_item = MenuItemBuilder::with_id("open_browser", "Open in Browser").build(app)?;
@@ -765,9 +787,6 @@ fn main() {
             let menu = MenuBuilder::new(app)
                 .item(&chat_item)
                 .item(&mute_item)
-                .item(&stop_cu_item)
-                .item(&cam_submenu)
-                .item(&share_screen_item)
                 .item(&sep1)
                 .item(&browser_item)
                 .item(&sep_prov)
@@ -836,57 +855,12 @@ fn main() {
                                 let _ = w.emit("tray-toggle-mute", ());
                             }
                         }
-                        "camera_rgb" => {
-                            if let Ok(home) = std::env::var("HOME") {
-                                let p = std::path::PathBuf::from(home).join(".jarvis/webcam-device");
-                                let _ = std::fs::create_dir_all(p.parent().unwrap());
-                                match std::fs::write(&p, "/dev/video0\n") {
-                                    Ok(_)  => println!("[JARVIS] camera source → RGB (/dev/video0)"),
-                                    Err(e) => eprintln!("[JARVIS] failed to write {}: {e}", p.display()),
-                                }
-                            }
-                        }
-                        "camera_ir" => {
-                            if let Ok(home) = std::env::var("HOME") {
-                                let p = std::path::PathBuf::from(home).join(".jarvis/webcam-device");
-                                let _ = std::fs::create_dir_all(p.parent().unwrap());
-                                match std::fs::write(&p, "/dev/video2\n") {
-                                    Ok(_)  => println!("[JARVIS] camera source → IR (/dev/video2)"),
-                                    Err(e) => eprintln!("[JARVIS] failed to write {}: {e}", p.display()),
-                                }
-                            }
-                        }
-                        "start_screen_share" => {
-                            // Write ~/.jarvis/start-screen-share with duration.
-                            // jarvis_agent.py's screen-share watcher polls
-                            // for this file, calls live_screen(N), and voices
-                            // the result. Default 30s.
-                            if let Ok(home) = std::env::var("HOME") {
-                                let p = std::path::PathBuf::from(home).join(".jarvis/start-screen-share");
-                                let _ = std::fs::create_dir_all(p.parent().unwrap());
-                                match std::fs::write(&p, "30\n") {
-                                    Ok(_)  => println!("[JARVIS] screen-share requested (30s)"),
-                                    Err(e) => eprintln!("[JARVIS] failed to write {}: {e}", p.display()),
-                                }
-                            }
-                        }
-                        "stop_computer_use" => {
-                            // Touch ~/.jarvis/computer-use-stop. The voice
-                            // agent's _check_guards reads + unlinks this on
-                            // the next action and raises ComputerUseError,
-                            // which the action tool returns as success=False
-                            // so the LLM stops and reports back.
-                            if let Ok(home) = std::env::var("HOME") {
-                                let p = std::path::PathBuf::from(home).join(".jarvis/computer-use-stop");
-                                if let Some(parent) = p.parent() {
-                                    let _ = std::fs::create_dir_all(parent);
-                                }
-                                match std::fs::write(&p, "stop\n") {
-                                    Ok(_)  => println!("[JARVIS] computer-use stop signaled at {}", p.display()),
-                                    Err(e) => eprintln!("[JARVIS] failed to write {}: {e}", p.display()),
-                                }
-                            }
-                        }
+                        // Handlers removed 2026-04-30: camera_rgb, camera_ir,
+                        // start_screen_share, stop_computer_use. The tray
+                        // entries that triggered them were also removed —
+                        // see the comment in the menu-builder block above
+                        // for rationale.
+
                         "open_browser" => {
                             // Pick the first port that responds AND
                             // is the JARVIS web (Next.js). Probe
