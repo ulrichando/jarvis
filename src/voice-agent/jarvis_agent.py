@@ -3434,6 +3434,32 @@ class JarvisAgent(Agent):
         # the quiet-hours window don't need a vocative.
         _touch_interaction()
 
+        # Bare-vocative fast path. When the user only says "Jarvis" (or a
+        # Whisper variant like "Joris", "Jervis"), voice the canonical
+        # "Yes, sir?" directly via session.say() and skip the LLM call.
+        # Why: LLM round-trip adds 500-1500 ms of first-token latency on
+        # top of endpointing wait. Measured 2-3 s end-to-end for bare wake
+        # calls, which is why the user has to call "Jarvis" twice — they
+        # think the first wasn't heard. Fast path drops latency to ~TTS
+        # synth time (~300-500 ms) so the response feels instant.
+        words = text.split()
+        if (
+            _JARVIS_NAME_RE.search(text)
+            and len(words) <= 2
+            and len(text) <= 16
+        ):
+            try:
+                await self.session.say("Yes, sir?", allow_interruptions=True)
+                logger.info(f"[bare-vocative] fast-path 'Yes, sir?' (heard: {text!r})")
+                raise StopResponse()
+            except StopResponse:
+                raise
+            except Exception as e:
+                logger.warning(f"[bare-vocative] fast-path failed: {e}; falling through to LLM")
+                # Fall through to LLM — no `return`, let the framework
+                # invoke the LLM with the bare-vocative as it would have
+                # before this fast path existed.
+
         # Not silent, not a mute trigger, passed quiet-hours gate → LLM.
         return
 
