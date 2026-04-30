@@ -1861,7 +1861,12 @@ JARVIS_CLI_SCRIPT = os.environ.get(
     "JARVIS_CLI_SCRIPT",
     str(Path.home() / "Documents/Projects/jarvis/src/cli/scripts/start.sh"),
 )
-JARVIS_CLI_TIMEOUT_S = int(os.environ.get("JARVIS_CLI_TIMEOUT_S", "60"))
+# Default 120 s (was 60 s). Multi-step design / refactor work
+# routinely needs 60-90 s end-to-end on deepseek-v4-pro; the lower
+# default was killing turns mid-write and leaving the planner
+# specialist with no concrete result to summarise. Override via
+# env when you want a different cap.
+JARVIS_CLI_TIMEOUT_S = int(os.environ.get("JARVIS_CLI_TIMEOUT_S", "120"))
 
 # Tool-busy flag file. Tools write a small token file at start and
 # remove it at end; the voice-client polls its mtime + presence on
@@ -2342,7 +2347,7 @@ async def run_jarvis_cli(request: str) -> str:
             except asyncio.TimeoutError:
                 proc.kill()
                 await proc.wait()
-            return "(tool ran past its 60 s deadline and was cancelled)"
+            return f"(tool ran past its {JARVIS_CLI_TIMEOUT_S} s deadline and was cancelled)"
 
         text = _ANSI_RE.sub("", stdout_b.decode("utf-8", errors="replace")).strip()
         err  = stderr_b.decode("utf-8", errors="replace").strip()
