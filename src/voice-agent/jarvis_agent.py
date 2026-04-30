@@ -108,6 +108,7 @@ from jarvis_browser import browser_task
 # error — preserves FallbackAdapter behaviour, just adds visibility.
 # Remove once the underlying 400 is identified and fixed.
 import aiohttp as _aiohttp
+from livekit.agents import RunContext
 from livekit.agents import APIConnectionError as _APIConnectionError
 from livekit.agents import APIError as _APIError
 from livekit.agents import APIStatusError as _APIStatusError
@@ -3542,7 +3543,7 @@ def _flatten_chat_content(content: object) -> str:
 #     it can voice "going silent" once before suppressing.
 class JarvisAgent(Agent):
     @function_tool()
-    async def transfer_to_desktop(self, context, request: str) -> tuple[Agent, str]:
+    async def transfer_to_desktop(self, context: RunContext, request: str) -> tuple[Agent, str]:
         """Hand off to the desktop-action specialist.
 
         Use whenever the user wants something done on the Linux desktop:
