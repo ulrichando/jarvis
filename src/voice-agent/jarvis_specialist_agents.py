@@ -35,11 +35,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from livekit.agents import Agent, function_tool
+from livekit.agents import Agent, RunContext, function_tool
 from livekit.agents.llm import ChatContext
-
-if TYPE_CHECKING:
-    from livekit.agents.voice import RunContext
 
 logger = logging.getLogger("jarvis-agent.specialist")
 
@@ -180,7 +177,7 @@ class DesktopActionsAgent(Agent):
         logger.info("[specialist:desktop] handing back to supervisor")
 
     @function_tool()
-    async def task_done(self, context: "RunContext", summary: str) -> tuple[Agent, str]:
+    async def task_done(self, context: RunContext, summary: str) -> tuple[Agent, str]:
         """Call this after the desktop task is complete. Hands control
         back to the JARVIS supervisor.
 
