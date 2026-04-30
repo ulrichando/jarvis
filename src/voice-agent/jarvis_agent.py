@@ -596,12 +596,24 @@ SPEECH_MODELS: dict[str, dict] = {
     # vs Groq's ~200 ms is an acceptable trade for fewer "JARVIS
     # not responding" turns. Requires DEEPSEEK_API_KEY in env.
     "deepseek-chat": {
-        "label": "DeepSeek · chat (V3)",
+        # NB 2026-04-30: DeepSeek's API now aliases `deepseek-chat`
+        # to `deepseek-v4-flash` (a thinking model). Even though the
+        # alias name says "chat", the underlying model emits
+        # reasoning_content by default — the openai plugin can't
+        # round-trip it and multi-turn within a specialist hangs
+        # silently after turn 2 (verified live: 'take a screenshot'
+        # turn 21:41:09 froze with no error, no progress, because
+        # the prior assistant message had reasoning_content the
+        # plugin couldn't echo back). Pass enable_thinking=false to
+        # force the underlying v4-flash into non-thinking mode so
+        # the round-trip stays clean.
+        "label": "DeepSeek · chat (no-think)",
         "build": lambda: lk_openai.LLM(
             model="deepseek-chat",
             api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
             base_url="https://api.deepseek.com/v1",
             temperature=0.6,
+            extra_body={"enable_thinking": False},
         ),
     },
     # V4 family with thinking DISABLED — `enable_thinking: false`
