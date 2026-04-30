@@ -90,12 +90,26 @@ def build_transfer_tool(spec: SpecialistSpec):
         f"    request: The user's request, verbatim or paraphrased."
     )
 
+    # NOTE: no `self` parameter. When @function_tool is used as a
+    # class method (e.g. `task_done` on RegistrySpecialist), Python's
+    # method machinery handles `self` before LiveKit introspects.
+    # When it's used on a closure-returned function passed via the
+    # supervisor's `tools=[…]` list, LiveKit's Pydantic-schema builder
+    # walks the parameter list and tries to look each name up in
+    # type_hints — `self` has no annotation → `KeyError: 'self'` and
+    # the framework wraps it as APIConnectionError ("failed to
+    # generate LLM completion: Connection error") which is misleading.
+    #
+    # Instead we get the supervisor from `context.session.current_agent`
+    # at call-time. The LLM that fired this tool IS the supervisor.
     @function_tool(name=spec.transfer_tool, description=description)
     async def _transfer(
-        self, context: RunContext, request: str
+        context: RunContext, request: str
     ) -> tuple[Agent, str]:
+        session = context.session
+        supervisor = session.current_agent
         try:
-            ctx = self.chat_ctx.copy(exclude_instructions=True)
+            ctx = supervisor.chat_ctx.copy(exclude_instructions=True)
             if spec.max_history_items is not None:
                 ctx = ctx.truncate(max_items=spec.max_history_items)
         except Exception:
@@ -103,14 +117,9 @@ def build_transfer_tool(spec: SpecialistSpec):
 
         # Stash the specialist name on the session so the assistant
         # `_on_item` telemetry hook in jarvis_agent.py can record it
-        # alongside route/emotion. Best-effort — `session` may not be
-        # available depending on how LiveKit binds context; the
-        # telemetry value falls back to None and the report shows
-        # those turns as `supervisor`.
+        # alongside route/emotion.
         try:
-            session = getattr(context, "session", None) or getattr(self, "session", None)
-            if session is not None:
-                session._jarvis_last_specialist = spec.name
+            session._jarvis_last_specialist = spec.name
         except Exception:
             pass
 
@@ -120,7 +129,7 @@ def build_transfer_tool(spec: SpecialistSpec):
         return (
             RegistrySpecialist(
                 spec=spec,
-                supervisor=self,
+                supervisor=supervisor,
                 chat_ctx=ctx,
             ),
             spec.ack_phrase,
