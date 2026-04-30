@@ -435,23 +435,12 @@ export function DesignView({
                 workspaceId={workspaceId}
                 workspaceName={workspaceName}
                 composerPlaceholder="Describe what you want to create — slides, prototype, landing, one-pager, infographic…"
-                onStreamingFile={queueStreaming}
-                onFileComplete={(filePath) => {
-                  // Flush any pending throttled update so the user sees the
-                  // final state, then clear streaming after a tick so the
-                  // iframe falls back to the file on disk.
-                  if (streamingTimerRef.current) {
-                    clearTimeout(streamingTimerRef.current);
-                    streamingTimerRef.current = null;
-                  }
-                  if (pendingStreamingRef.current) {
-                    setStreaming(pendingStreamingRef.current);
-                    pendingStreamingRef.current = null;
-                  }
-                  setStreaming((cur) =>
-                    cur && cur.filePath === filePath ? null : cur,
-                  );
-                }}
+                // Streaming preview overlay is intentionally NOT wired here —
+                // we want files to appear in the panel as they finish writing
+                // (which the runner does on action-close + tree invalidation),
+                // not a live in-iframe render that updates per chunk. This is
+                // also the biggest speed win: dropping the per-chunk callbacks
+                // removes the throttle + re-render storm on long generations.
                 prefillPrompt={prefillPrompt}
               />
             ) : (
