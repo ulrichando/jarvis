@@ -66,6 +66,18 @@ export async function touchWorkspace(id: string) {
   await saveMeta(meta);
 }
 
+export async function renameWorkspace(id: string, name: string): Promise<Workspace | null> {
+  const trimmed = name.trim();
+  if (!trimmed) return null;
+  const meta = await loadMeta();
+  const ws = meta.workspaces.find((w) => w.id === id);
+  if (!ws) return null;
+  ws.name = trimmed;
+  ws.updatedAt = Date.now();
+  await saveMeta(meta);
+  return ws;
+}
+
 export async function deleteWorkspace(id: string) {
   const dir = path.join(WORKSPACES_ROOT, id);
   await fs.rm(dir, { recursive: true, force: true });
