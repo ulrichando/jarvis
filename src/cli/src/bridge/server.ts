@@ -33,6 +33,13 @@ import {
   getJarvisPickerModels,
 } from '../utils/model/jarvisModelRegistry.js'
 import {
+  handleExtBrowse,
+  registerExtensionWS,
+  unregisterExtensionWS,
+  isExtensionConnected,
+  resolveExtensionResponse,
+} from './ext_browse'
+import {
   deleteSessionsBetween,
   listSessions,
   saveTurn,
@@ -438,6 +445,10 @@ const server = Bun.serve({
     if (url.pathname === '/api/page-query'     && req.method === 'POST') return handlePageQuery(req)
     if (url.pathname === '/api/analyze-screen' && req.method === 'POST') return handleAnalyzeScreen(req)
     if (url.pathname === '/api/livekit/token'  && req.method === 'POST') return handleLiveKitToken(req)
+    if (url.pathname === '/api/ext_browse'     && req.method === 'POST') return handleExtBrowse(req)
+    if (url.pathname === '/api/ext_status') {
+      return Response.json({ connected: isExtensionConnected() })
+    }
 
     if (url.pathname === '/api/conversations/sessions' && req.method === 'GET') {
       return Response.json({ sessions: listSessions() })
@@ -471,11 +482,31 @@ const server = Bun.serve({
       const sock = ws as unknown as WebSocket
       clients.delete(sock)
       wsSessionId.delete(sock)
+      unregisterExtensionWS(sock)
       console.log(`[bridge] client disconnected (${clients.size} total)`)
     },
     async message(ws, raw) {
       let msg: any
       try { msg = JSON.parse(raw.toString()) } catch { return }
+
+      // Extension identification — register this WS as the extension channel.
+      // The extension sends {type:'extension_hello'} as its first message so we
+      // can discriminate it from regular chat-panel / desktop clients.
+      if (msg.type === 'extension_hello') {
+        registerExtensionWS(ws as unknown as WebSocket)
+        console.log('[bridge] extension WebSocket registered')
+        try { ws.send(JSON.stringify({ type: 'extension_hello_ack' })) } catch {}
+        return
+      }
+
+      // Extension command response — correlate by cmd_id and wake the waiting
+      // handleExtBrowse() promise. These messages never reach the chat handlers.
+      if (msg.cmd_id) {
+        resolveExtensionResponse(msg)
+        return
+      }
+
+      // Existing chat-panel / desktop WS handling (unchanged).
       if (msg.type === 'query' && typeof msg.text === 'string') {
         await handleQuery(ws as unknown as WebSocket, msg.text)
       } else if (msg.type === 'feedback') {
