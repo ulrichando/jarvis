@@ -86,6 +86,31 @@ export function googleFontsUrl(p: FontPairing): string {
 }
 
 /**
+ * Quick heuristic: is this brief too sparse to ship a design from? Used by the
+ * chat route to swap in a minimal clarify-only prompt (way smaller than the
+ * full design playbook) so questions.html generates fast.
+ */
+export function isSparseBrief(text: string | null | undefined): boolean {
+  const t = (text ?? "").trim();
+  if (!t) return true;
+  const words = t.split(/\s+/);
+  // Long briefs are by definition specific.
+  if (words.length >= 12) return false;
+  // Catch the common no-content openers: "make me a deck", "build a website",
+  // "design something", etc.
+  if (
+    /^(make|build|design|create|generate|do)\s+(me\s+)?(a|an|some)?\s*(thing|something|cool|nice|deck|slide|slides|presentation|page|website|webpage|landing|app|prototype|design|poster|infographic|onepager|one-pager)?\.?\s*$/i.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  // Very short with no proper noun → sparse.
+  if (words.length <= 4 && !/[A-Z][a-z]+/.test(t.slice(1))) return true;
+  return false;
+}
+
+/**
  * Heuristic format classifier — picks a format from natural-language text.
  * Used when the client doesn't pass an explicit `format` (the design tab
  * doesn't show format chips by default, matching Claude Design's "describe
