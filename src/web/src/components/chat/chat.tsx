@@ -269,10 +269,18 @@ export function Chat({
             if (ev.kind === "error") {
               toast.error(`Action failed: ${ev.error}`);
             }
-            // After file writes, refresh the file tree so the workbench
-            // shows the new files immediately.
+            // After file writes, refresh both tree query keys so the
+            // workbench AND the design panel pick up the new files.
+            // (Workbench queries ["ws", id, "tree"]; design panel queries
+            // ["design-tree", id, ...] — different keys, both need invalidating.)
             if (ev.kind === "success" && t.action.type === "file") {
               qc.invalidateQueries({ queryKey: ["ws", targetWorkspaceId, "tree"] });
+              qc.invalidateQueries({ queryKey: ["design-tree", targetWorkspaceId] });
+              // Also bust the file-content cache for this exact file so a
+              // subsequent click on it shows the freshly-written contents.
+              qc.invalidateQueries({
+                queryKey: ["design-file", targetWorkspaceId, t.action.filePath],
+              });
             }
             // After a `start` action succeeds, the dev server is just
             // booting. Poll the preview endpoint until something is
