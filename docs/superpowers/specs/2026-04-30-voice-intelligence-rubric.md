@@ -262,3 +262,51 @@ Distance to 90: 3 points. The remaining axes:
 - Axis 6 (acknowledgment vocabulary 8) — varied bare-vocative responses (currently fixed at "Yes, sir?" by user preference).
 
 The closest +1 is axis 4 — once we have a few REASONING-tagged turns in the live telemetry (zero so far), we can either decide the current Groq path is fine (+0) or wire DeepSeek (+1). Axis 2 is the bigger investment but also higher-leverage. Axis 6 is constrained by user preference — the canonical "Yes, sir?" stays.
+
+### 2026-04-30 — Phase 8 (live-debug reliability fixes)
+
+A different shape from Phases 1-7 — these aren't planned axis-improvement features, they're production reliability fixes uncovered by the user dogfooding the agent for ~30 minutes after Phase 7 landed and reporting *"asking him questions twice now no response."* Each one is a real bug that surfaced once and was fixed.
+
+**Bugs found and fixed (commits in order):**
+
+1. `f1b8db3` → `83afeef` — **Phase-5 specialist `self` arg crashed tool-schema builder.** `build_transfer_tool` returned a closure with `self` as first parameter. LiveKit's Pydantic schema builder threw `KeyError: 'self'` (wrapped misleadingly as `APIConnectionError("Connection error")`) on every turn. Fixed by dropping `self` and using `context.session.current_agent`.
+
+2. `83afeef` (same commit) — **WebKitGTK `backdrop-filter: blur` ghosted text** in the floating status pill, producing visible doubled text ("Voiceeready", "JARVISsbooting"). Removed the blur and bumped the pill background opacity. Then user clarified they only wanted *one* indicator anyway → led to (3) below.
+
+3. `0092db4` — **Floating pill removed entirely** + duplicate `/status` poll consolidated into `useVoiceClient`. Tray icon (with state colours) is now the single status indicator, eliminating both the WebKit ghost-blur problem and the parallel poll loop the codebase had documented as a known duplicate.
+
+4. `76dbdff` — **Tray icon was permanently red** because the tray-state useEffect read `speech.connected` but `useVoiceClient` only exposed it under a misleadingly-named `listening` state. The deleted floating pill had been reading `s.connected` directly from the JSON and hid the bug. Added a real `connected` field to the hook's return shape.
+
+5. `71e43ba` — **Bare-vocative fast-path was always falling through to the LLM** (~2-3s instead of ~500ms) because `asyncio.create_task(session.say(...))` raises `TypeError: a coroutine was expected, got <SpeechHandle ...>` in livekit-agents 1.5+. Removed the wrapper.
+
+6. `b190f47` then `6cbfb6f` — **Post-LLM hedge filter (`drop_pure_hedge`) ate legitimate replies.** User asked *"how are you?"*; JARVIS replied *"I'm here, sir."*; the regex matched and yielded nothing → silence. First fix was loosening the regex; the proper fix replaced post-LLM regex with an upstream STT-confidence gate (`_is_garbage_transcript`) that drops obvious-noise transcripts BEFORE the LLM is called. **Industry pattern — production voice agents don't post-filter LLM output for ambiguous deflections; they filter the user transcript upstream where the noise patterns are unambiguous.** Removed `drop_pure_hedge` + `_PURE_HEDGE_REPLY_RE` entirely. 25 new unit tests for the gate.
+
+7. `12f6c02` — **Per-route TTS had no fallback** — when Orpheus or ElevenLabs returned zero audio frames mid-stream (observed twice: once on EL quota exhaustion, once on Orpheus intermittent), the framework raised `APIError: no audio frames were pushed` and the user heard silence even though JARVIS had generated a substantive reply. Wrapped every dispatcher inner in `tts.FallbackAdapter([primary, edge_tts])`. Microsoft Edge TTS is auth-free and quota-less; on a primary failure the conversation continues with the fallback voice.
+
+**Re-score after Phase 8:**
+
+| # | Axis | Before | After | Delta |
+|---|---|---|---|---|
+| 9 | Tool execution discipline | 9 | 10 | +1 — specialist `self` bug fixed; tool-schema validation no longer crashes silently as APIConnectionError. Three-specialist registry now battle-tested live. |
+| 10 | Self-eval / closed loop | 10 | 10 | unchanged but expanded — `[stt-gate]` log lines now surface every dropped turn with reason. Telemetry can rebuild the noise-pattern distribution from logs. |
+
+Plus the more important reliability win that doesn't cleanly map to a single axis: **TTS-fallback chain means a single provider failure no longer silences the conversation.** The user can now have a multi-turn session through ElevenLabs quota burn or Orpheus hiccups without rebooting anything. That's an axis-9 improvement in spirit even though the score was already at 10.
+
+**New total: 87 → 88 / 100.**
+
+Distance to 90: 2 points. Remaining axes (mostly the same as Phase 7's analysis):
+- Axis 2 (emotion detection 8 → 9 or 10) — acoustic prosody.
+- Axis 4 (LLM dispatch by route 8 → 9) — need real REASONING-route turns in telemetry.
+- Axis 6 — constrained by user preference; not pursuing.
+
+### Phase 9+ candidates (path to 90)
+
+1. **Acoustic prosody for emotion detection (axis 2 → 9, +1).** The lexical + speech-rate path is solid but doesn't catch tonal cues. A small RMS-energy / pitch-contour helper computed from the mic stream's audio frames (~1 hour of code) would catch "frustrated, low energy" or "excited, high pitch" that lex misses. Not gated on a paid API.
+
+2. **Sanitizer for LLM tool-call leakage (recurring bug 2 from earlier audit, 7 occurrences).** When the LLM jams JSON args into the tool name field (`recall_conversation{"query":...}`), the openai client rejects it with `tool call validation failed` — costs the user one unanswered turn each time. Could subclass `groq.LLM` and intercept tool_calls to repair the malformed names before the openai client sees them. ~3 hours of code; pure reliability win, no axis change but fewer "JARVIS didn't respond" moments.
+
+3. **REASONING route real-data validation (axis 4 → 9, +1).** Live telemetry shows REASONING has produced zero turns. Either the classifier is collapsing reasoning-class prompts to TASK or the user just hasn't asked any. Add a regex pre-classifier for high-confidence reasoning patterns ("why does", "explain", "walk me through", "step by step", "design", "debug") mirroring the BANTER fast-path. Also gives us a control to disambiguate "classifier is wrong" from "user pattern is missing."
+
+4. **Whisper logprob-based STT gate (axis 10 deepening, no axis change).** The Phase-1 STT gate is shape-only. Wiring Whisper's `avg_logprob` from the Groq STT response would let us drop low-confidence transcripts numerically. Currently blocked: livekit-plugins-groq doesn't surface logprobs in `UserInputTranscribedEvent`. Fork or PR upstream.
+
+The next obvious move is Phase 9 candidate #1 (acoustic prosody) since it's the largest remaining axis gap and unblocks 88 → 89.
