@@ -1,6 +1,8 @@
 "use client";
 
 import {
+  ChevronDown,
+  ChevronRight,
   ChevronUp,
   File as FileIcon,
   FileCode,
@@ -77,6 +79,15 @@ export function DesignFilesPanel({
       qc.invalidateQueries({ queryKey: ["design-tree", workspaceId] });
     },
   });
+
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
+  const toggleFolder = (path: string) =>
+    setExpandedFolders((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
 
   const clearWs = useMutation({
     mutationFn: async () => {
@@ -181,6 +192,9 @@ export function DesignFilesPanel({
                   onSelectFile={onSelectFile}
                   onDelete={(path) => del.mutate(path)}
                   deletingPath={del.isPending ? (del.variables ?? null) : null}
+                  workspaceId={workspaceId}
+                  expanded={expandedFolders}
+                  onToggleFolder={toggleFolder}
                 />
               );
             })}
@@ -207,6 +221,9 @@ function FileSection({
   onSelectFile,
   onDelete,
   deletingPath,
+  workspaceId,
+  expanded,
+  onToggleFolder,
 }: {
   label: string;
   entries: TreeEntry[];
@@ -214,6 +231,9 @@ function FileSection({
   onSelectFile: (entry: TreeEntry) => void;
   onDelete: (path: string) => void;
   deletingPath: string | null;
+  workspaceId: string;
+  expanded: Set<string>;
+  onToggleFolder: (path: string) => void;
 }) {
   return (
     <div>
@@ -221,18 +241,158 @@ function FileSection({
         {label}
       </div>
       <div className="space-y-px">
-        {entries.map((e) => (
-          <FileRow
-            key={e.path}
-            entry={e}
-            selected={selectedPath === e.path}
-            onClick={() => onSelectFile(e)}
-            onDelete={() => onDelete(e.path)}
-            deleting={deletingPath === e.path}
-          />
-        ))}
+        {entries.map((e) => {
+          const isFolder = e.type === "dir";
+          const isExpanded = isFolder && expanded.has(e.path);
+          return (
+            <FileEntry
+              key={e.path}
+              entry={e}
+              selectedPath={selectedPath}
+              onSelectFile={onSelectFile}
+              onDelete={onDelete}
+              deletingPath={deletingPath}
+              workspaceId={workspaceId}
+              expanded={expanded}
+              onToggleFolder={onToggleFolder}
+              isFolder={isFolder}
+              isExpanded={isExpanded}
+              indent={0}
+            />
+          );
+        })}
       </div>
     </div>
+  );
+}
+
+// A single tree node: renders the row, then if this is an expanded folder,
+// recursively renders its contents (which may themselves include nested
+// expanded folders). Indentation grows with depth.
+function FileEntry({
+  entry,
+  selectedPath,
+  onSelectFile,
+  onDelete,
+  deletingPath,
+  workspaceId,
+  expanded,
+  onToggleFolder,
+  isFolder,
+  isExpanded,
+  indent,
+}: {
+  entry: TreeEntry;
+  selectedPath: string | null;
+  onSelectFile: (entry: TreeEntry) => void;
+  onDelete: (path: string) => void;
+  deletingPath: string | null;
+  workspaceId: string;
+  expanded: Set<string>;
+  onToggleFolder: (path: string) => void;
+  isFolder: boolean;
+  isExpanded: boolean;
+  indent: number;
+}) {
+  return (
+    <>
+      <FileRow
+        entry={entry}
+        selected={selectedPath === entry.path}
+        onClick={() =>
+          isFolder ? onToggleFolder(entry.path) : onSelectFile(entry)
+        }
+        onDelete={() => onDelete(entry.path)}
+        deleting={deletingPath === entry.path}
+        expandable={isFolder}
+        expanded={isExpanded}
+        indent={indent}
+      />
+      {isExpanded && (
+        <FolderContents
+          workspaceId={workspaceId}
+          path={entry.path}
+          indent={indent + 1}
+          selectedPath={selectedPath}
+          onSelectFile={onSelectFile}
+          onDelete={onDelete}
+          deletingPath={deletingPath}
+          expanded={expanded}
+          onToggleFolder={onToggleFolder}
+        />
+      )}
+    </>
+  );
+}
+
+function FolderContents({
+  workspaceId,
+  path,
+  indent,
+  selectedPath,
+  onSelectFile,
+  onDelete,
+  deletingPath,
+  expanded,
+  onToggleFolder,
+}: {
+  workspaceId: string;
+  path: string;
+  indent: number;
+  selectedPath: string | null;
+  onSelectFile: (entry: TreeEntry) => void;
+  onDelete: (path: string) => void;
+  deletingPath: string | null;
+  expanded: Set<string>;
+  onToggleFolder: (path: string) => void;
+}) {
+  const { data: entries = [], isLoading } = useQuery({
+    queryKey: ["design-tree", workspaceId, path],
+    queryFn: () => apiTree(workspaceId, path),
+  });
+  if (isLoading) {
+    return (
+      <div
+        className="text-[11px] text-muted-foreground/70 py-1"
+        style={{ paddingLeft: `${indent * 16 + 12}px` }}
+      >
+        loading…
+      </div>
+    );
+  }
+  if (entries.length === 0) {
+    return (
+      <div
+        className="text-[11px] italic text-muted-foreground/60 py-1"
+        style={{ paddingLeft: `${indent * 16 + 12}px` }}
+      >
+        empty folder
+      </div>
+    );
+  }
+  return (
+    <>
+      {entries.map((e) => {
+        const isFolder = e.type === "dir";
+        const isExpanded = isFolder && expanded.has(e.path);
+        return (
+          <FileEntry
+            key={e.path}
+            entry={e}
+            selectedPath={selectedPath}
+            onSelectFile={onSelectFile}
+            onDelete={onDelete}
+            deletingPath={deletingPath}
+            workspaceId={workspaceId}
+            expanded={expanded}
+            onToggleFolder={onToggleFolder}
+            isFolder={isFolder}
+            isExpanded={isExpanded}
+            indent={indent}
+          />
+        );
+      })}
+    </>
   );
 }
 
@@ -242,12 +402,20 @@ function FileRow({
   onClick,
   onDelete,
   deleting,
+  expandable = false,
+  expanded = false,
+  indent = 0,
 }: {
   entry: TreeEntry;
   selected: boolean;
   onClick: () => void;
   onDelete: () => void;
   deleting: boolean;
+  /** When true, render a chevron at the row's start that flips with expanded. */
+  expandable?: boolean;
+  expanded?: boolean;
+  /** Tree depth — every level adds 16px of left padding. */
+  indent?: number;
 }) {
   // We don't have per-file mtime in the tree response yet; placeholder.
   const updated = "—";
@@ -273,13 +441,25 @@ function FileRow({
           onClick();
         }
       }}
+      style={indent > 0 ? { paddingLeft: `${indent * 16 + 12}px` } : undefined}
       className={cn(
-        "group flex w-full cursor-pointer items-center gap-3 rounded-md px-3 py-2 text-left transition-colors",
+        "group flex w-full cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-left transition-colors",
         selected
           ? "bg-primary/10 text-foreground"
           : "hover:bg-muted/40 text-foreground/90",
       )}
     >
+      {expandable ? (
+        <span className="flex size-3.5 shrink-0 items-center justify-center text-muted-foreground/70">
+          {expanded ? (
+            <ChevronDown className="size-3.5" />
+          ) : (
+            <ChevronRight className="size-3.5" />
+          )}
+        </span>
+      ) : (
+        <span className="size-3.5 shrink-0" aria-hidden />
+      )}
       <span
         className={cn(
           "flex size-7 shrink-0 items-center justify-center rounded-md",
