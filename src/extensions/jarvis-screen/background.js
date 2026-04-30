@@ -225,3 +225,155 @@ async function captureAndAnalyze(query) {
     return { error: `Can't reach JARVIS: ${e.message}` }
   }
 }
+
+// ── v3.0 — WS command channel to JARVIS bridge ───────────────────────
+
+const WS_URL = 'ws://localhost:8765/ws';
+const WS_KEEPALIVE_MS = 25_000;
+let ws = null;
+let wsKeepaliveTimer = null;
+
+function _connectWS() {
+  try { if (ws) ws.close(); } catch {}
+  ws = new WebSocket(WS_URL);
+
+  ws.addEventListener('open', () => {
+    console.log('[jarvis-ext] WS connected');
+    // Identify ourselves so the bridge calls registerExtensionWS for this socket.
+    ws.send(JSON.stringify({ type: 'extension_hello', version: '3.0.0' }));
+    if (wsKeepaliveTimer) clearInterval(wsKeepaliveTimer);
+    wsKeepaliveTimer = setInterval(() => {
+      try { ws.send(JSON.stringify({ type: 'ping' })); } catch {}
+    }, WS_KEEPALIVE_MS);
+  });
+
+  ws.addEventListener('message', async (ev) => {
+    let cmd;
+    try { cmd = JSON.parse(ev.data); }
+    catch { return; }
+    if (cmd.type === 'pong' || cmd.type === 'extension_hello_ack') return;
+    if (!cmd.cmd_id) return;
+    const result = await dispatchCommand(cmd);
+    try { ws.send(JSON.stringify({ cmd_id: cmd.cmd_id, ...result })); } catch {}
+  });
+
+  ws.addEventListener('close', () => {
+    console.log('[jarvis-ext] WS closed; reconnecting in 3s');
+    if (wsKeepaliveTimer) clearInterval(wsKeepaliveTimer);
+    setTimeout(_connectWS, 3000);
+  });
+
+  ws.addEventListener('error', (e) => console.warn('[jarvis-ext] WS error', e));
+}
+
+// Run on SW startup AND on resume.
+_connectWS();
+chrome.runtime.onStartup.addListener(_connectWS);
+
+async function dispatchCommand({ action, args = {}, confirmed = false }) {
+  // Some actions are bg-context-only (chrome.tabs / chrome.cookies).
+  // Others run in content.js (DOM ops). We split here.
+  try {
+    switch (action) {
+      case 'navigate':       return await _bgNavigate(args);
+      case 'back':           return await _bgHistory(-1);
+      case 'forward':        return await _bgHistory(+1);
+      case 'close_tab':      return await _bgCloseTab();
+      case 'screenshot':     return await _bgScreenshot();
+      case 'get_cookies':    return await _bgGetCookies(args);
+      case 'set_cookies':    return await _bgSetCookies(args);
+      case 'accept_dialog':  return await _bgAcceptDialog(args);
+      default:
+        return await _forwardToContent(action, args);
+    }
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+}
+
+async function _activeTabId() {
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  return tab?.id || null;
+}
+
+async function _forwardToContent(action, args) {
+  const tabId = await _activeTabId();
+  if (!tabId) return { ok: false, error: 'no active tab' };
+  return await chrome.tabs.sendMessage(tabId, { action, args });
+}
+
+async function _bgNavigate({ url }) {
+  if (!url) return { ok: false, error: 'url required' };
+  const tabId = await _activeTabId();
+  if (!tabId) {
+    const tab = await chrome.tabs.create({ url });
+    await _waitForLoad(tab.id);
+    return await _forwardToContent('dom_summary', {});
+  }
+  await chrome.tabs.update(tabId, { url });
+  await _waitForLoad(tabId);
+  return await _forwardToContent('dom_summary', {});
+}
+
+function _waitForLoad(tabId, timeoutMs = 10_000) {
+  return new Promise((resolve) => {
+    const onCompleted = (details) => {
+      if (details.tabId === tabId && details.frameId === 0) {
+        chrome.webNavigation.onCompleted.removeListener(onCompleted);
+        clearTimeout(t);
+        // small delay for SPA hydration
+        setTimeout(resolve, 300);
+      }
+    };
+    const t = setTimeout(() => {
+      chrome.webNavigation.onCompleted.removeListener(onCompleted);
+      resolve();
+    }, timeoutMs);
+    chrome.webNavigation.onCompleted.addListener(onCompleted);
+  });
+}
+
+async function _bgHistory(direction) {
+  const tabId = await _activeTabId();
+  if (!tabId) return { ok: false, error: 'no active tab' };
+  if (direction < 0) await chrome.tabs.goBack(tabId);
+  else                await chrome.tabs.goForward(tabId);
+  await _waitForLoad(tabId);
+  return await _forwardToContent('dom_summary', {});
+}
+
+async function _bgCloseTab() {
+  const tabId = await _activeTabId();
+  if (!tabId) return { ok: false, error: 'no active tab' };
+  await chrome.tabs.remove(tabId);
+  return { ok: true };
+}
+
+async function _bgScreenshot() {
+  const dataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
+  return { ok: true, image_b64: dataUrl };
+}
+
+async function _bgGetCookies({ domain }) {
+  const cookies = await chrome.cookies.getAll({ domain });
+  return { ok: true, cookies };
+}
+
+async function _bgSetCookies({ domain, cookies }) {
+  for (const c of (cookies || [])) {
+    await chrome.cookies.set({
+      url: `https://${domain}${c.path || '/'}`,
+      name: c.name, value: c.value,
+      domain, path: c.path || '/',
+      secure: c.secure ?? true,
+    });
+  }
+  return { ok: true };
+}
+
+async function _bgAcceptDialog(args) {
+  // Real browsers show alert/confirm/prompt synchronously. The
+  // chrome.debugger API would be needed to intercept; for v1 we
+  // just acknowledge and let the page handle defaults.
+  return { ok: true, note: 'dialog handling not yet implemented' };
+}
