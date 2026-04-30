@@ -374,28 +374,78 @@ function antiSlopBlock(): string {
 
 function artifactRulesBlock(format: Format): string {
   const file = FORMAT_FILE[format];
+  const folderExample = artifactFolderExample(format, file);
   return `
 <artifact_format>
-  Wrap your output in a single boltArtifact. Inside it, emit ONE OR MORE file blocks — the entry-point HTML first, then any companion files you split out for organization.
+  Wrap your output in a single boltArtifact. Inside it, emit ONE OR MORE boltAction file blocks — the entry-point first, then companion files.
 
-    <boltArtifact id="kebab-case-id" title="Short human title">
-      <boltAction type="file" filePath="${file}">FULL HTML (entry point — references companions via relative paths)</boltAction>
-      <!-- Optional companions, when splitting helps readability: -->
-      <!-- <boltAction type="file" filePath="styles.css">/* full CSS */</boltAction> -->
-      <!-- <boltAction type="file" filePath="src/easings.js">/* shared module */</boltAction> -->
-      <!-- <boltAction type="file" filePath="screens/detail.html">/* sub-screen */</boltAction> -->
-    </boltArtifact>
+  CRITICAL — the \`filePath\` attribute on each boltAction MUST encode the folder. Files don't end up in folders by magic; they end up wherever the \`filePath\` says they go. \`filePath="components/Button.jsx"\` → ends up in components/. \`filePath="Button.jsx"\` → ends up at the root. If your filePath has no slash, the file lands at the root, period.
 
-  Splitting rules:
-    - The entry-point file is named per the format ("${file}") and comes first.
-    - Companion files use plain relative paths (./styles.css, ./src/easings.js, ./screens/detail.html). The entry point references them via <link>, <script type="module">, or <iframe src>.
-    - Group helpers under \`src/\`, sub-screens under \`screens/\`, scenes under \`scenes/\`, etc. Don't invent random folders.
+  Concrete shape (THIS is what your output looks like, not commented hints):
+
+${folderExample}
+
+  Splitting rules (re-stating because this gets ignored a lot):
+    - When you write 3+ files, AT LEAST 2 of them MUST have a folder prefix in their filePath. No exceptions.
+    - Group helpers under \`src/\`, sub-screens under \`screens/\`, scenes under \`scenes/\`, components under \`components/\`. Don't invent random folder names.
+    - The entry-point file is "${file}" — it's the only file that always lives at the root.
+    - Companion files reference each other via plain relative paths inside their content (\`./components/Button.jsx\`, \`./src/cn.js\`). The folder you wrote in filePath = the folder they import from.
     - One design = one boltArtifact, even if it spans many files. Don't split one design into multiple artifacts.
 
-  Provide complete file contents — never diffs, never "// rest unchanged", never placeholders.
+  Provide complete file contents in every boltAction — never diffs, never "// rest unchanged", never placeholders.
   Do NOT emit boltAction type="shell" or type="start". No package.json, no install scripts.
   You may write a single line of prose before the artifact summarizing what you built. Nothing after the artifact.
 </artifact_format>`;
+}
+
+// Format-specific concrete artifact example. Shows actual filePath values
+// with folder prefixes so the model copies the structure rather than
+// inferring from prose.
+function artifactFolderExample(format: Format, entry: string): string {
+  switch (format) {
+    case "slides":
+      return `    <boltArtifact id="kindling-pitch" title="Kindling pitch deck">
+      <boltAction type="file" filePath="${entry}">[entry HTML — loads Tailwind, Babel standalone, mounts App.jsx]</boltAction>
+      <boltAction type="file" filePath="App.jsx">[root component — sequences slides]</boltAction>
+      <boltAction type="file" filePath="components/CoverSlide.jsx">[cover slide]</boltAction>
+      <boltAction type="file" filePath="components/StatSlide.jsx">[big-stat slide]</boltAction>
+      <boltAction type="file" filePath="components/QuoteSlide.jsx">[quote slide]</boltAction>
+      <boltAction type="file" filePath="src/cn.js">[clsx helper]</boltAction>
+    </boltArtifact>`;
+    case "prototype":
+      return `    <boltArtifact id="reading-tracker" title="Reading tracker prototype">
+      <boltAction type="file" filePath="${entry}">[entry HTML — loads Tailwind, Babel standalone, mounts App.jsx]</boltAction>
+      <boltAction type="file" filePath="App.jsx">[root — device frame + screen router]</boltAction>
+      <boltAction type="file" filePath="screens/Home.jsx">[home screen]</boltAction>
+      <boltAction type="file" filePath="screens/Library.jsx">[library screen]</boltAction>
+      <boltAction type="file" filePath="screens/Timer.jsx">[active reading screen]</boltAction>
+      <boltAction type="file" filePath="components/Button.jsx">[shadcn-pattern button]</boltAction>
+      <boltAction type="file" filePath="components/Card.jsx">[shadcn-pattern card]</boltAction>
+      <boltAction type="file" filePath="src/cn.js">[clsx helper]</boltAction>
+    </boltArtifact>`;
+    case "landing":
+      return `    <boltArtifact id="hearing-saas" title="Hearing scheduler landing">
+      <boltAction type="file" filePath="${entry}">[entry HTML — loads Tailwind, Babel standalone, mounts App.jsx]</boltAction>
+      <boltAction type="file" filePath="App.jsx">[root — composes sections]</boltAction>
+      <boltAction type="file" filePath="components/Hero.jsx">[asymmetric hero]</boltAction>
+      <boltAction type="file" filePath="components/StatBand.jsx">[stat band section]</boltAction>
+      <boltAction type="file" filePath="components/Quote.jsx">[testimonial section]</boltAction>
+      <boltAction type="file" filePath="components/CTA.jsx">[footer CTA]</boltAction>
+      <boltAction type="file" filePath="src/cn.js">[clsx helper]</boltAction>
+    </boltArtifact>`;
+    case "onepager":
+      return `    <boltArtifact id="weekly-briefing" title="Weekly team briefing">
+      <boltAction type="file" filePath="${entry}">[A4-portrait HTML, all sections inline — onepager is usually one file]</boltAction>
+    </boltArtifact>
+
+    Onepager is usually a single self-contained file. Only split if you genuinely have 3+ reusable blocks; even then prefer keeping it inline for print fidelity.`;
+    case "infographic":
+      return `    <boltArtifact id="cameroon-ride-hailing" title="Cameroon ride-hailing 2026">
+      <boltAction type="file" filePath="${entry}">[1080×1920 HTML, all chart blocks inline — infographic is usually one file]</boltAction>
+    </boltArtifact>
+
+    Infographic is usually a single self-contained file. Only split if you have shared chart helpers worth extracting to src/.`;
+  }
 }
 
 function examplesBlock(format: Format): string {
