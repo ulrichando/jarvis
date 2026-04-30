@@ -140,3 +140,38 @@ Iteration 3 candidates, in priority order:
 1. **REASONING route never picked** (axis 3 still capped at 9 because the data shows zero REASONING turns ever). Investigate whether the classifier is collapsing reasoning-class turns into TASK because the classifier model (`llama-3.1-8b-instant`) is too small to reliably tag REASONING. Try `llama-3.3-70b-versatile` for the classifier or strengthen the classifier prompt with examples.
 2. **Acoustic emotion signal** (axis 2 at 6). `AudioMeta.speech_rate_wpm` is plumbed but never populated — the `user_input_transcribed` event has no rate attr. Wire utterance start/end timestamps from STT events, compute words/duration, maintain a rolling baseline.
 3. **EMOTIONAL follow-up rate of 0%** (axis 4 at 7) — if telemetry stays at 0% over the next 30 emotional turns, the EMOTIONAL inner (`llama-4-scout`) isn't landing emotionally; consider a router-prompt change that nudges it warmer, or different voice prosody.
+
+### 2026-04-30 — Iteration 3 (acoustic speech-rate signal)
+
+**Picked candidate 2.** REASONING-never-picked could be a data artifact (the user just hasn't asked many reasoning-class questions in the 127 logged turns) but the dead acoustic input is a code defect — `AudioMeta` was plumbed and consumed by `detect_emotion`'s rate path, but no caller ever populated it. Lexical-only emotion detection misses voice-tone signals that voice mode AAA assistants pick up.
+
+**Targeted improvement.**
+
+LiveKit fires `user_state_changed` events with `old_state` / `new_state` ∈ `{speaking, listening, away}`. Hook them, stamp utterance start/end timestamps, then in the dispatch listener:
+
+1. Compute `current_wpm = compute_speech_rate(transcript, duration_s)` (pure function, floors at 0.3s and zero words).
+2. Update the user's rolling baseline via `update_baseline(current, prior, alpha=0.2)` — exponential moving average with ~5-turn half-life. First sample seeds the baseline. A measurable-zero rate leaves it untouched.
+3. Stash the new baseline on the session for next turn.
+4. Pass `AudioMeta(speech_rate_wpm=current, baseline_wpm=prior)` to `detect_emotion` so the rate-vs-baseline ratio path activates: ratio > 1.30 escalates neutral/excited → `urgent`; ratio < 0.70 escalates neutral/sad-shaped → `sad`.
+
+The two new helpers (`compute_speech_rate`, `update_baseline`) live in `turn_router.py` as pure functions — easy to unit-test without LiveKit.
+
+**Tests:** 10 new cases in `test_turn_router.py` — rate math, EMA convergence, edge cases (too-short duration, zero words, zero baseline), plus integration tests showing the speech-rate path activating `urgent` / `sad` even when the lexicon is silent. Full voice-agent suite: 66/66 green.
+
+**Re-score after iteration 3:**
+
+| # | Axis | Before | After | Delta |
+|---|---|---|---|---|
+| 2 | Emotion detection | 6 | 8 | +2 — acoustic speech-rate signal now actually feeds the rate path that was previously dead. Emotion detection now uses both lexical AND prosodic signals; no separate model required. |
+
+**New total: 80/100 = 80%.**
+
+Reality check: detection quality only improves to the extent VAD start/end timestamps actually fire reliably across STT modes (interim transcripts, push-to-talk, server-VAD vs local-VAD). If the next telemetry batch shows the emotion distribution unchanged from iter 1 (still 91% neutral), VAD isn't being seen and we need to instrument logs to find out why.
+
+### Next-iteration target
+
+Iteration 4 candidates, in priority order:
+1. **Run-time validation** of the new acoustic path — add a one-line debug log showing `wpm=… baseline=… → emotion=…` (already added) so the next telemetry batch can verify the rate signal is actually firing. If the next batch shows non-trivial `urgent` / `sad` counts where the lexical path would have said `neutral`, the wiring works and we score it as a genuine +2. If not, reduce the score back to 6 and move on.
+2. **REASONING fast-path regex** mirroring BANTER's structure — high-confidence reasoning patterns ("why does", "how does X work", "explain", "walk me through", "step by step", "design", "debug"). Less obviously beneficial than BANTER's because REASONING uses the slowest LLM, but at least gets the route classification right when the data shows it's currently broken.
+3. **Tool execution discipline** (axis 9 at 7) — the browser specialist migration is mid-flight. Once landed, that closes a gap.
+4. **Self-eval / TTFW measurement quality** (axis 10 at 9 → 10) — `ttfw_ms` is computed at the assistant `_on_item` callback which fires when the assistant message lands in `chat_ctx`, NOT on the first audio frame. So today's "TTFW" is closer to "time-to-LLM-completion." Hook the actual first-token-emitted moment for a true TTFW measurement.

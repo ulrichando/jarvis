@@ -64,6 +64,37 @@ def _lex_match(text: str) -> Emotion:
     return "neutral"
 
 
+def compute_speech_rate(transcript: str, duration_s: float) -> float:
+    """Words per minute, 0.0 when unknowable.
+
+    Used to feed `AudioMeta.speech_rate_wpm` from VAD-state-change
+    timestamps. Floor on duration is 0.3s — anything shorter is
+    almost certainly a single word and the rate would be wildly noisy.
+    """
+    if duration_s <= 0.3:
+        return 0.0
+    words = len(transcript.split())
+    if not words:
+        return 0.0
+    return words / (duration_s / 60.0)
+
+
+def update_baseline(current_wpm: float, prior_baseline: float, alpha: float = 0.2) -> float:
+    """Exponential-moving-average baseline of the user's speech rate.
+
+    First non-zero sample seeds the baseline; subsequent samples blend
+    in with weight `alpha` (default 0.2 = ~5-turn half-life). A current
+    rate of 0 means we couldn't measure this turn — leave the baseline
+    untouched. A prior baseline of 0 means we've never measured before
+    — adopt the current sample wholesale.
+    """
+    if current_wpm <= 0:
+        return prior_baseline
+    if prior_baseline <= 0:
+        return current_wpm
+    return prior_baseline * (1 - alpha) + current_wpm * alpha
+
+
 def detect_emotion(transcript: str, audio: AudioMeta) -> Emotion:
     """Detect dominant emotion. neutral on no signal."""
     base = _lex_match(transcript)

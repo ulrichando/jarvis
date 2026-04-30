@@ -1,5 +1,88 @@
 import pytest
-from turn_router import detect_emotion, AudioMeta
+from turn_router import (
+    detect_emotion, AudioMeta,
+    compute_speech_rate, update_baseline,
+)
+
+
+# ── compute_speech_rate ────────────────────────────────────────────────
+
+
+def test_compute_speech_rate_basic():
+    # 6 words in 2 seconds = 180 wpm
+    assert compute_speech_rate("one two three four five six", 2.0) == 180.0
+
+
+def test_compute_speech_rate_zero_when_too_short():
+    # Floor: anything ≤ 0.3s is single-word noise
+    assert compute_speech_rate("hey", 0.2) == 0.0
+    assert compute_speech_rate("hey there", 0.0) == 0.0
+    assert compute_speech_rate("hey there", -1.0) == 0.0
+
+
+def test_compute_speech_rate_zero_when_no_words():
+    assert compute_speech_rate("", 5.0) == 0.0
+    assert compute_speech_rate("   ", 5.0) == 0.0
+
+
+def test_compute_speech_rate_realistic():
+    # Average English speech ≈ 130-160 wpm
+    # 13 words in 5 seconds → 156 wpm
+    rate = compute_speech_rate("the quick brown fox jumps over the lazy dog right by the gate", 5.0)
+    assert 150 < rate < 160
+
+
+# ── update_baseline (EMA) ──────────────────────────────────────────────
+
+
+def test_update_baseline_first_sample_seeds():
+    # Empty baseline + first sample → adopt the sample wholesale
+    assert update_baseline(150.0, 0.0) == 150.0
+
+
+def test_update_baseline_zero_current_leaves_baseline_alone():
+    # Couldn't measure this turn → don't pollute the baseline
+    assert update_baseline(0.0, 140.0) == 140.0
+
+
+def test_update_baseline_ema_blends():
+    # alpha=0.2 default → new = 0.8*prior + 0.2*current
+    out = update_baseline(200.0, 100.0)
+    assert out == pytest.approx(120.0)  # 0.8*100 + 0.2*200
+
+
+def test_update_baseline_alpha_override():
+    # alpha=0.5 → average
+    out = update_baseline(200.0, 100.0, alpha=0.5)
+    assert out == pytest.approx(150.0)
+
+
+def test_update_baseline_converges():
+    # Repeated equal samples should converge the baseline to the sample
+    base = 100.0
+    for _ in range(50):
+        base = update_baseline(180.0, base)
+    assert base == pytest.approx(180.0, rel=1e-3)
+
+
+# ── Integration: speech-rate → detect_emotion ─────────────────────────
+
+
+def test_acoustic_signal_drives_emotion_when_lexicon_silent():
+    """A neutral-words turn delivered fast (rate >> baseline) should
+    flip to 'urgent' via the speech-rate path."""
+    fast_audio = AudioMeta(speech_rate_wpm=200, baseline_wpm=130)
+    # No lexicon hits in this transcript — only the rate signal triggers urgency
+    assert detect_emotion("just open the file", fast_audio) == "urgent"
+
+
+def test_acoustic_signal_can_signal_sad_with_neutral_words():
+    """Slow speech with sad-shaped lexicon → sad."""
+    slow_audio = AudioMeta(speech_rate_wpm=70, baseline_wpm=140)
+    assert detect_emotion("i just don't know", slow_audio) == "sad"
+
+
+
 
 
 @pytest.mark.parametrize("transcript,expected", [
