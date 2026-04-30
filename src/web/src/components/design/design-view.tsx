@@ -19,6 +19,7 @@ import { DesignFilesPanel } from "./design-files-panel";
 import { DesignPreview, type DesignComment } from "./design-preview";
 import { TweaksPanel } from "./tweaks-panel";
 import { RefineForm } from "./refine-form";
+import { ProjectPicker } from "./project-picker";
 
 type DesignTab =
   | { kind: "files" }
@@ -54,9 +55,11 @@ function tabLabel(t: DesignTab): string {
 export function DesignView({
   workspaceId,
   workspaceName,
+  projects = [],
 }: {
   workspaceId: string;
   workspaceName: string;
+  projects?: import("@/lib/workspace/client").Workspace[];
 }) {
   const [tabs, setTabs] = useState<DesignTab[]>([{ kind: "files" }]);
   const [activeKey, setActiveKey] = useState<string>("__files");
@@ -214,15 +217,13 @@ export function DesignView({
       {/* ── Top bar ─────────────────────────────────────────── */}
       <header className="flex h-12 shrink-0 items-stretch border-b border-border/60">
         <div
-          className="flex shrink-0 items-center gap-2 border-r border-border/60 px-3"
+          className="flex shrink-0 items-stretch border-r border-border/60"
           style={{ width: chatColumn.width }}
         >
-          <span className="flex size-7 items-center justify-center rounded-md bg-orange-500/15 text-orange-400">
-            <Palette className="size-3.5" />
-          </span>
-          <span className="text-[14px] font-semibold tracking-tight">
-            {workspaceName}
-          </span>
+          <ProjectPicker
+            current={{ id: workspaceId, name: workspaceName }}
+            projects={projects}
+          />
         </div>
 
         <div className="flex flex-1 items-stretch overflow-x-auto">
