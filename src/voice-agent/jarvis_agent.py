@@ -1237,56 +1237,57 @@ You have THIRTEEN tools, split into four groups by purpose:
 
 ═══ TOOL ROUTING — pick the right path ═══
 
-Tool docstrings are auto-injected into your context — read them
-when picking a specific tool. Don't re-memorize the catalog. The
-ROUTING decision happens at this layer:
+You are the supervisor / router. You DO NOT have direct action
+tools (no bash, no computer_use, no run_jarvis_cli, no media_control,
+no browser_task, no screenshot). For ANY action work, you MUST
+hand off to a specialist via the handoff tools below.
 
-**1. Desktop work** (open app, screenshot, click, drag, type into UI,
-launch terminal, anything visible on the user's screen):
-   → call `transfer_to_desktop(request)`. The desktop specialist
-   has bash + computer_use + screenshot + click family. Don't
-   call those tools yourself.
+What you can do directly:
 
-**2. Browser work BEYOND just opening a URL** (log in to an account,
-post on social media, fill a form, click checkout, scroll a feed,
-read content INSIDE a site):
-   → call `browser_task(task)` (multi-step web automation via a
-   real Chrome with the JARVIS profile).
-   For just "open YouTube" / "go to example.com" / "open Gmail
-   tab" — that's desktop work, use transfer_to_desktop.
+**1. ANY action / desktop / browser / media / multi-step work**
+   → call `transfer_to_desktop(request)`. The specialist has the
+   full action toolset (bash, computer_use, run_jarvis_cli,
+   media_control, browser_task, screenshot, click, drag, type,
+   etc.) and a focused prompt for tool execution discipline.
+   This is the ONLY path for anything the user wants DONE.
 
-**3. Multi-step plans / research / skill work / sub-agents**
-("research X and write a summary", "plan and execute Y",
-"build a thing", "review a codebase"):
-   → call `run_jarvis_cli(request)` — its own internal LLM with
-   skills, sub-agents, MCP, plan/execute loop.
+**2. Conversational / informational** (user asks something you can
+   answer from your own knowledge — what time is it, what's a
+   palindrome, what's the meaning of life):
+   → answer directly. NO tool call needed.
 
-**4. Conversational / informational** (the user asks you something
-you can answer from your knowledge — what time is it, what's a
-palindrome, how does HTTP work):
-   → answer directly. NO tool call. The orchestrator's job here is
-   conversation, not action.
+**3. System inspection — read-only** (file content, search code,
+   fetch a URL for its content):
+   → read_file, glob_files, grep_files, web_fetch (these are
+   non-action tools and safe for you to call directly).
 
-**5. System inspection** (uptime, disk usage, "what's listening on
-port 4000", file content, search files):
-   → bash / read_file / glob_files / grep_files / web_fetch — direct
-   primitives, fast, atomic.
-
-**6. Memory** (recall what was discussed, save a preference):
+**4. Memory** (recall what was discussed, save a preference, manage
+   learned-rule proposals):
    → recall_conversation, remember_this, list_pending_proposals,
    accept_proposal, reject_proposal.
 
-**Only-call-once rule:** for any user turn, pick ONE route from
-above. Don't chain bash + transfer_to_desktop in the same turn.
-Don't call the same tool twice with different args hoping one
-sticks. Pick the right path; if it fails, the tool result tells
-you why and you re-route on the NEXT turn.
+**5. Face ID** (visual identification of who's in front of the
+   webcam — register, identify, list, delete):
+   → face_register, face_identify, face_list, face_delete.
 
-**The narration trap.** If you find yourself about to type "I'll
-try to ...", "Since you've asked, I'll ...", "you'll need a
-terminal open", "I'm not capable of ..." — STOP. That means you
-picked path #4 (conversation) for a request that needed path
-#1, #2, or #3. Re-route to the correct tool.
+**You CANNOT directly:**
+  - Open Chrome / any app  → transfer_to_desktop
+  - Take a screenshot       → transfer_to_desktop
+  - Run a bash command      → transfer_to_desktop (or read_file/grep/glob if read-only)
+  - Click / type / drag     → transfer_to_desktop
+  - Play music              → transfer_to_desktop
+  - Browser automation      → transfer_to_desktop
+  - Run a plan via the CLI  → transfer_to_desktop
+
+If the user asks to DO something on their machine — handoff is
+the ONLY answer. There is no "let me try bash" or "I'll use
+media_control" path for you. transfer_to_desktop, period.
+
+**The narration trap.** If you find yourself about to type "I've
+opened Chrome, sir." / "I've played the song." / "Done, sir."
+WITHOUT having called transfer_to_desktop in this turn — STOP.
+You haven't done it. You're hallucinating success. Re-emit the
+turn as a transfer_to_desktop tool call instead.
 
 ═══ USER PREFERENCES (persist across sessions) ═══
 
@@ -3444,10 +3445,19 @@ class JarvisAgent(Agent):
         from jarvis_computer_use import (
             computer_use, computer_stop, click, type_text, scroll, drag,
             key_press, wait, screenshot, live_screen, watch_screen,
+            webcam_capture,
         )
+        # Specialist gets the full action toolset. The supervisor has
+        # NONE of these (intentional, see tools list above) — every
+        # action funnels through this handoff.
         desktop_tools = [
             bash, computer_use, computer_stop, click, type_text, scroll,
             drag, key_press, wait, screenshot, live_screen, watch_screen,
+            webcam_capture,
+            # Multi-step + media + browser also routed here. Specialist
+            # decides whether to fire bash directly, computer_use loop,
+            # run_jarvis_cli plan, media_control, or browser_task.
+            run_jarvis_cli, type_in_terminal, media_control, browser_task,
         ]
         # Carry chat history forward (LiveKit's recommended pattern) so
         # the specialist sees the user's request without us having to
@@ -4313,41 +4323,47 @@ async def entrypoint(ctx: JobContext) -> None:
         chat_ctx=_seed_chat_ctx(),
         # Tool surface — see run_jarvis_cli vs bash vs specialized
         # primitives doc upthread for routing.
+        # Supervisor tool list — DELIBERATELY MINIMAL. JarvisAgent is
+        # the orchestrator/router only. ALL action work (open apps,
+        # click, type, drag, screenshot, browser automation, multi-step
+        # plans, media playback) goes through transfer_to_desktop
+        # → DesktopActionsAgent specialist. The narration trap (LLM
+        # claims "I've opened Chrome" without firing any tool) was the
+        # downstream symptom of giving the supervisor too many tools.
+        # With nothing it can do directly, it MUST handoff for action.
+        #
+        # What stays here:
+        #   - Memory: recall_conversation, remember_this, learned-rule mgmt
+        #   - Information: web_fetch, read_file, glob_files, grep_files
+        #     (these are read-only; no narration-trap risk)
+        #   - Face ID (read-only CV; no action effect)
+        #   - The ONE handoff: transfer_to_desktop
+        #
+        # What was removed:
+        #   - bash → desktop specialist
+        #   - run_jarvis_cli → desktop specialist (multi-step plans)
+        #   - media_control → desktop specialist (playback)
+        #   - type_in_terminal → desktop specialist
+        #   - computer_use family + screenshot family → desktop specialist
+        #   - browser_task → desktop specialist (specialist's tools list)
+        # All preserved on DesktopActionsAgent; nothing was lost.
         tools=[
-            run_jarvis_cli,
-            bash,
+            # Information / read-only (safe for supervisor)
             read_file,
             web_fetch,
             glob_files,
             grep_files,
-            type_in_terminal,
-            media_control,
+            # Memory
             recall_conversation,
-            # Behavioral learning
             remember_this,
             list_pending_proposals,
             accept_proposal,
             reject_proposal,
-            # Desktop computer-use (Gemini vision + xdotool)
-            computer_use,
-            computer_stop,
-            click,
-            type_text,
-            scroll,
-            drag,
-            key_press,
-            wait,
-            screenshot,
-            live_screen,
-            webcam_capture,
-            watch_screen,
-            # Face ID (dlib + face_recognition)
+            # Face ID — read-only CV
             face_register,
             face_identify,
             face_list,
             face_delete,
-            # Browser automation (browser-use over Groq, dedicated profile)
-            browser_task,
         ],
     )
 
