@@ -3794,6 +3794,40 @@ async def entrypoint(ctx: JobContext) -> None:
             session._jarvis_turn_user_text = transcript
         except Exception:
             pass
+
+        # Hot-reload learned rules if learned_rules.md changed since last
+        # check. Without this, edits to ~/.jarvis/learned_rules.md only
+        # take effect on the next agent restart — meaning when the user
+        # corrects JARVIS mid-session ("remember, always use default
+        # profile"), the correction sits on disk for hours unread.
+        nonlocal _rules_mtime
+        try:
+            cur_mtime = _LEARNED_RULES_PATH.stat().st_mtime
+            if cur_mtime != _rules_mtime:
+                new_block = _load_learned_rules()
+                new_instructions = (
+                    _instructions_prefix + new_block + _instructions_suffix
+                )
+
+                async def _push_rules():
+                    try:
+                        await _jarvis_agent.update_instructions(new_instructions)
+                        logger.info(
+                            f"[learned-rules] hot-reloaded "
+                            f"({len(new_block)} chars) — was stale {cur_mtime - _rules_mtime:.0f}s"
+                        )
+                    except Exception as e:
+                        logger.warning(f"[learned-rules] hot-reload push failed: {e}")
+
+                _task = asyncio.create_task(_push_rules())
+                _bg_tasks.add(_task)
+                _task.add_done_callback(_bg_tasks.discard)
+                _rules_mtime = cur_mtime
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            logger.debug(f"[learned-rules] mtime check skipped: {e}")
+
         audio = AudioMeta(
             speech_rate_wpm=float(getattr(ev, "speech_rate_wpm", 0.0) or 0.0),
             baseline_wpm=float(getattr(ev, "baseline_wpm", 0.0) or 0.0),
@@ -4101,68 +4135,63 @@ async def entrypoint(ctx: JobContext) -> None:
         )
         logger.info(f"[learned-rules] {pending_count} pending proposal(s) at startup")
 
+    # Stash static parts so the per-turn rule-reload can reconstruct the
+    # full instructions when learned_rules.md changes mid-session, without
+    # re-deriving runtime_id_block / pending_block (those are session-bound).
+    _instructions_prefix = JARVIS_INSTRUCTIONS + runtime_id_block
+    _instructions_suffix = pending_block
+    try:
+        _rules_mtime = _LEARNED_RULES_PATH.stat().st_mtime
+    except FileNotFoundError:
+        _rules_mtime = 0.0
+
+    _jarvis_agent = JarvisAgent(
+        instructions=(_instructions_prefix + learned_rules_block + _instructions_suffix),
+        # Pre-load recent prior turns from conversations.db so the
+        # LLM sees what was discussed before this job started.
+        # Without this, every voice-client reconnect = amnesia.
+        chat_ctx=_seed_chat_ctx(),
+        # Tool surface — see run_jarvis_cli vs bash vs specialized
+        # primitives doc upthread for routing.
+        tools=[
+            run_jarvis_cli,
+            bash,
+            read_file,
+            web_fetch,
+            glob_files,
+            grep_files,
+            type_in_terminal,
+            media_control,
+            recall_conversation,
+            # Behavioral learning
+            remember_this,
+            list_pending_proposals,
+            accept_proposal,
+            reject_proposal,
+            # Desktop computer-use (Gemini vision + xdotool)
+            computer_use,
+            computer_stop,
+            click,
+            type_text,
+            scroll,
+            drag,
+            key_press,
+            wait,
+            screenshot,
+            live_screen,
+            webcam_capture,
+            watch_screen,
+            # Face ID (dlib + face_recognition)
+            face_register,
+            face_identify,
+            face_list,
+            face_delete,
+        ],
+    )
+
     await session.start(
         room=ctx.room,
-        agent=JarvisAgent(
-            instructions=(
-                JARVIS_INSTRUCTIONS
-                + runtime_id_block
-                + learned_rules_block
-                + pending_block
-            ),
-            # Pre-load recent prior turns from conversations.db so the
-            # LLM sees what was discussed before this job started.
-            # Without this, every voice-client reconnect = amnesia.
-            chat_ctx=_seed_chat_ctx(),
-            # Tool surface explanation:
-            #   bash / read_file / web_fetch / glob_files / grep_files
-            #     — direct primitives. Atomic single-step asks. ~3 KB
-            #     output cap. No CLI subprocess hop, ~1-2 s faster
-            #     than going via run_jarvis_cli.
-            #   run_jarvis_cli — the dispatcher. Multi-step / agent-
-            #     loop / sub-agent / plan / MCP / skills work goes
-            #     here. The CLI's own LLM picks the right downstream
-            #     tools.
-            #   type_in_terminal / media_control / recall_conversation
-            #     — specialized ergonomics. Direct in-process tools
-            #     for things where Bash equivalents are awkward (xdotool
-            #     window dance, playerctl player targeting, SQL over
-            #     conversations.db).
-            tools=[
-                run_jarvis_cli,
-                bash,
-                read_file,
-                web_fetch,
-                glob_files,
-                grep_files,
-                type_in_terminal,
-                media_control,
-                recall_conversation,
-                # Behavioral learning
-                remember_this,
-                list_pending_proposals,
-                accept_proposal,
-                reject_proposal,
-                # Desktop computer-use (Gemini vision + xdotool)
-                computer_use,
-                computer_stop,
-                click,
-                type_text,
-                scroll,
-                drag,
-                key_press,
-                wait,
-                screenshot,
-                live_screen,
-                webcam_capture,
-                watch_screen,
-                # Face ID (dlib + face_recognition)
-                face_register,
-                face_identify,
-                face_list,
-                face_delete,
-            ],
-        ),
+        agent=_jarvis_agent,
         # Critical: keep the agent session alive when the voice-
         # client disconnects. Default is True — session closes on
         # first client leave — which means when systemd restarts
