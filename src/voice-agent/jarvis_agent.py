@@ -383,6 +383,55 @@ _BANTER_FAST_PATH_RE = re.compile(
     re.IGNORECASE,
 )
 
+# High-confidence REASONING patterns. Mirrors the BANTER fast-path
+# but for the opposite end of the route spectrum: questions that
+# deserve a multi-step thinking response rather than a snappy chat
+# reply. Phase 9.1 of /loop voice-intelligence: live telemetry showed
+# zero REASONING-tagged turns over 127 logged turns — either the
+# classifier was collapsing reasoning prompts to TASK or the user
+# pattern was missing. This regex forces REASONING when the prompt
+# matches a clear "explain me how / why / walk me through" shape so
+# we get telemetry on the route AND the qwen3-32b inner LLM gets used
+# for prompts it's actually suited for.
+#
+# Disambiguating from BANTER's "how are you" family — REASONING
+# patterns reference a TOPIC after the question word, not just JARVIS:
+#   BANTER:    "how are you", "how's it going"        (about JARVIS)
+#   REASONING: "how does http work", "why is x"      (about a topic)
+#
+# Conservative: anchored, requires explicit reasoning-shaped verb +
+# enough words to indicate substance.
+_REASONING_FAST_PATH_RE = re.compile(
+    r"^\s*"
+    r"(?:"
+    # "Why does X" / "Why is X" / "Why are X"
+    r"why\s+(?:does|do|did|is|are|was|were|would|should|can|"
+    r"can'?t|don'?t|isn'?t|aren'?t)\s+\w+|"
+    # "How does X work" / "How do X Y work" — multi-word topic, must end on
+    # a reasoning verb (work / happen / function / etc.)
+    r"how\s+(?:does|do)\s+(?:\w+\s+){1,5}(?:work|happen|function|operate)|"
+    r"how\s+do\s+(?:you|i|we)\s+(?:implement|design|build|debug|"
+    r"fix|solve|approach|think\s+about|reason\s+about)|"
+    # "Explain X" / "Walk me through X" / "Tell me how X works"
+    r"explain\s+\w+|"
+    r"walk\s+me\s+through\s+\w+|"
+    r"tell\s+me\s+how\s+\w+|"
+    r"can\s+you\s+explain\s+\w+|"
+    # "Step by step" / "step-by-step"
+    r"step[\s\-]+by[\s\-]+step|"
+    # "Design X" / "Debug X" / "Trace through Y" — engineering verbs
+    r"(?:design|debug|trace\s+through|architect)\s+\w+|"
+    # "What's the difference between X and Y" / "Compare X to Y"
+    r"what'?s\s+the\s+difference\s+between\s+\w+|"
+    r"compare\s+\w+\s+(?:to|with|and)\s+\w+|"
+    # "Why would X" / "Why should X" — analytical
+    r"why\s+(?:would|should|might|could)\s+\w+"
+    r")"
+    # Allow trailing content (these prompts are usually full sentences)
+    r"\b",
+    re.IGNORECASE,
+)
+
 # Tool-call leakage sanitization. When the speech LLM regresses and emits
 # a tool call as TEXT inside content (e.g. `<function/bash{"command": ...}>`)
 # instead of as a structured tool_call, the framework's dispatcher misses
@@ -4334,6 +4383,69 @@ async def entrypoint(ctx: JobContext) -> None:
             except Exception as e:
                 logger.warning(
                     f"[fast-path-banter] swap failed; falling back to classifier: {e}"
+                )
+
+        # Synchronous REASONING fast-path. Mirror of BANTER but for the
+        # opposite end of the route spectrum — high-confidence "explain me
+        # how X works", "why does Y", "walk me through Z" prompts.
+        # Phase 9.1 of /loop voice-intelligence: live telemetry showed
+        # zero REASONING turns over 127 logged turns; either the
+        # classifier was collapsing reasoning to TASK or these prompts
+        # never appeared. Forcing the route on confident matches gives
+        # telemetry data + ensures qwen3-32b is used for what it's good at.
+        if _REASONING_FAST_PATH_RE.match(transcript):
+            try:
+                fast_llm = _dispatch_llm.pick("REASONING")
+                fast_tts = _dispatch_tts.pick("REASONING")
+                session._llm = fast_llm
+                session._tts = fast_tts
+                session._jarvis_emotion = emotion
+                session._jarvis_route   = "REASONING"
+
+                # Per-route + per-emotion interrupt tuning (REASONING base
+                # is conservative — explanations need pause room).
+                try:
+                    mw, md = compute_interrupt_tuning("REASONING", emotion)
+                    opts = getattr(session, "options", None)
+                    if opts is not None and hasattr(opts, "interruption"):
+                        opts.interruption["min_words"]    = mw
+                        opts.interruption["min_duration"] = md
+                except Exception as ie:
+                    logger.debug(f"[fast-path-reasoning] interrupt-tune skipped: {ie}")
+
+                # Inject prefix synchronously (same shape as BANTER fast-path).
+                try:
+                    session._jarvis_turn_count = int(getattr(session, "_jarvis_turn_count", 0)) + 1
+                    _start = getattr(session, "_jarvis_session_start", None)
+                    _session_min = int((time.monotonic() - _start) / 60) if _start else 0
+                    _turn_n = session._jarvis_turn_count
+                    msgs = getattr(session.chat_ctx, "messages", None) or []
+                    for m in reversed(msgs):
+                        if getattr(m, "role", None) == "user":
+                            content = getattr(m, "content", None)
+                            prefix = (
+                                f"[Route: REASONING] [Emotion: {emotion}] "
+                                f"[Turn {_turn_n} · session {_session_min}m] "
+                            )
+                            if isinstance(content, str) and not content.startswith("[Route:"):
+                                m.content = prefix + content
+                            elif isinstance(content, list) and content:
+                                first = content[0]
+                                if isinstance(first, str) and not first.startswith("[Route:"):
+                                    content[0] = prefix + first
+                            break
+                except Exception as pe:
+                    logger.debug(f"[fast-path-reasoning] prefix inject skipped: {pe}")
+
+                logger.info(
+                    f"[fast-path-reasoning] sync swap (no classifier): "
+                    f"emotion={emotion} llm={getattr(fast_llm, '_jarvis_label', '?')} "
+                    f"transcript={transcript[:80]!r}"
+                )
+                return  # Skip the classifier task entirely
+            except Exception as e:
+                logger.warning(
+                    f"[fast-path-reasoning] swap failed; falling back to classifier: {e}"
                 )
 
         # ── LangGraph dispatcher (Phase 1) ────────────────────────
