@@ -171,12 +171,12 @@ export default function App() {
 
   // ── Tray icon state ─────────────────────────────────────────────────
   // Priority (highest first): offline > muted > talking > listening >
-  // booting > thinking > idle. Booting (purple) and thinking (amber) are
-  // now distinct states so the tray and pill always tell the same story.
-  // The pill reads `speech.connected` (voice-client :8767 HTTP) for its
-  // "Voice offline" decision — the tray must check the same signal in
-  // addition to wsStatus (Python bridge :8765 WS), otherwise one process
-  // can be down and the other up and the two indicators disagree.
+  // booting > thinking > idle. Booting (purple) and thinking (amber)
+  // are distinct states so the tray colour conveys what JARVIS is
+  // doing without needing the floating pill (removed 2026-04-30).
+  // We check `speech.connected` (voice-client :8767 HTTP) AND wsStatus
+  // (Python bridge :8765 WS) so either process being down trips the
+  // offline state.
   useEffect(() => {
     let next = 'idle'
     if (wsStatus === 'disconnected' || !speech.connected) next = 'offline'
@@ -189,6 +189,31 @@ export default function App() {
     else                                  next = 'idle'
     pushTrayState(next)
   }, [wsStatus, voiceMuted, speech.connected, speech.speaking, speech.voiceActive, speech.silentMode, speech.booting, speech.processing, pushTrayState])
+
+  // ── Tray menu label sync ────────────────────────────────────────────
+  // Pushes the active CLI / speech / TTS model IDs into the three
+  // dynamic header lines on the tray's "Models" submenu. Reads from
+  // the same `speech` hook the tray-icon effect above uses — single
+  // /status poll, single source of truth. (The legacy TrayLabelSync
+  // component was a separate poll and got deleted.)
+  const lastToolRef   = useRef(null)
+  const lastSpeechRef = useRef(null)
+  const lastTtsRef    = useRef(null)
+  useEffect(() => {
+    if (lastToolRef.current === speech.cliModel) return
+    lastToolRef.current = speech.cliModel
+    invoke('set_provider_label', { name: speech.cliModel || '' }).catch(console.error)
+  }, [speech.cliModel])
+  useEffect(() => {
+    if (lastSpeechRef.current === speech.speechModel) return
+    lastSpeechRef.current = speech.speechModel
+    invoke('set_speech_label', { name: speech.speechModel || '' }).catch(console.error)
+  }, [speech.speechModel])
+  useEffect(() => {
+    if (lastTtsRef.current === speech.ttsProvider) return
+    lastTtsRef.current = speech.ttsProvider
+    invoke('set_tts_label', { name: speech.ttsProvider || '' }).catch(console.error)
+  }, [speech.ttsProvider])
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────
   useEffect(() => {
@@ -212,13 +237,12 @@ export default function App() {
         </div>
       )}
 
-      {/* LiveKit voice-client status pill — reflects the native
-          jarvis-voice-client process (not the webview's legacy sidecar).
-          Dot colour: red=offline, gold=thinking/booting, green=idle,
-          blue=agent speaking, cyan=user speaking, gray=muted. Synced
-          with the tray icon: same `processing` flag drives both, so
-          when the tray is gold the pill says "JARVIS thinking" too. */}
-      <VoiceClientPill processing={speech.processing} />
+      {/* The floating status pill was removed 2026-04-30 — the user
+          only wanted ONE indicator and the tray icon already shows
+          state via colour. Tray-menu header labels (Speech / Tool /
+          TTS) are now refreshed by an inline useEffect below that
+          reads from the same `speech` hook, eliminating the duplicate
+          /status poll the legacy TrayLabelSync used to run. */}
 
       {/* Chat panel — opened on tray click or Ctrl+H */}
       {chatOpen && (
@@ -236,97 +260,3 @@ export default function App() {
 }
 
 
-/**
- * Polls http://127.0.0.1:8767/status every second and renders a
- * small corner pill. Separate component so its 1 Hz re-renders don't
- * drag the whole App tree.
- */
-function VoiceClientPill({ processing = false }) {
-  const [s, setS] = useState(null)
-  // Last IDs pushed to the tray, so we don't fire the Tauri commands
-  // on every 1 Hz poll when nothing changed.
-  const lastToolRef   = useRef(null)
-  const lastSpeechRef = useRef(null)
-  const lastTtsRef    = useRef(null)
-  useEffect(() => {
-    let alive = true
-    let t
-    const tick = async () => {
-      try {
-        const r = await fetch('http://127.0.0.1:8767/status', { cache: 'no-store' })
-        if (!r.ok) throw 0
-        const data = await r.json()
-        if (alive) setS(data)
-        // Push both active model IDs into their respective tray
-        // header lines. Empty string is a valid signal — renders as
-        // "Tool: (loading…)" / "Speech: (loading…)".
-        if (alive && lastToolRef.current !== data.cli_model) {
-          lastToolRef.current = data.cli_model
-          invoke('set_provider_label', { name: data.cli_model || '' }).catch(console.error)
-        }
-        if (alive && lastSpeechRef.current !== data.speech_model) {
-          lastSpeechRef.current = data.speech_model
-          invoke('set_speech_label', { name: data.speech_model || '' }).catch(console.error)
-        }
-        if (alive && lastTtsRef.current !== data.tts_provider) {
-          lastTtsRef.current = data.tts_provider
-          invoke('set_tts_label', { name: data.tts_provider || '' }).catch(console.error)
-        }
-      } catch {
-        if (alive) setS({ connected: false })
-      }
-      if (alive) t = setTimeout(tick, 500)
-    }
-    tick()
-    return () => { alive = false; clearTimeout(t) }
-  }, [])
-  // Short pill label per CLI model — kept terse so the corner pill
-  // doesn't grow unbounded.
-  const cliModelShort = ({
-    'deepseek-chat':                                  'ds-chat',
-    'deepseek-reasoner':                              'ds-reason',
-    'deepseek-v4-flash':                              'ds-v4-flash',
-    'deepseek-v4-pro':                                'ds-v4-pro',
-    'qwen/qwen3-32b':                                 'qwen3-32b',
-    'llama-3.3-70b-versatile':                        'llama 3.3',
-    'meta-llama/llama-4-scout-17b-16e-instruct':      'llama 4 scout',
-    'openai/gpt-oss-120b':                            'gpt-oss-120b',
-  })[s?.cli_model] || null
-  // Pill state priority — matches the tray icon priority in App's
-  // useEffect so the two surfaces always agree:
-  //   offline > muted > talking > listening > thinking > booting > ready
-  // "thinking" comes from the same `processing` flag the tray reads,
-  // passed in as a prop. So gold tray ⇔ "JARVIS thinking" pill, every
-  // time. Booting still has its own label so the user knows the
-  // difference between "we're warming up" and "LLM is generating".
-  const { color, label } =
-      !s?.connected        ? { color: '#ef4444', label: 'Voice offline'  }
-    :  s.muted             ? { color: '#111111', label: 'Mic muted'       }
-    :  s.silent_mode       ? { color: '#111111', label: 'JARVIS quiet'    }
-    :  s.speaking          ? { color: '#4493f8', label: 'JARVIS speaking' }
-    :  s.listening         ? { color: '#22d3ee', label: 'You speaking'    }
-    : !s.agent_present     ? { color: '#a855f7', label: 'JARVIS booting'  }
-    :  processing          ? { color: '#fab432', label: 'JARVIS thinking' }
-    :                        { color: '#3fb950', label: 'Voice ready'     }
-  return (
-    <div style={{ position:'fixed', top:'1rem', right:'1rem', zIndex:50, pointerEvents:'none' }}>
-      <div style={{ display:'flex', alignItems:'center', gap:'0.375rem',
-                    padding:'0.25rem 0.625rem', borderRadius:'9999px',
-                    // Slightly more opaque to compensate for the
-                    // removed backdrop-filter (WebKitGTK on Linux
-                    // ghosts text under backdrop-filter: blur, which
-                    // is what was making the label look doubled).
-                    background:'rgba(10,10,14,0.85)', border:`1px solid ${color}55`,
-                    color:'#d1d5db', fontSize:'0.7rem', fontFamily:'monospace' }}>
-        <span style={{ width:'6px', height:'6px', borderRadius:'9999px',
-                       background: color, boxShadow:`0 0 6px ${color}` }} />
-        {label}
-        {cliModelShort && (
-          <span style={{ opacity: 0.55, marginLeft: '0.25rem' }}>
-            · {cliModelShort}
-          </span>
-        )}
-      </div>
-    </div>
-  )
-}
