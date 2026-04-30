@@ -183,3 +183,51 @@ describe('keyboard / input actions', () => {
     expect(submitted).toBe(true);
   });
 });
+
+describe('scroll/wait/dialog actions', () => {
+  beforeEach(() => {
+    document.body.innerHTML = `<div id="late" style="display:none">late</div>`;
+    Object.defineProperty(window, 'scrollTo', {
+      value: jest.fn((x, y) => { window._sx = x; window._sy = y; }),
+      writable: true,
+    });
+    window.scrollX = 0;
+    window.scrollY = 0;
+  });
+
+  test('ext_scroll down', () => {
+    expect(actions.ext_scroll({direction: 'down', amount: 500}).ok).toBe(true);
+    expect(window.scrollTo).toHaveBeenCalledWith(0, 500);
+  });
+
+  test('ext_scroll up after down', () => {
+    actions.ext_scroll({direction: 'down', amount: 1000});
+    actions.ext_scroll({direction: 'up', amount: 300});
+    expect(window.scrollTo).toHaveBeenLastCalledWith(0, -300);
+  });
+
+  test('ext_scroll page', () => {
+    Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true });
+    actions.ext_scroll({direction: 'down', amount: 'page'});
+    expect(window.scrollTo).toHaveBeenCalledWith(0, 800);
+  });
+
+  test('ext_wait_for finds element that already exists', async () => {
+    document.getElementById('late').style.display = 'block';
+    const r = await actions.ext_wait_for({selector: '#late', timeout: 1});
+    expect(r.found).toBe(true);
+  });
+
+  test('ext_wait_for times out for missing element', async () => {
+    const r = await actions.ext_wait_for({selector: '#never', timeout: 0.2});
+    expect(r.found).toBe(false);
+  });
+
+  test('ext_accept_dialog returns ok (delegated to background)', () => {
+    expect(actions.ext_accept_dialog({accept: true}).ok).toBe(true);
+  });
+
+  test('ext_switch_iframe returns ok or error', () => {
+    expect(actions.ext_switch_iframe({selector_or_index: 0}).ok).toBe(false);
+  });
+});
