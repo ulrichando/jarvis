@@ -3732,6 +3732,35 @@ async def entrypoint(ctx: JobContext) -> None:
     else:
         _dispatch_llm = None
         _dispatch_tts = None
+
+    # Build the LangGraph dispatcher + LangChain classifier ONCE at
+    # startup. The classifier is provider-pluggable via env
+    # (JARVIS_ROUTER_PROVIDER, JARVIS_ROUTER_MODEL); defaults to
+    # Groq llama-3.1-8b-instant. JARVIS_GRAPH_DISABLED=1 reverts to
+    # the inline async classify_and_swap path. Phase-1 of LangGraph
+    # migration: the graph handles the slow-path (classifier →
+    # swap_route → inject_prefix → tune_interrupt). The synchronous
+    # BANTER fast-path stays inline above so listeners still complete
+    # the swap before the framework reads session._llm.
+    if (
+        _dispatch_llm is not None
+        and os.environ.get("JARVIS_GRAPH_DISABLED", "0") != "1"
+    ):
+        try:
+            from turn_graph import build_turn_graph, make_classifier
+            _turn_graph = build_turn_graph()
+            _turn_classifier = make_classifier()
+            logger.info(
+                f"[turn-graph] active "
+                f"(classifier={'configured' if _turn_classifier else 'disabled (no key)'})"
+            )
+        except Exception as e:
+            logger.error(f"[turn-graph] build failed; falling back to inline: {e}")
+            _turn_graph = None
+            _turn_classifier = None
+    else:
+        _turn_graph = None
+        _turn_classifier = None
         llm_arg = _active_speech_llm
         tts_arg = tts.FallbackAdapter(_build_tts_chain())
 
@@ -4170,6 +4199,76 @@ async def entrypoint(ctx: JobContext) -> None:
                 logger.warning(
                     f"[fast-path-banter] swap failed; falling back to classifier: {e}"
                 )
+
+        # ── LangGraph dispatcher (Phase 1) ────────────────────────
+        # When the graph is built (default), invoke it as a background
+        # task in place of the inline _classify_and_swap below. Same
+        # behaviour: classifier → route swap → prefix inject → tune
+        # interrupt. The graph keeps the logic explicit and replayable
+        # and gives us a place to hang future specialists as graph
+        # nodes (Phase 2). Falls back to the inline path on
+        # JARVIS_GRAPH_DISABLED=1 or build failure.
+        if _turn_graph is not None:
+            try:
+                history = [
+                    (m.role, getattr(m, "content", "") or "")
+                    for m in (
+                        session.chat_ctx.messages[-5:]
+                        if hasattr(session, "chat_ctx") and session.chat_ctx
+                        else []
+                    )
+                ]
+            except Exception:
+                history = []
+
+            # Detect interrupt synchronously — same heuristic as the
+            # inline path. Walked back so the graph's inject_prefix node
+            # can flag [Interrupted] without re-walking chat_ctx.
+            interrupted = False
+            try:
+                msgs = getattr(session.chat_ctx, "messages", None) or []
+                for m in reversed(msgs):
+                    role = getattr(m, "role", None)
+                    if role == "assistant":
+                        c = getattr(m, "content", None)
+                        text = c if isinstance(c, str) else (
+                            c[0] if isinstance(c, list) and c and isinstance(c[0], str) else ""
+                        )
+                        text = (text or "").rstrip()
+                        if (
+                            text
+                            and not text.endswith((".", "!", "?", '"'))
+                            and len(text.split()) >= 4
+                        ):
+                            interrupted = True
+                        break
+                    if role == "user":
+                        break
+            except Exception:
+                pass
+
+            graph_state = {
+                "transcript": transcript,
+                "duration_s": duration_s,
+                # BANTER fast-path returned earlier; if we got here
+                # the regex didn't match, so the graph runs the
+                # classifier branch.
+                "fast_path": False,
+                "interrupted": interrupted,
+            }
+            graph_cfg = {"configurable": {
+                "session": session,
+                "dispatcher": _dispatch_llm,
+                "tts_dispatcher": _dispatch_tts,
+                "classifier": _turn_classifier,
+                "history": history,
+            }}
+            task = asyncio.create_task(
+                _turn_graph.ainvoke(graph_state, config=graph_cfg)
+            )
+            _bg_tasks.add(task)
+            task.add_done_callback(_bg_tasks.discard)
+            return  # graph owns the rest of this turn's dispatch
 
         async def _classify_and_swap():
             async def _groq_call(prompt: str) -> str:
