@@ -148,10 +148,11 @@ def register_desktop() -> None:
     overwrites, so this is safe to call from `__init__.py` on every
     import.
 
-    `enabled=False` for now: `JarvisAgent.transfer_to_desktop` still
-    serves as the live handoff path. Flip this to `True` once the
-    registry pattern is proven by a SECOND specialist (browser,
-    planner, etc.) and the legacy method can be retired.
+    Phase 4 of the registry migration: desktop is now `enabled=True`
+    after the planner specialist proved the registry pattern works
+    end-to-end. The legacy `JarvisAgent.transfer_to_desktop` method
+    has been retired in the same commit; the registry now owns the
+    handoff for both desktop and planner.
     """
     register(SpecialistSpec(
         name="desktop",
@@ -161,5 +162,5 @@ def register_desktop() -> None:
         tool_factory=_desktop_tools,
         ack_phrase="On it, sir.",
         max_history_items=12,
-        enabled=False,
+        enabled=True,
     ))

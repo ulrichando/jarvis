@@ -129,32 +129,19 @@ def test_tool_factory_is_lazy():
 
 
 def test_package_autoregisters_desktop():
-    """Importing the specialists package registers the built-in desktop
-    spec. Auto-fixture cleared the registry, so we reimport here.
-
-    Desktop is registered with `enabled=False` for now (legacy
-    JarvisAgent.transfer_to_desktop still owns the live handoff), so
-    `get("desktop")` returns None but the underlying _REGISTRY has it.
-    """
-    # Force a re-register by importing the desktop module directly
+    """Phase 4: desktop is enabled in the registry. The legacy
+    JarvisAgent.transfer_to_desktop method has been retired; the
+    registry's RegistrySpecialist now owns the handoff for both
+    desktop and planner."""
     from specialists import desktop as desktop_mod
     desktop_mod.register_desktop()
 
-    # Disabled by default — legacy method still active
-    assert get("desktop") is None
-    # But the spec exists in the underlying registry; flip enabled to
-    # see it. We don't reach into _REGISTRY directly; instead we
-    # re-register with enabled=True to prove the spec is well-formed.
-    desktop_spec = SpecialistSpec(
-        name="desktop",
-        transfer_tool="transfer_to_desktop",
-        when_to_use="x",
-        instructions="x",
-        tool_factory=lambda: [],
-        enabled=True,
-    )
-    register(desktop_spec)
-    assert get("desktop") is not None
+    spec = get("desktop")
+    assert spec is not None
+    assert spec.transfer_tool == "transfer_to_desktop"
+    assert spec.enabled is True
+    assert "DESKTOP" not in spec.instructions  # heading style differs; just sanity
+    assert "task_done" in spec.instructions   # the back-handoff convention is documented
 
 
 # ── Phase 3: planner specialist ────────────────────────────────────────
