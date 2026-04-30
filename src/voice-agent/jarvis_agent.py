@@ -249,6 +249,25 @@ _JARVIS_NAME_RE        = re.compile(
     r"\b(?:j[aeo]r?vis|joris|jervis|jarvest|jaravis|y[aeo]rvis|g[aeo]rvis|h[aeo]rvis|jorvis|jarbis)\b",
     re.IGNORECASE,
 )
+
+# Bare-vocative pattern — the user only called JARVIS by name (with
+# optional preamble fillers, no actual command). Used by the fast path
+# in JarvisAgent.on_user_turn_completed to skip the LLM round-trip and
+# voice "Yes, sir?" directly via session.say(), cutting wake latency
+# from 2-3 s to ~300-500 ms (TTS synth only).
+#
+# Accepts:  jarvis. / hey jarvis / yo jarvis! / ok jarvis / i said jarvis
+# Rejects:  jarvis open browser / jarvis what time / jarvis remember this
+_BARE_VOCATIVE_RE = re.compile(
+    r"^\s*"
+    # Optional preamble — common wake-fillers before the name:
+    r"(?:(?:hey|yo|hi|ok(?:ay)?|so|alright|hello|i\s+said|please)\s+)*"
+    # The name itself, matching Whisper variants:
+    r"(?:j[aeo]r?vis|joris|jervis|jarvest|jaravis|y[aeo]rvis|g[aeo]rvis|h[aeo]rvis|jorvis|jarbis)"
+    # Optional trailing punctuation only — no follow-up content:
+    r"\s*[?!.,]*\s*$",
+    re.IGNORECASE,
+)
 _last_real_interaction = 0.0     # monotonic timestamp of last accepted turn
 _bg_tasks: set = set()  # keeps create_task refs alive until done
 
@@ -3434,20 +3453,21 @@ class JarvisAgent(Agent):
         # the quiet-hours window don't need a vocative.
         _touch_interaction()
 
-        # Bare-vocative fast path. When the user only says "Jarvis" (or a
-        # Whisper variant like "Joris", "Jervis"), voice the canonical
-        # "Yes, sir?" directly via session.say() and skip the LLM call.
-        # Why: LLM round-trip adds 500-1500 ms of first-token latency on
-        # top of endpointing wait. Measured 2-3 s end-to-end for bare wake
-        # calls, which is why the user has to call "Jarvis" twice — they
-        # think the first wasn't heard. Fast path drops latency to ~TTS
-        # synth time (~300-500 ms) so the response feels instant.
-        words = text.split()
-        if (
-            _JARVIS_NAME_RE.search(text)
-            and len(words) <= 2
-            and len(text) <= 16
-        ):
+        # Bare-vocative fast path. When the user just calls JARVIS by name
+        # (with optional preamble like "hey", "yo", "okay", "i said"),
+        # voice the canonical "Yes, sir?" directly via session.say() and
+        # skip the LLM call. Why: LLM round-trip + endpointing adds 2-3 s
+        # of latency. The user thinks the first call wasn't heard and says
+        # it again. Fast path drops latency to ~TTS synth time only.
+        #
+        # Accepted patterns (the regex below tightly bounds these):
+        #   "jarvis" / "Jarvis." / "Jarvis?"
+        #   "hey jarvis" / "yo jarvis" / "ok jarvis"
+        #   "i said jarvis" / "okay jarvis"
+        # Rejected (deferred to LLM):
+        #   "jarvis open the browser"  — actual command after name
+        #   "jarvis what time is it"   — actual question
+        if _BARE_VOCATIVE_RE.match(text):
             try:
                 await self.session.say("Yes, sir?", allow_interruptions=True)
                 logger.info(f"[bare-vocative] fast-path 'Yes, sir?' (heard: {text!r})")
