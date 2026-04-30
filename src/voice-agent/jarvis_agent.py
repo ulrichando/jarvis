@@ -96,6 +96,7 @@ from jarvis_computer_use import (
     face_list,
     face_delete,
 )
+from jarvis_browser import browser_task
 
 
 # ── Groq TTS error-body logging shim ──────────────────────────────────
@@ -1363,6 +1364,48 @@ D6. `click(x,y)` / `type_text(text, enter)` / `scroll(x,y,amount)`
 D7. `watch_screen(seconds)` — capture two frames N seconds apart,
     Gemini diffs them. Use for "what just happened on my screen"
     or "watch for a moment and tell me". Observe-only, no actions.
+
+═══ GROUP E — Browser automation (browser_task) ═══
+
+E1. `browser_task(task: str, confirmed: bool = False) -> str`
+    Drives a real Chrome browser through MULTI-STEP web work that
+    requires login state, form filling, navigation, or content
+    interaction beyond just opening a URL. Uses a dedicated JARVIS
+    Chrome profile at ~/.jarvis/browser-profile (separate from the
+    user's main Default profile) so automated sessions don't clash
+    with manual browsing.
+
+    **Use browser_task when:**
+      - "check my gmail and summarize unread"
+      - "post 'hello' on Twitter for me"
+      - "find cheap flights from SFO to NYC next week"
+      - "scroll LinkedIn and tell me about the top 3 posts"
+      - "log in to Amazon and reorder the dog food I bought"
+      - "go to my bank and tell me my balance"
+      - anything where you'd need to BE inside a website doing things,
+        not just opening it
+
+    **Do NOT use browser_task when:**
+      - The user just said "open Chrome" / "open a new tab" — that's
+        bash() with the Chrome command. browser_task spends real
+        Groq tokens; don't burn them on a launch.
+      - The user said "open <site>" with no further action — also bash.
+        E.g. "open YouTube" → bash("setsid -f google-chrome
+        --profile-directory=\"Default\" --new-window https://youtube.com
+        >/dev/null 2>&1")
+      - You can answer the question without browsing — use your
+        knowledge first.
+
+    **Destructive-action confirmation gate.** If the task contains a
+    destructive verb (delete, buy, post, send, transfer, cancel,
+    unfollow, etc.), the FIRST call returns a confirmation prompt.
+    You must:
+      1. Voice the prompt back to the user as a question.
+      2. WAIT for the user to explicitly say "yes" / "do it" /
+         "go ahead" / "confirm" before re-calling.
+      3. Re-call with confirmed=True.
+    Background TV / family talk does NOT count as confirmation.
+    A flat "ok" or "sure" only counts if it's clearly directed at you.
 
 ═══ USER PREFERENCES (persist across sessions) ═══
 
@@ -4348,6 +4391,8 @@ async def entrypoint(ctx: JobContext) -> None:
             face_identify,
             face_list,
             face_delete,
+            # Browser automation (browser-use over Groq, dedicated profile)
+            browser_task,
         ],
     )
 
