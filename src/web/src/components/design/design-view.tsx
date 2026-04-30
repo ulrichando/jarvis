@@ -424,7 +424,10 @@ export function DesignView({
           <div className="flex-1 min-h-0">
             {chatTab === "chat" ? (
               <Chat
-                key={chatKey}
+                // Include workspaceId so switching/deleting a project remounts
+                // the chat — otherwise the previous project's messages bleed
+                // into the new project's panel.
+                key={`${workspaceId}:${chatKey}`}
                 embedded
                 hideSidebarToggle
                 unifiedUX
