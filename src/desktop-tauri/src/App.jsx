@@ -173,9 +173,13 @@ export default function App() {
   // Priority (highest first): offline > muted > talking > listening >
   // booting > thinking > idle. Booting (purple) and thinking (amber) are
   // now distinct states so the tray and pill always tell the same story.
+  // The pill reads `speech.connected` (voice-client :8767 HTTP) for its
+  // "Voice offline" decision — the tray must check the same signal in
+  // addition to wsStatus (Python bridge :8765 WS), otherwise one process
+  // can be down and the other up and the two indicators disagree.
   useEffect(() => {
     let next = 'idle'
-    if (wsStatus === 'disconnected')       next = 'offline'
+    if (wsStatus === 'disconnected' || !speech.connected) next = 'offline'
     else if (voiceMuted)                   next = 'muted'
     else if (speech.silentMode)            next = 'muted'
     else if (speech.speaking)             next = 'talking'
@@ -184,7 +188,7 @@ export default function App() {
     else if (speech.processing)          next = 'thinking'
     else                                  next = 'idle'
     pushTrayState(next)
-  }, [wsStatus, voiceMuted, speech.speaking, speech.voiceActive, speech.silentMode, speech.booting, speech.processing, pushTrayState])
+  }, [wsStatus, voiceMuted, speech.connected, speech.speaking, speech.voiceActive, speech.silentMode, speech.booting, speech.processing, pushTrayState])
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────
   useEffect(() => {
@@ -308,9 +312,12 @@ function VoiceClientPill({ processing = false }) {
     <div style={{ position:'fixed', top:'1rem', right:'1rem', zIndex:50, pointerEvents:'none' }}>
       <div style={{ display:'flex', alignItems:'center', gap:'0.375rem',
                     padding:'0.25rem 0.625rem', borderRadius:'9999px',
-                    background:'rgba(10,10,14,0.55)', border:`1px solid ${color}55`,
-                    color:'#d1d5db', fontSize:'0.7rem', fontFamily:'monospace',
-                    backdropFilter:'blur(6px)' }}>
+                    // Slightly more opaque to compensate for the
+                    // removed backdrop-filter (WebKitGTK on Linux
+                    // ghosts text under backdrop-filter: blur, which
+                    // is what was making the label look doubled).
+                    background:'rgba(10,10,14,0.85)', border:`1px solid ${color}55`,
+                    color:'#d1d5db', fontSize:'0.7rem', fontFamily:'monospace' }}>
         <span style={{ width:'6px', height:'6px', borderRadius:'9999px',
                        background: color, boxShadow:`0 0 6px ${color}` }} />
         {label}
