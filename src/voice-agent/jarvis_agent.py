@@ -268,6 +268,41 @@ _BARE_VOCATIVE_RE = re.compile(
     r"\s*[?!.,]*\s*$",
     re.IGNORECASE,
 )
+
+# Tool-call leakage sanitization. When the speech LLM regresses and emits
+# a tool call as TEXT inside content (e.g. `<function/bash{"command": ...}>`)
+# instead of as a structured tool_call, the framework's dispatcher misses
+# it (no execution) but the text gets persisted to chat history. On the
+# next turn, the LLM sees its own leaked text as PRECEDENT and mimics —
+# self-reinforcing loop where every tool call is leaked as text and
+# nothing actually runs.
+#
+# Two-layer defense (per LiveKit PR #4999 + NousResearch hermes-agent#741
+# patterns): (1) strip on WRITE so the convo db never accepts a leaked
+# pattern going forward, (2) strip on RECALL so any historical leakage
+# never re-enters chat_ctx. Each layer alone is insufficient: the write
+# filter doesn't help old turns; the recall filter doesn't help the
+# Convex mirror or other downstream readers.
+_TOOL_LEAK_RE = re.compile(
+    r"<function/.*?</function>"                    # full tagged call
+    r"|<function/[^<]{0,500}"                      # opening + tail (no close)
+    r"|[^<]{0,500}</function>"                     # orphaned trailing close
+    r"|<tool_call>.*?</tool_call>"                 # alternate tag format
+    r"|<\|tool_call\|>.*?<\|/tool_call\|>",        # pipe-bracket format
+    re.DOTALL,
+)
+
+
+def _sanitize_leaked_tool_text(s: str) -> str:
+    """Strip any text that looks like a leaked structured tool-call.
+
+    Returns the cleaned string (may be empty if the entire text was leak).
+    Callers that get an empty result back should drop the turn entirely
+    rather than store an empty record.
+    """
+    if not s:
+        return ""
+    return _TOOL_LEAK_RE.sub("", s).strip()
 _last_real_interaction = 0.0     # monotonic timestamp of last accepted turn
 _bg_tasks: set = set()  # keeps create_task refs alive until done
 
@@ -2483,6 +2518,19 @@ def _save_turn(session_id: str, role: str, text: str) -> None:
     text = (text or "").strip()
     if not text:
         return
+    # Strip leaked structured tool-call text from assistant turns BEFORE
+    # persisting. If the entire turn was just leak, drop it — empty rows
+    # are noise. See _sanitize_leaked_tool_text for rationale.
+    if role == "assistant":
+        cleaned = _sanitize_leaked_tool_text(text)
+        if cleaned != text:
+            logger.info(
+                f"[tool-leak] sanitized assistant turn on save "
+                f"(was {len(text)} chars, now {len(cleaned)})"
+            )
+        if not cleaned:
+            return
+        text = cleaned
     # Schema constrains role to ('user', 'assistant'). Tool calls +
     # system messages pass through conversation_item_added too, so we
     # need to map anything unexpected to one of the two legal values
@@ -2584,13 +2632,25 @@ def _load_recent_turns(limit: int = RECENT_TURNS_LIMIT) -> list[tuple[str, str]]
 def _seed_chat_ctx() -> ChatContext:
     """Build a ChatContext pre-populated with recent prior turns."""
     items: list[ChatMessage] = []
+    sanitized = 0
     for role, text in _load_recent_turns():
         text = (text or "").strip()
         if not text:
             continue
+        # Belt-and-suspenders: strip leaked tool-call text from assistant
+        # turns at recall time too, in case any slipped past _save_turn
+        # (older rows, external writers, regex updates between writes).
+        if role == "assistant":
+            cleaned = _sanitize_leaked_tool_text(text)
+            if cleaned != text:
+                sanitized += 1
+            if not cleaned:
+                continue
+            text = cleaned
         items.append(ChatMessage(role=role, content=[text]))
     if items:
-        logger.info(f"[recall] seeded chat_ctx with {len(items)} prior turns")
+        extra = f" ({sanitized} sanitized)" if sanitized else ""
+        logger.info(f"[recall] seeded chat_ctx with {len(items)} prior turns{extra}")
     return ChatContext(items=items)
 
 
