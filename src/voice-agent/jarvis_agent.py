@@ -4683,11 +4683,55 @@ async def entrypoint(ctx: JobContext) -> None:
     _tts_fail_marker = Path.home() / ".jarvis" / "tts-failures.log"
     _last_notify_ts = [0.0]   # boxed so the closure can mutate it
 
+    # Throttle the LLM-error fallback voice so a flapping bug doesn't
+    # spam "had trouble, try again" every 200ms during retry loops.
+    _llm_fallback_last_ts = [0.0]
+
     @session.on("error")
     def _on_error(ev) -> None:
         try:
             from livekit.agents import tts as _lk_tts  # local to avoid top-level slow path
             err = getattr(ev, "error", None)
+
+            # ── LLM error fallback voice (Phase 9.2) ──────────────────
+            # When the recurring 'tool call validation failed' bug fires
+            # (LLM jams JSON args into tool_call.name field), the
+            # framework's retry loop exhausts and JARVIS goes silent.
+            # User has no idea what happened. Catch the malformed-tool-
+            # call class of APIConnectionError and voice a fallback so
+            # the conversation continues. Throttled to 1/15s so a tight
+            # retry loop doesn't bury the user in apologies.
+            try:
+                from livekit.agents import APIConnectionError as _APIConnectionError
+                from livekit.agents import llm as _lk_llm
+                err_msg = str(err) if err else ""
+                is_llm_validation_err = (
+                    isinstance(err, _APIConnectionError)
+                    or "tool call validation failed" in err_msg
+                    or "Connection error" in err_msg  # the wrapper symptom
+                )
+                if is_llm_validation_err:
+                    now_ts = time.time()
+                    if now_ts - _llm_fallback_last_ts[0] > 15.0:
+                        _llm_fallback_last_ts[0] = now_ts
+                        # session.say is sync in livekit-agents 1.5+,
+                        # returns a SpeechHandle. Calling it directly
+                        # dispatches synthesis on the framework's task.
+                        try:
+                            session.say(
+                                "Sorry, sir, I had trouble with that. "
+                                "Could you rephrase?",
+                                allow_interruptions=True,
+                            )
+                            logger.info(
+                                f"[llm-fallback] voiced apology after LLM error: {err_msg[:120]!r}"
+                            )
+                        except Exception as say_err:
+                            logger.debug(f"[llm-fallback] say() failed: {say_err}")
+                    return  # don't fall through to TTS-error branch
+            except ImportError:
+                pass  # framework's APIConnectionError import shape changed
+
             if not isinstance(err, _lk_tts.TTSError):
                 return
             # Best-effort grab of the in-flight text — if we can't,
