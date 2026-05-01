@@ -91,7 +91,7 @@ from turn_router    import (
 )
 from dispatching_llm import DispatchingLLM
 from dispatching_tts import DispatchingTTS
-from turn_telemetry import init_db, log_turn, DEFAULT_DB_PATH
+from turn_telemetry import init_db, log_turn, log_launch_attempt, DEFAULT_DB_PATH
 
 # Specialist registry — auto-registers built-in specs on import
 # (see specialists/__init__.py). build_all_transfer_tools() returns
@@ -3242,6 +3242,10 @@ async def launch_app(binary: str, args: str = "") -> str:
         return "MISSING: no binary supplied"
     bin_path = shutil.which(bin_only)
     if bin_path is None:
+        try:
+            log_launch_attempt(binary=bin_only, outcome="MISSING")
+        except Exception:
+            pass
         return f"MISSING: '{bin_only}' is not installed on this system"
 
     args_clean = (args or "").strip()
@@ -3274,11 +3278,19 @@ async def launch_app(binary: str, args: str = "") -> str:
             stderr_tail = Path(log_path).read_text(encoding="utf-8", errors="replace")[:280]
         except Exception:
             stderr_tail = ""
+        try:
+            log_launch_attempt(binary=bin_only, outcome="CRASHED")
+        except Exception:
+            pass
         return (
             f"CRASHED: '{bin_only}' exited immediately. "
             f"stderr: {stderr_tail.strip() or '(empty)'}"
         )
 
+    try:
+        log_launch_attempt(binary=bin_only, outcome="OK")
+    except Exception:
+        pass
     return f"OK: launched '{bin_only}'"
 
 
