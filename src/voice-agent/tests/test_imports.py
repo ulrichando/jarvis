@@ -38,6 +38,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
     "specialists.planner",
     "specialists.browser",
     "specialists.summarize",
+    "specialists.weather",
+    "specialists.researcher",
 ])
 def test_module_imports_clean(mod):
     """Each must import without raising. Module-level patches like
@@ -80,21 +82,27 @@ def test_jarvis_agent_exposes_required_tools():
         assert hasattr(jarvis_agent, name), f"jarvis_agent.{name} is missing"
 
 
-def test_subagent_registry_includes_summarize():
-    """The summarize subagent should auto-register when specialists/
-    is imported. Verifies the SubagentSpec / delegate path is wired
-    end-to-end at production startup."""
+def test_subagent_registry_includes_builtin_subagents():
+    """The summarize / weather / researcher subagents should
+    auto-register when specialists/ is imported. Verifies the
+    SubagentSpec / delegate path is wired end-to-end at production
+    startup."""
     from specialists.registry import SUBAGENT_REGISTRY, clear_subagents
     from specialists.summarize import register_summarize
+    from specialists.weather import register_weather
+    from specialists.researcher import register_researcher
 
     # Other tests (test_subagent_registry) clear the SUBAGENT_REGISTRY
     # in their fixtures and may leave it empty when run before this.
     # Re-register explicitly so this test is order-independent.
     clear_subagents()
     register_summarize()
+    register_weather()
+    register_researcher()
 
-    assert "summarize" in SUBAGENT_REGISTRY
-    assert SUBAGENT_REGISTRY["summarize"].enabled is True
+    for name in ("summarize", "weather", "researcher"):
+        assert name in SUBAGENT_REGISTRY, f"{name} missing from SUBAGENT_REGISTRY"
+        assert SUBAGENT_REGISTRY[name].enabled is True
 
 
 def test_build_all_transfer_tools_includes_delegate():
@@ -108,6 +116,8 @@ def test_build_all_transfer_tools_includes_delegate():
     from specialists.desktop import register_desktop
     from specialists.browser import register_browser
     from specialists.summarize import register_summarize
+    from specialists.weather import register_weather
+    from specialists.researcher import register_researcher
     from specialists.agent import build_all_transfer_tools
 
     clear()
@@ -116,14 +126,27 @@ def test_build_all_transfer_tools_includes_delegate():
     register_desktop()
     register_browser()
     register_summarize()
+    register_weather()
+    register_researcher()
 
     tools = build_all_transfer_tools()
     tool_names = {getattr(t, "name", None) or t.info.name for t in tools}
-    # Three legacy transfer_to_X tools + one delegate tool = 4
+    # Three legacy transfer_to_X tools + one delegate tool = 4 total.
+    # (delegate covers all SubagentSpecs internally — count stays at 4
+    # whether you have 1 subagent or 100. That's the whole point.)
     assert "transfer_to_planner" in tool_names
     assert "transfer_to_desktop" in tool_names
     assert "transfer_to_browser" in tool_names
     assert "delegate" in tool_names
+
+    # Verify all three subagent roles are listed in delegate's description
+    # so the supervisor's LLM can discover them at routing time.
+    delegate = next(t for t in tools
+                    if (getattr(t, "name", None) or t.info.name) == "delegate")
+    for role in ("summarize", "weather", "researcher"):
+        assert role in delegate.info.description, (
+            f"role {role!r} missing from delegate description"
+        )
 
 
 def test_specialist_registry_discovers_three_enabled_specs():
