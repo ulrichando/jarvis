@@ -427,6 +427,37 @@ What shipped (`09adb17` + `da50746`):
 
 **New total: 92 → 93 / 100.**
 
+### 2026-04-30 — Phase 10.5 (interruption telemetry)
+
+Phase 7 shipped `compute_interrupt_tuning(route, emotion)` with per-route base + per-emotion overlay (frustrated/sad pad, urgent shaves), but with no telemetry signal it was untestable in production. The rubric flagged this open gap explicitly: "verification deferred — needs interruption-rate logging". Phase 10.5 closes it.
+
+What shipped (`40327da`):
+
+- **`turn_telemetry.py`** — `interrupted INTEGER` column added via online migration (the pattern used for the Phase 6 `specialist` column, so pre-existing dbs upgrade without manual touch). `log_turn()` gains `interrupted: bool = False`. `report()` prints `interruption rate (overall)` and `interruption rate by route` (filters to routes with ≥5 turns to keep noise out).
+
+- **`jarvis_agent.py`** — two listeners stamp `session._jarvis_was_interrupted = True`:
+  - The existing `_on_user_input_kill_phrase` (after calling `session.interrupt()`).
+  - A new `_on_user_state_for_interrupt` that catches barge-ins (user transitions to `speaking` while `agent_state == "speaking"`).
+  - `log_turn()` call reads the flag and resets it. Per-turn coverage is automatic.
+
+- All 223 tests still pass. Live DB migrated; `PRAGMA table_info` confirms `14|interrupted|INTEGER|0|0|0`.
+
+**Re-score after Phase 10.5:**
+
+| # | Axis | Before | After | Delta |
+|---|---|---|---|---|
+| 7 | Interruption handling | 9 | 10 | +1 — every barge-in and every kill-phrase fire is now logged. The per-route interrupt-rate column gives us the signal to validate (or refute) the per-route + per-emotion overlay's tuning constants from real data. The rubric's open verification debt is closed. |
+
+**New total: 93 → 94 / 100.**
+
+Distance to 95: 1 point. Available bumps:
+- Axis 6 (Acknowledgment vocabulary 7) — was constrained by user preference; not pursuing.
+- Axis 1 (TTFW) currently 10 from Phase 7. Capped.
+
+Realistic remaining moves:
+- **Phase 10.6: `launch_app` outcome telemetry.** No axis bump but a quality-of-detail win — adds MISSING/CRASHED counts per binary so the report can suggest "users keep asking for X but it's not installed".
+- **Phase 10.7: live data soak + report iteration.** Run telemetry over ~6 hours of real use and tune the per-route base / per-emotion overlay constants based on actual interrupt rates.
+
 ### Phase 10+ candidates (path to 95)
 
 2. **REASONING route live-data confirmation (no score change yet).** Phase 9.1 shipped the regex; need ~6h of normal use to verify the route lights up in `turn_telemetry.py --report`. If it does, Axis 4 may have headroom for another +0 (already at 9 from Phase 9.3) but the system as a whole gets a confidence boost.
