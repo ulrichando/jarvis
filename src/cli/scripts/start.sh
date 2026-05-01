@@ -28,12 +28,21 @@ export DISABLE_NON_ESSENTIAL_MODEL_CALLS=1
 export DISABLE_AUTOUPDATER=1
 export DISABLE_COST_WARNINGS=1
 
-# Load API keys
-if [ -f "$ROOT/.env.local" ]; then
-  set -a
-  source "$ROOT/.env.local"
-  set +a
-fi
+# Load API keys.
+# .env.providers is loaded FIRST so .env.local can override individual
+# values without forcing duplication. .env.providers holds the broad
+# provider catalog (DEEPSEEK / GROQ / GOOGLE / OPENAI / …); .env.local
+# is the per-machine overlay (auth flags, custom JARVIS_PROVIDER).
+# Pre-2026-05-01 this only loaded .env.local — meaning GOOGLE_API_KEY
+# (lived in .env.providers) was missing and the new GetLocationTool
+# fell through to IP geolocation despite a working key being on disk.
+for envfile in "$ROOT/.env.providers" "$ROOT/.env.local"; do
+  if [ -f "$envfile" ]; then
+    set -a
+    source "$envfile"
+    set +a
+  fi
+done
 
 # ── Internal wiring (users never set these) ───────────────────────────────
 # Resolve the active CLI model. Precedence:
