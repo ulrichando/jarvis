@@ -53,7 +53,7 @@ def test_browser_instructions_mention_destructive_gate():
     spec = get("browser")
     # Match by an explicit substring — confirmation gate is non-negotiable
     assert "confirm" in spec.instructions.lower()
-    assert "_confirmed=True" in spec.instructions or "_confirmed" in spec.instructions
+    assert "confirmed=True" in spec.instructions or "confirmed" in spec.instructions
 
 
 def test_ext_post_returns_structured_error_when_bridge_down(monkeypatch):

@@ -37,8 +37,11 @@ async def _post(action: str, **args: Any) -> dict:
     verbatim — usually `{ok: bool, ...}`. Network/extension errors
     surface as `{ok: False, error: "..."}` so the LLM gets actionable
     text rather than a Python exception."""
-    timeout_ms = args.pop("_timeout_ms", None) or _DEFAULT_TIMEOUT_MS
-    confirmed = args.pop("_confirmed", False)
+    # Pydantic v2.10+ rejects leading-underscore field names in
+    # create_model, so the @function_tool exposes `confirmed` (no
+    # underscore). The bridge wire-protocol has always used "confirmed".
+    timeout_ms = args.pop("timeout_ms", None) or _DEFAULT_TIMEOUT_MS
+    confirmed = args.pop("confirmed", False)
     payload = {
         "action": action,
         "args": args,
@@ -343,18 +346,18 @@ async def ext_switch_iframe(selector: str) -> str:
 
 
 @function_tool
-async def ext_exec_js(code: str, _confirmed: bool = False) -> str:
+async def ext_exec_js(code: str, confirmed: bool = False) -> str:
     """Execute arbitrary JavaScript in the active tab and return the
     result. **Destructive verb gate applies.** First call returns a
-    confirmation prompt; voice it and re-call with `_confirmed=True`
+    confirmation prompt; voice it and re-call with `confirmed=True`
     only after explicit user OK.
 
     Args:
         code: the JS expression to evaluate. Must return a JSON-
               serializable value.
-        _confirmed: set True only after explicit user confirmation.
+        confirmed: set True only after explicit user confirmation.
     """
-    return _summarize(await _post("exec_js", code=code, _confirmed=_confirmed))
+    return _summarize(await _post("exec_js", code=code, confirmed=confirmed))
 
 
 @function_tool
@@ -370,16 +373,16 @@ async def ext_get_cookies(domain: Optional[str] = None) -> str:
 
 
 @function_tool
-async def ext_set_cookies(cookies: list, _confirmed: bool = False) -> str:
+async def ext_set_cookies(cookies: list, confirmed: bool = False) -> str:
     """Set cookies on the active tab's domain. **Destructive verb
     gate applies** — the first call returns a confirmation prompt.
 
     Args:
         cookies: list of {name, value, domain?, path?, expires?} dicts.
-        _confirmed: set True only after explicit user confirmation.
+        confirmed: set True only after explicit user confirmation.
     """
     return _summarize(await _post(
-        "set_cookies", cookies=cookies, _confirmed=_confirmed,
+        "set_cookies", cookies=cookies, confirmed=confirmed,
     ))
 
 
