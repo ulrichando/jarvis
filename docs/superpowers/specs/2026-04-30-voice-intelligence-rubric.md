@@ -362,6 +362,24 @@ What shipped (`2d1ebfe`):
 
 **New total: 90 → 91 / 100.**
 
+### 2026-04-30 — Phase 10.2 (tool-name sanitizer)
+
+Closes the recurring "JARVIS didn't respond" failure mode caught seven times in the prior audit. Phase 9.2 papered over the silence with an apology voice; Phase 10.2 actually recovers the turn.
+
+What shipped (`a2e958f`):
+
+- **`tool_name_sanitizer.py`** — pure-function `_try_recover(err_msg, known_tools) → (name, args) | None`. Tight regex requires the malformed pattern's exact shape (`identifier {<JSON object>}`) AND that the recovered name is actually in the current stream's tool list. Anything looser would risk synthesizing tool calls the user didn't intend.
+- **Patched `inference.llm.LLMStream._run`** with a try/except wrapper. Walks the exception chain (the inner `openai.APIError` is wrapped to `APIConnectionError` by the plugin's outer handler), parses the validation message, synthesizes a `ChatChunk` containing the cleaned `FunctionToolCall`, sends through `_event_ch` and returns normally. Failure paths (no match, unknown name, can't enqueue) propagate the original error so behavior matches pre-patch.
+- 8 unit tests covering real captured error, wrapped exception chain, unknown-name guard, missing-JSON guard, multi-arg JSON, nested braces, empty tool list. All 215 voice-agent tests pass.
+
+**Re-score after Phase 10.2:**
+
+| # | Axis | Before | After | Delta |
+|---|---|---|---|---|
+| 9 | Tool execution discipline | 10 | 10 | capped, but the qualitative win is real — the recurring "JARVIS didn't respond" cause is now self-healing. Phase 9.2's apology voice still fires for non-recoverable errors (the recovery's safety guards prevent over-aggressive synthesis), so the user UX improves on both axes: hallucinated success → MISSING/CRASHED (Phase 9.4); silent failure → recovered tool execution (Phase 10.2). |
+
+Total stays **91 / 100** — Phase 10.2 is a reliability fix without an unblocked axis. The path to 95 still has acoustic prosody (axis 2: 9→10) as the next single-axis lift.
+
 ### Phase 10+ candidates (path to 95)
 
 1. **Acoustic prosody for emotion detection (axis 2: 9 → 10, +1).** Now the only path to 10 on axis 2 since lex is at its practical ceiling. Real estimate: 4-5h. Subscribe a parallel VAD on the room audio track, capture end-of-speech frames, RMS energy + zero-crossing-rate (cheap proxies for arousal). Pitch contour optional and finicky; skip for v1. Plumb new fields into `AudioMeta` and refine `detect_emotion` to use them as additional priors.
