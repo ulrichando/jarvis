@@ -81,3 +81,13 @@ llm/
 jarvis-cli/
 .superpowers/
 .worktrees/
+.gstack/
+
+# Secrets — every tracked .env was leaking credentials in commit
+# history. Untracking on 2026-05-01. Example files stay tracked.
+.env
+.env.local
+.env.providers
+.env.production
+!.env.example
+!**/.env.example
