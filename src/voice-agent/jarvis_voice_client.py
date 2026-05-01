@@ -276,14 +276,11 @@ DEFAULT_CLI_MODEL   = "deepseek-v4-pro"
 SPEECH_MODEL_FILE      = Path.home() / ".jarvis" / "voice-model"
 
 # TTS provider switching. Format: "<provider>:<voice_id_or_name>"
-# e.g. "elevenlabs:JBFqnCBsd6RMkjVDRZzb" or "groq:troy".
-# If absent, agent falls back to env-var logic (ELEVENLABS_API_KEY present
-# → ElevenLabs, else Groq Orpheus).
+# Only `groq:<voice>` is supported post-2026-05-01 (ElevenLabs removed).
 TTS_PROVIDER_FILE      = Path.home() / ".jarvis" / "tts-provider"
 
 def _default_tts_provider() -> str:
-    return ("elevenlabs:JBFqnCBsd6RMkjVDRZzb"
-            if os.getenv("ELEVENLABS_API_KEY") else "groq:troy")
+    return "groq:troy"
 
 def _ensure_tts_provider_file() -> None:
     if not TTS_PROVIDER_FILE.exists():
@@ -291,11 +288,8 @@ def _ensure_tts_provider_file() -> None:
         TTS_PROVIDER_FILE.write_text(_default_tts_provider() + "\n", encoding="utf-8")
 
 TTS_PROVIDERS_AVAILABLE = {
-    "elevenlabs:JBFqnCBsd6RMkjVDRZzb": "ElevenLabs · George",
-    "elevenlabs:pNInz6obpgDQGcFmaJgB": "ElevenLabs · Adam",
-    "elevenlabs:nPczCjzI2devNBz1zQrb": "ElevenLabs · Brian",
-    "groq:troy":                         "Groq Orpheus · Troy",
-    "groq:austin":                        "Groq Orpheus · Austin",
+    "groq:troy":   "Groq Orpheus · Troy",
+    "groq:austin": "Groq Orpheus · Austin",
 }
 
 # Same path as jarvis_agent.py's _TOOL_BUSY_FILE — written when a
@@ -466,7 +460,7 @@ class ClientState:
     # still work, but JARVIS won't respond. Distinct from `muted`
     # (hardware track mute). UI maps this to the black indicator.
     silent_mode:   bool = False
-    # Active TTS provider spec (e.g., "elevenlabs:JBFqnCBsd6RMkjVDRZzb").
+    # Active TTS provider spec (e.g., "groq:troy").
     # Read from TTS_PROVIDER_FILE on every /status hit.
     tts_provider:  str = ""
     # Informative only — lets the UI show "jarvis@ws://..." if it

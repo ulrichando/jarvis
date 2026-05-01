@@ -64,8 +64,8 @@ import edge_tts_plugin
 # module — it lives under the voice room_io submodule. Import
 # directly to dodge the ImportError.
 from livekit.agents.voice.room_io import RoomOptions
-from livekit.plugins import elevenlabs, groq, openai as lk_openai, silero
-from livekit.plugins.elevenlabs import VoiceSettings as _ELVoiceSettings
+from livekit.plugins import groq, openai as lk_openai, silero
+# ElevenLabs removed 2026-05-01 — see _build_dispatching_tts comment.
 
 # Round-trip DeepSeek's reasoning_content field. livekit-plugins-openai
 # 1.5.x doesn't track it, which makes V4-flash / V4-pro reject any
@@ -554,9 +554,8 @@ SPEECH_MODEL_FILE     = Path.home() / ".jarvis" / "voice-model"
 DEFAULT_SPEECH_MODEL  = "llama-3.3-70b-versatile"
 
 # TTS provider switching — written by the tray via /tts-provider on
-# the voice client. Format: "<provider>:<voice>", e.g.
-# "elevenlabs:JBFqnCBsd6RMkjVDRZzb" or "groq:troy".
-# If absent falls back to ELEVENLABS_API_KEY env-var logic.
+# the voice client. Format: "<provider>:<voice>", e.g. "groq:troy".
+# Only `groq:<voice>` is accepted post-2026-05-01 (ElevenLabs removed).
 TTS_PROVIDER_FILE = Path.home() / ".jarvis" / "tts-provider"
 
 # IDs match the upstream model names verbatim so the registry stays
@@ -669,14 +668,16 @@ def _build_tts_chain() -> list:
 
     Priority (first wins):
       1. ~/.jarvis/tts-provider file  — written by the tray's Voice submenu
-      2. ELEVENLABS_API_KEY env var   — backwards-compat for existing setups
-      3. Default: Groq Orpheus
+      2. Default: Groq Orpheus (voice from JARVIS_TTS_VOICE env)
     Always appended last: Edge-TTS (no auth, always available).
+
+    ElevenLabs was removed 2026-05-01 after the live key 401-d and
+    the FallbackAdapter chain failed to recover (both EL and edge_tts
+    returned 0 frames during the same window, leaving JARVIS silent
+    and poisoning the chat_ctx with a half-completed assistant turn).
     """
-    el_key = os.getenv("ELEVENLABS_API_KEY", "")
     groq_voice = os.getenv("JARVIS_TTS_VOICE", "troy")
     edge_voice = os.getenv("JARVIS_EDGE_VOICE", "en-US-GuyNeural")
-    el_model   = os.getenv("ELEVENLABS_MODEL", "eleven_turbo_v2_5")
 
     primary = None
     try:
@@ -685,42 +686,28 @@ def _build_tts_chain() -> list:
             provider, voice = spec.split(":", 1)
             provider = provider.strip()
             voice    = voice.strip()
-            if provider == "elevenlabs" and el_key:
-                primary = elevenlabs.TTS(
-                    voice_id=voice, model=el_model, api_key=el_key,
-                )
-                logger.info(f"[tts] ElevenLabs (voice {voice[:8]}…) [tray selection]")
-            elif provider == "groq":
+            if provider == "groq":
                 primary = _LoggingGroqTTS(
                     model="canopylabs/orpheus-v1-english", voice=voice,
                 )
                 logger.info(f"[tts] Groq Orpheus voice={voice} [tray selection]")
+            else:
+                logger.warning(
+                    f"[tts] unknown / removed provider {provider!r} in {TTS_PROVIDER_FILE}; "
+                    f"falling back to Groq Orpheus default"
+                )
     except FileNotFoundError:
         pass
     except Exception as e:
         logger.warning(f"[tts] could not read {TTS_PROVIDER_FILE}: {e}")
 
     if primary is None:
-        # Fallback to env-var logic
-        if el_key:
-            el_voice = os.getenv("ELEVENLABS_VOICE_ID", "JBFqnCBsd6RMkjVDRZzb")
-            primary = elevenlabs.TTS(
-                voice_id=el_voice, model=el_model, api_key=el_key,
-            )
-            logger.info(f"[tts] ElevenLabs (voice {el_voice[:8]}…) [env var]")
-        else:
-            primary = _LoggingGroqTTS(
-                model="canopylabs/orpheus-v1-english", voice=groq_voice,
-            )
-            logger.info(f"[tts] Groq Orpheus voice={groq_voice} [default]")
+        primary = _LoggingGroqTTS(
+            model="canopylabs/orpheus-v1-english", voice=groq_voice,
+        )
+        logger.info(f"[tts] Groq Orpheus voice={groq_voice} [default]")
 
-    return [
-        primary,
-        # Groq Orpheus as second fallback only when ElevenLabs is primary
-        *([_LoggingGroqTTS(model="canopylabs/orpheus-v1-english", voice=groq_voice)]
-          if isinstance(primary, elevenlabs.TTS) else []),
-        edge_tts_plugin.EdgeTTS(voice=edge_voice),
-    ]
+    return [primary, edge_tts_plugin.EdgeTTS(voice=edge_voice)]
 
 
 def _build_dispatching_llm() -> DispatchingLLM:
@@ -783,24 +770,14 @@ def _build_dispatching_tts() -> DispatchingTTS:
     """Per-route inner Groq Orpheus TTS instances with different voices.
 
     Voices are env-overridable via JARVIS_VOICE_{BANTER,TASK,REASONING,EMOTIONAL}.
-    BANTER and TASK use Groq Orpheus (fast, cheap). EMOTIONAL and REASONING
-    optionally use ElevenLabs for higher voice quality + cross-provider
-    timbre variety, falling back to Orpheus if ELEVENLABS_API_KEY is missing
-    or construction fails.
+    All four routes use Groq Orpheus (fast, cheap, reliable). ElevenLabs
+    was removed 2026-05-01 after the live key 401-d and the safety-net
+    edge_tts fallback ALSO returned 0 frames in the same window — the
+    StreamAdapter+EL+edge cascade had a real failure mode that left
+    JARVIS silent mid-turn. Orpheus has its own intermittent silent-frame
+    bug, but FallbackAdapter([orpheus, edge_tts]) handles it cleanly.
     """
-    el_key   = os.environ.get("ELEVENLABS_API_KEY", "")
-    el_model = os.environ.get("ELEVENLABS_MODEL", "eleven_turbo_v2_5")
-    # Voice IDs: env override → public ElevenLabs voice IDs as defaults.
-    # Defaults chosen for tone fit; user can swap to any voice in their
-    # ElevenLabs account by setting the env var.
-    el_emotional_voice = os.environ.get(
-        "JARVIS_EL_VOICE_EMOTIONAL", "JBFqnCBsd6RMkjVDRZzb"  # "George" — warm British
-    )
-    el_reasoning_voice = os.environ.get(
-        "JARVIS_EL_VOICE_REASONING", "TX3LPaxmHKxFdv7VOQHJ"  # "Liam" — clear American
-    )
-
-    # Orpheus voices for BANTER + TASK (and as fallback for the EL routes).
+    # Orpheus voices for all four routes. Per-route picks come from env.
     orph = {
         "BANTER":    os.environ.get("JARVIS_VOICE_BANTER", "austin"),
         "TASK":      os.environ.get("JARVIS_VOICE_TASK",   "troy"),
@@ -841,44 +818,6 @@ def _build_dispatching_tts() -> DispatchingTTS:
             return primary
 
     for route in ("BANTER", "TASK", "REASONING", "EMOTIONAL"):
-        # Try ElevenLabs first for EMOTIONAL/REASONING when the key is set.
-        # Skipping when JARVIS_EL_DISPATCH_DISABLED=1 lets users opt out
-        # cheaply (e.g. ElevenLabs quota burn during dogfood).
-        use_el = (
-            el_key
-            and os.environ.get("JARVIS_EL_DISPATCH_DISABLED", "0") != "1"
-            and route in ("EMOTIONAL", "REASONING")
-        )
-        if use_el:
-            voice_id = el_emotional_voice if route == "EMOTIONAL" else el_reasoning_voice
-            # Per-route prosody. EMOTIONAL = warmer, slower, more expressive
-            # (low stability, high style, slowed speed). REASONING = clearer,
-            # measured, slightly slow (mid stability, moderate style).
-            if route == "EMOTIONAL":
-                vs = _ELVoiceSettings(
-                    stability=0.35, similarity_boost=0.85, style=0.6, speed=0.92,
-                )
-            else:  # REASONING
-                vs = _ELVoiceSettings(
-                    stability=0.5, similarity_boost=0.75, style=0.3, speed=0.95,
-                )
-            try:
-                t = elevenlabs.TTS(
-                    voice_id=voice_id, model=el_model, api_key=el_key,
-                    voice_settings=vs,
-                )
-                t.voice_id = f"el:{voice_id[:8]}…"
-                # Wrap in FallbackAdapter([elevenlabs, edge_tts]) so when
-                # ElevenLabs hits its quota or returns 0 frames, edge_tts
-                # takes over. Both quota-exhaustion (HTTP 401) and the
-                # "no audio frames pushed" symptom we saw 2026-04-30
-                # were leaving JARVIS silent mid-conversation; the
-                # fallback fixes both.
-                inners[route] = _wrap_with_edge_fallback(t)
-                continue
-            except Exception as e:
-                logger.warning(f"[dispatch] EL tts for {route} failed ({e}); falling back to Orpheus")
-
         # Orpheus path. Orpheus capability is streaming=False (whole-reply
         # synthesis), so wrap in StreamAdapter to make the framework
         # synthesize sentence-by-sentence — first sentence's audio plays
@@ -891,8 +830,8 @@ def _build_dispatching_tts() -> DispatchingTTS:
             raw = _LoggingGroqTTS(model="canopylabs/orpheus-v1-english", voice=vid)
             t = tts.StreamAdapter(tts=raw, text_pacing=True)
             t.voice_id = vid
-            # Wrap with edge_tts fallback (see EL block above for
-            # rationale — Orpheus has the same intermittent failure mode).
+            # Wrap with edge_tts fallback so Orpheus's intermittent
+            # silent-frame bug doesn't silence the conversation.
             inners[route] = _wrap_with_edge_fallback(t)
         except Exception as e:
             logger.warning(f"[dispatch] orph tts {route}={vid} failed: {e}; will inherit TASK")
@@ -917,9 +856,6 @@ def _build_dispatching_tts() -> DispatchingTTS:
 # prompt builder can tell the user the full stack on demand.
 VOICE_STT_LABEL = "Whisper Large v3 Turbo on Groq"
 VOICE_TTS_LABEL = (
-    f"ElevenLabs (voice {os.getenv('ELEVENLABS_VOICE_ID', 'JBFqnCBsd6RMkjVDRZzb')[:8]}…), "
-    f"Orpheus on Groq fallback, Edge-TTS final fallback"
-    if os.getenv("ELEVENLABS_API_KEY") else
     f"Orpheus on Groq (voice {os.getenv('JARVIS_TTS_VOICE', 'troy')}), "
     f"with Edge-TTS ({os.getenv('JARVIS_EDGE_VOICE', 'en-US-GuyNeural')}) as fallback"
 )
@@ -4101,11 +4037,10 @@ async def entrypoint(ctx: JobContext) -> None:
         # ── TTS chain ───────────────────────────────────────────────
         # Provider order is controlled by ~/.jarvis/tts-provider
         # (written by the tray's "Voice" submenu via /tts-provider).
-        # Format: "<provider>:<voice>", e.g. "elevenlabs:JBFqnCBsd6RMkjVDRZzb"
-        # or "groq:troy". Falls back to ELEVENLABS_API_KEY env-var
-        # logic when the file is absent so existing setups keep working.
-        # Final fallback is always Edge-TTS (no auth, always available).
-        # When Maya dispatcher is active, tts_arg is the TASK voice.
+        # Format: "<provider>:<voice>" — only `groq:<voice>` is
+        # supported (ElevenLabs removed 2026-05-01). Final fallback
+        # is Edge-TTS (no auth, always available). When Maya dispatcher
+        # is active, tts_arg is the TASK voice.
         tts=tts_arg,
         # ── Barge-in / multitask tuning ─────────────────────────────
         # Defaults make JARVIS feel "deaf while speaking": the agent
