@@ -4364,9 +4364,16 @@ async def entrypoint(ctx: JobContext) -> None:
 
     @session.on("user_input_transcribed")
     def _on_user_input_for_dispatch(ev) -> None:
-        """Maya-class router: pick LLM + TTS per turn based on emotion + classifier."""
-        if _dispatch_llm is None:
-            return
+        """Maya-class router: pick LLM + TTS per turn based on emotion + classifier.
+
+        Phase 10.4 — emotion + route signal collection runs unconditionally
+        so telemetry stays meaningful even with JARVIS_DISPATCH_DISABLED=1
+        (the per-route LLM/TTS swap is the only thing the flag actually
+        gates). Without this, every turn gets logged with NULL route /
+        emotion and the report shows '?: 12 turns (8%)' — pure noise.
+        """
+        # No `if _dispatch_llm is None: return` — that gate is now scoped
+        # to the swap calls themselves at the bottom of this function.
         if not getattr(ev, "is_final", False):
             return
         transcript = getattr(ev, "transcript", "") or ""
@@ -4466,11 +4473,35 @@ async def entrypoint(ctx: JobContext) -> None:
                 f"rms_db={current_rms_db:.1f}/{prior_rms_base:.1f} → emotion={emotion}"
             )
 
+        # Phase 10.4 — early-stamp emotion + a regex-only route guess so
+        # telemetry has populated values even if the dispatcher is off
+        # (JARVIS_DISPATCH_DISABLED=1) or the classifier task fails.
+        # Downstream branches (BANTER fast-path, REASONING fast-path,
+        # async classifier swap) will overwrite with their final route.
+        session._jarvis_emotion = emotion
+        _word_count_pre = len(transcript.split())
+        if _word_count_pre <= 6 and _BANTER_FAST_PATH_RE.match(transcript):
+            session._jarvis_route = "BANTER"
+        elif _REASONING_FAST_PATH_RE.match(transcript):
+            session._jarvis_route = "REASONING"
+        elif emotion in ("frustrated", "sad"):
+            # Strong emotional lex → EMOTIONAL by default. The classifier
+            # would do the same; we mirror its output for the bypass case.
+            session._jarvis_route = "EMOTIONAL"
+        else:
+            session._jarvis_route = "TASK"
+
         # Reset the per-utterance markers so the next turn starts fresh
         # — without this, a transcript that arrives after the user has
         # already started speaking again would carry stale stamps.
         session._jarvis_speech_started_at = None
         session._jarvis_speech_ended_at   = None
+
+        # Phase 10.4 — short-circuit when the dispatcher is bypassed.
+        # Emotion + early route are already stamped above; downstream
+        # branches only do the LLM/TTS swap, which the bypass disables.
+        if _dispatch_llm is None:
+            return
 
         # Synchronous BANTER fast-path. If the transcript is high-
         # confidence chitchat, skip the 500ms Groq classifier and swap
