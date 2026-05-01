@@ -60,6 +60,27 @@ export const verifications = pgTable("verifications", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+export const projects = pgTable(
+  "projects",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    description: text("description").notNull().default(""),
+    instructions: text("instructions").notNull().default(""),
+    badge: text("badge"),
+    isFavorite: boolean("is_favorite").notNull().default(false),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("projects_user_idx").on(table.userId),
+    index("projects_updated_idx").on(table.updatedAt),
+  ],
+);
+
 export const conversations = pgTable(
   "conversations",
   {
@@ -67,6 +88,9 @@ export const conversations = pgTable(
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
+    projectId: uuid("project_id").references(() => projects.id, {
+      onDelete: "set null",
+    }),
     title: text("title").notNull().default("New chat"),
     model: text("model").notNull().default("claude-sonnet-4-6"),
     systemPrompt: text("system_prompt"),
@@ -78,6 +102,7 @@ export const conversations = pgTable(
   (table) => [
     index("conversations_user_idx").on(table.userId),
     index("conversations_updated_idx").on(table.updatedAt),
+    index("conversations_project_idx").on(table.projectId),
   ],
 );
 
@@ -182,6 +207,15 @@ export const usersRelations = relations(users, ({ many }) => ({
   conversations: many(conversations),
   sessions: many(sessions),
   accounts: many(accounts),
+  projects: many(projects),
+}));
+
+export const projectsRelations = relations(projects, ({ one, many }) => ({
+  user: one(users, {
+    fields: [projects.userId],
+    references: [users.id],
+  }),
+  conversations: many(conversations),
 }));
 
 export const conversationsRelations = relations(
@@ -190,6 +224,10 @@ export const conversationsRelations = relations(
     user: one(users, {
       fields: [conversations.userId],
       references: [users.id],
+    }),
+    project: one(projects, {
+      fields: [conversations.projectId],
+      references: [projects.id],
     }),
     messages: many(messages),
     artifacts: many(artifacts),
@@ -218,3 +256,4 @@ export type Conversation = typeof conversations.$inferSelect;
 export type Message = typeof messages.$inferSelect;
 export type Artifact = typeof artifacts.$inferSelect;
 export type ArtifactVersion = typeof artifactVersions.$inferSelect;
+export type Project = typeof projects.$inferSelect;

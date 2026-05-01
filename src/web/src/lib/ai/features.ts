@@ -39,6 +39,12 @@ export type Feature = {
   overflow?: boolean;
   /** Small badge rendered next to the label (e.g., "Beta", "New"). */
   badge?: string;
+  /**
+   * Override sidebar link target. When set, the sidebar renders this href
+   * instead of the default `/{provider}/{slug}` placeholder route — used for
+   * features that have a real top-level page (e.g. Projects).
+   */
+  href?: string;
 };
 
 export const PROVIDER_FEATURES: Record<Provider, Feature[]> = {
@@ -47,6 +53,7 @@ export const PROVIDER_FEATURES: Record<Provider, Feature[]> = {
       slug: "projects",
       label: "Projects",
       icon: FolderKanban,
+      href: "/projects",
       description:
         "Bundle chats, files, and instructions into reusable workspaces. Claude starts every session with the same context.",
     },
@@ -57,13 +64,10 @@ export const PROVIDER_FEATURES: Record<Provider, Feature[]> = {
       description:
         "Versioned, sandboxed code and document blocks. React components, HTML, SVG, and markdown — rendered live in the preview pane.",
     },
-    {
-      slug: "code",
-      label: "Code",
-      icon: Code2,
-      description:
-        "Agentic coding inside your repo. Read, edit, run, and ship — with full file-system context.",
-    },
+    // "Code" feature removed from the anthropic provider list — the
+    // sidebar's top-level CORE_NAV already has a Code entry linking to
+    // /code, and rendering both produced a duplicate "Code" item in the
+    // sidebar.
     {
       slug: "customize",
       label: "Customize",
@@ -75,6 +79,7 @@ export const PROVIDER_FEATURES: Record<Provider, Feature[]> = {
       slug: "design",
       label: "Design",
       icon: Palette,
+      href: "/design",
       description:
         "UI mockups, color explorations, and visual drafts. Rendered live in the preview pane.",
     },

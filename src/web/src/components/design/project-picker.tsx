@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronDown, Loader2, Palette, Pencil, Plus, Trash2 } from "lucide-react";
+import { ChevronDown, Loader2, Pencil, Plus, Trash2 } from "lucide-react";
 import {
   apiCreateWorkspace,
   apiDeleteWorkspace,
@@ -38,7 +38,7 @@ export function ProjectPicker({
     if (!name || !name.trim()) return;
     setBusy("create");
     try {
-      const ws = await apiCreateWorkspace(name.trim());
+      const ws = await apiCreateWorkspace(name.trim(), "design");
       onChanged?.();
       router.push(`/design?ws=${encodeURIComponent(ws.id)}`);
     } catch (err) {
@@ -82,7 +82,7 @@ export function ProjectPicker({
       // wiping the workspace they're sitting in — otherwise the design view
       // unmounts mid-delete and we'd refetch a 404.
       if (isCurrent) {
-        const target = others[0] ?? (await apiCreateWorkspace("Untitled design"));
+        const target = others[0] ?? (await apiCreateWorkspace("Untitled design", "design"));
         await apiDeleteWorkspace(id);
         onChanged?.();
         router.push(`/design?ws=${encodeURIComponent(target.id)}`);
@@ -99,20 +99,20 @@ export function ProjectPicker({
   };
 
   return (
-    <details className="relative flex h-full">
+    <details className="relative flex h-full min-w-0">
       <summary
         className={cn(
-          "flex h-full min-w-0 cursor-pointer list-none items-center gap-2 px-3",
+          "flex h-full min-w-0 cursor-pointer list-none items-center gap-2.5 px-3",
           "hover:bg-muted/30 transition-colors",
+          "[&::-webkit-details-marker]:hidden",
         )}
       >
-        <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-orange-500/15 text-orange-400">
-          <Palette className="size-3.5" />
-        </span>
-        <span className="truncate text-[14px] font-semibold tracking-tight">
+        {/* No logo here — the global Sidebar already brands the app.
+            Showing a second mark stacks two logos in the same eye-line. */}
+        <span className="truncate text-[13px] font-medium tracking-tight text-foreground/90">
           {current.name}
         </span>
-        <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
+        <ChevronDown className="size-3 shrink-0 text-muted-foreground/70" />
       </summary>
 
       <div className="absolute left-2 top-full z-30 mt-1 w-72 max-h-[60vh] overflow-y-auto rounded-md border border-border/60 bg-popover shadow-lg">

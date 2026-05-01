@@ -16,7 +16,7 @@ export function ComposerWorkspacePicker() {
 
   const { data: workspaces = [] } = useQuery({
     queryKey: ["workspaces"],
-    queryFn: apiListWorkspaces,
+    queryFn: () => apiListWorkspaces(),
   });
 
   const label = targetId

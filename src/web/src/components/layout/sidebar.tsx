@@ -7,6 +7,7 @@ import { useState } from "react";
 import {
   ChevronDown,
   Code2,
+  Hammer,
   MessagesSquare,
   MoreHorizontal,
   PanelLeftClose,
@@ -29,7 +30,7 @@ const CORE_NAV = [
   { href: "/search", label: "Search", icon: Search },
   { href: "/chats", label: "Chats", icon: MessagesSquare },
   { href: "/code", label: "Code", icon: Code2 },
-  { href: "/workbench", label: "Workbench", icon: Code2 },
+  { href: "/workbench", label: "Workbench", icon: Hammer },
 ] as const;
 
 function initials(name?: string | null) {
@@ -123,8 +124,10 @@ export function Sidebar() {
                 {/* Provider features */}
                 <nav className="mt-1 space-y-px">
                     {primary.map((f) => {
-                      const href = `/anthropic/${f.slug}`;
-                      const active = pathname === href;
+                      const href = f.href ?? `/anthropic/${f.slug}`;
+                      const active = f.href
+                        ? pathname.startsWith(f.href)
+                        : pathname === href;
                       return (
                         <Link
                           key={f.slug}
@@ -174,8 +177,10 @@ export function Sidebar() {
                           className="overflow-hidden"
                         >
                           {overflow.map((f) => {
-                            const href = `/anthropic/${f.slug}`;
-                            const active = pathname === href;
+                            const href = f.href ?? `/anthropic/${f.slug}`;
+                            const active = f.href
+                              ? pathname.startsWith(f.href)
+                              : pathname === href;
                             return (
                               <Link
                                 key={f.slug}
@@ -314,19 +319,22 @@ export function Sidebar() {
           </motion.aside>
         )}
       </AnimatePresence>
-      {!sidebarOpen && !pathname.startsWith("/workbench") && !pathname.startsWith("/code") && (
-        <div className="absolute left-2 top-2 z-10">
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={toggleSidebar}
-            aria-label="Open sidebar"
-            className="size-8"
-          >
-            <PanelLeftOpen className="size-4" />
-          </Button>
-        </div>
-      )}
+      {!sidebarOpen &&
+        !pathname.startsWith("/workbench") &&
+        !pathname.startsWith("/code") &&
+        !pathname.startsWith("/design") && (
+          <div className="absolute left-2 top-2 z-10">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={toggleSidebar}
+              aria-label="Open sidebar"
+              className="size-8"
+            >
+              <PanelLeftOpen className="size-4" />
+            </Button>
+          </div>
+        )}
     </>
   );
 }

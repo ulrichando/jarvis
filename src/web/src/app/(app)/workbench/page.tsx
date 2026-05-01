@@ -10,20 +10,23 @@ import {
   apiDeleteWorkspace,
 } from "@/lib/workspace/client";
 import { Button } from "@/components/ui/button";
+import { SidebarToggle } from "@/components/layout/sidebar-toggle";
 
 export default function WorkbenchListPage() {
   const qc = useQueryClient();
   const [name, setName] = useState("");
 
+  // Workbench tab lists only kind="workbench" workspaces. Design
+  // workspaces stay separate.
   const { data: workspaces = [], isLoading } = useQuery({
-    queryKey: ["workspaces"],
-    queryFn: apiListWorkspaces,
+    queryKey: ["workspaces", "workbench"],
+    queryFn: () => apiListWorkspaces("workbench"),
   });
 
   const create = useMutation({
-    mutationFn: (n: string) => apiCreateWorkspace(n),
+    mutationFn: (n: string) => apiCreateWorkspace(n, "workbench"),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["workspaces"] });
+      qc.invalidateQueries({ queryKey: ["workspaces", "workbench"] });
       setName("");
     },
   });
@@ -31,13 +34,21 @@ export default function WorkbenchListPage() {
   const del = useMutation({
     mutationFn: (id: string) => apiDeleteWorkspace(id),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["workspaces"] });
+      qc.invalidateQueries({ queryKey: ["workspaces", "workbench"] });
     },
   });
 
   return (
-    <div className="h-full overflow-y-auto px-6 py-8">
-      <div className="mx-auto max-w-3xl">
+    <div className="flex h-full flex-col">
+      {/* Tiny header just for the SidebarToggle — the workbench paths
+          (this list AND /workbench/[id]) are excluded from both TopBar
+          and the Sidebar's floating button, so without this row there's
+          NO way to reopen the global sidebar from here. */}
+      <header className="flex h-11 shrink-0 items-center border-b border-border/60">
+        <SidebarToggle />
+      </header>
+      <div className="flex-1 overflow-y-auto px-6 py-8">
+        <div className="mx-auto max-w-3xl">
         <h1 className="font-serif text-2xl font-semibold tracking-tight mb-1">
           Workbench
         </h1>
@@ -103,6 +114,7 @@ export default function WorkbenchListPage() {
               </div>
             ))
           )}
+        </div>
         </div>
       </div>
     </div>
