@@ -33,6 +33,7 @@ Idempotent: `install()` can be called multiple times safely.
 from __future__ import annotations
 
 import logging
+from contextvars import ContextVar
 from typing import Any
 
 logger = logging.getLogger("jarvis.deepseek_roundtrip")
@@ -49,6 +50,16 @@ _STREAMING_STATE: dict[str, dict[str, Any]] = {}
 # loaded, or by a non-thinking model in a prior session). DeepSeek
 # accepts arbitrary non-empty text in this field.
 _PLACEHOLDER_REASONING = "(prior turn — reasoning not captured)"
+
+# Per-request flag — set by the patched LLMStream._run when the target
+# endpoint is api.deepseek.com. The patched `to_chat_ctx` reads this
+# and only injects reasoning_content when True. Without this gate,
+# Groq rejects requests with `'property reasoning_content is
+# unsupported'` (live failure 2026-05-01 13:19) — Groq tightened
+# their schema validation and the field is now an outright reject.
+_DEEPSEEK_REQUEST: ContextVar[bool] = ContextVar(
+    "jarvis_deepseek_request", default=False
+)
 
 
 def _patch_parse_choice() -> None:
@@ -110,6 +121,14 @@ def _patch_to_chat_ctx() -> None:
         messages, extra = orig_to_chat_ctx(
             chat_ctx, inject_dummy_user_message=inject_dummy_user_message
         )
+        # Only inject when this request is bound for DeepSeek. Groq
+        # rejects the field outright ('property reasoning_content is
+        # unsupported' — live 2026-05-01); OpenAI proper ignores it
+        # but the request is wasted bytes. The flag is set in the
+        # patched LLMStream._run via _DEEPSEEK_REQUEST.set(True).
+        if not _DEEPSEEK_REQUEST.get():
+            return messages, extra
+
         injected_real = 0
         injected_placeholder = 0
         for msg in messages:
@@ -127,16 +146,15 @@ def _patch_to_chat_ctx() -> None:
                 # No cached reasoning — happens for tool-call messages
                 # recalled from the conversations DB (prior session,
                 # different speech model) or messages produced before
-                # the patch was installed. The DeepSeek thinking-mode
-                # API demands reasoning_content on EVERY prior
-                # assistant tool-call message regardless of origin, so
-                # we synthesize a stub. Other providers (Groq, OpenAI
-                # proper) accept the extra field as a no-op.
+                # the patch was installed. DeepSeek thinking-mode
+                # demands reasoning_content on EVERY prior assistant
+                # tool-call message regardless of origin, so synthesize
+                # a stub.
                 msg["reasoning_content"] = _PLACEHOLDER_REASONING
                 injected_placeholder += 1
         if injected_real or injected_placeholder:
             logger.debug(
-                "injected reasoning_content: %d real, %d placeholder",
+                "injected reasoning_content (DeepSeek): %d real, %d placeholder",
                 injected_real,
                 injected_placeholder,
             )
@@ -146,11 +164,50 @@ def _patch_to_chat_ctx() -> None:
     oai_fmt._jarvis_deepseek_patched = True
 
 
+def _patch_run_marker() -> None:
+    """Wrap LLMStream._run with a context-var setter so the patched
+    to_chat_ctx knows whether the in-flight request is going to
+    DeepSeek. Detection: read self._client.base_url at call time.
+
+    Idempotent. Coexists with tool_name_sanitizer's _run wrap — both
+    patches stack, each does its own try/except wrapper. The marker
+    runs FIRST so that if the sanitizer fires, its own retry path
+    inherits the same provider context."""
+    from livekit.agents.inference import llm as inf_llm
+
+    if getattr(inf_llm.LLMStream, "_jarvis_deepseek_marker_patched", False):
+        return
+
+    orig_run = inf_llm.LLMStream._run
+
+    async def _patched(self) -> None:
+        is_deepseek = False
+        try:
+            client = getattr(self, "_client", None)
+            base_url = str(getattr(client, "base_url", "")) if client else ""
+            is_deepseek = "deepseek.com" in base_url.lower()
+        except Exception:
+            is_deepseek = False
+
+        token = _DEEPSEEK_REQUEST.set(is_deepseek)
+        try:
+            await orig_run(self)
+        finally:
+            _DEEPSEEK_REQUEST.reset(token)
+
+    inf_llm.LLMStream._run = _patched
+    inf_llm.LLMStream._jarvis_deepseek_marker_patched = True
+
+
 def install() -> None:
-    """Apply both round-trip patches. Idempotent."""
+    """Apply round-trip patches. Idempotent."""
     _patch_parse_choice()
     _patch_to_chat_ctx()
-    logger.info("DeepSeek reasoning_content round-trip patches installed")
+    _patch_run_marker()
+    logger.info(
+        "DeepSeek reasoning_content round-trip patches installed "
+        "(provider-scoped via _DEEPSEEK_REQUEST contextvar)"
+    )
 
 
 def cache_size() -> int:
