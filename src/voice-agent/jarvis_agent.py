@@ -4272,6 +4272,9 @@ async def entrypoint(ctx: JobContext) -> None:
                     else:
                         llm_used = active_speech_id
                         voice_used = "fallback-chain"
+                    interrupted_flag = bool(
+                        getattr(session, "_jarvis_was_interrupted", False)
+                    )
                     log_turn(
                         user_text=getattr(session, "_jarvis_turn_user_text", "") or "",
                         jarvis_text=text or "",
@@ -4284,10 +4287,12 @@ async def entrypoint(ctx: JobContext) -> None:
                         user_followup_30s=False,  # backfilled at report-time
                         route_fallback=False,
                         specialist=specialist,
+                        interrupted=interrupted_flag,
                     )
                     # Reset for next turn so a fresh handoff stamps
                     # the value and absent handoffs leave it None.
                     session._jarvis_last_specialist = None
+                    session._jarvis_was_interrupted = False
                     # Reset first-token marker too so the next
                     # turn measures from its own stream start.
                     session._jarvis_first_token_at_monotonic = None
@@ -4371,8 +4376,23 @@ async def entrypoint(ctx: JobContext) -> None:
                 return
             logger.info(f"[kill-phrase] '{text[:60]!r}' detected mid-speech → forcing interrupt")
             session.interrupt()
+            session._jarvis_was_interrupted = True
         except Exception as e:
             logger.debug(f"[kill-phrase] check skipped: {e}")
+
+    # Phase 10.5 — barge-in detection. If the user starts speaking
+    # while the agent is still mid-utterance, that's a real interrupt.
+    # Stamp it so the per-turn telemetry write picks it up.
+    @session.on("user_state_changed")
+    def _on_user_state_for_interrupt(ev) -> None:
+        try:
+            new_state = getattr(ev, "new_state", None)
+            if new_state == "speaking":
+                agent_state = getattr(session, "agent_state", "")
+                if agent_state == "speaking":
+                    session._jarvis_was_interrupted = True
+        except Exception as e:
+            logger.debug(f"[interrupt-detect] skipped: {e}")
 
     @session.on("user_input_transcribed")
     def _on_user_input_for_dispatch(ev) -> None:

@@ -66,16 +66,26 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
     with sqlite3.connect(db_path) as conn:
         # Step 1 — base schema (works for fresh dbs AND no-op for old ones).
         conn.executescript(_BASE_SCHEMA)
-        # Step 2 — online migration: add `specialist` if missing.
-        # ALTER TABLE … ADD COLUMN IF NOT EXISTS isn't supported by
-        # SQLite, so we check first and tolerate the dup-column race.
+        # Step 2-onwards — online migrations: ALTER TABLE ADD COLUMN IF
+        # NOT EXISTS isn't supported by SQLite, so we check first and
+        # tolerate the dup-column race that an exception would suggest.
         cols = {r[1] for r in conn.execute("PRAGMA table_info(turns)")}
         if "specialist" not in cols:
             try:
                 conn.execute("ALTER TABLE turns ADD COLUMN specialist TEXT")
             except sqlite3.OperationalError:
-                pass  # raced with another writer; column will be there
-        # Step 3 — index on specialist (after the column definitely exists).
+                pass
+        if "interrupted" not in cols:
+            # Phase 10.5 — bool flag; stamped True if the user barged
+            # in, fired a kill-phrase, or the framework auto-interrupted
+            # this turn. Lets the report show per-route interrupt-rate
+            # for tuning the per-route + per-emotion overlay.
+            try:
+                conn.execute(
+                    "ALTER TABLE turns ADD COLUMN interrupted INTEGER DEFAULT 0"
+                )
+            except sqlite3.OperationalError:
+                pass
         conn.execute("CREATE INDEX IF NOT EXISTS idx_turns_specialist ON turns(specialist)")
 
 
@@ -94,13 +104,16 @@ def log_turn(
     route_fallback: bool,
     notes: str = "",
     specialist: Optional[str] = None,
+    interrupted: bool = False,
 ) -> None:
     """Write one row. Any exception is swallowed so telemetry never blocks voice.
 
     `specialist` is the registry name (`desktop`, `planner`, `browser`, …)
     of the sub-agent that owned this turn — set when a `transfer_to_X`
-    handoff fired during the turn, None otherwise. Lets the report
-    surface specialist usage distribution alongside route distribution.
+    handoff fired during the turn, None otherwise.
+
+    `interrupted` is True if the user barged in during the agent's reply,
+    fired a kill-phrase, or the framework auto-interrupted this turn.
     """
     try:
         with sqlite3.connect(db_path) as conn:
@@ -108,14 +121,14 @@ def log_turn(
                 """INSERT INTO turns
                    (ts_utc, user_text, jarvis_text, emotion, route, llm_used,
                     voice_used, ttfw_ms, total_audio_ms, user_followup_30s,
-                    route_fallback, notes, specialist)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    route_fallback, notes, specialist, interrupted)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     user_text, jarvis_text, emotion, route, llm_used,
                     voice_used, ttfw_ms, total_audio_ms,
                     int(user_followup_30s), int(route_fallback), notes,
-                    specialist,
+                    specialist, int(interrupted),
                 ),
             )
     except Exception:
@@ -267,6 +280,31 @@ def report(
             spec_pct = lambda c: f"{c}/{n} ({c/n:.0%})"
             parts = ", ".join(f"{s}={spec_pct(c)}" for s, c in spec_rows)
             out.append(f"specialist usage: {parts}")
+
+        # ── Interruption rate (overall + per-route) ───────────────
+        # Phase 10.5 — surfaces the impact of per-route + per-emotion
+        # interrupt tuning. A route with a markedly higher interrupt
+        # rate than its base means the overlay isn't padding enough
+        # for that route's typical pace.
+        intr_total = conn.execute(
+            f"SELECT AVG(COALESCE(interrupted, 0)) FROM turns{where_sql}",
+            where_args,
+        ).fetchone()[0] or 0
+        out.append(f"interruption rate (overall): {intr_total:.1%}")
+        intr_rows = list(conn.execute(
+            f"""SELECT COALESCE(route, '?'),
+                       AVG(COALESCE(interrupted, 0)),
+                       COUNT(*)
+                FROM turns{where_sql}
+                GROUP BY route
+                HAVING COUNT(*) >= 5
+                ORDER BY 2 DESC""",
+            where_args,
+        ))
+        if intr_rows:
+            out.append("interruption rate by route:")
+            for r, rate, c in intr_rows:
+                out.append(f"  {r}: {rate:.1%} ({c} turns)")
 
         # ── Emotional follow-up rate + route-fallback rate ────────
         emo_followup = conn.execute(
