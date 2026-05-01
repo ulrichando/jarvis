@@ -138,9 +138,122 @@ def build_transfer_tool(spec: SpecialistSpec):
     return _transfer
 
 
+def build_delegate_tool():
+    """Generate the single `delegate(role, task)` function_tool that
+    covers ALL registered SubagentSpecs.
+
+    Why one tool instead of one-per-subagent:
+      - Token cost in supervisor prompt is constant in N. With 100
+        SpecialistSpecs the per-turn input grows by ~30k tokens — at
+        Groq's processing rate that's +1500ms TTFW. With one delegate
+        tool the cost is ~600 tokens flat, regardless of N.
+      - Adding a 101st subagent doesn't change the supervisor's prompt
+        — only the role-list inside the description grows.
+
+    The tool accepts `role` as a free-form string for now (LLM picks
+    from the role list embedded in the description). Validation
+    happens at call-time; an unknown role returns an error string the
+    supervisor can voice. Returns `None` if no subagents registered —
+    the supervisor then doesn't get the tool at all.
+    """
+    from .registry import all_subagents, get_subagent
+
+    available = all_subagents()
+    if not available:
+        return None
+
+    role_list = "\n".join(
+        f"  • {s.name} — {s.when_to_use[:140]}"
+        for s in available
+    )
+    description = (
+        "Delegate the user's request to a specialist sub-agent. "
+        "Pick the role whose description best matches the request.\n\n"
+        "Available roles:\n"
+        f"{role_list}\n\n"
+        "Args:\n"
+        "    role: One of the role names listed above (verbatim).\n"
+        "    task: Full instruction for the sub-agent — what to do, "
+        "what success looks like, any context it needs."
+    )
+
+    @function_tool(name="delegate", description=description)
+    async def _delegate(
+        context: RunContext, role: str, task: str
+    ) -> tuple[Agent, str]:
+        spec = get_subagent(role)
+        if spec is None:
+            from .registry import all_subagents as _all_subs
+            available_names = sorted(s.name for s in _all_subs())
+            logger.warning(
+                f"[delegate] unknown role={role!r}; "
+                f"available={available_names}"
+            )
+            # Return a string so the supervisor can voice the error
+            # without breaking the conversation. Unknown role is the
+            # LLM's mistake; surface it so the user can rephrase.
+            return (
+                context.session.current_agent,
+                f"Sorry, sir, I don't have a {role!r} specialist. "
+                f"Available: {', '.join(available_names[:10])}.",
+            )
+
+        session = context.session
+        supervisor = session.current_agent
+        try:
+            ctx = supervisor.chat_ctx.copy(exclude_instructions=True)
+            if spec.max_history_items is not None:
+                ctx = ctx.truncate(max_items=spec.max_history_items)
+        except Exception:
+            ctx = None
+
+        try:
+            session._jarvis_last_specialist = spec.name
+        except Exception:
+            pass
+
+        logger.info(
+            f"[delegate] → {spec.name} (task: {task[:80]!r})"
+        )
+
+        # Reuse RegistrySpecialist by adapting SubagentSpec fields onto
+        # SpecialistSpec — saves us a parallel Agent class.
+        adapter_spec = SpecialistSpec(
+            name=spec.name,
+            transfer_tool=f"(via delegate)",
+            when_to_use=spec.when_to_use,
+            instructions=spec.instructions,
+            tool_factory=spec.tool_factory,
+            ack_phrase=spec.ack_phrase,
+            max_history_items=spec.max_history_items,
+            enabled=spec.enabled,
+        )
+        return (
+            RegistrySpecialist(
+                spec=adapter_spec,
+                supervisor=supervisor,
+                chat_ctx=ctx,
+            ),
+            spec.ack_phrase,
+        )
+
+    return _delegate
+
+
 def build_all_transfer_tools() -> list[Any]:
-    """All registered specialists' transfer tools, ready to attach to
-    the supervisor's `tools=[…]` list at construction. No supervisor
-    arg needed — `self` is bound at call-time by LiveKit."""
+    """All registered specialists' transfer tools + the single delegate
+    tool covering subagents. Ready to attach to the supervisor's
+    `tools=[…]` list at construction.
+
+    Returns the per-name `transfer_to_X` tools for legacy SpecialistSpecs
+    (planner / desktop / browser today) PLUS one `delegate(role, task)`
+    tool covering all SubagentSpecs. Both can coexist — the supervisor
+    picks `transfer_to_X` for the existing 3 specialists and `delegate`
+    for everything new.
+    """
     from .registry import all_specs
-    return [build_transfer_tool(s) for s in all_specs()]
+    tools: list[Any] = [build_transfer_tool(s) for s in all_specs()]
+    delegate = build_delegate_tool()
+    if delegate is not None:
+        tools.append(delegate)
+    return tools

@@ -31,17 +31,27 @@ DesktopActionsAgent is mirrored here so adding the next specialist
 (browser, planner, research, etc.) follows the registry pattern, but
 existing imports of DesktopActionsAgent keep working.
 """
-from .registry import SpecialistSpec, register, all_specs, get, clear
+from .registry import (
+    SpecialistSpec, register, all_specs, get, clear,
+    SubagentSpec, register_subagent, all_subagents, get_subagent, clear_subagents,
+)
 
-# Auto-register built-in specialists on package import. Each module's
-# register_X() helper is idempotent (re-registration overwrites), so
-# importing this package twice is safe.
+# Auto-register built-in specialists + subagents on package import.
+# Each module's register_X() helper is idempotent (re-registration
+# overwrites), so importing this package twice is safe.
 def _register_builtins() -> None:
-    from . import desktop, planner, browser
+    from . import desktop, planner, browser, summarize
     desktop.register_desktop()
     planner.register_planner()
     browser.register_browser()
+    # SubagentSpec path — new specialists go here so they don't bloat
+    # the supervisor's prompt with one transfer_to_X tool each.
+    summarize.register_summarize()
 
 _register_builtins()
 
-__all__ = ["SpecialistSpec", "register", "all_specs", "get", "clear"]
+__all__ = [
+    "SpecialistSpec", "register", "all_specs", "get", "clear",
+    "SubagentSpec", "register_subagent", "all_subagents",
+    "get_subagent", "clear_subagents",
+]
