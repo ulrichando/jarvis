@@ -83,6 +83,8 @@ import { TaskCreateTool } from './tools/TaskCreateTool/TaskCreateTool.js'
 import { TaskGetTool } from './tools/TaskGetTool/TaskGetTool.js'
 import { TaskUpdateTool } from './tools/TaskUpdateTool/TaskUpdateTool.js'
 import { TaskListTool } from './tools/TaskListTool/TaskListTool.js'
+import { GetLocationTool } from './tools/GetLocationTool/GetLocationTool.js'
+import { SetLocationTool } from './tools/SetLocationTool/SetLocationTool.js'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { isToolSearchEnabledOptimistic } from './utils/toolSearch.js'
 import { isTodoV2Enabled } from './utils/tasks.js'
@@ -244,6 +246,11 @@ export function getAllBaseTools(): Tools {
     ...(process.env.NODE_ENV === 'test' ? [TestingPermissionTool] : []),
     ListMcpResourcesTool,
     ReadMcpResourceTool,
+    // Location tools — IP geo + Wi-Fi BSSID via Google Geolocation API,
+    // shared override file with the voice-agent at ~/.jarvis/location-override.
+    // Use when the user asks about weather, "near me", regional content, etc.
+    GetLocationTool,
+    SetLocationTool,
     // Include ToolSearchTool when tool search might be enabled (optimistic check)
     // The actual decision to defer tools happens at request time in claude.ts
     ...(isToolSearchEnabledOptimistic() ? [ToolSearchTool] : []),
