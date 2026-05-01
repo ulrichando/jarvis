@@ -57,6 +57,20 @@ CREATE TABLE IF NOT EXISTS turns (
 );
 CREATE INDEX IF NOT EXISTS idx_turns_ts_utc ON turns(ts_utc);
 CREATE INDEX IF NOT EXISTS idx_turns_route  ON turns(route);
+
+-- Phase 10.6 — launch_app outcome ledger. One row per launch attempt
+-- across all sessions. Lets the report surface per-binary OK / MISSING
+-- / CRASHED counts so we can spot patterns like "users keep asking for
+-- 'notepad' but it isn't installed → suggest adding mousepad to the
+-- specialist's app-name lookup".
+CREATE TABLE IF NOT EXISTS launch_attempts (
+    id INTEGER PRIMARY KEY,
+    ts_utc TEXT NOT NULL,
+    binary TEXT NOT NULL,
+    outcome TEXT NOT NULL  -- 'OK' | 'MISSING' | 'CRASHED'
+);
+CREATE INDEX IF NOT EXISTS idx_launch_ts ON launch_attempts(ts_utc);
+CREATE INDEX IF NOT EXISTS idx_launch_binary ON launch_attempts(binary);
 """
 
 
@@ -133,6 +147,31 @@ def log_turn(
             )
     except Exception:
         return  # silent — see module docstring
+
+
+def log_launch_attempt(
+    *,
+    db_path: Path = DEFAULT_DB_PATH,
+    binary: str,
+    outcome: str,
+) -> None:
+    """Write one launch_attempts row. Outcome is `OK | MISSING | CRASHED`.
+
+    Called from launch_app() after the verification step. Failures are
+    swallowed — telemetry never blocks the user-visible reply.
+    """
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO launch_attempts (ts_utc, binary, outcome) VALUES (?, ?, ?)",
+                (
+                    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    binary,
+                    outcome,
+                ),
+            )
+    except Exception:
+        return
 
 
 def _median_int(values: list[int]) -> Optional[int]:
@@ -318,6 +357,51 @@ def report(
             where_args,
         ).fetchone()[0] or 0
         out.append(f"route-fallback rate: {fb:.1%}")
+
+        # ── launch_app outcomes (Phase 10.6) ─────────────────────────
+        # Only show this section when there's data — fresh dbs and
+        # voice-only sessions have no launch attempts.
+        launch_where = ""
+        launch_args: tuple = ()
+        if days is not None and days > 0:
+            launch_where = " WHERE ts_utc >= ?"
+            launch_args = where_args
+        try:
+            total_attempts = conn.execute(
+                f"SELECT COUNT(*) FROM launch_attempts{launch_where}",
+                launch_args,
+            ).fetchone()[0]
+        except sqlite3.OperationalError:
+            total_attempts = 0  # fresh db without the migration yet
+        if total_attempts:
+            ok_n = conn.execute(
+                f"SELECT COUNT(*) FROM launch_attempts{launch_where}"
+                f"{' AND' if launch_where else ' WHERE'} outcome='OK'",
+                launch_args,
+            ).fetchone()[0]
+            out.append(
+                f"launch attempts: {total_attempts} ({ok_n}/{total_attempts} OK"
+                f", {ok_n/total_attempts:.0%} success)"
+            )
+            # Per-binary breakdown — limit to top 8 by attempt count
+            # so a noisy session doesn't blow up the report.
+            for binary, ok, missing, crashed in conn.execute(
+                f"""SELECT binary,
+                           SUM(CASE outcome WHEN 'OK' THEN 1 ELSE 0 END),
+                           SUM(CASE outcome WHEN 'MISSING' THEN 1 ELSE 0 END),
+                           SUM(CASE outcome WHEN 'CRASHED' THEN 1 ELSE 0 END)
+                    FROM launch_attempts{launch_where}
+                    GROUP BY binary
+                    ORDER BY COUNT(*) DESC
+                    LIMIT 8""",
+                launch_args,
+            ):
+                # Only call out problem rows in the per-binary section —
+                # OK-only binaries clutter the output without adding signal.
+                if (missing or 0) or (crashed or 0):
+                    out.append(
+                        f"  {binary}: ok={ok or 0} missing={missing or 0} crashed={crashed or 0}"
+                    )
     return "\n".join(out)
 
 
