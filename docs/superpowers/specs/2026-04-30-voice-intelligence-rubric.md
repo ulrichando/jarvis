@@ -310,3 +310,43 @@ Distance to 90: 2 points. Remaining axes (mostly the same as Phase 7's analysis)
 4. **Whisper logprob-based STT gate (axis 10 deepening, no axis change).** The Phase-1 STT gate is shape-only. Wiring Whisper's `avg_logprob` from the Groq STT response would let us drop low-confidence transcripts numerically. Currently blocked: livekit-plugins-groq doesn't surface logprobs in `UserInputTranscribedEvent`. Fork or PR upstream.
 
 The next obvious move is Phase 9 candidate #1 (acoustic prosody) since it's the largest remaining axis gap and unblocks 88 → 89.
+
+### 2026-04-30 — Phase 9 (DeepSeek viability + verified launches)
+
+Three reliability commits driven by a real dogfood session that uncovered three distinct failure modes — none planned, all uncovered by the user actually using the agent.
+
+- **Phase 9.1 (`d721e7e`):** REASONING regex fast-path. Live telemetry showed zero REASONING-route turns over 127 prior turns; the LLM classifier was collapsing reasoning-class prompts to TASK. Synchronous regex catches "why does", "explain X", "walk me through", "design", "debug", "step by step", "compare X to Y" patterns and forces REASONING. Disambiguated against the BANTER "how are you" family with explicit negative tests. Awaits live data to confirm the route lights up.
+- **Phase 9.2 (`d6bffde`):** LLM-error fallback voice. When the LLM jams JSON into the tool name field (`recall_conversation{"query":...}`) and the openai client rejects with `tool call validation failed`, the agent used to go silent — user saw zero feedback for an entire turn. Now `_on_error` speaks "Sorry, sir, I had trouble with that. Could you rephrase?" so the user knows the turn was lost. Pure UX win; doesn't fix the root malformed-tool-call bug, but stops the silent-failure mode.
+- **Phase 9.3 (`0f1b779`, `1760985`, `04e1a12`, `7a75b07`, `ca67795`):** **DeepSeek V4 thinking models unblocked as speech LLMs.** This was the headline of the session. Five sub-commits:
+   - `0f1b779` — `deepseek_roundtrip.py`: monkey-patches `livekit.agents.inference.llm.LLMStream._parse_choice` (capture `delta.reasoning_content` keyed by tool_call_id) + `livekit.agents.llm._provider_format.openai.to_chat_ctx` (inject reasoning_content on assistant tool-call messages). DeepSeek V4 (`v4-flash`, `v4-pro`) was previously unusable as a speech model — multi-turn handoffs hard-failed with `400: 'reasoning_content in the thinking mode must be passed back'`. Probed live against the API to verify the patch works for `deepseek-chat` (V3, no-op), `v4-flash`, and `v4-pro` (all PASS). Survey of langchain-deepseek, litellm, instructor, livekit-agents upstream, and openai-python: nobody handles this natively (langchain #34166, litellm #26395, livekit #4190 all open).
+   - `1760985` — voice-client allowlist re-enables DeepSeek (was scrubbed when the family was flagged broken).
+   - `04e1a12` — tray's `speech_model_pretty` lookup gets DeepSeek entries so the indicator label resolves correctly after switching.
+   - `7a75b07` — voice-client `/voice-model` and `/tts-provider` POST endpoints become no-op when value unchanged. **Caught live**: a stray tray re-POST of the current model triggered `systemctl restart jarvis-voice-agent` mid-handoff, killing a desktop specialist that was about to open Chrome (exit 255).
+   - `ca67795` — placeholder `reasoning_content` for tool-call messages without a cached entry. Tool calls recalled from the conversations DB (different session, possibly a non-thinking model) had no entry in the call_id sidecar, so the prior guard skipped them entirely — DeepSeek 400'd on the supervisor's resume after every specialist handoff. Now any assistant tool-call message without cached reasoning gets a stub injected. DeepSeek accepts arbitrary non-empty text; non-DeepSeek providers ignore the field.
+- **Phase 9.4 (`93556c5`):** `launch_app(binary, args="")` — verified launches. **Caught live**: user asked for "open Notepad" on Linux. Desktop specialist ran `setsid -f notepad >/dev/null 2>&1` ten times and reported `Two Notepad windows opened, sir.` three times. Zero windows existed — `setsid` forks before `notepad` fails to exec, so bash returns exit 0 and the LLM hallucinated success. New tool does `shutil.which()` pre-flight (catches missing binaries with a `MISSING:` return), then `pgrep` 600ms after spawn (catches binaries that exec'd and crashed), capturing stderr to `/tmp/jarvis-launch-*.log` for the failure path. Desktop prompt rewritten to require `launch_app` for every GUI launch and to map result codes to honest voice replies. Tested live against `notepad` (MISSING) and `xeyes` (OK).
+
+**Re-score after Phase 9:**
+
+| # | Axis | Before | After | Delta |
+|---|---|---|---|---|
+| 4 | LLM dispatch by route | 8 | 9 | +1 — DeepSeek V4 thinking models now first-class speech LLMs (previously hard-failed on handoff). The dispatcher's per-route LLM swap is no longer artificially gated to non-thinking models. Phase 9.1 regex fast-path also unblocks the REASONING route's data path. |
+| 9 | Tool execution discipline | 10 | 10 | capped, but the win is real — `launch_app` makes the desktop specialist physically incapable of hallucinating success on missing binaries, and Phase 9.2 means tool-call validation failures speak rather than silence. Both prevent the "JARVIS lied / JARVIS didn't respond" moments that drive trust loss. |
+| 10 | Self-eval / closed loop | 10 | 10 | capped, but `launch_app` introduces structured tool-result codes (OK/MISSING/CRASHED) that telemetry can aggregate per-binary in the future — laying the groundwork for "what apps do users ask for that aren't installed" reporting. |
+
+Plus a live-only fix that doesn't slot under any axis but matters: **stray same-value POST to /voice-model no longer kills active sessions.** Subtle bug, hit by the tray re-syncing on launch, observed killing a specialist mid-handoff once. Now any unchanged value short-circuits before the systemctl call.
+
+**New total: 88 → 90 / 100.**
+
+We hit the rubric goal. Distance to 95 from here is mostly Axis 2 (emotion detection) since 1, 3, 4, 5, 7, 8, 9, 10 are all ≥9.
+
+### Phase 10+ candidates (path to 95)
+
+1. **Acoustic prosody for emotion detection (axis 2: 8 → 9 or 10, +1 to +2).** Still the biggest single-axis gap remaining. Compute RMS-energy + pitch-contour from the mic stream's audio frames; merge into `detect_emotion`. Catches "frustrated low-energy" / "excited high-pitch" that the lex+speech-rate path misses. ~1 hour of code; not gated on any paid API.
+
+2. **REASONING route live-data confirmation (no score change yet).** Phase 9.1 shipped the regex; need ~6h of normal use to verify the route lights up in `turn_telemetry.py --report`. If it does, Axis 4 may have headroom for another +0 (already at 9 from Phase 9.3) but the system as a whole gets a confidence boost.
+
+3. **Tool-call name sanitizer (recurring bug 2 — reliability win, no axis bump).** Subclass `groq.LLM` to repair `tool_name{"args":...}` malformed names before the openai client rejects them. Eliminates the silent-turn cause that Phase 9.2 currently apologizes for. ~3 hours.
+
+4. **Whisper logprob-based STT gate (axis 10 deepening, capped score).** Still blocked on `livekit-plugins-groq` not surfacing `avg_logprob`. Fork or upstream PR.
+
+5. **`launch_app` outcome telemetry.** Log MISSING/CRASHED outcomes per binary; expose in `turn_telemetry.py --report`. Lets us identify "users ask for X but it's not installed — should we suggest Y" patterns over time.
