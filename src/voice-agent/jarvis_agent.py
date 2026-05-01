@@ -76,6 +76,14 @@ from livekit.plugins.elevenlabs import VoiceSettings as _ELVoiceSettings
 import deepseek_roundtrip
 deepseek_roundtrip.install()
 
+# Recover from `tool call validation failed: attempted to call tool
+# '<name> {<json>}' which was not in request.tools` — the recurring
+# bug where some Groq models jam JSON args into the name field.
+# install() catches the APIError, parses out the real name + args,
+# and synthesizes a clean ChatChunk so the turn isn't lost.
+import tool_name_sanitizer
+tool_name_sanitizer.install()
+
 # ── Maya-class speech intelligence ────────────────────────────────────
 from turn_router    import (
     detect_emotion, classify_turn, AudioMeta,
