@@ -37,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
     "specialists.desktop",
     "specialists.planner",
     "specialists.browser",
+    "specialists.summarize",
 ])
 def test_module_imports_clean(mod):
     """Each must import without raising. Module-level patches like
@@ -77,6 +78,52 @@ def test_jarvis_agent_exposes_required_tools():
     )
     for name in required:
         assert hasattr(jarvis_agent, name), f"jarvis_agent.{name} is missing"
+
+
+def test_subagent_registry_includes_summarize():
+    """The summarize subagent should auto-register when specialists/
+    is imported. Verifies the SubagentSpec / delegate path is wired
+    end-to-end at production startup."""
+    from specialists.registry import SUBAGENT_REGISTRY, clear_subagents
+    from specialists.summarize import register_summarize
+
+    # Other tests (test_subagent_registry) clear the SUBAGENT_REGISTRY
+    # in their fixtures and may leave it empty when run before this.
+    # Re-register explicitly so this test is order-independent.
+    clear_subagents()
+    register_summarize()
+
+    assert "summarize" in SUBAGENT_REGISTRY
+    assert SUBAGENT_REGISTRY["summarize"].enabled is True
+
+
+def test_build_all_transfer_tools_includes_delegate():
+    """build_all_transfer_tools should return BOTH the per-spec
+    transfer_to_X tools AND the single delegate(role, task) tool
+    when there are SubagentSpecs registered."""
+    from specialists.registry import (
+        clear, clear_subagents, _REGISTRY, SUBAGENT_REGISTRY,
+    )
+    from specialists.planner import register_planner
+    from specialists.desktop import register_desktop
+    from specialists.browser import register_browser
+    from specialists.summarize import register_summarize
+    from specialists.agent import build_all_transfer_tools
+
+    clear()
+    clear_subagents()
+    register_planner()
+    register_desktop()
+    register_browser()
+    register_summarize()
+
+    tools = build_all_transfer_tools()
+    tool_names = {getattr(t, "name", None) or t.info.name for t in tools}
+    # Three legacy transfer_to_X tools + one delegate tool = 4
+    assert "transfer_to_planner" in tool_names
+    assert "transfer_to_desktop" in tool_names
+    assert "transfer_to_browser" in tool_names
+    assert "delegate" in tool_names
 
 
 def test_specialist_registry_discovers_three_enabled_specs():
