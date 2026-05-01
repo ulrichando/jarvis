@@ -81,3 +81,59 @@ def clear() -> None:
     """Reset the registry. Test-only — production agents register on
     import and never clear."""
     _REGISTRY.clear()
+
+
+# ── SubagentSpec — same shape, different routing ─────────────────────
+#
+# SpecialistSpec → supervisor exposes ONE `transfer_to_{name}` tool per
+# spec. Doesn't scale past ~25 specs (each tool def costs ~300 prompt
+# tokens; supervisor TTFW grows linearly with N).
+#
+# SubagentSpec → supervisor exposes a single `delegate(role, task)` tool
+# that covers ALL registered subagents. Token cost is constant in N.
+# Use for new specialists where prompt-bloat matters more than per-tool
+# specificity. The 3 existing specialists (planner / desktop / browser)
+# stay on `SpecialistSpec` for back-compat.
+
+
+@dataclass
+class SubagentSpec:
+    """Declarative spec for a sub-agent reachable via `delegate(role, task)`.
+
+    Same fields as SpecialistSpec minus `transfer_tool` (there is no
+    per-spec transfer tool — `delegate` handles routing by name).
+    """
+    name: str
+    when_to_use: str
+    instructions: str
+    tool_factory: Callable[[], list]
+    ack_phrase: str = "On it, sir."
+    max_history_items: Optional[int] = 12
+    enabled: bool = True
+
+
+SUBAGENT_REGISTRY: dict[str, SubagentSpec] = {}
+
+
+def register_subagent(spec: SubagentSpec) -> None:
+    """Register a subagent. Re-registering the same name overwrites,
+    matching `register()` semantics for SpecialistSpec."""
+    if not spec.name:
+        raise ValueError("SubagentSpec.name must be non-empty")
+    SUBAGENT_REGISTRY[spec.name] = spec
+
+
+def all_subagents() -> list[SubagentSpec]:
+    """All enabled subagents in registration order."""
+    return [s for s in SUBAGENT_REGISTRY.values() if s.enabled]
+
+
+def get_subagent(name: str) -> Optional[SubagentSpec]:
+    """Lookup by name. None if missing OR disabled."""
+    s = SUBAGENT_REGISTRY.get(name)
+    return s if s and s.enabled else None
+
+
+def clear_subagents() -> None:
+    """Reset the subagent registry. Test-only."""
+    SUBAGENT_REGISTRY.clear()
