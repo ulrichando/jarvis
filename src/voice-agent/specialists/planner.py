@@ -147,7 +147,7 @@ def register_planner() -> None:
         when_to_use=_PLANNER_WHEN,
         instructions=PLANNER_INSTRUCTIONS,
         tool_factory=_planner_tools,
-        ack_phrase="On it, sir.",
+        ack_phrase="Of course, sir.",
         max_history_items=12,
         enabled=True,
     ))
