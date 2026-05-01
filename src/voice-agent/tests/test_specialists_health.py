@@ -313,3 +313,46 @@ def test_browser_v2_tool_factory_builds_when_enabled():
         getattr(getattr(t, "_func", t), "__name__", "") == "browser_task_v2"
         for t in tools
     )
+
+
+def test_no_specialist_imports_task_done_from_jarvis_agent():
+    """task_done lives on RegistrySpecialist (specialists/agent.py:55)
+    and is auto-attached when a specialist activates. Importing it from
+    jarvis_agent ImportErrors at handoff time and crashes the
+    specialist. Regression captured live 2026-05-01: browser_v2
+    imported `task_done` from jarvis_agent → ImportError → handoff
+    failed silently → supervisor's parallel web_fetch saved the turn,
+    masking the bug."""
+    from pathlib import Path
+    spec_dir = Path(__file__).parent.parent / "specialists"
+    offenders = []
+    for f in spec_dir.glob("*.py"):
+        text = f.read_text()
+        # Crude but effective: any specialist that does
+        # `from jarvis_agent import ... task_done ...` is broken.
+        if "from jarvis_agent import" in text and "task_done" in text:
+            # Walk the import lines to be sure.
+            for line in text.splitlines():
+                if line.startswith("from jarvis_agent import") and "task_done" in line:
+                    offenders.append(f"{f.name}: {line.strip()}")
+    assert not offenders, (
+        f"Specialists must NOT import task_done from jarvis_agent "
+        f"(it's a RegistrySpecialist method). Offenders:\n  "
+        + "\n  ".join(offenders)
+    )
+
+
+@pytest.mark.parametrize("name", SPECIALIST_NAMES + ["browser_v2"])
+def test_specialist_handoff_constructs_without_error(name):
+    """Smoke test the full handoff path: tool_factory must build, and
+    the registry's transfer-tool builder must not crash. Catches
+    runtime ImportErrors / decorator bugs that only surface during a
+    real handoff (which is what happened with browser_v2's spurious
+    task_done import on 2026-05-01)."""
+    from specialists.registry import get
+    spec = get(name)
+    if spec is None or not spec.enabled:
+        pytest.skip(f"{name} not enabled in this environment")
+    # Just call tool_factory — that's where the broken import surfaces.
+    tools = spec.tool_factory()
+    assert isinstance(tools, list)
