@@ -108,6 +108,10 @@ class AudioMeta:
     speech_rate_wpm: float = 0.0   # 0 means unknown
     baseline_wpm:    float = 0.0   # rolling-window user baseline (0=unknown)
     peak_db:         float = 0.0
+    # Phase 10.3 — acoustic prosody. Mean RMS dB over the speech segment
+    # of THIS turn vs an EMA baseline of prior turns. 0.0 means unknown.
+    rms_db:          float = 0.0
+    rms_baseline_db: float = 0.0
 
 
 def _caps_ratio(text: str) -> float:
@@ -235,6 +239,8 @@ def detect_emotion(transcript: str, audio: AudioMeta) -> Emotion:
          to urgent. Applied AFTER lex so a strong "amazing!!!" stays
          excited rather than getting clobbered to urgent.
       4. Speech-rate ratio refines neutral / excited / sad.
+      5. RMS-energy delta (Phase 10.3) — refines neutral toward
+         frustrated/urgent (loud) or sad (quiet) when lex was silent.
     """
     base = _lex_match(transcript)
 
@@ -254,6 +260,17 @@ def detect_emotion(transcript: str, audio: AudioMeta) -> Emotion:
         if ratio > 1.30 and base in ("neutral", "excited"):
             return "urgent"
         if ratio < 0.70 and base in ("neutral", "sad"):
+            return "sad"
+
+    # RMS-energy delta. dB is logarithmic — a +6 dB delta is roughly a
+    # 2× amplitude jump (about as loud as someone leaning into the
+    # mic). Conservative thresholds so we only refine when the signal
+    # is clear; lex/rate handle the obvious cases above.
+    if audio.rms_db and audio.rms_baseline_db:
+        diff = audio.rms_db - audio.rms_baseline_db
+        if diff > 6.0 and base == "neutral":
+            return "frustrated"
+        if diff < -6.0 and base in ("neutral", "sad"):
             return "sad"
 
     return base
