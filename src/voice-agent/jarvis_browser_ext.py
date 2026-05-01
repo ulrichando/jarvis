@@ -86,7 +86,7 @@ def _summarize(result: dict, max_chars: int = 800) -> str:
     return str(rest)[:max_chars] if rest else "Done."
 
 
-# ── Navigation (5) ────────────────────────────────────────────────────
+# ── Navigation (6) ────────────────────────────────────────────────────
 
 
 @function_tool
@@ -98,6 +98,20 @@ async def ext_navigate(url: str) -> str:
         url: Full URL including protocol (https://example.com).
     """
     return _summarize(await _post("navigate", url=url))
+
+
+@function_tool
+async def ext_new_tab(url: str = "") -> str:
+    """Open a BRAND-NEW tab in Chrome (Ctrl+T equivalent). Does NOT
+    close or replace the currently-active tab. Use for "open a new
+    tab" / "open a tab" / "new tab" requests. Optionally navigates
+    the new tab to `url` if provided; otherwise lands on Chrome's
+    new-tab page.
+
+    Args:
+        url: Optional URL to load in the new tab. Empty = new-tab page.
+    """
+    return _summarize(await _post("new_tab", url=url))
 
 
 @function_tool
@@ -389,11 +403,11 @@ async def ext_set_cookies(cookies: list, confirmed: bool = False) -> str:
 # ── Public surface ────────────────────────────────────────────────────
 
 
-# All 25 tools, in the order the prompt references them. Specialists
+# All 26 tools, in the order the prompt references them. Specialists
 # pull this in via their tool_factory.
 ALL_TOOLS = [
     # Navigation
-    ext_navigate, ext_back, ext_forward, ext_get_url, ext_close_tab,
+    ext_navigate, ext_new_tab, ext_back, ext_forward, ext_get_url, ext_close_tab,
     # Reading
     ext_extract_text, ext_find_by_text, ext_dom_summary, ext_screenshot,
     # Mouse

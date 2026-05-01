@@ -276,6 +276,7 @@ async function dispatchCommand({ action, args = {}, confirmed = false }) {
   try {
     switch (action) {
       case 'navigate':       return await _bgNavigate(args);
+      case 'new_tab':        return await _bgNewTab(args);
       case 'back':           return await _bgHistory(-1);
       case 'forward':        return await _bgHistory(+1);
       case 'close_tab':      return await _bgCloseTab();
@@ -313,6 +314,15 @@ async function _bgNavigate({ url }) {
   await chrome.tabs.update(tabId, { url });
   await _waitForLoad(tabId);
   return await _forwardToContent('dom_summary', {});
+}
+
+async function _bgNewTab({ url } = {}) {
+  // Open a brand-new tab (Ctrl+T equivalent). url is optional — empty
+  // means about:blank-ish "new tab page". active:true so the user sees
+  // it; previously-active tabs are NOT closed.
+  const tab = await chrome.tabs.create({ url: url || undefined, active: true });
+  if (url) await _waitForLoad(tab.id);
+  return { ok: true, tab_id: tab.id, url: tab.url || (url || 'newtab') };
 }
 
 function _waitForLoad(tabId, timeoutMs = 10_000) {
