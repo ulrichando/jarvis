@@ -126,14 +126,30 @@ def build_transfer_tool(spec: SpecialistSpec):
         logger.info(
             f"[handoff] → {spec.name} specialist (request: {request[:80]!r})"
         )
-        return (
-            RegistrySpecialist(
+        # Defensive: catch tool-factory failures (e.g. ImportError from
+        # a typo'd specialist module) so the supervisor sees a concrete
+        # error string instead of the framework's generic "exception
+        # occurred while executing tool". Captured live 2026-05-01:
+        # browser_v2's `from jarvis_agent import task_done` ImportError
+        # crashed the handoff silently — supervisor's parallel tool call
+        # masked it. The supervisor saw nothing actionable.
+        try:
+            specialist = RegistrySpecialist(
                 spec=spec,
                 supervisor=supervisor,
                 chat_ctx=ctx,
-            ),
-            spec.ack_phrase,
-        )
+            )
+        except Exception as e:
+            logger.exception(
+                f"[handoff] {spec.name} specialist failed to construct"
+            )
+            # Stay on supervisor; return an error string the LLM can
+            # narrate or recover from.
+            return (
+                supervisor,
+                f"(specialist {spec.name} unavailable: {type(e).__name__}: {e})",
+            )
+        return (specialist, spec.ack_phrase)
 
     return _transfer
 
