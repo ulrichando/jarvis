@@ -472,7 +472,41 @@ Concrete payoff: after a few hours of soak, the report will surface things like 
 
 No axis bumps — this is quality of detail, not score movement. **Total stays 94 / 100.**
 
-### Phase 10+ candidates (path to 95)
+### 2026-04-30 — Phase 10.7 (ack-vocabulary unlock)
+
+The original axis-6 cap was a user-preference constraint: "use 'sir' sparingly, bare-vocative is canonical 'Yes, sir?'". User confirmed tonight that the constraint was about reflexive over-use of "sir" and the canonical bare-vocative — *not* about the LLM's general opener variety. So the cap relaxes for openers other than bare-vocative responses.
+
+What shipped (`c9d749f`):
+
+- **`ACKNOWLEDGMENT VOCABULARY` section** added to `JARVIS_INSTRUCTIONS` between FORMATTING and BARE-VOCATIVE HANDLING. Three pieces:
+  - Per-route opener menus (TASK / REASONING / BANTER / EMOTIONAL) with 5-6 alternatives each.
+  - Don't-repeat-the-same-opener-twice rule.
+  - Rationing principle for "sir": intentional, not reflexive; preferred at the end of brief task confirmations; bare-vocative remains exempt.
+  - Emotion → tone map (urgent → snappy, frustrated → don't compound, sad → softer pace, excited → match energy).
+
+- **No code changes.** The post-process `cap_sir_count` filter still enforces the once-per-reply cap on "sir"; this commit just teaches the LLM to use varied openers instead of leaning on the same default phrase.
+
+**Re-score after Phase 10.7:**
+
+| # | Axis | Before | After | Delta |
+|---|---|---|---|---|
+| 6 | Acknowledgment vocabulary | 7 | 8 | +1 — explicit per-route opener menus + anti-repeat rule + emotion tone map. The +2 to 9 (Claude-parity) requires live verification that the LLM actually follows the variety rules; deferred to a Phase 11 live-data check. |
+
+**New total: 94 → 95 / 100. Reaches 95% goal.**
+
+This was the hardest 1-point lift of the night because the constraint was social (user preference), not technical. The unlock was checking the original feedback's *scope* — it was about reflexive "sir" repetition, not banning ack variety in general.
+
+### Phase 11 — live data soak (no code, just observation)
+
+The remaining headroom (95 → 97-98 plausibly) is gated on data, not implementation:
+1. **Verify Phase 10.7 actually varies openers** in practice. If the LLM still defaults to "Got it, sir." 70% of the time, the prompt addition wasn't enough — would need a runtime "last 3 openers" injection into the system message before each reply. Bump axis 6 to 9 if variety > 60%, to 10 if > 80% with no repeats in the last-3 window.
+2. **Tune Phase 10.5's interrupt overlay.** With ≥50 turns of `interrupted` data, look at the per-route rate. If REASONING shows interrupt-rate > 20%, the overlay isn't padding enough — relax the per-emotion adjustment for sad / frustrated. If BANTER shows < 5%, the base is too defensive — tighten `min_words` from 1 to 2.
+3. **Check Phase 10.6's launch_app data.** Patterns like `notepad: missing=8` should drive prompt updates ("for notepad asks, suggest mousepad").
+4. **Validate Phase 10.3's RMS thresholds.** ±6 dB is a guess. With ~100 turns of rms_db / rms_baseline_db pairs we can fit the actual std-dev and pick thresholds that catch outliers without over-firing.
+
+These are all "wait for data" tasks — no code to ship tonight. The soak runs naturally as the agent stays in production use.
+
+### Phase 11+ candidates (path to 100)
 
 2. **REASONING route live-data confirmation (no score change yet).** Phase 9.1 shipped the regex; need ~6h of normal use to verify the route lights up in `turn_telemetry.py --report`. If it does, Axis 4 may have headroom for another +0 (already at 9 from Phase 9.3) but the system as a whole gets a confidence boost.
 
