@@ -64,6 +64,32 @@ def test_returns_none_when_malformed_name_has_no_json_body():
     assert res is None
 
 
+def test_handles_name_eq_json_form():
+    """Captured live 2026-05-01: Groq llama emitted
+    `web_fetch={"url":"...","timeout":"15"}` — no space, `=` sep."""
+    err = (
+        "tool call validation failed: attempted to call tool "
+        "'web_fetch={\"url\": \"https://example.com\", \"timeout\": \"15\"}' "
+        "which was not in request.tools"
+    )
+    res = _try_recover(err, {"web_fetch"})
+    assert res is not None
+    name, args = res
+    assert name == "web_fetch"
+    assert "url" in args
+    assert "example.com" in args
+
+
+def test_handles_name_colon_json_form():
+    """Defensive — some providers may use `name:{...}` shape."""
+    err = (
+        "tool call validation failed: attempted to call tool "
+        "'bash:{\"cmd\": \"ls\"}' which was not in request.tools"
+    )
+    res = _try_recover(err, {"bash"})
+    assert res == ("bash", '{"cmd": "ls"}')
+
+
 def test_handles_multi_arg_json():
     err = (
         "tool call validation failed: attempted to call tool "
