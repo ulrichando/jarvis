@@ -4188,6 +4188,19 @@ async def entrypoint(ctx: JobContext) -> None:
     session._jarvis_turn_count    = 0
     session._jarvis_session_start = time.monotonic()
 
+    # Phase 10.3 — acoustic prosody. Subscribe to the user's audio
+    # track on the room and maintain a rolling RMS dB buffer. The
+    # tap waits for track_subscribed events, so attaching here is
+    # safe regardless of whether the user joined before or after us.
+    try:
+        from acoustic_tap import AcousticTap
+        _tap = AcousticTap()
+        _tap.attach_to_room(ctx.room)
+        session._jarvis_acoustic_tap = _tap
+    except Exception as e:
+        logger.warning(f"[acoustic-tap] init failed: {e}")
+        session._jarvis_acoustic_tap = None
+
     # Bind the session for the stamp_first_token TTS filter (Phase 7).
     # The filter list was built at session-construction time and can't
     # reach back into the session via closure capture; this container
@@ -4425,14 +4438,32 @@ async def entrypoint(ctx: JobContext) -> None:
         # doesn't compare to itself (ratio always = 1.0).
         session._jarvis_baseline_wpm = new_baseline
 
+        # Phase 10.3 — query the acoustic tap for mean RMS dB over the
+        # speech segment, maintain its own EMA baseline. Same shape as
+        # the wpm path so the prior-baseline-vs-current-sample logic
+        # in detect_emotion works identically.
+        current_rms_db = 0.0
+        prior_rms_base = float(getattr(session, "_jarvis_baseline_rms_db", 0.0) or 0.0)
+        tap = getattr(session, "_jarvis_acoustic_tap", None)
+        if tap is not None and _start and _end and _end > _start:
+            try:
+                current_rms_db = tap.mean_rms_db(_start, _end)
+            except Exception as e:
+                logger.debug(f"[acoustic] rms query failed: {e}")
+        new_rms_baseline = update_baseline(current_rms_db, prior_rms_base)
+        session._jarvis_baseline_rms_db = new_rms_baseline
+
         audio = AudioMeta(
             speech_rate_wpm=current_wpm,
             baseline_wpm=prior_base,
+            rms_db=current_rms_db,
+            rms_baseline_db=prior_rms_base,
         )
         emotion = detect_emotion(transcript, audio)
-        if current_wpm > 0:
+        if current_wpm > 0 or current_rms_db < 0:
             logger.debug(
-                f"[acoustic] wpm={current_wpm:.0f} baseline={prior_base:.0f} → emotion={emotion}"
+                f"[acoustic] wpm={current_wpm:.0f}/{prior_base:.0f} "
+                f"rms_db={current_rms_db:.1f}/{prior_rms_base:.1f} → emotion={emotion}"
             )
 
         # Reset the per-utterance markers so the next turn starts fresh

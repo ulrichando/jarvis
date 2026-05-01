@@ -258,6 +258,64 @@ def test_expanded_lex_catches_new_phrases():
     assert detect_emotion("come on, every time?", AudioMeta()) == "frustrated"
 
 
+# ── Phase 10.3 — acoustic prosody (RMS-energy delta) ──────────────────
+
+
+def test_loud_neutral_lex_pushes_to_frustrated():
+    """+8 dB above baseline on a lex-silent turn → frustrated."""
+    am = AudioMeta(rms_db=-22.0, rms_baseline_db=-30.0)  # diff = +8 dB
+    assert detect_emotion("just open the file", am) == "frustrated"
+
+
+def test_quiet_neutral_lex_pushes_to_sad():
+    """-8 dB below baseline on a lex-silent turn → sad."""
+    am = AudioMeta(rms_db=-38.0, rms_baseline_db=-30.0)  # diff = -8 dB
+    assert detect_emotion("just open the file", am) == "sad"
+
+
+def test_quiet_already_sad_stays_sad():
+    """-8 dB below baseline reinforces an existing sad lex match."""
+    am = AudioMeta(rms_db=-38.0, rms_baseline_db=-30.0)
+    assert detect_emotion("i don't know", am) == "sad"
+
+
+def test_loud_excited_does_not_clobber_to_frustrated():
+    """+8 dB on `amazing` should NOT downgrade excited to frustrated.
+    Only neutral bases are escalated by RMS, not strong lex hits."""
+    am = AudioMeta(rms_db=-22.0, rms_baseline_db=-30.0)
+    assert detect_emotion("this is amazing", am) == "excited"
+
+
+def test_small_rms_delta_doesnt_trigger():
+    """+3 dB is within normal speaking variance — should stay neutral."""
+    am = AudioMeta(rms_db=-27.0, rms_baseline_db=-30.0)  # diff = +3 dB
+    assert detect_emotion("just open the file", am) == "neutral"
+
+
+def test_zero_rms_baseline_no_signal():
+    """First turn ever — baseline is 0 → don't divide-by-zero or
+    treat as catastrophic delta. Pure-lex result stands."""
+    am = AudioMeta(rms_db=-25.0, rms_baseline_db=0.0)
+    assert detect_emotion("just open the file", am) == "neutral"
+
+
+def test_zero_rms_current_no_signal():
+    """Tap returned 0 (e.g. mic muted, no samples in window) — skip
+    the RMS branch."""
+    am = AudioMeta(rms_db=0.0, rms_baseline_db=-30.0)
+    assert detect_emotion("just open the file", am) == "neutral"
+
+
+def test_rms_and_speech_rate_combine():
+    """Loud + fast (both above thresholds) → speech-rate path runs
+    first and returns urgent before RMS branch fires."""
+    am = AudioMeta(
+        speech_rate_wpm=240, baseline_wpm=140,
+        rms_db=-22.0, rms_baseline_db=-30.0,
+    )
+    assert detect_emotion("just open the file", am) == "urgent"
+
+
 import asyncio
 from unittest.mock import AsyncMock, patch
 
