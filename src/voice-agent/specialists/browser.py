@@ -151,7 +151,7 @@ def register_browser() -> None:
         when_to_use=_BROWSER_WHEN,
         instructions=BROWSER_INSTRUCTIONS,
         tool_factory=_browser_tools,
-        ack_phrase="Working on it, sir.",
+        ack_phrase="At once, sir.",
         max_history_items=12,
         enabled=True,
     ))

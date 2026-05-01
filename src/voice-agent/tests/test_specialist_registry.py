@@ -100,7 +100,7 @@ def test_clear_resets_registry():
 
 def test_default_ack_phrase_and_history_window():
     s = _spec("ack_test")
-    assert s.ack_phrase == "On it, sir."
+    assert s.ack_phrase == "Right away, sir."
     assert s.max_history_items == 12
 
 
