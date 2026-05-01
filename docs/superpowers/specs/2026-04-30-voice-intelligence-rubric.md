@@ -458,6 +458,20 @@ Realistic remaining moves:
 - **Phase 10.6: `launch_app` outcome telemetry.** No axis bump but a quality-of-detail win — adds MISSING/CRASHED counts per binary so the report can suggest "users keep asking for X but it's not installed".
 - **Phase 10.7: live data soak + report iteration.** Run telemetry over ~6 hours of real use and tune the per-route base / per-emotion overlay constants based on actual interrupt rates.
 
+### 2026-04-30 — Phase 10.6 (launch_app outcome telemetry)
+
+Polish without a score bump. The launch_app verified-launch wrapper from Phase 9.4 returns three structured outcomes (OK / MISSING / CRASHED) and routes to specific voice replies — but those outcomes were transient. Phase 10.6 persists them so we can mine patterns over time.
+
+What shipped (`3cbc8cf`):
+
+- **`launch_attempts` table** in `turn_telemetry.db` — one row per `launch_app()` invocation: `ts_utc`, `binary`, `outcome`. Indexed by ts_utc and binary.
+- **`log_launch_attempt(binary, outcome)`** helper, called from each return path of `launch_app` (MISSING pre-flight, CRASHED post-pgrep, OK happy path). Failures are swallowed — telemetry never blocks the user-visible reply.
+- **Report adds a `launch attempts` section** with overall success rate plus per-binary breakdowns, filtered to rows that have any MISSING/CRASHED counts so OK-only binaries don't clutter the output. Top 8 binaries by attempt count.
+
+Concrete payoff: after a few hours of soak, the report will surface things like `notepad: ok=0 missing=8 crashed=0` — a clear signal to update the desktop specialist's prompt with a Linux-aware suggestion (e.g. "for notepad-style asks, suggest mousepad / gedit"). Currently the user has to repeat themselves; with the data we can pre-empt the failure.
+
+No axis bumps — this is quality of detail, not score movement. **Total stays 94 / 100.**
+
 ### Phase 10+ candidates (path to 95)
 
 2. **REASONING route live-data confirmation (no score change yet).** Phase 9.1 shipped the regex; need ~6h of normal use to verify the route lights up in `turn_telemetry.py --report`. If it does, Axis 4 may have headroom for another +0 (already at 9 from Phase 9.3) but the system as a whole gets a confidence boost.
