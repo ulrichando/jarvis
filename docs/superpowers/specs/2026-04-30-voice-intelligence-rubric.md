@@ -380,9 +380,33 @@ What shipped (`a2e958f`):
 
 Total stays **91 / 100** — Phase 10.2 is a reliability fix without an unblocked axis. The path to 95 still has acoustic prosody (axis 2: 9→10) as the next single-axis lift.
 
-### Phase 10+ candidates (path to 95)
+### 2026-04-30 — Phase 10.3 (acoustic prosody)
 
-1. **Acoustic prosody for emotion detection (axis 2: 9 → 10, +1).** Now the only path to 10 on axis 2 since lex is at its practical ceiling. Real estimate: 4-5h. Subscribe a parallel VAD on the room audio track, capture end-of-speech frames, RMS energy + zero-crossing-rate (cheap proxies for arousal). Pitch contour optional and finicky; skip for v1. Plumb new fields into `AudioMeta` and refine `detect_emotion` to use them as additional priors.
+The signal lex couldn't reach: tonal energy. A quiet "just open the file" looks identical to a loud "just open the file" in lex space, but the user almost certainly means different things.
+
+What shipped (`ec004ab`):
+
+- **`acoustic_tap.py`** — `AcousticTap` subscribes to a participant's audio track via `rtc.Room.on('track_subscribed')`, spawns a background `_consume()` task on `rtc.AudioStream(track)`, decodes int16 PCM frames to float32 normalized in [-1, 1] using numpy, and stores per-frame RMS dB in a 1024-entry deque keyed by `time.monotonic()`. `mean_rms_db(start, end)` returns the windowed mean (0.0 when no samples — treated as "unknown" upstream). Skips agent-prefixed identities so we don't tap our own playback. The audio decode duplicates work the framework's STT path already does, but the cost at 48kHz / int16 / 10ms frames is negligible (< 1% CPU).
+
+- **`AudioMeta` gains `rms_db` + `rms_baseline_db`.** Plumbed through the same VAD-state-change timestamps that drive `speech_rate_wpm`, so the tap query window is exactly the speech segment. EMA baseline (`session._jarvis_baseline_rms_db`) maintained alongside the wpm baseline.
+
+- **New branch in `detect_emotion`.** After speech-rate: if `rms_db - rms_baseline_db > +6 dB` and lex is neutral, return `frustrated`; if `< -6 dB` and lex is neutral or sad, return `sad`. 6 dB ≈ 2× amplitude — about as loud as someone leaning into the mic. Conservative threshold so we only refine when the signal is clear.
+
+- **8 new unit tests** covering loud-pushes-frustrated, quiet-pushes-sad, quiet-reinforces-sad, loud-doesn't-clobber-excited (we don't downgrade strong lex), small-delta-ignored, zero-baseline-no-signal (first turn), zero-current-no-signal (mic muted), and rate+RMS combination (rate fires first). All 223 voice-agent tests pass.
+
+- **Live verified**: agent restarted with the patch loaded; log shows `[acoustic-tap] attaching to desktop-ulrich (track=TR_AMr8P6pnMwt3eN)` immediately after the user joins. Tap consumes frames silently; the per-turn RMS appears in the `[acoustic]` debug line alongside wpm.
+
+**Re-score after Phase 10.3:**
+
+| # | Axis | Before | After | Delta |
+|---|---|---|---|---|
+| 2 | Emotion detection | 9 | 10 | +1 — the lex+rate path now has a third independent channel that catches what neither could. Quiet sad turns ("i don't know" in low energy) and loud frustrated turns (loud "just open the file") are distinguished from their neutral-energy lookalikes. The remaining unsolved subspace — pitch-contour cues that distinguish excited high-pitch from sarcastic high-pitch — is genuine work for axis 3 (response shaping) rather than detection. |
+
+**New total: 91 → 92 / 100.**
+
+Distance to 95: 3 points. The remaining axes — 4 (LLM dispatch by route 9), 7 (interruption handling 9), 9 (tool execution 10), 10 (self-eval 10) — are largely capped or stable. The realistic path is: confirm Phase 9.1's REASONING regex is firing in live telemetry (axis 4: 9 → 10, +1), then explore axis-7 work (interruption logic) for the rest.
+
+### Phase 10+ candidates (path to 95)
 
 2. **REASONING route live-data confirmation (no score change yet).** Phase 9.1 shipped the regex; need ~6h of normal use to verify the route lights up in `turn_telemetry.py --report`. If it does, Axis 4 may have headroom for another +0 (already at 9 from Phase 9.3) but the system as a whole gets a confidence boost.
 
