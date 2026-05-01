@@ -577,8 +577,11 @@ const DEEPSEEK_UX: ProviderUX = {
     { id: "deepthink", label: "DeepThink", icon: Brain, defaultOn: false },
     { id: "search", label: "Search", icon: Globe, defaultOn: true },
   ],
-  modelShortLabel: (_label, id) =>
-    id === "deepseek-reasoner" ? "Expert" : "Instant",
+  // Don't collapse every non-reasoner DeepSeek model to "Instant" in the
+  // picker trigger — that hid which model was actually selected
+  // (V3 / V4 Pro / V4 Flash all read as "Instant"). Falling through to
+  // shortLabel + the subLabel() tag in model-picker.tsx shows
+  // "DeepSeek V4 Pro" / "DeepSeek V3" etc., matching every other provider.
 };
 
 const GROQ_UX: ProviderUX = {

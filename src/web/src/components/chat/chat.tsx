@@ -27,7 +27,6 @@
 
 import { type UIMessage } from "ai";
 import { useEffect, useMemo, useRef, useState, startTransition } from "react";
-import { flushSync } from "react-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { PanelLeftOpen } from "lucide-react";
@@ -43,6 +42,7 @@ import { DEFAULT_MODEL, MODELS_META } from "@/lib/ai/models-meta";
 import { getProviderUX } from "@/lib/ai/provider-ux";
 import { StreamingMessageParser } from "@/lib/actions/message-parser";
 import { ActionRunner, type ActionEvent } from "@/lib/actions/runner";
+import { apiWriteFile } from "@/lib/workspace/client";
 import type { TrackedAction, ArtifactData } from "@/lib/actions/types";
 import { ArtifactPanel } from "./artifact-panel";
 
@@ -88,12 +88,64 @@ type ChatProps = {
   // which provider is selected. Used by the Design tab so switching models
   // doesn't shift the composer's pre-block / inline toggles.
   unifiedUX?: boolean;
+  // Fires when the server returns a conversation ID via the X-Conversation-Id
+  // response header (i.e. on the first POST that creates the conversation,
+  // or any subsequent POST). Lets a parent persist the id (e.g. localStorage
+  // keyed by workspace) so the conversation can be reloaded on page refresh.
+  onConversationId?: (id: string) => void;
 };
 
 type ChatStatus = "ready" | "submitted" | "streaming" | "error";
 
 function makeId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// Truncate huge output blobs so a runaway log doesn't blow the model's
+// context. We keep the head (where the failing line + stack typically
+// is) and a tail. 6KB/stream/action is enough for a build error +
+// stack trace; bigger outputs probably mean the model should run a
+// more targeted command.
+function clipOutput(s: string, maxBytes = 6_000): string {
+  if (!s) return "";
+  if (s.length <= maxBytes) return s;
+  const head = s.slice(0, Math.floor(maxBytes * 0.7));
+  const tail = s.slice(-Math.floor(maxBytes * 0.3));
+  return `${head}\n…[clipped ${s.length - maxBytes} bytes]…\n${tail}`;
+}
+
+type CapturedResultLite = {
+  actionId: string;
+  type: "shell" | "start";
+  command: string;
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  detached: boolean;
+};
+
+// Serializes the captured shell/start results into a block the LLM can
+// read on its NEXT turn. This is what every Bolt-style coding agent
+// does: actions are NOT fire-and-forget — their output gets fed back
+// so the model can verify, diagnose, and self-correct.
+function renderActionResultsBlock(results: CapturedResultLite[]): string {
+  const lines: string[] = ["<boltActionResults>"];
+  for (const r of results) {
+    lines.push(`  <result actionId="${r.actionId}" type="${r.type}" exitCode="${r.exitCode}">`);
+    lines.push(`    <command>${r.command}</command>`);
+    if (r.detached) {
+      lines.push(`    <note>started in background; output not captured</note>`);
+    } else {
+      const stdout = clipOutput(r.stdout).trimEnd();
+      const stderr = clipOutput(r.stderr).trimEnd();
+      if (stdout) lines.push(`    <stdout>\n${stdout}\n    </stdout>`);
+      if (stderr) lines.push(`    <stderr>\n${stderr}\n    </stderr>`);
+      if (!stdout && !stderr) lines.push(`    <note>(no output)</note>`);
+    }
+    lines.push(`  </result>`);
+  }
+  lines.push("</boltActionResults>");
+  return lines.join("\n");
 }
 
 // Poll /api/workspace/<id>/preview until something is listening or the
@@ -143,6 +195,7 @@ export function Chat({
   format,
   onStreamingFile,
   onFileComplete,
+  onConversationId,
   prefillPrompt,
   hideSidebarToggle,
   unifiedUX,
@@ -156,6 +209,21 @@ export function Chat({
   >(new Map());
   const [previewPort, setPreviewPort] = useState<number | null>(null);
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
+  // Per-assistant-message reasoning text. Reasoning models (DeepSeek
+  // V4 Pro, R1, gpt-oss) emit the model's chain-of-thought as
+  // `reasoning-delta` chunks. We accumulate them keyed by the
+  // assistantId so each message keeps its own "Thoughts" trace, and
+  // re-render via the same rAF cadence as text-delta.
+  const [reasoningById, setReasoningById] = useState<Map<string, string>>(
+    () => new Map(),
+  );
+  // Per-assistant-message plan card. The model emits a <jarvisplan>
+  // block before the boltArtifact describing what's about to be built —
+  // we surface it as a card above the message body so the user sees the
+  // "blueprint" before files start streaming in.
+  const [planById, setPlanById] = useState<
+    Map<string, { content: string; complete: boolean }>
+  >(() => new Map());
   const previewPollRef = useRef<{ cancel: () => void } | null>(null);
 
   const { toggleSidebar, sidebarOpen } = useUI();
@@ -191,6 +259,10 @@ export function Chat({
   // This never blocks the event loop (unlike flushSync).
   const streamPending = useRef<{ id: string; text: string } | null>(null);
   const rafId = useRef<number | null>(null);
+  // Same pattern for the reasoning-delta stream — separate ref + rAF
+  // slot so reasoning and text don't fight for the same frame.
+  const reasoningPending = useRef<{ id: string; text: string } | null>(null);
+  const reasoningRafId = useRef<number | null>(null);
 
   const stop = () => {
     abortRef.current?.abort();
@@ -199,7 +271,12 @@ export function Chat({
       cancelAnimationFrame(rafId.current);
       rafId.current = null;
     }
+    if (reasoningRafId.current !== null) {
+      cancelAnimationFrame(reasoningRafId.current);
+      reasoningRafId.current = null;
+    }
     streamPending.current = null;
+    reasoningPending.current = null;
     setStatus("ready");
   };
 
@@ -239,6 +316,18 @@ export function Chat({
       string,
       { artifact: ArtifactData; actions: TrackedAction[] }
     >();
+    // rAF-coalesced flush. The parser fires onActionStream on every chunk
+    // (10-30/sec); calling setArtifacts + flushSync per chunk freezes the
+    // main thread (clicks blocked, tab crashes). Coalesce into one paint.
+    let flushScheduled = false;
+    const scheduleArtifactFlush = () => {
+      if (flushScheduled) return;
+      flushScheduled = true;
+      requestAnimationFrame(() => {
+        flushScheduled = false;
+        setArtifacts(new Map(localArtifacts));
+      });
+    };
     const updateArtifact = (
       artifactId: string,
       mut: (prev: { artifact: ArtifactData; actions: TrackedAction[] }) => {
@@ -250,61 +339,97 @@ export function Chat({
       if (!prev) return;
       const next = mut(prev);
       localArtifacts.set(artifactId, next);
-      flushSync(() => {
-        setArtifacts(new Map(localArtifacts));
-      });
+      scheduleArtifactFlush();
     };
 
+    const invalidateForFile = (filePath: string) => {
+      qc.invalidateQueries({ queryKey: ["ws", targetWorkspaceId, "tree"] });
+      qc.invalidateQueries({ queryKey: ["design-tree", targetWorkspaceId] });
+      qc.invalidateQueries({
+        queryKey: ["design-file", targetWorkspaceId, filePath],
+      });
+    };
     const runner =
       targetWorkspaceId !== null
-        ? new ActionRunner(targetWorkspaceId, (ev: ActionEvent) => {
-            const t = ev.tracked;
-            updateArtifact(t.artifactId, (prev) => {
-              const actions = prev.actions.slice();
-              const idx = actions.findIndex((a) => a.actionId === t.actionId);
-              if (idx === -1) actions.push(t);
-              else actions[idx] = t;
-              return { ...prev, actions };
-            });
-            if (ev.kind === "error") {
-              toast.error(`Action failed: ${ev.error}`);
-            }
-            // After file writes, refresh both tree query keys so the
-            // workbench AND the design panel pick up the new files.
-            // (Workbench queries ["ws", id, "tree"]; design panel queries
-            // ["design-tree", id, ...] — different keys, both need invalidating.)
-            if (ev.kind === "success" && t.action.type === "file") {
-              qc.invalidateQueries({ queryKey: ["ws", targetWorkspaceId, "tree"] });
-              qc.invalidateQueries({ queryKey: ["design-tree", targetWorkspaceId] });
-              // Also bust the file-content cache for this exact file so a
-              // subsequent click on it shows the freshly-written contents.
-              qc.invalidateQueries({
-                queryKey: ["design-file", targetWorkspaceId, t.action.filePath],
+        ? new ActionRunner(
+            targetWorkspaceId,
+            (ev: ActionEvent) => {
+              const t = ev.tracked;
+              updateArtifact(t.artifactId, (prev) => {
+                const actions = prev.actions.slice();
+                const idx = actions.findIndex((a) => a.actionId === t.actionId);
+                if (idx === -1) actions.push(t);
+                else actions[idx] = t;
+                return { ...prev, actions };
               });
-            }
-            // After a `start` action succeeds, the dev server is just
-            // booting. Poll the preview endpoint until something is
-            // actually listening, then surface a one-click preview link.
-            if (ev.kind === "success" && t.action.type === "start") {
-              previewPollRef.current?.cancel();
-              previewPollRef.current = pollForPreviewPort(
-                targetWorkspaceId,
-                (port) => setPreviewPort(port),
-              );
-            }
-          })
+              if (ev.kind === "error") {
+                toast.error(`Action failed: ${ev.error}`);
+              }
+              if (ev.kind === "success" && t.action.type === "file") {
+                invalidateForFile(t.action.filePath);
+              }
+              // After a `start` action succeeds, the dev server is just
+              // booting. Poll the preview endpoint until something is
+              // actually listening, then surface a one-click preview link.
+              if (ev.kind === "success" && t.action.type === "start") {
+                previewPollRef.current?.cancel();
+                previewPollRef.current = pollForPreviewPort(
+                  targetWorkspaceId,
+                  (port) => setPreviewPort(port),
+                );
+              }
+              // Capture shell + start results so we can hand them back
+              // to the model on the next turn. Skipped for file actions
+              // — the model already knows what it wrote.
+              if (
+                (ev.kind === "success" || ev.kind === "error") &&
+                (t.action.type === "shell" || t.action.type === "start") &&
+                ev.result
+              ) {
+                turnResults.push({
+                  actionId: t.actionId,
+                  type: t.action.type,
+                  command: t.action.content,
+                  exitCode: ev.result.exitCode,
+                  stdout: ev.result.stdout,
+                  stderr: ev.result.stderr,
+                  detached: Boolean(ev.result.detached),
+                });
+              }
+            },
+            // Placeholder-write hook: fires when an empty file is written
+            // on action-open, so the panel populates without waiting for
+            // the close tag.
+            (filePath) => invalidateForFile(filePath),
+          )
         : null;
 
     const parser = new StreamingMessageParser({
+      onPlan: (p) => {
+        // Live-update the plan card as <jarvisplan> streams. complete=true
+        // fires once the closing tag arrives so the card can render its
+        // settled state (e.g., remove the streaming pulse).
+        startTransition(() => {
+          setPlanById((prev) => {
+            const next = new Map(prev);
+            next.set(assistantId, {
+              content: p.content,
+              complete: p.complete,
+            });
+            return next;
+          });
+        });
+      },
       onArtifactOpen: (a) => {
         const artifact: ArtifactData = { id: a.id, title: a.title, type: a.type };
         localArtifacts.set(a.id, { artifact, actions: [] });
-        flushSync(() => setArtifacts(new Map(localArtifacts)));
+        scheduleArtifactFlush();
       },
       onActionOpen: (a) => {
-        // No-op for now; we add the action card on close. (For very long
-        // file streams we could pre-render the card, but the visual
-        // churn isn't worth it.)
+        // Tell the runner to write an empty placeholder so the file
+        // appears in the design panel right away — instead of only
+        // landing when the close tag arrives 10-30 seconds later.
+        runner?.onOpen(a.artifactId, a.actionId, a.action);
       },
       onActionStream: (a) => {
         runner?.onStream(a.artifactId, a.actionId, a.action);
@@ -326,21 +451,109 @@ export function Chat({
 
     let assistantText = "";
     let parsedSoFar = "";
+    // Reasoning trace for this turn. Persisted across auto-continue
+    // passes (same assistantId) so the "Thoughts" block shows the full
+    // chain of thought, not just the last segment.
+    let reasoningText = "";
+    // Shell/start action results captured during this turn. Each entry
+    // carries the actual command + exit + stdout/stderr so we can
+    // append a <boltActionResults> block to the assistant message and
+    // give the model real ground-truth on the NEXT turn (Bolt-style
+    // tool feedback). Without this the model writes diagnose
+    // commands, never sees their output, and either hallucinates or
+    // gives up — that's the "Jarvis stops while diagnosing" symptom.
+    type CapturedResult = {
+      actionId: string;
+      type: "shell" | "start";
+      command: string;
+      exitCode: number;
+      stdout: string;
+      stderr: string;
+      detached: boolean;
+    };
+    const turnResults: CapturedResult[] = [];
 
-    try {
+    // Schedule one rAF flush. The hot loop only writes to the ref —
+    // never calling setState directly. The rAF callback fires at most
+    // once per animation frame (~60fps) and does the actual setState.
+    // This keeps the event loop free (no flushSync blocking).
+    const scheduleFlush = () => {
+      if (rafId.current !== null) return;
+      rafId.current = requestAnimationFrame(() => {
+        rafId.current = null;
+        const p = streamPending.current;
+        if (!p) return;
+        // startTransition marks this as a low-priority, interruptible
+        // render. If new tokens arrive while React is mid-render (markdown
+        // parsing a large string), React abandons the in-progress render
+        // and restarts with the latest text. This prevents render backlog
+        // and is how Claude.ai / Copilot handle fast streaming.
+        startTransition(() => {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === p.id
+                ? { ...m, parts: [{ type: "text", text: p.text } as never] }
+                : m,
+            ),
+          );
+        });
+      });
+    };
+
+    // Same idea for reasoning-delta. Reasoning models emit dozens of
+    // chunks per second; collapsing them to one rAF tick keeps the
+    // Thoughts panel smooth.
+    const scheduleReasoningFlush = () => {
+      if (reasoningRafId.current !== null) return;
+      reasoningRafId.current = requestAnimationFrame(() => {
+        reasoningRafId.current = null;
+        const p = reasoningPending.current;
+        if (!p) return;
+        startTransition(() => {
+          setReasoningById((prev) => {
+            const next = new Map(prev);
+            next.set(p.id, p.text);
+            return next;
+          });
+        });
+      });
+    };
+
+    // One pass through fetch + stream-consume. Returns whether the stream
+    // ended with finishReason="length" (= the model hit its token cap and
+    // we should fire a continuation). Returns null on hard error / abort,
+    // letting the caller bail without an auto-continue retry.
+    const runOneStream = async (
+      messagesForRequest: UIMessage[],
+    ): Promise<"length" | "complete" | "error" | "abort"> => {
+      // Watchdog: if the server doesn't return ANY response within 20s,
+      // something's wrong (provider rejected, route hung, network dead).
+      // Surface a toast so the user isn't just staring at the spinner.
+      const stuck = setTimeout(() => {
+        toast.warning("Server hasn't responded in 20s", {
+          description:
+            "The provider may be slow or rejecting the request. Click Stop and try a smaller brief or a different model.",
+          duration: 8000,
+        });
+      }, 20000);
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           id: chatId,
           model,
-          messages: historyForApi,
+          messages: messagesForRequest,
           workspaceId: targetWorkspaceId ?? undefined,
           mode,
           format,
         }),
         signal: ctrl.signal,
-      });
+      }).finally(() => clearTimeout(stuck));
+
+      // Capture the server-assigned conversation ID so the parent can
+      // persist it (per-workspace) and reload on refresh.
+      const cid = res.headers.get("X-Conversation-Id");
+      if (cid && onConversationId) onConversationId(cid);
 
       if (!res.ok || !res.body) {
         let detail = `HTTP ${res.status}`;
@@ -358,55 +571,24 @@ export function Chat({
         } catch {
           toast.error(detail);
         }
-        setStatus("error");
-        // Drop the empty placeholder so the user isn't left with
-        // a permanent "thinking…" bubble.
-        setMessages((prev) => prev.filter((m) => m.id !== assistantId));
-        return;
+        return "error";
       }
 
-      // 3. Stream consumption
       setStatus("streaming");
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = "";
-
-      // Schedule one rAF flush. The hot loop only writes to the ref —
-      // never calling setState directly. The rAF callback fires at most
-      // once per animation frame (~60fps) and does the actual setState.
-      // This keeps the event loop free (no flushSync blocking).
-      const scheduleFlush = () => {
-        if (rafId.current !== null) return;
-        rafId.current = requestAnimationFrame(() => {
-          rafId.current = null;
-          const p = streamPending.current;
-          if (!p) return;
-          // startTransition marks this as a low-priority, interruptible
-          // render. If new tokens arrive while React is mid-render (markdown
-          // parsing a large string), React abandons the in-progress render
-          // and restarts with the latest text. This prevents render backlog
-          // and is how Claude.ai / Copilot handle fast streaming.
-          startTransition(() => {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === p.id
-                  ? { ...m, parts: [{ type: "text", text: p.text } as never] }
-                  : m,
-              ),
-            );
-          });
-        });
-      };
+      let finishReason: string | undefined;
 
       while (true) {
-        if (ctrl.signal.aborted) break;
+        if (ctrl.signal.aborted) return "abort";
         const { done, value } = await reader.read();
         if (done) break;
         buf += decoder.decode(value, { stream: true });
         const lines = buf.split("\n");
         buf = lines.pop() ?? "";
         for (const line of lines) {
-          if (ctrl.signal.aborted) break;
+          if (ctrl.signal.aborted) return "abort";
           if (!line.startsWith("data: ")) continue;
           const raw = line.slice(6);
           if (raw === "[DONE]") continue;
@@ -416,17 +598,101 @@ export function Chat({
           } catch {
             continue;
           }
-          // We only show plain text-delta. Reasoning chunks (DeepSeek
-          // V4 / R1, gpt-oss-120b) are intentionally hidden — they
-          // arrive as `reasoning-delta` and clutter the visible reply
-          // if shown verbatim.
+          // text-delta = visible reply tokens. reasoning-delta =
+          // hidden chain-of-thought (DeepSeek V4/R1, gpt-oss-120b,
+          // o-series). Both arrive as { delta: string }; we render
+          // text into the message body and reasoning into a
+          // collapsible "Thoughts" block above it.
           if (evt.type === "text-delta" && typeof evt.delta === "string") {
             assistantText += evt.delta;
+            // The parser is stateful per messageId. Across continuations
+            // we keep the SAME assistantId, so passing the cumulative
+            // assistantText resumes mid-artifact correctly — actions
+            // opened in the prior pass close cleanly when their `</…>`
+            // finally arrives.
             parsedSoFar += parser.parse(assistantId, assistantText);
             streamPending.current = { id: assistantId, text: parsedSoFar };
             scheduleFlush();
+          } else if (
+            evt.type === "reasoning-delta" &&
+            typeof evt.delta === "string"
+          ) {
+            reasoningText += evt.delta;
+            reasoningPending.current = { id: assistantId, text: reasoningText };
+            scheduleReasoningFlush();
+          } else if (evt.type === "finish") {
+            finishReason = (evt as unknown as { finishReason?: string })
+              .finishReason;
           }
         }
+      }
+      return finishReason === "length" ? "length" : "complete";
+    };
+
+    try {
+      // Auto-continue loop: when the stream ends with finishReason="length"
+      // the model ran out of output budget mid-artifact. Fire a follow-up
+      // call with the partial assistant text + a tight "continue exactly
+      // where you stopped" instruction so the model picks up its own
+      // sentence. Capped to 3 retries so a runaway model can't loop forever.
+      const MAX_AUTO_CONTINUES = 3;
+      let messagesForRequest: UIMessage[] = historyForApi;
+      let continued = 0;
+      let initialStatus: Awaited<ReturnType<typeof runOneStream>> = "complete";
+
+      while (true) {
+        const status = await runOneStream(messagesForRequest);
+        if (continued === 0) initialStatus = status;
+        if (status === "error" || status === "abort" || status === "complete") {
+          if (status === "error") {
+            // Drop the empty placeholder so the user isn't left with
+            // a permanent "thinking…" bubble.
+            setMessages((prev) => prev.filter((m) => m.id !== assistantId));
+            setReasoningById((prev) => {
+              if (!prev.has(assistantId)) return prev;
+              const next = new Map(prev);
+              next.delete(assistantId);
+              return next;
+            });
+            setPlanById((prev) => {
+              if (!prev.has(assistantId)) return prev;
+              const next = new Map(prev);
+              next.delete(assistantId);
+              return next;
+            });
+          }
+          break;
+        }
+        // status === "length" → auto-continue.
+        if (continued >= MAX_AUTO_CONTINUES) {
+          toast.warning("Generation hit its limit", {
+            description:
+              "Tried to auto-continue 3 times and still hit the token cap. The brief might be too big — try splitting it.",
+          });
+          break;
+        }
+        continued += 1;
+        toast.info(`Continuing… (${continued}/${MAX_AUTO_CONTINUES})`, {
+          duration: 2500,
+        });
+        messagesForRequest = [
+          ...historyForApi,
+          {
+            id: `${assistantId}-partial-${continued}`,
+            role: "assistant",
+            parts: [{ type: "text", text: assistantText }],
+          } as UIMessage,
+          {
+            id: makeId("u"),
+            role: "user",
+            parts: [
+              {
+                type: "text",
+                text: "Continue your previous output exactly where you stopped. Do NOT restart, do NOT write any preamble, do NOT repeat what you already wrote, do NOT recap. The next character you emit must extend the previous text verbatim. Close any open boltAction and the boltArtifact properly.",
+              },
+            ],
+          } as UIMessage,
+        ];
       }
 
       // Cancel any in-flight rAF and do a direct final commit so the
@@ -434,6 +700,10 @@ export function Chat({
       if (rafId.current !== null) {
         cancelAnimationFrame(rafId.current);
         rafId.current = null;
+      }
+      if (reasoningRafId.current !== null) {
+        cancelAnimationFrame(reasoningRafId.current);
+        reasoningRafId.current = null;
       }
       if (parsedSoFar) {
         const finalText = parsedSoFar;
@@ -447,11 +717,105 @@ export function Chat({
           );
         });
       }
+      if (reasoningText) {
+        const finalReasoning = reasoningText;
+        startTransition(() => {
+          setReasoningById((prev) => {
+            const next = new Map(prev);
+            next.set(assistantId, finalReasoning);
+            return next;
+          });
+        });
+      }
       streamPending.current = null;
+      reasoningPending.current = null;
 
-      setStatus("ready");
-      qc.invalidateQueries({ queryKey: ["conversations"] });
-      if (chatId) qc.invalidateQueries({ queryKey: ["conversation", chatId] });
+      // Wait for every queued shell/file action to finish, then build a
+      // <boltActionResults> block summarizing exit + stdout + stderr.
+      // Append it to the assistant text so the NEXT turn's request
+      // includes ground-truth output for each shell command — without
+      // this the model is blind to its own diagnostics and either
+      // hallucinates or stops mid-investigation.
+      if (runner) {
+        try {
+          await runner.drain();
+        } catch (err) {
+          console.warn("[chat] runner drain failed:", err);
+        }
+        if (turnResults.length > 0) {
+          const block = renderActionResultsBlock(turnResults);
+          assistantText += `\n\n${block}\n`;
+          // Also store on the message itself so it persists in history
+          // and travels in the next request body.
+          startTransition(() => {
+            setMessages((prev) =>
+              prev.map((m) => {
+                if (m.id !== assistantId) return m;
+                const existing =
+                  m.parts
+                    .map((p) => (p.type === "text" ? p.text : ""))
+                    .join("") ?? "";
+                return {
+                  ...m,
+                  parts: [
+                    {
+                      type: "text",
+                      text: `${existing}\n\n${block}\n`,
+                    } as never,
+                  ],
+                };
+              }),
+            );
+          });
+        }
+      }
+
+      // Rescue path for the clarify-mode questionnaire. Some models
+      // (deepseek-chat in particular) ignore the playbook's "wrap in
+      // boltAction" instruction and dump the questions.html source as
+      // a markdown fenced code block instead. The boltAction parser
+      // can't see it → no file lands → no interactive form. Detect
+      // the questions-form signature in the assistant text and write
+      // it as a real file. Strictly scoped to the questions.html case
+      // so it can't accidentally rescue other code blocks.
+      if (
+        targetWorkspaceId !== null &&
+        mode === "design" &&
+        /<form[^>]*\bid=["']jarvis-questions["']/i.test(assistantText) &&
+        !/<boltaction[^>]+filepath=["']questions\.html["']/i.test(
+          assistantText,
+        )
+      ) {
+        // Try to extract the full HTML (preferred: from <!doctype to </html>)
+        // or fall back to the fenced block content.
+        let html: string | null = null;
+        const docMatch = assistantText.match(
+          /<!doctype[\s\S]*?<\/html>\s*/i,
+        );
+        if (docMatch) html = docMatch[0];
+        if (!html) {
+          const fenceMatch = assistantText.match(
+            /```(?:html|text|markdown)?\s*\n([\s\S]*?<form[^>]*\bid=["']jarvis-questions["'][\s\S]*?)\n```/i,
+          );
+          if (fenceMatch) html = fenceMatch[1];
+        }
+        if (html) {
+          try {
+            await apiWriteFile(targetWorkspaceId, "questions.html", html);
+            invalidateForFile("questions.html");
+          } catch (err) {
+            console.warn("[chat] questions.html rescue write failed:", err);
+          }
+        }
+      }
+
+      if (initialStatus === "error") {
+        setStatus("error");
+      } else {
+        setStatus("ready");
+        qc.invalidateQueries({ queryKey: ["conversations"] });
+        if (chatId) qc.invalidateQueries({ queryKey: ["conversation", chatId] });
+      }
     } catch (e) {
       const err = e as Error & { name?: string };
       if (err?.name === "AbortError") {
@@ -461,6 +825,18 @@ export function Chat({
         toast.error(err?.message ?? "Couldn't get a reply.");
         setStatus("error");
         setMessages((prev) => prev.filter((m) => m.id !== assistantId));
+        setReasoningById((prev) => {
+          if (!prev.has(assistantId)) return prev;
+          const next = new Map(prev);
+          next.delete(assistantId);
+          return next;
+        });
+        setPlanById((prev) => {
+          if (!prev.has(assistantId)) return prev;
+          const next = new Map(prev);
+          next.delete(assistantId);
+          return next;
+        });
       }
     } finally {
       abortRef.current = null;
@@ -609,6 +985,8 @@ export function Chat({
         <Thread
           messages={messages}
           isStreaming={status === "streaming" || status === "submitted"}
+          reasoningById={reasoningById}
+          planById={planById}
           artifactPanel={
             <div className="mx-auto max-w-3xl px-4">
               <ArtifactPanel

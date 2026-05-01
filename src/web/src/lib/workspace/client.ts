@@ -16,17 +16,23 @@ export type TreeEntry = {
   type: "file" | "dir";
 };
 
-export async function apiListWorkspaces(): Promise<Workspace[]> {
-  const r = await fetch("/api/workspace");
+export async function apiListWorkspaces(
+  kind?: "design" | "workbench",
+): Promise<Workspace[]> {
+  const url = kind ? `/api/workspace?kind=${kind}` : "/api/workspace";
+  const r = await fetch(url);
   const j = await r.json();
   return j.workspaces ?? [];
 }
 
-export async function apiCreateWorkspace(name: string): Promise<Workspace> {
+export async function apiCreateWorkspace(
+  name: string,
+  kind?: "design" | "workbench",
+): Promise<Workspace> {
   const r = await fetch("/api/workspace", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify(kind ? { name, kind } : { name }),
   });
   const j = await r.json();
   return j.workspace;

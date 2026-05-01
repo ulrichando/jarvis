@@ -19,6 +19,15 @@ export type ModelMeta = {
   contextWindow: number;
   /** Small pill badge in the model picker (e.g., "Beta", "New"). */
   badge?: string;
+  /** Reasoning-mode model: spends most of its output budget on hidden
+   *  thinking tokens. Great for analysis tasks but BAD for code-heavy
+   *  generation (design, workbench) where every output token should be
+   *  going to the actual artifact. The chat route auto-substitutes a
+   *  non-reasoning sibling for design mode. */
+  reasoning?: boolean;
+  /** Sibling model id to fall back to when reasoning is unsuitable
+   *  (e.g. design mode). Same provider, no thinking-token overhead. */
+  nonReasoningFallback?: string;
 };
 
 export const PROVIDER_LABEL: Record<Provider, string> = {
@@ -73,6 +82,8 @@ export const MODELS_META: Record<string, ModelMeta> = {
     description: "Reasoning-first OpenAI model.",
     provider: "openai",
     contextWindow: 200_000,
+    reasoning: true,
+    nonReasoningFallback: "gpt-5-mini",
   },
 
   "gemini-2.5-pro": {
@@ -103,13 +114,19 @@ export const MODELS_META: Record<string, ModelMeta> = {
     description: "Reasoning-focused DeepSeek.",
     provider: "deepseek",
     contextWindow: 128_000,
+    reasoning: true,
+    nonReasoningFallback: "deepseek-chat",
   },
   "deepseek-v4-pro": {
     id: "deepseek-v4-pro",
     label: "DeepSeek V4 Pro",
-    description: "Top reasoning. Used as the JARVIS CLI tool model.",
+    description: "Top model. Used as the JARVIS CLI tool model and the design default.",
     provider: "deepseek",
     contextWindow: 128_000,
+    // NOT flagged as reasoning. With 16K maxOutputTokens, v4-pro produces
+    // full multi-file artifacts in a single shot even with its thinking
+    // overhead. Substituting it to v4-flash was overcautious — restore
+    // the user's explicit pick.
   },
   "deepseek-v4-flash": {
     id: "deepseek-v4-flash",
@@ -132,6 +149,8 @@ export const MODELS_META: Record<string, ModelMeta> = {
     description: "Deep thinking for complex questions.",
     provider: "kimi",
     contextWindow: 256_000,
+    reasoning: true,
+    nonReasoningFallback: "kimi-k2-instant",
   },
   "kimi-k2-agent": {
     id: "kimi-k2-agent",

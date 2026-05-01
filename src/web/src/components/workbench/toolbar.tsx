@@ -140,19 +140,19 @@ export function WorkbenchToolbar({
 
       {/* ── CENTER: URL pill — flex-1 so it never overlaps left/right ──────── */}
       <div className="flex-1 flex justify-center min-w-0 px-2">
-        <div className="flex items-center h-7 px-3 rounded-full border border-border/40 bg-muted/20 gap-2 w-full max-w-64">
+        <div className="flex items-center h-8 pl-3 pr-1.5 rounded-full border border-border bg-muted/40 gap-2 w-full max-w-80">
           <span className={cn(
-            "flex-1 truncate font-mono text-[11px]",
-            previewUrl ? "text-foreground" : "text-muted-foreground/35",
+            "flex-1 truncate font-mono text-[12px]",
+            previewUrl ? "text-foreground" : "text-muted-foreground",
           )}>
             {previewUrl ?? "/"}
           </span>
-          <div className="flex items-center gap-1.5 shrink-0">
+          <div className="flex items-center gap-0.5 shrink-0">
             <UrlBtn title="Refresh" onClick={onRefresh} disabled={!previewUrl}>
-              <RotateCw className="size-3" />
+              <RotateCw className="size-3.5" />
             </UrlBtn>
             <UrlBtn as="a" href={previewUrl ?? undefined} target="_blank" rel="noreferrer" title="Open in new tab" disabled={!previewUrl}>
-              <ExternalLink className="size-3" />
+              <ExternalLink className="size-3.5" />
             </UrlBtn>
             <UrlBtn
               title={viewport === "desktop" ? "Mobile view" : "Desktop view"}
@@ -161,11 +161,11 @@ export function WorkbenchToolbar({
               disabled={!previewUrl}
             >
               {viewport === "mobile"
-                ? <RectangleVertical className="size-3" />
-                : <RectangleHorizontal className="size-3" />}
+                ? <RectangleVertical className="size-3.5" />
+                : <RectangleHorizontal className="size-3.5" />}
             </UrlBtn>
             <UrlBtn title={fullscreen ? "Exit fullscreen" : "Fullscreen"} onClick={onToggleFullscreen} disabled={!previewUrl}>
-              {fullscreen ? <Minimize2 className="size-3" /> : <Maximize2 className="size-3" />}
+              {fullscreen ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
             </UrlBtn>
           </div>
         </div>
@@ -254,11 +254,16 @@ type UrlBtnProps = {
 
 function UrlBtn(props: UrlBtnProps) {
   const { title, disabled, active, children } = props;
+  // Decent tap targets (size-7 ≈ 28px) and visible default color so the
+  // bar's icons read as actually clickable. The previous `text-muted-foreground/45`
+  // + 12px icons + zero padding made them ghost-icons.
   const cls = cn(
-    "flex items-center justify-center transition-colors shrink-0",
-    active ? "text-foreground" : "text-muted-foreground/45",
-    !disabled && "hover:text-foreground cursor-pointer",
-    disabled && "opacity-20 cursor-not-allowed pointer-events-none",
+    "flex size-7 items-center justify-center rounded-md transition-colors shrink-0",
+    active
+      ? "text-foreground bg-muted/60"
+      : "text-muted-foreground hover:text-foreground hover:bg-muted/40",
+    !disabled && "cursor-pointer",
+    disabled && "opacity-30 cursor-not-allowed pointer-events-none",
   );
   if (props.as === "a") {
     return (

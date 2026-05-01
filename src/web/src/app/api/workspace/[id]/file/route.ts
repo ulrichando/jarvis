@@ -23,9 +23,14 @@ const MIME: Record<string, string> = {
   htm: "text/html; charset=utf-8",
   css: "text/css; charset=utf-8",
   js: "application/javascript; charset=utf-8",
+  mjs: "application/javascript; charset=utf-8",
+  jsx: "application/javascript; charset=utf-8",
+  ts: "application/javascript; charset=utf-8",
+  tsx: "application/javascript; charset=utf-8",
   pdf: "application/pdf",
   json: "application/json; charset=utf-8",
   txt: "text/plain; charset=utf-8",
+  md: "text/markdown; charset=utf-8",
 };
 
 export async function GET(req: Request, ctx: RouteContext<"/api/workspace/[id]/file">) {

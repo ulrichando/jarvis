@@ -8,4 +8,5 @@ set -euo pipefail
 JARVIS_ROOT="/home/ulrich/Documents/Projects/jarvis/src/cli"
 SCRIPTS="$JARVIS_ROOT/scripts"
 
+clear
 exec bash "$SCRIPTS/start.sh" "$@"

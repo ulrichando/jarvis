@@ -10,9 +10,8 @@ from __future__ import annotations
 from .registry import SpecialistSpec, register
 
 
-# Same prompt as `DESKTOP_INSTRUCTIONS` in jarvis_specialist_agents.py.
-# Lifted verbatim so the migration is no-op behaviourally; the canonical
-# copy now lives here. The legacy file becomes a re-export shim.
+# Canonical home of DESKTOP_INSTRUCTIONS — lifted from the retired
+# jarvis_specialist_agents.py shim (deleted 2026-05-01).
 DESKTOP_INSTRUCTIONS = """\
 You are the desktop-action specialist for JARVIS. The supervisor agent
 (also named JARVIS) handed control to you because the user asked for

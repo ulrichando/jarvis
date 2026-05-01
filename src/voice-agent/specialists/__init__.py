@@ -26,10 +26,8 @@ Why this design:
 - Lazy tool-factory pattern keeps livekit imports out of the registry
   module so tests don't need a livekit install
 
-The registry coexists with `jarvis_specialist_agents.py` for now:
-DesktopActionsAgent is mirrored here so adding the next specialist
-(browser, planner, research, etc.) follows the registry pattern, but
-existing imports of DesktopActionsAgent keep working.
+All specialists now live in this package; the legacy
+`jarvis_specialist_agents.py` shim was retired 2026-05-01.
 """
 from .registry import (
     SpecialistSpec, register, all_specs, get, clear,

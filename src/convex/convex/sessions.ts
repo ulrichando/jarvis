@@ -1,4 +1,4 @@
-import { query } from './_generated/server'
+import { mutation, query } from './_generated/server'
 import { v } from 'convex/values'
 
 // All sessions, newest-first, with per-session turn count and last-text
@@ -42,5 +42,25 @@ export const get = query({
       .query('sessions')
       .withIndex('by_session_id', q => q.eq('sessionId', sessionId))
       .first()
+  },
+})
+
+// Delete a session and every turn that belongs to it. Used by the Chats
+// list page so users can prune voice sessions they don't want to keep
+// (test runs, accidental wake-ups, mic noise that landed a stray turn).
+export const remove = mutation({
+  args: { sessionId: v.string() },
+  handler: async (ctx, { sessionId }) => {
+    const session = await ctx.db
+      .query('sessions')
+      .withIndex('by_session_id', q => q.eq('sessionId', sessionId))
+      .first()
+    if (session) await ctx.db.delete(session._id)
+    const turns = await ctx.db
+      .query('turns')
+      .withIndex('by_session_ts', q => q.eq('sessionId', sessionId))
+      .collect()
+    for (const t of turns) await ctx.db.delete(t._id)
+    return { deleted: turns.length + (session ? 1 : 0) }
   },
 })
