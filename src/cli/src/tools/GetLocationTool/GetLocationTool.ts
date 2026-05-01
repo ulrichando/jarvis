@@ -117,8 +117,11 @@ async function googleGeolocate(
 }
 
 async function reverseGeocode(lat: number, lng: number): Promise<string | null> {
+  // zoom=18 gets street-level detail (road / neighborhood / suburb).
+  // We pick at most one micro-locator (road OR neighborhood) so the
+  // string stays voice-friendly.
   const url =
-    `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=10`
+    `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18`
   try {
     const res = await fetch(url, {
       headers: { 'User-Agent': 'jarvis-cli/1.0' },
@@ -126,11 +129,14 @@ async function reverseGeocode(lat: number, lng: number): Promise<string | null> 
     })
     const data = (await res.json()) as { address?: Record<string, string> }
     const addr = data.address ?? {}
+    const road = addr.road
+    const neighbourhood = addr.neighbourhood ?? addr.suburb ?? addr.quarter
     const city =
       addr.city ?? addr.town ?? addr.village ?? addr.hamlet ?? addr.county
     const region = addr.state ?? addr.region
     const country = addr.country
-    const parts = [city, region, country].filter(Boolean)
+    const micro = road ?? neighbourhood
+    const parts = [micro, city, region, country].filter(Boolean)
     return parts.length > 0 ? parts.join(', ') : null
   } catch {
     return null
