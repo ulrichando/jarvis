@@ -92,3 +92,82 @@ def test_does_not_recover_blank_tool_list():
     """Edge: empty known-tools set means we can't validate — fail safely."""
     res = _try_recover(_REAL_ERROR, set())
     assert res is None
+
+
+# ── Helpers added in inline-execution rewrite (2026-05-01) ──────────
+
+
+def test_tool_takes_context_via_param_name():
+    """A function with a `context` parameter should be flagged as
+    needing RunContext — sanitizer can't recover those inline."""
+    from tool_name_sanitizer import _tool_takes_context
+
+    async def needs_context(context, request: str) -> str:
+        return f"got {request}"
+
+    # Wrap minimally to mimic FunctionTool's _func attribute
+    class FakeTool:
+        _func = staticmethod(needs_context)
+
+    assert _tool_takes_context(FakeTool()) is True
+
+
+def test_tool_takes_context_via_annotation():
+    """If the parameter is named differently but typed RunContext,
+    we should still detect it."""
+    from tool_name_sanitizer import _tool_takes_context
+
+    # Use a string annotation since we don't import RunContext here
+    async def needs_typed(c: "RunContext", request: str) -> str:
+        return request
+
+    class FakeTool:
+        _func = staticmethod(needs_typed)
+
+    # The annotation repr will contain "RunContext" as a string
+    # due to the forward reference.
+    needs_typed.__annotations__["c"] = "RunContext"
+    assert _tool_takes_context(FakeTool()) is True
+
+
+def test_tool_no_context_returns_false():
+    """get_location-style tool (no args, no context) — recoverable inline."""
+    from tool_name_sanitizer import _tool_takes_context
+
+    async def free_func() -> str:
+        return "ok"
+
+    class FakeTool:
+        _func = staticmethod(free_func)
+
+    assert _tool_takes_context(FakeTool()) is False
+
+
+def test_format_result_string_passthrough():
+    from tool_name_sanitizer import _format_result
+    assert _format_result("Columbus, Ohio") == "Columbus, Ohio"
+
+
+def test_format_result_tuple_extracts_string():
+    """Specialist transfer tools return (Agent, str). Use the str."""
+    from tool_name_sanitizer import _format_result
+
+    class FakeAgent: pass
+    assert _format_result((FakeAgent(), "On it.")) == "On it."
+
+
+def test_format_result_dict_picks_message_field():
+    from tool_name_sanitizer import _format_result
+    out = _format_result({"message": "Got it.", "status": "ok"})
+    assert out == "Got it."
+
+
+def test_format_result_dict_with_no_known_field_serializes():
+    from tool_name_sanitizer import _format_result
+    out = _format_result({"foo": "bar"})
+    assert "foo" in out and "bar" in out
+
+
+def test_format_result_falls_back_to_str():
+    from tool_name_sanitizer import _format_result
+    assert _format_result(42) == "42"

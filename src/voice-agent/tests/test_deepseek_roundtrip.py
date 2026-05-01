@@ -19,10 +19,16 @@ import deepseek_roundtrip
 
 @pytest.fixture(autouse=True)
 def _clean_sidecars():
-    """Each test starts with empty sidecars."""
+    """Each test starts with empty sidecars + the deepseek-request
+    contextvar SET so injection runs (mimics in-flight call to
+    api.deepseek.com). For tests that need to verify the
+    no-injection-on-non-deepseek path, override with
+    `monkeypatch.setattr(...)` or use the contextvar's reset()."""
     deepseek_roundtrip._REASONING_BY_CALL_ID.clear()
     deepseek_roundtrip._STREAMING_STATE.clear()
+    token = deepseek_roundtrip._DEEPSEEK_REQUEST.set(True)
     yield
+    deepseek_roundtrip._DEEPSEEK_REQUEST.reset(token)
     deepseek_roundtrip._REASONING_BY_CALL_ID.clear()
     deepseek_roundtrip._STREAMING_STATE.clear()
 
@@ -97,6 +103,27 @@ def test_to_chat_ctx_injects_placeholder_when_uncached():
     messages, _ = ctx.to_provider_format(format="openai")
     assistant = next(m for m in messages if m.get("role") == "assistant")
     assert assistant.get("reasoning_content") == deepseek_roundtrip._PLACEHOLDER_REASONING
+
+
+def test_to_chat_ctx_no_inject_when_deepseek_flag_off():
+    """Provider-scoped injection — when the contextvar is False (e.g.
+    request bound for Groq / OpenAI / etc.), reasoning_content must
+    NOT be added to any message. Live failure 2026-05-01: Groq
+    rejects requests with reasoning_content as 'unsupported'."""
+    deepseek_roundtrip.install()
+    deepseek_roundtrip._REASONING_BY_CALL_ID["call_real"] = "would-be-injected"
+
+    # Override the autouse fixture's True default with False.
+    token = deepseek_roundtrip._DEEPSEEK_REQUEST.set(False)
+    try:
+        ctx = _build_synth_chat_ctx_with_assistant_tool_call(call_id="call_real")
+        messages, _ = ctx.to_provider_format(format="openai")
+        assistant = next(m for m in messages if m.get("role") == "assistant")
+        assert "reasoning_content" not in assistant, (
+            "reasoning_content leaked into a non-DeepSeek request"
+        )
+    finally:
+        deepseek_roundtrip._DEEPSEEK_REQUEST.reset(token)
 
 
 def test_to_chat_ctx_no_inject_on_text_only_assistant():
