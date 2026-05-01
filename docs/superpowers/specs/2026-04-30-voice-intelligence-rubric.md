@@ -506,6 +506,23 @@ The remaining headroom (95 → 97-98 plausibly) is gated on data, not implementa
 
 These are all "wait for data" tasks — no code to ship tonight. The soak runs naturally as the agent stays in production use.
 
+### 2026-05-01 — Phase 11 partial soak findings (data, not code)
+
+After 8h+ with the new schema deployed:
+
+| Signal | Result | Verdict |
+|---|---|---|
+| Phase 9.1 REASONING regex | **10/154 turns (6%), median TTFW 691ms, hit-rate 60%** | Route is alive — best TTFW of any route. **Confirmed.** |
+| Phase 10.4 NULL-route fix | 0 NULL rows in 32 post-fix turns | **Confirmed working.** |
+| Phase 10.5 interrupt rate | 0% across all routes (32 measurable turns) | Insufficient signal — overlay constants un-validated. Need an active conversation window with real interrupts to test. |
+| Phase 10.6 launch_attempts | 0 rows | Insufficient signal — user hasn't asked for app launches in this window. |
+| Phase 10.7 ack variety | 0 turns post-deploy | Insufficient signal. Pre-deploy baseline was 12% "yes, sir?" + 68% "sir"-anywhere, but those are pre-Phase-10.7 numbers. |
+| Route distribution | BANTER 56% / TASK 34% / REASONING 6% / EMOTIONAL 4% | **EMOTIONAL is borderline under-served** (3.9% < 5% floor). Worth watching across longer windows. |
+
+Backfill — `bin/jarvis-backfill-null-routes.py` (`39b7963`) — classifies historical NULL-route rows using the same deterministic default-route logic Phase 10.4 ships live. Ran tonight: 12 rows reclassified, report no longer shows `?: 12 turns (8%)` in the 24h window.
+
+**No score change from Phase 11 partial.** The data confirms Phase 9.1 + 10.4 are working, but doesn't yet give us enough signal to bump axis 6 (ack variety), axis 5 (per-route TTS validation now that the dispatcher is restored), or axis 7 (interrupt overlay tuning). Total stays **95/100**. Real soak requires an active conversation window of ≥30 min that exercises specialist handoffs, app launches, and interruptions.
+
 ### Phase 11+ candidates (path to 100)
 
 2. **REASONING route live-data confirmation (no score change yet).** Phase 9.1 shipped the regex; need ~6h of normal use to verify the route lights up in `turn_telemetry.py --report`. If it does, Axis 4 may have headroom for another +0 (already at 9 from Phase 9.3) but the system as a whole gets a confidence boost.
