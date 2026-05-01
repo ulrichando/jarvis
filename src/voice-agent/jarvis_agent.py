@@ -3306,6 +3306,95 @@ async def launch_app(binary: str, args: str = "") -> str:
     return f"OK: launched '{bin_only}'"
 
 
+# Cache the geolocation result for ~10 min so repeated weather /
+# "where am I" turns don't hammer the IP-info API. The user's location
+# rarely changes within a single voice session.
+_LOCATION_CACHE: dict[str, object] = {"value": None, "ts": 0.0}
+_LOCATION_TTL_S = 600.0
+# Optional manual override path. If this file exists, its contents
+# (single line, free-form e.g. "Yaoundé, Cameroon") become the canonical
+# location, ignoring IP-based geolocation entirely. Useful when the IP
+# resolves to the wrong city (VPN, mobile carrier NAT, etc.).
+_LOCATION_OVERRIDE_PATH = Path.home() / ".jarvis" / "location-override"
+
+
+@function_tool
+async def get_location() -> str:
+    """Return the user's approximate physical location.
+
+    Lookup order:
+      1. ~/.jarvis/location-override file (manual override, single line)
+      2. ~10-min in-memory cache from a prior call
+      3. IP-based geolocation via ipinfo.io (no auth needed for the
+         basic city/region/country fields). Falls back to ip-api.com
+         if ipinfo is unreachable.
+
+    Returns a one-line free-form description: "Yaoundé, Centre, Cameroon".
+    On total failure returns "Location unavailable" so callers (weather,
+    navigation, news) can either retry or use a sensible default.
+
+    No GPS — this is laptop-class IP geolocation, accurate to city level
+    typically. For street-level accuracy, set the override file.
+    """
+    # 1. Manual override
+    try:
+        if _LOCATION_OVERRIDE_PATH.exists():
+            override = _LOCATION_OVERRIDE_PATH.read_text(
+                encoding="utf-8"
+            ).strip()
+            if override:
+                return override
+    except Exception as e:
+        logger.debug(f"[get_location] override read failed: {e}")
+
+    # 2. Cache
+    now = time.monotonic()
+    cached = _LOCATION_CACHE["value"]
+    if cached and (now - float(_LOCATION_CACHE["ts"])) < _LOCATION_TTL_S:
+        return str(cached)
+
+    # 3. IP geolocation. Two providers in order: ipinfo.io is faster
+    # but rate-limited; ip-api.com is the no-auth fallback.
+    async def _try(url: str, parse) -> str | None:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "curl", "-sS", "-m", "4", url,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+            import json as _json
+            data = _json.loads(out_b.decode("utf-8", errors="replace"))
+            return parse(data)
+        except Exception as e:
+            logger.debug(f"[get_location] {url} failed: {e}")
+            return None
+
+    def _parse_ipinfo(d: dict) -> str | None:
+        city = d.get("city")
+        region = d.get("region")
+        country = d.get("country")
+        parts = [p for p in (city, region, country) if p]
+        return ", ".join(parts) if parts else None
+
+    def _parse_ipapi(d: dict) -> str | None:
+        city = d.get("city")
+        region = d.get("regionName")
+        country = d.get("country")
+        parts = [p for p in (city, region, country) if p]
+        return ", ".join(parts) if parts else None
+
+    location = await _try("https://ipinfo.io/json", _parse_ipinfo)
+    if not location:
+        location = await _try("http://ip-api.com/json/", _parse_ipapi)
+
+    if location:
+        _LOCATION_CACHE["value"] = location
+        _LOCATION_CACHE["ts"] = now
+        return location
+    return "Location unavailable"
+
+
 @function_tool
 async def read_file(path: str, max_bytes: int = 8_192) -> str:
     """Read a file from disk and return its contents (capped).
@@ -3596,6 +3685,19 @@ async def strip_voice_closers(text):
 # included [,.]? which ate the period and produced run-on output.
 _SIR_RE = re.compile(r",?\s*\bsir\b", re.IGNORECASE)
 
+# Trailing-sir matcher: ",?\s*sir\b\s*[.!?]?$" — captures the
+# robotic "...everything ends with, sir." cadence that makes JARVIS
+# sound like a butler-bot. The whole match (including the trailing
+# period/comma) gets dropped, then we re-append the original sentence
+# terminator (period/exclamation/question) so the line still ends
+# cleanly. Bare-vocative "Yes, sir?" is exempt because it bypasses
+# this filter — voiced via session.say() directly, not through the
+# tts_text_transforms chain.
+_TRAILING_SIR_RE = re.compile(
+    r",?\s*\bsir\b\s*([.!?]?)\s*$",
+    re.IGNORECASE,
+)
+
 
 # If the ENTIRE reply is a hedge — "Sorry, I missed that...", "I'm
 # here to help", "I'm listening, sir", or just "..." — drop it
@@ -3739,15 +3841,44 @@ async def normalize_numbers(text):
 
 
 async def cap_sir_count(text):
-    # Buffer the whole reply, then emit once. Progressive chunk-then-tail
-    # buffering was tried first but cut "sir" across the chunk boundary
-    # for short replies (< 100 chars). Voice replies are usually < 1KB,
-    # so the latency cost of holding the stream is well under 200ms.
+    """Trim the robotic 'sir'-tic. Two-pass cleanup:
+
+      1. Always strip trailing 'sir' at end-of-reply. The pattern
+         "Done, sir." / "It's clear, sir." appended to every statement
+         is the single biggest cause of JARVIS sounding like a
+         butler-bot. We preserve the original terminator (./!/?).
+      2. Of any remaining 'sir' occurrences, keep AT MOST ONE
+         (the first); drop the rest. Mid-sentence sir is fine
+         occasionally; multiple sirs per reply still over-formal.
+
+    The bare-vocative reply ('Yes, sir?') bypasses this filter
+    entirely — it's voiced via session.say() directly, not through
+    the tts_text_transforms chain.
+    """
     buffer = ""
     async for chunk in text:
         buffer += chunk
     if not buffer:
         return
+
+    # Pass 1 — strip trailing sir, restore terminator.
+    m = _TRAILING_SIR_RE.search(buffer)
+    if m:
+        terminator = m.group(1) or ""
+        # Some replies end with the sentence already punctuated
+        # (e.g. "Done." → STT inserts a leading "Sir" by accident →
+        # we want clean removal). Re-append terminator only if not
+        # already present at the cut point.
+        cut = buffer[: m.start()].rstrip()
+        if terminator and not cut.endswith(terminator):
+            buffer = cut + terminator
+        else:
+            buffer = cut
+
+    if not buffer.strip():
+        return
+
+    # Pass 2 — keep at most one remaining 'sir' inside the body.
     saw_first = False
     out = []
     last = 0
