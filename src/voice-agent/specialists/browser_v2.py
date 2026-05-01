@@ -79,10 +79,11 @@ You: task_done("<summary>")
 
 def _browser_v2_tools() -> list:
     """Lazy import so browser-use's heavy startup doesn't block
-    registry import. Returns just the v2 tool + task_done."""
+    registry import. `task_done` is auto-attached by RegistrySpecialist
+    — don't import it (regression captured live 2026-05-01: ImportError
+    crashed the handoff)."""
     from jarvis_browser_v2 import browser_task_v2
-    from jarvis_agent import task_done
-    return [browser_task_v2, task_done]
+    return [browser_task_v2]
 
 
 _BROWSER_V2_WHEN = (
