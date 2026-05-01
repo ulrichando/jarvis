@@ -296,12 +296,11 @@ fn switch_cli_model(app: &tauri::AppHandle, id: &'static str) {
 
 /// Ordered list of (provider_spec, display_label) pairs.
 /// Must match the order items are pushed into TtsVoiceItems.
+/// ElevenLabs entries removed 2026-05-01 — see jarvis_agent.py
+/// _build_dispatching_tts comment.
 const TTS_VOICES: &[(&str, &str)] = &[
-    ("elevenlabs:JBFqnCBsd6RMkjVDRZzb", "ElevenLabs · George"),
-    ("elevenlabs:pNInz6obpgDQGcFmaJgB", "ElevenLabs · Adam"),
-    ("elevenlabs:nPczCjzI2devNBz1zQrb", "ElevenLabs · Brian"),
-    ("groq:troy",                        "Groq Orpheus · Troy"),
-    ("groq:austin",                      "Groq Orpheus · Austin"),
+    ("groq:troy",   "Groq Orpheus · Troy"),
+    ("groq:austin", "Groq Orpheus · Austin"),
 ];
 
 /// Map a TTS provider:voice spec to a short pretty label for the tray.
@@ -313,8 +312,7 @@ fn tts_provider_pretty(spec: &str) -> Option<&'static str> {
 /// Switch the active TTS voice by POSTing to the voice-client.
 /// Voice-client writes `~/.jarvis/tts-provider`; the agent reads it
 /// on the next session start (or via _build_tts_chain on each call).
-/// No agent restart needed — ElevenLabs and Groq Orpheus are both
-/// in the FallbackAdapter chain; order shifts on next utterance.
+/// No agent restart needed — order shifts on next utterance.
 fn switch_tts_provider(app: &tauri::AppHandle, spec: &'static str) {
     let body = format!(r#"{{"provider":"{spec}"}}"#);
     let _ = std::process::Command::new("curl")
@@ -705,9 +703,9 @@ fn main() {
             // ── TTS VOICE submenu (nested under Models) ──
             // Switches the synthesis voice without restarting the agent.
             // Voice-client writes ~/.jarvis/tts-provider; agent's
-            // _build_tts_chain reads it on next utterance. ElevenLabs
-            // items require ELEVENLABS_API_KEY in env; Groq Orpheus is
-            // the offline fallback.
+            // _build_tts_chain reads it on next utterance. Groq Orpheus
+            // only as of 2026-05-01 (ElevenLabs removed after live key
+            // 401 + fallback chain failure left JARVIS silent mid-turn).
 
             // Read the current selection from disk so we can pre-mark
             // it with ✓ immediately — no wait for a /status poll.
@@ -727,15 +725,9 @@ fn main() {
             let tts_current = MenuItemBuilder::with_id("tts_current", &init_tts_header)
                 .enabled(false)
                 .build(app)?;
-            let tts_el_george = MenuItemBuilder::with_id("tts_el_george", &tts_item_label("elevenlabs:JBFqnCBsd6RMkjVDRZzb", "ElevenLabs · George")).build(app)?;
-            let tts_el_adam   = MenuItemBuilder::with_id("tts_el_adam",   &tts_item_label("elevenlabs:pNInz6obpgDQGcFmaJgB", "ElevenLabs · Adam")).build(app)?;
-            let tts_el_brian  = MenuItemBuilder::with_id("tts_el_brian",  &tts_item_label("elevenlabs:nPczCjzI2devNBz1zQrb", "ElevenLabs · Brian")).build(app)?;
-            let tts_gr_troy   = MenuItemBuilder::with_id("tts_gr_troy",   &tts_item_label("groq:troy",                        "Groq Orpheus · Troy")).build(app)?;
-            let tts_gr_austin = MenuItemBuilder::with_id("tts_gr_austin", &tts_item_label("groq:austin",                      "Groq Orpheus · Austin")).build(app)?;
+            let tts_gr_troy   = MenuItemBuilder::with_id("tts_gr_troy",   &tts_item_label("groq:troy",   "Groq Orpheus · Troy")).build(app)?;
+            let tts_gr_austin = MenuItemBuilder::with_id("tts_gr_austin", &tts_item_label("groq:austin", "Groq Orpheus · Austin")).build(app)?;
             let tts_submenu = SubmenuBuilder::new(app, "TTS voice ▸")
-                .item(&tts_el_george)
-                .item(&tts_el_adam)
-                .item(&tts_el_brian)
                 .item(&tts_gr_troy)
                 .item(&tts_gr_austin)
                 .build()?;
@@ -790,7 +782,7 @@ fn main() {
             }
             {
                 let vi: State<TtsVoiceItems> = app.state();
-                *vi.0.lock().unwrap() = vec![tts_el_george, tts_el_adam, tts_el_brian, tts_gr_troy, tts_gr_austin];
+                *vi.0.lock().unwrap() = vec![tts_gr_troy, tts_gr_austin];
             }
 
             let sep2         = PredefinedMenuItem::separator(app)?;
@@ -934,9 +926,6 @@ fn main() {
                         "speech_deepseek-v4-flash"                         => switch_speech_model(app, "deepseek-v4-flash"),
                         "speech_deepseek-v4-pro"                           => switch_speech_model(app, "deepseek-v4-pro"),
                         // TTS-voice picks (no agent restart — file written, read on next utterance)
-                        "tts_el_george" => switch_tts_provider(app, "elevenlabs:JBFqnCBsd6RMkjVDRZzb"),
-                        "tts_el_adam"   => switch_tts_provider(app, "elevenlabs:pNInz6obpgDQGcFmaJgB"),
-                        "tts_el_brian"  => switch_tts_provider(app, "elevenlabs:nPczCjzI2devNBz1zQrb"),
                         "tts_gr_troy"   => switch_tts_provider(app, "groq:troy"),
                         "tts_gr_austin" => switch_tts_provider(app, "groq:austin"),
                         "quit" => {
