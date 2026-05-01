@@ -339,9 +339,32 @@ Plus a live-only fix that doesn't slot under any axis but matters: **stray same-
 
 We hit the rubric goal. Distance to 95 from here is mostly Axis 2 (emotion detection) since 1, 3, 4, 5, 7, 8, 9, 10 are all ≥9.
 
+### 2026-04-30 — Phase 10.1 (Lex v2 emotion detection)
+
+Originally pitched as "acoustic prosody (~1h)" — investigation revealed livekit-agents doesn't expose a public hook on the VAD's `END_OF_SPEECH` frames (Silero VAD emits `VADEvent.frames` to a private `_event_ch` that the framework's STT consumer drains). Tapping it requires either subscribing a parallel VAD on the room's audio track (~5h, doubles audio decode cost) or forking the plugin. Scoped down to a software-layer win that lands in ~1h.
+
+What shipped (`2d1ebfe`):
+
+- **Per-emotion lexicon expanded ~3×.** Each emotion went from 8-12 keys to 25-30 (e.g. frustrated +18: ridiculous, infuriating, fed up, "for the love of", "every time", "doesn't work", …). Spot-checked phrases that turn up in real chat logs.
+- **Score-based aggregation replacing first-match.** `_score_emotions` returns `dict[Emotion, float]`; `_lex_match` picks the highest positive scorer, falling back to neutral. Tie-break preserves the original first-match precedence (frustrated > excited > sad > urgent > curious).
+- **Intensifier doubles weight.** `(very|really|so|extremely|absolutely|completely|totally|super|hella|incredibly|insanely|utterly|genuinely|truly|freaking|fucking)` in the local clause preceding a match → ×2.
+- **Negation flips sign.** `(not|no|never|n't|cannot|don't|doesn't|isn't|...|none|nothing|neither|nor|without)` → -1. So "I'm NOT frustrated" pushes the frustrated score *down*.
+- **Local-clause scoping.** "30-char window before the match" first-pass leaked `not` from a prior clause onto a later excited match. Fixed by truncating the scan window at the most recent clause boundary (`,`/`—`/`.`/`;`/`:`/`!`/`?`/` but `/` however `/` yet `/` though `). Catches the realistic "not annoying — but amazing" case.
+- **Multi-punctuation escalation.** `?!?!`, `!!!`, `??` bump neutral / curious to urgent (a pressing question). Applied after lex so "amazing!!!" stays excited rather than getting clobbered.
+
+10 new unit tests; all 207 voice-agent tests still pass.
+
+**Re-score after Phase 10.1:**
+
+| # | Axis | Before | After | Delta |
+|---|---|---|---|---|
+| 2 | Emotion detection | 8 | 9 | +1 — coverage roughly tripled, "I'm not frustrated" no longer scores frustrated (was a known false-positive class), "really frustrating" now outscores a single "amazing" elsewhere in the same turn (correct intensity weighting). The acoustic gap remains for tonal cues, but the lexical layer is no longer the bottleneck. |
+
+**New total: 90 → 91 / 100.**
+
 ### Phase 10+ candidates (path to 95)
 
-1. **Acoustic prosody for emotion detection (axis 2: 8 → 9 or 10, +1 to +2).** Still the biggest single-axis gap remaining. Compute RMS-energy + pitch-contour from the mic stream's audio frames; merge into `detect_emotion`. Catches "frustrated low-energy" / "excited high-pitch" that the lex+speech-rate path misses. ~1 hour of code; not gated on any paid API.
+1. **Acoustic prosody for emotion detection (axis 2: 9 → 10, +1).** Now the only path to 10 on axis 2 since lex is at its practical ceiling. Real estimate: 4-5h. Subscribe a parallel VAD on the room audio track, capture end-of-speech frames, RMS energy + zero-crossing-rate (cheap proxies for arousal). Pitch contour optional and finicky; skip for v1. Plumb new fields into `AudioMeta` and refine `detect_emotion` to use them as additional priors.
 
 2. **REASONING route live-data confirmation (no score change yet).** Phase 9.1 shipped the regex; need ~6h of normal use to verify the route lights up in `turn_telemetry.py --report`. If it does, Axis 4 may have headroom for another +0 (already at 9 from Phase 9.3) but the system as a whole gets a confidence boost.
 
