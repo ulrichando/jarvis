@@ -4239,48 +4239,60 @@ async def entrypoint(ctx: JobContext) -> None:
                     _set_silent(True)
                     logger.info(f"[silent-mode] auto-engaged from assistant text: {text[:80]!r}")
                 # Maya-class telemetry: log turn outcome to SQLite.
-                if _dispatch_llm is not None:
-                    try:
-                        start = getattr(session, "_jarvis_turn_start_monotonic", None)
-                        # Phase-7 TTFW: prefer the first-token timestamp
-                        # stamped by the stamp_first_token TTS filter (true
-                        # latency from STT-final to first audible word).
-                        # Fall back to "assistant message landed in
-                        # chat_ctx" timing only if the filter didn't fire
-                        # (e.g. an empty / hedge-dropped reply).
-                        first_tok = getattr(session, "_jarvis_first_token_at_monotonic", None)
-                        if start and first_tok and first_tok >= start:
-                            ttfw_ms = int((first_tok - start) * 1000)
-                        elif start:
-                            ttfw_ms = int((time.monotonic() - start) * 1000)
-                        else:
-                            ttfw_ms = 0
-                        # Capture specialist BEFORE clearing — read once,
-                        # then None-out so the next turn doesn't reuse a
-                        # stale value when the supervisor handles it
-                        # directly (no handoff).
-                        specialist = getattr(session, "_jarvis_last_specialist", None)
-                        log_turn(
-                            user_text=getattr(session, "_jarvis_turn_user_text", "") or "",
-                            jarvis_text=text or "",
-                            emotion=getattr(session, "_jarvis_emotion", None),
-                            route=getattr(session, "_jarvis_route", None),
-                            llm_used=_dispatch_llm.last_llm_label,
-                            voice_used=_dispatch_tts.last_voice_id,
-                            ttfw_ms=ttfw_ms,
-                            total_audio_ms=0,  # not measured in v1
-                            user_followup_30s=False,  # backfilled at report-time
-                            route_fallback=False,
-                            specialist=specialist,
-                        )
-                        # Reset for next turn so a fresh handoff stamps
-                        # the value and absent handoffs leave it None.
-                        session._jarvis_last_specialist = None
-                        # Reset first-token marker too so the next
-                        # turn measures from its own stream start.
-                        session._jarvis_first_token_at_monotonic = None
-                    except Exception as te:
-                        logger.debug(f"[telemetry] write skipped: {te}")
+                # Phase 10.4 — write unconditionally. The previous
+                # `_dispatch_llm is not None` gate dropped every row when
+                # JARVIS_DISPATCH_DISABLED=1, leaving the bypass case
+                # invisible in the report. We just fall back to direct
+                # session-config reads for llm_used / voice_used in that
+                # case, since the dispatcher's `last_*` fields are the
+                # only thing the gate was protecting.
+                try:
+                    start = getattr(session, "_jarvis_turn_start_monotonic", None)
+                    # Phase-7 TTFW: prefer the first-token timestamp
+                    # stamped by the stamp_first_token TTS filter (true
+                    # latency from STT-final to first audible word).
+                    # Fall back to "assistant message landed in
+                    # chat_ctx" timing only if the filter didn't fire
+                    # (e.g. an empty / hedge-dropped reply).
+                    first_tok = getattr(session, "_jarvis_first_token_at_monotonic", None)
+                    if start and first_tok and first_tok >= start:
+                        ttfw_ms = int((first_tok - start) * 1000)
+                    elif start:
+                        ttfw_ms = int((time.monotonic() - start) * 1000)
+                    else:
+                        ttfw_ms = 0
+                    # Capture specialist BEFORE clearing — read once,
+                    # then None-out so the next turn doesn't reuse a
+                    # stale value when the supervisor handles it
+                    # directly (no handoff).
+                    specialist = getattr(session, "_jarvis_last_specialist", None)
+                    if _dispatch_llm is not None:
+                        llm_used = _dispatch_llm.last_llm_label
+                        voice_used = _dispatch_tts.last_voice_id
+                    else:
+                        llm_used = active_speech_id
+                        voice_used = "fallback-chain"
+                    log_turn(
+                        user_text=getattr(session, "_jarvis_turn_user_text", "") or "",
+                        jarvis_text=text or "",
+                        emotion=getattr(session, "_jarvis_emotion", None),
+                        route=getattr(session, "_jarvis_route", None),
+                        llm_used=llm_used,
+                        voice_used=voice_used,
+                        ttfw_ms=ttfw_ms,
+                        total_audio_ms=0,  # not measured in v1
+                        user_followup_30s=False,  # backfilled at report-time
+                        route_fallback=False,
+                        specialist=specialist,
+                    )
+                    # Reset for next turn so a fresh handoff stamps
+                    # the value and absent handoffs leave it None.
+                    session._jarvis_last_specialist = None
+                    # Reset first-token marker too so the next
+                    # turn measures from its own stream start.
+                    session._jarvis_first_token_at_monotonic = None
+                except Exception as te:
+                    logger.debug(f"[telemetry] write skipped: {te}")
                 # Trim chat_ctx if it has grown too long. Access via
                 # session.chat_ctx.messages — the live list the agent's
                 # LLM receives on every turn. Keep the most recent
