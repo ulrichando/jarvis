@@ -3318,23 +3318,139 @@ _LOCATION_TTL_S = 600.0
 _LOCATION_OVERRIDE_PATH = Path.home() / ".jarvis" / "location-override"
 
 
+async def _collect_wifi_bssids() -> list[dict]:
+    """Scan nearby Wi-Fi APs via nmcli. Returns a list of access-point
+    dicts in the shape Google Geolocation API + similar services
+    expect: `[{"macAddress": "AA:BB:...", "signalStrength": -dBm}, ...]`.
+
+    Returns [] if nmcli is missing or no APs are visible. The caller
+    should treat that as "Wi-Fi-based geo unavailable" and fall back
+    to IP geo.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "nmcli", "-t", "-f", "BSSID,SIGNAL", "device", "wifi", "list",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=4.0)
+    except Exception as e:
+        logger.debug(f"[get_location] nmcli scan failed: {e}")
+        return []
+    aps: list[dict] = []
+    for line in out_b.decode("utf-8", errors="replace").splitlines()[:12]:
+        # nmcli's escaped output: `30\:86\:2D\:84\:E9\:81:79`
+        # First 6 colon-separated octets are the BSSID; trailing field is signal %.
+        clean = line.replace(r"\:", ":")
+        parts = clean.split(":")
+        if len(parts) < 7:
+            continue
+        bssid = ":".join(parts[:6])
+        try:
+            signal_pct = int(parts[6])
+        except ValueError:
+            continue
+        # Convert nmcli's 0-100 % to a rough dBm: 100% ≈ -30 dBm,
+        # 0% ≈ -100 dBm. Linear interpolation; precise enough for
+        # Google's API (it weighs by relative strength).
+        signal_dbm = -100 + (signal_pct * 0.7)
+        aps.append({
+            "macAddress": bssid,
+            "signalStrength": int(signal_dbm),
+        })
+    return aps
+
+
+async def _google_geolocate(api_key: str, aps: list[dict]) -> tuple[float, float] | None:
+    """Hit Google Geolocation API with the BSSID list. Returns
+    (lat, lng) or None on any failure (403=API not enabled, network
+    out, no AP match)."""
+    if not api_key or not aps:
+        return None
+    import json as _json
+    body = _json.dumps({"considerIp": True, "wifiAccessPoints": aps})
+    url = f"https://www.googleapis.com/geolocation/v1/geolocate?key={api_key}"
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "curl", "-sS", "-m", "5", "-X", "POST",
+            "-H", "Content-Type: application/json",
+            "-d", body, url,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=6.0)
+        data = _json.loads(out_b.decode("utf-8", errors="replace"))
+    except Exception as e:
+        logger.debug(f"[get_location] Google geolocate failed: {e}")
+        return None
+    if "error" in data:
+        # 403 means the API isn't enabled on the user's project. Log
+        # once, fall through to IP geo. User can enable at:
+        # https://console.developers.google.com/apis/api/geolocation.googleapis.com/overview
+        msg = data["error"].get("message", "")
+        if "has not been used" in msg or "PERMISSION_DENIED" in msg:
+            logger.warning(
+                "[get_location] Google Geolocation API disabled — "
+                "enable at console.developers.google.com to get Wi-Fi "
+                "BSSID-based accuracy"
+            )
+        else:
+            logger.debug(f"[get_location] Google geo error: {msg[:120]}")
+        return None
+    loc = data.get("location") or {}
+    if "lat" in loc and "lng" in loc:
+        return (float(loc["lat"]), float(loc["lng"]))
+    return None
+
+
+async def _reverse_geocode(lat: float, lng: float) -> str | None:
+    """Coords → 'City, State, Country' via Nominatim (no API key)."""
+    import json as _json
+    url = (
+        f"https://nominatim.openstreetmap.org/reverse"
+        f"?format=json&lat={lat}&lon={lng}&zoom=10"
+    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "curl", "-sS", "-m", "5",
+            "-H", "User-Agent: jarvis-agent/1.0",
+            url,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=6.0)
+        data = _json.loads(out_b.decode("utf-8", errors="replace"))
+    except Exception as e:
+        logger.debug(f"[get_location] reverse-geocode failed: {e}")
+        return None
+    addr = data.get("address") or {}
+    city = (
+        addr.get("city") or addr.get("town") or addr.get("village")
+        or addr.get("hamlet") or addr.get("county")
+    )
+    region = addr.get("state") or addr.get("region")
+    country = addr.get("country")
+    parts = [p for p in (city, region, country) if p]
+    return ", ".join(parts) if parts else None
+
+
 @function_tool
 async def get_location() -> str:
     """Return the user's approximate physical location.
 
-    Lookup order:
-      1. ~/.jarvis/location-override file (manual override, single line)
-      2. ~10-min in-memory cache from a prior call
-      3. IP-based geolocation via ipinfo.io (no auth needed for the
-         basic city/region/country fields). Falls back to ip-api.com
-         if ipinfo is unreachable.
+    Lookup order (most accurate first):
+      1. ~/.jarvis/location-override file (manual override).
+      2. ~10-min in-memory cache from a prior call.
+      3. **Google Geolocation API** (Wi-Fi BSSID → coords → reverse
+         geocode). Best accuracy (~50 m) when GOOGLE_API_KEY is set
+         AND the Geolocation API is enabled on the project. Silently
+         falls through if the API returns 403 (not enabled).
+      4. ipinfo.io / ip-api.com IP-based geo. Coarse (~city level)
+         and unreliable on VPNs / mobile carriers / Google networks.
 
-    Returns a one-line free-form description: "Yaoundé, Centre, Cameroon".
+    Returns a one-line free-form description: "Cleveland, Ohio, US".
     On total failure returns "Location unavailable" so callers (weather,
-    navigation, news) can either retry or use a sensible default.
-
-    No GPS — this is laptop-class IP geolocation, accurate to city level
-    typically. For street-level accuracy, set the override file.
+    navigation, news) can either retry or ask the user.
     """
     # 1. Manual override
     try:
@@ -3353,7 +3469,21 @@ async def get_location() -> str:
     if cached and (now - float(_LOCATION_CACHE["ts"])) < _LOCATION_TTL_S:
         return str(cached)
 
-    # 3. IP geolocation. Two providers in order: ipinfo.io is faster
+    # 3. Wi-Fi BSSID + Google Geolocation API
+    google_key = os.environ.get("GOOGLE_API_KEY", "")
+    if google_key:
+        aps = await _collect_wifi_bssids()
+        if aps:
+            coords = await _google_geolocate(google_key, aps)
+            if coords:
+                location = await _reverse_geocode(*coords)
+                if location:
+                    logger.info(f"[get_location] Google/Wi-Fi → {location}")
+                    _LOCATION_CACHE["value"] = location
+                    _LOCATION_CACHE["ts"] = now
+                    return location
+
+    # 4. IP geolocation. Two providers in order: ipinfo.io is faster
     # but rate-limited; ip-api.com is the no-auth fallback.
     async def _try(url: str, parse) -> str | None:
         try:
@@ -3393,6 +3523,39 @@ async def get_location() -> str:
         _LOCATION_CACHE["ts"] = now
         return location
     return "Location unavailable"
+
+
+@function_tool
+async def set_location(city: str) -> str:
+    """Persist a manual location override.
+
+    The user said something like "I'm in Cleveland" / "set my location
+    to Columbus" / "for weather use Tokyo". Write the value to
+    `~/.jarvis/location-override` so future get_location() calls return
+    it directly, ignoring IP geo and Wi-Fi lookups.
+
+    Args:
+        city: Free-form location string (e.g. "Cleveland, Ohio, US",
+              "Tokyo, Japan", or just "Cleveland"). Stored verbatim.
+              Pass an empty string to clear the override.
+    """
+    city = (city or "").strip()
+    try:
+        _LOCATION_OVERRIDE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if not city:
+            if _LOCATION_OVERRIDE_PATH.exists():
+                _LOCATION_OVERRIDE_PATH.unlink()
+            # Bust the cache so next get_location does a fresh lookup
+            _LOCATION_CACHE["value"] = None
+            _LOCATION_CACHE["ts"] = 0.0
+            return "Location override cleared. I'll use auto-detection."
+        _LOCATION_OVERRIDE_PATH.write_text(city + "\n", encoding="utf-8")
+        # Bust the cache so this turn's reply uses the new value.
+        _LOCATION_CACHE["value"] = None
+        _LOCATION_CACHE["ts"] = 0.0
+        return f"Got it — using {city} as your location from now on."
+    except Exception as e:
+        return f"Couldn't save location: {e}"
 
 
 @function_tool
@@ -5281,6 +5444,12 @@ async def entrypoint(ctx: JobContext) -> None:
             web_fetch,
             glob_files,
             grep_files,
+            # Location — IP geo + Wi-Fi BSSID + manual override.
+            # set_location is on the supervisor so phrases like
+            # "I'm in Cleveland" / "set my location to X" persist
+            # without going through a specialist handoff.
+            get_location,
+            set_location,
             # Memory
             recall_conversation,
             remember_this,
