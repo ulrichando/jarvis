@@ -108,7 +108,9 @@ function StreamingPreview({ content, filePath }: { content: string; filePath: st
         <iframe
           title={filePath}
           srcDoc={safe}
-          sandbox="allow-scripts"
+          // Match HtmlPreview's sandbox flags so streaming previews can
+          // also fetch the path-mirror endpoints for relative imports.
+          sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
           className="h-full w-full border-0 bg-white"
         />
       ) : (
@@ -363,7 +365,211 @@ function PreviewToolbar({
 // to activate. All listeners are passive when disabled, so this is safe to
 // inject unconditionally; we only inject when commentMode flips on so users
 // not commenting see clean iframes.
+//
+// Also installs an inline error overlay so when a module import 404s,
+// React fails to mount, or a component throws, the user sees the actual
+// error in the iframe instead of a silent black page. Without this we
+// have to ask the user to open devtools every time something breaks.
 const PICKER_SCRIPT = `
+(function(){
+  // ── ERROR OVERLAY ───────────────────────────────────────────────
+  // Catches uncaught errors + unhandled rejections + module-load failures
+  // and renders them on top of the iframe content. Cheap, no deps,
+  // fixed-position so it always wins z-index.
+  function showErr(msg){
+    try {
+      var box = document.getElementById('__jarvis_err__');
+      if (!box) {
+        box = document.createElement('div');
+        box.id = '__jarvis_err__';
+        box.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:#0a0a0a;color:#ff6a6a;font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;padding:24px;overflow:auto;white-space:pre-wrap;';
+        (document.body || document.documentElement).appendChild(box);
+        var h = document.createElement('div');
+        h.style.cssText = 'color:#fff;font:600 13px/1.5 ui-sans-serif,system-ui;margin-bottom:12px;';
+        h.textContent = 'Design failed to load';
+        box.appendChild(h);
+      }
+      var line = document.createElement('div');
+      line.textContent = '• ' + msg;
+      line.style.marginTop = '6px';
+      box.appendChild(line);
+    } catch (e) { /* nowhere left to surface this */ }
+  }
+  window.addEventListener('error', function(ev){
+    var src = (ev.filename || '').replace(location.origin, '') || 'inline';
+    showErr(src + ':' + (ev.lineno||'?') + '  ' + (ev.message||'unknown error'));
+  }, true);
+  window.addEventListener('unhandledrejection', function(ev){
+    var r = ev.reason;
+    var msg = (r && (r.stack || r.message)) || String(r);
+    showErr('unhandled rejection: ' + msg);
+  });
+})();
+
+(function(){
+  // ── AUTO-FIT FIXED CANVASES ────────────────────────────────────
+  // Slides (1920×1080), infographics (1080×1920), onepagers (A4) are
+  // designed at a fixed pixel canvas and need to scale to fit the
+  // preview iframe. The playbook tells the model to ship a scale-to-fit
+  // script, but if it forgets, we auto-detect and inject one.
+  //
+  // Heuristic: after layout, if body.scrollWidth or scrollHeight exceed
+  // the viewport by >5%, find the first top-level wrapper child (section,
+  // div, main) and apply transform:scale(min(vw/cw, vh/ch)) to it so
+  // the natural-sized design shrinks to fit. We only do this once on
+  // load and on resize — never overrides an explicit transform the
+  // model already set.
+  function autoFit() {
+    var body = document.body;
+    if (!body) return;
+    // Multi-slide deck path: if the page contains a stack of <.slide> blocks
+    // (or any sibling fixed-size sections), scale ALL of them uniformly to
+    // fit the viewport WIDTH so the user can scroll through every slide
+    // at the same shrink factor. This is what most stacked-slide decks
+    // need when the model forgot the scale script.
+    var slides = document.querySelectorAll('.slide');
+    if (slides.length >= 2) {
+      var first = slides[0];
+      var sw = first.scrollWidth || first.offsetWidth;
+      if (sw && sw > window.innerWidth * 1.05) {
+        var s = Math.min(1, window.innerWidth / sw);
+        for (var i = 0; i < slides.length; i++) {
+          var sl = slides[i];
+          if ((sl.style.transform || '').indexOf('scale') !== -1) continue;
+          sl.style.transformOrigin = '0 0';
+          sl.style.transform = 'scale(' + s + ')';
+          // Compensate vertical layout: scaled element occupies natural
+          // pre-scale height. Set explicit margin-bottom that collapses the
+          // gap so visually slides stack at the new size.
+          var nh = sl.scrollHeight || sl.offsetHeight;
+          sl.style.marginBottom = (nh * s - nh + 32) + 'px';
+        }
+        body.style.overflow = 'auto';
+        return;
+      }
+    }
+    // Single fixed canvas path — ONLY fires when the design is a
+    // genuinely fixed-size canvas (slide/infographic/onepager). The
+    // signal: the first element has an EXPLICIT pixel width set via
+    // inline style or a fixed-pixel CSS class. A scrollable landing
+    // page never sets that, so this path is skipped and the page
+    // scrolls normally.
+    //
+    // Without this guard the auto-fit was firing on tall landings,
+    // setting body.style.overflow="hidden" + explicit width/height,
+    // which killed scroll AND triggered a ResizeObserver loop
+    // (each style change re-fired the observer = flicker).
+    var firstEl = body.firstElementChild;
+    if (!firstEl) return;
+    var existing = firstEl.style.transform || '';
+    if (existing.indexOf('scale') !== -1) return;
+    // Detect fixed-pixel canvas: must have explicit width:Npx in inline
+    // style. Tailwind arbitrary-value classes like w-[1920px] compile
+    // to inline style so this also catches model output that uses them.
+    var inlineW = (firstEl.style.width || '').toString();
+    var hasFixedCanvas = /^\d+(?:\.\d+)?px$/.test(inlineW);
+    if (!hasFixedCanvas) return;
+    var natW = firstEl.scrollWidth || firstEl.offsetWidth;
+    var natH = firstEl.scrollHeight || firstEl.offsetHeight;
+    if (!natW || !natH) return;
+    var vw = window.innerWidth;
+    var vh = window.innerHeight;
+    if (natW <= vw * 1.05 && natH <= vh * 1.05) return;
+    var s2 = Math.min(vw / natW, vh / natH);
+    if (s2 >= 0.99) return;
+    firstEl.style.transformOrigin = '0 0';
+    firstEl.style.transform = 'scale(' + s2 + ')';
+    body.style.margin = '0';
+    body.style.overflow = 'hidden';
+    body.style.width = (natW * s2) + 'px';
+    body.style.height = (natH * s2) + 'px';
+    body.style.marginLeft = 'auto';
+    body.style.marginRight = 'auto';
+  }
+  // Reset every transform we previously set so autoFit() can measure
+  // the natural pre-scale dimensions correctly. Clears scales on ALL
+  // .slide elements (not just the first child) — the prior bug was
+  // re-fitting only slide[0] on resize, leaving slides[1..N] stuck at
+  // the old scale and overflowing the new viewport.
+  function resetScales() {
+    var body = document.body;
+    if (!body) return;
+    var slides = document.querySelectorAll('.slide');
+    for (var i = 0; i < slides.length; i++) {
+      slides[i].style.transform = '';
+      slides[i].style.marginBottom = '';
+    }
+    var firstEl = body.firstElementChild;
+    if (firstEl) {
+      firstEl.style.transform = '';
+    }
+    // Reset body sizing too (single-canvas path sets explicit width/height).
+    body.style.width = '';
+    body.style.height = '';
+  }
+  // Loop-breaker. ResizeObserver fires whenever ANY layout-affecting
+  // style changes — and refit() itself changes body width/height/transform.
+  // Without this flag the observer would catch refit's own mutations and
+  // schedule another refit, ad infinitum. We mute the observer for ~120ms
+  // after each fit to let layout settle, then re-arm.
+  var fitting = false;
+  function refit() {
+    if (fitting) return;
+    fitting = true;
+    resetScales();
+    requestAnimationFrame(function(){
+      setTimeout(function(){
+        autoFit();
+        // Re-arm after layout settles — if no further user interaction,
+        // the observer stays silent. If the user resizes the panel
+        // again, the next event triggers a fresh refit.
+        setTimeout(function(){ fitting = false; }, 120);
+      }, 0);
+    });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function(){ setTimeout(autoFit, 0); });
+  } else {
+    setTimeout(autoFit, 0);
+  }
+  // Re-fit when React first mounts content.
+  var rootObserved = false;
+  function observeRoot() {
+    if (rootObserved) return;
+    rootObserved = true;
+    var mo = new MutationObserver(function(){ setTimeout(autoFit, 0); });
+    mo.observe(document.body, { childList: true, subtree: true });
+    setTimeout(function(){ mo.disconnect(); }, 1500);
+  }
+  if (document.body) observeRoot();
+  else document.addEventListener('DOMContentLoaded', observeRoot);
+  // Re-fit on viewport resize. Debounced via rAF so a continuous drag
+  // (splitter resize) doesn't fire 60+ refits per second.
+  var resizeRaf = null;
+  window.addEventListener('resize', function(){
+    if (resizeRaf !== null) return;
+    resizeRaf = requestAnimationFrame(function(){
+      resizeRaf = null;
+      refit();
+    });
+  }, { passive: true });
+  // Also watch the iframe's documentElement for size changes — covers
+  // edge cases where window.resize doesn't fire (some embed contexts)
+  // but the iframe element itself was resized by the parent.
+  if (typeof ResizeObserver !== 'undefined') {
+    try {
+      var ro = new ResizeObserver(function(){
+        if (resizeRaf !== null) return;
+        resizeRaf = requestAnimationFrame(function(){
+          resizeRaf = null;
+          refit();
+        });
+      });
+      ro.observe(document.documentElement);
+    } catch (e) { /* best effort */ }
+  }
+})();
+
 (function(){
   const ACCENT = '#FF6A00';
   const STYLE = 'jarvis-pick-' + Math.random().toString(36).slice(2,8);
@@ -629,6 +835,117 @@ function injectPickerScript(html: string): string {
   return html + tag;
 }
 
+/**
+ * Inject `<base href>` so relative imports inside the iframe resolve
+ * against our path-mirroring file API. Without this, an entry HTML loaded
+ * via `srcDoc` runs at `about:srcdoc` and `./App.jsx` cannot fetch — the
+ * whole multi-file React design renders blank.
+ *
+ * The base must be the FIRST child of <head> so subsequent <link>, <script
+ * src>, and module imports all resolve through it.
+ */
+function injectBaseHref(html: string, baseHref: string): string {
+  const tag = `<base href="${baseHref}">`;
+  // If the model already wrote a <base>, leave it alone.
+  if (/<base\s/i.test(html)) return html;
+  if (/<head\b[^>]*>/i.test(html)) {
+    return html.replace(/(<head\b[^>]*>)/i, `$1${tag}`);
+  }
+  if (/<html\b[^>]*>/i.test(html)) {
+    return html.replace(/(<html\b[^>]*>)/i, `$1<head>${tag}</head>`);
+  }
+  return `<head>${tag}</head>${html}`;
+}
+
+/**
+ * Pin every React URL variant the model might write (or that esbuild
+ * might emit) to a single canonical version. Without this, esm.sh
+ * serves a different React copy for each unique URL — react-dom ends
+ * up with its own React instance, hooks return null contexts, and the
+ * design crashes with `Cannot read properties of null (reading 'useContext')`.
+ *
+ * The `?deps=react@18.3.1` query tells esm.sh to use THIS exact React
+ * for the package's own React peer dep, so motion/radix/etc. all share
+ * the same instance.
+ */
+const IMPORT_MAP = {
+  imports: {
+    react: "https://esm.sh/react@18.3.1",
+    "react/": "https://esm.sh/react@18.3.1/",
+    "react-dom": "https://esm.sh/react-dom@18.3.1?deps=react@18.3.1",
+    "react-dom/": "https://esm.sh/react-dom@18.3.1&deps=react@18.3.1/",
+    "react/jsx-runtime": "https://esm.sh/react@18.3.1/jsx-runtime",
+    "react/jsx-dev-runtime": "https://esm.sh/react@18.3.1/jsx-dev-runtime",
+    "react-dom/client": "https://esm.sh/react-dom@18.3.1/client?deps=react@18.3.1",
+    // Redirect the URL-form imports the model writes ("https://esm.sh/react@18")
+    // to the same canonical version so model-written and esbuild-emitted
+    // imports collapse to ONE module instance.
+    "https://esm.sh/react@18": "https://esm.sh/react@18.3.1",
+    "https://esm.sh/react@18/jsx-runtime":
+      "https://esm.sh/react@18.3.1/jsx-runtime",
+    "https://esm.sh/react@18/jsx-dev-runtime":
+      "https://esm.sh/react@18.3.1/jsx-dev-runtime",
+    "https://esm.sh/react-dom@18":
+      "https://esm.sh/react-dom@18.3.1?deps=react@18.3.1",
+    "https://esm.sh/react-dom@18/client":
+      "https://esm.sh/react-dom@18.3.1/client?deps=react@18.3.1",
+    // Pin downstream libs to the same React via ?deps so they don't
+    // bring their own copy.
+    "https://esm.sh/motion@12/react":
+      "https://esm.sh/motion@12/react?deps=react@18.3.1",
+    "https://esm.sh/@radix-ui/react-dialog@1":
+      "https://esm.sh/@radix-ui/react-dialog@1?deps=react@18.3.1,react-dom@18.3.1",
+    "https://esm.sh/@radix-ui/react-tabs@1":
+      "https://esm.sh/@radix-ui/react-tabs@1?deps=react@18.3.1,react-dom@18.3.1",
+    // Radix primitives used by the curated shadcn bundle (jarvis-shadcn.mjs).
+    // Pin all of them to react@18.3.1 so they share React state with the host.
+    "https://esm.sh/@radix-ui/react-tooltip@1":
+      "https://esm.sh/@radix-ui/react-tooltip@1?deps=react@18.3.1,react-dom@18.3.1",
+    "https://esm.sh/@radix-ui/react-separator@1":
+      "https://esm.sh/@radix-ui/react-separator@1?deps=react@18.3.1,react-dom@18.3.1",
+    "https://esm.sh/lucide-react@0.469":
+      "https://esm.sh/lucide-react@0.469?deps=react@18.3.1",
+  },
+};
+
+function injectImportMap(html: string): string {
+  // Import maps MUST appear before the first <script type="module">. We
+  // put it right after <base> at the top of <head>.
+  const tag = `<script type="importmap">${JSON.stringify(IMPORT_MAP)}</script>`;
+  if (/<script\s+type=["']importmap["']/i.test(html)) return html;
+  if (/<head\b[^>]*>/i.test(html)) {
+    return html.replace(/(<head\b[^>]*>)/i, `$1${tag}`);
+  }
+  return `<head>${tag}</head>${html}`;
+}
+
+/**
+ * Replace the FIRST inline <script type="module"> (the one that imports
+ * App.jsx + mounts React) with a single <script src="…/bundle?entry=…">
+ * pointing at our server-side esbuild route. The route bundles every
+ * local .jsx/.tsx file referenced from the inline entry into one self-
+ * contained module — eliminating per-file path-mirror fragility,
+ * relative-import resolution against about:srcdoc, and React duplication.
+ *
+ * Subsequent <script type="module"> tags (none typical, but the model
+ * MIGHT add side-effect ones) are left as-is.
+ */
+function rewriteEntryToBundle(
+  html: string,
+  workspaceId: string,
+  entryPath: string,
+): string {
+  const re =
+    /<script\b[^>]*\btype\s*=\s*["']module["'][^>]*>[\s\S]*?<\/script>/i;
+  const m = re.exec(html);
+  if (!m) return html;
+  // Skip if this <script> already has a src= (already external).
+  if (/\bsrc\s*=/i.test(m[0].split(">")[0])) return html;
+  const bundleUrl = `/api/workspace/${workspaceId}/bundle?entry=${encodeURIComponent(entryPath)}`;
+  const replacement = `<script type="module" src="${bundleUrl}"></script>`;
+  return html.replace(m[0], replacement);
+}
+
 function HtmlPreview({
   workspaceId,
   path,
@@ -672,11 +989,24 @@ function HtmlPreview({
   } | null>(null);
   const [comment, setComment] = useState("");
 
-  // Always inject the picker script. Selection (highlight + click-to-comment)
-  // is gated by an enable/disable message so users not commenting see a clean
-  // iframe; tweak-application listeners run unconditionally so the right-side
-  // panel can drive live changes regardless of comment mode.
-  const html = useMemo(() => injectPickerScript(content), [content]);
+  // Always inject:
+  //   1. <base href> pointing at the path-mirroring file API, so relative
+  //      imports inside the iframe (./App.jsx, ./components/Button.jsx, etc.)
+  //      resolve to real URLs. Without this, srcDoc → about:srcdoc → broken.
+  //   2. The picker script, so selection / tweak / edit messages work.
+  const baseHref = `/api/workspace/${workspaceId}/files/`;
+  const html = useMemo(
+    () =>
+      injectPickerScript(
+        injectImportMap(
+          injectBaseHref(
+            rewriteEntryToBundle(content, workspaceId, path),
+            baseHref,
+          ),
+        ),
+      ),
+    [content, baseHref],
+  );
 
   // Replay every tweak override whenever they change. Posting again is
   // idempotent (setting a CSS variable to the same value is a no-op) so we
@@ -771,7 +1101,13 @@ function HtmlPreview({
             ref={iframeRef}
             title={path}
             srcDoc={html}
-            sandbox="allow-scripts"
+            // `allow-same-origin` is REQUIRED — without it the iframe runs
+            // in a unique opaque origin and `<script type="module">` imports
+            // to `/api/workspace/.../files/App.jsx` are treated as cross-
+            // origin without CORS, silently failing → black page. With both
+            // flags the iframe shares origin with the parent so module
+            // fetches work normally.
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
             className="h-full w-full border-0 bg-white"
             onLoad={() => {
               const win = iframeRef.current?.contentWindow;

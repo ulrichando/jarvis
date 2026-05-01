@@ -8,10 +8,14 @@ export function Thread({
   messages,
   isStreaming,
   artifactPanel,
+  reasoningById,
+  planById,
 }: {
   messages: UIMessage[];
   isStreaming: boolean;
   artifactPanel?: React.ReactNode;
+  reasoningById?: Map<string, string>;
+  planById?: Map<string, { content: string; complete: boolean }>;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -28,6 +32,8 @@ export function Thread({
           isStreaming={
             isStreaming && i === messages.length - 1 && m.role === "assistant"
           }
+          reasoning={reasoningById?.get(m.id)}
+          plan={planById?.get(m.id)}
         />
       ))}
       {artifactPanel}

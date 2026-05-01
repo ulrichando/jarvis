@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Square, Search, Sparkles } from "lucide-react";
 import { CodeSidebar } from "@/components/code/code-sidebar";
 import { CodeComposer } from "@/components/code/code-composer";
+import { SidebarToggle } from "@/components/layout/sidebar-toggle";
 
 export default function CodePage() {
   const [input, setInput] = useState("");
@@ -12,10 +13,16 @@ export default function CodePage() {
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground overflow-hidden">
-      <header className="grid grid-cols-3 h-11 shrink-0 items-center border-b border-border/50 px-4">
-        <Link href="/chat" className="font-bold text-[14px] text-foreground">
-          Jarvis CLI
-        </Link>
+      <header className="grid grid-cols-3 h-11 shrink-0 items-center border-b border-border/50 pr-4">
+        <div className="flex items-center">
+          <SidebarToggle />
+          <Link
+            href="/chat"
+            className="font-bold text-[14px] text-foreground pl-1"
+          >
+            Jarvis CLI
+          </Link>
+        </div>
         <div className="flex justify-center">
           <span className="rounded-full border border-border/60 px-2.5 py-0.5 text-[11px] text-foreground/60">
             Research preview

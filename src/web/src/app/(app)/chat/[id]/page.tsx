@@ -6,8 +6,13 @@ import { Chat } from "@/components/chat/chat";
 
 export default async function ChatByIdPage(props: PageProps<"/chat/[id]">) {
   const { id } = await props.params;
+  const search = (await props.searchParams) as
+    | { seed?: string | string[] }
+    | undefined;
+  const rawSeed = search?.seed;
+  const seed = Array.isArray(rawSeed) ? rawSeed[0] : rawSeed;
 
-  if (!db) return <Chat chatId={id} />;
+  if (!db) return <Chat chatId={id} seed={seed} />;
 
   const [conversation] = await db
     .select()
@@ -28,5 +33,14 @@ export default async function ChatByIdPage(props: PageProps<"/chat/[id]">) {
     .where(eq(schema.messages.conversationId, id))
     .orderBy(asc(schema.messages.createdAt));
 
-  return <Chat chatId={id} initialMessages={toUIMessages(rows)} />;
+  return (
+    <Chat
+      chatId={id}
+      initialMessages={toUIMessages(rows)}
+      // Only seed if the conversation has no prior messages — avoids
+      // double-sending if the user reloads the URL with the seed param
+      // still in place.
+      seed={rows.length === 0 ? seed : undefined}
+    />
+  );
 }

@@ -3,10 +3,19 @@
 import { useState } from "react";
 import dynamic from "next/dynamic";
 import { Group, Panel, Separator } from "react-resizable-panels";
-import { GitBranch, Search, Terminal as TerminalIcon, Zap, Plus } from "lucide-react";
+import {
+  GitBranch,
+  Search,
+  Terminal as TerminalIcon,
+  Zap,
+  Plus,
+  X,
+} from "lucide-react";
 import { FileTree } from "../file-tree";
 import { FileSearch } from "../file-search";
 import { Editor } from "../editor";
+import { PreviewTab } from "./preview-tab";
+import type { ViewportPreset } from "../toolbar";
 import { cn } from "@/lib/utils";
 
 const WorkbenchTerminal = dynamic(
@@ -21,9 +30,22 @@ type Props = {
   workspaceId: string;
   activePath: string | null;
   onOpen: (path: string) => void;
+  // When the user closes the editor (X on the breadcrumb), we drop back
+  // to the preview iframe — same UX as v0 / Lovable / Bolt where the
+  // canvas is the default and the file viewer is opt-in.
+  onClosePath: () => void;
+  iframeKey: number;
+  viewport: ViewportPreset;
 };
 
-export function CodeTab({ workspaceId, activePath, onOpen }: Props) {
+export function CodeTab({
+  workspaceId,
+  activePath,
+  onOpen,
+  onClosePath,
+  iframeKey,
+  viewport,
+}: Props) {
   const [leftTab, setLeftTab] = useState<LeftPaneTab>("files");
   const [bottomTab, setBottomTab] = useState<BottomPaneTab>("terminal");
 
@@ -67,11 +89,35 @@ export function CodeTab({ workspaceId, activePath, onOpen }: Props) {
 
       <Separator className="w-px bg-border/50 hover:bg-primary/40 transition-colors" />
 
-      {/* Right: editor stacked over a tabbed bottom pane */}
+      {/* Right: editor (or preview when no file is open) stacked over a
+          tabbed bottom pane. Preview is the default — clicking a file
+          swaps it for the editor. */}
       <Panel defaultSize="78%" className="overflow-hidden">
         <Group orientation="vertical" style={{ height: "100%" }}>
           <Panel defaultSize="68%" minSize="20%" className="overflow-hidden">
-            <Editor workspaceId={workspaceId} path={activePath} />
+            {activePath ? (
+              <div className="flex h-full flex-col">
+                <div className="flex items-center justify-end px-2 py-1 border-b border-border/40 bg-muted/10">
+                  <button
+                    onClick={onClosePath}
+                    title="Close file (back to preview)"
+                    className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
+                  >
+                    <X className="size-3" />
+                    <span>Preview</span>
+                  </button>
+                </div>
+                <div className="flex-1 min-h-0 overflow-hidden">
+                  <Editor workspaceId={workspaceId} path={activePath} />
+                </div>
+              </div>
+            ) : (
+              <PreviewTab
+                workspaceId={workspaceId}
+                iframeKey={iframeKey}
+                viewport={viewport}
+              />
+            )}
           </Panel>
           <Separator className="h-px bg-border/50 hover:bg-primary/40 transition-colors" />
           <Panel defaultSize="32%" minSize="10%" className="overflow-hidden">

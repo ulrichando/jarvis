@@ -12,15 +12,45 @@
 // package.json → npm install → write source → start dev).
 
 import type { Action, TrackedAction } from "./types";
-import { apiWriteFile } from "@/lib/workspace/client";
+import { apiCreateEntry, apiWriteFile } from "@/lib/workspace/client";
+
+export type ShellResult = {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  // For start actions we don't wait — there's no exit yet. The chat
+  // layer still needs to know the action was a "start" so it generates
+  // a meaningful boltActionResult block ("started in background").
+  detached?: boolean;
+};
 
 export type ActionEvent =
   | { kind: "queued"; tracked: TrackedAction }
   | { kind: "running"; tracked: TrackedAction }
-  | { kind: "success"; tracked: TrackedAction; output?: string }
-  | { kind: "error"; tracked: TrackedAction; error: string };
+  | {
+      kind: "success";
+      tracked: TrackedAction;
+      output?: string;
+      result?: ShellResult;
+    }
+  | {
+      kind: "error";
+      tracked: TrackedAction;
+      error: string;
+      result?: ShellResult;
+    };
 
 export type ActionListener = (ev: ActionEvent) => void;
+
+/**
+ * Fires after a file is successfully written to disk — placeholder OR
+ * final-content write. The chat layer uses this to invalidate the
+ * design-tree query so the file appears in the panel right away.
+ *
+ * Decoupled from ActionListener because placeholder writes shouldn't
+ * push extra status transitions through the action-card UI.
+ */
+export type FileWriteListener = (filePath: string) => void;
 
 type Pending = {
   artifactId: string;
@@ -32,13 +62,90 @@ type Pending = {
 export class ActionRunner {
   private workspaceId: string;
   private listener: ActionListener;
+  private onFileWrite?: FileWriteListener;
   private queues = new Map<string, Promise<void>>(); // per-artifact serial queue
   private fileBuffers = new Map<string, string>();    // actionId → live content
   private done = new Set<string>();                   // actionIds already executed
+  private placeholders = new Set<string>();           // actionIds with a placeholder already written
+  private dirsCreated = new Set<string>();            // folder paths we've already mkdir'd in this turn
 
-  constructor(workspaceId: string, listener: ActionListener) {
+  constructor(
+    workspaceId: string,
+    listener: ActionListener,
+    onFileWrite?: FileWriteListener,
+  ) {
     this.workspaceId = workspaceId;
     this.listener = listener;
+    this.onFileWrite = onFileWrite;
+  }
+
+  /**
+   * Wait for every per-artifact queue to settle. Used after the LLM's
+   * stream finishes so the chat layer can capture all action results
+   * before generating the <boltActionResults> follow-up block.
+   */
+  async drain(): Promise<void> {
+    // Snapshot the queue promises (the map may grow if late close tags
+    // race in) and await them. Re-check until stable.
+    while (true) {
+      const promises = Array.from(this.queues.values());
+      if (promises.length === 0) return;
+      await Promise.allSettled(promises);
+      const after = Array.from(this.queues.values());
+      if (after.length === promises.length) return;
+    }
+  }
+
+  /**
+   * Action's opening tag arrived. For file actions we want the file to
+   * appear in the panel immediately — not 30 seconds later when the close
+   * tag finally arrives. Write an empty placeholder via the per-artifact
+   * queue so it's serialized with the eventual full-content write.
+   *
+   * Also: if the model crashes mid-file, the placeholder is what proves
+   * the file was attempted, instead of leaving the user with nothing.
+   */
+  onOpen(artifactId: string, actionId: string, action: Action) {
+    if (action.type !== "file") return;
+    if (this.placeholders.has(actionId)) return;
+    this.placeholders.add(actionId);
+    const filePath = action.filePath;
+    const prev = this.queues.get(artifactId) ?? Promise.resolve();
+    const next = prev.then(async () => {
+      try {
+        // Create ancestor folders explicitly before the placeholder file
+        // so the design panel sees the folder appear FIRST, then the file
+        // populate inside it on the next tick — instead of folder + file
+        // both materializing together. Each newly-created ancestor fires
+        // its own `onFileWrite` so the tree query invalidates between
+        // steps. Already-created dirs are no-ops on the server (createEntry
+        // uses mkdir -p semantics).
+        const segments = filePath.split("/").slice(0, -1);
+        if (segments.length > 0) {
+          let cum = "";
+          for (const seg of segments) {
+            cum = cum ? `${cum}/${seg}` : seg;
+            if (this.dirsCreated.has(cum)) continue;
+            this.dirsCreated.add(cum);
+            try {
+              await apiCreateEntry(this.workspaceId, cum, "dir");
+              this.onFileWrite?.(cum);
+              // Tiny breathing room so the panel's polling cycle has a
+              // chance to render the folder before the file inside it.
+              await new Promise((r) => setTimeout(r, 80));
+            } catch {
+              /* dir may already exist — fine */
+            }
+          }
+        }
+        await apiWriteFile(this.workspaceId, filePath, "");
+        this.onFileWrite?.(filePath);
+      } catch (err) {
+        // Swallow placeholder failures; the close-write will retry.
+        console.warn("[action-runner] placeholder write failed:", err);
+      }
+    });
+    this.queues.set(artifactId, next);
   }
 
   /**
@@ -97,22 +204,29 @@ export class ActionRunner {
           body: JSON.stringify({ command: action.content }),
         });
         const j = await r.json();
-        if (!r.ok || j.exitCode !== 0) {
+        const result: ShellResult = {
+          exitCode: typeof j?.exitCode === "number" ? j.exitCode : -1,
+          stdout: typeof j?.stdout === "string" ? j.stdout : "",
+          stderr: typeof j?.stderr === "string" ? j.stderr : "",
+        };
+        if (!r.ok || result.exitCode !== 0) {
           const message =
-            j?.stderr?.trim() ||
+            result.stderr.trim() ||
             j?.error ||
-            `exited with code ${j?.exitCode ?? "?"}`;
+            `exited with code ${result.exitCode}`;
           this.listener({
             kind: "error",
             tracked: { ...tracked, status: "error", error: message },
             error: message,
+            result,
           });
           return;
         }
         this.listener({
           kind: "success",
           tracked: { ...tracked, status: "success" },
-          output: j.stdout,
+          output: result.stdout,
+          result,
         });
         return;
       }
@@ -130,12 +244,19 @@ export class ActionRunner {
             kind: "error",
             tracked: { ...tracked, status: "error", error: message },
             error: message,
+            result: { exitCode: -1, stdout: "", stderr: message, detached: true },
           });
           return;
         }
         this.listener({
           kind: "success",
           tracked: { ...tracked, status: "success" },
+          result: {
+            exitCode: 0,
+            stdout: "",
+            stderr: "",
+            detached: true,
+          },
         });
         return;
       }

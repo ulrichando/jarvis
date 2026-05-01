@@ -36,12 +36,16 @@ def test_browser_spec_registers_enabled():
     assert "transfer_to_desktop" in spec.when_to_use  # negative-routing example
 
 
-def test_browser_spec_loads_25_tools():
+def test_browser_spec_loads_all_ext_tools():
     browser_mod.register_browser()
     spec = get("browser")
     tools = spec.tool_factory()
-    # 25 ext_* tools — see jarvis_browser_ext.ALL_TOOLS
-    assert len(tools) == 25
+    # ext_* tools — see jarvis_browser_ext.ALL_TOOLS (count tracks
+    # additions like ext_new_tab; assert against the source list rather
+    # than a magic number to avoid bit-rot).
+    from jarvis_browser_ext import ALL_TOOLS
+    assert len(tools) == len(ALL_TOOLS)
+    assert len(tools) >= 26  # ext_new_tab landed 2026-05-01
 
 
 def test_browser_instructions_mention_destructive_gate():

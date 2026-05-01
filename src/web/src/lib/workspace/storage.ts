@@ -14,11 +14,17 @@ export const WORKSPACES_ROOT =
 
 const META_FILE = path.join(WORKSPACES_ROOT, "_meta.json");
 
+export type WorkspaceKind = "design" | "workbench";
+
 export type Workspace = {
   id: string;
   name: string;
   createdAt: number;
   updatedAt: number;
+  /** Origin tab. Determines which tab's project picker lists it.
+   *  Legacy workspaces with no `kind` are treated as "design" (the
+   *  original Workspace tab was used purely for design mocks). */
+  kind?: WorkspaceKind;
 };
 
 type Meta = { workspaces: Workspace[] };
@@ -42,10 +48,35 @@ export async function listWorkspaces(): Promise<Workspace[]> {
   return meta.workspaces.sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
-export async function createWorkspace(name: string): Promise<Workspace> {
+/**
+ * Tab-scoped listing.
+ * - kind="design" returns design workspaces (legacy `kind === undefined`
+ *   counts as design too — original tab was design-only).
+ * - kind="workbench" returns ONLY workspaces explicitly tagged workbench.
+ *   Legacy untagged workspaces stay out so existing design projects
+ *   don't bleed into the new Workbench list.
+ */
+export async function listWorkspacesOfKind(
+  kind: WorkspaceKind,
+): Promise<Workspace[]> {
+  const all = await listWorkspaces();
+  if (kind === "design") return all.filter((w) => w.kind !== "workbench");
+  return all.filter((w) => w.kind === "workbench");
+}
+
+export async function createWorkspace(
+  name: string,
+  kind: WorkspaceKind = "design",
+): Promise<Workspace> {
   const id = randomUUID();
   const now = Date.now();
-  const ws: Workspace = { id, name: name.trim() || "untitled", createdAt: now, updatedAt: now };
+  const ws: Workspace = {
+    id,
+    name: name.trim() || "untitled",
+    createdAt: now,
+    updatedAt: now,
+    kind,
+  };
   await fs.mkdir(path.join(WORKSPACES_ROOT, id), { recursive: true });
   const meta = await loadMeta();
   meta.workspaces.push(ws);
@@ -146,6 +177,38 @@ export async function readTree(id: string, rel = ""): Promise<TreeEntry[]> {
     return a.name.localeCompare(b.name);
   });
   return out;
+}
+
+/**
+ * Flat list of every file path inside a workspace, recursive. Skips the
+ * usual heavy/build dirs (node_modules etc.) and dotfiles. Used by the
+ * chat route to tell the model what files already exist when the user
+ * is iterating on a design — without it, the model treats every turn
+ * as a fresh ask and writes brand-new unrelated files.
+ */
+export async function listAllFiles(
+  id: string,
+  rel = "",
+  acc: string[] = [],
+): Promise<string[]> {
+  const dir = resolveSafe(id, rel);
+  let entries;
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    return acc;
+  }
+  for (const e of entries) {
+    if (e.name.startsWith(".") && e.name !== ".env") continue;
+    if (e.isDirectory() && IGNORE_DIRS.has(e.name)) continue;
+    const childRel = path.posix.join(rel, e.name);
+    if (e.isDirectory()) {
+      await listAllFiles(id, childRel, acc);
+    } else if (e.isFile()) {
+      acc.push(childRel);
+    }
+  }
+  return acc;
 }
 
 export async function readFile(id: string, rel: string): Promise<string> {

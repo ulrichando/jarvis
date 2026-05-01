@@ -51,6 +51,8 @@ export function DesignFilesPanel({
   onToggleBrand,
   brandActive,
   onRefine,
+  onFileDeleted,
+  onWorkspaceCleared,
 }: {
   workspaceId: string;
   selectedPath: string | null;
@@ -66,17 +68,37 @@ export function DesignFilesPanel({
   /** Open the structured "Refine the brief" form. When set, the empty state
    *  shows it as a primary CTA above the starter cards. */
   onRefine?: () => void;
+  /** Fired after a successful single-file or single-folder delete so the
+   *  parent can clear the selection / close tabs pointing at the now-gone
+   *  path. Pass the deleted entry's path. */
+  onFileDeleted?: (path: string) => void;
+  /** Fired after a workspace-clear succeeds so the parent can drop the
+   *  preview entirely (every file is gone, not just one). */
+  onWorkspaceCleared?: () => void;
 }) {
   const qc = useQueryClient();
   const { data: entries = [], isLoading, refetch } = useQuery({
     queryKey: ["design-tree", workspaceId, "", refetchKey ?? 0],
     queryFn: () => apiTree(workspaceId, ""),
+    // Belt-and-suspenders: invalidations from the runner SHOULD pull new
+    // files into the panel within ms, but if a notification drops (rAF
+    // scheduling, React batching mid-stream, etc.) the panel can sit
+    // stale. 2s polling guarantees the user sees files within at most
+    // one tick — cheap for a local API, no perceptible cost.
+    refetchInterval: 2000,
+    refetchIntervalInBackground: false,
+    staleTime: 0,
   });
 
   const del = useMutation({
     mutationFn: (path: string) => apiDeleteEntry(workspaceId, path),
-    onSuccess: () => {
+    onSuccess: (_, path) => {
       qc.invalidateQueries({ queryKey: ["design-tree", workspaceId] });
+      qc.removeQueries({
+        queryKey: ["design-file", workspaceId, path],
+        exact: false,
+      });
+      onFileDeleted?.(path);
     },
   });
 
@@ -88,6 +110,36 @@ export function DesignFilesPanel({
       else next.add(path);
       return next;
     });
+
+  // Auto-expand newly-appearing folders during generation. Without this,
+  // the model writes `components/Button.jsx` and the user only sees a
+  // collapsed `components/` row — feels like nothing's actually happening
+  // inside. Tracks which dir paths we've already seen and expands the new
+  // ones. We never auto-collapse, so a folder the user closes manually
+  // stays closed as long as no NEW dirs land.
+  const seenDirsRef = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    seenDirsRef.current = null;
+  }, [workspaceId]);
+  useEffect(() => {
+    const currentDirs = new Set<string>();
+    for (const e of entries) if (e.type === "dir") currentDirs.add(e.path);
+    if (seenDirsRef.current === null) {
+      seenDirsRef.current = currentDirs;
+      return;
+    }
+    const newlyAppeared: string[] = [];
+    for (const p of currentDirs) {
+      if (!seenDirsRef.current.has(p)) newlyAppeared.push(p);
+    }
+    seenDirsRef.current = currentDirs;
+    if (newlyAppeared.length === 0) return;
+    setExpandedFolders((prev) => {
+      const next = new Set(prev);
+      for (const p of newlyAppeared) next.add(p);
+      return next;
+    });
+  }, [entries]);
 
   const clearWs = useMutation({
     mutationFn: async () => {
@@ -102,6 +154,8 @@ export function DesignFilesPanel({
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["design-tree", workspaceId] });
+      qc.removeQueries({ queryKey: ["design-file", workspaceId], exact: false });
+      onWorkspaceCleared?.();
     },
   });
 
@@ -336,6 +390,12 @@ function FolderContents({
   const { data: entries = [], isLoading } = useQuery({
     queryKey: ["design-tree", workspaceId, path],
     queryFn: () => apiTree(workspaceId, path),
+    // Same polling as the root tree — when the model writes files into
+    // a subfolder during generation, this query needs to refetch too or
+    // the user only sees the empty folder while files are landing.
+    refetchInterval: 2000,
+    refetchIntervalInBackground: false,
+    staleTime: 0,
   });
   if (isLoading) {
     return (
