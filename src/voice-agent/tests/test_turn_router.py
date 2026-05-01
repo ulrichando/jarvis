@@ -169,6 +169,95 @@ def test_emotion_unknown_falls_back_to_neutral():
     assert detect_emotion("blarg foo whatever", AudioMeta()) == "neutral"
 
 
+# ── Phase 10.1 — score-based lex v2: negation, intensifier, escalation ─
+
+
+def test_negation_kills_frustrated_signal():
+    """`I'm NOT frustrated` should not push frustrated above neutral."""
+    # "frustrating" is a key in the frustrated lex; "not" in the
+    # preceding 30 chars flips its sign to -1.
+    assert detect_emotion("this is not frustrating at all", AudioMeta()) == "neutral"
+
+
+def test_negation_can_be_outvoted_by_other_match():
+    """A single negated frustrated key shouldn't suppress other genuine signals.
+    Frustrated -1 (negated) + Excited +1 (real) → excited wins."""
+    assert detect_emotion(
+        "this is not annoying — it's actually amazing", AudioMeta()
+    ) == "excited"
+
+
+def test_intensifier_doubles_match_weight():
+    """`really frustrating` should outscore a competing single-key match."""
+    # frustrated: "really" + "frustrating" → weight 2
+    # excited:    "amazing" → weight 1
+    # frustrated wins 2 > 1.
+    assert detect_emotion(
+        "this is really frustrating but the other part is amazing",
+        AudioMeta(),
+    ) == "frustrated"
+
+
+def test_intensifier_window_doesnt_bleed_far():
+    """Intensifier 30+ chars before a match should NOT boost it.
+    Without the window cap a 'really' early in a long sentence
+    would inflate every later emotion match arbitrarily."""
+    text = (
+        "I really enjoyed the talk earlier today and then later in the "
+        "afternoon I noticed something annoying"
+    )
+    # "annoying" is far from "really" (>30 chars); should score 1, not 2.
+    # No competing emotion → frustrated still wins, but the test asserts
+    # the score is the lower value.
+    from turn_router import _score_emotions
+    scores = _score_emotions(text)
+    assert scores["frustrated"] == 1.0  # not 2.0
+
+
+def test_score_aggregates_multiple_matches():
+    """Multiple frustrated keys in one turn → frustrated wins big."""
+    from turn_router import _score_emotions
+    scores = _score_emotions(
+        "this is annoying and frustrating and seriously not working"
+    )
+    # annoying + frustrating + not working + seriously → 4 hits
+    # ("seriously" isn't in negation regex, "not" in "not working"
+    # is *part of* the key, doesn't count as negating itself)
+    assert scores["frustrated"] >= 3.0
+
+
+def test_escalation_punctuation_pushes_neutral_to_urgent():
+    """`why is this happening??!!` (no lex hit) → urgent via escalation."""
+    # No lex match, but multi-punctuation triggers urgent.
+    assert detect_emotion("hello are you there??!!", AudioMeta()) == "urgent"
+
+
+def test_escalation_does_not_override_strong_lex():
+    """`amazing!!!` should stay excited, not get clobbered to urgent."""
+    assert detect_emotion("this is amazing!!!", AudioMeta()) == "excited"
+
+
+def test_escalation_pushes_curious_to_urgent():
+    """A pressing-question pattern (`how does this work??`) escalates."""
+    assert detect_emotion("how does this work??", AudioMeta()) == "urgent"
+
+
+def test_score_returns_neutral_when_only_negated_matches():
+    """All matches negated → no positive score → neutral."""
+    assert detect_emotion(
+        "this isn't frustrating and it's not annoying either", AudioMeta()
+    ) == "neutral"
+
+
+def test_expanded_lex_catches_new_phrases():
+    """Phase 10.1 added ~20 keys per emotion — spot-check a few."""
+    assert detect_emotion("I'm completely burnt out", AudioMeta()) == "sad"
+    assert detect_emotion("this is fantastic", AudioMeta()) == "excited"
+    assert detect_emotion("I'm running late", AudioMeta()) == "urgent"
+    assert detect_emotion("tell me about quantum tunneling", AudioMeta()) == "curious"
+    assert detect_emotion("come on, every time?", AudioMeta()) == "frustrated"
+
+
 import asyncio
 from unittest.mock import AsyncMock, patch
 
