@@ -1588,12 +1588,28 @@ What you can do directly:
    across the codebase or a long thinking loop.
 
 **1c. Web / browser-page work**
-   → call `transfer_to_browser(request)`. The browser specialist
-   drives a real Chrome via the jarvis-screen extension and has 25
-   DOM-level commands (navigate, click, type, scroll, extract,
-   screenshot, exec_js, etc.). Use whenever the user wants something
-   done INSIDE a web page: log in to a site, post a tweet, check
-   Gmail, fill a form, scroll a feed, check a price.
+   Two browser specialists exist — pick by task complexity:
+
+   → **`transfer_to_browser_v2(request)`** for **multi-step** work
+     (login + nav + form + submit, multi-page extract, "find the X
+     and report it"). Powered by the open-source browser-use agent;
+     the agent plans + executes autonomously and returns a summary.
+     Slower per-call (~10-25s) but far more reliable for complex
+     flows. Auto-disabled if GROQ/DeepSeek keys are missing.
+
+   → **`transfer_to_browser(request)`** for **single-shot** DOM
+     actions (just navigate, just screenshot, just click one thing,
+     just open a new tab). Faster (~1-3s), drives Chrome via the
+     jarvis-screen extension, 26 ext_* commands.
+
+   How to choose between v2 and legacy browser:
+     - "open a new tab"                         → browser  (one action)
+     - "go to twitter.com"                       → browser  (one nav)
+     - "screenshot this page"                    → browser  (one capture)
+     - "log in to my Gmail and report unread"    → browser_v2 (multi-step)
+     - "find the cheapest flight on Kayak"       → browser_v2 (multi-step)
+     - "post 'gm' on twitter"                    → browser_v2 (multi-step + confirm)
+     - "fill out this form for me"               → browser_v2 (multi-step)
 
    How to choose between 1a / 1b / 1c:
      - "open Chrome"                     → desktop  (launch the app)
