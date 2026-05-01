@@ -3404,11 +3404,18 @@ async def _google_geolocate(api_key: str, aps: list[dict]) -> tuple[float, float
 
 
 async def _reverse_geocode(lat: float, lng: float) -> str | None:
-    """Coords → 'City, State, Country' via Nominatim (no API key)."""
+    """Coords → most-specific human-readable address via Nominatim.
+
+    Uses zoom=18 (street-level) so the neighborhood, road, and suburb
+    surface in the address dict — then we assemble a layered string:
+    'Road · Neighborhood, City, State, Country'. Where Nominatim
+    doesn't return a road or neighborhood (often, for residential
+    grids), we gracefully fall back to city-level.
+    """
     import json as _json
     url = (
         f"https://nominatim.openstreetmap.org/reverse"
-        f"?format=json&lat={lat}&lon={lng}&zoom=10"
+        f"?format=json&lat={lat}&lon={lng}&zoom=18"
     )
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -3424,13 +3431,23 @@ async def _reverse_geocode(lat: float, lng: float) -> str | None:
         logger.debug(f"[get_location] reverse-geocode failed: {e}")
         return None
     addr = data.get("address") or {}
+    # Layered fields, most-specific first. We pick at most one
+    # micro-locator (road or neighbourhood) to keep the string voice-
+    # friendly — both is too long for TTS.
+    road = addr.get("road")
+    neighbourhood = (
+        addr.get("neighbourhood") or addr.get("suburb") or addr.get("quarter")
+    )
     city = (
         addr.get("city") or addr.get("town") or addr.get("village")
         or addr.get("hamlet") or addr.get("county")
     )
     region = addr.get("state") or addr.get("region")
     country = addr.get("country")
-    parts = [p for p in (city, region, country) if p]
+
+    # Choose the micro-locator: road > neighborhood > nothing.
+    micro = road or neighbourhood
+    parts = [p for p in (micro, city, region, country) if p]
     return ", ".join(parts) if parts else None
 
 
