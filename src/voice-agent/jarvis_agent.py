@@ -3198,6 +3198,83 @@ async def bash(command: str, timeout: int = 30) -> str:
 
 
 @function_tool
+async def launch_app(binary: str, args: str = "") -> str:
+    """Launch a desktop GUI application with verification.
+
+    Use this INSTEAD of raw bash() for opening applications. Two-stage
+    verification:
+      1. Pre-flight: check the binary exists on PATH (catches typos
+         like 'notepad' on Linux, where bash 'setsid -f notepad' would
+         silently exit 0 because setsid forks before notepad fails to
+         exec — leaving the LLM to falsely claim success).
+      2. Post-launch: capture stderr to a log file, then `pgrep` to
+         confirm a matching process is alive 600ms after spawn. If
+         not, surface the captured stderr so the LLM can report a
+         specific failure instead of "X opened, sir".
+
+    Args:
+        binary:  Executable name, e.g. 'google-chrome', 'code',
+                 'qterminal'. No path needed; PATH is searched.
+        args:    Optional flags as one string,
+                 e.g. '--new-window --profile-directory="Default"'.
+
+    Returns:
+        'OK: launched ...'                — process verified alive
+        'MISSING: <binary> ...'           — binary not on PATH
+        'CRASHED: <binary> ...<stderr>'   — exec'd then died
+
+    Voice replies should mirror the result honestly:
+        OK      → 'Done, sir.' / '<App> opened, sir.'
+        MISSING → '<App> is not installed, sir.'
+        CRASHED → '<App> failed to start, sir.'
+    """
+    import shutil
+    bin_only = (binary or "").strip().split()[0] if binary else ""
+    if not bin_only:
+        return "MISSING: no binary supplied"
+    bin_path = shutil.which(bin_only)
+    if bin_path is None:
+        return f"MISSING: '{bin_only}' is not installed on this system"
+
+    args_clean = (args or "").strip()
+    log_path = f"/tmp/jarvis-launch-{bin_only.replace('/', '_')}-{int(time.time())}.log"
+    cmd = f"setsid -f {bin_path} {args_clean} > {log_path} 2>&1"
+    logger.info(f"launch_app → {cmd[:140]}")
+
+    try:
+        proc = await asyncio.create_subprocess_shell(cmd)
+        await asyncio.wait_for(proc.wait(), timeout=5.0)
+    except Exception as e:
+        return f"CRASHED: spawn error — {e}"
+
+    # Give X11 / the app a moment to register itself.
+    await asyncio.sleep(0.6)
+
+    try:
+        check = await asyncio.create_subprocess_exec(
+            "pgrep", "-f", bin_only,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        out_b, _ = await asyncio.wait_for(check.communicate(), timeout=2.0)
+        running = bool(out_b.decode("utf-8", errors="replace").strip())
+    except Exception:
+        running = False
+
+    if not running:
+        try:
+            stderr_tail = Path(log_path).read_text(encoding="utf-8", errors="replace")[:280]
+        except Exception:
+            stderr_tail = ""
+        return (
+            f"CRASHED: '{bin_only}' exited immediately. "
+            f"stderr: {stderr_tail.strip() or '(empty)'}"
+        )
+
+    return f"OK: launched '{bin_only}'"
+
+
+@function_tool
 async def read_file(path: str, max_bytes: int = 8_192) -> str:
     """Read a file from disk and return its contents (capped).
 
