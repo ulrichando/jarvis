@@ -406,6 +406,27 @@ What shipped (`ec004ab`):
 
 Distance to 95: 3 points. The remaining axes — 4 (LLM dispatch by route 9), 7 (interruption handling 9), 9 (tool execution 10), 10 (self-eval 10) — are largely capped or stable. The realistic path is: confirm Phase 9.1's REASONING regex is firing in live telemetry (axis 4: 9 → 10, +1), then explore axis-7 work (interruption logic) for the rest.
 
+### 2026-04-30 — Phase 10.4 (telemetry coverage during dispatch bypass)
+
+Telemetry audit after Phase 10.3 lit up: `?: 12 turns (8%)` plus `specialist usage: supervisor=153/154` despite running multiple desktop handoffs tonight. Root cause: two separate places gated their work on `_dispatch_llm is not None` — meaning `JARVIS_DISPATCH_DISABLED=1` (the current state since the dispatcher's StreamAdapter+Orpheus path was returning no audio frames) silently dropped both the per-turn signal collection AND every log_turn() write. The report was reflecting only pre-bypass turns.
+
+What shipped (`09adb17` + `da50746`):
+
+- **`_on_user_input_for_dispatch`** restructured. Speech-rate / RMS / detect_emotion now run unconditionally; `session._jarvis_emotion` and `session._jarvis_route` get stamped before the dispatcher check via a deterministic regex/lex-based default route (BANTER fast-path → REASONING fast-path → frustrated|sad → EMOTIONAL → TASK). Dispatcher swap is the only thing the bypass gates.
+- **`_on_item` telemetry write** moved out from under the `_dispatch_llm is not None` check. When the dispatcher is off, `llm_used` falls back to the active speech-model id and `voice_used` to the literal `'fallback-chain'` marker — sufficient for the report's per-LLM grouping. The specialist column gets the real value either way (it's stamped from the registry's transfer tool, independent of dispatcher state).
+- All 223 tests pass.
+
+**Phase 9.1 also confirmed live** — telemetry shows REASONING route firing 10/154 turns (6% of total, median TTFW 691ms, hit-rate 60% — the best of any route). The regex fast-path is doing its job.
+
+**Re-score after Phase 10.4:**
+
+| # | Axis | Before | After | Delta |
+|---|---|---|---|---|
+| 4 | LLM dispatch by route | 9 | 10 | +1 — REASONING route now confirmed firing in live telemetry (10/154 turns at 691ms median) AND every turn now has populated route/emotion regardless of dispatcher state. The "trust the report" gap is closed: a `?: 12 turns (8%)` line is no longer possible. |
+| 10 | Self-eval / closed loop | 10 | 10 | capped, but qualitatively much stronger — the report now reflects 100% of turns instead of just the dispatcher-enabled subset. Specialist column populates correctly for every desktop / planner / browser handoff. |
+
+**New total: 92 → 93 / 100.**
+
 ### Phase 10+ candidates (path to 95)
 
 2. **REASONING route live-data confirmation (no score change yet).** Phase 9.1 shipped the regex; need ~6h of normal use to verify the route lights up in `turn_telemetry.py --report`. If it does, Axis 4 may have headroom for another +0 (already at 9 from Phase 9.3) but the system as a whole gets a confidence boost.
