@@ -42,7 +42,7 @@ class SpecialistSpec:
     when_to_use: str
     instructions: str
     tool_factory: Callable[[], list]
-    ack_phrase: str = "On it, sir."
+    ack_phrase: str = "Right away, sir."
     max_history_items: Optional[int] = 12
     enabled: bool = True
 
@@ -107,7 +107,7 @@ class SubagentSpec:
     when_to_use: str
     instructions: str
     tool_factory: Callable[[], list]
-    ack_phrase: str = "On it, sir."
+    ack_phrase: str = "Right away, sir."
     max_history_items: Optional[int] = 12
     enabled: bool = True
 
