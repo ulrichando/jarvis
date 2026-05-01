@@ -1,4 +1,4 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { ArrowRight, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,12 @@ const VALID_PROVIDERS = Object.keys(PROVIDER_FEATURES) as Provider[];
 export function generateStaticParams() {
   const out: Array<{ provider: string; feature: string }> = [];
   for (const [provider, features] of Object.entries(PROVIDER_FEATURES)) {
-    for (const f of features) out.push({ provider, feature: f.slug });
+    // Skip features that have a real top-level page — e.g. /anthropic/projects
+    // would shadow /projects. The sidebar already routes around them.
+    for (const f of features) {
+      if (f.href) continue;
+      out.push({ provider, feature: f.slug });
+    }
   }
   return out;
 }
@@ -25,6 +30,7 @@ export default async function FeaturePage(
 
   const resolved = getFeature(provider, feature);
   if (!resolved) return notFound();
+  if (resolved.feature.href) redirect(resolved.feature.href);
 
   const { feature: f, provider: p } = resolved;
   const siblings = PROVIDER_FEATURES[p].filter((x) => x.slug !== f.slug);

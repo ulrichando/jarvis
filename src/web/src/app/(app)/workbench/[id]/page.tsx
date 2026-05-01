@@ -71,6 +71,24 @@ export default function WorkbenchEditPage({
     }
   }, [searchParams, id, router]);
 
+  // Seed prompt from the Design tab's "Build" action — auto-fires the
+  // chat on first mount so the workbench scaffolds the full-stack app
+  // from the design files without the user having to re-type the brief.
+  // Read once via useState init so a re-render with the same URL doesn't
+  // re-fire (the Chat itself is already ref-guarded but we also clean
+  // the URL so a manual reload doesn't replay either).
+  const [seedPrompt] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    const params = new URLSearchParams(window.location.search);
+    return params.get("seed");
+  });
+  useEffect(() => {
+    if (seedPrompt) {
+      // Clean the URL so a refresh doesn't re-trigger.
+      router.replace(`/workbench/${id}`);
+    }
+  }, [seedPrompt, id, router]);
+
   // Esc exits fullscreen.
   useEffect(() => {
     if (!fullscreen) return;
@@ -103,6 +121,9 @@ export default function WorkbenchEditPage({
             workspaceId={id}
             activePath={activePath}
             onOpen={setActivePath}
+            onClosePath={() => setActivePath(null)}
+            iframeKey={iframeKey}
+            viewport={viewport}
           />
         )}
         {active === "preview" && (
@@ -128,22 +149,28 @@ export default function WorkbenchEditPage({
       <Group orientation="horizontal" style={{ height: "100%" }}>
         {/* Left: chat panel pinned to this workspace */}
         <Panel
-          defaultSize="32%"
-          minSize="22%"
-          maxSize="55%"
+          // Match the design tab's chat-column width — ~380px on a
+          // typical 1440-wide laptop. 32% was way too wide (~615px on
+          // a 1920 screen) and crowded the workbench toolbar/preview.
+          defaultSize="26%"
+          minSize="18%"
+          maxSize="45%"
           className="border-r border-border/50 overflow-hidden"
         >
           <Chat
             workspaceId={id}
             workspaceName={ws?.name ?? "workspace"}
+            seed={seedPrompt ?? undefined}
             embedded
+            unifiedUX
+            composerPlaceholder="Describe what you want to build — frontend, backend, full-stack…"
           />
         </Panel>
 
         <Separator className="w-px bg-border/50 hover:bg-primary/40 transition-colors" />
 
         {/* Right: workbench toolbar + tabs */}
-        <Panel defaultSize="68%" className="overflow-hidden">
+        <Panel defaultSize="74%" className="overflow-hidden">
           {right}
         </Panel>
       </Group>

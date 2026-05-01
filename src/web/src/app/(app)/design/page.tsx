@@ -1,4 +1,4 @@
-import { listWorkspaces, createWorkspace } from "@/lib/workspace/storage";
+import { listWorkspacesOfKind, createWorkspace } from "@/lib/workspace/storage";
 import { DesignView } from "@/components/design/design-view";
 
 type SearchParams = Promise<{ ws?: string | string[] }>;
@@ -11,7 +11,7 @@ export default async function DesignPage({
   const { ws } = await searchParams;
   const wsId = Array.isArray(ws) ? ws[0] : ws;
 
-  const all = await listWorkspaces();
+  const all = await listWorkspacesOfKind("design");
 
   // Resolution order:
   //   1. ?ws=<id> in the URL → use that workspace if it exists
@@ -19,7 +19,7 @@ export default async function DesignPage({
   //   3. Else: create the first one ("My first design")
   let workspace = wsId ? all.find((w) => w.id === wsId) : null;
   if (!workspace) {
-    workspace = all[0] ?? (await createWorkspace("My first design"));
+    workspace = all[0] ?? (await createWorkspace("My first design", "design"));
   }
 
   // Sort by recency so the picker dropdown shows latest first.

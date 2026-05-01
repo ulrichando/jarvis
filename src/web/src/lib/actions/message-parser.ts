@@ -18,10 +18,28 @@
 
 import type { Action, ActionType, ArtifactData, FileAction, ShellAction, StartAction } from "./types";
 
-const ARTIFACT_TAG_OPEN = "<boltArtifact";
-const ARTIFACT_TAG_CLOSE = "</boltArtifact>";
-const ACTION_TAG_OPEN = "<boltAction";
-const ACTION_TAG_CLOSE = "</boltAction>";
+// Tag constants stored lowercase so case-insensitive matching is a
+// single .toLowerCase() on the input. Some models emit `<boltArtifact>`,
+// some emit `<boltartifact>`, some `<BoltArtifact>` — all should parse.
+// Without case-insensitive matching, lowercase tags pass through as
+// visible text and React's renderer warns about unknown HTML elements.
+const ARTIFACT_TAG_OPEN = "<boltartifact";
+const ARTIFACT_TAG_CLOSE = "</boltartifact>";
+const ACTION_TAG_OPEN = "<boltaction";
+const ACTION_TAG_CLOSE = "</boltaction>";
+// JARVIS-specific. Wraps a one-shot plan block the model emits BEFORE the
+// boltArtifact, so the user sees what's about to be built before file
+// streaming starts. Content is markdown; we strip the tag from visible
+// output and surface it as a card via callbacks instead.
+const PLAN_TAG_OPEN = "<jarvisplan";
+const PLAN_TAG_CLOSE = "</jarvisplan>";
+// Synthetic block injected by the chat layer (NOT by the model) after
+// every boltArtifact's actions complete. Carries the actual exit/stdout/
+// stderr of each shell action so the LLM has ground truth on the next
+// turn. We strip this from the visible message body — it's only there
+// to be re-sent in the conversation history.
+const RESULTS_TAG_OPEN = "<boltactionresults";
+const RESULTS_TAG_CLOSE = "</boltactionresults>";
 
 export type ArtifactCallbackData = ArtifactData & {
   messageId: string;
@@ -34,12 +52,19 @@ export type ActionCallbackData = {
   action: Action;
 };
 
+export type PlanCallbackData = {
+  messageId: string;
+  content: string;
+  complete: boolean;
+};
+
 export type ParserCallbacks = {
   onArtifactOpen?: (data: ArtifactCallbackData) => void;
   onArtifactClose?: (data: ArtifactCallbackData) => void;
   onActionOpen?: (data: ActionCallbackData) => void;
   onActionStream?: (data: ActionCallbackData) => void;
   onActionClose?: (data: ActionCallbackData) => void;
+  onPlan?: (data: PlanCallbackData) => void;
 };
 
 type PartialAction =
@@ -52,10 +77,13 @@ type MessageState = {
   position: number;
   insideArtifact: boolean;
   insideAction: boolean;
+  insidePlan: boolean;
+  insideResults: boolean;
   artifactCounter: number;
   currentArtifact?: ArtifactData;
   currentAction: PartialAction;
   actionId: number;
+  planContent: string;
 };
 
 function stripCodeFence(content: string): string {
@@ -94,22 +122,72 @@ export class StreamingMessageParser {
         position: 0,
         insideArtifact: false,
         insideAction: false,
+        insidePlan: false,
+        insideResults: false,
         artifactCounter: 0,
         currentAction: { type: "", content: "" },
         actionId: 0,
+        planContent: "",
       };
       this.#messages.set(messageId, state);
     }
+
+    // Lowercased view for case-insensitive tag matching. Models are
+    // inconsistent about casing — `<boltArtifact>`, `<boltartifact>`,
+    // `<BoltArtifact>` all need to parse. We keep the original input for
+    // attribute extraction (regex flag `i` already case-insensitive)
+    // and content slicing.
+    const lower = input.toLowerCase();
 
     let output = "";
     let i = state.position;
 
     while (i < input.length) {
+      if (state.insideResults) {
+        // Drop everything inside <boltActionResults>...</boltActionResults>
+        // from the visible output. Block exists for the LLM's eyes only.
+        const closeIndex = lower.indexOf(RESULTS_TAG_CLOSE, i);
+        if (closeIndex !== -1) {
+          state.insideResults = false;
+          i = closeIndex + RESULTS_TAG_CLOSE.length;
+          continue;
+        }
+        return commit(state, output, input.length);
+      }
+
+      if (state.insidePlan) {
+        // Accumulate plan content until we see </jarvisplan>. Don't emit
+        // any of it to the visible output — it's surfaced via onPlan
+        // instead and rendered as a card in the message component.
+        const closeIndex = lower.indexOf(PLAN_TAG_CLOSE, i);
+        if (closeIndex !== -1) {
+          state.planContent += input.slice(i, closeIndex);
+          this.callbacks.onPlan?.({
+            messageId,
+            content: state.planContent,
+            complete: true,
+          });
+          state.insidePlan = false;
+          i = closeIndex + PLAN_TAG_CLOSE.length;
+          continue;
+        }
+        // Tag not closed yet — emit a streaming update so the plan card
+        // builds up live (same UX as file actions), then bail until the
+        // next chunk arrives.
+        state.planContent += input.slice(i);
+        this.callbacks.onPlan?.({
+          messageId,
+          content: state.planContent,
+          complete: false,
+        });
+        return commit(state, output, input.length);
+      }
+
       if (state.insideArtifact) {
         const artifact = state.currentArtifact!;
 
         if (state.insideAction) {
-          const closeIndex = input.indexOf(ACTION_TAG_CLOSE, i);
+          const closeIndex = lower.indexOf(ACTION_TAG_CLOSE, i);
           const action = state.currentAction;
 
           if (closeIndex !== -1) {
@@ -158,8 +236,8 @@ export class StreamingMessageParser {
             break;
           }
         } else {
-          const actionOpen = input.indexOf(ACTION_TAG_OPEN, i);
-          const artifactClose = input.indexOf(ARTIFACT_TAG_CLOSE, i);
+          const actionOpen = lower.indexOf(ACTION_TAG_OPEN, i);
+          const artifactClose = lower.indexOf(ARTIFACT_TAG_CLOSE, i);
 
           if (actionOpen !== -1 && (artifactClose === -1 || actionOpen < artifactClose)) {
             const tagEnd = input.indexOf(">", actionOpen);
@@ -184,24 +262,32 @@ export class StreamingMessageParser {
           }
         }
       } else if (input[i] === "<" && input[i + 1] !== "/") {
-        // Could be the start of <boltArtifact …>; scan forward to confirm.
+        // Could be the start of <boltArtifact …>, <jarvisPlan …>, or
+        // <boltActionResults …>. Probe forward: as long as the running
+        // prefix is a prefix of any of the known tags, keep going; on
+        // exact match, transition; on no-match, treat as ordinary text.
+        const longest = Math.max(
+          ARTIFACT_TAG_OPEN.length,
+          PLAN_TAG_OPEN.length,
+          RESULTS_TAG_OPEN.length,
+        );
         let j = i;
         let probe = "";
-        while (j < input.length && probe.length < ARTIFACT_TAG_OPEN.length) {
-          probe += input[j];
+        let consumed = false;
+        while (j < input.length && probe.length < longest) {
+          probe += lower[j];
+          // Full match for boltArtifact: open the artifact.
           if (probe === ARTIFACT_TAG_OPEN) {
             const next = input[j + 1];
-            // Reject `<boltArtifactSomething` that just happens to share the prefix.
             if (next && next !== ">" && next !== " ") {
+              // `<boltArtifactSomething` — not our tag.
               output += input.slice(i, j + 1);
               i = j + 1;
+              consumed = true;
               break;
             }
             const tagEnd = input.indexOf(">", j);
-            if (tagEnd === -1) {
-              // Tag not finished yet — wait for next chunk.
-              return commit(state, output, i);
-            }
+            if (tagEnd === -1) return commit(state, output, i);
             const tag = input.slice(i, tagEnd + 1);
             const title = extractAttr(tag, "title") ?? "Artifact";
             const type = extractAttr(tag, "type");
@@ -211,19 +297,52 @@ export class StreamingMessageParser {
             state.currentArtifact = artifact;
             this.callbacks.onArtifactOpen?.({ messageId, ...artifact });
             i = tagEnd + 1;
+            consumed = true;
             break;
-          } else if (!ARTIFACT_TAG_OPEN.startsWith(probe)) {
-            // Not a bolt tag at all; emit the chars and continue.
+          }
+          // Full match for jarvisPlan: enter plan mode.
+          if (probe === PLAN_TAG_OPEN) {
+            const next = input[j + 1];
+            if (next && next !== ">" && next !== " ") {
+              output += input.slice(i, j + 1);
+              i = j + 1;
+              consumed = true;
+              break;
+            }
+            const tagEnd = input.indexOf(">", j);
+            if (tagEnd === -1) return commit(state, output, i);
+            state.insidePlan = true;
+            state.planContent = "";
+            this.callbacks.onPlan?.({
+              messageId,
+              content: "",
+              complete: false,
+            });
+            i = tagEnd + 1;
+            consumed = true;
+            break;
+          }
+          // Probe is no longer a prefix of either known tag — bail.
+          if (
+            !ARTIFACT_TAG_OPEN.startsWith(probe) &&
+            !PLAN_TAG_OPEN.startsWith(probe)
+          ) {
             output += input.slice(i, j + 1);
             i = j + 1;
+            consumed = true;
             break;
           }
           j++;
         }
 
-        // We hit EOF mid-probe — the prefix could still complete on the
-        // next chunk, so stop here and don't emit `<` yet.
-        if (j === input.length && ARTIFACT_TAG_OPEN.startsWith(probe)) {
+        if (consumed) continue;
+
+        // EOF mid-probe and the prefix could still complete next chunk.
+        if (
+          j === input.length &&
+          (ARTIFACT_TAG_OPEN.startsWith(probe) ||
+            PLAN_TAG_OPEN.startsWith(probe))
+        ) {
           break;
         }
       } else {

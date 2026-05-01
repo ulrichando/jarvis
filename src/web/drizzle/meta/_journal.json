@@ -8,6 +8,13 @@
       "when": 1777220929615,
       "tag": "0000_glorious_reavers",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1782700000000,
+      "tag": "0001_add_projects",
+      "breakpoints": true
     }
   ]
 }

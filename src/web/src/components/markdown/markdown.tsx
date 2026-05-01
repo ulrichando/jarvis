@@ -111,6 +111,34 @@ const components: Components = {
   pre: ({ children }) => <>{children}</>,
 };
 
+// `rehypeRaw` keeps inline HTML, which is what we want for things like
+// math + tables + Tailwind-styled elements the model might emit. But
+// the design playbook's `<boltArtifact>` / `<boltAction>` tags also
+// show up in two paths: (1) very briefly during streaming before the
+// parser strips them, and (2) in saved conversation history, since the
+// server persists the full assistant text. ReactMarkdown then tries to
+// render them as React components and warns about unknown HTML elements.
+//
+// Plus any inline `<script>` the model wrote in design code (it sometimes
+// dumps a sample) — React skips executing scripts in component trees
+// and warns. Strip all three before rendering.
+function stripDesignTags(content: string): string {
+  return content
+    // Whole boltArtifact + everything inside (case-insensitive).
+    .replace(/<boltartifact\b[\s\S]*?<\/boltartifact>/gi, "")
+    // Open boltArtifact that didn't close (mid-stream truncation).
+    .replace(/<boltartifact\b[\s\S]*$/i, "")
+    // Lone boltAction blocks not wrapped in artifact.
+    .replace(/<boltaction\b[\s\S]*?<\/boltaction>/gi, "")
+    .replace(/<boltaction\b[\s\S]*$/i, "")
+    // Inline <script> tags in prose. The parser already redirects
+    // module scripts to the bundle endpoint — but those run inside an
+    // iframe, NOT in the chat thread. A script tag in CHAT prose is
+    // either a sample the model dumped or a leftover from a partial
+    // artifact. Either way, don't render it.
+    .replace(/<script\b[\s\S]*?<\/script>/gi, "");
+}
+
 export const Markdown = memo(function Markdown({
   content,
   className,
@@ -118,6 +146,7 @@ export const Markdown = memo(function Markdown({
   content: string;
   className?: string;
 }) {
+  const safe = stripDesignTags(content);
   return (
     <div
       className={cn(
@@ -130,7 +159,7 @@ export const Markdown = memo(function Markdown({
         rehypePlugins={[rehypeRaw, rehypeKatex]}
         components={components}
       >
-        {content}
+        {safe}
       </ReactMarkdown>
     </div>
   );

@@ -2,14 +2,17 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { ChevronDown, Download, ExternalLink, Maximize, Palette, Play, Plus, Share2, Sliders, X } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { ChevronDown, Download, ExternalLink, Hammer, Loader2, Maximize, Palette, Play, Plus, Share2, Sliders, X } from "lucide-react";
 import type { TreeEntry } from "@/lib/workspace/client";
 import { Chat } from "@/components/chat/chat";
 import { Button } from "@/components/ui/button";
 import { useSettings } from "@/hooks/use-settings";
+import { SidebarToggle } from "@/components/layout/sidebar-toggle";
+import { useConversation } from "@/hooks/use-conversations";
 import { useResizableColumn } from "@/hooks/use-resizable-column";
 import { cn } from "@/lib/utils";
-import { formatFromFilename } from "@/lib/design/format";
+import { FORMAT_FILE, formatFromFilename } from "@/lib/design/format";
 import { extractTweaks, type Tweak } from "@/lib/design/tweaks";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiDeleteEntry, apiReadFile, apiTree } from "@/lib/workspace/client";
@@ -91,11 +94,70 @@ export function DesignView({
   const [showTweaks, setShowTweaks] = useState(false);
   const [tweakOverrides, setTweakOverrides] = useState<Record<string, Tweak["value"]>>({});
   const [chatTab, setChatTab] = useState<"chat" | "comments">("chat");
+  // "Build" button state — POSTs to /api/design/build, gets a fresh
+  // workbench workspace + seed prompt, navigates to /workbench/<id>?seed=…
+  // The workbench's chat auto-fires the seed, scaffolding the full-stack
+  // app from the design files.
+  const [buildPending, setBuildPending] = useState(false);
   // Bumping `chatKey` remounts <Chat>, throwing away its in-memory messages so
   // the user starts a fresh thread (the + button in the chat header).
   const [chatKey, setChatKey] = useState(0);
   const designComments = useDesignComments(workspaceId);
   const { data: settings } = useSettings();
+
+  // Reset workspace-scoped UI state when SWITCHING projects (delete +
+  // auto-switch, new project, manual project picker change). Skips the
+  // very first mount so a page refresh on the same workspace doesn't
+  // wipe the chat buffer, file selection, etc. — only an actual
+  // workspaceId change triggers the reset.
+  const prevWorkspaceRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (prevWorkspaceRef.current === null) {
+      prevWorkspaceRef.current = workspaceId;
+      return;
+    }
+    if (prevWorkspaceRef.current === workspaceId) return;
+    prevWorkspaceRef.current = workspaceId;
+    setTabs([{ kind: "files" }]);
+    setActiveKey("__files");
+    setSelected(null);
+    setStreaming(null);
+    setTweakOverrides({});
+    setShowTweaks(false);
+    setShowBrand(false);
+    setChatKey((k) => k + 1);
+    setChatId(null);
+  }, [workspaceId]);
+
+  // Persist the conversation id per workspace so a refresh restores
+  // the same chat thread. Stored in localStorage keyed by workspaceId.
+  // Picked up on first mount so the Chat receives chatId + initial
+  // messages and the user's history isn't dropped on F5.
+  const chatIdKey = `design:chat:${workspaceId}`;
+  const [chatId, setChatId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return window.localStorage.getItem(`design:chat:${workspaceId}`);
+  });
+  useEffect(() => {
+    // Re-read when workspaceId changes (the workspace-switch effect
+    // above clears chatId, then this picks the right one for the new ws).
+    if (typeof window === "undefined") return;
+    setChatId(window.localStorage.getItem(chatIdKey));
+  }, [chatIdKey]);
+  const handleConversationId = (id: string) => {
+    setChatId(id);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(chatIdKey, id);
+    }
+  };
+  const conversationQuery = useConversation(chatId ?? undefined);
+  const initialMessages = conversationQuery.data?.messages ?? [];
+  // True only when we have a chatId saved AND the query hasn't settled
+  // yet. While loading, we DEFER mounting <Chat> — otherwise it would
+  // mount with an empty initialMessages and ignore the data when the
+  // query resolves (useState reads its initial value once).
+  const isLoadingChatHistory =
+    chatId !== null && conversationQuery.isLoading && !conversationQuery.data;
 
   // Fetch the selected file's content so we can extract its declared tweaks.
   // Same queryKey as HtmlPreview's useQuery — react-query dedupes the fetch.
@@ -151,6 +213,51 @@ export function DesignView({
     // closure each render). Listing it would cause an infinite loop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rootTree]);
+
+  // Auto-open the entry HTML when generation lands a new design. Without
+  // this the user finishes a turn and is left staring at the file list
+  // wondering whether anything happened. Triggers when an entry-format file
+  // (slides.html / prototype.html / etc.) appears at the root that wasn't
+  // there a moment ago. Skips questions.html (handled by the watcher above)
+  // and never overrides a file the user already picked.
+  const ENTRY_NAMES = useMemo(
+    () => new Set<string>(Object.values(FORMAT_FILE)),
+    [],
+  );
+  const seenEntriesRef = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    seenEntriesRef.current = null;
+  }, [workspaceId]);
+  useEffect(() => {
+    const currentEntries = new Set<string>();
+    for (const e of rootTree) {
+      if (e.type === "file" && ENTRY_NAMES.has(e.name)) {
+        currentEntries.add(e.name);
+      }
+    }
+    // First snapshot: record what's already there so we don't pop the
+    // entry file open just because the user navigated to a workspace.
+    if (seenEntriesRef.current === null) {
+      seenEntriesRef.current = currentEntries;
+      return;
+    }
+    const newlyAppeared: string[] = [];
+    for (const name of currentEntries) {
+      if (!seenEntriesRef.current.has(name)) newlyAppeared.push(name);
+    }
+    seenEntriesRef.current = currentEntries;
+    if (newlyAppeared.length === 0) return;
+    // Don't yank focus if the user is actively looking at something.
+    if (selected) return;
+    const pick = newlyAppeared[0];
+    const entry = rootTree.find(
+      (e) => e.type === "file" && e.name === pick,
+    );
+    if (entry) openFile(entry);
+    // openFile / selected captured intentionally — same closure pattern as
+    // the questions watcher above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rootTree, ENTRY_NAMES]);
 
   // Listen for the clarifying-questions form (questions.html, generated by
   // the model when the brief is sparse) submitting answers. Serialize into
@@ -317,6 +424,58 @@ export function DesignView({
     if (activeKey === k) setActiveKey("__files");
   };
 
+  // Called by DesignFilesPanel after a successful single-entry delete. The
+  // tree query is already invalidated there; this just makes sure the
+  // preview pane and any open tab pointing at the gone file get cleared,
+  // so the user doesn't keep staring at the now-deleted preview.
+  const handleFileDeleted = (path: string) => {
+    const matches = (p: string) => p === path || p.startsWith(path + "/");
+    setSelected((cur) => (cur && matches(cur.path) ? null : cur));
+    setTabs((prev) =>
+      prev.filter((t) => t.kind !== "file" || !matches(t.entry.path)),
+    );
+    setActiveKey((cur) => {
+      if (cur.startsWith("f:") && matches(cur.slice(2))) return "__files";
+      return cur;
+    });
+  };
+
+  // Called by DesignFilesPanel after the workspace is wiped. Drop the
+  // selection + every file tab — every preview is stale by definition.
+  const handleWorkspaceCleared = () => {
+    setSelected(null);
+    setTabs([{ kind: "files" }]);
+    setActiveKey("__files");
+  };
+
+  const router = useRouter();
+  const handleBuild = async () => {
+    if (buildPending) return;
+    setBuildPending(true);
+    try {
+      const r = await fetch("/api/design/build", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceWorkspaceId: workspaceId }),
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        alert(`Build failed: ${j.error ?? r.statusText}`);
+        return;
+      }
+      const j = (await r.json()) as { workspaceId: string; seed: string };
+      // Navigate to the new workbench workspace with the seed prompt.
+      // The workbench page's Chat auto-fires it on mount.
+      router.push(
+        `/workbench/${j.workspaceId}?seed=${encodeURIComponent(j.seed)}`,
+      );
+    } catch (err) {
+      alert(`Build failed: ${err instanceof Error ? err.message : err}`);
+    } finally {
+      setBuildPending(false);
+    }
+  };
+
   const initials = (settings?.user?.name ?? "U").slice(0, 1).toUpperCase();
   const showFiles = activeKey === "__files";
   const showRefine = activeKey === "__refine";
@@ -329,6 +488,7 @@ export function DesignView({
           className="flex shrink-0 items-stretch border-r border-border/60"
           style={{ width: chatColumn.width }}
         >
+          <SidebarToggle />
           <ProjectPicker
             current={{ id: workspaceId, name: workspaceName }}
             projects={projects}
@@ -379,6 +539,27 @@ export function DesignView({
         </div>
 
         <div className="flex shrink-0 items-center gap-2 px-3">
+          {/* Build — copies design files to a new workbench workspace and
+              fires a seed prompt that scaffolds a full-stack version. */}
+          <button
+            type="button"
+            onClick={handleBuild}
+            disabled={buildPending}
+            className={cn(
+              "flex items-center gap-1.5 rounded-md border border-border/60 px-2.5 py-1 text-[13px] transition-colors",
+              "hover:border-primary/50 hover:bg-primary/5 hover:text-foreground",
+              "text-muted-foreground",
+              buildPending && "opacity-60",
+            )}
+            title="Build — open this design in the Workbench and scaffold a full-stack app"
+          >
+            {buildPending ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Hammer className="size-3.5" />
+            )}
+            Build
+          </button>
           {isHtmlFile && (
             <button
               type="button"
@@ -495,17 +676,26 @@ export function DesignView({
           />
           <div className="flex-1 min-h-0">
             {chatTab === "chat" ? (
+              isLoadingChatHistory ? (
+                <div className="flex h-full items-center justify-center text-[12px] text-muted-foreground/70">
+                  loading conversation…
+                </div>
+              ) : (
               <Chat
                 // Include workspaceId so switching/deleting a project remounts
                 // the chat — otherwise the previous project's messages bleed
-                // into the new project's panel.
-                key={`${workspaceId}:${chatKey}`}
+                // into the new project's panel. chatId in the key too so a
+                // brand-new conversation in the same workspace also remounts.
+                key={`${workspaceId}:${chatId ?? "new"}:${chatKey}`}
                 embedded
                 hideSidebarToggle
                 unifiedUX
                 mode="design"
                 workspaceId={workspaceId}
                 workspaceName={workspaceName}
+                chatId={chatId ?? undefined}
+                initialMessages={initialMessages}
+                onConversationId={handleConversationId}
                 composerPlaceholder="Describe what you want to create — slides, prototype, landing, one-pager, infographic…"
                 // Streaming preview overlay is intentionally NOT wired here —
                 // we want files to appear in the panel as they finish writing
@@ -515,6 +705,7 @@ export function DesignView({
                 // removes the throttle + re-render storm on long generations.
                 prefillPrompt={prefillPrompt}
               />
+              )
             ) : (
               <CommentsList
                 items={designComments.items}
@@ -579,6 +770,8 @@ export function DesignView({
                 onToggleBrand={() => setShowBrand((v) => !v)}
                 brandActive={showBrand}
                 onRefine={openRefine}
+                onFileDeleted={handleFileDeleted}
+                onWorkspaceCleared={handleWorkspaceCleared}
               />
             </div>
             <div className="flex w-[42%] min-w-80 shrink-0 flex-col border-l border-border/60">

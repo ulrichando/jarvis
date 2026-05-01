@@ -88,7 +88,11 @@ function ArtifactCardView({
   previewPort: number | null;
   embedded: boolean;
 }) {
-  const [open, setOpen] = useState(true);
+  // Default-collapsed: showing every file row + auto-streaming code makes
+  // the chat thread huge and noisy. The card header alone — title +
+  // "n/m done" counter — is enough info during generation. Click to
+  // expand for the per-file detail view.
+  const [open, setOpen] = useState(false);
   const total = card.actions.length;
   const succeeded = card.actions.filter((a) => a.status === "success").length;
   const failed = card.actions.filter((a) => a.status === "error").length;
@@ -158,19 +162,11 @@ function ArtifactCardView({
 }
 
 function ActionRow({ a }: { a: TrackedAction }) {
-  // Auto-expand a file action while it is streaming so the user can
-  // watch the AI write code character-by-character. Auto-collapse once
-  // the action succeeds — by then the content is in the workbench
-  // editor / on disk and the chat card just shows the filename.
+  // Collapsed by default — the live code stream during generation just
+  // adds visual noise to the chat. Click the row to expand and inspect
+  // the file contents on demand. Files land in the design panel + on
+  // disk regardless, so there's no information lost.
   const [expanded, setExpanded] = useState(false);
-  const isFileStreaming =
-    a.action.type === "file" &&
-    (a.status === "running" || a.status === "queued");
-
-  useEffect(() => {
-    if (isFileStreaming) setExpanded(true);
-    else if (a.status === "success") setExpanded(false);
-  }, [isFileStreaming, a.status]);
 
   const icon = (() => {
     if (a.status === "running" || a.status === "queued")
@@ -242,7 +238,7 @@ function ActionRow({ a }: { a: TrackedAction }) {
           <FileContentView
             path={a.action.filePath}
             content={a.action.content}
-            streaming={isFileStreaming}
+            streaming={a.status === "running" || a.status === "queued"}
           />
         </div>
       )}

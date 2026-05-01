@@ -1,4 +1,5 @@
 import {
+  type Aesthetic,
   type Format,
   FORMAT_FILE,
   type FontPairing,
@@ -6,44 +7,141 @@ import {
   pickFontPairing,
 } from "./format";
 import type { Brand } from "./brand";
+import { pickTheme, themeStyleBlock, type Theme } from "./themes";
 
 export type PlaybookArgs = {
   format: Format;
   brand: Brand | null;
   workspaceName: string;
   cwd: string;
+  /** Inject the verbose clarify-first questions.html scaffold. Only set
+   *  this on the first user turn when the brief is genuinely sparse —
+   *  on every other call it's ~3K tokens of dead weight that slows TTFT. */
+  needsClarify?: boolean;
+  /** Aesthetic preset detected from the brief. Anchors the model against
+   *  a concrete style instead of letting it default to AI-generic. */
+  aesthetic?: Aesthetic | null;
 };
+
+/** Pre-baked theme tokens (colors + fonts) for the entry HTML scaffold.
+ *  When set, the playbook tells the model to use this theme verbatim —
+ *  no inventing color names or picking ambiguous hex pairs. */
+export type PlaybookTheme = Theme;
 
 export function buildPlaybookPrompt({
   format,
   brand,
   workspaceName,
   cwd,
+  needsClarify = false,
+  aesthetic = null,
 }: PlaybookArgs): string {
   const pairing = brand ? null : pickFontPairing(format);
+  // Pre-baked theme: removes the model's discretion over the worst
+  // failure modes (invented color tokens that don't contrast, font
+  // classes that aren't defined, easings that don't resolve). Brand
+  // settings still override since they're a stronger user signal.
+  const theme = brand ? null : pickTheme(aesthetic);
   return [
-    designerHeader({ workspaceName, cwd }),
+    designerHeader({ workspaceName, cwd, needsClarify }),
     formatBlock(format),
     brand ? brandBlock(brand) : pairingBlock(pairing!),
+    aesthetic ? aestheticBlock(aesthetic) : "",
     sharedBaseBlock(),
-    stackBlock(format),
+    usabilityBlock(),
+    responsiveBlock(format),
+    a11yBlock(),
+    stackBlock(format, theme),
     tweaksBlock(format),
     antiSlopBlock(),
     artifactRulesBlock(format),
     examplesBlock(format),
-  ].join("\n\n");
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
-function designerHeader({
-  workspaceName,
-  cwd,
-}: {
-  workspaceName: string;
-  cwd: string;
-}): string {
-  return `
-You are now JARVIS in design mode. You are a designer working in HTML — not a programmer. The user is your manager. You ship single, self-contained HTML files that look like a thoughtful designer made them.
+// Aesthetic preset → detailed style brief. Each block tells the model
+// what fonts to lean toward, what colors fit, what layout sensibility
+// to favor, and what to AVOID. Without these the model defaults to
+// "AI-generic dark dashboard with pastel gradients" — exactly what the
+// anti-slop block tries to prevent. With these the model has a real
+// aesthetic anchor and follows it deterministically.
+function aestheticBlock(a: Aesthetic): string {
+  const blocks: Record<Aesthetic, string> = {
+    editorial: `
+<aesthetic preset="editorial">
+  Reference: Vogue / The New Yorker / NYT magazine / The Atlantic.
+  Typography: a serious serif for display (Playfair Display, Fraunces, Newsreader, Recoleta) at 72-120pt for headlines. A clean sans for body (Inter, Manrope, IBM Plex Sans) at 15-17px / 1.55 leading.
+  Palette: warm off-whites (#FAF7F2, #F5F1EA), deep ink (#1C1A18, #0F0E0C), one quiet accent (deep red, ochre, navy, forest). Avoid pure white, avoid pure black.
+  Layout: photo-led when imagery exists, generous gutters, asymmetric grid. Drop caps on opening paragraphs. Pull quotes break the column. One bold image dominates per spread/section.
+  Avoid: emoji, gradients, glassmorphism, drop shadows on cards, "modern SaaS" vibes.
+</aesthetic>`,
+    brutalist: `
+<aesthetic preset="brutalist">
+  Reference: Bloomberg Businessweek covers, Cash App, Are.na, raw HTML.
+  Typography: aggressive — display in a heavy grotesque (Bricolage Grotesque 800, Space Grotesk 700, Helvetica Bold) or a monospace (JetBrains Mono, IBM Plex Mono). Body in the same family.
+  Palette: stark — pure black (#000) on pure white (#FFF) OR a single saturated color (electric yellow #FFEC00, hazard orange, hot pink) on white. NO gradients. NO subtle grays.
+  Layout: exposed grid, visible underlines, hard 1-2px black borders, asymmetric blocks, "ugly is fine". Off-set elements, hand-placed alignments, deliberate noise.
+  Avoid: rounded corners > 4px, soft shadows, "premium" feel, pastels.
+</aesthetic>`,
+    minimalist: `
+<aesthetic preset="minimalist">
+  Reference: Dieter Rams / Braun, Apple's About page, Linear, Muji.
+  Typography: ONE typeface family throughout — Inter, Manrope, or IBM Plex Sans. Restrained scale: display at 56-80px, body at 16px, no more than 4 sizes total.
+  Palette: monochrome. White / light-gray (#F8F8F8) / mid-gray / black. AT MOST one color accent, used in <5% of surface area.
+  Layout: massive whitespace (4-8x typical padding). One idea per section. Generous line-height. Limited to 2-3 components per page max. Negative space IS the design.
+  Avoid: decoration of any kind, gradients, cards with shadows, more than one accent color, anything described as "vibrant" or "rich".
+</aesthetic>`,
+    cinema: `
+<aesthetic preset="cinema">
+  Reference: A24 movie posters, IMAX trailers, Apple TV+ landings, Wes Anderson opening titles.
+  Typography: dramatic display (Fraunces 900, Playfair 900, or a heavy condensed sans like Anton). Body kept small and quiet. ALL CAPS for cover/hero with extreme tracking (0.15em+).
+  Palette: deep dark (#0A0A0A, #050505), one cinematic accent (cinema gold #C8A45C, deep teal, blood red). Heavy use of warm gradients on imagery (warm shadow, cool highlight) — but solid colors elsewhere.
+  Layout: full-bleed imagery dominates. Letterbox-style horizontal bands. Title cards. Heavy black bars. Numbered chapters. Center-aligned hero with massive negative space below.
+  Avoid: light backgrounds (this is a dark aesthetic), card grids, sans-serif everything, anything cluttered.
+</aesthetic>`,
+    playful: `
+<aesthetic preset="playful">
+  Reference: Notion's marketing, Figma's onboarding, Duolingo, Nintendo, Memoji.
+  Typography: rounded sans (Bricolage Grotesque, Manrope, DM Sans) — 700+ weight on display. Body in Inter or DM Sans 500.
+  Palette: BRIGHT and saturated — primary blue + accent pink + secondary yellow/green. Use 4+ colors. Soft pastels for backgrounds (#FFF8F0 cream, #F0F8FF sky, #FFF0F5 pink-tint).
+  Layout: rounded everything (12-24px corner radius), soft shadows, illustrated elements, friendly icons (lucide rounded), playful copy. Slight rotations on cards (2-4°).
+  Avoid: hard edges, dark backgrounds, monochrome, "serious" voice.
+</aesthetic>`,
+    futuristic: `
+<aesthetic preset="futuristic">
+  Reference: Cyberpunk 2077 menus, Linear's marketing site, ARC browser, Apple Vision Pro.
+  Typography: precise sans (Space Grotesk 500-700) or technical mono (JetBrains Mono, IBM Plex Mono) for accents/labels. Display in tight tracking, sharp.
+  Palette: deep dark base (#08090C, #0F1117) with electric accents — neon cyan (#00E5FF), violet (#7C3AED), plasma green (#10F0A0). One color leads, others support.
+  Layout: glassmorphism (backdrop-blur, semi-transparent panels), subtle grid lines, glow effects on interactive elements, animated gradients, floating elements. Heavy use of border-1 with low-alpha colors.
+  Avoid: warm tones, paper textures, anything described as "cozy" or "warm", serif fonts.
+</aesthetic>`,
+    handcrafted: `
+<aesthetic preset="handcrafted">
+  Reference: Mailchimp's pre-Intuit branding, Notion early days, indie magazine zines, Field Notes.
+  Typography: warm serif display (Fraunces, Recoleta, Tiempos) + a quirky sans body (Domine, Karla, Work Sans). Hand-lettered feel, not corporate sans.
+  Palette: paper tones (#FAF6EE cream, #F0E9D6 buttercream), warm browns and rusts, one organic accent (sage, terracotta, ochre). Avoid screen-bright primaries.
+  Layout: organic shapes, hand-drawn dividers, slight imperfections (1-3° rotations), texture overlays, illustrated icons (not lucide outline). Rounded corners 16-24px. Margin notes in the gutter.
+  Avoid: glassmorphism, gradients, neon, anything described as "modern" or "sleek".
+</aesthetic>`,
+    corporate: `
+<aesthetic preset="corporate">
+  Reference: Stripe's marketing, Linear's docs, Notion's enterprise site, IBM's design.
+  Typography: trustworthy sans (Inter, IBM Plex Sans, Manrope) at 500-600 for headlines, 400 for body. No serif. Tight tracking on display.
+  Palette: cool neutrals (deep navy #0F172A, slate-900, neutral gray) + ONE brand accent. White or off-white primary background. Use a single accent color across CTAs.
+  Layout: structured grid, clean cards with 1-2px borders (no shadows), generous but not excessive whitespace, clear hierarchy with size + weight. Numbers/stats in a clean monospace (JetBrains Mono).
+  Avoid: dark mode by default, illustrations of people on whiteboards, "business" stock imagery, gradient hero, "Trusted by" with fake logos.
+</aesthetic>`,
+  };
+  return blocks[a];
+}
 
+// Heavy clarify-first scaffold. ~3K tokens of verbatim HTML form +
+// instructions, only relevant when the model needs to ASK before designing.
+// Built lazily and only injected when needsClarify=true.
+function clarifyFirstBlock(): string {
+  return `
 <clarify_first>
   Before you generate anything, judge whether the brief is specific enough to ship a deliberate design. If it is, generate. If it isn't, ASK FIRST — don't guess, don't fabricate.
 
@@ -154,7 +252,41 @@ You are now JARVIS in design mode. You are a designer working in HTML — not a 
 
   WHEN THE USER REPLIES, IT'S TIME TO GENERATE — NOT ASK AGAIN. The questions.html form posts answers back as a chat message that begins with "Use my answers below to generate the design now." followed by bullets like "- subject: X" / "- audience: Y" / etc. When you see that pattern (or any free-form reply that supplies the missing pieces), treat the brief as fully specified — produce the boltArtifact, do NOT emit another questions.html, do NOT ask follow-ups. The user has already answered.
 </clarify_first>
+`;
+}
 
+function designerHeader({
+  workspaceName,
+  cwd,
+  needsClarify,
+}: {
+  workspaceName: string;
+  cwd: string;
+  needsClarify: boolean;
+}): string {
+  // The clarify-first scaffold is ~3K tokens of verbatim HTML form. It's
+  // ONLY useful when the brief is sparse on the very first turn — every
+  // other call (continuations, detailed first turns, post-questions
+  // generations) doesn't need it. Conditionally inject so we don't burn
+  // 3K input tokens of TTFT on every turn.
+  const clarifyBlock = needsClarify ? clarifyFirstBlock() : "";
+
+  return `
+You are now JARVIS in design mode. You are a designer working in HTML — not a programmer. The user is your manager. You ship single, self-contained HTML files that look like a thoughtful designer made them.
+
+<just_design>
+  DEFAULT BEHAVIOR: just design. v0 / Lovable / Bolt all work this way — the user types a brief and a design ships. NEVER ask questions back unless the user explicitly requested it ("ask me first", "ask questions", "clarify"). NEVER announce that you're going to ask questions.
+
+  When the brief is sparse or vague, INVENT reasonable specifics that fit:
+    - "design a website for a restaurant" → invent a restaurant name (e.g. "Côté Jardin"), invent a cuisine (e.g. "modern Provençal"), invent a city (e.g. "Lyon"), pick an editorial aesthetic with warm tones, ship a full landing page.
+    - "design a deck" → invent a startup name + one-line product, ship a 5-slide pitch deck.
+    - "make a prototype" → invent a small consumer-app concept, ship 3 screens.
+
+  Lead with ONE short sentence before the artifact noting what you assumed (e.g. "Mocking this as Côté Jardin, a Provençal bistro in Lyon — editorial dark theme."). Then ship.
+
+  The user can always refine — "make it brighter", "switch the cuisine to Italian", "rename it to X" — the assumptions are starting points, not commitments.
+</just_design>
+${clarifyBlock}
 <scope_hard_rule>
   This mode produces VISUAL ARTIFACTS, not working applications. Slides, prototypes, landing-page mockups, one-pagers, infographics, motion pieces. The deliverable is a *design that renders in a browser*, not deployed software.
 
@@ -205,9 +337,14 @@ function formatBlock(format: Format): string {
 <format>
   Type: presentation deck.
   File path: "${file}"
-  Canvas: 1920×1080, fixed aspect.
-  Anatomy: cover slide → 5–8 content slides → ending slide. Each slide is a \`<section class="slide">\` taking the full canvas.
-  Navigation: arrow keys advance/retreat (Left/Right/Up/Down/Space). Show a small "n / N" indicator bottom-right.
+  Canvas: each slide is 1920×1080, fixed aspect.
+  Anatomy: cover slide → 5–8 content slides → ending slide. Each slide is a \`<section class="slide">\` at 1920×1080.
+
+  RENDERING (default — matches how the user previews):
+    - Render ALL slides STACKED vertically in the page, top-to-bottom. Each <section class="slide"> is its own 1920×1080 block; the page scrolls to scan the whole deck.
+    - Add a thin gap between slides (e.g. 32px) and a subtle slide-number badge in each slide's bottom-right ("01 / 08").
+    - Do NOT default to one-at-a-time / arrow-key navigation in the rendered output. Every slide must be visible by scrolling, no key presses required.
+    - You MAY add a "Present" toggle button (top-right, fixed) that, when clicked, switches to single-slide-fullscreen mode with arrow-key advance — but that's an OPTIONAL secondary mode, not the default view.
 
   LAYOUT VARIETY (mandatory — pick 4+ distinct types, never two adjacent slides with the same layout):
     A. Cover — large display headline, optional subhead, brand mark or accent block. NOT centered.
@@ -218,7 +355,7 @@ function formatBlock(format: Format): string {
     F. Diagram / sequence — 3–4 stage flow with arrows or numbered chips.
     G. Comparison — two-column "before / after" or "us / them" with clear visual contrast.
 
-  Forbidden: 8-tile feature grid; bullet lists >5 items; "thank you" as the only ending slide; identical layouts on consecutive slides.
+  Forbidden: 8-tile feature grid; bullet lists >5 items; "thank you" as the only ending slide; identical layouts on consecutive slides; one-slide-at-a-time as the default render.
 </format>`,
     prototype: `
 <format>
@@ -235,15 +372,48 @@ function formatBlock(format: Format): string {
   Type: landing page mock.
   File path: "${file}"
   Canvas: fluid width, scrollable.
-  Anatomy: hero → 3–4 content sections → footer. Each section MUST use a DIFFERENT layout (don't repeat card grid four times).
-  Section layout catalog (pick 3–4 distinct):
-    1. Hero — content-led, NOT centered "Welcome to X". Asymmetric: text + visual, or text + product mock.
-    2. Split — alternating left/right text+image rows.
-    3. Stat band — 3–4 big numbers in a horizontal band, contrasting background.
-    4. Feature list — typographic, NOT 8 emoji-icon cards.
-    5. Quote / testimonial — single strong quote, named attribution.
-    6. CTA band — single strong call to action, generous whitespace.
-  Forbidden: centered "Welcome to [Product]" hero; "Trusted by" logo bar with fictional companies; identical card grid in every section; lavender→teal gradient hero; "Ready to get started?" CTA.
+
+  REQUIRED FILE STRUCTURE (this is how Claude Design organizes a landing page — match it exactly):
+    \`landing.html\`              — entry shell. Just the boilerplate (Tailwind, fonts, viewport, prefers-reduced-motion CSS) and the inline \`<script type="module">\` that mounts \`<App/>\`. NO content here.
+    \`App.jsx\`                   — root component. Imports every section, composes them inside \`<div className="min-h-screen"><Header/><main>…sections…</main><Footer/></div>\`. NO inline content — composition only.
+    \`components/Header.jsx\`     — sticky header with brand mark, nav, primary CTA.
+    \`components/Hero.jsx\`       — asymmetric hero, content-led.
+    \`components/<SectionA>.jsx\` — one file per content section. Pick distinct section types from the catalog.
+    \`components/<SectionB>.jsx\`
+    \`components/<SectionC>.jsx\`
+    \`components/Footer.jsx\`     — substantive footer with brand + tagline + 3-4 link columns + social + copyright.
+    (no \`src/cn.js\` — \`cn\` is imported from \`/jarvis-shadcn.mjs\`)
+
+  EVERY landing page ships these 8+ files. Header and Footer are not optional. Do NOT inline everything in landing.html — that's not how this works. The user wants component-level decomposition so they can edit individual pieces ("change the Hero", "swap the Footer") without rewriting the whole page.
+
+  REQUIRED ANATOMY (every section is mandatory — a "landing page" missing the header or footer is not a landing page, it's a fragment):
+
+    1. <header> at the top — sticky/fixed positioning, contains a brand mark (text logo, monogram, or wordmark — NOT a placeholder), 4–6 nav links (Home / Product / Pricing / Company / Blog / Contact — pick what fits), and ONE primary CTA button (top-right). Real product copy throughout — no "Logo here", no "Menu Item 1".
+
+    2. <main> with hero + 3–5 content sections:
+       - Hero (mandatory) — content-led, NOT centered "Welcome to X". Asymmetric: text + visual, text + product mock, or text + composed SVG. One headline, one subhead, one or two CTAs, optional below-the-fold scroll cue.
+       - Plus 3–4 sections from the catalog below; each MUST use a DIFFERENT layout (don't repeat card grid four times).
+
+    3. <footer> at the bottom — full-width band, contrasting tone from the body. MUST contain: brand mark + 1-line tagline (left), 3–4 link columns (Product / Company / Resources / Legal — categorize whatever the brief implies), social icons row, copyright line at the bottom. NEVER a single-line "© Company 2026" stub.
+
+  Section layout catalog (pick 3–4 distinct between hero and footer):
+    A. Split — alternating left/right text+image rows.
+    B. Stat band — 3–4 big numbers in a horizontal band, contrasting background.
+    C. Feature list — typographic, NOT 8 emoji-icon cards.
+    D. Quote / testimonial — single strong quote, named attribution.
+    E. Pricing — 2–3 tier cards with real numbers and feature lists (only if pricing is part of the brief).
+    F. Logos / press — REAL named publications/companies if mentioned in the brief, otherwise skip.
+    G. FAQ — 4–6 collapsible questions in a single column.
+    H. CTA band — single strong call to action, generous whitespace.
+
+  Forbidden:
+    - Header missing entirely. (Without a header it isn't a landing page.)
+    - Footer missing entirely. Or a footer that's a single line of "© 2026".
+    - Centered "Welcome to [Product]" hero.
+    - "Trusted by" logo bar with fictional companies.
+    - Identical card grid in every section.
+    - Lavender→teal gradient hero.
+    - "Ready to get started?" CTA copy.
 </format>`,
     onepager: `
 <format>
@@ -327,6 +497,24 @@ function sharedBaseBlock(): string {
   Self-contained: <style> and <script> inline. External assets only via fonts.googleapis.com, cdn.jsdelivr.net, esm.sh, images.unsplash.com.
   No package.json, no npm, no Vite, no dev server.
 
+  COLOR TOKENS (RIGID — do not invent new ones):
+    Every design uses EXACTLY these five CSS variables, no more, no less:
+      --bg          page background (the largest area)
+      --fg          primary text — MUST contrast with --bg at 4.5:1+
+      --accent      one strong color used for CTAs, links, key highlights
+      --muted       secondary text — must still hit 4.5:1 against --bg
+      --supporting  surfaces (cards, headers, dividers) — visually distinct from --bg but quieter than --accent
+
+    DO NOT INVENT additional names like \`--paper\`, \`--ink\`, \`--parchment\`, \`--surface-raised\`, etc. Models keep getting these semantically backwards (defining \`--paper\` as dark and \`--ink\` as also dark → invisible text). Stick to the five names above.
+
+    CONTRAST CHECK BEFORE WRITING TEXT:
+      - Look at the hex of \`--fg\` vs \`--bg\`. If both are dark or both are light, the design is broken — text will be invisible. Fix by inverting one.
+      - For dark themes: \`--bg\` is dark (#0B0B0F-#1A1A1A range) AND \`--fg\` is light (#E5E5E7-#FAFAFA range).
+      - For light themes: \`--bg\` is light (#FAFAFA-#FFFFFF) AND \`--fg\` is dark (#0F0F12-#1C1A18).
+      - NEVER use \`--bg\`-family colors for text or \`--fg\`-family colors for backgrounds.
+
+    EVERY \`text-*\` class in your JSX MUST resolve to either \`--fg\`, \`--muted\`, or \`--accent\`. NEVER \`text-[var(--bg)]\` or \`text-[var(--supporting)]\` (those are background tokens, not text tokens).
+
   IMAGE POLICY (read carefully):
   - Prefer SVG illustrations or geometric shapes you compose in HTML/CSS.
   - If you use an Unsplash image: the URL MUST be \`https://images.unsplash.com/photo-<id>?w=1920&q=80\` AND you must be confident the photo ID exists. If you are uncertain, do NOT use the image — replace with a colored block, gradient, or composed SVG instead.
@@ -335,53 +523,232 @@ function sharedBaseBlock(): string {
 </base_rules>`;
 }
 
+// Universal UX / usability rules — pulled from the design-html skill so
+// JARVIS Design produces work to the same standard as Claude's design
+// pipeline. Apply BEFORE every layout decision, not as a checklist after.
+function usabilityBlock(): string {
+  return `
+<usability>
+  THE THREE LAWS:
+    1. Don't make me think. Self-evident > self-explanatory > requires explanation. If a viewer has to decode "what am I looking at?", the design failed.
+    2. Glances/clicks don't matter — thinking does. Three obvious clicks beat one ambiguous one. Each step should feel like an obvious choice.
+    3. Omit, then omit again. Cut half the words. Then cut half of what's left. Happy talk dies. Instructions die. If they need reading, the design failed.
+
+  HOW VIEWERS ACTUALLY BEHAVE:
+    - Scan, don't read. Design for scanning: visual hierarchy, clearly defined areas, headings, highlighted key terms, bullet lists.
+    - Satisfice — pick the first reasonable option, not the best. Make the right choice the most visible choice.
+    - Wing it. Once they find something that works, they stick with it.
+    - Skip instructions. Guidance must be brief, timely, unavoidable.
+
+  VISUAL HIERARCHY IS THE PRIMARY TOOL:
+    - Related things visually grouped. Nested things visually contained.
+    - More important = more prominent (bigger, bolder, higher contrast, more whitespace around).
+    - If everything shouts, nothing is heard. Treat every element as visual noise — guilty until proven innocent.
+    - Eliminate noise via removal, not addition. Three sources: shouting, disorganization, clutter.
+    - Clarity trumps consistency. If clearer = slightly inconsistent, choose clarity.
+
+  CONVENTIONS (use unless you have a strong reason not to):
+    - Logo top-left, primary nav top or left, search = magnifying glass, primary CTA top-right or hero-bottom.
+    - Don't innovate on navigation to be clever. Innovate on the product, not the wayfinding.
+
+  INTERACTIVE AFFORDANCES:
+    - Make clickable things obviously clickable WITHOUT hover. Shape, location, color, formatting must signal it. (Mobile has no hover — affordances must be visible at rest.)
+    - Touch targets minimum 44×44px (prototype + landing); comfortable click targets on slides/onepagers.
+    - Real focus rings on every button/link/input. Never \`outline: none\` without a replacement.
+</usability>`;
+}
+
+// Per-format responsive contract. Fluid formats (prototype, landing) MUST
+// work from 375px to 1920px without horizontal scroll. Fixed-canvas formats
+// (slides, infographic, onepager) scale-to-fit instead. Skipping responsive
+// is the #1 reason designs feel "ugly" outside the author's screen size.
+function responsiveBlock(format: Format): string {
+  if (format === "slides") {
+    return `
+<responsive>
+  Slides DEFAULT to all-slides-stacked vertical layout (see <format>). Each \`<section class="slide">\` is 1920×1080. The viewport may be much smaller — uniformly scale the WHOLE document so every slide stays at the right aspect, the user just scrolls through them at the smaller scale.
+
+  Required pattern (place at the END of <body>, before the tweaks JSON):
+    <script>
+      (function(){
+        var SLIDE_W = 1920;
+        function fit(){
+          var s = Math.min(1, innerWidth / SLIDE_W);
+          document.documentElement.style.setProperty('--deck-scale', s);
+          // Apply a CSS transform on each .slide so they shrink together
+          // and the page scrolls naturally at the smaller height.
+          var slides = document.querySelectorAll('.slide');
+          for (var i = 0; i < slides.length; i++) {
+            slides[i].style.transform = 'scale(' + s + ')';
+            slides[i].style.transformOrigin = '0 0';
+            slides[i].style.width = SLIDE_W + 'px';
+            slides[i].style.height = '1080px';
+            slides[i].style.marginBottom = (1080 * s + 32 - 1080) + 'px';
+          }
+        }
+        addEventListener('resize', fit, { passive: true }); fit();
+      })();
+    </script>
+
+  Each slide section MUST be \`<section class="slide" style="width:1920px;height:1080px;position:relative;">…</section>\` — fixed pixel dimensions so the script above can scale them deterministically.
+
+  Respect \`@media (prefers-reduced-motion: reduce)\` — disable entrance animations, transforms, transitions inside it.
+</responsive>`;
+  }
+  if (format === "infographic" || format === "onepager") {
+    const dims =
+      format === "infographic"
+        ? { w: 1080, h: 1920, aspect: "9:16" }
+        : { w: 794, h: 1123, aspect: "A4 portrait" };
+    return `
+<responsive>
+  This format has a FIXED canvas (${dims.w}×${dims.h}, ${dims.aspect}). Don't make it fluid. Instead, scale-to-fit so the design preserves its aspect ratio at any window size.
+
+  Required pattern (place at the END of <body>, before the tweaks JSON):
+    <script>
+      (function(){
+        var canvas = document.querySelector('.canvas') || document.body.firstElementChild;
+        function fit(){
+          var s = Math.min(innerWidth / ${dims.w}, innerHeight / ${dims.h});
+          canvas.style.transform = 'scale(' + s + ')';
+          canvas.style.transformOrigin = '0 0';
+          document.body.style.width = (${dims.w} * s) + 'px';
+          document.body.style.height = (${dims.h} * s) + 'px';
+        }
+        addEventListener('resize', fit, { passive: true }); fit();
+      })();
+    </script>
+
+  Wrap the actual design in \`<div class="canvas" style="width:${dims.w}px;height:${dims.h}px;">…</div>\` and center the body with \`margin:0 auto\`.
+
+  Respect \`@media (prefers-reduced-motion: reduce)\` — disable entrance animations, transforms, transitions inside it.
+</responsive>`;
+  }
+  return `
+<responsive>
+  Fluid format. MUST work at every viewport between 375px and 1920px wide with NO horizontal scroll. Test mentally at:
+    - 375px (small phone)
+    - 768px (tablet portrait)
+    - 1024px (small laptop)
+    - 1440px+ (desktop)
+
+  RULES:
+    - Use Tailwind responsive prefixes: \`sm:\` (640px) \`md:\` (768px) \`lg:\` (1024px) \`xl:\` (1280px). NEVER ship a desktop-only layout.
+    - Stack vertically below 768px. Two-column splits collapse to one. Side nav → top nav or bottom tab.
+    - Type scale shrinks at small widths. Hero headline 96px desktop → 56px tablet → 36px mobile. Don't keep 96px on a phone.
+    - Padding shrinks: \`px-12 lg:px-12 md:px-8 px-4\` (mobile-first equivalents work too).
+    - Touch targets stay 44×44px even on desktop.
+    - Images/SVGs use \`max-width: 100%\` and \`height: auto\` so they reflow.
+    - Avoid fixed-width pixel values for content blocks — they break on mobile. Prefer rem, %, \`min(…)\`, \`clamp(…)\`, gap utilities.
+    - Use a single \`<meta name="viewport" content="width=device-width, initial-scale=1">\` in <head>.
+
+  Respect \`@media (prefers-reduced-motion: reduce)\` — disable transforms/transitions/auto-advance inside it.
+  Respect \`@media (prefers-color-scheme: dark)\` if the design is neutral; opinionated brand designs may stay single-mode.
+</responsive>`;
+}
+
+// Accessibility floor — every design ships with this baked in. Lifted from
+// the design-html skill standard so JARVIS Design output is keyboard-usable
+// and screen-reader-legible, not just pretty in screenshots.
+function a11yBlock(): string {
+  return `
+<a11y>
+  Non-negotiable accessibility floor — every output must clear this:
+
+  STRUCTURE:
+    - Semantic HTML5 only: \`<header>\`, \`<nav>\`, \`<main>\`, \`<section>\`, \`<article>\`, \`<aside>\`, \`<footer>\`. Don't render everything as \`<div>\`.
+    - Heading hierarchy: exactly one \`<h1>\` per page, \`<h2>\` for sections, \`<h3>\` under those. NEVER skip a level.
+    - Lists are \`<ul>/<ol>/<li>\`, not stacked \`<div>\`s.
+
+  NAMES & ROLES:
+    - Every \`<button>\` and \`<a>\` has a real accessible name — text content, \`aria-label\`, or \`aria-labelledby\`. Icon-only buttons MUST set \`aria-label\`.
+    - Form fields use \`<label for>\` (or wrap the input). Placeholder text is NOT a label.
+    - \`<img>\` tags have an \`alt\` attribute (empty \`alt=""\` for purely decorative).
+
+  KEYBOARD & FOCUS:
+    - Every interactive element is reachable by Tab. No \`tabindex="-1"\` on links/buttons.
+    - Visible focus ring on every interactive element. Use \`:focus-visible\` with a real ring (e.g. \`focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[var(--accent)]\`). NEVER \`outline: none\` without a replacement.
+
+  CONTRAST:
+    - 4.5:1 for body text vs background. 3:1 for large text (>=18pt or >=14pt bold) and UI components.
+    - No #888 on white. No light-gray-on-light-gray. If you can't read the placeholder text squinting at arm's length, neither can your viewer.
+
+  MOTION:
+    - Wrap any auto-playing animation in \`@media (prefers-reduced-motion: no-preference)\` so reduced-motion users see the static layout.
+</a11y>`;
+}
+
 // Per-format guidance on the JARVIS design stack: React + Tailwind +
 // shadcn-pattern + motion, all loaded via CDN/esm.sh, no build step. Heavier
 // formats (prototype, landing, slides) get the full stack. Static formats
 // (onepager, infographic) skip it — plain HTML + Tailwind is enough.
-function stackBlock(format: Format): string {
+function stackBlock(format: Format, theme: Theme | null): string {
+  // Theme block: pre-baked, WCAG-verified colors + fonts + Tailwind config.
+  // The model uses this VERBATIM in <head>. No inventing color tokens, no
+  // wondering which fonts to wire — already done. Only assembles content.
+  const themeHead = theme
+    ? themeStyleBlock(theme)
+    : // Fallback for when no theme is selected (brand override path).
+      `<link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="...Google Fonts URL..." rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>`;
+
   if (format === "onepager" || format === "infographic") {
     return `
 <stack>
-  This format is static print-grade. Plain HTML + Tailwind via CDN is enough — don't pull in React. Load Tailwind once in <head>:
-    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
-  Use Tailwind classes everywhere; declare custom tokens via inline <script>tailwind.config = { theme: { extend: { colors: { accent: 'var(--accent)' } } } }</script>.
+  Static print-grade format. Plain HTML + Tailwind via CDN. Don't pull in React.
+
+  REQUIRED <head> CONTENT (verbatim — colors and fonts are pre-locked, do NOT modify the CSS variables or the tailwind config):
+${themeHead}
+
+  Use Tailwind classes everywhere — \`bg-bg\`, \`text-fg\`, \`text-muted\`, \`bg-accent\`, \`bg-supporting\`, \`font-display\`, \`font-body\`, \`ease-out-expo\`, etc. ALL of these are pre-wired in the tailwind config above.
 </stack>`;
   }
 
   return `
 <stack>
-  Build with the JARVIS design stack: React + Tailwind + shadcn-pattern + motion. Everything loads via CDN/esm.sh — NO build step, NO package.json. The user opens the entry HTML directly and it just works.
+  Build with: React + Tailwind + shadcn-pattern + motion via CDN/esm.sh. NO build step, NO package.json.
 
-  ENTRY HTML SCAFFOLD (the entry-point file the user opens):
+  ENTRY HTML SCAFFOLD (the entry-point file the user opens). The <head> below is PRE-BAKED — drop it in verbatim. Colors, fonts, Tailwind config, easings, prefers-reduced-motion — all set. DO NOT modify the CSS variables in :root, the tailwind.config, or the body classes. The contrast and font wiring are correct as-is.
+
     <!doctype html>
     <html lang="en">
     <head>
       <meta charset="utf-8">
-      <title>...</title>
-      <link rel="preconnect" href="https://fonts.googleapis.com">
-      <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-      <link href="...Google Fonts URL..." rel="stylesheet">
-      <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
-      <script>tailwind.config = { theme: { extend: { colors: { accent: 'var(--accent)' } } } };</script>
-      <script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
-      <style>:root { --bg: #0B0B0F; --fg: #F4F4F5; --accent: #FF6A00; }</style>
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>YOUR-DESIGN-TITLE</title>
+${themeHead.split("\n").map((l) => "      " + l).join("\n")}
     </head>
-    <body class="bg-[var(--bg)] text-[var(--fg)]">
+    <body class="bg-[var(--bg)] text-[var(--fg)] antialiased">
       <div id="root"></div>
-      <script type="text/babel" data-type="module" data-presets="react">
+      <script type="module">
+        import { createElement } from "https://esm.sh/react@18";
         import { createRoot } from "https://esm.sh/react-dom@18/client";
         import App from "./App.jsx";
-        createRoot(document.getElementById("root")).render(<App />);
+        createRoot(document.getElementById("root")).render(createElement(App));
       </script>
     </body>
     </html>
 
-  WHY \`type="text/babel" data-type="module"\`: Babel standalone fetches each \`./*.jsx\` import, transforms the JSX, and re-evaluates as an ES module. This is what makes multi-file JSX work without a build.
+  HOW TO COLOR + STYLE COMPONENTS — Tailwind arbitrary values referencing the CSS variables (these are guaranteed to resolve at runtime; named utilities like \`bg-bg\` do NOT work with @tailwindcss/browser):
+
+    Backgrounds: \`bg-[var(--bg)]\` (page), \`bg-[var(--supporting)]\` (cards/headers), \`bg-[var(--accent)]\` (CTAs).
+    Text:        \`text-[var(--fg)]\` (primary), \`text-[var(--muted)]\` (secondary), \`text-[var(--accent)]\` (links/highlights).
+    Borders:     \`border-[var(--fg)]/10\`, \`border-[var(--supporting)]\`, \`border-[var(--accent)]\`.
+    Fonts:       use the helper classes \`font-display\` (headlines, defined in :root) or \`font-body\` (UI). Headings (h1/h2/h3) are auto-set to display via CSS — no class needed.
+    Easings:     use the helper class \`ease-out-expo\` for transitions.
+
+  STRICT RULES:
+    1. NEVER use \`text-[var(--bg)]\` or \`text-[var(--supporting)]\` for body content. Those are background tones — the result is dark-on-dark or near-dark-on-near-dark, invisible.
+    2. Inverted text (button label on a colored bg): \`bg-[var(--accent)] text-[var(--bg)]\` is OK ONLY when --accent is bright enough to contrast with --bg as the text color. The pre-baked themes are tuned so this works; do NOT use it on generic \`bg-[var(--supporting)]\`.
+    3. NEVER stack opacity modifiers on already-muted tokens (\`text-[var(--muted)]/50\` becomes near-invisible). For very-quiet text use \`text-[var(--muted)]\` plain.
+    4. Do NOT invent new CSS variable names (--paper, --ink, --parchment, etc.). The five tokens above are all you have.
+
+  HOW MULTI-FILE WORKS: JARVIS transforms each \`.jsx\` / \`.tsx\` file server-side via esbuild before serving, using the automatic JSX runtime. So you DO NOT need to \`import React\` in component files — \`<div/>\` and \`<MyComp/>\` just work. Bare ES module imports like \`./components/Button.jsx\` are real browser-native ESM imports — fast, no Babel runtime in the iframe.
 
   COMPONENT FILES (.jsx):
-    // App.jsx
-    import React from "https://esm.sh/react@18";
+    // App.jsx — note: no \`import React\` needed; the JSX runtime is auto-imported.
     import { motion, AnimatePresence } from "https://esm.sh/motion@12/react";
     import Button from "./components/Button.jsx";
     import Home from "./screens/Home.jsx";
@@ -395,9 +762,10 @@ function stackBlock(format: Format): string {
       );
     }
 
-  LIBRARY IMPORTS (use these exact specifiers):
-    React:        \`import React from "https://esm.sh/react@18"\`
-    React DOM:    \`import { createRoot } from "https://esm.sh/react-dom@18/client"\`
+  LIBRARY IMPORTS (use these exact specifiers — only in the entry HTML; component files don't need React imports):
+    React (entry only): \`import { createElement } from "https://esm.sh/react@18"\`
+    React DOM (entry):  \`import { createRoot } from "https://esm.sh/react-dom@18/client"\`
+    React hooks:        \`import { useState, useEffect, useRef, useMemo } from "https://esm.sh/react@18"\`
     Motion:       \`import { motion, AnimatePresence } from "https://esm.sh/motion@12/react"\`
     Radix Dialog: \`import * as Dialog from "https://esm.sh/@radix-ui/react-dialog@1"\`
     Radix Tabs:   \`import * as Tabs from "https://esm.sh/@radix-ui/react-tabs@1"\`
@@ -405,11 +773,32 @@ function stackBlock(format: Format): string {
     clsx:         \`import clsx from "https://esm.sh/clsx@2"\`
     cva:          \`import { cva } from "https://esm.sh/class-variance-authority@0"\`
 
-  SHADCN PATTERN (NOT npm install):
-  shadcn isn't a runtime library — it's a pattern of inlining unstyled Radix primitives + Tailwind class variants into your own components. You write the components yourself in \`components/\`. Don't try to npm install. Don't use \`npx shadcn\`.
-  Each component is a plain JSX file using Tailwind classes that match the shadcn aesthetic + Radix primitives via esm.sh when interactivity needs them.
-  Common shadcn-pattern components: Button (cva variants — default/outline/ghost/destructive), Card, Input, Label, Dialog, Tabs, Tooltip, Sheet, Command, Switch, Select.
-  Helper: \`src/cn.js\` exports \`cn = (...classes) => clsx(...classes)\`.
+  SHADCN COMPONENTS (use the bundled JARVIS shadcn primitives — DO NOT re-implement them):
+  JARVIS ships a curated shadcn-pattern bundle at \`/jarvis-shadcn.mjs\`. Import the primitives you need from there directly — saves you from re-writing Button/Card/Dialog every generation, AND ensures consistency across designs.
+
+    import {
+      Button, Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter,
+      Input, Label, Badge, Separator, Avatar, AvatarImage, AvatarFallback,
+      Tabs, TabsList, TabsTrigger, TabsContent,
+      Dialog, DialogTrigger, DialogContent, DialogHeader, DialogFooter,
+      DialogTitle, DialogDescription,
+      TooltipProvider, Tooltip, TooltipTrigger, TooltipContent,
+      Section, cn,
+    } from "/jarvis-shadcn.mjs";
+
+  Available variants:
+    - Button: \`variant\` = default | outline | ghost | destructive | secondary | link.   \`size\` = sm | md | lg | icon.
+    - Badge:  \`variant\` = default | secondary | outline | destructive.
+
+  All primitives consume the theme CSS variables (--bg, --fg, --accent, --muted, --supporting), so they automatically match whatever theme the entry HTML sets up. No styling needed.
+
+  When to fall back to inline JSX (instead of importing): only when you need a component the bundle doesn't have (e.g. a custom Hero layout, a marketing-specific Pricing card). Common interactive primitives are ALWAYS in the bundle.
+
+  HELPERS — DON'T duplicate:
+    \`cn\` is already exported by \`/jarvis-shadcn.mjs\` (named export). DO NOT create \`src/cn.js\`. DO NOT \`import cn from "../src/cn.js"\`. Use \`import { cn } from "/jarvis-shadcn.mjs"\` everywhere.
+
+  ICONS:
+    \`import { ArrowRight, Check, X } from "https://esm.sh/lucide-react@0.469"\` — same package the bundle uses, deduped by the iframe's import map.
 
   FOLDER LAYOUT (REQUIRED for multi-file React projects):
     \`<entry>.html\`               — the format's entry-point HTML (loads Tailwind + Babel standalone)
@@ -419,7 +808,7 @@ function stackBlock(format: Format): string {
     \`screens/Home.jsx\`           — for prototype: each route gets its own file
     \`screens/Detail.jsx\`
     \`scenes/Intro.jsx\`           — for animated slides: each scene gets its own file
-    \`src/cn.js\`                  — \`cn()\` helper
+    (no \`src/cn.js\` needed — \`cn()\` is imported from \`/jarvis-shadcn.mjs\`)
     \`src/palette.js\`             — color/space tokens as constants (optional)
     \`tailwind.config.json\`       — custom tokens, OPTIONAL (declared inline in HTML works too)
     \`references/\`                — uploaded assets
@@ -470,16 +859,22 @@ function antiSlopBlock(): string {
 <anti_slop>
   These are the most common AI-design tells. Avoid every one:
   - Centered "Welcome to [Product]" hero with a single CTA button. Replace with content-led, asymmetric layouts.
+  - Cookie-cutter hero with left-text + right-image at 50/50. Vary the ratio (3:5, 2:3) or break the convention deliberately.
   - 4-up or 8-up emoji-icon feature cards. Use typographic feature lists or one strong visual instead.
+  - Emoji used as visual elements (🚀 📊 ✨ in headlines, on cards, as icons). Use real iconography (lucide, inline SVG) or typography.
   - "Ready to get started?" / "Let's get started" / "Start your journey" CTA copy. Write a specific verb ("Schedule a demo", "Try it on a hearing", "Open the dashboard").
   - 3-card pricing tables when pricing was not asked for. Don't invent pricing.
   - "Trusted by" logo bar with fictional company names. Skip unless real logos provided.
+  - Generic testimonial sections with invented names + roles (e.g. "Sarah K., Product Manager"). If no real quote, skip the section.
   - Generic stock photos of laptops on white desks, or "team smiling at whiteboard". Use SVG, color blocks, or skip.
   - Lavender→teal, purple→blue, or pastel rainbow gradient hero. Pick a palette that fits the brief and stick to it.
+  - Decorative blobs, waves, gradient orbs, or geometric scribbles that aren't in the brief. Pure visual filler — cut them.
   - Lorem ipsum. "Company X". "Lorem Solutions". "Acme". Use plausible specifics — invent named cities, named years, real-looking product names.
   - More than ONE orchestrated entrance animation per file. Restraint beats sparkle.
   - Floating action buttons in places that aren't apps.
   - Drop-shadows on every card. Use one elevation pattern, not five.
+  - Center-everything layouts with no visual hierarchy. Asymmetry creates focus.
+  - Identical card grid in every section. Vary the layout per section — that's the whole point of sections.
 </anti_slop>`;
 }
 
@@ -506,6 +901,13 @@ ${folderExample}
   Provide complete file contents in every boltAction — never diffs, never "// rest unchanged", never placeholders.
   Do NOT emit boltAction type="shell" or type="start". No package.json, no install scripts.
   You may write a single line of prose before the artifact summarizing what you built. Nothing after the artifact.
+
+  ABSOLUTELY DO NOT (these noise the chat thread to the point of being unreadable):
+    - Wrap any file content in markdown fenced code blocks (\`\`\`html, \`\`\`jsx, \`\`\`css, etc.). The boltAction is the ONLY way code reaches the user.
+    - Re-emit the file content as a code block "for clarity" or "to show what I wrote" before/after the artifact.
+    - Explain what the code does line-by-line in prose. The code speaks for itself; the user can read the file.
+    - Inline preview snippets, "here's a sample", "for reference", or any other code-shaped prose.
+  If you need to mention a filename or a single short identifier, use \`inline backticks\` — never a fenced block.
 </artifact_format>`;
 }
 
@@ -521,7 +923,7 @@ function artifactFolderExample(format: Format, entry: string): string {
       <boltAction type="file" filePath="components/CoverSlide.jsx">[cover slide]</boltAction>
       <boltAction type="file" filePath="components/StatSlide.jsx">[big-stat slide]</boltAction>
       <boltAction type="file" filePath="components/QuoteSlide.jsx">[quote slide]</boltAction>
-      <boltAction type="file" filePath="src/cn.js">[clsx helper]</boltAction>
+      <!-- no src/cn.js — cn is exported by /jarvis-shadcn.mjs -->
     </boltArtifact>`;
     case "prototype":
       return `    <boltArtifact id="reading-tracker" title="Reading tracker prototype">
@@ -532,7 +934,7 @@ function artifactFolderExample(format: Format, entry: string): string {
       <boltAction type="file" filePath="screens/Timer.jsx">[active reading screen]</boltAction>
       <boltAction type="file" filePath="components/Button.jsx">[shadcn-pattern button]</boltAction>
       <boltAction type="file" filePath="components/Card.jsx">[shadcn-pattern card]</boltAction>
-      <boltAction type="file" filePath="src/cn.js">[clsx helper]</boltAction>
+      <!-- no src/cn.js — cn is exported by /jarvis-shadcn.mjs -->
     </boltArtifact>`;
     case "landing":
       return `    <boltArtifact id="hearing-saas" title="Hearing scheduler landing">
@@ -542,7 +944,7 @@ function artifactFolderExample(format: Format, entry: string): string {
       <boltAction type="file" filePath="components/StatBand.jsx">[stat band section]</boltAction>
       <boltAction type="file" filePath="components/Quote.jsx">[testimonial section]</boltAction>
       <boltAction type="file" filePath="components/CTA.jsx">[footer CTA]</boltAction>
-      <boltAction type="file" filePath="src/cn.js">[clsx helper]</boltAction>
+      <!-- no src/cn.js — cn is exported by /jarvis-shadcn.mjs -->
     </boltArtifact>`;
     case "onepager":
       return `    <boltArtifact id="weekly-briefing" title="Weekly team briefing">
