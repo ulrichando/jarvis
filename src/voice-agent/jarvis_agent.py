@@ -84,6 +84,15 @@ deepseek_roundtrip.install()
 import tool_name_sanitizer
 tool_name_sanitizer.install()
 
+# Suppress + recover DeepSeek's DSML tool-call envelope when it leaks
+# as plain text content. Without this, JARVIS reads the envelope
+# markup ("<｜｜DSML｜｜tool_calls> <｜｜DSML｜｜invoke name=…>…") aloud
+# verbatim — captured live 2026-05-01 17:38 on a weather lookup.
+# Patches _parse_choice; stacks on top of deepseek_roundtrip's own
+# patch of the same hook.
+import dsml_sanitizer
+dsml_sanitizer.install()
+
 # ── Maya-class speech intelligence ────────────────────────────────────
 from turn_router    import (
     detect_emotion, classify_turn, AudioMeta,

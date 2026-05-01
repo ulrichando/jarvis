@@ -67,9 +67,13 @@ _VALIDATION_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-# Tight pattern: identifier + whitespace + JSON object body.
+# Tight pattern: identifier + (whitespace OR `=` OR `:`) + JSON object body.
+# Captured forms seen live:
+#   `recall_conversation {"query": "total"}`        — Groq qwen3 (space)
+#   `web_fetch={"url":"...","timeout":"15"}`       — Groq llama (= sign)
+#   `bash:{"cmd":"ls"}`                              — defensive (colon)
 _NAME_JSON_RE = re.compile(
-    r"^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*(\{.*\})\s*$",
+    r"^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*[=:]?\s*(\{.*\})\s*$",
     re.DOTALL,
 )
 
