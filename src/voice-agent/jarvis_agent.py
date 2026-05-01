@@ -711,46 +711,89 @@ def _build_tts_chain() -> list:
 
 
 def _build_dispatching_llm() -> DispatchingLLM:
-    """Construct route → inner-LLM mapping using Groq variants only.
+    """Construct route → inner-LLM mapping using Groq variants, each
+    wrapped in a FallbackAdapter([groq, deepseek-chat]) so a Groq-edge
+    connection blip falls through to DeepSeek instead of losing the turn.
 
     BANTER     → llama-3.1-8b-instant (fastest)
     TASK       → llama-3.3-70b-versatile (current default, tools)
     REASONING  → qwen/qwen3-32b (structured reasoning)
     EMOTIONAL  → llama-4-scout (warmer temperament, temp 0.7)
 
-    Anthropic + DeepSeek not available with current livekit plugin set.
+    DeepSeek-chat (V3, non-thinking) is the per-route safety net since
+    it has no reasoning_content round-trip overhead and a different
+    network edge than Groq. Phase 10.2 sanitizer + Phase 10.3
+    deepseek_roundtrip patches still apply transparently.
     """
     # Tight retry profile across all dispatcher LLMs. Default is
     # max_retries=3 which means up to 4 attempts × ~2 s backoff = ~10 s
     # of silence on a 4xx-but-classified-retryable error (e.g. tool-call
     # validation failure). User reports "have to ask twice" caused by
-    # that silence. Cap at 1 retry → fail in ~3 s → user retries once
-    # via voice instead of waiting forever.
+    # that silence. Cap at 1 retry → fail in ~3 s → fallback kicks in.
     LLM_KWARGS = {"max_retries": 1, "timeout": 8.0}
 
-    main = groq.LLM(model="llama-3.3-70b-versatile", temperature=0.6, **LLM_KWARGS)
-    main._jarvis_label = "groq:llama-3.3-70b-versatile"
+    # Build a single shared DeepSeek instance; the FallbackAdapter chain
+    # passes it as the second-tier provider on each route.
+    ds_fallback = None
+    ds_key = os.environ.get("DEEPSEEK_API_KEY", "")
+    if ds_key:
+        try:
+            ds_fallback = lk_openai.LLM(
+                model="deepseek-chat",
+                api_key=ds_key,
+                base_url="https://api.deepseek.com/v1",
+                temperature=0.6,
+            )
+            ds_fallback._jarvis_label = "deepseek:chat"
+            logger.info("[dispatch] DeepSeek fallback armed for all routes")
+        except Exception as e:
+            logger.warning(f"[dispatch] DeepSeek fallback construction failed: {e}")
+            ds_fallback = None
+    else:
+        logger.info("[dispatch] DEEPSEEK_API_KEY missing, no cross-provider fallback")
+
+    def _wrap(primary):
+        """Wrap a Groq LLM in FallbackAdapter([groq, deepseek]) so a
+        Groq blip transparently routes to DeepSeek. Preserves
+        _jarvis_label for telemetry."""
+        if ds_fallback is None:
+            return primary
+        try:
+            from livekit.agents.llm import FallbackAdapter as _LLMFallback
+            wrapped = _LLMFallback([primary, ds_fallback])
+            wrapped._jarvis_label = getattr(primary, "_jarvis_label", "?")
+            return wrapped
+        except Exception as e:
+            logger.warning(f"[dispatch] LLM FallbackAdapter wrap failed ({e}); using primary alone")
+            return primary
+
+    main_raw = groq.LLM(model="llama-3.3-70b-versatile", temperature=0.6, **LLM_KWARGS)
+    main_raw._jarvis_label = "groq:llama-3.3-70b-versatile"
+    main = _wrap(main_raw)
 
     try:
-        banter = groq.LLM(model="llama-3.1-8b-instant", temperature=0.6, **LLM_KWARGS)
-        banter._jarvis_label = "groq:llama-3.1-8b-instant"
+        banter_raw = groq.LLM(model="llama-3.1-8b-instant", temperature=0.6, **LLM_KWARGS)
+        banter_raw._jarvis_label = "groq:llama-3.1-8b-instant"
+        banter = _wrap(banter_raw)
     except Exception as e:
         logger.warning(f"[dispatch] BANTER LLM construction failed: {e}; using main")
         banter = main
 
     try:
-        reasoning = groq.LLM(model="qwen/qwen3-32b", temperature=0.6, **LLM_KWARGS)
-        reasoning._jarvis_label = "groq:qwen3-32b"
+        reasoning_raw = groq.LLM(model="qwen/qwen3-32b", temperature=0.6, **LLM_KWARGS)
+        reasoning_raw._jarvis_label = "groq:qwen3-32b"
+        reasoning = _wrap(reasoning_raw)
     except Exception as e:
         logger.warning(f"[dispatch] REASONING LLM construction failed: {e}; using main")
         reasoning = main
 
     try:
-        emotional = groq.LLM(
+        emotional_raw = groq.LLM(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
             temperature=0.7, **LLM_KWARGS,
         )
-        emotional._jarvis_label = "groq:llama-4-scout"
+        emotional_raw._jarvis_label = "groq:llama-4-scout"
+        emotional = _wrap(emotional_raw)
     except Exception as e:
         logger.warning(f"[dispatch] EMOTIONAL LLM construction failed: {e}; using main")
         emotional = main
