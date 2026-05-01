@@ -34,10 +34,12 @@ def _reset_and_register():
     clear()
     clear_subagents()
     from specialists import (
-        desktop, browser, planner, summarize, weather, researcher,
+        desktop, browser, browser_v2, planner,
+        summarize, weather, researcher,
     )
     desktop.register_desktop()
     browser.register_browser()
+    browser_v2.register_browser_v2()
     planner.register_planner()
     summarize.register_summarize()
     weather.register_weather()
@@ -52,6 +54,14 @@ def _reset_and_register():
 
 SPECIALIST_NAMES = ["desktop", "browser", "planner"]
 SUBAGENT_NAMES = ["summarize", "weather", "researcher"]
+
+# Conditionally tested specialists — present-in-registry but only
+# enabled when their dep keys are available. The matrix tests below
+# parametrize against enabled specialists only.
+import os as _os
+_BROWSER_V2_ENABLED = bool(
+    _os.environ.get("GROQ_API_KEY") or _os.environ.get("DEEPSEEK_API_KEY")
+)
 
 
 # Phrases the user has explicitly objected to (2026-05-01).
@@ -240,6 +250,8 @@ def test_no_disabled_specialists_in_registry_for_long():
     expected enabled names; tightens future cleanup work.)"""
     from specialists.registry import _REGISTRY, SUBAGENT_REGISTRY
     expected_enabled = set(SPECIALIST_NAMES) | set(SUBAGENT_NAMES)
+    if _BROWSER_V2_ENABLED:
+        expected_enabled.add("browser_v2")
     actual_enabled = {
         s.name for s in (list(_REGISTRY.values()) + list(SUBAGENT_REGISTRY.values()))
         if s.enabled
@@ -250,4 +262,54 @@ def test_no_disabled_specialists_in_registry_for_long():
     assert not unexpected, (
         f"Unexpected enabled specialists/subagents (add to expected list "
         f"or remove): {unexpected}"
+    )
+
+
+# ── browser_v2 specialist (conditional on GROQ/DeepSeek availability) ─
+
+
+def test_browser_v2_specialist_registered():
+    """browser_v2 should always REGISTER (even if disabled). Lets us
+    check enabled state directly rather than missing-spec errors."""
+    from specialists.registry import _REGISTRY
+    assert "browser_v2" in _REGISTRY
+    spec = _REGISTRY["browser_v2"]
+    assert spec.transfer_tool == "transfer_to_browser_v2"
+    # enabled state mirrors is_available()
+    from jarvis_browser_v2 import is_available
+    assert spec.enabled == is_available()
+
+
+def test_browser_v2_module_importable_without_key():
+    """Importing jarvis_browser_v2 should never raise — even when
+    GROQ/DeepSeek keys are missing. is_available() is the gate."""
+    import jarvis_browser_v2
+    assert hasattr(jarvis_browser_v2, "browser_task_v2")
+    assert hasattr(jarvis_browser_v2, "is_available")
+
+
+def test_browser_v2_self_disables_when_no_keys(monkeypatch):
+    """is_available() returns False when both Groq and DeepSeek keys
+    are absent. Critical for graceful-degradation behaviour: the
+    specialist registers but stays out of the supervisor's tool list."""
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    import importlib
+    import jarvis_browser_v2
+    importlib.reload(jarvis_browser_v2)
+    assert jarvis_browser_v2.is_available() is False
+
+
+@pytest.mark.skipif(
+    not _BROWSER_V2_ENABLED,
+    reason="browser_v2 needs GROQ_API_KEY or DEEPSEEK_API_KEY",
+)
+def test_browser_v2_tool_factory_builds_when_enabled():
+    from specialists.registry import get
+    spec = get("browser_v2")
+    assert spec is not None
+    tools = spec.tool_factory()
+    assert any(
+        getattr(getattr(t, "_func", t), "__name__", "") == "browser_task_v2"
+        for t in tools
     )
