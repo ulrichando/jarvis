@@ -38,10 +38,16 @@ from .registry import (
 # Each module's register_X() helper is idempotent (re-registration
 # overwrites), so importing this package twice is safe.
 def _register_builtins() -> None:
-    from . import desktop, planner, browser, summarize, weather, researcher
+    from . import (
+        desktop, planner, browser, browser_v2,
+        summarize, weather, researcher,
+    )
     desktop.register_desktop()
     planner.register_planner()
     browser.register_browser()
+    # browser_v2 self-disables when GROQ/DeepSeek key or browser-use
+    # are missing — safe to always call register_browser_v2().
+    browser_v2.register_browser_v2()
     # SubagentSpec path — new specialists go here so they don't bloat
     # the supervisor's prompt with one transfer_to_X tool each.
     summarize.register_summarize()
