@@ -35,7 +35,7 @@ def _reset_and_register():
     clear_subagents()
     from specialists import (
         desktop, browser, browser_v2, planner,
-        summarize, weather, researcher,
+        summarize, weather, researcher, validator,
     )
     desktop.register_desktop()
     browser.register_browser()
@@ -44,6 +44,7 @@ def _reset_and_register():
     summarize.register_summarize()
     weather.register_weather()
     researcher.register_researcher()
+    validator.register_validator()
     yield
     clear()
     clear_subagents()
@@ -62,6 +63,7 @@ import os as _os
 _BROWSER_V2_ENABLED = bool(
     _os.environ.get("GROQ_API_KEY") or _os.environ.get("DEEPSEEK_API_KEY")
 )
+_VALIDATOR_ENABLED = bool(_os.environ.get("GROQ_API_KEY"))
 
 
 # Phrases the user has explicitly objected to (2026-05-01).
@@ -252,6 +254,8 @@ def test_no_disabled_specialists_in_registry_for_long():
     expected_enabled = set(SPECIALIST_NAMES) | set(SUBAGENT_NAMES)
     if _BROWSER_V2_ENABLED:
         expected_enabled.add("browser_v2")
+    if _VALIDATOR_ENABLED:
+        expected_enabled.add("validator")
     actual_enabled = {
         s.name for s in (list(_REGISTRY.values()) + list(SUBAGENT_REGISTRY.values()))
         if s.enabled
