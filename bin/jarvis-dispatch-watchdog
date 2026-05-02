@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# JARVIS dispatch watchdog — runs from a systemd timer every 5 seconds.
+# Detects the case where voice-client is connected but the agent
+# worker isn't dispatched into the room (the LiveKit SFU dispatch
+# hang we hit repeatedly on 2026-05-02).
+#
+# Logic: query /status. If `connected=true` AND `agent_present=false`
+# for two consecutive checks (≥10s of stuck state), restart the
+# voice-agent service. The voice-client's own presence-watchdog
+# (10s) is the first line of defense; this script catches the case
+# where the WORKER side is hung even after the client gives up
+# and reconnects.
+#
+# State persists in /tmp so consecutive runs see the prior status.
+# Stateless approach (single check) would false-positive during the
+# normal "agent registering" 1-3s window after a fresh connect.
+
+set -euo pipefail
+
+STATE_FILE="/tmp/jarvis-dispatch-watchdog.state"
+STATUS_URL="http://localhost:8767/status"
+
+# Pull current status. If the endpoint itself is unreachable, the
+# voice-client is hung — that's a separate problem; let voice-client's
+# own systemd Restart=always handle it.
+status=$(curl -s --max-time 2 "$STATUS_URL" 2>/dev/null || echo "")
+if [ -z "$status" ]; then
+    # Voice-client unreachable — clear state, let voice-client recover.
+    rm -f "$STATE_FILE"
+    exit 0
+fi
+
+connected=$(printf '%s' "$status" | python3 -c "import sys,json;print(json.load(sys.stdin).get('connected', False))" 2>/dev/null || echo "False")
+agent_present=$(printf '%s' "$status" | python3 -c "import sys,json;print(json.load(sys.stdin).get('agent_present', False))" 2>/dev/null || echo "False")
+
+# Healthy: clear state. Stalled: increment counter.
+if [ "$connected" = "True" ] && [ "$agent_present" = "False" ]; then
+    prev=$(cat "$STATE_FILE" 2>/dev/null || echo "0")
+    next=$((prev + 1))
+    echo "$next" > "$STATE_FILE"
+    if [ "$next" -ge 2 ]; then
+        # Two consecutive stuck checks (~10s). Restart the agent.
+        logger -t jarvis-dispatch-watchdog \
+            "agent dispatch stalled (connected=true, agent_present=false for ${next} checks); restarting jarvis-voice-agent.service"
+        systemctl --user restart jarvis-voice-agent.service
+        rm -f "$STATE_FILE"
+    fi
+else
+    rm -f "$STATE_FILE"
+fi
