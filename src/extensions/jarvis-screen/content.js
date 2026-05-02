@@ -101,11 +101,50 @@
   }
 
   // ── Message listener ─────────────────────────────────────────────────────
+  //
+  // Two dispatch paths:
+  //   1. `extract-dom` — internal side-panel observer, returns the
+  //      heuristic page summary defined above.
+  //   2. Any other action — bridge → background.js _forwardToContent →
+  //      here. Map verb to ext_<verb> handler in __jarvisActions
+  //      (set up by actions.js, loaded just before this file). This
+  //      wiring is what makes click / type / scroll / dom_summary /
+  //      get_url etc. actually do something — without it those tools
+  //      time out silently and the LLM hallucinates success.
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (!msg || !msg.action) {
+      sendResponse({ ok: false, error: 'no action' })
+      return false
+    }
     if (msg.action === 'extract-dom') {
       sendResponse(extractDOM())
       return false  // synchronous response
+    }
+    const actions = (typeof globalThis !== 'undefined') && globalThis.__jarvisActions
+    if (!actions) {
+      sendResponse({ ok: false, error: 'actions registry missing — actions.js failed to load' })
+      return false
+    }
+    const fn = actions['ext_' + msg.action]
+    if (typeof fn !== 'function') {
+      sendResponse({ ok: false, error: 'unknown content action: ' + msg.action })
+      return false
+    }
+    try {
+      const result = fn(msg.args || {})
+      if (result && typeof result.then === 'function') {
+        // Async handler (e.g. ext_wait_for) — keep the message channel
+        // open by returning true.
+        result.then(r => sendResponse(r))
+              .catch(e => sendResponse({ ok: false, error: String(e && e.message || e) }))
+        return true
+      }
+      sendResponse(result)
+      return false
+    } catch (e) {
+      sendResponse({ ok: false, error: String(e && e.message || e) })
+      return false
     }
   })
 
