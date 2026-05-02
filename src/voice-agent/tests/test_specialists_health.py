@@ -36,7 +36,7 @@ def _reset_and_register():
     from specialists import (
         desktop, browser, browser_v2, planner,
         summarize, weather, researcher, validator, code_reviewer,
-        memory_recall,
+        memory_recall, github,
     )
     desktop.register_desktop()
     browser.register_browser()
@@ -48,6 +48,7 @@ def _reset_and_register():
     validator.register_validator()
     code_reviewer.register_code_reviewer()
     memory_recall.register_memory_recall()
+    github.register_github()
     yield
     clear()
     clear_subagents()
@@ -70,6 +71,10 @@ _VALIDATOR_ENABLED = bool(_os.environ.get("GROQ_API_KEY"))
 _CODE_REVIEWER_ENABLED = bool(_os.environ.get("GROQ_API_KEY"))
 from pathlib import Path as _Path
 _MEMORY_RECALL_ENABLED = (_Path.home() / ".jarvis" / "conversations.db").exists()
+import shutil as _shutil
+_GITHUB_ENABLED = bool(_shutil.which("gh")) and (
+    _Path.home() / ".config" / "gh" / "hosts.yml"
+).exists()
 
 
 # Phrases the user has explicitly objected to (2026-05-01).
@@ -325,6 +330,8 @@ def test_no_disabled_specialists_in_registry_for_long():
         expected_enabled.add("code_reviewer")
     if _MEMORY_RECALL_ENABLED:
         expected_enabled.add("memory_recall")
+    if _GITHUB_ENABLED:
+        expected_enabled.add("github")
     actual_enabled = {
         s.name for s in (list(_REGISTRY.values()) + list(SUBAGENT_REGISTRY.values()))
         if s.enabled
