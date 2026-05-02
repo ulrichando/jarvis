@@ -466,23 +466,96 @@ async def ext_upload_file(selector: str, file_path: str) -> str:
     ))
 
 
-# All 30 tools, in the order the prompt references them. Specialists
-# pull this in via their tool_factory.
+# ── Phase B: modern-web parity (2026-05-02) ──────────────────────────
+
+
+@function_tool
+async def ext_local_storage(
+    action: str = "list",
+    key: str = "",
+    value: str = "",
+    scope: str = "local",
+) -> str:
+    """Read/write the page's localStorage or sessionStorage (mirror
+    of Playwright MCP's `browser_localstorage_*` / `browser_sessionstorage_*`).
+    Modern SPAs put auth tokens in localStorage, not cookies — this
+    is the 2025 web's equivalent of ext_get_cookies/ext_set_cookies.
+
+    Args:
+        action: 'get' | 'set' | 'delete' | 'list' | 'clear'.
+        key: storage key (required for get/set/delete).
+        value: storage value (only for set).
+        scope: 'local' (persistent) or 'session' (per-tab).
+    """
+    return _summarize(await _post(
+        "local_storage", action=action, key=key, value=value, scope=scope
+    ))
+
+
+@function_tool
+async def ext_storage_state_get(include_cookies: bool = True) -> str:
+    """Snapshot the active tab's full storage state — cookies +
+    localStorage + sessionStorage — as a single JSON blob (mirror of
+    Playwright MCP's `browser_storage_state`). Useful for "save my
+    login state" before navigating away.
+
+    Args:
+        include_cookies: include cookies in the snapshot (default: yes).
+    """
+    return _summarize(await _post(
+        "storage_state_get", include_cookies=include_cookies
+    ))
+
+
+@function_tool
+async def ext_storage_state_set(state: dict) -> str:
+    """Restore a previously-snapshotted storage state (mirror of
+    Playwright MCP's `browser_set_storage_state`). Pair with
+    ext_storage_state_get.
+
+    Args:
+        state: object with optional keys `cookies`, `localStorage`,
+               `sessionStorage`. Same shape as get returns.
+    """
+    return _summarize(await _post("storage_state_set", state=state))
+
+
+@function_tool
+async def ext_get_dropdown_options(selector: str) -> str:
+    """Enumerate the options of a `<select>` element (mirror of
+    browser-use's `get_dropdown_options`). Use BEFORE ext_select to
+    confirm which option values exist, especially when the LLM is
+    guessing at a value name.
+
+    Args:
+        selector: CSS selector of the `<select>` element.
+    """
+    return _summarize(await _post(
+        "get_dropdown_options", selector=selector
+    ))
+
+
+# All 34 tools (26 base + 4 Phase A + 4 Phase B), in the order the
+# prompt references them. Specialists pull this in via tool_factory.
 ALL_TOOLS = [
-    # Navigation
+    # Navigation (7)
     ext_navigate, ext_new_tab, ext_back, ext_forward, ext_get_url, ext_close_tab,
     ext_list_tabs,
-    # Reading
+    # Reading (5)
     ext_extract_text, ext_find_by_text, ext_dom_summary, ext_screenshot,
     ext_get_console,
-    # Mouse
+    # Mouse (5)
     ext_click, ext_right_click, ext_hover, ext_drag, ext_select,
-    # Keyboard / forms
+    # Keyboard / forms (5)
     ext_type, ext_fill_form, ext_keypress, ext_submit,
-    # Scroll / wait / dialog / iframe
+    ext_get_dropdown_options,
+    # Scroll / wait / dialog / iframe (4)
     ext_scroll, ext_wait_for, ext_accept_dialog, ext_switch_iframe,
-    # File I/O
+    # File I/O (2)
     ext_save_pdf, ext_upload_file,
-    # Power tools
-    ext_exec_js, ext_get_cookies, ext_set_cookies,
+    # Storage (5) — cookies + localStorage + storage_state
+    ext_get_cookies, ext_set_cookies,
+    ext_local_storage, ext_storage_state_get, ext_storage_state_set,
+    # Power tools (1)
+    ext_exec_js,
 ]
