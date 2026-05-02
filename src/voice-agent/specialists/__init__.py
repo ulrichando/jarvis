@@ -40,7 +40,7 @@ from .registry import (
 def _register_builtins() -> None:
     from . import (
         desktop, planner, browser, browser_v2,
-        summarize, weather, researcher, validator,
+        summarize, weather, researcher, validator, code_reviewer,
     )
     desktop.register_desktop()
     planner.register_planner()
@@ -53,8 +53,9 @@ def _register_builtins() -> None:
     summarize.register_summarize()
     weather.register_weather()
     researcher.register_researcher()
-    # Validator self-disables when GROQ key missing.
+    # Validator + code_reviewer self-disable when GROQ key missing.
     validator.register_validator()
+    code_reviewer.register_code_reviewer()
 
 _register_builtins()
 
