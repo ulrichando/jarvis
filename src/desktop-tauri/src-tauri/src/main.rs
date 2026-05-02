@@ -185,22 +185,31 @@ fn xdotool_raise(win_name: &str) {
 // ── Tauri commands called from JS ──────────────────────────────────────────
 
 // ── API key management ────────────────────────────────────────────────────
-// Single source of truth for user-set keys: ~/.jarvis/keys.env. Format
-// is plain `KEY=value` lines (dotenv-style). Voice agent loads this
-// file at startup BEFORE any provider client is constructed, so
-// values written here override repo .env defaults.
-//
-// Supported providers (the React UI iterates this list to render rows):
-//   GROQ_API_KEY, DEEPSEEK_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY,
-//   GOOGLE_API_KEY, MISTRAL_API_KEY, KIMI_API_KEY, XAI_API_KEY.
+// Two-tier key storage:
+//   1) ~/.jarvis/keys.env (user override, highest priority)
+//   2) Repo defaults: src/voice-agent/.env, src/cli/.env.local,
+//      src/cli/.env.providers (lower priority)
+// keys_read merges them with source labels. keys_set always writes to
+// the user override. keys_clear can target either tier (with
+// confirmation handled by the UI).
 fn _keys_file() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     std::path::PathBuf::from(home).join(".jarvis").join("keys.env")
 }
 
-fn _keys_read_map() -> std::collections::BTreeMap<String, String> {
+fn _repo_env_files() -> Vec<std::path::PathBuf> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let base = std::path::PathBuf::from(&home).join("Documents/Projects/jarvis");
+    vec![
+        base.join("src/voice-agent/.env"),
+        base.join("src/cli/.env.local"),
+        base.join("src/cli/.env.providers"),
+    ]
+}
+
+fn _parse_env_file(path: &std::path::Path) -> std::collections::BTreeMap<String, String> {
     let mut out = std::collections::BTreeMap::new();
-    if let Ok(text) = std::fs::read_to_string(_keys_file()) {
+    if let Ok(text) = std::fs::read_to_string(path) {
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') { continue }
@@ -212,6 +221,57 @@ fn _keys_read_map() -> std::collections::BTreeMap<String, String> {
         }
     }
     out
+}
+
+fn _keys_read_map() -> std::collections::BTreeMap<String, String> {
+    _parse_env_file(&_keys_file())
+}
+
+/// Read all repo .env files and return one merged map.
+/// Earlier files in the list win on collision.
+fn _repo_keys_read_map() -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    for path in _repo_env_files() {
+        for (k, v) in _parse_env_file(&path) {
+            out.entry(k).or_insert(v);   // first-wins
+        }
+    }
+    out
+}
+
+/// Find which repo .env file contains the given key. Returns the
+/// first match (we try in priority order: voice-agent → cli/.env.local
+/// → cli/.env.providers). Used by keys_clear to know which file to
+/// modify.
+fn _find_repo_key_file(key: &str) -> Option<std::path::PathBuf> {
+    for path in _repo_env_files() {
+        if _parse_env_file(&path).contains_key(key) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// Remove `key=...` line(s) from a repo .env file. Preserves comments
+/// and other lines. Returns Ok(true) if a line was removed.
+fn _remove_key_from_file(path: &std::path::Path, key: &str) -> Result<bool, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let mut changed = false;
+    let kept: Vec<&str> = text.lines().filter(|line| {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') || !trimmed.contains('=') { return true; }
+        let starts_with_key = trimmed
+            .split_once('=')
+            .map(|(k, _)| k.trim() == key)
+            .unwrap_or(false);
+        if starts_with_key { changed = true; false } else { true }
+    }).collect();
+    if changed {
+        let mut new_text = kept.join("\n");
+        if !new_text.ends_with('\n') { new_text.push('\n'); }
+        std::fs::write(path, new_text).map_err(|e| e.to_string())?;
+    }
+    Ok(changed)
 }
 
 fn _keys_write_map(map: &std::collections::BTreeMap<String, String>) -> Result<(), String> {
@@ -250,12 +310,20 @@ fn keys_read() -> Result<Vec<serde_json::Value>, String> {
         ("KIMI_API_KEY",      "Kimi (Moonshot)"),
         ("XAI_API_KEY",       "xAI (Grok)"),
     ];
-    let stored = _keys_read_map();
+    let user_keys = _keys_read_map();
+    let repo_keys = _repo_keys_read_map();
     let mut out = Vec::with_capacity(PROVIDERS.len());
     for (env, label) in PROVIDERS {
-        let value = stored.get(*env).cloned().unwrap_or_default();
+        // User keys.env takes precedence over repo .env defaults.
+        let (value, source) = if let Some(v) = user_keys.get(*env) {
+            (v.clone(), "user")
+        } else if let Some(v) = repo_keys.get(*env) {
+            (v.clone(), "repo")
+        } else {
+            (String::new(), "none")
+        };
         let masked = if value.is_empty() {
-            "".to_string()
+            String::new()
         } else if value.len() > 8 {
             // Show first 4 + last 4, hide middle. Lets user verify they
             // pasted the right key without exposing it.
@@ -267,6 +335,7 @@ fn keys_read() -> Result<Vec<serde_json::Value>, String> {
             "env":     env,
             "label":   label,
             "present": !value.is_empty(),
+            "source":  source,        // "user" | "repo" | "none"
             "masked":  masked,
         }));
     }
@@ -291,10 +360,36 @@ fn keys_set(provider: String, value: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn keys_clear(provider: String) -> Result<(), String> {
-    let mut map = _keys_read_map();
-    map.remove(&provider);
-    _keys_write_map(&map)
+fn keys_clear(provider: String, source: String) -> Result<String, String> {
+    // source: "user" → only clear from ~/.jarvis/keys.env
+    //         "repo" → also remove from src/voice-agent/.env or cli/.env.local
+    //         "all"  → clear from BOTH (keys.env + the repo file)
+    let provider = provider.trim().to_string();
+    let mut details: Vec<String> = Vec::new();
+    let s = source.trim().to_lowercase();
+
+    // Always clear from user keys.env if requested
+    if s == "user" || s == "all" {
+        let mut map = _keys_read_map();
+        if map.remove(&provider).is_some() {
+            _keys_write_map(&map)?;
+            details.push("removed from ~/.jarvis/keys.env".to_string());
+        }
+    }
+    // Repo .env removal — only when explicitly requested
+    if s == "repo" || s == "all" {
+        if let Some(path) = _find_repo_key_file(&provider) {
+            let removed = _remove_key_from_file(&path, &provider)?;
+            if removed {
+                let p_str = path.to_string_lossy().to_string();
+                details.push(format!("removed from {}", p_str));
+            }
+        }
+    }
+    if details.is_empty() {
+        return Ok(format!("nothing to clear for {provider}"));
+    }
+    Ok(details.join("; "))
 }
 
 #[tauri::command]
