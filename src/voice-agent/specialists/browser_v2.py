@@ -118,6 +118,6 @@ def register_browser_v2() -> None:
         instructions=BROWSER_V2_INSTRUCTIONS,
         tool_factory=_browser_v2_tools,
         ack_phrase="Right away, sir.",
-        max_history_items=12,
+        max_history_items=4,   # 2026-05-02: see browser.py for rationale
         enabled=enabled,
     ))
