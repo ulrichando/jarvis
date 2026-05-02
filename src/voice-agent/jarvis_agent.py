@@ -4788,6 +4788,21 @@ async def entrypoint(ctx: JobContext) -> None:
         except Exception as e:
             logger.debug(f"[acoustic] state-change skipped: {e}")
 
+    # Mirror the framework's authoritative agent_state into the
+    # thinking flag file so the tray can stay amber for the FULL
+    # duration of LLM + tool work — no TTL guesswork. Captured live
+    # 2026-05-02: tray reverted to green during a 15s browser_v2
+    # task because the prior 10s TTL on _AGENT_THINKING_FILE expired
+    # mid-tool. Refreshing the flag on every state change beats the
+    # TTL into irrelevance.
+    @session.on("agent_state_changed")
+    def _on_agent_state(ev) -> None:
+        new_state = getattr(ev, "new_state", None)
+        if new_state == "thinking":
+            _mark_thinking_start()
+        elif new_state in ("idle", "listening", "speaking"):
+            _mark_thinking_end()
+
     # STT finalised a user turn — LLM is about to start generating
     # (or the agent will decide to stay silent if the directed-at-me
     # filter rejects it). Touch the thinking flag so the tray goes

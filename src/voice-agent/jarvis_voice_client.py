@@ -300,15 +300,20 @@ SILENT_MODE_FILE       = Path.home() / ".jarvis" / ".silent-mode"
 
 # Agent's LLM-thinking flag. Same pattern: present means LLM is
 # generating. Has a staleness check below — if the file is older
-# than AGENT_THINKING_MAX_AGE we ignore it. This also handles the
-# "agent decided to stay silent" case (the directed-at-me filter
+# than AGENT_THINKING_MAX_AGE we ignore it. This handles the
+# "agent decided to stay silent" case (directed-at-me filter
 # rejects an ambient mic trigger): no assistant turn ever lands to
-# clear the flag, but it goes stale within a few seconds and the
-# tray drops gold automatically. 10 s is generous for real LLM
-# thinking; long-running TOOL calls use the separate tool_running
-# flag (no time limit on that one).
+# clear the flag, but it goes stale and the tray drops gold
+# automatically.
+#
+# 2026-05-02: bumped 10s → 60s. The agent now refreshes the flag
+# on every `agent_state_changed → thinking` event, so under normal
+# operation it never hits the TTL. The 60s ceiling is purely a
+# safety belt against a stuck agent process leaving stale flags.
+# The previous 10s TTL was tighter than the longest legitimate
+# thinking window (browser_v2 = 25s, planner = 60s+).
 AGENT_THINKING_FILE    = Path.home() / ".jarvis" / ".agent-thinking"
-AGENT_THINKING_MAX_AGE = 10   # seconds
+AGENT_THINKING_MAX_AGE = 60   # seconds
 
 
 def _agent_is_thinking() -> bool:
