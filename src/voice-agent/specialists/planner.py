@@ -183,6 +183,6 @@ def register_planner() -> None:
         instructions=PLANNER_INSTRUCTIONS,
         tool_factory=_planner_tools,
         ack_phrase="Of course, sir.",
-        max_history_items=12,
+        max_history_items=4,   # 2026-05-02: see browser.py for rationale
         enabled=True,
     ))
