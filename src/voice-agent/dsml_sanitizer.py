@@ -104,17 +104,55 @@ def _parse_envelope(envelope: str) -> list[tuple[str, dict[str, str]]]:
     return out
 
 
+def _tool_takes_context(tool) -> bool:
+    """True if the tool's signature requires a `context` / `RunContext`
+    argument we can't construct from outside the framework's tool
+    dispatch. Mirrors tool_name_sanitizer's guard. Tools that need
+    RunContext (like transfer_to_X built via build_transfer_tool)
+    can't be inline-executed by us — fall back to silent suppression
+    so we don't voice the framework's TypeError to the user."""
+    func = getattr(tool, "_func", tool)
+    try:
+        sig = inspect.signature(func)
+    except Exception:
+        return True   # conservative — bail rather than guess
+    for name, param in sig.parameters.items():
+        if name in ("context", "ctx", "run_context"):
+            return True
+        ann = getattr(param, "annotation", None)
+        if "RunContext" in repr(ann):
+            return True
+    return False
+
+
 async def _execute_inline(stream, name: str, args: dict[str, str]) -> str | None:
     """Look up `name` in the LLMStream's tool context, execute, return
-    a voice-friendly string. None if dispatch is impossible."""
+    a voice-friendly string. Returns None if dispatch is impossible —
+    in that case the caller suppresses the envelope without voicing
+    anything (better than reading a TypeError aloud)."""
     try:
         tool_map = stream._tool_ctx.function_tools
     except Exception:
         return None
     tool = tool_map.get(name)
     if tool is None:
-        logger.warning("[dsml] tool %r not in stream's tool list", name)
-        return f"(I tried to call {name} but that tool isn't available in this context)"
+        logger.warning("[dsml] tool %r not in stream's tool list — suppressing silently", name)
+        return None
+
+    # Tools that need RunContext can't be invoked from outside the
+    # framework. Captured live 2026-05-02 13:16: DSML envelope
+    # contained transfer_to_desktop, recovery tried tool() and got
+    # "missing 1 required positional argument: 'context'", that
+    # error string was voiced. Silent suppression is the right move —
+    # the framework's own retry path will dispatch the tool properly
+    # in a moment.
+    if _tool_takes_context(tool):
+        logger.warning(
+            "[dsml] tool %r needs RunContext; can't recover inline — "
+            "suppressing envelope, framework will retry",
+            name,
+        )
+        return None
 
     # Convert string args to whatever the tool's signature expects.
     # Cheap heuristic: try JSON-decoding first, fall back to string.
@@ -130,8 +168,13 @@ async def _execute_inline(stream, name: str, args: dict[str, str]) -> str | None
         if inspect.iscoroutine(result):
             result = await result
     except Exception as e:
-        logger.warning("[dsml] tool %r raised: %s", name, e)
-        return f"(tool {name} failed: {e})"
+        # Don't voice the failure — log + suppress. The user shouldn't
+        # hear "tool X failed: TypeError ...". If the LLM emitted DSML
+        # again on its next attempt, this path runs again; if it
+        # emitted structured tool_calls, the framework dispatches
+        # cleanly and the user just hears the real result.
+        logger.warning("[dsml] tool %r raised during inline exec: %s — suppressing", name, e)
+        return None
 
     if isinstance(result, str):
         return result
