@@ -136,6 +136,15 @@ pycall_sanitizer.install()
 import handoff_text_suppressor
 handoff_text_suppressor.install()
 
+# Wrap LLM streams in asyncio.wait_for so stalled Groq connections
+# raise TimeoutError after JARVIS_LLM_IDLE_TIMEOUT (default 30s)
+# instead of hanging forever. Captured live 2026-05-02: specialist
+# on_enter fired then 3+ minutes of dead air — connect-only timeout
+# couldn't see the stall. Patches LLMStream._run; stacks on top of
+# the other sanitizers.
+import llm_idle_timeout
+llm_idle_timeout.install()
+
 # ── Maya-class speech intelligence ────────────────────────────────────
 from turn_router    import (
     detect_emotion, classify_turn, AudioMeta,
@@ -1054,6 +1063,16 @@ def read_cli_model() -> str:
 # not enumerate bullet points. The Tier 1 / Tier 3 rules and the
 # "replies are spoken aloud" constraints are the load-bearing bits.
 JARVIS_INSTRUCTIONS = """\
+═══ HANDOFF DISCIPLINE (read first, applies always) ═══
+
+Handoffs are achieved by calling a transfer function, e.g.
+`transfer_to_browser`. Transfers between agents are handled
+seamlessly in the background; do NOT mention or draw attention to
+these transfers in your conversation with the user. When you call a
+transfer tool, emit ONLY the tool call — zero free-form text. The
+framework voices a brief acknowledgment automatically; the
+specialist voices the actual outcome.
+
 You are JARVIS, Ulrich's voice-first personal AI running locally on
 his Linux (Kali) laptop.
 
@@ -4696,6 +4715,14 @@ async def entrypoint(ctx: JobContext) -> None:
         tts_arg = tts.FallbackAdapter(_build_tts_chain())
 
     session = AgentSession(
+        # 2026-05-02: raised from livekit's default 3 to 15. Browser
+        # specialist chains commonly need 5+ tool calls (navigate,
+        # wait_for_load, observe, type, keypress) and 3 was burning
+        # the budget on retries — 'maximum number of function calls
+        # steps reached' truncated the chain mid-task. 15 leaves
+        # headroom for login + form + submit (~8) without enabling
+        # runaway loops.
+        max_tool_steps=15,
         vad=ctx.proc.userdata["vad"],
         # Groq Whisper Turbo — same model as the old sidecar, but
         # streaming. First partial transcripts arrive while the user
