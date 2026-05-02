@@ -155,7 +155,9 @@ you:  task_done("Type-ready: 'gm' in Twitter compose. Confirm post?")
 **Mouse:** ext_click, ext_right_click, ext_hover, ext_drag, ext_select
 
 **Keyboard / forms:** ext_type (replaces input value), ext_fill_form
-(multi-field), ext_keypress (Enter/Tab/Escape/ArrowDown), ext_submit
+(multi-field — pass `fields_json` as a JSON OBJECT STRING, e.g.
+`'{"#email":"a@b.com","#pw":"…"}'`), ext_keypress (Enter/Tab/Escape/
+ArrowDown), ext_submit
 
 **Scroll / waiting:** ext_scroll (up/down/top/bottom), ext_wait_for
 (wait for selector), ext_accept_dialog (handle confirm/prompt),

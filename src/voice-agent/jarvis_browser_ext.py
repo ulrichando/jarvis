@@ -16,9 +16,26 @@ Action naming: the bridge dispatches by bare action name (e.g.
 content-side handler names is the JS internal convention. The
 function names below match the bridge action names verbatim so
 the LLM's tool choice and the bridge's dispatch are perfectly aligned.
+
+═══ Why three params are `*_json: str` instead of dict/list ═══
+
+`ext_fill_form(fields_json)`, `ext_set_cookies(cookies_json)`, and
+`ext_storage_state_set(state_json)` take JSON strings rather than
+native Python `dict` / `list` types. Reason: Groq strict-mode JSON
+schema validation rejects open object schemas with HTTP 400
+"`additionalProperties:false` must be set on every object". When
+ANY tool in the registered list fails validation, Groq rejects the
+entire request, FallbackAdapter switches to DeepSeek (slower), and
+the LLM may stream "Done" text before a tool actually fires. We hit
+this on 2026-05-02 — user observed "first attempt said done with no
+action, second attempt worked." JSON strings sidestep the issue
+entirely; the LLM emits a JSON literal and we parse server-side.
+Don't revert to native dict/list types unless Groq relaxes strict
+mode.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Any, Optional
@@ -269,15 +286,21 @@ async def ext_type(selector: str, text: str) -> str:
 
 
 @function_tool
-async def ext_fill_form(fields: dict) -> str:
-    """Fill multiple form fields at once. `fields` maps CSS selectors
-    to values; each is filled in sequence. Useful for login / signup
-    forms.
+async def ext_fill_form(fields_json: str) -> str:
+    """Fill multiple form fields at once. Each selector→value pair is
+    filled in sequence. Useful for login / signup forms.
 
     Args:
-        fields: dict[str, str] mapping selector → value, e.g.
-                `{"#email": "user@x.com", "#password": "..."}`.
+        fields_json: JSON object string mapping selector → value, e.g.
+                     `'{"#email": "user@x.com", "#password": "..."}'`.
+                     Must be a valid JSON string.
     """
+    try:
+        fields = json.loads(fields_json) if isinstance(fields_json, str) else fields_json
+    except json.JSONDecodeError as e:
+        return f"Browser command failed: fields_json is not valid JSON ({e})"
+    if not isinstance(fields, dict):
+        return "Browser command failed: fields_json must be a JSON object"
     return _summarize(await _post("fill_form", fields=fields))
 
 
@@ -387,14 +410,22 @@ async def ext_get_cookies(domain: Optional[str] = None) -> str:
 
 
 @function_tool
-async def ext_set_cookies(cookies: list, confirmed: bool = False) -> str:
+async def ext_set_cookies(cookies_json: str, confirmed: bool = False) -> str:
     """Set cookies on the active tab's domain. **Destructive verb
     gate applies** — the first call returns a confirmation prompt.
 
     Args:
-        cookies: list of {name, value, domain?, path?, expires?} dicts.
+        cookies_json: JSON array string of cookie objects, e.g.
+                      `'[{"name":"sid","value":"abc","domain":".x.com"}]'`.
+                      Each object may contain name, value, domain, path, expires.
         confirmed: set True only after explicit user confirmation.
     """
+    try:
+        cookies = json.loads(cookies_json) if isinstance(cookies_json, str) else cookies_json
+    except json.JSONDecodeError as e:
+        return f"Browser command failed: cookies_json is not valid JSON ({e})"
+    if not isinstance(cookies, list):
+        return "Browser command failed: cookies_json must be a JSON array"
     return _summarize(await _post(
         "set_cookies", cookies=cookies, confirmed=confirmed,
     ))
@@ -508,15 +539,22 @@ async def ext_storage_state_get(include_cookies: bool = True) -> str:
 
 
 @function_tool
-async def ext_storage_state_set(state: dict) -> str:
+async def ext_storage_state_set(state_json: str) -> str:
     """Restore a previously-snapshotted storage state (mirror of
     Playwright MCP's `browser_set_storage_state`). Pair with
     ext_storage_state_get.
 
     Args:
-        state: object with optional keys `cookies`, `localStorage`,
-               `sessionStorage`. Same shape as get returns.
+        state_json: JSON object string with optional keys `cookies`,
+                    `localStorage`, `sessionStorage`. Same shape as
+                    ext_storage_state_get returns.
     """
+    try:
+        state = json.loads(state_json) if isinstance(state_json, str) else state_json
+    except json.JSONDecodeError as e:
+        return f"Browser command failed: state_json is not valid JSON ({e})"
+    if not isinstance(state, dict):
+        return "Browser command failed: state_json must be a JSON object"
     return _summarize(await _post("storage_state_set", state=state))
 
 
