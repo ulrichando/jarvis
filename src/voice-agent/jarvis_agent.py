@@ -64,6 +64,32 @@ import edge_tts_plugin
 # module — it lives under the voice room_io submodule. Import
 # directly to dodge the ImportError.
 from livekit.agents.voice.room_io import RoomOptions
+
+# Load user-managed API keys from ~/.jarvis/keys.env BEFORE any
+# provider client is constructed. Tray UI writes/clears keys here.
+# Repo .env files are still loaded by systemd (EnvironmentFile=...);
+# keys.env values WIN on collision so the user-set key always
+# overrides the repo default. Missing file is fine — graceful no-op.
+def _load_user_keys_env() -> None:
+    import os
+    from pathlib import Path
+    p = Path.home() / ".jarvis" / "keys.env"
+    if not p.exists():
+        return
+    try:
+        for line in p.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k = k.strip()
+            v = v.strip().strip('"').strip("'")
+            if k and v:
+                os.environ[k] = v   # override repo .env
+    except Exception:
+        pass
+
+_load_user_keys_env()
 from livekit.plugins import groq, openai as lk_openai, silero
 # ElevenLabs removed 2026-05-01 — see _build_dispatching_tts comment.
 
