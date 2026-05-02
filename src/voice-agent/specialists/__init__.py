@@ -41,6 +41,7 @@ def _register_builtins() -> None:
     from . import (
         desktop, planner, browser, browser_v2,
         summarize, weather, researcher, validator, code_reviewer,
+        memory_recall,
     )
     desktop.register_desktop()
     planner.register_planner()
@@ -56,6 +57,8 @@ def _register_builtins() -> None:
     # Validator + code_reviewer self-disable when GROQ key missing.
     validator.register_validator()
     code_reviewer.register_code_reviewer()
+    # Memory recall self-disables when conversations.db doesn't exist.
+    memory_recall.register_memory_recall()
 
 _register_builtins()
 
