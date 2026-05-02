@@ -286,10 +286,17 @@ async function dispatchCommand({ action, args = {}, confirmed = false }) {
       case 'accept_dialog':  return await _bgAcceptDialog(args);
       // Phase A additions (2026-05-02): browser tool gap-fills lifted
       // from browser-use (MIT) + Playwright MCP (Apache-2.0) patterns.
-      case 'list_tabs':      return await _bgListTabs(args);
-      case 'get_console':    return await _bgGetConsole(args);
-      case 'save_pdf':       return await _bgSavePdf(args);
-      case 'upload_file':    return await _bgUploadFile(args);
+      case 'list_tabs':            return await _bgListTabs(args);
+      case 'get_console':          return await _bgGetConsole(args);
+      case 'save_pdf':             return await _bgSavePdf(args);
+      case 'upload_file':          return await _bgUploadFile(args);
+      // Phase B (2026-05-02): modern-web parity — localStorage,
+      // storage_state, dropdown introspection. All routed through
+      // chrome.scripting.executeScript (no new permissions).
+      case 'local_storage':        return await _bgLocalStorage(args);
+      case 'storage_state_get':    return await _bgStorageStateGet(args);
+      case 'storage_state_set':    return await _bgStorageStateSet(args);
+      case 'get_dropdown_options': return await _bgGetDropdownOptions(args);
       default:
         return await _forwardToContent(action, args);
     }
@@ -582,4 +589,206 @@ async function _bgUploadFile({ selector, file_path, file_b64, file_name } = {}) 
     ok: false,
     error: 'bytes-based upload not implemented yet — pass file_path (absolute) instead',
   };
+}
+
+// ── Phase B: modern-web parity (2026-05-02) ─────────────────────────
+// localStorage / sessionStorage / storage_state / dropdown introspection.
+// All routed through chrome.scripting.executeScript with world:'MAIN'
+// so we read the same storage the page sees (NOT the extension's
+// isolated world). No new permissions needed; "scripting" already in
+// manifest.
+
+async function _execInPage(fn, args = []) {
+  // Helper: run `fn` in MAIN world of active tab, return its result.
+  // Errors are caught and returned as ok:false so the bridge stays
+  // deterministic-JSON.
+  const tabId = await _activeTabId();
+  if (!tabId) return { ok: false, error: 'no active tab' };
+  try {
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      func: fn,
+      args,
+    });
+    return { ok: true, ...result };
+  } catch (e) {
+    return { ok: false, error: `executeScript failed: ${e.message || e}` };
+  }
+}
+
+async function _bgLocalStorage({ action = 'list', key, value, scope = 'local' } = {}) {
+  // One tool, multiple actions — avoids 4 separate handlers and
+  // keeps the supervisor's prompt slim. scope = 'local' | 'session'.
+  // action = 'get' | 'set' | 'delete' | 'list' | 'clear'.
+  if (!['local', 'session'].includes(scope)) {
+    return { ok: false, error: 'scope must be local or session' };
+  }
+  if (!['get', 'set', 'delete', 'list', 'clear'].includes(action)) {
+    return { ok: false, error: 'invalid action' };
+  }
+  return await _execInPage((scope, action, key, value) => {
+    const store = scope === 'session' ? sessionStorage : localStorage;
+    if (action === 'list') {
+      const out = {};
+      for (let i = 0; i < store.length; i++) {
+        const k = store.key(i);
+        out[k] = store.getItem(k);
+      }
+      return { entries: out, count: store.length };
+    }
+    if (action === 'get') {
+      if (!key) return { error: 'key required' };
+      return { key, value: store.getItem(key) };
+    }
+    if (action === 'set') {
+      if (!key) return { error: 'key required' };
+      store.setItem(key, String(value ?? ''));
+      return { key, set: true };
+    }
+    if (action === 'delete') {
+      if (!key) return { error: 'key required' };
+      store.removeItem(key);
+      return { key, deleted: true };
+    }
+    if (action === 'clear') {
+      const n = store.length;
+      store.clear();
+      return { cleared: true, removed: n };
+    }
+  }, [scope, action, key || '', value]);
+}
+
+async function _bgStorageStateGet({ include_cookies = true } = {}) {
+  // Mirror Playwright MCP's `browser_storage_state` save. Returns a
+  // single JSON blob with cookies + localStorage + sessionStorage.
+  // Useful for "save my login state" → restore later via
+  // storage_state_set.
+  const tabId = await _activeTabId();
+  if (!tabId) return { ok: false, error: 'no active tab' };
+  const tab = await chrome.tabs.get(tabId);
+  let url;
+  try { url = new URL(tab.url); } catch { url = null; }
+
+  // Browser storage (local + session) via executeScript.
+  const local = await _execInPage(() => {
+    const out = {};
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      out[k] = localStorage.getItem(k);
+    }
+    return { entries: out };
+  });
+  const session = await _execInPage(() => {
+    const out = {};
+    for (let i = 0; i < sessionStorage.length; i++) {
+      const k = sessionStorage.key(i);
+      out[k] = sessionStorage.getItem(k);
+    }
+    return { entries: out };
+  });
+
+  // Cookies for the active tab's domain (and parents).
+  let cookies = [];
+  if (include_cookies && url) {
+    cookies = await chrome.cookies.getAll({ domain: url.hostname });
+  }
+  return {
+    ok: true,
+    origin: url ? `${url.protocol}//${url.host}` : null,
+    cookies: cookies.map(c => ({
+      name: c.name, value: c.value, domain: c.domain,
+      path: c.path, secure: c.secure, httpOnly: c.httpOnly,
+      sameSite: c.sameSite,
+      expirationDate: c.expirationDate,
+    })),
+    localStorage: local.ok ? (local.entries || {}) : {},
+    sessionStorage: session.ok ? (session.entries || {}) : {},
+  };
+}
+
+async function _bgStorageStateSet({ state } = {}) {
+  // Mirror Playwright MCP's `browser_set_storage_state`. Restores a
+  // previously-snapshotted state. Cookies first (so the page sees
+  // them on next load), then storage on the active tab.
+  if (!state || typeof state !== 'object') {
+    return { ok: false, error: 'state object required' };
+  }
+  const tabId = await _activeTabId();
+  if (!tabId) return { ok: false, error: 'no active tab' };
+  const tab = await chrome.tabs.get(tabId);
+
+  // Cookies: chrome.cookies.set. Construct the URL the cookie applies
+  // to from domain + path so chrome can scope it.
+  const cookieResults = [];
+  for (const c of state.cookies || []) {
+    try {
+      // Strip leading dot from domain for url construction; Chrome
+      // accepts both forms but URL constructor doesn't.
+      const dom = (c.domain || '').replace(/^\./, '');
+      const url = `${c.secure ? 'https' : 'http'}://${dom}${c.path || '/'}`;
+      await chrome.cookies.set({
+        url,
+        name: c.name,
+        value: c.value,
+        domain: c.domain,
+        path: c.path || '/',
+        secure: c.secure ?? false,
+        httpOnly: c.httpOnly ?? false,
+        sameSite: c.sameSite || 'unspecified',
+        ...(c.expirationDate ? { expirationDate: c.expirationDate } : {}),
+      });
+      cookieResults.push({ name: c.name, ok: true });
+    } catch (e) {
+      cookieResults.push({ name: c.name, ok: false, error: String(e) });
+    }
+  }
+
+  // localStorage / sessionStorage: write into MAIN world.
+  const apply = await _execInPage((local, session) => {
+    let l = 0, s = 0;
+    for (const [k, v] of Object.entries(local || {})) {
+      try { localStorage.setItem(k, String(v)); l++; } catch {}
+    }
+    for (const [k, v] of Object.entries(session || {})) {
+      try { sessionStorage.setItem(k, String(v)); s++; } catch {}
+    }
+    return { local_set: l, session_set: s };
+  }, [state.localStorage || {}, state.sessionStorage || {}]);
+
+  return {
+    ok: true,
+    cookies_set: cookieResults.filter(c => c.ok).length,
+    cookies_failed: cookieResults.filter(c => !c.ok).length,
+    local_set: apply.local_set || 0,
+    session_set: apply.session_set || 0,
+    note: 'reload the page if you want the restored state to take effect',
+  };
+}
+
+async function _bgGetDropdownOptions({ selector } = {}) {
+  // Mirror browser-use's `get_dropdown_options`. Returns the option
+  // values + visible labels of a `<select>` element so the LLM can
+  // pick before calling ext_select.
+  if (!selector) return { ok: false, error: 'selector required' };
+  return await _execInPage((sel) => {
+    const el = document.querySelector(sel);
+    if (!el) return { error: 'no element matched' };
+    if (el.tagName !== 'SELECT') {
+      return { error: `not a <select>: tag=${el.tagName}` };
+    }
+    const opts = Array.from(el.options).map((o, i) => ({
+      index: i,
+      value: o.value,
+      text: (o.text || o.label || '').trim().slice(0, 200),
+      selected: o.selected,
+      disabled: o.disabled,
+    }));
+    return {
+      options: opts,
+      count: opts.length,
+      selected_index: el.selectedIndex,
+      multiple: el.multiple,
+    };
+  }, [selector]);
 }

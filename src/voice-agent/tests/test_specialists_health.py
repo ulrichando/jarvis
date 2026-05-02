@@ -244,6 +244,23 @@ def test_browser_has_phase_a_tools():
         assert tool in e.ALL_TOOLS, f"{name} not in ALL_TOOLS"
 
 
+def test_browser_has_phase_b_tools():
+    """Phase B 2026-05-02 — modern-web parity: localStorage I/O +
+    storage_state save/restore + dropdown introspection. Without
+    these, JARVIS handles 2015-era cookies-only auth flows but
+    breaks on every modern SPA that uses localStorage tokens."""
+    import jarvis_browser_ext as e
+    for name in (
+        "ext_local_storage",
+        "ext_storage_state_get",
+        "ext_storage_state_set",
+        "ext_get_dropdown_options",
+    ):
+        assert hasattr(e, name), f"missing: {name}"
+        tool = getattr(e, name)
+        assert tool in e.ALL_TOOLS, f"{name} not in ALL_TOOLS"
+
+
 def test_extension_manifest_has_debugger_permission():
     """Phase A's save_pdf + upload_file + get_console all use
     chrome.debugger. Manifest must declare the permission, otherwise

@@ -82,7 +82,7 @@ you:  task_done("Type-ready: 'gm' in Twitter compose. Confirm post?")
  transfer_to_browser again with confirmed=True via confirmed param]
 ```
 
-═══ TOOLS YOU HAVE (30) ═══
+═══ TOOLS YOU HAVE (34) ═══
 
 **Navigation (7):** ext_navigate, ext_new_tab, ext_back, ext_forward, ext_get_url, ext_close_tab, ext_list_tabs
 
@@ -103,6 +103,20 @@ you:  task_done("Type-ready: 'gm' in Twitter compose. Confirm post?")
   - **"any errors in the console"** / "console says what" → `ext_get_console()`.
     Captures only logs AFTER first attach; reload the page if you
     need startup-time logs.
+
+**Storage (5):**
+  - **Cookies**: `ext_get_cookies(domain?)`, `ext_set_cookies(cookies, confirmed)`.
+  - **`ext_local_storage(action, key?, value?, scope?)`** — modern web
+    auth tokens live in localStorage, not cookies. action='list'/'get'/
+    'set'/'delete'/'clear'. scope='local'|'session'.
+  - **`ext_storage_state_get()` + `ext_storage_state_set(state)`** —
+    full snapshot/restore of cookies + localStorage + sessionStorage
+    as one JSON. Use for "save my login state" / "restore session."
+
+**Forms helpers:**
+  - **`ext_get_dropdown_options(selector)`** — call BEFORE ext_select
+    when you're not sure of the option values. Returns array of
+    {value, text, selected, disabled}.
 
 **Reading:** ext_extract_text (page or selector), ext_find_by_text
 (locate by visible text → returns selector hint), ext_dom_summary
