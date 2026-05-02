@@ -118,7 +118,7 @@ async def ext_navigate(url: str) -> str:
 
 
 @function_tool
-async def ext_new_tab(url: str = "") -> str:
+async def ext_new_tab(url: Optional[str] = None) -> str:
     """Open a BRAND-NEW tab in Chrome (Ctrl+T equivalent). Does NOT
     close or replace the currently-active tab. Use for "open a new
     tab" / "open a tab" / "new tab" requests. Optionally navigates
@@ -126,9 +126,18 @@ async def ext_new_tab(url: str = "") -> str:
     new-tab page.
 
     Args:
-        url: Optional URL to load in the new tab. Empty = new-tab page.
+        url: Optional URL to load in the new tab. None / omitted →
+             Chrome's new-tab page.
     """
-    return _summarize(await _post("new_tab", url=url))
+    # Optional[str] = None instead of str = "" so Groq strict-mode
+    # tool-call validation accepts a call with the property omitted.
+    # Live failure 2026-05-02: `tool call validation failed:
+    # parameters for tool ext_new_tab did not match schema: errors:
+    # [missing properties: 'url']` — Groq required `url` even though
+    # it had a default. Fallback to DeepSeek opened a tab; second
+    # user request opened ANOTHER one because chat_ctx truncation
+    # had hidden the first → the "two tabs" complaint.
+    return _summarize(await _post("new_tab", url=url or ""))
 
 
 @function_tool
@@ -451,7 +460,7 @@ async def ext_list_tabs() -> str:
 
 
 @function_tool
-async def ext_get_console(level: str = "", limit: int = 25) -> str:
+async def ext_get_console(level: Optional[str] = None, limit: int = 25) -> str:
     """Read recent console log entries from the active tab (mirror of
     BrowserMCP's `browser_get_console_logs`). The first call attaches
     chrome.debugger to the tab; subsequent calls reuse the buffer.
@@ -461,14 +470,14 @@ async def ext_get_console(level: str = "", limit: int = 25) -> str:
 
     Args:
         level: Filter by 'log', 'warn', 'error', 'info', or 'debug'.
-               Empty = all levels.
+               None / omitted = all levels.
         limit: Most recent N entries (1–100, default 25).
     """
-    return _summarize(await _post("get_console", level=level, limit=limit))
+    return _summarize(await _post("get_console", level=level or "", limit=limit))
 
 
 @function_tool
-async def ext_save_pdf(path: str = "") -> str:
+async def ext_save_pdf(path: Optional[str] = None) -> str:
     """Save the current page as PDF (mirror of Playwright MCP's
     `browser_pdf_save` and browser-use's `save_pdf`). Uses CDP
     Page.printToPDF; saves to the user's Downloads folder unless
@@ -478,7 +487,7 @@ async def ext_save_pdf(path: str = "") -> str:
         path: Optional filename (or relative path inside Downloads).
               Default = "<page-title>.pdf".
     """
-    return _summarize(await _post("save_pdf", path=path))
+    return _summarize(await _post("save_pdf", path=path or ""))
 
 
 @function_tool
@@ -502,10 +511,10 @@ async def ext_upload_file(selector: str, file_path: str) -> str:
 
 @function_tool
 async def ext_local_storage(
-    action: str = "list",
-    key: str = "",
-    value: str = "",
-    scope: str = "local",
+    action: Optional[str] = None,
+    key: Optional[str] = None,
+    value: Optional[str] = None,
+    scope: Optional[str] = None,
 ) -> str:
     """Read/write the page's localStorage or sessionStorage (mirror
     of Playwright MCP's `browser_localstorage_*` / `browser_sessionstorage_*`).
@@ -513,13 +522,17 @@ async def ext_local_storage(
     is the 2025 web's equivalent of ext_get_cookies/ext_set_cookies.
 
     Args:
-        action: 'get' | 'set' | 'delete' | 'list' | 'clear'.
+        action: 'get' | 'set' | 'delete' | 'list' | 'clear'. Default 'list'.
         key: storage key (required for get/set/delete).
         value: storage value (only for set).
-        scope: 'local' (persistent) or 'session' (per-tab).
+        scope: 'local' (persistent) or 'session' (per-tab). Default 'local'.
     """
     return _summarize(await _post(
-        "local_storage", action=action, key=key, value=value, scope=scope
+        "local_storage",
+        action=action or "list",
+        key=key or "",
+        value=value or "",
+        scope=scope or "local",
     ))
 
 
@@ -577,7 +590,7 @@ async def ext_get_dropdown_options(selector: str) -> str:
 
 
 @function_tool
-async def ext_observe(query: str = "", limit: int = 5) -> str:
+async def ext_observe(query: Optional[str] = None, limit: int = 5) -> str:
     """Return a ranked list of actionable elements matching `query`
     (mirror of Stagehand's `observe()` + browser-use's `find_elements`).
     Each match includes a stable selector + suggested action method
@@ -593,11 +606,11 @@ async def ext_observe(query: str = "", limit: int = 5) -> str:
         Each match: {selector, tag, role, text, suggested_method, score}.
         Pass the selector + suggested_method to ext_click / ext_type / etc.
     """
-    return _summarize(await _post("observe", query=query, limit=limit))
+    return _summarize(await _post("observe", query=query or "", limit=limit))
 
 
 @function_tool
-async def ext_wait_for_load(state: str = "load", timeout_ms: int = 10000) -> str:
+async def ext_wait_for_load(state: Optional[str] = None, timeout_ms: int = 10000) -> str:
     """Wait for the page to reach a specific load state (mirror of
     Playwright MCP's `browser_wait_for` extended modes).
 
@@ -608,12 +621,12 @@ async def ext_wait_for_load(state: str = "load", timeout_ms: int = 10000) -> str
         timeout_ms: Max wait (1000-60000, default 10000).
     """
     return _summarize(await _post(
-        "wait_for_load", state=state, timeout_ms=timeout_ms
+        "wait_for_load", state=state or "load", timeout_ms=timeout_ms
     ))
 
 
 @function_tool
-async def ext_download_file(url: str, filename: str = "") -> str:
+async def ext_download_file(url: str, filename: Optional[str] = None) -> str:
     """Download a file directly to the Downloads folder (mirror of
     Playwright MCP's download capture + Skyvern's DOWNLOAD_FILE
     action). Pass a direct URL — for "click this button which
@@ -626,7 +639,7 @@ async def ext_download_file(url: str, filename: str = "") -> str:
                   filename or browser default).
     """
     return _summarize(await _post(
-        "download_file", url=url, filename=filename
+        "download_file", url=url, filename=filename or ""
     ))
 
 
