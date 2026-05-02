@@ -809,12 +809,27 @@ def _build_dispatching_llm() -> DispatchingLLM:
             logger.warning(f"[dispatch] LLM FallbackAdapter wrap failed ({e}); using primary alone")
             return primary
 
-    main_raw = groq.LLM(model="llama-3.3-70b-versatile", temperature=0.6, **LLM_KWARGS)
+    # Per-route prompt_cache_key. Groq's prompt caching keys-in by
+    # this string + the prompt prefix. Same key + same prefix = cache
+    # hit (cuts input tokens by ~80%, TTFW by ~30-40% per Groq docs).
+    # Different routes get different keys so their cache pools don't
+    # interfere. Bump the version suffix any time the supervisor's
+    # system prompt OR tool definitions change materially — stale
+    # cache entries return wrong tool schemas.
+    main_raw = groq.LLM(
+        model="llama-3.3-70b-versatile", temperature=0.6,
+        prompt_cache_key="jarvis-task-v2026-05-02",
+        **LLM_KWARGS,
+    )
     main_raw._jarvis_label = "groq:llama-3.3-70b-versatile"
     main = _wrap(main_raw)
 
     try:
-        banter_raw = groq.LLM(model="llama-3.1-8b-instant", temperature=0.6, **LLM_KWARGS)
+        banter_raw = groq.LLM(
+            model="llama-3.1-8b-instant", temperature=0.6,
+            prompt_cache_key="jarvis-banter-v2026-05-02",
+            **LLM_KWARGS,
+        )
         banter_raw._jarvis_label = "groq:llama-3.1-8b-instant"
         banter = _wrap(banter_raw)
     except Exception as e:
@@ -822,7 +837,11 @@ def _build_dispatching_llm() -> DispatchingLLM:
         banter = main
 
     try:
-        reasoning_raw = groq.LLM(model="qwen/qwen3-32b", temperature=0.6, **LLM_KWARGS)
+        reasoning_raw = groq.LLM(
+            model="qwen/qwen3-32b", temperature=0.6,
+            prompt_cache_key="jarvis-reasoning-v2026-05-02",
+            **LLM_KWARGS,
+        )
         reasoning_raw._jarvis_label = "groq:qwen3-32b"
         reasoning = _wrap(reasoning_raw)
     except Exception as e:
@@ -832,7 +851,9 @@ def _build_dispatching_llm() -> DispatchingLLM:
     try:
         emotional_raw = groq.LLM(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
-            temperature=0.7, **LLM_KWARGS,
+            temperature=0.7,
+            prompt_cache_key="jarvis-emotional-v2026-05-02",
+            **LLM_KWARGS,
         )
         emotional_raw._jarvis_label = "groq:llama-4-scout"
         emotional = _wrap(emotional_raw)
