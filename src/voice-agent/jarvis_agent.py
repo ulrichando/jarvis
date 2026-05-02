@@ -770,9 +770,14 @@ def _build_dispatching_llm() -> DispatchingLLM:
     # Tight retry profile across all dispatcher LLMs. Default is
     # max_retries=3 which means up to 4 attempts × ~2 s backoff = ~10 s
     # of silence on a 4xx-but-classified-retryable error (e.g. tool-call
-    # validation failure). User reports "have to ask twice" caused by
-    # that silence. Cap at 1 retry → fail in ~3 s → fallback kicks in.
-    LLM_KWARGS = {"max_retries": 1, "timeout": 8.0}
+    # validation failure). 2026-05-02 13:20 incident: a desktop
+    # specialist hung for ~2 minutes because its LLM cycled through
+    # Groq → retry → DeepSeek → retry → Groq with the prior 8 s/req
+    # timeout. Tightened to 5 s/req and 0 retries — single fail-over
+    # is enough; the FallbackAdapter handles the cross-provider hop.
+    # Worst case now: 5s Groq + 5s DeepSeek = 10s ceiling, vs the
+    # ~120s observed previously.
+    LLM_KWARGS = {"max_retries": 0, "timeout": 5.0}
 
     # Build a single shared DeepSeek instance; the FallbackAdapter chain
     # passes it as the second-tier provider on each route.
