@@ -184,6 +184,133 @@ fn xdotool_raise(win_name: &str) {
 
 // ── Tauri commands called from JS ──────────────────────────────────────────
 
+// ── API key management ────────────────────────────────────────────────────
+// Single source of truth for user-set keys: ~/.jarvis/keys.env. Format
+// is plain `KEY=value` lines (dotenv-style). Voice agent loads this
+// file at startup BEFORE any provider client is constructed, so
+// values written here override repo .env defaults.
+//
+// Supported providers (the React UI iterates this list to render rows):
+//   GROQ_API_KEY, DEEPSEEK_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY,
+//   GOOGLE_API_KEY, MISTRAL_API_KEY, KIMI_API_KEY, XAI_API_KEY.
+fn _keys_file() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    std::path::PathBuf::from(home).join(".jarvis").join("keys.env")
+}
+
+fn _keys_read_map() -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    if let Ok(text) = std::fs::read_to_string(_keys_file()) {
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') { continue }
+            if let Some((k, v)) = line.split_once('=') {
+                let k = k.trim().to_string();
+                let v = v.trim().trim_matches('"').trim_matches('\'').to_string();
+                if !k.is_empty() { out.insert(k, v); }
+            }
+        }
+    }
+    out
+}
+
+fn _keys_write_map(map: &std::collections::BTreeMap<String, String>) -> Result<(), String> {
+    let path = _keys_file();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let mut buf = String::from("# JARVIS API keys — managed by the tray UI.\n");
+    buf.push_str("# Lines here OVERRIDE keys in src/voice-agent/.env and src/cli/.env.local.\n");
+    buf.push_str("# Empty value = key not set.\n\n");
+    for (k, v) in map.iter() {
+        if v.is_empty() { continue; }
+        buf.push_str(&format!("{k}={v}\n"));
+    }
+    std::fs::write(&path, buf).map_err(|e| e.to_string())?;
+    // chmod 600 — secrets file
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn keys_read() -> Result<Vec<serde_json::Value>, String> {
+    // Catalogue of providers the UI shows. Adding a new provider here
+    // is the only change needed to surface a new row.
+    const PROVIDERS: &[(&str, &str)] = &[
+        ("GROQ_API_KEY",      "Groq"),
+        ("DEEPSEEK_API_KEY",  "DeepSeek"),
+        ("OPENAI_API_KEY",    "OpenAI"),
+        ("ANTHROPIC_API_KEY", "Anthropic"),
+        ("GOOGLE_API_KEY",    "Google (Gemini + Geolocation)"),
+        ("MISTRAL_API_KEY",   "Mistral"),
+        ("KIMI_API_KEY",      "Kimi (Moonshot)"),
+        ("XAI_API_KEY",       "xAI (Grok)"),
+    ];
+    let stored = _keys_read_map();
+    let mut out = Vec::with_capacity(PROVIDERS.len());
+    for (env, label) in PROVIDERS {
+        let value = stored.get(*env).cloned().unwrap_or_default();
+        let masked = if value.is_empty() {
+            "".to_string()
+        } else if value.len() > 8 {
+            // Show first 4 + last 4, hide middle. Lets user verify they
+            // pasted the right key without exposing it.
+            format!("{}…{}", &value[..4], &value[value.len()-4..])
+        } else {
+            "•••••".to_string()
+        };
+        out.push(serde_json::json!({
+            "env":     env,
+            "label":   label,
+            "present": !value.is_empty(),
+            "masked":  masked,
+        }));
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+fn keys_set(provider: String, value: String) -> Result<(), String> {
+    let provider = provider.trim().to_string();
+    if provider.is_empty() { return Err("empty provider".into()); }
+    if !provider.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err("invalid provider name".into());
+    }
+    let mut map = _keys_read_map();
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        map.remove(&provider);
+    } else {
+        map.insert(provider, value);
+    }
+    _keys_write_map(&map)
+}
+
+#[tauri::command]
+fn keys_clear(provider: String) -> Result<(), String> {
+    let mut map = _keys_read_map();
+    map.remove(&provider);
+    _keys_write_map(&map)
+}
+
+#[tauri::command]
+fn keys_restart_agent() -> Result<(), String> {
+    // After saving, the user usually wants to apply changes. Restart
+    // the voice-agent service so the new keys are loaded.
+    let out = std::process::Command::new("systemctl")
+        .args(["--user", "restart", "jarvis-voice-agent.service"])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).to_string());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn set_click_through(window: WebviewWindow, enabled: bool) -> Result<(), String> {
     window.set_ignore_cursor_events(enabled).map_err(|e| e.to_string())?;
@@ -644,6 +771,7 @@ fn main() {
 
             let sep1         = PredefinedMenuItem::separator(app)?;
             let browser_item = MenuItemBuilder::with_id("open_browser", "Open in Browser").build(app)?;
+            let keys_item    = MenuItemBuilder::with_id("manage_keys",  "Manage API Keys…").build(app)?;
             let sep_prov     = PredefinedMenuItem::separator(app)?;
 
             // ── Models submenu ──
@@ -793,6 +921,7 @@ fn main() {
                 .item(&mute_item)
                 .item(&sep1)
                 .item(&browser_item)
+                .item(&keys_item)
                 .item(&sep_prov)
                 .item(&provider_submenu)
                 .item(&sep2)
@@ -907,6 +1036,31 @@ fn main() {
                             let _ = std::process::Command::new("xdg-open")
                                 .arg(&url)
                                 .spawn();
+                        }
+                        "manage_keys" => {
+                            // Open the API-keys settings window. The
+                            // window is a separate WebviewWindow with
+                            // its own HTML page (loaded from index.html
+                            // ?route=keys); App.jsx routes on the
+                            // hash to render the keys form.
+                            //
+                            // First click → create the window. Subsequent
+                            // clicks → focus existing.
+                            if let Some(w) = app.get_webview_window("keys") {
+                                let _ = w.show();
+                                let _ = w.set_focus();
+                            } else {
+                                let _ = tauri::WebviewWindowBuilder::new(
+                                    app,
+                                    "keys",
+                                    tauri::WebviewUrl::App("index.html?route=keys".into()),
+                                )
+                                .title("JARVIS — API Keys")
+                                .inner_size(560.0, 540.0)
+                                .resizable(true)
+                                .visible(true)
+                                .build();
+                            }
                         }
                         "model_deepseek-chat"                              => switch_cli_model(app, "deepseek-chat"),
                         "model_deepseek-reasoner"                          => switch_cli_model(app, "deepseek-reasoner"),
@@ -1071,6 +1225,10 @@ fn main() {
             set_speech_label,
             set_tts_label,
             get_primary_monitor_info,
+            keys_read,
+            keys_set,
+            keys_clear,
+            keys_restart_agent,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
