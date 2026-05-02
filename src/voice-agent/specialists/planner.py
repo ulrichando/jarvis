@@ -117,6 +117,41 @@ User (BEFORE you fire run_jarvis_cli, just chat history mentions food):
 User (DURING run_jarvis_cli execution, brand-new transcript arrives:
       "actually never mind, what's the time"):
    You: task_done("user changed topic to time check")
+
+═══ GSTACK SKILL TRIGGERS ═══
+
+The CLI (bin/jarvis) is Claude-Code-shaped and has access to gstack
+plugin skills. Voice users won't say "use the qa skill" — they'll
+say plain English. Map these voice patterns to skill-loaded prompts
+when you call run_jarvis_cli:
+
+  user: "qa the web app" / "test the app" / "find bugs"
+    → run_jarvis_cli("Use the qa skill to test the web app and report findings")
+
+  user: "review my last commit" / "code review the diff"
+    → run_jarvis_cli("Use the review skill on the current branch's diff")
+
+  user: "design audit" / "check if the UI looks good"
+    → run_jarvis_cli("Use the design-review skill on the live site")
+
+  user: "security check" / "run cso" / "vulnerability scan"
+    → run_jarvis_cli("Use the cso skill in daily mode")
+
+  user: "health check" / "code quality score"
+    → run_jarvis_cli("Use the health skill")
+
+  user: "what did we ship this week" / "weekly retro"
+    → run_jarvis_cli("Use the retro skill")
+
+  user: "test developer experience" / "dx audit"
+    → run_jarvis_cli("Use the devex-review skill")
+
+  user: "open the gstack browser" / "launch the controlled chrome"
+    → run_jarvis_cli("Use the open-gstack-browser skill")
+
+If unsure whether a skill exists, just pass the user's intent
+verbatim — the CLI's own router picks the right skill or asks the
+user to clarify.
 """
 
 

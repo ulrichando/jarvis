@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke }  from '@tauri-apps/api/core'
 import { listen }  from '@tauri-apps/api/event'
 import ChatPanel   from './components/ChatPanel.jsx'
+import KeysSettings from './KeysSettings.jsx'
 // Voice lives OUT of the webview — jarvis-voice-client.service is
 // the LiveKit peer that owns the mic + speaker, reached over HTTP
 // on :8767 through useVoiceClient. Imported under the `useSpeech`
@@ -57,6 +58,16 @@ function useJarvisWS(url) {
 
 // ── App ───────────────────────────────────────────────────────────────────
 export default function App() {
+  // Tray's "Manage API Keys…" item opens this same bundle in a new
+  // webview with `?route=keys` in the URL. When that's present, render
+  // the keys page and skip the rest of the overlay machinery (chat,
+  // voice client status, click-through layer, etc.) — that window is
+  // dedicated to keys management.
+  if (typeof window !== 'undefined' &&
+      window.location.search.includes('route=keys')) {
+    return <KeysSettings />
+  }
+
   const [chatOpen, setChatOpen]     = useState(false)
   const [voiceMuted, setVoiceMuted] = useState(false)
   // Reply-output mute (item #10): when on, typed-reply TTS is suppressed.
