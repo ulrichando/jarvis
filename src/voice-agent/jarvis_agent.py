@@ -126,6 +126,16 @@ dsml_sanitizer.install()
 import pycall_sanitizer
 pycall_sanitizer.install()
 
+# Drop anticipatory text alongside transfer_to_*/delegate calls. The
+# supervisor LLM sometimes emits a fake confirmation ("A new tab is
+# open, sir.") in the same turn as a handoff tool call — TTS plays
+# the lie before the specialist runs. confab_detector blocks the DB
+# save but TTS already streamed; this patches _parse_choice to blank
+# delta.content from the moment a handoff is detected. Stacks on top
+# of dsml_sanitizer + pycall_sanitizer.
+import handoff_text_suppressor
+handoff_text_suppressor.install()
+
 # ── Maya-class speech intelligence ────────────────────────────────────
 from turn_router    import (
     detect_emotion, classify_turn, AudioMeta,
@@ -1717,32 +1727,31 @@ What you can do directly:
    across the codebase or a long thinking loop.
 
 **1c. Web / browser-page work**
-   Two browser specialists exist — pick by task complexity:
 
-   → **`transfer_to_browser_v2(request)`** for **multi-step** work
-     (login + nav + form + submit, multi-page extract, "find the X
-     and report it"). Powered by the open-source browser-use agent;
-     the agent plans + executes autonomously and returns a summary.
-     Slower per-call (~10-25s) but far more reliable for complex
-     flows. Auto-disabled if GROQ/DeepSeek keys are missing.
+   → **`transfer_to_browser(request)`** — drives the user's existing
+     Chrome via the jarvis-screen extension (37 ext_* commands:
+     navigate, click, type, scroll, observe, fill_form, screenshot,
+     etc.). Use this for ANYTHING that happens inside a Chrome tab,
+     whether one action or twenty. The specialist runs DOM actions
+     one at a time, looking at each result before deciding the next.
 
-   → **`transfer_to_browser(request)`** for **single-shot** DOM
-     actions (just navigate, just screenshot, just click one thing,
-     just open a new tab). Faster (~1-3s), drives Chrome via the
-     jarvis-screen extension, 26 ext_* commands.
+   Examples — ALL go to browser:
+     - "open a new tab"                          → browser
+     - "open a new tab on my current browser"    → browser
+     - "go to youtube"                           → browser
+     - "search for cooking videos on YouTube"    → browser  (navigate + observe + type + Enter)
+     - "log in to my Gmail and report unread"    → browser  (multi-step DOM actions)
+     - "find the cheapest flight on Kayak"       → browser
+     - "post 'gm' on twitter"                    → browser  (with confirmation)
+     - "fill out this form for me"               → browser
+     - "screenshot this page"                    → browser
 
-   How to choose between v2 and legacy browser:
-     - "open a new tab"                         → browser  (one action)
-     - "open a new tab on my browser"           → browser  (same — "my/the/this/current browser" = active Chrome)
-     - "open a new tab on my current browser"   → browser  (same — common voice phrasing)
-     - "give me a new tab"                       → browser
-     - "another tab"                             → browser
-     - "go to twitter.com"                       → browser  (one nav)
-     - "screenshot this page"                    → browser  (one capture)
-     - "log in to my Gmail and report unread"    → browser_v2 (multi-step)
-     - "find the cheapest flight on Kayak"       → browser_v2 (multi-step)
-     - "post 'gm' on twitter"                    → browser_v2 (multi-step + confirm)
-     - "fill out this form for me"               → browser_v2 (multi-step)
+   2026-05-02: a separate `transfer_to_browser_v2` specialist was
+   disabled because it spawned a fresh Chromium window every call
+   (CDP attach to localhost:9222 failed → browser-use fell back to
+   launching its own Chromium) and the user saw it as "another
+   Chrome window opening." Don't reach for browser_v2 — it isn't in
+   your tool list.
 
 **ANY phrase combining "tab" + "browser" goes to BROWSER, never
 desktop.** Past failure 2026-05-02 13:43: user said "Could you
