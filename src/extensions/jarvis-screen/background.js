@@ -297,6 +297,10 @@ async function dispatchCommand({ action, args = {}, confirmed = false }) {
       case 'storage_state_get':    return await _bgStorageStateGet(args);
       case 'storage_state_set':    return await _bgStorageStateSet(args);
       case 'get_dropdown_options': return await _bgGetDropdownOptions(args);
+      // Phase C (2026-05-02): observe + wait_for_load + download_file.
+      case 'observe':              return await _bgObserve(args);
+      case 'wait_for_load':        return await _bgWaitForLoad(args);
+      case 'download_file':        return await _bgDownloadFile(args);
       default:
         return await _forwardToContent(action, args);
     }
@@ -791,4 +795,202 @@ async function _bgGetDropdownOptions({ selector } = {}) {
       multiple: el.multiple,
     };
   }, [selector]);
+}
+
+// ── Phase C: advanced (2026-05-02) ──────────────────────────────────
+
+async function _bgObserve({ query = "", limit = 5 } = {}) {
+  // Mirror Stagehand's `observe()` + browser-use's `find_elements`.
+  // Returns a ranked array of actionable elements with stable
+  // selectors so the supervisor LLM can pick deterministically.
+  // Pure heuristic — no extra LLM call. Saves tokens on repeat
+  // tasks because the LLM doesn't have to scan the full DOM each
+  // turn; it queries by intent and gets back ≤5 candidates.
+  return await _execInPage((q, lim) => {
+    const lower = (q || "").toLowerCase().trim();
+    // Score-as-you-go: collect all interactive elements + score by
+    // (text-match × visibility × semantic-weight).
+    const candidates = [];
+    // Tag-level semantic weight — favor explicit interactive tags.
+    const TAG_WEIGHT = {
+      button: 1.0, a: 0.95, input: 0.9, select: 0.85, textarea: 0.85,
+      summary: 0.7, label: 0.6, li: 0.4, span: 0.3, div: 0.2,
+    };
+    const ROLE_WEIGHT = {
+      button: 1.0, link: 0.95, textbox: 0.9, combobox: 0.85,
+      checkbox: 0.8, menuitem: 0.7, tab: 0.7, switch: 0.7,
+    };
+    const sel = 'a,button,input,textarea,select,summary,label,'
+      + '[role="button"],[role="link"],[role="textbox"],[role="combobox"],'
+      + '[role="checkbox"],[role="menuitem"],[role="tab"],[role="switch"],'
+      + '[onclick],[contenteditable="true"]';
+    const all = document.querySelectorAll(sel);
+    for (const el of all) {
+      // Visibility: skip hidden / zero-size.
+      const r = el.getBoundingClientRect();
+      if (r.width < 4 || r.height < 4) continue;
+      const cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+      if (parseFloat(cs.opacity || '1') < 0.05) continue;
+      // Skip disabled.
+      if (el.disabled || el.getAttribute('aria-disabled') === 'true') continue;
+      // Score.
+      const tag = el.tagName.toLowerCase();
+      const role = (el.getAttribute('role') || '').toLowerCase();
+      const text = (
+        el.innerText || el.textContent ||
+        el.getAttribute('aria-label') || el.getAttribute('placeholder') ||
+        el.getAttribute('title') || el.getAttribute('value') || ''
+      ).trim().toLowerCase();
+      let score = (TAG_WEIGHT[tag] || 0.3) + (ROLE_WEIGHT[role] || 0);
+      if (lower) {
+        if (text === lower)               score += 3.0;
+        else if (text.startsWith(lower))  score += 2.0;
+        else if (text.includes(lower))    score += 1.5;
+        else {
+          // Word-level match.
+          const words = lower.split(/\s+/);
+          const matched = words.filter(w => w && text.includes(w));
+          if (matched.length) score += 0.6 * (matched.length / words.length);
+          else continue;  // skip — no relevance to query
+        }
+      }
+      candidates.push({ el, tag, role, text, score, rect: r });
+    }
+    // Top-N by score.
+    candidates.sort((a, b) => b.score - a.score);
+    const top = candidates.slice(0, Math.max(1, Math.min(lim, 20)));
+    // Build a stable selector for each: prefer #id, then aria-label,
+    // then unique attribute.
+    function selectorFor(el) {
+      if (el.id) {
+        const escaped = (typeof CSS !== 'undefined' && CSS.escape)
+          ? CSS.escape(el.id) : el.id.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+        return `#${escaped}`;
+      }
+      const aria = el.getAttribute('aria-label');
+      if (aria) {
+        return `[aria-label="${aria.replace(/"/g, '\\"')}"]`;
+      }
+      const name = el.getAttribute('name');
+      if (name) return `${el.tagName.toLowerCase()}[name="${name}"]`;
+      const dt = el.getAttribute('data-testid');
+      if (dt) return `[data-testid="${dt}"]`;
+      // Fallback: tag + nth-of-type within parent.
+      const parent = el.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children).filter(
+          c => c.tagName === el.tagName
+        );
+        const idx = siblings.indexOf(el) + 1;
+        return `${el.tagName.toLowerCase()}:nth-of-type(${idx})`;
+      }
+      return el.tagName.toLowerCase();
+    }
+    function suggestMethod(tag, role, el) {
+      if (tag === 'input') {
+        const t = (el.type || '').toLowerCase();
+        if (['checkbox', 'radio', 'submit', 'button'].includes(t)) return 'click';
+        return 'type';
+      }
+      if (tag === 'textarea' || el.contentEditable === 'true') return 'type';
+      if (tag === 'select') return 'select';
+      return 'click';
+    }
+    return {
+      matches: top.map(c => ({
+        selector: selectorFor(c.el),
+        tag: c.tag,
+        role: c.role || null,
+        text: c.text.slice(0, 120),
+        suggested_method: suggestMethod(c.tag, c.role, c.el),
+        score: Math.round(c.score * 100) / 100,
+      })),
+      count: top.length,
+      query: q,
+    };
+  }, [query, limit]);
+}
+
+async function _bgWaitForLoad({ state = "load", timeout_ms = 10000 } = {}) {
+  // Mirror Playwright's wait-for-load-state + Playwright MCP's
+  // `browser_wait_for`. Polls document.readyState (load /
+  // domcontentloaded) or network-idle (resourceTimings stable for
+  // 500ms). Returns the state actually reached.
+  if (!['load', 'domcontentloaded', 'networkidle'].includes(state)) {
+    return { ok: false, error: 'state must be load|domcontentloaded|networkidle' };
+  }
+  return await _execInPage((target, deadline) => {
+    return new Promise((resolve) => {
+      const start = Date.now();
+      function done(reached, note) {
+        resolve({ reached, elapsed_ms: Date.now() - start, note });
+      }
+      // Already complete?
+      if (target === 'domcontentloaded' && document.readyState !== 'loading') {
+        return done(document.readyState, null);
+      }
+      if (target === 'load' && document.readyState === 'complete') {
+        return done('complete', null);
+      }
+      // Set up event listeners + polling.
+      let timer;
+      function check() {
+        if (Date.now() - start > deadline) {
+          clearTimeout(timer);
+          return done('timeout', `did not reach ${target} within ${deadline}ms`);
+        }
+        if (target === 'domcontentloaded' && document.readyState !== 'loading') {
+          return done(document.readyState, null);
+        }
+        if (target === 'load' && document.readyState === 'complete') {
+          return done('complete', null);
+        }
+        if (target === 'networkidle') {
+          // Heuristic — no network entries added in last 500ms.
+          const entries = performance.getEntriesByType('resource');
+          if (!check._lastCount) check._lastCount = entries.length;
+          if (!check._lastTime) check._lastTime = Date.now();
+          if (entries.length === check._lastCount) {
+            if (Date.now() - check._lastTime > 500) {
+              return done('networkidle', null);
+            }
+          } else {
+            check._lastCount = entries.length;
+            check._lastTime = Date.now();
+          }
+        }
+        timer = setTimeout(check, 100);
+      }
+      window.addEventListener('DOMContentLoaded', check, { once: true });
+      window.addEventListener('load', check, { once: true });
+      timer = setTimeout(check, 50);
+    });
+  }, [state, Math.max(1000, Math.min(timeout_ms, 60000))]);
+}
+
+async function _bgDownloadFile({ url, filename = "" } = {}) {
+  // Mirror Playwright MCP's download capture + browser-use's read_file
+  // pattern. v1 = URL-based (pass a direct downloadable URL); we use
+  // chrome.downloads.download which handles redirects, auth cookies
+  // (since it's the same browser session), and reports a downloadId.
+  // The bridge returns immediately; download happens in background.
+  // For "click this button which triggers a download" use ext_click —
+  // any download Chrome detects auto-saves to Downloads.
+  if (!url) return { ok: false, error: 'url required' };
+  try {
+    const downloadId = await chrome.downloads.download({
+      url,
+      filename: filename || undefined,
+      saveAs: false,
+    });
+    return {
+      ok: true,
+      download_id: downloadId,
+      url,
+      note: 'download started in background; check Downloads folder',
+    };
+  } catch (e) {
+    return { ok: false, error: `download failed: ${e.message || e}` };
+  }
 }

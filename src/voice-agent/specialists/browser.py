@@ -82,7 +82,7 @@ you:  task_done("Type-ready: 'gm' in Twitter compose. Confirm post?")
  transfer_to_browser again with confirmed=True via confirmed param]
 ```
 
-═══ TOOLS YOU HAVE (34) ═══
+═══ TOOLS YOU HAVE (37) ═══
 
 **Navigation (7):** ext_navigate, ext_new_tab, ext_back, ext_forward, ext_get_url, ext_close_tab, ext_list_tabs
 
@@ -117,6 +117,18 @@ you:  task_done("Type-ready: 'gm' in Twitter compose. Confirm post?")
   - **`ext_get_dropdown_options(selector)`** — call BEFORE ext_select
     when you're not sure of the option values. Returns array of
     {value, text, selected, disabled}.
+
+**Observation + waiting (Phase C):**
+  - **`ext_observe(query?, limit?)`** — find actionable elements by
+    natural-language query. Returns ranked array of {selector, tag,
+    role, text, suggested_method, score}. Use FIRST when you don't
+    know the right CSS selector for what the user wants.
+  - **`ext_wait_for_load(state?, timeout_ms?)`** — wait for the page
+    to reach 'load' (default), 'domcontentloaded', or 'networkidle'.
+    Use after navigation when the page is JS-heavy.
+  - **`ext_download_file(url, filename?)`** — download a direct URL
+    to the Downloads folder. For "click this button which triggers
+    a download" just use ext_click — Chrome auto-saves.
 
 **Reading:** ext_extract_text (page or selector), ext_find_by_text
 (locate by visible text → returns selector hint), ext_dom_summary

@@ -261,6 +261,16 @@ def test_browser_has_phase_b_tools():
         assert tool in e.ALL_TOOLS, f"{name} not in ALL_TOOLS"
 
 
+def test_browser_has_phase_c_tools():
+    """Phase C 2026-05-02 — advanced: Stagehand observe pattern,
+    Playwright wait_for_load states, direct file download."""
+    import jarvis_browser_ext as e
+    for name in ("ext_observe", "ext_wait_for_load", "ext_download_file"):
+        assert hasattr(e, name), f"missing: {name}"
+        tool = getattr(e, name)
+        assert tool in e.ALL_TOOLS, f"{name} not in ALL_TOOLS"
+
+
 def test_extension_manifest_has_debugger_permission():
     """Phase A's save_pdf + upload_file + get_console all use
     chrome.debugger. Manifest must declare the permission, otherwise

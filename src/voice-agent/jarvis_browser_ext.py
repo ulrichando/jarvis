@@ -535,24 +535,83 @@ async def ext_get_dropdown_options(selector: str) -> str:
     ))
 
 
-# All 34 tools (26 base + 4 Phase A + 4 Phase B), in the order the
-# prompt references them. Specialists pull this in via tool_factory.
+# ── Phase C: advanced (2026-05-02) ───────────────────────────────────
+
+
+@function_tool
+async def ext_observe(query: str = "", limit: int = 5) -> str:
+    """Return a ranked list of actionable elements matching `query`
+    (mirror of Stagehand's `observe()` + browser-use's `find_elements`).
+    Each match includes a stable selector + suggested action method
+    (click/type/select). Use to find the right element when text-based
+    lookup is fuzzy.
+
+    Args:
+        query: Natural-language description of the element you want.
+               Empty = top-N most-actionable elements on the page.
+        limit: Max matches to return (1-20, default 5).
+
+    Returns:
+        Each match: {selector, tag, role, text, suggested_method, score}.
+        Pass the selector + suggested_method to ext_click / ext_type / etc.
+    """
+    return _summarize(await _post("observe", query=query, limit=limit))
+
+
+@function_tool
+async def ext_wait_for_load(state: str = "load", timeout_ms: int = 10000) -> str:
+    """Wait for the page to reach a specific load state (mirror of
+    Playwright MCP's `browser_wait_for` extended modes).
+
+    Args:
+        state: 'load' (full load complete, default),
+               'domcontentloaded' (DOM parsed),
+               'networkidle' (no network for 500ms).
+        timeout_ms: Max wait (1000-60000, default 10000).
+    """
+    return _summarize(await _post(
+        "wait_for_load", state=state, timeout_ms=timeout_ms
+    ))
+
+
+@function_tool
+async def ext_download_file(url: str, filename: str = "") -> str:
+    """Download a file directly to the Downloads folder (mirror of
+    Playwright MCP's download capture + Skyvern's DOWNLOAD_FILE
+    action). Pass a direct URL — for "click this button which
+    triggers a download" use ext_click; Chrome auto-saves any
+    detected download.
+
+    Args:
+        url: Direct downloadable URL.
+        filename: Optional filename override (default = URL's
+                  filename or browser default).
+    """
+    return _summarize(await _post(
+        "download_file", url=url, filename=filename
+    ))
+
+
+# All 37 tools (26 base + 4 Phase A + 4 Phase B + 3 Phase C), in the
+# order the prompt references them. Specialists pull this in via
+# tool_factory.
 ALL_TOOLS = [
     # Navigation (7)
     ext_navigate, ext_new_tab, ext_back, ext_forward, ext_get_url, ext_close_tab,
     ext_list_tabs,
-    # Reading (5)
+    # Reading + observation (6)
     ext_extract_text, ext_find_by_text, ext_dom_summary, ext_screenshot,
-    ext_get_console,
+    ext_get_console, ext_observe,
     # Mouse (5)
     ext_click, ext_right_click, ext_hover, ext_drag, ext_select,
     # Keyboard / forms (5)
     ext_type, ext_fill_form, ext_keypress, ext_submit,
     ext_get_dropdown_options,
-    # Scroll / wait / dialog / iframe (4)
-    ext_scroll, ext_wait_for, ext_accept_dialog, ext_switch_iframe,
-    # File I/O (2)
-    ext_save_pdf, ext_upload_file,
+    # Scroll / wait / dialog / iframe (5)
+    ext_scroll, ext_wait_for, ext_wait_for_load,
+    ext_accept_dialog, ext_switch_iframe,
+    # File I/O (3)
+    ext_save_pdf, ext_upload_file, ext_download_file,
     # Storage (5) — cookies + localStorage + storage_state
     ext_get_cookies, ext_set_cookies,
     ext_local_storage, ext_storage_state_get, ext_storage_state_set,
