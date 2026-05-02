@@ -119,7 +119,14 @@ async def _heartbeat_loop(shutdown: asyncio.Event) -> None:
 # missed the dispatch (race: client connected before worker registered).
 # Self-heal by restarting so the preflight delete_room forces a fresh
 # dispatch into the now-registered worker.
-AGENT_DISPATCH_TIMEOUT_SEC = 45.0
+#
+# 2026-05-02: lowered 45s → 10s. Production voice products (Vapi,
+# Retell, Pipecat) use sub-15-second dispatch timeouts. 45s of
+# silence is unusable in a voice loop — the user has time to give
+# up, repeat themselves, and start troubleshooting before the
+# watchdog fires. 10s is short enough that a single missed dispatch
+# is recovered within the user's "is this thing working?" window.
+AGENT_DISPATCH_TIMEOUT_SEC = 10.0
 
 # How long after voice activity with no DB update before we declare
 # the Groq STT connection dead and restart both services.  The failure
