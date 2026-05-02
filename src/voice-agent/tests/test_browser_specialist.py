@@ -45,7 +45,7 @@ def test_browser_spec_loads_all_ext_tools():
     # than a magic number to avoid bit-rot).
     from jarvis_browser_ext import ALL_TOOLS
     assert len(tools) == len(ALL_TOOLS)
-    assert len(tools) >= 34  # Phase B landed 2026-05-02: 26 base + 4 Phase A + 4 Phase B
+    assert len(tools) >= 37  # Phase C landed 2026-05-02: 26 base + 4 Phase A + 4 Phase B + 3 Phase C
 
 
 def test_browser_instructions_mention_destructive_gate():
