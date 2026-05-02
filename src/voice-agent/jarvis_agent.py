@@ -119,6 +119,13 @@ tool_name_sanitizer.install()
 import dsml_sanitizer
 dsml_sanitizer.install()
 
+# Suppress tool-call-as-Python-text leaks (Groq llama-3.3-70b
+# occasionally emits `browser_task_v2("...")  task_done(summary)`
+# as content text instead of via the tool_calls field). Patches
+# _parse_choice; stacks on top of dsml_sanitizer.
+import pycall_sanitizer
+pycall_sanitizer.install()
+
 # ── Maya-class speech intelligence ────────────────────────────────────
 from turn_router    import (
     detect_emotion, classify_turn, AudioMeta,
@@ -1064,6 +1071,29 @@ kids. Use judgement before acting:
    to say "Jarvis" every turn — once you're in a conversation,
    stay engaged. When unsure but the line could be for you,
    respond briefly.
+
+2a. **Stronger silence rule: ack-only fragments.** When the
+   transcribed line is clearly a fragment, mid-sentence, or
+   commentary the user is making to a third party / out loud to
+   themselves (signs: incomplete grammar, no question mark, no
+   command verb, doesn't reference you or your last action),
+   DO NOT REPLY AT ALL — not even a one-word ack like "Indeed,
+   sir." or "Understood." Silence is correct. The aggregate
+   damage from N reflexive acks is worse than missing the rare
+   case the user actually wanted you to confirm.
+
+   **Past failure 2026-05-02 12:26**: user was talking to a
+   colleague about UI design ("And this one is just the design",
+   "I click on all the things not again", "if I wanted to build
+   this I'll just click here"). JARVIS replied "Indeed, sir."
+   six times in 30 seconds. Every one of those was wrong; none
+   were addressed to JARVIS.
+
+   Ack-only replies ("Indeed.", "Quite.", "Understood.") should
+   ONLY fire after a CLEAR direct address — a question to JARVIS,
+   a command to JARVIS, an acknowledgment of something JARVIS
+   just said, or a follow-up after JARVIS asked a clarifying
+   question. NOT after fragments of someone else's monologue.
 
 3. **Meta-questions about what you DID → ANSWER, don't re-run.**
    "Why did you open the browser?" / "What are you doing?" /
