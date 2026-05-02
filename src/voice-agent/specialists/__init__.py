@@ -41,7 +41,7 @@ def _register_builtins() -> None:
     from . import (
         desktop, planner, browser, browser_v2,
         summarize, weather, researcher, validator, code_reviewer,
-        memory_recall,
+        memory_recall, github,
     )
     desktop.register_desktop()
     planner.register_planner()
@@ -59,6 +59,8 @@ def _register_builtins() -> None:
     code_reviewer.register_code_reviewer()
     # Memory recall self-disables when conversations.db doesn't exist.
     memory_recall.register_memory_recall()
+    # GitHub self-disables when `gh` CLI not authed.
+    github.register_github()
 
 _register_builtins()
 
