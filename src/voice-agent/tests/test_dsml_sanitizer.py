@@ -95,7 +95,8 @@ def _clean_state():
 def test_parse_choice_swallows_dsml_envelope():
     """Stream chunk-by-chunk through _parse_choice and assert the DSML
     text gets stripped from delta.content while normal text passes
-    through unchanged."""
+    through unchanged. The detector triggers on a single U+FF5C
+    (｜) character, so split-across-chunks openers are caught."""
     from livekit.agents.inference import llm as inf_llm
     dsml_sanitizer.install()
 
@@ -143,6 +144,57 @@ def test_parse_choice_swallows_dsml_envelope():
     assert c6.delta.content == ""
     # State cleared after closer.
     assert response_id not in dsml_sanitizer._DSML_STATE
+
+
+def test_parse_choice_handles_split_dsml_opener():
+    """The 22-char DSML opener can arrive split across many chunks
+    because each `｜` character is its own DeepSeek token. The
+    detector must trigger on the FIRST chunk containing any U+FF5C
+    char — not require the full opener in one chunk. Captured live
+    2026-05-02: 'At once, sir. <｜｜DSML｜｜tool_calls>...' leaked
+    because the previous detector waited for the full opener."""
+    from livekit.agents.inference import llm as inf_llm
+    dsml_sanitizer.install()
+
+    response_id = "resp_split"
+    self_mock = SimpleNamespace(
+        _tool_call_id=None, _fnc_name=None, _fnc_raw_arguments=None,
+        _tool_extra=None, _tool_index=None,
+        _tool_ctx=SimpleNamespace(function_tools={}),
+        _event_ch=SimpleNamespace(send_nowait=lambda c: None),
+    )
+    import threading
+    thinking = threading.Event()
+
+    def _make(content):
+        delta = SimpleNamespace(content=content, tool_calls=None, reasoning_content=None)
+        return SimpleNamespace(delta=delta, finish_reason=None)
+
+    # Stream the opener split across 5 chunks the way DeepSeek tokenizes
+    # it. Each chunk individually does NOT contain the full
+    # "<｜｜DSML｜｜tool_calls>" string, so the OLD detector silently
+    # missed it. The new trigger-char detector catches the first `｜`.
+    chunks_in = [
+        "At once, sir. <",   # pre-text + envelope start
+        "｜",                 # ← first trigger char; should switch to swallow
+        "｜DSML",
+        "｜｜tool_calls>",
+        '<｜｜DSML｜｜invoke name="open_app">',
+        '<｜｜DSML｜｜parameter name="x">y</｜｜DSML｜｜parameter>',
+        "</｜｜DSML｜｜invoke>",
+        "</｜｜DSML｜｜tool_calls>",
+    ]
+    voiced = []
+    for content in chunks_in:
+        c = _make(content)
+        inf_llm.LLMStream._parse_choice(self_mock, response_id, c, thinking)
+        voiced.append(c.delta.content)
+    # Only the pre-text "At once, sir. " should have reached TTS.
+    full_voiced = "".join(voiced)
+    assert "At once, sir." in full_voiced, "pre-text dropped"
+    assert "｜" not in full_voiced, f"DSML char leaked to TTS: {full_voiced!r}"
+    assert "DSML" not in full_voiced, f"DSML markup leaked: {full_voiced!r}"
+    assert "tool_calls" not in full_voiced, f"tool_calls leaked: {full_voiced!r}"
 
 
 def test_parse_choice_no_op_on_normal_text():

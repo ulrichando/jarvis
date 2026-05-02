@@ -47,7 +47,14 @@ from typing import Any
 
 logger = logging.getLogger("jarvis.dsml_sanitizer")
 
-# DSML envelope markers. The two `｜` chars are U+FF5C, NOT regular `|`.
+# DSML envelope markers. The `｜` chars are U+FF5C — DeepSeek's reserved
+# tokenizer character, virtually never in regular text. We use a single
+# `｜` as the START TRIGGER because the LLM streams the opener as 5-7
+# tokens (`<`, `｜`, `｜`, `DSML`, `｜`, `｜`, `tool_calls`, `>`). The
+# previous detector required the full 22-char opener in one chunk and
+# silently failed on any streamed envelope (captured live 2026-05-02
+# 08:32 — "At once, sir. <｜｜DSML｜｜tool_calls>..." leaked to TTS).
+_DSML_TRIGGER_CHAR = "｜"             # ｜  (single fullwidth pipe)
 _DSML_OPEN = "<｜｜DSML｜｜tool_calls>"
 _DSML_CLOSE = "</｜｜DSML｜｜tool_calls>"
 
@@ -160,11 +167,24 @@ def install() -> None:
             content = getattr(delta, "content", None) or ""
             state = _DSML_STATE.get(id)
 
-            if state is None and _DSML_OPEN in content:
-                # Begin envelope buffering. Anything BEFORE the opener
-                # in this chunk passes through as normal content.
-                pre, _, rest = content.partition(_DSML_OPEN)
-                _DSML_STATE[id] = {"buffer": _DSML_OPEN + rest}
+            if state is None and _DSML_TRIGGER_CHAR in content:
+                # First chunk that contains the DSML trigger char.
+                # Walk back to the nearest `<` to find the envelope
+                # start (e.g. "Sure sir. <｜｜DSML..." → split at `<`).
+                trig_idx = content.find(_DSML_TRIGGER_CHAR)
+                start_idx = content.rfind("<", 0, trig_idx)
+                if start_idx == -1:
+                    # No `<` before the trigger — treat the trigger
+                    # itself as the boundary (some LLMs emit a bare
+                    # `｜｜tool_calls...` opener).
+                    start_idx = trig_idx
+                pre = content[:start_idx]
+                rest = content[start_idx:]
+                _DSML_STATE[id] = {"buffer": rest}
+                logger.warning(
+                    "[dsml] envelope detected, suppressing tail (pre_len=%d, rest_len=%d)",
+                    len(pre), len(rest),
+                )
                 _try_set_content(delta, pre)
             elif state is not None and content:
                 # Already in envelope — accumulate, suppress streamed text.
@@ -190,6 +210,12 @@ def install() -> None:
                     logger.debug(
                         "[dsml] no running event loop; suppressed envelope without recovery"
                     )
+            elif state is not None and len(state["buffer"]) > 16000:
+                # Safety bailout — never accumulate forever. If we hit
+                # 16KB without seeing the closer, the envelope is
+                # malformed; give up so memory doesn't grow unbounded.
+                logger.warning("[dsml] buffer overflow without closer — discarding")
+                del _DSML_STATE[id]
 
         # Always pass through to the original (and any other patches
         # stacked on top of us).
@@ -197,7 +223,9 @@ def install() -> None:
 
     inf_llm.LLMStream._parse_choice = patched
     inf_llm.LLMStream._jarvis_dsml_patched = True
-    logger.info("DSML sanitizer installed")
+    # Use warning level so this shows in the JSON log without
+    # configuring a handler — install confirmation needs to be visible.
+    logger.warning("DSML sanitizer installed (trigger=U+FF5C)")
 
 
 async def _dispatch(stream, envelope: str, agents_llm) -> None:
