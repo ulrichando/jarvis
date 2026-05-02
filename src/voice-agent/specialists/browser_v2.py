@@ -105,11 +105,24 @@ def register_browser_v2() -> None:
     can't crash agent startup; the specialist just doesn't appear
     in the supervisor's tool list when its deps are missing.
     """
-    try:
-        from jarvis_browser_v2 import is_available
-        enabled = is_available()
-    except Exception:
-        enabled = False
+    # 2026-05-02: hard-disabled. Three independent failures stack on
+    # every invocation:
+    #   (1) CDP attach to localhost:9222 fails (user's Chrome isn't
+    #       launched with --remote-debugging-port). browser-use then
+    #       spawns a FRESH Chromium — visible to the user as "another
+    #       Chrome window," exactly what they complained about.
+    #   (2) Groq llama-3.3-70b rejects browser-use's
+    #       response_format=json_schema with HTTP 400 (model doesn't
+    #       support structured outputs).
+    #   (3) jarvis_browser_v2.py:169 has a `TypeError: 'method' object
+    #       is not subscriptable` — `actions[-1]` where `actions` is
+    #       the bound method `agent.history.action_results`, not a list.
+    # Until those three bugs are fixed and the user's Chrome is
+    # configured with --remote-debugging-port=9222, leave it OFF and
+    # let the supervisor route browser work to the regular `browser`
+    # specialist (37 ext_* tools driving the user's real Chrome via
+    # the jarvis-screen extension — DOES type, click, scroll for real).
+    enabled = False
 
     register(SpecialistSpec(
         name="browser_v2",
@@ -118,6 +131,6 @@ def register_browser_v2() -> None:
         instructions=BROWSER_V2_INSTRUCTIONS,
         tool_factory=_browser_v2_tools,
         ack_phrase="Right away, sir.",
-        max_history_items=4,   # 2026-05-02: see browser.py for rationale
+        max_history_items=4,
         enabled=enabled,
     ))

@@ -164,7 +164,18 @@ async def browser_task_v2(task: str) -> str:
                     continue
         if final_text is None:
             # Last resort — string repr of the last action's result.
-            actions = getattr(history, "action_results", None) or []
+            # `action_results` may be a method (browser-use 0.12.x) or a
+            # property/list. Resolve callables before subscripting; the
+            # naive `actions[-1]` raised `TypeError: 'method' object is
+            # not subscriptable` on every browser_v2 turn pre-2026-05-02.
+            actions = getattr(history, "action_results", None)
+            if callable(actions):
+                try:
+                    actions = actions()
+                except Exception:
+                    actions = None
+            if not actions:
+                actions = []
             if actions:
                 last = actions[-1]
                 final_text = getattr(last, "extracted_content", None) or str(last)
