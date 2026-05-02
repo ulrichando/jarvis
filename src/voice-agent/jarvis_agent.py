@@ -4917,6 +4917,15 @@ async def entrypoint(ctx: JobContext) -> None:
     # task because the prior 10s TTL on _AGENT_THINKING_FILE expired
     # mid-tool. Refreshing the flag on every state change beats the
     # TTL into irrelevance.
+    #
+    # ALSO clears the _TOOL_BUSY_FILE flag when state returns to
+    # idle/listening/speaking. Captured live 2026-05-02 13:28: the
+    # desktop specialist emitted a screenshot description as text
+    # but skipped task_done, so the tool-busy flag from the
+    # transfer never got cleared — tray stayed amber for 7 minutes
+    # and `/status.tool_running` reported True forever. Trusting
+    # the framework's state machine over per-tool cleanup is the
+    # robust fix.
     @session.on("agent_state_changed")
     def _on_agent_state(ev) -> None:
         new_state = getattr(ev, "new_state", None)
@@ -4924,6 +4933,10 @@ async def entrypoint(ctx: JobContext) -> None:
             _mark_thinking_start()
         elif new_state in ("idle", "listening", "speaking"):
             _mark_thinking_end()
+            # If we're back to a non-working state, no tool can be
+            # legitimately running. Clear the flag — better than
+            # leaving it stale across a failed task_done.
+            _mark_tool_end()
 
     # STT finalised a user turn — LLM is about to start generating
     # (or the agent will decide to stay silent if the directed-at-me
