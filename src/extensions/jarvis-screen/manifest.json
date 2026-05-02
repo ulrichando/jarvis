@@ -10,7 +10,9 @@
     "scripting",
     "webNavigation",
     "cookies",
-    "storage"
+    "storage",
+    "debugger",
+    "downloads"
   ],
   "host_permissions": [
     "http://localhost:8765/*",

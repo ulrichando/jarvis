@@ -403,19 +403,86 @@ async def ext_set_cookies(cookies: list, confirmed: bool = False) -> str:
 # ── Public surface ────────────────────────────────────────────────────
 
 
-# All 26 tools, in the order the prompt references them. Specialists
+# Phase A additions (2026-05-02): four gap-fill tools lifted from
+# browser-use (MIT) + Playwright MCP (Apache-2.0) patterns. See the
+# 2026-05-02 browser-tooling audit doc for the cross-product gap
+# table that prioritized these four.
+
+
+@function_tool
+async def ext_list_tabs() -> str:
+    """List all open browser tabs (mirror of Playwright MCP's
+    `browser_tabs`). Returns a compact summary of each tab's id, url,
+    title, and which one is active. Use to answer "what's open?" or
+    before switching tabs.
+    """
+    return _summarize(await _post("list_tabs"))
+
+
+@function_tool
+async def ext_get_console(level: str = "", limit: int = 25) -> str:
+    """Read recent console log entries from the active tab (mirror of
+    BrowserMCP's `browser_get_console_logs`). The first call attaches
+    chrome.debugger to the tab; subsequent calls reuse the buffer.
+
+    The buffer captures logs ONLY AFTER first attach — reload the
+    page if you need startup logs.
+
+    Args:
+        level: Filter by 'log', 'warn', 'error', 'info', or 'debug'.
+               Empty = all levels.
+        limit: Most recent N entries (1–100, default 25).
+    """
+    return _summarize(await _post("get_console", level=level, limit=limit))
+
+
+@function_tool
+async def ext_save_pdf(path: str = "") -> str:
+    """Save the current page as PDF (mirror of Playwright MCP's
+    `browser_pdf_save` and browser-use's `save_pdf`). Uses CDP
+    Page.printToPDF; saves to the user's Downloads folder unless
+    `path` is supplied.
+
+    Args:
+        path: Optional filename (or relative path inside Downloads).
+              Default = "<page-title>.pdf".
+    """
+    return _summarize(await _post("save_pdf", path=path))
+
+
+@function_tool
+async def ext_upload_file(selector: str, file_path: str) -> str:
+    """Upload a file to a `<input type="file">` element by selector
+    (mirror of browser-use's `upload_file`). The file must exist on
+    the SAME machine as Chrome. Uses CDP DOM.setFileInputFiles.
+
+    Args:
+        selector: CSS selector of the file input
+                  (e.g. 'input[type=file]', '#avatar-upload').
+        file_path: Absolute path to the file on Chrome's filesystem.
+    """
+    return _summarize(await _post(
+        "upload_file", selector=selector, file_path=file_path
+    ))
+
+
+# All 30 tools, in the order the prompt references them. Specialists
 # pull this in via their tool_factory.
 ALL_TOOLS = [
     # Navigation
     ext_navigate, ext_new_tab, ext_back, ext_forward, ext_get_url, ext_close_tab,
+    ext_list_tabs,
     # Reading
     ext_extract_text, ext_find_by_text, ext_dom_summary, ext_screenshot,
+    ext_get_console,
     # Mouse
     ext_click, ext_right_click, ext_hover, ext_drag, ext_select,
     # Keyboard / forms
     ext_type, ext_fill_form, ext_keypress, ext_submit,
     # Scroll / wait / dialog / iframe
     ext_scroll, ext_wait_for, ext_accept_dialog, ext_switch_iframe,
+    # File I/O
+    ext_save_pdf, ext_upload_file,
     # Power tools
     ext_exec_js, ext_get_cookies, ext_set_cookies,
 ]
