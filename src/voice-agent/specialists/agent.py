@@ -66,6 +66,14 @@ class RegistrySpecialist(Agent):
         logger.info(
             f"[specialist:{self._spec.name}] task_done → '{summary[:80]}'"
         )
+        # Clear the tool-busy flag — pair with _mark_tool_start in
+        # _transfer above. Tray returns to idle/listening as soon as
+        # the supervisor takes the summary.
+        try:
+            from jarvis_agent import _mark_tool_end
+            _mark_tool_end()
+        except Exception:
+            pass
         return self._supervisor, summary
 
 
@@ -126,6 +134,18 @@ def build_transfer_tool(spec: SpecialistSpec):
         logger.info(
             f"[handoff] → {spec.name} specialist (request: {request[:80]!r})"
         )
+        # Mark tool-busy for the FULL duration of the specialist run so
+        # the tray icon stays amber until task_done. Without this, the
+        # framework's `agent_state_changed` flips back to "idle" between
+        # the supervisor's transfer and the specialist's first action,
+        # making the tray flicker green mid-task. Lazy import to dodge
+        # circular jarvis_agent ↔ specialists registration.
+        try:
+            from jarvis_agent import _mark_tool_start
+            _mark_tool_start(f"specialist:{spec.name}")
+        except Exception:
+            pass
+
         # Defensive: catch tool-factory failures (e.g. ImportError from
         # a typo'd specialist module) so the supervisor sees a concrete
         # error string instead of the framework's generic "exception
