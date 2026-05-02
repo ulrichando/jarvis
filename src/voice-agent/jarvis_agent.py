@@ -3085,9 +3085,16 @@ def _convex_mirror_turn(session_id: str, role: str, text: str, ts_ms: int) -> No
     _convex_executor.submit(_write)
 
 
-def _save_turn(session_id: str, role: str, text: str) -> None:
+def _save_turn(
+    session_id: str, role: str, text: str,
+    prior_messages: list | None = None,
+) -> None:
     """Single-row insert into turns. Swallow errors — losing a log
-    line is better than tearing down a live session."""
+    line is better than tearing down a live session.
+
+    `prior_messages` (optional) is the chat-history snapshot from
+    the active session, passed by the conversation_item_added hook
+    so the confab detector can look back for tool evidence."""
     text = (text or "").strip()
     if not text:
         return
@@ -3104,6 +3111,27 @@ def _save_turn(session_id: str, role: str, text: str) -> None:
         if not cleaned:
             return
         text = cleaned
+
+        # Confab detector: refuse to save assistant turns that
+        # strongly claim a tool-using success when no tool fired.
+        # Without this, every false-success ("A new tab is open,
+        # sir." with no ext_new_tab call) gets persisted, then the
+        # next session's chat_ctx replay teaches the LLM to
+        # produce more of the same. Pollution loop closed at the
+        # write boundary. Detector is conservative — false negatives
+        # are tolerated; false positives only cost a missing log line.
+        try:
+            from confab_detector import looks_like_confabulation
+            is_confab, reason = looks_like_confabulation(text, prior_messages or [])
+            if is_confab:
+                logger.warning(
+                    f"[confab-detector] dropping assistant turn — {reason}; "
+                    f"text={text[:120]!r}"
+                )
+                return
+        except Exception as e:
+            # NEVER let detection errors break the save path.
+            logger.debug(f"[confab-detector] skipped due to error: {e}")
     # Schema constrains role to ('user', 'assistant'). Tool calls +
     # system messages pass through conversation_item_added too, so we
     # need to map anything unexpected to one of the two legal values
@@ -4842,7 +4870,14 @@ async def entrypoint(ctx: JobContext) -> None:
             item = ev.item
             role = getattr(item, "role", None)
             text = _flatten_chat_content(getattr(item, "content", None))
-            _save_turn(convo_session_id, role, text)
+            # Snapshot prior chat_ctx items so the confab detector can
+            # look back for tool evidence. Only the last few are read;
+            # we pass the whole list and let the detector window itself.
+            try:
+                prior = list(getattr(session.history, "items", None) or [])
+            except Exception:
+                prior = []
+            _save_turn(convo_session_id, role, text, prior_messages=prior)
             # Assistant turn just landed → LLM phase is over (TTS has
             # been streaming). Clear the thinking flag. The desktop
             # tray drops gold the next /status poll.
