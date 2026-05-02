@@ -643,10 +643,78 @@ async def ext_download_file(url: str, filename: Optional[str] = None) -> str:
     ))
 
 
-# All 37 tools (26 base + 4 Phase A + 4 Phase B + 3 Phase C), in the
-# order the prompt references them. Specialists pull this in via
-# tool_factory.
+# ── Search shortcut (2026-05-02) ──────────────────────────────────────
+#
+# Production agents (browser-use, Stagehand) skip the search-box DOM
+# entirely for known sites and navigate to the search-results URL
+# directly. This sidesteps shadow-DOM problems (YouTube's
+# `<input id="search">` lives in a Web Component) AND collapses the
+# 5-step chain (navigate → wait → observe → type → submit) into ONE
+# tool call.
+#
+# URL templates copied verbatim from browser-use's `search` action,
+# `browser_use/tools/service.py:442` + the canonical YouTube + Maps
+# patterns documented across the web for ~15 years.
+
+import urllib.parse
+
+_SEARCH_URLS = {
+    "youtube":    "https://www.youtube.com/results?search_query={q}",
+    "google":     "https://www.google.com/search?q={q}",
+    "bing":       "https://www.bing.com/search?q={q}",
+    "duckduckgo": "https://duckduckgo.com/?q={q}",
+    "amazon":     "https://www.amazon.com/s?k={q}",
+    "maps":       "https://www.google.com/maps/search/{q}",
+    "wikipedia":  "https://en.wikipedia.org/wiki/Special:Search?search={q}",
+}
+
+
+@function_tool
+async def web_search(engine: str, query: str, new_tab: bool = False) -> str:
+    """Search a known website by going DIRECTLY to its results URL —
+    no DOM clicking, no shadow-DOM searching, no typing required.
+
+    Use this for any "search X for Y" / "find Y on X" voice request
+    when X is one of the known engines. Collapses what would be a
+    5-step chain (navigate, wait, observe, type, press Enter) into
+    ONE tool call.
+
+    Args:
+        engine: One of 'youtube', 'google', 'bing', 'duckduckgo',
+                'amazon', 'maps', 'wikipedia'. Unknown engines fall
+                back to Google.
+        query:  The search term, plain text (URL-encoding handled here).
+        new_tab: If True, opens results in a brand-new tab. Default
+                 False (replaces the current tab) — matches the
+                 voice-flow "open YouTube and search" intent.
+
+    Returns:
+        One-line confirmation string with engine + query, e.g.
+        "Searched YouTube for cooking videos."
+    """
+    eng = (engine or "").strip().lower()
+    template = _SEARCH_URLS.get(eng) or _SEARCH_URLS["google"]
+    encoded = urllib.parse.quote(query or "")
+    url = template.format(q=encoded)
+
+    if new_tab:
+        result = await _post("new_tab", url=url)
+    else:
+        result = await _post("navigate", url=url)
+
+    if not result.get("ok"):
+        return _summarize(result)
+
+    pretty_engine = eng if eng in _SEARCH_URLS else f"Google (engine={eng!r} unknown)"
+    return f"Searched {pretty_engine} for {query!r}, sir."
+
+
+# All 38 tools (26 base + 4 Phase A + 4 Phase B + 3 Phase C + 1 search
+# shortcut), in the order the prompt references them. Specialists pull
+# this in via tool_factory.
 ALL_TOOLS = [
+    # Search shortcut (1) — try first for any "search X for Y" request
+    web_search,
     # Navigation (7)
     ext_navigate, ext_new_tab, ext_back, ext_forward, ext_get_url, ext_close_tab,
     ext_list_tabs,
