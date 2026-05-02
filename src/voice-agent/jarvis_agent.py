@@ -3143,11 +3143,15 @@ def _save_turn(session_id: str, role: str, text: str) -> None:
 #      what the user's asking about ("remember that Roblox script
 #      from yesterday?").
 #
-# Recent-window size is conservative — voice replies want low first-
-# token latency, and chat_ctx tokens cost on every turn. 30 turns ≈
-# 5-10 minutes of conversation, which is what "what did we just
-# discuss" generally means.
-RECENT_TURNS_LIMIT = 30
+# Recent-window size — voice replies want low first-token latency.
+# 2026-05-02: cut 30 → 8. Captured live: 30-turn recall was seeding
+# the supervisor with multiple past confabulations of "A new tab is
+# open, sir." (real bug: tool never fired). The LLM pattern-matched
+# against those past lies and produced fresh ones — same hallucinated
+# success three times in a row. Smaller window = less past-pattern
+# pollution. The recall_conversation tool is still available for
+# explicit "what did we discuss" lookups beyond this window.
+RECENT_TURNS_LIMIT = 8
 RECALL_SEARCH_LIMIT = 8
 
 
