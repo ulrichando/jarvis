@@ -233,6 +233,38 @@ def test_browser_has_new_tab_tool():
     assert e.ext_new_tab in e.ALL_TOOLS
 
 
+def test_browser_has_phase_a_tools():
+    """Phase A 2026-05-02 — gap fills from cross-product audit:
+    list_tabs, get_console, save_pdf, upload_file. Their absence
+    means JARVIS is below browser-use / Playwright MCP tool surface."""
+    import jarvis_browser_ext as e
+    for name in ("ext_list_tabs", "ext_get_console", "ext_save_pdf", "ext_upload_file"):
+        assert hasattr(e, name), f"missing: {name}"
+        tool = getattr(e, name)
+        assert tool in e.ALL_TOOLS, f"{name} not in ALL_TOOLS"
+
+
+def test_extension_manifest_has_debugger_permission():
+    """Phase A's save_pdf + upload_file + get_console all use
+    chrome.debugger. Manifest must declare the permission, otherwise
+    the user-visible failure is a silent NoOp on first call."""
+    import json
+    from pathlib import Path
+    repo_root = Path(__file__).parent.parent.parent.parent
+    manifest = json.loads(
+        (repo_root / "src/extensions/jarvis-screen/manifest.json").read_text()
+    )
+    perms = manifest.get("permissions", [])
+    assert "debugger" in perms, (
+        "extension manifest missing 'debugger' permission — Phase A "
+        "tools (save_pdf, upload_file, get_console) will fail at runtime"
+    )
+    assert "downloads" in perms, (
+        "extension manifest missing 'downloads' permission — save_pdf "
+        "uses chrome.downloads.download to drop the file"
+    )
+
+
 def test_browser_has_navigate_and_close_tab_distinguished():
     """ext_navigate REPLACES the active tab; ext_new_tab CREATES one.
     The browser specialist instructions must tell the LLM the

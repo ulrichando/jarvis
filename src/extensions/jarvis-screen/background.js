@@ -284,6 +284,12 @@ async function dispatchCommand({ action, args = {}, confirmed = false }) {
       case 'get_cookies':    return await _bgGetCookies(args);
       case 'set_cookies':    return await _bgSetCookies(args);
       case 'accept_dialog':  return await _bgAcceptDialog(args);
+      // Phase A additions (2026-05-02): browser tool gap-fills lifted
+      // from browser-use (MIT) + Playwright MCP (Apache-2.0) patterns.
+      case 'list_tabs':      return await _bgListTabs(args);
+      case 'get_console':    return await _bgGetConsole(args);
+      case 'save_pdf':       return await _bgSavePdf(args);
+      case 'upload_file':    return await _bgUploadFile(args);
       default:
         return await _forwardToContent(action, args);
     }
@@ -386,4 +392,194 @@ async function _bgAcceptDialog(args) {
   // chrome.debugger API would be needed to intercept; for v1 we
   // just acknowledge and let the page handle defaults.
   return { ok: true, note: 'dialog handling not yet implemented' };
+}
+
+// ── Phase A: gap fills (2026-05-02) ─────────────────────────────────
+// These four actions close the highest-leverage gaps identified in
+// the cross-product audit (Anthropic CU / OpenAI CUA / Manus / Playwright
+// MCP / browser-use / Stagehand). list_tabs is pure chrome.tabs;
+// the other three need chrome.debugger (added to manifest permissions).
+
+async function _bgListTabs() {
+  // Mirror Playwright MCP's `browser_tabs` and browser-use's tabs
+  // accessor. Returns all tabs across all windows the extension can
+  // see, with a stable id, current url, title, and which one is the
+  // active focused tab. JARVIS already had new_tab/close_tab/switch
+  // but no enumerate.
+  const tabs = await chrome.tabs.query({});
+  const active = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  const activeId = active[0]?.id || null;
+  return {
+    ok: true,
+    tabs: tabs.map(t => ({
+      tab_id: t.id,
+      url: t.url,
+      title: t.title,
+      active: t.id === activeId,
+      window_id: t.windowId,
+      pinned: t.pinned,
+    })),
+    active_tab_id: activeId,
+    count: tabs.length,
+  };
+}
+
+// Per-tab ring buffer of recent console messages. Captured via
+// chrome.debugger Runtime.consoleAPICalled. Sized to fit voice-mode
+// summaries — the LLM reads "the last 25" not "the entire session."
+const _CONSOLE_BUFFER = new Map();          // tabId -> array<entry>
+const _CONSOLE_MAX = 100;
+const _DEBUGGER_ATTACHED = new Set();       // tabIds we've already attached to
+
+async function _ensureDebuggerAttached(tabId) {
+  // chrome.debugger.attach shows a "JARVIS started debugging" banner
+  // in the tab — one-time per tab session. We attach lazily on first
+  // use, keep the connection open, and re-use across calls.
+  if (_DEBUGGER_ATTACHED.has(tabId)) return;
+  await chrome.debugger.attach({ tabId }, '1.3');
+  _DEBUGGER_ATTACHED.add(tabId);
+  // Wire console capture as soon as we attach.
+  await chrome.debugger.sendCommand({ tabId }, 'Runtime.enable');
+}
+
+// Listen for console events from any tab we've attached to.
+chrome.debugger.onEvent?.addListener?.((src, method, params) => {
+  if (method !== 'Runtime.consoleAPICalled') return;
+  const buf = _CONSOLE_BUFFER.get(src.tabId) || [];
+  // Args come back as RemoteObjects; pull values where feasible.
+  const text = (params.args || [])
+    .map(a => a.value !== undefined ? String(a.value) : (a.description || ''))
+    .join(' ');
+  buf.push({
+    level: params.type,                     // log/warn/error/info/debug
+    text: text.slice(0, 400),
+    ts: Date.now(),
+  });
+  while (buf.length > _CONSOLE_MAX) buf.shift();
+  _CONSOLE_BUFFER.set(src.tabId, buf);
+});
+
+// When a tab closes, drop its buffer.
+chrome.tabs.onRemoved?.addListener?.((tabId) => {
+  _CONSOLE_BUFFER.delete(tabId);
+  _DEBUGGER_ATTACHED.delete(tabId);
+});
+
+async function _bgGetConsole({ level = '', limit = 25 } = {}) {
+  // Mirror BrowserMCP's `browser_get_console_logs` + Playwright MCP's
+  // `browser_console_messages`. Returns the most recent N entries from
+  // our debugger-attached buffer, optionally filtered by level.
+  const tabId = await _activeTabId();
+  if (!tabId) return { ok: false, error: 'no active tab' };
+  try {
+    await _ensureDebuggerAttached(tabId);
+  } catch (e) {
+    return { ok: false, error: `debugger attach failed: ${e.message || e}` };
+  }
+  const buf = _CONSOLE_BUFFER.get(tabId) || [];
+  let filtered = buf;
+  if (level) {
+    filtered = buf.filter(e => e.level === level);
+  }
+  return {
+    ok: true,
+    entries: filtered.slice(-Math.max(1, Math.min(limit, _CONSOLE_MAX))),
+    total_buffered: buf.length,
+    note: buf.length === 0
+      ? 'console buffer empty — JARVIS only captures logs after first attach. Reload the page if you want to see startup logs.'
+      : undefined,
+  };
+}
+
+async function _bgSavePdf({ path = '' } = {}) {
+  // Mirror Playwright MCP's `browser_pdf_save` and browser-use's
+  // `save_pdf`. Uses CDP Page.printToPDF, which returns base64. We
+  // chrome.downloads.download to drop the file in the user's
+  // Downloads folder (or a custom path).
+  const tabId = await _activeTabId();
+  if (!tabId) return { ok: false, error: 'no active tab' };
+  try {
+    await _ensureDebuggerAttached(tabId);
+  } catch (e) {
+    return { ok: false, error: `debugger attach failed: ${e.message || e}` };
+  }
+  let pdfData;
+  try {
+    const r = await chrome.debugger.sendCommand(
+      { tabId },
+      'Page.printToPDF',
+      { printBackground: true, preferCSSPageSize: true }
+    );
+    pdfData = r.data;
+  } catch (e) {
+    return { ok: false, error: `printToPDF failed: ${e.message || e}` };
+  }
+  // Default filename derived from page title.
+  const title = (await chrome.tabs.get(tabId)).title || 'page';
+  const safe = title.replace(/[^a-zA-Z0-9_\- ]/g, '').trim().slice(0, 80) || 'page';
+  const filename = path || `${safe}.pdf`;
+  // chrome.downloads.download accepts data: URLs.
+  const dataUrl = `data:application/pdf;base64,${pdfData}`;
+  try {
+    const downloadId = await chrome.downloads.download({
+      url: dataUrl,
+      filename,
+      saveAs: false,
+    });
+    return { ok: true, download_id: downloadId, filename };
+  } catch (e) {
+    return { ok: false, error: `download failed: ${e.message || e}` };
+  }
+}
+
+async function _bgUploadFile({ selector, file_path, file_b64, file_name } = {}) {
+  // Mirror browser-use's `upload_file` and Playwright MCP's
+  // `browser_file_upload`. The voice-agent reads the file from disk
+  // and base64-encodes it; we use CDP DOM.setFileInputFiles to point
+  // the <input type="file"> at a virtual file written via
+  // Page.handleFileChooser. Two paths:
+  //   - file_path: path on the agent's filesystem (preferred when
+  //     the file already exists on the same machine as Chrome)
+  //   - file_b64 + file_name: agent reads then forwards the file
+  //     bytes (works for any host that can reach the bridge)
+  if (!selector) return { ok: false, error: 'selector required' };
+  const tabId = await _activeTabId();
+  if (!tabId) return { ok: false, error: 'no active tab' };
+  try {
+    await _ensureDebuggerAttached(tabId);
+  } catch (e) {
+    return { ok: false, error: `debugger attach failed: ${e.message || e}` };
+  }
+  // Resolve the input element to a backendNodeId via DOM.querySelector.
+  let nodeId;
+  try {
+    const doc = await chrome.debugger.sendCommand({ tabId }, 'DOM.getDocument', {});
+    const q = await chrome.debugger.sendCommand(
+      { tabId }, 'DOM.querySelector', { nodeId: doc.root.nodeId, selector }
+    );
+    nodeId = q.nodeId;
+    if (!nodeId) return { ok: false, error: `selector matched no element: ${selector}` };
+  } catch (e) {
+    return { ok: false, error: `selector lookup failed: ${e.message || e}` };
+  }
+  // Path-based upload: the simple case — chrome.debugger only needs
+  // the absolute filesystem path. Caller is responsible for the file
+  // existing at that path on the machine running Chrome.
+  if (file_path) {
+    try {
+      await chrome.debugger.sendCommand(
+        { tabId }, 'DOM.setFileInputFiles', { files: [file_path], nodeId }
+      );
+      return { ok: true, uploaded: file_path };
+    } catch (e) {
+      return { ok: false, error: `setFileInputFiles failed: ${e.message || e}` };
+    }
+  }
+  // Bytes-based upload: write the bytes to a temp file inside Chrome's
+  // sandbox via a Blob URL trick. Slightly more work; punt for v1 and
+  // require file_path.
+  return {
+    ok: false,
+    error: 'bytes-based upload not implemented yet — pass file_path (absolute) instead',
+  };
 }
