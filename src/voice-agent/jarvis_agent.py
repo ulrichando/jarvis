@@ -785,8 +785,17 @@ def _build_dispatching_llm() -> DispatchingLLM:
     ds_key = os.environ.get("DEEPSEEK_API_KEY", "")
     if ds_key:
         try:
+            # 2026-05-02: switched fallback from deepseek-chat (V3,
+            # non-thinking) to deepseek-v4-flash. Rationale: Groq has
+            # been throwing "Failed to call a function" frequently, so
+            # the fallback fires often. V4-flash is ~30% faster than
+            # V3 chat AND has better tool-call accuracy (V4 family
+            # was trained on more agentic data). reasoning_content
+            # round-trip is handled by deepseek_roundtrip.install()
+            # at the top of this file. Override via env if you want
+            # a different fallback model.
             ds_fallback = lk_openai.LLM(
-                model="deepseek-chat",
+                model=os.environ.get("JARVIS_DS_FALLBACK_MODEL", "deepseek-v4-flash"),
                 api_key=ds_key,
                 base_url="https://api.deepseek.com/v1",
                 temperature=0.6,
