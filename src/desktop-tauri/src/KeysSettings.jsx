@@ -3,15 +3,19 @@ import { invoke } from '@tauri-apps/api/core'
 
 // Settings page: list of API providers with paste/clear/save controls.
 // Backed by ~/.jarvis/keys.env via Tauri commands keys_read / keys_set /
-// keys_clear / keys_restart_agent. Mounted from App.jsx when the URL
-// contains ?route=keys (the tray menu's "Manage API Keys…" item opens
-// a webview with that query string).
+// keys_clear / keys_restart_agent.
+//
+// Two-tier storage shown to user:
+//   - "From tray" = ~/.jarvis/keys.env (managed here, highest priority)
+//   - "From repo" = src/voice-agent/.env etc. (defaults)
+// Clear button opens a small action menu to choose which to clear.
 
 export default function KeysSettings() {
-  const [rows, setRows] = useState([])     // [{env, label, present, masked}]
+  const [rows, setRows] = useState([])     // [{env, label, present, source, masked}]
   const [edits, setEdits] = useState({})   // {env: pasted_value}
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('') // banner text
+  const [openMenu, setOpenMenu] = useState(null)  // env whose clear-menu is open
 
   const refresh = useCallback(async () => {
     try {
@@ -40,12 +44,17 @@ export default function KeysSettings() {
     }
   }
 
-  const onClear = async (env) => {
-    if (!confirm(`Clear ${env}? The agent will lose this provider until you restart.`)) return
+  const onClear = async (env, source) => {
+    setOpenMenu(null)
+    let label
+    if (source === 'user') label = 'tray override (~/.jarvis/keys.env)'
+    else if (source === 'repo') label = 'repo .env file'
+    else label = 'BOTH places'
+    if (!confirm(`Clear ${env} from ${label}?\n\nThe agent will lose this provider until you set a new one.`)) return
     setBusy(true)
     try {
-      await invoke('keys_clear', { provider: env })
-      setStatus(`Cleared ${env}`)
+      const detail = await invoke('keys_clear', { provider: env, source })
+      setStatus(`Cleared ${env}: ${detail}`)
       await refresh()
     } catch (e) {
       setStatus(`Clear failed: ${e}`)
@@ -77,15 +86,16 @@ export default function KeysSettings() {
       </div>
 
       <p style={subtitleStyle}>
-        Stored at <code>~/.jarvis/keys.env</code>. Values here override
-        the repo&rsquo;s <code>.env</code> defaults. Restart the voice
-        agent for changes to take effect.
+        Tray entries are stored at <code>~/.jarvis/keys.env</code> and
+        override repo defaults from <code>.env</code> files. Clear gives
+        you a per-source choice. Restart the voice agent to apply
+        changes.
       </p>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={listStyle}>
         {rows.map(row => (
           <div key={row.env} style={rowStyle}>
-            <div style={{ flex: '0 0 220px' }}>
+            <div style={{ flex: '0 0 200px' }}>
               <div style={{ fontWeight: 600 }}>{row.label}</div>
               <div style={dimStyle}>{row.env}</div>
             </div>
@@ -93,15 +103,19 @@ export default function KeysSettings() {
             <div style={{ flex: '1', minWidth: 0 }}>
               {row.present ? (
                 <div style={presentRowStyle}>
-                  <span style={{ color: '#22c55e' }}>● set</span>
+                  <span style={badgeStyleFor(row.source)}>
+                    {row.source === 'user' ? '● tray' : '● repo'}
+                  </span>
                   <span style={maskStyle}>{row.masked}</span>
                 </div>
               ) : (
-                <div style={{ color: '#9ca3af' }}>● not set</div>
+                <div style={{ color: '#9ca3af', fontSize: 12, marginBottom: 4 }}>
+                  ● not set
+                </div>
               )}
               <input
                 type="password"
-                placeholder={row.present ? 'Paste new value to replace…' : 'Paste key…'}
+                placeholder={row.present ? 'Paste new value to override…' : 'Paste key…'}
                 value={edits[row.env] || ''}
                 onChange={e => setEdits(prev => ({ ...prev, [row.env]: e.target.value }))}
                 style={inputStyle}
@@ -110,17 +124,37 @@ export default function KeysSettings() {
               />
             </div>
 
-            <div style={{ display: 'flex', gap: 6 }}>
+            <div style={{ display: 'flex', gap: 6, position: 'relative' }}>
               <button
                 onClick={() => onSave(row.env)}
                 disabled={busy || !((edits[row.env] || '').trim())}
                 style={smallButton}
               >Save</button>
               <button
-                onClick={() => onClear(row.env)}
+                onClick={() => row.present && setOpenMenu(openMenu === row.env ? null : row.env)}
                 disabled={busy || !row.present}
                 style={dangerButton}
-              >Clear</button>
+              >Clear ▾</button>
+              {openMenu === row.env && (
+                <div style={menuStyle}>
+                  {row.source === 'user' && (
+                    <button style={menuItemStyle} onClick={() => onClear(row.env, 'user')}>
+                      Clear from tray override
+                    </button>
+                  )}
+                  {row.source === 'repo' && (
+                    <button style={menuItemStyle} onClick={() => onClear(row.env, 'repo')}>
+                      Clear from repo .env file
+                    </button>
+                  )}
+                  <button style={menuItemStyle} onClick={() => onClear(row.env, 'all')}>
+                    Clear from BOTH
+                  </button>
+                  <button style={menuItemStyle} onClick={() => setOpenMenu(null)}>
+                    Cancel
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         ))}
@@ -135,37 +169,47 @@ export default function KeysSettings() {
 
 // ── Styles (inline — single page, no need to bloat index.css) ─────
 const pageStyle = {
-  padding: 20, fontFamily: 'system-ui, -apple-system, sans-serif',
-  color: '#e5e7eb', background: '#111827', minHeight: '100vh',
+  // Fill the webview window and let the rows scroll inside it.
+  // Without overflow:auto, an 8-row list overflowed the 540px window
+  // and was inaccessible — captured live 2026-05-02.
+  position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+  overflowY: 'auto', overflowX: 'hidden',
+  padding: 16, fontFamily: 'system-ui, -apple-system, sans-serif',
+  color: '#e5e7eb', background: '#111827',
   fontSize: 14,
+}
+const listStyle = {
+  display: 'flex', flexDirection: 'column', gap: 8,
+  paddingBottom: 80,        // breathing room below last row
 }
 const headerStyle = {
   display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-  marginBottom: 8,
+  marginBottom: 6, gap: 12, position: 'sticky', top: 0,
+  background: '#111827', paddingTop: 4, paddingBottom: 8, zIndex: 10,
 }
 const subtitleStyle = {
-  fontSize: 12, color: '#9ca3af', marginTop: 0, marginBottom: 18,
+  fontSize: 12, color: '#9ca3af', marginTop: 0, marginBottom: 14,
   lineHeight: 1.4,
 }
 const rowStyle = {
-  display: 'flex', alignItems: 'center', gap: 12, padding: 12,
+  display: 'flex', alignItems: 'flex-start', gap: 10, padding: 10,
   background: '#1f2937', borderRadius: 6,
 }
 const dimStyle = { fontSize: 11, color: '#6b7280', fontFamily: 'monospace' }
 const presentRowStyle = {
-  display: 'flex', gap: 10, alignItems: 'center', fontSize: 12,
+  display: 'flex', gap: 8, alignItems: 'center', fontSize: 11,
   marginBottom: 4,
 }
-const maskStyle = { color: '#9ca3af', fontFamily: 'monospace' }
+const maskStyle = { color: '#9ca3af', fontFamily: 'monospace', fontSize: 11 }
 const inputStyle = {
   width: '100%', padding: '6px 8px', borderRadius: 4,
   border: '1px solid #374151', background: '#111827', color: '#e5e7eb',
-  fontFamily: 'monospace', fontSize: 12,
+  fontFamily: 'monospace', fontSize: 12, boxSizing: 'border-box',
 }
 const smallButton = {
   padding: '6px 10px', borderRadius: 4, border: '1px solid #374151',
   background: '#374151', color: '#e5e7eb', cursor: 'pointer',
-  fontSize: 12,
+  fontSize: 12, whiteSpace: 'nowrap',
 }
 const primaryButton = {
   ...smallButton, background: '#2563eb', borderColor: '#2563eb',
@@ -173,7 +217,24 @@ const primaryButton = {
 const dangerButton = {
   ...smallButton, background: '#7f1d1d', borderColor: '#7f1d1d',
 }
+const menuStyle = {
+  position: 'absolute', top: '100%', right: 0, marginTop: 4,
+  background: '#1f2937', border: '1px solid #374151', borderRadius: 4,
+  display: 'flex', flexDirection: 'column', minWidth: 220, zIndex: 20,
+  boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+}
+const menuItemStyle = {
+  padding: '8px 12px', background: 'transparent', color: '#e5e7eb',
+  border: 'none', textAlign: 'left', cursor: 'pointer', fontSize: 12,
+  borderBottom: '1px solid #374151',
+}
 const statusStyle = {
+  position: 'sticky', bottom: 0,
   marginTop: 16, padding: 10, background: '#1e3a8a', borderRadius: 4,
   fontSize: 12,
+}
+function badgeStyleFor(source) {
+  return source === 'user'
+    ? { color: '#22c55e', fontSize: 11 }      // green = tray (managed)
+    : { color: '#facc15', fontSize: 11 }      // amber = repo (default)
 }
