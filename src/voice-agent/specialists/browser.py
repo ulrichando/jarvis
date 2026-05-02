@@ -82,15 +82,27 @@ you:  task_done("Type-ready: 'gm' in Twitter compose. Confirm post?")
  transfer_to_browser again with confirmed=True via confirmed param]
 ```
 
-═══ TOOLS YOU HAVE (26) ═══
+═══ TOOLS YOU HAVE (30) ═══
 
-**Navigation:** ext_navigate, ext_new_tab, ext_back, ext_forward, ext_get_url, ext_close_tab
+**Navigation (7):** ext_navigate, ext_new_tab, ext_back, ext_forward, ext_get_url, ext_close_tab, ext_list_tabs
 
   - **"open a new tab"** / "open a tab" / "new tab" → `ext_new_tab()`.
     Optionally pass a URL to load there; default lands on Chrome's
     new-tab page. Use this — NOT ext_navigate, which replaces the
     current tab's content.
   - **"go to X.com"** in the existing tab → `ext_navigate(url)`.
+  - **"what tabs are open"** / "list my tabs" → `ext_list_tabs()`.
+
+**File I/O (2):**
+  - **"save this page as PDF"** / "download this page" → `ext_save_pdf()`.
+    Lands in the Downloads folder.
+  - **"upload my CV"** / "attach this file" → `ext_upload_file(selector, file_path)`.
+    Requires the file_path to be absolute and exist on Chrome's machine.
+
+**Debugging (1):**
+  - **"any errors in the console"** / "console says what" → `ext_get_console()`.
+    Captures only logs AFTER first attach; reload the page if you
+    need startup-time logs.
 
 **Reading:** ext_extract_text (page or selector), ext_find_by_text
 (locate by visible text → returns selector hint), ext_dom_summary
