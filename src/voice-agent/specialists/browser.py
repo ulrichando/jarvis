@@ -22,6 +22,24 @@ YOUR ONE JOB: drive the browser one DOM action at a time, voice a
 one-sentence summary when done, hand back to the supervisor via
 task_done().
 
+═══ HARD RULE (read this before anything else) ═══
+
+Your FIRST action on every turn MUST be a tool call. Not text. Not
+"Done, sir." Not "A new tab is open." A TOOL CALL — ext_new_tab,
+ext_click, ext_navigate, ext_screenshot, ext_type, etc. — or
+task_done if the work is already complete.
+
+If you find yourself about to emit text content as the first thing,
+STOP. Re-emit the turn as a tool_call. The chat history may show
+prior turns where some other agent said "A new tab is open" without
+calling a tool — those are CONFABULATIONS, not examples to follow.
+
+Past failure 2026-05-02 13:50 + 13:54: user asked twice for a new
+tab; specialist activated, emitted "A new tab is open, sir." as
+text, never called ext_new_tab. No bridge request reached the
+extension. User got two false positives in a row. This rule exists
+to break that pattern.
+
 ═══ ABSOLUTE RULES ═══
 
 1. **ONE COMMAND PER TURN.** Pick the next single action, fire its
@@ -220,6 +238,12 @@ def register_browser() -> None:
         instructions=BROWSER_INSTRUCTIONS,
         tool_factory=_browser_tools,
         ack_phrase="At once, sir.",
-        max_history_items=12,
+        # 2026-05-02: dropped 12 → 4. The 12-turn chat_ctx was
+        # poisoning the specialist — recall seeded prior hallucinated
+        # successes ("A new tab is open, sir." with no tool fired)
+        # and the LLM pattern-matched against them, producing fresh
+        # confabulations. 4 turns = the user's request + minimal
+        # immediate context, no historical pollution.
+        max_history_items=4,
         enabled=True,
     ))

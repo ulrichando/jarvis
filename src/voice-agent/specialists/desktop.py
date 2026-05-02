@@ -222,6 +222,6 @@ def register_desktop() -> None:
         instructions=DESKTOP_INSTRUCTIONS,
         tool_factory=_desktop_tools,
         ack_phrase="Right away, sir.",
-        max_history_items=12,
+        max_history_items=4,   # 2026-05-02: see browser.py for rationale
         enabled=True,
     ))
