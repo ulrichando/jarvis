@@ -1,0 +1,14 @@
+{
+  "name": "@jarvis/hub",
+  "version": "0.1.0",
+  "private": true,
+  "description": "JARVIS event-hub TypeScript SDK (parallel to client.py). Used by web's server-side routes and CLI.",
+  "type": "module",
+  "main": "./client.ts",
+  "exports": {
+    ".": "./client.ts"
+  },
+  "dependencies": {
+    "ioredis": "^5.10.1"
+  }
+}
