@@ -8,10 +8,12 @@ import { PrivacySection } from "@/components/settings/privacy";
 import { UsageSection } from "@/components/settings/usage";
 import { CapabilitiesSection } from "@/components/settings/capabilities";
 import { ConnectorsSection } from "@/components/settings/connectors";
+import { IntegrationsSection } from "@/components/settings/integrations";
 import { ProvidersSection } from "@/components/settings/providers";
 import { DataSection } from "@/components/settings/data";
 import { AboutSection } from "@/components/settings/about";
 import { JarvisInChromeSection } from "@/components/settings/jarvis-in-chrome";
+import { VoiceAndModelsSection } from "@/components/settings/voice-and-models";
 
 type Section =
   | "general"
@@ -20,7 +22,9 @@ type Section =
   | "usage"
   | "capabilities"
   | "connectors"
+  | "integrations"
   | "providers"
+  | "voice-and-models"
   | "data"
   | "about"
   | "jarvis-in-chrome";
@@ -32,7 +36,9 @@ const NAV: Array<{ id: Section; label: string }> = [
   { id: "usage", label: "Usage" },
   { id: "capabilities", label: "Capabilities" },
   { id: "connectors", label: "Connectors" },
+  { id: "integrations", label: "Integrations" },
   { id: "providers", label: "Providers" },
+  { id: "voice-and-models", label: "Voice & Models" },
   { id: "data", label: "Data" },
   { id: "about", label: "About" },
   { id: "jarvis-in-chrome", label: "Jarvis in Chrome" },
@@ -76,7 +82,9 @@ export default function SettingsPage() {
           {section === "usage" && <UsageSection />}
           {section === "capabilities" && <CapabilitiesSection />}
           {section === "connectors" && <ConnectorsSection />}
+          {section === "integrations" && <IntegrationsSection />}
           {section === "providers" && <ProvidersSection />}
+          {section === "voice-and-models" && <VoiceAndModelsSection />}
           {section === "data" && <DataSection />}
           {section === "about" && <AboutSection />}
           {section === "jarvis-in-chrome" && <JarvisInChromeSection />}
