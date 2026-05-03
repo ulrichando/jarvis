@@ -73,6 +73,21 @@ export const settingsSchema = z.object({
       density: z.enum(["compact", "cozy"]).default("cozy"),
     })
     .default({ fontSize: "md", density: "cozy" }),
+  integrations: z
+    .object({
+      github: z
+        .object({
+          // Personal Access Token (classic or fine-grained). Used to
+          // push the workspace's git repo to a GitHub remote. Stays
+          // local — never sent to the model, never logged.
+          token: z.string().optional(),
+          // Default account/org for the prompt that asks "<owner>/<repo>"
+          // on first push. Optional convenience.
+          defaultOwner: z.string().optional(),
+        })
+        .default({}),
+    })
+    .default({ github: {} }),
 });
 
 export type Settings = z.infer<typeof settingsSchema>;

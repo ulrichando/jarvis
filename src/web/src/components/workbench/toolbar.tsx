@@ -1,6 +1,5 @@
 "use client";
 
-import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Eye,
@@ -14,13 +13,14 @@ import {
   Settings2,
   RectangleHorizontal,
   RectangleVertical,
-  Zap,
   PenLine,
+  Download,
+  GitBranch,
 } from "lucide-react";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
 
-export type WorkbenchTab = "preview" | "code" | "database" | "terminal" | "settings";
+export type WorkbenchTab = "preview" | "code" | "database" | "terminal" | "history" | "settings";
 export type ViewportPreset = "desktop" | "mobile";
 
 type Runtime = {
@@ -84,10 +84,11 @@ export function WorkbenchToolbar({
     ? `http://${typeof window !== "undefined" ? window.location.hostname : "localhost"}:${livePort}`
     : null;
 
-  useEffect(() => {
-    if (previewUrl && active !== "preview") onTabChange("preview");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [previewUrl]);
+  // No auto-switch to the Preview tab when the dev server boots — the
+  // Code tab already renders the preview iframe when no file is open
+  // (and switches to the editor only when the user clicks a file). So
+  // landing on Code shows the preview AND the file tree, which is the
+  // intended default.
 
   return (
     <div className="flex items-center h-11 px-3 border-b border-border/50 bg-background gap-2 overflow-hidden">
@@ -103,14 +104,6 @@ export function WorkbenchToolbar({
           J
         </Link>
 
-        <button
-          title="Jarvis AI"
-          className="flex size-6 items-center justify-center rounded-full bg-blue-500 hover:bg-blue-400 transition-colors shrink-0"
-        >
-          <Zap className="size-3 text-white fill-white" />
-        </button>
-
-        <span className="size-1 rounded-full bg-muted-foreground/25 shrink-0" />
         <span className="text-[13px] text-muted-foreground/30 select-none">/</span>
 
         <span className="text-[13px] font-normal text-foreground/90 truncate max-w-24 shrink">
@@ -131,6 +124,9 @@ export function WorkbenchToolbar({
           </TabIcon>
           <TabIcon active={active === "terminal"} title="Terminal" onClick={() => onTabChange("terminal")}>
             <PenLine className="size-3.5" />
+          </TabIcon>
+          <TabIcon active={active === "history"} title="History" onClick={() => onTabChange("history")}>
+            <GitBranch className="size-3.5" />
           </TabIcon>
           <TabIcon active={active === "settings"} title="Settings" onClick={() => onTabChange("settings")}>
             <Settings2 className="size-3.5" />
@@ -171,8 +167,20 @@ export function WorkbenchToolbar({
         </div>
       </div>
 
-      {/* ── RIGHT: GitHub · Share · Publish ──────────────────────────────── */}
+      {/* ── RIGHT: Download · GitHub · Share · Publish ───────────────────── */}
       <div className="flex items-center gap-2 shrink-0">
+        {/* Download — opens /api/workspace/<id>/zip in a new tab; the
+            server returns Content-Disposition: attachment so the browser
+            saves the project as <name>-<date>.zip. Excludes node_modules
+            / .next / .git / data DBs. */}
+        <a
+          href={`/api/workspace/${workspaceId}/zip`}
+          title="Download project as .zip"
+          className="flex size-7 items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <Download className="size-4" />
+        </a>
+
         {/* GitHub octocat */}
         <button
           title="GitHub"

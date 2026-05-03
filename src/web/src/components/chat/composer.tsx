@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowUp, AudioLines, Paperclip, Square } from "lucide-react";
+import { ArrowUp, AudioLines, Paperclip, Square, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -11,10 +11,17 @@ import { PlusMenu, SecondaryMenu } from "./plus-menu";
 import type { Provider } from "@/lib/ai/models-meta";
 import { getProviderUX } from "@/lib/ai/provider-ux";
 
+export type AttachedImage = {
+  // Stable id so we can remove a specific one without index drift.
+  id: string;
+  dataUrl: string; // data:image/...;base64,xxx
+  name: string;
+};
+
 type ComposerProps = {
   value: string;
   onChange: (v: string) => void;
-  onSubmit: () => void;
+  onSubmit: (opts?: { images?: AttachedImage[] }) => void;
   onStop?: () => void;
   status: "ready" | "submitted" | "streaming" | "error";
   provider: Provider;
@@ -84,8 +91,23 @@ export function Composer({
         }).catch(() => {});
       } catch {}
       e.preventDefault();
-      if (!isBusy && value.trim().length > 0) onSubmit();
+      // Allow submit when there's text OR an attached image (image-only
+      // prompts like "implement this" + a screenshot are valid).
+      const hasContent = value.trim().length > 0 || images.length > 0;
+      if (!isBusy && hasContent) {
+        const carry = images;
+        setImages([]);
+        onSubmit({ images: carry });
+      }
     }
+  };
+
+  const submitClick = () => {
+    if (isBusy) return;
+    if (value.trim().length === 0 && images.length === 0) return;
+    const carry = images;
+    setImages([]);
+    onSubmit({ images: carry });
   };
 
   const startDictation = () =>
@@ -93,29 +115,135 @@ export function Composer({
       description: "Whisper streaming will be wired next.",
     });
 
-  const attach = () =>
-    toast.message("Attachments — coming soon", {
-      description: "File upload pipeline is not wired yet.",
+  // Image attachments (drop-screenshot-get-code workflow). Stored as
+  // data URLs so we can preview thumbnails and ship them inline as
+  // image parts in the user message — no upload round-trip needed.
+  const [images, setImages] = useState<AttachedImage[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [dragOver, setDragOver] = useState(false);
+
+  const fileToDataUrl = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onerror = () => reject(r.error ?? new Error("read failed"));
+      r.onload = () => resolve(String(r.result));
+      r.readAsDataURL(file);
     });
+
+  const ingestFiles = useCallback(async (files: FileList | File[]) => {
+    const arr = Array.from(files).filter((f) =>
+      f.type.startsWith("image/"),
+    );
+    if (arr.length === 0) return;
+    // Cap on file size so a 50MB photo doesn't blow the request body.
+    const TOO_BIG = 8 * 1024 * 1024;
+    const ok = arr.filter((f) => {
+      if (f.size > TOO_BIG) {
+        toast.error(
+          `Image ${f.name} is ${(f.size / 1024 / 1024).toFixed(1)}MB — over the 8MB limit.`,
+        );
+        return false;
+      }
+      return true;
+    });
+    if (ok.length === 0) return;
+    try {
+      const parsed = await Promise.all(
+        ok.map(async (f) => ({
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          dataUrl: await fileToDataUrl(f),
+          name: f.name,
+        })),
+      );
+      setImages((prev) => [...prev, ...parsed]);
+    } catch (e) {
+      toast.error(`Couldn't read image: ${(e as Error).message}`);
+    }
+  }, []);
+
+  const attach = () => fileInputRef.current?.click();
+
+  const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(e.clipboardData?.files ?? []).filter((f) =>
+      f.type.startsWith("image/"),
+    );
+    if (files.length > 0) {
+      e.preventDefault();
+      void ingestFiles(files);
+    }
+  };
+
+  const onDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setDragOver(false);
+    const files = e.dataTransfer?.files;
+    if (files && files.length > 0) void ingestFiles(files);
+  };
+
+  const removeImage = (id: string) =>
+    setImages((prev) => prev.filter((p) => p.id !== id));
 
   const inlineToggles = providerUX.inlineToggles ?? [];
 
   return (
     <div className="mx-auto w-full max-w-3xl px-4 pb-4">
-      {!unifiedUX && providerUX.renderPreComposer && providerUX.renderPreComposer()}
-
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          if (e.target.files) void ingestFiles(e.target.files);
+          e.target.value = "";
+        }}
+      />
       <div
+        onDragOver={(e) => {
+          e.preventDefault();
+          if (e.dataTransfer?.types?.includes("Files")) setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={onDrop}
         className={cn(
           "relative flex flex-col rounded-2xl border border-transparent bg-card/70 transition-all",
           "shadow-[0_1px_0_0_oklch(1_0_0/3%)_inset]",
           "focus-within:border-border focus-within:bg-card focus-within:shadow-[0_1px_0_0_oklch(1_0_0/5%)_inset]",
+          dragOver && "border-primary/60 bg-primary/5",
         )}
       >
+        {images.length > 0 && (
+          <div className="flex flex-wrap gap-2 px-3 pt-3">
+            {images.map((img) => (
+              <div
+                key={img.id}
+                className="relative group rounded-md border border-border/50 bg-card overflow-hidden"
+                title={img.name}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={img.dataUrl}
+                  alt={img.name}
+                  className="block size-16 object-cover"
+                />
+                <button
+                  type="button"
+                  onClick={() => removeImage(img.id)}
+                  className="absolute top-0.5 right-0.5 flex size-4 items-center justify-center rounded-full bg-background/80 text-foreground opacity-0 group-hover:opacity-100 transition-opacity"
+                  aria-label="Remove image"
+                >
+                  <X className="size-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <textarea
           ref={ref}
           value={value}
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={handleKey}
+          onPaste={onPaste}
           rows={1}
           placeholder={placeholder ?? ux.placeholder}
           className="resize-none bg-transparent px-5 pt-5 pb-3 text-[15px] leading-7 outline-none placeholder:text-muted-foreground/70 min-h-18"
@@ -131,13 +259,14 @@ export function Composer({
               size="icon"
               onClick={attach}
               className="size-8 rounded-lg text-muted-foreground hover:text-foreground"
-              aria-label="Attach"
+              aria-label="Attach image"
+              title="Attach image (or drag/drop, or paste)"
             >
               <Paperclip className="size-4" />
             </Button>
             <ComposerModelPicker />
             {!hideWorkspacePicker && <ComposerWorkspacePicker />}
-            {value.trim().length === 0 && !isBusy ? (
+            {value.trim().length === 0 && images.length === 0 && !isBusy ? (
               <Button
                 type="button"
                 onClick={startDictation}
@@ -149,19 +278,26 @@ export function Composer({
                 <AudioLines className="size-4" />
               </Button>
             ) : isBusy ? (
-              <Button
+              // Bright cyan stop button with a soft ping ring so it's
+              // unmistakable that the model is still running. Solid fill
+              // + ring contrast against the composer's dark surface.
+              <button
                 type="button"
                 onClick={onStop}
-                size="icon"
-                className="size-8 rounded-lg"
                 aria-label="Stop"
+                title="Stop generating"
+                className="relative inline-flex size-8 items-center justify-center rounded-lg bg-cyan-400 text-black shadow-[0_0_0_1px_rgba(34,211,238,0.6),0_0_12px_rgba(34,211,238,0.45)] transition-transform hover:scale-105 hover:bg-cyan-300 active:scale-95"
               >
-                <Square className="size-3.5 fill-current" />
-              </Button>
+                <span
+                  className="pointer-events-none absolute inset-0 rounded-lg ring-2 ring-cyan-400/60 animate-ping"
+                  aria-hidden
+                />
+                <Square className="relative size-3.5 fill-current" />
+              </button>
             ) : (
               <Button
                 type="button"
-                onClick={onSubmit}
+                onClick={submitClick}
                 size="icon"
                 className="size-8 rounded-lg"
                 aria-label="Send"

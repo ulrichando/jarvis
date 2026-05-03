@@ -6,21 +6,134 @@ import { loadSettings } from "@/lib/settings/store";
 import {
   ensureConversation,
   extractText,
+  maybeUpdateLastAssistantMessage,
   saveAssistantMessage,
   saveUserMessage,
 } from "@/lib/chat/persist";
 import { db, schema } from "@/lib/db";
-import { getWorkspace, listAllFiles, writeFile } from "@/lib/workspace/storage";
+import {
+  getWorkspace,
+  listAllFiles,
+  setWorkspaceConversation,
+  writeFile,
+} from "@/lib/workspace/storage";
 import { generateQuestions, renderQuestionsHtml } from "@/lib/design/questionnaire";
 import { buildWorkbenchPrompt, buildDesignPrompt } from "@/lib/actions/jarvis-prompt";
+import { buildDesignContextBlock } from "@/lib/design-context";
 import { getBrand } from "@/lib/design/brand";
 import {
+  AESTHETICS,
+  type Aesthetic,
   type Format,
   inferAesthetic,
   inferFormat,
   userAskedForQuestions,
 } from "@/lib/design/format";
 import { webSearchTool } from "@/lib/tools/web-search";
+
+// File extension → suggested filename when the model dumps a fenced
+// code block instead of using boltAction. Used by the recovery path
+// in onFinish: if the assistant text contains ```language fences but
+// no <boltArtifact>, we treat each fence as a candidate file write so
+// the user gets SOMETHING on disk instead of an empty workspace.
+const FENCE_LANG_TO_FILE: Record<string, string> = {
+  html: "index.html",
+  jsx: "App.jsx",
+  tsx: "App.tsx",
+  js: "main.js",
+  ts: "main.ts",
+  css: "styles.css",
+  json: "data.json",
+};
+
+const FENCE_RE = /```([a-zA-Z0-9]+)\n([\s\S]*?)```/g;
+// Unclosed fence at the end of a truncated stream. We grab everything
+// from the opening fence to end-of-text. Used with .exec() / .search()
+// (NOT .match() which would only match at offset 0) so it finds the
+// fence wherever it appears in the tail.
+const UNCLOSED_FENCE_RE = /```([a-zA-Z0-9]+)\n([\s\S]*)$/;
+const ARTIFACT_RE = /<boltArtifact\b/i;
+
+/**
+ * Recover files when the model forgot the bolt protocol and dumped
+ * code in markdown fences. Returns the count of files written so the
+ * caller can log a warning.
+ *
+ * Heuristic: if the text contains at least one ```html|jsx|tsx|...
+ * fenced block AND no `<boltArtifact>` tag, write each fenced block
+ * to a sensible default filename (index.html for html, App.jsx for
+ * jsx, etc.). Multiple blocks of the same language get suffixed
+ * (e.g. App.jsx → App.2.jsx). Files that already exist are skipped.
+ */
+async function recoverFencesAsFiles(
+  workspaceId: string,
+  assistantText: string,
+): Promise<{ written: number; skipped: number }> {
+  if (ARTIFACT_RE.test(assistantText)) return { written: 0, skipped: 0 };
+  let written = 0;
+  let skipped = 0;
+  const counts: Record<string, number> = {};
+  let lastClosedEnd = 0;
+  for (const match of assistantText.matchAll(FENCE_RE)) {
+    const lang = match[1].toLowerCase();
+    const body = match[2];
+    const baseName = FENCE_LANG_TO_FILE[lang];
+    if (match.index !== undefined) {
+      lastClosedEnd = match.index + match[0].length;
+    }
+    if (!baseName || !body.trim()) {
+      skipped += 1;
+      continue;
+    }
+    counts[baseName] = (counts[baseName] ?? 0) + 1;
+    const fileName =
+      counts[baseName] === 1
+        ? baseName
+        : baseName.replace(/\.([a-z]+)$/, `.${counts[baseName]}.$1`);
+    try {
+      await writeFile(workspaceId, fileName, body);
+      written += 1;
+    } catch (err) {
+      console.warn(`[chat] fence-recovery: writeFile ${fileName} failed:`, err);
+      skipped += 1;
+    }
+  }
+  // Unclosed-fence recovery: when finish=length truncated the stream
+  // mid-file, the opening ```html arrived but the closing ``` did not.
+  // Look in the tail (after the last closed fence) for an opening
+  // fence and treat everything after it as the file body. Without this
+  // the user loses the entire half-finished artifact.
+  const tail = assistantText.slice(lastClosedEnd);
+  // .exec finds the pattern anywhere in `tail`, unlike .match which is
+  // anchored to offset 0 when the regex itself has no leading anchor.
+  const unclosed = UNCLOSED_FENCE_RE.exec(tail);
+  if (unclosed) {
+    const lang = unclosed[1].toLowerCase();
+    const body = unclosed[2];
+    const baseName = FENCE_LANG_TO_FILE[lang];
+    if (baseName && body.trim()) {
+      counts[baseName] = (counts[baseName] ?? 0) + 1;
+      const fileName =
+        counts[baseName] === 1
+          ? baseName
+          : baseName.replace(/\.([a-z]+)$/, `.${counts[baseName]}.$1`);
+      try {
+        await writeFile(workspaceId, fileName, body);
+        written += 1;
+        console.warn(
+          `[chat] fence-recovery: rescued UNCLOSED ${lang} fence from truncated stream → ${fileName} (${body.length} chars)`,
+        );
+      } catch (err) {
+        console.warn(
+          `[chat] fence-recovery: writeFile ${fileName} failed:`,
+          err,
+        );
+        skipped += 1;
+      }
+    }
+  }
+  return { written, skipped };
+}
 
 function buildProjectPrompt(p: {
   name: string;
@@ -93,6 +206,36 @@ export async function POST(req: Request) {
     }
   }
 
+  // Workbench-mode model routing. Same problem as design mode but for
+  // multi-file builds: reasoning models burn output budget on hidden
+  // thinking and stall on commits. Two override paths, in priority:
+  //   1. JARVIS_WORKBENCH_MODEL env var — admin/user-configured "always
+  //      use this model for workspace turns" (e.g. claude-sonnet-4-6).
+  //      If the configured model is unknown or has no API key, we fall
+  //      through to the user's pick rather than 400-erroring.
+  //   2. Reasoning-model fallback (same as design mode).
+  // This is the same "smart routing" Cursor and Bolt do — diagnose with
+  // a fast cheap model, write with a stronger committal one.
+  if (workspaceId && !mode) {
+    const envOverride = process.env.JARVIS_WORKBENCH_MODEL;
+    if (envOverride && MODELS_META[envOverride]) {
+      if (envOverride !== modelId) {
+        console.log(
+          `[chat] workbench-mode: override ${modelId} → ${envOverride} (JARVIS_WORKBENCH_MODEL)`,
+        );
+        modelId = envOverride;
+      }
+    } else {
+      const meta = MODELS_META[modelId];
+      if (meta?.reasoning && meta.nonReasoningFallback) {
+        console.log(
+          `[chat] workbench-mode: substituting ${modelId} → ${meta.nonReasoningFallback} (reasoning model — would burn output budget on thinking instead of files)`,
+        );
+        modelId = meta.nonReasoningFallback;
+      }
+    }
+  }
+
   // eslint-disable-next-line no-console
   console.log(
     `[chat] POST mode=${mode ?? "regular"} model=${modelId} msgs=${messages.length} ws=${workspaceId ?? "—"}`,
@@ -124,7 +267,43 @@ export async function POST(req: Request) {
     firstUserText,
   });
 
+  // Pin conversation→workspace server-side so refresh / different-
+  // browser still resolves the same chat history. Was localStorage-only
+  // before; that broke the moment a user opened the workspace from
+  // anywhere else (or after clearing site data).
+  if (conversation && workspaceId) {
+    try {
+      await setWorkspaceConversation(workspaceId, conversation.id);
+    } catch (err) {
+      console.warn("[chat] setWorkspaceConversation failed:", err);
+    }
+  }
+
   if (conversation && lastUser) {
+    // Before saving the new user message, persist any client-side
+    // enrichment of the PREVIOUS assistant message (e.g. the
+    // <boltActionResults> block the chat layer appends after actions
+    // finish). Without this, refresh wipes the results from history
+    // and the model loses its ground truth across turns — that's the
+    // "Jarvis keeps stopping in diagnose loops" symptom. Find the most
+    // recent assistant message in the request and reconcile its text
+    // with the DB.
+    const lastAssistantInReq = [...messages]
+      .reverse()
+      .find((m) => m.role === "assistant");
+    if (lastAssistantInReq) {
+      try {
+        await maybeUpdateLastAssistantMessage({
+          conversationId: conversation.id,
+          candidate: lastAssistantInReq,
+        });
+      } catch (err) {
+        console.error(
+          "[chat] failed to persist enriched assistant message",
+          err,
+        );
+      }
+    }
     await saveUserMessage({
       conversationId: conversation.id,
       message: lastUser,
@@ -235,7 +414,49 @@ export async function POST(req: Request) {
           .filter((m) => m.role === "user")
           .map((m) => extractText(m.parts))
           .join("\n");
-        const aesthetic = brand ? null : inferAesthetic(allUserText);
+        let aesthetic: Aesthetic | null = brand
+          ? null
+          : inferAesthetic(allUserText);
+        // If neither a brand nor a keyword pinned the aesthetic, pick
+        // one DETERMINISTICALLY from the workspaceId. Without this the
+        // model defaults to its training bias (usually editorial dark
+        // serif) for every fresh build — which is why the user
+        // perceived jarvis as "only knowing one style." Hashing the
+        // workspaceId means each workspace gets a stable, distinct
+        // aesthetic, but you still get the same look across turns
+        // within a workspace (no flicker between builds).
+        // Workspace-id hash — used both for the aesthetic fallback AND
+        // as the base of the theme rotation seed. Same workspace → same
+        // hash → consistent style across "edit this" follow-ups.
+        let wsHash = 0;
+        for (let i = 0; i < workspaceId.length; i++) {
+          wsHash = (wsHash * 31 + workspaceId.charCodeAt(i)) | 0;
+        }
+        if (!aesthetic && !brand) {
+          const idx = Math.abs(wsHash) % AESTHETICS.length;
+          aesthetic = AESTHETICS[idx] as Aesthetic;
+          console.log(
+            `[chat] design-mode: rotated aesthetic → ${aesthetic} (no brand, no keyword match in brief)`,
+          );
+        }
+        // Theme seed: stable per workspace by default. Bumped each
+        // time the user asks for a "redesign" / "different style" /
+        // "another version" so follow-up turns rotate to a different
+        // colorway WITHIN the same aesthetic. Without this, "redesign"
+        // returns identical hex values because the theme picker is
+        // locked 1:1 to aesthetic. Count redesign-intent words across
+        // the full conversation so the bump is monotonic.
+        const REDESIGN_RE =
+          /\b(redesign|redo|different\s+(style|look|version|colors|theme)|another\s+(version|take|look)|new\s+look|fresh\s+(take|look)|change\s+(the\s+)?(style|theme|colors)|swap\s+(the\s+)?(theme|colors|palette)|make\s+it\s+look\s+different)\b/i;
+        const redesignCount = messages.filter(
+          (m) => m.role === "user" && REDESIGN_RE.test(extractText(m.parts)),
+        ).length;
+        const themeSeed = wsHash * 7 + redesignCount;
+        if (redesignCount > 0) {
+          console.log(
+            `[chat] design-mode: redesign signals detected (${redesignCount}) — themeSeed=${themeSeed}`,
+          );
+        }
         finalSystem += buildDesignPrompt({
           workspaceName: ws.name,
           cwd: "/workspace",
@@ -243,6 +464,7 @@ export async function POST(req: Request) {
           brand,
           needsClarify,
           aesthetic,
+          themeSeed,
         });
 
         // Refine mode: when the workspace already has design files, the
@@ -277,6 +499,17 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
           workspaceName: ws.name,
           cwd: "/workspace",
         });
+        // Auto-embed the workspace's design/ folder into context so
+        // jarvis has the visual reference inline from turn 1 — no
+        // need to spend an LLM turn cat'ing files. Bolt + Lovable do
+        // the same with Figma context. Empty string when there's no
+        // design/ directory; cheap (~10ms) when there is.
+        try {
+          const designBlock = await buildDesignContextBlock(workspaceId);
+          if (designBlock) finalSystem += designBlock;
+        } catch (err) {
+          console.warn("[chat] design-context load failed:", err);
+        }
       }
     }
   }
@@ -298,17 +531,27 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
 
   // Output-token ceilings tuned per turn type.
   //
-  // - Workspace turns (design + workbench) get 32K. v4-pro is a
-  //   reasoning model that burns 60-80% of its budget on hidden
-  //   thinking; without a generous ceiling, multi-file builds hit
-  //   `finish: length` mid-artifact and the client has to auto-continue.
-  //   32K accommodates both the reasoning AND a 10+ file output in a
-  //   single shot. Providers that cap lower (DeepSeek V3 at ~8K, some
-  //   Groq models) silently clamp to their actual max — no harm.
+  // - Workspace turns (design + workbench) WANT 32K so multi-file
+  //   builds don't hit `finish: length` mid-artifact. But several
+  //   providers reject high caps with hard errors instead of silently
+  //   clamping (Groq Llama 4 Scout: 8K max, GPT-5: 16K, etc.).
+  //   We clamp here per known provider so the request succeeds even
+  //   when our preferred ceiling exceeds the provider's actual max.
   //
   // - Regular chat turns (no workspace) keep 4K — answers rarely need
   //   more, and going higher just inflates cost on chatty providers.
-  const maxOutputTokens = workspaceId ? 32768 : 4096;
+  const PROVIDER_MAX_OUTPUT: Record<string, number> = {
+    groq: 8192,
+    google: 8192,
+    openai: 16384,
+    anthropic: 16384,
+    deepseek: 8192,
+    kimi: 8192,
+  };
+  const meta = MODELS_META[modelId];
+  const providerCap = meta ? PROVIDER_MAX_OUTPUT[meta.provider] : undefined;
+  const desired = workspaceId ? 32768 : 4096;
+  const maxOutputTokens = providerCap ? Math.min(desired, providerCap) : desired;
 
   // eslint-disable-next-line no-console
   console.log(
@@ -321,7 +564,16 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
     messages: modelMessages,
     temperature: settings.defaults.temperature ?? 0.7,
     maxOutputTokens,
-    abortSignal: req.signal,
+    // INTENTIONALLY no abortSignal: req.signal here. If we tied the
+    // model run to the request signal, navigating away from the
+    // workspace mid-stream would close the SSE connection, fire
+    // req.signal.abort(), kill streamText, and onFinish would never
+    // run — meaning the assistant message would NEVER persist to
+    // the DB. The user would come back to find nothing. By
+    // detaching the model run from the request lifecycle (and
+    // pairing with consumeStream below), the model finishes
+    // server-side regardless of client connection state, onFinish
+    // fires, and the message is in the DB when the user returns.
     // Workspace-scoped turns (design AND workbench) shouldn't have
     // webSearch enabled. Models have been calling it instead of
     // producing the requested artifact (`finish: tool-calls`, no
@@ -343,6 +595,45 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
           `[chat] finish=length — output truncated at ${totalUsage.outputTokens} tokens (mode=${mode ?? "regular"})`,
         );
       }
+      // Fence-recovery fallback: when the model ignored the bolt
+      // protocol and dumped code in ```language fenced blocks, write
+      // those blocks as files server-side so the user doesn't end up
+      // with an empty workspace. The prompt fix should make this rare,
+      // but DeepSeek-chat / Llama variants ignore the protocol often
+      // enough that having a safety net is worthwhile.
+      if (
+        workspaceId &&
+        !ARTIFACT_RE.test(text) &&
+        (FENCE_RE.test(text) || UNCLOSED_FENCE_RE.test(text))
+      ) {
+        // FENCE_RE has /g flag; reset before recovery uses it again.
+        FENCE_RE.lastIndex = 0;
+        try {
+          const { written, skipped } = await recoverFencesAsFiles(
+            workspaceId,
+            text,
+          );
+          if (written > 0) {
+            console.warn(
+              `[chat] fence-recovery: model emitted ${written} fenced block(s) outside boltArtifact — wrote them as files (${skipped} skipped). Strengthen the prompt or switch to a model that follows the protocol.`,
+            );
+            // Multi-file landing-page check. When mode=design and the
+            // model emitted a single ~30K html file, we know the model
+            // ignored both the boltAction protocol AND the multi-file
+            // mandate. Surface this loudly so we can spot misbehaving
+            // models quickly. The threshold (10KB single file = "fat
+            // monolith") is empirical from observing DeepSeek-chat
+            // dump everything inline.
+            if (mode === "design" && written === 1 && text.length > 10_000) {
+              console.warn(
+                `[chat] design-mode: model emitted ONE fat ${text.length}-char file instead of the required 8+ component files. Prompt fix needed or route to a stronger model.`,
+              );
+            }
+          }
+        } catch (err) {
+          console.error("[chat] fence-recovery failed:", err);
+        }
+      }
       if (!conversation) return;
       try {
         await saveAssistantMessage({
@@ -361,5 +652,35 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
   const headers: Record<string, string> = {};
   if (conversation) headers["X-Conversation-Id"] = conversation.id;
 
-  return result.toUIMessageStreamResponse({ headers });
+  // Drive consumption independently of the response body. Without this,
+  // when the client cancels the SSE response (navigating away from the
+  // workspace, browser tab close, etc.), the underlying ReadableStream
+  // backpressures and the model run stalls. consumeStream keeps pulling
+  // chunks server-side so onFinish always runs to completion and the
+  // assistant message persists. Fire-and-forget — errors are surfaced
+  // via the onError hook on streamText already.
+  result.consumeStream();
+
+  return result.toUIMessageStreamResponse({
+    headers,
+    // Forward per-step usage from streamText into the UI message stream
+    // as `messageMetadata` events. The chat client reads these to render
+    // a per-turn token + cost chip below each assistant message — same
+    // visibility OpenRouter / Cursor / Bolt show. Without this, the
+    // user has no insight into how many tokens or dollars a turn cost.
+    messageMetadata: ({ part }) => {
+      if (part.type === "finish-step") {
+        return {
+          usage: {
+            inputTokens: part.usage.inputTokens ?? 0,
+            outputTokens: part.usage.outputTokens ?? 0,
+            reasoningTokens:
+              part.usage.outputTokenDetails?.reasoningTokens ?? 0,
+          },
+          model: modelId,
+        };
+      }
+      return undefined;
+    },
+  });
 }

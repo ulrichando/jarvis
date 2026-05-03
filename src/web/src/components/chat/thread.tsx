@@ -10,12 +10,26 @@ export function Thread({
   artifactPanel,
   reasoningById,
   planById,
+  usageById,
+  workspaceId,
 }: {
   messages: UIMessage[];
   isStreaming: boolean;
   artifactPanel?: React.ReactNode;
   reasoningById?: Map<string, string>;
   planById?: Map<string, { content: string; complete: boolean }>;
+  usageById?: Map<
+    string,
+    {
+      inputTokens: number;
+      outputTokens: number;
+      reasoningTokens?: number;
+      model?: string;
+    }
+  >;
+  // When set, each assistant message gets an Undo button that rolls
+  // the workspace back to the snapshot taken just before that turn.
+  workspaceId?: string;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -34,6 +48,8 @@ export function Thread({
           }
           reasoning={reasoningById?.get(m.id)}
           plan={planById?.get(m.id)}
+          usage={usageById?.get(m.id)}
+          workspaceId={workspaceId}
         />
       ))}
       {artifactPanel}
