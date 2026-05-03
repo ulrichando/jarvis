@@ -88,6 +88,52 @@ export function PreviewTab({ workspaceId, iframeKey, viewport = "desktop" }: Pro
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, port, isLoading]);
 
+  // Self-healing auto-trigger. Once we've fired autostart, if the dev
+  // server is still not listening 30s later we assume something
+  // crashed and call /heal. The heal endpoint reads dev.log for known
+  // signatures (EADDRINUSE, missing modules, uncaught exceptions) and
+  // applies the canonical fix without involving the LLM. We cap at 2
+  // auto-heals per session to avoid restart loops.
+  const healedCountRef = useRef(0);
+  const healingRef = useRef(false);
+  const [healMessage, setHealMessage] = useState<string | null>(null);
+  useEffect(() => {
+    if (port) {
+      // Server came up — reset for any future crashes.
+      healedCountRef.current = 0;
+      return;
+    }
+    if (!triedRef.current || starting) return;
+    if (healedCountRef.current >= 2) return;
+    const t = setTimeout(async () => {
+      if (port || healingRef.current) return;
+      healingRef.current = true;
+      try {
+        const r = await fetch(`/api/workspace/${workspaceId}/heal`, {
+          method: "POST",
+        });
+        if (r.ok) {
+          const j = (await r.json()) as {
+            acted: boolean;
+            signature: string | null;
+            details: string;
+          };
+          if (j.acted) {
+            healedCountRef.current += 1;
+            setHealMessage(j.details);
+          } else {
+            setHealMessage(j.details);
+          }
+        }
+      } catch {
+        /* swallow — preview polling handles the next cycle */
+      } finally {
+        healingRef.current = false;
+      }
+    }, 30_000);
+    return () => clearTimeout(t);
+  }, [workspaceId, port, starting]);
+
   if (!port) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
@@ -102,13 +148,17 @@ export function PreviewTab({ workspaceId, iframeKey, viewport = "desktop" }: Pro
           <p className="text-sm text-foreground/80">
             {starting
               ? "Starting dev server…"
-              : startError
-                ? "Couldn't start the dev server."
-                : "No dev server detected yet."}
+              : healMessage
+                ? "Auto-healing dev server…"
+                : startError
+                  ? "Couldn't start the dev server."
+                  : "No dev server detected yet."}
           </p>
           <p className="mt-1 max-w-md text-xs leading-5 text-muted-foreground">
             {starting ? (
               <>Patching the dev script (if needed) and spawning <code className="font-mono">bun run dev</code> on port 5173. Preview should appear within ~10s once it's up.</>
+            ) : healMessage ? (
+              healMessage
             ) : startError ? (
               startError
             ) : (

@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
+import { gitInit } from "./git";
 
 // Each workspace is just a directory under ~/.jarvis/workspaces/<id>/.
 // Metadata (name, createdAt) lives in workspaces.json next to it.
@@ -25,6 +26,12 @@ export type Workspace = {
    *  Legacy workspaces with no `kind` are treated as "design" (the
    *  original Workspace tab was used purely for design mocks). */
   kind?: WorkspaceKind;
+  /** Most-recent conversation for this workspace. Persisted server-
+   *  side (in this _meta.json) so refresh / close / different-browser
+   *  all show the same chat history. Without this the link lives only
+   *  in localStorage which empties when the user clears site data or
+   *  opens the workspace from another device. */
+  conversationId?: string;
 };
 
 type Meta = { workspaces: Workspace[] };
@@ -81,6 +88,15 @@ export async function createWorkspace(
   const meta = await loadMeta();
   meta.workspaces.push(ws);
   await saveMeta(meta);
+  // Init git so every workspace is a real repo from turn 1. Failures
+  // here aren't fatal — the workspace still works without git, the
+  // commit endpoint will retry init on first commit. Most likely cause
+  // of failure is missing `git` binary, which is rare on dev machines.
+  try {
+    await gitInit(id);
+  } catch (err) {
+    console.warn("[workspace] git init failed:", err);
+  }
   return ws;
 }
 
@@ -93,6 +109,25 @@ export async function touchWorkspace(id: string) {
   const meta = await loadMeta();
   const ws = meta.workspaces.find((w) => w.id === id);
   if (!ws) return;
+  ws.updatedAt = Date.now();
+  await saveMeta(meta);
+}
+
+/**
+ * Pin the conversation for a workspace. Called from the chat route on
+ * every workspace-scoped turn so refresh / browser-close / different-
+ * device all resolve the same chat history without relying on
+ * localStorage. Idempotent — repeated calls with the same id no-op.
+ */
+export async function setWorkspaceConversation(
+  workspaceId: string,
+  conversationId: string,
+) {
+  const meta = await loadMeta();
+  const ws = meta.workspaces.find((w) => w.id === workspaceId);
+  if (!ws) return;
+  if (ws.conversationId === conversationId) return;
+  ws.conversationId = conversationId;
   ws.updatedAt = Date.now();
   await saveMeta(meta);
 }

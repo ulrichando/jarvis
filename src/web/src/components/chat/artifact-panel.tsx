@@ -146,8 +146,13 @@ function ArtifactCardView({
       </button>
       {open && (
         <div className="border-t border-border/40 divide-y divide-border/30">
-          {card.actions.map((a) => (
-            <ActionRow key={a.actionId} a={a} />
+          {card.actions.map((a, idx) => (
+            // Composite key: actionId can in pathological cases be
+            // duplicated (e.g. ancient persisted messages from a parser
+            // bug, or a strict-mode double-mount race). Pairing with the
+            // index keeps each row's key unique no matter what's in the
+            // data.
+            <ActionRow key={`${a.actionId}-${idx}`} a={a} />
           ))}
         </div>
       )}
@@ -345,9 +350,13 @@ function FileDownloadSection({ files }: { files: TrackedAction[] }) {
   return (
     <div className="border-t border-border/40 px-4 py-3 space-y-2">
       {files.map(
-        (f) =>
+        (f, idx) =>
           f.action.type === "file" && (
-            <FileCard key={f.actionId} filePath={f.action.filePath} content={f.action.content} />
+            <FileCard
+              key={`${f.actionId}-${idx}`}
+              filePath={f.action.filePath}
+              content={f.action.content}
+            />
           ),
       )}
       {files.length > 1 && (

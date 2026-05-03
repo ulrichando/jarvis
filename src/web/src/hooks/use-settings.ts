@@ -4,11 +4,18 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Provider } from "@/lib/ai/models-meta";
 import type { Settings } from "@/lib/settings/schema";
 
-export type RedactedSettings = Omit<Settings, "providers"> & {
+export type RedactedSettings = Omit<Settings, "providers" | "integrations"> & {
   providers: Record<
     Provider,
     { hasKey: boolean; keyPreview?: string; baseURL?: string }
   >;
+  integrations: {
+    github: {
+      hasToken: boolean;
+      tokenPreview?: string;
+      defaultOwner?: string;
+    };
+  };
 };
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -49,6 +56,12 @@ export type SettingsPatch = {
   appearance?: {
     fontSize?: "sm" | "md" | "lg";
     density?: "compact" | "cozy";
+  };
+  integrations?: {
+    github?: {
+      token?: string | null;
+      defaultOwner?: string | null;
+    };
   };
 };
 
