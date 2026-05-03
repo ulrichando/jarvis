@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ChevronRight,
   File as FileIcon,
@@ -17,6 +17,7 @@ import {
   apiDeleteEntry,
   type TreeEntry,
 } from "@/lib/workspace/client";
+import { useEditedFiles } from "@/stores/edited-files";
 
 type Props = {
   workspaceId: string;
@@ -112,6 +113,21 @@ function EntryRow({
 
   const isFile = entry.type === "file";
   const active = activePath === entry.path;
+  // "Recently edited by JARVIS" indicator. The chat layer pushes paths
+  // into the store on each successful file action; we render a small
+  // cyan dot next to the filename for ~60s. We re-render once a second
+  // so the indicator fades away on its own without needing the store
+  // to push expiration events.
+  const wasRecentlyEdited = useEditedFiles((s) => s.wasRecentlyEdited);
+  const [, force] = useState(0);
+  useEffect(() => {
+    if (!isFile) return;
+    if (!wasRecentlyEdited(workspaceId, entry.path)) return;
+    const t = setInterval(() => force((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [isFile, workspaceId, entry.path, wasRecentlyEdited]);
+  const recentlyEdited =
+    isFile && wasRecentlyEdited(workspaceId, entry.path);
 
   return (
     <div>
@@ -147,6 +163,13 @@ function EntryRow({
           </>
         )}
         <span className="truncate flex-1">{entry.name}</span>
+        {recentlyEdited && (
+          <span
+            title="Recently edited by JARVIS"
+            className="size-1.5 rounded-full bg-cyan-400 shadow-[0_0_4px_rgba(34,211,238,0.7)] animate-pulse shrink-0"
+            aria-label="recently edited"
+          />
+        )}
         <button
           onClick={(ev) => {
             ev.stopPropagation();

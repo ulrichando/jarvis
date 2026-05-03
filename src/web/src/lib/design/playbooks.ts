@@ -21,6 +21,11 @@ export type PlaybookArgs = {
   /** Aesthetic preset detected from the brief. Anchors the model against
    *  a concrete style instead of letting it default to AI-generic. */
   aesthetic?: Aesthetic | null;
+  /** Theme rotation seed. Stable per workspace by default; bumped by
+   *  the chat route when the user explicitly asks for a redesign so
+   *  follow-up turns rotate to a different colorway within the same
+   *  aesthetic. */
+  themeSeed?: number;
 };
 
 /** Pre-baked theme tokens (colors + fonts) for the entry HTML scaffold.
@@ -35,18 +40,30 @@ export function buildPlaybookPrompt({
   cwd,
   needsClarify = false,
   aesthetic = null,
+  themeSeed = 0,
 }: PlaybookArgs): string {
   const pairing = brand ? null : pickFontPairing(format);
   // Pre-baked theme: removes the model's discretion over the worst
   // failure modes (invented color tokens that don't contrast, font
   // classes that aren't defined, easings that don't resolve). Brand
   // settings still override since they're a stronger user signal.
-  const theme = brand ? null : pickTheme(aesthetic);
+  const theme = brand ? null : pickTheme(aesthetic, themeSeed);
   return [
     designerHeader({ workspaceName, cwd, needsClarify }),
+    // Output-format rules MUST come right after the designer header.
+    // When buried lower in the prompt the model (especially DeepSeek-chat
+    // and Llama 3 variants) defaults to its training bias of dumping
+    // code in ```language fenced blocks — which ARE NOT the bolt
+    // protocol, so the runtime never writes the files to disk and the
+    // user sees an artifact card with zero files. Putting it second
+    // (and the hard-rules block above artifactRulesBlock) makes the
+    // protocol the first thing the model commits to.
+    artifactHardRulesBlock(),
+    artifactRulesBlock(format),
     formatBlock(format),
     brand ? brandBlock(brand) : pairingBlock(pairing!),
     aesthetic ? aestheticBlock(aesthetic) : "",
+    productionPatternsBlock(),
     sharedBaseBlock(),
     usabilityBlock(),
     responsiveBlock(format),
@@ -54,11 +71,36 @@ export function buildPlaybookPrompt({
     stackBlock(format, theme),
     tweaksBlock(format),
     antiSlopBlock(),
-    artifactRulesBlock(format),
     examplesBlock(format),
   ]
     .filter(Boolean)
     .join("\n\n");
+}
+
+// Loud, brief, easy-to-find. The full <artifact_format> block stays as
+// the authoritative spec (with file structure, examples, etc.) — this
+// is the "no matter how long the prompt gets, you must do this" reminder.
+function artifactHardRulesBlock(): string {
+  return `<output_protocol priority="absolute">
+  Your reply has TWO parts:
+    1. ONE short sentence of prose (optional).
+    2. EXACTLY ONE \`<boltArtifact>\` block containing one or more \`<boltAction type="file" filePath="...">FILE CONTENT</boltAction>\` elements.
+
+  THE ENTIRE FILE GOES INSIDE THE boltAction TAG. The opening tag, the raw file content, and the closing \`</boltAction>\` — that's the file. No code fences, no nesting, no escaping.
+
+  If you wrap file content in markdown fenced code blocks (\`\`\`html, \`\`\`jsx, \`\`\`css, \`\`\`js, etc.) the runtime CANNOT write the file to disk. The user sees an empty workspace and an artifact card with zero files. This is the single most common failure mode — DO NOT DO IT.
+
+  HARD RULES:
+    - NEVER use triple-backtick fenced code blocks anywhere in your reply.
+    - NEVER paraphrase the file or "show what you wrote" outside the boltAction.
+    - NEVER use \`&lt;\` / \`&gt;\` / \`&amp;\` to escape characters inside file content — write the raw character. The runtime parses your output as XML-flavored HTML, and HTML allows raw \`<\` inside element content.
+    - The FIRST emitted token of the structured part MUST be \`<boltArtifact\`.
+    - The LAST emitted token MUST be \`</boltArtifact>\`. If you stop short, the file is lost.
+
+  Self-check before emitting:
+    - Did I include \`\`\` anywhere? → DELETE that block, put the content inside a boltAction.
+    - Is every \`<boltAction>\` matched with \`</boltAction>\` and inside the artifact? → If not, the file silently vanishes.
+</output_protocol>`;
 }
 
 // Aesthetic preset → detailed style brief. Each block tells the model
@@ -373,18 +415,32 @@ function formatBlock(format: Format): string {
   File path: "${file}"
   Canvas: fluid width, scrollable.
 
-  REQUIRED FILE STRUCTURE (this is how Claude Design organizes a landing page — match it exactly):
-    \`landing.html\`              — entry shell. Just the boilerplate (Tailwind, fonts, viewport, prefers-reduced-motion CSS) and the inline \`<script type="module">\` that mounts \`<App/>\`. NO content here.
-    \`App.jsx\`                   — root component. Imports every section, composes them inside \`<div className="min-h-screen"><Header/><main>…sections…</main><Footer/></div>\`. NO inline content — composition only.
-    \`components/Header.jsx\`     — sticky header with brand mark, nav, primary CTA.
-    \`components/Hero.jsx\`       — asymmetric hero, content-led.
-    \`components/<SectionA>.jsx\` — one file per content section. Pick distinct section types from the catalog.
-    \`components/<SectionB>.jsx\`
-    \`components/<SectionC>.jsx\`
-    \`components/Footer.jsx\`     — substantive footer with brand + tagline + 3-4 link columns + social + copyright.
-    (no \`src/cn.js\` — \`cn\` is imported from \`/jarvis-shadcn.mjs\`)
+  =============== FILE STRUCTURE — NON-NEGOTIABLE ===============
+  A landing page is a MULTI-FILE project. This is exactly how Lovable, v0, Bolt, and Claude Design organize their output — and it is what every user expects when they ask jarvis to build a landing page.
 
-  EVERY landing page ships these 8+ files. Header and Footer are not optional. Do NOT inline everything in landing.html — that's not how this works. The user wants component-level decomposition so they can edit individual pieces ("change the Hero", "swap the Footer") without rewriting the whole page.
+  EMITTING ONE BIG HTML FILE WITH EVERYTHING INLINE IS A FAILURE MODE. The user opens the file tree and sees one bloated index.html instead of editable components. They cannot say "redesign just the Hero" or "tweak the Footer" because there are no separate files. Don't do this.
+
+  YOU MUST emit BETWEEN 8 AND 12 SEPARATE FILES per landing page. ANY artifact with fewer than 7 boltAction file blocks is wrong and must be expanded before you stop.
+
+  Required file list — emit each as a separate \`<boltAction type="file" filePath="...">\`:
+    1. \`landing.html\`              — entry shell ONLY. Tailwind CDN, fonts, viewport, prefers-reduced-motion CSS, and the inline \`<script type="module">\` that mounts \`<App/>\` from \`./App.jsx\`. ~25-50 lines. NO page content here, no headlines, no sections.
+    2. \`App.jsx\`                   — root component. Imports every section, composes them. ~25-40 lines. NO inline JSX content beyond \`<Header/>\`, the section components in order, and \`<Footer/>\`. Composition only.
+    3. \`components/Header.jsx\`     — sticky header. Brand mark + 4-6 nav links + primary CTA. ~40-80 lines.
+    4. \`components/Hero.jsx\`       — hero section, content-led, asymmetric or full-bleed. Real Unsplash photo. ~60-120 lines.
+    5. \`components/LogoCloud.jsx\`  — social-proof band ("As featured in" / "Trusted by" with grayscale wordmarks). ~30-60 lines.
+    6. \`components/Features.jsx\` (or \`AlternatingRows.jsx\`) — primary features as alternating image-left/image-right rows. ~80-150 lines.
+    7. \`components/<Section>.jsx\`   — secondary section using a DIFFERENT pattern from the library (bento, stat-band, quote-pull, timeline, before-after, etc.). ~60-120 lines.
+    8. \`components/Testimonials.jsx\` — testimonial carousel or grid with real Unsplash portraits + name + role + company. ~60-120 lines.
+    9. \`components/Pricing.jsx\` OR \`components/FAQ.jsx\` — pricing tiers OR accordion of 4-6 questions. ~50-120 lines.
+    10. \`components/CTABand.jsx\`    — sticky-CTA band before the footer. ~30-50 lines.
+    11. \`components/Footer.jsx\`     — substantive 5-column footer (brand+social, product, company, resources, newsletter). ~80-150 lines.
+
+  (no \`src/cn.js\` — \`cn\` is imported from \`/jarvis-shadcn.mjs\`)
+
+  Self-check before you emit \`</boltArtifact>\`:
+    - Did I write at least 8 separate \`<boltAction type="file">\` blocks? If no → keep going, you're not done.
+    - Is \`landing.html\` under 60 lines? If it has section content inline, you broke the rule — move it to a component file.
+    - Is \`App.jsx\` purely composition (no inline copy/markup beyond component tags)? If no → factor sections out.
 
   REQUIRED ANATOMY (every section is mandatory — a "landing page" missing the header or footer is not a landing page, it's a fragment):
 
@@ -483,6 +539,98 @@ function brandBlock(b: Brand): string {
   ${logoLine}
   This brand block is the highest-priority guidance. It overrides any color/font default elsewhere.
 </brand_system>`;
+}
+
+// What separates Claude/ChatGPT/Lovable/v0-quality output from generic
+// AI-design slop. Every section here is enforceable: the model either
+// did it (concrete URLs, named patterns, real motion utilities, brand
+// copy) or it didn't. This block is what makes the design feel like a
+// real designer made it instead of a template generator. Lives in the
+// design playbook so it ships with every design-tab turn — workbench
+// has its own equivalent inside <designer_mindset>.
+function productionPatternsBlock(): string {
+  return `
+<production_patterns priority="non-negotiable">
+  This is what separates real-designer output from AI slop. Every rule here is enforceable; when you skip even one, the output reads as "generated" and the user notices instantly. These match what Lovable, Framer, Claude Design, and v0 ship by default in 2026.
+
+  THE "PURPLE PROBLEM" — the single biggest AI-design tell.
+    DO NOT default to: indigo, violet, purple, lavender, periwinkle, or pastel rainbow gradients ANYWHERE. Specifically forbidden: \`bg-indigo-500\`, \`from-violet-X to-purple-Y\` hero gradients, lavender→teal gradients, "lofi pastel cloud" backgrounds. Every AI tool ships these by default and design Twitter has named the pattern.
+    Pick a NON-default accent that fits the brief's domain: warm gold (#C8A45C) for cinematic/wine/food, deep teal (#0E5E62) for travel/water/wellness, hazard yellow (#FFEC00) for brutalist/SaaS, brick red (#B0413E) for restaurants/heritage, charcoal+single-saturated for editorial. The accent appears in <5% of surface area, never as a hero gradient.
+
+  REAL IMAGERY — never colored placeholder boxes for content imagery.
+    Every hero, feature, gallery, testimonial, "about", and team section needs at least one real photo. Use Unsplash hotlinks (no auth needed):
+      https://images.unsplash.com/photo-<id>?w=1920&q=80&auto=format&fit=crop
+    Pick photo IDs that match the brief's domain. Tested IDs that always work:
+      Wine / bar / restaurant / food → photo-1547573854-74d2a71d0826 · photo-1414235077428-338989a2e8c0 · photo-1551024506-0bccd828d307 · photo-1510812431401-41d2bd2722f3
+      Coffee / cafe → photo-1495474472287-4d71bcdd2085 · photo-1442512595331-e89e73853f31 · photo-1497935586351-b67a49e012bf
+      Office / SaaS / tech → photo-1497366216548-37526070297c · photo-1556761175-5973dc0f32e7 · photo-1517245386807-bb43f82c33c4
+      Fitness / gym / yoga → photo-1571019613454-1cb2f99b2d8b · photo-1517836357463-d25dfeac3438 · photo-1599058917765-a780eda07a3e
+      Fashion / retail → photo-1551836022-d5d88e9218df · photo-1483985988355-763728e1935b · photo-1490481651871-ab68de25d43d
+      Travel / outdoor / nature → photo-1469854523086-cc02fe5d8800 · photo-1506905925346-21bda4d32df4 · photo-1501785888041-af3ef285b470
+      School / education → photo-1503676260728-1c00da094a0b · photo-1523580494863-6f3031224c94 · photo-1497486751825-1233686d5d80
+      Healthcare / wellness → photo-1559757148-5c350d0d3c56 · photo-1576091160399-112ba8d25d1d · photo-1505751172876-fa1923c5c528
+    Photos must have descriptive alt text ("warm-lit dining room with copper pendants" — never "image" or "photo"). Use \`object-cover\` with explicit aspect ratios via Tailwind (\`aspect-[16/9]\`, \`aspect-[4/5]\`, \`aspect-square\`).
+    For brand marks / logos / icons / decorative shapes that AREN'T photographic: write inline SVG. Don't use placeholder squares, don't use emoji, don't pull a random Unsplash. SVG you author belongs at the markup level.
+
+  MOTION — every page should feel alive without being noisy.
+    Tailwind CDN gives you all of these out of the box; use them everywhere:
+      transition-all duration-300 ease-out
+      hover:scale-105 / hover:-translate-y-1 / hover:shadow-lg
+      group + group-hover:translate-x-1 (for arrow icons that slide on link hover)
+      animate-in fade-in slide-in-from-bottom-4 duration-700  (Tailwind v3.3+ — works in CDN)
+    For richer entrance animations, use CSS @keyframes inline:
+      @keyframes fade-up { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: none; } }
+      .reveal { opacity: 0; animation: fade-up 0.7s var(--ease-out-expo) forwards; }
+      .reveal-delay-1 { animation-delay: 0.1s; } /* etc through delay-5 */
+    Apply on hero text, feature card entrances, and section headings. The reveal class on each direct child of a section gives a "stagger" feel for free.
+    AVOID: bouncing emojis, infinite-rotate logos, rainbow gradient text animations, scrolljacking the whole page.
+
+  SECTION COUNT — 7-9 distinct sections is the credibility floor.
+    Lovable's reference output has ~8. v0/Bolt at 4-5 reads as "thin / unfinished" — that's a fail mode. Aim for THIS exact backbone, in order:
+      1. Sticky <header> with brand mark + 4-6 nav links + 1 primary CTA
+      2. <hero> (one of the named patterns below)
+      3. Logo cloud / social-proof band ("As featured in…" / "Trusted by…") — even if you have to invent plausible neighbor brands. Use grayscale SVG wordmarks you author inline, NOT real logos you don't have rights to.
+      4. Primary features as alternating-rows (3-4 rows, image-left/image-right toggling)
+      5. Secondary features as bento-grid OR stat-band (visual variety from #4)
+      6. Testimonials with real photos (Unsplash portraits) + name + role + company
+      7. Pricing OR FAQ-accordion (or both)
+      8. Sticky CTA-band before the footer
+      9. Substantive footer (5-col: brand+social, product, company, resources, newsletter signup)
+
+  LAYOUT PATTERN LIBRARY — pick named patterns. Don't invent generic stacked rectangles.
+    Heroes (pick ONE): split-asymmetric (60/40 text+photo) · full-bleed-photo (image cover, text overlay bottom-left) · stacked-editorial (centered serif headline + kicker + photo below) · diagonal-split (clipped angle between text/photo) · video-loop-bg (muted autoplay) · ambient-gradient (subtle conic/radial motion behind big text — cinema/futuristic only)
+    Mid sections (pick 4 DIFFERENT ones): stat-band (3-4 oversized numbers + label) · alternating-rows (image-left, image-right, image-left…) · three-column-features (icon + headline + 2-line body) · bento-grid (3+ tiles of varying width, 2018-Apple-keynote style) · quote-pull (oversized blockquote) · timeline-vertical · process-steps (1→2→3 with connector line) · before-after-slider · accordion-FAQ · marquee (scrolling testimonials or logos)
+    Closers (pick ONE): testimonial-carousel-with-photos · pricing-three-tier-with-popular-flag · sticky-CTA-band · newsletter-with-incentive · footer-with-newsletter (5-col)
+    Never repeat the same pattern twice. If you used three-column-features at the top, the middle CANNOT be another three-column. Variety is what makes the page read as designed-by-a-human.
+
+  CONCRETE COPY — every visible string must be brand-specific.
+    FORBIDDEN PHRASES (these read as default AI):
+      "Welcome to <Product>" · "Get Started" · "Learn More" · "Ready to start?" · "Take your X to the next level" · "Empower your team" · "Unlock your potential" · "The future of X" · "Lorem ipsum" · "Trusted by leading companies"
+    Required pattern:
+      Hero H1 — specific outcome the brand delivers, 8-14 words, names a real thing. "Slow-roasted coffee, served at the corner of 5th and Main" — not "Welcome to BrewCo".
+      Hero subhead — single concrete benefit + proof, 15-25 words. "Beans roasted Tuesday, brewed Wednesday. Three blocks from the F train. Open 6am to 8pm, every day."
+      Primary CTA — verb + outcome. "Reserve a table" / "See this week's menu" / "Get the playlist" — never "Get Started".
+      Secondary CTA — exit ramp for the not-ready visitor. "Read our story" / "How we source" / "Watch the 60s film".
+    Replace ALL "Acme / Company / Brand X / Lorem Solutions" placeholders with a coherent brand name + tagline before shipping.
+
+  MODERN CSS PER AESTHETIC — these signals tell the user "this is current, not 2018".
+    cinema / futuristic → glassmorphism cards (\`backdrop-blur-xl bg-white/5 border border-white/10\`), conic / radial gradient backgrounds, subtle grain overlay (SVG noise PNG dataURL), neon-glow text-shadows on accent text. WARM gradient overlays on hero photos.
+    editorial → wide letter-spacing on display, drop-cap on first paragraph (\`first-letter:text-7xl first-letter:float-left first-letter:mr-3 first-letter:font-display\`), serif numerals, thin top/bottom hairline rules between sections.
+    brutalist → hard \`border-2 border-black\`, no shadows, no rounding (\`rounded-none\`), oversized type that breaks the grid, raw HTML form widgets.
+    playful → soft shadows (\`shadow-[0_20px_40px_-15px_rgba(0,0,0,0.15)]\`), big radii (\`rounded-3xl\`), bouncy easing (\`ease-[cubic-bezier(0.34,1.56,0.64,1)]\`), confetti / squiggle SVG accents.
+    handcrafted → off-white paper bg (#faf6ee), torn-edge SVG dividers, hand-drawn underline SVG on key words, slight rotate on cards (\`rotate-[-0.5deg]\`).
+    corporate → restrained shadows, generous whitespace, single accent color, navy/charcoal palette, geometric-sans display.
+    minimalist → no gradients, no shadows; rely on whitespace, type scale, and a single accent stripe / dot.
+
+  COMPLETENESS CHECK — run this mentally before emitting the closing </boltAction> tag:
+    1. Are there 3+ Unsplash images on the page? If zero, you shipped placeholder squares — fix.
+    2. Read the hero H1. Does it name a specific product/place/outcome? If it starts "Welcome to" or contains "Empower", rewrite.
+    3. Count layout patterns. Are there 4+ DIFFERENT named patterns from the library above? If you used three-column-features twice, swap one out.
+    4. Hover a card mentally. Are there \`transition\`, \`hover:scale\`, or \`animate-in\` utilities anywhere? If no, add them.
+    5. Match-check the chosen aesthetic. If you picked "futuristic" — is there glassmorphism or a conic gradient somewhere? If "editorial" — is there a drop-cap and a hairline rule?
+    6. Footer present? Header present? Real navigation links (4-6, named for actual sections), not "Home / About / Contact" stubs?
+    7. Did you close every <boltAction> AND the <boltArtifact>? An unclosed tag = a lost file.
+</production_patterns>`;
 }
 
 function sharedBaseBlock(): string {
@@ -720,7 +868,7 @@ ${themeHead}
       <title>YOUR-DESIGN-TITLE</title>
 ${themeHead.split("\n").map((l) => "      " + l).join("\n")}
     </head>
-    <body class="bg-[var(--bg)] text-[var(--fg)] antialiased">
+    <body class="bg-(--bg) text-(--fg) antialiased">
       <div id="root"></div>
       <script type="module">
         import { createElement } from "https://esm.sh/react@18";

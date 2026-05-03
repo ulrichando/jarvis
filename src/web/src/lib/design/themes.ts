@@ -101,7 +101,7 @@ const brutalist: Theme = {
 };
 
 const cinema: Theme = {
-  id: "cinema",
+  id: "cinema-gold",
   mode: "dark",
   bg: "#050505",
   fg: "#F4EDD8",
@@ -114,8 +114,36 @@ const cinema: Theme = {
     "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,700;9..144,900&family=Manrope:wght@400;500;600&display=swap",
 };
 
+const cinemaTeal: Theme = {
+  id: "cinema-teal",
+  mode: "dark",
+  bg: "#06090B",
+  fg: "#E6EEEA",
+  accent: "#3DA89E",
+  muted: "#7A8A86",
+  supporting: "#0E1517",
+  displayFont: "Anton",
+  bodyFont: "Manrope",
+  fontsUrl:
+    "https://fonts.googleapis.com/css2?family=Anton&family=Manrope:wght@400;500;600&display=swap",
+};
+
+const cinemaBlood: Theme = {
+  id: "cinema-blood",
+  mode: "dark",
+  bg: "#0A0507",
+  fg: "#F2E6E1",
+  accent: "#B0413E",
+  muted: "#8A7872",
+  supporting: "#160B0E",
+  displayFont: "Playfair Display",
+  bodyFont: "Manrope",
+  fontsUrl:
+    "https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Manrope:wght@400;500;600&display=swap",
+};
+
 const playful: Theme = {
-  id: "playful",
+  id: "playful-coral",
   mode: "light",
   bg: "#FFF8F0",
   fg: "#1A1A2E",
@@ -128,8 +156,78 @@ const playful: Theme = {
     "https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@700;800&family=DM+Sans:wght@400;500;600;700&display=swap",
 };
 
+const playfulMint: Theme = {
+  id: "playful-mint",
+  mode: "light",
+  bg: "#F0FBF6",
+  fg: "#0F2E22",
+  accent: "#10B981",
+  muted: "#5C6E66",
+  supporting: "#D1F2E2",
+  displayFont: "Bricolage Grotesque",
+  bodyFont: "DM Sans",
+  fontsUrl:
+    "https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@700;800&family=DM+Sans:wght@400;500;600;700&display=swap",
+};
+
+const corporateSlate: Theme = {
+  id: "corporate-slate",
+  mode: "light",
+  bg: "#F8FAFC",
+  fg: "#0F172A",
+  accent: "#0F766E",
+  muted: "#475569",
+  supporting: "#E2E8F0",
+  displayFont: "Inter",
+  bodyFont: "Inter",
+  fontsUrl:
+    "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap",
+};
+
+const handcraftedRust: Theme = {
+  id: "handcrafted-rust",
+  mode: "light",
+  bg: "#F5EFE2",
+  fg: "#2A140A",
+  accent: "#A04020",
+  muted: "#705542",
+  supporting: "#E8DCC8",
+  displayFont: "Newsreader",
+  bodyFont: "Karla",
+  fontsUrl:
+    "https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,500;6..72,700&family=Karla:wght@400;500;600;700&display=swap",
+};
+
+const brutalistMagenta: Theme = {
+  id: "brutalist-magenta",
+  mode: "light",
+  bg: "#FFFFFF",
+  fg: "#000000",
+  accent: "#FF0080",
+  muted: "#000000",
+  supporting: "#FFFFFF",
+  displayFont: "Bricolage Grotesque",
+  bodyFont: "JetBrains Mono",
+  fontsUrl:
+    "https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@700;800&family=JetBrains+Mono:wght@400;500;700&display=swap",
+};
+
+const brutalistLime: Theme = {
+  id: "brutalist-lime",
+  mode: "light",
+  bg: "#FFFFFF",
+  fg: "#000000",
+  accent: "#84CC16",
+  muted: "#000000",
+  supporting: "#FFFFFF",
+  displayFont: "Bricolage Grotesque",
+  bodyFont: "JetBrains Mono",
+  fontsUrl:
+    "https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@700;800&family=JetBrains+Mono:wght@400;500;700&display=swap",
+};
+
 const futuristic: Theme = {
-  id: "futuristic",
+  id: "futuristic-cyan",
   mode: "dark",
   bg: "#08090C",
   fg: "#E8ECF1",
@@ -140,6 +238,34 @@ const futuristic: Theme = {
   bodyFont: "JetBrains Mono",
   fontsUrl:
     "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap",
+};
+
+const futuristicEmerald: Theme = {
+  id: "futuristic-emerald",
+  mode: "dark",
+  bg: "#06100C",
+  fg: "#E5F5EE",
+  accent: "#34D399",
+  muted: "#7A9A8E",
+  supporting: "#0C1A14",
+  displayFont: "Bricolage Grotesque",
+  bodyFont: "JetBrains Mono",
+  fontsUrl:
+    "https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700;800&family=JetBrains+Mono:wght@400;500&display=swap",
+};
+
+const futuristicViolet: Theme = {
+  id: "futuristic-violet",
+  mode: "dark",
+  bg: "#0B0817",
+  fg: "#ECE7F5",
+  accent: "#A78BFA",
+  muted: "#8C84A8",
+  supporting: "#15102A",
+  displayFont: "Space Grotesk",
+  bodyFont: "Inter",
+  fontsUrl:
+    "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap",
 };
 
 const handcrafted: Theme = {
@@ -170,32 +296,39 @@ const corporate: Theme = {
     "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap",
 };
 
+// Multiple colorways per aesthetic so different workspaces with the
+// same aesthetic don't all look identical, and "redesign" follow-ups
+// can rotate to a fresh palette while staying inside the aesthetic.
+// First entry is the canonical / safest pick; later entries provide
+// variety the seed will rotate through.
+const THEMES_BY_AESTHETIC: Record<Aesthetic, Theme[]> = {
+  editorial: [editorialDark, editorialLight],
+  minimalist: [minimalistLight, minimalistDark],
+  brutalist: [brutalist, brutalistMagenta, brutalistLime],
+  cinema: [cinema, cinemaTeal, cinemaBlood],
+  playful: [playful, playfulMint],
+  futuristic: [futuristic, futuristicEmerald, futuristicViolet],
+  handcrafted: [handcrafted, handcraftedRust],
+  corporate: [corporate, corporateSlate],
+};
+
 /**
- * Pick a theme. Aesthetic preset wins; otherwise we choose a sensible
- * default based on what kind of content the brief implies.
+ * Pick a theme inside the chosen aesthetic. The seed rotates the
+ * choice — so two workspaces with the same aesthetic don't end up
+ * with identical hex values, AND a "redesign" turn that bumps the
+ * seed gets a fresh palette without changing aesthetic.
+ *
+ * Seed is typically `workspaceHash * 7 + redesignCounter` from the
+ * chat route. A stable seed (no redesign) keeps the theme consistent
+ * across edits within a workspace.
  */
-export function pickTheme(aesthetic: Aesthetic | null): Theme {
-  switch (aesthetic) {
-    case "editorial":
-      return editorialDark;
-    case "minimalist":
-      return minimalistLight;
-    case "brutalist":
-      return brutalist;
-    case "cinema":
-      return cinema;
-    case "playful":
-      return playful;
-    case "futuristic":
-      return futuristic;
-    case "handcrafted":
-      return handcrafted;
-    case "corporate":
-      return corporate;
-    default:
-      // Sensible fallback for sites without a stated aesthetic.
-      return editorialDark;
-  }
+export function pickTheme(
+  aesthetic: Aesthetic | null,
+  seed: number = 0,
+): Theme {
+  const variants = aesthetic ? THEMES_BY_AESTHETIC[aesthetic] : null;
+  if (!variants || variants.length === 0) return editorialDark;
+  return variants[Math.abs(Math.trunc(seed)) % variants.length];
 }
 
 /**

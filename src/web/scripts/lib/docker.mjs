@@ -167,23 +167,62 @@ export async function exec(workspaceId, command, { timeoutMs = 600_000 } = {}) {
 }
 
 // Start a detached long-running process (e.g., `npm run dev`). Returns
-// immediately with the spawned exec ID. Output is dropped — for visible
-// output, the user should watch the workbench terminal.
+// immediately with the spawned exec ID. We redirect both streams into
+// `.jarvis/dev.log` inside the workspace (bind-mounted, so the host can
+// read it without another docker exec) — gives the model a tailable
+// log for runtime diagnostics. Without this, dev-server output goes
+// nowhere and the model is blind to crashes / 500s / port conflicts.
 export async function spawnDetached(workspaceId, command) {
   await ensureRunning(workspaceId);
   const name = containerName(workspaceId);
   const uid = process.getuid?.() ?? 1000;
   const gid = process.getgid?.() ?? 1000;
+  // Wrap the user command so the shell:
+  //   1. ensures .jarvis/ exists
+  //   2. timestamps the start so successive runs are easy to scan
+  //   3. truncates the log (one dev server at a time → fresh log per start)
+  //   4. runs the command with stdout+stderr appended to dev.log
+  //   5. on exit, appends an EXIT marker with the code
+  // The whole thing is `bash -lc` so users can still pipe / chain commands
+  // in the action body — the wrapper just adds redirection.
+  // Inline-export the polling env vars before running the user command.
+  // We tried setting them via `docker exec -e` but they vanished between
+  // bash and bun for reasons unclear (likely bun's env normalization).
+  // Using `export` inside the wrapper bash is the shell-level way to
+  // propagate vars through any chain of subshells and `bun run` invocations
+  // — including past `cd … &&` prefixes the caller may chain.
+  const wrapped = [
+    "mkdir -p .jarvis",
+    "export CHOKIDAR_USEPOLLING=true",
+    "export CHOKIDAR_INTERVAL=300",
+    "export WATCHPACK_POLLING=true",
+    "export NEXT_TELEMETRY_DISABLED=1",
+    `printf '\\n--- start %s ---\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > .jarvis/dev.log`,
+    `(${command}) >> .jarvis/dev.log 2>&1`,
+    `echo "--- exit $? ---" >> .jarvis/dev.log`,
+  ].join("; ");
   // -d puts docker exec in detached mode: it returns as soon as the
   // process is started, leaving it running inside the container.
-  const { stdout } = await execFileP("docker", [
+  // Force file-watcher polling: Docker bind mounts on Linux don't reliably
+  // propagate inotify events from host writes into the container, so
+  // Next/Vite/Webpack's default fsnotify-based watchers miss host edits
+  // and the dev server stops auto-reloading. Setting these env vars makes
+  // every common watcher (chokidar, webpack, vite-plugin-node, nodemon)
+  // fall back to polling, which DOES see bind-mount changes.
+  const dockerArgs = [
     "exec",
     "-d",
     "-u", `${uid}:${gid}`,
     "-w", "/workspace",
+    "-e", "CHOKIDAR_USEPOLLING=true",
+    "-e", "CHOKIDAR_INTERVAL=300",
+    "-e", "WATCHPACK_POLLING=true",
+    "-e", "NEXT_TELEMETRY_DISABLED=1",
     name,
-    "/bin/bash", "-lc", command,
-  ]);
+    "/bin/bash", "-lc", wrapped,
+  ];
+  console.log("[spawnDetached] cmd=docker", dockerArgs.slice(0, 12).join(" "));
+  const { stdout } = await execFileP("docker", dockerArgs);
   return { execId: stdout.trim() };
 }
 

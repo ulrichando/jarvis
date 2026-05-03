@@ -129,21 +129,57 @@ export function DesignView({
     setChatId(null);
   }, [workspaceId]);
 
+  // Sync the resolved workspaceId to the URL so a refresh deterministically
+  // re-opens the same workspace. Without this, /design (no query) hits the
+  // server's "fall back to all[0]" branch which can pick a DIFFERENT
+  // workspace each time depending on how the storage layer orders the list
+  // — which manifests as "my conversation disappeared on refresh" because
+  // the chatId localStorage key (\`design:chat:\${workspaceId}\`) no longer
+  // matches.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("ws") === workspaceId) return;
+    params.set("ws", workspaceId);
+    const next = `${window.location.pathname}?${params.toString()}`;
+    window.history.replaceState(null, "", next);
+  }, [workspaceId]);
+
   // Persist the conversation id per workspace so a refresh restores
-  // the same chat thread. Stored in localStorage keyed by workspaceId.
-  // Picked up on first mount so the Chat receives chatId + initial
-  // messages and the user's history isn't dropped on F5.
+  // the same chat thread.
+  //
+  // Source of truth is server-side `_meta.json` (set by the chat route
+  // on every workspace turn). We pull it via the workspace API so the
+  // chat history is visible to ANY browser / device that opens this
+  // workspace, not just the one that created the conversation.
+  // localStorage is the fallback for legacy workspaces created before
+  // the server-side persistence landed. Reading localStorage during
+  // useState's initializer causes a hydration mismatch — defer to
+  // useEffect so first paint matches SSR; upgrade once hydrated.
   const chatIdKey = `design:chat:${workspaceId}`;
-  const [chatId, setChatId] = useState<string | null>(() => {
-    if (typeof window === "undefined") return null;
-    return window.localStorage.getItem(`design:chat:${workspaceId}`);
+  const [chatId, setChatId] = useState<string | null>(null);
+  const [hydrated, setHydrated] = useState(false);
+  const wsQuery = useQuery({
+    queryKey: ["workspace", workspaceId],
+    queryFn: async () => {
+      const r = await fetch(`/api/workspace/${workspaceId}`);
+      if (!r.ok) return null;
+      const j = await r.json();
+      return j.workspace as { id: string; name: string; conversationId?: string } | null;
+    },
+    refetchOnWindowFocus: false,
   });
   useEffect(() => {
-    // Re-read when workspaceId changes (the workspace-switch effect
-    // above clears chatId, then this picks the right one for the new ws).
+    const fromServer = wsQuery.data?.conversationId ?? null;
+    if (fromServer) {
+      setChatId(fromServer);
+      setHydrated(true);
+      return;
+    }
     if (typeof window === "undefined") return;
     setChatId(window.localStorage.getItem(chatIdKey));
-  }, [chatIdKey]);
+    setHydrated(true);
+  }, [chatIdKey, wsQuery.data?.conversationId]);
   const handleConversationId = (id: string) => {
     setChatId(id);
     if (typeof window !== "undefined") {
@@ -155,9 +191,10 @@ export function DesignView({
   // True only when we have a chatId saved AND the query hasn't settled
   // yet. While loading, we DEFER mounting <Chat> — otherwise it would
   // mount with an empty initialMessages and ignore the data when the
-  // query resolves (useState reads its initial value once).
+  // query resolves (useState reads its initial value once). Gated on
+  // `hydrated` so SSR / first client paint render identically.
   const isLoadingChatHistory =
-    chatId !== null && conversationQuery.isLoading && !conversationQuery.data;
+    hydrated && chatId !== null && conversationQuery.isLoading && !conversationQuery.data;
 
   // Fetch the selected file's content so we can extract its declared tweaks.
   // Same queryKey as HtmlPreview's useQuery — react-query dedupes the fetch.
@@ -180,37 +217,36 @@ export function DesignView({
     setTweakOverrides({});
   }, [selected?.path]);
 
-  // Auto-open questions.html when the model just wrote it. Watches the root
-  // tree (same queryKey as DesignFilesPanel — react-query dedupes the fetch)
-  // and fires only on the absent→present transition, so closing the tab
-  // doesn't immediately re-open it. Resets per workspace.
+  // Auto-open questions.html whenever it's present in the tree. Watches
+  // the root tree (same queryKey as DesignFilesPanel — react-query
+  // dedupes the fetch). Previously we only fired on the absent→present
+  // transition, which meant if the user landed on a workspace that
+  // ALREADY had questions.html (from a previous session, page refresh,
+  // or branch switch) the form sat invisible in the file tree. Opening
+  // unconditionally when present is the right default — the questions
+  // are always the active surface until the user submits answers.
   const { data: rootTree = [] } = useQuery({
     queryKey: ["design-tree", workspaceId, "", 0],
     queryFn: () => apiTree(workspaceId, ""),
     enabled: !!workspaceId,
   });
-  const lastQuestionsPresentRef = useRef<boolean | null>(null);
+  const openedQuestionsRef = useRef(false);
   useEffect(() => {
-    lastQuestionsPresentRef.current = null;
+    openedQuestionsRef.current = false;
   }, [workspaceId]);
   useEffect(() => {
-    const present = rootTree.some(
+    const q = rootTree.find(
       (e) => e.type === "file" && e.name === "questions.html",
     );
-    // First snapshot: just record state, never auto-open on initial load.
-    if (lastQuestionsPresentRef.current === null) {
-      lastQuestionsPresentRef.current = present;
-      return;
+    if (q && !openedQuestionsRef.current) {
+      openedQuestionsRef.current = true;
+      openFile(q);
+    } else if (!q) {
+      // Questions deleted (user submitted answers, design proceeded) —
+      // reset so a future re-clarification can auto-open again.
+      openedQuestionsRef.current = false;
     }
-    if (present && !lastQuestionsPresentRef.current) {
-      const q = rootTree.find(
-        (e) => e.type === "file" && e.name === "questions.html",
-      );
-      if (q) openFile(q);
-    }
-    lastQuestionsPresentRef.current = present;
-    // openFile is stable across renders (defined inline but with the same
-    // closure each render). Listing it would cause an infinite loop.
+    // openFile is stable across renders. Listing it would loop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rootTree]);
 
@@ -289,7 +325,7 @@ export function DesignView({
       //    the model generates. Fire-and-forget — don't block the auto-send
       //    on filesystem I/O. Also reset the auto-open ref so a *future*
       //    questions.html (re-clarification) can auto-open again.
-      lastQuestionsPresentRef.current = null;
+      openedQuestionsRef.current = false;
       void apiDeleteEntry(workspaceId, "questions.html")
         .then(() => {
           qc.invalidateQueries({ queryKey: ["design-tree", workspaceId] });

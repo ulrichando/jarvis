@@ -200,6 +200,15 @@ export class StreamingMessageParser {
                 content = unescapeTags(content);
               }
               content += "\n";
+            } else if (action.type === "shell" || action.type === "start") {
+              // Unescape `&lt;` / `&gt;` in shell + start command bodies
+              // too. Some models (DeepSeek V4 in particular) defensively
+              // XML-escape angle brackets inside <boltAction> content,
+              // so a shell like `grep '<Link><a' ...` arrives as
+              // `grep '&lt;Link&gt;&lt;a' ...` and matches nothing in
+              // the workspace. Without unescape the autonomous fix loop
+              // diagnoses, finds "NO_MATCHES", and stops.
+              content = unescapeTags(content);
             }
             action.content = content;
 
@@ -322,10 +331,27 @@ export class StreamingMessageParser {
             consumed = true;
             break;
           }
-          // Probe is no longer a prefix of either known tag — bail.
+          // Full match for boltActionResults: enter results-skip mode.
+          if (probe === RESULTS_TAG_OPEN) {
+            const next = input[j + 1];
+            if (next && next !== ">" && next !== " ") {
+              output += input.slice(i, j + 1);
+              i = j + 1;
+              consumed = true;
+              break;
+            }
+            const tagEnd = input.indexOf(">", j);
+            if (tagEnd === -1) return commit(state, output, i);
+            state.insideResults = true;
+            i = tagEnd + 1;
+            consumed = true;
+            break;
+          }
+          // Probe is no longer a prefix of any known tag — bail.
           if (
             !ARTIFACT_TAG_OPEN.startsWith(probe) &&
-            !PLAN_TAG_OPEN.startsWith(probe)
+            !PLAN_TAG_OPEN.startsWith(probe) &&
+            !RESULTS_TAG_OPEN.startsWith(probe)
           ) {
             output += input.slice(i, j + 1);
             i = j + 1;
@@ -341,7 +367,8 @@ export class StreamingMessageParser {
         if (
           j === input.length &&
           (ARTIFACT_TAG_OPEN.startsWith(probe) ||
-            PLAN_TAG_OPEN.startsWith(probe))
+            PLAN_TAG_OPEN.startsWith(probe) ||
+            RESULTS_TAG_OPEN.startsWith(probe))
         ) {
           break;
         }

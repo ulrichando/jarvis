@@ -17,7 +17,6 @@ import {
   Coffee,
   Compass,
   Database,
-  Diamond,
   FileText,
   FilePen,
   Flower,
@@ -38,10 +37,8 @@ import {
   Search,
   Sparkles,
   UserPlus,
-  Zap,
   type LucideIcon,
 } from "lucide-react";
-import { useChatStore } from "@/stores/chat";
 import { cn } from "@/lib/utils";
 import type { Provider } from "./models-meta";
 
@@ -81,12 +78,6 @@ export type ProviderUX = {
   placeholder: string;
   /** Renders the content above the composer on a fresh chat. */
   renderGreeting: (ctx: GreetingCtx) => ReactNode;
-  /**
-   * Optional control strip rendered ABOVE the composer. Used by DeepSeek for
-   * the Instant/Expert mode toggle. Rendered both in empty-state and while
-   * chatting.
-   */
-  renderPreComposer?: () => ReactNode;
   /** Suggestion chips rendered below the composer. Empty = none. */
   chips: Chip[];
   /** Click the `+` in the composer → this grouped menu. */
@@ -172,71 +163,12 @@ function KimiGreeting(_ctx: GreetingCtx) {
 }
 
 function DeepSeekGreeting(_ctx: GreetingCtx) {
-  return <DeepSeekGreetingInner />;
-}
-
-function DeepSeekGreetingInner() {
-  const model = useChatStore((s) => s.model);
-  const mode = model === "deepseek-reasoner" ? "Expert" : "Instant";
   return (
     <div className="flex items-center justify-center gap-3">
       <span className="text-4xl">🐳</span>
       <h1 className="text-2xl font-medium tracking-tight text-foreground md:text-3xl">
-        Start chatting with <span className="text-primary">{mode}</span>
+        Start chatting with <span className="text-primary">DeepSeek</span>
       </h1>
-    </div>
-  );
-}
-
-function DeepSeekPreComposer() {
-  // Outer fn is the ReactNode factory consumed by Composer — it must NOT call
-  // hooks itself (Composer would attribute them to its own hook order and
-  // violate the Rules of Hooks). The inner component owns the hooks.
-  return <DeepSeekPreComposerInner />;
-}
-
-function DeepSeekPreComposerInner() {
-  const model = useChatStore((s) => s.model);
-  const setModel = useChatStore((s) => s.setModel);
-
-  const modes: Array<{
-    id: "instant" | "expert";
-    label: string;
-    icon: LucideIcon;
-    modelId: string;
-  }> = [
-    { id: "instant", label: "Instant", icon: Zap, modelId: "deepseek-chat" },
-    { id: "expert", label: "Expert", icon: Diamond, modelId: "deepseek-reasoner" },
-  ];
-
-  const activeId = model === "deepseek-reasoner" ? "expert" : "instant";
-
-  return (
-    <div className="mb-4 flex items-center justify-center gap-1 rounded-full border border-border bg-card/40 p-1 w-fit mx-auto">
-      {modes.map((m) => {
-        const active = m.id === activeId;
-        return (
-          <button
-            key={m.id}
-            type="button"
-            onClick={() => setModel(m.modelId)}
-            className={cn(
-              "flex items-center gap-1.5 rounded-full px-4 py-1.5 text-[13px] font-medium transition-colors",
-              active
-                ? "bg-primary/20 text-foreground"
-                : "text-muted-foreground hover:text-foreground",
-            )}
-          >
-            <m.icon
-              className={cn(
-                "size-3.5",
-                active ? "text-primary" : "text-muted-foreground",
-              )}
-            />
-            {m.label}
-          </button>
-        );
-      })}
     </div>
   );
 }
@@ -570,7 +502,6 @@ const KIMI_UX: ProviderUX = {
 const DEEPSEEK_UX: ProviderUX = {
   placeholder: "Message DeepSeek",
   renderGreeting: DeepSeekGreeting,
-  renderPreComposer: DeepSeekPreComposer,
   chips: [],
   plus: DEFAULT_UX.plus,
   inlineToggles: [
