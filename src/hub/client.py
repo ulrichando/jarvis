@@ -62,6 +62,30 @@ class _ReadMixin:
             conn.close()
 
     @staticmethod
+    def read_setting_sync(
+        key: str,
+        db_path: Path | str | None = None,
+    ) -> str | None:
+        """Latest value for a settings key, or None if never set.
+
+        Settings table is populated by the hub daemon's file watcher
+        whenever ~/.jarvis/{cli-model, voice-model, tts-provider}
+        change. keys.env is NEVER replicated here (sensitive).
+        """
+        path = Path(db_path) if db_path else _state_db_path()
+        if not path.exists():
+            return None
+        conn = sqlite3.connect(str(path))
+        try:
+            row = conn.execute(
+                "SELECT value FROM settings WHERE key = ?",
+                (key,),
+            ).fetchone()
+            return row[0] if row else None
+        finally:
+            conn.close()
+
+    @staticmethod
     def read_session_sync(
         session_id: str,
         db_path: Path | str | None = None,
