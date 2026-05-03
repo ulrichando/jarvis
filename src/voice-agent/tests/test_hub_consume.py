@@ -123,3 +123,52 @@ async def test_consume_returns_zero_when_stream_empty(tmp_path):
     redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
     n = await server.consume_once(redis, db_path=db)
     assert n == 0
+
+
+@pytest.mark.asyncio
+async def test_consume_publishes_to_broadcasts_stream(tmp_path):
+    """After state.db apply + ACK, the same event must also land in
+    broadcasts:conversation for SSE subscribers."""
+    db = tmp_path / "state.db"
+    server.bootstrap_schema(db)
+    redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+    await redis.xadd("events:conversation", {"data": json.dumps({
+        "source": "voice",
+        "source_event_id": "bcast-1",
+        "type": "conversation.message.created",
+        "session_id": "s-bcast",
+        "source_ts": 1714710000000,
+        "payload": {"role": "user", "text": "broadcast me"},
+    })})
+    n = await server.consume_once(redis, db_path=db)
+    assert n == 1
+
+    bcast = await redis.xrange("broadcasts:conversation")
+    assert len(bcast) == 1
+    _id, fields = bcast[0]
+    evt = json.loads(fields["data"])
+    assert evt["source_event_id"] == "bcast-1"
+    assert evt["session_id"] == "s-bcast"
+    assert evt["type"] == "conversation.message.created"
+
+
+@pytest.mark.asyncio
+async def test_consume_does_not_broadcast_on_apply_failure(tmp_path):
+    """Broken event still ACKs but must NOT publish to broadcasts."""
+    db = tmp_path / "state.db"
+    server.bootstrap_schema(db)
+    redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+    # Malformed: missing 'session_id' key — _apply_event raises KeyError.
+    await redis.xadd("events:conversation", {"data": json.dumps({
+        "source": "voice",
+        "source_event_id": "bad-1",
+        "type": "conversation.message.created",
+        "source_ts": 0,
+        "payload": {"role": "user", "text": "x"},
+    })})
+    await server.consume_once(redis, db_path=db)
+
+    bcast = await redis.xrange("broadcasts:conversation")
+    assert bcast == [], "failed events must not leak to broadcasts"
