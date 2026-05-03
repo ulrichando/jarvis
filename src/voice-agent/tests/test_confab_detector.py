@@ -174,6 +174,46 @@ def test_legit_long_explanatory_response():
     assert not is_confab
 
 
+def test_legit_complete_your_thought():
+    """`complete` inside a clarifying question must NOT trigger.
+    Live false positive 2026-05-03: JARVIS asked the user to repeat
+    themselves with 'Could you please complete your thought?' and the
+    detector dropped the turn — user got silence, JARVIS appeared
+    broken. The success-claim regex only counts when followed by
+    sentence-end punctuation or a known success noun."""
+    cases = [
+        "Could you please complete your thought?",
+        "It seems like you started to say something, sir. Could you please complete your thought?",
+        "I'd be happy to help you complete the project documentation.",
+        "Once you finish reviewing it, let me know.",
+        "I'm not done explaining yet — there's more.",
+    ]
+    for text in cases:
+        is_confab, reason = confab_detector.looks_like_confabulation(
+            text, prior_messages=[],
+        )
+        assert not is_confab, (
+            f"false positive on legit phrasing: text={text!r} reason={reason!r}"
+        )
+
+
+def test_caught_done_with_punctuation_still_fires():
+    """Sanity: tightening the regex must NOT regress real success
+    claims. 'Done, sir.' / 'Task completed.' / 'Finished.' MUST still
+    trigger when there's no tool evidence."""
+    cases = [
+        "Done, sir.",
+        "Task completed.",
+        "Finished.",
+        "All complete, sir.",
+    ]
+    for text in cases:
+        is_confab, _ = confab_detector.looks_like_confabulation(
+            text, prior_messages=[],
+        )
+        assert is_confab, f"missed real confab: {text!r}"
+
+
 # ── Disable via env ───────────────────────────────────────────────
 
 

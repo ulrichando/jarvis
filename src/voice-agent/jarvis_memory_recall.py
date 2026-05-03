@@ -1,9 +1,16 @@
-"""Memory recall — search past conversations stored in
-~/.jarvis/conversations.db (SQLite, written by jarvis_agent.py's
-conversation_item_added handler).
+"""Memory recall — search past conversations stored in the hub's
+~/.jarvis/hub/state.db (SQLite, written by the hub daemon as it
+consumes conversation.message.created events).
 
-Pattern: ChatGPT/Claude memory tool, but local. The DB already has
-hundreds of turns indexed by (session_id, ts, role, text). This
+Pre-2026-05-03 this module read ~/.jarvis/conversations.db, which has
+since been retired in favor of the hub bus. The query shape is the
+same — `messages` (state.db) is the equivalent of the old `turns`
+table. The only material difference: state.db.ts is in milliseconds
+while the legacy turns.ts was seconds. We convert to seconds at the
+SELECT layer so all downstream formatting stays.
+
+Pattern: ChatGPT/Claude memory tool, but local. State.db already has
+thousands of turns indexed by (session_id, ts, role, text). This
 subagent exposes that history to the supervisor as a single tool:
 "what did we discuss about X" / "when did I tell you about Y".
 
@@ -30,15 +37,17 @@ from livekit.agents.llm import function_tool
 
 logger = logging.getLogger("jarvis.memory_recall")
 
-_CONVO_DB = Path.home() / ".jarvis" / "conversations.db"
+# Hub's canonical state.db (post-2026-05-03 — see
+# docs/superpowers/specs/2026-05-03-jarvis-event-hub-design.md).
+_STATE_DB = Path.home() / ".jarvis" / "hub" / "state.db"
 
 
 def _connect():
-    """Open the conversations DB read-only. The agent process holds a
-    write connection elsewhere; we use a fresh read-only handle so we
-    don't fight for locks."""
+    """Open state.db read-only. The hub daemon holds the write
+    connection elsewhere; we use a fresh read-only handle so we don't
+    fight for locks."""
     return sqlite3.connect(
-        f"file:{_CONVO_DB}?mode=ro", uri=True, isolation_level=None
+        f"file:{_STATE_DB}?mode=ro", uri=True, isolation_level=None
     )
 
 
@@ -101,8 +110,8 @@ async def recall(query: str, days: int = 30, limit: int = 5) -> str:
     limit = max(1, min(int(limit or 5), 15))
     cutoff = int(time.time()) - days * 86400
 
-    if not _CONVO_DB.exists():
-        return "(no conversation history yet — DB not created)"
+    if not _STATE_DB.exists():
+        return "(no conversation history yet — state.db not created)"
 
     # Tokenize the query into words; require ALL non-stopword tokens
     # to appear (AND match) for tighter relevance. Falls back to the
@@ -119,14 +128,22 @@ async def recall(query: str, days: int = 30, limit: int = 5) -> str:
     where_clauses = " AND ".join(["LOWER(text) LIKE ?"] * len(tokens))
     params = [f"%{t}%" for t in tokens]
 
+    # state.db.messages.ts is in milliseconds; convert to seconds at
+    # the SELECT layer so the cutoff comparison and downstream
+    # `_format_when` (which expects seconds) keep working unchanged.
     sql = (
-        f"SELECT session_id, ts, role, text FROM turns "
+        f"SELECT session_id, CAST(ts/1000 AS INTEGER) AS ts, role, text "
+        f"FROM messages "
         f"WHERE ts >= ? AND ({where_clauses}) "
         f"ORDER BY ts DESC LIMIT ?"
     )
     try:
         with _connect() as conn:
-            rows = conn.execute(sql, [cutoff, *params, limit]).fetchall()
+            # cutoff is in seconds; multiply by 1000 to compare against
+            # state.db's ms timestamps.
+            rows = conn.execute(
+                sql, [cutoff * 1000, *params, limit],
+            ).fetchall()
     except Exception as e:
         logger.warning("[recall] DB query failed: %s", e)
         return f"(recall failed: {e})"
@@ -174,6 +191,6 @@ _STOPWORDS = {
 
 
 def is_available() -> bool:
-    """True if the conversations DB exists. Otherwise gracefully
+    """True if the hub's state.db exists. Otherwise gracefully
     disables (won't show up in supervisor's tool list)."""
-    return _CONVO_DB.exists()
+    return _STATE_DB.exists()
