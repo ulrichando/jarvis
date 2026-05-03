@@ -14,6 +14,7 @@ import { DataSection } from "@/components/settings/data";
 import { AboutSection } from "@/components/settings/about";
 import { JarvisInChromeSection } from "@/components/settings/jarvis-in-chrome";
 import { VoiceAndModelsSection } from "@/components/settings/voice-and-models";
+import { MemoriesSection } from "@/components/settings/memories";
 
 type Section =
   | "general"
@@ -25,6 +26,7 @@ type Section =
   | "integrations"
   | "providers"
   | "voice-and-models"
+  | "memories"
   | "data"
   | "about"
   | "jarvis-in-chrome";
@@ -39,6 +41,7 @@ const NAV: Array<{ id: Section; label: string }> = [
   { id: "integrations", label: "Integrations" },
   { id: "providers", label: "Providers" },
   { id: "voice-and-models", label: "Voice & Models" },
+  { id: "memories", label: "Memories" },
   { id: "data", label: "Data" },
   { id: "about", label: "About" },
   { id: "jarvis-in-chrome", label: "Jarvis in Chrome" },
@@ -85,6 +88,7 @@ export default function SettingsPage() {
           {section === "integrations" && <IntegrationsSection />}
           {section === "providers" && <ProvidersSection />}
           {section === "voice-and-models" && <VoiceAndModelsSection />}
+          {section === "memories" && <MemoriesSection />}
           {section === "data" && <DataSection />}
           {section === "about" && <AboutSection />}
           {section === "jarvis-in-chrome" && <JarvisInChromeSection />}
