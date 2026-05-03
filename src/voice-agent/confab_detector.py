@@ -66,7 +66,19 @@ _STRONG_CLAIMS = [
     re.compile(r"\b(?:posted|tweeted|sent|emailed|messaged|saved|uploaded|downloaded|deleted)\s+(?:the |it|that)?", re.I),
     # Generic completion + screenshot
     re.compile(r"\b(?:screenshot|picture) (?:has been )?taken\b", re.I),
-    re.compile(r"\b(?:done|complete|completed|finished),?\s*(?:sir)?\.?\s*(?:new tab|task|action)?\b", re.I),
+    # Bare success word ("Done, sir." / "Task completed." / "Finished.") —
+    # must terminate with sentence-end punctuation OR be followed by a
+    # known success-noun. The trailing-clause check was missing
+    # pre-2026-05-03 and silently ate clarifying-question turns like
+    # "Could you please complete your thought?" — see
+    # test_legit_complete_your_thought.
+    re.compile(
+        r"\b(?:done|complete|completed|finished)"
+        r"(?:[\s,]+sir)?"                                       # optional ", sir"
+        r"(?:[\.!,]"                                            # ends with . ! ,
+        r"|\s+(?:the\s+)?(?:new\s+tab|task|action|search|operation))",  # OR followed by success-noun
+        re.I,
+    ),
 ]
 
 
