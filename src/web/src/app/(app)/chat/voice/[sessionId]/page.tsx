@@ -24,8 +24,12 @@ import { formatRelativeTime } from "@/lib/utils";
 //  - Composer at the bottom POSTs to the voice-client's /user-input
 //    endpoint, which publishes a data packet that the voice-agent
 //    treats as a synthetic user turn (full LLM → TTS round trip).
-//    Both sides of the round trip land in conversations.db, mirror to
-//    Convex, and re-render this page within ~50 ms.
+//    Both sides of the round trip publish to the hub event bus
+//    (events:conversation), which the hub daemon consumes into
+//    ~/.jarvis/hub/state.db AND the existing Convex mirror, so this
+//    page re-renders within ~50 ms via the Convex subscription.
+//    (Pre-2026-05-03 the path was a direct conversations.db write
+//    by the voice-agent; that DB has been retired in favor of the hub.)
 //
 //  Distinct from /chat/[id] (typed chat in Drizzle). This route is
 //  scoped to a single voice session and edits go through the voice
