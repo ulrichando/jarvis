@@ -26,3 +26,13 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages (session_id, ts);
 CREATE INDEX IF NOT EXISTS idx_messages_source  ON messages (source, ts);
+
+-- Schema v2 (2026-05-03): unified settings.
+INSERT OR IGNORE INTO schema_version (version) VALUES (2);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    source      TEXT
+);
