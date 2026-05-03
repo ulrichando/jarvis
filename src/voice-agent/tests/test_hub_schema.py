@@ -33,9 +33,9 @@ def test_bootstrap_idempotent(tmp_path):
     versions = sorted(r[0] for r in conn.execute(
         "SELECT version FROM schema_version"
     ))
-    # As of schema v2 the bootstrap seeds [1, 2]. Every additional call
+    # As of schema v3 the bootstrap seeds [1, 2, 3]. Every additional call
     # is a no-op because of INSERT OR IGNORE.
-    assert versions == [1, 2]
+    assert versions == [1, 2, 3]
 
 
 def test_messages_unique_idempotency(tmp_path):

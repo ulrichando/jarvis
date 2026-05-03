@@ -27,7 +27,8 @@ def test_v2_schema_version_bumped(tmp_path):
     versions = [r[0] for r in conn.execute(
         "SELECT version FROM schema_version ORDER BY version"
     )]
-    assert versions == [1, 2], f"expected [1, 2], got {versions}"
+    # v2 must be present (later versions are tested in their own files).
+    assert 1 in versions and 2 in versions, f"expected 1 and 2 in {versions}"
 
 
 def test_v2_settings_primary_key_is_key(tmp_path):
