@@ -153,6 +153,30 @@ async def test_memory_apply_writes_broadcast(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_memory_consumer_uses_default_constants(tmp_path):
+    """consume_once with the new constants `MEMORY_EVENTS_STREAM` /
+    `MEMORY_BROADCASTS_STREAM` works end-to-end (proves the daemon's
+    third gather() arm is wireable)."""
+    db = tmp_path / "state.db"
+    server.bootstrap_schema(db)
+    redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+    await redis.xadd(server.MEMORY_EVENTS_STREAM, {"data": json.dumps(
+        _upsert_evt("const-test", "ok", eid="evt-const"),
+    )})
+    n = await server.consume_once(
+        redis, db_path=db,
+        events_stream=server.MEMORY_EVENTS_STREAM,
+        broadcasts_stream=server.MEMORY_BROADCASTS_STREAM,
+        consumer=server.MEMORY_CONSUMER,
+    )
+    assert n == 1
+
+    bcast = await redis.xrange(server.MEMORY_BROADCASTS_STREAM)
+    assert len(bcast) == 1
+
+
+@pytest.mark.asyncio
 async def test_memory_remove_unknown_id_is_noop(tmp_path):
     """Deleting a memory_id that was never upserted must not raise."""
     db = tmp_path / "state.db"
