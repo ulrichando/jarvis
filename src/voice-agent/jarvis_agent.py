@@ -165,6 +165,18 @@ except Exception as _hub_err:
         f"disabled — could not initialize: {_hub_err}"
     )
 
+# ── Memory layer (durable user-facts that survive chat deletion) ──────
+# Spec: docs/superpowers/specs/2026-05-03-jarvis-memory-layer-design.md.
+# `is_available()` returns False if the hub state.db is unreachable, in
+# which case we skip both the per-turn injection and the tool registration
+# below.
+import jarvis_memory  # noqa: E402
+
+_MEMORY_AVAILABLE = jarvis_memory.is_available()
+logging.getLogger("jarvis-agent.memory").info(
+    f"memory layer {'enabled' if _MEMORY_AVAILABLE else 'disabled'}"
+)
+
 # ── Maya-class speech intelligence ────────────────────────────────────
 from turn_router    import (
     detect_emotion, classify_turn, AudioMeta,
@@ -5153,29 +5165,46 @@ async def entrypoint(ctx: JobContext) -> None:
         # take effect on the next agent restart — meaning when the user
         # corrects JARVIS mid-session ("remember, always use default
         # profile"), the correction sits on disk for hours unread.
-        nonlocal _rules_mtime
+        nonlocal _rules_mtime, _last_memory_block
         try:
             cur_mtime = _LEARNED_RULES_PATH.stat().st_mtime
-            if cur_mtime != _rules_mtime:
-                new_block = _load_learned_rules()
+            rules_block = _load_learned_rules() if cur_mtime != _rules_mtime \
+                else learned_rules_block
+            new_memory_block = _build_memory_block()
+
+            rules_changed = cur_mtime != _rules_mtime
+            memory_changed = new_memory_block != _last_memory_block
+
+            if rules_changed or memory_changed:
                 new_instructions = (
-                    _instructions_prefix + new_block + _instructions_suffix
+                    _instructions_prefix + rules_block
+                    + _instructions_suffix + new_memory_block
                 )
 
-                async def _push_rules():
+                async def _push_instructions():
                     try:
                         await _jarvis_agent.update_instructions(new_instructions)
-                        logger.info(
-                            f"[learned-rules] hot-reloaded "
-                            f"({len(new_block)} chars) — was stale {cur_mtime - _rules_mtime:.0f}s"
-                        )
+                        if rules_changed:
+                            logger.info(
+                                f"[learned-rules] hot-reloaded "
+                                f"({len(rules_block)} chars) — was stale "
+                                f"{cur_mtime - _rules_mtime:.0f}s"
+                            )
+                        if memory_changed:
+                            logger.info(
+                                f"[memory] block refreshed "
+                                f"({len(new_memory_block)} chars)"
+                            )
                     except Exception as e:
-                        logger.warning(f"[learned-rules] hot-reload push failed: {e}")
+                        logger.warning(f"[instructions] hot-reload push failed: {e}")
 
-                _task = asyncio.create_task(_push_rules())
+                _task = asyncio.create_task(_push_instructions())
                 _bg_tasks.add(_task)
                 _task.add_done_callback(_bg_tasks.discard)
-                _rules_mtime = cur_mtime
+                if rules_changed:
+                    _rules_mtime = cur_mtime
+                if memory_changed:
+                    _last_memory_block = new_memory_block
         except FileNotFoundError:
             pass
         except Exception as e:
@@ -5815,8 +5844,25 @@ async def entrypoint(ctx: JobContext) -> None:
     except FileNotFoundError:
         _rules_mtime = 0.0
 
+    # Memory block — top-N curated facts, rebuilt per turn so web-side
+    # edits propagate. Track last-pushed string to skip no-op updates.
+    def _build_memory_block() -> str:
+        if not _MEMORY_AVAILABLE:
+            return ""
+        try:
+            block = jarvis_memory.format_memories_for_prompt()
+            if not block:
+                return ""
+            return "\n\n" + block
+        except Exception as e:
+            logger.warning(f"[memory] block render failed: {e}")
+            return ""
+
+    _memory_block = _build_memory_block()
+    _last_memory_block = _memory_block
+
     _jarvis_agent = JarvisAgent(
-        instructions=(_instructions_prefix + learned_rules_block + _instructions_suffix),
+        instructions=(_instructions_prefix + learned_rules_block + _instructions_suffix + _memory_block),
         # Pre-load recent prior turns from conversations.db so the
         # LLM sees what was discussed before this job started.
         # Without this, every voice-client reconnect = amnesia.
@@ -5859,12 +5905,20 @@ async def entrypoint(ctx: JobContext) -> None:
             # without going through a specialist handoff.
             get_location,
             set_location,
-            # Memory
+            # Memory — recall_conversation searches transcript history;
+            # remember/forget/list_memories operate on the durable
+            # facts store (state.db.memories) that survives chat delete.
+            # See docs/superpowers/specs/2026-05-03-jarvis-memory-layer-design.md.
             recall_conversation,
             remember_this,
             list_pending_proposals,
             accept_proposal,
             reject_proposal,
+            *([
+                jarvis_memory.remember,
+                jarvis_memory.forget,
+                jarvis_memory.list_memories,
+            ] if _MEMORY_AVAILABLE else []),
             # Face ID — read-only CV
             face_register,
             face_identify,
