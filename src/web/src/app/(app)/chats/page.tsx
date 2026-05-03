@@ -2,8 +2,10 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { useMutation, useQuery } from "convex/react";
-import { api } from "@convex/_generated/api";
+import {
+  useVoiceSessions,
+  removeVoiceSession,
+} from "@/hooks/use-voice-sessions";
 import {
   CheckSquare,
   Loader2,
@@ -46,7 +48,7 @@ function toMs(v: string | number): number {
 
 export default function ChatsPage() {
   const { data: typed = [], isLoading: typedLoading } = useConversations();
-  const voiceSessions = useQuery(api.sessions.list, { limit: 200 });
+  const voiceSessions = useVoiceSessions(200);
 
   const [filter, setFilter] = useState("");
   const [selectMode, setSelectMode] = useState(false);
@@ -55,7 +57,6 @@ export default function ChatsPage() {
   const [bulkPending, setBulkPending] = useState(false);
 
   const del = useDeleteConversation();
-  const removeVoice = useMutation(api.sessions.remove);
 
   // Build the unfiltered base lists once. Filtering applies after so we
   // keep "0 of 12 match 'foo'" semantics correct.
@@ -160,7 +161,7 @@ export default function ChatsPage() {
         if (key.startsWith("t:")) {
           await del.mutateAsync(key.slice(2));
         } else if (key.startsWith("v:")) {
-          await removeVoice({ sessionId: key.slice(2) });
+          await removeVoiceSession(key.slice(2));
         }
       }
       exitSelectMode();
@@ -505,7 +506,6 @@ function VoiceRow({
   selected: boolean;
   onToggle: () => void;
 }) {
-  const remove = useMutation(api.sessions.remove);
   const [confirming, setConfirming] = useState(false);
   const [pending, setPending] = useState(false);
 
@@ -519,7 +519,7 @@ function VoiceRow({
     }
     setPending(true);
     try {
-      await remove({ sessionId: item.sessionId });
+      await removeVoiceSession(item.sessionId);
     } finally {
       setPending(false);
     }
