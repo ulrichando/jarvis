@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 EVENTS_STREAM = "events:conversation"
+MEMORY_EVENTS_STREAM = "events:memory"
 
 
 def _new_event_id() -> str:
@@ -86,6 +87,64 @@ class _ReadMixin:
             conn.close()
 
     @staticmethod
+    def read_memories_sync(
+        category: str | None = None,
+        limit: int = 30,
+        db_path: Path | str | None = None,
+    ) -> list[dict]:
+        """Top memories ranked by use_count DESC, updated_ts DESC.
+        Filters by category if provided. Returns [] if state.db doesn't
+        exist yet."""
+        path = Path(db_path) if db_path else _state_db_path()
+        if not path.exists():
+            return []
+        sql = (
+            "SELECT memory_id, content, category, source, "
+            "       source_session_id, created_ts, updated_ts, "
+            "       last_used_ts, use_count "
+            "FROM memories "
+        )
+        params: list[Any] = []
+        if category:
+            sql += "WHERE category = ? "
+            params.append(category)
+        sql += "ORDER BY use_count DESC, updated_ts DESC LIMIT ?"
+        params.append(int(limit))
+        conn = sqlite3.connect(str(path))
+        try:
+            conn.row_factory = sqlite3.Row
+            return [dict(r) for r in conn.execute(sql, params).fetchall()]
+        finally:
+            conn.close()
+
+    @staticmethod
+    def bump_memory_use_sync(
+        memory_ids: list[str],
+        db_path: Path | str | None = None,
+    ) -> None:
+        """Increment use_count + update last_used_ts for the given
+        memories. Used by the voice agent after injecting memories
+        into the system prompt — heavily-referenced memories rise."""
+        if not memory_ids:
+            return
+        path = Path(db_path) if db_path else _state_db_path()
+        if not path.exists():
+            return
+        now = int(time.time() * 1000)
+        placeholders = ",".join("?" for _ in memory_ids)
+        conn = sqlite3.connect(str(path))
+        try:
+            conn.execute(
+                f"UPDATE memories "
+                f"SET use_count = use_count + 1, last_used_ts = ? "
+                f"WHERE memory_id IN ({placeholders})",
+                [now, *memory_ids],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    @staticmethod
     def read_session_sync(
         session_id: str,
         db_path: Path | str | None = None,
@@ -140,11 +199,17 @@ class HubClient(_ReadMixin):
         type: str,
         session_id: str,
         payload: dict | None = None,
+        *,
+        stream: str = EVENTS_STREAM,
     ) -> str:
         """Publish an event. Returns the source_event_id.
 
         Buffers up to OFFLINE_MAX events in-memory if Redis is
         unreachable; flush via `flush_offline_queue()`.
+
+        Pass `stream` to target a non-default stream (e.g.
+        `MEMORY_EVENTS_STREAM` for memory events). Offline buffer is
+        per-stream so the right destination is preserved.
         """
         eid = _new_event_id()
         evt = {
@@ -155,9 +220,9 @@ class HubClient(_ReadMixin):
             "source_ts": int(time.time() * 1000),
             "payload": payload or {},
         }
-        record = {"data": json.dumps(evt)}
+        record = {"_stream": stream, "data": json.dumps(evt)}
         try:
-            await self._redis.xadd(EVENTS_STREAM, record)
+            await self._redis.xadd(stream, {"data": record["data"]})
         except Exception:
             self._offline.append(record)
         return eid
@@ -168,8 +233,11 @@ class HubClient(_ReadMixin):
         flushed = 0
         while self._offline:
             record = self._offline[0]
+            target_stream = record.get("_stream", EVENTS_STREAM)
             try:
-                await self._redis.xadd(EVENTS_STREAM, record)
+                await self._redis.xadd(
+                    target_stream, {"data": record["data"]},
+                )
             except Exception:
                 break
             self._offline.popleft()
