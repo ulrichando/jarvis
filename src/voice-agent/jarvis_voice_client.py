@@ -611,9 +611,10 @@ async def _h_user_input(req: web.Request) -> web.Response:
     only, no LLM). /user-input feeds the text into the AgentSession
     as if it had come from STT — JARVIS's LLM processes it, generates
     a reply, and the reply gets voiced via TTS. Both the user turn
-    and the agent's reply land in conversations.db (and hence Convex
-    via the mirror) so a web client subscribed to that session sees
-    the round trip live.
+    and the agent's reply publish to the hub event bus
+    (events:conversation), which the hub daemon consumes into
+    ~/.jarvis/hub/state.db AND fans out via broadcasts:conversation,
+    so a web client subscribed via SSE sees the round trip live.
 
     Used by the web voice-transcript page to let the user follow up
     via typing without breaking out a mic.
