@@ -104,6 +104,44 @@ def _apply_event(conn: sqlite3.Connection, evt: dict) -> None:
         logger.warning("[hub] unknown event type: %s", t)
 
 
+async def main() -> None:
+    """Long-running daemon entry point. Wraps `consume_once` in a loop
+    with graceful shutdown on SIGINT/SIGTERM."""
+    import asyncio
+    import os
+    import signal
+
+    import redis.asyncio as aredis
+
+    url = os.environ.get("JARVIS_HUB_URL", "redis://127.0.0.1:6379")
+    db_path = os.environ.get(
+        "JARVIS_HUB_DB",
+        str(Path.home() / ".jarvis" / "hub" / "state.db"),
+    )
+
+    bootstrap_schema(db_path)
+    logger.info("[hub] state.db ready at %s", db_path)
+
+    redis = aredis.from_url(url, decode_responses=True)
+
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop.set)
+
+    logger.info("[hub] daemon up — consuming %s", EVENTS_STREAM)
+    while not stop.is_set():
+        n = await consume_once(redis, db_path=db_path, count=100)
+        if n == 0:
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=0.25)
+            except asyncio.TimeoutError:
+                pass
+
+    await redis.aclose()
+    logger.info("[hub] daemon shutting down cleanly")
+
+
 async def consume_once(
     redis: Any,
     db_path: str | Path | None = None,
@@ -149,3 +187,12 @@ async def consume_once(
         return applied
     finally:
         conn.close()
+
+
+if __name__ == "__main__":
+    import asyncio
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    asyncio.run(main())

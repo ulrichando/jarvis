@@ -1,0 +1,16 @@
+[Unit]
+Description=JARVIS event hub (Redis Streams consumer + state.db writer)
+After=network.target redis-server.service
+Wants=redis-server.service
+
+[Service]
+Type=simple
+ExecStart=/home/ulrich/Documents/Projects/jarvis/bin/jarvis-hub
+Restart=always
+RestartSec=2
+StandardOutput=append:/tmp/jarvis-hub.log
+StandardError=append:/tmp/jarvis-hub.log
+Environment=JARVIS_HUB_URL=redis://127.0.0.1:6379
+
+[Install]
+WantedBy=default.target
