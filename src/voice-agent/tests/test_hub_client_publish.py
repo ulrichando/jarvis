@@ -41,3 +41,26 @@ async def test_publish_requires_source():
     redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
     with pytest.raises(ValueError):
         client.HubClient(redis=redis, source="")
+
+
+@pytest.mark.asyncio
+async def test_publish_routes_to_alternate_stream():
+    """Memory events go to events:memory, not events:conversation.
+    The default-conversation stream must stay empty when stream= is set."""
+    redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    c = client.HubClient(redis=redis, source="voice")
+
+    await c.publish(
+        type="memory.value.upserted",
+        session_id="voice-sess-1",
+        payload={"memory_id": "abc", "content": "x", "category": "fact"},
+        stream=client.MEMORY_EVENTS_STREAM,
+    )
+
+    mem_entries = await redis.xrange("events:memory")
+    convo_entries = await redis.xrange("events:conversation")
+    assert len(mem_entries) == 1
+    assert len(convo_entries) == 0
+    _, fields = mem_entries[0]
+    evt = json.loads(fields["data"])
+    assert evt["type"] == "memory.value.upserted"
