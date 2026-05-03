@@ -639,6 +639,32 @@ DEFAULT_SPEECH_MODEL  = "llama-3.3-70b-versatile"
 # Only `groq:<voice>` is accepted post-2026-05-01 (ElevenLabs removed).
 TTS_PROVIDER_FILE = Path.home() / ".jarvis" / "tts-provider"
 
+
+def _read_unified_setting(key: str, file_path: Path) -> str | None:
+    """Read a setting via state.db (canonical, populated by the hub
+    daemon's settings_watcher) with a flat-file fallback for the
+    transition window when state.db isn't yet populated.
+
+    Returns None if neither path yields a value — caller decides what
+    the default means. See spec 2026-05-03-jarvis-unified-settings."""
+    # 1. State.db (canonical post-2026-05-03)
+    try:
+        from hub.client import HubClient as _HubClient
+        v = _HubClient.read_setting_sync(key)
+        if v:
+            return v
+    except Exception:
+        pass  # SDK unavailable / state.db missing — fall through
+    # 2. Flat file (legacy, still written by the tray)
+    try:
+        v = file_path.read_text(encoding="utf-8").strip()
+        return v if v else None
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        logger.warning(f"could not read {file_path}: {e}")
+        return None
+
 # IDs match the upstream model names verbatim so the registry stays
 # legible. Each entry: (provider+model labels for display, factory
 # building the LLM). Factories raise on missing API key — the
@@ -711,20 +737,17 @@ SPEECH_MODELS: dict[str, dict] = {
 
 
 def read_speech_model() -> str:
-    """Return the active speech model ID, or the default if unset/invalid."""
-    try:
-        name = SPEECH_MODEL_FILE.read_text(encoding="utf-8").strip()
-        if name in SPEECH_MODELS:
-            return name
-        if name:
-            logger.warning(
-                f"unknown speech model {name!r} in {SPEECH_MODEL_FILE}, "
-                f"falling back to {DEFAULT_SPEECH_MODEL}"
-            )
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        logger.warning(f"could not read {SPEECH_MODEL_FILE}: {e}")
+    """Return the active speech model ID, or the default if unset/invalid.
+
+    Reads via the unified-settings SDK (state.db) first, falling back
+    to the flat file written by the tray UI."""
+    name = _read_unified_setting("voice-model", SPEECH_MODEL_FILE)
+    if name in SPEECH_MODELS:
+        return name
+    if name:
+        logger.warning(
+            f"unknown speech model {name!r}, falling back to {DEFAULT_SPEECH_MODEL}"
+        )
     return DEFAULT_SPEECH_MODEL
 
 
@@ -761,26 +784,21 @@ def _build_tts_chain() -> list:
     edge_voice = os.getenv("JARVIS_EDGE_VOICE", "en-US-GuyNeural")
 
     primary = None
-    try:
-        spec = TTS_PROVIDER_FILE.read_text(encoding="utf-8").strip()
-        if ":" in spec:
-            provider, voice = spec.split(":", 1)
-            provider = provider.strip()
-            voice    = voice.strip()
-            if provider == "groq":
-                primary = _LoggingGroqTTS(
-                    model="canopylabs/orpheus-v1-english", voice=voice,
-                )
-                logger.info(f"[tts] Groq Orpheus voice={voice} [tray selection]")
-            else:
-                logger.warning(
-                    f"[tts] unknown / removed provider {provider!r} in {TTS_PROVIDER_FILE}; "
-                    f"falling back to Groq Orpheus default"
-                )
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        logger.warning(f"[tts] could not read {TTS_PROVIDER_FILE}: {e}")
+    spec = _read_unified_setting("tts-provider", TTS_PROVIDER_FILE)
+    if spec and ":" in spec:
+        provider, voice = spec.split(":", 1)
+        provider = provider.strip()
+        voice    = voice.strip()
+        if provider == "groq":
+            primary = _LoggingGroqTTS(
+                model="canopylabs/orpheus-v1-english", voice=voice,
+            )
+            logger.info(f"[tts] Groq Orpheus voice={voice} [tray selection]")
+        else:
+            logger.warning(
+                f"[tts] unknown / removed provider {provider!r}; "
+                f"falling back to Groq Orpheus default"
+            )
 
     if primary is None:
         primary = _LoggingGroqTTS(
@@ -1061,20 +1079,17 @@ CLI_MODELS: dict[str, dict] = {
 
 
 def read_cli_model() -> str:
-    """Return the active CLI model ID, or the default if unset/invalid."""
-    try:
-        name = CLI_MODEL_FILE.read_text(encoding="utf-8").strip()
-        if name in CLI_MODELS:
-            return name
-        if name:
-            logger.warning(
-                f"unknown CLI model {name!r} in {CLI_MODEL_FILE}, "
-                f"falling back to {DEFAULT_CLI_MODEL}"
-            )
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        logger.warning(f"could not read {CLI_MODEL_FILE}: {e}")
+    """Return the active CLI model ID, or the default if unset/invalid.
+
+    Reads via the unified-settings SDK (state.db) first, falling back
+    to the flat file written by the tray UI."""
+    name = _read_unified_setting("cli-model", CLI_MODEL_FILE)
+    if name in CLI_MODELS:
+        return name
+    if name:
+        logger.warning(
+            f"unknown CLI model {name!r}, falling back to {DEFAULT_CLI_MODEL}"
+        )
     return DEFAULT_CLI_MODEL
 
 
