@@ -24,12 +24,18 @@ def test_bootstrap_creates_schema(tmp_path):
 
 
 def test_bootstrap_idempotent(tmp_path):
+    """Re-running bootstrap must not raise and must not create extra
+    rows (each version row is idempotent via INSERT OR IGNORE)."""
     db = tmp_path / "state.db"
     server.bootstrap_schema(db)
     server.bootstrap_schema(db)  # second call must not raise
     conn = sqlite3.connect(db)
-    n = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0]
-    assert n == 1
+    versions = sorted(r[0] for r in conn.execute(
+        "SELECT version FROM schema_version"
+    ))
+    # As of schema v2 the bootstrap seeds [1, 2]. Every additional call
+    # is a no-op because of INSERT OR IGNORE.
+    assert versions == [1, 2]
 
 
 def test_messages_unique_idempotency(tmp_path):
