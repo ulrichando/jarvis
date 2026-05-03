@@ -532,3 +532,53 @@ Backfill — `bin/jarvis-backfill-null-routes.py` (`39b7963`) — classifies his
 4. **Whisper logprob-based STT gate (axis 10 deepening, capped score).** Still blocked on `livekit-plugins-groq` not surfacing `avg_logprob`. Fork or upstream PR.
 
 5. **`launch_app` outcome telemetry.** Log MISSING/CRASHED outcomes per binary; expose in `turn_telemetry.py --report`. Lets us identify "users ask for X but it's not installed — should we suggest Y" patterns over time.
+
+### 2026-05-03 — Phase 12 (memory layer — durable user-facts)
+
+Adds the curated long-term memory store the big assistants have: ChatGPT "Saved memories", Gemini "Personalization", Claude "Memories". Distinct from raw chat transcripts — survives chat deletion. The architectural property the user explicitly asked for ("if I delete the voice chat from web, does it wipe what JARVIS knows about me?") now resolves correctly: chat delete removes the transcript, the memory layer stays.
+
+Spec: [`2026-05-03-jarvis-memory-layer-design.md`](./2026-05-03-jarvis-memory-layer-design.md). Plan: [`2026-05-03-jarvis-memory-layer-plan.md`](../plans/2026-05-03-jarvis-memory-layer-plan.md).
+
+**What shipped (10 commits):**
+
+- Schema v3 (`memories` table) — sha256 `memory_id` for idempotent upsert, `use_count` + `last_used_ts` for ranking.
+- Hub `_apply_event` branches for `memory.value.upserted` / `.removed` and a third `consume_once` arm in the daemon (events:memory → broadcasts:memory).
+- Python SDK: `read_memories_sync`, `bump_memory_use_sync`, stream-aware `publish(stream=)`.
+- TS SDKs (Bun + Node) — `readMemories`, `bumpMemoryUse`. Drift-checked byte-equal `client-core.ts`.
+- `jarvis_memory.py` voice tools — `remember(content, category)`, `forget(query)`, `list_memories(category)`. Sensitive-content blocklist (regex on api/secret/password/token/sk-/ghp_/aws_) + 500-char cap server-side.
+- Voice agent: top-N memories prepended to system prompt; refreshed per-turn alongside the existing learned-rules hot-reload, only pushed when the block string actually changes.
+- Web `/api/memories` CRUD + `/api/events/stream/memory` SSE.
+- Web `/settings → Memories` section — list, add, forget, live SSE updates.
+
+**Live verification (post-deploy):**
+
+| Property | Verified |
+|---|---|
+| Voice writes via `remember()` → state.db has the row | ✅ via direct SDK publish + sqlite3 read |
+| Web GET `/api/memories` shows voice-written memory | ✅ |
+| Web DELETE removes the row + voice's next per-turn injection drops it | ✅ — `format_memories_for_prompt()` re-read confirmed |
+| Chat delete (`DELETE /api/sessions?id=…`) does NOT touch memories | ✅ — deleted 1 session + 3 messages, memory row untouched |
+| Sensitive content rejected at POST | ✅ — `OPENAI_API_KEY=sk-…` returns 400 |
+| SSE pushes upsert events live | ✅ — `curl -N` saw the event within ~1s of POST |
+| Drift detector passes | ✅ — `client-core.ts` byte-equal |
+| 64/64 hub + memory tests green | ✅ |
+
+**Re-score after Phase 12:**
+
+| # | Axis | Before | After | Delta | Why |
+|---|---|---|---|---|---|
+| 8 | Conversation memory & continuity | 8 | 9 | +1 | Adds the durable user-facts dimension (ChatGPT-style memory) on top of raw transcript recall. The remaining +1 to 10 (Claude-parity) requires live-data confirmation that the LLM actually invokes `remember()` proactively rather than only when the user explicitly says "remember that I…". |
+
+**New total: 95 → 96 / 100.**
+
+This is a structural bump, not a perceived-quality one — the user won't immediately notice anything different from inside a single voice session. The win shows up across sessions: JARVIS can carry user identity ("you run Pretva", "you live in Cameroon", "you prefer terse replies") through chat deletes, restarts, and database backups, the same way ChatGPT does.
+
+### Phase 12+ candidates
+
+1. **Memory recall used proactively (axis 8 → 10).** The LLM has the `remember()` tool but won't necessarily invoke it without a nudge in the system prompt. Once `JARVIS_INSTRUCTIONS` calls out the memory contract ("if the user shares a durable fact about themselves, call `remember()`"), monitor turn_telemetry for `remember`/`forget` invocations. If memory writes happen organically across 30+ minutes of natural conversation, +1.
+
+2. **Memory categories from observed usage.** Today: `identity` / `preference` / `project` / `fact`. After 50+ memories, look at the distribution; if `fact` is >70%, the categories aren't doing work and we should either drop them or add finer ones.
+
+3. **Cross-channel memory provenance.** Memories store `source` (voice / web / cli) and `source_session_id`. The UI doesn't surface this yet — could let the user click a memory to jump to the conversation that produced it. Light feature, mostly UX.
+
+4. **Memory expiry / TTL signal.** `last_used_ts` is recorded but never acted on. A "stale memory pruner" tool the LLM can call at month-end could keep the store tidy. Not urgent.
