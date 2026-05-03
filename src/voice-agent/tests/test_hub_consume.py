@@ -172,3 +172,39 @@ async def test_consume_does_not_broadcast_on_apply_failure(tmp_path):
 
     bcast = await redis.xrange("broadcasts:conversation")
     assert bcast == [], "failed events must not leak to broadcasts"
+
+
+@pytest.mark.asyncio
+async def test_consume_once_routes_to_custom_streams(tmp_path):
+    """consume_once with explicit events_stream/broadcasts_stream
+    pair routes correctly to the requested streams without touching
+    the default conversation streams."""
+    db = tmp_path / "state.db"
+    server.bootstrap_schema(db)
+    redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+    # Use a conversation event for now — Task 3 adds settings handler.
+    # The point of this test is just routing, not handler logic.
+    await redis.xadd("events:settings", {"data": json.dumps({
+        "source": "hub",
+        "source_event_id": "settings-route-1",
+        "type": "conversation.session.started",
+        "session_id": "s-route",
+        "source_ts": 1714710000,
+        "payload": {"title": "ok"},
+    })})
+
+    n = await server.consume_once(
+        redis,
+        db_path=db,
+        events_stream="events:settings",
+        broadcasts_stream="broadcasts:settings",
+        consumer="hub-settings-1",
+    )
+    assert n == 1
+
+    # Conversation streams should be untouched.
+    assert (await redis.xlen("events:conversation")) == 0
+    assert (await redis.xlen("broadcasts:conversation")) == 0
+    # Settings broadcast got the event.
+    assert (await redis.xlen("broadcasts:settings")) == 1

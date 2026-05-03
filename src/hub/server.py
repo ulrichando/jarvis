@@ -23,8 +23,11 @@ SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 EVENTS_STREAM = "events:conversation"
 BROADCASTS_STREAM = "broadcasts:conversation"
+SETTINGS_EVENTS_STREAM = "events:settings"
+SETTINGS_BROADCASTS_STREAM = "broadcasts:settings"
 GROUP = "hub"
 CONSUMER = "hub-1"
+SETTINGS_CONSUMER = "hub-settings-1"
 
 
 def bootstrap_schema(db_path: Path | str) -> None:
@@ -148,22 +151,31 @@ async def consume_once(
     db_path: str | Path | None = None,
     count: int = 100,
     block_ms: int = 0,
+    *,
+    events_stream: str = EVENTS_STREAM,
+    broadcasts_stream: str = BROADCASTS_STREAM,
+    consumer: str = CONSUMER,
+    broadcasts_maxlen: int = 10000,
 ) -> int:
-    """Consume up to `count` events from the events stream, apply to
-    state.db, ACK. Returns the number of events processed.
+    """Consume up to `count` events from `events_stream`, apply to
+    state.db, ACK, fan out to `broadcasts_stream`. Returns the
+    number of events processed.
 
-    Idempotent on duplicate `source_event_id`s via the UNIQUE
-    constraint. Failures don't loop the consumer group — events are
-    ACK'd regardless and dead letters are out of scope for now.
+    Idempotent on duplicate `source_event_id`s via UNIQUE constraints.
+    Failures ACK regardless — dead letters are out of scope.
+
+    Multiple stream pairs (e.g. events:conversation + events:settings)
+    are supported by calling this function twice in parallel with
+    different `consumer` names so XREADGROUP offsets don't collide.
     """
     if db_path is None:
         db_path = Path.home() / ".jarvis" / "hub" / "state.db"
 
-    await _ensure_group(redis, EVENTS_STREAM)
+    await _ensure_group(redis, events_stream)
 
     resp = await redis.xreadgroup(
-        GROUP, CONSUMER,
-        streams={EVENTS_STREAM: ">"},
+        GROUP, consumer,
+        streams={events_stream: ">"},
         count=count,
         block=block_ms,
     )
@@ -184,27 +196,22 @@ async def consume_once(
                     applied += 1
                 except Exception:
                     logger.exception(
-                        "[hub] failed to apply entry %s; ACKing anyway", entry_id
+                        "[hub] failed to apply entry %s on %s; ACKing anyway",
+                        entry_id, events_stream,
                     )
-                # ACK regardless so failed events don't loop forever.
-                await redis.xack(EVENTS_STREAM, GROUP, entry_id)
-                # Re-publish to broadcasts:* ONLY on successful apply.
-                # SSE subscribers reading from this stream are guaranteed
-                # the event already landed in state.db (no race vs.
-                # readers that fall back to state.db on reconnect).
+                await redis.xack(events_stream, GROUP, entry_id)
                 if applied_ok and evt is not None:
                     try:
                         await redis.xadd(
-                            BROADCASTS_STREAM,
+                            broadcasts_stream,
                             {"data": json.dumps(evt)},
-                            maxlen=10000,
+                            maxlen=broadcasts_maxlen,
                             approximate=True,
                         )
                     except Exception:
                         logger.exception(
-                            "[hub] broadcast failed for entry %s "
-                            "(state.db has it; subscribers miss live)",
-                            entry_id,
+                            "[hub] broadcast to %s failed for %s",
+                            broadcasts_stream, entry_id,
                         )
         conn.commit()
         return applied
