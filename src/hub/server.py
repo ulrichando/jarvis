@@ -116,6 +116,33 @@ def _apply_event(conn: sqlite3.Connection, evt: dict) -> None:
             "  source = excluded.source",
             (key, value, ts, src),
         )
+    elif t == "memory.value.upserted":
+        # ON CONFLICT preserves created_ts and use_count (durable across
+        # replays); content/category/updated_ts advance.
+        conn.execute(
+            "INSERT INTO memories "
+            "(memory_id, content, category, source, source_session_id, "
+            " created_ts, updated_ts, use_count) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 0) "
+            "ON CONFLICT(memory_id) DO UPDATE SET "
+            "  content = excluded.content, "
+            "  category = excluded.category, "
+            "  updated_ts = excluded.updated_ts",
+            (
+                payload["memory_id"],
+                payload["content"],
+                payload.get("category", "fact"),
+                src,
+                payload.get("source_session_id"),
+                ts,
+                ts,
+            ),
+        )
+    elif t == "memory.value.removed":
+        conn.execute(
+            "DELETE FROM memories WHERE memory_id = ?",
+            (payload["memory_id"],),
+        )
     else:
         logger.warning("[hub] unknown event type: %s", t)
 
