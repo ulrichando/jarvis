@@ -41,7 +41,7 @@ Each iteration of the `/loop` updates this section with the date, score, and the
 | 5 | Voice swap by route | 8 | Per-route Orpheus voices + ElevenLabs override for EMOTIONAL/REASONING when key is set; per-route prosody (stability/style/speed). |
 | 6 | Acknowledgment vocabulary | 7 | Bare-vocative fast path (`"Yes, sir?"`, canonical). `cap_sir_count` keeps "sir" to once per reply. Other ack variety lives in the prompt. |
 | 7 | Interruption handling | 8 | Per-route `min_words` / `min_duration` tuning. `[Interrupted]` tag injected before LLM call. Kill-phrase mid-speech `session.interrupt()`. |
-| 8 | Conversation memory & continuity | 8 | SQLite `conversations.db`, Convex mirror, `recall_conversation` / `remember_this` tools, learned-rules hot-reload on file mtime. `[Turn N · session Mm]` prefix. |
+| 8 | Conversation memory & continuity | 8 | Hub bus (Redis Streams `events:conversation`) → canonical `~/.jarvis/hub/state.db`; web subscribes via SSE on `broadcasts:conversation`. `recall_conversation` / `remember_this` tools, learned-rules hot-reload on file mtime. `[Turn N · session Mm]` prefix. (Pre-2026-05-03: `conversations.db` + Convex mirror — both retired.) |
 | 9 | Tool execution discipline | 7 | Supervisor stripped of action tools; `transfer_to_desktop` handoff to `DesktopActionsAgent`. Tool-call leak sanitization. Browser specialist mid-migration. |
 | 10 | Self-eval / closed loop | 6 | `turn_telemetry` writes one row per turn; `--report` prints route distribution + emotional follow-up rate + fallback rate. No TTFW-target hit rate, no per-route TTFW vs target, no recent-window comparison, no health-check on under-served routes. |
 
