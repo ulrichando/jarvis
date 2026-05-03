@@ -22,6 +22,7 @@ logger = logging.getLogger("jarvis.hub")
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 EVENTS_STREAM = "events:conversation"
+BROADCASTS_STREAM = "broadcasts:conversation"
 GROUP = "hub"
 CONSUMER = "hub-1"
 
@@ -174,15 +175,37 @@ async def consume_once(
         applied = 0
         for _stream, entries in resp:
             for entry_id, fields in entries:
+                applied_ok = False
+                evt = None
                 try:
                     evt = json.loads(fields["data"])
                     _apply_event(conn, evt)
+                    applied_ok = True
                     applied += 1
                 except Exception:
                     logger.exception(
                         "[hub] failed to apply entry %s; ACKing anyway", entry_id
                     )
+                # ACK regardless so failed events don't loop forever.
                 await redis.xack(EVENTS_STREAM, GROUP, entry_id)
+                # Re-publish to broadcasts:* ONLY on successful apply.
+                # SSE subscribers reading from this stream are guaranteed
+                # the event already landed in state.db (no race vs.
+                # readers that fall back to state.db on reconnect).
+                if applied_ok and evt is not None:
+                    try:
+                        await redis.xadd(
+                            BROADCASTS_STREAM,
+                            {"data": json.dumps(evt)},
+                            maxlen=10000,
+                            approximate=True,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "[hub] broadcast failed for entry %s "
+                            "(state.db has it; subscribers miss live)",
+                            entry_id,
+                        )
         conn.commit()
         return applied
     finally:
