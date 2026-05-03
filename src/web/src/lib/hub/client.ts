@@ -82,4 +82,23 @@ export class HubClient extends HubClientBase {
       db.close()
     }
   }
+
+  /** Latest value for a settings key, or null if never set. */
+  static readSetting(key: string): string | null {
+    const path = this.stateDbPath()
+    let db: Database.Database
+    try {
+      db = new Database(path, { readonly: true, fileMustExist: true })
+    } catch {
+      return null
+    }
+    try {
+      const row = db.prepare(
+        'SELECT value FROM settings WHERE key = ?',
+      ).get(key) as { value: string } | undefined
+      return row ? row.value : null
+    } finally {
+      db.close()
+    }
+  }
 }
