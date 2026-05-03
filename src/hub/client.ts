@@ -1,102 +1,40 @@
-// JARVIS event hub — TypeScript SDK
+// JARVIS event hub — Bun-runtime client.
 //
-// Mirror of the Python client at src/hub/client.py. Used by web's
-// server-side API routes and any other Bun/Node entrypoint that
-// needs to publish or read conversation events.
+// Used by the CLI bridge (src/cli/src/bridge/storage.ts) and any other
+// Bun entrypoint that reads from state.db. Wraps HubClientBase from
+// client-core.ts and adds SQLite reads via `bun:sqlite`.
 //
-// Browser code MUST NOT import this directly — Redis credentials and
-// SQLite file handles don't belong in the browser. Always go through
-// a Next.js Route Handler.
-//
-// Reads use `bun:sqlite` (built into Bun). If you run this under
-// Node.js you'll need to swap to `better-sqlite3` — the Database
-// API surface (.prepare/.query/.all/.close) is identical for the
-// queries we issue here.
+// Web's parallel copy lives at src/web/src/lib/hub/client.ts (Node
+// runtime, uses better-sqlite3). The CORE (publish/offline buffer
+// /types/constants) is byte-identical across both — see client-core.ts.
 
-import Redis from 'ioredis'
 import { Database } from 'bun:sqlite'
-import { randomUUID } from 'crypto'
-import { homedir } from 'os'
-import { join } from 'path'
+import {
+  HubClientBase,
+  stateDbPathDefault,
+  type Source,
+} from './client-core'
 
-const EVENTS_STREAM = 'events:conversation'
-const OFFLINE_MAX = 100
+export {
+  EVENTS_STREAM,
+  OFFLINE_MAX,
+  stateDbPathDefault,
+  type Source,
+  type EventType,
+  type EventPayload,
+  type HubEvent,
+} from './client-core'
 
-export type Source = 'voice' | 'web' | 'cli' | 'phone' | 'extension'
-
-export type EventType =
-  | 'conversation.message.created'
-  | 'conversation.session.started'
-  | 'conversation.session.ended'
-
-export interface EventPayload {
-  role?: 'user' | 'assistant'
-  text?: string
-  title?: string | null
-  tool_calls?: unknown
-}
-
-export class HubClient {
-  private offline: { data: string }[] = []
-
-  constructor(
-    private readonly redis: Redis,
-    private readonly source: Source,
-  ) {}
-
+export class HubClient extends HubClientBase {
   static fromEnv(source: Source): HubClient {
     const url = process.env.JARVIS_HUB_URL ?? 'redis://127.0.0.1:6379'
+    // Lazy import so test harnesses that don't need Redis don't pay the cost.
+    const Redis = require('ioredis') as typeof import('ioredis').default
     return new HubClient(new Redis(url), source)
   }
 
-  async publish(
-    type: EventType,
-    sessionId: string,
-    payload: EventPayload = {},
-  ): Promise<string> {
-    const eid = randomUUID().replace(/-/g, '')
-    const evt = {
-      source: this.source,
-      source_event_id: eid,
-      type,
-      session_id: sessionId,
-      source_ts: Date.now(),
-      payload,
-    }
-    const record = { data: JSON.stringify(evt) }
-    try {
-      await this.redis.xadd(EVENTS_STREAM, '*', 'data', record.data)
-    } catch {
-      this.offline.push(record)
-      if (this.offline.length > OFFLINE_MAX) this.offline.shift()
-    }
-    return eid
-  }
-
-  async flushOfflineQueue(): Promise<number> {
-    let flushed = 0
-    while (this.offline.length > 0) {
-      const r = this.offline[0]
-      try {
-        await this.redis.xadd(EVENTS_STREAM, '*', 'data', r.data)
-      } catch {
-        break
-      }
-      this.offline.shift()
-      flushed++
-    }
-    return flushed
-  }
-
-  async close(): Promise<void> {
-    await this.redis.quit()
-  }
-
-  // ── Static reads (state.db, no Redis round-trip needed) ─────────
-
   static stateDbPath(): string {
-    return process.env.JARVIS_HUB_DB
-      ?? join(homedir(), '.jarvis', 'hub', 'state.db')
+    return stateDbPathDefault()
   }
 
   /**
@@ -120,9 +58,7 @@ export class HubClient {
     }
   }
 
-  /**
-   * Up to `limit` (role, text, ts) tuples for a session, oldest-first.
-   */
+  /** Up to `limit` (role, text, ts) tuples for a session, oldest-first. */
   static readSession(
     sessionId: string,
     limit = 100,
