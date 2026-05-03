@@ -104,6 +104,18 @@ def _apply_event(conn: sqlite3.Connection, evt: dict) -> None:
                 logger.debug("[hub] dedupe: %s/%s already applied", src, seid)
             else:
                 raise
+    elif t == "settings.value.changed":
+        key = payload["key"]
+        value = payload["value"]
+        conn.execute(
+            "INSERT INTO settings (key, value, updated_at, source) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET "
+            "  value = excluded.value, "
+            "  updated_at = excluded.updated_at, "
+            "  source = excluded.source",
+            (key, value, ts, src),
+        )
     else:
         logger.warning("[hub] unknown event type: %s", t)
 
