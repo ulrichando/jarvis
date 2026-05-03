@@ -25,9 +25,12 @@ EVENTS_STREAM = "events:conversation"
 BROADCASTS_STREAM = "broadcasts:conversation"
 SETTINGS_EVENTS_STREAM = "events:settings"
 SETTINGS_BROADCASTS_STREAM = "broadcasts:settings"
+MEMORY_EVENTS_STREAM = "events:memory"
+MEMORY_BROADCASTS_STREAM = "broadcasts:memory"
 GROUP = "hub"
 CONSUMER = "hub-1"
 SETTINGS_CONSUMER = "hub-settings-1"
+MEMORY_CONSUMER = "hub-memory-1"
 
 
 def bootstrap_schema(db_path: Path | str) -> None:
@@ -148,11 +151,12 @@ def _apply_event(conn: sqlite3.Connection, evt: dict) -> None:
 
 
 async def main() -> None:
-    """Long-running daemon entry point. Runs three coroutines in
+    """Long-running daemon entry point. Runs four coroutines in
     parallel via asyncio.gather:
       1. events:conversation consumer
       2. events:settings consumer
-      3. settings file watcher (publishes to events:settings)
+      3. events:memory consumer
+      4. settings file watcher (publishes to events:settings)
     Graceful shutdown on SIGINT/SIGTERM via shared stop Event."""
     import asyncio
     import os
@@ -238,6 +242,10 @@ async def main() -> None:
         _consumer_loop(
             SETTINGS_EVENTS_STREAM, SETTINGS_BROADCASTS_STREAM,
             SETTINGS_CONSUMER, 1000,
+        ),
+        _consumer_loop(
+            MEMORY_EVENTS_STREAM, MEMORY_BROADCASTS_STREAM,
+            MEMORY_CONSUMER, 10000,
         ),
         _watcher_loop(),
     )
