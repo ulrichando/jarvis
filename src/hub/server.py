@@ -121,13 +121,24 @@ def _apply_event(conn: sqlite3.Connection, evt: dict) -> None:
 
 
 async def main() -> None:
-    """Long-running daemon entry point. Wraps `consume_once` in a loop
-    with graceful shutdown on SIGINT/SIGTERM."""
+    """Long-running daemon entry point. Runs three coroutines in
+    parallel via asyncio.gather:
+      1. events:conversation consumer
+      2. events:settings consumer
+      3. settings file watcher (publishes to events:settings)
+    Graceful shutdown on SIGINT/SIGTERM via shared stop Event."""
     import asyncio
     import os
     import signal
 
     import redis.asyncio as aredis
+    # Sibling module — use absolute path so this works whether the
+    # daemon was launched as `python -m hub.server` or via the test
+    # harness which adds src/hub to sys.path directly.
+    try:
+        from hub import settings_watcher
+    except ImportError:
+        import settings_watcher
 
     url = os.environ.get("JARVIS_HUB_URL", "redis://127.0.0.1:6379")
     db_path = os.environ.get(
@@ -145,14 +156,64 @@ async def main() -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
 
-    logger.info("[hub] daemon up — consuming %s", EVENTS_STREAM)
-    while not stop.is_set():
-        n = await consume_once(redis, db_path=db_path, count=100)
-        if n == 0:
+    # ── Three watched files (NOT keys.env — sensitive blocklist) ──
+    home = Path.home()
+    WATCHED_SETTINGS = {
+        "cli-model":    home / ".jarvis" / "cli-model",
+        "voice-model":  home / ".jarvis" / "voice-model",
+        "tts-provider": home / ".jarvis" / "tts-provider",
+    }
+
+    async def _consumer_loop(
+        events_stream: str,
+        broadcasts_stream: str,
+        consumer: str,
+        broadcasts_maxlen: int,
+    ) -> None:
+        logger.info(
+            "[hub] consumer up — %s → %s", events_stream, broadcasts_stream,
+        )
+        while not stop.is_set():
+            n = await consume_once(
+                redis,
+                db_path=db_path,
+                count=100,
+                events_stream=events_stream,
+                broadcasts_stream=broadcasts_stream,
+                consumer=consumer,
+                broadcasts_maxlen=broadcasts_maxlen,
+            )
+            if n == 0:
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=0.25)
+                except asyncio.TimeoutError:
+                    pass
+
+    async def _watcher_loop() -> None:
+        logger.info(
+            "[hub] settings watcher up — %d files", len(WATCHED_SETTINGS),
+        )
+        watcher_state: dict[str, str] = {}
+        while not stop.is_set():
             try:
-                await asyncio.wait_for(stop.wait(), timeout=0.25)
+                await settings_watcher.scan_once(
+                    redis, WATCHED_SETTINGS, watcher_state,
+                )
+            except Exception:
+                logger.exception("[hub] settings_watcher.scan_once failed")
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=1.0)
             except asyncio.TimeoutError:
                 pass
+
+    await asyncio.gather(
+        _consumer_loop(EVENTS_STREAM, BROADCASTS_STREAM, CONSUMER, 10000),
+        _consumer_loop(
+            SETTINGS_EVENTS_STREAM, SETTINGS_BROADCASTS_STREAM,
+            SETTINGS_CONSUMER, 1000,
+        ),
+        _watcher_loop(),
+    )
 
     await redis.aclose()
     logger.info("[hub] daemon shutting down cleanly")
