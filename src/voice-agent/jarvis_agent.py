@@ -145,6 +145,27 @@ handoff_text_suppressor.install()
 import llm_idle_timeout
 llm_idle_timeout.install()
 
+# ── Hub client (Phase 1: voice publishes conversation events) ─────────
+# Make src/hub importable without polluting sys.path globally. The
+# `logger` global below isn't defined yet at this point in module
+# init, so we use the root logger directly for the bring-up message.
+import sys as _sys
+_HUB_DIR = str(Path(__file__).parent.parent / "hub")
+if _HUB_DIR not in _sys.path:
+    _sys.path.insert(0, _HUB_DIR)
+
+try:
+    from client import HubClient as _HubClient  # noqa: E402
+    _HUB = _HubClient.from_url(source="voice")
+    logging.getLogger("jarvis-agent.hub").info(
+        "voice publisher ready (source='voice')"
+    )
+except Exception as _hub_err:
+    _HUB = None
+    logging.getLogger("jarvis-agent.hub").warning(
+        f"disabled — could not initialize: {_hub_err}"
+    )
+
 # ── Maya-class speech intelligence ────────────────────────────────────
 from turn_router    import (
     detect_emotion, classify_turn, AudioMeta,
@@ -3167,18 +3188,33 @@ def _save_turn(
     # — the user-visible transcript doesn't need them.
     if role not in ("user", "assistant"):
         return
-    # Take ONE timestamp so SQLite (seconds) and Convex (ms) point at
-    # the same instant — makes the two stores reconcilable later.
+    # Take ONE timestamp so the hub event and Convex point at the
+    # same instant — keeps the two stores reconcilable.
     now = time.time()
-    try:
-        with sqlite3.connect(str(CONVO_DB_PATH), timeout=2.0) as conn:
-            conn.execute(
-                "INSERT INTO turns (session_id, ts, role, text) VALUES (?, ?, ?, ?)",
-                (session_id, int(now), role, text),
+
+    # Publish to the event hub. State persistence is owned by the
+    # hub daemon (state.db at ~/.jarvis/hub/state.db). Old direct
+    # write to conversations.db retired 2026-05-03.
+    if _HUB is not None:
+        try:
+            import asyncio
+            coro = _HUB.publish(
+                type="conversation.message.created",
+                session_id=session_id,
+                payload={"role": role, "text": text},
             )
-            conn.commit()
-    except Exception as e:
-        logger.warning(f"turn save failed: {e}")
+            try:
+                asyncio.get_running_loop().create_task(coro)
+            except RuntimeError:
+                # Called outside an async loop (unusual — _save_turn
+                # is normally invoked from the conversation_item_added
+                # hook, which runs on the agent loop).
+                asyncio.run(coro)
+        except Exception as e:
+            logger.warning(f"[hub] publish failed (turn dropped): {e}")
+    else:
+        logger.debug("[hub] skip publish — client unavailable")
+
     _convex_mirror_turn(session_id, role, text, int(now * 1000))
 
 
@@ -3224,21 +3260,27 @@ def _load_recent_turns(limit: int = RECENT_TURNS_LIMIT) -> list[tuple[str, str]]
     assistant turns themselves. That preserves real exchanges and
     drops standalone background lines.
     """
-    if not CONVO_DB_PATH.exists():
+    # Read from the hub's state.db. State.db's `ts` is in milliseconds
+    # (event envelope's source_ts); old conversations.db used seconds.
+    # Convert ms→s here so the gap-filter math below stays simple.
+    state_db = Path.home() / ".jarvis" / "hub" / "state.db"
+    if not state_db.exists():
         return []
     try:
-        with sqlite3.connect(str(CONVO_DB_PATH), timeout=2.0) as conn:
+        with sqlite3.connect(str(state_db), timeout=2.0) as conn:
             # Pull more than `limit` rows so the filter has slack —
             # heavy ambient periods can drop a lot.
-            raw = conn.execute(
-                "SELECT ts, role, text FROM turns "
+            raw_ms = conn.execute(
+                "SELECT ts, role, text FROM messages "
                 "WHERE role IN ('user','assistant') "
-                "ORDER BY ts DESC LIMIT ?",
+                "ORDER BY ts DESC, id DESC LIMIT ?",
                 (limit * 4,),
             ).fetchall()
     except Exception as e:
         logger.warning(f"recall load failed: {e}")
         return []
+    # Normalize timestamps to seconds for the filter.
+    raw = [(int(ts // 1000), role, text) for ts, role, text in raw_ms]
     raw.reverse()  # OLDEST first
 
     # Walk forward: a user turn is kept only if an assistant turn
