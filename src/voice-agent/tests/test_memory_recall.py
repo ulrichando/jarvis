@@ -55,19 +55,21 @@ def test_recall_handles_empty_query():
 
 
 def test_recall_returns_no_matches_when_db_empty(monkeypatch, tmp_path):
-    """Mock the DB path to a fresh empty SQLite — recall should say
-    'no matches', not crash."""
-    db = tmp_path / "fake_conversations.db"
+    """Mock state.db to a fresh empty SQLite — recall should say
+    'no matches', not crash. Schema mirrors the hub's messages table
+    (per src/hub/schema.sql) since 2026-05-03."""
+    db = tmp_path / "fake_state.db"
     conn = sqlite3.connect(db)
     conn.execute(
-        "CREATE TABLE turns ("
-        "id INTEGER PRIMARY KEY, session_id TEXT, ts INTEGER, "
-        "role TEXT, text TEXT)"
+        "CREATE TABLE messages ("
+        "id INTEGER PRIMARY KEY, session_id TEXT, source TEXT, "
+        "source_event_id TEXT, role TEXT, text TEXT, "
+        "tool_calls_json TEXT, ts INTEGER)"
     )
     conn.commit()
     conn.close()
 
-    monkeypatch.setattr(mr, "_CONVO_DB", db)
+    monkeypatch.setattr(mr, "_STATE_DB", db)
 
     import asyncio
     fn = mr.recall._func
@@ -76,25 +78,30 @@ def test_recall_returns_no_matches_when_db_empty(monkeypatch, tmp_path):
 
 
 def test_recall_finds_matching_turn(monkeypatch, tmp_path):
-    """Seed a fake DB with one matching turn, verify recall returns it."""
+    """Seed a fake state.db with one matching message, verify recall
+    returns it. NB: state.db.ts is in milliseconds (post-2026-05-03)."""
     import time as _time
-    db = tmp_path / "fake_conversations.db"
+    db = tmp_path / "fake_state.db"
     conn = sqlite3.connect(db)
     conn.execute(
-        "CREATE TABLE turns ("
-        "id INTEGER PRIMARY KEY, session_id TEXT, ts INTEGER, "
-        "role TEXT, text TEXT)"
+        "CREATE TABLE messages ("
+        "id INTEGER PRIMARY KEY, session_id TEXT, source TEXT, "
+        "source_event_id TEXT, role TEXT, text TEXT, "
+        "tool_calls_json TEXT, ts INTEGER)"
     )
-    now = int(_time.time())
+    now_ms = int(_time.time() * 1000)
     conn.execute(
-        "INSERT INTO turns (session_id, ts, role, text) VALUES (?, ?, ?, ?)",
-        ("test-sess", now - 3600, "user",
-         "Pretva is the ride-hailing service we run in Cameroon"),
+        "INSERT INTO messages "
+        "(session_id, source, source_event_id, role, text, ts) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("test-sess", "voice", "evt-test-1", "user",
+         "Pretva is the ride-hailing service we run in Cameroon",
+         now_ms - 3600 * 1000),
     )
     conn.commit()
     conn.close()
 
-    monkeypatch.setattr(mr, "_CONVO_DB", db)
+    monkeypatch.setattr(mr, "_STATE_DB", db)
 
     import asyncio
     fn = mr.recall._func
