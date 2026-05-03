@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Entry point for the JARVIS event hub daemon. Reuses the voice-agent
+# venv's Python so we don't ship a second interpreter. Runs hub.server
+# as a module so relative imports resolve.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+exec env PYTHONPATH="$ROOT/src" "$ROOT/src/voice-agent/.venv/bin/python" -m hub.server
