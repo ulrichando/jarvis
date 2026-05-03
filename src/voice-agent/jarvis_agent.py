@@ -542,8 +542,8 @@ _REASONING_FAST_PATH_RE = re.compile(
 # patterns): (1) strip on WRITE so the convo db never accepts a leaked
 # pattern going forward, (2) strip on RECALL so any historical leakage
 # never re-enters chat_ctx. Each layer alone is insufficient: the write
-# filter doesn't help old turns; the recall filter doesn't help the
-# Convex mirror or other downstream readers.
+# filter doesn't help old turns; the recall filter doesn't help any
+# downstream readers reading state.db directly.
 _TOOL_LEAK_RE = re.compile(
     r"<function/.*?</function>"                    # full tagged call
     r"|<function/[^<]{0,500}"                      # opening + tail (no close)
@@ -3075,15 +3075,13 @@ async def media_control(action: str, player: str = "spotify") -> str:
 # connection briefly — our pattern: open → insert → close.
 CONVO_DB_PATH = Path.home() / ".jarvis" / "conversations.db"
 
-# ── Convex mirror ────────────────────────────────────────────────────
-# Voice persistence path (post-2026-05-03):
-#   _save_turn() publishes a conversation.message.created event via
-#   the hub SDK (HubClient at module scope). The hub daemon consumes
-#   the event into ~/.jarvis/hub/state.db AND re-broadcasts on
-#   `broadcasts:conversation` for SSE subscribers (e.g. the web UI).
-# The previous Convex mirror (`_convex_mirror_turn`,
-# `_get_convex_client`, `_convex_executor`) was retired here — web
-# now reads via SSE off the hub bus, no parallel write path.
+# ── Voice persistence path ───────────────────────────────────────────
+# _save_turn() publishes a `conversation.message.created` event via
+# the hub SDK (HubClient at module scope). The hub daemon consumes
+# the event into ~/.jarvis/hub/state.db AND re-broadcasts on
+# `broadcasts:conversation` for SSE subscribers (e.g. the web UI).
+# Pre-2026-05-03 we also dual-wrote to a Convex mirror; that was
+# retired alongside Convex itself.
 
 
 def _save_turn(
@@ -3140,8 +3138,7 @@ def _save_turn(
     # — the user-visible transcript doesn't need them.
     if role not in ("user", "assistant"):
         return
-    # Take ONE timestamp so the hub event and Convex point at the
-    # same instant — keeps the two stores reconcilable.
+    # Take ONE timestamp for the hub event envelope's source_ts.
     now = time.time()
 
     # Publish to the event hub. State persistence is owned by the
@@ -6006,9 +6003,10 @@ async def entrypoint(ctx: JobContext) -> None:
         active AgentSession activity. Polls up to 3 s for readiness
         before giving up. The agent's existing `conversation_item_added`
         handler picks up both the synthetic user turn AND the assistant
-        reply, persisting both to conversations.db (and onward to
-        Convex via the mirror) — so the web transcript shows the round
-        trip without any extra wiring on this side.
+        reply, publishing both to the hub event bus (events:conversation)
+        — the hub daemon writes them to state.db and re-broadcasts to
+        SSE subscribers, so the web transcript shows the round trip
+        without any extra wiring on this side.
         """
         for _ in range(30):
             if session._activity is not None:

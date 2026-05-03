@@ -81,10 +81,11 @@ export default function VoiceSessionPage() {
       }
       setInput("");
       // Don't append optimistically — the voice-agent's
-      // conversation_item_added handler will mirror the user turn into
-      // Convex within ~100 ms and the live subscription will render it
-      // for free. Optimistic local appends would race that and risk
-      // duplicates.
+      // conversation_item_added handler publishes the user turn to
+      // the hub bus, which the hub daemon writes to state.db and
+      // fans out via SSE within ~100 ms; useSessionTurns picks it up
+      // and renders it for free. Optimistic local appends would race
+      // that and risk duplicates.
     } catch (e) {
       toast.error(
         `Couldn't reach voice agent: ${
