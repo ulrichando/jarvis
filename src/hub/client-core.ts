@@ -20,6 +20,7 @@ import { homedir } from 'os'
 import { join } from 'path'
 
 export const EVENTS_STREAM = 'events:conversation'
+export const MEMORY_EVENTS_STREAM = 'events:memory'
 export const OFFLINE_MAX = 100
 
 export type Source = 'voice' | 'web' | 'cli' | 'phone' | 'extension'
@@ -28,12 +29,19 @@ export type EventType =
   | 'conversation.message.created'
   | 'conversation.session.started'
   | 'conversation.session.ended'
+  | 'memory.value.upserted'
+  | 'memory.value.removed'
 
 export interface EventPayload {
   role?: 'user' | 'assistant'
   text?: string
   title?: string | null
   tool_calls?: unknown
+  // memory.value.upserted / .removed
+  memory_id?: string
+  content?: string
+  category?: string
+  source_session_id?: string | null
 }
 
 export interface HubEvent {
@@ -58,7 +66,7 @@ export function stateDbPathDefault(): string {
  * publish/flush path here is identical across Bun, Node, and Next.js.
  */
 export class HubClientBase {
-  protected offline: { data: string }[] = []
+  protected offline: { stream: string; data: string }[] = []
 
   constructor(
     protected readonly redis: Redis,
@@ -78,7 +86,9 @@ export class HubClientBase {
     type: EventType,
     sessionId: string,
     payload: EventPayload = {},
+    opts: { stream?: string } = {},
   ): Promise<string> {
+    const stream = opts.stream ?? EVENTS_STREAM
     const eid = randomUUID().replace(/-/g, '')
     const evt: HubEvent = {
       source: this.source,
@@ -88,9 +98,9 @@ export class HubClientBase {
       source_ts: Date.now(),
       payload,
     }
-    const record = { data: JSON.stringify(evt) }
+    const record = { stream, data: JSON.stringify(evt) }
     try {
-      await this.redis.xadd(EVENTS_STREAM, '*', 'data', record.data)
+      await this.redis.xadd(stream, '*', 'data', record.data)
     } catch {
       this.offline.push(record)
       if (this.offline.length > OFFLINE_MAX) this.offline.shift()
@@ -104,7 +114,7 @@ export class HubClientBase {
     while (this.offline.length > 0) {
       const r = this.offline[0]
       try {
-        await this.redis.xadd(EVENTS_STREAM, '*', 'data', r.data)
+        await this.redis.xadd(r.stream, '*', 'data', r.data)
       } catch {
         break
       }
