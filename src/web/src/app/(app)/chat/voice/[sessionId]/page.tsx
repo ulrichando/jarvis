@@ -1,7 +1,5 @@
 "use client";
 
-import { useQuery } from "convex/react";
-import { api } from "@convex/_generated/api";
 import { ArrowUp, Mic } from "lucide-react";
 import {
   type FormEvent,
@@ -16,20 +14,19 @@ import { toast } from "sonner";
 import { Thread } from "@/components/chat/thread";
 import { Button } from "@/components/ui/button";
 import { formatRelativeTime } from "@/lib/utils";
+import { useSessionTurns, type Turn } from "@/hooks/use-session-turns";
 
 // Voice transcript view, two-way:
 //
-//  - Subscribes to Convex `turns:bySession` for live updates from the
-//    voice agent.
+//  - Subscribes to /api/events/stream/[sessionId] (SSE over Redis
+//    `broadcasts:conversation`) for live updates from the voice agent.
 //  - Composer at the bottom POSTs to the voice-client's /user-input
 //    endpoint, which publishes a data packet that the voice-agent
 //    treats as a synthetic user turn (full LLM → TTS round trip).
 //    Both sides of the round trip publish to the hub event bus
 //    (events:conversation), which the hub daemon consumes into
-//    ~/.jarvis/hub/state.db AND the existing Convex mirror, so this
-//    page re-renders within ~50 ms via the Convex subscription.
-//    (Pre-2026-05-03 the path was a direct conversations.db write
-//    by the voice-agent; that DB has been retired in favor of the hub.)
+//    ~/.jarvis/hub/state.db and re-broadcasts to subscribers — this
+//    page picks them up via SSE in ~100 ms.
 //
 //  Distinct from /chat/[id] (typed chat in Drizzle). This route is
 //  scoped to a single voice session and edits go through the voice
@@ -38,18 +35,13 @@ import { formatRelativeTime } from "@/lib/utils";
 const VOICE_CLIENT_URL =
   process.env.NEXT_PUBLIC_VOICE_CLIENT_URL ?? "http://127.0.0.1:8767";
 
-type ConvexTurn = {
-  _id: string;
-  ts: number;
-  role: "user" | "assistant";
-  text: string;
-};
-
-function turnsToUIMessages(turns: ConvexTurn[]): UIMessage[] {
+function turnsToUIMessages(turns: Turn[]): UIMessage[] {
   return turns.map(
-    (t) =>
+    (t, i) =>
       ({
-        id: t._id,
+        // Stable id per row — ts+role uniquely identifies a turn per session
+        // for our render purposes. (Convex used _id; SSE has no _id.)
+        id: `${t.ts}-${t.role}-${i}`,
         role: t.role,
         parts: [{ type: "text", text: t.text }],
       } as UIMessage),
@@ -60,7 +52,7 @@ export default function VoiceSessionPage() {
   const params = useParams<{ sessionId: string }>();
   const sessionId = params?.sessionId ?? "";
 
-  const turns = useQuery(api.turns.bySession, { sessionId });
+  const turns = useSessionTurns(sessionId);
 
   const messages = useMemo(
     () => (turns ? turnsToUIMessages(turns) : []),
