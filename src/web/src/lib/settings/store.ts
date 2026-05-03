@@ -50,6 +50,9 @@ export function redactForClient(settings: Settings): Settings & {
     keyof Settings["providers"],
     { hasKey: boolean; keyPreview?: string; baseURL?: string }
   >;
+  integrations: {
+    github: { hasToken: boolean; tokenPreview?: string; defaultOwner?: string };
+  };
 } {
   const redactedProviders = Object.fromEntries(
     Object.entries(settings.providers).map(([k, v]) => {
@@ -64,5 +67,17 @@ export function redactForClient(settings: Settings): Settings & {
       ];
     }),
   ) as never;
-  return { ...settings, providers: redactedProviders };
+  const ghToken = settings.integrations?.github?.token ?? "";
+  const redactedIntegrations = {
+    github: {
+      hasToken: ghToken.length > 0,
+      tokenPreview: ghToken ? `••••${ghToken.slice(-4)}` : undefined,
+      defaultOwner: settings.integrations?.github?.defaultOwner,
+    },
+  };
+  return {
+    ...settings,
+    providers: redactedProviders,
+    integrations: redactedIntegrations,
+  };
 }

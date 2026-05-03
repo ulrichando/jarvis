@@ -69,6 +69,18 @@ const patchSchema = z.object({
     })
     .partial()
     .optional(),
+  integrations: z
+    .object({
+      github: z
+        .object({
+          token: z.string().or(z.null()).optional(),
+          defaultOwner: z.string().or(z.null()).optional(),
+        })
+        .partial()
+        .optional(),
+    })
+    .partial()
+    .optional(),
 });
 
 export async function PATCH(req: Request) {
@@ -100,6 +112,25 @@ export async function PATCH(req: Request) {
     }
   }
 
+  // Integrations: same null-clears-the-field pattern as providers.
+  const nextIntegrations = { ...current.integrations };
+  if (patch.integrations?.github) {
+    const prev = nextIntegrations.github ?? {};
+    const ghPatch = patch.integrations.github;
+    const nextGh = { ...prev };
+    if (ghPatch.token !== undefined) {
+      nextGh.token =
+        ghPatch.token === null || ghPatch.token === "" ? undefined : ghPatch.token;
+    }
+    if (ghPatch.defaultOwner !== undefined) {
+      nextGh.defaultOwner =
+        ghPatch.defaultOwner === null || ghPatch.defaultOwner === ""
+          ? undefined
+          : ghPatch.defaultOwner;
+    }
+    nextIntegrations.github = nextGh;
+  }
+
   const next = settingsSchema.parse({
     ...current,
     user: { ...current.user, ...(patch.user ?? {}) },
@@ -108,6 +139,7 @@ export async function PATCH(req: Request) {
     defaults: { ...current.defaults, ...(patch.defaults ?? {}) },
     providers: nextProviders,
     appearance: { ...current.appearance, ...(patch.appearance ?? {}) },
+    integrations: nextIntegrations,
   });
 
   const saved = await saveSettings(next);

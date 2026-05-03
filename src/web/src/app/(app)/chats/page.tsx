@@ -385,28 +385,16 @@ function EmptyHint({ label }: { label: string }) {
   );
 }
 
-function Checkbox({
-  checked,
-  onClick,
-}: {
-  checked: boolean;
-  onClick: (e: React.MouseEvent) => void;
-}) {
+function Checkbox({ checked }: { checked: boolean }) {
   return (
-    <button
-      type="button"
+    <span
       role="checkbox"
       aria-checked={checked}
-      onClick={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        onClick(e);
-      }}
       className={cn(
         "shrink-0 rounded border transition-colors",
         checked
           ? "border-primary bg-primary text-primary-foreground"
-          : "border-border bg-background hover:border-foreground/50",
+          : "border-border bg-background group-hover:border-foreground/50",
       )}
     >
       {checked ? (
@@ -414,7 +402,7 @@ function Checkbox({
       ) : (
         <Square className="size-4 text-transparent" />
       )}
-    </button>
+    </span>
   );
 }
 
@@ -474,7 +462,7 @@ function TypedRow({
             : "border-transparent hover:border-border/80 hover:bg-card/60",
         )}
       >
-        <Checkbox checked={selected} onClick={onToggle} />
+        <Checkbox checked={selected} />
         {Inner}
       </button>
     );
@@ -552,7 +540,7 @@ function VoiceRow({
             : "border-transparent hover:border-border/80 hover:bg-card/60",
         )}
       >
-        <Checkbox checked={selected} onClick={onToggle} />
+        <Checkbox checked={selected} />
         {Inner}
       </button>
     );

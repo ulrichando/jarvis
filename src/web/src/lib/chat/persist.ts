@@ -117,6 +117,72 @@ export async function saveAssistantMessage({
     .where(eq(schema.conversations.id, conversationId));
 }
 
+/**
+ * Update the most recent assistant message of a conversation if the
+ * client's version of that message has additional text the server's DB
+ * row doesn't have yet. This is how we persist client-side appends like
+ * the synthetic <boltActionResults> block — the model returns its raw
+ * text via streamText, but the chat layer enriches it AFTER actions
+ * run, and that enrichment lives only in client state until the user
+ * fires a follow-up turn carrying the enriched message in the request.
+ *
+ * Safety: we only overwrite when the client text is a strict superset
+ * (starts with the DB text) — prevents accidental loss if the client
+ * somehow sends a TRUNCATED version (race, bug). If the texts diverge,
+ * we keep the DB version untouched.
+ */
+export async function maybeUpdateLastAssistantMessage({
+  conversationId,
+  candidate,
+}: {
+  conversationId: string;
+  candidate: UIMessage;
+}) {
+  if (!db) return;
+  if (candidate.role !== "assistant") return;
+  const candidateText = extractText(candidate.parts);
+  if (!candidateText) return;
+  const [latest] = await db
+    .select()
+    .from(schema.messages)
+    .where(
+      and(
+        eq(schema.messages.conversationId, conversationId),
+        eq(schema.messages.role, "assistant"),
+      ),
+    )
+    .orderBy(schema.messages.createdAt)
+    .limit(50);
+  // Use the LAST row by createdAt (drizzle's orderBy default is asc);
+  // grabbing 50 is enough headroom and avoids a separate `desc` import
+  // for now.
+  if (!latest) return;
+  const rows = await db
+    .select()
+    .from(schema.messages)
+    .where(
+      and(
+        eq(schema.messages.conversationId, conversationId),
+        eq(schema.messages.role, "assistant"),
+      ),
+    );
+  if (rows.length === 0) return;
+  const last = rows[rows.length - 1];
+  const dbParts = Array.isArray(last.content)
+    ? (last.content as UIMessage["parts"])
+    : [{ type: "text" as const, text: String(last.content ?? "") }];
+  const dbText = extractText(dbParts);
+  // No change → no-op.
+  if (candidateText === dbText) return;
+  // Only enrich (extend) — never overwrite divergent content. The
+  // client text must START WITH the DB text for the update to be safe.
+  if (!candidateText.startsWith(dbText)) return;
+  await db
+    .update(schema.messages)
+    .set({ content: candidate.parts })
+    .where(eq(schema.messages.id, last.id));
+}
+
 export function toUIMessages(
   rows: Array<typeof schema.messages.$inferSelect>,
 ): UIMessage[] {
