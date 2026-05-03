@@ -39,7 +39,6 @@ import re
 import sqlite3
 import subprocess as _subprocess
 import time
-import concurrent.futures
 import urllib.error
 import urllib.request
 import uuid
@@ -3077,61 +3076,14 @@ async def media_control(action: str, player: str = "spotify") -> str:
 CONVO_DB_PATH = Path.home() / ".jarvis" / "conversations.db"
 
 # ── Convex mirror ────────────────────────────────────────────────────
-# SQLite stays the primary write-through (the bridge / web UI's
-# semantic-recall code reads from it directly). Convex is a near-
-# real-time fanout for any client that wants reactive subscriptions
-# (the web UI, future phone clients). We dual-write best-effort: a
-# single-worker executor serialises the HTTP POSTs so writes don't
-# pile up if the backend stalls, and any error is logged + dropped
-# rather than propagated. JARVIS_CONVEX_URL="" disables the mirror
-# entirely (e.g., when running detached from the home network).
-_CONVEX_URL = os.environ.get("JARVIS_CONVEX_URL", "http://127.0.0.1:3210")
-_convex_client: object | None = None
-_convex_client_failed = False
-_convex_executor = concurrent.futures.ThreadPoolExecutor(
-    max_workers=1, thread_name_prefix="convex-mirror",
-)
-
-
-def _get_convex_client():
-    """Lazy-init so a missing convex package or down backend at boot
-    doesn't crash the whole voice agent — degrade to SQLite-only."""
-    global _convex_client, _convex_client_failed
-    if _convex_client is not None or _convex_client_failed:
-        return _convex_client
-    if not _CONVEX_URL:
-        _convex_client_failed = True
-        return None
-    try:
-        from convex import ConvexClient  # type: ignore[import-not-found]
-        _convex_client = ConvexClient(_CONVEX_URL)
-        logger.info(f"[convex] mirror client ready at {_CONVEX_URL}")
-    except Exception as e:
-        _convex_client_failed = True
-        logger.warning(f"[convex] init failed (mirror disabled): {e}")
-    return _convex_client
-
-
-def _convex_mirror_turn(session_id: str, role: str, text: str, ts_ms: int) -> None:
-    """Fire-and-forget mirror of a turn into Convex. Never raises."""
-    client = _get_convex_client()
-    if client is None:
-        return
-
-    def _write() -> None:
-        try:
-            client.mutation("turns:append", {  # type: ignore[attr-defined]
-                "sessionId": session_id,
-                "ts":        ts_ms,
-                "role":      role,
-                "text":      text,
-                "source":    "voice-agent",
-            })
-        except Exception as e:
-            # Don't spam — log once per failure type at WARN.
-            logger.warning(f"[convex] mirror write failed: {e}")
-
-    _convex_executor.submit(_write)
+# Voice persistence path (post-2026-05-03):
+#   _save_turn() publishes a conversation.message.created event via
+#   the hub SDK (HubClient at module scope). The hub daemon consumes
+#   the event into ~/.jarvis/hub/state.db AND re-broadcasts on
+#   `broadcasts:conversation` for SSE subscribers (e.g. the web UI).
+# The previous Convex mirror (`_convex_mirror_turn`,
+# `_get_convex_client`, `_convex_executor`) was retired here — web
+# now reads via SSE off the hub bus, no parallel write path.
 
 
 def _save_turn(
@@ -3214,8 +3166,6 @@ def _save_turn(
             logger.warning(f"[hub] publish failed (turn dropped): {e}")
     else:
         logger.debug("[hub] skip publish — client unavailable")
-
-    _convex_mirror_turn(session_id, role, text, int(now * 1000))
 
 
 # ── Recall: read prior turns out of the same conversations.db ─────────
