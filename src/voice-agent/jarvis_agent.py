@@ -246,6 +246,22 @@ from livekit.agents import APITimeoutError as _APITimeoutError
 from livekit.agents import utils as _lk_utils
 from livekit.plugins.groq.tts import ChunkedStream as _GroqChunkedStream
 
+# 20ms of Opus silence — Discord's published trick to suppress
+# decoder interpolation when interrupting a stream. See spec
+# 2026-05-04-jarvis-voice-resilience-design.md (Discord pattern).
+_OPUS_SILENCE_FRAME = b"\xf8\xff\xfe"
+
+
+def _push_silence_tail(output_emitter, frames: int = 5) -> None:
+    """Emit a short silence tail before closing a TTS stream so the
+    next utterance isn't eaten by the decoder's residual state.
+    Best-effort — silently no-ops if the emitter is already closed."""
+    for _ in range(frames):
+        try:
+            output_emitter.push(_OPUS_SILENCE_FRAME)
+        except Exception:
+            break
+
 
 class _LoggingGroqChunkedStream(_GroqChunkedStream):
     async def _run(self, output_emitter) -> None:
@@ -339,6 +355,9 @@ class _LoggingGroqChunkedStream(_GroqChunkedStream):
                     )
                     async for data, _ in resp.content.iter_chunks():
                         output_emitter.push(data)
+                    # Discord-style silence tail to suppress decoder
+                    # interpolation on the next utterance.
+                    _push_silence_tail(output_emitter)
                     output_emitter.flush()
             except asyncio.TimeoutError:
                 raise _APITimeoutError() from None
