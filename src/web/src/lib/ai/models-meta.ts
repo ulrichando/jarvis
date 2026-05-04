@@ -168,6 +168,28 @@ export const MODELS_META: Record<string, ModelMeta> = {
     badge: "Beta",
   },
 
+  "kimi-vision-8k": {
+    id: "kimi-vision-8k",
+    label: "Kimi Vision 8k",
+    description: "Vision-capable Moonshot model. Compact context.",
+    provider: "kimi",
+    contextWindow: 8_000,
+  },
+  "kimi-vision-32k": {
+    id: "kimi-vision-32k",
+    label: "Kimi Vision 32k",
+    description: "Vision-capable. Sweet-spot context for screen + page grounding.",
+    provider: "kimi",
+    contextWindow: 32_000,
+  },
+  "kimi-vision-128k": {
+    id: "kimi-vision-128k",
+    label: "Kimi Vision 128k",
+    description: "Vision-capable. Long context — multi-image reasoning, doc + screen analysis.",
+    provider: "kimi",
+    contextWindow: 128_000,
+  },
+
   "llama-3.3-70b": {
     id: "llama-3.3-70b",
     label: "Llama 3.3 70B (Groq)",
