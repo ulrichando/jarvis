@@ -6165,17 +6165,20 @@ async def entrypoint(ctx: JobContext) -> None:
         ],
     )
 
-    # Watchdog: emit WATCHDOG=1 every 5s from inside this asyncio
-    # loop. systemd kills + restarts us if we miss two pings (i.e.
-    # the listener wedged). See watchdog.py + spec.
-    from watchdog import watchdog_loop
-    _agent_shutdown_event = asyncio.Event()
-    _watchdog_task = asyncio.create_task(
-        watchdog_loop(_agent_shutdown_event), name="sd-notify-watchdog"
-    )
-    async def _set_agent_shutdown() -> None:
-        _agent_shutdown_event.set()
-    ctx.add_shutdown_callback(_set_agent_shutdown)
+    # NOTE: An in-asyncio-loop watchdog here does NOT reach systemd.
+    # livekit-agents forks worker subprocesses for each job, and the
+    # systemd unit uses NotifyAccess=main which rejects sd_notify()
+    # calls from any process other than the main supervisor PID. So
+    # the agent-side watchdog lives in __main__ as a daemon thread
+    # in the supervisor process (see below). That thread satisfies
+    # systemd's Type=notify liveness check but cannot detect a
+    # wedged worker loop — if a job's asyncio loop stalls, the
+    # supervisor keeps pinging happily and systemd will not restart.
+    # That gap is acknowledged in the spec; the voice-CLIENT side
+    # has full in-loop wedge detection because it runs the listener
+    # in the same process that pings systemd. A future improvement
+    # could add a worker-health probe (pipe / socket) the supervisor
+    # polls, stopping its pings when a worker stops responding.
 
     await session.start(
         room=ctx.room,
@@ -6368,17 +6371,25 @@ async def entrypoint(ctx: JobContext) -> None:
 
 
 if __name__ == "__main__":
-    # Emit READY=1 + start the WATCHDOG=1 ping loop from the main
-    # process (the livekit supervisor).  cli.run_app() below is a
-    # blocking call; the watchdog must run in a daemon thread so it
-    # keeps pinging systemd while the supervisor loop is alive.
-    # If this process stalls (supervisor loop hung), the thread keeps
-    # pinging — but the entrypoint-level watchdog (per-job asyncio
-    # task inside each worker) stops, so systemd will restart the job
-    # worker.  Two layers of protection for two different failure modes.
+    # systemd Type=notify watchdog. cli.run_app() below is a
+    # blocking sync call that hands the main thread to livekit-
+    # agents; we have no asyncio loop here to put a watchdog task
+    # into. So we use a daemon thread that pings WATCHDOG=1 every
+    # 5s. NotifyAccess=main + WatchdogSec=10s on the unit means
+    # systemd kills + restarts the supervisor if we miss two pings.
+    #
+    # Limitation: this thread runs independently of the worker
+    # subprocesses livekit-agents spawns for each job. If a worker's
+    # asyncio loop stalls (the original 2026-05-04 incident class),
+    # this thread keeps pinging happily and systemd will NOT
+    # restart. The voice-CLIENT process has full in-loop wedge
+    # detection (see jarvis_voice_client.py main_loop). The agent's
+    # main crash class — KeyError on stale track SIDs during
+    # reconnect — is fixed structurally by livekit_track_guard
+    # (Task 5), so this watchdog is a backstop for general
+    # supervisor liveness, not a wedge detector.
     import threading as _threading
     import sdnotify as _sdnotify
-    import time as _time
 
     _sd = _sdnotify.SystemdNotifier()
     _sd.notify("READY=1")
@@ -6386,8 +6397,14 @@ if __name__ == "__main__":
 
     def _main_watchdog_thread() -> None:
         """Ping systemd every 5s from the main supervisor process."""
+        # No STOPPING=1 emission: this is a daemon thread, killed
+        # by Python's interpreter shutdown without a clean hook.
+        # systemd treats process exit as sufficient termination
+        # for Type=notify (STOPPING=1 is best-effort, not required).
+        # The voice-CLIENT side does emit STOPPING=1 because its
+        # watchdog runs in the asyncio loop with a try/finally.
         while True:
-            _time.sleep(5)
+            time.sleep(5)
             _sd.notify("WATCHDOG=1")
 
     _threading.Thread(
