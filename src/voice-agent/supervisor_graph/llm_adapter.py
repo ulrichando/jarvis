@@ -89,20 +89,51 @@ def _ctx_to_lc_messages(chat_ctx: agents_llm.ChatContext) -> list:
 
 
 def _ai_messages_to_chunks(ai_messages: list) -> list[agents_llm.ChatChunk]:
-    """Convert AIMessages to ChatChunks for the LiveKit stream.
+    """Convert an iterable of AIMessages into ChatChunks for the
+    LiveKit framework to consume.
 
-    Tool calls are NOT surfaced — the graph already executed them
-    internally; TTS only needs the assistant content.
+    Two kinds of chunks emerge:
+      - content chunks (assistant text → TTS speaks them)
+      - tool_call chunks (tool name + args → AgentSession dispatches
+        the tool, which in JARVIS's case routes through the existing
+        RegistrySpecialist path for transfer_to_* and any direct tools)
+
+    The graph's state-shape gating ensures content chunks only emit
+    when pending state is empty; tool_call chunks emit DURING dispatch
+    so AgentSession can run the tool and return control here on the
+    next turn.
     """
+    import json as _json
     chunks = []
     for m in ai_messages:
         content = getattr(m, "content", "") or ""
-        if not content:
-            continue
-        chunks.append(agents_llm.ChatChunk(
-            id=f"graph_{uuid.uuid4().hex[:8]}",
-            delta=agents_llm.ChoiceDelta(role="assistant", content=content),
-        ))
+        tool_calls_lc = getattr(m, "tool_calls", None) or []
+
+        if content:
+            chunks.append(agents_llm.ChatChunk(
+                id=f"graph_{uuid.uuid4().hex[:8]}",
+                delta=agents_llm.ChoiceDelta(role="assistant", content=content),
+            ))
+
+        if tool_calls_lc:
+            # Convert LangChain tool_calls (dicts with name/args/id)
+            # to LiveKit FunctionToolCall objects.
+            lk_calls = []
+            for tc in tool_calls_lc:
+                name = tc.get("name", "") if isinstance(tc, dict) else getattr(tc, "name", "")
+                args = tc.get("args", {}) if isinstance(tc, dict) else getattr(tc, "args", {})
+                call_id = tc.get("id", "") if isinstance(tc, dict) else getattr(tc, "id", "")
+                lk_calls.append(agents_llm.FunctionToolCall(
+                    name=name,
+                    arguments=_json.dumps(args) if not isinstance(args, str) else args,
+                    call_id=call_id or f"graph_call_{uuid.uuid4().hex[:8]}",
+                ))
+            chunks.append(agents_llm.ChatChunk(
+                id=f"graph_tc_{uuid.uuid4().hex[:8]}",
+                delta=agents_llm.ChoiceDelta(
+                    role="assistant", tool_calls=lk_calls,
+                ),
+            ))
     return chunks
 
 
