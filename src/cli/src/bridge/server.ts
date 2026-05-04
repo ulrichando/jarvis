@@ -49,7 +49,31 @@ import { execSync } from 'node:child_process'
 import { AccessToken } from 'livekit-server-sdk'
 
 const PORT       = parseInt(process.env.JARVIS_BRIDGE_PORT ?? '8765')
+const HOSTNAME   = process.env.JARVIS_BRIDGE_HOST ?? '127.0.0.1'
 const PROXY_URL  = process.env.JARVIS_PROXY_URL ?? 'http://localhost:4000'
+
+// Optional bearer-token gate. When JARVIS_REQUIRE_LOCAL_AUTH=1 the bridge
+// rejects any /api/* request (and /ws upgrade) without
+// `Authorization: Bearer <JARVIS_LOCAL_API_TOKEN>` — value lives in
+// ~/.jarvis/local-api-token (chmod 600). Off by default so existing
+// callers keep working until each is updated to send the token.
+const REQUIRE_AUTH = process.env.JARVIS_REQUIRE_LOCAL_AUTH === '1'
+const LOCAL_TOKEN  = process.env.JARVIS_LOCAL_API_TOKEN ?? ''
+const PUBLIC_PATHS = new Set(['/health', '/api/ready', '/api/version', '/api/theme'])
+
+function isAuthorized(req: Request, urlObj: URL): boolean {
+  if (!REQUIRE_AUTH) return true
+  if (PUBLIC_PATHS.has(urlObj.pathname)) return true
+  if (urlObj.pathname === '/ws') {
+    // WebSocket auth via ?token= query param (no headers on initial upgrade
+    // for native WS clients) OR Sec-WebSocket-Protocol subprotocol value.
+    const qp = urlObj.searchParams.get('token')
+    const subproto = req.headers.get('Sec-WebSocket-Protocol') ?? ''
+    return qp === LOCAL_TOKEN || subproto === LOCAL_TOKEN
+  }
+  const auth = req.headers.get('Authorization') ?? ''
+  return auth === `Bearer ${LOCAL_TOKEN}`
+}
 // Mutable: /api/model lets the extension (and chat panel) pick a different
 // model at runtime. Applies to every subsequent query that doesn't override.
 let ACTIVE_MODEL = process.env.JARVIS_BRIDGE_MODEL ?? getJarvisDefaultModel().id
@@ -365,8 +389,13 @@ async function handleLiveKitToken(req: Request): Promise<Response> {
 
 const server = Bun.serve({
   port: PORT,
+  hostname: HOSTNAME,
   async fetch(req, server) {
     const url = new URL(req.url)
+
+    if (!isAuthorized(req, url)) {
+      return new Response('Unauthorized', { status: 401 })
+    }
 
     if (url.pathname === '/ws') {
       if (server.upgrade(req)) return
@@ -517,5 +546,5 @@ const server = Bun.serve({
   },
 })
 
-console.log(`[bridge] Jarvis desktop bridge listening on http://localhost:${PORT} (commit ${COMMIT})`)
+console.log(`[bridge] Jarvis desktop bridge listening on http://${HOSTNAME}:${PORT} (commit ${COMMIT}, auth=${REQUIRE_AUTH ? 'required' : 'off'})`)
 console.log(`[bridge] Proxying chat to ${PROXY_URL} with active model "${ACTIVE_MODEL}"`)

@@ -12,7 +12,11 @@
 // package.json → npm install → write source → start dev).
 
 import type { Action, TrackedAction } from "./types";
-import { apiCreateEntry, apiWriteFile } from "@/lib/workspace/client";
+import {
+  apiCreateEntry,
+  apiReadFile,
+  apiWriteFile,
+} from "@/lib/workspace/client";
 
 export type ShellResult = {
   exitCode: number;
@@ -68,6 +72,14 @@ export class ActionRunner {
   private done = new Set<string>();                   // actionIds already executed
   private placeholders = new Set<string>();           // actionIds with a placeholder already written
   private dirsCreated = new Set<string>();            // folder paths we've already mkdir'd in this turn
+  // Per-action snapshot of file content from BEFORE the placeholder
+  // overwrite. Lets us restore the original if the model emits a
+  // boltAction whose body is empty (a common truncation pattern: open
+  // tag + close tag arrive but no chunks streamed in between, which
+  // would otherwise nuke an existing file to 0 bytes and white-screen
+  // the design preview). Only populated when the file existed with
+  // non-empty content at onOpen time.
+  private prevFileContent = new Map<string, string>();
 
   constructor(
     workspaceId: string,
@@ -113,6 +125,19 @@ export class ActionRunner {
     const prev = this.queues.get(artifactId) ?? Promise.resolve();
     const next = prev.then(async () => {
       try {
+        // Snapshot the file's pre-placeholder content. If the model
+        // emits an empty boltAction (truncated stream — open + close
+        // arrive with no chunks in between), execute() restores this
+        // snapshot instead of leaving the file at 0 bytes.
+        try {
+          const existing = await apiReadFile(this.workspaceId, filePath);
+          if (existing.length > 0) {
+            this.prevFileContent.set(actionId, existing);
+          }
+        } catch {
+          /* file doesn't exist yet — nothing to preserve */
+        }
+
         // Create ancestor folders explicitly before the placeholder file
         // so the design panel sees the folder appear FIRST, then the file
         // populate inside it on the next tick — instead of folder + file
@@ -189,7 +214,31 @@ export class ActionRunner {
 
     try {
       if (action.type === "file") {
+        // Empty-content guard: if the model emitted a boltAction with
+        // no body (common when finish=length truncates the stream
+        // between the open and close tags), don't nuke a previously-
+        // populated file to 0 bytes. Restore the snapshot taken in
+        // onOpen instead — the design preview stays alive while the
+        // user can ask for a clean redo. Empty content for a file
+        // that didn't previously exist is still allowed (legitimate
+        // empty-file case like .gitignore stubs).
+        if (action.content.length === 0) {
+          const prev = this.prevFileContent.get(tracked.actionId);
+          if (prev && prev.length > 0) {
+            console.warn(
+              `[action-runner] empty boltAction for ${action.filePath} — likely truncated stream. Restoring ${prev.length}-byte previous content instead of writing 0 bytes.`,
+            );
+            await apiWriteFile(this.workspaceId, action.filePath, prev);
+            this.prevFileContent.delete(tracked.actionId);
+            this.listener({
+              kind: "success",
+              tracked: { ...tracked, status: "success" },
+            });
+            return;
+          }
+        }
         await apiWriteFile(this.workspaceId, action.filePath, action.content);
+        this.prevFileContent.delete(tracked.actionId);
         this.listener({
           kind: "success",
           tracked: { ...tracked, status: "success" },

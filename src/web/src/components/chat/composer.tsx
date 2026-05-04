@@ -186,7 +186,18 @@ export function Composer({
   const inlineToggles = providerUX.inlineToggles ?? [];
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-4 pb-4">
+    <div
+      className="mx-auto w-full max-w-3xl px-4"
+      // iOS Safari + Android Chrome with display-mode standalone need
+      // env(safe-area-inset-bottom) to clear the home-indicator gesture
+      // bar. Fallback to 1rem on browsers that don't support env().
+      // Doing this inline (not via Tailwind arbitrary value) so the
+      // computed value is correct in all build modes — Tailwind's
+      // arbitrary syntax doesn't always pass env() through cleanly.
+      style={{
+        paddingBottom: "max(1rem, env(safe-area-inset-bottom))",
+      }}
+    >
       <input
         ref={fileInputRef}
         type="file"
@@ -240,13 +251,17 @@ export function Composer({
         )}
         <textarea
           ref={ref}
+          data-jarvis-composer
           value={value}
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={handleKey}
           onPaste={onPaste}
           rows={1}
           placeholder={placeholder ?? ux.placeholder}
-          className="resize-none bg-transparent px-5 pt-5 pb-3 text-[15px] leading-7 outline-none placeholder:text-muted-foreground/70 min-h-18"
+          // 16px base prevents iOS Safari from auto-zooming the page
+          // when the textarea takes focus — anything under 16px triggers
+          // it. Visual cost vs 15px is negligible; UX win is large.
+          className="resize-none bg-transparent px-5 pt-5 pb-3 text-[16px] leading-7 outline-none placeholder:text-muted-foreground/70 min-h-18"
         />
         <div className="flex items-center justify-between gap-2 px-2 pb-2">
           <div className="flex items-center gap-1">

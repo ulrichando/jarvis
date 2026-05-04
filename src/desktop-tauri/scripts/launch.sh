@@ -5,7 +5,11 @@
 # not in this launcher. Services:
 #   • Proxy    :4000  — LLM router (Anthropic-compat → Groq/DeepSeek/…)
 #   • Bridge   :8765  — WS + REST API for the Tauri UI
-# Each is only started if not already listening. Idempotent.
+#   • Web      :3001  — Next.js dev server (the JARVIS web UI)
+# Each is only started if not already listening. Idempotent. Matches
+# what JupyterLab Desktop / Docker Desktop / VS Code Server do — the
+# launcher owns the lifecycle of its dependencies so the user never
+# has to remember to start them in a separate terminal.
 set -u
 
 # Maya-class speech intelligence defaults — override by setting in env.
@@ -18,6 +22,16 @@ set -u
 : "${JARVIS_VOICE_REASONING:=troy}"
 : "${JARVIS_VOICE_EMOTIONAL:=daniel}"
 : "${JARVIS_TELEMETRY_PATH:=$HOME/.local/share/jarvis/turn_telemetry.db}"
+
+# Local bridge bearer token. File is KEY=VALUE format (chmod 600);
+# safe to source directly. Empty when the file isn't present yet —
+# the bridge ignores the value unless JARVIS_REQUIRE_LOCAL_AUTH=1.
+if [ -r "$HOME/.jarvis/local-api-token.env" ]; then
+  # shellcheck disable=SC1091
+  . "$HOME/.jarvis/local-api-token.env"
+  export JARVIS_LOCAL_API_TOKEN
+fi
+
 export JARVIS_DISPATCH_DISABLED JARVIS_ROUTER_ENABLED JARVIS_ROUTER_TIMEOUT_MS \
        JARVIS_ROUTER_MODEL \
        JARVIS_VOICE_BANTER JARVIS_VOICE_TASK JARVIS_VOICE_REASONING JARVIS_VOICE_EMOTIONAL \
@@ -111,6 +125,45 @@ start_bun_bg() {
   disown || true
 }
 
+# start_web_bg <log>
+# Launches the Next.js dev server in src/web from a detached session.
+# Different shape from start_bun_bg because `bun run dev` needs a cwd
+# (src/web) to resolve package.json's "dev" script, plus we use the
+# system `bun` for the web (matches how the user runs it from a
+# terminal — vendored bun is for the CLI only).
+start_web_bg() {
+  local log=$1
+  local web_dir="$PROJECT_ROOT/src/web"
+  if [ ! -d "$web_dir" ]; then
+    echo "[launch] web dir missing at $web_dir — skipping" >&2
+    return 1
+  fi
+  if ! command -v bun >/dev/null 2>&1; then
+    echo "[launch] bun not in PATH — web auto-start skipped" >&2
+    return 1
+  fi
+  printf '\n\n=== start %s next dev ===\n' "$(date -Iseconds)" >>"$log"
+  ( cd "$web_dir" && \
+    nohup bash -c "set -a; [ -f '$ENV_FILE' ] && . '$ENV_FILE'; set +a; exec bun run dev" \
+      </dev/null >>"$log" 2>&1 & disown ) || true
+}
+
+# is_jarvis_web_live — check if a JARVIS web is responding on a known
+# port. Mirrors the tray's probe logic: TCP connect → GET /api/conversations
+# → expect 200 + application/json (so we don't false-positive on a stale
+# Open-WebUI / random server on the same port).
+is_jarvis_web_live() {
+  for port in 3001 3002 3000; do
+    local body
+    body=$(curl -sS -m 1 -o /dev/null -w '%{http_code} %{content_type}' \
+      "http://127.0.0.1:$port/api/conversations" 2>/dev/null) || continue
+    case "$body" in
+      "200 application/json"*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
 # ── Backend stack is owned by systemd user units ──────────────────────
 # Proxy (4000), bridge (8765), voice agent + voice client, and
 # mic_aec / sink_aec routing are all managed by systemd user units.
@@ -143,6 +196,34 @@ for port_host in "4000:proxy" "8765:bridge"; do
     esac
   fi
 done
+
+# ── Web UI (Next.js dev server on :3001) ────────────────────────────────
+# Spawn the JARVIS web in the background if it's not already running.
+# This is what JupyterLab Desktop / Docker Desktop / VS Code Server do —
+# the launcher owns the lifecycle so the tray's "Open in Browser" always
+# has something live to open.
+#
+# Idempotent: if the user already has `bun run dev` running in a terminal
+# (or another launcher invocation already started one), is_jarvis_web_live
+# returns 0 and we skip. No port collision possible.
+#
+# Non-blocking: we DON'T wait_port here. Next.js cold-compile is 5-15 s
+# on first run, and blocking would stall the tray boot for that long.
+# By the time the user clicks "Open in Browser", compile is usually
+# done. If they click during compile, the tray's diagnostic window
+# (web-not-running.html) shows a friendly "starting up" message.
+#
+# The user can opt out via JARVIS_WEB_AUTO_START=false (skip spawn,
+# tray will show diagnostic when web is needed) or override the URL
+# via JARVIS_WEB_URL=https://… in the binary's env.
+if [ "${JARVIS_WEB_AUTO_START:-true}" = "true" ]; then
+  if is_jarvis_web_live; then
+    echo "[launch] jarvis web already up — skipping spawn" >&2
+  else
+    echo "[launch] spawning jarvis web (Next.js dev) in background" >&2
+    start_web_bg /tmp/jarvis-web.log
+  fi
+fi
 
 # ── Voice services ────────────────────────────────────────────────────
 # Started in pairs because the voice-client races the voice-agent on

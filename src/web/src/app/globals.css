@@ -137,3 +137,40 @@
     background: oklch(0.80 0.155 198 / 50%);
   }
 }
+
+/* Streaming caret — inline blinking bar at the end of the last
+   paragraph during a model stream. Embedded as <span data-stream-caret>
+   inside the markdown content (not as a sibling of <Markdown>) so it
+   joins the last text line naturally instead of dropping below as
+   block sibling. Color matches text via currentColor; size set in em
+   so it scales with the surrounding font-size. */
+[data-stream-caret] {
+  display: inline-block;
+  width: 0.5em;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: currentColor;
+  animation: jarvis-caret-blink 1s ease-in-out infinite;
+}
+@keyframes jarvis-caret-blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0.2; }
+}
+
+/* Reduced motion — honor the user's OS preference. We don't
+   nuke transitions entirely (instant state-snaps disorient users
+   too), we just shorten them to 0.01ms which is below the
+   perceptual threshold but still keeps the state transition in
+   the accessibility tree. iteration-count: 1 also stops the
+   ping/pulse loops the streaming UI uses. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
