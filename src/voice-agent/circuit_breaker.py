@@ -17,6 +17,13 @@ from typing import Any, Awaitable, Callable, Optional
 
 logger = logging.getLogger("jarvis.breaker")
 
+# Module-level state constants. Tasks 2-4 will write to .state from
+# their test seams; constants prevent typo classes (e.g. "half_open"
+# vs "half-open") from passing silently as valid-looking strings.
+STATE_CLOSED = "closed"
+STATE_OPEN = "open"
+STATE_HALF_OPEN = "half-open"
+
 
 class CircuitOpenError(Exception):
     """Raised by CircuitBreaker.call() when state == 'open' and no
@@ -32,8 +39,15 @@ class CircuitBreaker:
     """Wraps an awaitable. Three states:
       - closed:    normal operation; failures counted toward threshold
       - open:      fail-fast for `cooldown_s` after threshold breach
-      - half-open: one probe call after cooldown; success → closed,
+      - half-open: probe-call mode after cooldown; success → closed,
                    failure → open again
+
+    Concurrency note: the breaker is NOT thread- or task-safe. Multiple
+    concurrent callers reaching the half-open transition simultaneously
+    will each get a probe (the design intent is "one probe at a time"
+    but enforcing that needs an asyncio.Lock and the voice pipeline is
+    serial so it's not worth the cost). Acceptable trade-off for our
+    use case; document if that ever changes.
     """
 
     def __init__(
@@ -48,7 +62,7 @@ class CircuitBreaker:
         self.fail_threshold = fail_threshold
         self.cooldown_s = cooldown_s
         self.timeout_s = timeout_s
-        self.state: str = "closed"
+        self.state: str = STATE_CLOSED
         self.failures: int = 0
         self.opened_at: float = 0.0
 
@@ -59,12 +73,12 @@ class CircuitBreaker:
         fallback: Optional[Callable[[], Awaitable[Any]]] = None,
         **kw: Any,
     ) -> Any:
-        if self.state == "open":
+        if self.state == STATE_OPEN:
             if time.time() - self.opened_at < self.cooldown_s:
                 if fallback is not None:
                     return await fallback()
                 raise CircuitOpenError(self.name)
-            self.state = "half-open"
+            self.state = STATE_HALF_OPEN
             logger.info("[breaker:%s] half-open (probe)", self.name)
 
         try:
@@ -79,17 +93,17 @@ class CircuitBreaker:
 
     def _record_failure(self) -> None:
         self.failures += 1
-        if self.state == "half-open" or self.failures >= self.fail_threshold:
-            if self.state != "open":
+        if self.state == STATE_HALF_OPEN or self.failures >= self.fail_threshold:
+            if self.state != STATE_OPEN:
                 logger.warning(
                     "[breaker:%s] OPEN after %d failure(s)",
                     self.name, self.failures,
                 )
-            self.state = "open"
+            self.state = STATE_OPEN
             self.opened_at = time.time()
 
     def _reset(self) -> None:
-        if self.state != "closed":
+        if self.state != STATE_CLOSED:
             logger.info("[breaker:%s] closed", self.name)
-        self.state = "closed"
+        self.state = STATE_CLOSED
         self.failures = 0
