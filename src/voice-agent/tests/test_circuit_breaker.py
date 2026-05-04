@@ -10,12 +10,14 @@ import asyncio
 import sys
 import time
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from circuit_breaker import CircuitBreaker, CircuitOpenError
+from circuit_breaker import (
+    CircuitBreaker, CircuitOpenError,
+    STATE_CLOSED, STATE_OPEN, STATE_HALF_OPEN,
+)
 
 
 def _run(coro):
@@ -37,13 +39,13 @@ async def _slow(seconds):
 
 def test_breaker_starts_closed():
     cb = CircuitBreaker("test", fail_threshold=3)
-    assert cb.state == "closed"
+    assert cb.state == STATE_CLOSED
 
 
 def test_breaker_passes_through_when_closed():
     cb = CircuitBreaker("test", fail_threshold=3)
     assert _run(cb.call(_ok)) == "ok"
-    assert cb.state == "closed"
+    assert cb.state == STATE_CLOSED
 
 
 def test_breaker_opens_after_threshold_failures():
@@ -51,14 +53,14 @@ def test_breaker_opens_after_threshold_failures():
     for _ in range(3):
         with pytest.raises(RuntimeError):
             _run(cb.call(_fail))
-    assert cb.state == "open"
+    assert cb.state == STATE_OPEN
 
 
 def test_breaker_fails_fast_when_open():
     cb = CircuitBreaker("test", fail_threshold=1, cooldown_s=10)
     with pytest.raises(RuntimeError):
         _run(cb.call(_fail))
-    assert cb.state == "open"
+    assert cb.state == STATE_OPEN
     with pytest.raises(CircuitOpenError):
         _run(cb.call(_ok))
 
@@ -84,7 +86,7 @@ def test_breaker_half_open_after_cooldown(monkeypatch):
     monkeypatch.setattr(time, "time", lambda: cb.opened_at + 2)
 
     assert _run(cb.call(_ok)) == "ok"
-    assert cb.state == "closed"
+    assert cb.state == STATE_CLOSED
 
 
 def test_breaker_reopens_on_half_open_failure(monkeypatch):
@@ -95,11 +97,30 @@ def test_breaker_reopens_on_half_open_failure(monkeypatch):
 
     with pytest.raises(RuntimeError):
         _run(cb.call(_fail))
-    assert cb.state == "open"
+    assert cb.state == STATE_OPEN
 
 
 def test_breaker_timeout_counts_as_failure():
     cb = CircuitBreaker("test", fail_threshold=1, cooldown_s=10, timeout_s=0.05)
     with pytest.raises(asyncio.TimeoutError):
         _run(cb.call(_slow, 0.5))
-    assert cb.state == "open"
+    assert cb.state == STATE_OPEN
+
+
+def test_breaker_half_open_does_not_serialize_concurrent_probes(monkeypatch):
+    """Documents intentional non-serialization. Two concurrent callers
+    both observe state=='open' past cooldown → both probe. We tolerate
+    this because our voice pipeline is serial; flag if behaviour ever
+    needs to change."""
+    cb = CircuitBreaker("test", fail_threshold=1, cooldown_s=1)
+    with pytest.raises(RuntimeError):
+        _run(cb.call(_fail))
+    monkeypatch.setattr(time, "time", lambda: cb.opened_at + 2)
+
+    # Two awaitables that both reach the half-open branch concurrently.
+    async def _both():
+        return await asyncio.gather(cb.call(_ok), cb.call(_ok))
+
+    results = _run(_both())
+    assert results == ["ok", "ok"]
+    assert cb.state == STATE_CLOSED
