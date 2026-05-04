@@ -609,6 +609,7 @@ Spec: [`2026-05-04-jarvis-voice-resilience-design.md`](./2026-05-04-jarvis-voice
 | Hub restart mid-session | `systemctl --user restart jarvis-hub.service` | ✅ voice-agent and voice-client unaffected (separate processes; hub bus reconnects via Redis). |
 | DNS local cache (8a) | dnsmasq listening on 127.0.0.1 with 1000-entry cache | ✅ Installed 2026-05-04. Config at `/etc/dnsmasq.d/jarvis.conf`. resolvconf hook (`lo.dnsmasq`) auto-points `/etc/resolv.conf` at 127.0.0.1. Verified: cached hosts resolve in 3ms even with all upstream resolvers blocked via iptables. Decorrelates the Groq STT/TTS/LLM endpoints during DNS blips. |
 | Canned-phrase WAVs | `scripts/render-canned-phrases.py` | ⚠️ Deferred — Groq TTS was unreachable during render attempt; renderer exits cleanly with status 1, no leftover artifacts. Re-run when Groq recovers. Loader's `is_available()` returns False, so the breaker-open path falls back to silence (not crash). |
+| Laptop suspend/resume | `scripts/jarvis-on-resume.sh` installed at `/usr/lib/systemd/system-sleep/jarvis-on-resume` | ✅ Installed 2026-05-04. systemd-sleep hook restarts voice-agent + voice-client on wake (3s settle delay for PipeWire). Pattern from Slack/Discord/Element on Linux. Verified: simulated `post suspend` invocation cleanly cycled both services in ~5 s. Today's resilience layer reconnects them automatically. |
 
 **Tests added: ~30 new pytest cases.** All green under `-W error::ResourceWarning`:
 - `test_circuit_breaker.py` — 9 tests
