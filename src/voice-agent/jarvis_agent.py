@@ -376,11 +376,12 @@ class _BreakeredGroqSTT(groq.STT):
         except CircuitOpenError as e:
             raise _APIConnectionError() from e
 
-    @classmethod
-    async def _call_with_breaker_for_test(cls):
-        """Test seam — exercises the breaker-open path without a
-        real Groq client. Calls _STT_BREAKER directly; production
-        code paths go through _recognize_impl above."""
+    async def _call_with_breaker_for_test(self):
+        """Test seam — instance method so the test exercises
+        _build_breakered_stt() construction, catching factory regressions
+        (wrong model string, broken constructor signature) at test time
+        rather than at production startup. The body itself only probes
+        the breaker-open path; production calls go through _recognize_impl."""
         async def _no_op():
             return None
         try:
