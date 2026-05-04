@@ -1,28 +1,29 @@
-"""specialist_node — the bridge from the graph to the existing
-RegistrySpecialist machinery in `specialists/agent.py`.
+"""specialist_node — graph-side handoff coordinator.
 
-Three responsibilities:
+Architecture (Phase 6, 2026-05-04): the graph does NOT run the
+specialist in-process. The specialist's actual work (browser
+ext_*, desktop tools, etc.) runs through LiveKit AgentSession's
+normal tool dispatch, kicking off the existing RegistrySpecialist
+machinery (specialists/agent.py with the task_done gate). The graph's
+job here is:
+
   1. Emit the non-committal filler ("One moment, sir.") exactly once
-     per handoff — bridges the latency gap so the user hears a voice.
-     The Sierra/Hamming/Vapi pattern: never claim completion before
-     the work happens.
-  2. Run the named specialist to completion via _run_specialist().
-     The specialist still goes through its existing task_done gate
-     (added 2026-05-04) so it cannot bail out without doing work.
-  3. Clear pending_specialist + pending_tool_calls regardless of
-     specialist outcome (success OR failure). Never leave the graph
-     in a deadlocked pending state.
+     so the user hears a voice during the latency.
+  2. Re-emit the transfer_to_* tool_call so the LLM adapter surfaces
+     it as a real ChatChunk for AgentSession to dispatch.
+  3. Clear pending_specialist + pending_tool_calls so speak_gate
+     releases this turn (the specialist runs in a separate turn).
 
-The actual specialist run is in _run_specialist() so tests can swap
-it without standing up a full LiveKit AgentSession.
+On the NEXT user turn, the chat_ctx already contains the specialist's
+result (as a tool_result message); the supervisor's classify routes
+appropriately and life goes on.
 """
 from __future__ import annotations
 
 import logging
 import random
-from typing import Optional
 
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage
 
 logger = logging.getLogger("supervisor_graph.specialist")
 
@@ -40,76 +41,56 @@ def _pick_filler() -> str:
     return random.choice(_FILLERS)
 
 
-def _run_specialist(name: str, request: str, state: dict) -> str:
-    """Invoke the named specialist and return its final summary.
-
-    For Phase 5 of this plan, this is a thin shim. Real specialist
-    invocation requires plumbing the existing LiveKit
-    `RegistrySpecialist` into the graph's runtime — that's deferred
-    to a follow-up patch. Until then, return an honest message so
-    the user hears something instead of silence after the filler.
-    """
-    return (
-        f"Specialist handoff to {name!r} isn't wired into the graph "
-        f"supervisor yet, sir. (Tracked: complete this in the next "
-        f"patch.)"
-    )
-
-
 def specialist_node(state: dict) -> dict:
-    """Run the in-flight specialist; emit filler-once; clear pending.
+    """Emit the filler-once and the handoff tool_call passthrough.
 
-    The graph routes here when `pending_specialist` is set (typically
-    set by task_dispatch_node when it emits a transfer_to_X tool
-    call). On entry: set the filler if not already emitted. On exit:
-    pending_specialist and pending_tool_calls are guaranteed empty —
-    speak_gate will release.
+    Does NOT run the specialist directly. The LLM adapter surfaces
+    the tool_call so AgentSession dispatches via the normal LiveKit
+    tool path → existing RegistrySpecialist.
     """
     name = state.get("pending_specialist")
     if not name:
-        # Defensive — shouldn't happen given graph wiring.
         logger.warning("[specialist] called with no pending_specialist")
         return {}
 
-    user_query = state.get("user_query") or ""
     output_messages: list = []
 
-    # 1. Filler-once — bridges latency without lying.
+    # 1. Filler-once.
     if not state.get("handoff_filler_voiced"):
         filler = _pick_filler()
         logger.info("[specialist] filler: %r → %s", filler, name)
         output_messages.append(AIMessage(content=filler))
 
-    # 2. Run the specialist. Catch all exceptions; never deadlock.
-    try:
-        summary = _run_specialist(name, user_query, state)
-        if not summary:
-            summary = f"({name} specialist returned no summary)"
-        logger.info("[specialist] %s done: %r", name, summary[:120])
-    except Exception as e:
-        summary = f"The {name} specialist failed: {type(e).__name__}: {e}"
-        logger.warning("[specialist] %s failed: %s", name, e)
+    # 2. Re-emit the handoff tool_call so the LLM adapter surfaces it.
+    #    The most recent AIMessage in messages should be task_dispatch's
+    #    output with tool_calls populated. Find it and copy the
+    #    tool_calls into a new AIMessage in our return — this
+    #    duplicates the tool_call into the post-handoff state slice
+    #    that the LLM adapter will scan.
+    last_handoff_call = None
+    for m in reversed(state.get("messages") or []):
+        tcs = getattr(m, "tool_calls", None) or []
+        for tc in tcs:
+            tc_name = tc.get("name", "") if isinstance(tc, dict) else getattr(tc, "name", "")
+            if tc_name.startswith("transfer_to_"):
+                last_handoff_call = tc
+                break
+        if last_handoff_call is not None:
+            break
 
-    # 3. Append the specialist's summary as a tool result the speak
-    #    path can consume. Pair with the handoff's tool_call_id so
-    #    pending_tool_calls clears cleanly.
-    pending = state.get("pending_tool_calls") or []
-    if pending:
-        # The first pending id corresponds to the handoff that started
-        # this specialist. Pair them.
-        output_messages.append(ToolMessage(
-            content=summary, tool_call_id=pending[0],
+    if last_handoff_call is not None:
+        output_messages.append(AIMessage(
+            content="",
+            tool_calls=[last_handoff_call],
         ))
-    # 4. Also surface the summary as an AIMessage so the LiveKit LLM
-    #    adapter (`_ai_messages_to_chunks`) yields it for TTS. Without
-    #    this the user hears the filler then silence (ToolMessages are
-    #    filtered out before chunks are emitted).
-    output_messages.append(AIMessage(content=summary))
 
+    # 3. Clear pending state so speak_gate releases. The specialist
+    #    will run in a separate LiveKit turn (dispatched by
+    #    AgentSession after our tool_call chunk is forwarded).
     return {
         "messages": output_messages,
         "pending_specialist": None,
         "pending_tool_calls": [],
-        "last_tool_result": summary,
+        "last_tool_result": None,  # specialist hasn't run yet
         "handoff_filler_voiced": True,
     }
