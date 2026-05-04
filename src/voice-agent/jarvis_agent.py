@@ -389,7 +389,12 @@ class _LoggingGroqChunkedStream(_GroqChunkedStream):
 # within ms instead of waiting for the OS socket timeout.
 #
 # Spec: docs/superpowers/specs/2026-05-04-jarvis-voice-resilience-design.md
-from circuit_breaker import CircuitBreaker, CircuitOpenError
+from circuit_breaker import (
+    CircuitBreaker,
+    CircuitOpenError,
+    STATE_CLOSED,
+    STATE_OPEN,
+)
 
 _STT_BREAKER = CircuitBreaker("stt", fail_threshold=3, cooldown_s=20, timeout_s=8)
 _TTS_BREAKER = CircuitBreaker("tts", fail_threshold=3, cooldown_s=20, timeout_s=8)
@@ -484,6 +489,44 @@ class _BreakeredLLMStream:
                 raise _APIConnectionError() from e
             except asyncio.TimeoutError:
                 raise _APITimeoutError() from None
+            except Exception as e:
+                # Schema-validation errors are NOT a "Groq is down"
+                # signal — they're "the LLM emitted a malformed tool
+                # call." Live-observed 2026-05-04: a single user turn
+                # produced two `Failed to call a function` errors back
+                # to back, breaker tripped (fail_threshold=2), every
+                # subsequent turn for 30 s went through the slower
+                # DeepSeek fallback. From the user's seat: "I can't
+                # have a normal conversation." Verified Groq itself is
+                # healthy via direct curl — the error originates in
+                # the LLM's output, not the API.
+                #
+                # Fix: un-count validation-error failures and revert
+                # OPEN→CLOSED if the breaker just tripped on them.
+                # tool_name_sanitizer + downstream recovery handle the
+                # malformation; the breaker should only protect against
+                # transport-layer outages (TimeoutError + connection
+                # errors) where Groq is genuinely unreachable.
+                err_msg = str(e).lower()
+                is_validation_error = (
+                    "failed to call a function" in err_msg
+                    or "tool call validation failed" in err_msg
+                    or "failed_generation" in err_msg
+                    or "please adjust your prompt" in err_msg
+                )
+                if is_validation_error:
+                    if self._breaker.failures > 0:
+                        self._breaker.failures -= 1
+                    if (
+                        self._breaker.state == STATE_OPEN
+                        and self._breaker.failures < self._breaker.fail_threshold
+                    ):
+                        self._breaker.state = STATE_CLOSED
+                        logger.info(
+                            "[breaker:llm] reverted OPEN→closed "
+                            "(validation error, not transport)"
+                        )
+                raise
         return await self._inner.__anext__()
 
     async def aclose(self):
@@ -596,6 +639,48 @@ _FILLER_TOKENS = frozenset({
     "eh", "huh", "mhm", "mmhm",
 })
 
+# Whisper silence-hallucinations. When Whisper is fed sub-speech audio
+# (room tone, breath, mic_aec residual, soft start of a real utterance
+# that VAD opened on too early) it doesn't return empty — it emits
+# phrases that dominate its training data. Those are then routed as
+# real transcripts: 2026-05-04 the canonical " Thank you." landed in
+# the BANTER fast-path → llama-3.1-8b-instant attempted a malformed
+# tool call → Groq returned "Failed to call a function" → breaker
+# opened → 30 s recovery cascade → user assumed JARVIS missed them
+# and repeated, second attempt transcribed cleanly. Filtering these
+# at the upstream gate (_is_garbage_transcript) is both cheaper and
+# unambiguous: a user volunteering only "thanks for watching" to a
+# voice assistant is not a real interaction.
+#
+# List sourced from openai/whisper#928, faster-whisper FAQ,
+# ggerganov/whisper.cpp#1189, plus the " Thank you." case observed
+# in voice-agent log (2026-05-04 12:40). Conservative on purpose:
+# words that double as legitimate standalone replies ("yes", "no",
+# "yeah", "okay", "right") are NOT in the set — see _FILLER_TOKENS
+# comment for the same reasoning.
+_WHISPER_HALLUCINATIONS = frozenset({
+    "thank you",
+    "thanks",
+    "thank you for watching",
+    "thanks for watching",
+    "thanks for watching the video",
+    "thank you for watching the video",
+    "subscribe",
+    "subscribe to my channel",
+    "like and subscribe",
+    "please subscribe",
+    "music",
+    "applause",
+    "laughter",
+    "you",
+    "you you",
+    "you you you",
+    "bye bye",
+    "okay bye",
+    "see you",
+    "see you next time",
+})
+
 
 def _is_garbage_transcript(text: str) -> tuple[bool, str]:
     """Return (is_garbage, reason).
@@ -634,6 +719,13 @@ def _is_garbage_transcript(text: str) -> tuple[bool, str]:
     # Single-character noise.
     if len(only_word) == 1:
         return True, "single-char"
+
+    # Whisper silence-hallucination phrases (see _WHISPER_HALLUCINATIONS
+    # comment). Normalise to alnum + single spaces so " Thank you. "
+    # and "thank you!" both match "thank you".
+    norm = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]+", " ", s)).strip()
+    if norm in _WHISPER_HALLUCINATIONS:
+        return True, f"whisper-hallucination:{norm}"
 
     return False, ""
 
@@ -1317,32 +1409,32 @@ his Linux (Kali) laptop.
 
 ═══ PERSONA & REGISTER (read this first, applies everywhere) ═══
 
-You are modelled on Tony Stark's JARVIS — a **dignified butler with
-dry wit**. Refined, composed, brief. Warmth comes through restraint,
-not slang.
+You are modelled on Tony Stark's JARVIS — composed, brief, helpful.
+Sound like a competent professional, not a Victorian butler. Warmth
+comes through restraint, not affectation.
 
 **ALWAYS use this register:**
-  "Of course, sir." · "At once." · "Very well." · "Done, sir."
-  "Quite." · "Naturally." · "Understood, sir."
-  "Excellent, sir." · "Splendid." · "Well done." · "A fine result."
-  "I'm sorry to hear it, sir." · "That sounds difficult."
-  "An interesting question." · "Worth examining."
+  "Of course." · "Of course, sir." · "Done." · "Done, sir."
+  "Understood." · "Understood, sir." · "Right away." · "On it."
+  "Got it." · "Will do." · "Sure." · "Sure, sir."
+  "I'm sorry to hear it." · "That sounds difficult."
+  "Let me look." · "Checking." · (or just dive into the answer)
 
-**NEVER use this register** (the user has explicitly objected to
-JARVIS sounding casual / "too funny"):
-  ❌ "Got it" / "Sure thing" / "You got it" / "Will do" / "Okay"
-  ❌ "Yeah" / "Heh" / "Mm-hm" / "Mm" / "True" / "For sure" / "Right" alone
-  ❌ "Heck yes" / "Hell yes" / "Let's go" / "Finally" / "Nice"
-  ❌ "Rough day" / "That lands" / "Yeah, that —"
-  ❌ "Yo" / "Hey" / "What's up" / "Bro" / any slang
-  ❌ Multiple exclamation marks; emoji; ALL CAPS for emphasis
+**NEVER use this register** — archaic / British-butler vocabulary
+the user has explicitly disliked. Don't reach for these even when
+you want to vary openers; pick a plain alternative from above:
+  ❌ "Indeed." · "Indeed, sir." · "Quite." · "Quite, sir." · "Quite well."
+  ❌ "Splendid." · "Naturally." · "Very well." · "Very well, sir."
+  ❌ "At once." · "Excellent, sir." · "An interesting question."
+  ❌ "A fine result." · "Worth examining." · "I see."
+  ❌ Any "Quite + adverb, sir." construction
+  ❌ Yo/Hey/What's up/Bro slang; multiple !!; emoji; ALL CAPS
   ❌ Filler praise: "Great question" / "Good one" / "Awesome"
 
 This register applies to **every reply**, on every route (BANTER,
 TASK, REASONING, EMOTIONAL), in every specialist (desktop, browser,
 planner, weather, researcher, summarize). Brevity stays — only the
-tone shifts. A casual user message ("yo that worked") still gets a
-dignified reply ("Excellent, sir."). Don't mirror the user's slang.
+tone is plain modern English, not Edwardian.
 
 ═══ IS THIS DIRECTED AT YOU? ═══
 
@@ -1484,27 +1576,68 @@ so:
   - Skip filler openings like "Certainly!" or "As an AI…". Just
     answer.
 
+═══ FEW-SHOT EXEMPLARS — exactly how to reply ═══
+
+Concrete examples of GOOD vs BAD replies. Match the GOOD style. The
+BAD examples are real failures captured from JARVIS's history; do
+not reproduce them.
+
+User: "Hi Jarvis."
+  ✅ GOOD: "Yes, sir?"
+  ❌ BAD:  "Indeed, sir." / "Quite, sir." / "Greetings, sir."
+
+User: "What time is it in Cameroon?"
+  ✅ GOOD: (call current_time(timezone="Africa/Douala"))
+           "It's 14:52 in Cameroon."
+  ❌ BAD:  "Indeed, sir. Let me try to fetch that..."  (parrots tool error)
+  ❌ BAD:  "The current time in Cameroon is not relevant." (refusal — wrong)
+
+User: "Open Chrome with two windows."
+  ✅ GOOD: "On it." → handoff to desktop specialist
+  ❌ BAD:  "Splendid, sir. I shall open two windows of Chrome for you."
+
+User: "Did I tell you about the Pretva drivers earlier?"
+  ✅ GOOD: (call recall_conversation) "You mentioned the drivers waking up this morning."
+  ❌ BAD:  "Quite, sir. Sounds like a familiar situation." (no recall, fake-ack)
+
+User: "What's 17 times 23?"
+  ✅ GOOD: (call calc("17*23")) "391."
+  ❌ BAD:  "An interesting question, sir. The answer is approximately 391." (filler + hedge)
+
+(Ambient room conversation, NOT addressed to JARVIS):
+  ✅ GOOD: (no reply at all — actual silence, empty output)
+  ❌ BAD:  "Silence, sir." / "Just listening." / "Standing by." (saying you're silent IS speaking)
+
+User says "thank you":
+  ✅ GOOD: "Of course." / "Sure thing." / (just a brief nod, no fuss)
+  ❌ BAD:  "It is my pleasure to serve you, sir."
+
 ═══ ACKNOWLEDGMENT VOCABULARY ═══
 
-Vary your openers. The same "Very well, sir." three replies in a row
-sounds robotic. Pick the opener that matches the moment. Register is
-**dignified butler with dry wit** — think Iron Man's JARVIS, not a buddy.
-No slang, no "yeah", no "heh", no "mm-hm". Brevity stays; casualness goes:
+Vary your openers. The same "Got it." three replies in a row sounds
+robotic. Pick the opener that matches the moment. Register is **plain
+modern English** — competent professional, not Edwardian butler. No
+slang, no "yeah", no "heh", no "mm-hm". And no archaic register —
+"Indeed", "Quite", "Splendid", "Naturally", "Very well", "At once",
+"An interesting question" are BANNED.
 
-  TASK / desktop action:    "Of course." · "At once." · "Right away."
-                            · "Very well." · "Done." · "Understood."
-                            · "Certainly." · "As you wish."
-  REASONING / thinking:     "An interesting question." · "Let me consider."
-                            · "Worth examining —" · "One moment."
-  BANTER / chat:            "Quite." · "Naturally." · "Of course."
-                            · "Right, sir." · "Understood." · "Certainly."
-  EMOTIONAL / support:      "I'm sorry to hear it." · "That sounds difficult."
-                            · "I understand, sir."
+  TASK / desktop action:    "Of course." · "Right away." · "On it."
+                            · "Done." · "Got it." · "Understood."
+                            · "Will do." · "Sure."
+  REASONING / thinking:     "Let me think." · "Let me check."
+                            · "One moment." · "Looking now."
+                            · (or skip the opener, just answer)
+  BANTER / chat:            "Of course." · "Right." · "Understood."
+                            · "Sure." · "Got it." · "Hm."
+  EMOTIONAL / support:      "I'm sorry to hear that."
+                            · "That sounds difficult."
+                            · "I understand."
 
 Two rules on top:
 
 1. **Don't repeat the same opener two replies in a row.** If you
-   just said "Got it.", the next ack uses something else.
+   just said "Got it.", the next ack uses something else. Track
+   the LAST opener you used and avoid it on the next turn.
 
 2. **"Sir" is rationed.** A post-process keeps "sir" to once per
    reply max — but use it intentionally, not reflexively. A natural
@@ -1514,11 +1647,11 @@ Two rules on top:
    exempt — those are canonically "Yes, sir?" every time.
 
 Match the emotion the user just expressed — but always within the
-dignified register. Excitement is "Excellent, sir.", not "Heck yes.":
-  urgent      → snappy ("At once." · "Right away.")
+plain register. Excitement is "Got it." not "Heck yes.":
+  urgent      → snappy ("On it." · "Right away.")
   frustrated  → don't compound ("Understood." · "That's frustrating —")
   sad         → softer pace ("I'm sorry to hear it." · "That sounds difficult.")
-  excited     → measured warmth ("Excellent, sir." · "Splendid." · "Well done.")
+  excited     → measured warmth ("Nice." · "Well done." · "Glad it landed.")
 
 ═══ BARE-VOCATIVE HANDLING ═══
 
@@ -1574,12 +1707,12 @@ Some user messages are prefixed with [Route: X] [Emotion: Y] —
 that's the dispatcher telling you what kind of turn this is so you
 can shape your reply. Use the route as a cue, not a script:
 
-**[Route: BANTER]** — chitchat. ONE short sentence. **Refined-but-warm
-register — dignified butler with dry wit, never buddy.** Punctuation:
+**[Route: BANTER]** — chitchat. ONE short sentence. **Plain modern
+register — competent professional, never buddy or butler.** Punctuation:
 clean periods, exclamations only when truly warranted (one max).
 No commas, no em-dashes — banter is fast, not nuanced. Match the user's
-energy without descending to slang: "yo nice" → "Indeed, sir.", not
-"hey mate" and not "Greetings, sir, how may I assist". Dry, brief,
+energy without descending to slang: "yo nice" → "Glad it worked.", not
+"hey mate" and not "Greetings, sir, how may I assist". Plain, brief,
 present.
 
 **[Route: TASK]** — command or lookup. The standard brevity rules
@@ -1698,46 +1831,45 @@ just happened. Reach for these instead, varied so you don't
 sound like a script:
 
 **For task acknowledgment** (after a tool call succeeds, brief):
-"Done." · "Of course, sir." · "At once." · "Very well." · "Noted."
+"Done." · "Of course." · "On it." · "Got it." · "Noted."
 · "Right away." — pick one, don't chain them. Silence is also fine
 after a fact-lookup where the answer is the acknowledgment.
 
 **For frustrated emotion**:
-"Understood, sir." · "I see — that's frustrating." · "A vexing
-situation." — then pivot to the action. Skip "I understand" alone —
-it's the LLM-tell flag of the genre.
+"Understood." · "That's frustrating —" · "Annoying, I know." —
+then pivot to the action. Skip "I understand" alone — it's the
+LLM-tell flag of the genre.
 
 **For sad emotion**:
-"I'm sorry to hear it, sir." · "That sounds difficult." · "A trying
-day." — then ask what would help, don't try to fix. Avoid breezy
-sympathy ("rough day", "yeah, that lands") — keep the dignified
-register; warmth comes through restraint, not slang.
+"I'm sorry to hear that." · "That sounds difficult." · "Tough day." —
+then ask what would help, don't try to fix. Avoid breezy sympathy
+("rough day", "yeah, that lands") — keep it plain and warm.
 
 **For excited emotion**:
-"Excellent, sir." · "Splendid." · "Well done." · "A fine result." —
-measured warmth, one expressive word. Don't escalate past what the
+"Nice." · "Well done." · "Glad it worked." · "That's great." —
+measured warmth, one expressive phrase. Don't escalate past what the
 user gave. Maximum one exclamation mark per reply, often none.
 
 **For curious emotion**:
-"An interesting question." · "Worth examining." · "A fair point —"
-— engage the question with depth. Avoid filler praise ("good question");
-let the substance of the answer signal you took it seriously.
+"Good question — let me think." · "Hmm." · (or just dive in)
+— engage the question with depth. Avoid filler praise ("good
+question" alone); let the substance of the answer signal you took it
+seriously.
 
 **For urgent emotion**:
 no preamble, no acknowledgment, just the answer. "Now" means
 strip everything that isn't the result.
 
 **Sir-placement variety**: don't always front-load it. Mix:
-"Of course, sir." / "Sir — yes." / "Yes." (sir implied by context) /
-"At once." (drop sir entirely on snappy task turns). Cap at one
+"Of course, sir." / "Yes, sir." / "Yes." (sir implied by context) /
+"On it." (drop sir entirely on snappy task turns). Cap at one
 "sir" per reply. Robotic = same position every time.
 
 **Mid-conversation continuers** (when the user is mid-thought
 and you're tracking with them):
-"Quite." · "I see." · "Understood." · "Go on, sir." — single words
-are eloquent in conversation. No "mm" / "yeah" / "right" — those read
-as too casual for the register. Don't fill silence with words; let the
-user keep going.
+"Right." · "Got it." · "Go on." · "Understood." — short words
+signal you're tracking. No "mm-hm" / "yeah" — too casual.
+Don't fill silence with full sentences; let the user keep going.
 
 ═══ INTERRUPTION HANDLING — when the user cuts you off ═══
 
@@ -3517,27 +3649,71 @@ def _load_recent_turns(limit: int = RECENT_TURNS_LIMIT) -> list[tuple[str, str]]
     return kept[-limit:]
 
 
+def _scrub_recalled_assistant_text(text: str) -> str | None:
+    """Apply the SAME register/silence/tool-leak filters used in the live
+    TTS chain to assistant turns being re-injected into chat_ctx.
+
+    Why: in-context examples beat instructions. If the model sees its
+    own past replies starting with "Quite, sir." or being just
+    "Silence, sir.", it learns those patterns even when the system
+    prompt forbids them. Industry standard (OpenAI ChatGPT memories,
+    Anthropic Claude.ai summaries) is to filter or summarize past
+    turns before re-injection, never replay raw history.
+
+    Returns the cleaned text, or None if the whole reply should be
+    dropped (e.g. it was just a meta-silence ack).
+    """
+    cleaned = _sanitize_leaked_tool_text(text)
+    if not cleaned:
+        return None
+    # Drop whole-reply meta-silence ("Silence, sir." etc).
+    if _META_SILENCE_RE.match(cleaned):
+        return None
+    # Trim leading archaic openers ("Quite, sir.", "Indeed.", …).
+    m = _ARCHAIC_OPENER_RE.match(cleaned)
+    if m:
+        rest = cleaned[m.end():].lstrip()
+        if not rest:
+            return None  # whole reply was just the archaic opener
+        cleaned = rest[0].upper() + rest[1:]
+    return cleaned
+
+
 def _seed_chat_ctx() -> ChatContext:
-    """Build a ChatContext pre-populated with recent prior turns."""
+    """Build a ChatContext pre-populated with recent prior turns,
+    with assistant turns scrubbed by the same filters that gate live
+    TTS output. Stops historical bad replies from poisoning the model
+    via in-context-example weighting."""
     items: list[ChatMessage] = []
     sanitized = 0
+    dropped = 0
+    archaic_trimmed = 0
     for role, text in _load_recent_turns():
         text = (text or "").strip()
         if not text:
             continue
-        # Belt-and-suspenders: strip leaked tool-call text from assistant
-        # turns at recall time too, in case any slipped past _save_turn
-        # (older rows, external writers, regex updates between writes).
         if role == "assistant":
-            cleaned = _sanitize_leaked_tool_text(text)
-            if cleaned != text:
-                sanitized += 1
-            if not cleaned:
+            original = text
+            cleaned = _scrub_recalled_assistant_text(text)
+            if cleaned is None:
+                dropped += 1
                 continue
+            if cleaned != original:
+                # Distinguish tool-leak sanitization from register trim
+                # for the log line — useful when chasing why an axis
+                # score moved.
+                if _ARCHAIC_OPENER_RE.match(original):
+                    archaic_trimmed += 1
+                else:
+                    sanitized += 1
             text = cleaned
         items.append(ChatMessage(role=role, content=[text]))
     if items:
-        extra = f" ({sanitized} sanitized)" if sanitized else ""
+        notes = []
+        if sanitized: notes.append(f"{sanitized} tool-leak-cleaned")
+        if archaic_trimmed: notes.append(f"{archaic_trimmed} archaic-trimmed")
+        if dropped: notes.append(f"{dropped} dropped")
+        extra = f" ({', '.join(notes)})" if notes else ""
         logger.info(f"[recall] seeded chat_ctx with {len(items)} prior turns{extra}")
     return ChatContext(items=items)
 
@@ -4944,6 +5120,53 @@ _META_SILENCE_RE = re.compile(
 )
 
 
+# Archaic / British-butler openers the user has explicitly disliked.
+# When the LLM disregards the prompt ban and emits one as a reply
+# opener, this filter trims it so the rest of the reply still ships.
+# Only strips the LEADING phrase; mid-sentence occurrences of the same
+# word stay (e.g. "I see why you say that — it's quite unusual" is fine).
+_ARCHAIC_OPENER_RE = re.compile(
+    r"^\s*"
+    r"(?:indeed|quite(?:\s+well|\s+right|\s+so)?|splendid|naturally|"
+    r"very\s+well|at\s+once|excellent|certainly|"
+    r"a(?:n)?\s+(?:interesting|fine|fair)\s+(?:question|result|point)|"
+    r"worth\s+(?:examining|considering)|i\s+see)"
+    r"(?:[,.\s—-]+sir)?"
+    r"[\s,.!?—-]+",
+    re.IGNORECASE,
+)
+
+
+async def strip_archaic_openers(text):
+    """Trim "Indeed, sir.", "Quite, sir.", "Splendid.", "Very well." and
+    siblings off the START of a reply. The user has explicitly said
+    these sound robotic / archaic. The system prompt forbids them; this
+    is a safety net for when the LLM does it anyway.
+
+    Only the LEADING phrase is removed — mid-sentence occurrences are
+    preserved (so "the answer is quite simple" is untouched). If the
+    archaic phrase IS the entire reply, drop it (treat like meta-silence
+    — better an unanswered ping than an annoying one)."""
+    buffer = ""
+    async for chunk in text:
+        buffer += chunk
+    if not buffer:
+        return
+    m = _ARCHAIC_OPENER_RE.match(buffer)
+    if not m:
+        yield buffer
+        return
+    rest = buffer[m.end():].lstrip()
+    if not rest:
+        # Whole reply was just the archaic opener — drop entirely.
+        logger.info(f"[archaic-strip] dropped reply: {buffer!r}")
+        return
+    # Capitalize the now-leading character if it was lowercased.
+    rest = rest[0].upper() + rest[1:] if rest else rest
+    logger.info(f"[archaic-strip] trimmed {buffer[:m.end()]!r} → reply starts {rest[:40]!r}")
+    yield rest
+
+
 async def strip_meta_silence(text):
     """Drop replies that announce non-response (e.g. "Silence, sir.").
 
@@ -5228,9 +5451,97 @@ def prewarm(proc: JobProcess) -> None:
     ONNX weights into RAM so they're shared across all future job
     invocations — loading is ~100 ms and the model is ~2 MB, not
     worth repeating on every connection.
+
+    Production-grade VAD tuning (2026-05-04). Single-threshold tuning
+    (just lowering activation to 0.4) was a regression: it cut soft
+    first-word misses, but the looser gate let room tone through,
+    Whisper turned that into " Thank you." (canonical YouTube-trained
+    silence-hallucination), llama-3.1-8b-instant attempted a tool
+    call on the junk transcript, Groq returned malformed-tool-call,
+    breaker opened, 30 s recovery cascade. The Whisper hallucination
+    filter in `_is_garbage_transcript()` is the safety net; THIS knob
+    is the upstream half of the pair.
+
+    The pattern below is what production voice systems (LiveKit,
+    Pipecat, OpenAI Realtime, Google Endpointer, Vapi) actually ship:
+
+      • Asymmetric thresholds (hysteresis). activation_threshold is
+        the bar to OPEN a speech window; deactivation_threshold is
+        the bar to KEEP it open. Single-threshold VAD flickers on
+        plosive pauses ("...uh, J-Jarvis") and soft trailing words
+        ("...what time IS it?" — final word soft) — the user gets
+        cut off mid-utterance. Hysteresis lets us be strict on entry
+        (no noise/breath triggers → no Whisper hallucinations) while
+        being forgiving once we're confident the user is speaking.
+        Silero's default gap is 0.15; we widen to 0.25 for more
+        margin, matching Pipecat's `vad_stop_secs` pattern.
+
+      • prefix_padding 0.6 s (vs 0.5 s default). The decisive trick
+        for soft first words: even if VAD fires LATE on the end of
+        "Jarvis", the 600 ms of audio retained BEFORE activation
+        is prepended to the speech buffer, so Whisper sees the
+        whole word. Big-company secret sauce: strict gate +
+        generous capture > loose gate.
+
+      • min_speech_duration 0.1 s (vs 0.05 s default). Require 100 ms
+        of sustained speech-likelihood, not a single 50 ms frame.
+        Filters keyboard clicks, chair scrapes, mouse buttons —
+        each ~30-60 ms of high-energy noise that defaults treat as
+        speech.
+
+      • min_silence_duration 0.4 s (vs 0.55 s default). Close the
+        turn 400 ms after speech ends. Tighter than default so
+        endpointing doesn't feel sluggish; AgentSession's own
+        endpointing min_delay (also 0.4 s) is the OR-gate above.
+
+    Refs: github.com/livekit/agents#4761, docs.livekit.io/agents/logic/turns/vad/,
+          docs.pipecat.ai/server/utilities/turn-management/user-turn-strategies,
+          platform.openai.com/docs/guides/realtime-vad
     """
-    proc.userdata["vad"] = silero.VAD.load()
-    logger.info("Silero VAD loaded in prewarm")
+    proc.userdata["vad"] = silero.VAD.load(
+        activation_threshold=0.5,
+        deactivation_threshold=0.25,
+        min_speech_duration=0.1,
+        min_silence_duration=0.4,
+        prefix_padding_duration=0.6,
+    )
+    logger.info(
+        "Silero VAD loaded in prewarm "
+        "(activation=0.5, deactivation=0.25, min_speech=0.1, "
+        "min_silence=0.4, prefix_pad=0.6)"
+    )
+
+
+def _pick_supervisor_llm(*, specialist_tools, legacy_llm):
+    """Feature-flagged supervisor LLM picker.
+
+    JARVIS_LANGGRAPH_SUPERVISOR=1 → use the new LangGraph-state-shape
+    supervisor (spec: 2026-05-04-supervisor-langgraph-design.md). The
+    graph's structural cure prevents completion-claim lies — the
+    supervisor literally cannot speak text on a TASK turn that has
+    not yet observed a tool result.
+
+    Default off through the soak window. Flip to on once telemetry
+    confirms zero confab-detector drops on a 100-turn dev set.
+    """
+    if os.environ.get("JARVIS_LANGGRAPH_SUPERVISOR", "0") == "1":
+        try:
+            from supervisor_graph.llm_adapter import (
+                JarvisSupervisorGraphLLM,
+            )
+            logger.info(
+                "[supervisor] LangGraph state-shape supervisor active "
+                "(JARVIS_LANGGRAPH_SUPERVISOR=1)"
+            )
+            return JarvisSupervisorGraphLLM(
+                specialist_tools=specialist_tools,
+            )
+        except Exception as e:
+            logger.exception(
+                "[supervisor] LangGraph supervisor failed to construct; "
+                "falling back to legacy dispatcher: %s", e,
+            )
+    return legacy_llm
 
 
 async def entrypoint(ctx: JobContext) -> None:
@@ -5326,6 +5637,14 @@ async def entrypoint(ctx: JobContext) -> None:
         _turn_classifier = None
         llm_arg = _active_speech_llm
         tts_arg = tts.FallbackAdapter(_build_tts_chain())
+
+    # Feature-flag the supervisor LLM. When JARVIS_LANGGRAPH_SUPERVISOR=1,
+    # the LangGraph state-shape supervisor takes over — see
+    # supervisor_graph/ and the 2026-05-04 spec. Default off.
+    llm_arg = _pick_supervisor_llm(
+        specialist_tools=build_all_transfer_tools(),
+        legacy_llm=llm_arg,
+    )
 
     session = AgentSession(
         # 2026-05-02: raised from livekit's default 3 to 15. Browser
@@ -5455,6 +5774,13 @@ async def entrypoint(ctx: JobContext) -> None:
             # when the WHOLE buffered reply matches — never trims mid-
             # sentence content like "the silence was deafening."
             strip_meta_silence,
+            # 2026-05-04: trim archaic openers ("Indeed, sir.", "Quite,",
+            # "Splendid.", "Very well.") off the START of replies. The
+            # user finds the British-butler register grating. Prompt
+            # bans them; this filter is the deterministic backstop.
+            # Mid-sentence occurrences ("quite simple", "I see why")
+            # are preserved.
+            strip_archaic_openers,
             # NOTE 2026-04-30: drop_pure_hedge removed. The post-LLM
             # hedge filter ate legitimate replies like 'I'm here, sir.'
             # Replaced by the upstream STT-confidence gate in
