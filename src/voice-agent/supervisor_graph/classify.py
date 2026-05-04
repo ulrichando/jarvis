@@ -157,3 +157,21 @@ def classify_with_llm(
             type(e).__name__, e,
         )
         return {"route": "BANTER", "confidence": 0.3}
+
+
+def classify_node(state) -> dict:
+    """LangGraph node. Regex first, LLM fallback. Returns the partial
+    state dict (`route`, `route_confidence`) so LangGraph's reducer
+    merges it into the parent state."""
+    text = state.get("user_query") or ""
+    if is_verb_initial_task(text):
+        logger.info("[classify] regex matched TASK: %r", text[:80])
+        return {"route": "TASK", "route_confidence": 1.0}
+
+    history = state.get("messages") or []
+    result = classify_with_llm(text, history)
+    logger.info(
+        "[classify] LLM route=%s conf=%.2f text=%r",
+        result["route"], result["confidence"], text[:80],
+    )
+    return {"route": result["route"], "route_confidence": result["confidence"]}
