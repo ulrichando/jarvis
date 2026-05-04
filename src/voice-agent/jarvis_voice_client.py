@@ -58,6 +58,12 @@ import sounddevice as sd
 from aiohttp import web
 from livekit import api, rtc
 
+# Defensive monkey-patch on livekit.rtc.Room — install BEFORE any Room
+# is constructed. See src/voice-agent/livekit_track_guard.py and
+# spec 2026-05-04-jarvis-voice-resilience-design.md.
+import livekit_track_guard as _track_guard
+_track_guard.install()
+
 logging.basicConfig(
     level=os.environ.get("JARVIS_VOICE_LOG_LEVEL", "INFO"),
     format="%(asctime)s %(levelname)-7s %(name)s %(message)s",
