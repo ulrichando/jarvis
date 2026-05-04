@@ -70,3 +70,65 @@ def test_adapter_chat_streams_banter_response():
         if c.delta is not None
     )
     assert "hello" in contents.lower()
+
+
+def test_adapter_chat_surfaces_handoff_as_tool_call_chunk():
+    """When the graph state ends with a transfer_to_* AIMessage,
+    the adapter must emit a ChatChunk whose delta has tool_calls
+    populated — so AgentSession dispatches the tool through the
+    existing RegistrySpecialist path. This is the Phase 6 wiring
+    that makes graph-supervised TASK turns actually work."""
+    from supervisor_graph.llm_adapter import JarvisSupervisorGraphLLM
+    from langchain_core.messages import AIMessage
+
+    fake_task_llm_response = AIMessage(content="", tool_calls=[{
+        "name": "transfer_to_browser",
+        "args": {"request": "open a tab"},
+        "id": "call_xyz",
+        "type": "tool_call",
+    }])
+    fake_task_llm = MagicMock()
+    fake_task_llm.bind_tools = MagicMock(return_value=fake_task_llm)
+    fake_task_llm.invoke = MagicMock(return_value=fake_task_llm_response)
+
+    fake_specialist_tool = MagicMock()
+    fake_specialist_tool.name = "transfer_to_browser"
+
+    with patch(
+        "supervisor_graph.dispatch._build_task_llm",
+        return_value=fake_task_llm,
+    ):
+        from livekit.agents import llm as agents_llm
+
+        chat_ctx = agents_llm.ChatContext()
+        chat_ctx.add_message(role="user", content="open a tab")
+
+        adapter = JarvisSupervisorGraphLLM(
+            specialist_tools=[fake_specialist_tool],
+        )
+        stream = adapter.chat(chat_ctx=chat_ctx)
+
+        async def collect():
+            chunks = []
+            async with stream:
+                async for chunk in stream:
+                    chunks.append(chunk)
+            return chunks
+
+        chunks = _run(collect())
+
+    # We expect AT LEAST one chunk with tool_calls populated.
+    has_tool_call_chunk = any(
+        c.delta is not None and (c.delta.tool_calls or [])
+        for c in chunks
+    )
+    assert has_tool_call_chunk, (
+        f"expected at least one ChatChunk with tool_calls populated; "
+        f"got chunks: {[(c.delta and c.delta.content, c.delta and c.delta.tool_calls) for c in chunks]}"
+    )
+    # And at least one content chunk for the filler.
+    has_content_chunk = any(
+        c.delta is not None and c.delta.content
+        for c in chunks
+    )
+    assert has_content_chunk, "expected the filler content chunk"
