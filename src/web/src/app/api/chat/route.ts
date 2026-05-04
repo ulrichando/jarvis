@@ -304,10 +304,34 @@ export async function POST(req: Request) {
         );
       }
     }
-    await saveUserMessage({
-      conversationId: conversation.id,
-      message: lastUser,
-    });
+    // Skip persisting the chat layer's synthetic auto-continue prompt.
+    // When the model hits finish=length mid-output, the client appends
+    // a user message with the canary string below to nudge the next
+    // streamText call to extend the partial reply. That's PLUMBING —
+    // the user never typed it. Persisting it would leak the system
+    // prompt into the visible chat history, which the user reported
+    // as "code is leaking on the UI" (the message reads like a stage
+    // direction next to their real prompts on refresh).
+    //
+    // The canary check is intentionally tight: if the user genuinely
+    // typed this 40-character prefix verbatim, they meant it; we
+    // don't want to silently drop their input.
+    const lastUserText = extractText(lastUser.parts).trim();
+    const AUTO_CONTINUE_CANARY =
+      "Continue your previous output exactly where you stopped";
+    const isAutoContinueSynthetic =
+      lastUserText.startsWith(AUTO_CONTINUE_CANARY) &&
+      lastUserText.includes("Close any open boltAction");
+    if (!isAutoContinueSynthetic) {
+      await saveUserMessage({
+        conversationId: conversation.id,
+        message: lastUser,
+      });
+    } else {
+      console.log(
+        "[chat] skipping persistence of auto-continue synthetic prompt",
+      );
+    }
   }
 
   const modelMessages = await convertToModelMessages(messages);

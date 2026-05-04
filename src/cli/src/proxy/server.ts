@@ -106,6 +106,7 @@ async function executeWithFallback(
 
 const server = Bun.serve({
   port: PORT,
+  hostname: process.env.JARVIS_PROXY_HOST ?? '127.0.0.1',
   async fetch(req) {
     const url = new URL(req.url)
 

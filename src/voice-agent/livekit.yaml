@@ -4,12 +4,19 @@
 # WebSocket signaling; media flows over UDP :7882 (multiplexed via TURN
 # fallback on TCP :7881 if UDP is blocked).
 #
-# Keys are dev-style — fine for local LAN / Tailscale. If this ever
-# gets exposed to a public network, regenerate with
-# `./livekit-server.bin generate-keys` and rotate.
+# Keys live outside the repo at ~/.jarvis/livekit-keys.yaml (chmod 600).
+# Rotate with `./livekit-server.bin generate-keys` and overwrite that
+# file. Keep this yaml committable — never reintroduce a `keys:` block.
 
 port: 7880
+# Localhost-only bind. The Tauri webview, voice-agent, and voice-client
+# all connect to ws://127.0.0.1:7880 — no LAN exposure today. Add a LAN
+# IP here (or remove to listen on all interfaces) when wiring an Android
+# client over Tailscale or LAN.
+bind_addresses:
+  - 127.0.0.1
 log_level: info
+key_file: /home/ulrich/.jarvis/livekit-keys.yaml
 
 rtc:
   # TCP fallback for media (used when UDP is blocked by NAT or by
@@ -25,10 +32,7 @@ rtc:
   # and we add stun_servers.
   use_external_ip: false
 
-# API keypair. Generated with `./livekit-server.bin generate-keys`.
-# The agent AND every client use these to mint short-lived JWT tokens
-# authorising a client to join a specific room. Separate key for each
-# deployment when we add phone/WAN. Do not commit this file if this
-# tree ever becomes a public repo.
-keys:
-  APIveRsdNgLskjE: KliwnenjqBuzWcjPDCrbo5aLbvTyz2pQZp490L7SjdT
+# API keypair lives in the `key_file` referenced above so this yaml can
+# be committed without leaking secrets. The agent + every client read
+# LIVEKIT_API_KEY / LIVEKIT_API_SECRET from src/voice-agent/.env (also
+# gitignored) and must match the keyfile entries.

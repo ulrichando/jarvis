@@ -1,50 +1,45 @@
 #!/usr/bin/env bash
-# Local hourly snapshot of ~/.jarvis/hub/state.db (the canonical
-# event-hub state DB — populated by jarvis-hub.service from the
-# Redis Streams `events:conversation` log).
+# Local hourly snapshots of:
+#   - ~/.jarvis/hub/state.db          (canonical hub store — memories live here)
+#   - ~/.local/share/jarvis/turn_telemetry.db (per-turn TTFW / route / emotion / interrupted)
 #
-# Atomic via SQLite's online-backup API — safe to run while the hub
-# daemon is actively writing (WAL mode is on).
-#
-# Pre-2026-05-03 this snapshotted ~/.jarvis/conversations.db (now
-# retired) and skipped the Convex mirror as derived. Today the hub's
-# state.db is the single canonical store; if it's lost, replay from
-# the Redis events stream rebuilds it (the daemon's consumer group
-# has the offset, and `XRANGE events:conversation - +` re-applies
-# every event idempotently via UNIQUE(source, source_event_id)).
+# Atomic via SQLite's online-backup API — safe to run while writers are active.
 #
 # Restore:
 #   systemctl --user stop jarvis-hub
 #   cp ~/.jarvis/snapshots/state-latest.db ~/.jarvis/hub/state.db
 #   systemctl --user start jarvis-hub
+#
+# Telemetry restore (no service to stop — the writer reopens on next turn):
+#   cp ~/.jarvis/snapshots/turn_telemetry-latest.db ~/.local/share/jarvis/turn_telemetry.db
 set -euo pipefail
 
-SRC="${HOME}/.jarvis/hub/state.db"
 DST_DIR="${HOME}/.jarvis/snapshots"
 RETENTION_DAYS="${JARVIS_SNAPSHOT_RETENTION_DAYS:-30}"
-
-if [[ ! -f "$SRC" ]]; then
-    echo "[jarvis-backup] no source db at ${SRC}" >&2
-    exit 1
-fi
 
 mkdir -p "${DST_DIR}"
 
 stamp="$(date +%Y-%m-%d-%H%M)"
-dst="${DST_DIR}/state-${stamp}.db"
 
-# SQLite .backup uses the online-backup API (block-level copy with
-# WAL coordination). Concurrent readers/writers are fine.
-sqlite3 "$SRC" ".backup '${dst}'"
+# Snapshot a single sqlite db via the online-backup API. Returns 0 if
+# the source exists and the backup succeeded; non-zero otherwise.
+backup_one() {
+    local label="$1" src="$2"
+    if [[ ! -f "$src" ]]; then
+        echo "[jarvis-backup] skip ${label}: no source at ${src}" >&2
+        return 1
+    fi
+    local dst="${DST_DIR}/${label}-${stamp}.db"
+    sqlite3 "$src" ".backup '${dst}'"
+    ln -sfn "$(basename "$dst")" "${DST_DIR}/${label}-latest.db"
+    local size; size=$(du -h "$dst" | awk '{print $1}')
+    local count; count=$(find "${DST_DIR}" -maxdepth 1 -name "${label}-*.db" -type f | wc -l)
+    echo "[jarvis-backup] ${label}: ${dst} (${size}) — ${count} retained"
+    find "${DST_DIR}" -maxdepth 1 -name "${label}-*.db" -type f -mtime "+${RETENTION_DAYS}" -delete
+}
 
-# Convenience symlink → restore commands always know a stable path.
-ln -sfn "$(basename "$dst")" "${DST_DIR}/state-latest.db"
+backup_one "state" "${HOME}/.jarvis/hub/state.db" || true
+backup_one "turn_telemetry" "${HOME}/.local/share/jarvis/turn_telemetry.db" || true
 
-# Prune snapshots older than RETENTION_DAYS.
-find "${DST_DIR}" -name 'state-*.db' -type f -mtime "+${RETENTION_DAYS}" -delete
-# Also prune any pre-retirement conversations-*.db snapshots.
-find "${DST_DIR}" -name 'conversations-*.db' -type f -mtime "+${RETENTION_DAYS}" -delete 2>/dev/null || true
-
-size=$(du -h "$dst" | awk '{print $1}')
-count=$(find "${DST_DIR}" -name 'state-*.db' -type f | wc -l)
-echo "[jarvis-backup] snapshot ${dst} (${size}) — ${count} retained"
+# Pre-retirement conversations-*.db snapshots — prune.
+find "${DST_DIR}" -maxdepth 1 -name 'conversations-*.db' -type f -mtime "+${RETENTION_DAYS}" -delete 2>/dev/null || true

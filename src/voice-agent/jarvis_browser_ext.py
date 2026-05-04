@@ -47,6 +47,10 @@ logger = logging.getLogger("jarvis-agent.browser-ext")
 
 _BRIDGE_URL = os.environ.get("JARVIS_BRIDGE_URL", "http://localhost:8765")
 _DEFAULT_TIMEOUT_MS = int(os.environ.get("JARVIS_EXT_TIMEOUT_MS", "10000"))
+# Optional bridge bearer token. Bridge enforces it when
+# JARVIS_REQUIRE_LOCAL_AUTH=1; we always send it if available so the
+# flag can be flipped without redeploying the agent.
+_LOCAL_TOKEN = os.environ.get("JARVIS_LOCAL_API_TOKEN", "")
 
 
 async def _post(action: str, **args: Any) -> dict:
@@ -68,11 +72,13 @@ async def _post(action: str, **args: Any) -> dict:
     # Add 5s slack for HTTP overhead so the bridge's own timeout fires
     # first and we get its structured 504 instead of an aiohttp raise.
     http_timeout = aiohttp.ClientTimeout(total=(timeout_ms / 1000.0) + 5.0)
+    headers = {"Authorization": f"Bearer {_LOCAL_TOKEN}"} if _LOCAL_TOKEN else {}
     try:
         async with aiohttp.ClientSession(timeout=http_timeout) as s:
             async with s.post(
                 f"{_BRIDGE_URL}/api/ext_browse",
                 json=payload,
+                headers=headers,
             ) as r:
                 try:
                     data = await r.json()
