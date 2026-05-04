@@ -86,9 +86,21 @@ def task_dispatch_node(state: dict, tools: list[Any]) -> dict:
         ", ".join(tc.get("name", "?") for tc in tool_calls),
     )
 
+    # If any tool call is a specialist handoff (transfer_to_*), set
+    # pending_specialist now so the branch fn and specialist_node both
+    # see it without relying on in-place mutation of the branch's state
+    # argument (which LangGraph does not propagate).
+    pending_specialist = None
+    for tc in tool_calls:
+        name = tc.get("name", "")
+        if name.startswith("transfer_to_"):
+            pending_specialist = name[len("transfer_to_"):]
+            break  # Only one handoff at a time.
+
     return {
         "messages": [response],
         "pending_tool_calls": pending,
+        "pending_specialist": pending_specialist,
     }
 
 
