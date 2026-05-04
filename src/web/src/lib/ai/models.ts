@@ -58,10 +58,21 @@ const MODEL_IDS: Record<string, { provider: Provider; modelId: string }> = {
   "deepseek-v4-pro": { provider: "deepseek", modelId: "deepseek-v4-pro" },
   "deepseek-v4-flash": { provider: "deepseek", modelId: "deepseek-v4-flash" },
 
-  "kimi-k2-instant": { provider: "kimi", modelId: "kimi-k2-0905-preview" },
-  "kimi-k2-thinking": { provider: "kimi", modelId: "kimi-thinking-preview" },
-  "kimi-k2-agent": { provider: "kimi", modelId: "kimi-k2-0905-preview" },
-  "kimi-k2-swarm": { provider: "kimi", modelId: "kimi-k2-0905-preview" },
+  // K2.6 family — all four UI modes hit the same API model (`kimi-k2.6`).
+  // Moonshot exposes ONE K2.6 endpoint; the "Instant / Thinking / Agent /
+  // Swarm" differentiation on kimi.com is built ON TOP of the model with
+  // different system prompts, tool sets, and parallelism — those presets
+  // are implemented on the JARVIS side, not switched at the modelId
+  // level. Verified live via /v1/models 2026-05-04.
+  // NOTE: K2.6 returns a separate `reasoning_content` field on every
+  // response (same shape as DeepSeek-R1). The chat route + voice agent
+  // adapters must strip / suppress it before TTS — otherwise JARVIS
+  // narrates his own chain-of-thought (the `<think>` tag bug surfaces
+  // here in a different shape).
+  "kimi-k2-instant": { provider: "kimi", modelId: "kimi-k2.6" },
+  "kimi-k2-thinking": { provider: "kimi", modelId: "kimi-k2.6" },
+  "kimi-k2-agent": { provider: "kimi", modelId: "kimi-k2.6" },
+  "kimi-k2-swarm": { provider: "kimi", modelId: "kimi-k2.6" },
 
   "llama-3.3-70b": { provider: "groq", modelId: "llama-3.3-70b-versatile" },
   "gpt-oss-120b": { provider: "groq", modelId: "openai/gpt-oss-120b" },
