@@ -351,12 +351,18 @@ class _LoggingGroqChunkedStream(_GroqChunkedStream):
 
     @staticmethod
     async def _call_with_breaker_for_test():
-        """Test seam — exercises only the breaker-open path. Unlike
-        Task 2's STT seam (instance method to exercise the factory),
-        the TTS factory _LoggingGroqTTS.synthesize() is trivial — one
-        no-arg constructor call — so there's no meaningful regression
-        risk worth covering through it. Stays a staticmethod since
-        the body never references cls or self."""
+        """Test seam — exercises only the breaker-open path with a
+        no-op coroutine. Cheap to invoke and proves the breaker
+        conversion (CircuitOpenError → _APIConnectionError, asyncio.
+        TimeoutError → _APITimeoutError) works in isolation.
+
+        Limitation: this seam does NOT exercise the full caller
+        contract (e.g. `async with stream: async for chunk in stream:`
+        used by livekit-agents). Tests that need to verify the wrapper
+        honours protocol methods must construct the wrapper class
+        directly and drive it through async with + async for — see
+        test_breaker_llm_open_raises_apiconnection_error for the
+        pattern."""
         async def _no_op():
             return None
         try:
@@ -454,6 +460,14 @@ class _BreakeredLLMStream:
         return self
 
     async def __anext__(self):
+        # First chunk only goes through the breaker — it protects cold
+        # starts (DNS, TCP handshake, time-to-first-byte). Mid-stream
+        # stalls (LLM hangs at chunk 5 of 20) are NOT protected; that
+        # would require per-chunk timeout tracking. FallbackAdapter's
+        # retry_on_chunk_sent=False default also won't cascade
+        # mid-stream, so the boundary is consistent across the stack.
+        # TODO: mid-stream stall protection if production telemetry
+        # shows it's worth the complexity.
         if self._first:
             self._first = False
             try:
@@ -467,6 +481,12 @@ class _BreakeredLLMStream:
     async def aclose(self):
         if hasattr(self._inner, "aclose"):
             await self._inner.aclose()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.aclose()
 
     # Some livekit code paths poke .ctx, .messages, etc. on the
     # underlying stream. Forward attribute access by default so we're
@@ -489,9 +509,20 @@ class _BreakeredGroqLLM(groq.LLM):
 
     @staticmethod
     async def _call_with_breaker_for_test():
-        """Test seam — exercises only the breaker-open path. Like the
+        """Test seam — exercises only the breaker-open path with a
+        no-op coroutine. Cheap to invoke and proves the breaker
+        conversion (CircuitOpenError → _APIConnectionError, asyncio.
+        TimeoutError → _APITimeoutError) works in isolation. Like the
         TTS seam (Task 3), the LLM factory is straightforward enough
-        that we don't need the seam itself to drive construction."""
+        that we don't need the seam itself to drive construction.
+
+        Limitation: this seam does NOT exercise the full caller
+        contract (e.g. `async with stream: async for chunk in stream:`
+        used by livekit-agents). Tests that need to verify the wrapper
+        honours protocol methods must construct the wrapper class
+        directly and drive it through async with + async for — see
+        test_breaker_llm_open_raises_apiconnection_error for the
+        pattern."""
         async def _no_op():
             return None
         try:
