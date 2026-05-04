@@ -1114,6 +1114,16 @@ async def main() -> None:
         f"kill if stale > {WATCHDOG_STALE_SEC}s"
     )
 
+    # systemd sd_notify watchdog. Runs in the same asyncio loop as the
+    # LiveKit + HTTP tasks — if the loop stalls, pings stop and systemd
+    # kills + restarts us within WatchdogSec=10s (two missed pings).
+    # Complements the OS-thread heartbeat above: that one handles a
+    # fully-wedged loop (os._exit); this one tells systemd we're healthy
+    # during normal operation (READY=1) and initiating a clean shutdown
+    # (STOPPING=1).
+    from watchdog import watchdog_loop
+    asyncio.create_task(watchdog_loop(shutdown), name="sd-notify-watchdog")
+
     # Ensure the TTS provider file exists so the Tauri desktop can read
     # the current voice at startup without waiting for a user interaction.
     _ensure_tts_provider_file()

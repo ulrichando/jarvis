@@ -6165,6 +6165,18 @@ async def entrypoint(ctx: JobContext) -> None:
         ],
     )
 
+    # Watchdog: emit WATCHDOG=1 every 5s from inside this asyncio
+    # loop. systemd kills + restarts us if we miss two pings (i.e.
+    # the listener wedged). See watchdog.py + spec.
+    from watchdog import watchdog_loop
+    _agent_shutdown_event = asyncio.Event()
+    _watchdog_task = asyncio.create_task(
+        watchdog_loop(_agent_shutdown_event), name="sd-notify-watchdog"
+    )
+    async def _set_agent_shutdown() -> None:
+        _agent_shutdown_event.set()
+    ctx.add_shutdown_callback(_set_agent_shutdown)
+
     await session.start(
         room=ctx.room,
         agent=_jarvis_agent,
@@ -6356,6 +6368,34 @@ async def entrypoint(ctx: JobContext) -> None:
 
 
 if __name__ == "__main__":
+    # Emit READY=1 + start the WATCHDOG=1 ping loop from the main
+    # process (the livekit supervisor).  cli.run_app() below is a
+    # blocking call; the watchdog must run in a daemon thread so it
+    # keeps pinging systemd while the supervisor loop is alive.
+    # If this process stalls (supervisor loop hung), the thread keeps
+    # pinging — but the entrypoint-level watchdog (per-job asyncio
+    # task inside each worker) stops, so systemd will restart the job
+    # worker.  Two layers of protection for two different failure modes.
+    import threading as _threading
+    import sdnotify as _sdnotify
+    import time as _time
+
+    _sd = _sdnotify.SystemdNotifier()
+    _sd.notify("READY=1")
+    logger.info("[watchdog] main process READY=1 sent to systemd")
+
+    def _main_watchdog_thread() -> None:
+        """Ping systemd every 5s from the main supervisor process."""
+        while True:
+            _time.sleep(5)
+            _sd.notify("WATCHDOG=1")
+
+    _threading.Thread(
+        target=_main_watchdog_thread,
+        name="main-sd-watchdog",
+        daemon=True,
+    ).start()
+
     cli.run_app(
         WorkerOptions(
             entrypoint_fnc=entrypoint,
