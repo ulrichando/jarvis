@@ -15,7 +15,14 @@ os.environ.setdefault("GROQ_API_KEY", "test-key-for-init")
 
 
 def _run(coro):
-    return asyncio.new_event_loop().run_until_complete(coro)
+    """Run an async coroutine in a fresh event loop. Closes the loop
+    afterwards to avoid ResourceWarning + selector fd leaks across
+    the test session."""
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
 def test_breaker_stt_open_raises_apiconnection_error():
@@ -43,6 +50,7 @@ def test_breaker_stt_open_raises_apiconnection_error():
     finally:
         jarvis_agent._STT_BREAKER.state = STATE_CLOSED
         jarvis_agent._STT_BREAKER.failures = 0
+        jarvis_agent._STT_BREAKER.opened_at = 0.0
 
 
 def test_breaker_tts_open_raises_apiconnection_error():
@@ -66,3 +74,4 @@ def test_breaker_tts_open_raises_apiconnection_error():
     finally:
         jarvis_agent._TTS_BREAKER.state = STATE_CLOSED
         jarvis_agent._TTS_BREAKER.failures = 0
+        jarvis_agent._TTS_BREAKER.opened_at = 0.0

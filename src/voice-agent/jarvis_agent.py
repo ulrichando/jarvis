@@ -346,22 +346,25 @@ class _LoggingGroqChunkedStream(_GroqChunkedStream):
             await _TTS_BREAKER.call(_do_real_run)
         except CircuitOpenError as e:
             raise _APIConnectionError() from e
+        except asyncio.TimeoutError:
+            raise _APITimeoutError() from None
 
-    @classmethod
-    async def _call_with_breaker_for_test(cls):
-        """Test seam — exercises only the breaker-open path of _run.
-        Unlike Task 2's STT seam (which is an instance method to
-        exercise the factory), the TTS chunked stream is constructed
-        per-utterance by livekit-agents internals and can't be
-        cleanly factory-tested in isolation. The corresponding
-        production path is _run itself, which IS exercised live via
-        the agent's actual TTS flow."""
+    @staticmethod
+    async def _call_with_breaker_for_test():
+        """Test seam — exercises only the breaker-open path. Unlike
+        Task 2's STT seam (instance method to exercise the factory),
+        the TTS factory _LoggingGroqTTS.synthesize() is trivial — one
+        no-arg constructor call — so there's no meaningful regression
+        risk worth covering through it. Stays a staticmethod since
+        the body never references cls or self."""
         async def _no_op():
             return None
         try:
             return await _TTS_BREAKER.call(_no_op)
         except CircuitOpenError as e:
             raise _APIConnectionError() from e
+        except asyncio.TimeoutError:
+            raise _APITimeoutError() from None
 
 
 # ── Per-upstream circuit breakers ────────────────────────────────────
@@ -403,6 +406,12 @@ class _BreakeredGroqSTT(groq.STT):
             return await _STT_BREAKER.call(super()._recognize_impl, *args, **kw)
         except CircuitOpenError as e:
             raise _APIConnectionError() from e
+        except asyncio.TimeoutError:
+            # Breaker's own 8s timeout fired (separate from the
+            # underlying STT's timeout). Surface as APITimeoutError
+            # so livekit-agents' retry / fallback path handles it
+            # uniformly with other timeout sources.
+            raise _APITimeoutError() from None
 
     async def _call_with_breaker_for_test(self):
         """Test seam — instance method so the test exercises
@@ -416,6 +425,8 @@ class _BreakeredGroqSTT(groq.STT):
             return await _STT_BREAKER.call(_no_op)
         except CircuitOpenError as e:
             raise _APIConnectionError() from e
+        except asyncio.TimeoutError:
+            raise _APITimeoutError() from None
 
 
 def _build_breakered_stt() -> _BreakeredGroqSTT:
