@@ -607,7 +607,7 @@ Spec: [`2026-05-04-jarvis-voice-resilience-design.md`](./2026-05-04-jarvis-voice
 | DNS blackout | `iptables -A OUTPUT -p udp --dport 53 -j DROP` for 30s | ✅ Both processes survived. LLM breaker fired (`OPEN after 2 failure(s)`), cooled down, half-opened on probe, closed cleanly. FallbackAdapter cascaded to DeepSeek during the gap. |
 | Watchdog kill | `kill -STOP $(pgrep jarvis_voice_client)` for 15s | ✅ systemd fired `Watchdog timeout (limit 10s)` at 6s missed, sent SIGABRT, respawned 5s later. PID 436818 → 579923. |
 | Hub restart mid-session | `systemctl --user restart jarvis-hub.service` | ✅ voice-agent and voice-client unaffected (separate processes; hub bus reconnects via Redis). |
-| DNS local cache (8a) | systemd-resolved drop-in | ⚠️ Deferred — Kali laptop uses NetworkManager + direct gateway DNS, not systemd-resolved. Would require `apt install dnsmasq`. Not blocking — breakers + reconnect ladder are the primary defense. |
+| DNS local cache (8a) | dnsmasq listening on 127.0.0.1 with 1000-entry cache | ✅ Installed 2026-05-04. Config at `/etc/dnsmasq.d/jarvis.conf`. resolvconf hook (`lo.dnsmasq`) auto-points `/etc/resolv.conf` at 127.0.0.1. Verified: cached hosts resolve in 3ms even with all upstream resolvers blocked via iptables. Decorrelates the Groq STT/TTS/LLM endpoints during DNS blips. |
 | Canned-phrase WAVs | `scripts/render-canned-phrases.py` | ⚠️ Deferred — Groq TTS was unreachable during render attempt; renderer exits cleanly with status 1, no leftover artifacts. Re-run when Groq recovers. Loader's `is_available()` returns False, so the breaker-open path falls back to silence (not crash). |
 
 **Tests added: ~30 new pytest cases.** All green under `-W error::ResourceWarning`:
@@ -633,5 +633,5 @@ The remaining 3 points are mostly observation-gated (Phase 12+ proactive memory 
 
 1. **Worker-health probe for the agent process.** The agent-side watchdog only confirms the supervisor dispatcher is alive, not that the worker asyncio loop is processing turns. Adding a pipe/socket health probe (worker writes a heartbeat byte; supervisor stops pinging systemd if it stops) would close the wedge-detection gap.
 2. **Render canned WAVs + wire breaker-open fallback.** When `_LLM_BREAKER` is open, `_BreakeredLLMStream` could surface a `_use_canned_fallback` signal that causes the agent to play `one_second.wav` instead of failing the turn. Requires careful WAV → AudioFrame conversion in the LiveKit TTS pipeline.
-3. **Local DNS cache.** Install + configure dnsmasq listening on 127.0.0.1; point `/etc/resolv.conf` at it. Would decorrelate the three Groq endpoints during DNS blips. Deferred until DNS-correlated failures recur in production.
+3. **~~Local DNS cache.~~** ✅ Shipped 2026-05-04. dnsmasq active on 127.0.0.1, `/etc/dnsmasq.d/jarvis.conf` config, 1000-entry cache, gateway+1.1.1.1+8.8.8.8 as upstreams. Verified cache survives upstream DNS outage.
 4. **Stalled-listener simulation test.** The unit-test gap noted in Task 6 review: a test that drives `watchdog_loop` while injecting a fake stall and verifies the watchdog stops pinging.
