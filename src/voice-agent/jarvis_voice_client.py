@@ -885,11 +885,9 @@ async def play_subscribed_track(track: rtc.RemoteAudioTrack) -> None:
 
 
 async def run_once(shutdown: asyncio.Event) -> None:
-    """
-    One connection attempt. Returns when the SFU disconnects us or
-    `shutdown` fires. The outer loop re-connects if we exited
-    unexpectedly.
-    """
+    """One connection attempt. Returns when the SFU disconnects us
+    OR `shutdown` fires. The outer main_loop reconnects via the
+    ReconnectLadder if `shutdown` is still unset on return."""
     # Declare module-globals up front so every assignment inside this
     # function (mic publish, room-ref in the finally, etc.) is
     # unambiguous. Python requires `global` to precede any assignment
@@ -898,6 +896,12 @@ async def run_once(shutdown: asyncio.Event) -> None:
     token = mint_token()
     room = rtc.Room()
     loop = asyncio.get_running_loop()
+
+    # Per-run event for SFU-side disconnects. The process-wide
+    # `shutdown` is reserved for SIGTERM/SIGINT — conflating the
+    # two would mean a single SFU drop ends the supervisor loop
+    # without giving the ReconnectLadder a chance to recover.
+    room_disconnected = asyncio.Event()
 
     # ── Room event handlers update the shared ClientState snapshot
     # used by the /status HTTP endpoint. Keeping the updates here (not
@@ -949,7 +953,7 @@ async def run_once(shutdown: asyncio.Event) -> None:
         state.agent_present = False
         state.listening     = False
         state.speaking      = False
-        shutdown.set()
+        room_disconnected.set()
 
     # ── Stream drain handlers ───────────────────────────────────────
     # The agent publishes two streams the voice-client doesn't
@@ -1085,7 +1089,18 @@ async def run_once(shutdown: asyncio.Event) -> None:
     log.info("[mic] capture started")
 
     try:
-        await shutdown.wait()
+        # Block until either the process is shutting down (SIGTERM/INT)
+        # or the SFU dropped us. The supervisor loop above decides what
+        # to do next based on which fired.
+        done, pending = await asyncio.wait(
+            [
+                asyncio.create_task(shutdown.wait()),
+                asyncio.create_task(room_disconnected.wait()),
+            ],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
     finally:
         log.info("tearing down")
         _room_ref = None
@@ -1152,9 +1167,13 @@ async def main() -> None:
             return False
 
     async def _full_teardown() -> None:
-        """Tier-2 teardown: small delay so the SFU settles before the
-        next reconnect attempt. The Room is already disconnected at
-        this point (run_once returned/errored)."""
+        """Tier-2 'teardown' — the room was already disconnected by
+        run_once's finally block before we got here. This is just a
+        settle-time gap before the next resume cycle, giving the SFU
+        a moment to clean up its side. Distinct from tier-1 (immediate
+        retry) only by adding this 1s delay; if a future failure mode
+        needs a real teardown step (delete + recreate room, fresh
+        token mint, IPC reconnect), put it here."""
         await asyncio.sleep(1)
 
     ladder = ReconnectLadder(
@@ -1162,15 +1181,22 @@ async def main() -> None:
         full_teardown_fn=_full_teardown,
     )
 
-    while not shutdown.is_set():
-        try:
-            await run_once(shutdown)
-            # Clean exit (shutdown.is_set()) → fall through to cleanup
-        except Exception as e:
-            log.exception(f"[supervisor] run_once crashed: {e}")
-            await ladder.recover()
-
-    await http_runner.cleanup()
+    try:
+        while not shutdown.is_set():
+            try:
+                await run_once(shutdown)
+                # Clean return — was it shutdown, or a disconnect we should recover from?
+                if shutdown.is_set():
+                    break
+                # Disconnect without process shutdown → reconnect via ladder.
+                log.info("[supervisor] disconnect detected; entering reconnect ladder")
+                await ladder.recover()
+            except Exception as e:
+                log.exception(f"[supervisor] run_once crashed: {e}")
+                await ladder.recover()
+    finally:
+        shutdown.set()
+        await http_runner.cleanup()
     log.info("bye")
 
 
