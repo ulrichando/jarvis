@@ -79,7 +79,7 @@ class ReconnectLadder:
             "[reconnect] all resume attempts failed; full teardown #%d",
             self._consecutive_full,
         )
-        if self._consecutive_full > self._max_full:
+        if self._consecutive_full >= self._max_full:
             logger.error(
                 "[reconnect] %d full teardowns in a row — bailing for systemd",
                 self._consecutive_full,
