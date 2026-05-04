@@ -271,68 +271,96 @@ class _LoggingGroqChunkedStream(_GroqChunkedStream):
             output_emitter.push(_wav)
             output_emitter.flush()
             return
-        api_url = f"{self._opts.base_url}/audio/speech"
-        payload = {
-            "model": self._opts.model,
-            "voice": self._opts.voice,
-            "input": self._input_text,
-            "response_format": "wav",
-        }
+        # Breaker-gated upstream call. _TTS_BREAKER fails fast when
+        # Groq's TTS endpoint is in cooldown so FallbackAdapter
+        # cascades to EdgeTTS within ms instead of waiting ~30s for
+        # the aiohttp socket to time out. Existing exception handlers
+        # for HTTP / status / generic errors stay inside _do_real_run
+        # so behaviour is unchanged when the breaker is closed.
+        async def _do_real_run():
+            api_url = f"{self._opts.base_url}/audio/speech"
+            payload = {
+                "model": self._opts.model,
+                "voice": self._opts.voice,
+                "input": self._input_text,
+                "response_format": "wav",
+            }
+            try:
+                async with self._tts._ensure_session().post(
+                    api_url,
+                    headers={
+                        "Authorization": f"Bearer {self._opts.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                    timeout=_aiohttp.ClientTimeout(
+                        total=30, sock_connect=self._conn_options.timeout
+                    ),
+                ) as resp:
+                    if resp.status >= 400:
+                        body = await resp.text()
+                        logger.error(
+                            "Groq TTS %d (model=%s voice=%s): %s",
+                            resp.status,
+                            payload["model"],
+                            payload["voice"],
+                            body[:600].replace("\n", " "),
+                        )
+                        raise _APIStatusError(
+                            message=f"Groq TTS {resp.status}: {body[:200]}",
+                            status_code=resp.status,
+                            request_id=None,
+                            body=body,
+                        )
+                    if not resp.content_type.startswith("audio"):
+                        content = await resp.text()
+                        logger.error(
+                            "Groq TTS returned non-audio (%s): %s",
+                            resp.content_type,
+                            content[:300],
+                        )
+                        raise _APIError(
+                            message="Groq returned non-audio data", body=content
+                        )
+                    output_emitter.initialize(
+                        request_id=_lk_utils.shortuuid(),
+                        sample_rate=48000,
+                        num_channels=1,
+                        mime_type="audio/wav",
+                    )
+                    async for data, _ in resp.content.iter_chunks():
+                        output_emitter.push(data)
+                    output_emitter.flush()
+            except asyncio.TimeoutError:
+                raise _APITimeoutError() from None
+            except _APIError:
+                raise
+            except _aiohttp.ClientResponseError as e:
+                raise _APIStatusError(
+                    message=e.message, status_code=e.status, request_id=None, body=None
+                ) from None
+            except Exception as e:
+                raise _APIConnectionError() from e
+
         try:
-            async with self._tts._ensure_session().post(
-                api_url,
-                headers={
-                    "Authorization": f"Bearer {self._opts.api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-                timeout=_aiohttp.ClientTimeout(
-                    total=30, sock_connect=self._conn_options.timeout
-                ),
-            ) as resp:
-                if resp.status >= 400:
-                    body = await resp.text()
-                    logger.error(
-                        "Groq TTS %d (model=%s voice=%s): %s",
-                        resp.status,
-                        payload["model"],
-                        payload["voice"],
-                        body[:600].replace("\n", " "),
-                    )
-                    raise _APIStatusError(
-                        message=f"Groq TTS {resp.status}: {body[:200]}",
-                        status_code=resp.status,
-                        request_id=None,
-                        body=body,
-                    )
-                if not resp.content_type.startswith("audio"):
-                    content = await resp.text()
-                    logger.error(
-                        "Groq TTS returned non-audio (%s): %s",
-                        resp.content_type,
-                        content[:300],
-                    )
-                    raise _APIError(
-                        message="Groq returned non-audio data", body=content
-                    )
-                output_emitter.initialize(
-                    request_id=_lk_utils.shortuuid(),
-                    sample_rate=48000,
-                    num_channels=1,
-                    mime_type="audio/wav",
-                )
-                async for data, _ in resp.content.iter_chunks():
-                    output_emitter.push(data)
-                output_emitter.flush()
-        except asyncio.TimeoutError:
-            raise _APITimeoutError() from None
-        except _APIError:
-            raise
-        except _aiohttp.ClientResponseError as e:
-            raise _APIStatusError(
-                message=e.message, status_code=e.status, request_id=None, body=None
-            ) from None
-        except Exception as e:
+            await _TTS_BREAKER.call(_do_real_run)
+        except CircuitOpenError as e:
+            raise _APIConnectionError() from e
+
+    @classmethod
+    async def _call_with_breaker_for_test(cls):
+        """Test seam — exercises only the breaker-open path of _run.
+        Unlike Task 2's STT seam (which is an instance method to
+        exercise the factory), the TTS chunked stream is constructed
+        per-utterance by livekit-agents internals and can't be
+        cleanly factory-tested in isolation. The corresponding
+        production path is _run itself, which IS exercised live via
+        the agent's actual TTS flow."""
+        async def _no_op():
+            return None
+        try:
+            return await _TTS_BREAKER.call(_no_op)
+        except CircuitOpenError as e:
             raise _APIConnectionError() from e
 
 
