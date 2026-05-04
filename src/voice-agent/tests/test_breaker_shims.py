@@ -75,3 +75,27 @@ def test_breaker_tts_open_raises_apiconnection_error():
         jarvis_agent._TTS_BREAKER.state = STATE_CLOSED
         jarvis_agent._TTS_BREAKER.failures = 0
         jarvis_agent._TTS_BREAKER.opened_at = 0.0
+
+
+def test_breaker_llm_open_raises_apiconnection_error():
+    """When _LLM_BREAKER is open, the shimmed LLM's chat() must
+    return a stream whose first __anext__ raises APIConnectionError
+    so livekit-agents' FallbackAdapter cascades to DeepSeek instead
+    of waiting on Groq's TCP timeout."""
+    from circuit_breaker import (
+        CircuitBreaker, CircuitOpenError,
+        STATE_CLOSED, STATE_OPEN,
+    )
+    import jarvis_agent
+    from livekit.agents import APIConnectionError
+
+    jarvis_agent._LLM_BREAKER.state = STATE_OPEN
+    jarvis_agent._LLM_BREAKER.opened_at = 1e18
+
+    try:
+        with pytest.raises(APIConnectionError):
+            _run(jarvis_agent._BreakeredGroqLLM._call_with_breaker_for_test())
+    finally:
+        jarvis_agent._LLM_BREAKER.state = STATE_CLOSED
+        jarvis_agent._LLM_BREAKER.failures = 0
+        jarvis_agent._LLM_BREAKER.opened_at = 0.0
