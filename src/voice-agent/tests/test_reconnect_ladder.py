@@ -68,8 +68,9 @@ async def _simulate_repeated(ladder, n):
 
 
 def test_teardown_failure_after_max_in_a_row_bails():
-    """After max_full_reconnects+1 consecutive full teardowns, raise
-    SystemExit so systemd takes over."""
+    """After max_full_reconnects consecutive full teardowns, raise
+    SystemExit so systemd takes over. With max_full_reconnects=3,
+    the 3rd teardown raises SystemExit (the first 2 just sleep + retry)."""
     resume = AsyncMock(return_value=False)
     teardown = AsyncMock()
     ladder = ReconnectLadder(
@@ -79,7 +80,7 @@ def test_teardown_failure_after_max_in_a_row_bails():
         max_full_reconnects=3,
     )
     with pytest.raises(SystemExit):
-        _run(_simulate_repeated(ladder, 4))
+        _run(_simulate_repeated(ladder, 3))
 
 
 def test_resume_exception_counts_as_failure():
