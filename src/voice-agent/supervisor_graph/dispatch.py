@@ -37,22 +37,34 @@ def _build_task_llm():
     return ChatGroq(model=model, temperature=0.3, max_tokens=512)
 
 
-def task_dispatch_node(state: dict, tools: list[Any]) -> dict:
-    """Force a tool_call. The supervisor cannot emit completion text
-    on TASK turns; tool_choice='required' guarantees this at the API
-    level. The output AIMessage's tool_calls populate
-    `pending_tool_calls` so speak_gate refuses to fire until the
-    matching ToolMessages arrive.
+def _build_task_fallback_llm():
+    """DeepSeek fallback for TASK turns. Uses the same
+    tool_choice='required' contract — the fallback CANNOT lie about
+    completion either. Cures cross-stream hallucination (failure
+    mode #5, live-observed 2026-05-04)."""
+    from langchain_openai import ChatOpenAI  # DeepSeek is OpenAI-compat
+    api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+    base_url = os.environ.get(
+        "DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"
+    )
+    return ChatOpenAI(
+        model=os.environ.get("JARVIS_GRAPH_TASK_FALLBACK_MODEL", "deepseek-chat"),
+        api_key=api_key,
+        base_url=base_url,
+        temperature=0.3,
+        max_tokens=512,
+    )
 
-    This node is called with the supervisor's tool list bound — the
-    graph builder (graph.py) injects the registered transfer_to_X
-    tools.
+
+def task_dispatch_node(state: dict, tools: list[Any]) -> dict:
+    """Force a tool_call. Primary: Groq. Fallback (on any exception):
+    DeepSeek, also with tool_choice='required'. The fallback sees the
+    SAME state — no partial assistant content has been appended yet,
+    so it cannot confabulate completion.
     """
     user_query = state.get("user_query") or ""
     history = state.get("messages") or []
-
-    llm = _build_task_llm()
-    bound = llm.bind_tools(tools, tool_choice="required")
+    failed: list[str] = list(state.get("failed_providers") or [])
 
     sys_prompt = (
         "You are JARVIS's task-dispatch supervisor. The user just gave "
@@ -65,42 +77,56 @@ def task_dispatch_node(state: dict, tools: list[Any]) -> dict:
         HumanMessage(content=user_query),
     ]
 
-    try:
-        response: AIMessage = bound.invoke(msgs)
-    except Exception as e:
-        # Caller (the graph) handles fallback. Re-raise here so the
-        # graph's recovery edge fires.
-        logger.warning(
-            "[task-dispatch] LLM error: %s: %s", type(e).__name__, e,
-        )
-        raise
+    def _try(builder, provider_name: str):
+        llm = builder()
+        bound = llm.bind_tools(tools, tool_choice="required")
+        return bound.invoke(msgs)
 
-    # tool_calls is a list of dicts in LangChain shape:
-    #   {"name": ..., "args": ..., "id": ..., "type": "tool_call"}
+    response: AIMessage
+    try:
+        response = _try(_build_task_llm, "groq")
+    except Exception as e:
+        logger.warning(
+            "[task-dispatch] primary (groq) failed: %s: %s — falling back to deepseek",
+            type(e).__name__, e,
+        )
+        failed.append("groq")
+        # Fallback: re-invoke with the SAME messages + SAME contract.
+        # No partial assistant turn has been appended; fallback gets a
+        # clean state and cannot lie about completion.
+        try:
+            response = _try(_build_task_fallback_llm, "deepseek")
+        except Exception as e2:
+            logger.error(
+                "[task-dispatch] fallback (deepseek) ALSO failed: %s: %s",
+                type(e2).__name__, e2,
+            )
+            raise
+
     tool_calls = response.tool_calls or []
     pending = [tc["id"] for tc in tool_calls if tc.get("id")]
 
-    logger.info(
-        "[task-dispatch] emitted %d tool_call(s): %s",
-        len(tool_calls),
-        ", ".join(tc.get("name", "?") for tc in tool_calls),
-    )
-
-    # If any tool call is a specialist handoff (transfer_to_*), set
-    # pending_specialist now so the branch fn and specialist_node both
-    # see it without relying on in-place mutation of the branch's state
-    # argument (which LangGraph does not propagate).
+    # Detect specialist handoff so the graph's downstream branch can
+    # route to specialist_node (Task 11 added this; preserve it).
     pending_specialist = None
     for tc in tool_calls:
         name = tc.get("name", "")
         if name.startswith("transfer_to_"):
             pending_specialist = name[len("transfer_to_"):]
-            break  # Only one handoff at a time.
+            break
+
+    logger.info(
+        "[task-dispatch] emitted %d tool_call(s): %s (failed_providers=%s)",
+        len(tool_calls),
+        ", ".join(tc.get("name", "?") for tc in tool_calls),
+        failed,
+    )
 
     return {
         "messages": [response],
         "pending_tool_calls": pending,
         "pending_specialist": pending_specialist,
+        "failed_providers": failed,
     }
 
 
