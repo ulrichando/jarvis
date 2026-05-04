@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from typing import Any
 
@@ -42,6 +43,38 @@ from livekit.agents import llm as agents_llm
 
 from .graph import build_graph
 from .state import initial_state
+
+
+# Reasoning-trace patterns. Several Groq models — qwen3-32b,
+# DeepSeek-R1, gpt-oss when configured for "show thinking" — emit
+# their internal chain-of-thought wrapped in <think>…</think> or
+# <thinking>…</thinking> tags as part of the regular `content`
+# field. If we forward that to TTS, the user hears JARVIS narrate
+# his own reasoning ("the user wants me to explain recursion. let
+# me think about base cases…") before the actual reply. Strip
+# them here, in the LLM adapter, so the TTS-bound content stays
+# clean. If a future model wraps reasoning in a different tag, add
+# the pattern here.
+_REASONING_TAG_RE = re.compile(
+    r"<\s*(?:think|thinking|reasoning)\b[^>]*>"
+    r".*?"
+    r"<\s*/\s*(?:think|thinking|reasoning)\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _strip_reasoning_traces(text: str) -> str:
+    """Remove <think>…</think> / <thinking>…</thinking> /
+    <reasoning>…</reasoning> blocks from `text`. Idempotent. Keeps
+    everything outside the tags intact; collapses any double
+    whitespace introduced by the removal."""
+    if not text:
+        return text
+    cleaned = _REASONING_TAG_RE.sub("", text)
+    # Trim runs of whitespace introduced by the removal so TTS
+    # doesn't pause awkwardly.
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
 
 logger = logging.getLogger("supervisor_graph.llm_adapter")
 
@@ -106,8 +139,14 @@ def _ai_messages_to_chunks(ai_messages: list) -> list[agents_llm.ChatChunk]:
     import json as _json
     chunks = []
     for m in ai_messages:
-        content = getattr(m, "content", "") or ""
+        raw_content = getattr(m, "content", "") or ""
         tool_calls_lc = getattr(m, "tool_calls", None) or []
+
+        # Strip <think>…</think> reasoning traces before TTS sees them.
+        # qwen3-32b (REASONING route) and DeepSeek-R1 emit their
+        # chain-of-thought inline; if we forward it, the user hears
+        # JARVIS narrate his thinking out loud before the real reply.
+        content = _strip_reasoning_traces(raw_content)
 
         if content:
             chunks.append(agents_llm.ChatChunk(
