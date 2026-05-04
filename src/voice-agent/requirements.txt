@@ -42,3 +42,6 @@ langgraph-checkpoint-sqlite>=3.0.3
 langchain>=1.0
 langchain-groq>=1.0
 langchain-openai~=1.2
+
+# Redis for truth-grounded blackboard state in supervisor v2.
+redis>=5.0
