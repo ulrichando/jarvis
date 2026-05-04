@@ -43,3 +43,26 @@ def test_breaker_stt_open_raises_apiconnection_error():
     finally:
         jarvis_agent._STT_BREAKER.state = STATE_CLOSED
         jarvis_agent._STT_BREAKER.failures = 0
+
+
+def test_breaker_tts_open_raises_apiconnection_error():
+    """When _TTS_BREAKER is open, the breaker-gated path inside
+    _LoggingGroqChunkedStream._run must surface APIConnectionError so
+    FallbackAdapter cascades to EdgeTTS instead of waiting on Groq's
+    ~30s aiohttp timeout."""
+    from circuit_breaker import (
+        CircuitBreaker, CircuitOpenError,
+        STATE_CLOSED, STATE_OPEN,
+    )
+    import jarvis_agent
+    from livekit.agents import APIConnectionError
+
+    jarvis_agent._TTS_BREAKER.state = STATE_OPEN
+    jarvis_agent._TTS_BREAKER.opened_at = 1e18
+
+    try:
+        with pytest.raises(APIConnectionError):
+            _run(jarvis_agent._LoggingGroqChunkedStream._call_with_breaker_for_test())
+    finally:
+        jarvis_agent._TTS_BREAKER.state = STATE_CLOSED
+        jarvis_agent._TTS_BREAKER.failures = 0
