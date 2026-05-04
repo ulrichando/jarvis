@@ -72,3 +72,28 @@ def test_remote_track_unpublished_with_unknown_participant_does_not_crash():
     fake_event.track_unpublished.publication_sid = "TR_NOT_REGISTERED"
 
     room._on_room_event(fake_event)
+
+
+def test_unguarded_branch_passes_through_unchanged():
+    """Branches NOT in _GUARDED_BRANCHES must delegate to the
+    original `_on_room_event` without the KeyError shield. Verifies
+    we don't accidentally widen the catch and swallow real bugs."""
+    livekit_track_guard.install()
+    import livekit_track_guard as _tg
+
+    calls = []
+    saved_original = _tg._ORIGINAL_ON_ROOM_EVENT
+    _tg._ORIGINAL_ON_ROOM_EVENT = (
+        lambda self, event: calls.append(event) or None
+    )
+    try:
+        fake_event = MagicMock()
+        fake_event.WhichOneof = lambda _: "reconnected"
+
+        room = _lk_rtc.Room()
+        room._on_room_event(fake_event)
+        assert calls == [fake_event], (
+            "expected the unguarded branch to delegate exactly once"
+        )
+    finally:
+        _tg._ORIGINAL_ON_ROOM_EVENT = saved_original
