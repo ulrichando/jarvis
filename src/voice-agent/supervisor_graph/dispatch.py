@@ -90,3 +90,73 @@ def task_dispatch_node(state: dict, tools: list[Any]) -> dict:
         "messages": [response],
         "pending_tool_calls": pending,
     }
+
+
+def _build_banter_llm():
+    model = os.environ.get(
+        "JARVIS_GRAPH_BANTER_MODEL", "llama-3.1-8b-instant"
+    )
+    return ChatGroq(model=model, temperature=0.6, max_tokens=160)
+
+
+def _build_reasoning_llm():
+    model = os.environ.get(
+        "JARVIS_GRAPH_REASONING_MODEL", "qwen/qwen3-32b"
+    )
+    return ChatGroq(model=model, temperature=0.4, max_tokens=512)
+
+
+def _build_emotional_llm():
+    model = os.environ.get(
+        "JARVIS_GRAPH_EMOTIONAL_MODEL",
+        "meta-llama/llama-4-scout-17b-16e-instruct",
+    )
+    return ChatGroq(model=model, temperature=0.7, max_tokens=300)
+
+
+_PERSONA = (
+    "You are JARVIS, a dignified British butler. Address the user as "
+    "'sir' sparingly — at most once per reply, only when natural. "
+    "Speak in plain English; never use markdown, bullet lists, or "
+    "emoji. Keep replies short for voice — one or two sentences."
+)
+
+
+def banter_speak_node(state: dict) -> dict:
+    """Chitchat. No tools. Pure content."""
+    return _speak_with(state, _build_banter_llm(),
+                       extra_system="Reply briefly, casually, warmly.")
+
+
+def reasoning_speak_node(state: dict) -> dict:
+    """Explanation / analysis. No tools."""
+    return _speak_with(state, _build_reasoning_llm(),
+                       extra_system="Explain clearly. Use plain language.")
+
+
+def emotional_speak_node(state: dict) -> dict:
+    """Empathic acknowledgment. No tools."""
+    return _speak_with(state, _build_emotional_llm(),
+                       extra_system="Acknowledge feelings warmly; do not lecture.")
+
+
+def _speak_with(state: dict, llm, *, extra_system: str) -> dict:
+    """Common 'invoke an LLM with the persona + history + user_query'
+    body for the no-tool speak nodes."""
+    user_query = state.get("user_query") or ""
+    history = state.get("messages") or []
+
+    msgs = [
+        SystemMessage(content=_PERSONA),
+        SystemMessage(content=extra_system),
+    ] + list(history) + [HumanMessage(content=user_query)]
+
+    try:
+        response = llm.invoke(msgs)
+    except Exception as e:
+        logger.warning(
+            "[speak] LLM error: %s: %s", type(e).__name__, e,
+        )
+        raise
+
+    return {"messages": [response]}
