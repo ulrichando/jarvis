@@ -41,6 +41,10 @@ function downloadFile(filename: string, content: string) {
 type ArtifactCard = {
   artifact: ArtifactData;
   actions: TrackedAction[];
+  // Source assistant-message id. Set by chat.tsx so Thread can render
+  // each card under the turn that produced it. Optional for callers
+  // that don't need per-message attribution (legacy embed paths).
+  messageId?: string;
 };
 
 type Props = {

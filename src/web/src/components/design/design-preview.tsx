@@ -395,9 +395,45 @@ const PICKER_SCRIPT = `
       box.appendChild(line);
     } catch (e) { /* nowhere left to surface this */ }
   }
+  // Per-resource error capture — the window-level error event fires
+  // with an empty message/filename when a <script src=…> fails to
+  // load (404, MIME mismatch, network blocked). Browsers scrub the
+  // payload because the script never parsed, so the only useful
+  // info is on the EventTarget itself: ev.target.src.
+  //
+  // ONLY treat SCRIPT and LINK (stylesheet) failures as fatal — they
+  // break the page. IMG load failures are NOT fatal: the browser
+  // already shows a broken-image icon and the surrounding layout
+  // works. Surfacing them as a fullscreen overlay turned every
+  // Unsplash blip / hotlink-block / ad-blocker hit into "Design
+  // failed to load", which is wildly misleading.
   window.addEventListener('error', function(ev){
+    var t = ev.target;
+    if (t && t !== window && (t.tagName === 'SCRIPT' || t.tagName === 'LINK')) {
+      var url = (t.src || t.href || '').replace(location.origin, '') || '(no src)';
+      showErr(t.tagName.toLowerCase() + ' load failed: ' + url);
+      return;
+    }
+    // Non-fatal load failures (img, video, audio, etc.) — let the
+    // browser's native broken-resource UI handle them.
+    if (t && t !== window && (t.tagName === 'IMG' || t.tagName === 'VIDEO' || t.tagName === 'AUDIO' || t.tagName === 'SOURCE')) {
+      return;
+    }
     var src = (ev.filename || '').replace(location.origin, '') || 'inline';
-    showErr(src + ':' + (ev.lineno||'?') + '  ' + (ev.message||'unknown error'));
+    var msg = ev.message || '';
+    if (!msg && ev.error && ev.error.message) msg = ev.error.message;
+    if (!msg) {
+      // Last-resort: enumerate scripts so the user sees WHICH file
+      // is in flight. Empty error events almost always come from
+      // script-tag load failures the browser refused to detail.
+      var scripts = document.querySelectorAll('script[src]');
+      var srcs = [];
+      for (var i = 0; i < scripts.length; i++) {
+        srcs.push(scripts[i].src.replace(location.origin, ''));
+      }
+      msg = 'script-load failure (no detail). Loaded scripts: ' + (srcs.join(', ') || 'none');
+    }
+    showErr(src + ':' + (ev.lineno||'?') + '  ' + msg);
   }, true);
   window.addEventListener('unhandledrejection', function(ev){
     var r = ev.reason;

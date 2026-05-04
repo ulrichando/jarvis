@@ -235,9 +235,15 @@ export default function ChatPanel({ isOpen, onClose, onBoundsChange, ttsEnabled 
 
   const PYTHON_BASE = 'http://127.0.0.1:8765'
 
+  // Bridge bearer token, injected by Tauri main.rs at window setup.
+  // Empty string when the token file isn't present yet — bridge
+  // ignores empty tokens unless JARVIS_REQUIRE_LOCAL_AUTH=1.
+  const apiToken = (typeof window !== 'undefined' && window.__JARVIS_LOCAL_API_TOKEN) || ''
+  const authHeaders = apiToken ? { Authorization: `Bearer ${apiToken}` } : {}
+
   const fetchSessions = useCallback(async () => {
     try {
-      const res = await fetch(`${PYTHON_BASE}/api/conversations/sessions`)
+      const res = await fetch(`${PYTHON_BASE}/api/conversations/sessions`, { headers: authHeaders })
       const data = await res.json()
       setSessions(data.sessions || [])
     } catch {}
@@ -250,7 +256,7 @@ export default function ChatPanel({ isOpen, onClose, onBoundsChange, ttsEnabled 
     try {
       await fetch(`${PYTHON_BASE}/api/conversations/session`, {
         method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({ start_ts: session.start_ts, end_ts: session.end_ts }),
       })
       setSessions(prev => prev.filter(s => s.id !== session.id))
@@ -455,7 +461,12 @@ export default function ChatPanel({ isOpen, onClose, onBoundsChange, ttsEnabled 
   handleWsMessageRef.current = handleWsMessage
 
   useEffect(() => {
-    const wsUrl = 'ws://127.0.0.1:8765/ws?client=desktop'
+    // Bridge optional auth: when JARVIS_REQUIRE_LOCAL_AUTH=1 the bridge
+    // checks ?token=<JARVIS_LOCAL_API_TOKEN> on the WS upgrade. Always
+    // append it when present so flipping the flag doesn't require code
+    // change.
+    const tokenSuffix = apiToken ? `&token=${encodeURIComponent(apiToken)}` : ''
+    const wsUrl = `ws://127.0.0.1:8765/ws?client=desktop${tokenSuffix}`
     let ws = null
     let reconnectTimer = null
     let reconnectDelay = 1000
@@ -501,7 +512,7 @@ export default function ChatPanel({ isOpen, onClose, onBoundsChange, ttsEnabled 
     } else {
       fetch(`${PYTHON_BASE}/api/think`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({ query: text }),
       })
         .then((res) => res.json())

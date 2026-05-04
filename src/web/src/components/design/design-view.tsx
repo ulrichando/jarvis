@@ -180,7 +180,17 @@ export function DesignView({
     setChatId(window.localStorage.getItem(chatIdKey));
     setHydrated(true);
   }, [chatIdKey, wsQuery.data?.conversationId]);
+  // Tracks whether the chatId currently in state was assigned by a
+  // mid-session onConversationId callback (i.e. the server returned
+  // X-Conversation-Id on the very first POST of a brand-new chat).
+  // We must NOT defer mounting <Chat> in that case — Chat is already
+  // mounted and streaming the response that PRODUCED the id. Treating
+  // it like "history loading" here unmounts Chat mid-stream, aborts
+  // the fetch, and prevents the assistant message from ever persisting
+  // client-side. That was the "messages disappear on refresh" bug.
+  const sessionAssignedIdRef = useRef(false);
   const handleConversationId = (id: string) => {
+    sessionAssignedIdRef.current = true;
     setChatId(id);
     if (typeof window !== "undefined") {
       window.localStorage.setItem(chatIdKey, id);
@@ -188,13 +198,17 @@ export function DesignView({
   };
   const conversationQuery = useConversation(chatId ?? undefined);
   const initialMessages = conversationQuery.data?.messages ?? [];
-  // True only when we have a chatId saved AND the query hasn't settled
-  // yet. While loading, we DEFER mounting <Chat> — otherwise it would
-  // mount with an empty initialMessages and ignore the data when the
-  // query resolves (useState reads its initial value once). Gated on
-  // `hydrated` so SSR / first client paint render identically.
+  // Defer mounting <Chat> only on FRESH page loads where we already
+  // had a chatId from server/localStorage at hydrate time (so we know
+  // history exists and we want to avoid mounting with [] then ignoring
+  // the resolved data). On mid-session id assignment, Chat is already
+  // mounted and we leave it alone.
   const isLoadingChatHistory =
-    hydrated && chatId !== null && conversationQuery.isLoading && !conversationQuery.data;
+    hydrated &&
+    chatId !== null &&
+    !sessionAssignedIdRef.current &&
+    conversationQuery.isLoading &&
+    !conversationQuery.data;
 
   // Fetch the selected file's content so we can extract its declared tweaks.
   // Same queryKey as HtmlPreview's useQuery — react-query dedupes the fetch.
@@ -720,9 +734,18 @@ export function DesignView({
               <Chat
                 // Include workspaceId so switching/deleting a project remounts
                 // the chat — otherwise the previous project's messages bleed
-                // into the new project's panel. chatId in the key too so a
-                // brand-new conversation in the same workspace also remounts.
-                key={`${workspaceId}:${chatId ?? "new"}:${chatKey}`}
+                // into the new project's panel. chatKey is bumped by the
+                // explicit "+ new chat" button so a manual reset remounts.
+                //
+                // chatId is intentionally NOT part of the key. When a brand-new
+                // conversation gets its server-assigned id mid-stream (via the
+                // X-Conversation-Id header → onConversationId → setChatId),
+                // including chatId in the key would trigger a remount during
+                // the very first response — aborting the in-flight fetch,
+                // wiping the streaming state, and (worst case) preventing the
+                // assistant message from ever persisting. That was the
+                // "messages disappear on refresh" bug.
+                key={`${workspaceId}:${chatKey}`}
                 embedded
                 hideSidebarToggle
                 unifiedUX

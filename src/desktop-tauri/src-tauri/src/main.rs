@@ -2,12 +2,13 @@
 
 use std::sync::{Arc, Mutex};
 use tauri::{
-    Manager, State, WebviewWindow, PhysicalSize, PhysicalPosition,
+    AppHandle, Manager, State, WebviewWindow, PhysicalSize, PhysicalPosition,
     image::Image,
     menu::{MenuBuilder, MenuItem, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder},
     tray::{TrayIcon, TrayIconBuilder},
     Emitter, Wry,
 };
+use tauri_plugin_opener::OpenerExt;
 
 /// Shared chat-open state between the tray menu and JS. React calls
 /// `set_chat_state` from `openChat`/`closeChat` so the Rust-side toggle
@@ -697,6 +698,319 @@ fn get_primary_monitor_info(window: WebviewWindow) -> Result<serde_json::Value, 
     }))
 }
 
+// ── Browser-open helpers ───────────────────────────────────────────────────
+
+/// Probe the standard JARVIS web ports and return the first URL that
+/// responds with a JARVIS-shaped response (200 + application/json on
+/// /api/conversations). Returns `None` when nothing matches —
+/// `JARVIS_WEB_URL` env override is honored before probing.
+///
+/// Replaces the previous "fall back to a dead URL anyway" behavior:
+/// the caller now knows when no live web exists and can show a
+/// useful UI instead of opening Chrome to a connection-refused page.
+fn probe_jarvis_web() -> Option<String> {
+    if let Ok(url) = std::env::var("JARVIS_WEB_URL") {
+        if !url.trim().is_empty() {
+            return Some(url);
+        }
+    }
+    for port in [3001u16, 3002, 3000, 8765] {
+        let Ok(addr) = format!("127.0.0.1:{port}").parse() else { continue };
+        let Ok(mut stream) = std::net::TcpStream::connect_timeout(
+            &addr,
+            std::time::Duration::from_millis(150),
+        ) else { continue };
+        use std::io::{Read, Write};
+        let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(300)));
+        let req = format!(
+            "GET /api/conversations HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n",
+        );
+        let _ = stream.write_all(req.as_bytes());
+        let mut buf = [0u8; 256];
+        if let Ok(n) = stream.read(&mut buf) {
+            let head = String::from_utf8_lossy(&buf[..n]);
+            if head.starts_with("HTTP/1.1 200") && head.contains("application/json") {
+                return Some(format!("http://127.0.0.1:{port}/"));
+            }
+        }
+    }
+    None
+}
+
+/// Open `url` in the user's default browser via tauri-plugin-opener
+/// (the v2 successor to tauri-plugin-shell::Shell::open). Cross-
+/// platform — uses `xdg-open` on Linux, `open` on macOS, `start`
+/// on Windows. Logs failures instead of swallowing them.
+fn open_in_browser(app: &AppHandle, url: &str) {
+    // The second arg picks a SPECIFIC application; None means "system
+    // default". The turbofish fixes type inference (Option<&str>).
+    if let Err(e) = app.opener().open_url(url, None::<&str>) {
+        eprintln!("[JARVIS] open_in_browser failed for {url}: {e}");
+    }
+}
+
+/// Walk up from the running binary's path to find the project root.
+/// Binary lives at `<project>/src/desktop-tauri/src-tauri/target/release/jarvis-desktop`,
+/// so 5 ancestors up = `<project>`. Honored override:
+/// `JARVIS_PROJECT_ROOT=/path/to/jarvis` (useful for testing).
+fn find_project_root() -> Option<std::path::PathBuf> {
+    if let Ok(p) = std::env::var("JARVIS_PROJECT_ROOT") {
+        let pb = std::path::PathBuf::from(p);
+        if pb.exists() {
+            return Some(pb);
+        }
+    }
+    let exe = std::env::current_exe().ok()?;
+    // jarvis-desktop ← release ← target ← src-tauri ← desktop-tauri ← src ← <project>
+    let mut p = exe.as_path();
+    for _ in 0..6 {
+        p = p.parent()?;
+    }
+    Some(p.to_path_buf())
+}
+
+/// Spawn `bun run dev` in src/web as a detached background process.
+/// Fire-and-forget — no PID tracking. Matches the launch.sh pattern
+/// where backend services (proxy, bridge, voice) survive tray exits.
+/// Returns true if the spawn was attempted (bun + web dir present),
+/// false otherwise so the caller can fall through to the diagnostic
+/// window instead of waiting on a no-op.
+fn try_spawn_web() -> bool {
+    let Some(root) = find_project_root() else {
+        eprintln!("[JARVIS] try_spawn_web: project root not found");
+        return false;
+    };
+    let web_dir = root.join("src/web");
+    if !web_dir.is_dir() {
+        eprintln!("[JARVIS] try_spawn_web: missing {}", web_dir.display());
+        return false;
+    }
+    // Detect bun by trying to spawn and watching for ENOENT. Spawn
+    // happens with stdout/stderr redirected to /tmp/jarvis-web.log
+    // (append) so the user can postmortem compile errors.
+    let log_path = "/tmp/jarvis-web.log";
+    let log = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+    {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("[JARVIS] try_spawn_web: open log: {e}");
+            return false;
+        }
+    };
+    let log_clone = match log.try_clone() {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    let mut cmd = std::process::Command::new("bun");
+    cmd.arg("run").arg("dev")
+        .current_dir(&web_dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::from(log))
+        .stderr(std::process::Stdio::from(log_clone));
+    match cmd.spawn() {
+        Ok(child) => {
+            eprintln!(
+                "[JARVIS] try_spawn_web: spawned bun run dev (pid={}) in {} — log {}",
+                child.id(),
+                web_dir.display(),
+                log_path,
+            );
+            // Don't wait — Next.js dev compiles for ~5-15 s on first
+            // run. The poll loop in handle_open_browser picks up
+            // readiness without blocking the spawn itself.
+            std::mem::drop(child);
+            true
+        }
+        Err(e) => {
+            eprintln!("[JARVIS] try_spawn_web: spawn failed: {e}");
+            false
+        }
+    }
+}
+
+/// Tray "Open in Browser" handler. Big-company pattern (JupyterLab /
+/// VS Code Server / Docker Desktop): the click ALWAYS leads to the
+/// web opening, even if it wasn't running. Flow:
+///   1. Probe — if a JARVIS web is up, open it. (Fast path, no spawn.)
+///   2. Otherwise: spawn `bun run dev` in src/web (idempotent —
+///      duplicate spawn is harmless, port-collision fail is silent).
+///   3. Poll the port for up to 30 s waiting for readiness.
+///   4. On readiness: open the browser. On timeout: show the
+///      diagnostic window so the user can debug manually.
+///
+/// `route_suffix` is appended to the resolved base URL so callers can
+/// reuse the same probe-spawn-poll machinery to deep-link into a
+/// specific page (e.g. "/logs" for the View Logs menu entry).
+///
+/// Runs on a worker thread so the menu event loop stays responsive
+/// during the up-to-30-s wait.
+fn handle_open_browser(app: &AppHandle, route_suffix: &'static str) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let resolved = |url: String| {
+            // The probe returns "http://host:port/" — strip the trailing
+            // slash before appending the route so we don't end up with
+            // "//logs". When route_suffix is empty (the default Open
+            // in Browser), the URL stays as-is.
+            if route_suffix.is_empty() {
+                url
+            } else {
+                format!("{}{}", url.trim_end_matches('/'), route_suffix)
+            }
+        };
+
+        // 1. Fast path: probe finds a live web.
+        if let Some(url) = probe_jarvis_web() {
+            open_in_browser(&app, &resolved(url));
+            return;
+        }
+
+        // 2. No live web — kick off a spawn. If we can't (no bun, no
+        //    web dir), skip straight to the diagnostic window.
+        let spawned = try_spawn_web();
+        if !spawned {
+            show_web_not_running_window(&app);
+            return;
+        }
+
+        // 3. Poll for readiness. Next.js cold-compile is typically
+        //    5-15 s; 30 s gives margin. Probe interval 500 ms is
+        //    cheap (one TCP connect + 256-byte read per try).
+        for _ in 0..60 {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            if let Some(url) = probe_jarvis_web() {
+                open_in_browser(&app, &resolved(url));
+                return;
+            }
+        }
+
+        // 4. Timeout — surface the diagnostic so the user can check
+        //    /tmp/jarvis-web.log for compile errors.
+        eprintln!("[JARVIS] handle_open_browser: web didn't come up within 30 s");
+        show_web_not_running_window(&app);
+    });
+}
+
+/// Open a small Tauri webview window with a "JARVIS web isn't
+/// running" diagnostic + the exact start command. Replaces the
+/// old behavior where the tray would open Chrome to a dead URL —
+/// now the user sees an explanation and the command to copy.
+///
+/// Self-contained: HTML is embedded inline as a `data:` URL so this
+/// doesn't require new routes in the JS app dist or `npm run build`.
+/// The window reuses the same WebviewWindowBuilder pattern as the
+/// existing API-keys window (manage_keys handler).
+fn show_web_not_running_window(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("web-not-running") {
+        let _ = w.show();
+        let _ = w.set_focus();
+        return;
+    }
+    // Inline HTML — kept tiny so URL-encoding is cheap. The copy
+    // button uses navigator.clipboard which is available in all
+    // modern webviews; falls back to selecting the <code> if not.
+    let html = r##"<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<title>JARVIS web — not running</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: #0a0a0a; color: #e0e0e0;
+    margin: 0; padding: 28px 32px; line-height: 1.55;
+  }
+  h1 { font-size: 17px; font-weight: 600; margin: 0 0 6px; color: #f5f5f5; }
+  .sub { color: #888; font-size: 13px; margin: 0 0 18px; }
+  .cmd {
+    background: #161616; border: 1px solid #262626; border-radius: 8px;
+    padding: 12px 14px; font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 12.5px; color: #d8d8d8; margin: 0 0 10px;
+    word-break: break-all;
+  }
+  .row { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; }
+  button {
+    background: #1d1d1d; border: 1px solid #303030; border-radius: 6px;
+    color: #e0e0e0; padding: 6px 12px; font-size: 12px; cursor: pointer;
+    font-family: inherit;
+  }
+  button:hover { background: #262626; border-color: #3a3a3a; }
+  .ok { color: #34d399; }
+  .hint { color: #666; font-size: 12px; }
+  a { color: #22d3ee; }
+</style></head>
+<body>
+<h1>JARVIS web isn't running</h1>
+<p class="sub">The tray tried ports 3001, 3002, 3000, 8765 — none responded with a JARVIS web. Start it with:</p>
+<div class="cmd" id="cmd">cd ~/Documents/Projects/jarvis/src/web &amp;&amp; bun run dev</div>
+<div class="row">
+  <button id="copy">Copy command</button>
+  <span class="hint" id="status"></span>
+</div>
+<p class="hint">Once it boots, the tray's "Open in Browser" will pick it up automatically. The dev server lands on <a href="http://localhost:3001/">http://localhost:3001/</a>.</p>
+<p class="hint">Tip: set <code>JARVIS_WEB_URL=https://your-host</code> to bypass detection and always open a specific URL.</p>
+<script>
+  document.getElementById("copy").addEventListener("click", async () => {
+    const cmd = document.getElementById("cmd").textContent.trim();
+    const status = document.getElementById("status");
+    try {
+      await navigator.clipboard.writeText(cmd);
+      status.textContent = "Copied — paste it in your terminal.";
+      status.classList.add("ok");
+    } catch (e) {
+      // Fallback: select the command for manual copy.
+      const r = document.createRange();
+      r.selectNodeContents(document.getElementById("cmd"));
+      const s = window.getSelection();
+      s.removeAllRanges(); s.addRange(r);
+      status.textContent = "Selected — press Ctrl/Cmd+C to copy.";
+    }
+  });
+</script>
+</body></html>"##;
+
+    // Percent-encode for the data: URL. Keep printable ASCII alpha-num
+    // and a few safe punctuation chars unencoded; everything else
+    // becomes %XX. UTF-8 multi-byte chars are encoded byte-by-byte,
+    // which is what the URL spec requires anyway.
+    let mut encoded = String::with_capacity(html.len() * 2);
+    for &b in html.as_bytes() {
+        let safe = b.is_ascii_alphanumeric()
+            || matches!(b, b'-' | b'_' | b'.' | b'~');
+        if safe {
+            encoded.push(b as char);
+        } else {
+            encoded.push_str(&format!("%{:02X}", b));
+        }
+    }
+    let data_url_str = format!("data:text/html;charset=utf-8,{}", encoded);
+
+    let parsed = match data_url_str.parse() {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("[JARVIS] data URL parse failed: {e}");
+            return;
+        }
+    };
+
+    if let Err(e) = tauri::WebviewWindowBuilder::new(
+        app,
+        "web-not-running",
+        tauri::WebviewUrl::External(parsed),
+    )
+    .title("JARVIS — Web not running")
+    .inner_size(500.0, 360.0)
+    .resizable(false)
+    .visible(true)
+    .build()
+    {
+        eprintln!("[JARVIS] failed to build web-not-running window: {e}");
+    }
+}
+
 // ── Entry point ────────────────────────────────────────────────────────────
 
 fn main() {
@@ -712,6 +1026,7 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
@@ -734,6 +1049,22 @@ fn main() {
         .setup(move |app| {
             let window = app.get_webview_window("main").unwrap();
             let window_for_poll = window.clone();
+
+            // Inject the local API bearer token into the webview as a
+            // global. ChatPanel.jsx reads window.__JARVIS_LOCAL_API_TOKEN
+            // and adds it to fetch() Authorization headers + WS query
+            // string. Empty when token file isn't present — bridge
+            // ignores empty tokens unless JARVIS_REQUIRE_LOCAL_AUTH=1.
+            let bridge_token = std::env::var("JARVIS_LOCAL_API_TOKEN").unwrap_or_default();
+            // JSON-escape for safe injection. Tokens are hex (no quotes
+            // or backslashes), but be defensive anyway.
+            let escaped = bridge_token
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"");
+            let _ = window.eval(&format!(
+                "window.__JARVIS_LOCAL_API_TOKEN = \"{}\";",
+                escaped
+            ));
 
             // Full-screen transparent overlay. Pick the LAPTOP screen (smallest
             // monitor by area) rather than primary_monitor() — primary is the
@@ -866,6 +1197,7 @@ fn main() {
 
             let sep1         = PredefinedMenuItem::separator(app)?;
             let browser_item = MenuItemBuilder::with_id("open_browser", "Open in Browser").build(app)?;
+            let logs_item    = MenuItemBuilder::with_id("open_logs",    "View Logs").build(app)?;
             let keys_item    = MenuItemBuilder::with_id("manage_keys",  "Manage API Keys…").build(app)?;
             let sep_prov     = PredefinedMenuItem::separator(app)?;
 
@@ -1016,6 +1348,7 @@ fn main() {
                 .item(&mute_item)
                 .item(&sep1)
                 .item(&browser_item)
+                .item(&logs_item)
                 .item(&keys_item)
                 .item(&sep_prov)
                 .item(&provider_submenu)
@@ -1067,9 +1400,18 @@ fn main() {
                             // curl invocation mirrors the pre-existing
                             // pattern — Tauri webview CORS doesn't apply to
                             // subprocess calls out of the webview.
-                            let _ = std::process::Command::new("curl")
-                                .args(["-s", "-X", "POST", "http://127.0.0.1:8765/api/mute"])
-                                .spawn();
+                            // Bridge bearer token (optional; required only when
+                            // JARVIS_REQUIRE_LOCAL_AUTH=1). Read from env or
+                            // ~/.jarvis/local-api-token at process start; cached
+                            // in JARVIS_LOCAL_API_TOKEN.
+                            let bridge_token = std::env::var("JARVIS_LOCAL_API_TOKEN").unwrap_or_default();
+                            let mut mute_args: Vec<String> = vec!["-s".into(), "-X".into(), "POST".into()];
+                            if !bridge_token.is_empty() {
+                                mute_args.push("-H".into());
+                                mute_args.push(format!("Authorization: Bearer {}", bridge_token));
+                            }
+                            mute_args.push("http://127.0.0.1:8765/api/mute".into());
+                            let _ = std::process::Command::new("curl").args(&mute_args).spawn();
                             // Toggle the voice-client by POSTing with no
                             // body — the Python handler defaults to "flip
                             // current state" when `mute` is absent.
@@ -1090,47 +1432,24 @@ fn main() {
                         // for rationale.
 
                         "open_browser" => {
-                            // Pick the first port that responds AND
-                            // is the JARVIS web (Next.js). Probe
-                            // checks for a JARVIS-specific marker
-                            // header / path so we don't accidentally
-                            // open Open-WebUI on :3000 or some other
-                            // app the user has running. Override
-                            // with JARVIS_WEB_URL to skip detection.
-                            let url = std::env::var("JARVIS_WEB_URL").ok()
-                                .or_else(|| {
-                                    for port in [3001u16, 3002, 3000, 8765] {
-                                        let probe_url = format!("http://127.0.0.1:{port}/api/conversations");
-                                        if let Ok(mut stream) = std::net::TcpStream::connect_timeout(
-                                            &format!("127.0.0.1:{port}").parse().unwrap(),
-                                            std::time::Duration::from_millis(150),
-                                        ) {
-                                            use std::io::{Read, Write};
-                                            let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(300)));
-                                            let req = format!(
-                                                "GET /api/conversations HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n",
-                                            );
-                                            let _ = stream.write_all(req.as_bytes());
-                                            let mut buf = [0u8; 256];
-                                            if let Ok(n) = stream.read(&mut buf) {
-                                                let head = String::from_utf8_lossy(&buf[..n]);
-                                                // JARVIS web has /api/conversations → 200 with json content-type;
-                                                // open-webui returns 404 / different shape.
-                                                if head.starts_with("HTTP/1.1 200")
-                                                    && head.contains("application/json")
-                                                {
-                                                    let _ = probe_url;
-                                                    return Some(format!("http://127.0.0.1:{port}/"));
-                                                }
-                                            }
-                                        }
-                                    }
-                                    None
-                                })
-                                .unwrap_or_else(|| "http://127.0.0.1:3001/".to_string());
-                            let _ = std::process::Command::new("xdg-open")
-                                .arg(&url)
-                                .spawn();
+                            // Big-company pattern (JupyterLab / VS Code Server /
+                            // Docker Desktop): click ALWAYS leads to the web
+                            // opening, even if it wasn't running. Probe → if up,
+                            // open immediately. Else spawn `bun run dev` in
+                            // src/web, poll for readiness, open when ready.
+                            // Diagnostic window only appears on hard failure
+                            // (no bun, no web dir, or 30 s timeout).
+                            //
+                            // Runs on a worker thread so the menu doesn't
+                            // freeze during the cold-compile wait.
+                            handle_open_browser(app, "");
+                        }
+                        "open_logs" => {
+                            // Same flow as open_browser, but lands on the
+                            // /logs route — a live tail of every JARVIS
+                            // service's logs in one page (built on top of
+                            // /api/logs/stream SSE).
+                            handle_open_browser(app, "/logs");
                         }
                         "manage_keys" => {
                             // Open the API-keys settings window. The

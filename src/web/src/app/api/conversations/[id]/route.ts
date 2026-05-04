@@ -53,3 +53,30 @@ export async function DELETE(
 
   return new Response(null, { status: 204 });
 }
+
+export async function PATCH(
+  req: Request,
+  ctx: RouteContext<"/api/conversations/[id]">,
+) {
+  if (!db) return new Response("Persistence disabled", { status: 503 });
+
+  const { id } = await ctx.params;
+  const body = (await req.json().catch(() => ({}))) as {
+    title?: unknown;
+  };
+  const title =
+    typeof body.title === "string" ? body.title.trim().slice(0, 200) : "";
+  if (!title) return new Response("Missing title", { status: 400 });
+
+  await db
+    .update(schema.conversations)
+    .set({ title })
+    .where(
+      and(
+        eq(schema.conversations.id, id),
+        eq(schema.conversations.userId, LOCAL_USER_ID),
+      ),
+    );
+
+  return Response.json({ ok: true });
+}

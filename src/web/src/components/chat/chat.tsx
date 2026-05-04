@@ -33,6 +33,11 @@ import { PanelLeftOpen } from "lucide-react";
 import { Thread } from "./thread";
 import { Composer } from "./composer";
 import { EmptyState } from "./empty-state";
+import { ScrollToBottomPill } from "./scroll-to-bottom-pill";
+import { ShortcutsHelp } from "./shortcuts-help";
+import { useStickToBottom } from "@/hooks/use-stick-to-bottom";
+import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
+import { useRouter } from "next/navigation";
 import { FunctionGrid } from "./function-grid";
 import { TaskPanel } from "./task-panel";
 import { useChatStore } from "@/stores/chat";
@@ -126,20 +131,9 @@ type CapturedResultLite = {
   detached: boolean;
 };
 
-// Mirror of the /api/workspace/[id]/verify response shape — kept inline
-// to avoid the round-trip of importing a server-only module on the client.
-type VerifyOutcome = {
-  ok: boolean;
-  fixers: Array<{
-    rule: string;
-    filesChanged: string[];
-    description: string;
-  }>;
-  typecheck: { ran: boolean; ok: boolean; output: string };
-  preview: { ran: boolean; ok: boolean; status: number | null };
-  screenshot?: { dataUrl: string; bytes: number; target: string };
-  durationMs: number;
-};
+// VerifyOutcome shape now lives in @/lib/verify/types so client
+// components (VerifyPill, Thread, Message) can share it.
+import type { VerifyOutcome } from "@/lib/verify/types";
 
 // Renders a synthetic block summarizing the verify pass — gets appended
 // to the assistant message text just like <boltActionResults>, so the
@@ -179,57 +173,27 @@ function renderVerifyBlock(v: VerifyOutcome): string {
   return lines.join("\n");
 }
 
-function renderVerifyFailedRetryPrompt(v: VerifyOutcome): string {
-  const lines: string[] = [];
-  lines.push(
-    "[auto-retry] Runtime verification FAILED after your last turn. The actual errors are below — fix them before declaring done.",
-  );
-  lines.push("");
-  if (!v.typecheck.ok && v.typecheck.ran) {
-    lines.push(`Typecheck (\`bunx tsc --noEmit\`) failed:`);
-    const firstChunk = v.typecheck.output.split("\n").slice(0, 30).join("\n");
-    lines.push("```");
-    lines.push(firstChunk);
-    lines.push("```");
-    lines.push("");
-  }
-  if (!v.preview.ok && v.preview.ran) {
-    lines.push(
-      `Preview (\`curl http://localhost:5173\`) returned status ${v.preview.status ?? "(no response)"}.`,
-    );
-    lines.push(
-      "Read \`tail -200 .jarvis/dev.log\` to see the actual server-side error.",
-    );
-    lines.push("");
-  }
-  if (v.fixers.length > 0) {
-    lines.push(
-      `The runtime auto-fixed ${v.fixers.length} issue(s) before this verify (${v.fixers.map((f) => f.rule).join(", ")}). Don't undo those.`,
-    );
-    lines.push("");
-  }
-  lines.push("Rules for your fix turn:");
-  lines.push(
-    "1. Emit `<boltAction type=\"file\">` writes for the broken files. Complete file contents — never diffs.",
-  );
-  lines.push(
-    "2. End with the SAME verification command (tsc / curl) so the runtime can re-verify on the next turn.",
-  );
-  lines.push(
-    "3. If the error is unfamiliar (not a syntax / import / type issue), read \`.jarvis/dev.log\` first and quote the relevant line in your plan.",
-  );
-  lines.push(
-    "4. If you genuinely don't know the fix, say so in one sentence and STOP.",
-  );
-  return lines.join("\n");
-}
+// ARCHITECTURE NOTE: synthetic auto-retry prompts have been REMOVED.
+// Previous versions of this file rendered four kinds of fake user
+// messages — verify-failed, real-shell-failure, diagnose-only, and
+// thought-only — and fed them back to the model via a microtask
+// to force an autonomous fix loop. That's the Cursor / Devin / Cline
+// pattern, and it produced the failure modes the user kept hitting:
+// transient curl-can't-connect classified as a real failure, retry
+// prompts that demanded "complete file contents" (interpreted as
+// "rewrite the whole project"), and a chat surface polluted with
+// `[auto-retry]` text the user never typed. We now follow the Claude
+// Code pattern instead: verify still runs, results are still appended
+// to the assistant's text as a `<jarvisVerify>` block (model sees
+// them on the next turn as ground truth), and the user sees a
+// VerifyPill on the assistant message they can click to manually
+// retry. No synthetic prompts; the model's own reasoning decides
+// what to do.
 
 // Diagnostic / read-only commands that can legitimately exit non-zero
-// without the model considering it a failure. We use this to skip the
-// auto-retry trigger when the only "failure" was a grep returning 1
-// because there were no matches — that's a successful diagnostic, not
-// something to retry. Match: command STARTS WITH any of these tokens
-// (after stripping "cd ... && " prefixes, env vars, and pipe heads).
+// without the model considering it a failure. Currently unused after
+// the auto-retry removal but kept here in case we want it for the
+// VerifyPill's "should this even surface as a failure" classification.
 const DIAGNOSTIC_PREFIXES = [
   "grep",
   "rg",
@@ -309,108 +273,6 @@ function renderStageProgressPrompt(
       `4. The runtime will auto-fire stage ${nextStage + 1} after this verifies. Don't try to do later stages now.`,
     );
   }
-  return lines.join("\n");
-}
-
-// Variant for when the previous turn ran shell commands but emitted
-// ZERO file actions — the model stopped at "diagnose mode" without
-// committing edits. This is the most common stall in fix-the-website
-// prompts: the model runs grep/cat to explore, exits 0 on everything
-// because of `|| true` / `|| echo` fallbacks, and then waits for the
-// user instead of continuing to the fix.
-function renderDiagnoseOnlyRetryPrompt(
-  ran: CapturedResultLite[],
-  iteration: number,
-): string {
-  const lines: string[] = [];
-  if (iteration <= 1) {
-    lines.push(
-      "[auto-retry] Your previous turn ran shell commands but did NOT emit any `<boltAction type=\"file\">` edits. Diagnose-only turns don't move the project forward — production agents (Bolt, Replit, Lovable) commit fixes in the SAME turn they diagnose.",
-    );
-  } else {
-    // Repeat offender: the model has now had 2+ chances to commit a fix
-    // and keeps running more diagnose. Stop being polite — the model
-    // will get stuck in an infinite cat/grep loop unless the prompt is
-    // shouty about it.
-    lines.push(
-      `[auto-retry — iteration ${iteration}] STOP. Your last ${iteration} turns have been diagnose-only. No more cat / grep / ls / find / head / tail this turn. The pattern in your <boltActionResults> is OBVIOUS by now.`,
-    );
-    lines.push("");
-    lines.push(
-      "MANDATE for this turn — pick exactly ONE of these two outcomes, no third path:",
-    );
-    lines.push(
-      "  A) Emit a boltArtifact with at least one `<boltAction type=\"file\" filePath=\"...\">` writing the fix. Complete file contents. Then ONE verification shell command at the end.",
-    );
-    lines.push(
-      "  B) If you genuinely can't identify the fix from what you've already seen, write ONE sentence saying \"I need X to proceed: <specific question>\" and STOP. NO new boltArtifact, NO more diagnose commands.",
-    );
-    lines.push("");
-    lines.push(
-      "DO NOT emit another diagnose-only artifact. The runtime will detect it and you'll get this same message AGAIN.",
-    );
-    lines.push("");
-  }
-  lines.push("Commands you've already run (results in <boltActionResults>):");
-  for (const r of ran) {
-    lines.push(`- \`${r.command}\``);
-  }
-  if (iteration <= 1) {
-    lines.push("");
-    lines.push(
-      "Now: based on what those commands revealed, emit a NEW boltArtifact that ACTUALLY EDITS the affected files. Rules:",
-    );
-    lines.push(
-      "1. Every fix turn must contain at least one `<boltAction type=\"file\" filePath=\"...\">` write.",
-    );
-    lines.push(
-      "2. Provide COMPLETE file contents — never diffs or `// rest unchanged`.",
-    );
-    lines.push(
-      "3. End with one verification shell action (`bunx tsc --noEmit`, `curl`, etc.) so we can confirm the fix worked.",
-    );
-    lines.push(
-      "4. If the diagnose results showed nothing actionable (e.g. \"NO_MATCHES\"), say so in one sentence and STOP — don't emit another diagnose.",
-    );
-  }
-  return lines.join("\n");
-}
-
-// Renders the synthetic user message used by auto-retry. Mirrors the
-// Bolt / Replit / Lovable pattern: explicit failure list + an explicit
-// nudge to switch approach if the previous strategy is fundamentally
-// blocked, not just to repeat the same commands.
-function renderAutoRetryPrompt(failed: CapturedResultLite[]): string {
-  const lines: string[] = [];
-  lines.push(
-    "[auto-retry] The previous artifact had failed actions. Read the <boltActionResults> block in your last message for full output, then emit a NEW boltArtifact that fixes the root cause.",
-  );
-  lines.push("");
-  lines.push("Failed actions:");
-  for (const r of failed) {
-    const stderrHead = (r.stderr || r.stdout || "")
-      .split("\n")
-      .filter((l) => l.trim())
-      .slice(0, 3)
-      .join(" | ");
-    lines.push(
-      `- ${r.type}: \`${r.command}\` (exit ${r.exitCode}) — ${stderrHead || "no error output"}`,
-    );
-  }
-  lines.push("");
-  lines.push("Rules for the fix:");
-  lines.push(
-    "1. Target ONLY the broken files / failing step. Don't re-scaffold the whole project.",
-  );
-  lines.push(
-    "2. Re-run the failing verification command at the end of the new artifact so we can see if the fix worked.",
-  );
-  lines.push(
-    "3. If the previous approach hit a fundamental blocker (port in use, dependency 404, peer-dep conflict, framework incompatibility), SWITCH STRATEGY — try a different package, framework, port, or lib. Don't repeat the exact same commands and hope for a different result.",
-  );
-  lines.push(
-    "4. If you genuinely don't know how to fix it after reading the actual error output, say so in one short sentence and STOP — do not emit a placeholder artifact.",
-  );
   return lines.join("\n");
 }
 
@@ -494,8 +356,13 @@ export function Chat({
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<UIMessage[]>(initialMessages ?? []);
   const [status, setStatus] = useState<ChatStatus>("ready");
+  // Artifact cards keyed by artifact id. `messageId` records the
+  // assistant turn that produced each card — Thread uses this to render
+  // each artifact INLINE under the message that created it, instead of
+  // dumping every conversation-wide artifact into one bottom panel
+  // (which made later turns appear to inherit older turns' artifacts).
   const [artifacts, setArtifacts] = useState<
-    Map<string, { artifact: ArtifactData; actions: TrackedAction[] }>
+    Map<string, { artifact: ArtifactData; actions: TrackedAction[]; messageId: string }>
   >(new Map());
   const [previewPort, setPreviewPort] = useState<number | null>(null);
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
@@ -514,6 +381,23 @@ export function Chat({
   const [planById, setPlanById] = useState<
     Map<string, { content: string; complete: boolean }>
   >(() => new Map());
+  // Per-assistant-message error state. When a stream fails (network
+  // drop, auth, rate-limit, server error) we keep the partial message
+  // visible (Claude/ChatGPT pattern — never blank a partial response)
+  // and stash the failure here so the Message component can render an
+  // inline "Response stopped — Retry" pill at the end of the text.
+  // Keyed by assistantId.
+  const [errorById, setErrorById] = useState<Map<string, string>>(
+    () => new Map(),
+  );
+  // Per-assistant-message verify outcome. Populated when the runtime
+  // ran the verify pipeline (tsc / curl / screenshot) after the turn.
+  // The model already gets these results as a `<jarvisVerify>` block
+  // appended to its text — this map is purely so the UI can render a
+  // VerifyPill on the message, letting the user see + manually retry.
+  const [verifyById, setVerifyById] = useState<Map<string, VerifyOutcome>>(
+    () => new Map(),
+  );
   const previewPollRef = useRef<{ cancel: () => void } | null>(null);
 
   const { toggleSidebar, sidebarOpen } = useUI();
@@ -544,6 +428,18 @@ export function Chat({
   }, [model, setModel]);
 
   const abortRef = useRef<AbortController | null>(null);
+  // Scroll container for the message thread. The useStickToBottom
+  // hook tracks how close the user is to the bottom; isAtBottom
+  // gates Thread's auto-scroll on stream so the page doesn't yank
+  // the user back when they've scrolled up to read history. The
+  // floating "Scroll to latest" pill renders inside the same
+  // container with one-click re-attach. Matches Claude.ai /
+  // ChatGPT scroll-stickiness UX.
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const { isAtBottom, scrollToBottom } = useStickToBottom(scrollContainerRef);
+  // Cmd/Ctrl+/ help modal state. Wired by useKeyboardShortcuts below.
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const router = useRouter();
   // rAF-based streaming flush: the hot loop writes here; a scheduled
   // animation-frame reads it and calls setMessages once per frame.
   // This never blocks the event loop (unlike flushSync).
@@ -553,12 +449,6 @@ export function Chat({
   // slot so reasoning and text don't fight for the same frame.
   const reasoningPending = useRef<{ id: string; text: string } | null>(null);
   const reasoningRafId = useRef<number | null>(null);
-  // Per-conversation counter of consecutive diagnose-only turns. Reset
-  // when ANY turn lands a file action — bumped each time an auto-retry
-  // fires for "no file edits". The retry prompt scales its language
-  // based on this so a model stuck in cat/grep loops gets shouted at
-  // by turn 2+ instead of the same polite nudge forever.
-  const diagnoseStreakRef = useRef(0);
   // Multi-stage plan progression state. When the model emits a plan with
   // `stages="N"`, the runtime auto-fires `[auto-progress to stage K]`
   // continuation turns until all stages complete or one fails. This is
@@ -610,6 +500,17 @@ export function Chat({
     reasoningPending.current = null;
     setStatus("ready");
   };
+
+  // Global keyboard shortcuts: Esc/Shift+Esc/Cmd+Shift+O/Cmd+/.
+  // Esc gates on streaming so it doesn't steal Esc from popovers when
+  // the model is idle. New chat resets to /chat (the route handles
+  // wiping conversation state on mount via the URL change).
+  useKeyboardShortcuts({
+    isStreaming: status === "streaming" || status === "submitted",
+    onStop: stop,
+    onNewChat: () => router.push("/chat"),
+    onToggleHelp: () => setShortcutsOpen((v) => !v),
+  });
 
   const submit = async (
     text?: string,
@@ -727,7 +628,7 @@ export function Chat({
     // leak in.
     const localArtifacts = new Map<
       string,
-      { artifact: ArtifactData; actions: TrackedAction[] }
+      { artifact: ArtifactData; actions: TrackedAction[]; messageId: string }
     >();
     // rAF-coalesced flush. The parser fires onActionStream on every chunk
     // (10-30/sec); calling setArtifacts + flushSync per chunk freezes the
@@ -743,9 +644,14 @@ export function Chat({
     };
     const updateArtifact = (
       artifactId: string,
-      mut: (prev: { artifact: ArtifactData; actions: TrackedAction[] }) => {
+      mut: (prev: {
         artifact: ArtifactData;
         actions: TrackedAction[];
+        messageId: string;
+      }) => {
+        artifact: ArtifactData;
+        actions: TrackedAction[];
+        messageId: string;
       },
     ) => {
       const prev = localArtifacts.get(artifactId);
@@ -841,7 +747,11 @@ export function Chat({
       },
       onArtifactOpen: (a) => {
         const artifact: ArtifactData = { id: a.id, title: a.title, type: a.type };
-        localArtifacts.set(a.id, { artifact, actions: [] });
+        localArtifacts.set(a.id, {
+          artifact,
+          actions: [],
+          messageId: a.messageId,
+        });
         scheduleArtifactFlush();
       },
       onActionOpen: (a) => {
@@ -1103,21 +1013,34 @@ export function Chat({
         if (continued === 0) initialStatus = status;
         if (status === "error" || status === "abort" || status === "complete") {
           if (status === "error") {
-            // Drop the empty placeholder so the user isn't left with
-            // a permanent "thinking…" bubble.
-            setMessages((prev) => prev.filter((m) => m.id !== assistantId));
-            setReasoningById((prev) => {
-              if (!prev.has(assistantId)) return prev;
-              const next = new Map(prev);
-              next.delete(assistantId);
-              return next;
-            });
-            setPlanById((prev) => {
-              if (!prev.has(assistantId)) return prev;
-              const next = new Map(prev);
-              next.delete(assistantId);
-              return next;
-            });
+            // KEEP the partial message visible (Claude/ChatGPT pattern
+            // — never blank a partial response) and stash the failure
+            // so the Message component renders an inline retry pill.
+            // Empty-text placeholders still get removed (a "thinking…"
+            // bubble with no body and no error is just visual noise).
+            const hasContent = assistantText.trim().length > 0;
+            if (hasContent) {
+              setErrorById((prev) =>
+                new Map(prev).set(
+                  assistantId,
+                  "Response stopped",
+                ),
+              );
+            } else {
+              setMessages((prev) => prev.filter((m) => m.id !== assistantId));
+              setReasoningById((prev) => {
+                if (!prev.has(assistantId)) return prev;
+                const next = new Map(prev);
+                next.delete(assistantId);
+                return next;
+              });
+              setPlanById((prev) => {
+                if (!prev.has(assistantId)) return prev;
+                const next = new Map(prev);
+                next.delete(assistantId);
+                return next;
+              });
+            }
           }
           break;
         }
@@ -1272,6 +1195,18 @@ export function Chat({
               );
               if (r.ok) {
                 verifyResult = (await r.json()) as VerifyOutcome;
+                // Stash the verify outcome on a per-message map so the
+                // UI can render a VerifyPill below the assistant body.
+                // This is the user-facing surface that REPLACES the
+                // synthetic [auto-retry] prompts — verify outcome is
+                // now visible as a clickable pill, not as a fake user
+                // message in the chat.
+                if (verifyResult) {
+                  const outcome = verifyResult;
+                  setVerifyById((prev) =>
+                    new Map(prev).set(assistantId, outcome),
+                  );
+                }
                 // Stash the live-preview screenshot for the NEXT turn
                 // to attach as an image part. The model on the next turn
                 // can compare it to design references in its context.
@@ -1325,22 +1260,12 @@ export function Chat({
         // decides whether to fix or escalate. Diagnostic commands
         // (grep/find/cat returning non-zero on "no match") are excluded
         // so we don't kick a retry over a successful exploratory probe.
+        // Stage-progression bookkeeping for multi-stage plans. We
+        // intentionally do NOT inject auto-retry prompts on verify
+        // failure or diagnose-only turns — see the comment block
+        // below for why. Stage progression is the only autonomous
+        // turn-firing path that survives.
         if (!opts.isAutoRetry && targetWorkspaceId) {
-          const realFailures = turnResults.filter(
-            (r) =>
-              r.exitCode !== 0 &&
-              !r.detached &&
-              !isDiagnosticCommand(r.command),
-          );
-          // Heuristic #2: the model emitted shell actions but ZERO file
-          // actions. That's the diagnose-only stop pattern — model ran
-          // grep/cat/rg to look at the workspace, then ended the turn
-          // without committing any edits. Without this kick, the model
-          // sits waiting for the user to type "continue", which kills
-          // the autonomous-fix loop production tools (Bolt, Lovable,
-          // Replit Agent) all rely on. We only count the actions in
-          // THIS turn — turnResults doesn't include file actions, so we
-          // walk the artifacts state to detect file activity.
           let hadFileEdits = false;
           for (const card of localArtifacts.values()) {
             if (card.actions.some((a) => a.action.type === "file")) {
@@ -1348,34 +1273,14 @@ export function Chat({
               break;
             }
           }
-          const diagnoseOnly =
-            turnResults.length > 0 && !hadFileEdits;
-          // Verify-failed retry: if verify ran (workspace turn that
-          // produced file edits) AND tsc/curl returned errors, the
-          // turn isn't actually done. Treat as a retry trigger so the
-          // model sees the failure and emits a fix.
           const verifyFailed = !!verifyResult && verifyResult.ok === false;
-          const shouldRetry =
-            realFailures.length > 0 || diagnoseOnly || verifyFailed;
-          // Update the diagnose streak: any turn that landed a file edit
-          // breaks the streak and resets the counter; consecutive
-          // diagnose-only turns increment it. The retry-prompt renderer
-          // uses the streak count to escalate language (polite nudge on
-          // turn 1, hard mandate on turn 2+, prevents the
-          // "cat-cat-cat-forever" loop the model gets stuck in).
-          if (hadFileEdits) {
-            diagnoseStreakRef.current = 0;
-          } else if (diagnoseOnly) {
-            diagnoseStreakRef.current += 1;
-          }
           // Multi-stage plan detection. When the model emits a
-          // `<jarvisPlan stages="N">` on the first turn (or any
-          // user-initiated turn), capture N. Subsequent stage progression
-          // is tracked via stagePlanRef.current.currentStage.
+          // `<jarvisPlan stages="N">` on the first turn, capture N.
+          // Subsequent stage progression is tracked via
+          // stagePlanRef.current.currentStage.
           if (!opts.isAutoRetry) {
             const detected = detectStageCount(assistantText);
             if (detected) {
-              // First turn of a multi-stage plan — initialize tracking.
               stagePlanRef.current = {
                 totalStages: detected,
                 currentStage: 1,
@@ -1385,27 +1290,30 @@ export function Chat({
               };
             }
           }
-          if (shouldRetry) {
-            // Retry-prompt selection priority:
-            //   1. Verify failed (tsc / curl returned errors) — surface
-            //      the actual error from the verify block; most actionable.
-            //   2. Real shell failures — treat as a "switch strategy" retry.
-            //   3. Diagnose-only — escalating mandate.
-            const retryPrompt = verifyFailed && verifyResult
-              ? renderVerifyFailedRetryPrompt(verifyResult)
-              : realFailures.length > 0
-                ? renderAutoRetryPrompt(realFailures)
-                : renderDiagnoseOnlyRetryPrompt(
-                    turnResults,
-                    diagnoseStreakRef.current,
-                  );
-            // Defer to a microtask so the current submit() finishes its
-            // setState chain before we kick off another one. queueMicrotask
-            // is the same pattern the seed-prompt path uses.
-            queueMicrotask(() => {
-              void submit(retryPrompt, { isAutoRetry: true });
-            });
-          } else if (
+          // Auto-retry-on-failure REMOVED — see ARCHITECTURE NOTE below.
+          //
+          // The previous implementation injected synthetic [auto-retry] /
+          // [diagnose-only] / [thought-only] user messages into the chat
+          // to force the model into a fix loop — the Cursor/Devin/Cline
+          // pattern. Concrete failure modes that drove the removal:
+          //   - Transient curl status 0 (dev server not up yet) read as
+          //     a real failure → spurious retry → rewrite-everything loop
+          //   - Retry prompts told the model "Complete file contents —
+          //     never diffs", which it interpreted as "re-emit the whole
+          //     project", producing the file-drift bug the user kept
+          //     hitting
+          //   - User saw raw "[auto-retry]" prompts in their chat surface
+          //     even though they hadn't typed anything — confusing UX
+          //
+          // We're now using the Claude Code pattern: the verify pipeline
+          // still runs and its results are appended to the assistant
+          // text as a `<jarvisVerify>` block (already happens above);
+          // the model sees that block on the next user turn as ground
+          // truth and reasons about whether to fix. The user sees a
+          // VerifyPill on the assistant message so they can explicitly
+          // click "Try fix" — no synthetic prompts, no spinning, no
+          // transient-error misclassification.
+          if (
             stagePlanRef.current &&
             stagePlanRef.current.currentStage <
               stagePlanRef.current.totalStages &&
@@ -1492,9 +1400,20 @@ export function Chat({
         // User clicked Stop — keep whatever assistantText we got.
         setStatus("ready");
       } else {
-        toast.error(err?.message ?? "Couldn't get a reply.");
+        // Same Claude/ChatGPT pattern as the in-stream error path:
+        // keep the partial message visible if we got any content
+        // before the fetch threw, and surface the error inline so
+        // the user can retry without losing the in-progress reply.
+        // Toast still fires for screen-reader announcement.
+        const errMsg = err?.message ?? "Couldn't get a reply.";
+        toast.error(errMsg);
         setStatus("error");
-        setMessages((prev) => prev.filter((m) => m.id !== assistantId));
+        const hasContent = assistantText.trim().length > 0;
+        if (hasContent) {
+          setErrorById((prev) => new Map(prev).set(assistantId, errMsg));
+        } else {
+          setMessages((prev) => prev.filter((m) => m.id !== assistantId));
+        }
         setReasoningById((prev) => {
           if (!prev.has(assistantId)) return prev;
           const next = new Map(prev);
@@ -1510,6 +1429,32 @@ export function Chat({
       }
     } finally {
       abortRef.current = null;
+      // Finalize any artifact actions still in queued/running state.
+      // The runner only transitions to success/error when the parser
+      // sees the closing </boltAction> tag — but if the stream cuts
+      // off mid-action (model truncated, network blip, user hit Stop)
+      // those actions stay "running" forever. The composer's Stop
+      // button hides as soon as `status` flips to ready, so the user
+      // sees an artifact card with "1 running" but no way to cancel.
+      // Sweep terminal-state any non-terminal actions so the UI
+      // reflects reality. Marking as "error" so the spinner stops
+      // and the card surfaces an "incomplete" state instead of
+      // hanging forever.
+      let anyStuck = false;
+      for (const [id, card] of localArtifacts) {
+        const fixed = card.actions.map((a) =>
+          a.status === "queued" || a.status === "running"
+            ? { ...a, status: "error" as const, error: "stream ended before action closed" }
+            : a,
+        );
+        if (fixed.some((a, i) => a !== card.actions[i])) {
+          anyStuck = true;
+          localArtifacts.set(id, { ...card, actions: fixed });
+        }
+      }
+      if (anyStuck) {
+        setArtifacts(new Map(localArtifacts));
+      }
     }
   };
 
@@ -1548,6 +1493,7 @@ export function Chat({
           next.set(a.id, {
             artifact: { id: a.id, title: a.title, type: a.type },
             actions: [],
+            messageId: a.messageId,
           });
           return next;
         });
@@ -1740,26 +1686,75 @@ export function Chat({
           </button>
         </div>
       )}
-      <div className="flex-1 overflow-y-auto">
+      <div ref={scrollContainerRef} className="relative flex-1 overflow-y-auto">
         <Thread
           messages={messages}
           isStreaming={status === "streaming" || status === "submitted"}
           reasoningById={reasoningById}
           planById={planById}
           usageById={usageById}
+          errorById={errorById}
+          verifyById={verifyById}
+          onVerifyRetry={(messageId) => {
+            // Manual "Try fix" from the VerifyPill. Find the failed
+            // assistant message + its preceding user prompt, then
+            // submit a tight one-line message asking for a targeted
+            // fix. The model's context already includes the
+            // <jarvisVerify> block from the failed turn, so this is
+            // just a nudge to act on what it can already see.
+            const idx = messages.findIndex((m) => m.id === messageId);
+            if (idx < 0) return;
+            void submit(
+              "The verify pipeline reported errors above. Read the <jarvisVerify> block from your last turn and fix the failing files — only the files that need changing.",
+            );
+          }}
+          onRetry={(messageId) => {
+            // Re-submit the user message that triggered this failed
+            // assistant turn. Find the user message immediately
+            // preceding the failed assistant message, extract its
+            // text, clear the error, and call submit().
+            const idx = messages.findIndex((m) => m.id === messageId);
+            if (idx <= 0) return;
+            // Walk back to the most recent user message before this
+            // assistant — auto-continue continuations have an
+            // assistant message immediately before, but the user's
+            // ORIGINAL prompt is the prior user turn.
+            let userIdx = idx - 1;
+            while (userIdx >= 0 && messages[userIdx].role !== "user") {
+              userIdx--;
+            }
+            if (userIdx < 0) return;
+            const userText = messages[userIdx].parts
+              .map((p) => (p.type === "text" ? p.text : ""))
+              .join("");
+            // Clear the error pill on the failed message so it stops
+            // showing while the retry runs.
+            setErrorById((prev) => {
+              if (!prev.has(messageId)) return prev;
+              const next = new Map(prev);
+              next.delete(messageId);
+              return next;
+            });
+            // Drop the failed assistant message (and any artifacts /
+            // reasoning attached to it) so the retry produces a fresh
+            // turn instead of appending to the broken one.
+            setMessages((prev) => prev.filter((m) => m.id !== messageId));
+            void submit(userText);
+          }}
           workspaceId={targetWorkspaceId ?? undefined}
-          artifactPanel={
-            <div className="mx-auto max-w-3xl px-4">
-              <ArtifactPanel
-                artifacts={artifacts}
-                workspaceId={targetWorkspaceId}
-                workspaceName={targetWorkspaceName}
-                previewPort={previewPort}
-                embedded={embedded}
-              />
-            </div>
-          }
+          isAtBottom={isAtBottom}
+          artifacts={artifacts}
+          renderArtifacts={(cards) => (
+            <ArtifactPanel
+              artifacts={cards}
+              workspaceId={targetWorkspaceId}
+              workspaceName={targetWorkspaceName}
+              previewPort={previewPort}
+              embedded={embedded}
+            />
+          )}
         />
+        <ScrollToBottomPill visible={!isAtBottom} onClick={scrollToBottom} />
       </div>
       <Composer
         value={input}
@@ -1772,6 +1767,7 @@ export function Chat({
         unifiedUX={unifiedUX}
         placeholder={composerPlaceholder}
       />
+      <ShortcutsHelp open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
     </div>
   );
 }
