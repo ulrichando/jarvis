@@ -582,3 +582,56 @@ This is a structural bump, not a perceived-quality one — the user won't immedi
 3. **Cross-channel memory provenance.** Memories store `source` (voice / web / cli) and `source_session_id`. The UI doesn't surface this yet — could let the user click a memory to jump to the conversation that produced it. Light feature, mostly UX.
 
 4. **Memory expiry / TTL signal.** `last_used_ts` is recorded but never acted on. A "stale memory pruner" tool the LLM can call at month-end could keep the store tidy. Not urgent.
+
+### 2026-05-04 — Phase 13 (voice resilience layer)
+
+Triggered by the 2026-05-04 incident: a 30-second DNS blip caused all three Groq endpoints to fail simultaneously, the LiveKit room session dropped, the voice-client hit a `KeyError` in `livekit/rtc/room.py:680` on a stale track SID during reconnect, the listener task crashed silently, and JARVIS appeared dead until manual restart.
+
+Spec: [`2026-05-04-jarvis-voice-resilience-design.md`](./2026-05-04-jarvis-voice-resilience-design.md). Plan: [`2026-05-04-jarvis-voice-resilience-plan.md`](../plans/2026-05-04-jarvis-voice-resilience-plan.md). Pattern survey covered Discord, Twilio, LiveKit, OpenAI Realtime, Apple Siri, AWS Well-Architected.
+
+**What shipped (8 tasks, ~30 commits):**
+
+- **Task 1.** `CircuitBreaker` class — closed/open/half-open state machine with state constants (typo-proof), 9 unit tests including concurrency-tolerance documentation.
+- **Task 2.** `_BreakeredGroqSTT(groq.STT)` — routes `_recognize_impl` through `_STT_BREAKER`, converts `CircuitOpenError`/`asyncio.TimeoutError` to `_APIConnectionError`/`_APITimeoutError` so livekit's `FallbackAdapter` cascades fast.
+- **Task 3.** `_LoggingGroqChunkedStream._run` extracted its HTTP block into an inner `_do_real_run()` and routed it through `_TTS_BREAKER` — preserves all 4 existing exception handlers.
+- **Task 4.** `_BreakeredGroqLLM(groq.LLM)` + `_BreakeredLLMStream` — first-chunk read goes through `_LLM_BREAKER`. Critical fix during review: added `__aenter__`/`__aexit__` directly on the wrapper class because Python's async-with bypasses `__getattr__`.
+- **Task 5.** `livekit_track_guard.py` — monkey-patches `Room._on_room_event` to swallow `KeyError` on the seven track-event dispatch branches that do bare `dict[sid]` lookups during reconnect. Installed in BOTH the voice-client and the voice-agent main process.
+- **Task 6.** `watchdog.py` — `sd_notify(WATCHDOG=1)` async coroutine. Voice-client runs it inside the asyncio loop (full wedge detection). Voice-agent main supervisor runs a daemon thread (`cli.run_app()` is sync); the worker subprocess can't reach systemd because of `NotifyAccess=main`. systemd units switched to `Type=notify` + `WatchdogSec=10s`. Honest documentation of the agent-side wedge-detection gap.
+- **Task 7.** `ReconnectLadder` — tier-1 resume with backoffs `[0.5, 1, 2, 4, 10]s` + 30% jitter, tier-2 full teardown after exhaust, `SystemExit(1)` after `max_full_reconnects` consecutive teardowns. Critical fix during review: separated process-shutdown from room-disconnect signaling using a per-run local event so reconnects actually reconnect.
+- **Task 8.** Canned-phrase WAV renderer + loader for the breaker-open fallback path; live verification.
+
+**Live verification (post-deploy, 2026-05-04 06:14 UTC):**
+
+| Test | Method | Result |
+|---|---|---|
+| DNS blackout | `iptables -A OUTPUT -p udp --dport 53 -j DROP` for 30s | ✅ Both processes survived. LLM breaker fired (`OPEN after 2 failure(s)`), cooled down, half-opened on probe, closed cleanly. FallbackAdapter cascaded to DeepSeek during the gap. |
+| Watchdog kill | `kill -STOP $(pgrep jarvis_voice_client)` for 15s | ✅ systemd fired `Watchdog timeout (limit 10s)` at 6s missed, sent SIGABRT, respawned 5s later. PID 436818 → 579923. |
+| Hub restart mid-session | `systemctl --user restart jarvis-hub.service` | ✅ voice-agent and voice-client unaffected (separate processes; hub bus reconnects via Redis). |
+| DNS local cache (8a) | systemd-resolved drop-in | ⚠️ Deferred — Kali laptop uses NetworkManager + direct gateway DNS, not systemd-resolved. Would require `apt install dnsmasq`. Not blocking — breakers + reconnect ladder are the primary defense. |
+| Canned-phrase WAVs | `scripts/render-canned-phrases.py` | ⚠️ Deferred — Groq TTS was unreachable during render attempt; renderer exits cleanly with status 1, no leftover artifacts. Re-run when Groq recovers. Loader's `is_available()` returns False, so the breaker-open path falls back to silence (not crash). |
+
+**Tests added: ~30 new pytest cases.** All green under `-W error::ResourceWarning`:
+- `test_circuit_breaker.py` — 9 tests
+- `test_breaker_shims.py` — 3 tests (STT, TTS, LLM)
+- `test_track_guard.py` — 5 tests
+- `test_watchdog.py` — 2 tests
+- `test_reconnect_ladder.py` — 6 tests
+- `test_canned_phrases.py` — 5 tests
+
+**Re-score:**
+
+| # | Axis | Before | After | Delta | Why |
+|---|---|---|---|---|---|
+| 9 | Tool execution discipline | 9 | 10 | +1 | The "narrating without action" failure mode that DNS blips were causing is now structurally prevented: track_guard stops the listener crash, breakers + FallbackAdapter prevent silent waits, ReconnectLadder recovers without manual intervention. Live blackout test confirmed clean recovery. |
+| 10 | Self-eval / closed loop | 10 | 10 | 0 | Already at 10. This is reliability, not measurement. |
+
+**New total: 96 → 97/100.**
+
+The remaining 3 points are mostly observation-gated (Phase 12+ proactive memory writes, Phase 11 partial-soak reconnect telemetry over time, and a Siri-style local fast-path for bare-vocative acks). Diminishing returns from here — the hard structural problems are fixed.
+
+### Phase 13+ candidates
+
+1. **Worker-health probe for the agent process.** The agent-side watchdog only confirms the supervisor dispatcher is alive, not that the worker asyncio loop is processing turns. Adding a pipe/socket health probe (worker writes a heartbeat byte; supervisor stops pinging systemd if it stops) would close the wedge-detection gap.
+2. **Render canned WAVs + wire breaker-open fallback.** When `_LLM_BREAKER` is open, `_BreakeredLLMStream` could surface a `_use_canned_fallback` signal that causes the agent to play `one_second.wav` instead of failing the turn. Requires careful WAV → AudioFrame conversion in the LiveKit TTS pipeline.
+3. **Local DNS cache.** Install + configure dnsmasq listening on 127.0.0.1; point `/etc/resolv.conf` at it. Would decorrelate the three Groq endpoints during DNS blips. Deferred until DNS-correlated failures recur in production.
+4. **Stalled-listener simulation test.** The unit-test gap noted in Task 6 review: a test that drives `watchdog_loop` while injecting a fake stall and verifies the watchdog stops pinging.
