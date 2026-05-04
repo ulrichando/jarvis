@@ -336,6 +336,21 @@ class _LoggingGroqChunkedStream(_GroqChunkedStream):
             raise _APIConnectionError() from e
 
 
+# ── Per-upstream circuit breakers ────────────────────────────────────
+# Three independent breakers gate the Groq endpoints. A DNS / API
+# blip on one upstream (e.g. STT) no longer drags TTS + LLM down
+# with a 30s timeout each. CircuitOpenError gets converted to
+# APIConnectionError below so the FallbackAdapter chain takes over
+# within ms instead of waiting for the OS socket timeout.
+#
+# Spec: docs/superpowers/specs/2026-05-04-jarvis-voice-resilience-design.md
+from circuit_breaker import CircuitBreaker, CircuitOpenError
+
+_STT_BREAKER = CircuitBreaker("stt", fail_threshold=3, cooldown_s=20, timeout_s=8)
+_TTS_BREAKER = CircuitBreaker("tts", fail_threshold=3, cooldown_s=20, timeout_s=8)
+_LLM_BREAKER = CircuitBreaker("llm", fail_threshold=2, cooldown_s=30, timeout_s=12)
+
+
 class _LoggingGroqTTS(groq.TTS):
     """groq.TTS that logs Groq's response body on non-2xx."""
 
@@ -347,6 +362,36 @@ class _LoggingGroqTTS(groq.TTS):
             input_text=text,
             conn_options=conn_options or DEFAULT_API_CONNECT_OPTIONS,
         )
+
+
+class _BreakeredGroqSTT(groq.STT):
+    """groq.STT wrapped by _STT_BREAKER. On CircuitOpenError, raises
+    livekit.agents.APIConnectionError so FallbackAdapter (if any STT
+    fallback is configured) takes over without waiting the full
+    upstream timeout."""
+
+    async def _recognize_impl(self, *args, **kw):
+        try:
+            return await _STT_BREAKER.call(super()._recognize_impl, *args, **kw)
+        except CircuitOpenError as e:
+            raise _APIConnectionError() from e
+
+    @classmethod
+    async def _call_with_breaker_for_test(cls):
+        """Test seam — exercises the breaker-open path without a
+        real Groq client. Calls _STT_BREAKER directly; production
+        code paths go through _recognize_impl above."""
+        async def _no_op():
+            return None
+        try:
+            return await _STT_BREAKER.call(_no_op)
+        except CircuitOpenError as e:
+            raise _APIConnectionError() from e
+
+
+def _build_breakered_stt() -> _BreakeredGroqSTT:
+    """Constructor used by the JarvisAgent wiring at session.start()."""
+    return _BreakeredGroqSTT(model="whisper-large-v3-turbo", language="en")
 
 
 # ── Quiet hours ───────────────────────────────────────────────────────
@@ -4784,10 +4829,7 @@ async def entrypoint(ctx: JobContext) -> None:
         # streaming. First partial transcripts arrive while the user
         # is still talking, so turn latency drops from ~500 ms
         # (whole-clip upload) to ~100 ms (just the tail decoder).
-        stt=groq.STT(
-            model="whisper-large-v3-turbo",
-            language="en",
-        ),
+        stt=_build_breakered_stt(),
         # Speech LLM — switchable via the tray's "Models" submenu.
         # Default is llama-3.3-70b on Groq for ~200 ms first-token
         # latency. Switching writes ~/.jarvis/voice-model and bounces
