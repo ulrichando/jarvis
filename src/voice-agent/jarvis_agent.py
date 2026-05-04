@@ -1323,7 +1323,7 @@ not slang.
 
 **ALWAYS use this register:**
   "Of course, sir." · "At once." · "Very well." · "Done, sir."
-  "Indeed." · "Quite." · "Naturally." · "Understood, sir."
+  "Quite." · "Naturally." · "Understood, sir."
   "Excellent, sir." · "Splendid." · "Well done." · "A fine result."
   "I'm sorry to hear it, sir." · "That sounds difficult."
   "An interesting question." · "Worth examining."
@@ -1496,8 +1496,8 @@ No slang, no "yeah", no "heh", no "mm-hm". Brevity stays; casualness goes:
                             · "Certainly." · "As you wish."
   REASONING / thinking:     "An interesting question." · "Let me consider."
                             · "Worth examining —" · "One moment."
-  BANTER / chat:            "Indeed." · "Quite." · "Naturally."
-                            · "Of course." · "Right, sir." · "Understood."
+  BANTER / chat:            "Quite." · "Naturally." · "Of course."
+                            · "Right, sir." · "Understood." · "Certainly."
   EMOTIONAL / support:      "I'm sorry to hear it." · "That sounds difficult."
                             · "I understand, sir."
 
@@ -2155,12 +2155,19 @@ the actual silencing — your job is just to acknowledge briefly:
   — you only stop your own replies. Music, videos, system sounds
   keep playing. The mic also stays ON so you can hear "wake up".
 
-  ALSO IMPORTANT: NEVER voice the literal word "Silent" as a reply.
+  ALSO IMPORTANT: NEVER voice ANY meta-silence acknowledgment.
   Past failure: when faced with ambient room conversation that wasn't
-  meant for you, the model started replying with the single word
-  "Silent" out loud (instead of actually staying silent). The word
-  "Silent" is BANNED as a reply. To stay silent, produce no text at
-  all — empty output, not the word "silent".
+  meant for you, the model started replying with words like "Silent",
+  "Silence", "Silence, sir.", "Quiet", "Listening", "Standing by." —
+  saying you're being silent IS speaking. BANNED replies (this is not
+  exhaustive — the rule is "no meta-acknowledgment of non-response"):
+    ❌ "Silent." / "Silence." / "Silence, sir." / "Silently."
+    ❌ "Quiet." / "Quietly noted." / "Standing by."
+    ❌ "Listening." / "Just listening." / "Observing."
+    ❌ Any single-word or short-phrase that announces you are NOT replying.
+  To stay silent, produce no text at all — empty output. The post-
+  process filter strips these patterns as a safety net, but you must
+  not generate them in the first place.
 
 - If the user says any of: "wake up", "come back", "unmute", "talk
   again", "you there" — the gate has just exited silent mode.
@@ -3546,19 +3553,24 @@ async def recall_conversation(query: str) -> str:
       - "did I mention Y before"
       - "what was that thing about Z"
 
-    Returns the top matching turns (role and text), oldest first, as
-    plain text. If nothing matches, returns "(no matches)" — in that
-    case tell the user you don't have a record of it.
+    NEVER use this for stable facts about the user (their name,
+    location, job, preferences) — those live in `remember_this()` /
+    durable memory, queried via the system prompt. This tool is for
+    transcript search only.
+
+    Returns the top matching turns (role and text), oldest first.
+    Errors return paraphrasable text — surface briefly and offer to
+    try a different keyword.
 
     Args:
-        query: A keyword or phrase to search for, lowercase. The
-               search is a simple substring match against turn text.
+        query: A keyword or phrase to search for, lowercase. Simple
+               substring match — pick distinctive words, not stop-words.
     """
     query = (query or "").strip().lower()
     if not query:
-        return "(empty query)"
+        return "No search keyword supplied. Ask the user what to look for."
     if not CONVO_DB_PATH.exists():
-        return "(no conversation database yet)"
+        return "No prior conversations recorded yet. Tell the user this is a fresh session."
     try:
         with sqlite3.connect(str(CONVO_DB_PATH), timeout=2.0) as conn:
             rows = conn.execute(
@@ -3570,9 +3582,9 @@ async def recall_conversation(query: str) -> str:
             ).fetchall()
     except Exception as e:
         logger.warning(f"recall search failed: {e}")
-        return f"(recall failed: {e})"
+        return f"Conversation recall failed [{type(e).__name__}]. Tell the user briefly and offer to try again."
     if not rows:
-        return "(no matches)"
+        return f"No prior turns mention {query!r}. Tell the user there's no record of it and offer to search a different keyword."
     # Oldest first reads more naturally when voiced back.
     rows.reverse()
     lines = []
@@ -3613,7 +3625,7 @@ async def remember_this(rule: str) -> str:
     """
     rule = (rule or "").strip()
     if not rule:
-        return "(no rule text provided)"
+        return "No rule text supplied. Ask the user to state the rule clearly."
     if len(rule) > 500:
         rule = rule[:500]
 
@@ -3648,13 +3660,13 @@ async def list_pending_proposals() -> str:
     """
     try:
         if not _PROPOSALS_PATH.exists():
-            return "(no proposals file yet — run analysis first)"
+            return "No proposals to review yet — the analyzer hasn't generated any. Tell the user."
         from jarvis_log_analyzer import _load_existing_proposals
         proposals = _load_existing_proposals()
         pending = [(i + 1, p) for i, p in enumerate(proposals)
                    if p.get("status") == "PENDING"]
         if not pending:
-            return "(no pending proposals — all have been reviewed)"
+            return "No pending proposals — all have been reviewed. Tell the user."
         lines = [f"Found {len(pending)} pending proposal(s):\n"]
         for n, p in pending:
             lines.append(
@@ -3664,7 +3676,7 @@ async def list_pending_proposals() -> str:
         return "\n".join(lines)
     except Exception as e:
         logger.warning(f"[proposals] list failed: {e}")
-        return f"(failed to load proposals: {e})"
+        return f"Could not load proposals [{type(e).__name__}]. Tell the user briefly."
 
 
 @function_tool
@@ -3685,11 +3697,11 @@ async def accept_proposal(proposal_number: int) -> str:
                            if p.get("status") == "PENDING"]
         # proposal_number is 1-based among PENDING proposals
         if proposal_number < 1 or proposal_number > len(pending_indices):
-            return f"(proposal {proposal_number} not found — use list_pending_proposals to see what's available)"
+            return f"Proposal {proposal_number} not found. Tell the user and offer to list pending proposals again."
         real_idx = pending_indices[proposal_number - 1]
         rule = proposals[real_idx].get("rule", "").strip()
         if not rule:
-            return "(proposal has no rule text — rejecting instead)"
+            return "That proposal has no rule text — treating as rejected. Tell the user."
         # Mark accepted in file
         proposals[real_idx]["status"] = "ACCEPTED"
         await asyncio.to_thread(_write_proposals, proposals)
@@ -3703,7 +3715,7 @@ async def accept_proposal(proposal_number: int) -> str:
         return f"Accepted. Rule added: '{rule}'. Takes full effect from next session."
     except Exception as e:
         logger.warning(f"[proposals] accept failed: {e}")
-        return f"(accept failed: {e})"
+        return f"Could not accept the proposal [{type(e).__name__}]. Tell the user briefly."
 
 
 @function_tool
@@ -3721,7 +3733,7 @@ async def reject_proposal(proposal_number: int) -> str:
         pending_indices = [i for i, p in enumerate(proposals)
                            if p.get("status") == "PENDING"]
         if proposal_number < 1 or proposal_number > len(pending_indices):
-            return f"(proposal {proposal_number} not found)"
+            return f"Proposal {proposal_number} not found. Tell the user and offer to list pending proposals again."
         real_idx = pending_indices[proposal_number - 1]
         rule = proposals[real_idx].get("rule", "")
         proposals[real_idx]["status"] = "REJECTED"
@@ -3730,7 +3742,7 @@ async def reject_proposal(proposal_number: int) -> str:
         return f"Rejected. Proposal {proposal_number} won't be applied."
     except Exception as e:
         logger.warning(f"[proposals] reject failed: {e}")
-        return f"(reject failed: {e})"
+        return f"Could not reject the proposal [{type(e).__name__}]. Tell the user briefly."
 
 
 # ── Direct primitive tools ────────────────────────────────────────────
@@ -4048,19 +4060,23 @@ async def _reverse_geocode(lat: float, lng: float) -> str | None:
 async def get_location() -> str:
     """Return the user's approximate physical location.
 
+    Use for "where am I" / "what city am I in" / "what's the weather
+    here" (chain into weather subagent) / "find restaurants near me".
+
+    NEVER use this for time queries — `current_time(timezone)` is
+    faster and doesn't need geo. Use this only when the answer
+    genuinely depends on physical location.
+
     Lookup order (most accurate first):
       1. ~/.jarvis/location-override file (manual override).
       2. ~10-min in-memory cache from a prior call.
-      3. **Google Geolocation API** (Wi-Fi BSSID → coords → reverse
-         geocode). Best accuracy (~50 m) when GOOGLE_API_KEY is set
-         AND the Geolocation API is enabled on the project. Silently
-         falls through if the API returns 403 (not enabled).
-      4. ipinfo.io / ip-api.com IP-based geo. Coarse (~city level)
-         and unreliable on VPNs / mobile carriers / Google networks.
+      3. Google Geolocation API (Wi-Fi BSSID → coords → reverse geocode)
+         when GOOGLE_API_KEY is set.
+      4. ipinfo.io / ip-api.com IP-based geo (city-level, VPN-fragile).
 
-    Returns a one-line free-form description: "Cleveland, Ohio, US".
-    On total failure returns "Location unavailable" so callers (weather,
-    navigation, news) can either retry or ask the user.
+    Returns a one-line description like "Cleveland, Ohio, US". On
+    total failure returns "Location unavailable, sir — try setting it
+    manually with set_location." Tell the user; offer set_location.
     """
     # 1. Manual override
     try:
@@ -4132,7 +4148,7 @@ async def get_location() -> str:
         _LOCATION_CACHE["value"] = location
         _LOCATION_CACHE["ts"] = now
         return location
-    return "Location unavailable"
+    return "Location unavailable. Tell the user briefly and offer to set it manually with set_location."
 
 
 @function_tool
@@ -4165,7 +4181,7 @@ async def set_location(city: str) -> str:
         _LOCATION_CACHE["ts"] = 0.0
         return f"Got it — using {city} as your location from now on."
     except Exception as e:
-        return f"Couldn't save location: {e}"
+        return f"Could not save location override [{type(e).__name__}]. Tell the user briefly."
 
 
 @function_tool
@@ -4173,8 +4189,12 @@ async def read_file(path: str, max_bytes: int = 8_192) -> str:
     """Read a file from disk and return its contents (capped).
 
     Use when the user asks "what's in <file>" / "read me <file>" / "show
-    me the contents of <file>". Atomic single-step — for editing or
-    multi-file analysis use run_jarvis_cli.
+    me the contents of <file>". Atomic single-step.
+
+    NEVER use this for editing — there's no write counterpart. For
+    multi-file analysis, file-system traversal beyond a single read,
+    or anything that needs the CLI's editing/refactor tools, hand
+    off via transfer_to_planner.
 
     Args:
         path:      Absolute or ~-prefixed file path.
@@ -4182,20 +4202,320 @@ async def read_file(path: str, max_bytes: int = 8_192) -> str:
     """
     path = (path or "").strip()
     if not path:
-        return "(no path supplied)"
+        return "No path supplied. Ask the user which file to read."
     p = Path(path).expanduser()
     if not p.exists():
-        return f"(no such file: {p})"
+        return f"File not found at {p}. Tell the user the path doesn't exist and ask for clarification."
     if p.is_dir():
-        return f"(is a directory: {p})"
+        return f"{p} is a directory, not a file. Suggest listing contents with glob_files instead."
     try:
         with open(p, "rb") as f:
             data = f.read(max(1, int(max_bytes or 8_192)))
         text = data.decode("utf-8", errors="replace")
     except Exception as e:
-        return f"(read failed: {e})"
+        return f"File could not be read [{type(e).__name__}]. Tell the user briefly."
     logger.info(f"read_file → {p} ({len(data)} bytes)")
     return _truncate(text)
+
+
+@function_tool
+async def calc(expression: str) -> str:
+    """Evaluate a math expression. Use for ANY arithmetic / unit math
+    the user asks about — "what's 17 times 23", "fifteen percent of
+    eighty", "square root of 144", "log of 1000".
+
+    NEVER use web_fetch for arithmetic — math has a definitive offline
+    answer; using a calculator site is slow and can fail.
+
+    Supports: + - * / // % ** parentheses, and these functions:
+      sqrt, log, log2, log10, exp, sin, cos, tan, asin, acos, atan,
+      abs, round, floor, ceil, min, max, pi, e.
+
+    Examples (input → output):
+      "17 * 23"             → "391"
+      "15% of 80"           → "12"   (percent shorthand supported)
+      "sqrt(144) + 5"       → "17.0"
+      "(50 + 25) / 3"       → "25.0"
+      "2 ** 10"             → "1024"
+
+    Returns the numeric result as a string, or an explanation if the
+    expression is malformed.
+    """
+    import ast
+    import math as _math
+
+    expr = (expression or "").strip()
+    if not expr:
+        return "No expression supplied. Tell the user briefly."
+
+    # Percent-shorthand: "15% of 80" → "(15/100)*80"
+    expr = re.sub(r"(\d+(?:\.\d+)?)\s*%\s*of\s+", r"((\1)/100)*", expr, flags=re.IGNORECASE)
+    # Bare "%" → "/100" only if at the end of a number with no `of`
+    # (handled above); leave standalone "%" as modulo for power users.
+
+    allowed_funcs = {
+        "sqrt": _math.sqrt, "log": _math.log, "log2": _math.log2, "log10": _math.log10,
+        "exp": _math.exp, "sin": _math.sin, "cos": _math.cos, "tan": _math.tan,
+        "asin": _math.asin, "acos": _math.acos, "atan": _math.atan,
+        "abs": abs, "round": round, "floor": _math.floor, "ceil": _math.ceil,
+        "min": min, "max": max,
+    }
+    allowed_consts = {"pi": _math.pi, "e": _math.e}
+
+    def _eval(node):
+        if isinstance(node, ast.Expression):
+            return _eval(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return node.value
+        if isinstance(node, ast.Name) and node.id in allowed_consts:
+            return allowed_consts[node.id]
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+            v = _eval(node.operand)
+            return +v if isinstance(node.op, ast.UAdd) else -v
+        if isinstance(node, ast.BinOp):
+            l, r = _eval(node.left), _eval(node.right)
+            op = node.op
+            if isinstance(op, ast.Add): return l + r
+            if isinstance(op, ast.Sub): return l - r
+            if isinstance(op, ast.Mult): return l * r
+            if isinstance(op, ast.Div): return l / r
+            if isinstance(op, ast.FloorDiv): return l // r
+            if isinstance(op, ast.Mod): return l % r
+            if isinstance(op, ast.Pow): return l ** r
+            raise ValueError(f"unsupported operator: {type(op).__name__}")
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id not in allowed_funcs:
+                raise ValueError(f"unknown function: {node.func.id}")
+            return allowed_funcs[node.func.id](*[_eval(a) for a in node.args])
+        raise ValueError(f"unsupported syntax: {type(node).__name__}")
+
+    try:
+        tree = ast.parse(expr, mode="eval")
+        result = _eval(tree)
+    except ZeroDivisionError:
+        return "Cannot divide by zero. Tell the user."
+    except (ValueError, SyntaxError, TypeError) as e:
+        return f"That expression could not be evaluated [{type(e).__name__}]. Ask the user to rephrase."
+
+    # Format: integers as integers, floats with up to 6 decimals stripped of trailing zeros.
+    if isinstance(result, float) and result.is_integer():
+        result = int(result)
+    if isinstance(result, float):
+        out = f"{result:.6f}".rstrip("0").rstrip(".")
+    else:
+        out = str(result)
+    return f"Result: {out}"
+
+
+@function_tool
+async def date_math(operation: str, date1: str = "", date2: str = "", days: int = 0) -> str:
+    """Date arithmetic. Use for "how many days until X", "what day was
+    50 days ago", "what's the date 3 weeks from now", "what day of the
+    week is YYYY-MM-DD".
+
+    NEVER use web_fetch for date math — `datetime` handles it offline.
+
+    Operations:
+      "diff"     — days/weeks between date1 and date2 (both required, ISO YYYY-MM-DD)
+      "add"      — date1 + `days` (negative `days` = past)
+      "weekday"  — what day of the week is date1
+      "today"    — today's date in ISO format
+
+    Date format: ISO YYYY-MM-DD (e.g. "2026-12-25") OR keywords
+    "today" / "tomorrow" / "yesterday".
+
+    Examples:
+      date_math("diff", "2026-05-04", "2026-12-25") → "235 days (33 weeks, 4 days) between …"
+      date_math("add", "today", days=30)            → "30 days from today is 2026-06-03 (Wednesday)"
+      date_math("weekday", "2026-12-25")            → "2026-12-25 is a Friday"
+      date_math("today")                            → "Today is 2026-05-04 (Monday)"
+
+    Errors return paraphrasable text — surface briefly to the user.
+    """
+    from datetime import date as _date, timedelta as _td
+    op = (operation or "").strip().lower()
+
+    def _parse(s: str) -> _date:
+        s = (s or "").strip().lower()
+        if s in ("", "today"):
+            return _date.today()
+        if s == "tomorrow":
+            return _date.today() + _td(days=1)
+        if s == "yesterday":
+            return _date.today() - _td(days=1)
+        try:
+            return _date.fromisoformat(s)
+        except ValueError as e:
+            raise ValueError(f"date '{s}' is not ISO YYYY-MM-DD") from e
+
+    try:
+        if op == "today":
+            t = _date.today()
+            return f"Today is {t.isoformat()} ({t.strftime('%A')})."
+        if op == "weekday":
+            d = _parse(date1)
+            return f"{d.isoformat()} is a {d.strftime('%A')}."
+        if op == "add":
+            d = _parse(date1)
+            n = int(days)
+            r = d + _td(days=n)
+            direction = "from" if n >= 0 else "before"
+            return f"{abs(n)} days {direction} {d.isoformat()} is {r.isoformat()} ({r.strftime('%A')})."
+        if op == "diff":
+            d1, d2 = _parse(date1), _parse(date2)
+            delta = (d2 - d1).days
+            weeks, leftover = divmod(abs(delta), 7)
+            sign = "after" if delta >= 0 else "before"
+            return f"{abs(delta)} days ({weeks} weeks, {leftover} days) — {d2.isoformat()} is {sign} {d1.isoformat()}."
+        return f"Unknown operation '{op}'. Use one of: diff, add, weekday, today."
+    except ValueError as e:
+        return f"Date math failed [{e}]. Ask the user to provide ISO dates (YYYY-MM-DD)."
+
+
+@function_tool
+async def current_time(timezone: str = "") -> str:
+    """Return the current local time in a given IANA timezone.
+
+    Use this for any "what time is it" / "current time in <place>" /
+    "is it morning in <city>" question. NEVER use web_fetch for time —
+    timezone data is offline-resolvable via Python's zoneinfo and never
+    fails on network.
+
+    `timezone` is an IANA name like "America/New_York", "Europe/Paris",
+    "Africa/Douala" (Cameroon), "Asia/Tokyo". Empty string returns the
+    user's local time. Common-name fallbacks resolve a few aliases:
+    "cameroon" → "Africa/Douala", "uk"/"britain" → "Europe/London",
+    "japan" → "Asia/Tokyo", "ny"/"new york" → "America/New_York".
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+    aliases = {
+        "cameroon": "Africa/Douala",
+        "uk": "Europe/London", "britain": "Europe/London", "england": "Europe/London",
+        "japan": "Asia/Tokyo", "tokyo": "Asia/Tokyo",
+        "ny": "America/New_York", "new york": "America/New_York", "nyc": "America/New_York",
+        "la": "America/Los_Angeles", "los angeles": "America/Los_Angeles",
+        "paris": "Europe/Paris", "france": "Europe/Paris",
+        "berlin": "Europe/Berlin", "germany": "Europe/Berlin",
+        "lagos": "Africa/Lagos", "nigeria": "Africa/Lagos",
+        "utc": "UTC", "gmt": "UTC",
+    }
+    tz_in = (timezone or "").strip()
+    if not tz_in:
+        now = datetime.now().astimezone()
+        return f"Local time: {now.strftime('%H:%M on %A, %B %d, %Y')} ({now.tzname()})."
+    tz_name = aliases.get(tz_in.lower(), tz_in)
+    try:
+        tz = ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError:
+        return f"Unknown timezone '{tz_in}'. Use an IANA name like 'Africa/Douala' or 'Europe/London'."
+    now = datetime.now(tz)
+    return f"Time in {tz_name}: {now.strftime('%H:%M on %A, %B %d, %Y')}."
+
+
+@function_tool
+async def web_search(query: str, max_results: int = 5) -> str:
+    """Search the web and return the top results (title + URL + snippet).
+
+    Use for ANY "search the web for X" / "find me information on X" /
+    "what does the internet say about X" — questions where you don't
+    already know the URL.
+
+    NEVER use web_fetch for search — guessing a URL fails too often
+    (the site might be down, rate-limited, or redesigned). Use this
+    tool first; THEN web_fetch one of the returned URLs if you need
+    deeper detail. For multi-source research, use transfer_to_planner
+    instead — that wraps a full agent loop.
+
+    Returns up to `max_results` (default 5, cap 10) entries formatted as:
+        1. <title>
+           <url>
+           <snippet>
+
+    Errors return paraphrasable text — surface them briefly to the user
+    and offer to retry or try a different query.
+    """
+    import urllib.parse as _up
+
+    q = (query or "").strip()
+    if not q:
+        return "No search query supplied. Ask the user what to search for."
+    n = max(1, min(int(max_results or 5), 10))
+
+    logger.info(f"web_search → {q!r} (n={n})")
+
+    # DuckDuckGo HTML endpoint — keyless, no rate-limit auth, stable
+    # for years. Browser UA required (the JARVIS-voice UA gets a 403).
+    url = "https://html.duckduckgo.com/html/"
+    params = _up.urlencode({"q": q})
+    full_url = f"{url}?{params}"
+    UA = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
+
+    def _fetch_html() -> str:
+        req = urllib.request.Request(full_url, headers={
+            "User-Agent": UA,
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "en-US,en;q=0.5",
+        })
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            return resp.read(256 * 1024).decode("utf-8", errors="replace")
+
+    try:
+        html = await asyncio.to_thread(_fetch_html)
+    except urllib.error.HTTPError as e:
+        return f"Search service unavailable [status={e.code}]. Tell the user briefly and offer to try again."
+    except urllib.error.URLError as e:
+        return f"Search service unreachable [{e.reason}]. Tell the user briefly and offer to try again."
+    except Exception as e:
+        return f"Search failed [{type(e).__name__}]. Tell the user briefly and offer to try again."
+
+    # Parse DDG HTML: result anchors look like
+    #   <a class="result__a" rel="nofollow" href="//duckduckgo.com/l/?uddg=<encoded>&...">Title</a>
+    # followed (a few elements later) by
+    #   <a class="result__snippet" ...>Snippet</a>
+    anchor_re = re.compile(
+        r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
+        re.DOTALL | re.IGNORECASE,
+    )
+    snippet_re = re.compile(
+        r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
+        re.DOTALL | re.IGNORECASE,
+    )
+    anchors = anchor_re.findall(html)
+    snippets = snippet_re.findall(html)
+
+    def _strip_tags(s: str) -> str:
+        s = re.sub(r"<[^>]+>", " ", s)
+        s = re.sub(r"&amp;", "&", s)
+        s = re.sub(r"&quot;", '"', s)
+        s = re.sub(r"&#x27;|&apos;", "'", s)
+        s = re.sub(r"&lt;", "<", s)
+        s = re.sub(r"&gt;", ">", s)
+        s = re.sub(r"&nbsp;", " ", s)
+        return re.sub(r"\s+", " ", s).strip()
+
+    def _real_url(redirect: str) -> str:
+        # DDG wraps result URLs in /l/?uddg=<encoded>. Decode it.
+        try:
+            parsed = _up.urlparse(redirect)
+            qs = _up.parse_qs(parsed.query)
+            if "uddg" in qs:
+                return _up.unquote(qs["uddg"][0])
+        except Exception:
+            pass
+        return redirect.lstrip("/")
+
+    results = []
+    for i, (href, title_html) in enumerate(anchors[:n]):
+        title = _strip_tags(title_html)
+        url_real = _real_url(href)
+        snippet = _strip_tags(snippets[i]) if i < len(snippets) else ""
+        snippet = (snippet[:160] + "…") if len(snippet) > 160 else snippet
+        results.append(f"{len(results)+1}. {title}\n   {url_real}\n   {snippet}")
+
+    if not results:
+        return f"No search results for {q!r}. Ask the user to rephrase or try a different angle."
+    return "\n".join(results)
 
 
 @function_tool
@@ -4232,12 +4552,16 @@ async def web_fetch(url: str, timeout: int = 15) -> str:
                     return f"(non-text content-type: {ct or 'unknown'})"
                 return raw.decode("utf-8", errors="replace")
         body = await asyncio.to_thread(_fetch)
+    # Errors return paraphrasing-friendly text (no quotable HTTP-speak
+    # like "internal server error" — the LLM tends to relay those
+    # verbatim, which sounds robotic). Status code is included for the
+    # LLM's reasoning but wrapped so it doesn't read aloud cleanly.
     except urllib.error.HTTPError as e:
-        return f"(HTTP {e.code}: {e.reason})"
+        return f"The page could not be retrieved — the site is unavailable [status={e.code}]. Tell the user briefly and offer to try a different source."
     except urllib.error.URLError as e:
-        return f"(network error: {e.reason})"
+        return f"The page could not be retrieved — network failure [{e.reason}]. Tell the user briefly and offer to try again."
     except Exception as e:
-        return f"(fetch failed: {e})"
+        return f"The page could not be retrieved — fetch failed [{type(e).__name__}]. Tell the user briefly and offer to try again."
     # Strip HTML to plain-ish text. Not perfect, but good enough for
     # voice-side summarisation.
     body = re.sub(r"<script\b.*?</script>", "", body, flags=re.DOTALL | re.IGNORECASE)
@@ -4251,8 +4575,12 @@ async def web_fetch(url: str, timeout: int = 15) -> str:
 async def glob_files(pattern: str, path: str = "~") -> str:
     """List files matching a glob pattern under `path`, recursively.
 
-    Use for atomic "find all <kind> files in <dir>" asks. Returns one
-    path per line, capped at 100 entries.
+    Use for atomic "find all <kind> files in <dir>" / "list every X
+    file" asks. Returns one path per line, capped at 100 entries.
+
+    NEVER use this to read file contents — chain with read_file when
+    you need to see what's inside. For searching INSIDE files (find
+    every TODO, where is X used) use grep_files instead.
 
     Args:
         pattern: e.g. "*.py", "**/*.ts", "src/**/test_*.py".
@@ -4260,16 +4588,16 @@ async def glob_files(pattern: str, path: str = "~") -> str:
     """
     pattern = (pattern or "").strip()
     if not pattern:
-        return "(no pattern supplied)"
+        return "No pattern supplied. Ask the user what kind of files to list."
     root = Path(path or "~").expanduser()
     if not root.exists():
-        return f"(no such root: {root})"
+        return f"Root path {root} does not exist. Tell the user the directory is missing."
     try:
         # `**` in pattern means recursive — pathlib handles it.
         # If user gave a non-recursive pattern, glob it as-is.
         matches = list(root.rglob(pattern) if "**" not in pattern else root.glob(pattern))
     except Exception as e:
-        return f"(glob failed: {e})"
+        return f"File listing failed [{type(e).__name__}]. Tell the user briefly."
     matches = [str(m) for m in matches if m.is_file()]
     total = len(matches)
     matches = matches[:100]
@@ -4277,16 +4605,20 @@ async def glob_files(pattern: str, path: str = "~") -> str:
     head = "\n".join(matches)
     if total > 100:
         head += f"\n…[+{total - 100} more]"
-    return head or f"(no matches under {root})"
+    return head or f"No files matching {pattern!r} under {root}. Tell the user the search came up empty."
 
 
 @function_tool
 async def grep_files(pattern: str, path: str = ".", glob: str = "") -> str:
     """Search for a regex `pattern` across files under `path`.
 
-    Use for atomic "where is X used" / "find every TODO" asks. Wraps
-    ripgrep if installed (fast), else falls back to grep -R. Returns
-    `file:line:match` lines, capped at 50.
+    Use for atomic "where is X used" / "find every TODO" / "which file
+    mentions Y" asks. Wraps ripgrep if installed (fast), else grep -R.
+    Returns `file:line:match` lines, capped at 50.
+
+    NEVER use this to LIST files (use glob_files) or READ a single
+    file (use read_file). Use only when you need to find content
+    INSIDE files matching a regex.
 
     Args:
         pattern: Regex (POSIX ERE / PCRE2 depending on rg vs grep).
@@ -4295,10 +4627,10 @@ async def grep_files(pattern: str, path: str = ".", glob: str = "") -> str:
     """
     pattern = (pattern or "").strip()
     if not pattern:
-        return "(no pattern supplied)"
+        return "No search pattern supplied. Ask the user what to look for."
     root = Path(path or ".").expanduser()
     if not root.exists():
-        return f"(no such root: {root})"
+        return f"Search root {root} does not exist. Tell the user the directory is missing."
     # Prefer ripgrep — bundled into many distros and into bun's embedded
     # tools. Fast and handles binary-skipping by default.
     has_rg = shutil_which("rg")
@@ -4322,9 +4654,9 @@ async def grep_files(pattern: str, path: str = ".", glob: str = "") -> str:
         out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
     except asyncio.TimeoutError:
         proc.terminate()
-        return "(grep timed out after 30s)"
+        return "Search timed out after 30 seconds. Ask the user to narrow the scope (e.g. add a glob filter or smaller path)."
     except Exception as e:
-        return f"(grep failed: {e})"
+        return f"Search failed [{type(e).__name__}]. Tell the user briefly."
     text = out_b.decode("utf-8", errors="replace").strip().splitlines()
     total = len(text)
     text = text[:50]
@@ -4332,7 +4664,7 @@ async def grep_files(pattern: str, path: str = ".", glob: str = "") -> str:
     head = "\n".join(text)
     if total > 50:
         head += f"\n…[+{total - 50} more matches]"
-    return head or "(no matches)"
+    return head or f"No matches for {pattern!r} under {root}. Tell the user briefly and suggest a different keyword."
 
 
 def shutil_which(name: str) -> str | None:
@@ -4597,6 +4929,39 @@ async def strip_preambles(text):
         logger.info(f"[preamble-strip] cut {len(buffer) - len(cleaned)} chars of filler")
     if cleaned:
         yield cleaned
+
+
+# Meta-silence replies: words/phrases the LLM emits when it should
+# have stayed silent. Saying "Silence, sir." IS speaking — the
+# observed failure mode (2026-05-04). Pattern matches the entire reply
+# only when it is JUST one of these phrases (with optional sir/period).
+_META_SILENCE_RE = re.compile(
+    r"^\s*\[?\s*"
+    r"(?:silent|silence|silently|quiet|quietly|listening|just\s+listening|"
+    r"observing|standing\s+by|noted|quietly\s+noted)"
+    r"(?:[\s,—-]+sir)?[\s.,!?\]]*$",
+    re.IGNORECASE,
+)
+
+
+async def strip_meta_silence(text):
+    """Drop replies that announce non-response (e.g. "Silence, sir.").
+
+    Saying "Silent" / "Silence" / "Just listening" out loud is the
+    same failure as actual chatter for ambient turns. The LLM is told
+    not to do this, but reliable behavior requires a safety net here
+    too. Only fires when the ENTIRE buffered reply matches — never
+    cuts mid-sentence content like "the silence was deafening."
+    """
+    buffer = ""
+    async for chunk in text:
+        buffer += chunk
+    if not buffer:
+        return
+    if _META_SILENCE_RE.match(buffer):
+        logger.info(f"[meta-silence-strip] dropped reply: {buffer!r}")
+        return  # emit nothing — actual silence
+    yield buffer
 
 
 async def normalize_numbers(text):
@@ -5083,6 +5448,13 @@ async def entrypoint(ctx: JobContext) -> None:
             # swap to a smaller model. Verified 2026-04-28 vs convo db
             # (the user heard "Done." as a trailing dot).
             strip_voice_closers,
+            # 2026-05-04: drop "Silence, sir." / "Just listening." class
+            # of meta-acknowledgments. Saying you're being silent IS
+            # speaking. The system prompt forbids this; the filter is a
+            # safety net for when the LLM does it anyway. Only fires
+            # when the WHOLE buffered reply matches — never trims mid-
+            # sentence content like "the silence was deafening."
+            strip_meta_silence,
             # NOTE 2026-04-30: drop_pure_hedge removed. The post-LLM
             # hedge filter ate legitimate replies like 'I'm here, sir.'
             # Replaced by the upstream STT-confidence gate in
@@ -6109,7 +6481,8 @@ async def entrypoint(ctx: JobContext) -> None:
         #
         # What stays here:
         #   - Memory: recall_conversation, remember_this, learned-rule mgmt
-        #   - Information: web_fetch, read_file, glob_files, grep_files
+        #   - Information: web_search, web_fetch, current_time, date_math,
+        #     calc, read_file, glob_files, grep_files
         #     (these are read-only; no narration-trap risk)
         #   - Face ID (read-only CV; no action effect)
         #   - The ONE handoff: transfer_to_desktop
@@ -6125,7 +6498,11 @@ async def entrypoint(ctx: JobContext) -> None:
         tools=[
             # Information / read-only (safe for supervisor)
             read_file,
+            web_search,
             web_fetch,
+            current_time,
+            date_math,
+            calc,
             glob_files,
             grep_files,
             # Location — IP geo + Wi-Fi BSSID + manual override.
@@ -6273,6 +6650,28 @@ async def entrypoint(ctx: JobContext) -> None:
 
     asyncio.create_task(_watch_screen_share())
 
+    # ── Worker heartbeat ──────────────────────────────────────────────
+    # Closes the supervisor-vs-worker watchdog gap acknowledged at
+    # jarvis_agent.py:6167. The worker subprocess can't reach systemd
+    # (NotifyAccess=main rejects sd_notify from non-supervisor PIDs),
+    # so it instead drops a timestamp into a file the supervisor reads.
+    # If the worker's asyncio loop wedges, this coroutine stops firing
+    # and the supervisor's main-sd-watchdog notices a stale timestamp
+    # and stops pinging systemd → systemd restarts within WatchdogSec.
+    HEARTBEAT_PATH = Path("/tmp/jarvis-worker-heartbeat")
+
+    async def _worker_heartbeat() -> None:
+        while True:
+            try:
+                tmp = HEARTBEAT_PATH.with_suffix(".tmp")
+                tmp.write_text(str(time.monotonic()))
+                tmp.replace(HEARTBEAT_PATH)
+            except Exception as e:
+                logger.warning(f"[worker-heartbeat] write failed: {e}")
+            await asyncio.sleep(3.0)
+
+    asyncio.create_task(_worker_heartbeat())
+
     # Handle one-shot "speak this text" requests from any client in
     # the room. session.say() voices the text directly without an
     # LLM round-trip — used by the Tauri UI to voice typed-chat
@@ -6395,15 +6794,37 @@ if __name__ == "__main__":
     logger.info("[watchdog] main process READY=1 sent to systemd")
 
     def _main_watchdog_thread() -> None:
-        """Ping systemd every 5s from the main supervisor process."""
-        # No STOPPING=1 emission: this is a daemon thread, killed
-        # by Python's interpreter shutdown without a clean hook.
-        # systemd treats process exit as sufficient termination
-        # for Type=notify (STOPPING=1 is best-effort, not required).
-        # The voice-CLIENT side does emit STOPPING=1 because its
-        # watchdog runs in the asyncio loop with a try/finally.
+        """Ping systemd every 5s from the main supervisor process —
+        BUT only when the worker subprocess is fresh. The worker
+        coroutine writes /tmp/jarvis-worker-heartbeat every 3s; if it
+        stops (loop wedge) the supervisor stops pinging too, so
+        systemd's WatchdogSec=120s restarts the entire process tree.
+
+        Grace period of 60s on startup so the worker has time to spawn
+        and write its first heartbeat. After grace, a heartbeat older
+        than 30s is treated as stale → no ping."""
+        import os as _os
+        from pathlib import Path as _Path
+        HB = _Path("/tmp/jarvis-worker-heartbeat")
+        STALE_AFTER_S = 30.0
+        GRACE_S = 60.0
+        started_at = time.monotonic()
         while True:
             time.sleep(5)
+            now = time.monotonic()
+            in_grace = (now - started_at) < GRACE_S
+            stale = False
+            try:
+                if HB.exists():
+                    age = now - float(HB.read_text().strip())
+                    stale = age > STALE_AFTER_S
+                else:
+                    stale = not in_grace  # missing file = stale (post-grace)
+            except Exception:
+                stale = not in_grace
+            if stale:
+                logger.warning("[watchdog] worker heartbeat stale — withholding WATCHDOG=1")
+                continue
             _sd.notify("WATCHDOG=1")
 
     _threading.Thread(

@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# jarvis-logs — live-tail every JARVIS log stream into one prefixed,
+# colour-coded view. The tray, web, bridge, proxy, hub, voice agent /
+# voice client, and launcher each write to their own file under /tmp.
+# Without an aggregator you have to open 7+ terminals. This is what
+# Datadog / Vector / lnav give you for free in production stacks; the
+# tiny bash version is plenty for a single-user dev rig.
+#
+# Usage:
+#   jarvis-logs                # tail everything
+#   jarvis-logs <regex>        # only show lines matching the regex
+#   jarvis-logs -s web,tray    # only those two sources
+#   jarvis-logs --list         # list available sources and exit
+#
+# Sources are auto-detected: only files that exist + units that are
+# active are included. Add new sources by appending to the SOURCES
+# array below.
+set -u
+
+# Each entry: name:color:path
+# Colors: 31 red, 32 green, 33 yellow, 34 blue, 35 magenta, 36 cyan, 37 white
+SOURCES=(
+  "tray:36:/tmp/jarvis-desktop.log"
+  "web:32:/tmp/jarvis-web.log"
+  "bridge:33:/tmp/jarvis-bridge.log"
+  "proxy:34:/tmp/jarvis-proxy.log"
+  "hub:35:/tmp/jarvis-hub.log"
+  "voice-agent:31:/tmp/jarvis-voice-agent.log"
+  "voice-client:31:/tmp/jarvis-voice-client.log"
+  "launch:37:/tmp/jarvis-launch.log"
+  "chat-dbg:35:/tmp/jarvis-web-chat-dbg.log"
+)
+
+# systemd user units we'll fold in via journalctl when active. Falls
+# back gracefully if systemd isn't available or the unit doesn't exist.
+JOURNAL_UNITS=(
+  "jarvis-voice-agent"
+  "jarvis-voice-client"
+  "jarvis-bridge"
+  "jarvis-proxy"
+)
+
+GREP_FILTER=""
+SOURCE_FILTER=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -s|--source)
+      SOURCE_FILTER="$2"; shift 2 ;;
+    -l|--list)
+      echo "Available sources:"
+      for entry in "${SOURCES[@]}"; do
+        IFS=: read -r name _ path <<< "$entry"
+        if [ -f "$path" ]; then
+          printf "  %-12s  %s\n" "$name" "$path"
+        else
+          printf "  %-12s  %s (not present yet)\n" "$name" "$path"
+        fi
+      done
+      for unit in "${JOURNAL_UNITS[@]}"; do
+        if systemctl --user is-active --quiet "$unit" 2>/dev/null; then
+          printf "  %-12s  journal: %s (active)\n" "${unit#jarvis-}" "$unit"
+        fi
+      done
+      exit 0
+      ;;
+    -h|--help)
+      sed -n '2,/^set -u/p' "$0" | sed 's/^# \?//' | head -n -1
+      exit 0
+      ;;
+    -*)
+      echo "unknown flag: $1" >&2; exit 2 ;;
+    *)
+      GREP_FILTER="$1"; shift ;;
+  esac
+done
+
+# When the user runs us in a non-tty (piped to a file) drop the colour
+# escapes. Same convention as `ls` / `grep`.
+if [ -t 1 ]; then
+  use_color=1
+else
+  use_color=0
+fi
+
+# Helper: stream lines from a source through awk to prefix + colour them.
+# Trap-aware so Ctrl-C cleanly kills every backgrounded tail/journalctl.
+PIDS=()
+trap 'kill "${PIDS[@]}" 2>/dev/null; wait 2>/dev/null; exit 0' INT TERM
+
+# Apply the source filter (comma-separated names).
+should_include() {
+  local name=$1
+  if [ -z "$SOURCE_FILTER" ]; then return 0; fi
+  IFS=, read -ra wanted <<< "$SOURCE_FILTER"
+  for w in "${wanted[@]}"; do
+    [ "$w" = "$name" ] && return 0
+  done
+  return 1
+}
+
+# Pipe a stream through the prefixer + optional grep filter.
+prefixed_stream() {
+  local name=$1
+  local color=$2
+  if [ "$use_color" = 1 ]; then
+    awk -v n="$name" -v c="$color" '{printf "\033[%sm[%-12s]\033[0m %s\n", c, n, $0; fflush()}'
+  else
+    awk -v n="$name" '{printf "[%-12s] %s\n", n, $0; fflush()}'
+  fi
+}
+
+# 1. File-based sources
+for entry in "${SOURCES[@]}"; do
+  IFS=: read -r name color path <<< "$entry"
+  should_include "$name" || continue
+  if [ ! -f "$path" ]; then continue; fi
+  if [ -n "$GREP_FILTER" ]; then
+    ( tail -F -n 0 "$path" 2>/dev/null \
+      | grep --line-buffered -E "$GREP_FILTER" \
+      | prefixed_stream "$name" "$color" ) &
+  else
+    ( tail -F -n 0 "$path" 2>/dev/null \
+      | prefixed_stream "$name" "$color" ) &
+  fi
+  PIDS+=($!)
+done
+
+# 2. systemd-managed units (only when active)
+for unit in "${JOURNAL_UNITS[@]}"; do
+  short="${unit#jarvis-}"
+  should_include "$short" || continue
+  systemctl --user is-active --quiet "$unit" 2>/dev/null || continue
+  if [ -n "$GREP_FILTER" ]; then
+    ( journalctl --user -u "$unit" -f -n 0 -o cat 2>/dev/null \
+      | grep --line-buffered -E "$GREP_FILTER" \
+      | prefixed_stream "$short" "31" ) &
+  else
+    ( journalctl --user -u "$unit" -f -n 0 -o cat 2>/dev/null \
+      | prefixed_stream "$short" "31" ) &
+  fi
+  PIDS+=($!)
+done
+
+if [ "${#PIDS[@]}" -eq 0 ]; then
+  echo "No active log sources found. Run: jarvis-logs --list" >&2
+  exit 1
+fi
+
+# Wait for all background tails. Ctrl-C kills them via the trap above.
+wait

@@ -3,7 +3,7 @@
 import { motion, AnimatePresence } from "motion/react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
   Code2,
@@ -18,7 +18,11 @@ import {
 import { Button } from "@/components/ui/button";
 import { useUI } from "@/stores/ui";
 import { useChatStore } from "@/stores/chat";
-import { useConversations } from "@/hooks/use-conversations";
+import {
+  useConversations,
+  useRenameConversation,
+  type ConversationSummary,
+} from "@/hooks/use-conversations";
 import { useSettings } from "@/hooks/use-settings";
 import { cn } from "@/lib/utils";
 import { DEFAULT_MODEL, MODELS_META } from "@/lib/ai/models-meta";
@@ -32,6 +36,31 @@ const CORE_NAV = [
   { href: "/code", label: "Code", icon: Code2 },
   { href: "/workbench", label: "Workbench", icon: Hammer },
 ] as const;
+
+// Bucket a conversation into Today / Yesterday / Last 7 days / Older
+// based on its updatedAt timestamp. Bucket label drives the section
+// header in the sidebar Recents list. Older entries collapse into a
+// single "Older" group so a long history doesn't sprawl.
+type Bucket = "today" | "yesterday" | "week" | "older";
+const BUCKET_LABEL: Record<Bucket, string> = {
+  today: "Today",
+  yesterday: "Yesterday",
+  week: "Last 7 days",
+  older: "Older",
+};
+function bucketOf(updatedAt: string): Bucket {
+  const t = new Date(updatedAt).getTime();
+  const now = new Date();
+  const startOfToday = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+  ).getTime();
+  if (t >= startOfToday) return "today";
+  if (t >= startOfToday - 24 * 60 * 60 * 1000) return "yesterday";
+  if (t >= startOfToday - 7 * 24 * 60 * 60 * 1000) return "week";
+  return "older";
+}
 
 function initials(name?: string | null) {
   if (!name) return "YO";
@@ -253,47 +282,13 @@ export function Sidebar() {
                 </div>
               )}
 
-              {/* Recents */}
-              <div className="mt-5 flex-1 overflow-y-auto px-2">
-                <div className="px-2.5 pb-1 text-[11px] text-sidebar-foreground/50">
-                  {recentsLabel}
-                </div>
-                <div className="space-y-px">
-                  {isLoading && !conversations ? (
-                    <div className="px-2.5 py-1.5 text-xs text-sidebar-foreground/40">
-                      loading…
-                    </div>
-                  ) : conversations && conversations.length > 0 ? (
-                    conversations.map((c) => {
-                      const href = `/chat/${c.id}`;
-                      const active = pathname === href;
-                      const isUntitled =
-                        !c.title.trim() || c.title === "New chat";
-                      return (
-                        <Link
-                          key={c.id}
-                          href={href}
-                          className={cn(
-                            "block truncate rounded-md px-2.5 py-1 text-[13px] leading-6 transition-colors",
-                            "hover:bg-sidebar-accent/60",
-                            active
-                              ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                              : isUntitled
-                                ? "text-sidebar-foreground/40"
-                                : "text-sidebar-foreground/85",
-                          )}
-                        >
-                          {isUntitled ? "Untitled" : c.title}
-                        </Link>
-                      );
-                    })
-                  ) : (
-                    <div className="px-2.5 py-1.5 text-xs text-sidebar-foreground/40">
-                      no chats yet.
-                    </div>
-                  )}
-                </div>
-              </div>
+              {/* Recents — grouped + searchable + rename-able */}
+              <RecentsList
+                conversations={conversations}
+                isLoading={isLoading}
+                pathname={pathname}
+                label={recentsLabel}
+              />
 
               {/* User footer */}
               <div className="border-t border-border/50 px-2 py-2">
@@ -336,5 +331,203 @@ export function Sidebar() {
           </div>
         )}
     </>
+  );
+}
+
+// Searchable + grouped Recents list.
+// - Cmd/Ctrl+K focuses the filter input
+// - Conversations bucketed by Today / Yesterday / Last 7 days / Older
+// - Double-click a row to rename it inline (Enter to save, Esc to cancel)
+function RecentsList({
+  conversations,
+  isLoading,
+  pathname,
+  label,
+}: {
+  conversations: ConversationSummary[] | undefined;
+  isLoading: boolean;
+  pathname: string;
+  label: string;
+}) {
+  const [filter, setFilter] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Cmd/Ctrl+K → focus the filter. Skip when the user is already
+  // typing in another field so the binding doesn't steal focus from
+  // the composer mid-message.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
+      const mod = isMac ? e.metaKey : e.ctrlKey;
+      if (!mod || e.key !== "k") return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable)
+      ) {
+        // Composer/Search input has focus already — don't fight it.
+        if (target !== inputRef.current) return;
+      }
+      e.preventDefault();
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const filtered = useMemo(() => {
+    if (!conversations) return [];
+    const q = filter.trim().toLowerCase();
+    if (!q) return conversations;
+    return conversations.filter((c) => c.title.toLowerCase().includes(q));
+  }, [conversations, filter]);
+
+  const grouped = useMemo(() => {
+    const out: Record<Bucket, ConversationSummary[]> = {
+      today: [],
+      yesterday: [],
+      week: [],
+      older: [],
+    };
+    for (const c of filtered) out[bucketOf(c.updatedAt)].push(c);
+    return out;
+  }, [filtered]);
+
+  return (
+    <div className="mt-5 flex-1 overflow-y-auto px-2">
+      <div className="flex items-center gap-1.5 px-2.5 pb-1">
+        <span className="flex-1 text-[11px] text-sidebar-foreground/50">
+          {label}
+        </span>
+        {conversations && conversations.length > 0 && (
+          <kbd className="hidden sm:inline-flex h-4 items-center justify-center rounded border border-border/50 bg-card/40 px-1 text-[9px] text-sidebar-foreground/50">
+            ⌘K
+          </kbd>
+        )}
+      </div>
+
+      {conversations && conversations.length > 0 && (
+        <div className="px-2.5 pb-2">
+          <input
+            ref={inputRef}
+            type="text"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter chats…"
+            className="w-full rounded-md border border-transparent bg-card/40 px-2 py-1 text-[12px] text-sidebar-foreground/85 placeholder:text-sidebar-foreground/40 outline-none focus:border-border focus:bg-card transition-colors"
+          />
+        </div>
+      )}
+
+      {isLoading && !conversations ? (
+        <div className="px-2.5 py-1.5 text-xs text-sidebar-foreground/40">
+          loading…
+        </div>
+      ) : !conversations || conversations.length === 0 ? (
+        <div className="px-2.5 py-1.5 text-xs text-sidebar-foreground/40">
+          no chats yet.
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="px-2.5 py-1.5 text-xs text-sidebar-foreground/40">
+          no matches.
+        </div>
+      ) : (
+        (["today", "yesterday", "week", "older"] as Bucket[]).map((b) => {
+          const items = grouped[b];
+          if (items.length === 0) return null;
+          return (
+            <div key={b} className="mb-2">
+              <div className="px-2.5 pb-0.5 pt-1 text-[10px] font-medium uppercase tracking-wider text-sidebar-foreground/40">
+                {BUCKET_LABEL[b]}
+              </div>
+              <div className="space-y-px">
+                {items.map((c) => (
+                  <RecentRow key={c.id} c={c} pathname={pathname} />
+                ))}
+              </div>
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
+// One conversation row. Single-click navigates; double-click swaps to
+// an inline <input> so the user can rename without a context menu —
+// matches Notion / VS Code / Finder rename UX. Enter saves, Esc
+// cancels, blur saves (matches the discoverable convention).
+function RecentRow({
+  c,
+  pathname,
+}: {
+  c: ConversationSummary;
+  pathname: string;
+}) {
+  const href = `/chat/${c.id}`;
+  const active = pathname === href;
+  const isUntitled = !c.title.trim() || c.title === "New chat";
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(c.title);
+  const rename = useRenameConversation();
+
+  // Re-sync the draft if the title changed under us (e.g. server
+  // auto-named the chat after first message).
+  useEffect(() => {
+    if (!editing) setDraft(c.title);
+  }, [c.title, editing]);
+
+  const commit = () => {
+    const next = draft.trim();
+    setEditing(false);
+    if (!next || next === c.title) return;
+    rename.mutate({ id: c.id, title: next });
+  };
+
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            commit();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            setDraft(c.title);
+            setEditing(false);
+          }
+        }}
+        onBlur={commit}
+        className="block w-full truncate rounded-md border border-border bg-card px-2.5 py-1 text-[13px] leading-6 text-sidebar-accent-foreground outline-none focus:border-primary"
+      />
+    );
+  }
+
+  return (
+    <Link
+      href={href}
+      onDoubleClick={(e) => {
+        e.preventDefault();
+        setEditing(true);
+      }}
+      className={cn(
+        "block truncate rounded-md px-2.5 py-1 text-[13px] leading-6 transition-colors",
+        "hover:bg-sidebar-accent/60",
+        active
+          ? "bg-sidebar-accent text-sidebar-accent-foreground"
+          : isUntitled
+            ? "text-sidebar-foreground/40"
+            : "text-sidebar-foreground/85",
+      )}
+      title="Double-click to rename"
+    >
+      {isUntitled ? "Untitled" : c.title}
+    </Link>
   );
 }

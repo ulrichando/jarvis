@@ -18,10 +18,62 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Markdown } from "@/components/markdown/markdown";
+import { Sources, extractSources } from "./sources";
 import { cn } from "@/lib/utils";
 
+// Synthetic-prompt patterns the chat layer's plumbing emits but the
+// user shouldn't see. Stripped at the SOURCE (textFromParts) so every
+// render path — assistant <Markdown />, user <p>{text}</p>, accessible
+// labels, copy-to-clipboard — gets clean text in one place. Multiple
+// patterns because models sometimes echo only the tail of the prompt
+// back, leaving leading-only or trailing-only fragments in history.
+const SYNTHETIC_PROMPT_PATTERNS: RegExp[] = [
+  // Full auto-continue prompt (canonical form)
+  /Continue your previous output exactly where you stopped[\s\S]*?Close any open boltAction[^.]*\.?/g,
+  // Just the tail when the model echoed only the closing instruction
+  /Close any open boltAction and the boltArtifact properly\.?/g,
+  // Just the leading sentence when the model echoed only the opener
+  /Continue your previous output exactly where you stopped\.?(?:\s+Do NOT[^.]*\.?)*/g,
+  // Stray "boltArtifact properly." at start of a line — last-resort
+  // for the case where everything else got truncated and only this
+  // sentence-end fragment remains.
+  /^[ \t]*boltArtifact properly\.?[ \t]*$/gm,
+];
+
+function cleanSyntheticPrompts(text: string): string {
+  let out = text;
+  for (const re of SYNTHETIC_PROMPT_PATTERNS) {
+    out = out.replace(re, "");
+  }
+  // Collapse the runs of blank lines the strips leave behind.
+  return out.replace(/\n{3,}/g, "\n\n").trim();
+}
+
 function textFromParts(parts: UIMessage["parts"]): string {
-  return parts.map((p) => (p.type === "text" ? p.text : "")).join("");
+  const raw = parts.map((p) => (p.type === "text" ? p.text : "")).join("");
+  return cleanSyntheticPrompts(raw);
+}
+
+// Wrap inline `[N]` references with a markdown link to the matching
+// source URL, so Markdown's `<a>` renderer (which detects citation
+// links and styles them as superscript chips) picks them up. Skip
+// references that fall outside the source array — leave the bare
+// `[N]` untouched so we don't produce a broken link.
+//
+// Conservative regex: only matches `[N]` that's NOT immediately
+// followed by `(` (which would be a markdown link already) and is
+// preceded by a non-bracket character (so we don't double-process
+// `[[1]]` and similar). Anchors require word/punct boundaries on
+// both sides so we skip patterns like `[1, 2, 3]` (ranges) where
+// the `[` and `]` aren't a single citation.
+function linkifyCitations(text: string, urls: string[]): string {
+  if (urls.length === 0) return text;
+  return text.replace(/(^|[^\[\]\w])\[(\d{1,3})\](?!\()/g, (m, pre, num) => {
+    const idx = Number(num) - 1;
+    const url = urls[idx];
+    if (!url) return m;
+    return `${pre}[${num}](${url})`;
+  });
 }
 
 // Image attachments arrive as `file` UIMessageParts with a data: URL or
@@ -54,7 +106,10 @@ export function Message({
   reasoning,
   plan,
   usage,
+  error,
+  onRetry,
   workspaceId,
+  isLast,
 }: {
   message: UIMessage;
   isStreaming?: boolean;
@@ -73,9 +128,35 @@ export function Message({
   // the workspace back to the snapshot taken just before this turn.
   // Only meaningful for assistant messages in the workbench.
   workspaceId?: string;
+  // True for the most-recent message in the thread — the action
+  // toolbar is always-visible on the last turn (matches Claude/ChatGPT
+  // pattern) and hover-only on earlier turns. Cuts visual noise.
+  isLast?: boolean;
+  // Error label for failed streams. When set, an inline
+  // "Response stopped — Retry" pill renders below the partial text.
+  error?: string;
+  // Click handler for the retry pill. Receives the failed message id.
+  onRetry?: (messageId: string) => void;
 }) {
   const isUser = message.role === "user";
   const text = textFromParts(message.parts);
+
+  // Skip rendering the chat layer's synthetic auto-continue prompt
+  // when it leaks into history. New turns no longer persist this
+  // (chat/route.ts skips it at saveUserMessage), but legacy DB rows
+  // pre-fix still surface as user bubbles in the thread because user
+  // messages bypass <Markdown /> and render raw <p>{text}</p>. The
+  // canary check is intentionally tight — same as the chat-route
+  // skip — so we don't accidentally hide a real user message that
+  // happened to start with the same words.
+  const trimmed = text.trim();
+  const isSyntheticAutoContinue =
+    isUser &&
+    trimmed.startsWith(
+      "Continue your previous output exactly where you stopped",
+    ) &&
+    trimmed.includes("Close any open boltAction");
+  if (isSyntheticAutoContinue) return null;
 
   // The reasoning block is open by default while reasoning is still
   // streaming (so the user can watch it think live), then auto-collapses
@@ -89,7 +170,17 @@ export function Message({
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.16, ease: "easeOut" }}
       className={cn("group w-full", isUser ? "flex justify-end" : "flex")}
+      // Each turn is a region in the page's accessible tree so SR
+      // users can jump between user/assistant messages with regular
+      // landmark navigation (NVDA: D, VoiceOver: rotor → Headings).
+      role="article"
+      aria-label={isUser ? "Your message" : "JARVIS message"}
     >
+      {/* Hidden landmark heading — invisible to sighted users but
+          gives SR users a "heading-by-heading" jump path through the
+          conversation, the same way Claude.ai and ChatGPT mark up
+          turns. h2 because the page title is the h1. */}
+      <h2 className="sr-only">{isUser ? "You" : "JARVIS"}</h2>
       {isUser ? (
         <div className="max-w-[85%] rounded-2xl bg-card px-4 py-2.5 text-foreground space-y-2">
           {(() => {
@@ -128,19 +219,52 @@ export function Message({
             />
           ) : null}
           {text ? (
-            <>
-              <Markdown content={text} />
-              {isStreaming && <StreamingCursor />}
-            </>
+            <Markdown
+              content={linkifyCitations(
+                text,
+                extractSources(message).map((s) => s.url),
+              )}
+              isStreaming={isStreaming}
+            />
           ) : isStreaming && !reasoning && !plan ? (
             <ThinkingIndicator />
           ) : null}
-          {text && !isStreaming && (
-            <MessageActions
-              text={text}
-              messageId={message.id}
-              workspaceId={workspaceId}
+          {/* Polite live region — announces the final answer once the
+              stream completes. We deliberately mount the text only when
+              !isStreaming so SR doesn't read every token (which would
+              be unbearable). The visible Markdown above is aria-hidden
+              from this announcement (it's a separate node, but we leave
+              it readable by SR users via heading nav as a backup). */}
+          {!isUser && text && !isStreaming && (
+            <div role="status" aria-live="polite" className="sr-only">
+              {text}
+            </div>
+          )}
+          {error && !isStreaming && (
+            <ErrorRetryPill
+              label={error}
+              onRetry={() => onRetry?.(message.id)}
             />
+          )}
+          {!isStreaming && (() => {
+            const sources = extractSources(message);
+            return sources.length > 0 ? <Sources sources={sources} /> : null;
+          })()}
+          {text && !isStreaming && (
+            <div
+              className={cn(
+                "transition-opacity duration-150",
+                isLast
+                  ? "opacity-100"
+                  : "opacity-0 group-hover:opacity-100 focus-within:opacity-100",
+              )}
+            >
+              <MessageActions
+                text={text}
+                messageId={message.id}
+                workspaceId={workspaceId}
+              />
+            </div>
           )}
           {usage && !isStreaming && <UsageChip usage={usage} />}
         </div>
@@ -335,15 +459,56 @@ function ThinkingDots() {
 // ── Streaming cursor ─────────────────────────────────────────────────────
 
 function StreamingCursor() {
+  // Blinking caret. Claude.ai / ChatGPT both use a thin vertical bar that
+  // appears at the end of the streaming text — bouncing dots are for
+  // pre-first-token "Thinking..." state only. The caret is inline so it
+  // sits flush after the last rendered character instead of starting a
+  // new row of indicators below the text.
   return (
-    <div className="mt-3 flex items-center gap-1" aria-hidden>
-      {[0, 1, 2].map((i) => (
-        <span
-          key={i}
-          className="size-1.5 rounded-full bg-primary/60 animate-bounce"
-          style={{ animationDelay: `${i * 0.18}s`, animationDuration: "1s" }}
-        />
-      ))}
+    <span
+      aria-hidden
+      className="inline-block ml-0.5 align-text-bottom w-0.5 h-[1.1em] bg-foreground animate-pulse"
+    />
+  );
+}
+
+// ── Error retry pill ─────────────────────────────────────────────────────
+//
+// Inline "Response stopped — Retry" pill rendered below a partial
+// assistant message when the stream errored mid-flight. Pattern from
+// Claude.ai / ChatGPT: the partial answer stays visible (don't lose
+// the user's tokens), but a low-key warning + one-tap retry sits
+// just below it. Click → re-send the original turn from the same
+// state. The original message stays in history; the retry produces a
+// new assistant message after it.
+function ErrorRetryPill({
+  label,
+  onRetry,
+}: {
+  label: string;
+  onRetry: () => void;
+}) {
+  return (
+    <div
+      role="alert"
+      className="mt-3 flex flex-wrap items-center gap-2 text-[12.5px] text-muted-foreground"
+    >
+      <span className="text-destructive/90">{label}</span>
+      <button
+        type="button"
+        onClick={onRetry}
+        className={cn(
+          "inline-flex items-center gap-1.5 rounded-full",
+          "border border-border bg-card/80 px-2.5 py-1",
+          "text-foreground hover:bg-card hover:text-foreground",
+          "transition-colors",
+          "focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50",
+        )}
+        aria-label="Retry response"
+      >
+        <RotateCcw className="size-3" />
+        <span>Retry</span>
+      </button>
     </div>
   );
 }

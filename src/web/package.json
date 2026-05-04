@@ -3,12 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "concurrently -n next,pty -c blue,magenta \"next dev\" \"node scripts/pty-server.mjs\"",
-    "dev:next": "next dev",
+    "dev": "concurrently -n next,pty -c blue,magenta \"next dev -H 127.0.0.1\" \"node scripts/pty-server.mjs\"",
+    "dev:next": "next dev -H 127.0.0.1",
     "dev:pty": "node scripts/pty-server.mjs",
     "build:image": "docker build -t jarvis-workbench:latest scripts/workbench-image",
     "build": "next build",
-    "start": "concurrently -n next,pty -c blue,magenta \"next start\" \"node scripts/pty-server.mjs\"",
+    "start": "concurrently -n next,pty -c blue,magenta \"next start -H 127.0.0.1\" \"node scripts/pty-server.mjs\"",
     "lint": "eslint"
   },
   "dependencies": {

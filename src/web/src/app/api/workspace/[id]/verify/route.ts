@@ -118,19 +118,37 @@ export async function POST(
       "curl -sS -o /dev/null -w '%{http_code}' http://localhost:5173 --max-time 5 || echo CONNREFUSED",
       { timeoutMs: 10_000 },
     );
-    const code = r.stdout.trim();
-    if (code === "CONNREFUSED" || code === "") {
+    const out = r.stdout;
+    // curl with `-w '%{http_code}'` ALWAYS prints the http_code to
+    // stdout — it prints "000" on connection failure, THEN exits
+    // non-zero so the `|| echo CONNREFUSED` fallback also fires. Net
+    // stdout when no server is listening: "000\nCONNREFUSED" (or
+    // similar). The previous parser checked `trim() === "CONNREFUSED"`
+    // which never matched, so it parseInt'd "000" → status:0 → falsy
+    // ok → spurious retry trigger. Detect either signal: literal
+    // "CONNREFUSED" anywhere in output, OR a parsed status of 0.
+    if (out.includes("CONNREFUSED") || out.trim() === "") {
       // No dev server running yet — not a failure of THIS turn,
       // just no preview to verify. ok=true so we don't trigger a
       // retry on a workspace that doesn't have a `start` action yet.
       preview = { ran: true, ok: true, status: null };
     } else {
-      const status = parseInt(code, 10);
-      preview = {
-        ran: true,
-        ok: status >= 200 && status < 400,
-        status,
-      };
+      // Pull the FIRST numeric line (the http_code). Ignores any
+      // trailing fallback text or stray noise.
+      const m = out.match(/(\d{3})/);
+      const status = m ? parseInt(m[1], 10) : 0;
+      if (status === 0) {
+        // curl produced "000" without a CONNREFUSED tag — same
+        // semantic as connection refused. Treat as "no preview", not
+        // a failure to retry over.
+        preview = { ran: true, ok: true, status: null };
+      } else {
+        preview = {
+          ran: true,
+          ok: status >= 200 && status < 400,
+          status,
+        };
+      }
     }
   } catch {
     preview = { ran: true, ok: true, status: null };

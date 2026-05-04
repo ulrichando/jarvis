@@ -1,0 +1,70 @@
+version: 2
+updates:
+  # Voice agent — Python (pip)
+  - package-ecosystem: "pip"
+    directory: "/src/voice-agent"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      livekit-ecosystem:
+        patterns:
+          - "livekit*"
+      python-runtime:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "livekit*"
+    labels:
+      - "deps"
+      - "voice-agent"
+
+  # Bridge / proxy / CLI — Node/Bun (npm)
+  - package-ecosystem: "npm"
+    directory: "/src/cli"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "deps"
+      - "cli"
+
+  # Web app — Next.js (npm)
+  - package-ecosystem: "npm"
+    directory: "/src/web"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      next-stack:
+        patterns:
+          - "next"
+          - "react"
+          - "react-dom"
+          - "@tanstack/*"
+    labels:
+      - "deps"
+      - "web"
+
+  # Tauri — Rust (cargo)
+  - package-ecosystem: "cargo"
+    directory: "/src/desktop-tauri/src-tauri"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    labels:
+      - "deps"
+      - "tauri"
+
+  # GitHub Actions self-update
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    labels:
+      - "deps"
+      - "ci"

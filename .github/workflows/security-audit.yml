@@ -1,0 +1,58 @@
+name: security-audit
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  schedule:
+    # Weekly Monday 14:00 UTC — catches CVEs disclosed over the weekend
+    - cron: '0 14 * * 1'
+
+jobs:
+  pip-audit:
+    name: pip-audit (voice-agent)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pip-audit
+      # PYSEC-2025-49 / CVE-2024-6345 affect setuptools install-time path
+      # traversal during package install. Voice agent never invokes
+      # `pip install` at runtime, and the setuptools<70 pin is required
+      # for transitive `pkg_resources` consumers (langchain). Accepted.
+      - run: pip-audit -r src/voice-agent/requirements.txt --strict --ignore-vuln PYSEC-2025-49 --ignore-vuln CVE-2024-6345
+
+  npm-audit-cli:
+    name: npm audit (cli)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - working-directory: src/cli
+        run: npm audit --audit-level=high
+
+  npm-audit-web:
+    name: npm audit (web)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - working-directory: src/web
+        run: npm audit --audit-level=high
+
+  cargo-audit:
+    name: cargo-audit (tauri)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install --locked cargo-audit
+      - working-directory: src/desktop-tauri/src-tauri
+        run: cargo audit

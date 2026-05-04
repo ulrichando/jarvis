@@ -53,17 +53,49 @@ const components: Components = {
   p: ({ className, ...props }) => (
     <p className={cn("leading-7 [&:not(:first-child)]:mt-4", className)} {...stripKey(props)} />
   ),
-  a: ({ className, ...props }) => (
-    <a
-      className={cn(
-        "font-medium text-primary underline underline-offset-4 decoration-primary/30 hover:decoration-primary",
-        className,
-      )}
-      target="_blank"
-      rel="noreferrer"
-      {...stripKey(props)}
-    />
-  ),
+  a: ({ className, children, ...props }) => {
+    // Citation refs come through as a numeric-only link text:
+    // `[1]` → <a>1</a>, `[12]` → <a>12</a>. Detect that shape and
+    // render the link as a Perplexity-style inline superscript chip
+    // — small, monospace, no underline. Everything else stays a
+    // normal underlined link. The detection has to look at React's
+    // children as a string since the renderer hasn't materialized
+    // the DOM yet.
+    const innerText = String(
+      Array.isArray(children) ? children.join("") : (children ?? ""),
+    ).trim();
+    const isCitation = /^\d{1,3}$/.test(innerText);
+    if (isCitation) {
+      return (
+        <a
+          className={cn(
+            "mx-0.5 inline-flex items-center justify-center align-super",
+            "h-4 min-w-4 rounded-full px-1",
+            "bg-primary/15 text-[10px] font-mono font-medium tabular-nums text-primary",
+            "no-underline hover:bg-primary/25 transition-colors",
+          )}
+          target="_blank"
+          rel="noreferrer"
+          {...stripKey(props)}
+        >
+          {children}
+        </a>
+      );
+    }
+    return (
+      <a
+        className={cn(
+          "font-medium text-primary underline underline-offset-4 decoration-primary/30 hover:decoration-primary",
+          className,
+        )}
+        target="_blank"
+        rel="noreferrer"
+        {...stripKey(props)}
+      >
+        {children}
+      </a>
+    );
+  },
   ul: ({ className, ...props }) => (
     <ul className={cn("my-3 ml-6 list-disc [&>li]:mt-1", className)} {...stripKey(props)} />
   ),
@@ -158,36 +190,168 @@ function stripDesignTags(content: string): string {
     // persisted-history path the same way as the results block above.
     .replace(/<jarvisplan\b[\s\S]*?<\/jarvisplan>/gi, "")
     .replace(/<jarvisplan\b[\s\S]*$/i, "")
+    // <jarvisVerify> blocks — synthetic verify-pass output the chat
+    // layer appends after a turn drains. Rendered separately by a
+    // VerifyCard-style component (or just dropped from the visible
+    // body). Same DB-persisted history pattern as boltActionResults.
+    .replace(/<jarvisverify\b[\s\S]*?<\/jarvisverify>/gi, "")
+    .replace(/<jarvisverify\b[\s\S]*$/i, "")
+    // <preview>...</preview> — sometimes the model wraps its output
+    // in a `preview` tag (likely a hallucinated leftover from
+    // training data). It has no semantic meaning to the runtime and
+    // rehypeRaw tries to render it as a custom element, triggering
+    // the "tag <preview> is unrecognized" console warning. Drop it.
+    .replace(/<preview\b[\s\S]*?<\/preview>/gi, "")
+    .replace(/<preview\b[\s\S]*$/i, "")
     // Inline <script> tags in prose. The parser already redirects
     // module scripts to the bundle endpoint — but those run inside an
     // iframe, NOT in the chat thread. A script tag in CHAT prose is
     // either a sample the model dumped or a leftover from a partial
     // artifact. Either way, don't render it.
-    .replace(/<script\b[\s\S]*?<\/script>/gi, "");
+    .replace(/<script\b[\s\S]*?<\/script>/gi, "")
+    // Auto-continue synthetic prompt — the chat layer's plumbing
+    // when finish=length truncates a turn. We now skip persisting it
+    // (chat/route.ts), but legacy DB rows may still have it. Strip
+    // from RENDER so refreshes don't surface internal stage
+    // direction next to the user's real messages. Match the canary
+    // prefix and the closing instruction so we only catch this exact
+    // synthetic content, not a user who happened to type the words.
+    .replace(
+      /Continue your previous output exactly where you stopped[\s\S]*?Close any open boltAction[^.]*\.?/g,
+      "",
+    )
+    // Generic JSX-component tag drop: any `<Name…>` or `</Name>` whose
+    // name contains an uppercase letter is a JSX component reference
+    // (AnimatePresence, motion.div, Hero, Footer, Section, etc.) that
+    // the model has dumped into prose while explaining code. HTML
+    // element names are always lowercase, so the uppercase test is a
+    // reliable JSX-vs-HTML discriminator. We strip the WRAPPER tags
+    // only — the inner content is kept, since it's usually
+    // human-readable prose the user still wants to see. Without this
+    // strip rehypeRaw renders these as unknown custom elements and
+    // React 19 fires "tag <foo> is unrecognized" for every one.
+    //
+    // Self-closing tags (`<motion.div />`) and dotted tags
+    // (`<motion.div>` → DOM lowercases to `<motion.div>` which
+    // browsers reject as malformed; the regex below catches those
+    // by allowing `.` in the name segment).
+    .replace(/<\/?([a-zA-Z][a-zA-Z0-9.]*)\b[^>]*>/g, (match, name: string) => {
+      // JSX components: name has an uppercase letter (Hero, AnimatePresence)
+      // OR a dot (motion.div, Disclosure.Panel). Both are invalid HTML
+      // tag names and trip the "unrecognized tag" warning.
+      const isJsxComponent = /[A-Z]/.test(name) || name.includes(".");
+      return isJsxComponent ? "" : match;
+    });
 }
+
+// Split a markdown string into top-level "blocks" — sequences
+// separated by blank lines, with fenced code blocks (``` … ```) kept
+// intact even when they contain blank lines internally. This is the
+// streamdown.ai pattern: render each block as its own memoized
+// ReactMarkdown subtree so during streaming, only the LAST (growing)
+// block re-renders. Earlier blocks become referentially stable
+// strings and React.memo bails out, which is the difference between
+// a thread that stutters at 1k+ tokens and one that doesn't.
+//
+// Conservative on purpose: we don't try to be smart about list
+// continuations or table rows. A block is a paragraph-delimited
+// chunk, fenced code blocks excepted. ReactMarkdown sees each chunk
+// in isolation, so any cross-block markdown construct (e.g. a list
+// interrupted by a blank line) renders as two separate lists. That's
+// a tiny visual cost compared to the per-token re-render savings.
+function splitBlocks(content: string): string[] {
+  const blocks: string[] = [];
+  let i = 0;
+  let buf = "";
+  let inFence = false;
+  let fenceMarker = "";
+  const lines = content.split("\n");
+  for (i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const fenceMatch = /^(\s*)(```+|~~~+)/.exec(line);
+    if (fenceMatch) {
+      const marker = fenceMatch[2];
+      if (!inFence) {
+        inFence = true;
+        fenceMarker = marker;
+      } else if (line.trimStart().startsWith(fenceMarker)) {
+        inFence = false;
+        fenceMarker = "";
+      }
+    }
+    if (!inFence && line.trim() === "" && buf.length > 0) {
+      // Blank line outside a fence ends the current block.
+      blocks.push(buf);
+      buf = "";
+      continue;
+    }
+    buf += (buf.length > 0 ? "\n" : "") + line;
+  }
+  if (buf.length > 0) blocks.push(buf);
+  return blocks;
+}
+
+// Per-block memoized renderer. memo() bails out when `content` is
+// referentially equal — and since splitBlocks returns the SAME string
+// (cached by its substring of the parent) for completed blocks across
+// renders, those subtrees stop re-rendering during streaming.
+const Block = memo(function Block({ content }: { content: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm, remarkMath]}
+      rehypePlugins={[rehypeRaw, rehypeKatex]}
+      components={components}
+    >
+      {content}
+    </ReactMarkdown>
+  );
+});
 
 export const Markdown = memo(function Markdown({
   content,
   className,
+  // When true, append an inline blinking caret to the LAST block's
+  // last paragraph so the cursor sits flush against the most-recent
+  // character — instead of dropping below the prose as a stray
+  // siblings of <Markdown> would. Implemented by emitting a raw
+  // <span data-stream-caret> at the end of the last block's content;
+  // rehypeRaw passes it through as an inline element so it joins the
+  // last paragraph's last line, and CSS styles + animates it.
+  isStreaming,
 }: {
   content: string;
   className?: string;
+  isStreaming?: boolean;
 }) {
   const safe = stripDesignTags(content);
+  const blocks = splitBlocks(safe);
+  // Tail-block streaming caret. We mutate ONLY the last block so all
+  // earlier (settled) blocks stay referentially identical across
+  // renders — the per-block memo bailout keeps holding.
+  const blocksWithCaret =
+    isStreaming && blocks.length > 0
+      ? [
+          ...blocks.slice(0, -1),
+          blocks[blocks.length - 1] + '<span data-stream-caret></span>',
+        ]
+      : blocks;
   return (
+    // 15px body / 1.7 line-height — the Claude/ChatGPT reading rhythm.
+    // Tailwind's `leading-7` is 1.75rem absolute (so 1.75 / 0.94 at
+    // 15px ≈ 1.86, too loose). Custom `[1.7]` lands at the visually
+    // intentional value the research surfaced. `prose` resets paragraph
+    // margins; `[&_p]:my-3` reasserts a tighter rhythm than prose's
+    // default margin so paragraph spacing matches the inter-turn gap.
     <div
       className={cn(
-        "prose prose-neutral dark:prose-invert max-w-none text-[15px] leading-7",
+        "prose prose-neutral dark:prose-invert max-w-none text-[15px] leading-[1.7]",
+        "[&_p]:my-4 [&_ul]:my-3 [&_ol]:my-3 [&_li]:my-1 [&_h1]:mt-8 [&_h2]:mt-7 [&_h3]:mt-6",
         className,
       )}
     >
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[rehypeRaw, rehypeKatex]}
-        components={components}
-      >
-        {safe}
-      </ReactMarkdown>
+      {blocksWithCaret.map((b, i) => (
+        <Block key={i} content={b} />
+      ))}
     </div>
   );
 });
