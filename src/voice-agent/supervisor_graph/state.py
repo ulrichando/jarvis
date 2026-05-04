@@ -51,6 +51,14 @@ class JarvisState(TypedDict):
     failed_providers: list[str]
     retry_attempt: int
 
+    # V2 — grounding gate
+    grounding_retry_count: int
+    grounding_rejected_claims: list[str]
+
+    # V2 — speculative prefetch
+    speculative_dispatch_id: Optional[str]
+    speculative_result: Optional[dict[str, Any]]
+
 
 def initial_state(user_query: str = "", audio_meta: Optional[dict] = None) -> JarvisState:
     """Construct a clean state for a new turn. The graph compile path
@@ -68,4 +76,8 @@ def initial_state(user_query: str = "", audio_meta: Optional[dict] = None) -> Ja
         handoff_filler_voiced=False,
         failed_providers=[],
         retry_attempt=0,
+        grounding_retry_count=0,
+        grounding_rejected_claims=[],
+        speculative_dispatch_id=None,
+        speculative_result=None,
     )
