@@ -1133,23 +1133,42 @@ async def main() -> None:
     # during a blip rather than a 404.
     http_runner = await start_http_server()
 
-    # Supervisor loop — reconnect with 2 s backoff on transient errors
-    # so a blip in the SFU (or a reboot) doesn't leave the client dead.
-    # Systemd also restarts the process if it exits, so this is a
-    # belt-and-braces measure for soft errors that don't kill the process.
-    backoff = 2.0
+    # Supervisor loop — two-tier ReconnectLadder on transient errors so
+    # a blip in the SFU (or a reboot) doesn't leave the client dead.
+    # Tier 1: cheap resume() attempts with exponential backoff + jitter.
+    # Tier 2: full teardown + reconnect after all resume slots exhaust.
+    # After max_full_reconnects consecutive tier-2 failures, SystemExit
+    # so systemd's Restart=always takes over with a clean process.
+    from reconnect_ladder import ReconnectLadder
+
+    async def _resume() -> bool:
+        """Tier-1 resume: try a fresh run_once cycle. Returns True on
+        clean exit, False on any disconnect/exception."""
+        try:
+            await run_once(shutdown)
+            return True
+        except Exception as e:
+            log.warning(f"[resume] failed: {e}")
+            return False
+
+    async def _full_teardown() -> None:
+        """Tier-2 teardown: small delay so the SFU settles before the
+        next reconnect attempt. The Room is already disconnected at
+        this point (run_once returned/errored)."""
+        await asyncio.sleep(1)
+
+    ladder = ReconnectLadder(
+        resume_fn=_resume,
+        full_teardown_fn=_full_teardown,
+    )
+
     while not shutdown.is_set():
         try:
             await run_once(shutdown)
-            # Clean exit → reset backoff + loop immediately
-            backoff = 2.0
+            # Clean exit (shutdown.is_set()) → fall through to cleanup
         except Exception as e:
-            log.exception(f"connection attempt failed: {e}")
-            try:
-                await asyncio.wait_for(shutdown.wait(), timeout=backoff)
-            except asyncio.TimeoutError:
-                pass
-            backoff = min(backoff * 2, 30.0)
+            log.exception(f"[supervisor] run_once crashed: {e}")
+            await ladder.recover()
 
     await http_runner.cleanup()
     log.info("bye")
