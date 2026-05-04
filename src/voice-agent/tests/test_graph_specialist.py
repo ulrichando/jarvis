@@ -29,8 +29,14 @@ def test_specialist_node_emits_filler_once():
         out1 = specialist_node(state)
         # Filler should be in messages.
         contents = [getattr(m, "content", "") for m in out1["messages"]]
-        assert any("moment" in c.lower() or "on it" in c.lower()
-                   for c in contents)
+        # Filler must be one of the known non-committal fillers.
+        # Pinning the exact list rather than substring-matching avoids
+        # a flaky pass when random.choice picks "Let me check." or
+        # "Looking now." (no "moment" / "on it" substrings).
+        from supervisor_graph.specialist import _FILLERS
+        assert any(c in _FILLERS for c in contents), (
+            f"expected one of _FILLERS in {contents!r}"
+        )
         assert out1["handoff_filler_voiced"] is True
 
     # Second invocation in same state (rare; mostly defensive) must
