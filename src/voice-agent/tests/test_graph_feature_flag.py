@@ -35,3 +35,27 @@ def test_feature_flag_on_uses_graph_supervisor():
             legacy_llm="LEGACY-SENTINEL",
         )
     assert isinstance(chosen, JarvisSupervisorGraphLLM)
+
+
+def test_feature_flag_on_silences_dispatcher_listeners():
+    """When the graph flag is on, the legacy dispatcher's per-turn
+    LLM-swap listeners must not fire — those would silently overwrite
+    the graph supervisor's LLM after the first BANTER turn."""
+    import os
+    import re
+    from pathlib import Path
+
+    src = Path(
+        "/home/ulrich/Documents/Projects/jarvis/src/voice-agent/jarvis_agent.py"
+    ).read_text()
+    # The fix appears in entrypoint(): when the env flag is on,
+    # _dispatch_llm and friends are nuked so the existing
+    # `if _dispatch_llm is not None:` listeners short-circuit.
+    pattern = (
+        r"JARVIS_LANGGRAPH_SUPERVISOR.*?==.*?[\"']1[\"']"
+        r".*?_dispatch_llm\s*=\s*None"
+    )
+    assert re.search(pattern, src, re.DOTALL), (
+        "expected entrypoint() to clear _dispatch_llm when "
+        "JARVIS_LANGGRAPH_SUPERVISOR=1"
+    )
