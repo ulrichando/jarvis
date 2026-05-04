@@ -61,32 +61,22 @@ def specialist_node(state: dict) -> dict:
         logger.info("[specialist] filler: %r → %s", filler, name)
         output_messages.append(AIMessage(content=filler))
 
-    # 2. Re-emit the handoff tool_call so the LLM adapter surfaces it.
-    #    The most recent AIMessage in messages should be task_dispatch's
-    #    output with tool_calls populated. Find it and copy the
-    #    tool_calls into a new AIMessage in our return — this
-    #    duplicates the tool_call into the post-handoff state slice
-    #    that the LLM adapter will scan.
-    last_handoff_call = None
-    for m in reversed(state.get("messages") or []):
-        tcs = getattr(m, "tool_calls", None) or []
-        for tc in tcs:
-            tc_name = tc.get("name", "") if isinstance(tc, dict) else getattr(tc, "name", "")
-            if tc_name.startswith("transfer_to_"):
-                last_handoff_call = tc
-                break
-        if last_handoff_call is not None:
-            break
-
-    if last_handoff_call is not None:
-        output_messages.append(AIMessage(
-            content="",
-            tool_calls=[last_handoff_call],
-        ))
-
-    # 3. Clear pending state so speak_gate releases. The specialist
+    # 2. Clear pending state so speak_gate releases. The specialist
     #    will run in a separate LiveKit turn (dispatched by
-    #    AgentSession after our tool_call chunk is forwarded).
+    #    AgentSession after the LLM adapter forwards
+    #    task_dispatch_node's tool_call chunk).
+    #
+    # NOTE (live-observed 2026-05-04): an earlier version of this node
+    # ALSO re-emitted the transfer_to_* tool_call as a defensive
+    # duplicate. That was a bug — the LLM adapter walks every appended
+    # AIMessage and surfaces tool_calls from each, so the duplicate
+    # caused two identical handoffs to fire on the same turn. AgentSession
+    # rejected with "expected to receive only one AgentTask from the
+    # tool executions" → turn errored → supervisor re-ran from scratch
+    # → fresh filler emitted every cycle ("On it." then "Looking now."
+    # then "Let me check.") until the user gave up. Don't re-add the
+    # re-emit. task_dispatch_node's AIMessage in state.messages already
+    # carries the tool_call; the adapter already surfaces it once.
     return {
         "messages": output_messages,
         "pending_specialist": None,
