@@ -43,19 +43,16 @@ def _pick_filler() -> str:
 def _run_specialist(name: str, request: str, state: dict) -> str:
     """Invoke the named specialist and return its final summary.
 
-    For Phase 5 of this plan, this is a thin shim over the existing
-    `RegistrySpecialist` mechanism. The graph constructs the
-    specialist with the current chat_ctx and runs it in-process; the
-    LiveKit AgentSession dispatches its tools normally.
-
-    NOTE: in Phase 6 (graph-as-LLM adapter, Task 13) the specialist
-    invocation is replaced by an inner LangGraph subgraph that wraps
-    the same RegistrySpecialist as a node. Until then this shim is
-    stubbed in tests via patch.
+    For Phase 5 of this plan, this is a thin shim. Real specialist
+    invocation requires plumbing the existing LiveKit
+    `RegistrySpecialist` into the graph's runtime — that's deferred
+    to a follow-up patch. Until then, return an honest message so
+    the user hears something instead of silence after the filler.
     """
-    raise NotImplementedError(
-        "Wired up by graph.py + llm_adapter.py in later tasks. "
-        "Tests inject this via unittest.mock.patch."
+    return (
+        f"Specialist handoff to {name!r} isn't wired into the graph "
+        f"supervisor yet, sir. (Tracked: complete this in the next "
+        f"patch.)"
     )
 
 
@@ -103,6 +100,11 @@ def specialist_node(state: dict) -> dict:
         output_messages.append(ToolMessage(
             content=summary, tool_call_id=pending[0],
         ))
+    # 4. Also surface the summary as an AIMessage so the LiveKit LLM
+    #    adapter (`_ai_messages_to_chunks`) yields it for TTS. Without
+    #    this the user hears the filler then silence (ToolMessages are
+    #    filtered out before chunks are emitted).
+    output_messages.append(AIMessage(content=summary))
 
     return {
         "messages": output_messages,
