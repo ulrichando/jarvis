@@ -28,6 +28,89 @@ from langchain_groq import ChatGroq
 logger = logging.getLogger("supervisor_graph.dispatch")
 
 
+def _livekit_tools_to_openai_schemas(tools: list[Any]) -> list[dict]:
+    """Convert livekit FunctionTool / RawFunctionTool objects to OpenAI
+    tool-schema dicts so that ChatGroq.bind_tools can consume them.
+
+    livekit FunctionTools include a RunContext parameter. Pydantic cannot
+    generate a JSON schema for RunContext, so passing the raw tool object
+    to bind_tools causes a schema-generation error on the first live
+    TASK turn. This converter uses livekit's own schema builder
+    (build_legacy_openai_schema / RawFunctionToolInfo.raw_schema) which
+    already strips the RunContext parameter before emitting JSON Schema.
+
+    Passthrough rules:
+    - dict objects are passed through unchanged (pre-converted or test
+      fixtures that already carry the right shape).
+    - Objects whose getattr probes all return MagicMock-like values (unit
+      tests) also produce a best-effort schema rather than raising.
+    """
+    try:
+        from livekit.agents.llm.tool_context import FunctionTool as LKFunctionTool
+        from livekit.agents.llm.tool_context import RawFunctionTool as LKRawFunctionTool
+        from livekit.agents.llm.utils import build_legacy_openai_schema
+        _livekit_available = True
+    except ImportError:
+        _livekit_available = False
+
+    schemas: list[dict] = []
+    for t in tools:
+        # Already a dict — pass through unchanged.
+        if isinstance(t, dict):
+            schemas.append(t)
+            continue
+
+        # Use livekit's own schema builder when the type is known — it
+        # already excludes the RunContext parameter correctly.
+        if _livekit_available:
+            if isinstance(t, LKRawFunctionTool):
+                schemas.append({
+                    "type": "function",
+                    "function": t.info.raw_schema,
+                })
+                continue
+            if isinstance(t, LKFunctionTool):
+                try:
+                    schemas.append(build_legacy_openai_schema(t))
+                    continue
+                except Exception as e:
+                    logger.warning(
+                        "[task-dispatch] build_legacy_openai_schema failed for %r: %s; "
+                        "falling back to best-effort extraction",
+                        getattr(t, "name", repr(t)), e,
+                    )
+
+        # Best-effort extraction for unknown tool shapes (mock objects,
+        # future livekit versions with a different class hierarchy, etc.).
+        info = getattr(t, "info", None)
+        name = getattr(info, "name", None) or getattr(t, "name", "") or "tool"
+        description = (
+            getattr(info, "description", None)
+            or getattr(t, "description", "")
+            or ""
+        )
+        # Try several attribute paths for the parameters schema.
+        params = (
+            getattr(info, "arguments_dict", None)
+            or getattr(info, "arguments_schema", None)
+            or getattr(t, "arguments_dict", None)
+            or {"type": "object", "properties": {}, "required": []}
+        )
+        # Guard: if params is not a real dict (e.g. MagicMock), replace
+        # with an empty schema to keep the request well-formed.
+        if not isinstance(params, dict):
+            params = {"type": "object", "properties": {}, "required": []}
+        schemas.append({
+            "type": "function",
+            "function": {
+                "name": str(name),
+                "description": str(description),
+                "parameters": params,
+            },
+        })
+    return schemas
+
+
 def _build_task_llm():
     """Tool-dispatch LLM. Default: tool-tuned llama variant. Override
     via JARVIS_GRAPH_TASK_MODEL."""
@@ -77,9 +160,11 @@ def task_dispatch_node(state: dict, tools: list[Any]) -> dict:
         HumanMessage(content=user_query),
     ]
 
+    tool_schemas = _livekit_tools_to_openai_schemas(tools)
+
     def _try(builder, provider_name: str):
         llm = builder()
-        bound = llm.bind_tools(tools, tool_choice="required")
+        bound = llm.bind_tools(tool_schemas, tool_choice="required")
         return bound.invoke(msgs)
 
     response: AIMessage
