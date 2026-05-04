@@ -27,6 +27,14 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
+__all__ = [
+    "capture_screenshot",
+    "get_active_app",
+    "describe_screen",
+    "VisionTapThrottle",
+    "main",
+]
+
 logger = logging.getLogger("vision_tap")
 
 
