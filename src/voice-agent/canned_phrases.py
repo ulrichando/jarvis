@@ -13,6 +13,10 @@ from pathlib import Path
 logger = logging.getLogger("jarvis.canned")
 
 CACHE_DIR = Path.home() / ".jarvis" / "cache" / "voice"
+# NB: scripts/render-canned-phrases.py uses PHRASES as a dict
+# {filename → text}; this tuple is the stems-only form for the
+# loader's get_phrase_bytes(name) lookup. Keep the basenames in
+# sync with the renderer.
 PHRASES = ("one_second", "connection_unstable", "try_again")
 
 
@@ -22,15 +26,15 @@ def get_phrase_bytes(name: str) -> bytes | None:
     the caller can choose silence (rather than crashing or sending
     zero bytes downstream which the LiveKit emitter rejects)."""
     if name not in PHRASES:
-        logger.debug("[canned] unknown phrase %r — known: %s", name, PHRASES)
+        logger.warning("[canned] unknown phrase %r — known: %s", name, PHRASES)
         return None
     path = CACHE_DIR / f"{name}.wav"
     if not path.exists():
-        logger.debug("[canned] missing: %s", path)
+        logger.info("[canned] missing: %s", path)
         return None
     data = path.read_bytes()
     if not data:
-        logger.debug("[canned] empty WAV: %s", path)
+        logger.info("[canned] empty WAV: %s", path)
         return None
     return data
 
