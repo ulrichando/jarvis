@@ -6,15 +6,13 @@ Pipeline:
   blackboard.tools → if all matched, RELEASE. If any unmatched,
   REJECT with retry budget (max 3) → if exhausted, replace with
   fixed honest fallback.
-
-This file currently exposes only the tokenizer. The node body is
-added in Task 11.
 """
 from __future__ import annotations
 
 import logging
 import re
 from dataclasses import dataclass, field
+from typing import Optional
 
 logger = logging.getLogger("supervisor_graph.grounding_gate")
 
@@ -109,3 +107,86 @@ def extract_claims(text: str) -> list[Claim]:
         keywords = prev_kw + keywords
         claims.append(Claim(verb=word, keywords=keywords, span=(start, end)))
     return claims
+
+
+from langchain_core.messages import AIMessage
+
+GROUNDING_RETRY_LIMIT = 3
+GROUNDING_FALLBACK_MESSAGE = "Something didn't go as expected, sir."
+
+
+def grounding_gate_node(state: dict, *, client=None) -> dict:
+    """Validate the latest assistant draft against blackboard evidence.
+
+    Three outcomes:
+      - "release"    : all claims have evidence (or no claims found) → END
+      - "regenerate" : at least one claim lacks evidence → graph re-runs
+                       the dispatch step with a corrective system message
+      - "release" with replaced fallback message : retry budget exhausted
+
+    `client` is a BlackboardClient instance. Tests inject a stub.
+    """
+    if client is None:
+        from blackboard.client import BlackboardClient
+        client = BlackboardClient()
+
+    msgs = state.get("messages") or []
+    if not msgs:
+        return {"__route__": "release"}
+
+    last = msgs[-1]
+    text = getattr(last, "content", "") or ""
+    if not isinstance(text, str):
+        return {"__route__": "release"}
+
+    claims = extract_claims(text)
+    if not claims:
+        # Nothing to validate.
+        return {"__route__": "release"}
+
+    from blackboard.gates import find_tool_evidence
+
+    rejected: list[str] = []
+    for claim in claims:
+        ev = find_tool_evidence(
+            client,
+            claim_keywords=[claim.verb, *claim.keywords],
+            within_seconds=30,
+        )
+        if ev is None:
+            rejected.append(f"{claim.verb} ({', '.join(claim.keywords[:3])})")
+
+    if not rejected:
+        # All claims grounded.
+        logger.info("[grounding] released — %d claim(s) all matched", len(claims))
+        return {"__route__": "release"}
+
+    retry_count = state.get("grounding_retry_count", 0)
+    if retry_count >= GROUNDING_RETRY_LIMIT:
+        logger.warning(
+            "[grounding] retry budget exhausted (rejected: %s); "
+            "replacing draft with honest fallback",
+            rejected,
+        )
+        return {
+            "__route__": "release",
+            "messages": [AIMessage(content=GROUNDING_FALLBACK_MESSAGE)],
+            "grounding_rejected_claims": list(state.get("grounding_rejected_claims", [])) + rejected,
+        }
+
+    logger.warning(
+        "[grounding] REJECT (retry %d/%d) — claims without evidence: %s",
+        retry_count + 1, GROUNDING_RETRY_LIMIT, rejected,
+    )
+    return {
+        "__route__": "regenerate",
+        "grounding_retry_count": retry_count + 1,
+        "grounding_rejected_claims": list(state.get("grounding_rejected_claims", [])) + rejected,
+    }
+
+
+def grounding_gate_branch(state: dict) -> str:
+    """Branch fn for `add_conditional_edges`. Returns 'release' or
+    'regenerate'."""
+    route = state.get("__route__")
+    return "regenerate" if route == "regenerate" else "release"
