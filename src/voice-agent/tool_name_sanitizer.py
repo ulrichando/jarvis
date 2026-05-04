@@ -190,14 +190,45 @@ def install() -> None:
                 raise
 
             if _tool_takes_context(tool):
-                # Can't construct a RunContext from inside _run.
-                # Surface the original error so the user gets the
-                # apology voice (Phase 9.2) instead of a wrong answer.
+                # Can't construct a RunContext from inside _run, so
+                # we can't actually run the tool. But propagating the
+                # original APIConnectionError trips _LLM_BREAKER (it
+                # counts this as a Groq-down failure even though it's
+                # an LLM tool-call format bug). And it leaves the user
+                # with silence.
+                #
+                # Instead: emit a soft recovery chunk so the user hears
+                # SOMETHING and the breaker stays closed. The next turn
+                # gets a fresh chance with the recovered turn now in
+                # chat_ctx, which usually nudges the LLM to format the
+                # call correctly. Live-observed 2026-05-04: with the
+                # raise-version, JARVIS went silent + restart-looped.
                 logger.warning(
-                    "[sanitizer] tool %r requires context; can't recover inline",
-                    real_name,
+                    "[sanitizer] tool %r requires context; soft recovery "
+                    "(args truncated: %s)",
+                    real_name, args_json[:80],
                 )
-                raise
+                soft_msg = (
+                    "Let me try that differently, sir."
+                    if real_name == "delegate"
+                    else "One moment, sir — let me rephrase that."
+                )
+                soft_chunk = agents_llm.ChatChunk(
+                    id=f"soft_{uuid.uuid4().hex[:8]}",
+                    delta=agents_llm.ChoiceDelta(
+                        role="assistant",
+                        content=soft_msg,
+                    ),
+                )
+                try:
+                    self._event_ch.send_nowait(soft_chunk)
+                    return  # success — breaker stays closed
+                except Exception as send_err:
+                    logger.warning(
+                        "[sanitizer] could not enqueue soft recovery: %s",
+                        send_err,
+                    )
+                    raise
 
             # Parse JSON args. If parsing fails, fall through to original.
             try:
