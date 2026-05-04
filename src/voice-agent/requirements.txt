@@ -38,5 +38,6 @@ setuptools<70
 # (Groq default; DeepSeek/OpenAI/Anthropic via JARVIS_ROUTER_PROVIDER).
 # Set JARVIS_GRAPH_DISABLED=1 to revert to the inline async dispatcher.
 langgraph>=1.0
+langgraph-checkpoint-sqlite>=3.0.3
 langchain>=1.0
 langchain-groq>=1.0
