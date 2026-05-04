@@ -5641,6 +5641,22 @@ async def entrypoint(ctx: JobContext) -> None:
     # Feature-flag the supervisor LLM. When JARVIS_LANGGRAPH_SUPERVISOR=1,
     # the LangGraph state-shape supervisor takes over — see
     # supervisor_graph/ and the 2026-05-04 spec. Default off.
+    #
+    # When the LangGraph supervisor is active, disable the legacy
+    # per-turn dispatcher mutations of session._llm. The graph
+    # supervisor wraps the entire turn flow; the BANTER / REASONING
+    # fast-path listeners that swap session._llm would otherwise
+    # silently overwrite our adapter on every turn.
+    if os.environ.get("JARVIS_LANGGRAPH_SUPERVISOR", "0") == "1":
+        _dispatch_llm = None
+        _dispatch_tts = None
+        _turn_graph = None
+        _turn_classifier = None
+        logger.info(
+            "[supervisor] graph flag on — legacy dispatcher disabled "
+            "(session._llm mutations short-circuited)"
+        )
+
     llm_arg = _pick_supervisor_llm(
         specialist_tools=build_all_transfer_tools(),
         legacy_llm=llm_arg,
