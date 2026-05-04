@@ -77,20 +77,32 @@ def test_graph_task_with_handoff_path_end_to_end():
     with patch(
         "supervisor_graph.dispatch._build_task_llm",
         return_value=fake_task_llm,
-    ), patch(
-        "supervisor_graph.specialist._run_specialist",
-        return_value="Tab opened, sir.",
     ):
         g = build_graph(specialist_tools=[fake_specialist_tool])
         out = g.invoke(initial_state(user_query="open a tab"))
 
-    # Filler + final summary must both be present.
+    # Filler must be present (the only thing the graph emits before
+    # AgentSession dispatches the tool_call). The actual specialist
+    # work happens in a separate LiveKit turn, NOT inside the graph.
     contents = " ".join(
         getattr(m, "content", "") for m in out["messages"]
     ).lower()
     assert ("moment" in contents or "on it" in contents
             or "let me check" in contents or "looking now" in contents)
-    assert "tab opened" in contents
-    # speak_gate released cleanly.
+    # The transfer_to_browser tool_call must be RE-EMITTED in
+    # specialist_node's output so the LLM adapter forwards it as a
+    # ChatChunk with tool_calls populated.
+    has_handoff_tc = False
+    for m in out["messages"]:
+        for tc in (getattr(m, "tool_calls", None) or []):
+            name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name")
+            if name == "transfer_to_browser":
+                has_handoff_tc = True
+                break
+    assert has_handoff_tc, (
+        "expected transfer_to_browser tool_call surfaced for AgentSession"
+    )
+    # speak_gate released cleanly — pending state cleared so this
+    # turn ends and AgentSession can dispatch the tool.
     assert out["pending_specialist"] is None
     assert out["pending_tool_calls"] == []
