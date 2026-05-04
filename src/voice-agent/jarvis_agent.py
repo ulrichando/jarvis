@@ -434,6 +434,74 @@ def _build_breakered_stt() -> _BreakeredGroqSTT:
     return _BreakeredGroqSTT(model="whisper-large-v3-turbo", language="en")
 
 
+class _BreakeredLLMStream:
+    """Wraps a livekit-agents LLMStream so the first __anext__ goes
+    through _LLM_BREAKER. After the first chunk arrives we pass
+    through untouched — the breaker only protects against cold
+    starts (DNS / first-byte latency), not mid-stream stalls.
+
+    Mirrors the FallbackAdapter contract: convert CircuitOpenError
+    and asyncio.TimeoutError to APIConnectionError / APITimeoutError
+    so livekit-agents cascades to the next LLM in the FallbackAdapter
+    chain (typically DeepSeek)."""
+
+    def __init__(self, inner, breaker):
+        self._inner = inner
+        self._breaker = breaker
+        self._first = True
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._first:
+            self._first = False
+            try:
+                return await self._breaker.call(self._inner.__anext__)
+            except CircuitOpenError as e:
+                raise _APIConnectionError() from e
+            except asyncio.TimeoutError:
+                raise _APITimeoutError() from None
+        return await self._inner.__anext__()
+
+    async def aclose(self):
+        if hasattr(self._inner, "aclose"):
+            await self._inner.aclose()
+
+    # Some livekit code paths poke .ctx, .messages, etc. on the
+    # underlying stream. Forward attribute access by default so we're
+    # transparent to the caller.
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+class _BreakeredGroqLLM(groq.LLM):
+    """groq.LLM whose `chat()` returns a stream gated by _LLM_BREAKER.
+    The first chunk read goes through the breaker; later chunks pass
+    through unmodified. When the breaker is open or the breaker's
+    own timeout fires, the FallbackAdapter sees APIConnectionError /
+    APITimeoutError and cascades to the next LLM (typically DeepSeek)
+    within ms instead of the upstream's ~30s default."""
+
+    def chat(self, *args, **kw):
+        inner_stream = super().chat(*args, **kw)
+        return _BreakeredLLMStream(inner_stream, _LLM_BREAKER)
+
+    @staticmethod
+    async def _call_with_breaker_for_test():
+        """Test seam — exercises only the breaker-open path. Like the
+        TTS seam (Task 3), the LLM factory is straightforward enough
+        that we don't need the seam itself to drive construction."""
+        async def _no_op():
+            return None
+        try:
+            return await _LLM_BREAKER.call(_no_op)
+        except CircuitOpenError as e:
+            raise _APIConnectionError() from e
+        except asyncio.TimeoutError:
+            raise _APITimeoutError() from None
+
+
 # ── Quiet hours ───────────────────────────────────────────────────────
 # Between JARVIS_QUIET_START and JARVIS_QUIET_END (local time, 24h),
 # ambient VAD picks up sleeping household noise and JARVIS acts on it
@@ -985,14 +1053,14 @@ def _build_dispatching_llm() -> DispatchingLLM:
     # Groq's compatibility layer rejects it. Don't re-add until
     # Groq announces support. Latency improvement still pending —
     # next try should be Groq's `service_tier` field instead.
-    main_raw = groq.LLM(
+    main_raw = _BreakeredGroqLLM(
         model="llama-3.3-70b-versatile", temperature=0.6, **LLM_KWARGS,
     )
     main_raw._jarvis_label = "groq:llama-3.3-70b-versatile"
     main = _wrap(main_raw)
 
     try:
-        banter_raw = groq.LLM(
+        banter_raw = _BreakeredGroqLLM(
             model="llama-3.1-8b-instant", temperature=0.6, **LLM_KWARGS,
         )
         banter_raw._jarvis_label = "groq:llama-3.1-8b-instant"
@@ -1002,7 +1070,7 @@ def _build_dispatching_llm() -> DispatchingLLM:
         banter = main
 
     try:
-        reasoning_raw = groq.LLM(
+        reasoning_raw = _BreakeredGroqLLM(
             model="qwen/qwen3-32b", temperature=0.6, **LLM_KWARGS,
         )
         reasoning_raw._jarvis_label = "groq:qwen3-32b"
@@ -1012,7 +1080,7 @@ def _build_dispatching_llm() -> DispatchingLLM:
         reasoning = main
 
     try:
-        emotional_raw = groq.LLM(
+        emotional_raw = _BreakeredGroqLLM(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
             temperature=0.7, **LLM_KWARGS,
         )
