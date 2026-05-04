@@ -144,6 +144,15 @@ handoff_text_suppressor.install()
 import llm_idle_timeout
 llm_idle_timeout.install()
 
+# Defensive monkey-patch on livekit.rtc.Room to swallow KeyError on
+# stale track SIDs during reconnect — installs in BOTH the voice-
+# client process and the agent job subprocess (livekit-agents
+# framework constructs its own Room before our entrypoint runs).
+# See src/voice-agent/livekit_track_guard.py and spec
+# 2026-05-04-jarvis-voice-resilience-design.md.
+import livekit_track_guard as _track_guard
+_track_guard.install()
+
 # ── Hub client (Phase 1: voice publishes conversation events) ─────────
 # Make src/hub importable without polluting sys.path globally. The
 # `logger` global below isn't defined yet at this point in module
