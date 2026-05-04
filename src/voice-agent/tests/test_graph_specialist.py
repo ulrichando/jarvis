@@ -67,10 +67,20 @@ def test_specialist_node_clears_pending():
     assert out["pending_tool_calls"] == []
 
 
-def test_specialist_node_re_emits_tool_call():
-    """The most recent transfer_to_* tool_call from messages must be
-    surfaced as a tool_call in the output AIMessage so the LLM
-    adapter forwards it to AgentSession."""
+def test_specialist_node_does_NOT_re_emit_tool_call():
+    """REGRESSION GUARD (live-observed 2026-05-04): an earlier version
+    of specialist_node re-emitted the most-recent transfer_to_* tool_call
+    as a defensive duplicate. The LLM adapter walks every appended
+    AIMessage and surfaces tool_calls from each, so the duplicate caused
+    two identical handoffs to fire on the same turn. AgentSession
+    rejected with "expected to receive only one AgentTask from the tool
+    executions" → turn errored → supervisor re-ran → fresh filler every
+    cycle ("On it." then "Looking now." etc.) until the user gave up.
+
+    The fix: specialist_node MUST NOT add an AIMessage with tool_calls
+    to its output. task_dispatch_node's AIMessage in state.messages
+    already carries the tool_call; the adapter surfaces it once.
+    """
     from supervisor_graph.specialist import specialist_node
     from supervisor_graph.state import initial_state
 
@@ -81,18 +91,12 @@ def test_specialist_node_re_emits_tool_call():
         "transfer_to_browser", {"request": "open a tab"}, "call_abc"
     )]
     out = specialist_node(state)
-    # Find the AIMessage with tool_calls in the output.
-    tool_call_msg = None
+    # No output message may carry tool_calls — only filler content.
     for m in out["messages"]:
-        if getattr(m, "tool_calls", None):
-            tool_call_msg = m
-            break
-    assert tool_call_msg is not None, (
-        f"expected an AIMessage with tool_calls in output; got "
-        f"{[type(m).__name__ for m in out['messages']]}"
-    )
-    tcs = tool_call_msg.tool_calls
-    assert len(tcs) == 1
-    tc = tcs[0]
-    name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name")
-    assert name == "transfer_to_browser"
+        tcs = getattr(m, "tool_calls", None) or []
+        assert not tcs, (
+            f"specialist_node must not re-emit tool_calls; "
+            f"got {tcs!r} on a {type(m).__name__}. This re-opens the "
+            f"double-handoff bug (AgentSession rejects with 'expected "
+            f"only one AgentTask')."
+        )
