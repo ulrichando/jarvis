@@ -21,7 +21,14 @@ from circuit_breaker import (
 
 
 def _run(coro):
-    return asyncio.new_event_loop().run_until_complete(coro)
+    """Run an async coroutine in a fresh event loop. Closes the loop
+    afterwards to avoid ResourceWarning + selector fd leaks across
+    the test session."""
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
 async def _ok():
