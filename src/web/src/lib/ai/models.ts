@@ -74,6 +74,14 @@ const MODEL_IDS: Record<string, { provider: Provider; modelId: string }> = {
   "kimi-k2-agent": { provider: "kimi", modelId: "kimi-k2.6" },
   "kimi-k2-swarm": { provider: "kimi", modelId: "kimi-k2.6" },
 
+  // Moonshot vision family. K2.6 itself is text-only — these are the
+  // separate vision-capable models. Image input must be base64
+  // (Moonshot rejects external URLs as of 2026-05-04). Useful for
+  // computer-use/screen-grounding flows alongside K2.6 text.
+  "kimi-vision-8k": { provider: "kimi", modelId: "moonshot-v1-8k-vision-preview" },
+  "kimi-vision-32k": { provider: "kimi", modelId: "moonshot-v1-32k-vision-preview" },
+  "kimi-vision-128k": { provider: "kimi", modelId: "moonshot-v1-128k-vision-preview" },
+
   "llama-3.3-70b": { provider: "groq", modelId: "llama-3.3-70b-versatile" },
   "gpt-oss-120b": { provider: "groq", modelId: "openai/gpt-oss-120b" },
   "qwen3-32b": { provider: "groq", modelId: "qwen/qwen3-32b" },
