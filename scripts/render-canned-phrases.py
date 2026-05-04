@@ -13,30 +13,34 @@ import os
 import sys
 from pathlib import Path
 
-# Allow imports from src/voice-agent so we can reuse the agent's
-# Groq TTS construction conventions.
-sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "voice-agent"))
-
 from livekit.plugins import groq
 
 CACHE_DIR = Path.home() / ".jarvis" / "cache" / "voice"
 
 
 def _load_keys_env() -> None:
-    """Mirror jarvis_agent.py: load ~/.jarvis/keys.env into os.environ
-    so GROQ_API_KEY is available without needing a full systemd env."""
-    keys_env = Path.home() / ".jarvis" / "keys.env"
-    if not keys_env.exists():
+    """Load ~/.jarvis/keys.env into os.environ. keys.env values WIN
+    on collision so a stale shell-exported key doesn't beat the live
+    one. Mirrors production behaviour in jarvis_agent.py."""
+    p = Path.home() / ".jarvis" / "keys.env"
+    if not p.exists():
         return
-    for line in keys_env.read_text().splitlines():
+    for line in p.read_text().splitlines():
         line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+        if not line or line.startswith("#"):
             continue
-        k, _, v = line.partition("=")
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
         k = k.strip()
         v = v.strip().strip('"').strip("'")
-        if k and k not in os.environ:
+        if k and v:
             os.environ[k] = v
+
+
+# NB: src/voice-agent/canned_phrases.py uses PHRASES as a tuple of
+# stems without extension; this dict maps filename → text for
+# rendering. The base names (without `.wav`) must match.
 PHRASES = {
     "one_second.wav":          "One second, sir.",
     "connection_unstable.wav": "Connection unstable, sir.",
@@ -57,10 +61,12 @@ def _read_voice_setting() -> str:
     return raw or "troy"
 
 
-async def main():
+async def main() -> int:
+    failures = 0
     _load_keys_env()
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    voice = os.environ.get("JARVIS_VOICE") or _read_voice_setting()
+    # Match production: jarvis_agent.py uses JARVIS_TTS_VOICE.
+    voice = os.environ.get("JARVIS_TTS_VOICE") or _read_voice_setting()
     print(f"voice: {voice}")
 
     # Mirror jarvis_agent.py's groq.TTS construction. The agent uses
@@ -71,20 +77,38 @@ async def main():
 
     for filename, text in PHRASES.items():
         out_path = CACHE_DIR / filename
+        tmp_path = out_path.with_suffix(".wav.tmp")
         print(f"rendering: {text!r} -> {out_path}")
         try:
             stream = tts.synthesize(text)
-            with open(out_path, "wb") as f:
-                async for chunk in stream:
-                    f.write(chunk.frame.data.tobytes())
+            frames = []
+            async for chunk in stream:
+                frames.append(chunk.frame)
+            if not frames:
+                print(f"  ERROR: no frames received from Groq")
+                failures += 1
+                continue
+            from livekit import rtc
+            combined = rtc.combine_audio_frames(frames)
+            wav_bytes = combined.to_wav_bytes()
+            tmp_path.write_bytes(wav_bytes)
+            tmp_path.replace(out_path)  # atomic on POSIX
             size = out_path.stat().st_size
-            print(f"  wrote {size} bytes")
-            if size == 0:
-                print(f"  WARNING: zero bytes — render failed for {filename}")
+            print(f"  wrote {size} bytes (WAV)")
         except Exception as e:
             print(f"  ERROR: {e}")
-            print(f"  (run again when Groq TTS is reachable)")
+            failures += 1
+            # Clean up the .tmp file if it exists
+            try:
+                tmp_path.unlink()
+            except FileNotFoundError:
+                pass
+
+    if failures:
+        print(f"\n{failures}/{len(PHRASES)} phrases failed — re-run when Groq TTS is reachable")
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    sys.exit(asyncio.run(main()))
