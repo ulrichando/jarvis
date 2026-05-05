@@ -180,11 +180,52 @@ def _maybe_write_intent(text: str, route: str, confidence: float) -> None:
         logger.warning("[classify] blackboard intent write failed: %s", e)
 
 
+# Wake / status-check phrases. The user is checking JARVIS is alive,
+# not asking him to perform a tool. Live-observed 2026-05-04: "Jarvis
+# wake up" was being LLM-classified as TASK conf=0.90 → routed to
+# transfer_to_desktop with request "Wake up from silent mode" → Groq
+# malformed the tool call → fallback fired → user heard a filler then
+# nothing. Wake phrases short-circuit to BANTER so the supervisor
+# answers conversationally ("I'm here, sir") instead of dispatching.
+_WAKE_OR_LIVENESS_RE = re.compile(
+    r"\b(?:"
+    r"wake\s+up|wake\s+the\s+\w+\s+up|come\s+back|"
+    r"are\s+you\s+(?:there|listening|alive|broken|ok|awake|back|with\s+me)|"
+    r"you\s+there|you\s+with\s+me|you\s+alive|"
+    r"talk\s+again|can\s+you\s+talk|hello\?+|hello\s+jarvis"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _is_wake_or_liveness(text: str) -> bool:
+    """True if the user is asking JARVIS to wake / confirm liveness,
+    not perform a task. Bounded to short utterances (≤8 words) to
+    avoid false positives on narrative text like 'I went to wake up
+    at 6'. Mirrors the existing _COMMAND_MAX_WORDS gate in
+    jarvis_agent.py for the same reason."""
+    if not text:
+        return False
+    if len(text.split()) > 8:
+        return False
+    return bool(_WAKE_OR_LIVENESS_RE.search(text))
+
+
 def classify_node(state) -> dict:
     """LangGraph node. Regex first, LLM fallback. Returns the partial
     state dict (`route`, `route_confidence`) so LangGraph's reducer
     merges it into the parent state."""
     text = state.get("user_query") or ""
+    # Wake / liveness checks are CONVERSATIONAL, not tools — even
+    # though they contain imperative verbs ("wake up"). Short-circuit
+    # to BANTER before either the verb-initial regex or the LLM
+    # classifier can mis-route them. Same priority as the bare-vocative
+    # fast-path in jarvis_agent.on_user_turn_completed.
+    if _is_wake_or_liveness(text):
+        logger.info("[classify] wake/liveness fast-path → BANTER: %r", text[:80])
+        _maybe_write_intent(text, "BANTER", 1.0)
+        return {"route": "BANTER", "route_confidence": 1.0}
+
     if is_verb_initial_task(text):
         logger.info("[classify] regex matched TASK: %r", text[:80])
         _maybe_write_intent(text, "TASK", 1.0)
