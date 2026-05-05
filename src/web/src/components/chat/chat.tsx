@@ -234,6 +234,27 @@ function isDiagnosticCommand(rawCommand: string): boolean {
 // Detects a `<jarvisPlan stages="N">` declaration in the assistant
 // text and returns N if found. Used by the chat layer to track
 // long-horizon multi-stage builds (Replit Agent / Devin pattern).
+// Did the assistant emit a `<boltArtifact>` or `<boltAction>` opening
+// tag without a matching closer? Happens when the stream ends
+// mid-tag — sometimes provider reports finishReason="stop" but the
+// content is clearly incomplete (the closing tag is missing). Used
+// by the auto-continue trigger to recover the same way it does on
+// an explicit length finish: "continue exactly where you stopped"
+// gets the model to emit the closer.
+function hasOpenArtifactTag(text: string): boolean {
+  // Lowercase + count opens vs closes for each tag. Conservative: a
+  // tag is considered "open" only when there are MORE opens than
+  // closes; equal counts means everything balanced even if the order
+  // is weird.
+  const lower = text.toLowerCase();
+  const opens = (s: string) => (lower.match(new RegExp(`<${s}\\b`, "g")) || []).length;
+  const closes = (s: string) => (lower.match(new RegExp(`</${s}\\s*>`, "g")) || []).length;
+  return (
+    opens("boltartifact") > closes("boltartifact") ||
+    opens("boltaction") > closes("boltaction")
+  );
+}
+
 function detectStageCount(assistantText: string): number | null {
   const m = assistantText.match(/<jarvisplan\b[^>]*\bstages\s*=\s*["'](\d+)["']/i);
   if (!m) return null;
@@ -855,16 +876,19 @@ export function Chat({
     const runOneStream = async (
       messagesForRequest: UIMessage[],
     ): Promise<"length" | "complete" | "error" | "abort"> => {
-      // Watchdog: if the server doesn't return ANY response within 20s,
+      // Watchdog: if the server doesn't return ANY response within 60s,
       // something's wrong (provider rejected, route hung, network dead).
       // Surface a toast so the user isn't just staring at the spinner.
+      // 60s (was 20s) accommodates legitimately slow paths like K2.6
+      // Swarm's decompose+fan-out before the response opens. Below 60s
+      // the user should be staring at active progress already.
       const stuck = setTimeout(() => {
-        toast.warning("Server hasn't responded in 20s", {
+        toast.warning("Server hasn't responded in 60s", {
           description:
             "The provider may be slow or rejecting the request. Click Stop and try a smaller brief or a different model.",
           duration: 8000,
         });
-      }, 20000);
+      }, 60000);
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -993,6 +1017,17 @@ export function Chat({
             }
           }
         }
+      }
+      // Truncation detection: even when the provider reports
+      // finishReason="stop" (not "length"), the assistant text can
+      // end mid-`<boltAction>` or mid-`<boltArtifact>` — the model
+      // ran out of internal budget but didn't surface it as a length
+      // signal. Treat that as a length finish so auto-continue can
+      // close the artifact properly. This is a CONTINUATION of the
+      // same turn ("finish what you started"), not a synthetic
+      // retry — Cursor / Bolt / Claude Code all do this.
+      if (finishReason !== "length" && hasOpenArtifactTag(assistantText)) {
+        return "length";
       }
       return finishReason === "length" ? "length" : "complete";
     };

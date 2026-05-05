@@ -203,9 +203,11 @@ describe("E2E: Swarm", () => {
     });
     expect(resp.status).toBe(200);
     expect(resp.headers.get("X-Kimi-Mode")).toBe("swarm");
-    expect(resp.headers.get("X-Kimi-Swarm-Subagents")).toBe("3");
     const body = await readSse(resp);
     expect(body).toContain("Synthesized comparison");
+    // The composite stream emits a kimi-swarm-status data part for each
+    // sub-agent landing — verifies the live progress counter wires through.
+    expect(body).toContain("data-kimi-swarm-status");
   });
 });
 
