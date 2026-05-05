@@ -22,6 +22,7 @@ import { Markdown } from "@/components/markdown/markdown";
 import { Sources, extractSources } from "./sources";
 import { KimiReasoning } from "./kimi-reasoning";
 import { KimiToolTrace, type ToolTraceEntry } from "./kimi-tool-trace";
+import { KimiSwarmProgress } from "./kimi-swarm-progress";
 import { cn } from "@/lib/utils";
 
 // Synthetic-prompt patterns the chat layer's plumbing emits but the
@@ -192,6 +193,28 @@ function toolTraceFromMessage(parts: UIMessage["parts"]): ToolTraceEntry[] {
   return out;
 }
 
+// K2.6 Swarm mode emits `data-kimi-swarm-status` data parts as the
+// fan-out completes. The handler currently emits one initial 0/N event
+// then one per sub-agent settled (composite-stream prefix). The latest
+// event wins — we render a single progress card from the most recent.
+function swarmStatusFromMessage(
+  parts: UIMessage["parts"],
+): { total: number; completed: number; current?: string } | null {
+  let last: { total: number; completed: number; current?: string } | null = null;
+  for (const p of parts) {
+    if (typeof p !== "object" || p === null) continue;
+    const obj = p as Record<string, unknown>;
+    if (obj.type === "data-kimi-swarm-status") {
+      last = {
+        total: Number(obj.total ?? 0),
+        completed: Number(obj.completed ?? 0),
+        current: obj.current as string | undefined,
+      };
+    }
+  }
+  return last;
+}
+
 export function Message({
   message,
   isStreaming,
@@ -234,6 +257,7 @@ export function Message({
   const text = textFromParts(message.parts);
   const kimiReasoning = kimiReasoningFromMessage(message.parts);
   const toolTrace = toolTraceFromMessage(message.parts);
+  const swarmStatus = swarmStatusFromMessage(message.parts);
 
   // Skip rendering the chat layer's synthetic auto-continue prompt
   // when it leaks into history. New turns no longer persist this
@@ -328,6 +352,14 @@ export function Message({
             />
           ) : null}
           {toolTrace.length > 0 ? <KimiToolTrace entries={toolTrace} /> : null}
+          {swarmStatus ? (
+            <KimiSwarmProgress
+              total={swarmStatus.total}
+              completed={swarmStatus.completed}
+              current={swarmStatus.current}
+              done={Boolean(text)}
+            />
+          ) : null}
           {reasoning ? (
             <ReasoningBlock
               reasoning={reasoning}
