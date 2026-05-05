@@ -17,6 +17,7 @@ import {
   setWorkspaceConversation,
   writeFile,
 } from "@/lib/workspace/storage";
+import { readKnowledgeBlock } from "@/lib/workspace/knowledge";
 import { generateQuestions, renderQuestionsHtml } from "@/lib/design/questionnaire";
 import { buildWorkbenchPrompt, buildDesignPrompt } from "@/lib/actions/jarvis-prompt";
 import { buildDesignContextBlock } from "@/lib/design-context";
@@ -240,6 +241,16 @@ export async function POST(req: Request) {
   console.log(
     `[chat] POST mode=${mode ?? "regular"} model=${modelId} msgs=${messages.length} ws=${workspaceId ?? "—"}`,
   );
+
+  // K2.6 mode-aware routing. Each kimi-k2-{instant,thinking,agent,swarm}
+  // model id maps to the same upstream API but needs different params /
+  // orchestration to deliver the user-facing semantics. The full
+  // dispatcher lives in src/lib/ai/kimi/. Gated by KIMI_K2_MODES_ENABLED
+  // so we can roll it out behind a flag and revert in one env-var flip.
+  if (modelId.startsWith("kimi-k2-") && process.env.KIMI_K2_MODES_ENABLED === "1") {
+    const { routeKimiMode } = await import("@/lib/ai/kimi");
+    return routeKimiMode({ messages, model, system }, modelId);
+  }
 
   let selected;
   try {
@@ -536,6 +547,25 @@ ${designFiles.map((p) => `    ${p}`).join("\n")}
         }
       }
     }
+  }
+
+  // Workspace-scoped custom instructions (the .cursorrules / CLAUDE.md
+  // pattern). Editable from the workbench Settings tab. Trimmed to
+  // 8K on save in updateWorkspaceMeta. Appended LAST so workspace-
+  // specific rules override more general ones from defaults / mode
+  // prompts above.
+  if (workspaceId) {
+    const ws = await getWorkspace(workspaceId);
+    if (ws?.customInstructions) {
+      finalSystem += `\n\n## Custom instructions for this workspace\n${ws.customInstructions}\n`;
+    }
+    // Workspace knowledge — uploaded reference docs (CV, brand guide,
+    // API contract, etc.). Each enabled doc is read whole, truncated
+    // to 4K chars, concatenated into a "## Workspace knowledge"
+    // section. Treated as authoritative project facts. Settings →
+    // Knowledge manages the docs.
+    const knowledge = await readKnowledgeBlock(workspaceId);
+    if (knowledge) finalSystem += knowledge;
   }
 
   // If this chat belongs to a Project, mix in the project's name,
