@@ -55,9 +55,10 @@ class JarvisState(TypedDict):
     grounding_retry_count: int
     grounding_rejected_claims: list[str]
 
-    # V2 — speculative prefetch
-    speculative_dispatch_id: Optional[str]
-    speculative_result: Optional[dict[str, Any]]
+    # V2 — speculative prefetch deferred to Phase 2 (the node was
+    # implemented in 2026-05-04 but never wired into the graph; rather
+    # than ship inert code, we removed it. State fields will return when
+    # a working dispatch path is in place.)
 
 
 def initial_state(user_query: str = "", audio_meta: Optional[dict] = None) -> JarvisState:
@@ -78,6 +79,4 @@ def initial_state(user_query: str = "", audio_meta: Optional[dict] = None) -> Ja
         retry_attempt=0,
         grounding_retry_count=0,
         grounding_rejected_claims=[],
-        speculative_dispatch_id=None,
-        speculative_result=None,
     )
