@@ -159,6 +159,27 @@ def classify_with_llm(
         return {"route": "BANTER", "confidence": 0.3}
 
 
+def _maybe_write_intent(text: str, route: str, confidence: float) -> None:
+    """Write the Intent to blackboard if v2 flag is on. Best-effort —
+    failures are logged and swallowed."""
+    if os.environ.get("JARVIS_BLACKBOARD", "0") != "1":
+        return
+    try:
+        import time as _time
+        from blackboard.client import BlackboardClient
+        from blackboard.schema import Intent
+        bb = BlackboardClient()
+        bb.write_intent(Intent(
+            turn_id=f"turn_{int(_time.time() * 1000)}",
+            route=route,
+            confidence=confidence,
+            raw_text=text,
+            ts=_time.time(),
+        ))
+    except Exception as e:
+        logger.warning("[classify] blackboard intent write failed: %s", e)
+
+
 def classify_node(state) -> dict:
     """LangGraph node. Regex first, LLM fallback. Returns the partial
     state dict (`route`, `route_confidence`) so LangGraph's reducer
@@ -166,6 +187,7 @@ def classify_node(state) -> dict:
     text = state.get("user_query") or ""
     if is_verb_initial_task(text):
         logger.info("[classify] regex matched TASK: %r", text[:80])
+        _maybe_write_intent(text, "TASK", 1.0)
         return {"route": "TASK", "route_confidence": 1.0}
 
     history = state.get("messages") or []
@@ -174,4 +196,5 @@ def classify_node(state) -> dict:
         "[classify] LLM route=%s conf=%.2f text=%r",
         result["route"], result["confidence"], text[:80],
     )
+    _maybe_write_intent(text, result["route"], result["confidence"])
     return {"route": result["route"], "route_confidence": result["confidence"]}
