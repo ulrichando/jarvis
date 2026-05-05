@@ -249,6 +249,16 @@ def main() -> None:
     )
     logger.info("[vision-tap] starting")
 
+    # Cost gate: vision_tap makes paid Moonshot API calls. Require
+    # explicit opt-in via JARVIS_VISION_TAP=1, separate from the
+    # JARVIS_BLACKBOARD flag (which is free, Redis-only).
+    if os.environ.get("JARVIS_VISION_TAP", "0") != "1":
+        logger.warning(
+            "[vision-tap] JARVIS_VISION_TAP is not set; exiting cleanly. "
+            "To enable vision capture, set JARVIS_VISION_TAP=1."
+        )
+        return
+
     from blackboard.client import BlackboardClient
 
     bb = BlackboardClient()
