@@ -1,4 +1,4 @@
-"""grounding_gate_node — validates draft against blackboard with retry budget."""
+"""grounding_gate_node — Phase 1 binary release-or-replace, TASK-only."""
 import sys
 import time
 from pathlib import Path
@@ -10,10 +10,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 def _draft_state(text: str, retry_count: int = 0):
-    """Build a JarvisState with one assistant message containing `text`."""
+    """Build a JarvisState with one assistant TASK-route message."""
     from langchain_core.messages import AIMessage
     from supervisor_graph.state import initial_state
     s = initial_state()
+    s["route"] = "TASK"
     s["messages"] = [AIMessage(content=text)]
     s["grounding_retry_count"] = retry_count
     return s
@@ -41,18 +42,9 @@ def test_release_when_all_claims_have_evidence():
     from supervisor_graph.grounding_gate import grounding_gate_node
     state = _draft_state("I've opened a new tab, sir.")
     out = grounding_gate_node(state, client=_stub_client_with_evidence("ext_new_tab"))
-    assert out["__route__"] == "release"
-    assert "messages" not in out  # message untouched
-
-
-def test_reject_and_retry_when_claim_lacks_evidence():
-    from supervisor_graph.grounding_gate import grounding_gate_node
-    state = _draft_state("I've sent the email, sir.")
-    # No evidence on board.
-    out = grounding_gate_node(state, client=_stub_client_empty())
-    assert out["__route__"] == "regenerate"
-    assert out["grounding_retry_count"] == 1
-    assert "rejected_claims" in out or "grounding_rejected_claims" in out
+    # No state mutation — gate released cleanly.
+    assert "messages" not in out
+    assert "grounding_rejected_claims" not in out
 
 
 def test_no_claims_passes_through():
@@ -60,17 +52,46 @@ def test_no_claims_passes_through():
     from supervisor_graph.grounding_gate import grounding_gate_node
     state = _draft_state("How are you, sir?")
     out = grounding_gate_node(state, client=_stub_client_empty())
-    assert out["__route__"] == "release"
+    # No claims → no mutation.
+    assert "messages" not in out
+    assert "grounding_rejected_claims" not in out
 
 
-def test_retry_budget_exhausted_emits_fallback():
-    """After 3 rejections, replace the draft with a fixed honest message."""
+def test_release_when_route_not_task():
+    """Non-TASK routes bypass grounding entirely (Phase 1 scope)."""
     from supervisor_graph.grounding_gate import grounding_gate_node
-    state = _draft_state("I've opened it.", retry_count=3)
+    from supervisor_graph.state import initial_state
+    from langchain_core.messages import AIMessage
+
+    state = initial_state()
+    state["route"] = "BANTER"
+    state["messages"] = [AIMessage(content="I've sent your email, sir.")]
     out = grounding_gate_node(state, client=_stub_client_empty())
-    assert out["__route__"] == "release"
-    # The message must have been replaced with the honest fallback.
-    msgs = out["messages"]
-    assert len(msgs) >= 1
-    content = msgs[-1].content.lower()
-    assert "didn't go" in content or "wasn't able" in content or "expected" in content
+    # No state mutation expected — gate bypassed.
+    assert "messages" not in out
+    assert "grounding_rejected_claims" not in out
+
+
+def test_reject_replaces_message_in_place():
+    """Phase 1: rejection REPLACES the lying message via id-match
+    (LangChain add_messages reducer)."""
+    from supervisor_graph.grounding_gate import grounding_gate_node, GROUNDING_FALLBACK_MESSAGE
+    from supervisor_graph.state import initial_state
+    from langchain_core.messages import AIMessage
+
+    rejected = AIMessage(content="I've sent the email, sir.", id="msg_42")
+    state = initial_state()
+    state["route"] = "TASK"
+    state["messages"] = [rejected]
+    out = grounding_gate_node(state, client=_stub_client_empty())
+
+    # Replacement message must have the SAME id so add_messages replaces.
+    assert "messages" in out
+    replacement = out["messages"][0]
+    assert replacement.id == "msg_42", (
+        f"expected replacement id 'msg_42'; got {replacement.id!r} "
+        "— without id-match, LangGraph appends instead of replaces, "
+        "and TTS will speak both the lie AND the fallback"
+    )
+    assert replacement.content == GROUNDING_FALLBACK_MESSAGE
+    assert "grounding_rejected_claims" in out

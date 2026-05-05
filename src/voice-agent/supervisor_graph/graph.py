@@ -31,7 +31,7 @@ from .dispatch import (
     reasoning_speak_node,
     task_dispatch_node,
 )
-from .grounding_gate import grounding_gate_branch, grounding_gate_node
+from .grounding_gate import grounding_gate_node
 from .specialist import specialist_node
 from .speak_gate import speak_gate_branch, speak_gate_node
 from .state import JarvisState
@@ -96,7 +96,7 @@ def build_graph(*, specialist_tools: list[Any]):
         g.add_node("grounding_gate", grounding_gate_node)
     else:
         # No-op shim: passthrough that always releases.
-        g.add_node("grounding_gate", lambda s: {"__route__": "release"})
+        g.add_node("grounding_gate", lambda s: {})
     # No-op terminal for the rare WAITING / unknown route.
     g.add_node("no_op", lambda s: {})
 
@@ -145,13 +145,9 @@ def build_graph(*, specialist_tools: list[Any]):
         },
     )
 
-    g.add_conditional_edges(
-        "grounding_gate",
-        grounding_gate_branch,
-        {
-            "release": END,
-            "regenerate": "task_dispatch",  # re-run the dispatch with corrective context
-        },
-    )
+    # Grounding gate is binary in Phase 1: it either passes the message
+    # through unchanged or replaces it with the honest fallback in place.
+    # Either way, the next stop is END — no regeneration loop.
+    g.add_edge("grounding_gate", END)
 
     return g.compile()
