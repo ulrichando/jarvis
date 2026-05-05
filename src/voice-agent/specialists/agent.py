@@ -12,10 +12,11 @@ install.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from livekit.agents import Agent, RunContext, function_tool
-from livekit.agents.llm import ChatContext
+from livekit.agents.llm import ChatContext, FunctionCall
 
 from .registry import SpecialistSpec
 
@@ -44,9 +45,25 @@ class RegistrySpecialist(Agent):
         )
         self._spec = spec
         self._supervisor = supervisor
+        # High-water mark of chat_ctx at handoff start. task_done's
+        # tool-gate looks at items appended AFTER this index to decide
+        # whether the specialist did real work this handoff.
+        self._handoff_start_idx: int = 0
 
     async def on_enter(self) -> None:
         logger.info(f"[specialist:{self._spec.name}] active")
+        # Record where this handoff begins. Anything appended to
+        # chat_ctx.items past this index is the specialist's own work
+        # (its tool calls + outputs). task_done uses this to enforce
+        # the "do real work before exiting" rule programmatically.
+        try:
+            self._handoff_start_idx = len(self.chat_ctx.items)
+        except Exception as e:
+            logger.warning(
+                f"[specialist:{self._spec.name}] couldn't read chat_ctx "
+                f"on_enter: {e}; tool-gate will be soft"
+            )
+            self._handoff_start_idx = 0
 
     async def on_exit(self) -> None:
         logger.info(f"[specialist:{self._spec.name}] handing back to supervisor")
@@ -63,6 +80,55 @@ class RegistrySpecialist(Agent):
                      The supervisor will see this and may voice a
                      follow-up to the user.
         """
+        # ── No-bailout-first gate ─────────────────────────────────────
+        # Specialist instructions explicitly forbid task_done as the
+        # first tool call (see browser.py:31-52, "NO BAILOUT-FIRST
+        # RULE"). The LLM ignores those instructions periodically —
+        # observed 2026-05-02 23:35 (YouTube search hallucinated as
+        # task_done with no tool fired) and 2026-05-04 12:58 ("open
+        # a new tab" → task_done with no ext_*, confab-detector
+        # dropped the false claim, user heard silence and assumed
+        # JARVIS was deaf). This is the structural enforcement: count
+        # real (non-task_done) tool calls in this handoff window; if
+        # zero, refuse the exit and force the LLM to actually act.
+        # JARVIS_SPECIALIST_TOOL_GATE=0 disables.
+        if os.environ.get("JARVIS_SPECIALIST_TOOL_GATE", "1") == "1":
+            try:
+                since_handoff = self.chat_ctx.items[self._handoff_start_idx:]
+                real_calls = [
+                    it for it in since_handoff
+                    if isinstance(it, FunctionCall) and it.name != "task_done"
+                ]
+                if not real_calls:
+                    logger.warning(
+                        f"[specialist:{self._spec.name}] task_done REFUSED — "
+                        f"no real tool call this handoff "
+                        f"(items_since={len(since_handoff)}). "
+                        f"Summary attempted: {summary[:120]!r}"
+                    )
+                    # Stay on the specialist; the corrective string is
+                    # returned as the tool result the LLM will read
+                    # next. Phrased to be unambiguous: which tool to
+                    # try first matters less than NOT returning to
+                    # task_done with another guess.
+                    return (
+                        self,
+                        "REFUSED: task_done called without first executing "
+                        "any real tool. Per your instructions you MUST call "
+                        "an ext_*/web_search tool that does real work BEFORE "
+                        "task_done. Do not retry task_done — pick the right "
+                        "tool for the user's request and call it now. If you "
+                        "are unsure, call ext_screenshot() to see the screen.",
+                    )
+            except Exception as e:
+                # Soft-fail: never let the gate itself block a real
+                # task_done. Better to let one confab through than to
+                # wedge every specialist.
+                logger.warning(
+                    f"[specialist:{self._spec.name}] tool-gate check failed: "
+                    f"{type(e).__name__}: {e} — proceeding with task_done"
+                )
+
         logger.info(
             f"[specialist:{self._spec.name}] task_done → '{summary[:80]}'"
         )
@@ -74,6 +140,33 @@ class RegistrySpecialist(Agent):
             _mark_tool_end()
         except Exception:
             pass
+
+        # V2: write ToolResult to the blackboard so grounding_gate can
+        # later validate any "I opened the tab" claims the supervisor
+        # may emit. Gated on JARVIS_BLACKBOARD=1 — disabled by default
+        # so v1-only deployments are unaffected.
+        if os.environ.get("JARVIS_BLACKBOARD", "0") == "1":
+            try:
+                from blackboard.client import BlackboardClient
+                from blackboard.schema import ToolResult
+                import time as _time
+
+                bb = BlackboardClient()
+                bb.write_tool_result(ToolResult(
+                    tool=f"{self._spec.name}_task_done",
+                    args={"summary": summary},
+                    result=summary,
+                    ok=True,
+                    ts=_time.time(),
+                    call_id=f"task_done_{self._spec.name}_{int(_time.time() * 1000)}",
+                ))
+            except Exception as e:
+                # Never let a blackboard write fail the handoff.
+                logger.warning(
+                    "[specialist:%s] blackboard write failed (non-fatal): %s",
+                    self._spec.name, e,
+                )
+
         return self._supervisor, summary
 
 
