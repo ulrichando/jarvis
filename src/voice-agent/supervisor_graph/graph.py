@@ -31,6 +31,7 @@ from .dispatch import (
     reasoning_speak_node,
     task_dispatch_node,
 )
+from .grounding_gate import grounding_gate_branch, grounding_gate_node
 from .specialist import specialist_node
 from .speak_gate import speak_gate_branch, speak_gate_node
 from .state import JarvisState
@@ -86,6 +87,16 @@ def build_graph(*, specialist_tools: list[Any]):
     # when we add non-specialist tools. For now we just clear pending.
     g.add_node("tool_node", clear_resolved_pending)
     g.add_node("speak_gate", speak_gate_node)
+    # V2 grounding gate (gated by JARVIS_BLACKBOARD env). Validates
+    # the supervisor's draft against blackboard tool results before
+    # release. When the flag is OFF this node short-circuits to
+    # "release" so v1 behavior is preserved exactly.
+    import os as _os
+    if _os.environ.get("JARVIS_BLACKBOARD", "0") == "1":
+        g.add_node("grounding_gate", grounding_gate_node)
+    else:
+        # No-op shim: passthrough that always releases.
+        g.add_node("grounding_gate", lambda s: {"__route__": "release"})
     # No-op terminal for the rare WAITING / unknown route.
     g.add_node("no_op", lambda s: {})
 
@@ -123,14 +134,23 @@ def build_graph(*, specialist_tools: list[Any]):
     g.add_edge("tool_node", "speak_gate")
     g.add_edge("no_op", END)
 
-    # speak_gate decides: release → END; otherwise loop.
+    # speak_gate decides: release → grounding_gate; otherwise loop.
     g.add_conditional_edges(
         "speak_gate",
         speak_gate_branch,
         {
-            "release": END,
+            "release": "grounding_gate",   # was: END
             "block_for_tool": "tool_node",
             "block_for_specialist": "specialist",
+        },
+    )
+
+    g.add_conditional_edges(
+        "grounding_gate",
+        grounding_gate_branch,
+        {
+            "release": END,
+            "regenerate": "task_dispatch",  # re-run the dispatch with corrective context
         },
     )
 
