@@ -33,10 +33,13 @@ export type KimiUIPart =
 const KIMI_BASE_URL = "https://api.moonshot.ai/v1";
 const KIMI_API_MODEL = "kimi-k2.6";
 
-// Moonshot's K2.6 endpoint rejects any temperature value other than 0.6
-// ("invalid temperature: only 0.6 is allowed for this model"). All four
-// mode handlers must pass this exact value — do not parameterize per mode.
-export const KIMI_TEMPERATURE = 0.6;
+// K2.6 has a bimodal temperature constraint, per Moonshot's official
+// quickstart docs: thinking-disabled calls REQUIRE 0.6, thinking-enabled
+// calls REQUIRE 1.0. Any other value returns "invalid temperature: only
+// 0.6 is allowed for this model" (or the 1.0 equivalent in thinking).
+// top_p is fixed at 0.95 server-side — the SDK omits it; do not set.
+export const KIMI_TEMPERATURE = 0.6; // thinking:disabled (Instant/Agent/Swarm)
+export const KIMI_TEMPERATURE_THINKING = 1.0; // thinking:enabled (Thinking mode)
 
 export function kimiModesEnabled(): boolean {
   return process.env.KIMI_K2_MODES_ENABLED === "1";
