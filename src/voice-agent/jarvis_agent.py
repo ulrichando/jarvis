@@ -5884,13 +5884,40 @@ async def entrypoint(ctx: JobContext) -> None:
                 # but the LLM correctly inferred the intent and replied
                 # "Going quiet"). Honor the LLM's interpretation so
                 # behavior matches what was acknowledged out loud.
+                #
+                # Anti-hallucination guard (2026-05-04): if the most
+                # recent USER message matched a wake pattern, do NOT
+                # auto-mute — JARVIS hallucinating "going quiet" in
+                # response to "wake up" was the live-observed cascade
+                # that re-muted him right after waking up. The user's
+                # intent ("be active") wins over the LLM's confused
+                # text.
                 lower = (text or "").lower()
                 if not _is_silent() and any(p in lower for p in (
                     "going quiet", "going silent", "muting myself",
                     "going to sleep", "i'll be quiet", "be quiet now",
                 )):
-                    _set_silent(True)
-                    logger.info(f"[silent-mode] auto-engaged from assistant text: {text[:80]!r}")
+                    # Find the most recent user turn in `prior`.
+                    last_user_text = ""
+                    for prev in reversed(prior):
+                        if getattr(prev, "role", None) == "user":
+                            last_user_text = (
+                                _flatten_chat_content(getattr(prev, "content", None)) or ""
+                            ).lower()
+                            break
+                    user_just_woke_jarvis = bool(last_user_text) and any(
+                        p.search(last_user_text) for p in _WAKE_PATTERNS
+                    )
+                    if user_just_woke_jarvis:
+                        logger.warning(
+                            "[silent-mode] auto-mute SUPPRESSED — assistant text "
+                            "%r looks like a mute, but the user just woke JARVIS "
+                            "(%r). Hallucination guard.",
+                            text[:80], last_user_text[:80],
+                        )
+                    else:
+                        _set_silent(True)
+                        logger.info(f"[silent-mode] auto-engaged from assistant text: {text[:80]!r}")
                 # Maya-class telemetry: log turn outcome to SQLite.
                 # Phase 10.4 — write unconditionally. The previous
                 # `_dispatch_llm is not None` gate dropped every row when
