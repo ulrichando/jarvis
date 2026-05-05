@@ -1,6 +1,8 @@
 import "server-only";
 import {
   convertToModelMessages,
+  createUIMessageStream,
+  createUIMessageStreamResponse,
   generateObject,
   generateText,
   streamText,
@@ -158,6 +160,10 @@ If the request is too simple to benefit from parallelism, return an empty subtas
     const settled = await Promise.allSettled(subPromises);
     let totalInput = 0;
     let totalOutput = 0;
+    // Known limitation (I2): failed sub-agent token usage is not counted
+    // (Promise rejection means we have no `usage` object). This causes
+    // small ledger drift on partial failures — acceptable because failed
+    // calls typically produce minimal output. Not user-facing.
     const subResults: SubResult[] = settled.map((r, i) => {
       const role = plan.subtasks[i].role;
       if (r.status === "fulfilled") {
@@ -212,66 +218,56 @@ facts. If sources contradict, mention the disagreement. Keep it focused and well
       },
     });
 
-    // Build a composite SSE stream:
+    // Build a composite UI-message stream:
     //   1. emit kimi-swarm-status data parts as a prefix (sub-agents have
     //      already settled — Promise.allSettled returned by now)
-    //   2. then pipe the aggregator's UI-message stream body through
+    //   2. then merge the aggregator's UI-message stream
+    //
+    // Use the AI SDK's createUIMessageStream + createUIMessageStreamResponse
+    // primitives so the wire format is guaranteed correct (data-* parts must
+    // wrap their payload under a `data:` key — see UIMessageChunk schema)
+    // and the response gets the required `x-vercel-ai-ui-message-stream: v1`
+    // header automatically. writer.merge handles cancellation propagation
+    // and consumes the aggregator stream — no separate consumeStream() call
+    // needed (would race the merge).
     //
     // True "live counter" updates would require refactoring fan-out to fire
     // its own status as each sub-agent lands; deferred to v2 (see plan §11).
-    const encoder = new TextEncoder();
-    const composite = new ReadableStream({
-      async start(controller) {
+    const composite = createUIMessageStream({
+      execute: ({ writer }) => {
         // Initial status — "0/N coordinating".
-        controller.enqueue(
-          encoder.encode(
-            `data: ${JSON.stringify({
-              type: "data-kimi-swarm-status",
-              total: plan.subtasks.length,
-              completed: 0,
-            })}\n\n`,
-          ),
-        );
+        writer.write({
+          type: "data-kimi-swarm-status",
+          data: {
+            total: plan.subtasks.length,
+            completed: 0,
+          },
+        });
         // One per-completion update (replays the order the sub-agents
         // returned, so the UI can show "Latest: <role>").
         for (let i = 0; i < subResults.length; i++) {
-          controller.enqueue(
-            encoder.encode(
-              `data: ${JSON.stringify({
-                type: "data-kimi-swarm-status",
-                total: plan.subtasks.length,
-                completed: i + 1,
-                current: subResults[i].role,
-              })}\n\n`,
-            ),
-          );
+          writer.write({
+            type: "data-kimi-swarm-status",
+            data: {
+              total: plan.subtasks.length,
+              completed: i + 1,
+              current: subResults[i].role,
+            },
+          });
         }
-        // Pipe aggregator stream through.
-        const aggResp = aggregator.toUIMessageStreamResponse();
-        const reader = aggResp.body?.getReader();
-        if (!reader) {
-          controller.close();
-          return;
-        }
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            controller.enqueue(value);
-          }
-        } finally {
-          reader.releaseLock();
-          controller.close();
-        }
+        // Merge aggregator stream through. writer.merge consumes the
+        // aggregator's UIMessageChunk stream and forwards to the client.
+        writer.merge(aggregator.toUIMessageStream());
+      },
+      onError: (err) => {
+        console.error("[kimi-swarm] composite stream error:", err);
+        return (err as Error)?.message ?? "swarm composite failed";
       },
     });
 
-    aggregator.consumeStream();
-    return new Response(composite, {
-      status: 200,
+    return createUIMessageStreamResponse({
+      stream: composite,
       headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-store",
         "X-Kimi-Mode": "swarm",
         "X-Kimi-Swarm-Subagents": String(subResults.length),
         "X-Kimi-Swarm-Failures": String(subResults.filter((r) => r.failed).length),
