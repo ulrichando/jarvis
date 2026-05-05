@@ -63,12 +63,12 @@ describe("handleThinking", () => {
     expect(args.maxOutputTokens).toBe(16000);
   });
 
-  it("uses temperature 0.6 (Moonshot K2.6 only accepts 0.6)", async () => {
+  it("uses temperature 1.0 (Moonshot docs require 1.0 when thinking:enabled)", async () => {
     await handleThinking({
       messages: [{ id: "u", role: "user", parts: [{ type: "text", text: "explain" }] }],
     });
     const args = mockedStreamText.mock.calls[0][0] as Record<string, unknown>;
-    expect(args.temperature).toBe(0.6);
+    expect(args.temperature).toBe(1.0);
   });
 
   it("retries with maxOutputTokens 8000 when first call rejects '16000 too high'", async () => {
