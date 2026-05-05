@@ -1,11 +1,14 @@
 """Grounding gate — validates supervisor draft text against the
 blackboard. The structural cure for "JARVIS lies about completion."
 
-Pipeline:
+Pipeline (Phase 1, TASK-only, binary):
   draft text → extract_claims → for each claim: find evidence on
-  blackboard.tools → if all matched, RELEASE. If any unmatched,
-  REJECT with retry budget (max 3) → if exhausted, replace with
-  fixed honest fallback.
+  blackboard.tools → if all matched, RELEASE unchanged. If any
+  unmatched, REPLACE the lying message in place with the honest
+  fallback (via LangChain add_messages id-match reducer).
+
+Non-TASK routes (BANTER, REASONING, EMOTIONAL) bypass the gate
+entirely — they carry no tool-completion claims to validate.
 """
 from __future__ import annotations
 
@@ -111,38 +114,51 @@ def extract_claims(text: str) -> list[Claim]:
 
 from langchain_core.messages import AIMessage
 
-GROUNDING_RETRY_LIMIT = 3
 GROUNDING_FALLBACK_MESSAGE = "Something didn't go as expected, sir."
 
 
 def grounding_gate_node(state: dict, *, client=None) -> dict:
-    """Validate the latest assistant draft against blackboard evidence.
+    """Phase 1 binary grounding gate: release the message unchanged
+    if all past-tense claims have blackboard evidence, OR replace it
+    in place with the honest fallback if any claim lacks evidence.
 
-    Three outcomes:
-      - "release"    : all claims have evidence (or no claims found) → END
-      - "regenerate" : at least one claim lacks evidence → graph re-runs
-                       the dispatch step with a corrective system message
-      - "release" with replaced fallback message : retry budget exhausted
+    Three early-release paths bypass the validator:
+      - non-TASK routes (BANTER, REASONING, EMOTIONAL)
+      - empty messages
+      - draft text with no past-tense claims
 
-    `client` is a BlackboardClient instance. Tests inject a stub.
+    On rejection, the replacement AIMessage is emitted with the same
+    id as the rejected one so LangChain's add_messages reducer replaces
+    it in place — preventing the rejected lie from reaching TTS via the
+    LLM adapter's chunk path.
+
+    No retry budget in Phase 1. The retry/regenerate path the spec
+    described had two showstoppers (rejected message stays in stream,
+    wrong-route regeneration to task_dispatch); both are eliminated
+    by replace-in-place.
     """
     if client is None:
         from blackboard.client import BlackboardClient
         client = BlackboardClient()
 
+    # Phase 1 scope: only validate TASK turns. Other routes have no
+    # tool-completion claims to validate against the blackboard, and
+    # routing them through the gate creates more bugs than it cures.
+    if state.get("route") != "TASK":
+        return {}
+
     msgs = state.get("messages") or []
     if not msgs:
-        return {"__route__": "release"}
+        return {}
 
     last = msgs[-1]
     text = getattr(last, "content", "") or ""
     if not isinstance(text, str):
-        return {"__route__": "release"}
+        return {}
 
     claims = extract_claims(text)
     if not claims:
-        # Nothing to validate.
-        return {"__route__": "release"}
+        return {}
 
     from blackboard.gates import find_tool_evidence
 
@@ -157,36 +173,29 @@ def grounding_gate_node(state: dict, *, client=None) -> dict:
             rejected.append(f"{claim.verb} ({', '.join(claim.keywords[:3])})")
 
     if not rejected:
-        # All claims grounded.
         logger.info("[grounding] released — %d claim(s) all matched", len(claims))
-        return {"__route__": "release"}
+        return {}
 
-    retry_count = state.get("grounding_retry_count", 0)
-    if retry_count >= GROUNDING_RETRY_LIMIT:
-        logger.warning(
-            "[grounding] retry budget exhausted (rejected: %s); "
-            "replacing draft with honest fallback",
-            rejected,
-        )
-        return {
-            "__route__": "release",
-            "messages": [AIMessage(content=GROUNDING_FALLBACK_MESSAGE)],
-            "grounding_rejected_claims": list(state.get("grounding_rejected_claims", [])) + rejected,
-        }
+    # Telemetry: count rejections so soak can measure false-positive rate.
+    try:
+        client._r.incr(f"{client._prefix}:metrics:grounding_rejected")
+    except Exception as e:
+        logger.warning("[grounding] telemetry incr failed: %s", e)
 
     logger.warning(
-        "[grounding] REJECT (retry %d/%d) — claims without evidence: %s",
-        retry_count + 1, GROUNDING_RETRY_LIMIT, rejected,
+        "[grounding] REPLACE — claims without evidence: %s; "
+        "substituting honest fallback in place",
+        rejected,
     )
+
+    # Replace via id-match. LangChain's add_messages reducer replaces
+    # an existing message when a new one carries the same id. The
+    # rejected message has an id (LangChain assigns one on construction
+    # if not provided); we reuse it.
+    rejected_id = getattr(last, "id", None)
+    fallback = AIMessage(content=GROUNDING_FALLBACK_MESSAGE, id=rejected_id)
+
     return {
-        "__route__": "regenerate",
-        "grounding_retry_count": retry_count + 1,
+        "messages": [fallback],
         "grounding_rejected_claims": list(state.get("grounding_rejected_claims", [])) + rejected,
     }
-
-
-def grounding_gate_branch(state: dict) -> str:
-    """Branch fn for `add_conditional_edges`. Returns 'release' or
-    'regenerate'."""
-    route = state.get("__route__")
-    return "regenerate" if route == "regenerate" else "release"
