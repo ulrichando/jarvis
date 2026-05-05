@@ -4,6 +4,7 @@ export type JarvisProviderName =
   | 'gemini'
   | 'openai'
   | 'ollama'
+  | 'kimi'
 
 export type JarvisModelTier =
   | 'default'
@@ -88,6 +89,19 @@ const JARVIS_PROVIDER_DEFINITIONS: Record<
     defaultModel: 'ollama',
     supportsToolChoice: false,
     maxOutputTokens: 4096,
+  },
+  kimi: {
+    // Moonshot Kimi (K2.6 + vision). OpenAI-compatible endpoint.
+    // K2.6 emits a separate `reasoning_content` field on every response
+    // (DeepSeek-R1 shape) — the proxy / consumer should strip it from
+    // user-voiced output if Kimi ever lands on the voice path. Today
+    // it's CLI-only.
+    baseUrl: 'https://api.moonshot.ai/v1',
+    apiKeyEnvVar: 'KIMI_API_KEY',
+    defaultModel: 'kimi-k2.6-instant',
+    supportsToolChoice: true,
+    maxTools: 16,
+    maxOutputTokens: 16384,
   },
 }
 
@@ -256,6 +270,51 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     tiers: ['default'],
     capabilities: [],
     visibleInPicker: false,
+  },
+  // Kimi K2.6 family — all four UI modes hit the same upstream API
+  // model `kimi-k2.6`. The Instant/Thinking/Agent/Swarm split is a
+  // CLIENT-side preset (different system prompt + tools), not a
+  // separate API endpoint. Verified live via /v1/models 2026-05-04.
+  {
+    id: 'kimi-k2.6-instant',
+    label: 'Kimi K2.6 Instant',
+    description: 'Quick response. Default Kimi model.',
+    provider: 'kimi',
+    upstreamModel: 'kimi-k2.6',
+    tiers: ['fast', 'default'],
+    capabilities: [],
+    visibleInPicker: true,
+  },
+  {
+    id: 'kimi-k2.6-thinking',
+    label: 'Kimi K2.6 Thinking',
+    description: 'Deep reasoning. Returns reasoning_content.',
+    provider: 'kimi',
+    upstreamModel: 'kimi-k2.6',
+    tiers: ['reasoning'],
+    capabilities: ['thinking'],
+    visibleInPicker: true,
+    fallback: ['kimi-k2.6-instant'],
+  },
+  {
+    id: 'kimi-k2.6-agent',
+    label: 'Kimi K2.6 Agent',
+    description: 'Research / orchestration with tools.',
+    provider: 'kimi',
+    upstreamModel: 'kimi-k2.6',
+    tiers: ['orchestration', 'balanced'],
+    capabilities: [],
+    visibleInPicker: true,
+  },
+  {
+    id: 'kimi-k2.6-swarm',
+    label: 'Kimi K2.6 Swarm',
+    description: 'Long-form / batch tasks.',
+    provider: 'kimi',
+    upstreamModel: 'kimi-k2.6',
+    tiers: ['long_context'],
+    capabilities: [],
+    visibleInPicker: true,
   },
 ] as const
 
