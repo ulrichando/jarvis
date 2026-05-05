@@ -4,6 +4,7 @@ import {
   buildKimiClient,
   extractMessagesForKimi,
   formatKimiError,
+  KIMI_TEMPERATURE,
   KimiKeyMissingError,
   loadKimiPersona,
 } from "./shared";
@@ -27,7 +28,7 @@ function callStream(
     model: client.model,
     system,
     messages,
-    temperature: 1.0,
+    temperature: KIMI_TEMPERATURE,
     maxOutputTokens,
     providerOptions: {
       kimi: {

@@ -4,6 +4,7 @@ import {
   buildKimiClient,
   extractMessagesForKimi,
   formatKimiError,
+  KIMI_TEMPERATURE,
   KimiKeyMissingError,
   loadKimiPersona,
 } from "./shared";
@@ -40,7 +41,7 @@ export async function handleInstant(body: KimiModeRequest): Promise<Response> {
       model: client.model,
       system,
       messages,
-      temperature: 0.6,
+      temperature: KIMI_TEMPERATURE,
       maxOutputTokens: 1024,
       providerOptions: {
         kimi: {
