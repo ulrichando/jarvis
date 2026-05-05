@@ -1029,6 +1029,52 @@ SPEECH_MODELS: dict[str, dict] = {
             temperature=0.6,
         ),
     },
+    # Kimi K2.6 — Moonshot's OpenAI-compat endpoint. K2.6 returns a
+    # separate `reasoning_content` field on every response (DeepSeek-R1
+    # shape). The deepseek_roundtrip.install() patch already handles
+    # this for any OpenAI-compat upstream that uses the field, so Kimi
+    # works through the same path. All four entries use the same
+    # upstream model id `kimi-k2.6` — the Instant/Thinking/Agent/Swarm
+    # split is a CLIENT-SIDE preset, not a separate API endpoint.
+    # Differentiation here would require per-entry system prompts or
+    # tool restrictions, which is JARVIS-side work; today they all
+    # behave identically at the LLM layer.
+    "kimi-k2.6-instant": {
+        "label": "Kimi · K2.6 Instant",
+        "build": lambda: lk_openai.LLM(
+            model="kimi-k2.6",
+            api_key=os.environ.get("KIMI_API_KEY", ""),
+            base_url="https://api.moonshot.ai/v1",
+            temperature=0.6,
+        ),
+    },
+    "kimi-k2.6-thinking": {
+        "label": "Kimi · K2.6 Thinking",
+        "build": lambda: lk_openai.LLM(
+            model="kimi-k2.6",
+            api_key=os.environ.get("KIMI_API_KEY", ""),
+            base_url="https://api.moonshot.ai/v1",
+            temperature=0.4,
+        ),
+    },
+    "kimi-k2.6-agent": {
+        "label": "Kimi · K2.6 Agent",
+        "build": lambda: lk_openai.LLM(
+            model="kimi-k2.6",
+            api_key=os.environ.get("KIMI_API_KEY", ""),
+            base_url="https://api.moonshot.ai/v1",
+            temperature=0.6,
+        ),
+    },
+    "kimi-k2.6-swarm": {
+        "label": "Kimi · K2.6 Swarm",
+        "build": lambda: lk_openai.LLM(
+            model="kimi-k2.6",
+            api_key=os.environ.get("KIMI_API_KEY", ""),
+            base_url="https://api.moonshot.ai/v1",
+            temperature=0.7,
+        ),
+    },
 }
 
 
@@ -1370,6 +1416,34 @@ CLI_MODELS: dict[str, dict] = {
         "provider": "groq",
         "model":    "openai/gpt-oss-120b",
         "label":    "Groq · gpt-oss-120b",
+    },
+    # Kimi K2.6 — all four UI modes hit the same upstream API model
+    # `kimi-k2.6`. The Instant/Thinking/Agent/Swarm split is a
+    # client-side preset (system prompt + tools), not a separate API.
+    # Verified live via /v1/models 2026-05-04. K2.6 returns a separate
+    # `reasoning_content` field; the consuming dispatch path must
+    # strip it before TTS (mirror the existing deepseek_roundtrip
+    # pattern when wiring Kimi as a voice-LLM inner — today the tray
+    # picker just selects which model the speech-LLM dispatcher uses).
+    "kimi-k2.6-instant": {
+        "provider": "kimi",
+        "model":    "kimi-k2.6",
+        "label":    "Kimi · K2.6 Instant",
+    },
+    "kimi-k2.6-thinking": {
+        "provider": "kimi",
+        "model":    "kimi-k2.6",
+        "label":    "Kimi · K2.6 Thinking",
+    },
+    "kimi-k2.6-agent": {
+        "provider": "kimi",
+        "model":    "kimi-k2.6",
+        "label":    "Kimi · K2.6 Agent",
+    },
+    "kimi-k2.6-swarm": {
+        "provider": "kimi",
+        "model":    "kimi-k2.6",
+        "label":    "Kimi · K2.6 Swarm",
     },
 }
 
