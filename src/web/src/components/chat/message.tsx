@@ -13,12 +13,14 @@ import {
   ListChecks,
   Undo2,
   Loader2,
+  Hammer,
   type LucideIcon,
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Markdown } from "@/components/markdown/markdown";
 import { Sources, extractSources } from "./sources";
+import { KimiReasoning } from "./kimi-reasoning";
 import { cn } from "@/lib/utils";
 
 // Synthetic-prompt patterns the chat layer's plumbing emits but the
@@ -100,6 +102,32 @@ function imagePartsFromMessage(
   return out;
 }
 
+// K2.6 Thinking mode emits reasoning via either:
+//   1. A custom `data-kimi-reasoning` data part (defensive future-proofing
+//      for when we add a custom transform), OR
+//   2. The AI SDK 6 native `reasoning` / `reasoning-delta` part type when
+//      the openai-compatible provider forwards `reasoning_content`.
+// We pick up both so the SDK's native split works on day one without a
+// transform, AND the custom path is plumbed for if/when we need it.
+function kimiReasoningFromMessage(parts: UIMessage["parts"]): string {
+  let text = "";
+  for (const p of parts) {
+    if (typeof p !== "object" || p === null) continue;
+    const obj = p as Record<string, unknown>;
+    const t = obj.type as string | undefined;
+    if (t === "data-kimi-reasoning") {
+      const delta = obj.delta;
+      if (typeof delta === "string") text += delta;
+    } else if (t === "reasoning" || t === "reasoning-delta") {
+      // SDK 6 native reasoning part — works for K2.6 if openai-compatible
+      // forwards reasoning_content. Fields differ across SDK versions.
+      const candidate = obj.text ?? obj.delta ?? obj.reasoning;
+      if (typeof candidate === "string") text += candidate;
+    }
+  }
+  return text;
+}
+
 export function Message({
   message,
   isStreaming,
@@ -140,6 +168,7 @@ export function Message({
 }) {
   const isUser = message.role === "user";
   const text = textFromParts(message.parts);
+  const kimiReasoning = kimiReasoningFromMessage(message.parts);
 
   // Skip rendering the chat layer's synthetic auto-continue prompt
   // when it leaks into history. New turns no longer persist this
@@ -157,6 +186,22 @@ export function Message({
     ) &&
     trimmed.includes("Close any open boltAction");
   if (isSyntheticAutoContinue) return null;
+
+  // Build seed: when /design's "Build" button auto-fires the workspace
+  // chat, the seed prompt (full engineering brief — 30+ lines, ~2KB of
+  // text) lands as a user message. Rendered raw it dominates the
+  // thread visually and looks like the user typed an essay. Detect
+  // the canary phrase and render as a compact "Build started" card
+  // with click-to-expand instead. Same canary as in /api/design/build's
+  // seed composition — keep these in sync.
+  const isBuildSeed =
+    isUser &&
+    trimmed.includes("MANDATORY: emit `<jarvisplan stages=") &&
+    trimmed.includes("ship a real, working full-stack version");
+  // Stage progression seed (auto-fired when previous stage verified
+  // green). Same idea: collapse so the chat stays readable.
+  const isStageProgress =
+    isUser && trimmed.startsWith("[auto-progress to stage ");
 
   // The reasoning block is open by default while reasoning is still
   // streaming (so the user can watch it think live), then auto-collapses
@@ -181,7 +226,12 @@ export function Message({
           conversation, the same way Claude.ai and ChatGPT mark up
           turns. h2 because the page title is the h1. */}
       <h2 className="sr-only">{isUser ? "You" : "JARVIS"}</h2>
-      {isUser ? (
+      {isUser && (isBuildSeed || isStageProgress) ? (
+        <SystemSeedCard
+          text={trimmed}
+          kind={isBuildSeed ? "build" : "stage-progress"}
+        />
+      ) : isUser ? (
         <div className="max-w-[85%] rounded-2xl bg-card px-4 py-2.5 text-foreground space-y-2">
           {(() => {
             const imgs = imagePartsFromMessage(message.parts);
@@ -206,6 +256,12 @@ export function Message({
         </div>
       ) : (
         <div className="w-full">
+          {kimiReasoning ? (
+            <KimiReasoning
+              text={kimiReasoning}
+              streaming={Boolean(isStreaming && !text)}
+            />
+          ) : null}
           {reasoning ? (
             <ReasoningBlock
               reasoning={reasoning}
@@ -470,6 +526,86 @@ function StreamingCursor() {
       className="inline-block ml-0.5 align-text-bottom w-0.5 h-[1.1em] bg-foreground animate-pulse"
     />
   );
+}
+
+// ── System-generated seed card ──────────────────────────────────────
+//
+// When the runtime auto-fires a system-generated user message (the
+// /design "Build" seed prompt; auto-progress to next stage), the raw
+// text is 30+ lines of internal engineering brief. Rendering it as a
+// regular user bubble dominates the thread visually and reads as if
+// the human typed an essay nobody asked for.
+//
+// Show a compact card instead — "Building project" / "Stage N
+// starting" with a hint and a click-to-expand affordance for power
+// users who want to see what was actually fed to the model.
+function SystemSeedCard({
+  text,
+  kind,
+}: {
+  text: string;
+  kind: "build" | "stage-progress";
+}) {
+  const [open, setOpen] = useState(false);
+  const summary =
+    kind === "build"
+      ? buildSeedSummary(text)
+      : stageProgressSummary(text);
+  const Icon = kind === "build" ? Hammer : ListChecks;
+  return (
+    <div className="flex max-w-[85%] flex-col gap-1">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className={cn(
+          "flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2",
+          "text-left text-[12.5px] hover:bg-primary/10 transition-colors",
+        )}
+        aria-expanded={open}
+      >
+        <Icon className="size-3.5 shrink-0 text-primary" />
+        <span className="flex-1 truncate text-foreground">{summary.title}</span>
+        <span className="shrink-0 text-[11px] text-muted-foreground">
+          {summary.subtitle}
+        </span>
+        <ChevronDown
+          className={cn(
+            "size-3 shrink-0 text-muted-foreground transition-transform",
+            open && "rotate-180",
+          )}
+        />
+      </button>
+      {open && (
+        <pre className="max-h-80 overflow-y-auto rounded-lg border border-border/40 bg-card/40 p-3 font-mono text-[10.5px] leading-snug text-muted-foreground whitespace-pre-wrap">
+          {text}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+function buildSeedSummary(text: string): { title: string; subtitle: string } {
+  // Pull the first sentence's "the X design" → use as title fragment.
+  const m = text.match(/Take the (\S+(?:\s+\S+)?) design/);
+  const fmt = m ? m[1] : "design";
+  const stagesMatch = text.match(/<jarvisplan stages="(\d+)"/);
+  const stages = stagesMatch ? `${stagesMatch[1]} stages` : "multi-stage";
+  return {
+    title: `Building from ${fmt}`,
+    subtitle: stages,
+  };
+}
+
+function stageProgressSummary(text: string): {
+  title: string;
+  subtitle: string;
+} {
+  const m = text.match(/\[auto-progress to stage (\d+) of (\d+)\]/);
+  if (!m) return { title: "Stage progression", subtitle: "auto" };
+  return {
+    title: `Stage ${m[1]} of ${m[2]} starting`,
+    subtitle: "auto",
+  };
 }
 
 // ── Error retry pill ─────────────────────────────────────────────────────
