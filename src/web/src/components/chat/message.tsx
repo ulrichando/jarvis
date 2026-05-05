@@ -118,8 +118,10 @@ function kimiReasoningFromMessage(parts: UIMessage["parts"]): string {
     const obj = p as Record<string, unknown>;
     const t = obj.type as string | undefined;
     if (t === "data-kimi-reasoning") {
-      const delta = obj.delta;
-      if (typeof delta === "string") text += delta;
+      // AI SDK 6 wire format: data-* parts wrap their payload under a
+      // `data:` key (strictObject validation rejects flat fields).
+      const data = obj.data as { delta?: unknown } | undefined;
+      if (typeof data?.delta === "string") text += data.delta;
     } else if (t === "reasoning" || t === "reasoning-delta") {
       // SDK 6 native reasoning part — works for K2.6 if openai-compatible
       // forwards reasoning_content. Fields differ across SDK versions.
@@ -176,17 +178,19 @@ function toolTraceFromMessage(parts: UIMessage["parts"]): ToolTraceEntry[] {
     }
 
     // Fallback: custom kimi-tool-trace data part (forward-compat
-    // for adding $web_search later via a custom transform).
+    // for adding $web_search later via a custom transform). AI SDK 6
+    // wire format wraps payload under a `data:` key.
     if (t === "data-kimi-tool-trace") {
-      const id = (obj.id as string | undefined) ?? `custom-${out.length}`;
+      const data = (obj.data ?? {}) as Record<string, unknown>;
+      const id = (data.id as string | undefined) ?? `custom-${out.length}`;
       if (seenIds.has(id)) continue;
       seenIds.add(id);
       out.push({
         id,
-        toolName: (obj.toolName as string) ?? "tool",
-        summary: (obj.summary as string) ?? "",
-        status: ((obj.status as string) ?? "ok") as ToolTraceEntry["status"],
-        resultSummary: obj.resultSummary as string | undefined,
+        toolName: (data.toolName as string) ?? "tool",
+        summary: (data.summary as string) ?? "",
+        status: ((data.status as string) ?? "ok") as ToolTraceEntry["status"],
+        resultSummary: data.resultSummary as string | undefined,
       });
     }
   }
@@ -205,10 +209,13 @@ function swarmStatusFromMessage(
     if (typeof p !== "object" || p === null) continue;
     const obj = p as Record<string, unknown>;
     if (obj.type === "data-kimi-swarm-status") {
+      // AI SDK 6 wire format: data-* parts wrap their payload under
+      // a `data:` key (strictObject validation rejects flat fields).
+      const data = (obj.data ?? {}) as Record<string, unknown>;
       last = {
-        total: Number(obj.total ?? 0),
-        completed: Number(obj.completed ?? 0),
-        current: obj.current as string | undefined,
+        total: Number(data.total ?? 0),
+        completed: Number(data.completed ?? 0),
+        current: data.current as string | undefined,
       };
     }
   }
