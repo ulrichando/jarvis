@@ -21,6 +21,7 @@ import { toast } from "sonner";
 import { Markdown } from "@/components/markdown/markdown";
 import { Sources, extractSources } from "./sources";
 import { KimiReasoning } from "./kimi-reasoning";
+import { KimiToolTrace, type ToolTraceEntry } from "./kimi-tool-trace";
 import { cn } from "@/lib/utils";
 
 // Synthetic-prompt patterns the chat layer's plumbing emits but the
@@ -128,6 +129,69 @@ function kimiReasoningFromMessage(parts: UIMessage["parts"]): string {
   return text;
 }
 
+// Materialize tool-call/tool-result events into a flat list of entries
+// the KimiToolTrace component renders. Two sources of truth:
+//   1. Standard SDK 6 `tool-<name>` parts (e.g. `tool-webSearch`) with
+//      a `state` field — this is what the AI SDK emits today for Agent
+//      mode's webSearchTool.
+//   2. Our custom `data-kimi-tool-trace` data parts — forward-compat
+//      for adding K2.6's $web_search builtin via a custom transform.
+// De-dupes by toolCallId/id so a tool-call followed by tool-result for
+// the same call collapses to one entry whose status reflects the
+// terminal state.
+function toolTraceFromMessage(parts: UIMessage["parts"]): ToolTraceEntry[] {
+  const out: ToolTraceEntry[] = [];
+  const seenIds = new Set<string>();
+  for (const p of parts) {
+    if (typeof p !== "object" || p === null) continue;
+    const obj = p as Record<string, unknown>;
+    const t = obj.type as string | undefined;
+    if (!t) continue;
+
+    // Standard SDK shape: type="tool-<name>" with state field.
+    if (t.startsWith("tool-")) {
+      const toolName = t.slice("tool-".length);
+      const id = (obj.toolCallId as string | undefined) ?? `${toolName}-${out.length}`;
+      if (seenIds.has(id)) continue;
+      seenIds.add(id);
+      const state = (obj.state as string | undefined) ?? "input-streaming";
+      const input = obj.input as Record<string, unknown> | undefined;
+      const output = obj.output as unknown;
+      const summary =
+        toolName === "webSearch"
+          ? ((input?.query as string | undefined) ?? "(query…)")
+          : JSON.stringify(input ?? {}).slice(0, 80);
+      const status: ToolTraceEntry["status"] =
+        state === "output-available"
+          ? "ok"
+          : state === "output-error"
+            ? "error"
+            : "pending";
+      const resultSummary =
+        status === "ok" && output && toolName === "webSearch"
+          ? `${(output as { results?: unknown[] }).results?.length ?? 0} results`
+          : undefined;
+      out.push({ id, toolName, summary, status, resultSummary });
+    }
+
+    // Fallback: custom kimi-tool-trace data part (forward-compat
+    // for adding $web_search later via a custom transform).
+    if (t === "data-kimi-tool-trace") {
+      const id = (obj.id as string | undefined) ?? `custom-${out.length}`;
+      if (seenIds.has(id)) continue;
+      seenIds.add(id);
+      out.push({
+        id,
+        toolName: (obj.toolName as string) ?? "tool",
+        summary: (obj.summary as string) ?? "",
+        status: ((obj.status as string) ?? "ok") as ToolTraceEntry["status"],
+        resultSummary: obj.resultSummary as string | undefined,
+      });
+    }
+  }
+  return out;
+}
+
 export function Message({
   message,
   isStreaming,
@@ -169,6 +233,7 @@ export function Message({
   const isUser = message.role === "user";
   const text = textFromParts(message.parts);
   const kimiReasoning = kimiReasoningFromMessage(message.parts);
+  const toolTrace = toolTraceFromMessage(message.parts);
 
   // Skip rendering the chat layer's synthetic auto-continue prompt
   // when it leaks into history. New turns no longer persist this
@@ -262,6 +327,7 @@ export function Message({
               streaming={Boolean(isStreaming && !text)}
             />
           ) : null}
+          {toolTrace.length > 0 ? <KimiToolTrace entries={toolTrace} /> : null}
           {reasoning ? (
             <ReasoningBlock
               reasoning={reasoning}
