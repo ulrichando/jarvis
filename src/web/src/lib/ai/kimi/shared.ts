@@ -33,6 +33,11 @@ export type KimiUIPart =
 const KIMI_BASE_URL = "https://api.moonshot.ai/v1";
 const KIMI_API_MODEL = "kimi-k2.6";
 
+// Moonshot's K2.6 endpoint rejects any temperature value other than 0.6
+// ("invalid temperature: only 0.6 is allowed for this model"). All four
+// mode handlers must pass this exact value — do not parameterize per mode.
+export const KIMI_TEMPERATURE = 0.6;
+
 export function kimiModesEnabled(): boolean {
   return process.env.KIMI_K2_MODES_ENABLED === "1";
 }

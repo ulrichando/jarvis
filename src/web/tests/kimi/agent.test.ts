@@ -112,11 +112,11 @@ describe("handleAgent", () => {
     expect(resp.status).toBe(401);
   });
 
-  it("uses temperature 0.7", async () => {
+  it("uses temperature 0.6 (Moonshot K2.6 only accepts 0.6)", async () => {
     await handleAgent({
       messages: [{ id: "u", role: "user", parts: [{ type: "text", text: "weather?" }] }],
     });
     const args = mockedStreamText.mock.calls[0][0] as Record<string, unknown>;
-    expect(args.temperature).toBe(0.7);
+    expect(args.temperature).toBe(0.6);
   });
 });

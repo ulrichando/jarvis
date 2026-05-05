@@ -12,6 +12,7 @@ import {
   buildKimiClient,
   extractMessagesForKimi,
   formatKimiError,
+  KIMI_TEMPERATURE,
   KimiKeyMissingError,
   loadKimiPersona,
 } from "./shared";
@@ -125,7 +126,7 @@ If the request is too simple to benefit from parallelism, return an empty subtas
         model: client.model,
         system: loadKimiPersona(),
         messages,
-        temperature: 0.6,
+        temperature: KIMI_TEMPERATURE,
         maxOutputTokens: 1024,
         providerOptions: {
           kimi: { thinking: { type: "disabled" } },
@@ -146,7 +147,7 @@ If the request is too simple to benefit from parallelism, return an empty subtas
         model: client.model,
         system: `You are a sub-agent with role "${t.role}". Answer only your task.`,
         prompt: t.prompt,
-        temperature: 0.7,
+        temperature: KIMI_TEMPERATURE,
         maxOutputTokens: 800,
         providerOptions: {
           kimi: {
@@ -196,7 +197,7 @@ facts. If sources contradict, mention the disagreement. Keep it focused and well
           content: `Sub-agent results:\n\n${aggregatorPrompt}\n\nNow write the synthesized reply.`,
         },
       ],
-      temperature: 0.6,
+      temperature: KIMI_TEMPERATURE,
       maxOutputTokens: 4096,
       providerOptions: {
         kimi: { thinking: { type: "disabled" } },
