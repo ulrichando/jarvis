@@ -17,6 +17,13 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      // server-only's default export throws if loaded outside React Server
+      // Components. Alias to the package's own empty.js so server modules
+      // can be unit-tested directly. Same trick the Next.js docs use.
+      "server-only": path.resolve(
+        __dirname,
+        "./node_modules/server-only/empty.js",
+      ),
     },
   },
 });
