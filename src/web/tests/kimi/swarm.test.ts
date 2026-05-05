@@ -40,12 +40,22 @@ const mockedReserve = reserveSwarmBudget as unknown as ReturnType<typeof vi.fn>;
 
 function fakeStreamResult() {
   return {
+    // Empty-plan fallback path uses this directly.
     toUIMessageStreamResponse: (opts?: { headers?: Record<string, string> }) =>
       new Response("ok", {
         status: 200,
         headers: {
           "Content-Type": "text/event-stream",
           ...(opts?.headers ?? {}),
+        },
+      }),
+    // Composite path merges this stream into the createUIMessageStream
+    // writer. Empty stream is fine — assertions check headers / call
+    // counts, not body chunks (e2e.test.ts covers the body content).
+    toUIMessageStream: () =>
+      new ReadableStream({
+        start(controller) {
+          controller.close();
         },
       }),
     consumeStream: () => undefined,
