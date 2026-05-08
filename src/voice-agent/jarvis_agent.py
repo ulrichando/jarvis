@@ -6910,6 +6910,44 @@ class JarvisAgent(Agent):
         # the quiet-hours window don't need a vocative.
         _touch_interaction()
 
+        # Layer 1 (Phase 2 of memory-layer fix) — auto-extract memorable
+        # facts from the user transcript in parallel with the supervisor
+        # LLM call. Bypasses the LLM's tool-choice surface entirely; writes
+        # directly to state.db.memories via the existing _publish_event_async
+        # publish path. See docs/superpowers/specs/2026-05-08-anti-gaslighting-memory-design.md.
+        try:
+            import asyncio as _asyncio
+            from pipeline.memory_extractor import extract_memory_from_turn
+            from tools.memory import _publish_event_async, _memory_id
+            import os as _os
+
+            async def _run_extractor_and_publish(transcript: str) -> None:
+                try:
+                    extracted = await extract_memory_from_turn(transcript)
+                    if extracted is None:
+                        return
+                    await _publish_event_async("memory.value.upserted", {
+                        "memory_id": _memory_id(extracted.content),
+                        "content": extracted.content,
+                        "category": extracted.category,
+                        "source_session_id": _os.environ.get(
+                            "JARVIS_VOICE_SESSION_ID"
+                        ),
+                    })
+                except Exception as e:
+                    logger.warning(
+                        f"[extractor] task failed: {type(e).__name__}: {e}"
+                    )
+
+            # Don't await — the extractor must NOT block the supervisor reply.
+            _asyncio.create_task(_run_extractor_and_publish(text))
+        except Exception as e:
+            # Defense-in-depth: any failure in the extractor wiring itself
+            # (import error, etc.) must not block the user turn.
+            logger.warning(
+                f"[extractor] wiring failed: {type(e).__name__}: {e}"
+            )
+
         # Bare-vocative fast path. When the user just calls JARVIS by name
         # (with optional preamble like "hey", "yo", "okay", "i said"),
         # voice the canonical "Yes, sir?" directly via session.say() and
