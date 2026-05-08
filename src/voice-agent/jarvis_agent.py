@@ -6793,6 +6793,33 @@ def _flatten_chat_content(content: object) -> str:
     return str(content)
 
 
+# Groq Orpheus output is 48 kHz mono 16-bit WAV → 48000 × 1 × 2 = 96 bytes/ms.
+# Used by _record_synthesis to convert audio bytes → ms for the position
+# table. The 44-byte WAV header rounds to <1 ms — ignored.
+_GROQ_ORPHEUS_BYTES_PER_MS = 96
+
+
+def _record_synthesis(session, input_chars: int, audio_bytes: int) -> None:
+    """Append one entry to the session's TTS position table after a
+    completed synthesize() call. Idempotent; tolerant of missing session
+    or missing attr.
+
+    Spec: docs/superpowers/specs/2026-05-07-barge-in-truncation-design.md
+    """
+    if session is None:
+        return
+    table = getattr(session, "_jarvis_tts_position_table", None)
+    if table is None:
+        table = []
+        session._jarvis_tts_position_table = table
+    audio_ms = audio_bytes // _GROQ_ORPHEUS_BYTES_PER_MS
+    if table:
+        prev_ms, prev_chars = table[-1]
+    else:
+        prev_ms, prev_chars = 0, 0
+    table.append((prev_ms + audio_ms, prev_chars + input_chars))
+
+
 def _truncate_to_heard_portion(item, position_table, audio_end_ms):
     """Cut an assistant turn's text to only the audio that played.
 
@@ -7701,6 +7728,10 @@ async def entrypoint(ctx: JobContext) -> None:
                     # show monotonically increasing audio ms.
                     session._jarvis_agent_audio_ms_acc = 0
                     session._jarvis_agent_speaking_started_at = None
+                    # Reset TTS position table for the next assistant turn so
+                    # interrupt-bookkeeping starts clean. See spec
+                    # docs/superpowers/specs/2026-05-07-barge-in-truncation-design.md
+                    session._jarvis_tts_position_table = []
                     # Reset first-token marker too so the next
                     # turn measures from its own stream start.
                     session._jarvis_first_token_at_monotonic = None
