@@ -282,6 +282,12 @@ from livekit.plugins.groq.tts import ChunkedStream as _GroqChunkedStream
 
 class _LoggingGroqChunkedStream(_GroqChunkedStream):
     async def _run(self, output_emitter) -> None:
+        # Track audio bytes emitted this synthesize() call so we can
+        # append a position-table entry for barge-in truncation.
+        # Wrapped in a 1-element list so the nested _do_real_run can
+        # mutate it without `nonlocal` boilerplate.
+        # Spec: docs/superpowers/specs/2026-05-07-barge-in-truncation-design.md
+        nonlocal_audio_bytes = [0]
         # Groq Orpheus rejects synth requests where the input contains
         # no letters or digits — returns 400 "Input must contain at
         # least one letter or digit" (verified by the response-body
@@ -311,7 +317,15 @@ class _LoggingGroqChunkedStream(_GroqChunkedStream):
                 mime_type="audio/wav",
             )
             output_emitter.push(_wav)
+            nonlocal_audio_bytes[0] += len(_wav)
             output_emitter.flush()
+            # Record this (silent) call in the position table so subsequent
+            # synthesize() calls in the same turn see correct running totals.
+            _record_synthesis(
+                _active_session_for_telemetry[0],
+                len(self._input_text or ""),
+                nonlocal_audio_bytes[0],
+            )
             return
         # Breaker-gated upstream call. _TTS_BREAKER fails fast when
         # Groq's TTS endpoint is in cooldown so FallbackAdapter
@@ -372,6 +386,7 @@ class _LoggingGroqChunkedStream(_GroqChunkedStream):
                     )
                     async for data, _ in resp.content.iter_chunks():
                         output_emitter.push(data)
+                        nonlocal_audio_bytes[0] += len(data)
                     output_emitter.flush()
             except asyncio.TimeoutError:
                 raise _APITimeoutError() from None
@@ -390,6 +405,14 @@ class _LoggingGroqChunkedStream(_GroqChunkedStream):
             raise _APIConnectionError() from e
         except asyncio.TimeoutError:
             raise _APITimeoutError() from None
+        # Record this synthesize() call's position-table entry. Runs ONLY
+        # on success path — on breaker exception above, the audio wasn't
+        # actually played so we don't append.
+        _record_synthesis(
+            _active_session_for_telemetry[0],
+            len(self._input_text or ""),
+            nonlocal_audio_bytes[0],
+        )
 
     @staticmethod
     async def _call_with_breaker_for_test():
