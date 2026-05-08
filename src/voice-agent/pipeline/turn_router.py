@@ -318,7 +318,13 @@ def route_from_classifier_output(raw: str) -> Route:
 # async classifier path) call this helper so behaviour stays uniform.
 _ROUTE_BASE = {
     "BANTER":    (1, 0.3),
-    "TASK":      (2, 0.4),
+    # TASK bumped 2→3 (2026-05-07): filters 2-word backchannels like
+    # "yeah okay" / "got it" / "mhm okay" / "right right" that slipped
+    # past min_words=2 and killed real TTS replies. Cost: ~200 ms more
+    # latency on deliberate 2-word interrupts ("stop talking" / "wait
+    # please"); kill-phrase fast-path at jarvis_agent.py:7410 still
+    # catches single-word "stop|wait|hush|cancel|..." past min_words.
+    "TASK":      (3, 0.4),
     "REASONING": (3, 0.5),
     "EMOTIONAL": (3, 0.6),
 }
@@ -361,3 +367,64 @@ async def classify_turn(
     except (asyncio.TimeoutError, Exception):
         return "TASK"
     return route_from_classifier_output(raw)
+
+
+# ─────────────────────────────────────────────────────────────────
+# Layer 2 recall-pattern matcher (Phase 3 of memory-layer fix).
+# When a user transcript matches one of these regexes, the caller
+# should force tool_choice={"type": "function", "function":
+# {"name": "recall_conversation"}} for that single turn — bypassing
+# the supervisor's metacognition-conservatism that otherwise produces
+# 'I don't have memory' denials.
+#
+# CRITICAL caveat — github.com/livekit/agents/issues/4671: tool_choice
+# persists across turns when set on generate_reply() in LiveKit Agents.
+# Caller MUST reset to "auto" after the forced call.
+#
+# Patterns calibrated against:
+#   - "do you remember [X]"
+#   - "can you remember [X]"
+#   - "what did I tell you about [X]"
+#   - "what's my [X]'s name"
+#   - "remember when [X]"
+# Negative-tested against imperatives ("remember to bring milk"),
+# statements ("we charge $600"), and short ambient phrases.
+_RECALL_PATTERNS = [
+    re.compile(
+        r"\b(?:do|can|did)\s+(?:you|i|we)\s+(?:remember|recall|tell)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bwhat\s+(?:did|do)\s+(?:i|we|you)\s+(?:say|tell|talk|discuss)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:what's|what\s+(?:is|was))\s+my\s+\w+(?:'s)?\s+\w+",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bremember\s+when\s+(?:i|we|you)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bdid\s+i\s+(?:tell|say|mention)\b",
+        re.IGNORECASE,
+    ),
+]
+
+
+def is_recall_query(transcript: str) -> bool:
+    """Return True if the transcript looks like a recall question
+    (asking about prior conversation or stored facts), not a
+    command, statement, or imperative.
+
+    Conservative: imperatives like 'remember to do X' return False
+    so we don't force the recall tool when the user wants the
+    supervisor to act.
+    """
+    if not transcript:
+        return False
+    text = transcript.strip()
+    if not text:
+        return False
+    return any(p.search(text) for p in _RECALL_PATTERNS)
