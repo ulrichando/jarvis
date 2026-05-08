@@ -64,12 +64,21 @@ _GITHUB_WHEN = (
 
 def register_github() -> None:
     """Register the GitHub subagent. Self-disables when `gh` is
-    missing or the user hasn't run `gh auth login`."""
+    missing or the user hasn't run `gh auth login`.
+
+    DISABLED BY DEFAULT 2026-05-08 — opt in with `JARVIS_SUBAGENT_GITHUB=1`.
+    Disabled alongside summarize/researcher etc. while supervisor delegate
+    routing is being repaired.
+    """
+    import os
     try:
         from tools.github import is_available
         enabled = is_available()
     except Exception:
         enabled = False
+    enabled = enabled and (
+        os.environ.get("JARVIS_SUBAGENT_GITHUB", "0") == "1"
+    )
 
     register_subagent(SubagentSpec(
         name="github",
