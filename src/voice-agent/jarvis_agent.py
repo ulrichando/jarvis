@@ -7602,6 +7602,15 @@ async def entrypoint(ctx: JobContext) -> None:
             # docs/superpowers/specs/2026-05-07-barge-in-truncation-design.md
             if role == "assistant" and getattr(session, "_jarvis_was_interrupted", False):
                 audio_end_ms = getattr(session, "_jarvis_agent_audio_ms_acc", 0) or 0
+                # Fold in the open speaking-segment delta — barge-in fires
+                # while we're still in "speaking", and the accumulator is
+                # only flushed on speaking→not-speaking. Without this, the
+                # truncation under-reports heard duration on the very path
+                # this feature targets. Matches the same correction in the
+                # log_turn block below.
+                _spk_start = getattr(session, "_jarvis_agent_speaking_started_at", None)
+                if _spk_start is not None:
+                    audio_end_ms += int((time.monotonic() - _spk_start) * 1000)
                 table = getattr(session, "_jarvis_tts_position_table", None) or []
                 original_len = len(text or "")
                 truncated, mutated = _truncate_to_heard_portion(item, table, audio_end_ms)
