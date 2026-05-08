@@ -19,9 +19,55 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass
 
 logger = logging.getLogger("jarvis.memory_extractor")
+
+
+# Timestamp of the most recent successful extraction (epoch seconds).
+# Read by `confab_detector._has_tool_evidence` to grant evidence credit
+# for "saved/remembered" claims that ride the auto-extract path
+# (which doesn't fire a tool call the supervisor's chat_ctx can see).
+# Live capture 2026-05-08 13:18: confab dropped two consecutive
+# "I've confirmed your wife's name, Lizzie, is saved" turns even
+# though the extractor DID write the fact.
+#
+# Thread/concurrency note: this is a module-global mutable. Safe under
+# the voice-agent's single-event-loop runtime (extract_memory_from_turn
+# is dispatched via `asyncio.create_task` per turn, never threaded), and
+# any interleave window between two simultaneous extractions is
+# absorbed by the 30 s TTL — both refer to recent activity. If the
+# voice-agent ever spawns the extractor on a separate thread or
+# multiprocessing pool, wrap reads/writes with `asyncio.Lock`.
+_LAST_EXTRACTION_SUCCESS_AT: float | None = None
+# How long an extractor success stays "fresh" as evidence. Long enough
+# to cover the supervisor's reply turn (typical: a few seconds), short
+# enough that a stale 5-minute-old extraction doesn't grant evidence
+# to an unrelated confab.
+_EXTRACTION_EVIDENCE_TTL_SECONDS = 30.0
+
+
+def last_extraction_success_at() -> float | None:
+    """Return the epoch ts of the last successful extraction, or None."""
+    return _LAST_EXTRACTION_SUCCESS_AT
+
+
+def has_recent_extraction_evidence(now: float | None = None) -> bool:
+    """True if a successful extraction landed within the last
+    `_EXTRACTION_EVIDENCE_TTL_SECONDS`. Used by the confab detector
+    to avoid false-positive drops on memory-write turns."""
+    if _LAST_EXTRACTION_SUCCESS_AT is None:
+        return False
+    now = now if now is not None else time.time()
+    return (now - _LAST_EXTRACTION_SUCCESS_AT) <= _EXTRACTION_EVIDENCE_TTL_SECONDS
+
+
+def _mark_extraction_success() -> None:
+    """Record that the extractor just produced a parsed ExtractedMemory.
+    Test seam — also called by `extract_memory_from_turn` on success."""
+    global _LAST_EXTRACTION_SUCCESS_AT
+    _LAST_EXTRACTION_SUCCESS_AT = time.time()
 
 EXTRACTOR_SKIP = "SKIP"
 _VALID_CATEGORIES = ("user", "feedback", "project", "reference")
@@ -36,6 +82,57 @@ class ExtractedMemory:
 
 _LINE_RE = re.compile(r"^\s*([a-z]+)\s*:\s*(.+?)\s*$", re.DOTALL)
 _QUOTE_STRIP = re.compile(r'^["\']|["\']$')
+
+# Meta-paraphrase reject filter (added 2026-05-08, fix D in the
+# voice-channel audit). Live extractions captured this shape:
+#   - "The user inquires about the history of England"
+#   - "The user is expressing gratitude for the time spent"
+#   - "The conversation has shifted to a casual topic about a bird"
+#   - "It seems to be a mixed review of a product or service"
+#   - "User appears to be requesting mute"
+#   - "Coding Kiddos appears to involve a simulation or game"
+#
+# These are LLM-meta narration of what was *said*, not stable facts
+# about the user / project / preferences. They pollute the memory
+# store with junk and (worse) flow into chat_ctx via recall, training
+# the supervisor LLM to mirror the meta-paraphrase shape on its own
+# replies (= the "summarize-everything" failure mode from fix E).
+#
+# Anchored at start-of-content; case-insensitive. Mirrors phrasings
+# the user/project type would never legitimately start with.
+_META_PARAPHRASE_RE = re.compile(
+    r"""(?ix)
+    (?:
+        # Subject-anchored at start: "The user is/has X-ing", "The
+        # conversation has Y-ed", "It seems to be Z", "User asked
+        # about W". These are LLM narration of the conversation.
+        ^\s*the\s+(?:user|conversation|discussion|topic|exchange)
+            \s+(?:is|was|has|appears|seems|seemed|inquires|expresses|expressed|
+                 mentions|describes|asks|asked|seeks|sought|wants|wanted)
+      | ^\s*(?:it|this|that)\s+(?:seems|appears|looks|sounds)\s+(?:to|like)\b
+      | ^\s*user\s+(?:appears|seems|seemed|inquires|inquired|expresses|
+               expressed|mentions|mentioned|describes|described|asks|asked|
+               seeks|sought|wants|wanted)\b
+      | ^\s*the\s+user\s+seeks
+    )
+    """
+    # Narrowed 2026-05-08 (code review): the previous broad
+    # "\b(?:appears|seems)\s+to\s+(?:be|involve|...)\b" alternation
+    # rejected genuine hedged facts about user projects, e.g.
+    # "Pretva appears to involve regulatory work in Cameroon."
+    # Start-anchored narration-subject rules above still catch the
+    # actual LLM-narration shapes ("The user appears to...", "It seems
+    # to..."). A hedged-but-real project fact like "Coding Kiddos
+    # appears to involve teaching" now passes through; the few-shot
+    # extractor prompt's anti-examples already discourage that shape
+    # at the LLM level.
+)
+
+
+def _is_meta_paraphrase(content: str) -> bool:
+    """Return True for LLM-meta-narration outputs that should be
+    dropped instead of stored as memory. See `_META_PARAPHRASE_RE`."""
+    return bool(_META_PARAPHRASE_RE.search(content or ""))
 
 
 def parse_extractor_output(raw: str) -> ExtractedMemory | None:
@@ -68,6 +165,14 @@ def parse_extractor_output(raw: str) -> ExtractedMemory | None:
     if not content:
         return None
     if len(content) > _MAX_CONTENT_CHARS:
+        return None
+    # Drop meta-paraphrase outputs (e.g. "The user is X-ing", "The
+    # conversation has shifted to Y") — these are LLM narration, not
+    # facts. Live captures: 2026-05-08 17:07/17:47/17:51/17:52.
+    if _is_meta_paraphrase(content):
+        logger.info(
+            f"[extractor] meta-paraphrase rejected: {content[:80]!r}"
+        )
         return None
     return ExtractedMemory(category=category, content=content)
 
@@ -103,6 +208,28 @@ OUTPUT: SKIP
 
 USER: "yeah okay"
 OUTPUT: SKIP
+
+USER: "thanks for that"
+OUTPUT: SKIP
+
+USER: "could you tell me about the history of england"
+OUTPUT: SKIP
+
+USER: "what's the weather like"
+OUTPUT: SKIP
+
+ANTI-EXAMPLES (these shapes are FORBIDDEN — they are conversation \
+narration, not facts; output SKIP instead):
+  ✗ "The user is asking about X" — narration
+  ✗ "The user appears to be X-ing" — narration
+  ✗ "The conversation has shifted to X" — narration
+  ✗ "It seems to be X" — narration
+  ✗ "User wants to know about X" — narration
+
+A FACT looks like:
+  ✓ "Ulrich's wife is named Lizzy."
+  ✓ "Coding Kiddos charges $600 for 6 months."
+  ✓ "User prefers responses to start with content, not 'Sure thing'."
 
 USER: "{transcript}"
 OUTPUT:"""
@@ -159,4 +286,6 @@ async def extract_memory_from_turn(
         logger.info(
             f"[extractor] {parsed.category}: {parsed.content[:80]!r}"
         )
+        # Mark extractor-success evidence for the confab detector.
+        _mark_extraction_success()
     return parsed
