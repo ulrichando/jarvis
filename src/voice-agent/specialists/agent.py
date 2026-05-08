@@ -55,9 +55,35 @@ _BAILOUT_SUMMARY_RE = re.compile(
       | no\s+(?:desktop|browser)\s+(?:action|tool)
       | handing\s+back\s+to\s+(?:the\s+)?supervisor
       | not\s+a\s+request\s+I\s+can\s+act\s+on
+      # Environmental gates (added 2026-05-08) — situations where the
+      # specialist's underlying service is unreachable. These aren't
+      # fabricated outcomes; they're "the door is locked" statements.
+      # Tightly anchored so a confab can't slip through with the same
+      # words ("connection issue" must be paired with "extension"/"tool"/
+      # "browser"/"chrome"/"service" within ~30 chars).
+      | (?:extension|tool|service|browser|chrome|firefox)\s+(?:is\s+)?(?:not\s+connected|unavailable|offline|not\s+available)
+      | (?:bridge|extension)\s+disconnected
+      | google\s+chrome\s+isn'?t\s+available
     )
     """
 )
+
+
+# Retry ceiling for the no-tool gate. After this many consecutive
+# refusals on a single handoff, force-allow task_done with a
+# generic-bailout summary so the user isn't trapped in silence
+# while the LLM keeps re-rolling the same confab. Captured live
+# 2026-05-08 16:33:14–16:33:23: desktop specialist looped 3×
+# "Browser opened, sir." (refused each time) → 9s of silence to
+# the user. With a retry ceiling, the third REFUSE forces a
+# graceful handback so the supervisor can voice an apology.
+#
+# Read at RUNTIME (not module-import time) so operators editing
+# the systemd unit's Environment= line see the change without a
+# worker restart, matching the JARVIS_SPECIALIST_TOOL_GATE pattern
+# below.
+def _no_tool_retry_ceiling() -> int:
+    return int(os.environ.get("JARVIS_SPECIALIST_NO_TOOL_RETRY_CEILING", "3"))
 
 
 class RegistrySpecialist(Agent):
@@ -86,9 +112,14 @@ class RegistrySpecialist(Agent):
         # tool-gate looks at items appended AFTER this index to decide
         # whether the specialist did real work this handoff.
         self._handoff_start_idx: int = 0
+        # Counter for consecutive task_done refusals on this handoff.
+        # Resets on enter. Ceiling enforced in task_done.
+        self._no_tool_refusals: int = 0
 
     async def on_enter(self) -> None:
         logger.info(f"[specialist:{self._spec.name}] active")
+        # Reset the no-tool retry counter for this fresh handoff.
+        self._no_tool_refusals = 0
         # Record where this handoff begins. Anything appended to
         # chat_ctx.items past this index is the specialist's own work
         # (its tool calls + outputs). task_done uses this to enforce
@@ -131,6 +162,7 @@ class RegistrySpecialist(Agent):
         # JARVIS_SPECIALIST_TOOL_GATE=0 disables.
         if os.environ.get("JARVIS_SPECIALIST_TOOL_GATE", "1") == "1":
             try:
+                ceiling = _no_tool_retry_ceiling()
                 since_handoff = self.chat_ctx.items[self._handoff_start_idx:]
                 real_calls = [
                     it for it in since_handoff
@@ -148,11 +180,30 @@ class RegistrySpecialist(Agent):
                             f"(no tool fired, allowed): {summary[:120]!r}"
                         )
                         # Fall through to the normal handoff below.
+                    elif self._no_tool_refusals + 1 >= ceiling:
+                        # Retry ceiling reached. Force-allow with a
+                        # graceful generic-bailout summary so the user
+                        # isn't trapped in silence while the LLM keeps
+                        # re-rolling the same confab. The supervisor
+                        # voices a brief apology when it relays.
+                        logger.warning(
+                            f"[specialist:{self._spec.name}] task_done "
+                            f"FORCE-BAILED after {self._no_tool_refusals + 1} "
+                            f"no-tool refusals. Original summary: "
+                            f"{(summary or '')[:120]!r}"
+                        )
+                        summary = (
+                            "Cannot accomplish — handing back to supervisor."
+                        )
+                        # Fall through to the normal handoff below.
                     else:
+                        self._no_tool_refusals += 1
                         logger.warning(
                             f"[specialist:{self._spec.name}] task_done REFUSED — "
                             f"no real tool call this handoff "
-                            f"(items_since={len(since_handoff)}). "
+                            f"(items_since={len(since_handoff)}, "
+                            f"refusal #{self._no_tool_refusals}/"
+                            f"{ceiling}). "
                             f"Summary attempted: {summary[:120]!r}"
                         )
                         # Stay on the specialist; the corrective string is
