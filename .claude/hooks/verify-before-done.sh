@@ -20,5 +20,21 @@ STOP_HOOK_ACTIVE="$(jq -r '.stop_hook_active // false' <<<"$INPUT")"
 # 3. Escape hatch
 [[ "${JARVIS_SKIP_VERIFY:-0}" == "1" ]] && exit 0
 
-# 4. Edit detection (filled in by Task 3)
+# 4. Edit detection — extract unique edited file paths from transcript JSONL
+[[ -z "$TRANSCRIPT_PATH" || ! -f "$TRANSCRIPT_PATH" ]] && exit 0
+
+EDITED_FILES="$(jq -r '
+  select(.message.content) | .message.content[]?
+  | select(.type=="tool_use" and (.name=="Edit" or .name=="Write" or .name=="MultiEdit"))
+  | .input.file_path
+' "$TRANSCRIPT_PATH" 2>/dev/null | sort -u)"
+
+[[ -z "$EDITED_FILES" ]] && exit 0
+
+echo "[verify-before-done] DEBUG edits:" >&2
+while IFS= read -r file; do
+  echo "  $file" >&2
+done <<<"$EDITED_FILES"
+
+# 5. Subtree classification (filled in by Task 4)
 exit 0
