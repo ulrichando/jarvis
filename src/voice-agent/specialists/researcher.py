@@ -106,7 +106,13 @@ _RESEARCHER_WHEN = (
 
 
 def register_researcher() -> None:
-    """Register the researcher subagent. Idempotent."""
+    """Register the researcher subagent.
+
+    DISABLED BY DEFAULT 2026-05-08 — opt in with `JARVIS_SUBAGENT_RESEARCHER=1`.
+    Disabled alongside summarize/weather etc. while supervisor delegate
+    routing is being repaired.
+    """
+    import os
     register_subagent(SubagentSpec(
         name="researcher",
         when_to_use=_RESEARCHER_WHEN,
@@ -114,5 +120,5 @@ def register_researcher() -> None:
         tool_factory=_researcher_tools,
         ack_phrase="Looking into it, sir.",
         max_history_items=12,
-        enabled=True,
+        enabled=os.environ.get("JARVIS_SUBAGENT_RESEARCHER", "0") == "1",
     ))

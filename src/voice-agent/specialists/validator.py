@@ -61,12 +61,21 @@ _VALIDATOR_WHEN = (
 
 def register_validator() -> None:
     """Register the validator subagent. Auto-disables when GROQ key
-    missing (validator can't run without it)."""
+    missing (validator can't run without it).
+
+    DISABLED BY DEFAULT 2026-05-08 — opt in with `JARVIS_SUBAGENT_VALIDATOR=1`.
+    Disabled alongside summarize/researcher etc. while supervisor delegate
+    routing is being repaired.
+    """
+    import os
     try:
         from tools.validator import is_available
         enabled = is_available()
     except Exception:
         enabled = False
+    enabled = enabled and (
+        os.environ.get("JARVIS_SUBAGENT_VALIDATOR", "0") == "1"
+    )
 
     register_subagent(SubagentSpec(
         name="validator",
