@@ -76,6 +76,33 @@ def _strip_reasoning_traces(text: str) -> str:
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned
 
+
+def _sanitize_for_tts(text: str) -> str:
+    """Run the pycall sanitizer's leak detector on `text` and return
+    a TTS-safe string (or empty if it's a tool-call leak). Bridges
+    the gap that the streaming `_parse_choice` patches don't cover
+    on the LangGraph adapter path. Best-effort — never raises."""
+    if not text:
+        return text
+    try:
+        from sanitizers.pycall import sanitize_text_for_tts
+        return sanitize_text_for_tts(text)
+    except Exception as e:
+        logger.debug(
+            "[adapter] sanitize_text_for_tts unavailable: %s", e
+        )
+        return text
+
+
+# Recursion ceiling for the supervisor graph. LangGraph's default is
+# 25; live capture 2026-05-08 16:16:39 hit `Recursion limit of 10007
+# reached` (someone bumped it). The graph topology has ONE legitimate
+# loop (speak_gate → tool_node when a pending tool_call is unresolved)
+# which should resolve within 2-3 cycles. Anything above 25 means the
+# graph is wedged on an unresolvable pending_tool_call and the worker
+# should fail fast rather than burn 5,000 cycles before crashing.
+_GRAPH_RECURSION_LIMIT = 25
+
 logger = logging.getLogger("supervisor_graph.llm_adapter")
 
 
@@ -147,6 +174,15 @@ def _ai_messages_to_chunks(ai_messages: list) -> list[agents_llm.ChatChunk]:
         # chain-of-thought inline; if we forward it, the user hears
         # JARVIS narrate his thinking out loud before the real reply.
         content = _strip_reasoning_traces(raw_content)
+
+        # Sanitize the content before TTS sees it. The graph path
+        # bypasses the OpenAI/Groq plugin's `_parse_choice` patches
+        # (pycall/dsml/tool_name) where the production sanitizers
+        # live, so leaks can otherwise reach TTS unfiltered. Live
+        # capture 2026-05-08 16:14–16:18 voiced
+        # `ext_navigate("https://entropic.com")` 8 times before the
+        # graph crashed.
+        content = _sanitize_for_tts(content)
 
         if content:
             chunks.append(agents_llm.ChatChunk(
@@ -220,7 +256,10 @@ class _GraphLLMStream:
         state["messages"] = history
 
         try:
-            final_state = self._graph.invoke(state)
+            final_state = self._graph.invoke(
+                state,
+                config={"recursion_limit": _GRAPH_RECURSION_LIMIT},
+            )
         except Exception as e:
             logger.exception("[graph] invoke failed: %s", e)
             final_state = {
