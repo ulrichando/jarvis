@@ -11,8 +11,8 @@ cd "$REPO_ROOT" || exit 0
 
 # 1. Read stdin JSON
 INPUT="$(cat)"
-TRANSCRIPT_PATH="$(jq -r '.transcript_path // empty' <<<"$INPUT")"
-STOP_HOOK_ACTIVE="$(jq -r '.stop_hook_active // false' <<<"$INPUT")"
+TRANSCRIPT_PATH="$(jq -r '.transcript_path // empty' <<<"$INPUT" 2>/dev/null)"
+STOP_HOOK_ACTIVE="$(jq -r '.stop_hook_active // false' <<<"$INPUT" 2>/dev/null)"
 
 # 2. Recursion guard — never block twice
 [[ "$STOP_HOOK_ACTIVE" == "true" ]] && exit 0
