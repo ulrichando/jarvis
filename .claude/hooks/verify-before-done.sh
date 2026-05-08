@@ -87,5 +87,16 @@ if [[ "$WARN_CLI" == "1" ]]; then
   echo "[verify-before-done] WARN: CLI files edited. CLAUDE.md says src/cli/ is off-limits without asking — was this intentional?" >&2
 fi
 
-# 8. Decision (filled in by Task 5)
+# 8. Decision
+if [[ ${#FAIL_NAMES[@]} -eq 0 ]]; then
+  exit 0
+fi
+
+# 9. Build block JSON for Claude Code
+REASON="Verification failed before claiming done. Address these and re-run:"
+for i in "${!FAIL_NAMES[@]}"; do
+  REASON+=$'\n\n--- '"${FAIL_NAMES[$i]}"' (run: '"${FAIL_CMDS[$i]}"') ---\n'"${FAIL_OUTS[$i]}"
+done
+
+jq -n --arg reason "$REASON" '{decision: "block", reason: $reason}'
 exit 0
