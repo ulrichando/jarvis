@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { ChevronDown, Download, ExternalLink, Hammer, Loader2, Maximize, Palette, Play, Plus, Share2, Sliders, X } from "lucide-react";
 import type { TreeEntry } from "@/lib/workspace/client";
 import { Chat } from "@/components/chat/chat";
@@ -366,7 +367,12 @@ export function DesignView({
   const chatColumn = useResizableColumn({
     storageKey: "design.chatColumnWidth",
     defaultWidth: 380,
-    min: 280,
+    // 380px is the floor below which the composer's bottom toolbar
+    // (paperclip / model picker / workspace picker / voice / send)
+    // gets squeezed past the comfortable point — icons can disappear
+    // under flex-shrink. Bumped from 280 → 380 to match the workbench
+    // panel's hard minimum.
+    min: 380,
     max: 640,
   });
 
@@ -502,6 +508,14 @@ export function DesignView({
   const handleBuild = async () => {
     if (buildPending) return;
     setBuildPending(true);
+    // Toast + console traces so failures STOP being silent. The
+    // previous version only showed alert() on error which fires too
+    // late if the request itself never resolves (timeout, navigator
+    // dropping the fetch). Surface every step so the user sees
+    // exactly what stage stalled.
+    const buildToast = toast.loading("Preparing build…", {
+      description: "Copying design files into a new workbench workspace",
+    });
     try {
       const r = await fetch("/api/design/build", {
         method: "POST",
@@ -510,17 +524,38 @@ export function DesignView({
       });
       if (!r.ok) {
         const j = await r.json().catch(() => ({}));
-        alert(`Build failed: ${j.error ?? r.statusText}`);
+        const msg = j.error ?? r.statusText ?? "unknown error";
+        console.error("[design/build] failed:", r.status, msg);
+        toast.error("Build failed", {
+          id: buildToast,
+          description: msg,
+        });
         return;
       }
-      const j = (await r.json()) as { workspaceId: string; seed: string };
+      const j = (await r.json()) as {
+        workspaceId: string;
+        seed: string;
+        copiedFiles?: number;
+      };
+      console.log(
+        `[design/build] ok: workspace=${j.workspaceId}, copiedFiles=${j.copiedFiles ?? "?"}, seedLen=${j.seed.length}`,
+      );
+      toast.success("Build queued", {
+        id: buildToast,
+        description: `Copied ${j.copiedFiles ?? "?"} design files. Opening workbench…`,
+      });
       // Navigate to the new workbench workspace with the seed prompt.
       // The workbench page's Chat auto-fires it on mount.
       router.push(
         `/workbench/${j.workspaceId}?seed=${encodeURIComponent(j.seed)}`,
       );
     } catch (err) {
-      alert(`Build failed: ${err instanceof Error ? err.message : err}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[design/build] threw:", err);
+      toast.error("Build failed", {
+        id: buildToast,
+        description: msg,
+      });
     } finally {
       setBuildPending(false);
     }

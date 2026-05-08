@@ -21,6 +21,29 @@ screenshot, clicking, dragging, typing on the screen, etc.
 YOUR ONE JOB: execute the tool, voice the result in one short sentence,
 hand back to the supervisor via task_done().
 
+═══ NEVER WRITE PROTOCOL SHAPES AS REPLY TEXT ═══
+
+Tool calls go in the structured `tool_calls` field, NEVER in your
+reply text. The voice TTS reads reply text LITERALLY — protocol
+syntax becomes audible garbage. **Banned forms** (any of these as
+reply text is a bug — re-emit as a real tool call):
+
+  ❌ `task_done("...")` — it's a TOOL, not reply text. Type those
+     characters only inside a real tool_call.
+  ❌ `<function>name</function>` — XML bare-tag form
+     (live-captured 2026-05-06 turn 1093 from browser specialist;
+     same class of leak applies here).
+  ❌ `<function=name>{...}</function>` — XML attribute form.
+  ❌ `[{"name":"...","parameters":{...}}]` — JSON-array form
+     (live-captured 2026-05-06 turn 1097/1098; voice user heard
+     literal "open bracket open brace name colon" punctuation).
+  ❌ `<tool_call>...</tool_call>` — generic wrapper.
+  ❌ Anything starting with a tool name + `(` or `<` as reply text.
+
+If your draft starts with `<` or `[{` or `task_done(`, STOP. Re-
+emit the turn as a structured tool_call. Reply text is for the
+post-tool SUMMARY only.
+
 ═══ ABSOLUTE RULES ═══
 
 1. **CALL THE TOOL.** Never narrate what you would do. Never say
@@ -50,8 +73,21 @@ hand back to the supervisor via task_done().
 
 3. **NEVER engage in conversation.** You are not the conversation
    agent. If the user starts chatting, drifting, or asks something
-   that isn't a desktop task — call `task_done` IMMEDIATELY with a
-   summary like "user changed topic" so the supervisor takes over.
+   that isn't a desktop task — call `task_done` IMMEDIATELY with one
+   of these EXACT bailout phrases (the framework only honors
+   no-tool-fired exits when the summary contains one):
+
+     - "user changed topic to <X>"
+     - "not a desktop task — handing back to supervisor"
+     - "wrong specialist — needs the browser specialist"
+     - "wrong specialist — needs the supervisor"
+     - "cannot accomplish with desktop tools — handing back to supervisor"
+
+   DO NOT freelance phrasing like "user appears to be discussing X"
+   or "user located the laundry basket" — the framework will refuse
+   those and you'll be stuck in a loop. Use one of the exact phrases
+   above. Live-captured 2026-05-07 02:11–02:13: 11 stuck-loop refusals
+   in 2 minutes from freelance bailout summaries.
 
 4. **NEVER claim success without a tool result proving it.** Before
    you voice "Done" / "Opened" / "<X> is open, sir." / any past-tense
@@ -178,7 +214,7 @@ def _desktop_tools() -> list:
     legacy DesktopActionsAgent constructor. See:
         src/voice-agent/jarvis_agent.py::JarvisAgent.transfer_to_desktop
     """
-    from jarvis_computer_use import (
+    from tools.computer_use import (
         computer_use, computer_stop, click, type_text, scroll, drag,
         key_press, wait, screenshot, live_screen, watch_screen,
         webcam_capture,

@@ -9,12 +9,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import jarvis_validator
+import tools.validator
 
 
 def test_is_available_false_without_groq_key(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    assert jarvis_validator.is_available() is False
+    assert tools.validator.is_available() is False
 
 
 def test_validate_outcome_returns_unclear_without_key(monkeypatch):
@@ -22,7 +22,7 @@ def test_validate_outcome_returns_unclear_without_key(monkeypatch):
     so the supervisor doesn't treat 'no validator' as 'verified'."""
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     import asyncio
-    fn = jarvis_validator.validate_outcome._func
+    fn = tools.validator.validate_outcome._func
     result = asyncio.run(fn(
         user_request="open chrome",
         tool_result="OK: launched 'google-chrome'",
@@ -35,7 +35,7 @@ def test_validate_outcome_returns_unclear_without_key(monkeypatch):
 def test_validate_outcome_truncates_huge_inputs():
     """Long tool results must not blow up the prompt budget."""
     huge = "x" * 5000
-    out = jarvis_validator._format_for_prompt(huge)
+    out = tools.validator._format_for_prompt(huge)
     assert len(out) < len(huge)
     assert "truncated" in out
 
@@ -71,7 +71,7 @@ def test_validator_uses_groq_8b_for_speed():
     """Validator should default to the cheap fast model. If someone
     'upgrades' it to llama-3.3-70b without thinking, latency
     regresses by ~600ms per validation call."""
-    import jarvis_validator
-    src = Path(jarvis_validator.__file__).read_text()
+    import tools.validator
+    src = Path(tools.validator.__file__).read_text()
     # Default model (env-overrideable) should mention 8b.
     assert "llama-3.1-8b" in src, "validator default model is not the cheap 8b"

@@ -13,16 +13,16 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 def test_capture_screenshot_returns_path():
     """capture_screenshot uses scrot. Mock subprocess.run so the test
     doesn't actually take a screenshot."""
-    from vision_tap import capture_screenshot
+    from taps.vision import capture_screenshot
 
-    with patch("vision_tap.subprocess.run") as mock_run:
+    with patch("taps.vision.subprocess.run") as mock_run:
         mock_run.return_value.returncode = 0
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             f.write(b"fake-png-bytes")
             tmp_path = Path(f.name)
 
         try:
-            with patch("vision_tap._screenshot_path", return_value=tmp_path):
+            with patch("taps.vision._screenshot_path", return_value=tmp_path):
                 path = capture_screenshot()
             assert path == tmp_path
             assert mock_run.called
@@ -33,8 +33,8 @@ def test_capture_screenshot_returns_path():
 
 
 def test_capture_screenshot_returns_none_on_scrot_failure():
-    from vision_tap import capture_screenshot
-    with patch("vision_tap.subprocess.run") as mock_run:
+    from taps.vision import capture_screenshot
+    with patch("taps.vision.subprocess.run") as mock_run:
         mock_run.return_value.returncode = 1
         path = capture_screenshot()
         assert path is None
@@ -42,8 +42,8 @@ def test_capture_screenshot_returns_none_on_scrot_failure():
 
 def test_active_app_via_xdotool():
     """get_active_app uses xdotool. Mock the subprocess call."""
-    from vision_tap import get_active_app
-    with patch("vision_tap.subprocess.run") as mock_run:
+    from taps.vision import get_active_app
+    with patch("taps.vision.subprocess.run") as mock_run:
         mock_run.return_value.returncode = 0
         mock_run.return_value.stdout = "google-chrome\n"
         app = get_active_app()
@@ -51,8 +51,8 @@ def test_active_app_via_xdotool():
 
 
 def test_active_app_returns_none_on_xdotool_failure():
-    from vision_tap import get_active_app
-    with patch("vision_tap.subprocess.run") as mock_run:
+    from taps.vision import get_active_app
+    with patch("taps.vision.subprocess.run") as mock_run:
         mock_run.return_value.returncode = 1
         mock_run.return_value.stdout = ""
         assert get_active_app() is None

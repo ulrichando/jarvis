@@ -42,6 +42,7 @@ Env (from voice-agent/.env, inherited by the systemd unit):
 from __future__ import annotations
 
 import asyncio
+import faulthandler
 import json
 import logging
 import os
@@ -49,6 +50,7 @@ import signal
 import sys
 import threading
 import time
+import traceback
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional
@@ -59,9 +61,9 @@ from aiohttp import web
 from livekit import api, rtc
 
 # Defensive monkey-patch on livekit.rtc.Room — install BEFORE any Room
-# is constructed. See src/voice-agent/livekit_track_guard.py and
+# is constructed. See src/voice-agent/resilience/track_guard.py and
 # spec 2026-05-04-jarvis-voice-resilience-design.md.
-import livekit_track_guard as _track_guard
+import resilience.track_guard as _track_guard
 _track_guard.install()
 
 logging.basicConfig(
@@ -105,6 +107,12 @@ WATCHDOG_STALE_SEC     = 60.0
 
 _last_heartbeat: float = time.monotonic()
 _heartbeat_lock = threading.Lock()
+
+# Captured by main() at startup so the watchdog OS thread can ask the
+# asyncio loop for its task list at the moment of stall. Without this,
+# asyncio.all_tasks() defaults to the current thread's running loop —
+# which is None inside the watchdog thread, returning an empty list.
+_main_loop: asyncio.AbstractEventLoop | None = None
 
 
 async def _heartbeat_loop(shutdown: asyncio.Event) -> None:
@@ -245,6 +253,82 @@ def _check_stale_stt(db_path: Path) -> None:
     asyncio.create_task(_restart_agent_unit(), name="stale-stt-restart")
 
 
+def _dump_stall_diagnostics(age: float) -> None:
+    """Dump every Python thread stack and every pending asyncio task,
+    routed to log.error so the next stall NAMES its culprit instead of
+    leaving us with `loop heartbeat stale (N s old)` and nothing else.
+
+    Called from `_watchdog_thread` (an OS thread, not the asyncio loop)
+    immediately before `os._exit(1)`. Best-effort: any failure here is
+    swallowed so we never block the kill path that systemd relies on
+    for clean restart.
+
+    The slow_callback_duration knob set in main() catches *slow* but
+    *finishing* callbacks; this routine catches *fully wedged* loops
+    where a callback never finishes (blocking I/O, GIL-held C extension,
+    sync-over-async). The two diagnostics complement each other.
+    """
+    log.error(
+        "[watchdog-diag] === STALL %0.0fs OLD — DUMPING DIAGNOSTICS ===",
+        age,
+    )
+
+    # 1. Every Python thread's current stack via faulthandler. Catches
+    #    GIL-held C extensions: the offending C call is on the main
+    #    thread frame at the top.
+    try:
+        log.error("[watchdog-diag] --- all-thread tracebacks ---")
+        # faulthandler writes to a file descriptor; route to stderr (2)
+        # which is captured into /tmp/jarvis-voice-client.log per the
+        # systemd unit's StandardError=append:.
+        faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+    except Exception as e:
+        log.error("[watchdog-diag] faulthandler dump failed: %r", e)
+
+    # 2. Every asyncio task on the captured main loop, with stack.
+    #    Catches sync-over-async + long-running coroutines that never
+    #    yield. Use the captured _main_loop because asyncio.all_tasks()
+    #    inside this OS thread can't auto-resolve the right loop.
+    try:
+        if _main_loop is None:
+            log.error(
+                "[watchdog-diag] _main_loop unset — main() did not capture "
+                "the running loop. asyncio task dump skipped."
+            )
+        else:
+            tasks = asyncio.all_tasks(loop=_main_loop)
+            log.error(
+                "[watchdog-diag] --- %d asyncio task(s) on main loop ---",
+                len(tasks),
+            )
+            for t in tasks:
+                try:
+                    name = t.get_name() if hasattr(t, "get_name") else "?"
+                    coro = getattr(t, "get_coro", lambda: None)()
+                    coro_name = getattr(coro, "__qualname__", repr(coro))
+                    log.error(
+                        "[watchdog-diag] task %r coro=%s done=%s",
+                        name, coro_name, t.done(),
+                    )
+                    # t.get_stack() returns frame objects; format and join.
+                    frames = t.get_stack(limit=20)
+                    if frames:
+                        formatted = "".join(traceback.format_list(
+                            traceback.extract_stack(frames[-1])
+                        ))
+                        log.error(
+                            "[watchdog-diag] task %r stack:\n%s",
+                            name, formatted,
+                        )
+                except Exception as e:
+                    log.error(
+                        "[watchdog-diag] failed to dump task %r: %r",
+                        t, e,
+                    )
+    except Exception as e:
+        log.error("[watchdog-diag] asyncio task dump failed: %r", e)
+
+
 def _watchdog_thread() -> None:
     """OS thread: kills the process if the asyncio loop stops
     updating the heartbeat. Daemon so it doesn't block normal exit."""
@@ -262,6 +346,7 @@ def _watchdog_thread() -> None:
                 f"[watchdog] asyncio loop heartbeat stale ({age:.0f}s old) — "
                 f"killing process so systemd restarts us"
             )
+            _dump_stall_diagnostics(age)
             # os._exit (not sys.exit) — the loop is dead, atexit
             # handlers would deadlock waiting on it.
             os._exit(1)
@@ -353,6 +438,15 @@ SPEECH_MODELS_AVAILABLE = (
     "deepseek-chat",
     "deepseek-v4-flash",
     "deepseek-v4-pro",
+    # Kimi K2.6 voice entries are DISABLED 2026-05-05. K2.6 emits
+    # built-in tool calls (web_search, etc.) that aren't in
+    # request.tools, and Moonshot's API rejects every such request
+    # with `tool call validation failed`. Every supervisor turn fails
+    # on first content and the LLM circuit breaker trips. See the
+    # corresponding gate in jarvis_agent.py SPEECH_MODELS — the
+    # entries return when JARVIS_KIMI_VOICE_EXPERIMENTAL=1, but they
+    # are kept out of the default tray picker until proper
+    # integration lands (shim tools or server-side filtering).
 )
 
 
@@ -1116,6 +1210,28 @@ async def main() -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, shutdown.set)
 
+    # Stall instrumentation (2026-05-04 / 2026-05-05).
+    #
+    # Two complementary diagnostics for two different stall classes:
+    #
+    # (a) `slow_callback_duration = 0.5` — asyncio logs a WARNING with
+    #     the offending callback/Task whenever it finishes after >0.5s.
+    #     Catches *slow but finishing* coroutines.
+    #
+    # (b) `_dump_stall_diagnostics()` invoked by `_watchdog_thread`
+    #     before `os._exit(1)` — dumps every Python thread stack via
+    #     faulthandler + every asyncio task with its frame stack.
+    #     Catches *fully wedged* loops where the callback never returns
+    #     (blocking I/O, C-extension holding the GIL, sync-over-async).
+    #     The 2026-05-05 stalls (3 in 24h: 09:56, 10:26, 11:15) emitted
+    #     ZERO slow-callback warnings, proving (a) alone is not enough.
+    #
+    # Capturing the running loop into the module global lets the
+    # OS-thread watchdog ask asyncio for the task list at stall time.
+    global _main_loop
+    _main_loop = loop
+    loop.slow_callback_duration = 0.5
+
     # Asyncio loop watchdog. The OS thread runs forever (daemon=True
     # so it doesn't block exit); the asyncio task heartbeats every
     # few seconds. If the loop stalls, the thread kills the process
@@ -1136,7 +1252,7 @@ async def main() -> None:
     # fully-wedged loop (os._exit); this one tells systemd we're healthy
     # during normal operation (READY=1) and initiating a clean shutdown
     # (STOPPING=1).
-    from watchdog import watchdog_loop
+    from resilience.watchdog import watchdog_loop
     asyncio.create_task(watchdog_loop(shutdown), name="sd-notify-watchdog")
 
     # Ensure the TTS provider file exists so the Tauri desktop can read
@@ -1154,7 +1270,7 @@ async def main() -> None:
     # Tier 2: full teardown + reconnect after all resume slots exhaust.
     # After max_full_reconnects consecutive tier-2 failures, SystemExit
     # so systemd's Restart=always takes over with a clean process.
-    from reconnect_ladder import ReconnectLadder
+    from resilience.reconnect_ladder import ReconnectLadder
 
     async def _resume() -> bool:
         """Tier-1 resume: try a fresh run_once cycle. Returns True on

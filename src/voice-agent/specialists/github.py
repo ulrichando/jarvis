@@ -45,7 +45,7 @@ Rules:
 def _github_tools() -> list:
     """Lazy import — keeps the gh subprocess setup out of registry-
     load critical path."""
-    from jarvis_github import (
+    from tools.github import (
         github_list_prs, github_view_pr,
         github_list_issues, github_view_issue,
     )
@@ -66,7 +66,7 @@ def register_github() -> None:
     """Register the GitHub subagent. Self-disables when `gh` is
     missing or the user hasn't run `gh auth login`."""
     try:
-        from jarvis_github import is_available
+        from tools.github import is_available
         enabled = is_available()
     except Exception:
         enabled = False

@@ -9,9 +9,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from turn_router import detect_emotion, classify_turn, AudioMeta
-from dispatching_llm import DispatchingLLM
-from dispatching_tts import DispatchingTTS
+from pipeline.turn_router import detect_emotion, classify_turn, AudioMeta
+from pipeline.dispatching_llm import DispatchingLLM
+from pipeline.dispatching_tts import DispatchingTTS
 
 
 FIXTURES = [

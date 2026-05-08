@@ -135,14 +135,15 @@ async def ext_new_tab(url: Optional[str] = None) -> str:
         url: Optional URL to load in the new tab. None / omitted →
              Chrome's new-tab page.
     """
-    # Optional[str] = None instead of str = "" so Groq strict-mode
-    # tool-call validation accepts a call with the property omitted.
-    # Live failure 2026-05-02: `tool call validation failed:
-    # parameters for tool ext_new_tab did not match schema: errors:
-    # [missing properties: 'url']` — Groq required `url` even though
-    # it had a default. Fallback to DeepSeek opened a tab; second
-    # user request opened ANOTHER one because chat_ctx truncation
-    # had hidden the first → the "two tabs" complaint.
+    # `url: Optional[str] = None` was originally chosen to make Groq
+    # strict-mode tool-call validation accept a call with the property
+    # omitted. That alone wasn't sufficient — strict mode strips
+    # `default` from the property and forces every property into
+    # `required`. The actual fix lives at sanitizers/strict_schema_relax.py
+    # (W-009, RFC-001 follow-up): it drops defaulted params from
+    # `required` AND drops `additionalProperties:false` so the resulting
+    # hybrid-valid schema lets the LLM omit `url`. See POSTMORTEM-001
+    # for the regression caught + fixed mid-session.
     return _summarize(await _post("new_tab", url=url or ""))
 
 

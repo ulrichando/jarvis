@@ -22,7 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src" / "voice-agent"))
 
-from turn_router import detect_emotion, AudioMeta  # noqa: E402
+from pipeline.turn_router import detect_emotion, AudioMeta  # noqa: E402
 
 # These regex constants are imported lazily because jarvis_agent.py runs
 # install() side effects on import — we don't want them firing in a

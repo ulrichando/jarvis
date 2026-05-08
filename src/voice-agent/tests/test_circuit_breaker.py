@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from circuit_breaker import (
+from resilience.circuit_breaker import (
     CircuitBreaker, CircuitOpenError,
     STATE_CLOSED, STATE_OPEN, STATE_HALF_OPEN,
 )

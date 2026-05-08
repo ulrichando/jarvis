@@ -23,7 +23,7 @@ def _run(coro):
 def test_watchdog_loop_emits_ready_pings_then_stopping():
     """While stop is unset the loop must emit at least one
     WATCHDOG=1; once stop is set it exits cleanly with STOPPING=1."""
-    from watchdog import watchdog_loop
+    from resilience.watchdog import watchdog_loop
 
     notifier = MagicMock()
     stop = asyncio.Event()
@@ -48,7 +48,7 @@ def test_watchdog_loop_emits_ready_pings_then_stopping():
 def test_watchdog_loop_skips_pings_when_stop_already_set():
     """If stop is set before entry the loop emits READY/STOPPING but
     no WATCHDOG (no point in pinging if we're shutting down)."""
-    from watchdog import watchdog_loop
+    from resilience.watchdog import watchdog_loop
 
     notifier = MagicMock()
     stop = asyncio.Event()

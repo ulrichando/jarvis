@@ -1,4 +1,4 @@
-"""Tests for the browser specialist + jarvis_browser_ext client.
+"""Tests for the browser specialist + tools.browser_ext client.
 
 Smoke-level — verifies the registry spec is well-formed and the HTTP
 client returns the expected `{ok: False, ...}` shape on unreachable
@@ -40,10 +40,10 @@ def test_browser_spec_loads_all_ext_tools():
     browser_mod.register_browser()
     spec = get("browser")
     tools = spec.tool_factory()
-    # ext_* tools — see jarvis_browser_ext.ALL_TOOLS (count tracks
+    # ext_* tools — see tools.browser_ext.ALL_TOOLS (count tracks
     # additions like ext_new_tab; assert against the source list rather
     # than a magic number to avoid bit-rot).
-    from jarvis_browser_ext import ALL_TOOLS
+    from tools.browser_ext import ALL_TOOLS
     assert len(tools) == len(ALL_TOOLS)
     assert len(tools) >= 37  # Phase C landed 2026-05-02: 26 base + 4 Phase A + 4 Phase B + 3 Phase C
 
@@ -69,31 +69,31 @@ def test_ext_post_returns_structured_error_when_bridge_down(monkeypatch):
 
     # Import AFTER monkeypatch so the env wins
     import importlib
-    import jarvis_browser_ext
-    importlib.reload(jarvis_browser_ext)
+    import tools.browser_ext
+    importlib.reload(tools.browser_ext)
 
-    out = asyncio.run(jarvis_browser_ext._post("get_url"))
+    out = asyncio.run(tools.browser_ext._post("get_url"))
     assert isinstance(out, dict)
     assert out.get("ok") is False
     assert "error" in out
 
 
 def test_ext_summarize_handles_failure_payloads():
-    import jarvis_browser_ext
-    s = jarvis_browser_ext._summarize({"ok": False, "error": "extension not connected"})
+    import tools.browser_ext
+    s = tools.browser_ext._summarize({"ok": False, "error": "extension not connected"})
     assert "extension not connected" in s
 
 
 def test_ext_summarize_returns_value_field_when_present():
-    import jarvis_browser_ext
-    s = jarvis_browser_ext._summarize({"ok": True, "value": "https://example.com"})
+    import tools.browser_ext
+    s = tools.browser_ext._summarize({"ok": True, "value": "https://example.com"})
     assert s == "https://example.com"
 
 
 def test_ext_summarize_trims_long_payloads():
-    import jarvis_browser_ext
+    import tools.browser_ext
     long_text = "a" * 3000
-    s = jarvis_browser_ext._summarize({"ok": True, "text": long_text}, max_chars=500)
+    s = tools.browser_ext._summarize({"ok": True, "text": long_text}, max_chars=500)
     assert len(s) <= 501  # 500 + the trailing ellipsis
     assert s.endswith("…")
 

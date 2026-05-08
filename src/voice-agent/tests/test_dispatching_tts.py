@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock
 
-from dispatching_tts import DispatchingTTS
+from pipeline.dispatching_tts import DispatchingTTS
 
 
 def _stub(voice_id: str):

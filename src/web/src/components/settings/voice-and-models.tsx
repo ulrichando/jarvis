@@ -132,7 +132,7 @@ export function VoiceAndModelsSection() {
         <div className="space-y-1">
           <Select
             value={current || undefined}
-            onValueChange={(v) => update(key, v)}
+            onValueChange={(v) => update(key, v ?? "")}
           >
             <SelectTrigger className="w-full max-w-md">
               <SelectValue placeholder={`Choose ${label.toLowerCase()}…`} />
