@@ -629,6 +629,85 @@ class _BreakeredLLMStream:
 _LAST_PREFLIGHT: dict = {"tokens": None, "pressure": None, "model": None}
 
 
+def _ctx_items_token_estimate(items) -> int:
+    """Cheap estimate of tokens consumed by a list of chat_ctx items.
+    Mirrors the stringification used in `_BreakeredGroqLLM.chat`'s
+    pre-flight so the two stay in sync."""
+    from tools.token_estimation import estimate_tokens
+    s = ""
+    for it in items:
+        s += str(getattr(it, "content", it)) + "\n"
+    return estimate_tokens(s)
+
+
+def _prune_chat_ctx_for_budget(chat_ctx, target_tokens: int):
+    """Return a new ChatContext with oldest non-system items dropped
+    until the estimate fits within `target_tokens`.
+
+    Always preserves:
+      - All system messages (the JARVIS_INSTRUCTIONS preamble — losing
+        these is exactly the failure mode B in the 2026-05-08 audit:
+        once the system prompt evaporates, the supervisor LLM
+        hallucinates `delegate(role='summarize', ...)` for every turn).
+      - Paired FunctionCall / FunctionCallOutput by call_id (dropping
+        one without the other produces a 4xx from the API: a tool
+        result with no preceding call is invalid).
+
+    Returns the original chat_ctx unchanged when no pruning is needed
+    (estimate already fits) or when chat_ctx is empty.
+    """
+    try:
+        from livekit.agents.llm import ChatContext, ChatMessage
+    except Exception:
+        return chat_ctx
+
+    items = list(getattr(chat_ctx, "items", None) or [])
+    if not items:
+        return chat_ctx
+
+    if _ctx_items_token_estimate(items) <= target_tokens:
+        return chat_ctx
+
+    # Mark which indices are protected (system messages always kept).
+    is_system = [
+        isinstance(it, ChatMessage)
+        and getattr(it, "role", None) == "system"
+        for it in items
+    ]
+
+    # Build call_id -> indices map so we drop pairs together.
+    call_id_to_indices: dict[str, list[int]] = {}
+    for i, it in enumerate(items):
+        cid = getattr(it, "call_id", None)
+        if cid:
+            call_id_to_indices.setdefault(cid, []).append(i)
+
+    # Drop oldest non-system items, expanding to pair-mates, until
+    # the remaining items fit. Scan from the front (oldest) so the
+    # most recent context survives — that's where the user's current
+    # request and recent tool results live.
+    drop: set[int] = set()
+    for i, it in enumerate(items):
+        if is_system[i] or i in drop:
+            continue
+        # Drop this item AND its pair (if any).
+        candidates = {i}
+        cid = getattr(it, "call_id", None)
+        if cid:
+            for j in call_id_to_indices.get(cid, []):
+                if not is_system[j]:
+                    candidates.add(j)
+        # Don't drop system items.
+        candidates = {k for k in candidates if not is_system[k]}
+        drop |= candidates
+        kept = [t for k, t in enumerate(items) if k not in drop]
+        if _ctx_items_token_estimate(kept) <= target_tokens:
+            break
+
+    pruned = [t for k, t in enumerate(items) if k not in drop]
+    return ChatContext(items=pruned)
+
+
 class _BreakeredGroqLLM(groq.LLM):
     """groq.LLM whose `chat()` returns a stream gated by _LLM_BREAKER.
     The first chunk read goes through the breaker; later chunks pass
@@ -694,6 +773,43 @@ class _BreakeredGroqLLM(groq.LLM):
                     f"[token-estimation] {label} pressure={pressure} "
                     f"est_tokens={est} max={MAX_CONTEXT_TOKENS}"
                 )
+            # Token-aware hard prune (added 2026-05-08, fix B in the
+            # voice-channel audit). Live-captured pre-flight at 17:51
+            # showed est_tokens=293321 against max=128000 and the
+            # supervisor LLM degenerated into "delegate to summarize"
+            # for every utterance because Groq silently truncated the
+            # JARVIS_INSTRUCTIONS preamble.
+            #
+            # Approach: when the estimate exceeds a safe budget (target
+            # leaves ~13K headroom for response output + tool overhead),
+            # build a pruned ChatContext by dropping oldest non-system
+            # items until the estimate fits. Replace kw["chat_ctx"]
+            # only for THIS call — the AgentSession keeps the full
+            # history; we just send less to the LLM.
+            if (
+                pressure == "hard"
+                and chat_ctx is not None
+                and os.environ.get("JARVIS_TOKEN_AWARE_PRUNE", "1") == "1"
+            ):
+                # Target leaves headroom for tools (already counted) +
+                # ~8K for response output. Anything over WARN_TOKENS
+                # post-prune still fires the warning above so the
+                # operator knows pruning was active.
+                target = max(40_000, MAX_CONTEXT_TOKENS - 13_000) - estimate_tokens(tools_str)
+                pruned = _prune_chat_ctx_for_budget(chat_ctx, target)
+                pruned_items = getattr(pruned, "items", None) or []
+                original_items = getattr(chat_ctx, "items", None) or []
+                if len(pruned_items) < len(original_items):
+                    dropped = len(original_items) - len(pruned_items)
+                    new_est = _ctx_items_token_estimate(pruned_items) + estimate_tokens(tools_str)
+                    logger.warning(
+                        f"[token-prune] dropped {dropped} oldest non-system "
+                        f"items: {len(original_items)}→{len(pruned_items)} "
+                        f"items, est {est}→{new_est} tokens"
+                    )
+                    kw["chat_ctx"] = pruned
+                    _LAST_PREFLIGHT["tokens"] = new_est
+                    _LAST_PREFLIGHT["pressure"] = context_pressure_state(new_est)
         except Exception:
             # Pre-flight is purely diagnostic — never block the call.
             pass
@@ -5563,19 +5679,27 @@ async def launch_app(binary: str, args: str = "") -> str:
     except Exception as e:
         return f"CRASHED: spawn error — {e}"
 
-    # Give X11 / the app a moment to register itself.
-    await asyncio.sleep(0.6)
-
-    try:
-        check = await asyncio.create_subprocess_exec(
-            "pgrep", "-f", bin_only,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        out_b, _ = await asyncio.wait_for(check.communicate(), timeout=2.0)
-        running = bool(out_b.decode("utf-8", errors="replace").strip())
-    except Exception:
-        running = False
+    # Poll pgrep up to 4s, returning as soon as the app appears. The old
+    # fixed 600ms sleep raced cold-starting GUI apps (e.g. chrome takes
+    # >1s on first launch — extensions + profile load). On the user-
+    # visible "first attempt fails / second succeeds" pattern, the second
+    # attempt only succeeded because chrome was now running from the
+    # first attempt that we'd given up on too early. Bug fixed 2026-05-08.
+    running = False
+    for _ in range(20):  # 20 × 0.2s = 4s budget
+        await asyncio.sleep(0.2)
+        try:
+            check = await asyncio.create_subprocess_exec(
+                "pgrep", "-f", bin_only,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            out_b, _ = await asyncio.wait_for(check.communicate(), timeout=1.0)
+            if out_b.decode("utf-8", errors="replace").strip():
+                running = True
+                break
+        except Exception:
+            continue
 
     if not running:
         try:
