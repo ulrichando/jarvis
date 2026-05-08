@@ -20,7 +20,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from turn_graph import build_turn_graph
+from pipeline.turn_graph import build_turn_graph
 
 
 def _mk_session(prior_user_text: str = "hey there") -> SimpleNamespace:

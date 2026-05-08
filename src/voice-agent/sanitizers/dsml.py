@@ -299,4 +299,16 @@ async def _dispatch(stream, envelope: str, agents_llm) -> None:
         stream._event_ch.send_nowait(chunk)
         logger.info("[dsml] emitted recovery chunk for %r (len=%d)", name, len(text))
     except Exception as e:
-        logger.warning("[dsml] could not enqueue recovery chunk: %s", e)
+        # The previous log was `%s` on `e` which produced an empty string
+        # for ChanClosed-style exceptions (their __str__ is ""). Use repr
+        # + type name so we can actually diagnose the failure live —
+        # observed 2026-05-04: "[dsml] could not enqueue recovery chunk: "
+        # told us nothing. Most likely cause: stream._event_ch was closed
+        # by the framework before _dispatch finished (e.g. the LLM stream
+        # was torn down mid-tool-execution). If that's it, the only fix
+        # is to detect closure earlier; until we have telemetry, log the
+        # type so the next occurrence is informative.
+        logger.warning(
+            "[dsml] could not enqueue recovery chunk for %r: %s: %r",
+            name, type(e).__name__, e,
+        )

@@ -21,7 +21,10 @@ type DockerLib = {
   dockerAvailable: () => Promise<boolean>;
   imageExists: () => Promise<boolean>;
   inspect: (id: string) => Promise<RuntimeState>;
-  ensureRunning: (id: string) => Promise<RuntimeState>;
+  ensureRunning: (
+    id: string,
+    envVars?: Record<string, string>,
+  ) => Promise<RuntimeState>;
   stop: (id: string) => Promise<void>;
   destroy: (id: string) => Promise<void>;
   exec: (id: string, command: string, opts?: { timeoutMs?: number }) => Promise<ExecResult>;
@@ -64,9 +67,12 @@ export async function getRuntime(id: string): Promise<RuntimeState> {
   return lib.inspect(id);
 }
 
-export async function startRuntime(id: string): Promise<RuntimeState> {
+export async function startRuntime(
+  id: string,
+  envVars?: Record<string, string>,
+): Promise<RuntimeState> {
   const lib = await load();
-  return lib.ensureRunning(id);
+  return lib.ensureRunning(id, envVars);
 }
 
 export async function stopRuntime(id: string): Promise<void> {

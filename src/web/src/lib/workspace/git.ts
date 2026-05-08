@@ -135,6 +135,50 @@ export async function gitLog(
     .filter((c): c is CommitInfo => c !== null);
 }
 
+export type GitStatus = {
+  isRepo: boolean;
+  branch: string | null;
+  /** Number of files in the working tree that differ from HEAD
+   *  (modified + added + deleted + untracked). */
+  dirtyCount: number;
+  lastCommit: CommitInfo | null;
+};
+
+/** Cheap status read for the Settings UI: branch + dirty file count
+ *  + most recent commit. Doesn't list filenames — those are noisy
+ *  and the user can run `git status` in the terminal if they need
+ *  details. Returns isRepo:false if the workspace was never inited
+ *  (legacy / fresh after manual reset). */
+export async function gitStatus(workspaceId: string): Promise<GitStatus> {
+  if (!(await isGitRepo(workspaceId))) {
+    return { isRepo: false, branch: null, dirtyCount: 0, lastCommit: null };
+  }
+  const dir = workspaceRoot(workspaceId);
+  // --porcelain gives one line per changed entry. count lines.
+  const { stdout: porcelain } = await git(dir, ["status", "--porcelain"]).catch(
+    () => ({ stdout: "" }),
+  );
+  const dirtyCount = porcelain
+    .split("\n")
+    .filter((l) => l.trim().length > 0).length;
+  let branch: string | null = null;
+  try {
+    const { stdout } = await git(dir, ["rev-parse", "--abbrev-ref", "HEAD"]);
+    const t = stdout.trim();
+    branch = t === "HEAD" ? null : t || null;
+  } catch {
+    /* no commits yet — branch resolution fails harmlessly */
+  }
+  let lastCommit: CommitInfo | null = null;
+  try {
+    const { stdout } = await git(dir, ["log", "-1", LOG_FORMAT]);
+    lastCommit = parseLogLine(stdout.trim());
+  } catch {
+    /* no commits yet */
+  }
+  return { isRepo: true, branch, dirtyCount, lastCommit };
+}
+
 export async function gitPush(args: {
   workspaceId: string;
   ownerRepo: string; // "<owner>/<repo>"

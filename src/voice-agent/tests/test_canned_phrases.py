@@ -7,7 +7,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import canned_phrases
+import tts.canned_phrases as canned_phrases
 
 
 def test_unknown_phrase_returns_none():

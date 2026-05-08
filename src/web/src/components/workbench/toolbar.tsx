@@ -4,7 +4,6 @@ import { useQuery } from "@tanstack/react-query";
 import {
   Eye,
   Code2,
-  Database,
   RotateCw,
   ExternalLink,
   Maximize2,
@@ -15,12 +14,16 @@ import {
   RectangleVertical,
   PenLine,
   Download,
-  GitBranch,
 } from "lucide-react";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
 
-export type WorkbenchTab = "preview" | "code" | "database" | "terminal" | "history" | "settings";
+// Database + History used to be standalone tabs but they duplicated
+// Settings → Database and Settings → Backups respectively. Settings is
+// the source of truth for project configuration; the standalone tabs
+// were removed so users don't have to hunt for the same controls in
+// two places.
+export type WorkbenchTab = "preview" | "code" | "terminal" | "settings";
 export type ViewportPreset = "desktop" | "mobile";
 
 type Runtime = {
@@ -119,14 +122,8 @@ export function WorkbenchToolbar({
           <TabIcon active={active === "code"} title="Code" onClick={() => onTabChange("code")}>
             <Code2 className="size-3.5" />
           </TabIcon>
-          <TabIcon active={active === "database"} title="Database" onClick={() => onTabChange("database")}>
-            <Database className="size-3.5" />
-          </TabIcon>
           <TabIcon active={active === "terminal"} title="Terminal" onClick={() => onTabChange("terminal")}>
             <PenLine className="size-3.5" />
-          </TabIcon>
-          <TabIcon active={active === "history"} title="History" onClick={() => onTabChange("history")}>
-            <GitBranch className="size-3.5" />
           </TabIcon>
           <TabIcon active={active === "settings"} title="Settings" onClick={() => onTabChange("settings")}>
             <Settings2 className="size-3.5" />

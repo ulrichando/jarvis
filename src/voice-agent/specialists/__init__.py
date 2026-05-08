@@ -39,12 +39,17 @@ from .registry import (
 # overwrites), so importing this package twice is safe.
 def _register_builtins() -> None:
     from . import (
-        desktop, planner, browser, browser_v2,
+        desktop, browser, browser_v2,
         summarize, weather, researcher, validator, code_reviewer,
         memory_recall, github,
     )
+    # planner specialist removed 2026-05-05 — replaced by in-process
+    # plan-mode tools (tools/plan_mode.py). Supervisor itself enters
+    # plan mode via enter_plan_mode(), drafts the plan, and executes
+    # via the in-process bash/edit/write tools. Loses deepseek-v4-pro
+    # for multi-step coding but gains direct execution and removes
+    # the run_jarvis_cli subprocess hop.
     desktop.register_desktop()
-    planner.register_planner()
     browser.register_browser()
     # browser_v2 self-disables when GROQ/DeepSeek key or browser-use
     # are missing — safe to always call register_browser_v2().

@@ -1,5 +1,5 @@
 import pytest
-from turn_router import (
+from pipeline.turn_router import (
     detect_emotion, AudioMeta,
     compute_speech_rate, update_baseline,
 )
@@ -85,20 +85,22 @@ def test_acoustic_signal_can_signal_sad_with_neutral_words():
 # ── compute_interrupt_tuning (Phase 7) ────────────────────────────────
 
 
-from turn_router import compute_interrupt_tuning
+from pipeline.turn_router import compute_interrupt_tuning
 
 
 def test_route_base_neutral_emotion():
     """With neutral emotion, the route base values should pass through
     unchanged — verifies overlay doesn't perturb the baseline."""
     assert compute_interrupt_tuning("BANTER",    "neutral") == (1, 0.3)
-    assert compute_interrupt_tuning("TASK",      "neutral") == (2, 0.4)
+    # TASK bumped 2→3 on 2026-05-07 to filter 2-word backchannels
+    # ("yeah okay", "got it"). See pipeline/turn_router.py::_ROUTE_BASE.
+    assert compute_interrupt_tuning("TASK",      "neutral") == (3, 0.4)
     assert compute_interrupt_tuning("REASONING", "neutral") == (3, 0.5)
     assert compute_interrupt_tuning("EMOTIONAL", "neutral") == (3, 0.6)
 
 
 def test_unknown_route_defaults_to_task_base():
-    assert compute_interrupt_tuning("BLARG", "neutral") == (2, 0.4)
+    assert compute_interrupt_tuning("BLARG", "neutral") == (3, 0.4)
 
 
 def test_frustrated_overlay_adds_padding():
@@ -209,14 +211,14 @@ def test_intensifier_window_doesnt_bleed_far():
     # "annoying" is far from "really" (>30 chars); should score 1, not 2.
     # No competing emotion → frustrated still wins, but the test asserts
     # the score is the lower value.
-    from turn_router import _score_emotions
+    from pipeline.turn_router import _score_emotions
     scores = _score_emotions(text)
     assert scores["frustrated"] == 1.0  # not 2.0
 
 
 def test_score_aggregates_multiple_matches():
     """Multiple frustrated keys in one turn → frustrated wins big."""
-    from turn_router import _score_emotions
+    from pipeline.turn_router import _score_emotions
     scores = _score_emotions(
         "this is annoying and frustrating and seriously not working"
     )
@@ -319,7 +321,7 @@ def test_rms_and_speech_rate_combine():
 import asyncio
 from unittest.mock import AsyncMock, patch
 
-from turn_router import (
+from pipeline.turn_router import (
     route_from_classifier_output,
     classify_turn,
 )

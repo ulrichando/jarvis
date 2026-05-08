@@ -48,6 +48,29 @@ export async function POST(
 ) {
   const { id } = await ctx.params;
   const body = await req.json().catch(() => ({}));
+
+  // Restore branch — POST { action: "restore", sha }. Hard-resets the
+  // workspace to the given commit. Used by the Backups section in the
+  // Settings UI for snapshot rollback. Folded into this same endpoint
+  // (instead of a separate /restore route) since both deal with the
+  // git history of one workspace and share the gitLog helpers.
+  if (body.action === "restore") {
+    const sha = String(body.sha ?? "").trim();
+    if (!sha) {
+      return NextResponse.json({ error: "missing sha" }, { status: 400 });
+    }
+    try {
+      await gitRestore(id, sha);
+      return NextResponse.json({ ok: true });
+    } catch (err) {
+      console.error("[commit] restore failed:", err);
+      return NextResponse.json(
+        { error: "restore_failed", message: String(err) },
+        { status: 500 },
+      );
+    }
+  }
+
   const message = String(body.message ?? "update").trim() || "update";
   try {
     const commit = await gitCommit(id, message);

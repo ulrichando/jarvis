@@ -1,0 +1,94 @@
+# JARVIS — project context for Claude
+
+JARVIS is Ulrich's voice-first AI assistant. Real-time speech in, real-time speech out, with specialist handoffs for desktop / browser / multi-step coding work. Runs on Linux (Kali) as a multi-process LiveKit Agents Python worker, fronted by a Tauri desktop UI.
+
+> **Two layers of context:** this file is committed, project-wide, and loads in any session opened anywhere in the repo. Per-conversation evolving memory (user preferences, recent feedback, session-specific learnings) lives in `~/.claude/projects/-home-ulrich-Documents-Projects-jarvis/memory/MEMORY.md` — read it for ground-truth on user style + recent decisions. Don't duplicate that content here; this file is for things that stay true across sessions.
+
+## Stack at a glance
+
+| Layer | Tech | Where |
+|---|---|---|
+| Voice agent (the brain) | Python 3.13, LiveKit Agents framework | [src/voice-agent/](src/voice-agent/) |
+| Desktop UI | Tauri (Rust + React/TS) | [src/desktop-tauri/](src/desktop-tauri/) |
+| Web app | Next.js / React | [src/web/](src/web/) |
+| CLI agent (`jarvis`) | TypeScript / Bun, Claude Code shape | [src/cli/](src/cli/) |
+| Browser extension | TS, talks to bridge over WS | [src/extensions/](src/extensions/) |
+| Hub (jarvis-bridge.service) | Python on `127.0.0.1:8765`, brokers HTTP→Chrome ext via WS | [src/hub/](src/hub/) |
+| AI-native OS rice (Misty Scone) | Arch + custom desktop, copies cli/desktop-tauri | [src/os/desktop/](src/os/desktop/) |
+
+JARVIS has full `sudo NOPASSWD` root via `/etc/sudoers.d/jarvis` — every shell tool runs as root. Treat that as a load-bearing constraint, not a typo.
+
+## Voice-agent architecture
+
+[src/voice-agent/jarvis_agent.py](src/voice-agent/jarvis_agent.py) is the entrypoint (~8400 lines). It wires:
+
+- **Supervisor agent** — Groq llama-3.3-70b primary; FallbackAdapter cascade to llama-3.1-8b / DeepSeek / others. Owns conversation, routing, direct tools (bash/read/edit/write/plan-mode + memory + face ID).
+- **Specialist registry** — [specialists/registry.py](src/voice-agent/specialists/registry.py) + [specialists/agent.py](src/voice-agent/specialists/agent.py). `desktop` and `browser` are enabled; `planner` is retired (replaced by direct in-process tools + plan-mode). Each spec has `transfer_tool`, `when_to_use`, `instructions`, `tool_factory`, `ack_phrase`, `max_history_items`.
+- **Pipeline** — [pipeline/turn_router.py](src/voice-agent/pipeline/turn_router.py) classifies BANTER / TASK / REASONING / EMOTIONAL → picks LLM + TTS + interrupt tuning. [pipeline/turn_telemetry.py](src/voice-agent/pipeline/turn_telemetry.py) writes every turn to SQLite at `~/.local/share/jarvis/turn_telemetry.db`. [pipeline/turn_graph.py](src/voice-agent/pipeline/turn_graph.py) is the LangGraph supervisor (gated behind `JARVIS_LANGGRAPH_SUPERVISOR=1`, default off).
+- **Sanitizers** ([sanitizers/](src/voice-agent/sanitizers/)) — installed as monkey-patches at import time, all idempotent:
+  - `pycall.py` — suppresses tool-call-as-text leaks (`task_done(...)`, `<function>...</function>`, JSON arrays, `<tool_call>...`)
+  - `dsml.py` — DeepSeek meta-language sanitizer
+  - `tool_name.py` — coerces tool name shapes
+  - `deepseek_roundtrip.py`, `strict_schema_relax.py` — provider-shape fixups
+  - `handoff_text.py` — drops anticipatory text content from supervisor turns containing `transfer_to_*` / `delegate`
+- **Resilience** ([resilience/](src/voice-agent/resilience/)) — circuit breaker, idle timeout, reconnect ladder, track guard, watchdog.
+- **Confab detector** — [confab_detector.py](src/voice-agent/confab_detector.py) refuses to write turns to the conversation DB when the assistant claims success without tool evidence in the prior 10 messages.
+- **Specialist tool gate** — [specialists/agent.py](src/voice-agent/specialists/agent.py): `task_done` is refused if no real (non-`task_done`) tool fired this handoff. Narrow bailout-phrase allowlist (`user changed topic`, `not a desktop task`, `wrong specialist`, `cannot accomplish`, `handing back to supervisor`) lets wrongly-routed specialists exit cleanly.
+
+## Operational rules — durable, override defaults
+
+**Don't restart `jarvis-voice-agent.service` while a session is active.** Check `~/.local/share/jarvis/turn_telemetry.db` for the latest `ts_utc`; if within 60s, ask the user first. Restarting kills in-flight specialists and the user hears nothing.
+
+**No Co-Authored-By trailers on commits. No "🤖 Generated with Claude Code" or similar attribution in PR bodies.** Never.
+
+**`src/cli/` is off-limits when working on desktop / voice-agent / web.** It's a separate codebase (the `jarvis` CLI agent). Ask before modifying.
+
+**`src/cli/src/utils/claudeInChrome/` is reserved** for future Firefox/Chrome extension work. Don't delete.
+
+**Groq is the primary LLM provider, DeepSeek secondary.** Don't hardcode either — JARVIS is multi-provider (Groq, DeepSeek, OpenAI, Google, Anthropic, Kimi).
+
+**Bare "Jarvis" pings reply EXACTLY "Yes, sir?"** — canonical, not "Yes?" or "How can I help?". This is part of the voice persona; don't drift it.
+
+**`/loop`, `/schedule`, follow-up agent offers**: don't end JARVIS replies with "want me to schedule a follow-up agent?" — the user finds it noisy.
+
+**For desktop Tauri release builds:** `npm run build` alone does NOT ship JS changes. You must `cargo build --release` afterward to re-embed `dist/` into the binary. ([src/desktop-tauri/](src/desktop-tauri/))
+
+**Voice reactor sphere is intentionally removed.** Don't re-add per-frame React state in voice UI — latency cost was too high.
+
+**JARVIS website target layout is 3-column** (left nav / center chat / right preview). The Tauri desktop is a separate, smaller UI — don't conflate them.
+
+## Active design decisions — the load-bearing constraints
+
+- **Three load-bearing monkey-patches** on import (must not be removed): `deepseek_roundtrip`, `tool_name_sanitizer`, `AcousticTap`. See [sanitizers/__init__.py](src/voice-agent/sanitizers/__init__.py).
+- **Specialist tool-gate** refuses `task_done` with no real tool. Narrow bailout allowlist (`_BAILOUT_SUMMARY_RE` in [specialists/agent.py](src/voice-agent/specialists/agent.py)) lets wrongly-routed specialists exit. Adding new specialists: their prompt must list the exact bailout phrases the gate honors.
+- **STAY-IN-SUPERVISOR rule.** Conversational/ambiguous user input ("Jarvis, mute" / "I love you" / vague fragments / yes-no replies) stays in the supervisor — never `transfer_to_*`. Specialists need a nameable target. See [jarvis_agent.py::JARVIS_INSTRUCTIONS](src/voice-agent/jarvis_agent.py) "STAY-IN-SUPERVISOR RULE" section.
+- **`min_words` per route** ([pipeline/turn_router.py::_ROUTE_BASE](src/voice-agent/pipeline/turn_router.py)): BANTER=1, TASK=3, REASONING=3, EMOTIONAL=3. TASK was bumped 2→3 on 2026-05-07 to filter 2-word backchannels ("yeah okay" / "got it"). Kill-phrase regex at [jarvis_agent.py:7410](src/voice-agent/jarvis_agent.py#L7410) bypasses min_words for deliberate "stop / wait / cancel".
+- **`resume_false_interruption` is OFF on purpose.** LiveKit's `pause()` is broken on the SFU output (gates new frames but doesn't clear the queue). Disabling routes every barge-in to `interrupt() → clear_buffer() → clear_queue()`, which actually works. Don't re-enable without verifying the SFU path.
+- **`handoff_text_suppressor` walks the FULL chat_ctx**, not the last 15 items. The 15-item window dropped `task_done` past it in busy sessions, then suppressed all supervisor text indefinitely. Cost is O(n), bounded by `CTX_MAX_TURNS=80`.
+- **Confab-detector's tool-evidence lookback is 10 messages**, and `transfer_to_*` / `delegate` count as evidence. The supervisor's `chat_ctx` doesn't see the specialist's internal `ext_*` calls, so the handoff alone proves the specialist had a chance to do work.
+- **VAD threshold tuned 2026-05-04** to fix "first turn missed". Don't loosen it.
+- **Kimi K2.6 voice supervisor is broken** ("web_search not in request.tools"). Entries gated behind `JARVIS_KIMI_VOICE_EXPERIMENTAL=1`. Don't re-enable without a fix.
+
+## Common workflows
+
+| Task | Command |
+|---|---|
+| Restart voice agent | `systemctl --user restart jarvis-voice-agent.service` |
+| Voice agent logs | `tail -f ~/.local/share/jarvis/logs/voice-agent.log` (JSON-formatted; rotated daily by `jarvis-log-rotate.timer`) |
+| Voice agent test suite | `cd src/voice-agent && .venv/bin/python -m pytest tests/` |
+| Telemetry inspection | `sqlite3 ~/.local/share/jarvis/turn_telemetry.db` (tables: `turns`, `launch_attempts`) |
+| Periodic re-scoring | `bin/jarvis-soak-rescore.sh` |
+| Desktop dev (Tauri) | `cd src/desktop-tauri && npm run tauri dev` |
+| Desktop release | `npm run build && cargo build --release` (BOTH steps) |
+| Run jarvis CLI | `bin/jarvis` (Claude-Code-shaped, has gstack skill access) |
+| Hub status | `systemctl --user status jarvis-bridge.service` |
+
+## File-shape conventions
+
+- **Voice-agent specialist instructions** ([specialists/desktop.py](src/voice-agent/specialists/desktop.py), [specialists/browser.py](src/voice-agent/specialists/browser.py)) include `═══ NEVER WRITE PROTOCOL SHAPES AS REPLY TEXT ═══` sections — these block the LLM from emitting `task_done(...)`/`<function>...</function>`/JSON-array tool-call leaks as voiced text. Mirror the section when adding new specialists.
+- **Specialist `ack_phrase`** is the only supervisor-side voice the user hears between the handoff and the specialist's `task_done` summary. Keep it dignified-butler register ("Right away, sir." / "Of course, sir." / "At once, sir.").
+- **Adding a new specialist:** see [specialists/HOW_TO_ADD_A_SPECIALIST.md](src/voice-agent/specialists/HOW_TO_ADD_A_SPECIALIST.md).
+
+## Voice intelligence rubric
+
+There's a 10-axis /100 rubric tracking voice-mode parity with Claude AI. Current score ~95/100. Phase commits update score deltas. See `project_voice_intelligence_rubric.md` in the memory dir for the axes.

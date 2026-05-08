@@ -16,7 +16,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import dsml_sanitizer
+import sanitizers.dsml as dsml_sanitizer
 
 
 # ── Pure-function envelope parser ────────────────────────────────────

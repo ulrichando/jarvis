@@ -37,7 +37,7 @@ Rules:
 def _code_reviewer_tools() -> list:
     """Lazy import so groq client init doesn't run at registry-load.
     `task_done` is auto-attached by the framework."""
-    from jarvis_code_reviewer import review_code
+    from tools.code_reviewer import review_code
     return [review_code]
 
 
@@ -45,8 +45,8 @@ _CODE_REVIEWER_WHEN = (
     "Use when the user asks for a code review / critique / second "
     "opinion on code: \"review this\", \"what do you think of X\", "
     "\"any issues with this code\", \"look this over\". Also use "
-    "after the planner specialist produces multi-file code work, to "
-    "catch what the writer missed (Cognition's clean-context Smart "
+    "after you finish multi-file code work via plan-mode + bash/edit/"
+    "write, to catch what you missed (Cognition's clean-context Smart "
     "Friend pattern catches ~2 bugs/PR). Pass the code as a string. "
     "Returns categorized findings + a VERDICT (PASS|NEEDS_CHANGES|"
     "BLOCKED). Auto-disabled when GROQ_API_KEY is missing."
@@ -57,7 +57,7 @@ def register_code_reviewer() -> None:
     """Register the code-reviewer subagent. Auto-disables when GROQ
     key is missing (mirrors validator/browser_v2 graceful-degrade)."""
     try:
-        from jarvis_code_reviewer import is_available
+        from tools.code_reviewer import is_available
         enabled = is_available()
     except Exception:
         enabled = False
