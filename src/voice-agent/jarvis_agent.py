@@ -5012,9 +5012,16 @@ def _save_turn(
 #     conversation; user had to repeat the $600/6mo, Python/JS/Lua,
 #     etc. context multiple times. 20 covers ~10 exchanges (~5–10 min
 #     of dialogue). Cap stays at CTX_MAX_TURNS=80 inside the session.
-#     Holds at 20 — don't go back to 30 without re-verifying that
-#     confab_detector + scrub catch all past-pattern leaks.
-RECENT_TURNS_LIMIT = 20
+#     Held at 20 until 2026-05-08.
+#   - 2026-05-08: trimmed 20 → 12 after live evidence of topic-drift
+#     confabulation. With 20 turns of chat_ctx loaded, short user
+#     inputs ("Hush!" / "One second") triggered LLM monologues on
+#     topics from earlier in the session (live: "Hush!" → 19s of
+#     Cameroon history). state.db.memories now provides cross-session
+#     durability via Phase 2 auto-extraction, so chat_ctx doesn't need
+#     the full 20-turn window — 12 is enough for short-term continuity
+#     with less topic surface for the LLM to drift onto.
+RECENT_TURNS_LIMIT = 12
 RECALL_SEARCH_LIMIT = 8
 
 
