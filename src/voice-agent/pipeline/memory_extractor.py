@@ -129,7 +129,7 @@ async def _call_extractor_llm(transcript: str) -> str:
                 json={
                     "model": "llama-3.1-8b-instant",
                     "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 80,
+                    "max_tokens": 160,
                     "temperature": 0.0,
                     "stop": ["\nUSER:", "\n\n"],
                 },
