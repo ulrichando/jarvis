@@ -33,7 +33,7 @@ def test_breaker_stt_open_raises_apiconnection_error():
     Calling via _build_breakered_stt() instead of the bare class so
     a regression in the factory (wrong model arg, broken constructor)
     surfaces here at test time, not at agent startup."""
-    from circuit_breaker import (
+    from resilience.circuit_breaker import (
         CircuitBreaker, CircuitOpenError,
         STATE_CLOSED, STATE_OPEN,
     )
@@ -58,7 +58,7 @@ def test_breaker_tts_open_raises_apiconnection_error():
     _LoggingGroqChunkedStream._run must surface APIConnectionError so
     FallbackAdapter cascades to EdgeTTS instead of waiting on Groq's
     ~30s aiohttp timeout."""
-    from circuit_breaker import (
+    from resilience.circuit_breaker import (
         CircuitBreaker, CircuitOpenError,
         STATE_CLOSED, STATE_OPEN,
     )
@@ -87,7 +87,7 @@ def test_breaker_llm_open_raises_apiconnection_error():
     Python's special-method lookup bypasses __getattr__, so a missing
     __aenter__/__aexit__ on the wrapper would crash with TypeError
     in production but the staticmethod seam wouldn't catch it."""
-    from circuit_breaker import (
+    from resilience.circuit_breaker import (
         CircuitBreaker, CircuitOpenError,
         STATE_CLOSED, STATE_OPEN,
     )

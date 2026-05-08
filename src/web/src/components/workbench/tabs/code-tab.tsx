@@ -56,7 +56,11 @@ export function CodeTab({
         defaultSize="22%"
         minSize="14%"
         maxSize="40%"
-        className="border-r border-border/50 overflow-hidden"
+        // border-r removed — the <Separator> below is the only divider
+        // between this Files/Search rail and the editor pane. Having
+        // both produced a doubled vertical seam. Same pattern fix as
+        // workbench/[id]/page.tsx.
+        className="overflow-hidden"
       >
         <div className="flex h-full flex-col">
           <div className="flex items-center gap-3 px-3 py-2 border-b border-border/50">
@@ -87,7 +91,7 @@ export function CodeTab({
         </div>
       </Panel>
 
-      <Separator className="w-px bg-border/50 hover:bg-primary/40 transition-colors" />
+      <Separator className="w-px bg-foreground/15 hover:bg-primary/50 transition-colors" />
 
       {/* Right: editor (or preview when no file is open) stacked over a
           tabbed bottom pane. Preview is the default — clicking a file
@@ -119,7 +123,7 @@ export function CodeTab({
               />
             )}
           </Panel>
-          <Separator className="h-px bg-border/50 hover:bg-primary/40 transition-colors" />
+          <Separator className="h-px bg-foreground/15 hover:bg-primary/50 transition-colors" />
           <Panel defaultSize="32%" minSize="10%" className="overflow-hidden">
             <BottomPane
               workspaceId={workspaceId}

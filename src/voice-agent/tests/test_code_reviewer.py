@@ -8,12 +8,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import jarvis_code_reviewer
+import tools.code_reviewer
 
 
 def test_is_available_false_without_groq_key(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    assert jarvis_code_reviewer.is_available() is False
+    assert tools.code_reviewer.is_available() is False
 
 
 def test_review_code_returns_offline_message_without_key(monkeypatch):
@@ -22,7 +22,7 @@ def test_review_code_returns_offline_message_without_key(monkeypatch):
     dep isn't configured."""
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     import asyncio
-    fn = jarvis_code_reviewer.review_code._func
+    fn = tools.code_reviewer.review_code._func
     result = asyncio.run(fn(code="def foo(): pass", focus="", context=""))
     assert "offline" in result.lower()
 
@@ -31,7 +31,7 @@ def test_format_for_prompt_truncates_huge_inputs():
     """Code review of huge inputs must trim — the LLM's depth caps
     around 8KB anyway."""
     huge = "x" * 100000
-    out = jarvis_code_reviewer._format_for_prompt(huge)
+    out = tools.code_reviewer._format_for_prompt(huge)
     assert len(out) < len(huge)
     assert "truncated" in out
 
@@ -70,7 +70,7 @@ def test_code_reviewer_uses_groq_70b_for_depth():
     """Reviewer needs depth — should NOT default to the cheap 8b
     banter model. If someone 'optimizes' it down, review quality
     regresses sharply."""
-    src = Path(jarvis_code_reviewer.__file__).read_text()
+    src = Path(tools.code_reviewer.__file__).read_text()
     assert "llama-3.3-70b" in src, (
         "code reviewer should default to llama-3.3-70b — depth matters"
     )

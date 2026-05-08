@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import jarvis_memory_recall as mr
+import tools.memory_recall as mr
 
 
 def test_format_when_relative_strings():

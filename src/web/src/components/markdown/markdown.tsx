@@ -167,15 +167,118 @@ const components: Components = {
 // Plus any inline `<script>` the model wrote in design code (it sometimes
 // dumps a sample) — React skips executing scripts in component trees
 // and warns. Strip all three before rendering.
+// State-machine strip: walks the text character by character,
+// tracking which bolt block (artifact / action / results / plan /
+// verify) we're currently inside. Only emits characters when we're
+// OUTSIDE every block. This is what the streaming message-parser
+// already does; doing it here too means the renderer NEVER sees
+// boltArtifact-internal content even if the model emitted malformed
+// tags, nested actions, unbalanced closers, content-after-close,
+// markdown fences mixed with bolt markers, or any other shape.
+//
+// Replaces a long chain of regex strips. Regex on raw text was
+// fragile: every model output had a slightly different shape, each
+// new regex iteration revealed a new edge case (multi-line attrs,
+// continuation lines, fragment leftovers). The state machine is
+// robust by construction — it doesn't care about what's INSIDE
+// a block; only about block boundaries.
+//
+// Recognized blocks (case-insensitive open + close tags):
+//   boltartifact, boltaction, boltactionresults, jarvisplan, jarvisverify
+function stripBlocksByStateMachine(content: string): string {
+  const BLOCKS = [
+    "boltartifact",
+    "boltaction",
+    "boltactionresults",
+    "jarvisplan",
+    "jarvisverify",
+  ];
+  const lower = content.toLowerCase();
+  let out = "";
+  let i = 0;
+  // Stack of open block names — handles nested boltAction inside
+  // boltArtifact correctly. We're "outside" only when stack is empty.
+  const stack: string[] = [];
+
+  while (i < content.length) {
+    if (content[i] === "<") {
+      // Try to match an open or close tag for any known block.
+      let matched = false;
+      for (const tag of BLOCKS) {
+        // Open tag: `<tag` followed by space or `>` (after the b in tag).
+        if (lower.startsWith("<" + tag, i)) {
+          const after = lower.charCodeAt(i + 1 + tag.length);
+          // boundary char: space, >, /, tab, newline, or end
+          const isBoundary =
+            after === 32 || after === 62 || after === 47 ||
+            after === 9 || after === 10 || after === 13 ||
+            Number.isNaN(after);
+          if (isBoundary) {
+            // Skip until '>' (or end). This consumes the entire open tag.
+            const close = content.indexOf(">", i);
+            if (close < 0) {
+              // No closing `>` — model truncated mid-tag. Drop rest.
+              return out;
+            }
+            stack.push(tag);
+            i = close + 1;
+            matched = true;
+            break;
+          }
+        }
+        // Close tag: `</tag>` (boundary after t).
+        if (lower.startsWith("</" + tag, i)) {
+          const after = lower.charCodeAt(i + 2 + tag.length);
+          const isBoundary =
+            after === 32 || after === 62 || after === 9 ||
+            after === 10 || after === 13 || Number.isNaN(after);
+          if (isBoundary) {
+            const close = content.indexOf(">", i);
+            if (close < 0) return out;
+            // Pop the matching tag from the stack (or any if mismatched).
+            const idx = stack.lastIndexOf(tag);
+            if (idx >= 0) stack.splice(idx, 1);
+            else stack.length = 0; // unbalanced — reset, skip the tag
+            i = close + 1;
+            matched = true;
+            break;
+          }
+        }
+      }
+      if (matched) continue;
+    }
+    // Outside any block — emit the character.
+    if (stack.length === 0) {
+      out += content[i];
+    }
+    i++;
+  }
+  return out;
+}
+
 function stripDesignTags(content: string): string {
-  return content
-    // Whole boltArtifact + everything inside (case-insensitive).
-    .replace(/<boltartifact\b[\s\S]*?<\/boltartifact>/gi, "")
-    // Open boltArtifact that didn't close (mid-stream truncation).
-    .replace(/<boltartifact\b[\s\S]*$/i, "")
-    // Lone boltAction blocks not wrapped in artifact.
-    .replace(/<boltaction\b[\s\S]*?<\/boltaction>/gi, "")
-    .replace(/<boltaction\b[\s\S]*$/i, "")
+  let s = stripBlocksByStateMachine(content);
+
+  // Defensive cleanups for content that escaped the bolt blocks
+  // (legacy DB rows, model hallucinations). These are CHEAP regex
+  // passes applied to whatever the state machine emitted.
+  //
+  // Architecture decision: we DELIBERATELY do NOT try to strip raw
+  // JSX/HTML that the model emits OUTSIDE bolt blocks. Past attempts
+  // (line-based filters, multi-line tag matchers, JSX expression
+  // strippers) over-stripped legitimate prose — every model output
+  // shape was different and each fix revealed a new edge case. The
+  // RIGHT fix for "model leaked JSX outside boltAction" is the
+  // system prompt instruction (jarvis-prompt.ts: "NO MARKDOWN CODE
+  // FENCES IN CHAT"), not a render-time regex. If the model still
+  // leaks despite the prompt, that's a model-behavior issue to fix
+  // upstream, not a chat-display issue to fix downstream.
+  s = s
+    // <preview>...</preview> — model hallucination from training data.
+    .replace(/<preview\b[\s\S]*?<\/preview>/gi, "")
+    .replace(/<preview\b[\s\S]*$/i, "")
+    // Inline <script> — never executable in chat anyway, just noise.
+    .replace(/<script\b[\s\S]*?<\/script>/gi, "")
     // <boltActionResults> + nested <result>/<command>/<stdout>/<stderr>/<note>:
     // synthetic tool-feedback blocks the chat layer appends to assistant
     // messages so the model can read its own command output on the next
@@ -242,6 +345,7 @@ function stripDesignTags(content: string): string {
       const isJsxComponent = /[A-Z]/.test(name) || name.includes(".");
       return isJsxComponent ? "" : match;
     });
+  return s;
 }
 
 // Split a markdown string into top-level "blocks" — sequences

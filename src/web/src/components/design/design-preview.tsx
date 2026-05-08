@@ -693,32 +693,67 @@ const PICKER_SCRIPT = `
     }
   }
 
-  // ── Edit mode: contentEditable on text-leaf elements, postMessage on commit.
+  // ── Edit mode: contentEditable on every element that owns a direct
+  //    text node, postMessage on commit.
+  //
+  // Previous version had a hardcoded tag allowlist (p, h1-h6, li,
+  // span, etc.) and only marked LEAVES (no children). That missed:
+  //   - <button>Submit</button>             (tag not in list)
+  //   - <a>Click here</a>                   (tag not in list)
+  //   - <div>Section title</div>            (div not in list)
+  //   - <h1><span>Title</span></h1>         (h1 has children, span IS in list but only its text was editable)
+  //   - <strong>/<em>/<small>/<label>/...   (none in list)
+  // So large parts of typical landing pages were unclickable in edit mode.
+  //
+  // New approach: walk every element. If it has at least ONE direct
+  // text node child with non-whitespace content, mark it editable.
+  // That handles all the cases above. Skip a denylist of structural /
+  // interactive / scripty tags that should never become contenteditable.
   let editEnabled = false;
   let editFocused = null;
   let editOriginal = '';
-  const EDIT_TARGETS = ['p','h1','h2','h3','h4','h5','h6','li','span','figcaption','blockquote','dt','dd','td','th','caption','summary'];
+  const EDIT_SKIP_TAGS = {
+    SCRIPT: 1, STYLE: 1, NOSCRIPT: 1, IFRAME: 1, OBJECT: 1, EMBED: 1,
+    INPUT: 1, TEXTAREA: 1, SELECT: 1, OPTION: 1, OPTGROUP: 1,
+    CANVAS: 1, SVG: 1, MATH: 1, IMG: 1, VIDEO: 1, AUDIO: 1,
+    SOURCE: 1, TRACK: 1, PICTURE: 1, BR: 1, HR: 1, WBR: 1,
+  };
+
+  function hasDirectTextNode(el) {
+    if (!el || !el.childNodes) return false;
+    for (let i = 0; i < el.childNodes.length; i++) {
+      const n = el.childNodes[i];
+      // nodeType 3 = TEXT_NODE
+      if (n.nodeType === 3 && (n.textContent || '').trim().length > 0) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   function enableEdit() {
     editEnabled = true;
     document.body.setAttribute('data-jarvis-edit', '1');
-    EDIT_TARGETS.forEach(function(tag){
-      const nodes = document.getElementsByTagName(tag);
-      for (let i = 0; i < nodes.length; i++) {
-        const el = nodes[i];
-        // Only mark leaves so a heading containing an icon/span doesn't become a single editable block.
-        if (el.children.length === 0 && (el.textContent || '').trim().length > 0) {
-          el.setAttribute('contenteditable', 'plaintext-only');
-          el.classList.add(STYLE + '_edit');
-        }
-      }
-    });
+    const all = document.body.getElementsByTagName('*');
+    for (let i = 0; i < all.length; i++) {
+      const el = all[i];
+      if (EDIT_SKIP_TAGS[el.tagName]) continue;
+      if (!hasDirectTextNode(el)) continue;
+      el.setAttribute('contenteditable', 'plaintext-only');
+      el.classList.add(STYLE + '_edit');
+    }
     if (!document.getElementById(STYLE + '-editstyle')) {
       const s = document.createElement('style');
       s.id = STYLE + '-editstyle';
       s.textContent = '.' + STYLE + '_edit{cursor:text;}'
         + '.' + STYLE + '_edit:hover{outline:1px dashed ' + ACCENT + ';outline-offset:2px;}'
-        + '.' + STYLE + '_edit:focus{outline:2px solid ' + ACCENT + ';outline-offset:2px;background:rgba(255,170,0,0.06);}';
+        + '.' + STYLE + '_edit:focus{outline:2px solid ' + ACCENT + ';outline-offset:2px;background:rgba(255,170,0,0.06);}'
+        // While in edit mode, anchors must NOT navigate on click —
+        // otherwise clicking a "Click here" link blows the iframe away
+        // and exits edit mode. Pointer-events stays auto so the cursor
+        // can still place inside the anchor; click default is suppressed
+        // by the capture-phase handler below.
+        + 'body[data-jarvis-edit] a{cursor:text;}';
       document.head.appendChild(s);
     }
   }
@@ -734,6 +769,27 @@ const PICKER_SCRIPT = `
       arr[i].classList.remove(STYLE + '_edit');
     }
   }
+
+  // While edit mode is active, suppress anchor navigation + button
+  // submission. Otherwise clicking an editable <a> would navigate the
+  // iframe away and clicking a <button type="submit"> would post the
+  // form. The user is here to type, not to navigate.
+  document.addEventListener('click', function(e){
+    if (!editEnabled) return;
+    const t = e.target;
+    if (!t) return;
+    // Walk up to find an anchor or button ancestor.
+    let el = t;
+    while (el && el !== document.body) {
+      const tag = el.tagName;
+      if (tag === 'A' || tag === 'BUTTON') {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      el = el.parentElement;
+    }
+  }, true);
 
   document.addEventListener('focusin', function(e){
     if (!editEnabled) return;
@@ -1090,6 +1146,24 @@ function HtmlPreview({
     }
   }, [commentMode, html]);
 
+  // Tell the iframe when editMode flips. Same channel as commentMode but
+  // with the edit-specific message types — the picker script's enableEdit()
+  // adds contenteditable to leaf text elements; disableEdit() removes it.
+  // Was previously missing entirely: the toolbar button toggled parent
+  // state but never told the iframe, so clicking Edit appeared to do nothing.
+  useEffect(() => {
+    const win = iframeRef.current?.contentWindow;
+    if (!win) return;
+    win.postMessage(
+      {
+        type: editMode
+          ? "jarvis:design:edit:enable"
+          : "jarvis:design:edit:disable",
+      },
+      "*",
+    );
+  }, [editMode, html]);
+
   const cancel = () => {
     setPicked(null);
     setComment("");
@@ -1150,6 +1224,12 @@ function HtmlPreview({
               if (!win) return;
               if (commentMode) {
                 win.postMessage({ type: "jarvis:design:enable" }, "*");
+              }
+              if (editMode) {
+                win.postMessage(
+                  { type: "jarvis:design:edit:enable" },
+                  "*",
+                );
               }
               // Replay every override so the iframe matches the panel state
               // immediately on (re)load — without this the file would render

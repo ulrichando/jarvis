@@ -151,10 +151,31 @@ export function Thread({
   isAtBottom?: boolean;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  // Previous count of USER messages. When it grows, the user just
+  // submitted a new prompt — force-scroll to the bottom regardless
+  // of `isAtBottom`. Without this override, the new user bubble +
+  // assistant placeholder pop the height out of the 70px stickiness
+  // threshold BEFORE the effect runs, isAtBottom flips to false,
+  // and the auto-scroll gets gated out — making it look like the
+  // chat "stopped scrolling on new prompts." Streaming tokens still
+  // honor the gate so the page doesn't yank a reader back when
+  // they've scrolled up to read history.
+  const prevUserCountRef = useRef(0);
 
   useEffect(() => {
-    // Only force-scroll when the user is "stuck" to the bottom. If
-    // they've scrolled up to look at earlier turns, leave them alone.
+    const userCount = messages.reduce(
+      (n, m) => (m.role === "user" ? n + 1 : n),
+      0,
+    );
+    const userJustSubmitted = userCount > prevUserCountRef.current;
+    prevUserCountRef.current = userCount;
+    if (userJustSubmitted) {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+      return;
+    }
+    // Otherwise only force-scroll when the user is "stuck" to the
+    // bottom. If they've scrolled up to look at earlier turns,
+    // leave them alone.
     if (!isAtBottom) return;
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, isStreaming, isAtBottom]);
@@ -198,6 +219,12 @@ export function Thread({
     // which packs the thread too tight. The body line-height bump
     // (text-[15px] leading-7 → leading-relaxed in Markdown) is the
     // other half of the breathing-room fix.
+    // Responsive width with a fixed maximum, matching industry standard:
+    // Claude.ai (768px), ChatGPT (768px at xl), Perplexity (~768px) all
+    // cap at max-w-3xl and DO NOT grow on wide displays. Going past ~768px
+    // pushes line length above the readability sweet spot. Embedded chat
+    // surfaces (design column, workbench panel) inherit the cap but the
+    // parent panel is narrower, so the actual rendered width = parent.
     <div className="mx-auto w-full max-w-3xl space-y-8 px-4 py-8">
       {visible.map((m, i) => {
         const cards = artifactsByMessage.get(m.id);

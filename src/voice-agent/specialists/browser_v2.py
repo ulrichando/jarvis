@@ -8,7 +8,7 @@ to the legacy specialist for single-DOM-action work ("just navigate",
 "just screenshot the page").
 
 To DISABLE: set `enabled=False` in register_browser_v2() below — or
-unset GROQ_API_KEY / DEEPSEEK_API_KEY (jarvis_browser_v2.is_available()
+unset GROQ_API_KEY / DEEPSEEK_API_KEY (tools.browser_v2.is_available()
 returns False, and we register disabled).
 """
 from __future__ import annotations
@@ -82,7 +82,7 @@ def _browser_v2_tools() -> list:
     registry import. `task_done` is auto-attached by RegistrySpecialist
     — don't import it (regression captured live 2026-05-01: ImportError
     crashed the handoff)."""
-    from jarvis_browser_v2 import browser_task_v2
+    from tools.browser_v2 import browser_task_v2
     return [browser_task_v2]
 
 
@@ -114,7 +114,7 @@ def register_browser_v2() -> None:
     #   (2) Groq llama-3.3-70b rejects browser-use's
     #       response_format=json_schema with HTTP 400 (model doesn't
     #       support structured outputs).
-    #   (3) jarvis_browser_v2.py:169 has a `TypeError: 'method' object
+    #   (3) tools.browser_v2.py:169 has a `TypeError: 'method' object
     #       is not subscriptable` — `actions[-1]` where `actions` is
     #       the bound method `agent.history.action_results`, not a list.
     # Until those three bugs are fixed and the user's Chrome is

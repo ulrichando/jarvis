@@ -9,8 +9,6 @@ import { Chat } from "@/components/chat/chat";
 import { WorkbenchToolbar, type WorkbenchTab, type ViewportPreset } from "@/components/workbench/toolbar";
 import { CodeTab } from "@/components/workbench/tabs/code-tab";
 import { PreviewTab } from "@/components/workbench/tabs/preview-tab";
-import { DatabaseTab } from "@/components/workbench/tabs/database-tab";
-import { HistoryTab } from "@/components/workbench/tabs/history-tab";
 import { SettingsTab } from "@/components/workbench/tabs/settings-tab";
 import { useUI } from "@/stores/ui";
 
@@ -200,8 +198,6 @@ export default function WorkbenchEditPage({
         {active === "preview" && (
           <PreviewTab workspaceId={id} iframeKey={iframeKey} viewport={viewport} />
         )}
-        {active === "database" && <DatabaseTab workspaceId={id} />}
-        {active === "history" && <HistoryTab workspaceId={id} />}
         {active === "settings" && (
           <SettingsTab
             workspaceId={id}
@@ -221,13 +217,23 @@ export default function WorkbenchEditPage({
       <Group orientation="horizontal" style={{ height: "100%" }}>
         {/* Left: chat panel pinned to this workspace */}
         <Panel
+          // The `id` is the ONLY way to put a CSS rule on the Panel's
+          // outer wrapper (where flex-basis sizing actually lives).
+          // `style`/`className` props on Panel land on the INNER div
+          // — useless for constraining the outer flex item. See the
+          // chat-panel-floor rule in globals.css that uses this id.
+          id="workbench-chat-panel"
           // Match the design tab's chat-column width — ~380px on a
           // typical 1440-wide laptop. 32% was way too wide (~615px on
           // a 1920 screen) and crowded the workbench toolbar/preview.
           defaultSize="26%"
           minSize="18%"
           maxSize="45%"
-          className="border-r border-border/50 overflow-hidden"
+          // Visual separation between chat and right pane lives on the
+          // <Separator> below — DO NOT add border-r here too, that
+          // produced a doubled-line seam. globals.css's foreground/15
+          // separator color is the single source of truth.
+          className="overflow-hidden"
         >
           {/* Show the loading state ONLY after hydration confirms we
               have a saved conversation id and the messages are still
@@ -256,7 +262,14 @@ export default function WorkbenchEditPage({
           )}
         </Panel>
 
-        <Separator className="w-px bg-border/50 hover:bg-primary/40 transition-colors" />
+        {/* Single divider between chat and the workbench right pane.
+            The CSS design-token --border is set to 22% alpha at the
+            theme level (globals.css), so `bg-border` is only ~22%
+            opaque and barely visible on the dark workbench background.
+            Using bg-foreground/15 directly = 15% of the foreground
+            color, which on dark BG reads as a crisp ~15% white line —
+            the standard pattern used by VS Code / Cursor / Bolt. */}
+        <Separator className="w-px bg-foreground/15 hover:bg-primary/50 transition-colors" />
 
         {/* Right: workbench toolbar + tabs */}
         <Panel defaultSize="74%" className="overflow-hidden">

@@ -1,4 +1,4 @@
-"""Unit tests for jarvis_computer_use — screenshot, Gemini, xdotool, session."""
+"""Unit tests for tools.computer_use — screenshot, Gemini, xdotool, session."""
 from __future__ import annotations
 
 import asyncio
@@ -24,12 +24,12 @@ def run(coro):
 
 class TestTakeScreenshot:
     def test_calls_scrot_with_overwrite_flag(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
 
         # Mock PIL to skip image processing — we only care that scrot is invoked
-        with patch("jarvis_computer_use.subprocess.run") as mock_run, \
+        with patch("tools.computer_use.subprocess.run") as mock_run, \
              patch("PIL.Image.open") as mock_im_open, \
-             patch("jarvis_computer_use.os.unlink"):
+             patch("tools.computer_use.os.unlink"):
             fake_im = MagicMock()
             fake_im.convert.return_value = fake_im
             fake_im.size = (100, 100)
@@ -43,11 +43,11 @@ class TestTakeScreenshot:
         assert "-o" in argv
 
     def test_returns_bytes_and_jpeg_mime(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
 
-        with patch("jarvis_computer_use.subprocess.run"), \
+        with patch("tools.computer_use.subprocess.run"), \
              patch("PIL.Image.open") as mock_im_open, \
-             patch("jarvis_computer_use.os.unlink"):
+             patch("tools.computer_use.os.unlink"):
             fake_im = MagicMock()
             fake_im.convert.return_value = fake_im
             fake_im.size = (100, 100)
@@ -68,47 +68,47 @@ class TestTakeScreenshot:
 
 class TestGeminiDescribe:
     def test_calls_generate_content_with_correct_model(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
 
         mock_response = MagicMock()
         mock_response.text = "Chrome browser is open"
         mock_client = MagicMock()
         mock_client.models.generate_content.return_value = mock_response
 
-        with patch("jarvis_computer_use._get_gemini_client", return_value=mock_client):
+        with patch("tools.computer_use._get_gemini_client", return_value=mock_client):
             run(cu._gemini_describe(b"\x89PNG"))
 
         call_kwargs = mock_client.models.generate_content.call_args.kwargs
         assert call_kwargs["model"] == cu.GEMINI_MODEL
 
     def test_returns_text_from_response(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
 
         mock_response = MagicMock()
         mock_response.text = "Desktop: Kitty terminal in foreground"
         mock_client = MagicMock()
         mock_client.models.generate_content.return_value = mock_response
 
-        with patch("jarvis_computer_use._get_gemini_client", return_value=mock_client):
+        with patch("tools.computer_use._get_gemini_client", return_value=mock_client):
             result = run(cu._gemini_describe(b"\x89PNG"))
 
         assert result == "Desktop: Kitty terminal in foreground"
 
     def test_falls_back_when_response_text_is_none(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
 
         mock_response = MagicMock()
         mock_response.text = None
         mock_client = MagicMock()
         mock_client.models.generate_content.return_value = mock_response
 
-        with patch("jarvis_computer_use._get_gemini_client", return_value=mock_client):
+        with patch("tools.computer_use._get_gemini_client", return_value=mock_client):
             result = run(cu._gemini_describe(b"\x89PNG"))
 
         assert "no description" in result.lower()
 
     def test_raises_when_api_key_missing(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
 
         with patch.dict(os.environ, {"GOOGLE_API_KEY": ""}):
             with pytest.raises(cu.ComputerUseError, match="GOOGLE_API_KEY"):
@@ -130,7 +130,7 @@ def _fake_subprocess_exec(stdout: bytes = b"", returncode: int = 0):
 
 class TestXdotoolWrapper:
     def test_runs_xdotool_and_returns_stripped_stdout(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
 
         with patch("asyncio.create_subprocess_exec",
                    side_effect=_fake_subprocess_exec(b"  12345  \n")):
@@ -139,7 +139,7 @@ class TestXdotoolWrapper:
         assert result == "12345"
 
     def test_passes_args_through_to_xdotool(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
 
         captured = {}
         async def factory(*args, **kwargs):
@@ -161,15 +161,15 @@ class TestXdotoolWrapper:
 
 class TestComputerUseSession:
     def setup_method(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
         cu._active_session = None
 
     def teardown_method(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
         cu._active_session = None
 
     def test_computer_use_starts_session(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
 
         with patch.object(cu, "_screenshot_and_describe",
                           AsyncMock(return_value="Chrome open")):
@@ -180,7 +180,7 @@ class TestComputerUseSession:
         assert "Chrome open" in result
 
     def test_computer_use_rejects_second_session(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
         cu._active_session = cu._Session(task="existing task")
 
         with patch.object(cu, "_screenshot_and_describe",
@@ -191,7 +191,7 @@ class TestComputerUseSession:
         assert cu._active_session.task == "existing task"
 
     def test_computer_use_clears_session_on_screenshot_failure(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
 
         with patch.object(cu, "_screenshot_and_describe",
                           AsyncMock(side_effect=RuntimeError("scrot failed"))):
@@ -201,7 +201,7 @@ class TestComputerUseSession:
         assert "failed" in result.lower()
 
     def test_computer_stop_clears_session(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
         cu._active_session = cu._Session(task="open browser")
 
         result = run(cu.computer_stop())
@@ -210,7 +210,7 @@ class TestComputerUseSession:
         assert "open browser" in result
 
     def test_computer_stop_when_no_session(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
 
         result = run(cu.computer_stop())
 
@@ -222,15 +222,15 @@ class TestComputerUseSession:
 
 class TestActionTools:
     def setup_method(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
         cu._active_session = cu._Session(task="test")
 
     def teardown_method(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
         cu._active_session = None
 
     def test_click_requires_active_session(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
         cu._active_session = None
 
         result = run(cu.click(x=100, y=200))
@@ -238,7 +238,7 @@ class TestActionTools:
         assert "no active" in result
 
     def test_click_calls_xdotool_mousemove_and_click(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
 
         captured = []
         async def factory(*args, **kwargs):
@@ -261,7 +261,7 @@ class TestActionTools:
         assert "success=True" in result
 
     def test_type_text_calls_xdotool_type(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
 
         captured = []
         async def factory(*args, **kwargs):
@@ -281,7 +281,7 @@ class TestActionTools:
         assert "success=True" in result
 
     def test_type_text_with_enter_presses_return(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
 
         captured = []
         async def factory(*args, **kwargs):
@@ -301,7 +301,7 @@ class TestActionTools:
         assert "Return" in captured[-1]
 
     def test_key_press_calls_xdotool_key(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
 
         captured = []
         async def factory(*args, **kwargs):
@@ -320,7 +320,7 @@ class TestActionTools:
         assert "ctrl+t" in captured[0]
 
     def test_wait_sleeps_and_redescribes(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
 
         slept = []
         async def fake_sleep(s):
@@ -336,7 +336,7 @@ class TestActionTools:
         assert "settled" in result
 
     def test_screenshot_does_not_require_session(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
         cu._active_session = None
 
         with patch.object(cu, "_take_screenshot",
@@ -353,15 +353,15 @@ class TestActionTools:
 
 class TestSafetyGuards:
     def setup_method(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
         cu._active_session = None
 
     def teardown_method(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
         cu._active_session = None
 
     def test_check_guards_raises_on_failure_limit(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
         cu._active_session = cu._Session(task="test")
         cu._active_session.consecutive_failures = cu._FAILURE_LIMIT
 
@@ -369,7 +369,7 @@ class TestSafetyGuards:
             cu._check_guards()
 
     def test_check_guards_raises_on_stall(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
         cu._active_session = cu._Session(task="test")
         cu._active_session.last_change_at = time.monotonic() - cu._STALL_TIMEOUT_S - 1
 
@@ -377,12 +377,12 @@ class TestSafetyGuards:
             cu._check_guards()
 
     def test_check_guards_silent_when_no_session(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
 
         cu._check_guards()  # should not raise
 
     def test_check_guards_raises_on_tray_stop_signal(self, tmp_path):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
         cu._active_session = cu._Session(task="test")
         signal_file = tmp_path / "computer-use-stop"
         signal_file.write_text("stop\n")
@@ -394,7 +394,7 @@ class TestSafetyGuards:
             assert not signal_file.exists()
 
     def test_record_success_resets_failures(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
         cu._active_session = cu._Session(task="test")
         cu._active_session.consecutive_failures = 2
 
@@ -403,7 +403,7 @@ class TestSafetyGuards:
         assert cu._active_session.consecutive_failures == 0
 
     def test_record_success_updates_change_time_on_new_desc(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
         cu._active_session = cu._Session(task="test")
         cu._active_session.last_description = "old state"
         cu._active_session.last_change_at = time.monotonic() - 5
@@ -414,7 +414,7 @@ class TestSafetyGuards:
         assert cu._active_session.last_change_at > old_change_at
 
     def test_record_failure_increments_counter(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
         cu._active_session = cu._Session(task="test")
 
         cu._record_failure()
@@ -423,7 +423,7 @@ class TestSafetyGuards:
         assert cu._active_session.consecutive_failures == 2
 
     def test_click_returns_failure_when_guard_trips(self):
-        import jarvis_computer_use as cu
+        import tools.computer_use as cu
         cu._active_session = cu._Session(task="test")
         cu._active_session.consecutive_failures = cu._FAILURE_LIMIT
 

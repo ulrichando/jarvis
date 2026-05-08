@@ -187,6 +187,9 @@ export function Composer({
 
   return (
     <div
+      // Match Thread's cap (max-w-3xl, 768px). Industry-standard fixed
+      // width — Claude / ChatGPT / Perplexity all use this cap with no
+      // breakpoint scaling. See thread.tsx.
       className="mx-auto w-full max-w-3xl px-4"
       // iOS Safari + Android Chrome with display-mode standalone need
       // env(safe-area-inset-bottom) to clear the home-indicator gesture
@@ -263,31 +266,45 @@ export function Composer({
           // it. Visual cost vs 15px is negligible; UX win is large.
           className="resize-none bg-transparent px-5 pt-5 pb-3 text-[16px] leading-7 outline-none placeholder:text-muted-foreground/70 min-h-18"
         />
+        {/* Bottom toolbar. Default flex behavior shrinks every child to
+            its content; with no `shrink-0` on the icon buttons, the
+            voice/send/paperclip targets collapse to 0 width when the
+            container is narrow (e.g. embedded chat panel ~380px) — they
+            *appear* to "disappear" but are still occupying their slot.
+            Fix: pin the icon buttons with `shrink-0` so they always
+            keep their 32×32 footprint, and let the model/workspace
+            pickers truncate via `min-w-0` instead. */}
         <div className="flex items-center justify-between gap-2 px-2 pb-2">
-          <div className="flex items-center gap-1">
+          <div className="flex shrink-0 items-center gap-1">
             <PlusMenu groups={ux.plus} />
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex min-w-0 flex-1 items-center justify-end gap-1">
             <Button
               type="button"
               variant="ghost"
               size="icon"
               onClick={attach}
-              className="size-8 rounded-lg text-muted-foreground hover:text-foreground"
+              className="size-8 shrink-0 rounded-lg text-muted-foreground hover:text-foreground"
               aria-label="Attach image"
               title="Attach image (or drag/drop, or paste)"
             >
               <Paperclip className="size-4" />
             </Button>
-            <ComposerModelPicker />
-            {!hideWorkspacePicker && <ComposerWorkspacePicker />}
+            <div className="min-w-0 shrink">
+              <ComposerModelPicker />
+            </div>
+            {!hideWorkspacePicker && (
+              <div className="min-w-0 shrink">
+                <ComposerWorkspacePicker />
+              </div>
+            )}
             {value.trim().length === 0 && images.length === 0 && !isBusy ? (
               <Button
                 type="button"
                 onClick={startDictation}
                 size="icon"
                 variant="ghost"
-                className="size-8 rounded-lg text-muted-foreground hover:text-foreground"
+                className="size-8 shrink-0 rounded-lg text-muted-foreground hover:text-foreground"
                 aria-label="Voice input"
               >
                 <AudioLines className="size-4" />
@@ -301,7 +318,7 @@ export function Composer({
                 onClick={onStop}
                 aria-label="Stop"
                 title="Stop generating"
-                className="relative inline-flex size-8 items-center justify-center rounded-lg bg-cyan-400 text-black shadow-[0_0_0_1px_rgba(34,211,238,0.6),0_0_12px_rgba(34,211,238,0.45)] transition-transform hover:scale-105 hover:bg-cyan-300 active:scale-95"
+                className="relative inline-flex size-8 shrink-0 items-center justify-center rounded-lg bg-cyan-400 text-black shadow-[0_0_0_1px_rgba(34,211,238,0.6),0_0_12px_rgba(34,211,238,0.45)] transition-transform hover:scale-105 hover:bg-cyan-300 active:scale-95"
               >
                 <span
                   className="pointer-events-none absolute inset-0 rounded-lg ring-2 ring-cyan-400/60 animate-ping"
@@ -314,7 +331,7 @@ export function Composer({
                 type="button"
                 onClick={submitClick}
                 size="icon"
-                className="size-8 rounded-lg"
+                className="size-8 shrink-0 rounded-lg"
                 aria-label="Send"
               >
                 <ArrowUp className="size-4" />

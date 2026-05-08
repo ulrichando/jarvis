@@ -51,6 +51,7 @@ sanitizers.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import Any
 
@@ -64,6 +65,67 @@ _HANDOFF_STATE: dict[str, bool] = {}
 # `delegate` form is the single sub-agent dispatcher; transfer_to_X
 # covers all SpecialistSpecs (browser, desktop, planner, …).
 _HANDOFF_RE = re.compile(r"^(?:transfer_to_[a-z][a-z0-9_]*|delegate)$")
+
+
+def _chat_ctx_has_pending_handoff(stream: Any) -> bool:
+    """Cross-stream guard. Walk the recent chat_ctx tail to decide
+    whether a transfer_to_*/delegate was emitted earlier in this turn
+    WITHOUT a corresponding task_done since — i.e. a specialist is
+    currently running and any text content from a NEW supervisor
+    stream (e.g. FallbackAdapter retried with DeepSeek) is
+    necessarily anticipatory/hallucinated.
+
+    Live-observed 2026-05-04 13:11: stream A emitted transfer_to_browser
+    + handoff fired; stream B (DeepSeek fallback in same turn) emitted
+    "Done, sir. New tab's open and headed to YouTube." as plain text
+    with NO tool_call. The per-stream state in _HANDOFF_STATE didn't
+    catch B because B had no tool_call. The chat_ctx tail at the
+    moment B ran looked like:
+
+        user: "open a tab..."
+        assistant: tool_calls=[transfer_to_browser]      ← pending
+        tool:      "At once, sir." (ack_phrase)
+        (no task_done yet)
+
+    This walk-backwards check catches that exact shape: the most
+    recent FunctionCall in chat_ctx is transfer_to_*/delegate AND
+    there's no task_done newer than it.
+
+    Returns True when supervisor text content should be suppressed.
+    """
+    try:
+        items = getattr(stream._chat_ctx, "items", None)
+    except Exception:
+        return False
+    if not items:
+        return False
+
+    # 2026-05-06 — bug fix: was `tail = items[-15:]` which silently
+    # dropped task_done out of the window once the conversation had
+    # more than ~15 chat_ctx items (busy session: user msg + handoff
+    # + ext_* calls + text replies + new user msg). With task_done
+    # out of view, last_done_idx stayed at -1 while the handoff
+    # lived in-window, walk-back returned True, supervisor text got
+    # suppressed indefinitely → JARVIS went silent (live: 23:44 EDT).
+    #
+    # Fix: walk the full chat_ctx. Cost is O(n) per stream, n is
+    # bounded by the ChatCtx trim cap (CTX_MAX_TURNS=80 ≈ 200 items).
+    # That's a few microseconds per stream — well below the 10ms
+    # budget for chunk processing.
+    last_handoff_idx = -1
+    last_done_idx = -1
+    for i, it in enumerate(items):
+        name = getattr(it, "name", None)
+        if not name:
+            continue
+        if name == "task_done":
+            last_done_idx = i
+        elif _HANDOFF_RE.match(name):
+            last_handoff_idx = i
+
+    # Pending iff the most recent handoff is newer than the most
+    # recent task_done.
+    return last_handoff_idx > last_done_idx
 
 
 def _delta_has_handoff(delta: Any) -> bool:
@@ -113,7 +175,7 @@ def install() -> None:
         finish = getattr(choice, "finish_reason", None)
 
         if delta is not None:
-            # Newly-detected handoff in this delta? Mark the stream.
+            # 1. Per-stream check: this delta carries a handoff tool_call.
             if _delta_has_handoff(delta):
                 if not _HANDOFF_STATE.get(id):
                     logger.warning(
@@ -121,6 +183,24 @@ def install() -> None:
                         " stream %s — transfer_to_*/delegate detected",
                         id[:12] if id else "?",
                     )
+                _HANDOFF_STATE[id] = True
+
+            # 2. Cross-stream check: chat_ctx tail shows a pending
+            #    handoff with no task_done yet. Catches the FallbackAdapter
+            #    case where stream B (DeepSeek) runs while specialist
+            #    spawned by stream A is still working. Cached per id so
+            #    we only walk chat_ctx once per stream.
+            if (
+                os.environ.get("JARVIS_HANDOFF_CROSS_STREAM_GUARD", "1") == "1"
+                and not _HANDOFF_STATE.get(id)
+                and _chat_ctx_has_pending_handoff(self)
+            ):
+                logger.warning(
+                    "[handoff-suppressor] suppressing supervisor text on"
+                    " stream %s — chat_ctx shows pending handoff (specialist"
+                    " still running)",
+                    id[:12] if id else "?",
+                )
                 _HANDOFF_STATE[id] = True
 
             # Blank content during a handoff stream. The tool_call

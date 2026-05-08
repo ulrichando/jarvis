@@ -13,8 +13,8 @@
 import { createHash } from 'node:crypto'
 import { HubClient, MEMORY_EVENTS_STREAM } from '@/lib/hub/client'
 
-// Same blocklist shape as jarvis_memory.py; if either drifts the
-// other should follow.
+// Same blocklist shape as src/voice-agent/tools/memory.py; if either
+// drifts the other should follow.
 const SENSITIVE_RE =
   /(api[\s_-]?key|secret|password|bearer\s+\w+|sk-[a-zA-Z0-9]+|ghp_\w+|aws_(access|secret)_key|token\s*[:=])/i
 

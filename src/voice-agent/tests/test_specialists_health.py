@@ -200,13 +200,21 @@ def test_specialist_prompt_avoids_banned_register(name):
 
 
 def test_supervisor_has_anti_confabulation_rule():
-    """The supervisor prompt must contain Rule 4b (never claim an
-    action you didn't take). Captured live 2026-05-01: desktop
-    specialist hallucinated 'A new tab is open, sir.' with no tool
-    fired. The mirror-rule prevents recurrence."""
+    """The supervisor prompt must contain a rule against false-success
+    claims. Captured live 2026-05-01: desktop specialist hallucinated
+    'A new tab is open, sir.' with no tool fired.
+
+    Updated 2026-05-05 (W-021 prompt rewrite): structural anchor is now
+    the section header `NEVER CLAIM AN ACTION YOU DIDN'T TAKE`."""
     from jarvis_agent import JARVIS_INSTRUCTIONS
-    assert "NEVER claim an action you didn't take" in JARVIS_INSTRUCTIONS, (
-        "anti-confabulation rule (4b) missing from supervisor prompt"
+    assert "NEVER CLAIM AN ACTION YOU DIDN'T TAKE" in JARVIS_INSTRUCTIONS, (
+        "anti-confabulation section missing from supervisor prompt"
+    )
+    # The 2026-05-01 incident must still be in the prompt as a concrete
+    # past-failure example (evidence-based rules retain their force).
+    assert "A new tab is open" in JARVIS_INSTRUCTIONS, (
+        "anti-confabulation section missing the 2026-05-01 incident "
+        "evidence — rule loses force without the concrete failure"
     )
 
 
@@ -222,15 +230,186 @@ def test_browser_specialist_has_anti_confabulation_rule():
     assert "NEVER claim success without a tool result" in spec.instructions
 
 
-def test_supervisor_has_persona_register_block():
-    """The dignified-butler register declaration must appear at the
-    TOP of the supervisor prompt (first persona section). Burying it
-    mid-prompt didn't work — the LLM kept producing casual openers."""
+def test_supervisor_has_anti_tool_call_text_rule():
+    """W-017 (2026-05-05): the supervisor prompt must explicitly
+    forbid writing tool-call protocol shapes as reply text. Live-
+    captured turn 962 (22:29 UTC, EMOTIONAL/llama-4-scout, "Jarvis?"):
+    JARVIS replied with `task_done("Opened the OSU website, sir.")`
+    verbatim — the LLM was confused by a prior specialist's task_done
+    in chat_ctx and parroted the protocol. TTS read it aloud which
+    sounded non-English to the user.
+
+    The cure is structural: the prompt must NAME each of the leak
+    forms we've seen, mark them banned, and explain that task_done
+    is specialist-internal so the supervisor never types it. This
+    test pins the section so a future prompt rewrite can't silently
+    drop the discipline.
+    """
     from jarvis_agent import JARVIS_INSTRUCTIONS
-    assert "PERSONA & REGISTER" in JARVIS_INSTRUCTIONS
-    assert "dignified butler" in JARVIS_INSTRUCTIONS
-    # Must appear in the FIRST 3000 chars (early in the prompt)
-    assert JARVIS_INSTRUCTIONS.find("PERSONA & REGISTER") < 3000
+    instr = JARVIS_INSTRUCTIONS
+
+    # Section header — W-021 (2026-05-05) renamed the section to
+    # "NEVER WRITE THESE AS REPLY TEXT" so the header covers all
+    # three banned classes (tool-call shapes + prompt labels +
+    # meta-silence). Anchor on the new stable header.
+    assert "NEVER WRITE THESE AS REPLY TEXT" in instr, (
+        "supervisor prompt missing the anti-reply-text-leak section"
+    )
+
+    # The four leak forms we've live-captured + sanitized:
+    # 1. Python form (`task_done(...)`)
+    # 2. XML attribute (`<function=name>...`)
+    # 3. XML bare (`<function>name</function>` + `<arguments>`)
+    # 4. JSON array (`[{"name": ..., "parameters": ...}]`)
+    # 5. Pipe-bracket (`<tool_call>...</tool_call>`)
+    assert "task_done(" in instr, (
+        "anti-tool-call section missing the Python-form example "
+        "(task_done(...))"
+    )
+    assert "<function=" in instr, (
+        "anti-tool-call section missing the XML-attribute-form "
+        "example (<function=name>)"
+    )
+    assert "<function>" in instr, (
+        "anti-tool-call section missing the XML-bare-form example "
+        "(<function>name</function>)"
+    )
+    assert '"name":' in instr or '"name"' in instr, (
+        "anti-tool-call section missing the JSON-array-form example"
+    )
+
+    # The 'specialist-internal' rationale must be present — the LLM
+    # needs to know WHY task_done is off-limits, not just that it is.
+    assert "task_done" in instr and "specialist" in instr.lower(), (
+        "anti-tool-call section missing the rationale that task_done "
+        "is specialist-internal — without it the LLM may still type "
+        "task_done in supervisor replies"
+    )
+
+
+def test_supervisor_has_post_handoff_relay_rule():
+    """W-017 (2026-05-05): user reported "JARVIS doesn't follow up
+    when task is completed by subagent." Root cause: the prompt
+    didn't explicitly tell the supervisor what to do after a
+    specialist's task_done lands in chat_ctx. So sometimes the
+    supervisor stayed silent (user thought JARVIS forgot) or
+    parroted task_done verbatim.
+
+    The cure is a positive rule: "after a specialist hands back,
+    relay their summary in plain English." Pin the section.
+    """
+    from jarvis_agent import JARVIS_INSTRUCTIONS
+    instr = JARVIS_INSTRUCTIONS
+
+    # Section header — W-021 (2026-05-05) renamed to
+    # "AFTER A TOOL OR HANDOFF" to cover both plain-tool returns and
+    # specialist hand-backs (the relay rule is identical). Anchor on
+    # the new header.
+    assert "AFTER A TOOL OR HANDOFF" in instr, (
+        "supervisor prompt missing the post-tool/handoff relay section "
+        "— without it, supervisor stays silent or parrots task_done "
+        "after specialist completion"
+    )
+
+    # The positive guidance: relay in plain English.
+    assert "plain natural English" in instr or "plain English" in instr, (
+        "post-handoff section missing the 'relay in plain English' "
+        "directive"
+    )
+
+    # Counter-example: silence is bad after handoff.
+    assert "silence" in instr.lower(), (
+        "post-handoff section missing the silence-counter-example — "
+        "the LLM needs to see explicitly that staying silent after "
+        "a specialist hands back is wrong (user thinks JARVIS forgot)"
+    )
+
+    # Counter-example: verbatim parroting of task_done is bad.
+    assert "verbatim parrot" in instr.lower() or "verbatim repeat" in instr.lower(), (
+        "post-handoff section missing the verbatim-parroting counter-"
+        "example"
+    )
+
+
+def test_planner_specialist_has_truthfulness_section():
+    """W-005 (2026-05-05): the planner prompt must contain explicit
+    grounding rules. Live-observed F-arch-004: planner emitted
+    "Updated 7 files in jarvis_agent/, ran 34 iterations of debug
+    loop, generated 5 new code files, plan complete, sir." — surface-
+    correct (specific, past-tense) but composed without reading any
+    actual run_jarvis_cli output. The 2026-05-04 RegistrySpecialist
+    tool gate caught it programmatically; this test prevents a
+    future prompt rewrite from silently removing the LLM-side
+    discipline that pairs with the gate.
+
+    Asserts on the structural anchors, not the exact phrasing, so the
+    section can be rewritten without a brittle string match.
+    """
+    from specialists.registry import get
+    spec = get("planner")
+    instr = spec.instructions
+
+    # The TRUTHFULNESS section header must be present.
+    assert "TRUTHFULNESS" in instr, (
+        "planner prompt missing TRUTHFULNESS section — anti-confabulation "
+        "discipline disappeared"
+    )
+
+    # The "no tool fired = no claim" rule must be expressed.
+    assert "fabricated summary CANNOT make it through to the user" in instr or \
+        "Compose summaries from what you SAW the CLI return" in instr, (
+        "planner prompt missing the explicit grounding rule "
+        "(no real tool output ⇒ no completion claim)"
+    )
+
+    # The bad-summary list must include a confabulated example.
+    assert "CONFABULATED" in instr, (
+        "planner prompt missing the confabulation counter-example — "
+        "without it the LLM has only positive (good-summary) examples "
+        "and learns 'specific past-tense' as the goal rather than 'grounded'"
+    )
+
+
+def test_supervisor_has_persona_register_block():
+    """The persona+register block must appear near the TOP of the
+    supervisor prompt and must declare its policy via positive + negative
+    register lists. Burying it mid-prompt didn't work — the LLM kept
+    producing casual openers (live-observed pre-2026-05-04).
+
+    Structural assertions only. The literal persona phrasing has been
+    rewritten more than once (2026-05-04: 'dignified butler' → 'competent
+    professional, not a Victorian butler'; W-021 2026-05-05: section
+    header renamed to 'WHO YOU ARE' and the policy lists renamed to
+    'Register — use these' / 'Register — BANNED'); pinning specific
+    copy was brittle. The actionable invariants are: header present,
+    header near the top, both positive+negative register lists present.
+    """
+    from jarvis_agent import JARVIS_INSTRUCTIONS
+
+    header_idx = JARVIS_INSTRUCTIONS.find("WHO YOU ARE")
+    assert header_idx != -1, (
+        "WHO YOU ARE persona block missing entirely (W-021 renamed "
+        "this from 'PERSONA & REGISTER')"
+    )
+
+    # Must appear at the very top — it's the first section in the
+    # prompt as of W-021. 200 chars covers leading whitespace + the
+    # header itself.
+    assert header_idx < 200, (
+        f"WHO YOU ARE header buried at offset {header_idx}; "
+        "must appear in the first 200 chars (top-of-prompt)"
+    )
+
+    # The block must declare the actual policy. Without these two lists
+    # the block is decorative and the LLM has no constraint to follow.
+    assert "Register — use these" in JARVIS_INSTRUCTIONS, (
+        "WHO YOU ARE block missing the 'Register — use these' "
+        "positive policy list"
+    )
+    assert "Register — BANNED" in JARVIS_INSTRUCTIONS, (
+        "WHO YOU ARE block missing the 'Register — BANNED' "
+        "negative policy list"
+    )
 
 
 # ── Specific tool catalog assertions (the gaps that caused real bugs) ─
@@ -239,7 +418,7 @@ def test_supervisor_has_persona_register_block():
 def test_browser_has_new_tab_tool():
     """ext_new_tab must exist — its absence caused the 2026-05-01
     confabulation incident ('Done, sir.' with no tool fired)."""
-    import jarvis_browser_ext as e
+    import tools.browser_ext as e
     assert hasattr(e, "ext_new_tab")
     assert e.ext_new_tab in e.ALL_TOOLS
 
@@ -248,7 +427,7 @@ def test_browser_has_phase_a_tools():
     """Phase A 2026-05-02 — gap fills from cross-product audit:
     list_tabs, get_console, save_pdf, upload_file. Their absence
     means JARVIS is below browser-use / Playwright MCP tool surface."""
-    import jarvis_browser_ext as e
+    import tools.browser_ext as e
     for name in ("ext_list_tabs", "ext_get_console", "ext_save_pdf", "ext_upload_file"):
         assert hasattr(e, name), f"missing: {name}"
         tool = getattr(e, name)
@@ -260,7 +439,7 @@ def test_browser_has_phase_b_tools():
     storage_state save/restore + dropdown introspection. Without
     these, JARVIS handles 2015-era cookies-only auth flows but
     breaks on every modern SPA that uses localStorage tokens."""
-    import jarvis_browser_ext as e
+    import tools.browser_ext as e
     for name in (
         "ext_local_storage",
         "ext_storage_state_get",
@@ -275,7 +454,7 @@ def test_browser_has_phase_b_tools():
 def test_browser_has_phase_c_tools():
     """Phase C 2026-05-02 — advanced: Stagehand observe pattern,
     Playwright wait_for_load states, direct file download."""
-    import jarvis_browser_ext as e
+    import tools.browser_ext as e
     for name in ("ext_observe", "ext_wait_for_load", "ext_download_file"):
         assert hasattr(e, name), f"missing: {name}"
         tool = getattr(e, name)
@@ -349,23 +528,35 @@ def test_no_disabled_specialists_in_registry_for_long():
 
 
 def test_browser_v2_specialist_registered():
-    """browser_v2 should always REGISTER (even if disabled). Lets us
-    check enabled state directly rather than missing-spec errors."""
+    """browser_v2 must always REGISTER (even when disabled), so the
+    supervisor's tool-routing logic sees a recognized name rather than
+    a missing-spec error.
+
+    Per `specialists/browser_v2.py:108-125`, browser_v2 is HARD-CODED
+    disabled until three documented bugs are fixed (CDP attach to
+    user's Chrome, Groq response_format=json_schema rejection, and the
+    `actions[-1]` subscript TypeError on the bound method). The test
+    enforces that intentional disable: when the disable is lifted, the
+    assertion below MUST be updated to `assert spec.enabled == is_available()`
+    so we re-link enabled state to key availability.
+    """
     from specialists.registry import _REGISTRY
     assert "browser_v2" in _REGISTRY
     spec = _REGISTRY["browser_v2"]
     assert spec.transfer_tool == "transfer_to_browser_v2"
-    # enabled state mirrors is_available()
-    from jarvis_browser_v2 import is_available
-    assert spec.enabled == is_available()
+    assert spec.enabled is False, (
+        "browser_v2 is intentionally disabled per browser_v2.py:108-125. "
+        "If the three known bugs are fixed and this assertion now fails, "
+        "update the test to compare with is_available() instead."
+    )
 
 
 def test_browser_v2_module_importable_without_key():
-    """Importing jarvis_browser_v2 should never raise — even when
+    """Importing tools.browser_v2 should never raise — even when
     GROQ/DeepSeek keys are missing. is_available() is the gate."""
-    import jarvis_browser_v2
-    assert hasattr(jarvis_browser_v2, "browser_task_v2")
-    assert hasattr(jarvis_browser_v2, "is_available")
+    import tools.browser_v2
+    assert hasattr(tools.browser_v2, "browser_task_v2")
+    assert hasattr(tools.browser_v2, "is_available")
 
 
 def test_browser_v2_self_disables_when_no_keys(monkeypatch):
@@ -375,9 +566,9 @@ def test_browser_v2_self_disables_when_no_keys(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     import importlib
-    import jarvis_browser_v2
-    importlib.reload(jarvis_browser_v2)
-    assert jarvis_browser_v2.is_available() is False
+    import tools.browser_v2
+    importlib.reload(tools.browser_v2)
+    assert tools.browser_v2.is_available() is False
 
 
 @pytest.mark.skipif(
@@ -385,9 +576,18 @@ def test_browser_v2_self_disables_when_no_keys(monkeypatch):
     reason="browser_v2 needs GROQ_API_KEY or DEEPSEEK_API_KEY",
 )
 def test_browser_v2_tool_factory_builds_when_enabled():
-    from specialists.registry import get
-    spec = get("browser_v2")
-    assert spec is not None
+    """The tool factory must build cleanly when the dep keys are
+    present. Reads from `_REGISTRY` directly because `registry.get()`
+    returns None for any spec with `enabled=False`, and browser_v2 is
+    intentionally hard-disabled (see test_browser_v2_specialist_registered).
+    The factory itself works regardless of `enabled`; this test is
+    about the import + decorator path, not the gate.
+    """
+    from specialists.registry import _REGISTRY
+    spec = _REGISTRY.get("browser_v2")
+    assert spec is not None, (
+        "browser_v2 not registered — `register_browser_v2()` did not run"
+    )
     tools = spec.tool_factory()
     assert any(
         getattr(getattr(t, "_func", t), "__name__", "") == "browser_task_v2"

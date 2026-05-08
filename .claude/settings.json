@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(systemctl --user status *)",
+      "Bash(systemctl --user is-active *)",
+      "Bash(systemctl --user restart jarvis-voice-agent.service)",
+      "Bash(systemctl --user restart jarvis-bridge.service)",
+      "Bash(journalctl --user *)",
+      "Bash(sqlite3 ~/.local/share/jarvis/turn_telemetry.db *)",
+      "Bash(tail * /tmp/jarvis-voice-agent.log)",
+      "Bash(tail */tmp/jarvis-voice-agent.log)",
+      "Bash(grep * /tmp/jarvis-voice-agent.log)",
+      "Bash(.venv/bin/python -m pytest *)",
+      "Bash(.venv/bin/python -c *)",
+      "Bash(cd src/voice-agent && .venv/bin/python -m pytest *)",
+      "Bash(cd src/voice-agent && .venv/bin/python -c *)",
+      "Bash(npm run *)",
+      "Bash(bun run *)",
+      "Bash(bun test*)",
+      "Bash(cargo build *)",
+      "Bash(cargo check *)",
+      "Bash(cargo test *)",
+      "Bash(git status*)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git show *)",
+      "Bash(git branch*)",
+      "Bash(rg *)",
+      "Bash(time curl *)"
+    ]
+  }
+}

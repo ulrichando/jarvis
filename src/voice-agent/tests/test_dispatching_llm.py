@@ -1,7 +1,7 @@
 import asyncio
 from unittest.mock import MagicMock
 
-from dispatching_llm import DispatchingLLM
+from pipeline.dispatching_llm import DispatchingLLM
 
 
 def _stub_inner(label: str):

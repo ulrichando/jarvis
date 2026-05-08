@@ -53,7 +53,7 @@ from typing import Any, Optional, TypedDict
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
-from turn_router import (
+from pipeline.turn_router import (
     AudioMeta,
     classify_turn,
     compute_interrupt_tuning,
