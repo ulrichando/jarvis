@@ -64,3 +64,48 @@ def test_extracted_memory_max_length():
 
 def test_extractor_skip_constant():
     assert EXTRACTOR_SKIP == "SKIP"
+
+
+import asyncio
+import pipeline.memory_extractor as ext_mod
+
+
+def test_extract_memory_from_turn_with_mock_llm(monkeypatch):
+    """End-to-end extractor flow with a fake LLM that returns a
+    known-good output line."""
+
+    async def fake_llm(transcript):
+        return "project: Coding Kiddos charges $600 for 6 months."
+
+    monkeypatch.setattr(ext_mod, "_call_extractor_llm", fake_llm)
+    result = asyncio.run(ext_mod.extract_memory_from_turn(
+        "we charge six hundred for six months"
+    ))
+    assert result is not None
+    assert result.category == "project"
+    assert "$600" in result.content
+
+
+def test_extract_skips_empty_transcript():
+    result = asyncio.run(ext_mod.extract_memory_from_turn(""))
+    assert result is None
+    result = asyncio.run(ext_mod.extract_memory_from_turn("   "))
+    assert result is None
+
+
+def test_extract_handles_skip_from_llm(monkeypatch):
+    async def fake_skip(transcript):
+        return "SKIP"
+    monkeypatch.setattr(ext_mod, "_call_extractor_llm", fake_skip)
+    result = asyncio.run(ext_mod.extract_memory_from_turn("yeah okay"))
+    assert result is None
+
+
+def test_extract_handles_llm_failure(monkeypatch):
+    """If the LLM call itself errors, _call_extractor_llm returns
+    SKIP (logged in the function). Treat as no memory."""
+    async def fake_error(transcript):
+        return "SKIP"  # what _call_extractor_llm returns on httpx error
+    monkeypatch.setattr(ext_mod, "_call_extractor_llm", fake_error)
+    result = asyncio.run(ext_mod.extract_memory_from_turn("anything"))
+    assert result is None
