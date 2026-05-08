@@ -68,6 +68,7 @@ JARVIS has full `sudo NOPASSWD` root via `/etc/sudoers.d/jarvis` — every shell
 - **Confab-detector's tool-evidence lookback is 10 messages**, and `transfer_to_*` / `delegate` count as evidence. The supervisor's `chat_ctx` doesn't see the specialist's internal `ext_*` calls, so the handoff alone proves the specialist had a chance to do work.
 - **VAD threshold tuned 2026-05-04** to fix "first turn missed". Don't loosen it.
 - **Kimi K2.6 voice supervisor is broken** ("web_search not in request.tools"). Entries gated behind `JARVIS_KIMI_VOICE_EXPERIMENTAL=1`. Don't re-enable without a fix.
+- **Memory layer is 4-layered, NOT tool-choice driven.** [pipeline/memory_extractor.py](src/voice-agent/pipeline/memory_extractor.py) auto-extracts on turn boundary; [pipeline/turn_router.py::is_recall_query](src/voice-agent/pipeline/turn_router.py) force-routes recall queries; [sanitizers/denial_detector.py](src/voice-agent/sanitizers/denial_detector.py) blanks gaslighting outputs. The supervisor's `remember()` tool still exists but is a backup, not the primary write path. See [docs/superpowers/specs/2026-05-08-anti-gaslighting-memory-design.md](docs/superpowers/specs/2026-05-08-anti-gaslighting-memory-design.md).
 
 ## Common workflows
 
