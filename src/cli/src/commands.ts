@@ -80,6 +80,12 @@ const remoteControlServerCommand =
 const voiceCommand = feature('VOICE_MODE')
   ? require('./commands/voice/index.js').default
   : null
+const voiceRestartCommand = feature('VOICE_MODE')
+  ? require('./commands/voice/index.js').voiceRestart
+  : null
+const voiceLogsCommand = feature('VOICE_MODE')
+  ? require('./commands/voice/index.js').voiceLogs
+  : null
 const forceSnip = feature('HISTORY_SNIP')
   ? require('./commands/force-snip.js').default
   : null
@@ -326,6 +332,8 @@ const COMMANDS = memoize((): Command[] => [
   ...(bridge ? [bridge] : []),
   ...(remoteControlServerCommand ? [remoteControlServerCommand] : []),
   ...(voiceCommand ? [voiceCommand] : []),
+  ...(voiceRestartCommand ? [voiceRestartCommand] : []),
+  ...(voiceLogsCommand ? [voiceLogsCommand] : []),
   thinkback,
   thinkbackPlay,
   permissions,
