@@ -3,7 +3,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from turn_telemetry import log_turn, init_db, report, _median_int, _parse_days_arg
+from pipeline.turn_telemetry import log_turn, init_db, report, _median_int, _parse_days_arg
 
 
 def _seed(db_path, rows):
@@ -256,3 +256,195 @@ def test_report_shows_specialist_distribution(tmp_path):
     assert "planner=1/6" in out
     assert "browser=1/6" in out
     assert "supervisor=2/6" in out
+
+
+# ── 2026-05-05 cost-tracker columns (port from claude-code/cost-tracker.ts) ─
+
+
+def test_init_db_adds_cost_columns(tmp_path):
+    """Migration adds input_tokens, output_tokens, cost_usd,
+    context_pressure to a pre-existing schema."""
+    db = tmp_path / "telemetry.db"
+    # Simulate a pre-2026-05-05 db: create the base schema without the
+    # cost columns.
+    with sqlite3.connect(db) as c:
+        c.execute(
+            """CREATE TABLE turns (
+                id INTEGER PRIMARY KEY,
+                ts_utc TEXT NOT NULL,
+                user_text TEXT NOT NULL,
+                jarvis_text TEXT NOT NULL,
+                emotion TEXT,
+                route TEXT,
+                llm_used TEXT,
+                voice_used TEXT,
+                ttfw_ms INTEGER,
+                total_audio_ms INTEGER,
+                user_followup_30s INTEGER,
+                route_fallback INTEGER,
+                notes TEXT,
+                specialist TEXT,
+                interrupted INTEGER DEFAULT 0
+            )"""
+        )
+    # Migration runs.
+    init_db(db)
+    cols = {
+        r[1]
+        for r in sqlite3.connect(db).execute("PRAGMA table_info(turns)")
+    }
+    for new_col in ("input_tokens", "output_tokens", "cost_usd", "context_pressure"):
+        assert new_col in cols, f"migration missed column {new_col}"
+
+
+def test_log_turn_writes_cost_columns(tmp_path):
+    db = tmp_path / "telemetry.db"
+    init_db(db)
+    log_turn(
+        db_path=db,
+        user_text="what time is it",
+        jarvis_text="9:42",
+        emotion="neutral",
+        route="TASK",
+        llm_used="llama-3.3-70b-versatile",
+        voice_used="troy",
+        ttfw_ms=120,
+        total_audio_ms=200,
+        user_followup_30s=False,
+        route_fallback=False,
+        input_tokens=14_523,
+        output_tokens=42,
+        cost_usd=0.00857,
+        context_pressure="ok",
+    )
+    rows = sqlite3.connect(db).execute(
+        "SELECT input_tokens, output_tokens, cost_usd, context_pressure FROM turns"
+    ).fetchall()
+    assert rows == [(14_523, 42, 0.00857, "ok")]
+
+
+def test_log_turn_cost_columns_default_null(tmp_path):
+    """Pre-existing call sites that don't pass the cost args should
+    still write cleanly, with NULL cost columns."""
+    db = tmp_path / "telemetry.db"
+    init_db(db)
+    log_turn(
+        db_path=db,
+        user_text="x", jarvis_text="y",
+        emotion="neutral", route="TASK",
+        llm_used="llama-3.3-70b-versatile", voice_used="troy",
+        ttfw_ms=120, total_audio_ms=200,
+        user_followup_30s=False, route_fallback=False,
+    )
+    row = sqlite3.connect(db).execute(
+        "SELECT input_tokens, output_tokens, cost_usd, context_pressure FROM turns"
+    ).fetchone()
+    assert row == (None, None, None, None)
+
+
+def test_report_includes_cost_section_when_priced(tmp_path):
+    db = tmp_path / "telemetry.db"
+    init_db(db)
+    # Seed two priced turns + one unpriced.
+    for i, (in_t, out_t, cost) in enumerate([
+        (10_000, 30, 0.0059 + 0.0000237),
+        (20_000, 60, 0.0118 + 0.0000474),
+        (None, None, None),
+    ]):
+        log_turn(
+            db_path=db,
+            user_text=f"u{i}", jarvis_text=f"j{i}",
+            emotion="neutral", route="TASK",
+            llm_used="llama-3.3-70b-versatile", voice_used="troy",
+            ttfw_ms=100, total_audio_ms=200,
+            user_followup_30s=False, route_fallback=False,
+            input_tokens=in_t, output_tokens=out_t, cost_usd=cost,
+        )
+    out = report(db_path=db)
+    assert "cost:" in out
+    assert "priced turns" in out
+    assert "input=" in out and "tok" in out
+
+
+def test_report_skips_cost_section_when_no_priced(tmp_path):
+    """Fresh db / unpriced turns shouldn't print an empty cost section."""
+    db = tmp_path / "telemetry.db"
+    init_db(db)
+    log_turn(
+        db_path=db,
+        user_text="x", jarvis_text="y",
+        emotion="neutral", route="TASK",
+        llm_used="llama-3.3-70b-versatile", voice_used="troy",
+        ttfw_ms=100, total_audio_ms=200,
+        user_followup_30s=False, route_fallback=False,
+    )
+    out = report(db_path=db)
+    assert "cost:" not in out
+
+
+def test_report_includes_context_pressure_when_present(tmp_path):
+    db = tmp_path / "telemetry.db"
+    init_db(db)
+    for p in ("ok", "ok", "warn", "ok"):
+        log_turn(
+            db_path=db,
+            user_text="x", jarvis_text="y",
+            emotion="neutral", route="TASK",
+            llm_used="llama-3.3-70b-versatile", voice_used="troy",
+            ttfw_ms=100, total_audio_ms=200,
+            user_followup_30s=False, route_fallback=False,
+            context_pressure=p,
+        )
+    out = report(db_path=db)
+    assert "context pressure:" in out
+    assert "ok=3" in out
+    assert "warn=1" in out
+
+
+# ── Phase 2: memory_auto_extracted telemetry column ───────────────────
+
+
+def test_log_turn_accepts_memory_auto_extracted_flag(tmp_path):
+    """Phase 2 telemetry — boolean column tracking per-turn auto-
+    extractor outcome. Lets us measure auto-extraction rate vs
+    LLM-extraction rate over time."""
+    from pipeline.turn_telemetry import init_db, log_turn
+    db = tmp_path / "test_telemetry.db"
+    init_db(str(db))
+    log_turn(
+        user_text="we charge $600/6mo",
+        jarvis_text="Got it, sir.",
+        emotion="neutral", route="TASK",
+        llm_used="groq:llama-3.3-70b", voice_used="troy",
+        ttfw_ms=200, total_audio_ms=1500,
+        user_followup_30s=False, route_fallback=False,
+        memory_auto_extracted=True,
+        db_path=str(db),
+    )
+    import sqlite3
+    n = sqlite3.connect(str(db)).execute(
+        "SELECT memory_auto_extracted FROM turns"
+    ).fetchone()
+    assert n == (1,)
+
+
+def test_log_turn_default_memory_auto_extracted_is_zero(tmp_path):
+    """Default value when not specified — backward compat with existing
+    log_turn callers that don't know about the new flag yet."""
+    from pipeline.turn_telemetry import init_db, log_turn
+    db = tmp_path / "test_telemetry.db"
+    init_db(str(db))
+    log_turn(
+        user_text="hello",
+        jarvis_text="Yes, sir?",
+        emotion="neutral", route="BANTER",
+        llm_used="groq:llama-3.1-8b", voice_used="troy",
+        ttfw_ms=100, total_audio_ms=500,
+        user_followup_30s=False, route_fallback=False,
+        db_path=str(db),
+    )
+    import sqlite3
+    row = sqlite3.connect(str(db)).execute(
+        "SELECT memory_auto_extracted FROM turns"
+    ).fetchone()
+    assert row == (0,)
