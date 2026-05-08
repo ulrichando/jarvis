@@ -10,6 +10,10 @@ Modules:
   - deepseek_roundtrip : echoes `reasoning_content` on assistant tool-call
                          messages so DeepSeek-style providers don't
                          reject the tool result as malformed
+  - denial_detector    : suppresses memory-capability denial phrases
+                         ('I'm a conversational AI, I don't retain
+                         information') from supervisor output (Phase 4
+                         of memory-layer fix)
   - dsml               : extracts inline tool-call envelopes (U+FF5C
                          delimiter) and re-emits them as proper
                          FunctionToolCall chunks (was dsml_sanitizer.py)
