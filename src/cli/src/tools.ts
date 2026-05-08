@@ -85,6 +85,8 @@ import { TaskUpdateTool } from './tools/TaskUpdateTool/TaskUpdateTool.js'
 import { TaskListTool } from './tools/TaskListTool/TaskListTool.js'
 import { GetLocationTool } from './tools/GetLocationTool/GetLocationTool.js'
 import { SetLocationTool } from './tools/SetLocationTool/SetLocationTool.js'
+import { VoiceSpeakTool } from './tools/VoiceSpeakTool/VoiceSpeakTool.js'
+import { VoiceAgentStatusTool } from './tools/VoiceAgentStatusTool/VoiceAgentStatusTool.js'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { isToolSearchEnabledOptimistic } from './utils/toolSearch.js'
 import { isTodoV2Enabled } from './utils/tasks.js'
@@ -251,6 +253,10 @@ export function getAllBaseTools(): Tools {
     // Use when the user asks about weather, "near me", regional content, etc.
     GetLocationTool,
     SetLocationTool,
+    // Voice tools — Text-to-speech via espeak-ng + PipeWire, and
+    // voice-agent service health checks (jarvis-voice-agent.service).
+    VoiceSpeakTool,
+    VoiceAgentStatusTool,
     // Include ToolSearchTool when tool search might be enabled (optimistic check)
     // The actual decision to defer tools happens at request time in claude.ts
     ...(isToolSearchEnabledOptimistic() ? [ToolSearchTool] : []),
