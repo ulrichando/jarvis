@@ -7895,7 +7895,12 @@ async def entrypoint(ctx: JobContext) -> None:
     # flipped to "speaking" yet because partial transcripts don't always
     # imply the framework has decided to interrupt).
     _KILL_PHRASES = re.compile(
-        r"\b(stop|wait|hold on|shut up|hush|pause|quiet|enough|cancel|nevermind|never mind)\b",
+        r"\b("
+        r"stop|wait|hold on|shut up|hush|pause|quiet|enough|cancel|nevermind|never mind"
+        # Polite-stop phrases. User naturally says these to mean "let me speak"
+        # but framework VAD/duration thresholds often miss them on short audio.
+        r"|one sec|one second|give me a (sec|second|moment)|hold up|hang on"
+        r")\b",
         re.IGNORECASE,
     )
 
