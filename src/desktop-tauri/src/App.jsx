@@ -11,7 +11,16 @@ import KeysSettings from './KeysSettings.jsx'
 import useSpeech   from './hooks/useVoiceClient.js'
 
 const PYTHON_BASE = 'http://127.0.0.1:8765'
-const WS_URL      = 'ws://127.0.0.1:8765/ws?client=desktop'
+// Bridge optional auth: when JARVIS_REQUIRE_LOCAL_AUTH=1 the bridge
+// checks ?token=<JARVIS_LOCAL_API_TOKEN> on the WS upgrade. Always
+// append it when present so flipping the flag doesn't require code
+// change. Computed at module load — main.rs injects the token via
+// initialization_script before any React code runs.
+const WS_URL = (() => {
+  const base = 'ws://127.0.0.1:8765/ws?client=desktop'
+  const tok = (typeof window !== 'undefined' && window.__JARVIS_LOCAL_API_TOKEN) || ''
+  return tok ? `${base}&token=${encodeURIComponent(tok)}` : base
+})()
 
 // ── Minimal WebSocket hook ────────────────────────────────────────────────
 function useJarvisWS(url) {
@@ -75,7 +84,7 @@ export default function App() {
   // Independent of the tray mic-mute above.
   const [ttsEnabled, setTtsEnabled] = useState(true)
 
-  const { messages: wsMessages, status: wsStatus } = useJarvisWS(WS_URL)
+  const { messages: wsMessages, sendMessage: wsSendMessage, status: wsStatus } = useJarvisWS(WS_URL)
 
   // Speech: native LiveKit voice-client owns mic → SFU → agent.
   // `speech.speak(text)` below asks the agent to voice arbitrary text
@@ -84,7 +93,15 @@ export default function App() {
   const speech = useSpeech({ muted: voiceMuted })
 
   // ── Handle incoming WS messages ───────────────────────────────────────
+  // Live closures: ttsEnabled and speech can change after this effect's
+  // initial bind. Reading them from refs ensures a mid-session toggle
+  // takes effect on the very next message rather than only after the
+  // next message arrives (which re-runs the effect).
   const lastHandledRef = useRef(0)
+  const ttsEnabledRef = useRef(ttsEnabled)
+  ttsEnabledRef.current = ttsEnabled
+  const speechRef = useRef(speech)
+  speechRef.current = speech
   useEffect(() => {
     if (!wsMessages.length) return
     const start = lastHandledRef.current
@@ -92,8 +109,10 @@ export default function App() {
 
     for (let i = start; i < wsMessages.length; i++) {
       const m = wsMessages[i]
-      if (m.type === 'chat_response' && m.text && ttsEnabled) speech.speak(m.text)
-      if (m.type === 'voice_muted')                           setVoiceMuted(m.muted)
+      if (m.type === 'chat_response' && m.text && ttsEnabledRef.current) {
+        speechRef.current.speak(m.text)
+      }
+      if (m.type === 'voice_muted') setVoiceMuted(m.muted)
     }
     const last = wsMessages[wsMessages.length - 1]
     if (last.type === 'show_chat') openChat()
@@ -255,7 +274,11 @@ export default function App() {
           reads from the same `speech` hook, eliminating the duplicate
           /status poll the legacy TrayLabelSync used to run. */}
 
-      {/* Chat panel — opened on tray click or Ctrl+H */}
+      {/* Chat panel — opened on tray click or Ctrl+H. WS is owned by
+          App via useJarvisWS and passed down so ChatPanel doesn't open
+          a second socket (the duplicate caused chat_response events to
+          fire both speech.speak() AND a UI render through two
+          independent connections claiming the same client=desktop). */}
       {chatOpen && (
         <ChatPanel
           isOpen={chatOpen}
@@ -264,6 +287,9 @@ export default function App() {
           ttsEnabled={ttsEnabled}
           onToggleTts={() => setTtsEnabled(v => !v)}
           isDesktop={true}
+          wsMessages={wsMessages}
+          wsSendMessage={wsSendMessage}
+          wsConnected={wsStatus === 'connected'}
         />
       )}
     </div>
