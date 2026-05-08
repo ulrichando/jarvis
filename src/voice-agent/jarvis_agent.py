@@ -4306,6 +4306,78 @@ def _is_command(text: str, patterns: tuple[re.Pattern, ...]) -> bool:
         if any(p.search(body) for p in patterns):
             return True
     return False
+
+
+# ── Short-input ambiguity gate ────────────────────────────────────────
+# 2026-05-08: live evidence showed short user inputs (<3 words) without
+# a clear intent pattern triggered LLM monologues that drift into
+# chat_ctx topics. Examples (verbatim from telemetry 2026-05-08
+# 13:11-13:50, all 6/6 short-input + >5s-audio turns were confabs):
+#   "Hush!"         → 19s of Cameroon history
+#   "One second"    → 18s of English-language history
+#   "I'll say good."→ "The history of the universe is..."
+#   "so I have an idea" → "England's history spans 1,000 years..."
+# The supervisor LLM lacks a content anchor on these inputs and reaches
+# for topical content from the chat_ctx window. Fix: route to a
+# deterministic "Pardon, sir?" without calling the LLM. Legit short
+# inputs (yes/no/sure/thanks/cool/right/fine/okay) keep flowing.
+#
+# Note on "Hush!" specifically: _MUTE_PATTERNS does include `\bhush\b`
+# and _KILL_PHRASES does include it too, but _is_command() requires a
+# vocative ("Jarvis, hush") for mute patterns (line: "if is_mute_check
+# and not had_vocative: continue") — so "Hush!" without a vocative
+# passes through to the LLM. The kill-phrase path fires only when
+# agent_state == "speaking". If JARVIS wasn't speaking when the user
+# said "Hush!", both mute and kill-phrase gates are skipped and the
+# bare transcript reaches the LLM. This gate catches that case.
+_AMBIGUOUS_SHORT_ALLOWLIST = re.compile(
+    r"^\s*"
+    r"(?:"
+    # Affirmations / acks — let these flow to the LLM for natural reply
+    r"yes|yeah|yep|yup|sure|right|okay|ok|fine|cool|nice|"
+    r"thanks|thank\s*you|nope|no|nah|"
+    # Single-word polite responses
+    r"alright|bye|goodbye|cheers|gotcha|"
+    # Reaction words that benefit from LLM's emotional response
+    r"wow|sweet|awesome|amazing|great|good|perfect"
+    r")"
+    r"[\s,.!?]*$",
+    re.IGNORECASE,
+)
+
+
+def _is_ambiguous_short_input(text: str) -> bool:
+    """True if the transcript is ≤2 words and not a known intent
+    pattern, so the gate should respond with 'Pardon, sir?' rather than
+    routing to the supervisor LLM (which has been observed to reach for
+    topical content from chat_ctx on these short, contentless inputs).
+
+    Returns False for: legit affirmations, wake phrases, mute/kill
+    phrases (those have their own paths upstream), recall queries,
+    and anything ≥3 words.
+    """
+    if not text:
+        return False
+    text = text.strip()
+    if not text:
+        return False
+    word_count = len(text.split())
+    if word_count >= 3:
+        return False
+    # Allowlist: legit short replies that should flow to the LLM
+    if _AMBIGUOUS_SHORT_ALLOWLIST.match(text):
+        return False
+    # Recall queries are short but should hit the recall force-router,
+    # not be deflected. Mostly >=3 words in practice but check anyway.
+    try:
+        from pipeline.turn_router import is_recall_query
+        if is_recall_query(text):
+            return False
+    except Exception:
+        pass
+    return True
+
+
 # ── Behavioral learning: rule store ──────────────────────────────────
 #
 # Learned rules live in ~/.jarvis/learned_rules.md as plain bullet
@@ -7018,6 +7090,23 @@ class JarvisAgent(Agent):
         # Turn accepted — stamp the interaction time so follow-ups within
         # the quiet-hours window don't need a vocative.
         _touch_interaction()
+
+        # Short-input ambiguity gate (2026-05-08). Catches short non-pattern
+        # inputs that would otherwise let the LLM hallucinate a topic from
+        # chat_ctx. Live evidence: "Hush!" → 19s of Cameroon history,
+        # "One second" → 18s of English history (6/6 short-input + >5s-audio
+        # turns were confabulations). Routes to deterministic "Pardon, sir?"
+        # without calling the LLM.
+        #
+        # Fires AFTER: garbage/silent/mute/quiet-hours gates (those handle
+        # their own early-exit paths above).
+        # Fires BEFORE: bare-vocative fast-path and LLM dispatch.
+        if _is_ambiguous_short_input(text):
+            logger.info(
+                f"[short-input-gate] deflecting ambiguous short input: {text[:60]!r}"
+            )
+            self.session.say("Pardon, sir?", allow_interruptions=True)
+            raise StopResponse()
 
         # Layer 1 (Phase 2 of memory-layer fix) — auto-extract memorable
         # facts from the user transcript in parallel with the supervisor
