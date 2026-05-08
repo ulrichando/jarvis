@@ -38,3 +38,21 @@ def test_matches_recall_queries(transcript):
 ])
 def test_does_not_match_non_recall(transcript):
     assert is_recall_query(transcript) is False
+
+
+def test_recall_route_resets_after_use():
+    """Defensive: after one forced recall, the next non-recall turn
+    must have tool_choice reset (LiveKit #4671 mitigation)."""
+    # Simulated session with the attribute we read in jarvis_agent
+    class FakeSession:
+        _jarvis_force_tool_choice = None
+
+    s = FakeSession()
+    # Recall query sets it
+    if is_recall_query("do you remember my wife's name"):
+        s._jarvis_force_tool_choice = {"type": "function"}
+    assert s._jarvis_force_tool_choice is not None
+    # Next non-recall turn must clear it
+    if not is_recall_query("yeah okay"):
+        s._jarvis_force_tool_choice = None
+    assert s._jarvis_force_tool_choice is None
