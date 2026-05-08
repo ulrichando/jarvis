@@ -7802,6 +7802,31 @@ async def entrypoint(ctx: JobContext) -> None:
         except Exception:
             pass
 
+        # Layer 2 (Phase 3 of memory-layer fix) — when the user transcript
+        # is recall-shaped, force tool_choice on recall_conversation so the
+        # supervisor LLM can't reject the call via metacognition-conservatism.
+        # CRITICAL: explicitly reset tool_choice to None on every non-recall
+        # turn (LiveKit issue #4671: tool_choice persists across turns when
+        # set on generate_reply()). The reset MUST happen unconditionally,
+        # even on turns where we didn't set it ourselves, in case the prior
+        # turn's force is still active.
+        try:
+            from pipeline.turn_router import is_recall_query
+            if is_recall_query(transcript):
+                session._jarvis_force_tool_choice = {
+                    "type": "function",
+                    "function": {"name": "recall_conversation"},
+                }
+                logger.info(
+                    f"[recall-route] forcing recall_conversation for {transcript[:60]!r}"
+                )
+            else:
+                # Always reset to None — even if not recall, ensure prior
+                # forced-recall didn't leak into this turn.
+                session._jarvis_force_tool_choice = None
+        except Exception as e:
+            logger.debug(f"[recall-route] check skipped: {e}")
+
         # Hot-reload learned rules if learned_rules.md changed since last
         # check. Without this, edits to ~/.jarvis/learned_rules.md only
         # take effect on the next agent restart — meaning when the user
