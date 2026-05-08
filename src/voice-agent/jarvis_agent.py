@@ -7596,6 +7596,21 @@ async def entrypoint(ctx: JobContext) -> None:
             item = ev.item
             role = getattr(item, "role", None)
             text = _flatten_chat_content(getattr(item, "content", None))
+            # Barge-in truncation gate: if this assistant turn was
+            # interrupted, rewrite item.content + the saved text to only
+            # the heard portion (OpenAI Realtime parity). Spec:
+            # docs/superpowers/specs/2026-05-07-barge-in-truncation-design.md
+            if role == "assistant" and getattr(session, "_jarvis_was_interrupted", False):
+                audio_end_ms = getattr(session, "_jarvis_agent_audio_ms_acc", 0) or 0
+                table = getattr(session, "_jarvis_tts_position_table", None) or []
+                original_len = len(text or "")
+                truncated, mutated = _truncate_to_heard_portion(item, table, audio_end_ms)
+                if mutated:
+                    text = truncated
+                    logger.info(
+                        "[barge-in] truncated assistant turn %d→%d chars at audio_end_ms=%d",
+                        original_len, len(text), audio_end_ms,
+                    )
             # Snapshot prior chat_ctx items so the confab detector can
             # look back for tool evidence. Only the last few are read;
             # we pass the whole list and let the detector window itself.
