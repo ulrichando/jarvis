@@ -208,6 +208,47 @@ fn _repo_env_files() -> Vec<std::path::PathBuf> {
     ]
 }
 
+/// Returns true if the voice agent had a turn within the last 60 s.
+/// Uses sqlite3 (already on the box) instead of pulling rusqlite into
+/// the desktop binary. Errors / missing DB / no rows → returns false:
+/// "no evidence of an active session" is the conservative default for
+/// a destructive UI action like Quit.
+///
+/// Mirrors the CLI's `checkActiveSession` in
+/// `src/cli/src/commands/voice/restart.ts`. CLAUDE.md operational
+/// rule: "Don't restart `jarvis-voice-agent.service` while a session
+/// is active. Check `~/.local/share/jarvis/turn_telemetry.db` for the
+/// latest `ts_utc`; if within 60 s, ask the user first."
+fn voice_session_within_60s() -> bool {
+    let home = match std::env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => return false,
+    };
+    let db_path = format!("{}/.local/share/jarvis/turn_telemetry.db", home);
+    if !std::path::Path::new(&db_path).exists() {
+        return false;
+    }
+    let output = match std::process::Command::new("sqlite3")
+        .args([
+            db_path.as_str(),
+            // sqlite's strftime parses ISO 8601 timestamps; voice-agent
+            // writes ts_utc as an ISO string. Returning age in seconds
+            // keeps the parse trivial on this side.
+            "SELECT CAST((strftime('%s','now') - strftime('%s', ts_utc)) AS INTEGER) \
+             FROM turns ORDER BY ts_utc DESC LIMIT 1",
+        ])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return false,
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    match stdout.trim().parse::<i64>() {
+        Ok(age_secs) => age_secs < 60 && age_secs >= 0,
+        Err(_) => false,
+    }
+}
+
 fn _parse_env_file(path: &std::path::Path) -> std::collections::BTreeMap<String, String> {
     let mut out = std::collections::BTreeMap::new();
     if let Ok(text) = std::fs::read_to_string(path) {
@@ -848,8 +889,23 @@ fn try_spawn_web() -> bool {
 /// Runs on a worker thread so the menu event loop stays responsive
 /// during the up-to-30-s wait.
 fn handle_open_browser(app: &AppHandle, route_suffix: &'static str) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    // Guard: a double-click on "Open in Browser" used to spawn two
+    // worker threads that both probed and both called open_in_browser,
+    // producing two browser tabs. With this flag, the second click
+    // silently no-ops while the first is still polling.
+    static OPENING: AtomicBool = AtomicBool::new(false);
+    if OPENING.swap(true, Ordering::AcqRel) {
+        eprintln!("[JARVIS] handle_open_browser: already in flight, skipping");
+        return;
+    }
     let app = app.clone();
     std::thread::spawn(move || {
+        struct Guard;
+        impl Drop for Guard {
+            fn drop(&mut self) { OPENING.store(false, Ordering::Release); }
+        }
+        let _guard = Guard;
         let resolved = |url: String| {
             // The probe returns "http://host:port/" — strip the trailing
             // slash before appending the route so we don't end up with
@@ -1025,7 +1081,6 @@ fn main() {
     let panel_rect_poll  = panel_rect.clone();
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -1055,15 +1110,19 @@ fn main() {
             // and adds it to fetch() Authorization headers + WS query
             // string. Empty when token file isn't present — bridge
             // ignores empty tokens unless JARVIS_REQUIRE_LOCAL_AUTH=1.
+            //
+            // Encode via serde_json::to_string so any future token source
+            // (unicode, quotes, backslashes, control chars, embedded
+            // </script>) round-trips into a valid JS string literal.
+            // Hand-rolled '\\' / '"' escaping was a future-XSS surface —
+            // the previous fix's CSP=null context made even hex tokens
+            // a one-edit-away exploit if the source ever drifted.
             let bridge_token = std::env::var("JARVIS_LOCAL_API_TOKEN").unwrap_or_default();
-            // JSON-escape for safe injection. Tokens are hex (no quotes
-            // or backslashes), but be defensive anyway.
-            let escaped = bridge_token
-                .replace('\\', "\\\\")
-                .replace('"', "\\\"");
+            let token_js = serde_json::to_string(&bridge_token)
+                .unwrap_or_else(|_| "\"\"".to_string());
             let _ = window.eval(&format!(
-                "window.__JARVIS_LOCAL_API_TOKEN = \"{}\";",
-                escaped
+                "window.__JARVIS_LOCAL_API_TOKEN = {};",
+                token_js
             ));
 
             // Full-screen transparent overlay. Pick the LAPTOP screen (smallest
@@ -1497,13 +1556,36 @@ fn main() {
                         "tts_gr_troy"   => switch_tts_provider(app, "groq:troy"),
                         "tts_gr_austin" => switch_tts_provider(app, "groq:austin"),
                         "quit" => {
-                            // "Quit JARVIS" must stop everything the user
+                            // "Quit JARVIS" stops everything the user
                             // perceives as JARVIS — not just the overlay.
                             // The voice agent + voice client run as
                             // separate systemd user units and would
                             // happily keep listening if we only called
                             // app.exit(0). Stop them first, then exit.
                             //
+                            // BUT: CLAUDE.md operational rule — don't
+                            // restart/stop jarvis-voice-agent while a
+                            // session is active. Tray Quit is a one-click
+                            // destructive action with no confirmation
+                            // dialog surface, so the conservative path is:
+                            // if a turn happened within the last 60 s,
+                            // skip the systemctl stop, just hide the
+                            // desktop, and leave the voice services
+                            // running. The user can use the CLI's
+                            // `voice-restart --force` (or `systemctl
+                            // --user stop jarvis-voice-agent`) for an
+                            // explicit override.
+                            if voice_session_within_60s() {
+                                eprintln!(
+                                    "[jarvis-desktop] Quit: voice session active \
+                                     (turn within 60 s) — exiting overlay only, \
+                                     leaving voice services running. Use \
+                                     `voice-restart --force` to override."
+                                );
+                                app.exit(0);
+                                return;
+                            }
+                            // No active session — safe to stop everything.
                             // Spawn detached so we don't block the tray
                             // event handler. Failure is non-fatal — if
                             // the units were already stopped or systemctl
