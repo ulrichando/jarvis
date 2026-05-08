@@ -8113,6 +8113,33 @@ async def entrypoint(ctx: JobContext) -> None:
         if _dispatch_llm is None:
             return
 
+        # ── 2026-05-08: prevent prior-turn LLM leak ───────────────────
+        # Bug: BANTER fast-path swaps session._llm to banter_inner (8B);
+        # for SUBSEQUENT non-fast-path turns, _classify_and_swap() runs
+        # as a background task that races the framework's reply
+        # pipeline. If the framework reads session._llm before the
+        # classifier completes, the reply uses the leftover 8B from the
+        # prior BANTER turn — even though the new turn is TASK/EMOTIONAL/
+        # REASONING.
+        #
+        # Live evidence 2026-05-08 12:42-12:43: turn 1 "How you doing?"
+        # → BANTER fast-path → 8B. Turn 2 "Jarvis, my wife's name is
+        # Lizzie." → classified TASK but served by 8B. Turns 3,4 same.
+        # 70B never ran. Memory layer's gains were invisible because
+        # the supervisor was running on the wrong model.
+        #
+        # Fix: reset session._llm + session._tts to TASK defaults at
+        # the top of every dispatch. Fast-path branches below override
+        # synchronously when matched. The async classifier still
+        # refines to EMOTIONAL/REASONING after the LLM call may have
+        # already started — acceptable: 70B handles emotional turns
+        # reasonably, and we'd rather start strong than leak weak.
+        try:
+            session._llm = _dispatch_llm.pick("TASK")
+            session._tts = _dispatch_tts.pick("TASK")
+        except Exception as _reset_err:
+            logger.debug(f"[dispatch] LLM reset to TASK default skipped: {_reset_err}")
+
         # Synchronous BANTER fast-path. If the transcript is high-
         # confidence chitchat, skip the 500ms Groq classifier and swap
         # to the fast inner immediately so the framework's upcoming
