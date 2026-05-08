@@ -52,7 +52,12 @@ const TEXT_MUTE = '#6e7681'
 const ACCENT    = '#4493f8'
 const ACCENT_BG = 'rgba(68,147,248,0.14)'
 
-export default function ChatPanel({ isOpen, onClose, onBoundsChange, ttsEnabled = true, onToggleTts, isDesktop }) {
+export default function ChatPanel({
+  isOpen, onClose, onBoundsChange, ttsEnabled = true, onToggleTts, isDesktop,
+  // WebSocket comes from the parent App via useJarvisWS — single source
+  // of truth so the bridge sees one client=desktop connection, not two.
+  wsMessages = [], wsSendMessage, wsConnected = false,
+}) {
   const [messages, setMessages] = useState([
     { role: 'jarvis', text: 'Online. How can I assist you, Ulrich?' },
   ])
@@ -63,11 +68,9 @@ export default function ChatPanel({ isOpen, onClose, onBoundsChange, ttsEnabled 
   const [isStreaming, setIsStreaming] = useState(false)
   const [toolExecutions, setToolExecutions] = useState({})
   const [contextUsage, setContextUsage] = useState(null)
-  const [wsConnected, setWsConnected] = useState(false)
   const messagesContainerRef = useRef(null)
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
-  const wsRef = useRef(null)
   const toolIdCounter = useRef(0)
   const currentToolsRef = useRef({})
   const scrollRAF = useRef(null)
@@ -274,10 +277,30 @@ export default function ChatPanel({ isOpen, onClose, onBoundsChange, ttsEnabled 
     return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
   }
 
+  // Single AudioContext reused for both chimes — Chromium caps live
+  // contexts (~6 max), so the previous "new AudioContext on every
+  // chime" pattern silently failed after a long tool run with many
+  // playTick beats. Lazy init on first call so we don't open the
+  // device until needed.
+  const audioCtxRef = useRef(null)
+  const getAudioCtx = useCallback(() => {
+    if (!audioCtxRef.current) {
+      try {
+        audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)()
+      } catch { return null }
+    }
+    return audioCtxRef.current
+  }, [])
+  useEffect(() => () => {
+    try { audioCtxRef.current?.close() } catch {}
+    audioCtxRef.current = null
+  }, [])
+
   // Subtle chime when response completes
   const playDoneChime = useCallback(() => {
+    const ctx = getAudioCtx()
+    if (!ctx) return
     try {
-      const ctx = new (window.AudioContext || window.webkitAudioContext)()
       const osc = ctx.createOscillator()
       const gain = ctx.createGain()
       osc.connect(gain); gain.connect(ctx.destination)
@@ -289,7 +312,7 @@ export default function ChatPanel({ isOpen, onClose, onBoundsChange, ttsEnabled 
       osc.start(ctx.currentTime)
       osc.stop(ctx.currentTime + 0.25)
     } catch {}
-  }, [])
+  }, [getAudioCtx])
 
   const waitingToneRef = useRef(null)
   const hasActiveTools = Object.values(toolExecutions).some(t => t.status === 'running')
@@ -300,8 +323,9 @@ export default function ChatPanel({ isOpen, onClose, onBoundsChange, ttsEnabled 
       return
     }
     const playTick = () => {
+      const ctx = getAudioCtx()
+      if (!ctx) return
       try {
-        const ctx = new (window.AudioContext || window.webkitAudioContext)()
         const osc = ctx.createOscillator()
         const gain = ctx.createGain()
         osc.connect(gain); gain.connect(ctx.destination)
@@ -322,7 +346,7 @@ export default function ChatPanel({ isOpen, onClose, onBoundsChange, ttsEnabled 
       clearTimeout(initial)
       if (waitingToneRef.current) { clearInterval(waitingToneRef.current); waitingToneRef.current = null }
     }
-  }, [isLoading, hasActiveTools])
+  }, [isLoading, hasActiveTools, getAudioCtx])
 
   useEffect(() => {
     if (wasLoadingRef.current && !isLoading) playDoneChime()
@@ -412,13 +436,22 @@ export default function ChatPanel({ isOpen, onClose, onBoundsChange, ttsEnabled 
       }))
     }
 
-    if (type === 'clear_tools' || type === 'brain_ready') {
+    if (type === 'clear_tools') {
+      // clear_tools means in-flight tool calls have settled — clear
+      // the tool-execution UI but DON'T zero loading/streaming state.
+      // The bridge can send clear_tools mid-stream (between tool
+      // turns), and finalizing here would blank a still-coming reply.
+      // Loading is finalized by brain_ready / chat_response below.
+      setToolExecutions({})
+      currentToolsRef.current = {}
+      return
+    }
+    if (type === 'brain_ready') {
       setToolExecutions({})
       setIsLoading(false)
       setStreamingMessage('')
       setIsStreaming(false)
       currentToolsRef.current = {}
-      if (type === 'clear_tools') return
     }
 
     if (type === 'open_url') {
@@ -460,42 +493,35 @@ export default function ChatPanel({ isOpen, onClose, onBoundsChange, ttsEnabled 
   const handleWsMessageRef = useRef(handleWsMessage)
   handleWsMessageRef.current = handleWsMessage
 
+  // Watch the parent's WS message stream. App.jsx hoists the single
+  // bridge connection and the rolling buffer (last ~50 messages) lives
+  // in useJarvisWS state. lastWsHandledRef anchors at the buffer's
+  // length on mount so re-opening the panel doesn't replay history.
+  const lastWsHandledRef = useRef(null)
   useEffect(() => {
-    // Bridge optional auth: when JARVIS_REQUIRE_LOCAL_AUTH=1 the bridge
-    // checks ?token=<JARVIS_LOCAL_API_TOKEN> on the WS upgrade. Always
-    // append it when present so flipping the flag doesn't require code
-    // change.
-    const tokenSuffix = apiToken ? `&token=${encodeURIComponent(apiToken)}` : ''
-    const wsUrl = `ws://127.0.0.1:8765/ws?client=desktop${tokenSuffix}`
-    let ws = null
-    let reconnectTimer = null
-    let reconnectDelay = 1000
-
-    function connect() {
-      ws = new WebSocket(wsUrl)
-      wsRef.current = ws
-      ws.onopen = () => {
-        reconnectDelay = 1000
-        setWsConnected(true)
-        setToolExecutions({}); setIsLoading(false); setStreamingMessage(''); setIsStreaming(false)
-      }
-      ws.onmessage = (event) => {
-        try { handleWsMessageRef.current(JSON.parse(event.data)) } catch {}
-      }
-      ws.onclose = () => {
-        wsRef.current = null
-        setWsConnected(false)
-        reconnectTimer = setTimeout(() => {
-          reconnectDelay = Math.min(reconnectDelay * 2, 15000)
-          connect()
-        }, reconnectDelay)
-      }
-      ws.onerror = () => { ws.close() }
+    if (lastWsHandledRef.current === null) {
+      lastWsHandledRef.current = wsMessages.length
+      return
     }
+    if (wsMessages.length <= lastWsHandledRef.current) return
+    const start = lastWsHandledRef.current
+    lastWsHandledRef.current = wsMessages.length
+    for (let i = start; i < wsMessages.length; i++) {
+      try { handleWsMessageRef.current(wsMessages[i]) } catch {}
+    }
+  }, [wsMessages])
 
-    connect()
-    return () => { clearTimeout(reconnectTimer); ws?.close() }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  // Reflect parent-owned connection state in our UI (the green/orange
+  // status dot uses `wsConnected` lower in the render tree). When the
+  // socket reconnects, clear any in-flight UI state that would otherwise
+  // hang.
+  const prevWsConnectedRef = useRef(wsConnected)
+  useEffect(() => {
+    if (!prevWsConnectedRef.current && wsConnected) {
+      setToolExecutions({}); setIsLoading(false); setStreamingMessage(''); setIsStreaming(false)
+    }
+    prevWsConnectedRef.current = wsConnected
+  }, [wsConnected])
 
   const sendMessage = useCallback(() => {
     const text = input.trim()
@@ -506,9 +532,8 @@ export default function ChatPanel({ isOpen, onClose, onBoundsChange, ttsEnabled 
     setStreamingMessage('')
     setToolExecutions({})
     currentToolsRef.current = {}
-    const ws = wsRef.current
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'query', text }))
+    if (wsConnected && wsSendMessage) {
+      wsSendMessage({ type: 'query', text })
     } else {
       fetch(`${PYTHON_BASE}/api/think`, {
         method: 'POST',
@@ -525,15 +550,14 @@ export default function ChatPanel({ isOpen, onClose, onBoundsChange, ttsEnabled 
         })
         .finally(() => setIsLoading(false))
     }
-  }, [input, isLoading])
+  }, [input, isLoading, wsConnected, wsSendMessage, authHeaders])
 
   const sendFeedback = useCallback((msgIndex, score) => {
     setFeedbackState(prev => ({ ...prev, [msgIndex]: score > 0.5 ? 'up' : 'down' }))
-    const ws = wsRef.current
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'feedback', score, comment: '' }))
+    if (wsConnected && wsSendMessage) {
+      wsSendMessage({ type: 'feedback', score, comment: '' })
     }
-  }, [])
+  }, [wsConnected, wsSendMessage])
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage() }
