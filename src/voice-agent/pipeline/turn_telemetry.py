@@ -53,7 +53,8 @@ CREATE TABLE IF NOT EXISTS turns (
     total_audio_ms INTEGER,
     user_followup_30s INTEGER,
     route_fallback INTEGER,
-    notes TEXT
+    notes TEXT,
+    memory_auto_extracted INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_turns_ts_utc ON turns(ts_utc);
 CREATE INDEX IF NOT EXISTS idx_turns_route  ON turns(route);
@@ -100,6 +101,43 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
                 )
             except sqlite3.OperationalError:
                 pass
+        # 2026-05-05 — cost-tracker columns ported from claude-code's
+        # cost-tracker.ts. Per-turn token + cost accounting so the
+        # operator can see "this 10-min session burned X tokens at
+        # $Y/M". `context_pressure` is the pre-flight state ("ok"/
+        # "warn"/"hard") at turn start — lets us correlate failures
+        # with context-window pressure.
+        if "input_tokens" not in cols:
+            try:
+                conn.execute("ALTER TABLE turns ADD COLUMN input_tokens INTEGER")
+            except sqlite3.OperationalError:
+                pass
+        if "output_tokens" not in cols:
+            try:
+                conn.execute("ALTER TABLE turns ADD COLUMN output_tokens INTEGER")
+            except sqlite3.OperationalError:
+                pass
+        if "cost_usd" not in cols:
+            try:
+                conn.execute("ALTER TABLE turns ADD COLUMN cost_usd REAL")
+            except sqlite3.OperationalError:
+                pass
+        if "context_pressure" not in cols:
+            try:
+                conn.execute("ALTER TABLE turns ADD COLUMN context_pressure TEXT")
+            except sqlite3.OperationalError:
+                pass
+        # Phase 2 memory reliability — bool flag stamped True when the
+        # per-turn memory extractor ran via the auto-extraction path
+        # (regex / heuristic), False when it ran via LLM-extraction or
+        # wasn't triggered. Lets us compute auto-extraction rate over time.
+        if "memory_auto_extracted" not in cols:
+            try:
+                conn.execute(
+                    "ALTER TABLE turns ADD COLUMN memory_auto_extracted INTEGER DEFAULT 0"
+                )
+            except sqlite3.OperationalError:
+                pass
         conn.execute("CREATE INDEX IF NOT EXISTS idx_turns_specialist ON turns(specialist)")
 
 
@@ -119,6 +157,11 @@ def log_turn(
     notes: str = "",
     specialist: Optional[str] = None,
     interrupted: bool = False,
+    input_tokens: Optional[int] = None,
+    output_tokens: Optional[int] = None,
+    cost_usd: Optional[float] = None,
+    context_pressure: Optional[str] = None,
+    memory_auto_extracted: bool = False,
 ) -> None:
     """Write one row. Any exception is swallowed so telemetry never blocks voice.
 
@@ -128,6 +171,11 @@ def log_turn(
 
     `interrupted` is True if the user barged in during the agent's reply,
     fired a kill-phrase, or the framework auto-interrupted this turn.
+
+    `input_tokens` / `output_tokens` come from the LLM response usage
+    field. `cost_usd` is computed via tools.token_estimation.cost_usd().
+    `context_pressure` is "ok" / "warn" / "hard" from the pre-flight
+    estimate at turn start.
     """
     try:
         with sqlite3.connect(db_path) as conn:
@@ -135,14 +183,18 @@ def log_turn(
                 """INSERT INTO turns
                    (ts_utc, user_text, jarvis_text, emotion, route, llm_used,
                     voice_used, ttfw_ms, total_audio_ms, user_followup_30s,
-                    route_fallback, notes, specialist, interrupted)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    route_fallback, notes, specialist, interrupted,
+                    input_tokens, output_tokens, cost_usd, context_pressure,
+                    memory_auto_extracted)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     user_text, jarvis_text, emotion, route, llm_used,
                     voice_used, ttfw_ms, total_audio_ms,
                     int(user_followup_30s), int(route_fallback), notes,
                     specialist, int(interrupted),
+                    input_tokens, output_tokens, cost_usd, context_pressure,
+                    int(memory_auto_extracted),
                 ),
             )
     except Exception:
@@ -357,6 +409,68 @@ def report(
             where_args,
         ).fetchone()[0] or 0
         out.append(f"route-fallback rate: {fb:.1%}")
+
+        # ── Cost + token spend (2026-05-05, ported from claude-code) ─
+        # Only show when there's data — a fresh post-migration db
+        # has all NULLs and shouldn't print the section.
+        try:
+            cost_row = conn.execute(
+                f"""SELECT
+                       SUM(input_tokens),
+                       SUM(output_tokens),
+                       SUM(cost_usd),
+                       COUNT(cost_usd)
+                    FROM turns{where_sql}""",
+                where_args,
+            ).fetchone()
+        except sqlite3.OperationalError:
+            cost_row = (None, None, None, 0)
+        if cost_row and cost_row[3]:
+            in_tok, out_tok, total_cost, n_priced = cost_row
+            in_tok = in_tok or 0
+            out_tok = out_tok or 0
+            total_cost = total_cost or 0.0
+            avg_cost = total_cost / n_priced if n_priced else 0.0
+            out.append(
+                f"cost: ${total_cost:.4f} total ({n_priced} priced turns, "
+                f"avg ${avg_cost:.5f}/turn) — "
+                f"input={in_tok:,} tok, output={out_tok:,} tok"
+            )
+            # Per-route + per-model cost rollup. Useful for
+            # answering "where did the budget go?".
+            for route_or_model, calls, cost in conn.execute(
+                f"""SELECT COALESCE(llm_used, '?'),
+                           COUNT(cost_usd),
+                           SUM(cost_usd)
+                    FROM turns{where_sql}
+                    {' AND' if where_sql else ' WHERE'} cost_usd IS NOT NULL
+                    GROUP BY llm_used
+                    ORDER BY 3 DESC""",
+                where_args,
+            ):
+                out.append(
+                    f"  {route_or_model}: {calls} calls, "
+                    f"${cost or 0.0:.4f}"
+                )
+
+        # ── Context-pressure distribution (2026-05-05) ────────────────
+        # How often did we approach the 128K cap during the window?
+        # WARN means context was 78%+ full; HARD means 90%+ — in
+        # practice the supervisor should never see HARD because it
+        # would have been compacted before the call. WARN > 5% means
+        # auto-compaction is overdue.
+        try:
+            press_rows = list(conn.execute(
+                f"""SELECT COALESCE(context_pressure, 'unmeasured'), COUNT(*)
+                    FROM turns{where_sql}
+                    GROUP BY context_pressure ORDER BY 2 DESC""",
+                where_args,
+            ))
+        except sqlite3.OperationalError:
+            press_rows = []
+        if press_rows and any(p != "unmeasured" for p, _ in press_rows):
+            parts = ", ".join(f"{p}={c}" for p, c in press_rows)
+            out.append(f"context pressure: {parts}")
 
         # ── launch_app outcomes (Phase 10.6) ─────────────────────────
         # Only show this section when there's data — fresh dbs and
