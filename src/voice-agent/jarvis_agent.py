@@ -144,6 +144,12 @@ pycall_sanitizer.install()
 import sanitizers.handoff_text
 sanitizers.handoff_text.install()
 
+# Phase 4 of memory-layer fix — output-rail denial detector. Watches
+# supervisor text for memory-capability denials and blanks them
+# before TTS. JARVIS-original sanitizer (no published precedent).
+import sanitizers.denial_detector
+sanitizers.denial_detector.install()
+
 # Wrap LLM streams in asyncio.wait_for so stalled Groq connections
 # raise TimeoutError after JARVIS_LLM_IDLE_TIMEOUT (default 30s)
 # instead of hanging forever. Captured live 2026-05-02: specialist
