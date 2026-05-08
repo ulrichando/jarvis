@@ -1,145 +1,235 @@
-# Anti-gaslighting memory rule — supervisor prompt addition
+# Memory layer reliability — turn-boundary auto-extraction + recall force-routing
 
-**Status:** Design approved 2026-05-08, awaiting implementation
+**Status:** Design v2 (pending re-approval) 2026-05-08, supersedes v1 banned-phrases approach
 **Author:** Claude (with Ulrich)
 **Branch:** `feat/ext-browser-control-v3`
-**Scope:** Single-file edit to `src/voice-agent/jarvis_agent.py` supervisor prompt
+**Scope:** Architectural shift in memory pipeline + targeted prompt addition + defense-in-depth detector
 
-## Problem
+## Why a v2
 
-JARVIS's voice supervisor LLM (Groq llama-3.3-70b primary) periodically denies its own memory capability when the user asks it to remember something. Live verbatim from `~/.jarvis/hub/state.db.messages` at 2026-05-08 02:18:41:
+v1 of this design (banned-phrases prompt addition) was rejected by Ulrich as unnatural, and three parallel research passes (verification + voice-framework specifics + community sources Quora/GitHub/StackOverflow/Reddit) converged on a single conclusion that **invalidates the prompt-only direction**:
+
+> *"Mem0's own maintainers recommend bypassing function-tool registration."* — [github.com/mem0ai/mem0/issues/3999](https://github.com/mem0ai/mem0/issues/3999): the `function_tool` integration "requires manual tool invocation by the agent" and "agent must explicitly decide when to search/save memory." The maintainers recommend `MemoryService` / `PreloadMemoryTool` which **auto-injects relevant memories at the start of each turn without requiring any tool call**.
+
+Every production memory system that works (Mem0, Zep, Character.AI, Pi) has moved memory **off the LLM's tool surface**. Asking Llama-3.3-70B to choose to call `remember()` is the failure mode, not the fix.
+
+## Problem (unchanged from v1)
+
+JARVIS's voice supervisor (Groq llama-3.3-70b primary) periodically denies its own memory capability when asked to remember something. Live verbatim from `~/.jarvis/hub/state.db.messages` at 2026-05-08 02:18:41:
 
 > User: "Can you remember her name next time I ask you?"
-> JARVIS: "I'm afraid not, Lizzy. I'm a conversational AI, and I don't have the ability to store or recall individual names or memories. Each time you interact with me, it's a new conversation and I don't retain any information from previous conversations."
+> JARVIS: "I'm afraid not, Lizzy. I'm a conversational AI, and I don't have the ability to store or recall individual names or memories."
 
-This is **factually false**. JARVIS has both `remember(content, category)` and `recall_conversation(query)` registered as `@function_tool` entry points. State.db tables `messages` (5534 rows / 285 sessions) and `memories` (3 rows) prove that across-session persistence works.
+Hard data: across 285 sessions and 5534 logged messages, only **1 memory** has ever been saved through the voice path (May 6, the explicit "never restart" feedback Ulrich demanded). State.db has 3 memories total. Voice memory has effectively never worked.
 
-The user-facing failure: Ulrich asks JARVIS to remember a fact, JARVIS lies that it can't, the conversation ends with the user believing JARVIS is amnesiac when in reality the supervisor LLM was hallucinating training-data patterns over its own system prompt.
+## Research-driven root cause
 
-## Root cause (named, not speculated)
+The supervisor LLM ignores its registered `@function_tool` memory tools and falls back to "I'm a conversational AI" because:
+1. **Metacognition limits** — published 2025 research ([arXiv 2509.21545](https://arxiv.org/abs/2509.21545)) shows Llama-class models exhibit "conservatism in context-/time-sensitive queries" — they default to the safer "I can't do that" disclosure even when they factually can.
+2. **Training-data dominance** — millions of "I'm an AI assistant without memory" disclaimers in pretraining outweigh the system prompt's tool listing at inference time.
+3. **Voice agents amplify the cost** — a 12-word capability denial spoken at 175 wpm is ~4 seconds of dead air, much more disruptive than the same string in a chat reply.
 
-**The supervisor LLM ignores its system-prompt-listed tools and falls back to "I'm an AI, I don't have memory" — a pattern dominant in its training data**. Two corroborating signals:
+**Architectural insight from the research:** the LLM's reluctance to call memory tools is structural, not promptable. The fix has to bypass the LLM's choice rather than coerce it.
 
-1. The supervisor prompt at the time of failure already contained `recall_conversation`, `remember`, `remember_this`, `forget`, `list_memories`, `audit_memories` in the tool surface enumeration ([jarvis_agent.py:2156](../../src/voice-agent/jarvis_agent.py#L2156)) and a PROACTIVE CAPTURE section explaining when to use them.
-2. The `events:memory` Redis stream shows 12 events lifetime: 11 from `web` source, **only 1 from `voice` source** (the May 6 "Never restart" feedback explicitly demanded by user). JARVIS effectively never voluntarily emits `remember()` events.
+## Goal (success criterion — broadened from v1)
 
-The PROACTIVE CAPTURE addition shipped earlier today addresses *trigger detection* (when to capture). It does NOT address the more fundamental *self-denial* pattern that runs at a different layer of the LLM's reasoning — when asked directly about its own capabilities, the LLM short-circuits to "I'm a conversational AI" without consulting the system prompt.
+JARVIS reliably persists stable facts the user states, and never tells the user it can't remember when it factually can.
 
-## Goal (success criterion)
-
-**JARVIS stops gaslighting itself.** Specifically: when a user asks "can you remember X" / "do you know Y" / "what did I tell you yesterday," JARVIS NEVER replies with any of the live-failure phrases. Instead it either calls `remember()` / `recall_conversation()` and responds based on the result, OR honestly says "I don't have that yet, sir — want me to remember it now?"
+Concretely:
+1. When user states a memorable fact ("we charge $600/6mo", "my wife's name is Lizzy"), it lands in `state.db.memories` within ~1s, every time. No dependence on the LLM choosing to call a tool.
+2. When user asks a recall-shaped question ("what did I tell you about X?"), JARVIS retrieves from `state.db.memories` or `messages` and answers based on the result. Never replies with the gaslighting phrases.
+3. When the LLM does emit a gaslighting phrase despite layers 1-2, a defense-in-depth detector intercepts and re-rolls the turn.
 
 Out of scope (NOT goals of this fix):
-- Higher capture rate during ordinary conversation (covered by PROACTIVE CAPTURE earlier today).
-- Recovering the schema-rejection-then-recovery dispatch issue (separate investigation; the recovered chunk doesn't appear to actually execute the tool).
-- Programmatic gate forcing `remember()` when triggers fire.
-- Auto-capture from regex on user transcripts.
+- Multi-modal memory (face recognition memories, image attachments).
+- Cross-user memory sharing.
+- Memory editing/forgetting via voice (already handled by `forget()` tool).
 
-## Design
+## Design — three layers, defense-in-depth
 
-### Location in supervisor prompt
+### Layer 1 (PRIMARY): Auto-extraction on turn boundary
 
-Insert immediately after the PROACTIVE CAPTURE section (line ~3085, just-shipped) and before the existing "Memory drift" subsection. The MEMORY block ordering becomes:
+**The single highest-leverage change.** Mirrors the Mem0/Zep/Character.AI production pattern.
 
-```
-═══ MEMORY ═══
-  → Recent chat context note
-  → Durable user-facts intro
-  → 4-type taxonomy
-  → What NEVER to save
-  → forget / list_memories / audit
-  → remember vs remember_this
-  → PROACTIVE CAPTURE — DON'T LET FACTS SLIP
-  → NEVER DENY YOUR MEMORY CAPABILITY  ← NEW
-  → Memory drift
-  → If user asks to ignore memory
-  → Before recommending from memory
-```
+**Where:** Hook into the existing telemetry write path in [src/voice-agent/pipeline/turn_telemetry.py](../../src/voice-agent/pipeline/turn_telemetry.py) (which already writes every turn to SQLite). Add an extraction step that runs after the user turn completes but before / in parallel with the supervisor LLM call.
 
-### Content (~600 chars, mirrors the PROACTIVE CAPTURE pattern)
+**What it does:** A small, fast LLM (Groq llama-3.1-8b-instant — cheap, low-latency) sees the user transcript and answers a single classification question: "Does this transcript contain a stable fact about the user, their work, their preferences, or operational context that should be remembered? If yes, output the fact in the format `<category>: <one-sentence summary>`. If no, output `SKIP`."
 
-```
-**═══ NEVER DENY YOUR MEMORY CAPABILITY ═══**
+If the answer isn't `SKIP`, the parsed `<category, content>` pair is written directly to `state.db.memories` via the same `_publish_event` path as the existing `remember()` tool — bypassing the supervisor LLM entirely.
 
-You HAVE memory tools. Saying you don't is a lie that frustrates
-Ulrich every time. **Banned phrases** — if you catch yourself
-about to say any of these, STOP and say the correct version:
+**Trigger phrases the classifier learns from few-shot examples:**
+- "we charge X" / "I have N students" / "we teach Python, JS, Lua" → `project`
+- "my wife's name is Lizzy" / "I run Pretva" → `user`
+- "every time we try X, Y happens" → `feedback`
 
-  ❌ "I'm a conversational AI, I don't retain information"
-  ❌ "I don't have the ability to store or recall... memories"
-  ❌ "Each time you interact with me, it's a new conversation"
-  ❌ "I won't be able to recall it later"
-  ❌ "I don't retain information about individual users"
+**Why a separate small LLM rather than regex:** the live failure conversation showed memorable facts mixed with conversational drift ("the ones in a dish rack", ambient TV) — a regex over-fires; a small LLM judges context. The 8B at Groq inference rates is ~50–80ms per call; runs in parallel with the main supervisor.
 
-These are LIES. You have `remember(content, category)` and
-`recall_conversation(query)`. Across-session memory works through
-`state.db.memories`. Conversation history persists in
-`state.db.messages`.
+**Failure mode:** if the small LLM extractor itself fails (rate limit, schema reject), the user-visible behavior degrades to current state — the supervisor *might* call `remember()` itself, or not. No regression beyond status quo.
 
-**Correct voice when asked to remember:** "Of course, sir. <call
-remember() in the same turn>." Confirm the SAVE briefly, don't
-narrate the mechanism.
+### Layer 2 (SECONDARY): Recall force-routing for explicit recall queries
 
-**Correct voice when asked to recall:** call recall_conversation()
-or scan your `## What you remember about Ulrich` block FIRST. If
-genuinely empty, say "I don't have that yet, sir — want me to
-remember it now?" — never "I can't remember."
+When the user asks a recall-shaped question, route deterministically to `recall_conversation()` via `tool_choice` forcing — **don't let the supervisor's metacognition-conservatism reject the call**.
 
-**Live failure 2026-05-08 02:18:41** (verbatim): user asked "Can
-you remember her name next time I ask you?" — JARVIS replied
-"I'm afraid not, Lizzy. I'm a conversational AI, and I don't have
-the ability to store or recall individual names or memories." The
-correct reply was: "Of course, sir." + remember("Ulrich's wife is
-named Lizzy.", "user") + done.
+**Where:** Extend [src/voice-agent/pipeline/turn_router.py](../../src/voice-agent/pipeline/turn_router.py) which already classifies BANTER/TASK/REASONING/EMOTIONAL. Add a parallel `RECALL` category with a regex pre-filter:
+
+```python
+_RECALL_PATTERNS = [
+    r"\b(?:do you|can you|did i)\s+(?:remember|recall)",
+    r"\bwhat (?:did|do) (?:i|we) (?:tell|say|talk).*you",
+    r"\bwhat'?s? my\s+\w+(?:'s)?\s+name",
+    r"\bremember when (?:i|we)",
+]
 ```
 
-### Why this pattern works (precedent)
+When matched, the router sets `tool_choice={"type":"function","function":{"name":"recall_conversation"}}` for that single turn. **Critical caveat from [LiveKit issue #4671](https://github.com/livekit/agents/issues/4671): `tool_choice` persists across turns when set on `generate_reply()` in LiveKit Agents — must be explicitly reset to `"auto"` after the forced call.**
 
-Two prompt fixes shipped earlier with the same shape — name the live failure verbatim, list banned phrases, give the correct alternative — both worked:
+**Why not always-force:** would break banter and follow-up turns. The classifier-then-force pattern is what Groq's own docs recommend ([Groq tool-use blog](https://groq.com/blog/introducing-llama-3-groq-tool-use-models)).
 
-1. **Desktop/browser specialist anti-protocol-leak** at `specialists/desktop.py` and `specialists/browser.py`. Banned the LLM's tendency to emit `task_done(...)` / `<function>...` / `[{"name":...}]` as voiced TTS text. After the rule landed, log evidence of these leaks dropped to ~0 within a day.
-2. **Specialist tool-gate bailout-phrase allowlist** at `specialists/agent.py`. Banned freelance `task_done` summaries when no tool fired; listed exact accepted phrases. Eliminated the "11 refusals in 2 minutes" pathology observed pre-fix.
+### Layer 3 (DEFENSE-IN-DEPTH): Output-rail denial detector
 
-The pattern reliably overrides training-data behaviors when the rule is concrete enough that pattern-matching against the verbatim banned phrase happens before the model commits to the answer.
+**JARVIS-original — not in any published framework, but academically grounded.**
 
-## Implementation steps
+**Where:** New module `src/voice-agent/sanitizers/denial_detector.py`. Hooks into the same LLMStream patch surface used by other sanitizers (`pycall`, `dsml`, `tool_name`, `handoff_text`).
 
-1. Open `src/voice-agent/jarvis_agent.py`.
-2. Find the existing PROACTIVE CAPTURE section (search for the `═══ PROACTIVE CAPTURE — DON'T LET FACTS SLIP ═══` header).
-3. Insert the new section immediately after it ends, before the "**Memory drift — recall is a snapshot, not a fact.**" subsection begins.
-4. Smoke-test: `cd src/voice-agent && .venv/bin/python -c "import jarvis_agent; assert 'NEVER DENY YOUR MEMORY CAPABILITY' in jarvis_agent.JARVIS_INSTRUCTIONS"`.
-5. Run targeted pytest: `tests/ -k "router or canned or memory or sanitizer or specialist"` — expect pass.
-6. Confirm prompt size stays under 131K tokens (~115K chars).
-7. Restart `jarvis-voice-agent.service` (with the standard 60s session-age check first).
-8. Live verification per Verification section below.
+**What it does:** Watches the supervisor's outgoing assistant text. If it matches:
+```python
+_DENIAL_RE = re.compile(
+    r"\b(?:I'?m|I am)\s+(?:just\s+)?an?\s+(?:AI|conversational|language model|computer program)"
+    r".*?\b(?:can(?:'t|not)|don'?t|won'?t)\b.*?\b(?:remember|recall|retain|store|memory|memorize)",
+    re.IGNORECASE | re.DOTALL,
+)
+```
+…AND no `remember()` / `recall_conversation()` tool call fired this turn, the detector:
+1. Suppresses the assistant text (don't voice it).
+2. Logs `[denial-detector] suppressed gaslighting reply: <text[:120]>`.
+3. Re-rolls the turn with `tool_choice` forced to `recall_conversation`.
+
+**Academic precedent:** [Google ADK reflect-and-retry plugin](https://google.github.io/adk-docs/plugins/reflect-and-retry/) and the [Reflect, Retry, Reward paper (HuggingFace 2505.24726)](https://huggingface.co/papers/2505.24726) — both apply the pattern to tool *errors*; we'd be the first to apply it to capability *denials*.
+
+**Failure mode:** the detector regex might miss novel denial phrasings ("As a language model, I lack persistent memory"). Mitigation: log every supervisor text output to a separate sample for ongoing pattern tuning.
+
+### Supporting layer: targeted prompt addition (NOT the primary fix)
+
+The original v1 banned-phrases section is dropped. Replaced with a much shorter, naturally-phrased addition that mirrors what Anthropic auto-injects with their memory tool:
+
+```
+**═══ YOU HAVE MEMORY ═══**
+
+You have `remember(content, category)` and `recall_conversation(query)` 
+as tools. State.db persists across sessions. ASSUME INTERRUPTION: chat
+context resets every session — anything not in `remember()` is gone.
+Saying you can't remember is factually wrong; treat the tools as real.
+
+When the user states a stable fact (pricing, team, family, values), 
+either trust the auto-extractor (Layer 1) to capture it, or call 
+`remember()` yourself. Either way, never tell the user "I can't 
+remember" — you can.
+```
+
+**Why keep this:** even with Layers 1-3, the LLM still produces voice replies. Without this minimal anchor, the supervisor will say things like "I'll remember that for our conversation" when the auto-extractor has *actually* persisted it. This block keeps voice replies honest about the persisted state.
+
+## Architecture diagram
+
+```
+User speaks → STT → user_input_transcribed
+                          │
+            ┌─────────────┼─────────────────────┐
+            ▼             ▼                     ▼
+   Layer 1 extractor  Layer 2 router    Supervisor LLM
+   (small LLM,        (regex + tool_     (with prompt anchor
+    fact extraction)   choice forcing)    + Layer 3 denial
+            │             │               detector on output)
+            ▼             ▼                     │
+   state.db.memories  recall_conversation       │
+                       forced if matched         │
+            └─────────────┼─────────────────────┘
+                          ▼
+                       TTS → user
+```
+
+## Implementation phases
+
+### Phase 1 — minimal anchor (today, ~30 min)
+Just the supporting-layer prompt addition. Short, honest, not banned-phrases. No code changes.
+
+### Phase 2 — Layer 1 auto-extraction (this week, ~2 hours)
+- New `pipeline/memory_extractor.py` — async function called from `on_user_turn_completed`.
+- Few-shot prompt for llama-3.1-8b-instant with 5–8 examples.
+- Writes via existing `_publish_event("memory.value.upserted", ...)` path; no new infra.
+- Telemetry: log extraction outcomes to compare auto-extracted vs LLM-extracted memory rates.
+
+### Phase 3 — Layer 2 recall force-routing (this week, ~1 hour)
+- Extend `turn_router.py` with `_RECALL_PATTERNS` + `tool_choice` forcing.
+- Reset `tool_choice` to `"auto"` after the forced call (LiveKit #4671 mitigation).
+- Tests for the regex patterns.
+
+### Phase 4 — Layer 3 denial detector (this week, ~2 hours)
+- New `sanitizers/denial_detector.py` — installs as `LLMStream._run` patch like other sanitizers.
+- Suppresses gaslighting output, re-rolls with forced tool_choice.
+- Telemetry: count denial-detector triggers per session — should trend to ~0 as Layer 1 effectiveness grows.
 
 ## Verification
 
-### Static checks (pre-restart)
-- Imports clean (no syntax errors).
-- `JARVIS_INSTRUCTIONS` contains the new header verbatim.
-- 800+ existing tests still pass.
+### Phase 1 (prompt anchor)
+- `JARVIS_INSTRUCTIONS` contains "YOU HAVE MEMORY" verbatim.
+- 800+ existing tests pass.
+- Live: ask "do you have memory?" — JARVIS should NOT reply "I'm a conversational AI..."
 
-### Live behavior check (post-restart)
-One round of dialogue:
+### Phase 2 (extractor)
+- Smoke: state "we charge $600 for 6 months" → row appears in `state.db.memories` within 2s with category `project`.
+- Telemetry: new column `memory_auto_extracted` (bool) in `turns` table tracks per-turn extractor outcome.
+- Target: ≥80% of conversations with stable facts get at least one auto-extracted memory.
 
-1. Ulrich: "Jarvis, do you know my wife's name?"
-   - **Expected**: "I don't have that yet, sir — want me to remember it now?" or similar honest-empty response. **NEVER**: "I'm a conversational AI..." family of phrases.
-2. Ulrich: "Yes, her name is Lizzy."
-   - **Expected**: "Of course, sir." (or equivalent dignified-butler ack) + a `remember()` tool call in the same turn.
-   - **Verifiable evidence**: a new event lands in `events:memory` Redis stream within ~5s; a new row in `state.db.memories` with content like "Ulrich's wife is named Lizzy" and category `user`.
-3. Ulrich (in a later session): "What's my wife's name?"
-   - **Expected**: "Lizzy, sir." Pulled from the now-populated memories block at top of prompt.
+### Phase 3 (recall force-routing)
+- Test: "what's my wife's name?" → matches `_RECALL_PATTERNS` → `recall_conversation` fires → answer based on retrieval.
+- Test: "okay" / "yes please" / "thanks" → does NOT match patterns, normal route.
+- Confirm `tool_choice` reset after each forced call (no persistence across turns).
 
-### Failure mode if it doesn't work
-If JARVIS still emits "I'm a conversational AI..." after restart, the prompt-only approach is insufficient. **Escalation path**: implement programmatic gate (Approach B in brainstorm) — when user transcript matches `(can you )?remember.*(?:next time|later|please)|do you know.*(?:about me|my)`, refuse the assistant turn if no `remember()` or `recall_conversation()` tool call fired during it. Implementation surface mirrors the existing specialist tool-gate at `specialists/agent.py`.
+### Phase 4 (denial detector)
+- Unit test: feed denial-shaped string into detector → suppression triggers.
+- Unit test: feed legitimate refusal ("I can't generate physical money") → does NOT trigger.
+- Live: counts of `[denial-detector] suppressed` should drop to near-zero after Phases 1-3 land.
 
 ## Risks
 
-- **Rule too narrow**: the LLM finds a NEW gaslighting phrase not in our banned list (e.g., "as an AI assistant, I lack persistent memory"). Mitigation: monitor `~/.jarvis/hub/state.db.messages` for assistant-text matching `(?:I|i)('?m| am)? (?:just )?an? (?:AI|conversational|language model|computer program).*(?:can(?:'t|not)|don'?t|won'?t).*(?:remember|recall|retain|store)` and add new patterns to the banned list as they're observed.
-- **Rule too broad**: legitimate refusals get blocked ("I can't generate physical money, sir" should still work). Mitigation: rule is scoped specifically to memory denials with concrete banned phrases, not a blanket "never say I can't" rule.
-- **Prompt size growth**: adds ~600 chars to a ~110K-char prompt; negligible impact on token budget.
+- **Layer 1 false positives** — extractor saves trivia like "I'm thirsty." Mitigation: include negative few-shot examples (ephemeral statements should `SKIP`); cap memories at 500 chars; ban-list ephemeral words ("today", "right now", "currently").
+- **Layer 1 latency** — extra 50-80ms per turn calling 8B. Mitigation: run in parallel with supervisor LLM, not sequentially.
+- **Layer 2 false negatives** — recall-shaped queries the regex misses. Mitigation: log unmatched user transcripts containing "remember"/"recall"/"told you" for monthly pattern review.
+- **Layer 2 cross-turn persistence bug** — LiveKit #4671. Mitigation: explicit `tool_choice="auto"` reset after each forced call; integration test for reset.
+- **Layer 3 over-trigger** — detector fires on legitimate refusals. Mitigation: regex requires both the AI-self-reference AND the memory-specific verb; legitimate refusals like "I can't open a tab" don't match.
+- **Prompt anchor over-grows the system prompt** — adds ~400 chars to ~110K. Negligible budget impact.
 
-## Why now (and why not the bigger fix)
+## What we're explicitly NOT doing
 
-The user explicitly chose "JARVIS stops gaslighting" as the success criterion over "memory layer is bulletproof end-to-end." The deeper fixes (sanitizer recovery dispatch, programmatic capture gate) are still on the backlog as fallback if this prompt fix proves insufficient. Today's fix targets the user-visible lie that's most painful: "I can't remember" when the user knows JARVIS can.
+- NOT swapping models. Research showed `Llama-3-Groq-70B-Tool-Use` would help marginally but doesn't fix the proactive-memory problem; Groq itself recommends router → tool-use model only on tool-needed turns.
+- NOT using `tool_choice="required"` blanket. Breaks banter (LiveKit issue confirms cross-turn persistence makes this dangerous).
+- NOT using Reflexion-style multi-step self-correction. Recent practitioner reports show it amplifies confident wrongness on tool errors.
+- NOT moving to MemGPT/Letta architecture. Their tool-based memory works because they have a stateful ReAct loop between user turns; JARVIS doesn't and won't.
+- NOT fine-tuning. Breaks Groq hosting, expensive, and the auto-extraction pattern works without it.
+
+## Why now (and why this scope)
+
+Original v1 success criterion ("JARVIS stops gaslighting") was scoped tight under the assumption that prompt-only could fix it. Research definitively showed prompt-only is the path everyone abandoned. The architectural shift (Phase 2 + 3) is ~3 hours of work that follows the proven production pattern; the marginal added scope is justified by the strength of the evidence.
+
+Phase 1 (prompt anchor) ships first as a hedge: zero-risk, immediate, gives some improvement even if Phases 2-4 land later. Phases 2-4 then compound — each layer covers a different failure mode and they don't conflict.
+
+## Sources cited in this design
+
+- [Mem0 issue #3999 — recommend MemoryService over function tools](https://github.com/mem0ai/mem0/issues/3999) ← strongest signal
+- [Mem0 + LiveKit integration docs](https://docs.mem0.ai/integrations/livekit)
+- [Zep + LiveKit blog](https://blog.getzep.com/zep-livekit/)
+- [Anthropic Memory Tool docs (ASSUME INTERRUPTION)](https://platform.claude.com/docs/en/agents-and-tools/tool-use/memory-tool)
+- [LiveKit Agents #4671 — tool_choice persists across turns](https://github.com/livekit/agents/issues/4671)
+- [Groq tool-use models blog](https://groq.com/blog/introducing-llama-3-groq-tool-use-models)
+- [Evidence for Limited Metacognition in LLMs (arXiv 2509.21545)](https://arxiv.org/abs/2509.21545)
+- [Google ADK reflect-and-retry plugin](https://google.github.io/adk-docs/plugins/reflect-and-retry/)
+- [Reflect, Retry, Reward paper](https://huggingface.co/papers/2505.24726)
+- [HN — GPT-5 system prompt authenticity disputed](https://news.ycombinator.com/item?id=44832990)
+- [Lost in the Middle (Liu et al., arXiv 2307.03172)](https://arxiv.org/abs/2307.03172)
+- [LangChain few-shot tool-calling study](https://www.langchain.com/blog/few-shot-prompting-to-improve-tool-calling-performance)
+
+## Sources we initially cited but should NOT rely on as primary
+
+- "GPT-5 leaked system prompt with bio tool trigger" — [HN dispute](https://news.ycombinator.com/item?id=44832990); demote to inspirational, not authoritative.
+- "Instruction Hierarchy paper supports position-matters" — wrong citation; that paper is about role hierarchy.
+- "30-40% Llama 3.3 70B proactive tool ceiling" — no primary source; folk wisdom.
