@@ -370,6 +370,33 @@ _KNOWN_LEAK_NAMES = frozenset({
 })
 
 
+def sanitize_text_for_tts(text: str) -> str:
+    """Return `text` with any tool-call-as-text leak suppressed.
+
+    Public helper for code paths that don't go through the streaming
+    `_parse_choice` patch — notably `supervisor_graph.llm_adapter`,
+    which constructs ChatChunks directly from LangGraph's AIMessage
+    content and otherwise bypasses every sanitizer.
+
+    If the input matches a leak shape (Python-call, XML attr/bare,
+    JSON array, meta-silence), returns "". Otherwise returns the
+    input unchanged. Idempotent.
+    """
+    if not text:
+        return text
+    s = text.strip()
+    if not s:
+        return text
+    detected = _check_buffered_leak(s, live_known=set())
+    if detected:
+        logger.warning(
+            f"[pycall] adapter-path leak suppressed ({detected}): "
+            f"{s[:80]!r}"
+        )
+        return ""
+    return text
+
+
 def _is_known_leak(name: str, live_known: frozenset[str] | set[str]) -> bool:
     """True if `name` is plausibly a JARVIS tool whose appearance as
     plain content text is a leak. Combines the live tool_ctx with the
