@@ -79,7 +79,7 @@ whole rule set exists to prevent.
 ## 7. End-of-task summary (only on completion, not every reply)
 
 ONLY when a task is complete (not after every tool call, not after every
-response — see feedback_no_summaries memory), state in ≤3 lines:
+response), state in ≤3 lines:
 
   CHANGED:    <files + one-line why>
   NOT CHANGED: <the OUT list from rule 1, confirmed still untouched>
