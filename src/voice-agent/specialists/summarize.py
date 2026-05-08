@@ -12,6 +12,8 @@ costs nothing extra in supervisor prompt size.
 """
 from __future__ import annotations
 
+import os
+
 from .registry import SubagentSpec, register_subagent
 
 
@@ -75,7 +77,16 @@ _SUMMARIZE_WHEN = (
 
 
 def register_summarize() -> None:
-    """Register the summarize subagent. Idempotent."""
+    """Register the summarize subagent.
+
+    DISABLED BY DEFAULT 2026-05-08 — opt in with `JARVIS_SUBAGENT_SUMMARIZE=1`.
+    Live-session telemetry on 2026-05-08 17:53–17:55 showed the supervisor
+    delegating to summarize for trivial conversational input (`Yeah`, `Okay`,
+    `I don't know`) and voicing meta-paraphrases like
+    "The user is expressing gratitude for the time spent" — 27 task_done
+    refusals in one window. Re-enable once token-aware pruning lands
+    and the supervisor's `delegate(...)` routing is tightened.
+    """
     register_subagent(SubagentSpec(
         name="summarize",
         when_to_use=_SUMMARIZE_WHEN,
@@ -83,5 +94,5 @@ def register_summarize() -> None:
         tool_factory=_summarize_tools,
         ack_phrase="One sec, sir.",
         max_history_items=12,
-        enabled=True,
+        enabled=os.environ.get("JARVIS_SUBAGENT_SUMMARIZE", "0") == "1",
     ))

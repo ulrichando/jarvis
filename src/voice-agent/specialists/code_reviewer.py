@@ -55,12 +55,21 @@ _CODE_REVIEWER_WHEN = (
 
 def register_code_reviewer() -> None:
     """Register the code-reviewer subagent. Auto-disables when GROQ
-    key is missing (mirrors validator/browser_v2 graceful-degrade)."""
+    key is missing (mirrors validator/browser_v2 graceful-degrade).
+
+    DISABLED BY DEFAULT 2026-05-08 — opt in with `JARVIS_SUBAGENT_CODE_REVIEWER=1`.
+    Disabled alongside summarize/researcher etc. while supervisor delegate
+    routing is being repaired.
+    """
+    import os
     try:
         from tools.code_reviewer import is_available
         enabled = is_available()
     except Exception:
         enabled = False
+    enabled = enabled and (
+        os.environ.get("JARVIS_SUBAGENT_CODE_REVIEWER", "0") == "1"
+    )
 
     register_subagent(SubagentSpec(
         name="code_reviewer",

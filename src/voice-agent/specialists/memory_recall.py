@@ -50,12 +50,22 @@ _MEMORY_RECALL_WHEN = (
 
 def register_memory_recall() -> None:
     """Register the memory-recall subagent. Auto-disables if the
-    conversations DB hasn't been created (first-run scenario)."""
+    conversations DB hasn't been created (first-run scenario).
+
+    DISABLED BY DEFAULT 2026-05-08 — opt in with `JARVIS_SUBAGENT_MEMORY_RECALL=1`.
+    Disabled alongside summarize/researcher etc. while supervisor delegate
+    routing is being repaired. (The 4-layer auto-extract memory layer
+    handles recall on its own — see pipeline/memory_extractor.py.)
+    """
+    import os
     try:
         from tools.memory_recall import is_available
         enabled = is_available()
     except Exception:
         enabled = False
+    enabled = enabled and (
+        os.environ.get("JARVIS_SUBAGENT_MEMORY_RECALL", "0") == "1"
+    )
 
     register_subagent(SubagentSpec(
         name="memory_recall",
