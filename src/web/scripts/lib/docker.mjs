@@ -85,11 +85,17 @@ export async function inspect(workspaceId) {
   return { state: running ? "running" : "stopped", ports };
 }
 
-export async function ensureRunning(workspaceId) {
+export async function ensureRunning(workspaceId, envVars) {
   const name = containerName(workspaceId);
   const cur = await inspect(workspaceId);
   if (cur.state === "running") return cur;
   if (cur.state === "stopped") {
+    // If env vars changed since the container was created, the simplest
+    // safe behavior is to re-create it (you can't `docker update --env`
+    // on an existing container). Caller decides whether to destroy first;
+    // here we just `docker start` the existing one as before. The
+    // workbench Settings UI explicitly destroys + restarts when env
+    // changes — this fast-path covers normal "stopped → resume".
     await execFileP("docker", ["start", name]);
     return inspect(workspaceId);
   }
@@ -100,6 +106,20 @@ export async function ensureRunning(workspaceId) {
 
   const uid = process.getuid?.() ?? 1000;
   const gid = process.getgid?.() ?? 1000;
+
+  // Per-workspace env vars from _meta.json. Each becomes a `-e KEY=VAL`
+  // flag on the docker run line. Empty/null envVars is a no-op so this
+  // is safe to call from contexts that don't have any.
+  const envFlags = [];
+  if (envVars && typeof envVars === "object") {
+    for (const [k, v] of Object.entries(envVars)) {
+      // Defensive validation matches storage.ts's allowlist — keys must
+      // be uppercase + underscore + alphanumeric. Skip anything else
+      // rather than letting a bad key crash docker run.
+      if (!/^[A-Z_][A-Z0-9_]*$/.test(String(k))) continue;
+      envFlags.push("-e", `${k}=${v ?? ""}`);
+    }
+  }
 
   const args = [
     "run",
@@ -114,6 +134,7 @@ export async function ensureRunning(workspaceId) {
     "--cpus", "2",
     "--pids-limit", "512",
     "--restart", "no",
+    ...envFlags,
     // Run init as root so `apt-get install` etc. works if the user wants
     // it. We still `exec` as the host UID below for file-ownership sanity.
     IMAGE,

@@ -1,4 +1,4 @@
-"""livekit_track_guard.py — monkey-patch `Room._on_room_event` to
+"""resilience.track_guard (was livekit_track_guard.py) — monkey-patch `Room._on_room_event` to
 swallow KeyError from stale track SIDs during reconnect.
 
 Catches the exact bug that crashed the voice-client during the
@@ -8,30 +8,53 @@ Catches the exact bug that crashed the voice-client during the
         lpublication = self.local_participant.track_publications[sid]
     KeyError: 'TR_AMMxN69RnMdE3e'
 """
+import asyncio
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from livekit import rtc as _lk_rtc
 
-import livekit_track_guard
+import resilience.track_guard
+
+
+@pytest.fixture
+def fresh_loop():
+    """Provide a fresh, set-as-current event loop for the duration of
+    one test. Required because `livekit.rtc.Room.__init__` calls
+    `asyncio.get_event_loop()` which on Python 3.13 returns None (or
+    raises) when no loop is set on the thread. Earlier tests in the
+    full suite leave the thread without a loop; in isolation the
+    default-policy auto-create masks the problem. Pin the loop here
+    so the order of unrelated tests doesn't decide whether Room()
+    can construct.
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        yield loop
+    finally:
+        asyncio.set_event_loop(None)
+        loop.close()
 
 
 def test_install_is_idempotent():
     """Calling install() twice must not double-wrap the method."""
-    livekit_track_guard.install()
+    resilience.track_guard.install()
     first = _lk_rtc.Room._on_room_event
-    livekit_track_guard.install()
+    resilience.track_guard.install()
     second = _lk_rtc.Room._on_room_event
     assert first is second
 
 
-def test_local_track_unpublished_with_unknown_sid_does_not_crash():
+def test_local_track_unpublished_with_unknown_sid_does_not_crash(fresh_loop):
     """Pre-patch this raised KeyError (today's bug). Post-patch the
     guard logs + returns without crashing the listener task."""
-    livekit_track_guard.install()
+    resilience.track_guard.install()
 
     room = _lk_rtc.Room()
     fake_local = MagicMock()
@@ -47,8 +70,8 @@ def test_local_track_unpublished_with_unknown_sid_does_not_crash():
     room._on_room_event(fake_event)
 
 
-def test_local_track_published_with_unknown_sid_does_not_crash():
-    livekit_track_guard.install()
+def test_local_track_published_with_unknown_sid_does_not_crash(fresh_loop):
+    resilience.track_guard.install()
     room = _lk_rtc.Room()
     fake_local = MagicMock()
     fake_local.track_publications = {}
@@ -61,8 +84,8 @@ def test_local_track_published_with_unknown_sid_does_not_crash():
     room._on_room_event(fake_event)
 
 
-def test_remote_track_unpublished_with_unknown_participant_does_not_crash():
-    livekit_track_guard.install()
+def test_remote_track_unpublished_with_unknown_participant_does_not_crash(fresh_loop):
+    resilience.track_guard.install()
     room = _lk_rtc.Room()
     room.__dict__["_remote_participants"] = {}
 
@@ -74,12 +97,12 @@ def test_remote_track_unpublished_with_unknown_participant_does_not_crash():
     room._on_room_event(fake_event)
 
 
-def test_unguarded_branch_passes_through_unchanged():
+def test_unguarded_branch_passes_through_unchanged(fresh_loop):
     """Branches NOT in _GUARDED_BRANCHES must delegate to the
     original `_on_room_event` without the KeyError shield. Verifies
     we don't accidentally widen the catch and swallow real bugs."""
-    livekit_track_guard.install()
-    import livekit_track_guard as _tg
+    resilience.track_guard.install()
+    import resilience.track_guard as _tg
 
     calls = []
     saved_original = _tg._ORIGINAL_ON_ROOM_EVENT

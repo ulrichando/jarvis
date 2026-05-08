@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import jarvis_github
+import tools.github
 
 
 _GH_AUTHED = bool(shutil.which("gh")) and (
@@ -20,7 +20,7 @@ _GH_AUTHED = bool(shutil.which("gh")) and (
 
 def test_is_available_reflects_gh_state():
     """is_available() should match the gh CLI presence + auth state."""
-    assert jarvis_github.is_available() == _GH_AUTHED
+    assert tools.github.is_available() == _GH_AUTHED
 
 
 def test_github_subagent_registered():
@@ -51,22 +51,22 @@ def test_github_factory_builds():
 
 
 def test_format_short_user_strips_at():
-    assert jarvis_github._format_short_user("@ulrichando") == "ulrichando"
-    assert jarvis_github._format_short_user("ulrichando") == "ulrichando"
+    assert tools.github._format_short_user("@ulrichando") == "ulrichando"
+    assert tools.github._format_short_user("ulrichando") == "ulrichando"
 
 
 def test_returns_offline_message_when_gh_missing(monkeypatch):
     """If `gh` isn't on PATH, every tool returns a graceful error."""
-    monkeypatch.setattr(jarvis_github, "_gh_path", lambda: None)
+    monkeypatch.setattr(tools.github, "_gh_path", lambda: None)
     import asyncio
-    fn = jarvis_github.github_list_prs._func
+    fn = tools.github.github_list_prs._func
     result = asyncio.run(fn(repo="", state="open", limit=5))
     assert "not installed" in result
 
 
 def test_invalid_state_rejected():
     import asyncio
-    fn = jarvis_github.github_list_prs._func
+    fn = tools.github.github_list_prs._func
     result = asyncio.run(fn(repo="", state="bogus", limit=5))
     assert "invalid state" in result.lower()
 
@@ -86,7 +86,7 @@ def test_live_list_prs_returns_string():
     """Live integration test — only runs when gh is authed. Just
     asserts the tool returns a non-error string from a real API call."""
     import asyncio
-    fn = jarvis_github.github_list_prs._func
+    fn = tools.github.github_list_prs._func
     result = asyncio.run(fn(repo="", state="open", limit=2))
     # Should NOT contain "(github error" — should either be an empty
     # response or a list.

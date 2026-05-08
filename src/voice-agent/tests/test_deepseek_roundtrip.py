@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import deepseek_roundtrip
+import sanitizers.deepseek_roundtrip as deepseek_roundtrip
 
 
 @pytest.fixture(autouse=True)

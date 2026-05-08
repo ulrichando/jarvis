@@ -15,15 +15,19 @@ import { AboutSection } from "@/components/settings/about";
 import { JarvisInChromeSection } from "@/components/settings/jarvis-in-chrome";
 import { VoiceAndModelsSection } from "@/components/settings/voice-and-models";
 import { MemoriesSection } from "@/components/settings/memories";
+import { KnowledgeSection } from "@/components/settings/knowledge";
+import { SkillsSection } from "@/components/settings/skills";
 
 type Section =
   | "general"
   | "account"
+  | "applications"
+  | "knowledge"
+  | "skills"
   | "privacy"
   | "usage"
   | "capabilities"
   | "connectors"
-  | "integrations"
   | "providers"
   | "voice-and-models"
   | "memories"
@@ -34,14 +38,16 @@ type Section =
 const NAV: Array<{ id: Section; label: string }> = [
   { id: "general", label: "General" },
   { id: "account", label: "Account" },
-  { id: "privacy", label: "Privacy" },
-  { id: "usage", label: "Usage" },
-  { id: "capabilities", label: "Capabilities" },
-  { id: "connectors", label: "Connectors" },
-  { id: "integrations", label: "Integrations" },
+  { id: "applications", label: "Applications" },
+  { id: "knowledge", label: "Knowledge" },
+  { id: "skills", label: "Skills" },
+  { id: "connectors", label: "Connectors (MCP)" },
   { id: "providers", label: "Providers" },
   { id: "voice-and-models", label: "Voice & Models" },
   { id: "memories", label: "Memories" },
+  { id: "capabilities", label: "Capabilities" },
+  { id: "usage", label: "Usage" },
+  { id: "privacy", label: "Privacy" },
   { id: "data", label: "Data" },
   { id: "about", label: "About" },
   { id: "jarvis-in-chrome", label: "Jarvis in Chrome" },
@@ -81,11 +87,13 @@ export default function SettingsPage() {
         <div className="mx-auto max-w-2xl px-8 py-8">
           {section === "general" && <GeneralSection />}
           {section === "account" && <AccountSection />}
+          {section === "applications" && <IntegrationsSection />}
+          {section === "knowledge" && <KnowledgeSection />}
+          {section === "skills" && <SkillsSection />}
           {section === "privacy" && <PrivacySection />}
           {section === "usage" && <UsageSection />}
           {section === "capabilities" && <CapabilitiesSection />}
           {section === "connectors" && <ConnectorsSection />}
-          {section === "integrations" && <IntegrationsSection />}
           {section === "providers" && <ProvidersSection />}
           {section === "voice-and-models" && <VoiceAndModelsSection />}
           {section === "memories" && <MemoriesSection />}

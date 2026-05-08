@@ -1,26 +1,136 @@
 import { NextResponse } from "next/server";
-import { getWorkspace, deleteWorkspace, renameWorkspace } from "@/lib/workspace/storage";
+import {
+  getWorkspace,
+  deleteWorkspace,
+  renameWorkspace,
+  updateWorkspaceMeta,
+  maskEnvVars,
+  type Workspace,
+} from "@/lib/workspace/storage";
 import { destroyRuntime, dockerStatus } from "@/lib/workspace/docker";
 
 export const runtime = "nodejs";
 
-export async function GET(_req: Request, ctx: RouteContext<"/api/workspace/[id]">) {
+// Strip secret-class env values out of GET responses by default.
+// The Settings UI explicitly opts in to revealing a value via
+// `?revealEnv=KEY` so the rest of the network never sees the
+// plaintext key/token/dsn unless the operator clicked "reveal".
+function publicShape(ws: Workspace, revealEnvKeys?: string[]) {
+  const { envVars, ...rest } = ws;
+  const masked = maskEnvVars(envVars);
+  if (revealEnvKeys && envVars) {
+    for (const k of revealEnvKeys) {
+      if (k in envVars) masked[k] = { value: envVars[k], masked: false };
+    }
+  }
+  return { ...rest, envVars: masked };
+}
+
+export async function GET(req: Request, ctx: RouteContext<"/api/workspace/[id]">) {
   const { id } = await ctx.params;
   const ws = await getWorkspace(id);
   if (!ws) return NextResponse.json({ error: "not_found" }, { status: 404 });
-  return NextResponse.json({ workspace: ws });
+  const url = new URL(req.url);
+  const reveal = url.searchParams.getAll("revealEnv");
+  return NextResponse.json({ workspace: publicShape(ws, reveal) });
 }
 
 export async function PATCH(req: Request, ctx: RouteContext<"/api/workspace/[id]">) {
   const { id } = await ctx.params;
-  const body = (await req.json().catch(() => ({}))) as { name?: unknown };
-  const name = typeof body.name === "string" ? body.name : "";
-  if (!name.trim() || name.length > 80) {
-    return NextResponse.json({ error: "invalid name" }, { status: 400 });
+  const body = (await req.json().catch(() => ({}))) as {
+    name?: unknown;
+    customInstructions?: unknown;
+    envVars?: unknown;
+    devCommand?: unknown;
+    deploy?: unknown;
+    auth?: unknown;
+  };
+
+  // Name (legacy single-field rename — kept for back-compat).
+  if (typeof body.name === "string") {
+    const name = body.name;
+    if (!name.trim() || name.length > 80) {
+      return NextResponse.json({ error: "invalid name" }, { status: 400 });
+    }
+    const renamed = await renameWorkspace(id, name);
+    if (!renamed) return NextResponse.json({ error: "not_found" }, { status: 404 });
+    // If the request ONLY contained name, return early.
+    const otherKeys = ["customInstructions", "envVars", "devCommand", "deploy", "auth"] as const;
+    if (otherKeys.every((k) => body[k] === undefined)) {
+      return NextResponse.json({ workspace: publicShape(renamed) });
+    }
   }
-  const ws = await renameWorkspace(id, name);
+
+  // Other fields — validated inside updateWorkspaceMeta.
+  const patch: Parameters<typeof updateWorkspaceMeta>[1] = {};
+  if (typeof body.customInstructions === "string") {
+    patch.customInstructions = body.customInstructions;
+  }
+  if (
+    body.envVars &&
+    typeof body.envVars === "object" &&
+    !Array.isArray(body.envVars)
+  ) {
+    patch.envVars = body.envVars as Record<string, string>;
+  }
+  if (typeof body.devCommand === "string") {
+    patch.devCommand = body.devCommand;
+  }
+  if (
+    body.deploy &&
+    typeof body.deploy === "object" &&
+    !Array.isArray(body.deploy)
+  ) {
+    const d = body.deploy as Record<string, unknown>;
+    if (d.provider === "vercel") {
+      patch.deploy = {
+        provider: "vercel",
+        teamId:
+          typeof d.teamId === "string" && d.teamId ? d.teamId : undefined,
+        projectId:
+          typeof d.projectId === "string" && d.projectId
+            ? d.projectId
+            : undefined,
+        projectName:
+          typeof d.projectName === "string" && d.projectName
+            ? d.projectName
+            : undefined,
+      };
+    }
+  }
+  if (
+    body.auth &&
+    typeof body.auth === "object" &&
+    !Array.isArray(body.auth)
+  ) {
+    const a = body.auth as Record<string, unknown>;
+    patch.auth = {
+      providers: Array.isArray(a.providers)
+        ? (a.providers.filter((p) => typeof p === "string") as Array<
+            "credentials" | "magic-link" | "google" | "github"
+          >)
+        : [],
+      sessionMins:
+        typeof a.sessionMins === "number" ? a.sessionMins : 1440,
+      cookieSecure: !!a.cookieSecure,
+      cookieSameSite:
+        a.cookieSameSite === "strict" ||
+        a.cookieSameSite === "none" ||
+        a.cookieSameSite === "lax"
+          ? a.cookieSameSite
+          : "lax",
+    };
+  }
+  if (Object.keys(patch).length > 0) {
+    const updated = await updateWorkspaceMeta(id, patch);
+    if (!updated) return NextResponse.json({ error: "not_found" }, { status: 404 });
+    return NextResponse.json({ workspace: publicShape(updated) });
+  }
+
+  // No-op — nothing to update.
+  const ws = await getWorkspace(id);
   if (!ws) return NextResponse.json({ error: "not_found" }, { status: 404 });
-  return NextResponse.json({ workspace: ws });
+  return NextResponse.json({ workspace: publicShape(ws) });
 }
 
 export async function DELETE(_req: Request, ctx: RouteContext<"/api/workspace/[id]">) {

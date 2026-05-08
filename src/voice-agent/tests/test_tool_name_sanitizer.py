@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from tool_name_sanitizer import _try_recover
+from sanitizers.tool_name import _try_recover
 
 
 # Real error message captured live (Groq qwen3-32b, 2026-04-29):
@@ -126,7 +126,7 @@ def test_does_not_recover_blank_tool_list():
 def test_tool_takes_context_via_param_name():
     """A function with a `context` parameter should be flagged as
     needing RunContext — sanitizer can't recover those inline."""
-    from tool_name_sanitizer import _tool_takes_context
+    from sanitizers.tool_name import _tool_takes_context
 
     async def needs_context(context, request: str) -> str:
         return f"got {request}"
@@ -141,7 +141,7 @@ def test_tool_takes_context_via_param_name():
 def test_tool_takes_context_via_annotation():
     """If the parameter is named differently but typed RunContext,
     we should still detect it."""
-    from tool_name_sanitizer import _tool_takes_context
+    from sanitizers.tool_name import _tool_takes_context
 
     # Use a string annotation since we don't import RunContext here
     async def needs_typed(c: "RunContext", request: str) -> str:
@@ -158,7 +158,7 @@ def test_tool_takes_context_via_annotation():
 
 def test_tool_no_context_returns_false():
     """get_location-style tool (no args, no context) — recoverable inline."""
-    from tool_name_sanitizer import _tool_takes_context
+    from sanitizers.tool_name import _tool_takes_context
 
     async def free_func() -> str:
         return "ok"
@@ -170,30 +170,95 @@ def test_tool_no_context_returns_false():
 
 
 def test_format_result_string_passthrough():
-    from tool_name_sanitizer import _format_result
+    from sanitizers.tool_name import _format_result
     assert _format_result("Columbus, Ohio") == "Columbus, Ohio"
 
 
 def test_format_result_tuple_extracts_string():
     """Specialist transfer tools return (Agent, str). Use the str."""
-    from tool_name_sanitizer import _format_result
+    from sanitizers.tool_name import _format_result
 
     class FakeAgent: pass
     assert _format_result((FakeAgent(), "On it.")) == "On it."
 
 
 def test_format_result_dict_picks_message_field():
-    from tool_name_sanitizer import _format_result
+    from sanitizers.tool_name import _format_result
     out = _format_result({"message": "Got it.", "status": "ok"})
     assert out == "Got it."
 
 
 def test_format_result_dict_with_no_known_field_serializes():
-    from tool_name_sanitizer import _format_result
+    from sanitizers.tool_name import _format_result
     out = _format_result({"foo": "bar"})
     assert "foo" in out and "bar" in out
 
 
 def test_format_result_falls_back_to_str():
-    from tool_name_sanitizer import _format_result
+    from sanitizers.tool_name import _format_result
     assert _format_result(42) == "42"
+
+
+# ── W-014: inline-execute path now re-emits as FunctionToolCall ──────
+
+
+def test_inline_recovery_emits_function_tool_call_not_content():
+    """W-014 (2026-05-05): the previous inline-execute path called the
+    tool's underlying function and emitted the result as
+    `role: "assistant", content: <result>`. Two failure modes:
+      1. TTS read the dict repr aloud when the tool returned structured
+         data — live-observed with ext_navigate's page-headings dict.
+      2. LLM saw the result as `role: "assistant"`, never as
+         `role: "tool"`, so the next inference didn't know a tool had
+         returned and re-attempted the same call (loop).
+
+    The fix: re-emit the recovered call as a proper FunctionToolCall
+    chunk and let the framework's dispatch loop run it. This test pins
+    the *source-level* invariants so a future "optimize by going
+    inline again" can't silently regress without removing the
+    documented patterns. A live-integration test would need the full
+    livekit streaming machinery; the source-level invariant is durable
+    and order-independent.
+    """
+    import inspect
+    import sanitizers.tool_name as tool_name_sanitizer
+
+    src = inspect.getsource(tool_name_sanitizer)
+
+    # Bad pattern 1: emit a content chunk in the recovery branch.
+    assert "Emit ONE chunk with plain content" not in src, (
+        "the inline-execute path's content-emit pattern is back; this "
+        "regresses to W-014 (TTS-of-dict + LLM loop)."
+    )
+
+    # Bad pattern 2: call the tool inline.
+    assert "result = tool(**kwargs)" not in src, (
+        "the sanitizer is calling tool(**kwargs) inline again — that "
+        "regresses to W-014. The framework's dispatch loop must run "
+        "the tool, not the sanitizer."
+    )
+
+    # Good pattern: re-emit as FunctionToolCall.
+    assert "FunctionToolCall(" in src, (
+        "no FunctionToolCall re-emit in the sanitizer — recovery is "
+        "broken (or executing inline, which has W-014 failure modes)."
+    )
+    assert "tool_calls=[tool_call]" in src, (
+        "recovery chunk must set tool_calls (so framework dispatches), "
+        "not content (which TTS reads aloud)."
+    )
+
+    # Defensive: rationale comment must be present so the next
+    # maintainer reading the file understands why it's structured this
+    # way and doesn't "optimize" back to inline-execute.
+    src_l = src.lower()
+    assert (
+        "let framework dispatch" in src_l
+        or "framework's dispatch" in src_l
+        or "framework's normal tool-dispatch" in src_l
+        or "framework's tool-dispatch loop" in src_l
+    ), (
+        "the recovery code must comment the 'let framework dispatch' "
+        "rationale — without it a future maintainer rebuilds the "
+        "inline-execute path and reintroduces W-014."
+    )

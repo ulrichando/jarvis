@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any
 
 from livekit.agents import Agent, RunContext, function_tool
@@ -21,6 +22,42 @@ from livekit.agents.llm import ChatContext, FunctionCall
 from .registry import SpecialistSpec
 
 logger = logging.getLogger("jarvis-agent.specialist")
+
+# Bailout-phrase allowlist for the no-real-tool gate. When a specialist
+# is wrongly routed (e.g. supervisor handed it conversational input
+# that isn't a desktop/browser action), the spec instructions say
+# "call task_done IMMEDIATELY with 'user changed topic'" — but the
+# gate would otherwise refuse because no real tool fired this handoff.
+#
+# This regex matches summaries that DISCLAIM work was done. It must
+# stay narrow so a confabulated "Done — new tab is open" can never
+# slip through. Each pattern must be an exclusionary phrase ("not",
+# "wrong", "needs", "user changed", "cannot") — never a completion
+# claim.
+#
+# Live-captured 2026-05-07 02:11–02:13: 11 REFUSED task_done warnings
+# in 2 minutes for "user located laundry basket" / "user appears to be
+# describing X" / "user appears to be requesting mute" — supervisor
+# was routing conversational input ("Jarvis, mute" / "I love you,
+# dear" / "double") to the desktop specialist. The specialist tried
+# to bail honestly per its Rule 3, the gate refused, the LLM then
+# produced "I'm here to assist with desktop-related tasks" boilerplate
+# which got voiced. Allow the bailout to actually happen.
+_BAILOUT_SUMMARY_RE = re.compile(
+    r"""(?ix)
+    \b(?:
+        user\s+(?:changed|switched)\s+topic
+      | (?:not|isn'?t|is\s+not)\s+(?:a\s+)?(?:desktop|browser|relevant|valid)
+      | wrong\s+specialist
+      | needs?\s+(?:the\s+)?(?:browser|desktop|planner|supervisor)\s+specialist
+      | cannot\s+(?:accomplish|act\s+on|handle)
+      | nothing\s+to\s+(?:do|act\s+on)
+      | no\s+(?:desktop|browser)\s+(?:action|tool)
+      | handing\s+back\s+to\s+(?:the\s+)?supervisor
+      | not\s+a\s+request\s+I\s+can\s+act\s+on
+    )
+    """
+)
 
 
 class RegistrySpecialist(Agent):
@@ -100,26 +137,43 @@ class RegistrySpecialist(Agent):
                     if isinstance(it, FunctionCall) and it.name != "task_done"
                 ]
                 if not real_calls:
-                    logger.warning(
-                        f"[specialist:{self._spec.name}] task_done REFUSED — "
-                        f"no real tool call this handoff "
-                        f"(items_since={len(since_handoff)}). "
-                        f"Summary attempted: {summary[:120]!r}"
-                    )
-                    # Stay on the specialist; the corrective string is
-                    # returned as the tool result the LLM will read
-                    # next. Phrased to be unambiguous: which tool to
-                    # try first matters less than NOT returning to
-                    # task_done with another guess.
-                    return (
-                        self,
-                        "REFUSED: task_done called without first executing "
-                        "any real tool. Per your instructions you MUST call "
-                        "an ext_*/web_search tool that does real work BEFORE "
-                        "task_done. Do not retry task_done — pick the right "
-                        "tool for the user's request and call it now. If you "
-                        "are unsure, call ext_screenshot() to see the screen.",
-                    )
+                    # Bailout-phrase allowlist: when the supervisor wrongly
+                    # routed conversational/unclear input here, the spec's
+                    # Rule 3 says bail with task_done immediately. Honor
+                    # that path — but only for explicit disclaimer phrases
+                    # that can't double as a confabulated success claim.
+                    if _BAILOUT_SUMMARY_RE.search(summary or ""):
+                        logger.info(
+                            f"[specialist:{self._spec.name}] task_done bailout "
+                            f"(no tool fired, allowed): {summary[:120]!r}"
+                        )
+                        # Fall through to the normal handoff below.
+                    else:
+                        logger.warning(
+                            f"[specialist:{self._spec.name}] task_done REFUSED — "
+                            f"no real tool call this handoff "
+                            f"(items_since={len(since_handoff)}). "
+                            f"Summary attempted: {summary[:120]!r}"
+                        )
+                        # Stay on the specialist; the corrective string is
+                        # returned as the tool result the LLM will read
+                        # next. Phrased to be unambiguous: which tool to
+                        # try first matters less than NOT returning to
+                        # task_done with another guess.
+                        return (
+                            self,
+                            "REFUSED: task_done called without first executing "
+                            "any real tool, AND your summary doesn't match an "
+                            "allowed bailout phrase. Either: (a) call the right "
+                            "tool for the user's request and then task_done with "
+                            "a result-based summary, OR (b) if the request truly "
+                            "isn't yours to handle, call task_done with one of "
+                            "these exact bailout phrases: 'user changed topic', "
+                            "'not a desktop task', 'not a browser task', 'wrong "
+                            "specialist — needs the X specialist', 'cannot "
+                            "accomplish with these tools — handing back to "
+                            "supervisor'. Do not retry with a generic summary.",
+                        )
             except Exception as e:
                 # Soft-fail: never let the gate itself block a real
                 # task_done. Better to let one confab through than to

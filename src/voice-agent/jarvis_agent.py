@@ -6991,6 +6991,32 @@ class JarvisAgent(Agent):
                 # invoke the LLM with the bare-vocative as it would have
                 # before this fast path existed.
 
+        # Phase 3 (Task 12 consumer) — forward the forced tool_choice that
+        # _on_user_input_for_dispatch set on this turn into the LiveKit
+        # activity so the upcoming _generate_reply call picks it up.
+        # _on_user_input_for_dispatch already runs before on_user_turn_completed
+        # (user_input_transcribed fires on final STT; on_user_turn_completed runs
+        # at end-of-turn after STT completes), so _jarvis_force_tool_choice is
+        # already set/reset by the time we reach here.
+        #
+        # We write to session._activity._tool_choice via update_options() — the
+        # same field that agent_activity.py:_generate_reply reads at line 2028.
+        # This is the only path that leads to _generate_reply; all other exits
+        # above raise StopResponse (no LLM call, no update needed).
+        try:
+            _forced_tc = getattr(session, "_jarvis_force_tool_choice", None)
+            _activity = getattr(session, "_activity", None)
+            if _activity is not None:
+                _activity.update_options(tool_choice=_forced_tc)
+                if _forced_tc is not None:
+                    logger.info(
+                        "[recall-route] tool_choice forwarded to activity: "
+                        f"{_forced_tc!r}"
+                    )
+        except Exception as _tc_err:
+            # Never block the LLM call for a tool_choice wiring failure.
+            logger.debug(f"[recall-route] update_options failed: {_tc_err}")
+
         # Not silent, not a mute trigger, passed quiet-hours gate → LLM.
         return
 

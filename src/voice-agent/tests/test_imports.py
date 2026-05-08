@@ -19,18 +19,18 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 @pytest.mark.parametrize("mod", [
     "jarvis_agent",
-    "deepseek_roundtrip",
-    "tool_name_sanitizer",
-    "acoustic_tap",
-    "turn_router",
-    "turn_telemetry",
-    "turn_graph",
-    "dispatching_llm",
-    "dispatching_tts",
-    "edge_tts_plugin",
-    "jarvis_computer_use",
-    "jarvis_browser",
-    "jarvis_browser_ext",
+    "sanitizers.deepseek_roundtrip",
+    "sanitizers.tool_name",
+    "taps.acoustic",
+    "pipeline.turn_router",
+    "pipeline.turn_telemetry",
+    "pipeline.turn_graph",
+    "pipeline.dispatching_llm",
+    "pipeline.dispatching_tts",
+    "tts.edge",
+    "tools.computer_use",
+    "tools.browser",
+    "tools.browser_ext",
     "specialists",
     "specialists.registry",
     "specialists.agent",
@@ -53,8 +53,8 @@ def test_critical_patches_install_idempotently():
     """install() functions must be re-callable. The agent's entrypoint
     runs in a forked worker subprocess and re-imports modules; the
     second install() must not double-wrap or otherwise misbehave."""
-    import deepseek_roundtrip
-    import tool_name_sanitizer
+    import sanitizers.deepseek_roundtrip as deepseek_roundtrip
+    import sanitizers.tool_name as tool_name_sanitizer
 
     deepseek_roundtrip.install()
     deepseek_roundtrip.install()  # second call must be no-op

@@ -44,7 +44,7 @@ Rules:
 def _validator_tools() -> list:
     """Lazy import — keeps the Groq client out of the registry-import
     path. `task_done` is auto-attached by the framework."""
-    from jarvis_validator import validate_outcome
+    from tools.validator import validate_outcome
     return [validate_outcome]
 
 
@@ -63,7 +63,7 @@ def register_validator() -> None:
     """Register the validator subagent. Auto-disables when GROQ key
     missing (validator can't run without it)."""
     try:
-        from jarvis_validator import is_available
+        from tools.validator import is_available
         enabled = is_available()
     except Exception:
         enabled = False

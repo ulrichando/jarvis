@@ -1,8 +1,13 @@
 """End-to-end V2 path with mocked LLMs + real blackboard (Redis).
 
-This exercises the full graph flow: classify → speculative → dispatch
-→ specialist → tool result → blackboard write → grounding gate
-release. Uses a real Redis with a unique prefix; cleans up after."""
+This exercises the full graph flow: classify → dispatch → specialist
+→ tool result → blackboard write → grounding gate release. Uses a
+real Redis with a unique prefix; cleans up after.
+
+Note: an earlier draft of this docstring listed `speculative` as a
+node between classify and dispatch. That node was removed in commit
+feb681d4 ("speculative: remove dead code — defer to Phase 2"); the
+graph now goes classify → dispatch directly."""
 import os
 import sys
 import time

@@ -272,3 +272,136 @@ def test_pydantic_style_with_tool_use_block():
         "Chrome opened, sir.", prior_messages=prior,
     )
     assert not is_confab
+
+
+# ── 2026-05-06 specialist-handoff false-positive fix ────────────────
+
+
+def test_transfer_to_browser_handoff_counts_as_evidence():
+    """2026-05-06 turn 1110 (live-captured): browser specialist
+    truthfully said 'I have opened a new tab' after firing
+    ext_new_tab via the bridge. Bridge confirmed the tab was
+    created. But the supervisor's session.history doesn't include
+    the specialist's internal tool calls — only the supervisor's
+    own `transfer_to_browser` tool call. Pre-fix the detector
+    flagged the truthful statement as confab and dropped it from
+    chat_ctx, leaving a hole that confused future turns.
+
+    Fix: treat `transfer_to_*` / `delegate` handoff calls as tool
+    evidence. The handoff itself proves the specialist had a chance
+    to do real work; we don't have visibility into the specialist's
+    own ChatContext from this code path."""
+    prior = [
+        _user_msg("open a new tab"),
+        SimpleNamespace(
+            role="assistant",
+            content=[],
+            tool_calls=[SimpleNamespace(name="transfer_to_browser")],
+        ),
+    ]
+    is_confab, reason = confab_detector.looks_like_confabulation(
+        "I have opened a new tab on your browser. A new tab is now open.",
+        prior_messages=prior,
+    )
+    assert not is_confab, (
+        f"transfer_to_browser handoff should count as tool evidence; "
+        f"detector flagged: {reason!r}"
+    )
+
+
+def test_delegate_handoff_counts_as_evidence():
+    """`delegate(role, task)` is the new-style handoff. Same principle."""
+    prior = [
+        _user_msg("post on twitter"),
+        SimpleNamespace(
+            role="assistant",
+            content=[],
+            tool_calls=[SimpleNamespace(name="delegate")],
+        ),
+    ]
+    is_confab, _ = confab_detector.looks_like_confabulation(
+        "Posted, sir.", prior_messages=prior,
+    )
+    assert not is_confab
+
+
+def test_lookback_widened_to_10_messages():
+    """Pre-fix: only last 3 messages were checked, so a tool call
+    earlier in the window would be missed once a few text-only turns
+    piled on top. Post-fix: 10 messages."""
+    # 5 fillers, then tool call, then 4 fillers. Tool call is 5 back
+    # from the message being checked — outside the old 3-msg window.
+    prior = (
+        [_user_msg(f"chitchat {i}") for i in range(5)]
+        + [SimpleNamespace(
+            role="assistant",
+            content=[],
+            tool_calls=[SimpleNamespace(name="ext_new_tab")],
+        )]
+        + [_assistant_text(f"chat {i}") for i in range(4)]
+    )
+    is_confab, _ = confab_detector.looks_like_confabulation(
+        "I have opened a new tab on your browser.", prior_messages=prior,
+    )
+    assert not is_confab, "10-msg lookback should catch tool call 5-back"
+
+    # Negative: tool call beyond 10-msg window → flagged as confab.
+    prior_far = (
+        [_user_msg(f"old {i}") for i in range(5)]
+        + [SimpleNamespace(
+            role="assistant",
+            content=[],
+            tool_calls=[SimpleNamespace(name="ext_new_tab")],
+        )]
+        + [_assistant_text(f"newer {i}") for i in range(11)]
+    )
+    is_confab_far, _ = confab_detector.looks_like_confabulation(
+        "I have opened a new tab on your browser.", prior_messages=prior_far,
+    )
+    assert is_confab_far, (
+        "tool call >10 messages back should not count — too stale"
+    )
+
+
+def test_function_call_item_counts_as_evidence():
+    """LiveKit's ChatContext FunctionCall items expose `name` +
+    `arguments` + `call_id` at the top level (no role/content list)."""
+    prior = [
+        _user_msg("take a screenshot"),
+        SimpleNamespace(
+            name="ext_screenshot",
+            arguments="{}",
+            call_id="call_abc123",
+        ),
+    ]
+    is_confab, _ = confab_detector.looks_like_confabulation(
+        "Screenshot taken, sir.", prior_messages=prior,
+    )
+    assert not is_confab
+
+
+def test_function_call_output_item_counts_as_evidence():
+    """FunctionCallOutput items expose `output` + `call_id`."""
+    prior = [
+        _user_msg("take a screenshot"),
+        SimpleNamespace(
+            output="screenshot saved to /tmp/x.png",
+            call_id="call_abc123",
+        ),
+    ]
+    is_confab, _ = confab_detector.looks_like_confabulation(
+        "Screenshot taken, sir.", prior_messages=prior,
+    )
+    assert not is_confab
+
+
+def test_text_only_assistant_doesnt_count_as_evidence():
+    """Negative — random text-only assistant message ≠ tool evidence."""
+    prior = [
+        _user_msg("did you do anything"),
+        SimpleNamespace(role="assistant", content=["I did, sir."]),
+    ]
+    is_confab, _ = confab_detector.looks_like_confabulation(
+        "I have opened a new tab on your browser.", prior_messages=prior,
+    )
+    assert is_confab, "text-only assistant turn must not satisfy evidence"

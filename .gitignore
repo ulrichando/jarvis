@@ -82,6 +82,14 @@ jarvis-cli/
 .superpowers/
 .worktrees/
 .gstack/
+.pytest_cache/
+.remember/
+
+# Claude Code — personal overrides stay local
+CLAUDE.local.md
+.claude/CLAUDE.local.md
+.claude/settings.local.json
+**/*.local.md
 
 # Secrets — every tracked .env was leaking credentials in commit
 # history. Untracking on 2026-05-01. Example files stay tracked.

@@ -32,6 +32,56 @@ export type Workspace = {
    *  in localStorage which empties when the user clears site data or
    *  opens the workspace from another device. */
   conversationId?: string;
+  /** Workspace-scoped system-prompt addendum. Same role as Cursor's
+   *  `.cursorrules` or Claude Code's `CLAUDE.md` — gets appended to
+   *  the system prompt for every chat turn in this workspace. Stays
+   *  small (we trim at 8K chars on save) so it doesn't dominate the
+   *  context window. */
+  customInstructions?: string;
+  /** Workspace-scoped environment variables — exposed to the sandbox
+   *  on container start. Keys are uppercased on save; values are
+   *  stored as-is. SECRET-CLASS values (anything looking like a key,
+   *  token, password, dsn) get masked in API responses by default;
+   *  the editor must opt in to "reveal" to see them. */
+  envVars?: Record<string, string>;
+  /** Override for the dev-server start command. When set, replaces
+   *  the default `bun run dev`. Must bind 0.0.0.0:5173 — the
+   *  workbench container only exposes that port to the host. */
+  devCommand?: string;
+  /** Deploy target configuration. Currently Vercel-only; expanding to
+   *  Netlify / Cloudflare Pages / Fly is a `provider` switch + a new
+   *  adapter under lib/deploy/. The token itself is NOT stored here —
+   *  it lives in envVars (as VERCEL_TOKEN) so the secret-masking
+   *  pipeline applies the same way it does to runtime env vars. */
+  deploy?: {
+    provider: "vercel";
+    /** Vercel team scope. Optional — null/undefined uses the personal
+     *  account associated with VERCEL_TOKEN. */
+    teamId?: string;
+    /** Vercel project ID (vc_xxx). Created lazily on the first deploy
+     *  if absent. Stable across deploys for the same workspace. */
+    projectId?: string;
+    /** Vercel project NAME — what shows up in the dashboard. Defaults
+     *  to the workspace name on first create; user can override. */
+    projectName?: string;
+    /** Latest deployment ID + URL, cached so the UI doesn't have to
+     *  hit the API on every render. */
+    latestDeploymentId?: string;
+    productionUrl?: string;
+  };
+  /** Authentication config for the deployed app. The "Scaffold Auth"
+   *  button writes next-auth boilerplate based on this — it's a config
+   *  store, not the live auth layer. */
+  auth?: {
+    providers: Array<"credentials" | "magic-link" | "google" | "github">;
+    sessionMins: number;
+    cookieSecure: boolean;
+    cookieSameSite: "lax" | "strict" | "none";
+    /** Set true after the scaffold endpoint has written next-auth files
+     *  to the workspace; the UI uses this to label "Scaffolded" vs
+     *  "Configure". */
+    scaffolded?: boolean;
+  };
 };
 
 type Meta = { workspaces: Workspace[] };
@@ -142,6 +192,126 @@ export async function renameWorkspace(id: string, name: string): Promise<Workspa
   ws.updatedAt = Date.now();
   await saveMeta(meta);
   return ws;
+}
+
+/**
+ * Generic workspace-meta updater. Accepts a partial patch + applies
+ * field-level validation: customInstructions trims to 8K, envVars
+ * uppercases keys, devCommand trims. Returns the updated workspace
+ * or null if not found.
+ */
+export async function updateWorkspaceMeta(
+  id: string,
+  patch: {
+    customInstructions?: string;
+    envVars?: Record<string, string>;
+    devCommand?: string;
+    deploy?: Workspace["deploy"];
+    auth?: Workspace["auth"];
+  },
+): Promise<Workspace | null> {
+  const meta = await loadMeta();
+  const ws = meta.workspaces.find((w) => w.id === id);
+  if (!ws) return null;
+  if (typeof patch.customInstructions === "string") {
+    const trimmed = patch.customInstructions.slice(0, 8192);
+    ws.customInstructions = trimmed.length > 0 ? trimmed : undefined;
+  }
+  if (patch.envVars && typeof patch.envVars === "object") {
+    const next: Record<string, string> = {};
+    for (const [k, v] of Object.entries(patch.envVars)) {
+      const key = String(k).trim().toUpperCase();
+      // Reject empty keys + keys with shell-unsafe chars (newlines,
+      // equals, quotes). Docker --env doesn't permit them either.
+      if (!key || !/^[A-Z_][A-Z0-9_]*$/.test(key)) continue;
+      const val = String(v ?? "");
+      if (val.length > 4096) continue;
+      next[key] = val;
+    }
+    ws.envVars = Object.keys(next).length > 0 ? next : undefined;
+  }
+  if (typeof patch.devCommand === "string") {
+    const cmd = patch.devCommand.trim().slice(0, 512);
+    ws.devCommand = cmd.length > 0 ? cmd : undefined;
+  }
+  if (patch.deploy !== undefined) {
+    // Caller can pass null to clear, or a partial to merge. Validate
+    // provider explicitly so a typo doesn't poison the meta.
+    if (patch.deploy === null) {
+      ws.deploy = undefined;
+    } else if (patch.deploy.provider === "vercel") {
+      ws.deploy = {
+        ...(ws.deploy ?? {}),
+        ...patch.deploy,
+        provider: "vercel",
+      };
+    }
+  }
+  if (patch.auth !== undefined) {
+    if (patch.auth === null) {
+      ws.auth = undefined;
+    } else {
+      // Validate provider list — drop any unknown values silently.
+      const validProviders: Array<
+        "credentials" | "magic-link" | "google" | "github"
+      > = ["credentials", "magic-link", "google", "github"];
+      const providers = Array.isArray(patch.auth.providers)
+        ? patch.auth.providers.filter((p) =>
+            validProviders.includes(p),
+          )
+        : ws.auth?.providers ?? [];
+      const sessionMins = Number.isFinite(patch.auth.sessionMins)
+        ? Math.max(5, Math.min(43200, Math.floor(patch.auth.sessionMins)))
+        : ws.auth?.sessionMins ?? 1440;
+      const cookieSameSite =
+        patch.auth.cookieSameSite === "strict" ||
+        patch.auth.cookieSameSite === "none" ||
+        patch.auth.cookieSameSite === "lax"
+          ? patch.auth.cookieSameSite
+          : ws.auth?.cookieSameSite ?? "lax";
+      ws.auth = {
+        providers,
+        sessionMins,
+        cookieSecure: !!patch.auth.cookieSecure,
+        cookieSameSite,
+        scaffolded: patch.auth.scaffolded ?? ws.auth?.scaffolded,
+      };
+    }
+  }
+  ws.updatedAt = Date.now();
+  await saveMeta(meta);
+  return ws;
+}
+
+// Heuristic: which env-var values should be masked in API responses.
+// Anything containing a JWT-ish blob, a hex >32 chars, or matching a
+// common secret key name. Conservative — when in doubt, mask.
+const SECRET_KEY_PATTERN =
+  /(KEY|TOKEN|SECRET|PASSWORD|PWD|API|DSN|URL|CONNECTION)$/;
+
+export function isLikelySecret(key: string, value: string): boolean {
+  if (SECRET_KEY_PATTERN.test(key)) return true;
+  if (/^[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}$/.test(value))
+    return true;
+  if (/^[a-fA-F0-9]{32,}$/.test(value)) return true;
+  if (/^[A-Z][A-Z0-9_]+:\/\//.test(value) && value.includes("@"))
+    return true; // postgres://user:pw@host
+  return false;
+}
+
+export function maskEnvVars(
+  envVars: Record<string, string> | undefined,
+): Record<string, { value: string; masked: boolean }> {
+  if (!envVars) return {};
+  const out: Record<string, { value: string; masked: boolean }> = {};
+  for (const [k, v] of Object.entries(envVars)) {
+    const masked = isLikelySecret(k, v);
+    out[k] = {
+      value: masked ? "••••••••" : v,
+      masked,
+    };
+  }
+  return out;
 }
 
 export async function deleteWorkspace(id: string) {

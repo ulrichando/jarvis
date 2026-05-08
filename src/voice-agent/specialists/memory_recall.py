@@ -33,7 +33,7 @@ Rules:
 def _memory_recall_tools() -> list:
     """Lazy import — avoids the SQLite connection setup at registry-
     load time. `task_done` is auto-attached."""
-    from jarvis_memory_recall import recall
+    from tools.memory_recall import recall
     return [recall]
 
 
@@ -52,7 +52,7 @@ def register_memory_recall() -> None:
     """Register the memory-recall subagent. Auto-disables if the
     conversations DB hasn't been created (first-run scenario)."""
     try:
-        from jarvis_memory_recall import is_available
+        from tools.memory_recall import is_available
         enabled = is_available()
     except Exception:
         enabled = False

@@ -158,6 +158,22 @@
   51%, 100% { opacity: 0.2; }
 }
 
+/* Workbench chat-panel floor — react-resizable-panels v4 controls
+   panel sizing via flex-basis on the OUTER wrapper, but the
+   `style`/`className` props on <Panel> land on an INNER div.
+   The only API for styling the outer wrapper is the `id` prop,
+   which gets set as the DOM id. Apply min-width here so the
+   chat panel can't be dragged below the threshold where the
+   composer toolbar (paperclip / model picker / workspace picker
+   / voice / send) starts squeezing icons to 0 width. 380px is
+   the floor used by the /design tab's chat column too. !important
+   needed because the lib's inline `min-width: 0` on the outer
+   wrapper has equal specificity and would otherwise win the
+   tiebreaker by source order. */
+#workbench-chat-panel {
+  min-width: 380px !important;
+}
+
 /* Reduced motion — honor the user's OS preference. We don't
    nuke transitions entirely (instant state-snaps disorient users
    too), we just shorten them to 0.01ms which is below the
