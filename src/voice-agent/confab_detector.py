@@ -82,6 +82,30 @@ _STRONG_CLAIMS = [
 ]
 
 
+# Save-claim shape detector. Used ONLY to gate the extraction-evidence
+# path: a successful auto-extractor write within the last 30 s grants
+# evidence credit to "saved/remembered/noted" replies, but NOT to
+# unrelated success claims that happen to land in the same window.
+# Without this gate, a confab like "Done, sir, opened a tab" 25 s after
+# a successful extraction would slip through the detector. See
+# `looks_like_confabulation` for where this is consulted.
+_SAVE_CLAIM_RE = re.compile(
+    r"\b(?:"
+    r"saved"                                         # "saved", "It's saved as..."
+    r"|noted"                                        # "Noted, sir."
+    r"|remember(?:ed|ing|s)?"                        # "Remembered.", "I'll remember..."
+    r"|i'?ll\s+remember"
+    r"|got\s+(?:it|that)"                            # "Got it." / "Got that down."
+    r"|added\s+(?:that\s+|it\s+|this\s+)?to\s+memory"
+    r"|stored\s+(?:that|it|this)"                    # "Stored that."
+    r"|(?:made|jotted|wrote|took)\s+(?:a\s+)?note"   # "Made a note."
+    r"|(?:keep|kept|keeping)\s+(?:that\s+|it\s+)?in\s+mind"
+    r"|filed\s+(?:that|it|this)\s+away"
+    r")\b",
+    re.I,
+)
+
+
 # Phrases that NEGATE a success claim. If any of these appear in the
 # text, the success patterns above are ignored (the LLM is explaining
 # why it can't do something, not claiming it did it).
@@ -122,6 +146,21 @@ def _name_implies_handoff(name: str) -> bool:
     if not name:
         return False
     return name.startswith("transfer_to_") or name == "delegate"
+
+
+def _has_recent_extraction_evidence() -> bool:
+    """True if the auto-memory extractor wrote a fact within the last
+    ~30s. Treated as tool-equivalent evidence so a "saved, sir" reply
+    from the supervisor isn't dropped while the extractor handled the
+    actual write off-band. Live capture 2026-05-08 13:18: two
+    consecutive "Lizzie saved" replies were dropped because the
+    supervisor never called remember() — extractor did it for us.
+    """
+    try:
+        from pipeline.memory_extractor import has_recent_extraction_evidence
+        return has_recent_extraction_evidence()
+    except Exception:
+        return False
 
 
 def _has_tool_evidence(prior_messages: list[Any]) -> bool:
@@ -230,6 +269,16 @@ def looks_like_confabulation(
 
     # Strong claim found. Now check for tool evidence.
     if prior_messages and _has_tool_evidence(prior_messages):
+        return False, ""
+
+    # Auto-extractor evidence path: treat a recent successful memory
+    # write as tool-equivalent evidence for "saved/remembered" claims.
+    # Without this, every memory turn voiced "saved, sir" gets dropped
+    # because the supervisor never calls remember() in the v2 design
+    # (extractor owns the write). Gated by _SAVE_CLAIM_RE so unrelated
+    # confabs ("Browser opened, sir.") landing in the 30 s window
+    # don't get free evidence credit just because the extractor fired.
+    if _SAVE_CLAIM_RE.search(text) and _has_recent_extraction_evidence():
         return False, ""
 
     # Strong claim AND no tool evidence → confabulation.
