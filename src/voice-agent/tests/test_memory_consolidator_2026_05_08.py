@@ -87,3 +87,38 @@ def test_parse_no_clusters_returns_empty():
     stores — should return [] cleanly, not raise."""
     from pipeline.memory_consolidator import parse_consolidator_output
     assert parse_consolidator_output('{"clusters": []}', {"a"}, "user") == []
+
+
+# ── Young-memory exclusion ───────────────────────────────────────────
+
+
+def test_filter_young_memories_excludes_recent():
+    from pipeline.memory_consolidator import _filter_young_memories
+    now_ms = int(time.time() * 1000)
+    rows = [
+        {"memory_id": "old", "created_ts": now_ms - 10 * 60 * 1000},  # 10 min
+        {"memory_id": "new", "created_ts": now_ms - 60 * 1000},       # 60 s
+    ]
+    kept = _filter_young_memories(rows, exclusion_seconds=300, now_ms=now_ms)
+    assert [r["memory_id"] for r in kept] == ["old"]
+
+
+def test_filter_young_memories_keeps_all_when_old_enough():
+    from pipeline.memory_consolidator import _filter_young_memories
+    now_ms = int(time.time() * 1000)
+    rows = [
+        {"memory_id": "a", "created_ts": now_ms - 600 * 1000},
+        {"memory_id": "b", "created_ts": now_ms - 1200 * 1000},
+    ]
+    kept = _filter_young_memories(rows, exclusion_seconds=300, now_ms=now_ms)
+    assert len(kept) == 2
+
+
+def test_filter_young_memories_handles_missing_created_ts():
+    """Defensive: a row missing created_ts is treated as 'unknown age'
+    and excluded (we don't risk merging something we can't time)."""
+    from pipeline.memory_consolidator import _filter_young_memories
+    now_ms = int(time.time() * 1000)
+    rows = [{"memory_id": "x"}]
+    kept = _filter_young_memories(rows, exclusion_seconds=300, now_ms=now_ms)
+    assert kept == []

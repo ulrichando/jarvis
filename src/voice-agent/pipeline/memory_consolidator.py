@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -101,3 +102,19 @@ def parse_consolidator_output(
             continue
         out.append(Cluster(members=list(members), canonical=canonical, category=category))
     return out
+
+
+def _filter_young_memories(
+    rows: list[dict],
+    exclusion_seconds: int,
+    now_ms: int | None = None,
+) -> list[dict]:
+    """Drop rows whose `created_ts` (Unix ms) is younger than
+    `exclusion_seconds`. Rows missing `created_ts` are dropped too —
+    we can't risk merging entries we can't time.
+
+    `now_ms` is injected for tests; defaults to wall clock."""
+    if now_ms is None:
+        now_ms = int(time.time() * 1000)
+    cutoff_ms = now_ms - (exclusion_seconds * 1000)
+    return [r for r in rows if isinstance(r.get("created_ts"), int) and r["created_ts"] <= cutoff_ms]
