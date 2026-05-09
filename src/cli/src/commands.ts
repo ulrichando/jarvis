@@ -359,7 +359,7 @@ const COMMANDS = memoize((): Command[] => [
 
 export const builtInCommandNames = memoize(
   (): Set<string> =>
-    new Set(COMMANDS().flatMap(_ => [_.name, ...(_.aliases ?? [])])),
+    new Set(COMMANDS().flatMap((_: Command) => [_.name, ...(_.aliases ?? [])])),
 )
 
 async function getSkills(cwd: string): Promise<{
@@ -370,14 +370,14 @@ async function getSkills(cwd: string): Promise<{
 }> {
   try {
     const [skillDirCommands, pluginSkills] = await Promise.all([
-      getSkillDirCommands(cwd).catch(err => {
+      getSkillDirCommands(cwd).catch((err: unknown) => {
         logError(toError(err))
         logForDebugging(
           'Skill directory commands failed to load, continuing without them',
         )
         return []
       }),
-      getPluginSkills().catch(err => {
+      getPluginSkills().catch((err: unknown) => {
         logError(toError(err))
         logForDebugging('Plugin skills failed to load, continuing without them')
         return []
@@ -493,7 +493,7 @@ export async function getCommands(cwd: string): Promise<Command[]> {
 
   // Build base commands without dynamic skills
   const baseCommands = allCommands.filter(
-    _ => meetsAvailabilityRequirement(_) && isCommandEnabled(_),
+    (_: Command) => meetsAvailabilityRequirement(_) && isCommandEnabled(_),
   )
 
   if (dynamicSkills.length === 0) {
@@ -501,7 +501,7 @@ export async function getCommands(cwd: string): Promise<Command[]> {
   }
 
   // Dedupe dynamic skills - only add if not already present
-  const baseCommandNames = new Set(baseCommands.map(c => c.name))
+  const baseCommandNames = new Set(baseCommands.map((c: Command) => c.name))
   const uniqueDynamicSkills = dynamicSkills.filter(
     s =>
       !baseCommandNames.has(s.name) &&
@@ -514,8 +514,8 @@ export async function getCommands(cwd: string): Promise<Command[]> {
   }
 
   // Insert dynamic skills after plugin skills but before built-in commands
-  const builtInNames = new Set(COMMANDS().map(c => c.name))
-  const insertIndex = baseCommands.findIndex(c => builtInNames.has(c.name))
+  const builtInNames = new Set(COMMANDS().map((c: Command) => c.name))
+  const insertIndex = baseCommands.findIndex((c: Command) => builtInNames.has(c.name))
 
   if (insertIndex === -1) {
     return [...baseCommands, ...uniqueDynamicSkills]
