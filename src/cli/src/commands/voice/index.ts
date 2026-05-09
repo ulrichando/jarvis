@@ -41,3 +41,15 @@ export const voiceLogs: Command = {
   supportsNonInteractive: true,
   load: () => import('./logs.js'),
 }
+
+export const voiceTests: Command = {
+  type: 'local',
+  name: 'voice-tests',
+  description: 'Run the voice-agent pytest suite (optionally with -k filter)',
+  isEnabled: () => isVoiceGrowthBookEnabled(),
+  get isHidden() {
+    return !isVoiceModeEnabled()
+  },
+  supportsNonInteractive: true,
+  load: () => import('./tests.js'),
+}
