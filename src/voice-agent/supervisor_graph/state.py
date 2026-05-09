@@ -16,7 +16,7 @@ Channel design notes:
     handoff (e.g. "browser"). Set when transfer_to_X fires; cleared
     when the specialist's task_done returns.
   - `handoff_filler_voiced` is a single-shot flag. The graph emits a
-    non-committal filler ("One moment, sir.") exactly once per handoff
+    non-committal filler ("One moment.") exactly once per handoff
     so the user hears a voice while the specialist works — but never
     a completion claim.
 """

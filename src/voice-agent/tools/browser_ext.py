@@ -713,7 +713,7 @@ async def web_search(engine: str, query: str, new_tab: bool = False) -> str:
         return _summarize(result)
 
     pretty_engine = eng if eng in _SEARCH_URLS else f"Google (engine={eng!r} unknown)"
-    return f"Searched {pretty_engine} for {query!r}, sir."
+    return f"Searched {pretty_engine} for {query!r}."
 
 
 # All 38 tools (26 base + 4 Phase A + 4 Phase B + 3 Phase C + 1 search

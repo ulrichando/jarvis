@@ -149,7 +149,7 @@ async def recall(query: str, days: int = 30, limit: int = 5) -> str:
         return f"(recall failed: {e})"
 
     if not rows:
-        return f"No matches for {query!r} in the last {days} days, sir."
+        return f"No matches for {query!r} in the last {days} days."
 
     # Group by session so adjacent user→assistant turns voice as a
     # single exchange instead of two separate hits.

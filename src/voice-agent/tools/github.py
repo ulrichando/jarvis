@@ -97,7 +97,7 @@ async def github_list_prs(repo: str = "", state: str = "open", limit: int = 5) -
     except Exception:
         return f"(github returned invalid json)"
     if not prs:
-        return f"No {state} pull requests, sir."
+        return f"No {state} pull requests."
     # Voice-format: "PR 42, 'fix the dispatcher', by ulrichando, draft"
     lines = []
     for p in prs[:limit]:
@@ -197,7 +197,7 @@ async def github_list_issues(
         return "(github returned invalid json)"
     if not issues:
         scope = f" assigned to {assignee}" if assignee else ""
-        return f"No {state} issues{scope}, sir."
+        return f"No {state} issues{scope}."
     lines = []
     for i in issues[:limit]:
         author = _format_short_user(i.get("author", {}).get("login", "?"))
