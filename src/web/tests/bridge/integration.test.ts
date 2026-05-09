@@ -631,4 +631,38 @@ describe('reconnect + events + archive', () => {
     )
     expect(res.status).toBe(401)
   })
+
+  test('archive 401 on missing bearer', async () => {
+    const { POST } = await import(
+      '@/app/api/bridge/v1/sessions/[sessionId]/archive/route'
+    )
+    const res = await POST(
+      new Request(`http://x/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      }),
+      { params: Promise.resolve({ sessionId: 'sessB' }) },
+    )
+    expect(res.status).toBe(401)
+  })
+
+  test('reconnect 401 on wrong secret', async () => {
+    const { environment_id } = await registerEnv()
+    const { POST } = await import(
+      '@/app/api/bridge/v1/environments/[envId]/bridge/reconnect/route'
+    )
+    const res = await POST(
+      new Request(`http://x/`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer wrong-secret',
+        },
+        body: JSON.stringify({ session_id: 's' }),
+      }),
+      { params: Promise.resolve({ envId: environment_id }) },
+    )
+    expect(res.status).toBe(401)
+  })
 })

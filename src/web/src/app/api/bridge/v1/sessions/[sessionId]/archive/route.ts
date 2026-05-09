@@ -10,6 +10,10 @@ export async function POST(
 ): Promise<NextResponse> {
   const { sessionId } = await ctx.params
   const token = extractBearer(req.headers.get('authorization'))
+  // v1: accept any non-empty bearer for archive. Spec requires env-secret
+  // validation against the session's owning environment, but `archiveSession`
+  // currently auto-creates orphan rows which would need to be tightened
+  // first. Sub-project 3 will add `findSession` + reject orphan archives.
   if (!token) return bridgeError(401, 'unauthorized', 'Missing bearer')
   try {
     const result = archiveSession(getStore(), sessionId)
