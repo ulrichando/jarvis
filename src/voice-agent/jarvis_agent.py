@@ -6738,13 +6738,15 @@ async def strip_voice_closers(text):
             yield buffer
 
 
-# Cap "sir" frequency. gpt-oss-120b appends ", sir" to nearly every
-# sentence — heard 2026-04-28 with 21 of 25 last assistant replies
-# containing it. The system prompt's personality examples all use
-# "sir" which the model interpreted as "every reply needs sir." Keep
-# the first occurrence per reply (preserves the JARVIS flavor) and
-# strip the rest. Streamed processing — first sir is voiced as the
-# LLM emits it; subsequent ones are silently dropped.
+# Strip "sir" from voiced replies. gpt-oss-120b appended ", sir" to
+# nearly every sentence — heard 2026-04-28 with 21 of 25 last assistant
+# replies containing it. The first cure (2026-04-28) was "keep the
+# first sir, strip the rest"; the drop-butler-register overhaul
+# (2026-05-09) tightened it further: JARVIS's voice no longer uses
+# the butler register at all, so this safety net now drops EVERY
+# occurrence. Streamed processing — matches are silently dropped
+# before TTS sees them, even when the LLM still emits 'sir' from
+# learned habit.
 # Match the comma+space+sir cluster but leave trailing punctuation
 # alone so the host sentence keeps its terminator. Earlier version
 # included [,.]? which ate the period and produced run-on output.
@@ -6989,19 +6991,21 @@ async def normalize_numbers(text):
 
 
 async def cap_sir_count(text):
-    """Trim the robotic 'sir'-tic. Two-pass cleanup:
+    """Strip every 'sir' from voiced replies — the safety net for the
+    drop-butler-register overhaul (2026-05-09). JARVIS's voice no
+    longer uses the butler register at all; this filter makes the
+    runtime promise hard even when the LLM still emits 'sir' from
+    learned habit. Two-pass cleanup:
 
-      1. Always strip trailing 'sir' at end-of-reply. The pattern
-         "Done." / "It's clear." appended to every statement
-         is the single biggest cause of JARVIS sounding like a
-         butler-bot. We preserve the original terminator (./!/?).
-      2. Of any remaining 'sir' occurrences, keep AT MOST ONE
-         (the first); drop the rest. Mid-sentence sir is fine
-         occasionally; multiple sirs per reply still over-formal.
+      1. Strip trailing 'sir' at end-of-reply, preserving the
+         original terminator (./!/?). The "Done." / "It's clear."
+         cadence is the most overtly robotic shape.
+      2. Drop ALL remaining 'sir' occurrences in the body (was:
+         keep first only, until 2026-05-09).
 
-    The bare-vocative reply ('Yes?') bypasses this filter
-    entirely — it's voiced via session.say() directly, not through
-    the tts_text_transforms chain.
+    The bare-vocative reply ('Yes?') bypasses this filter entirely
+    — it's voiced via session.say() directly, not through the
+    tts_text_transforms chain — and no longer contains 'sir' anyway.
     """
     buffer = ""
     async for chunk in text:
@@ -7026,16 +7030,12 @@ async def cap_sir_count(text):
     if not buffer.strip():
         return
 
-    # Pass 2 — keep at most one remaining 'sir' inside the body.
-    saw_first = False
+    # Pass 2 — drop ALL remaining 'sir' occurrences in the body.
     out = []
     last = 0
     for m in _SIR_RE.finditer(buffer):
         out.append(buffer[last:m.start()])
-        if not saw_first:
-            out.append(m.group())
-            saw_first = True
-        # else: drop the match (and its surrounding ", " and "[,.]?")
+        # drop the match (and its surrounding ", " and "[,.]?")
         last = m.end()
     out.append(buffer[last:])
     yield "".join(out)
