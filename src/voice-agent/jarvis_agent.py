@@ -7810,8 +7810,9 @@ async def entrypoint(ctx: JobContext) -> None:
             # Convert "4 000" → "4,000" so TTS reads "four thousand"
             # instead of mispronouncing as "forty" or "four-oh".
             normalize_numbers,
-            # Cap "sir" to once per reply — gpt-oss-120b says it every
-            # sentence which sounds robotic.
+            # Strip ALL "sir" from voiced replies — safety net for the
+            # drop-butler-register policy (2026-05-09). gpt-oss-120b
+            # learned-habit filter.
             cap_sir_count,
             "filter_markdown",
             "filter_emoji",
