@@ -21,15 +21,20 @@ export async function POST(req: Request): Promise<NextResponse> {
   ) {
     return bridgeError(400, 'invalid_request', 'Missing required fields')
   }
-  const store = getStore()
-  const result = createEnvironment(store, {
-    machine_name: body.machine_name,
-    directory: body.directory,
-    branch: body.branch,
-    git_repo_url: body.git_repo_url,
-    max_sessions: body.max_sessions,
-    worker_type: body.metadata?.worker_type ?? 'jarvis',
-    reuse_id: body.environment_id,
-  })
-  return NextResponse.json(result, { status: 200 })
+  try {
+    const store = getStore()
+    const result = createEnvironment(store, {
+      machine_name: body.machine_name,
+      directory: body.directory,
+      branch: body.branch,
+      git_repo_url: body.git_repo_url,
+      max_sessions: body.max_sessions,
+      worker_type: body.metadata?.worker_type ?? 'jarvis',
+      reuse_id: body.environment_id,
+    })
+    return NextResponse.json(result, { status: 200 })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return bridgeError(500, 'internal_error', `DB error: ${msg}`)
+  }
 }
