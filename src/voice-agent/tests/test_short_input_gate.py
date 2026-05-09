@@ -118,3 +118,97 @@ def test_punctuation_only_allowlist_match():
     assert _is_ambiguous_short_input("yes!") is False
     assert _is_ambiguous_short_input("okay?") is False
     assert _is_ambiguous_short_input("sure,") is False
+
+
+# ── Bare-vocative bypass (added 2026-05-09 to fix "Jarvis. → Pardon?" bug) ──
+#
+# Canonical wake reply (post-persona-overhaul): bare "Jarvis" pings reply
+# EXACTLY "Yes?". The bare-vocative fast-path in jarvis_agent.py voices
+# that reply. This gate must NOT pre-empt the fast-path — vocatives (and
+# the Whisper mis-transcription variants in _BARE_VOCATIVE_RE) all return
+# False here. Live evidence 2026-05-09: 30+ "Pardon?" replies traced to
+# vocatives being deflected before the fast-path fires.
+
+@pytest.mark.parametrize("text", [
+    # Canonical
+    "Jarvis",
+    "Jarvis.",
+    "Jarvis?",
+    "jarvis!",
+    # Common Whisper mis-transcriptions (per _JARVIS_NAME_RE)
+    "Joris.",
+    "Yaris?",
+    "Jarius.",
+    "Jervis",
+    "Jarbis.",
+    "Yorvis",
+    "Garvis",
+    "Hervis.",
+    # With wake-fillers (per _BARE_VOCATIVE_RE preamble allowance)
+    "hey jarvis",
+    "yo jarvis",
+    "ok jarvis",
+    "okay jarvis",
+    "i said jarvis",
+])
+def test_vocatives_bypass_gate(text):
+    """Bare vocatives (and Whisper variants) must NOT be deflected — the
+    bare-vocative fast-path needs to fire 'Yes?' for them."""
+    assert _is_ambiguous_short_input(text) is False, (
+        f"Expected vocative {text!r} to bypass the gate (got True)"
+    )
+
+
+# ── Kill-phrase bypass (added 2026-05-09) ────────────────────────────
+#
+# Short imperative interrupts ("stop", "wait", "cancel") should reach the
+# supervisor LLM as conversational input rather than being flopped to
+# "Pardon?". The mid-speech kill-phrase listener in jarvis_agent.py only
+# fires when JARVIS is currently speaking; outside that window these
+# phrases need a normal LLM response.
+
+@pytest.mark.parametrize("text", [
+    "stop",
+    "Stop.",
+    "wait",
+    "Wait!",
+    "cancel",
+    "Cancel.",
+    "nevermind",
+    "never mind",
+    "enough",
+    "Enough.",
+    "pause",
+    "hold on",
+    "hold up",
+    "hang on",
+    "shut up",
+])
+def test_kill_phrases_bypass_gate(text):
+    """Short interrupt phrases must reach the LLM, not be deflected."""
+    assert _is_ambiguous_short_input(text) is False, (
+        f"Expected kill-phrase {text!r} to bypass the gate (got True)"
+    )
+
+
+# ── Original confab triggers must STILL be deflected ──────────────────
+#
+# The gate exists to catch the 2026-05-08 cases where the supervisor LLM
+# reached for chat_ctx topics on contentless short inputs. The vocative /
+# kill-phrase bypasses must NOT cover these — "Hush!" / "One second" etc.
+# stay in the gate.
+
+@pytest.mark.parametrize("text", [
+    "Hush!",        # → 19s of Cameroon history (live)
+    "Hush",
+    "One second",   # → 18s of English history (live)
+    "one sec",
+    "Whatever",
+    "Maybe",
+    "Hmm.",
+])
+def test_original_confab_triggers_still_deflected(text):
+    """The bypass additions must not regress the gate's primary job."""
+    assert _is_ambiguous_short_input(text) is True, (
+        f"Expected original confab trigger {text!r} to remain deflected"
+    )
