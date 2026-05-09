@@ -85,7 +85,7 @@ def register_github() -> None:
         when_to_use=_GITHUB_WHEN,
         instructions=GITHUB_INSTRUCTIONS,
         tool_factory=_github_tools,
-        ack_phrase="Looking it up, sir.",
+        ack_phrase="Looking it up.",
         max_history_items=4,
         enabled=enabled,
     ))

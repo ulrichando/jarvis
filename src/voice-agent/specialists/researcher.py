@@ -118,7 +118,7 @@ def register_researcher() -> None:
         when_to_use=_RESEARCHER_WHEN,
         instructions=RESEARCHER_INSTRUCTIONS,
         tool_factory=_researcher_tools,
-        ack_phrase="Looking into it, sir.",
+        ack_phrase="Looking into it.",
         max_history_items=12,
         enabled=os.environ.get("JARVIS_SUBAGENT_RESEARCHER", "0") == "1",
     ))

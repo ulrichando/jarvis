@@ -72,7 +72,7 @@ def register_memory_recall() -> None:
         when_to_use=_MEMORY_RECALL_WHEN,
         instructions=MEMORY_RECALL_INSTRUCTIONS,
         tool_factory=_memory_recall_tools,
-        ack_phrase="Looking it up, sir.",
+        ack_phrase="Looking it up.",
         max_history_items=4,
         enabled=enabled,
     ))
