@@ -270,8 +270,86 @@ async def consolidate_all_categories() -> None:
         _CONSOLIDATION_IN_FLIGHT = False
 
 
-# Stub LLM call — real implementation lands in Task 6.
+_CONSOLIDATOR_PROMPT = """You consolidate memory entries.
+
+You will be given a list of {n} entries (each: id + content) all of
+category '{category}'. Group entries that state the SAME fact about
+the SAME subject into clusters of 2+; produce ONE canonical merged
+content per cluster.
+
+Rules:
+- Cluster only entries that state the same fact. Different facts
+  about the same subject (e.g. wife's name vs wife's profession)
+  stay separate.
+- Canonical content must be a single first-person, declarative
+  sentence (max {max_chars} chars).
+- NO narration shapes ("the user appears to…"); NO hedge ("seems
+  to be…"). Plain assertions only.
+- Output JSON ONLY: {{"clusters": [{{"members": [...ids...],
+  "canonical": "..."}}]}}. If nothing to merge, output {{"clusters": []}}.
+
+Examples:
+
+ENTRIES:
+- a: My wife's name is Lizzy.
+- b: Ulrich's wife is named Lizzy.
+- c: Ulrich runs a ride-hailing service in Cameroon.
+
+OUTPUT:
+{{"clusters": [{{"members": ["a", "b"], "canonical": "Ulrich's wife is named Lizzy."}}]}}
+
+ENTRIES:
+- x: Coding Kiddos teaches Python.
+- y: Coding Kiddos teaches JavaScript.
+
+OUTPUT:
+{{"clusters": []}}
+
+ENTRIES:
+{entries_block}
+
+OUTPUT:"""
+
+
 async def _call_consolidator_llm(category: str, entries: list[dict]) -> str:
-    """Production LLM seam. Replaced in tests by a fake that returns
-    canned JSON. Real Groq call is added in Task 6."""
-    return '{"clusters": []}'  # placeholder until Task 6
+    """Call llama-3.1-8b-instant via Groq with the consolidator prompt.
+    Mirrors `pipeline.memory_extractor._call_extractor_llm` shape so the
+    failure modes (missing key, timeout, non-2xx) are identical."""
+    import httpx
+
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        logger.debug("[consolidator] GROQ_API_KEY missing — skipping")
+        return '{"clusters": []}'
+
+    entries_block = "\n".join(
+        f"- {e['memory_id']}: {(e.get('content') or '').replace(chr(10), ' ')[:200]}"
+        for e in entries
+    )
+    prompt = _CONSOLIDATOR_PROMPT.format(
+        n=len(entries),
+        category=category,
+        max_chars=_MAX_CONTENT_CHARS,
+        entries_block=entries_block,
+    )
+
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        try:
+            resp = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": "llama-3.1-8b-instant",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 600,
+                    "temperature": 0.0,
+                    "stop": ["\nENTRIES:", "\n\n\n"],
+                },
+            )
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            logger.warning(
+                f"[consolidator] LLM call failed: {type(e).__name__}: {e}"
+            )
+            return '{"clusters": []}'
