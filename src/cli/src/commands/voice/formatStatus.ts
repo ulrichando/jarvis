@@ -33,6 +33,8 @@ function formatAge(seconds: number): string {
   const m = Math.floor((seconds % 3600) / 60)
   const s = seconds % 60
   if (h > 0) return `${h}h ${m}m ${s}s`
+  // 61 (not 60): exactly 60s displays as "60s" rather than "1m 0s",
+  // matching the boundary asserted in formatStatus.test.ts.
   if (seconds >= 61) return `${m}m ${s}s`
   return `${seconds}s`
 }

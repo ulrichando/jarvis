@@ -75,6 +75,7 @@ export const call: LocalCommandCall = async args => {
   let stderr = ''
   let exitCode = 0
   let timedOut = false
+  let bufferOverflow = false
 
   try {
     const result = await execFileAsync(venvPython, argv, {
@@ -99,6 +100,7 @@ export const call: LocalCommandCall = async args => {
     if (e.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
       stdout = (e.stdout ?? '') + '\n[output truncated at 10 MB]'
       stderr = e.stderr ?? ''
+      bufferOverflow = true
     }
     if (typeof e.code === 'number') exitCode = e.code
   }
@@ -121,7 +123,7 @@ export const call: LocalCommandCall = async args => {
 
   const combined = stdout + (stderr ? `\n${stderr}` : '')
   const { summary, firstFailure } = parsePytestSummary(combined)
-  const passed = exitCode === 0 && summary !== null && !/failed|error/i.test(summary)
+  const passed = exitCode === 0 && summary !== null && !/\bfailed\b|\berror\b/i.test(summary)
 
   logEvent('tengu_voice_tests_run', {
     withFilter: extraArgs.length > 0,
@@ -138,13 +140,15 @@ export const call: LocalCommandCall = async args => {
     }
   }
 
+  const truncNote = bufferOverflow ? '[output truncated at 10 MB]\n' : ''
+
   if (passed) {
-    return { type: 'text' as const, value: summary }
+    return { type: 'text' as const, value: truncNote + summary }
   }
 
   const lines = [summary]
   if (firstFailure) {
     lines.push('', 'First failure:', firstFailure)
   }
-  return { type: 'text' as const, value: lines.join('\n') }
+  return { type: 'text' as const, value: truncNote + lines.join('\n') }
 }
