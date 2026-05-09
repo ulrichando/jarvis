@@ -52,6 +52,17 @@ describe('formatVoiceStatus', () => {
     expect(out).toContain('bridge:      unknown')
   })
 
+  test('failed state renders verbatim', () => {
+    const out = formatVoiceStatus({
+      voice: 'failed',
+      bridge: 'inactive',
+      lastTurnAt: '2026-05-09T11:00:00Z',
+      nowEpochMs: Date.parse('2026-05-09T12:10:00Z'),
+    })
+    expect(out).toContain('voice-agent: failed')
+    expect(out).toContain('bridge:      inactive')
+  })
+
   test('lastTurnAt invalid → unknown', () => {
     const out = formatVoiceStatus({
       voice: 'active',
