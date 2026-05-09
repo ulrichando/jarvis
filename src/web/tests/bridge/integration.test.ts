@@ -701,6 +701,8 @@ describe('admin enqueue + full E2E', () => {
       }),
     )
     expect(res.status).toBe(400)
+    const body = (await res.json()) as { error: { type: string; detail: string } }
+    expect(body.error.type).toBe('invalid_request')
   })
 
   test('admin enqueue 404 on unknown environment_id', async () => {
@@ -719,6 +721,8 @@ describe('admin enqueue + full E2E', () => {
       }),
     )
     expect(res.status).toBe(404)
+    const body = (await res.json()) as { error: { type: string; detail: string } }
+    expect(body.error.type).toBe('not_found')
   })
 
   test('full happy path: register → enqueue → poll → ack → heartbeat → events → archive → unregister', async () => {
@@ -738,6 +742,7 @@ describe('admin enqueue + full E2E', () => {
         }),
       }),
     )
+    expect(enqRes.status).toBe(200)
     const { work_id } = (await enqRes.json()) as { work_id: string }
 
     // Poll

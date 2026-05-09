@@ -4,6 +4,11 @@ import { enqueueWork, findEnvironment } from '@/lib/bridge/store'
 import { emitWorkAvailable } from '@/lib/bridge/events'
 import { bridgeError } from '@/lib/bridge/errors'
 
+// Admin enqueue is intentionally unauthenticated. v1 access control relies
+// on the server binding to 127.0.0.1 only (loopback assumption documented
+// in the spec). Do NOT add bearer-auth here unless sub-project 3 has also
+// switched the web UI to send a real token. If the bind ever moves off
+// loopback, this route MUST grow auth before going live.
 export async function POST(req: Request): Promise<NextResponse> {
   const body = (await req.json().catch(() => null)) as {
     environment_id?: string
@@ -21,6 +26,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       'environment_id and session_id required',
     )
   }
+  let workId: string
   try {
     const store = getStore()
     if (!findEnvironment(store, body.environment_id)) {
@@ -30,10 +36,15 @@ export async function POST(req: Request): Promise<NextResponse> {
       session_id: body.session_id,
       data: body.data ?? {},
     })
-    emitWorkAvailable(body.environment_id)
-    return NextResponse.json({ work_id: work.id }, { status: 200 })
+    workId = work.id
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     return bridgeError(500, 'internal_error', `DB error: ${msg}`)
   }
+  // emitWorkAvailable AFTER the try/catch — the work row is already written.
+  // If a listener throws synchronously, it would otherwise turn a successful
+  // enqueue into a 500 + duplicate-on-retry. Move it past the catch block
+  // so the work-row commit is the success boundary.
+  emitWorkAvailable(body.environment_id)
+  return NextResponse.json({ work_id: workId }, { status: 200 })
 }
