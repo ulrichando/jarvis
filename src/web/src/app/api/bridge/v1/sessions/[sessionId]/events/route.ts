@@ -23,6 +23,10 @@ export async function POST(
   try {
     const store = getStore()
     for (const event of body.events) {
+      // v1: silently skip events without a string `type` rather than
+      // returning 400 for the whole batch. Sub-project 3 will switch to
+      // strict validation once the canonical event-type set is locked
+      // down, so a malformed event rejects with 400 + index in the body.
       if (typeof event.type !== 'string') continue
       appendSessionEvent(store, sessionId, {
         type: event.type,
