@@ -1,9 +1,10 @@
 /**
  * Pure formatter for /voice-status output.
  *
- * Mirrors .claude/hooks/SessionStart.sh's reporting shape: voice + bridge
- * service status, last-turn timestamp + age, plus a <60s warning to
- * discourage restarting mid-session.
+ * Reports voice + bridge service status, last-turn timestamp + age, plus
+ * a <60s warning to discourage restarting mid-session. Mirrors the
+ * semantic content of .claude/hooks/SessionStart.sh's voice block (not
+ * its exact bullet-list formatting — this output is plain text).
  */
 
 export type ServiceState = 'active' | 'inactive' | 'failed' | 'unknown'
@@ -25,7 +26,7 @@ function formatAge(seconds: number): string {
   const m = Math.floor((seconds % 3600) / 60)
   const s = seconds % 60
   if (h > 0) return `${h}h ${m}m ${s}s`
-  if (m > 0 && seconds > 60) return `${m}m ${s}s`
+  if (seconds >= 61) return `${m}m ${s}s`
   return `${seconds}s`
 }
 
