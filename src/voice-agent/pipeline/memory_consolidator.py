@@ -19,6 +19,7 @@ Safety:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -214,3 +215,63 @@ async def consolidate_category(
         f"clusters={len(clusters)} merged_into={len(clusters)} "
         f"removed={members_total}"
     )
+
+
+# ── Top-level fanout ─────────────────────────────────────────────────
+
+
+_CONSOLIDATION_IN_FLIGHT: bool = False
+
+
+def _read_memories_for_category(category: str) -> list[dict]:
+    """Read all memories for a single category. Wraps the hub SDK's
+    sync reader so tests can monkeypatch this single function instead
+    of the whole HubClient."""
+    from client import HubClient
+    return HubClient.read_memories_sync(category=category, limit=200)
+
+
+def _default_publisher() -> Publisher:
+    """Production publisher: tools.memory._publish_event_async (the
+    async function itself, used as the Publisher callable). Tests
+    monkeypatch this whole function to return a FakePublisher."""
+    from tools.memory import _publish_event_async
+    return _publish_event_async
+
+
+async def consolidate_all_categories() -> None:
+    """Top-level entry. Fans out to each known category sequentially.
+    Concurrency-guarded with _CONSOLIDATION_IN_FLIGHT — a second trigger
+    while one is in flight is dropped (logged). The dropped run's work
+    is implicit: the next trigger sees the un-merged entries."""
+    global _CONSOLIDATION_IN_FLIGHT
+    if _CONSOLIDATION_IN_FLIGHT:
+        logger.info("[consolidator] skipping — already in flight")
+        return
+    _CONSOLIDATION_IN_FLIGHT = True
+    try:
+        publisher: Publisher = _default_publisher()
+        for category in _VALID_CATEGORIES:
+            try:
+                rows = _read_memories_for_category(category)
+            except Exception as e:
+                logger.warning(
+                    f"[consolidator] read failed for category={category}: "
+                    f"{type(e).__name__}: {e}"
+                )
+                continue
+            await consolidate_category(
+                category=category,
+                rows=rows,
+                publisher=publisher,
+                llm_fn=_call_consolidator_llm,
+            )
+    finally:
+        _CONSOLIDATION_IN_FLIGHT = False
+
+
+# Stub LLM call — real implementation lands in Task 6.
+async def _call_consolidator_llm(category: str, entries: list[dict]) -> str:
+    """Production LLM seam. Replaced in tests by a fake that returns
+    canned JSON. Real Groq call is added in Task 6."""
+    return '{"clusters": []}'  # placeholder until Task 6
