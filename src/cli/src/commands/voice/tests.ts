@@ -37,8 +37,7 @@ async function pathExists(p: string): Promise<boolean> {
 
 // Split a pytest-arg string into argv entries, respecting "double-quoted"
 // substrings. Never run through a shell.
-function splitArgs(input: string | undefined): string[] {
-  if (!input) return []
+function splitArgs(input: string): string[] {
   const trimmed = input.trim()
   if (!trimmed) return []
   const out: string[] = []
@@ -97,6 +96,10 @@ export const call: LocalCommandCall = async args => {
     if (e.signal === 'SIGTERM' || e.code === 'ETIMEDOUT') {
       timedOut = true
     }
+    if (e.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
+      stdout = (e.stdout ?? '') + '\n[output truncated at 10 MB]'
+      stderr = e.stderr ?? ''
+    }
     if (typeof e.code === 'number') exitCode = e.code
   }
 
@@ -111,7 +114,7 @@ export const call: LocalCommandCall = async args => {
     return {
       type: 'text' as const,
       value:
-        `Pytest exceeded ${PYTEST_TIMEOUT_MS / 1000}s timeout. ` +
+        `Pytest exceeded ${PYTEST_TIMEOUT_MS / 1000}s timeout (still running). ` +
         `Run manually: cd ${vaPath} && .venv/bin/python -m pytest tests/`,
     }
   }
