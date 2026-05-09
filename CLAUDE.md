@@ -51,7 +51,7 @@ JARVIS has full `sudo NOPASSWD` root via `/etc/sudoers.d/jarvis` — every shell
 
 **Groq is the primary LLM provider, DeepSeek secondary.** Don't hardcode either — JARVIS is multi-provider (Groq, DeepSeek, OpenAI, Google, Anthropic, Kimi).
 
-**Bare "Jarvis" pings reply EXACTLY "Yes, sir?"** — canonical, not "Yes?" or "How can I help?". This is part of the voice persona; don't drift it.
+**Bare "Jarvis" pings reply EXACTLY "Yes?"** — canonical, not "Yes, sir?" or "How can I help?". This is part of the voice persona; don't drift it.
 
 **`/loop`, `/schedule`, follow-up agent offers**: don't end JARVIS replies with "want me to schedule a follow-up agent?" — the user finds it noisy.
 
