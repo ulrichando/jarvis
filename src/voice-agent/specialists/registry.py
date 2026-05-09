@@ -32,7 +32,7 @@ class SpecialistSpec:
                       decorators have to run inside the agent process,
                       not at registry import time.
         ack_phrase: brief voiced ack when the supervisor hands off to
-                    this specialist. Defaults to "On it, sir."
+                    this specialist. Defaults to "Right away."
         max_history_items: number of recent chat_ctx items carried into
                            the specialist on handoff. None = no truncation.
         enabled: gate for hot-disabling without unregistering.
@@ -42,7 +42,7 @@ class SpecialistSpec:
     when_to_use: str
     instructions: str
     tool_factory: Callable[[], list]
-    ack_phrase: str = "Right away, sir."
+    ack_phrase: str = "Right away."
     max_history_items: Optional[int] = 12
     enabled: bool = True
 
@@ -107,7 +107,7 @@ class SubagentSpec:
     when_to_use: str
     instructions: str
     tool_factory: Callable[[], list]
-    ack_phrase: str = "Right away, sir."
+    ack_phrase: str = "Right away."
     max_history_items: Optional[int] = 12
     enabled: bool = True
 

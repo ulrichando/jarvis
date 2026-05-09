@@ -76,7 +76,7 @@ def register_code_reviewer() -> None:
         when_to_use=_CODE_REVIEWER_WHEN,
         instructions=CODE_REVIEWER_INSTRUCTIONS,
         tool_factory=_code_reviewer_tools,
-        ack_phrase="Reviewing, sir.",
+        ack_phrase="Reviewing.",
         max_history_items=4,  # reviewer doesn't need broader context
         enabled=enabled,
     ))
