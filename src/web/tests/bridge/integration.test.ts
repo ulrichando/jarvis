@@ -666,3 +666,173 @@ describe('reconnect + events + archive', () => {
     expect(res.status).toBe(401)
   })
 })
+
+describe('admin enqueue + full E2E', () => {
+  test('admin enqueue returns 200 + work_id', async () => {
+    const { environment_id } = await registerEnv()
+    const { POST } = await import(
+      '@/app/api/bridge/v1/admin/enqueue/route'
+    )
+    const res = await POST(
+      new Request(`http://x/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          environment_id,
+          session_id: 'sess1',
+          data: { prompt: 'hello' },
+        }),
+      }),
+    )
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { work_id: string }
+    expect(body.work_id).toBeTruthy()
+  })
+
+  test('admin enqueue 400 on missing fields', async () => {
+    const { POST } = await import(
+      '@/app/api/bridge/v1/admin/enqueue/route'
+    )
+    const res = await POST(
+      new Request(`http://x/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ environment_id: 'x' }),
+      }),
+    )
+    expect(res.status).toBe(400)
+  })
+
+  test('admin enqueue 404 on unknown environment_id', async () => {
+    const { POST } = await import(
+      '@/app/api/bridge/v1/admin/enqueue/route'
+    )
+    const res = await POST(
+      new Request(`http://x/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          environment_id: 'nonexistent',
+          session_id: 's',
+          data: {},
+        }),
+      }),
+    )
+    expect(res.status).toBe(404)
+  })
+
+  test('full happy path: register → enqueue → poll → ack → heartbeat → events → archive → unregister', async () => {
+    const reg = await registerEnv()
+    const { environment_id, environment_secret } = reg
+
+    // Enqueue via admin route
+    const enq = await import('@/app/api/bridge/v1/admin/enqueue/route')
+    const enqRes = await enq.POST(
+      new Request(`http://x/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          environment_id,
+          session_id: 'sessE',
+          data: { prompt: 'do thing' },
+        }),
+      }),
+    )
+    const { work_id } = (await enqRes.json()) as { work_id: string }
+
+    // Poll
+    const pollMod = await import(
+      '@/app/api/bridge/v1/environments/[envId]/work/poll/route'
+    )
+    const pollRes = await pollMod.GET(
+      new Request(
+        `http://x/api/bridge/v1/environments/${environment_id}/work/poll`,
+        { headers: { Authorization: `Bearer ${environment_secret}` } },
+      ),
+      { params: Promise.resolve({ envId: environment_id }) },
+    )
+    const work = (await pollRes.json()) as { id: string; data: { prompt: string } }
+    expect(work.id).toBe(work_id)
+    expect(work.data.prompt).toBe('do thing')
+
+    // Ack
+    const ackMod = await import(
+      '@/app/api/bridge/v1/environments/[envId]/work/[workId]/ack/route'
+    )
+    const ackRes = await ackMod.POST(
+      new Request(`http://x/`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${environment_secret}` },
+      }),
+      { params: Promise.resolve({ envId: environment_id, workId: work_id }) },
+    )
+    expect(ackRes.status).toBe(204)
+
+    // Heartbeat
+    const hbMod = await import(
+      '@/app/api/bridge/v1/environments/[envId]/work/[workId]/heartbeat/route'
+    )
+    const hbRes = await hbMod.POST(
+      new Request(`http://x/`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${environment_secret}`,
+        },
+        body: JSON.stringify({}),
+      }),
+      { params: Promise.resolve({ envId: environment_id, workId: work_id }) },
+    )
+    const hb = (await hbRes.json()) as { lease_extended: boolean }
+    expect(hb.lease_extended).toBe(true)
+
+    // Session event
+    const evMod = await import(
+      '@/app/api/bridge/v1/sessions/[sessionId]/events/route'
+    )
+    const evRes = await evMod.POST(
+      new Request(`http://x/`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${environment_secret}`,
+        },
+        body: JSON.stringify({
+          events: [{ type: 'permission_response', granted: true }],
+        }),
+      }),
+      { params: Promise.resolve({ sessionId: 'sessE' }) },
+    )
+    expect(evRes.status).toBe(204)
+
+    // Archive
+    const arMod = await import(
+      '@/app/api/bridge/v1/sessions/[sessionId]/archive/route'
+    )
+    const arRes = await arMod.POST(
+      new Request(`http://x/`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${environment_secret}`,
+        },
+        body: '{}',
+      }),
+      { params: Promise.resolve({ sessionId: 'sessE' }) },
+    )
+    expect(arRes.status).toBe(204)
+
+    // Unregister
+    const unregMod = await import(
+      '@/app/api/bridge/v1/environments/bridge/[envId]/route'
+    )
+    const unregRes = await unregMod.DELETE(
+      new Request(`http://x/`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${environment_secret}` },
+      }),
+      { params: Promise.resolve({ envId: environment_id }) },
+    )
+    expect(unregRes.status).toBe(204)
+  })
+})
