@@ -50,7 +50,7 @@ def test_ai_messages_to_chunks_strips_reasoning():
     m = AIMessage(content=(
         "<think>The user wants me to explain recursion. Recursion is "
         "when a function calls itself. Let me think about base cases."
-        "</think>Recursion is a function calling itself, sir."
+        "</think>Recursion is a function calling itself."
     ))
     chunks = _ai_messages_to_chunks([m])
     contents = [c.delta.content for c in chunks if c.delta and c.delta.content]

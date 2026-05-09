@@ -26,7 +26,7 @@ def test_validate_outcome_returns_unclear_without_key(monkeypatch):
     result = asyncio.run(fn(
         user_request="open chrome",
         tool_result="OK: launched 'google-chrome'",
-        claimed_outcome="Chrome opened, sir.",
+        claimed_outcome="Chrome opened.",
     ))
     assert result.startswith("UNCLEAR:"), result
     assert "validator offline" in result.lower()
