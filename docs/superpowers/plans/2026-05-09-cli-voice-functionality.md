@@ -573,7 +573,7 @@ describe('formatVoiceStatus', () => {
     expect(out).toContain('(1h 39m 45s ago)')
   })
 
-  test('age formatting — exactly 60s warns', () => {
+  test('age formatting — exactly 60s does NOT warn', () => {
     // 60s exactly is NOT a warning (we treat <60s as the threshold).
     const out = formatVoiceStatus({
       voice: 'active',
@@ -937,7 +937,7 @@ git commit -m "feat(cli-agents): add voice-log-analyzer project agent"
 cd src/cli && bun test src/commands/voice/ 2>&1 | tail -10
 ```
 
-Expected: `16 pass, 0 fail` (8 from `parsePytestSummary` + 8 from `formatStatus`).
+Expected: `20 pass, 0 fail` (9 from `parsePytestSummary` + 11 from `formatStatus`). Original plan called for 16; review-driven additions added 4 (xfailed token coverage, `failed` ServiceState coverage, `sqlite3Missing` formatter input, sessionActive structured flag).
 
 - [ ] **Step 2: Boot the CLI**
 
