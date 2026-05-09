@@ -365,7 +365,7 @@ def register_browser() -> None:
         when_to_use=_BROWSER_WHEN,
         instructions=BROWSER_INSTRUCTIONS,
         tool_factory=_browser_tools,
-        ack_phrase="At once, sir.",
+        ack_phrase="On it.",
         # 2026-05-02: dropped 12 → 4. The 12-turn chat_ctx was
         # poisoning the specialist — recall seeded prior hallucinated
         # successes ("A new tab is open, sir." with no tool fired)

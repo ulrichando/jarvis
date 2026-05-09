@@ -92,7 +92,7 @@ def register_summarize() -> None:
         when_to_use=_SUMMARIZE_WHEN,
         instructions=SUMMARIZE_INSTRUCTIONS,
         tool_factory=_summarize_tools,
-        ack_phrase="One sec, sir.",
+        ack_phrase="One sec.",
         max_history_items=12,
         enabled=os.environ.get("JARVIS_SUBAGENT_SUMMARIZE", "0") == "1",
     ))

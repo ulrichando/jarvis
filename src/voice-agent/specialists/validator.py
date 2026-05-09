@@ -82,7 +82,7 @@ def register_validator() -> None:
         when_to_use=_VALIDATOR_WHEN,
         instructions=VALIDATOR_INSTRUCTIONS,
         tool_factory=_validator_tools,
-        ack_phrase="Verifying, sir.",
+        ack_phrase="Verifying.",
         max_history_items=4,  # validator only needs the recent turn
         enabled=enabled,
     ))
