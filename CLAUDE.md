@@ -78,6 +78,8 @@ JARVIS has full `sudo NOPASSWD` root via `/etc/sudoers.d/jarvis` — every shell
 
 - **LangGraph supervisor** (`JARVIS_LANGGRAPH_SUPERVISOR=1`, default off) is gated by [supervisor_graph/llm_adapter.py](src/voice-agent/supervisor_graph/llm_adapter.py). Two guards live there: (1) `_GRAPH_RECURSION_LIMIT=25` is passed via `invoke(config={"recursion_limit": 25})` so the speak_gate↔tool_node loop trips fast instead of running 5,000 cycles (live failure 2026-05-08T16:16:39 hit `Recursion limit of 10007`); (2) outbound `AIMessage.content` is run through `sanitizers.pycall.sanitize_text_for_tts` because the LangGraph adapter bypasses the streaming `_parse_choice` patch chain.
 
+- **Memory consolidator** (added 2026-05-08, default ON, kill: `JARVIS_MEMORY_CONSOLIDATOR=0`). [pipeline/memory_consolidator.py](src/voice-agent/pipeline/memory_consolidator.py) runs after every `JARVIS_MEMORY_CONSOLIDATE_EVERY_N` (default 10) successful per-turn extractions. Per-category LLM call (llama-3.1-8b-instant) returns clusters of near-duplicate memories; canonical content replaces them via the existing `_publish_event_async("memory.value.{upserted,removed}")` path. Memories younger than `JARVIS_MEMORY_CONSOLIDATE_YOUNG_EXCLUSION_S` (default 300 s) are excluded so active-conversation extractions don't get merged mid-flow. Single-event-loop concurrency guard. All env vars read at runtime.
+
 ## Common workflows
 
 | Task | Command |
