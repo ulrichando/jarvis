@@ -284,3 +284,53 @@ def test_consolidate_category_idempotent():
 
     _run(consolidate_category("user", rows_second, publisher=pub2, llm_fn=second_llm))
     assert pub2.calls == []
+
+
+# ── consolidate_all_categories (fanout + concurrency guard) ──────────
+
+
+def test_consolidate_all_categories_skips_when_in_flight(monkeypatch):
+    """A second simultaneous call must early-return; only the first runs."""
+    import pipeline.memory_consolidator as mc
+    pub = _FakePublisher()
+    call_count = {"n": 0}
+
+    def fake_read(category=None, limit=30, db_path=None):
+        call_count["n"] += 1
+        return []  # empty store; consolidate_category will skip
+
+    monkeypatch.setattr(mc, "_read_memories_for_category", lambda c: fake_read(category=c))
+    monkeypatch.setattr(mc, "_default_publisher", lambda: pub)
+
+    async def both():
+        # Set the guard manually to simulate "already running".
+        mc._CONSOLIDATION_IN_FLIGHT = True
+        try:
+            await mc.consolidate_all_categories()
+        finally:
+            mc._CONSOLIDATION_IN_FLIGHT = False
+
+    _run(both())
+    # No category was read — the function early-returned on the guard.
+    assert call_count["n"] == 0
+
+
+def test_consolidate_all_categories_runs_each_category(monkeypatch):
+    import pipeline.memory_consolidator as mc
+
+    seen_categories: list[str] = []
+
+    def fake_read_for_category(category):
+        seen_categories.append(category)
+        return []  # empty — consolidate_category skips after read
+
+    async def llm_should_not_be_called(category, entries):
+        raise AssertionError("LLM should not be reached when stores are empty")
+
+    monkeypatch.setattr(mc, "_read_memories_for_category", fake_read_for_category)
+    monkeypatch.setattr(mc, "_default_publisher", lambda: _FakePublisher())
+    monkeypatch.setattr(mc, "_call_consolidator_llm", llm_should_not_be_called)
+
+    _run(mc.consolidate_all_categories())
+    assert seen_categories == list(mc._VALID_CATEGORIES)
+    assert mc._CONSOLIDATION_IN_FLIGHT is False  # cleared after run
