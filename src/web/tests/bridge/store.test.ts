@@ -139,13 +139,18 @@ describe('work queue', () => {
   test('heartbeatWork extends lease', () => {
     enqueueWork(store, envId, { session_id: 'a', data: {} })
     const w = leaseNextWork(store, envId, 60_000)!
-    const before = w.lease_expires_at
-    // Wait so the new expiry is provably later.
-    const result = heartbeatWork(store, envId, w.id, 60_000)
+    const before = w.lease_expires_at!
+    // Heartbeat with a longer TTL — the new expiry must be > before.
+    const result = heartbeatWork(store, envId, w.id, 120_000)
     expect(result.lease_extended).toBe(true)
     expect(result.state).toBe('leased')
-    const refreshed = leaseNextWork(store, envId, 60_000) // null — already leased
-    expect(refreshed).toBeNull()
+    const refreshed = store.db
+      .prepare('SELECT lease_expires_at FROM work WHERE id = ?')
+      .get(w.id) as { lease_expires_at: number }
+    expect(refreshed.lease_expires_at).toBeGreaterThan(before)
+    // Lease still held, so a fresh leaseNextWork returns null.
+    const next = leaseNextWork(store, envId, 60_000)
+    expect(next).toBeNull()
   })
 
   test('heartbeatWork rejects stopped work', () => {
