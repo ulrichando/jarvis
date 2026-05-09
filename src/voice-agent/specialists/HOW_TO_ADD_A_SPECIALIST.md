@@ -83,7 +83,7 @@ function_tool's docstring.
 | `when_to_use` | yes | one-line description; the LLM reads this to route |
 | `instructions` | yes | the specialist's system prompt — keep ~100 lines, focused |
 | `tool_factory` | yes | lazy callable returning the specialist's `@function_tool` list |
-| `ack_phrase` | no | brief voiced ack on handoff (default: "On it, sir.") |
+| `ack_phrase` | no | brief voiced ack on handoff (default: "Right away.") |
 | `max_history_items` | no | chat_ctx items carried into the specialist (default: 12) |
 | `enabled` | no | gate for hot-disabling without unregistering (default: True) |
 
