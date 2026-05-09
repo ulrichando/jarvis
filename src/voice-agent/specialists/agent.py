@@ -64,6 +64,8 @@ _BAILOUT_SUMMARY_RE = re.compile(
       | (?:extension|tool|service|browser|chrome|firefox)\s+(?:is\s+)?(?:not\s+connected|unavailable|offline|not\s+available)
       | (?:bridge|extension)\s+disconnected
       | google\s+chrome\s+isn'?t\s+available
+      # 2026-05-09 — weather specialist's location-failure phrasing
+      | couldn'?t\s+determine\s+(?:your\s+|the\s+)?location
     )
     """
 )
