@@ -10,12 +10,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 @pytest.mark.parametrize("text,expected_verbs", [
-    ("I've opened a new tab, sir.", ["opened"]),
+    ("I've opened a new tab.", ["opened"]),
     ("Tab is open.", ["open"]),
     ("Saved the file.", ["saved"]),
     ("Sent the email.", ["sent"]),
     ("Posted the tweet.", ["posted"]),
-    ("Done, sir.", ["done"]),
+    ("Done.", ["done"]),
     ("I've launched Chrome and navigated to YouTube.", ["launched", "navigated"]),
     ("Created the new file.", ["created"]),
     ("Deleted that line for you.", ["deleted"]),
@@ -34,11 +34,11 @@ def test_extract_claims_finds_past_tense_verbs(text, expected_verbs):
 @pytest.mark.parametrize("text", [
     "What would you like me to do?",
     "I can open a tab — should I?",
-    "How are you, sir?",
+    "How are you?",
     "I'll save it after you confirm.",
     "It's a sunny day.",
     "Let me check.",
-    "One moment, sir.",
+    "One moment.",
 ])
 def test_extract_claims_ignores_non_completion_text(text):
     from supervisor_graph.grounding_gate import extract_claims

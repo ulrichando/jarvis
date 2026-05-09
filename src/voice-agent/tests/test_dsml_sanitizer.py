@@ -119,9 +119,9 @@ def test_parse_choice_swallows_dsml_envelope():
         return SimpleNamespace(delta=delta, finish_reason=finish)
 
     # Chunk 1: pre-text, normal — should pass through.
-    c1 = _make_choice(content="Sure, sir. ")
+    c1 = _make_choice(content="Sure. ")
     inf_llm.LLMStream._parse_choice(self_mock, response_id, c1, thinking)
-    assert c1.delta.content == "Sure, sir. "
+    assert c1.delta.content == "Sure. "
 
     # Chunk 2: opener arrives with some inline args — should swallow envelope, leave pre-text.
     c2 = _make_choice(content='Looking it up. <｜｜DSML｜｜tool_calls>\n<｜｜DSML｜｜invoke name="x">')
@@ -151,7 +151,7 @@ def test_parse_choice_handles_split_dsml_opener():
     because each `｜` character is its own DeepSeek token. The
     detector must trigger on the FIRST chunk containing any U+FF5C
     char — not require the full opener in one chunk. Captured live
-    2026-05-02: 'At once, sir. <｜｜DSML｜｜tool_calls>...' leaked
+    2026-05-02: 'At once. <｜｜DSML｜｜tool_calls>...' leaked
     because the previous detector waited for the full opener."""
     from livekit.agents.inference import llm as inf_llm
     dsml_sanitizer.install()
@@ -175,7 +175,7 @@ def test_parse_choice_handles_split_dsml_opener():
     # "<｜｜DSML｜｜tool_calls>" string, so the OLD detector silently
     # missed it. The new trigger-char detector catches the first `｜`.
     chunks_in = [
-        "At once, sir. <",   # pre-text + envelope start
+        "At once. <",   # pre-text + envelope start
         "｜",                 # ← first trigger char; should switch to swallow
         "｜DSML",
         "｜｜tool_calls>",
@@ -189,9 +189,9 @@ def test_parse_choice_handles_split_dsml_opener():
         c = _make(content)
         inf_llm.LLMStream._parse_choice(self_mock, response_id, c, thinking)
         voiced.append(c.delta.content)
-    # Only the pre-text "At once, sir. " should have reached TTS.
+    # Only the pre-text "At once. " should have reached TTS.
     full_voiced = "".join(voiced)
-    assert "At once, sir." in full_voiced, "pre-text dropped"
+    assert "At once." in full_voiced, "pre-text dropped"
     assert "｜" not in full_voiced, f"DSML char leaked to TTS: {full_voiced!r}"
     assert "DSML" not in full_voiced, f"DSML markup leaked: {full_voiced!r}"
     assert "tool_calls" not in full_voiced, f"tool_calls leaked: {full_voiced!r}"

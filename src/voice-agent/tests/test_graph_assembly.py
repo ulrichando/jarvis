@@ -32,7 +32,7 @@ def test_graph_banter_path_end_to_end():
         return_value=MagicMock(content='{"route": "BANTER", "confidence": 0.9}')
     )
     fake_banter = MagicMock()
-    fake_banter.invoke = MagicMock(return_value=_ai("Just fine, sir."))
+    fake_banter.invoke = MagicMock(return_value=_ai("Just fine."))
 
     with patch(
         "supervisor_graph.classify._build_classifier_chain",

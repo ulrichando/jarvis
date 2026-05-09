@@ -1,5 +1,5 @@
 """specialist_node:
-  1. emits a filler chunk ("One moment, sir.") exactly once
+  1. emits a filler chunk ("One moment.") exactly once
   2. re-emits the most recent transfer_to_* tool_call so the LLM
      adapter surfaces it for AgentSession to dispatch via the
      existing RegistrySpecialist path (the actual specialist runs in
