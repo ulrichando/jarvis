@@ -353,3 +353,51 @@ async def _call_consolidator_llm(category: str, entries: list[dict]) -> str:
                 f"[consolidator] LLM call failed: {type(e).__name__}: {e}"
             )
             return '{"clusters": []}'
+
+
+# ── Trigger (called from memory_extractor on each successful extraction) ──
+
+
+_EXTRACTIONS_SINCE_LAST_CONSOLIDATE: int = 0
+_EVERY_N_DEFAULT = 10
+
+
+def _every_n() -> int:
+    """Threshold for triggering. Read at runtime."""
+    try:
+        n = int(os.environ.get("JARVIS_MEMORY_CONSOLIDATE_EVERY_N", str(_EVERY_N_DEFAULT)))
+        return max(1, n)
+    except ValueError:
+        return _EVERY_N_DEFAULT
+
+
+def _consolidator_enabled() -> bool:
+    return os.environ.get("JARVIS_MEMORY_CONSOLIDATOR", "1") != "0"
+
+
+def record_extraction(schedule: bool = True) -> bool:
+    """Increment the per-extraction counter; if it hits the threshold,
+    schedule consolidate_all_categories and reset.
+
+    `schedule=False` is for tests — they want to verify the trigger
+    decision without the asyncio.create_task side effect.
+
+    Returns True if a consolidation was triggered (threshold met),
+    False otherwise. Always returns False when disabled via env."""
+    global _EXTRACTIONS_SINCE_LAST_CONSOLIDATE
+    if not _consolidator_enabled():
+        return False
+    _EXTRACTIONS_SINCE_LAST_CONSOLIDATE += 1
+    if _EXTRACTIONS_SINCE_LAST_CONSOLIDATE < _every_n():
+        return False
+    _EXTRACTIONS_SINCE_LAST_CONSOLIDATE = 0
+    if schedule:
+        try:
+            asyncio.create_task(consolidate_all_categories())
+        except RuntimeError:
+            # No running loop — can happen if extractor runs outside the
+            # voice-agent's main event loop. Fall back to a logged skip;
+            # next trigger will re-arm.
+            logger.warning("[consolidator] no event loop — skipping schedule")
+            return False
+    return True
