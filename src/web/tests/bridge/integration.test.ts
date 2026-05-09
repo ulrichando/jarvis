@@ -517,3 +517,118 @@ describe('ack/stop/heartbeat', () => {
     expect(envSecret).toBeTruthy() // pin the secret reference
   })
 })
+
+describe('reconnect + events + archive', () => {
+  test('reconnect 204 with valid env bearer', async () => {
+    const { environment_id, environment_secret } = await registerEnv()
+    const { POST } = await import(
+      '@/app/api/bridge/v1/environments/[envId]/bridge/reconnect/route'
+    )
+    const res = await POST(
+      new Request(`http://x/`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${environment_secret}`,
+        },
+        body: JSON.stringify({ session_id: 'sess1' }),
+      }),
+      { params: Promise.resolve({ envId: environment_id }) },
+    )
+    expect(res.status).toBe(204)
+  })
+
+  test('events route accepts events and returns 204', async () => {
+    const { POST } = await import(
+      '@/app/api/bridge/v1/sessions/[sessionId]/events/route'
+    )
+    const res = await POST(
+      new Request(`http://x/`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          // v1: any non-empty bearer accepted (sub-project 3 will tighten)
+          Authorization: 'Bearer any-token',
+        },
+        body: JSON.stringify({
+          events: [{ type: 'permission_response', granted: true }],
+        }),
+      }),
+      { params: Promise.resolve({ sessionId: 'sess1' }) },
+    )
+    expect(res.status).toBe(204)
+  })
+
+  test('events route returns 400 on missing events array', async () => {
+    const { POST } = await import(
+      '@/app/api/bridge/v1/sessions/[sessionId]/events/route'
+    )
+    const res = await POST(
+      new Request(`http://x/`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer any',
+        },
+        body: JSON.stringify({}),
+      }),
+      { params: Promise.resolve({ sessionId: 'sessX' }) },
+    )
+    expect(res.status).toBe(400)
+  })
+
+  test('events route returns 401 on missing bearer', async () => {
+    const { POST } = await import(
+      '@/app/api/bridge/v1/sessions/[sessionId]/events/route'
+    )
+    const res = await POST(
+      new Request(`http://x/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ events: [] }),
+      }),
+      { params: Promise.resolve({ sessionId: 'sessX' }) },
+    )
+    expect(res.status).toBe(401)
+  })
+
+  test('archive 204 first time, 409 second time', async () => {
+    const { environment_id, environment_secret } = await registerEnv()
+    const { POST } = await import(
+      '@/app/api/bridge/v1/sessions/[sessionId]/archive/route'
+    )
+    const make = () =>
+      POST(
+        new Request(`http://x/`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${environment_secret}`,
+          },
+          body: '{}',
+        }),
+        { params: Promise.resolve({ sessionId: 'sessA' }) },
+      )
+    const r1 = await make()
+    expect(r1.status).toBe(204)
+    const r2 = await make()
+    expect(r2.status).toBe(409)
+    expect(environment_id).toBeTruthy()
+  })
+
+  test('reconnect 401 on missing bearer', async () => {
+    const { environment_id } = await registerEnv()
+    const { POST } = await import(
+      '@/app/api/bridge/v1/environments/[envId]/bridge/reconnect/route'
+    )
+    const res = await POST(
+      new Request(`http://x/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: 's' }),
+      }),
+      { params: Promise.resolve({ envId: environment_id }) },
+    )
+    expect(res.status).toBe(401)
+  })
+})
