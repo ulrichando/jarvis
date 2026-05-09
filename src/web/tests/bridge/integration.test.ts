@@ -192,3 +192,110 @@ describe('register + unregister', () => {
     expect(unknown.status).toBe(401)
   })
 })
+
+import { enqueueWork } from '@/lib/bridge/store'
+import { getStore } from '@/lib/bridge/db'
+import { emitWorkAvailable } from '@/lib/bridge/events'
+
+async function registerEnv(): Promise<{ environment_id: string; environment_secret: string }> {
+  const { POST } = await import('@/app/api/bridge/v1/environments/bridge/route')
+  const r = await POST(
+    new Request('http://127.0.0.1:3000/api/bridge/v1/environments/bridge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        machine_name: 'kali',
+        directory: '/tmp',
+        max_sessions: 4,
+        metadata: { worker_type: 'jarvis' },
+      }),
+    }),
+  )
+  return r.json() as Promise<{ environment_id: string; environment_secret: string }>
+}
+
+describe('poll', () => {
+  test('returns null body when no work available within timeout', async () => {
+    const { environment_id, environment_secret } = await registerEnv()
+    const { GET } = await import(
+      '@/app/api/bridge/v1/environments/[envId]/work/poll/route'
+    )
+    // Use a tiny custom timeout so this test runs fast.
+    process.env.BRIDGE_POLL_TIMEOUT_MS = '100'
+    const res = await GET(
+      new Request(
+        `http://127.0.0.1:3000/api/bridge/v1/environments/${environment_id}/work/poll`,
+        { headers: { Authorization: `Bearer ${environment_secret}` } },
+      ),
+      { params: Promise.resolve({ envId: environment_id }) },
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body).toBeNull()
+    delete process.env.BRIDGE_POLL_TIMEOUT_MS
+  })
+
+  test('returns leased work envelope when present', async () => {
+    const { environment_id, environment_secret } = await registerEnv()
+    enqueueWork(getStore(), environment_id, {
+      session_id: 'sess1',
+      data: { prompt: 'hello' },
+    })
+    const { GET } = await import(
+      '@/app/api/bridge/v1/environments/[envId]/work/poll/route'
+    )
+    const res = await GET(
+      new Request(
+        `http://127.0.0.1:3000/api/bridge/v1/environments/${environment_id}/work/poll`,
+        { headers: { Authorization: `Bearer ${environment_secret}` } },
+      ),
+      { params: Promise.resolve({ envId: environment_id }) },
+    )
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { id: string; state: string; data: { prompt: string } }
+    expect(body.state).toBe('leased')
+    expect(body.data.prompt).toBe('hello')
+  })
+
+  test('long-poll wakes up on emitWorkAvailable', async () => {
+    const { environment_id, environment_secret } = await registerEnv()
+    process.env.BRIDGE_POLL_TIMEOUT_MS = '5000'
+    const { GET } = await import(
+      '@/app/api/bridge/v1/environments/[envId]/work/poll/route'
+    )
+    setTimeout(() => {
+      enqueueWork(getStore(), environment_id, {
+        session_id: 's',
+        data: { x: 1 },
+      })
+      emitWorkAvailable(environment_id)
+    }, 50)
+    const t0 = Date.now()
+    const res = await GET(
+      new Request(
+        `http://127.0.0.1:3000/api/bridge/v1/environments/${environment_id}/work/poll`,
+        { headers: { Authorization: `Bearer ${environment_secret}` } },
+      ),
+      { params: Promise.resolve({ envId: environment_id }) },
+    )
+    const elapsed = Date.now() - t0
+    expect(elapsed).toBeLessThan(2000)
+    const body = await res.json()
+    expect(body).not.toBeNull()
+    delete process.env.BRIDGE_POLL_TIMEOUT_MS
+  })
+
+  test('poll without bearer returns 401', async () => {
+    const { environment_id } = await registerEnv()
+    const { GET } = await import(
+      '@/app/api/bridge/v1/environments/[envId]/work/poll/route'
+    )
+    const res = await GET(
+      new Request(
+        `http://127.0.0.1:3000/api/bridge/v1/environments/${environment_id}/work/poll`,
+      ),
+      { params: Promise.resolve({ envId: environment_id }) },
+    )
+    expect(res.status).toBe(401)
+  })
+})
