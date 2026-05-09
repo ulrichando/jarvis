@@ -136,6 +136,7 @@ done
 # Only the CLI and its children are contained — doesn't affect the rest
 # of the user session, including VSCode Claude Code.
 CLI_CMD=( "$BUN"
+  --feature=VOICE_MODE
   --define 'MACRO.VERSION="2.1.107"'
   --define 'MACRO.BUILD_TIME=""'
   --define 'MACRO.PACKAGE_URL="@anthropic-ai/claude-code"'
