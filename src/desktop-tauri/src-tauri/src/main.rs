@@ -225,12 +225,19 @@ fn voice_session_within_60s() -> bool {
         Err(_) => return false,
     };
     let db_path = format!("{}/.local/share/jarvis/turn_telemetry.db", home);
-    if !std::path::Path::new(&db_path).exists() {
+    voice_session_within_60s_at(std::path::Path::new(&db_path))
+}
+
+/// Path-parameterized inner — split out so unit tests can drop a
+/// fixture DB into a tempdir and exercise all branches without
+/// touching the real $HOME store.
+fn voice_session_within_60s_at(db_path: &std::path::Path) -> bool {
+    if !db_path.exists() {
         return false;
     }
     let output = match std::process::Command::new("sqlite3")
         .args([
-            db_path.as_str(),
+            db_path.to_string_lossy().as_ref(),
             // sqlite's strftime parses ISO 8601 timestamps; voice-agent
             // writes ts_utc as an ISO string. Returning age in seconds
             // keeps the parse trivial on this side.
@@ -246,6 +253,96 @@ fn voice_session_within_60s() -> bool {
     match stdout.trim().parse::<i64>() {
         Ok(age_secs) => age_secs < 60 && age_secs >= 0,
         Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    fn make_telemetry_db(dir: &std::path::Path, ts_iso: Option<&str>) -> PathBuf {
+        let path = dir.join("telemetry.db");
+        // Match the voice-agent schema enough to satisfy the query.
+        // ts_utc TEXT NOT NULL is the only column the function reads.
+        let create = "CREATE TABLE turns (id INTEGER PRIMARY KEY, ts_utc TEXT NOT NULL);";
+        Command::new("sqlite3")
+            .arg(&path)
+            .arg(create)
+            .status()
+            .expect("sqlite3 create");
+        if let Some(ts) = ts_iso {
+            Command::new("sqlite3")
+                .arg(&path)
+                .arg(format!("INSERT INTO turns (ts_utc) VALUES ('{ts}');"))
+                .status()
+                .expect("sqlite3 insert");
+        }
+        path
+    }
+
+    fn iso_seconds_ago(secs: i64) -> String {
+        let out = Command::new("date")
+            .args(["-u", "-d", &format!("@{}", chrono_like_now() - secs), "+%Y-%m-%dT%H:%M:%SZ"])
+            .output()
+            .expect("date");
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    }
+
+    fn chrono_like_now() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn returns_false_when_db_missing() {
+        let tmp = tempdir_safe();
+        let path = tmp.join("does-not-exist.db");
+        assert!(!voice_session_within_60s_at(&path));
+    }
+
+    #[test]
+    fn returns_false_when_table_empty() {
+        let tmp = tempdir_safe();
+        let path = make_telemetry_db(&tmp, None);
+        assert!(!voice_session_within_60s_at(&path));
+    }
+
+    #[test]
+    fn returns_true_for_recent_turn() {
+        let tmp = tempdir_safe();
+        let path = make_telemetry_db(&tmp, Some(&iso_seconds_ago(10)));
+        assert!(voice_session_within_60s_at(&path));
+    }
+
+    #[test]
+    fn returns_false_for_stale_turn() {
+        let tmp = tempdir_safe();
+        let path = make_telemetry_db(&tmp, Some(&iso_seconds_ago(120)));
+        assert!(!voice_session_within_60s_at(&path));
+    }
+
+    #[test]
+    fn returns_false_when_age_negative() {
+        // Future ts_utc (clock skew, unrealistic but possible) → safe path
+        // is "no active session" rather than "lock the user out of Quit"
+        let tmp = tempdir_safe();
+        let path = make_telemetry_db(&tmp, Some(&iso_seconds_ago(-30)));
+        assert!(!voice_session_within_60s_at(&path));
+    }
+
+    fn tempdir_safe() -> PathBuf {
+        let pid = std::process::id();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let p = std::env::temp_dir().join(format!("jarvis-desktop-test-{pid}-{nanos}"));
+        std::fs::create_dir_all(&p).expect("mkdir tempdir");
+        p
     }
 }
 
