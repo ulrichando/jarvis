@@ -436,7 +436,7 @@ def test_log_turn_default_memory_auto_extracted_is_zero(tmp_path):
     init_db(str(db))
     log_turn(
         user_text="hello",
-        jarvis_text="Yes, sir?",
+        jarvis_text="Yes?",
         emotion="neutral", route="BANTER",
         llm_used="groq:llama-3.1-8b", voice_used="troy",
         ttfw_ms=100, total_audio_ms=500,
