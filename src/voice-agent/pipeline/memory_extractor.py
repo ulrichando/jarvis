@@ -288,4 +288,16 @@ async def extract_memory_from_turn(
         )
         # Mark extractor-success evidence for the confab detector.
         _mark_extraction_success()
+        # Tell the consolidator a successful extraction landed; on every
+        # Nth call (default 10) it schedules consolidate_all_categories
+        # via asyncio.create_task. Lazy import so a circular at module
+        # load doesn't surface (consolidator imports _META_PARAPHRASE_RE
+        # from this module).
+        try:
+            from pipeline.memory_consolidator import record_extraction
+            record_extraction()
+        except Exception as e:
+            logger.warning(
+                f"[extractor] record_extraction failed: {type(e).__name__}: {e}"
+            )
     return parsed
