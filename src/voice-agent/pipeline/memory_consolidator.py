@@ -26,6 +26,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Awaitable, Callable
 
 # Ensure src/hub is importable for the lazy `from client import HubClient`
 # call in `_read_memories_for_category` — same pattern tools/memory.py uses.
@@ -118,3 +119,35 @@ def _filter_young_memories(
         now_ms = int(time.time() * 1000)
     cutoff_ms = now_ms - (exclusion_seconds * 1000)
     return [r for r in rows if isinstance(r.get("created_ts"), int) and r["created_ts"] <= cutoff_ms]
+
+
+# Publisher seam: production injects tools.memory._publish_event_async;
+# tests inject a FakePublisher.
+Publisher = Callable[[str, dict], Awaitable[None]]
+
+
+async def _apply_clusters(clusters: list[Cluster], publisher: Publisher) -> None:
+    """Apply each cluster: upsert canonical, then remove each member.
+    Aborts the whole call on first publisher exception — leaving any
+    partially-applied cluster on disk is acceptable (publish path is
+    the source of truth, idempotent on next run)."""
+    if not clusters:
+        return
+    # Lazy import to avoid a hard dep on tools.memory at module load.
+    from tools.memory import _memory_id
+
+    for c in clusters:
+        new_id = _memory_id(c.canonical)
+        try:
+            await publisher("memory.value.upserted", {
+                "memory_id": new_id,
+                "content": c.canonical,
+                "category": c.category,
+            })
+            for old_id in c.members:
+                await publisher("memory.value.removed", {"memory_id": old_id})
+        except Exception as e:
+            logger.warning(
+                f"[consolidator] apply aborted mid-cluster: {type(e).__name__}: {e}"
+            )
+            return

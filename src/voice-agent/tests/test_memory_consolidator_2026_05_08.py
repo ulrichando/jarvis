@@ -122,3 +122,65 @@ def test_filter_young_memories_handles_missing_created_ts():
     rows = [{"memory_id": "x"}]
     kept = _filter_young_memories(rows, exclusion_seconds=300, now_ms=now_ms)
     assert kept == []
+
+
+# ── Apply (publisher orchestration) ──────────────────────────────────
+
+
+class _FakePublisher:
+    """Captures ('upserted'|'removed', payload) tuples in order."""
+    def __init__(self, fail_on_call: int | None = None):
+        self.calls: list[tuple[str, dict]] = []
+        self.fail_on_call = fail_on_call
+
+    async def __call__(self, event_type: str, payload: dict) -> None:
+        if self.fail_on_call is not None and len(self.calls) == self.fail_on_call:
+            raise RuntimeError("simulated publish failure")
+        # event_type looks like "memory.value.upserted"; reduce to last token
+        kind = event_type.rsplit(".", 1)[-1]
+        self.calls.append((kind, payload))
+
+
+def _run(coro):
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
+def test_apply_clusters_publishes_upsert_then_remove():
+    from pipeline.memory_consolidator import Cluster, _apply_clusters
+    pub = _FakePublisher()
+    clusters = [Cluster(members=["a", "b"], canonical="merged.", category="user")]
+    _run(_apply_clusters(clusters, publisher=pub))
+    # Expect: 1 upsert + 2 removes, in that order.
+    assert [c[0] for c in pub.calls] == ["upserted", "removed", "removed"]
+    upsert_payload = pub.calls[0][1]
+    assert upsert_payload["content"] == "merged."
+    assert upsert_payload["category"] == "user"
+    assert "memory_id" in upsert_payload
+    removed_ids = sorted(c[1]["memory_id"] for c in pub.calls[1:])
+    assert removed_ids == ["a", "b"]
+
+
+def test_apply_aborts_on_publish_exception():
+    from pipeline.memory_consolidator import Cluster, _apply_clusters
+    pub = _FakePublisher(fail_on_call=1)  # fail on the first remove
+    clusters = [
+        Cluster(members=["a", "b"], canonical="x.", category="user"),
+        Cluster(members=["c", "d"], canonical="y.", category="user"),
+    ]
+    _run(_apply_clusters(clusters, publisher=pub))
+    # First cluster: upsert succeeded (call 0), first remove failed (call 1).
+    # Second cluster: never attempted — abort-on-exception is bounded to
+    # 1 already-published canonical (acceptable, documented in spec).
+    kinds = [c[0] for c in pub.calls]
+    assert kinds == ["upserted"]
+
+
+def test_apply_empty_clusters_is_noop():
+    from pipeline.memory_consolidator import _apply_clusters
+    pub = _FakePublisher()
+    _run(_apply_clusters([], publisher=pub))
+    assert pub.calls == []
