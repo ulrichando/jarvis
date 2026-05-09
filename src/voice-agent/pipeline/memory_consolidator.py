@@ -151,3 +151,66 @@ async def _apply_clusters(clusters: list[Cluster], publisher: Publisher) -> None
                 f"[consolidator] apply aborted mid-cluster: {type(e).__name__}: {e}"
             )
             return
+
+
+_YOUNG_EXCLUSION_SECONDS_DEFAULT = 300  # 5 min
+
+
+def _young_exclusion_seconds() -> int:
+    """Read at runtime so operator env edits take effect without restart
+    (matches the 2026-05-08 specialist-gate runtime-read pattern)."""
+    try:
+        return int(os.environ.get(
+            "JARVIS_MEMORY_CONSOLIDATE_YOUNG_EXCLUSION_S",
+            str(_YOUNG_EXCLUSION_SECONDS_DEFAULT),
+        ))
+    except ValueError:
+        return _YOUNG_EXCLUSION_SECONDS_DEFAULT
+
+
+# LLM seam — tests inject; production uses _call_consolidator_llm
+# (added in Task 6). Type: async (category, entries) -> str.
+LLMFn = Callable[[str, list[dict]], Awaitable[str]]
+
+
+async def consolidate_category(
+    category: str,
+    rows: list[dict],
+    publisher: Publisher,
+    llm_fn: LLMFn,
+) -> None:
+    """Read → filter young → LLM → parse → apply. Caller responsibility:
+    pass `rows` already filtered to a single category. No-op on any
+    failure (validation, LLM error, publisher abort). Logs a one-line
+    summary on every call."""
+    candidates = _filter_young_memories(rows, _young_exclusion_seconds())
+    if len(candidates) < 2:
+        logger.info(
+            f"[consolidator] category={category} candidates={len(candidates)} "
+            f"clusters=0 reason=under_threshold"
+        )
+        return
+
+    valid_ids = {r["memory_id"] for r in candidates}
+    try:
+        raw = await llm_fn(category, candidates)
+    except Exception as e:
+        logger.warning(
+            f"[consolidator] category={category} llm_error={type(e).__name__}: {e}"
+        )
+        return
+
+    clusters = parse_consolidator_output(raw, valid_ids, category)
+    if not clusters:
+        logger.info(
+            f"[consolidator] category={category} candidates={len(candidates)} clusters=0"
+        )
+        return
+
+    await _apply_clusters(clusters, publisher)
+    members_total = sum(len(c.members) for c in clusters)
+    logger.info(
+        f"[consolidator] category={category} candidates={len(candidates)} "
+        f"clusters={len(clusters)} merged_into={len(clusters)} "
+        f"removed={members_total}"
+    )

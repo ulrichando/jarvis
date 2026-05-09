@@ -184,3 +184,103 @@ def test_apply_empty_clusters_is_noop():
     pub = _FakePublisher()
     _run(_apply_clusters([], publisher=pub))
     assert pub.calls == []
+
+
+# ── consolidate_category (single category orchestration) ─────────────
+
+
+def test_consolidate_category_skips_when_under_two_entries():
+    from pipeline.memory_consolidator import consolidate_category
+    pub = _FakePublisher()
+
+    async def fake_llm(category, entries):
+        raise AssertionError("LLM should not be called for <2 entries")
+
+    rows = [{"memory_id": "a", "content": "only one.",
+             "created_ts": int(time.time()*1000) - 600_000}]
+    _run(consolidate_category("user", rows, publisher=pub, llm_fn=fake_llm))
+    assert pub.calls == []
+
+
+def test_consolidate_category_skips_when_all_young():
+    from pipeline.memory_consolidator import consolidate_category
+    pub = _FakePublisher()
+
+    async def fake_llm(category, entries):
+        raise AssertionError("LLM should not be called when all young")
+
+    now_ms = int(time.time() * 1000)
+    rows = [
+        {"memory_id": "a", "content": "x.", "created_ts": now_ms - 30_000},
+        {"memory_id": "b", "content": "y.", "created_ts": now_ms - 60_000},
+    ]
+    _run(consolidate_category("user", rows, publisher=pub, llm_fn=fake_llm))
+    assert pub.calls == []
+
+
+def test_consolidate_category_happy_path():
+    from pipeline.memory_consolidator import consolidate_category
+    pub = _FakePublisher()
+    now_ms = int(time.time() * 1000)
+    rows = [
+        {"memory_id": "a", "content": "Ulrich is married to Lizzy.",
+         "created_ts": now_ms - 600_000},
+        {"memory_id": "b", "content": "Ulrich's wife is named Lizzy.",
+         "created_ts": now_ms - 700_000},
+    ]
+
+    async def fake_llm(category, entries):
+        # Sanity: entries list passed in is the filtered set.
+        assert {e["memory_id"] for e in entries} == {"a", "b"}
+        return ('{"clusters": [{"members": ["a", "b"], '
+                '"canonical": "Ulrich is married to Lizzy."}]}')
+
+    _run(consolidate_category("user", rows, publisher=pub, llm_fn=fake_llm))
+    kinds = [c[0] for c in pub.calls]
+    assert kinds == ["upserted", "removed", "removed"]
+
+
+def test_consolidate_category_llm_garbage_is_noop():
+    from pipeline.memory_consolidator import consolidate_category
+    pub = _FakePublisher()
+    now_ms = int(time.time() * 1000)
+    rows = [
+        {"memory_id": "a", "content": "x.", "created_ts": now_ms - 600_000},
+        {"memory_id": "b", "content": "y.", "created_ts": now_ms - 700_000},
+    ]
+
+    async def fake_llm(category, entries):
+        return "not-json {{"
+
+    _run(consolidate_category("user", rows, publisher=pub, llm_fn=fake_llm))
+    assert pub.calls == []
+
+
+def test_consolidate_category_idempotent():
+    """Run twice with the same input — second run sees the canonical and
+    nothing else, so the LLM (still mocked) returns no clusters."""
+    from pipeline.memory_consolidator import consolidate_category
+    pub = _FakePublisher()
+    now_ms = int(time.time() * 1000)
+    rows_first = [
+        {"memory_id": "a", "content": "x.", "created_ts": now_ms - 600_000},
+        {"memory_id": "b", "content": "y.", "created_ts": now_ms - 700_000},
+    ]
+    canonical_id = None
+
+    async def first_llm(category, entries):
+        return ('{"clusters": [{"members": ["a", "b"], "canonical": "merged."}]}')
+
+    _run(consolidate_category("user", rows_first, publisher=pub, llm_fn=first_llm))
+    canonical_id = pub.calls[0][1]["memory_id"]
+
+    # Second run: only the canonical remains.
+    pub2 = _FakePublisher()
+    rows_second = [{"memory_id": canonical_id, "content": "merged.",
+                    "created_ts": now_ms - 800_000}]
+
+    async def second_llm(category, entries):
+        return '{"clusters": []}'  # nothing to merge
+
+    _run(consolidate_category("user", rows_second, publisher=pub2, llm_fn=second_llm))
+    assert pub2.calls == []
