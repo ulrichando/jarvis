@@ -264,7 +264,7 @@ def test_v2_e2e_grounding_gate_rejects_unsupported_claim(isolated_blackboard):
         # Invoke WITHOUT pre-populating evidence
         out = g.invoke(initial_state(user_query="open a new tab"))
 
-    # The specialist_node emits a filler ("One moment, sir." etc).
+    # The specialist_node emits a filler ("One moment." etc).
     # The filler has no past-tense claims, so grounding_gate will find
     # nothing to validate and release cleanly (no evidence needed).
     contents = " ".join(getattr(m, "content", "") for m in out["messages"]).lower()
