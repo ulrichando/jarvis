@@ -21,7 +21,7 @@ export function getStore(): Store {
   // in-memory DB to avoid clobbering the user's real ~/.jarvis/bridge.db.
   // Tests that explicitly want isolation across describe blocks should
   // call _resetForTests() in a beforeEach hook (see integration.test.ts).
-  const useMemoryDb = process.env.VITEST === 'true' || process.env.NODE_ENV === 'test'
+  const useMemoryDb = Boolean(process.env.VITEST) || process.env.NODE_ENV === 'test'
   let dbPath: string
   if (useMemoryDb) {
     dbPath = ':memory:'

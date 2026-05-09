@@ -144,4 +144,51 @@ describe('register + unregister', () => {
     )
     expect(ok.status).toBe(204)
   })
+
+  test('DELETE /environments/bridge/{id} returns 401 on wrong secret (no info leak)', async () => {
+    const reg = await import('@/app/api/bridge/v1/environments/bridge/route')
+    const r = await reg.POST(
+      new Request(
+        'http://127.0.0.1:3000/api/bridge/v1/environments/bridge',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            machine_name: 'kali',
+            directory: '/tmp',
+            max_sessions: 4,
+            metadata: { worker_type: 'jarvis' },
+          }),
+        },
+      ),
+    )
+    const { environment_id } = (await r.json()) as { environment_id: string }
+    const { DELETE } = await import(
+      '@/app/api/bridge/v1/environments/bridge/[envId]/route'
+    )
+    // Wrong secret on a real env -> 401 (NOT 204, NOT 404)
+    const wrong = await DELETE(
+      new Request(
+        `http://127.0.0.1:3000/api/bridge/v1/environments/bridge/${environment_id}`,
+        {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer wrong-secret' },
+        },
+      ),
+      { params: Promise.resolve({ envId: environment_id }) },
+    )
+    expect(wrong.status).toBe(401)
+    // Unknown env with any bearer -> SAME 401 (no info leak)
+    const unknown = await DELETE(
+      new Request(
+        `http://127.0.0.1:3000/api/bridge/v1/environments/bridge/nonexistent`,
+        {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer wrong-secret' },
+        },
+      ),
+      { params: Promise.resolve({ envId: 'nonexistent' }) },
+    )
+    expect(unknown.status).toBe(401)
+  })
 })
