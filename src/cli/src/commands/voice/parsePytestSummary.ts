@@ -17,7 +17,7 @@ export interface PytestSummary {
 
 // pytest's summary line shape: "X passed[, Y failed][, Z skipped]... in N.Ms"
 const SUMMARY_RE =
-  /(\d+ (?:passed|failed|skipped|error|errors|deselected|warning|warnings)(?:, \d+ (?:passed|failed|skipped|error|errors|deselected|warning|warnings))*) in [\d.]+s/
+  /(?:\d+ (?:passed|failed|skipped|error|errors|deselected|warning|warnings|xfailed|xpassed)(?:, \d+ (?:passed|failed|skipped|error|errors|deselected|warning|warnings|xfailed|xpassed))*) in [\d.]+s/
 
 // Strip ANSI escape sequences (color codes, bold, etc.)
 function stripAnsi(text: string): string {
@@ -47,13 +47,13 @@ function extractFirstFailure(lines: string[]): string | null {
   let captureEnd = -1
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
-    if (/^=+ (FAILURES|ERRORS) =+$/.test(line)) {
+    if (/^=+ (FAILURES|ERRORS) =+$/.test(line.trimEnd())) {
       inFailureSection = true
       continue
     }
     if (!inFailureSection) continue
     // A `_____ ... _____` separator marks a failure boundary.
-    const sepMatch = /^_+ .+ _+$/.test(line)
+    const sepMatch = /^_+ .+ _+$/.test(line.trimEnd())
     if (sepMatch) {
       if (captureStart === -1) {
         captureStart = i
@@ -65,7 +65,7 @@ function extractFirstFailure(lines: string[]): string | null {
     }
     // A `===` boundary (e.g. "short test summary info") closes the failure
     // section before any second separator appeared.
-    if (captureStart !== -1 && /^=+ .+ =+$/.test(line)) {
+    if (captureStart !== -1 && /^=+ .+ =+$/.test(line.trimEnd())) {
       captureEnd = i
       break
     }
