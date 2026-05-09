@@ -89,6 +89,9 @@ const voiceLogsCommand = feature('VOICE_MODE')
 const voiceTestsCommand = feature('VOICE_MODE')
   ? require('./commands/voice/index.js').voiceTests
   : null
+const voiceStatusCommand = feature('VOICE_MODE')
+  ? require('./commands/voice/index.js').voiceStatus
+  : null
 const forceSnip = feature('HISTORY_SNIP')
   ? require('./commands/force-snip.js').default
   : null
@@ -338,6 +341,7 @@ const COMMANDS = memoize((): Command[] => [
   ...(voiceRestartCommand ? [voiceRestartCommand] : []),
   ...(voiceLogsCommand ? [voiceLogsCommand] : []),
   ...(voiceTestsCommand ? [voiceTestsCommand] : []),
+  ...(voiceStatusCommand ? [voiceStatusCommand] : []),
   thinkback,
   thinkbackPlay,
   permissions,
