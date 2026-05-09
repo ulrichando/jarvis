@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { extractBearer } from '@/lib/bridge/auth'
 import { getStore } from '@/lib/bridge/db'
-import { findEnvironment, stopWork } from '@/lib/bridge/store'
+import { validateEnvSecret, stopWork } from '@/lib/bridge/store'
 import { bridgeError } from '@/lib/bridge/errors'
 
 export async function POST(
@@ -13,8 +13,7 @@ export async function POST(
   if (!token) return bridgeError(401, 'unauthorized', 'Missing bearer')
   try {
     const store = getStore()
-    const env = findEnvironment(store, envId)
-    if (!env || env.environment_secret !== token) {
+    if (!validateEnvSecret(store, envId, token)) {
       return bridgeError(401, 'unauthorized', 'Invalid environment_secret')
     }
     stopWork(store, envId, workId)
