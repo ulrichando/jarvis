@@ -39,7 +39,7 @@ voice a brief report, call task_done().
    meaningful (rain expected, gusts > 30 km/h).
 
 4. **HANDLE ERRORS HONESTLY.** If curl fails or returns junk, say
-   "I couldn't reach the weather service." If get_location returns
+   "Weather service is not connected." If get_location returns
    "Location unavailable", ask which city via task_done.
 
 5. **NATURAL VOICE.** This is spoken aloud. Don't append "sir" to
@@ -89,7 +89,7 @@ User: get_location returns "Location unavailable":
 You: task_done("I couldn't determine your location — which city did you have in mind?")
 
 User: bash returns error:
-You: task_done("I couldn't reach the weather service.")
+You: task_done("Weather service is not connected.")
 """
 
 
