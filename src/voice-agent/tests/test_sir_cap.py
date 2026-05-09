@@ -1,12 +1,14 @@
-"""Tests for cap_sir_count — the trailing-sir trimmer + at-most-one-sir
-gate that runs over assistant text before TTS.
+"""Tests for cap_sir_count — the trailing-sir + body-sir filter
+that runs over assistant text before TTS.
 
-The user's repeated complaint: every JARVIS reply ends with ", sir."
-which sounds robotic. cap_sir_count is the post-process filter that
-shapes this. We test:
+The user's repeated complaint: every JARVIS reply ended with ", sir."
+which sounded robotic. As of 2026-05-09 (drop-butler-register
+overhaul), the rule tightened from "keep one body sir" to "strip
+every sir." We test:
   - Trailing-sir is always stripped, terminator preserved
-  - Body-sir is kept (at most once) — natural mid-sentence sir is fine
-  - Bare-vocative ("Yes, sir?") is exempt (bypasses this filter)
+  - ALL body-sirs are stripped (was: keep first, until 2026-05-09)
+  - Bare-vocative ("Yes?") is exempt — bypasses this filter, and
+    the canonical phrase no longer contains 'sir' anyway
   - Empty / no-sir inputs pass through unchanged
 """
 import asyncio
@@ -86,28 +88,32 @@ def test_strips_when_only_word_after_period():
     assert _run("Done. Sir.") == "Done."
 
 
-# ── Body-sir handling (at most one) ─────────────────────────────────
+# ── Body-sir handling: drop ALL (drop-butler-register 2026-05-09) ───
 
 
-def test_keeps_first_body_sir():
-    """A natural mid-sentence sir is OK to keep."""
+def test_drops_first_body_sir():
+    """A mid-sentence sir is no longer kept — drop it too."""
     out = _run("Done, sir, and the file is saved.")
-    # First 'sir' kept, no trailing-sir to strip
-    assert ", sir," in out
-    assert out.count("sir") == 1
+    assert "sir" not in out.lower()
+    assert "Done" in out
+    assert "the file is saved" in out
 
 
-def test_drops_second_body_sir():
+def test_drops_all_body_sirs():
+    """Multiple body-sirs all get stripped (previously: kept first)."""
     out = _run("Done, sir, and the file is saved, sir, no errors.")
-    # Two body-sirs — keep first, drop second.
-    assert out.count("sir") == 1
+    assert "sir" not in out.lower()
+    assert "Done" in out
+    assert "the file is saved" in out
+    assert "no errors" in out
 
 
-def test_keeps_one_body_sir_strips_trailing():
-    """Combined: a body-sir AND a trailing-sir → keep body, drop trailing."""
+def test_drops_body_and_trailing_sir():
+    """Combined: body-sir AND trailing-sir → strip both."""
     out = _run("Done, sir. The file is saved, sir.")
-    assert out.count("sir") == 1
-    assert not out.rstrip().endswith("sir.")
+    assert "sir" not in out.lower()
+    assert "Done" in out
+    assert "The file is saved" in out
 
 
 # ── Edge cases ──────────────────────────────────────────────────────
@@ -120,10 +126,9 @@ def test_does_not_strip_sir_inside_word():
 
 
 def test_yes_sir_question_form_stripped_too():
-    """The bare-vocative 'Yes, sir?' goes through session.say() directly,
-    not through cap_sir_count. But if it ever did flow through this
-    filter, the trailing-sir rule would strip it. That's acceptable —
-    the canonical bare-vocative path bypasses this entirely."""
+    """The canonical bare-vocative is now 'Yes?' (post-2026-05-09
+    drop-butler-register). A legacy 'Yes, sir?' that somehow flows
+    through this filter still gets stripped to 'Yes?' — same end
+    state via the trailing-sir rule."""
     out = _run("Yes, sir?")
-    # Trailing-sir strip catches it; output is "Yes?"
     assert out.strip() == "Yes?"
