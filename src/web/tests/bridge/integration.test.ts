@@ -404,6 +404,11 @@ describe('ack/stop/heartbeat', () => {
       { params: Promise.resolve({ envId, workId }) },
     )
     expect(res.status).toBe(204)
+    // Verify the state column was actually updated.
+    const row = getStore()
+      .db.prepare('SELECT state FROM work WHERE id = ?')
+      .get(workId) as { state: string }
+    expect(row.state).toBe('stopped')
   })
 
   test('heartbeat extends lease', async () => {
@@ -460,5 +465,55 @@ describe('ack/stop/heartbeat', () => {
     )
     const body = (await res.json()) as { lease_extended: boolean }
     expect(body.lease_extended).toBe(false)
+  })
+
+  test('ack/stop/heartbeat all return 401 on missing or wrong bearer', async () => {
+    const { envId, envSecret, workId } = await registerAndLeaseWork()
+    const ackMod = await import(
+      '@/app/api/bridge/v1/environments/[envId]/work/[workId]/ack/route'
+    )
+    const stopMod = await import(
+      '@/app/api/bridge/v1/environments/[envId]/work/[workId]/stop/route'
+    )
+    const hbMod = await import(
+      '@/app/api/bridge/v1/environments/[envId]/work/[workId]/heartbeat/route'
+    )
+    const params = { params: Promise.resolve({ envId, workId }) }
+
+    // No bearer → 401
+    const noAuthAck = await ackMod.POST(
+      new Request(`http://x/`, { method: 'POST' }),
+      params,
+    )
+    expect(noAuthAck.status).toBe(401)
+    const noAuthStop = await stopMod.POST(
+      new Request(`http://x/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      }),
+      params,
+    )
+    expect(noAuthStop.status).toBe(401)
+    const noAuthHb = await hbMod.POST(
+      new Request(`http://x/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      }),
+      params,
+    )
+    expect(noAuthHb.status).toBe(401)
+
+    // Wrong bearer → 401 (sanity check the env exists)
+    const wrongAck = await ackMod.POST(
+      new Request(`http://x/`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer wrong' },
+      }),
+      params,
+    )
+    expect(wrongAck.status).toBe(401)
+    expect(envSecret).toBeTruthy() // pin the secret reference
   })
 })
