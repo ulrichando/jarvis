@@ -53,3 +53,15 @@ export const voiceTests: Command = {
   supportsNonInteractive: true,
   load: () => import('./tests.js'),
 }
+
+export const voiceStatus: Command = {
+  type: 'local',
+  name: 'voice-status',
+  description: 'Show voice-agent + bridge service status and last-turn age',
+  isEnabled: () => isVoiceGrowthBookEnabled(),
+  get isHidden() {
+    return !isVoiceModeEnabled()
+  },
+  supportsNonInteractive: true,
+  load: () => import('./status.js'),
+}
