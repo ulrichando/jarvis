@@ -114,7 +114,7 @@ def extract_claims(text: str) -> list[Claim]:
 
 from langchain_core.messages import AIMessage
 
-GROUNDING_FALLBACK_MESSAGE = "Something didn't go as expected, sir."
+GROUNDING_FALLBACK_MESSAGE = "Something didn't go as expected."
 
 
 def grounding_gate_node(state: dict, *, client=None) -> dict:

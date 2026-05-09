@@ -7,7 +7,7 @@ normal tool dispatch, kicking off the existing RegistrySpecialist
 machinery (specialists/agent.py with the task_done gate). The graph's
 job here is:
 
-  1. Emit the non-committal filler ("One moment, sir.") exactly once
+  1. Emit the non-committal filler ("One moment.") exactly once
      so the user hears a voice during the latency.
   2. Re-emit the transfer_to_* tool_call so the LLM adapter surfaces
      it as a real ChatChunk for AgentSession to dispatch.
@@ -30,7 +30,7 @@ logger = logging.getLogger("supervisor_graph.specialist")
 # Non-committal fillers. NEVER include past-tense success language.
 # All are < 1 second to synthesize via Groq Orpheus.
 _FILLERS = (
-    "One moment, sir.",
+    "One moment.",
     "On it.",
     "Let me check.",
     "Looking now.",

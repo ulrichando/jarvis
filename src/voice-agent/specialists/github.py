@@ -38,7 +38,7 @@ Rules:
     return what you found and let the supervisor delegate again.
   - This subagent is READ-ONLY. If the user asks to comment, merge,
     or close, return "needs human action — voice-agent doesn't ship
-    write tools yet, sir."
+    write tools yet."
 """
 
 

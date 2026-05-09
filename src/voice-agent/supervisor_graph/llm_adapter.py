@@ -264,7 +264,7 @@ class _GraphLLMStream:
             logger.exception("[graph] invoke failed: %s", e)
             final_state = {
                 "messages": [AIMessage(
-                    content="My apologies, sir — something went wrong on my end."
+                    content="My apologies — something went wrong on my end."
                 )]
             }
 
