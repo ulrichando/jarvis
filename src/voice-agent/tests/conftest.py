@@ -25,3 +25,10 @@ def pytest_configure(config) -> None:
         "GITHUB",
     ):
         os.environ.setdefault(f"JARVIS_SUBAGENT_{name}", "1")
+    # Memory consolidator: default OFF in tests so existing extractor
+    # tests (test_extractor_marks_success_on_parse etc.) don't trip
+    # the trigger counter and schedule background asyncio tasks that
+    # leak across tests. Tests that specifically validate the
+    # consolidator monkeypatch.setenv("JARVIS_MEMORY_CONSOLIDATOR", "1")
+    # in their own scope.
+    os.environ.setdefault("JARVIS_MEMORY_CONSOLIDATOR", "0")
