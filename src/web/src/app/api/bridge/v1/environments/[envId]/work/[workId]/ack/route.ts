@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { extractBearer } from '@/lib/bridge/auth'
 import { getStore } from '@/lib/bridge/db'
-import { findEnvironment } from '@/lib/bridge/store'
+import { validateEnvSecret } from '@/lib/bridge/store'
 import { bridgeError } from '@/lib/bridge/errors'
 
 export async function POST(
@@ -12,8 +12,7 @@ export async function POST(
   const token = extractBearer(req.headers.get('authorization'))
   if (!token) return bridgeError(401, 'unauthorized', 'Missing bearer')
   try {
-    const env = findEnvironment(getStore(), envId)
-    if (!env || env.environment_secret !== token) {
+    if (!validateEnvSecret(getStore(), envId, token)) {
       return bridgeError(401, 'unauthorized', 'Invalid environment_secret')
     }
     // Ack is a no-op on the server side beyond auth — the lease was already
