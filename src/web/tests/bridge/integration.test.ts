@@ -337,3 +337,128 @@ describe('poll', () => {
     }
   })
 })
+
+async function registerAndLeaseWork(): Promise<{
+  envId: string
+  envSecret: string
+  workId: string
+}> {
+  const reg = await registerEnv()
+  enqueueWork(getStore(), reg.environment_id, {
+    session_id: 'sess1',
+    data: { p: 'x' },
+  })
+  process.env.BRIDGE_POLL_TIMEOUT_MS = '100'
+  try {
+    const { GET } = await import(
+      '@/app/api/bridge/v1/environments/[envId]/work/poll/route'
+    )
+    const r = await GET(
+      new Request(
+        `http://127.0.0.1:3000/api/bridge/v1/environments/${reg.environment_id}/work/poll`,
+        { headers: { Authorization: `Bearer ${reg.environment_secret}` } },
+      ),
+      { params: Promise.resolve({ envId: reg.environment_id }) },
+    )
+    const w = (await r.json()) as { id: string }
+    return {
+      envId: reg.environment_id,
+      envSecret: reg.environment_secret,
+      workId: w.id,
+    }
+  } finally {
+    delete process.env.BRIDGE_POLL_TIMEOUT_MS
+  }
+}
+
+describe('ack/stop/heartbeat', () => {
+  test('ack returns 204', async () => {
+    const { envId, envSecret, workId } = await registerAndLeaseWork()
+    const { POST } = await import(
+      '@/app/api/bridge/v1/environments/[envId]/work/[workId]/ack/route'
+    )
+    const res = await POST(
+      new Request(`http://x/`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${envSecret}` },
+      }),
+      { params: Promise.resolve({ envId, workId }) },
+    )
+    expect(res.status).toBe(204)
+  })
+
+  test('stop returns 204 and marks work stopped', async () => {
+    const { envId, envSecret, workId } = await registerAndLeaseWork()
+    const { POST } = await import(
+      '@/app/api/bridge/v1/environments/[envId]/work/[workId]/stop/route'
+    )
+    const res = await POST(
+      new Request(`http://x/`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${envSecret}`,
+        },
+        body: JSON.stringify({ force: true }),
+      }),
+      { params: Promise.resolve({ envId, workId }) },
+    )
+    expect(res.status).toBe(204)
+  })
+
+  test('heartbeat extends lease', async () => {
+    const { envId, envSecret, workId } = await registerAndLeaseWork()
+    const { POST } = await import(
+      '@/app/api/bridge/v1/environments/[envId]/work/[workId]/heartbeat/route'
+    )
+    const res = await POST(
+      new Request(`http://x/`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${envSecret}`,
+        },
+        body: JSON.stringify({}),
+      }),
+      { params: Promise.resolve({ envId, workId }) },
+    )
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { lease_extended: boolean; last_heartbeat: string }
+    expect(body.lease_extended).toBe(true)
+    expect(body.last_heartbeat).toBeTruthy()
+  })
+
+  test('heartbeat after stop returns lease_extended:false', async () => {
+    const { envId, envSecret, workId } = await registerAndLeaseWork()
+    const stopMod = await import(
+      '@/app/api/bridge/v1/environments/[envId]/work/[workId]/stop/route'
+    )
+    await stopMod.POST(
+      new Request(`http://x/`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${envSecret}`,
+        },
+        body: JSON.stringify({ force: false }),
+      }),
+      { params: Promise.resolve({ envId, workId }) },
+    )
+    const hb = await import(
+      '@/app/api/bridge/v1/environments/[envId]/work/[workId]/heartbeat/route'
+    )
+    const res = await hb.POST(
+      new Request(`http://x/`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${envSecret}`,
+        },
+        body: JSON.stringify({}),
+      }),
+      { params: Promise.resolve({ envId, workId }) },
+    )
+    const body = (await res.json()) as { lease_extended: boolean }
+    expect(body.lease_extended).toBe(false)
+  })
+})
