@@ -242,14 +242,26 @@ export function leaseNextWork(
   })()
 }
 
-export function reclaimExpiredLeases(store: Store, envId: string): number {
+/**
+ * Reclaim leased work whose lease has been expired for at least `cutoffMs`
+ * milliseconds. Default cutoff is 0 (any expired lease).
+ *
+ * Caller passes a positive cutoff to give the leasing CLI a grace window
+ * after the lease nominally expires before the work is reassigned.
+ */
+export function reclaimExpiredLeases(
+  store: Store,
+  envId: string,
+  cutoffMs: number = 0,
+): number {
   const now = Date.now()
+  const cutoff = now - cutoffMs
   const result = store.db
     .prepare(
       `UPDATE work SET state = 'pending', leased_at = NULL, lease_expires_at = NULL
        WHERE environment_id = ? AND state = 'leased' AND lease_expires_at < ?`,
     )
-    .run(envId, now)
+    .run(envId, cutoff)
   return result.changes
 }
 

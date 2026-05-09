@@ -31,36 +31,44 @@ export async function GET(
     return bridgeError(401, 'unauthorized', 'Invalid environment_secret')
   }
 
-  const url = new URL(req.url)
-  const reclaimRaw = url.searchParams.get('reclaim_older_than_ms')
-  if (reclaimRaw) {
-    reclaimExpiredLeases(store, envId)
-  }
+  try {
+    const url = new URL(req.url)
+    const reclaimRaw = url.searchParams.get('reclaim_older_than_ms')
+    if (reclaimRaw !== null) {
+      const cutoffMs = parseInt(reclaimRaw, 10)
+      if (Number.isFinite(cutoffMs) && cutoffMs >= 0) {
+        reclaimExpiredLeases(store, envId, cutoffMs)
+      }
+    }
 
-  const tryLease = (): NextResponse | null => {
-    const work = leaseNextWork(store, envId, LEASE_TTL_MS)
-    if (!work) return null
-    return NextResponse.json(
-      {
-        id: work.id,
-        type: 'work',
-        environment_id: work.environment_id,
-        state: work.state,
-        data: work.data,
-        secret: work.secret_b64url,
-        created_at: new Date(work.created_at).toISOString(),
-      },
-      { status: 200 },
-    )
-  }
+    const tryLease = (): NextResponse | null => {
+      const work = leaseNextWork(store, envId, LEASE_TTL_MS)
+      if (!work) return null
+      return NextResponse.json(
+        {
+          id: work.id,
+          type: 'work',
+          environment_id: work.environment_id,
+          state: work.state,
+          data: work.data,
+          secret: work.secret_b64url,
+          created_at: new Date(work.created_at).toISOString(),
+        },
+        { status: 200 },
+      )
+    }
 
-  const immediate = tryLease()
-  if (immediate) return immediate
+    const immediate = tryLease()
+    if (immediate) return immediate
 
-  const woke = await waitForWork(envId, pollTimeoutMs())
-  if (woke) {
-    const after = tryLease()
-    if (after) return after
+    const woke = await waitForWork(envId, pollTimeoutMs())
+    if (woke) {
+      const after = tryLease()
+      if (after) return after
+    }
+    return NextResponse.json(null, { status: 200 })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return bridgeError(500, 'internal_error', `DB error: ${msg}`)
   }
-  return NextResponse.json(null, { status: 200 })
 }

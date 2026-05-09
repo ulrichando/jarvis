@@ -220,19 +220,21 @@ describe('poll', () => {
     const { GET } = await import(
       '@/app/api/bridge/v1/environments/[envId]/work/poll/route'
     )
-    // Use a tiny custom timeout so this test runs fast.
     process.env.BRIDGE_POLL_TIMEOUT_MS = '100'
-    const res = await GET(
-      new Request(
-        `http://127.0.0.1:3000/api/bridge/v1/environments/${environment_id}/work/poll`,
-        { headers: { Authorization: `Bearer ${environment_secret}` } },
-      ),
-      { params: Promise.resolve({ envId: environment_id }) },
-    )
-    expect(res.status).toBe(200)
-    const body = await res.json()
-    expect(body).toBeNull()
-    delete process.env.BRIDGE_POLL_TIMEOUT_MS
+    try {
+      const res = await GET(
+        new Request(
+          `http://127.0.0.1:3000/api/bridge/v1/environments/${environment_id}/work/poll`,
+          { headers: { Authorization: `Bearer ${environment_secret}` } },
+        ),
+        { params: Promise.resolve({ envId: environment_id }) },
+      )
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body).toBeNull()
+    } finally {
+      delete process.env.BRIDGE_POLL_TIMEOUT_MS
+    }
   })
 
   test('returns leased work envelope when present', async () => {
@@ -260,29 +262,32 @@ describe('poll', () => {
   test('long-poll wakes up on emitWorkAvailable', async () => {
     const { environment_id, environment_secret } = await registerEnv()
     process.env.BRIDGE_POLL_TIMEOUT_MS = '5000'
-    const { GET } = await import(
-      '@/app/api/bridge/v1/environments/[envId]/work/poll/route'
-    )
-    setTimeout(() => {
-      enqueueWork(getStore(), environment_id, {
-        session_id: 's',
-        data: { x: 1 },
-      })
-      emitWorkAvailable(environment_id)
-    }, 50)
-    const t0 = Date.now()
-    const res = await GET(
-      new Request(
-        `http://127.0.0.1:3000/api/bridge/v1/environments/${environment_id}/work/poll`,
-        { headers: { Authorization: `Bearer ${environment_secret}` } },
-      ),
-      { params: Promise.resolve({ envId: environment_id }) },
-    )
-    const elapsed = Date.now() - t0
-    expect(elapsed).toBeLessThan(2000)
-    const body = await res.json()
-    expect(body).not.toBeNull()
-    delete process.env.BRIDGE_POLL_TIMEOUT_MS
+    try {
+      const { GET } = await import(
+        '@/app/api/bridge/v1/environments/[envId]/work/poll/route'
+      )
+      setTimeout(() => {
+        enqueueWork(getStore(), environment_id, {
+          session_id: 's',
+          data: { x: 1 },
+        })
+        emitWorkAvailable(environment_id)
+      }, 50)
+      const t0 = Date.now()
+      const res = await GET(
+        new Request(
+          `http://127.0.0.1:3000/api/bridge/v1/environments/${environment_id}/work/poll`,
+          { headers: { Authorization: `Bearer ${environment_secret}` } },
+        ),
+        { params: Promise.resolve({ envId: environment_id }) },
+      )
+      const elapsed = Date.now() - t0
+      expect(elapsed).toBeLessThan(2000)
+      const body = await res.json()
+      expect(body).not.toBeNull()
+    } finally {
+      delete process.env.BRIDGE_POLL_TIMEOUT_MS
+    }
   })
 
   test('poll without bearer returns 401', async () => {
@@ -297,5 +302,38 @@ describe('poll', () => {
       { params: Promise.resolve({ envId: environment_id }) },
     )
     expect(res.status).toBe(401)
+  })
+
+  test('poll with reclaim_older_than_ms reclaims expired leases', async () => {
+    const { environment_id, environment_secret } = await registerEnv()
+    // Enqueue then immediately lease with a negative TTL — the lease is
+    // born expired.
+    enqueueWork(getStore(), environment_id, {
+      session_id: 's',
+      data: { x: 1 },
+    })
+    const { leaseNextWork } = await import('@/lib/bridge/store')
+    leaseNextWork(getStore(), environment_id, -1_000)
+    process.env.BRIDGE_POLL_TIMEOUT_MS = '100'
+    try {
+      const { GET } = await import(
+        '@/app/api/bridge/v1/environments/[envId]/work/poll/route'
+      )
+      // Pass cutoff=0 so the immediately-expired lease is reclaimed and we
+      // get the work back.
+      const res = await GET(
+        new Request(
+          `http://127.0.0.1:3000/api/bridge/v1/environments/${environment_id}/work/poll?reclaim_older_than_ms=0`,
+          { headers: { Authorization: `Bearer ${environment_secret}` } },
+        ),
+        { params: Promise.resolve({ envId: environment_id }) },
+      )
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body).not.toBeNull()
+      expect((body as { state: string }).state).toBe('leased')
+    } finally {
+      delete process.env.BRIDGE_POLL_TIMEOUT_MS
+    }
   })
 })
