@@ -334,3 +334,47 @@ def test_consolidate_all_categories_runs_each_category(monkeypatch):
     _run(mc.consolidate_all_categories())
     assert seen_categories == list(mc._VALID_CATEGORIES)
     assert mc._CONSOLIDATION_IN_FLIGHT is False  # cleared after run
+
+
+# ── record_extraction (trigger) ──────────────────────────────────────
+
+
+def test_record_extraction_increments_until_threshold(monkeypatch):
+    """At threshold, returns True (would schedule). Counter resets."""
+    import pipeline.memory_consolidator as mc
+    monkeypatch.setenv("JARVIS_MEMORY_CONSOLIDATOR", "1")
+    monkeypatch.setenv("JARVIS_MEMORY_CONSOLIDATE_EVERY_N", "3")
+    mc._EXTRACTIONS_SINCE_LAST_CONSOLIDATE = 0
+    assert mc.record_extraction(schedule=False) is False
+    assert mc.record_extraction(schedule=False) is False
+    assert mc.record_extraction(schedule=False) is True   # 3rd → triggers
+    assert mc._EXTRACTIONS_SINCE_LAST_CONSOLIDATE == 0    # reset
+    assert mc.record_extraction(schedule=False) is False  # next cycle
+
+
+def test_record_extraction_disabled_when_env_zero(monkeypatch):
+    """JARVIS_MEMORY_CONSOLIDATOR=0 makes record_extraction a no-op."""
+    import pipeline.memory_consolidator as mc
+    monkeypatch.setenv("JARVIS_MEMORY_CONSOLIDATOR", "0")
+    monkeypatch.setenv("JARVIS_MEMORY_CONSOLIDATE_EVERY_N", "1")
+    mc._EXTRACTIONS_SINCE_LAST_CONSOLIDATE = 0
+    # Even at 'every 1' the disable flag wins.
+    for _ in range(5):
+        assert mc.record_extraction(schedule=False) is False
+    assert mc._EXTRACTIONS_SINCE_LAST_CONSOLIDATE == 0
+
+
+def test_record_extraction_runtime_env_change(monkeypatch):
+    """N is read at runtime so operators can adjust without restart
+    (mirrors the 2026-05-08 specialist-gate runtime-read pattern)."""
+    import pipeline.memory_consolidator as mc
+    monkeypatch.setenv("JARVIS_MEMORY_CONSOLIDATOR", "1")
+    mc._EXTRACTIONS_SINCE_LAST_CONSOLIDATE = 0
+    monkeypatch.setenv("JARVIS_MEMORY_CONSOLIDATE_EVERY_N", "2")
+    assert mc.record_extraction(schedule=False) is False
+    assert mc.record_extraction(schedule=False) is True  # threshold=2 → trigger
+    # Now bump threshold mid-flight; new value must take effect immediately.
+    monkeypatch.setenv("JARVIS_MEMORY_CONSOLIDATE_EVERY_N", "3")
+    assert mc.record_extraction(schedule=False) is False
+    assert mc.record_extraction(schedule=False) is False
+    assert mc.record_extraction(schedule=False) is True
