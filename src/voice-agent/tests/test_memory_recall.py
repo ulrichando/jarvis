@@ -43,7 +43,7 @@ def test_condense_text_truncates_long_input():
 
 
 def test_condense_text_short_passes_through():
-    short = "Hello, sir."
+    short = "Hello."
     assert mr._condense_text(short) == short
 
 

@@ -40,7 +40,7 @@ def _stub_client_empty():
 
 def test_release_when_all_claims_have_evidence():
     from supervisor_graph.grounding_gate import grounding_gate_node
-    state = _draft_state("I've opened a new tab, sir.")
+    state = _draft_state("I've opened a new tab.")
     out = grounding_gate_node(state, client=_stub_client_with_evidence("ext_new_tab"))
     # No state mutation — gate released cleanly.
     assert "messages" not in out
@@ -50,7 +50,7 @@ def test_release_when_all_claims_have_evidence():
 def test_no_claims_passes_through():
     """Text with no past-tense claim is always released."""
     from supervisor_graph.grounding_gate import grounding_gate_node
-    state = _draft_state("How are you, sir?")
+    state = _draft_state("How are you?")
     out = grounding_gate_node(state, client=_stub_client_empty())
     # No claims → no mutation.
     assert "messages" not in out
@@ -65,7 +65,7 @@ def test_release_when_route_not_task():
 
     state = initial_state()
     state["route"] = "BANTER"
-    state["messages"] = [AIMessage(content="I've sent your email, sir.")]
+    state["messages"] = [AIMessage(content="I've sent your email.")]
     out = grounding_gate_node(state, client=_stub_client_empty())
     # No state mutation expected — gate bypassed.
     assert "messages" not in out
@@ -79,7 +79,7 @@ def test_reject_replaces_message_in_place():
     from supervisor_graph.state import initial_state
     from langchain_core.messages import AIMessage
 
-    rejected = AIMessage(content="I've sent the email, sir.", id="msg_42")
+    rejected = AIMessage(content="I've sent the email.", id="msg_42")
     state = initial_state()
     state["route"] = "TASK"
     state["messages"] = [rejected]

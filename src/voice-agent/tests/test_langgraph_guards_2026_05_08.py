@@ -125,7 +125,7 @@ def test_sanitizer_passes_normal_content_unchanged():
     from langchain_core.messages import AIMessage
     from supervisor_graph.llm_adapter import _ai_messages_to_chunks
 
-    msg = AIMessage(content="Right away, sir. Browser is open.")
+    msg = AIMessage(content="Right away. Browser is open.")
     chunks = _ai_messages_to_chunks([msg])
     found = False
     for ch in chunks:
