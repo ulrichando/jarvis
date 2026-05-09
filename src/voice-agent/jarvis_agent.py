@@ -862,7 +862,8 @@ QUIET_HOURS_WINDOW_SEC = float(os.environ.get("JARVIS_QUIET_WINDOW_SEC", "1200")
 # JARVIS responds to a similar-sounding word; false-negative means the
 # user has to repeat themselves.
 _JARVIS_NAME_RE        = re.compile(
-    r"\b(?:j[aeo]r?vis|joris|jervis|jarvest|jaravis|y[aeo]rvis|g[aeo]rvis|h[aeo]rvis|jorvis|jarbis)\b",
+    r"\b(?:j[aeo]r?vis|joris|jervis|jarvest|jaravis|y[aeo]rvis|g[aeo]rvis|h[aeo]rvis|jorvis|jarbis"
+    r"|yaris|yeris|yoris|jarius|jarrus|jorius)\b",
     re.IGNORECASE,
 )
 
@@ -878,9 +879,12 @@ _BARE_VOCATIVE_RE = re.compile(
     r"^\s*"
     # Optional preamble — common wake-fillers before the name:
     r"(?:(?:hey|yo|hi|ok(?:ay)?|so|alright|hello|i\s+said|please)\s+)*"
-    # The name itself, matching Whisper variants. Kept in sync with
-    # _JARVIS_NAME_RE — when adding a new STT variant there, add it
-    # here too.
+    # The name itself, matching Whisper variants. MUST stay bidirectionally
+    # in sync with _JARVIS_NAME_RE (line 864) AND the inline vocative-strip
+    # regex inside _is_command() (line 4397). Add a new STT variant here →
+    # add it to BOTH other sites; same in reverse. The 2026-05-09 spec
+    # review caught a one-way drift after the 6 trailing variants were
+    # added here only — quiet-hours guard silently dropped wake words.
     r"(?:j[aeo]r?vis|joris|jervis|jarvest|jaravis|y[aeo]rvis|g[aeo]rvis|h[aeo]rvis|jorvis|jarbis"
     r"|yaris|yeris|yoris|jarius|jarrus|jorius)"
     # Optional trailing punctuation only — no follow-up content:
@@ -4391,9 +4395,13 @@ def _is_command(text: str, patterns: tuple[re.Pattern, ...]) -> bool:
             continue
         # Strip a leading "jarvis" / "jervis" / "javis" / "joris" / etc.
         # vocative, remembering whether one was actually present.
-        # See _JARVIS_NAME_RE above for the full list of Whisper variants.
+        # MUST stay in sync with _JARVIS_NAME_RE (line 864) and the
+        # _BARE_VOCATIVE_RE alternation (line 884). All three sites accept
+        # the same Whisper-variant set; drift here causes mute/wake commands
+        # with mis-transcribed vocatives to be rejected.
         stripped = re.sub(
-            r"^(?:j[aeo]r?vis|joris|jervis|jarvest|jaravis|y[aeo]rvis|g[aeo]rvis|h[aeo]rvis|jorvis|jarbis)[,.:!\s]+",
+            r"^(?:j[aeo]r?vis|joris|jervis|jarvest|jaravis|y[aeo]rvis|g[aeo]rvis|h[aeo]rvis|jorvis|jarbis"
+            r"|yaris|yeris|yoris|jarius|jarrus|jorius)[,.:!\s]+",
             "",
             body,
         )
