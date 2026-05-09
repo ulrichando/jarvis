@@ -245,13 +245,13 @@ async def remember(content: str, category: str = "reference") -> str:
     """
     text = (content or "").strip()
     if not text:
-        return "(empty memory — nothing to save, sir)"
+        return "(empty memory — nothing to save)"
     if _is_sensitive(text):
         logger.info("[memory] blocked sensitive content")
-        return "That looks like a credential, sir — I won't store it."
+        return "That looks like a credential — I won't store it."
     if len(text) > _MAX_CONTENT_CHARS:
         return (
-            f"Memory too long, sir — keep it under "
+            f"Memory too long — keep it under "
             f"{_MAX_CONTENT_CHARS} characters."
         )
     # Normalize legacy aliases to the canonical taxonomy.
@@ -264,7 +264,7 @@ async def remember(content: str, category: str = "reference") -> str:
         "category": category,
         "source_session_id": os.environ.get("JARVIS_VOICE_SESSION_ID"),
     })
-    return "Saved, sir."
+    return "Saved."
 
 
 @function_tool
@@ -276,7 +276,7 @@ async def forget(query: str) -> str:
         query: Keyword(s) describing the memory to remove.
     """
     if not query or not query.strip():
-        return "(no query — what should I forget, sir?)"
+        return "(no query — what should I forget?)"
 
     candidates = _read_memories_via_sdk(limit=50)
     q = query.strip().lower()
@@ -285,7 +285,7 @@ async def forget(query: str) -> str:
         None,
     )
     if not match:
-        return f"No match for {query!r}, sir."
+        return f"No match for {query!r}."
 
     _publish_event("memory.value.removed", {"memory_id": match["memory_id"]})
     snippet = match["content"]
@@ -308,11 +308,11 @@ async def list_memories(category: str | None = None) -> str:
         category = _normalize_category(category)
     rows = _read_memories_via_sdk(category=category, limit=30)
     if not rows:
-        return "I haven't saved any memories yet, sir."
+        return "I haven't saved any memories yet."
     bullets = "\n  - ".join(
         f"[{r['category']}] {r['content']}" for r in rows
     )
-    return f"What I remember, sir:\n  - {bullets}"
+    return f"What I remember:\n  - {bullets}"
 
 
 # ── System-prompt injection (called per-turn from jarvis_agent) ─────
@@ -478,7 +478,7 @@ async def audit_memories() -> str:
       - near-duplicate pairs (≥50% word overlap, stopwords stripped)
 
     The supervisor's job is to voice the GIST briefly:
-      "23 memories, sir — 2 stale, 1 near-duplicate pair. Want me
+      "23 memories — 2 stale, 1 near-duplicate pair. Want me
        to walk through them?"
     Then call forget(query) on individual entries the user wants
     pruned. The full report is what audit_memories() returns; the

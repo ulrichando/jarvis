@@ -430,7 +430,7 @@ def build_delegate_tool():
             # LLM's mistake; surface it so the user can rephrase.
             return (
                 context.session.current_agent,
-                f"Sorry, sir, I don't have a {role!r} specialist. "
+                f"Sorry — I don't have a {role!r} specialist. "
                 f"Available: {', '.join(available_names[:10])}.",
             )
 
