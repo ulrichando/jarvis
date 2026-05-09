@@ -10,8 +10,12 @@ export function bridgeError(
   type: string,
   detail?: string,
 ): NextResponse {
-  const body: { error: { type: string; detail?: string } } = {
-    error: detail ? { type, detail } : { type },
+  // Include both `detail` and `message` so the CLI's two parsers both
+  // find the human-readable text:
+  //   - `extractErrorTypeFromData` reads `error.type`
+  //   - `extractErrorDetail` reads `error.message` / `data.message`
+  const body: { error: { type: string; detail?: string; message?: string } } = {
+    error: detail ? { type, detail, message: detail } : { type },
   }
   return NextResponse.json(body, { status })
 }

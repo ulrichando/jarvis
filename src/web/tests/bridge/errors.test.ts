@@ -7,7 +7,7 @@ describe('bridgeError', () => {
     expect(res.status).toBe(401)
     const body = await res.json()
     expect(body).toEqual({
-      error: { type: 'unauthorized', detail: 'Bad token' },
+      error: { type: 'unauthorized', detail: 'Bad token', message: 'Bad token' },
     })
   })
 

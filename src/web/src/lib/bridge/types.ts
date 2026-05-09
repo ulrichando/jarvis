@@ -30,12 +30,15 @@ export interface WorkSecret {
   version: number
   session_ingress_token: string
   api_base_url: string
-  sources: unknown[]
+  sources: Array<{
+    type: string
+    git_info?: { type: string; repo: string; ref?: string; token?: string }
+  }>
   auth: Array<{ type: string; token: string }>
-  claude_code_args: Record<string, string> | null
-  mcp_config: unknown | null
-  environment_variables: Record<string, string> | null
-  use_code_sessions: boolean
+  claude_code_args?: Record<string, string> | null
+  mcp_config?: unknown | null
+  environment_variables?: Record<string, string> | null
+  use_code_sessions?: boolean
 }
 
 export interface HeartbeatResponse {
