@@ -80,4 +80,11 @@ describe('parsePytestSummary', () => {
     const r = parsePytestSummary(stdout)
     expect(r.summary).toBe('24 passed in 1.37s')
   })
+
+  test('handles xfailed/xpassed pytest tokens', () => {
+    const r1 = parsePytestSummary('.x...\n1 xfailed, 4 passed in 0.5s\n')
+    expect(r1.summary).toBe('1 xfailed, 4 passed in 0.5s')
+    const r2 = parsePytestSummary('.X...\n1 xpassed, 4 passed in 0.5s\n')
+    expect(r2.summary).toBe('1 xpassed, 4 passed in 0.5s')
+  })
 })
