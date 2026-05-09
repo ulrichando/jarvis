@@ -81,16 +81,22 @@ CREATE TABLE IF NOT EXISTS session_events (
 CREATE INDEX IF NOT EXISTS session_events_session ON session_events(session_id, created_at);
 CREATE TABLE IF NOT EXISTS sessions (
   session_id TEXT PRIMARY KEY,
+  -- nullable: archiveSession() can create rows for orphan sessions whose
+  -- environment was already unregistered. Spec showed NOT NULL; we relax
+  -- it so archive remains idempotent regardless of registration order.
   environment_id TEXT,
   archived INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   archived_at INTEGER
 );
-PRAGMA foreign_keys = ON;
 `
 
 export function initSchema(db: Database.Database): void {
   db.exec(SCHEMA)
+  // FK enforcement is the load-bearing reason CASCADE DELETE works on the
+  // `work` table when an environment is deleted. Set explicitly here rather
+  // than relying on better-sqlite3's bundled SQLite default.
+  db.pragma('foreign_keys = ON')
 }
 
 function genId(): string {
@@ -247,6 +253,15 @@ export function reclaimExpiredLeases(store: Store, envId: string): number {
   return result.changes
 }
 
+/**
+ * Extend the lease on a leased work row, if the row is still in 'leased'
+ * state. Returns `{ lease_extended, state, ttl_seconds }`.
+ *
+ * Note: `last_heartbeat` (a wire-format ISO-8601 string) is NOT returned
+ * here — the route handler at /work/[workId]/heartbeat formats and adds
+ * it when building the HeartbeatResponse, since timestamp formatting is
+ * a wire-layer concern.
+ */
 export function heartbeatWork(
   store: Store,
   envId: string,
