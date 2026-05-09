@@ -137,6 +137,7 @@ done
 # of the user session, including VSCode Claude Code.
 CLI_CMD=( "$BUN"
   --feature=VOICE_MODE
+  --feature=BRIDGE_MODE
   --define 'MACRO.VERSION="2.1.107"'
   --define 'MACRO.BUILD_TIME=""'
   --define 'MACRO.PACKAGE_URL="@anthropic-ai/claude-code"'
