@@ -130,7 +130,7 @@ def register_browser_v2() -> None:
         when_to_use=_BROWSER_V2_WHEN,
         instructions=BROWSER_V2_INSTRUCTIONS,
         tool_factory=_browser_v2_tools,
-        ack_phrase="Right away, sir.",
+        ack_phrase="Right away.",
         max_history_items=4,
         enabled=enabled,
     ))

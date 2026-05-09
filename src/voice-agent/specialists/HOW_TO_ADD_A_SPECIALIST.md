@@ -37,7 +37,7 @@ handoff plumbing.
            ),
            instructions=RESEARCH_INSTRUCTIONS,
            tool_factory=_research_tools,
-           ack_phrase="Looking into it, sir.",
+           ack_phrase="Looking into it.",
        ))
    ```
 
