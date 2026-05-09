@@ -4,7 +4,7 @@ Modules:
   - edge          : Microsoft Edge TTS plugin for livekit-agents
                     (was edge_tts_plugin.py)
   - canned_phrases : pre-rendered WAV cache for known short phrases
-                    (e.g. "Yes, sir?", "At once, sir.") so circuit-
+                    (e.g. "Yes?", "Right away.") so circuit-
                     breaker-open + cold-start latency doesn't penalize
                     canonical replies
 
