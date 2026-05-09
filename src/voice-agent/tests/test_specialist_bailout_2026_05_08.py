@@ -81,6 +81,9 @@ def _make_specialist():
     "service offline.",
     "bridge disconnected.",
     "chrome unavailable.",
+    # New 2026-05-09 weather specialist phrasings (review closeout)
+    "I couldn't determine your location — which city did you have in mind?",
+    "Weather service is not connected.",
 ])
 def test_bailout_phrases_pass_gate(summary):
     """Phrases on the bailout allowlist must let task_done through
