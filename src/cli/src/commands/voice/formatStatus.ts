@@ -16,6 +16,13 @@ export interface VoiceStatusInputs {
   lastTurnAt: string | null
   /** Wall-clock epoch ms at format time. Injected for tests. */
   nowEpochMs: number
+  /** When true, last-turn line is overridden with the sqlite3-missing message. */
+  sqlite3Missing?: boolean
+}
+
+export interface VoiceStatusOutput {
+  text: string
+  sessionActive: boolean
 }
 
 const ACTIVE_SESSION_THRESHOLD_S = 60
@@ -48,18 +55,29 @@ function formatLastTurn(
   }
 }
 
-export function formatVoiceStatus(inputs: VoiceStatusInputs): string {
-  const { voice, bridge, lastTurnAt, nowEpochMs } = inputs
-  const turn = formatLastTurn(lastTurnAt, nowEpochMs)
+export function formatVoiceStatus(inputs: VoiceStatusInputs): VoiceStatusOutput {
+  const { voice, bridge, lastTurnAt, nowEpochMs, sqlite3Missing } = inputs
+  let lastTurnLine: string
+  let ageSeconds: number | null
+  if (sqlite3Missing) {
+    lastTurnLine = 'unknown (sqlite3 not in PATH)'
+    ageSeconds = null
+  } else {
+    const turn = formatLastTurn(lastTurnAt, nowEpochMs)
+    lastTurnLine = turn.line
+    ageSeconds = turn.ageSeconds
+  }
+  const sessionActive =
+    ageSeconds !== null && ageSeconds < ACTIVE_SESSION_THRESHOLD_S
   const lines = [
     `voice-agent: ${voice}`,
     `bridge:      ${bridge}`,
-    `last turn:   ${turn.line}`,
+    `last turn:   ${lastTurnLine}`,
   ]
-  if (turn.ageSeconds !== null && turn.ageSeconds < ACTIVE_SESSION_THRESHOLD_S) {
+  if (sessionActive) {
     lines.push(
       `WARNING: <60s since last turn — voice session may be active. Don't restart without asking.`,
     )
   }
-  return lines.join('\n')
+  return { text: lines.join('\n'), sessionActive }
 }
