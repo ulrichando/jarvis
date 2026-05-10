@@ -13,6 +13,7 @@ multi-turn flow needed.
 from __future__ import annotations
 
 from .registry import SubagentSpec, register_subagent
+from ._ack_phrases import ACK_CODE_REVIEWER
 
 
 CODE_REVIEWER_INSTRUCTIONS = """\
@@ -76,7 +77,7 @@ def register_code_reviewer() -> None:
         when_to_use=_CODE_REVIEWER_WHEN,
         instructions=CODE_REVIEWER_INSTRUCTIONS,
         tool_factory=_code_reviewer_tools,
-        ack_phrase="Reviewing.",
+        ack_phrase=ACK_CODE_REVIEWER,
         max_history_items=4,  # reviewer doesn't need broader context
         enabled=enabled,
     ))

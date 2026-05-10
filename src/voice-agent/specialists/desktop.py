@@ -8,6 +8,7 @@ To CUSTOMIZE: copy this file as a template and adjust spec fields.
 from __future__ import annotations
 
 from .registry import SpecialistSpec, register
+from ._ack_phrases import ACK_DESKTOP
 
 
 # Canonical home of DESKTOP_INSTRUCTIONS — lifted from the retired
@@ -257,7 +258,7 @@ def register_desktop() -> None:
         when_to_use=_DESKTOP_WHEN,
         instructions=DESKTOP_INSTRUCTIONS,
         tool_factory=_desktop_tools,
-        ack_phrase="Right away.",
+        ack_phrase=ACK_DESKTOP,
         max_history_items=4,   # 2026-05-02: see browser.py for rationale
         enabled=True,
     ))

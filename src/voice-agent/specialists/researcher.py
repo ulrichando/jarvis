@@ -15,6 +15,7 @@ hallucination).
 from __future__ import annotations
 
 from .registry import SubagentSpec, register_subagent
+from ._ack_phrases import ACK_RESEARCHER
 
 
 RESEARCHER_INSTRUCTIONS = """\
@@ -119,7 +120,7 @@ def register_researcher() -> None:
         when_to_use=_RESEARCHER_WHEN,
         instructions=RESEARCHER_INSTRUCTIONS,
         tool_factory=_researcher_tools,
-        ack_phrase="Looking into it.",
+        ack_phrase=ACK_RESEARCHER,
         max_history_items=12,
         enabled=os.environ.get("JARVIS_SUBAGENT_RESEARCHER", "1") == "1",
     ))

@@ -11,6 +11,7 @@ destructive-verb gating.
 from __future__ import annotations
 
 from .registry import SubagentSpec, register_subagent
+from ._ack_phrases import ACK_GITHUB
 
 
 GITHUB_INSTRUCTIONS = """\
@@ -85,7 +86,7 @@ def register_github() -> None:
         when_to_use=_GITHUB_WHEN,
         instructions=GITHUB_INSTRUCTIONS,
         tool_factory=_github_tools,
-        ack_phrase="Looking it up.",
+        ack_phrase=ACK_GITHUB,
         max_history_items=4,
         enabled=enabled,
     ))

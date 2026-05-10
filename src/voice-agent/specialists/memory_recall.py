@@ -10,6 +10,7 @@ output is a formatted voice summary of matches.
 from __future__ import annotations
 
 from .registry import SubagentSpec, register_subagent
+from ._ack_phrases import ACK_MEMORY_RECALL
 
 
 MEMORY_RECALL_INSTRUCTIONS = """\
@@ -72,7 +73,7 @@ def register_memory_recall() -> None:
         when_to_use=_MEMORY_RECALL_WHEN,
         instructions=MEMORY_RECALL_INSTRUCTIONS,
         tool_factory=_memory_recall_tools,
-        ack_phrase="Looking it up.",
+        ack_phrase=ACK_MEMORY_RECALL,
         max_history_items=4,
         enabled=enabled,
     ))

@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 
 from .registry import SubagentSpec, register_subagent
+from ._ack_phrases import ACK_SUMMARIZE
 
 
 SUMMARIZE_INSTRUCTIONS = """\
@@ -92,7 +93,7 @@ def register_summarize() -> None:
         when_to_use=_SUMMARIZE_WHEN,
         instructions=SUMMARIZE_INSTRUCTIONS,
         tool_factory=_summarize_tools,
-        ack_phrase="One sec.",
+        ack_phrase=ACK_SUMMARIZE,
         max_history_items=12,
         enabled=os.environ.get("JARVIS_SUBAGENT_SUMMARIZE", "0") == "1",
     ))
