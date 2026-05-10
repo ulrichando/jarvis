@@ -896,46 +896,16 @@ class _BreakeredGroqLLM(groq.LLM):
 QUIET_HOURS_START      = int(os.environ.get("JARVIS_QUIET_START",      "0"))    # OFF (was 1am)
 QUIET_HOURS_END        = int(os.environ.get("JARVIS_QUIET_END",        "0"))    # OFF (was 6am)
 QUIET_HOURS_WINDOW_SEC = float(os.environ.get("JARVIS_QUIET_WINDOW_SEC", "1200"))  # 20 min
-# Whisper transcribes "Jarvis" as many things depending on accent and
-# noise — verified 2026-04-28 from convo db: jarvis, jervis, javis,
-# joris, yarvis, garvis. We match the common phonetic variants. The
-# pattern is permissive on purpose: false-positive vocative just means
-# JARVIS responds to a similar-sounding word; false-negative means the
-# user has to repeat themselves.
-_JARVIS_NAME_RE        = re.compile(
-    r"\b(?:j[aeo][rl]?vis|joris|jervis|jarvest|jaravis|y[aeo][rl]?vis|g[aeo][rl]?vis|h[aeo][rl]?vis|jorvis|jarbis"
-    r"|yaris|yeris|yoris|jarius|jarrus|jorius)\b",
-    re.IGNORECASE,
-)
-
-# Bare-vocative pattern — the user only called JARVIS by name (with
-# optional preamble fillers, no actual command). Used by the fast path
-# in JarvisAgent.on_user_turn_completed to skip the LLM round-trip and
-# voice "Yes?" directly via session.say(), cutting wake latency
-# from 2-3 s to ~300-500 ms (TTS synth only).
-#
-# Accepts:  jarvis. / hey jarvis / yo jarvis! / ok jarvis / i said jarvis
-# Rejects:  jarvis open browser / jarvis what time / jarvis remember this
-_BARE_VOCATIVE_RE = re.compile(
-    r"^\s*"
-    # Optional preamble — common wake-fillers before the name. The
-    # filler may be followed by either whitespace OR a comma+whitespace
-    # ("Hello, Jarvis." is natural English; the comma-less form
-    # "Hello Jarvis" was the only one matched until 2026-05-09 and the
-    # comma form silently fell into the short-input gate as 2-word
-    # ambiguous → "Pardon?".
-    r"(?:(?:hey|yo|hi|ok(?:ay)?|so|alright|hello|i\s+said|please)[,\s]+)*"
-    # The name itself, matching Whisper variants. MUST stay bidirectionally
-    # in sync with _JARVIS_NAME_RE (line 864) AND the inline vocative-strip
-    # regex inside _is_command() (line 4403). Add a new STT variant here →
-    # add it to BOTH other sites; same in reverse. The 2026-05-09 spec
-    # review caught a one-way drift after the 6 trailing variants were
-    # added here only — quiet-hours guard silently dropped wake words.
-    r"(?:j[aeo][rl]?vis|joris|jervis|jarvest|jaravis|y[aeo][rl]?vis|g[aeo][rl]?vis|h[aeo][rl]?vis|jorvis|jarbis"
-    r"|yaris|yeris|yoris|jarius|jarrus|jorius)"
-    # Optional trailing punctuation only — no follow-up content:
-    r"\s*[?!.,]*\s*$",
-    re.IGNORECASE,
+# Vocative regexes — single source of truth in pipeline/vocative.py.
+# Pre-2026-05-10 these were 3 separate regex compilations in this file
+# kept in sync by hand-written line-number comments; that produced
+# silent drift (e.g. quiet-hours guard dropping wake words after a
+# variant was added to only one site). Now all 3 derive from one
+# NAME_ALTERNATION constant. Add new STT variants in vocative.py.
+from pipeline.vocative import (
+    NAME_RE          as _JARVIS_NAME_RE,
+    BARE_VOCATIVE_RE as _BARE_VOCATIVE_RE,
+    INLINE_STRIP_RE  as _INLINE_VOCATIVE_STRIP_RE,
 )
 
 
@@ -2041,18 +2011,12 @@ def _is_command(text: str, patterns: tuple[re.Pattern, ...]) -> bool:
         body = sentence.strip().lower()
         if not body:
             continue
-        # Strip a leading "jarvis" / "jervis" / "javis" / "joris" / etc.
-        # vocative, remembering whether one was actually present.
-        # MUST stay in sync with _JARVIS_NAME_RE (line 864) and the
-        # _BARE_VOCATIVE_RE alternation (line 888). All three sites accept
-        # the same Whisper-variant set; drift here causes mute/wake commands
-        # with mis-transcribed vocatives to be rejected.
-        stripped = re.sub(
-            r"^(?:j[aeo][rl]?vis|joris|jervis|jarvest|jaravis|y[aeo][rl]?vis|g[aeo][rl]?vis|h[aeo][rl]?vis|jorvis|jarbis"
-            r"|yaris|yeris|yoris|jarius|jarrus|jorius)[,.:!\s]+",
-            "",
-            body,
-        )
+        # Strip a leading vocative ("jarvis" / "jervis" / "javis" / "joris" /
+        # the 'l' variants / etc.), remembering whether one was actually
+        # present. The regex comes from pipeline.vocative — same alternation
+        # source as _JARVIS_NAME_RE and _BARE_VOCATIVE_RE, so all 3 sites
+        # stay synchronized automatically.
+        stripped = _INLINE_VOCATIVE_STRIP_RE.sub("", body)
         had_vocative = stripped != body
         body = stripped
         if len(body.split()) > _COMMAND_MAX_WORDS:
