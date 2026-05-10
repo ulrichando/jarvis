@@ -10,6 +10,7 @@ through the same registry handoff as desktop.
 from __future__ import annotations
 
 from .registry import SpecialistSpec, register
+from ._ack_phrases import ACK_BROWSER
 
 
 BROWSER_INSTRUCTIONS = """\
@@ -365,7 +366,7 @@ def register_browser() -> None:
         when_to_use=_BROWSER_WHEN,
         instructions=BROWSER_INSTRUCTIONS,
         tool_factory=_browser_tools,
-        ack_phrase="On it.",
+        ack_phrase=ACK_BROWSER,
         # 2026-05-02: dropped 12 → 4. The 12-turn chat_ctx was
         # poisoning the specialist — recall seeded prior hallucinated
         # successes ("A new tab is open, sir." with no tool fired)

@@ -16,6 +16,7 @@ list.
 from __future__ import annotations
 
 from .registry import SubagentSpec, register_subagent
+from ._ack_phrases import ACK_VALIDATOR
 
 
 VALIDATOR_INSTRUCTIONS = """\
@@ -82,7 +83,7 @@ def register_validator() -> None:
         when_to_use=_VALIDATOR_WHEN,
         instructions=VALIDATOR_INSTRUCTIONS,
         tool_factory=_validator_tools,
-        ack_phrase="Verifying.",
+        ack_phrase=ACK_VALIDATOR,
         max_history_items=4,  # validator only needs the recent turn
         enabled=enabled,
     ))

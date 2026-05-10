@@ -11,6 +11,7 @@ manual override) and bash + curl for the actual wttr.in fetch.
 from __future__ import annotations
 
 from .registry import SubagentSpec, register_subagent
+from ._ack_phrases import ACK_WEATHER
 
 
 WEATHER_INSTRUCTIONS = """\
@@ -122,7 +123,7 @@ def register_weather() -> None:
         when_to_use=_WEATHER_WHEN,
         instructions=WEATHER_INSTRUCTIONS,
         tool_factory=_weather_tools,
-        ack_phrase="Checking.",
+        ack_phrase=ACK_WEATHER,
         max_history_items=8,
         enabled=os.environ.get("JARVIS_SUBAGENT_WEATHER", "1") == "1",
     ))
