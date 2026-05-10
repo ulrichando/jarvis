@@ -1098,55 +1098,13 @@ _REASONING_FAST_PATH_RE = re.compile(
 # never re-enters chat_ctx. Each layer alone is insufficient: the write
 # filter doesn't help old turns; the recall filter doesn't help any
 # downstream readers reading state.db directly.
-_TOOL_LEAK_RE = re.compile(
-    # XML attribute form: `<function=name>...</function>` (W-015)
-    r"<function\s*=\s*[a-zA-Z_][a-zA-Z0-9_]*[^>]*>.*?</function>"
-    # XML bare-tag form: `<function>name</function>` (W-016)
-    r"|<function\s*>.*?</function>"
-    # Orphaned `<arguments>...</arguments>` chunk (W-016)
-    r"|<arguments\s*>.*?</arguments>"
-    # Trailing close after content was suppressed (legacy heuristic)
-    r"|[^<]{0,500}</function>"
-    # Alternate tag format
-    r"|<tool_call>.*?</tool_call>"
-    # Pipe-bracket format
-    r"|<\|tool_call\|>.*?<\|/tool_call\|>"
-    # JSON array of tool-call objects (W-016): line-anchored to avoid
-    # eating prose that mentions JSON. Matches a complete `[{...}]`
-    # array whose first object has a `"name"` (or `"tool"`/"function")
-    # key. The lazy `.*?` + `\]` anchor stops at the first close.
-    r"|\[\s*\{\s*\"(?:name|tool|function)\"\s*:.*?\]"
-    # Python call form for known specialist-internal tools (W-015)
-    # captured at the persistence layer too, so the leak can't survive
-    # into chat_ctx and teach the LLM to leak more next turn.
-    r"|task_done\s*\([^)]*\)"
-    r"|<\|end_header_id\|>"
-    # W-019 (2026-05-05): prompt-label preambles. Live-captured turn
-    # 981 — supervisor emitted "Bare-vocative call.\n\nYes?".
-    # Strip the categorical prefix when it's a known prompt-label
-    # phrase followed by newlines.
-    r"|^\s*(?:Bare-vocative call|Bare vocative call|"
-    r"\[TASK mode\][^\n]*|"
-    r"Recognized as[^\n]*|"
-    r"Following the bare-vocative rule[^\n]*|"
-    r"Classification:[^\n]*|"
-    r"Mode:[^\n]*|"
-    r"Category:[^\n]*)"
-    r"[.:]?\s*\n+",
-    re.DOTALL | re.MULTILINE,
-)
-
-
-def _sanitize_leaked_tool_text(s: str) -> str:
-    """Strip any text that looks like a leaked structured tool-call.
-
-    Returns the cleaned string (may be empty if the entire text was leak).
-    Callers that get an empty result back should drop the turn entirely
-    rather than store an empty record.
-    """
-    if not s:
-        return ""
-    return _TOOL_LEAK_RE.sub("", s).strip()
+# Tool-leak / recall sanitization moved to pipeline/chat_ctx.py
+# (Step 4 of the 10/10 refactor). Back-compat alias for the pre-write
+# scrubber on assistant turns (lines below). The chat_ctx-seeding
+# cluster (RECENT_TURNS_LIMIT, _load_recent_turns, _scrub_recalled_*,
+# _seed_chat_ctx, plus META/ARCHAIC regexes) imports further down so
+# it's near the call site of `_seed_chat_ctx` in the entrypoint.
+from pipeline.chat_ctx import sanitize_leaked_tool_text as _sanitize_leaked_tool_text
 _last_real_interaction = 0.0     # monotonic timestamp of last accepted turn
 _bg_tasks: set = set()  # keeps create_task refs alive until done
 
@@ -2724,134 +2682,21 @@ def _save_turn(
 #     durability via Phase 2 auto-extraction, so chat_ctx doesn't need
 #     the full 20-turn window — 12 is enough for short-term continuity
 #     with less topic surface for the LLM to drift onto.
-RECENT_TURNS_LIMIT = 12
+# ── Chat-context seeding + recall-time sanitizers ─────────────────────
+# Extracted to pipeline/chat_ctx.py 2026-05-10 (Step 4 of the 10/10
+# refactor). Re-exporting under legacy underscored names so existing
+# call sites are untouched. RECALL_SEARCH_LIMIT stays here because it's
+# only used by recall_conversation @function_tool below.
+from pipeline.chat_ctx import (
+    RECENT_TURNS_LIMIT,
+    TOOL_LEAK_RE              as _TOOL_LEAK_RE,
+    META_SILENCE_RE           as _META_SILENCE_RE,
+    ARCHAIC_OPENER_RE         as _ARCHAIC_OPENER_RE,
+    load_recent_turns         as _load_recent_turns,
+    scrub_recalled_assistant_text as _scrub_recalled_assistant_text,
+    seed_chat_ctx             as _seed_chat_ctx,
+)
 RECALL_SEARCH_LIMIT = 8
-
-
-def _load_recent_turns(limit: int = RECENT_TURNS_LIMIT) -> list[tuple[str, str]]:
-    """
-    Return the most recent (role, text) pairs from conversations.db,
-    OLDEST first (so they go into chat_ctx in chronological order).
-    Empty list on any error or if the DB doesn't exist yet.
-
-    Filters out runs of ambient/household chatter — the always-on
-    mic logs everything (kids, TV, family talking past JARVIS), and
-    seeding all of it would pollute context. We only keep user
-    turns that have an assistant reply within 60 s, plus the
-    assistant turns themselves. That preserves real exchanges and
-    drops standalone background lines.
-    """
-    # Read from the hub's state.db. State.db's `ts` is in milliseconds
-    # (event envelope's source_ts); old conversations.db used seconds.
-    # Convert ms→s here so the gap-filter math below stays simple.
-    state_db = Path.home() / ".jarvis" / "hub" / "state.db"
-    if not state_db.exists():
-        return []
-    try:
-        with sqlite3.connect(str(state_db), timeout=2.0) as conn:
-            # Pull more than `limit` rows so the filter has slack —
-            # heavy ambient periods can drop a lot.
-            raw_ms = conn.execute(
-                "SELECT ts, role, text FROM messages "
-                "WHERE role IN ('user','assistant') "
-                "ORDER BY ts DESC, id DESC LIMIT ?",
-                (limit * 4,),
-            ).fetchall()
-    except Exception as e:
-        logger.warning(f"recall load failed: {e}")
-        return []
-    # Normalize timestamps to seconds for the filter.
-    raw = [(int(ts // 1000), role, text) for ts, role, text in raw_ms]
-    raw.reverse()  # OLDEST first
-
-    # Walk forward: a user turn is kept only if an assistant turn
-    # follows within REPLY_GAP_S; assistant turns are always kept
-    # (they're proof a real exchange happened).
-    REPLY_GAP_S = 60
-    kept: list[tuple[str, str]] = []
-    for i, (ts, role, text) in enumerate(raw):
-        if role == "assistant":
-            kept.append((role, text))
-            continue
-        # role == 'user': check for an assistant reply soon after.
-        for j in range(i + 1, len(raw)):
-            nts, nrole, _ = raw[j]
-            if nts - ts > REPLY_GAP_S:
-                break
-            if nrole == "assistant":
-                kept.append((role, text))
-                break
-    # Trim to the most recent `limit` entries from the filtered set.
-    return kept[-limit:]
-
-
-def _scrub_recalled_assistant_text(text: str) -> str | None:
-    """Apply the SAME register/silence/tool-leak filters used in the live
-    TTS chain to assistant turns being re-injected into chat_ctx.
-
-    Why: in-context examples beat instructions. If the model sees its
-    own past replies starting with "Quite." or being just
-    "Silence.", it learns those patterns even when the system
-    prompt forbids them. Industry standard (OpenAI ChatGPT memories,
-    Anthropic Claude.ai summaries) is to filter or summarize past
-    turns before re-injection, never replay raw history.
-
-    Returns the cleaned text, or None if the whole reply should be
-    dropped (e.g. it was just a meta-silence ack).
-    """
-    cleaned = _sanitize_leaked_tool_text(text)
-    if not cleaned:
-        return None
-    # Drop whole-reply meta-silence ("Silence." etc).
-    if _META_SILENCE_RE.match(cleaned):
-        return None
-    # Trim leading archaic openers ("Quite.", "Indeed.", …).
-    m = _ARCHAIC_OPENER_RE.match(cleaned)
-    if m:
-        rest = cleaned[m.end():].lstrip()
-        if not rest:
-            return None  # whole reply was just the archaic opener
-        cleaned = rest[0].upper() + rest[1:]
-    return cleaned
-
-
-def _seed_chat_ctx() -> ChatContext:
-    """Build a ChatContext pre-populated with recent prior turns,
-    with assistant turns scrubbed by the same filters that gate live
-    TTS output. Stops historical bad replies from poisoning the model
-    via in-context-example weighting."""
-    items: list[ChatMessage] = []
-    sanitized = 0
-    dropped = 0
-    archaic_trimmed = 0
-    for role, text in _load_recent_turns():
-        text = (text or "").strip()
-        if not text:
-            continue
-        if role == "assistant":
-            original = text
-            cleaned = _scrub_recalled_assistant_text(text)
-            if cleaned is None:
-                dropped += 1
-                continue
-            if cleaned != original:
-                # Distinguish tool-leak sanitization from register trim
-                # for the log line — useful when chasing why an axis
-                # score moved.
-                if _ARCHAIC_OPENER_RE.match(original):
-                    archaic_trimmed += 1
-                else:
-                    sanitized += 1
-            text = cleaned
-        items.append(ChatMessage(role=role, content=[text]))
-    if items:
-        notes = []
-        if sanitized: notes.append(f"{sanitized} tool-leak-cleaned")
-        if archaic_trimmed: notes.append(f"{archaic_trimmed} archaic-trimmed")
-        if dropped: notes.append(f"{dropped} dropped")
-        extra = f" ({', '.join(notes)})" if notes else ""
-        logger.info(f"[recall] seeded chat_ctx with {len(items)} prior turns{extra}")
-    return ChatContext(items=items)
 
 
 @function_tool
@@ -4365,37 +4210,10 @@ async def strip_preambles(text):
         yield cleaned
 
 
-# Meta-silence replies: words/phrases the LLM emits when it should
-# have stayed silent. Saying "Silence." IS speaking — the
-# observed failure mode (2026-05-04). Pattern matches the entire reply
-# only when it is JUST one of these phrases (with optional sir/period).
-_META_SILENCE_RE = re.compile(
-    r"^\s*\[?\(?\s*"
-    r"(?:silent|silence|silently|quiet|quietly|listening|just\s+listening|"
-    r"observing|standing\s+by|noted|quietly\s+noted|"
-    # 2026-05-06 turn 1056: see sanitizers/pycall.py for context.
-    r"empty\s+output|no\s+reply|no\s+output|nothing\s+to\s+say|nothing|"
-    r"\(\s*empty\s*\)|\(\s*silent\s*\)|\(\s*no\s+reply\s*\))"
-    r"(?:[\s,—-]+sir)?[\s.,!?\]\)]*$",
-    re.IGNORECASE,
-)
-
-
-# Archaic / British-butler openers the user has explicitly disliked.
-# When the LLM disregards the prompt ban and emits one as a reply
-# opener, this filter trims it so the rest of the reply still ships.
-# Only strips the LEADING phrase; mid-sentence occurrences of the same
-# word stay (e.g. "I see why you say that — it's quite unusual" is fine).
-_ARCHAIC_OPENER_RE = re.compile(
-    r"^\s*"
-    r"(?:indeed|quite(?:\s+well|\s+right|\s+so)?|splendid|naturally|"
-    r"very\s+well|at\s+once|excellent|certainly|"
-    r"a(?:n)?\s+(?:interesting|fine|fair)\s+(?:question|result|point)|"
-    r"worth\s+(?:examining|considering)|i\s+see)"
-    r"(?:[,.\s—-]+sir)?"
-    r"[\s,.!?—-]+",
-    re.IGNORECASE,
-)
+# `_META_SILENCE_RE` and `_ARCHAIC_OPENER_RE` were duplicated here
+# pre-2026-05-10; the canonical definitions now live in
+# pipeline/chat_ctx.py and are imported at the top of this file.
+# `strip_archaic_openers` below uses the imported alias.
 
 
 async def strip_archaic_openers(text):
