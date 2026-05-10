@@ -34,14 +34,13 @@ def _reset_and_register():
     clear()
     clear_subagents()
     from specialists import (
-        desktop, browser, browser_v2, planner,
+        desktop, browser, browser_v2,
         summarize, weather, researcher, validator, code_reviewer,
         memory_recall, github,
     )
     desktop.register_desktop()
     browser.register_browser()
     browser_v2.register_browser_v2()
-    planner.register_planner()
     summarize.register_summarize()
     weather.register_weather()
     researcher.register_researcher()
@@ -57,7 +56,7 @@ def _reset_and_register():
 # ── Specialist matrix ─────────────────────────────────────────────────
 
 
-SPECIALIST_NAMES = ["desktop", "browser", "planner"]
+SPECIALIST_NAMES = ["desktop", "browser"]
 SUBAGENT_NAMES = ["summarize", "weather", "researcher"]
 
 # Conditionally tested specialists — present-in-registry but only
@@ -331,43 +330,11 @@ def test_supervisor_has_post_handoff_relay_rule():
     )
 
 
-def test_planner_specialist_has_truthfulness_section():
-    """W-005 (2026-05-05): the planner prompt must contain explicit
-    grounding rules. Live-observed F-arch-004: planner emitted
-    "Updated 7 files in jarvis_agent/, ran 34 iterations of debug
-    loop, generated 5 new code files, plan complete, sir." — surface-
-    correct (specific, past-tense) but composed without reading any
-    actual run_jarvis_cli output. The 2026-05-04 RegistrySpecialist
-    tool gate caught it programmatically; this test prevents a
-    future prompt rewrite from silently removing the LLM-side
-    discipline that pairs with the gate.
-
-    Asserts on the structural anchors, not the exact phrasing, so the
-    section can be rewritten without a brittle string match.
-    """
-    from specialists.registry import get
-    spec = get("planner")
-    instr = spec.instructions
-
-    # The TRUTHFULNESS section header must be present.
-    assert "TRUTHFULNESS" in instr, (
-        "planner prompt missing TRUTHFULNESS section — anti-confabulation "
-        "discipline disappeared"
-    )
-
-    # The "no tool fired = no claim" rule must be expressed.
-    assert "fabricated summary CANNOT make it through to the user" in instr or \
-        "Compose summaries from what you SAW the CLI return" in instr, (
-        "planner prompt missing the explicit grounding rule "
-        "(no real tool output ⇒ no completion claim)"
-    )
-
-    # The bad-summary list must include a confabulated example.
-    assert "CONFABULATED" in instr, (
-        "planner prompt missing the confabulation counter-example — "
-        "without it the LLM has only positive (good-summary) examples "
-        "and learns 'specific past-tense' as the goal rather than 'grounded'"
-    )
+# test_planner_specialist_has_truthfulness_section was retired
+# 2026-05-09 alongside the planner specialist itself. The anti-
+# confabulation discipline it guarded now lives in the in-process
+# plan-mode tool's prompt and the supervisor's "NEVER CLAIM AN ACTION
+# YOU DIDN'T TAKE" section in JARVIS_INSTRUCTIONS.
 
 
 def test_supervisor_has_persona_register_block():
