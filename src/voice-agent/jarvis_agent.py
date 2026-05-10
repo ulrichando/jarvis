@@ -903,7 +903,7 @@ QUIET_HOURS_WINDOW_SEC = float(os.environ.get("JARVIS_QUIET_WINDOW_SEC", "1200")
 # JARVIS responds to a similar-sounding word; false-negative means the
 # user has to repeat themselves.
 _JARVIS_NAME_RE        = re.compile(
-    r"\b(?:j[aeo]r?vis|joris|jervis|jarvest|jaravis|y[aeo]rvis|g[aeo]rvis|h[aeo]rvis|jorvis|jarbis"
+    r"\b(?:j[aeo][rl]?vis|joris|jervis|jarvest|jaravis|y[aeo][rl]?vis|g[aeo][rl]?vis|h[aeo][rl]?vis|jorvis|jarbis"
     r"|yaris|yeris|yoris|jarius|jarrus|jorius)\b",
     re.IGNORECASE,
 )
@@ -931,7 +931,7 @@ _BARE_VOCATIVE_RE = re.compile(
     # add it to BOTH other sites; same in reverse. The 2026-05-09 spec
     # review caught a one-way drift after the 6 trailing variants were
     # added here only — quiet-hours guard silently dropped wake words.
-    r"(?:j[aeo]r?vis|joris|jervis|jarvest|jaravis|y[aeo]rvis|g[aeo]rvis|h[aeo]rvis|jorvis|jarbis"
+    r"(?:j[aeo][rl]?vis|joris|jervis|jarvest|jaravis|y[aeo][rl]?vis|g[aeo][rl]?vis|h[aeo][rl]?vis|jorvis|jarbis"
     r"|yaris|yeris|yoris|jarius|jarrus|jorius)"
     # Optional trailing punctuation only — no follow-up content:
     r"\s*[?!.,]*\s*$",
@@ -4413,7 +4413,7 @@ def _is_command(text: str, patterns: tuple[re.Pattern, ...]) -> bool:
         # the same Whisper-variant set; drift here causes mute/wake commands
         # with mis-transcribed vocatives to be rejected.
         stripped = re.sub(
-            r"^(?:j[aeo]r?vis|joris|jervis|jarvest|jaravis|y[aeo]rvis|g[aeo]rvis|h[aeo]rvis|jorvis|jarbis"
+            r"^(?:j[aeo][rl]?vis|joris|jervis|jarvest|jaravis|y[aeo][rl]?vis|g[aeo][rl]?vis|h[aeo][rl]?vis|jorvis|jarbis"
             r"|yaris|yeris|yoris|jarius|jarrus|jorius)[,.:!\s]+",
             "",
             body,
@@ -4561,6 +4561,15 @@ def _is_ambiguous_short_input(text: str) -> bool:
     # Live failure 2026-05-09: 30+ "Pardon?" replies traced to
     # vocatives being deflected here before the fast-path could fire.
     if _BARE_VOCATIVE_RE.match(text):
+        return False
+    # Broader-net (2026-05-10): any short input containing a Jarvis-
+    # name variant ANYWHERE bypasses the gate. Catches Whisper
+    # transcripts like "at Jarvis." (mis-rendered "Hi, Jarvis") or
+    # "Hey Jalvis" where the preamble doesn't match _BARE_VOCATIVE_RE
+    # but the user clearly intended a wake. The gate's job is to
+    # block contentless ambient noise — anything containing the
+    # name is by definition not contentless.
+    if _JARVIS_NAME_RE.search(text):
         return False
     # Interrupt kill-phrases — let them flow to the LLM as conversational
     # input outside the mid-speech kill-phrase window.

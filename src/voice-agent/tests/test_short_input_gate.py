@@ -352,3 +352,47 @@ def test_vocatives_with_comma_after_preamble_bypass_gate(text):
     assert _is_ambiguous_short_input(text) is False, (
         f"Expected vocative-with-comma {text!r} to bypass gate (got True)"
     )
+
+
+# ── 2026-05-10 follow-up: 'l' Whisper variants + any-position match ───
+#
+# Live telemetry post-2026-05-10T06:56 restart: user said "Hey, Jalvis."
+# (id 1539) and "at Jarvis." (id 1540) — both got "Pardon?" (ttfw=24-29ms,
+# deterministic gate fire). Two new bug categories:
+#
+#   1. "Jalvis" / "Jelvis" / "Jolvis" — Whisper variants with 'l' instead
+#      of 'r'. The alternation accepted j[aeo]r?vis but not j[aeo]l?vis.
+#      Fix: relax to j[aeo][rl]?vis (3 sync sites — _JARVIS_NAME_RE,
+#      _BARE_VOCATIVE_RE, inline strip in _is_command).
+#
+#   2. "at Jarvis." — Whisper rendered the user's "Hi, Jarvis" or "Hey,
+#      Jarvis" as "at Jarvis". "at" is not in the preamble allowlist, so
+#      _BARE_VOCATIVE_RE.match() failed. Fix: add a broader-net check
+#      using _JARVIS_NAME_RE.search() — any short input containing a
+#      Jarvis-name variant anywhere is by definition not contentless
+#      ambient noise.
+
+@pytest.mark.parametrize("text", [
+    # Whisper 'l' variants — Jalvis / Jelvis / Jolvis / etc.
+    "Jalvis",
+    "Jalvis.",
+    "Jelvis",
+    "Jolvis",
+    "Hey, Jalvis.",
+    "Yo, Jelvis?",
+    "Yalvis",
+    "Galvis",
+    "Halvis",
+    # Vocative buried after a non-preamble word (Whisper's
+    # mistranscription noise — "Hi" → "at", "OK" → "I", etc.)
+    "at Jarvis.",
+    "at Jarvis",
+    "I Jarvis.",
+])
+def test_extended_vocative_variants_bypass_gate(text):
+    """All inputs containing a Jarvis-name variant (incl. 'l' phonemes
+    and non-preamble leading words) must bypass the gate. Live
+    regression 2026-05-10T06:57: turns 1539-1540 got 'Pardon?'."""
+    assert _is_ambiguous_short_input(text) is False, (
+        f"Expected vocative-bearing input {text!r} to bypass gate (got True)"
+    )
