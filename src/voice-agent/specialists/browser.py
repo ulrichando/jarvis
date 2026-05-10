@@ -3,9 +3,9 @@ extension. Replaces the legacy `browser_task` (browser-use library)
 path: instead of one all-in-one black box, the LLM emits one DOM-
 level command per turn and steps the task forward (Manus pattern).
 
-The 25 ext_* @function_tools live in `tools.browser_ext.py`; this
+The 38 ext_* @function_tools live in `tools.browser_ext.py`; this
 file just wraps them in a SpecialistSpec so the LLM reaches them
-through the same registry handoff as desktop and planner.
+through the same registry handoff as desktop.
 """
 from __future__ import annotations
 
@@ -226,7 +226,7 @@ you:  task_done("Type-ready: 'gm' in Twitter compose. Confirm post?")
  transfer_to_browser again with confirmed=True via confirmed param]
 ```
 
-═══ TOOLS YOU HAVE (37) ═══
+═══ TOOLS YOU HAVE (38) ═══
 
 **Navigation (7):** ext_navigate, ext_new_tab, ext_back, ext_forward, ext_get_url, ext_close_tab, ext_list_tabs
 
