@@ -108,9 +108,10 @@ _RESEARCHER_WHEN = (
 def register_researcher() -> None:
     """Register the researcher subagent.
 
-    DISABLED BY DEFAULT 2026-05-08 — opt in with `JARVIS_SUBAGENT_RESEARCHER=1`.
-    Disabled alongside summarize/weather etc. while supervisor delegate
-    routing is being repaired.
+    Re-enabled 2026-05-09 (audit recommendation D-2): clean prompt, no
+    hijack history, gives JARVIS multi-step web-research depth that the
+    supervisor's single web_search tool can't reach.
+    Per-spec opt-out via `JARVIS_SUBAGENT_RESEARCHER=0`.
     """
     import os
     register_subagent(SubagentSpec(
@@ -120,5 +121,5 @@ def register_researcher() -> None:
         tool_factory=_researcher_tools,
         ack_phrase="Looking into it.",
         max_history_items=12,
-        enabled=os.environ.get("JARVIS_SUBAGENT_RESEARCHER", "0") == "1",
+        enabled=os.environ.get("JARVIS_SUBAGENT_RESEARCHER", "1") == "1",
     ))
