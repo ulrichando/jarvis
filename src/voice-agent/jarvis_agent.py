@@ -440,22 +440,21 @@ class _LoggingGroqChunkedStream(_GroqChunkedStream):
 
 # ── Per-upstream circuit breakers ────────────────────────────────────
 # Three independent breakers gate the Groq endpoints. A DNS / API
-# blip on one upstream (e.g. STT) no longer drags TTS + LLM down
-# with a 30s timeout each. CircuitOpenError gets converted to
-# APIConnectionError below so the FallbackAdapter chain takes over
-# within ms instead of waiting for the OS socket timeout.
-#
-# Spec: docs/superpowers/specs/2026-05-04-jarvis-voice-resilience-design.md
+# Per-upstream circuit breakers — singletons live in `resilience/__init__.py`
+# (moved 2026-05-10 so provider classes splitting out of this file can
+# import them without circular-import gymnastics). Aliased to the legacy
+# underscored names so existing call sites (~24 of them in this file)
+# are untouched.
 from resilience.circuit_breaker import (
-    CircuitBreaker,
     CircuitOpenError,
     STATE_CLOSED,
     STATE_OPEN,
 )
-
-_STT_BREAKER = CircuitBreaker("stt", fail_threshold=3, cooldown_s=20, timeout_s=8)
-_TTS_BREAKER = CircuitBreaker("tts", fail_threshold=3, cooldown_s=20, timeout_s=8)
-_LLM_BREAKER = CircuitBreaker("llm", fail_threshold=2, cooldown_s=30, timeout_s=12)
+from resilience import (
+    STT_BREAKER as _STT_BREAKER,
+    TTS_BREAKER as _TTS_BREAKER,
+    LLM_BREAKER as _LLM_BREAKER,
+)
 
 
 def _build_breaker_status_block(breakers: list | None = None) -> str:
