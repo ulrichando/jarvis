@@ -428,3 +428,101 @@ def is_recall_query(transcript: str) -> bool:
     if not text:
         return False
     return any(p.search(text) for p in _RECALL_PATTERNS)
+
+
+# ── Layer 2.5: deterministic capture-trigger matcher ─────────────────
+# Audit recommendation E (2026-05-09): the supervisor's PROACTIVE CAPTURE
+# prompt section was being ignored — JARVIS only saved 3 memories in 285
+# sessions. The auto-extractor LLM is also conservative. So the trigger
+# vocabulary now lives here too as a sync regex; on match, the caller
+# force-publishes a memory event (bypassing both LLM judgments).
+#
+# Each pattern is tuple (regex, category, content_prefix). Categories
+# match `tools.memory.remember()`'s 4-type taxonomy. Content is the
+# user's verbatim statement (truncated 200 chars) prefixed with a
+# category tag — the memory consolidator polishes the canonical form
+# later.
+_CAPTURE_PATTERNS: list[tuple] = [
+    # Pricing — "we charge $600 for six months" / "I charge $100/mo"
+    (re.compile(
+        r"\b(?:we|i)\s+charge[s]?\b",
+        re.IGNORECASE,
+    ), "project", "Pricing/rate: "),
+    (re.compile(
+        r"\b(?:the\s+rate|our\s+(?:price|rate))\s+is\b",
+        re.IGNORECASE,
+    ), "project", "Pricing/rate: "),
+    # Offering — "we teach Python" / "we are teaching Python, JS, Lua" /
+    # "we build/sell/offer X". Imperative ("teach me Python") is
+    # excluded because the verb requires a we/I subject in front.
+    # NOTE: "run" is intentionally excluded here — "I run X" is a Role
+    # (handled below); "we run X" is a tech-stack/operational choice
+    # (handled by the dedicated pattern further down).
+    (re.compile(
+        r"\b(?:we|i)\s+(?:teach|build|sell|offer|provide)\s+\w",
+        re.IGNORECASE,
+    ), "project", "Offering: "),
+    (re.compile(
+        r"\b(?:we|i)\s*(?:'re|'m| are| am)\s+(?:teaching|building|selling|offering|providing)\s+\w",
+        re.IGNORECASE,
+    ), "project", "Offering: "),
+    # Scale — "we have N students/customers/clients/users/drivers/etc"
+    # Requires a numeric or quantifier-word, AND a noun that's a unit
+    # of operational scale (filters out "I have a headache").
+    (re.compile(
+        r"\b(?:we|i)\s+have\s+(?:\d+|one|two|three|four|five|several|many|a\s+few|dozens?\s+of|hundreds?\s+of|thousands?\s+of)\s+(?:student|customer|client|user|driver|employee|member|subscriber|partner)s?\b",
+        re.IGNORECASE,
+    ), "project", "Operational scale: "),
+    # Role — "I run/founded/built/started Pretva" / "I run a startup"
+    # Requires a capitalized proper noun OR an article ("a", "an",
+    # "the") + word, to filter "I run every morning" / "I built it".
+    (re.compile(
+        r"\bi\s+(?:run|founded|built|started|own|lead)\s+(?:[A-Z]\w+|a\s+\w+|an\s+\w+|the\s+\w+|my\s+own\s+\w+)",
+        re.IGNORECASE,
+    ), "user", "Role: "),
+]
+
+
+# Location detection is special-cased: place must start with uppercase
+# in the original text (case-sensitively) to distinguish "I live in
+# Cameroon" (place name) from "I'm in trouble" / "I live in the
+# country" (idioms).
+_LOCATION_PATTERN = re.compile(
+    r"\b(?:i\s+live\s+in|i\s*'?m\s+in|we\s+(?:'re|are|live)\s+in)\s+(\S+)",
+    re.IGNORECASE,
+)
+
+
+def detect_capture_trigger(transcript: str) -> tuple[str, str] | None:
+    """Return (category, content) if `transcript` matches a known
+    capture-trigger pattern, else None. Used by the on_user_turn_completed
+    handler to deterministically save user-facts that the LLM-side
+    extractor would otherwise miss.
+
+    Categories match `tools.memory.remember()`'s 4-type taxonomy
+    (`project` / `user` / `feedback` / `reference`). Content is the
+    user's verbatim statement prefixed with a category tag — the
+    memory consolidator polishes the canonical form later.
+
+    Conservative on imperatives (caller subjects required), idioms
+    (location requires capitalized place), and ephemerals (no
+    "today" / "right now" patterns).
+    """
+    if not transcript or not transcript.strip():
+        return None
+    text = transcript.strip()
+
+    # Location: special-cased because it needs case-sensitive check
+    # on the captured place name to filter idioms.
+    m = _LOCATION_PATTERN.search(text)
+    if m:
+        place = m.group(1).strip(".,!?;:'\"")
+        if place and place[0].isupper() and len(place) >= 4:
+            return ("user", f"Location: {text[:200]}")
+
+    # Standard patterns: first match wins (patterns are ordered by
+    # specificity — pricing before offering, role before location).
+    for pattern, category, prefix in _CAPTURE_PATTERNS:
+        if pattern.search(text):
+            return (category, f"{prefix}{text[:200]}")
+    return None
