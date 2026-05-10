@@ -4779,34 +4779,12 @@ def prewarm(proc: JobProcess) -> None:
 
 
 def _pick_supervisor_llm(*, specialist_tools, legacy_llm):
-    """Feature-flagged supervisor LLM picker.
-
-    JARVIS_LANGGRAPH_SUPERVISOR=1 → use the new LangGraph-state-shape
-    supervisor (spec: 2026-05-04-supervisor-langgraph-design.md). The
-    graph's structural cure prevents completion-claim lies — the
-    supervisor literally cannot speak text on a TASK turn that has
-    not yet observed a tool result.
-
-    Default off through the soak window. Flip to on once telemetry
-    confirms zero confab-detector drops on a 100-turn dev set.
-    """
-    if os.environ.get("JARVIS_LANGGRAPH_SUPERVISOR", "0") == "1":
-        try:
-            from supervisor_graph.llm_adapter import (
-                JarvisSupervisorGraphLLM,
-            )
-            logger.info(
-                "[supervisor] LangGraph state-shape supervisor active "
-                "(JARVIS_LANGGRAPH_SUPERVISOR=1)"
-            )
-            return JarvisSupervisorGraphLLM(
-                specialist_tools=specialist_tools,
-            )
-        except Exception as e:
-            logger.exception(
-                "[supervisor] LangGraph supervisor failed to construct; "
-                "falling back to legacy dispatcher: %s", e,
-            )
+    """Returns the legacy dispatcher LLM. Pre-2026-05-10 this was a
+    feature-flag picker for the LangGraph supervisor (gated behind
+    `JARVIS_LANGGRAPH_SUPERVISOR=1`); the alt supervisor was deleted
+    after sitting default-off through 2 spec-review cycles with no
+    plan to flip it on. `specialist_tools` arg kept for call-site
+    compatibility but no longer used."""
     return legacy_llm
 
 
@@ -4948,25 +4926,6 @@ async def entrypoint(ctx: JobContext) -> None:
         _turn_classifier = None
         llm_arg = _active_speech_llm
         tts_arg = tts.FallbackAdapter(_build_tts_chain())
-
-    # Feature-flag the supervisor LLM. When JARVIS_LANGGRAPH_SUPERVISOR=1,
-    # the LangGraph state-shape supervisor takes over — see
-    # supervisor_graph/ and the 2026-05-04 spec. Default off.
-    #
-    # When the LangGraph supervisor is active, disable the legacy
-    # per-turn dispatcher mutations of session._llm. The graph
-    # supervisor wraps the entire turn flow; the BANTER / REASONING
-    # fast-path listeners that swap session._llm would otherwise
-    # silently overwrite our adapter on every turn.
-    if os.environ.get("JARVIS_LANGGRAPH_SUPERVISOR", "0") == "1":
-        _dispatch_llm = None
-        _dispatch_tts = None
-        _turn_graph = None
-        _turn_classifier = None
-        logger.info(
-            "[supervisor] graph flag on — legacy dispatcher disabled "
-            "(session._llm mutations short-circuited)"
-        )
 
     llm_arg = _pick_supervisor_llm(
         specialist_tools=build_all_transfer_tools(),
