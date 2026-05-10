@@ -7294,8 +7294,38 @@ class JarvisAgent(Agent):
         try:
             import asyncio as _asyncio
             from pipeline.memory_extractor import extract_memory_from_turn
+            from pipeline.turn_router import detect_capture_trigger
             from tools.memory import _publish_event_async, _memory_id
             import os as _os
+
+            # Layer 1.5 (audit-rec E, 2026-05-09) — sync regex matcher for
+            # the high-confidence trigger phrases ("we charge X", "I run Y",
+            # "we have N students", etc.). Fires DETERMINISTICALLY whenever
+            # the pattern hits — no LLM judgment in the loop. The auto-
+            # extractor LLM still runs below as defense-in-depth (idempotent
+            # via _memory_id dedup). Fire-and-forget publish; zero latency
+            # added to the supervisor reply path.
+            try:
+                trigger = detect_capture_trigger(text)
+                if trigger is not None:
+                    cap_category, cap_content = trigger
+                    logger.info(
+                        f"[capture-trigger] {cap_category}: {cap_content[:80]!r}"
+                    )
+                    _asyncio.create_task(_publish_event_async(
+                        "memory.value.upserted", {
+                            "memory_id": _memory_id(cap_content),
+                            "content": cap_content,
+                            "category": cap_category,
+                            "source_session_id": _os.environ.get(
+                                "JARVIS_VOICE_SESSION_ID"
+                            ),
+                        }
+                    ))
+            except Exception as e:
+                logger.warning(
+                    f"[capture-trigger] failed: {type(e).__name__}: {e}"
+                )
 
             async def _run_extractor_and_publish(transcript: str) -> None:
                 try:
