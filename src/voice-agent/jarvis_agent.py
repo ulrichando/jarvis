@@ -878,17 +878,23 @@ class _BreakeredGroqLLM(groq.LLM):
 
 
 # ── Quiet hours ───────────────────────────────────────────────────────
-# Between JARVIS_QUIET_START and JARVIS_QUIET_END (local time, 24h),
-# ambient VAD picks up sleeping household noise and JARVIS acts on it
-# (opening Spotify, Chrome, etc. at 3am — confirmed 2026-04-27).
-# During quiet hours, the gate requires either:
+# OFF by default per user directive 2026-05-10: JARVIS should be
+# active 24/7. Set JARVIS_QUIET_START / JARVIS_QUIET_END (integers,
+# 0-23, local time) to re-enable a quiet window — when both are 0
+# (the default) the gate skips entirely.
+#
+# When ON: between START and END (local time, 24h), ambient VAD
+# picks up household noise and JARVIS acts on it (opening Spotify
+# at 3am — confirmed 2026-04-27). The gate then requires either:
 #   a) an explicit "Jarvis" vocative, OR
 #   b) a recent real interaction (within QUIET_HOURS_WINDOW_SEC)
-# This allows normal multi-turn conversation ("jarvis, time?" → "what
-# about tomorrow?" works) while blocking idle 3am ambient triggers
-# (no recent exchange → vocative required). Wake phrases always pass.
-QUIET_HOURS_START      = int(os.environ.get("JARVIS_QUIET_START",      "1"))    # 1am
-QUIET_HOURS_END        = int(os.environ.get("JARVIS_QUIET_END",        "6"))    # 6am
+# Allowing normal multi-turn conversation while blocking idle
+# ambient triggers. Wake phrases always pass.
+#
+# To re-enable the original 1am-6am window:
+#   export JARVIS_QUIET_START=1 JARVIS_QUIET_END=6
+QUIET_HOURS_START      = int(os.environ.get("JARVIS_QUIET_START",      "0"))    # OFF (was 1am)
+QUIET_HOURS_END        = int(os.environ.get("JARVIS_QUIET_END",        "0"))    # OFF (was 6am)
 QUIET_HOURS_WINDOW_SEC = float(os.environ.get("JARVIS_QUIET_WINDOW_SEC", "1200"))  # 20 min
 # Whisper transcribes "Jarvis" as many things depending on accent and
 # noise — verified 2026-04-28 from convo db: jarvis, jervis, javis,

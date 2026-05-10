@@ -10,33 +10,48 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 class TestQuietHoursConstants:
-    """Quiet-hours defaults match the tightened spec values."""
+    """Quiet-hours defaults: OFF by default per user directive
+    2026-05-10 (JARVIS should be active 24/7). Set JARVIS_QUIET_START /
+    JARVIS_QUIET_END to re-enable a window."""
 
-    def test_quiet_hours_start_default(self):
-        # Must be 1 (1am) — not 23 (11pm). Tightening removes the 11pm-1am block.
+    def test_quiet_hours_start_default_off(self):
+        # 2026-05-10: defaults flipped to 0 (off) so JARVIS is always
+        # listening. Original 1am window can be restored via env vars.
         import importlib
         import jarvis_agent
         importlib.reload(jarvis_agent)
-        assert jarvis_agent.QUIET_HOURS_START == 1, (
-            f"Expected QUIET_HOURS_START=1, got {jarvis_agent.QUIET_HOURS_START}"
+        assert jarvis_agent.QUIET_HOURS_START == 0, (
+            f"Expected QUIET_HOURS_START=0 (off), got {jarvis_agent.QUIET_HOURS_START}"
         )
 
-    def test_quiet_hours_end_default(self):
-        # Must be 6 (6am) — not 7 (7am). 6am-7am is morning, not sleep.
+    def test_quiet_hours_end_default_off(self):
+        # 2026-05-10: defaults flipped to 0 (off). The `if START == END:
+        # return False` short-circuit in _in_quiet_hours() makes this
+        # equivalent to "no quiet hours".
         import importlib
         import jarvis_agent
         importlib.reload(jarvis_agent)
-        assert jarvis_agent.QUIET_HOURS_END == 6, (
-            f"Expected QUIET_HOURS_END=6, got {jarvis_agent.QUIET_HOURS_END}"
+        assert jarvis_agent.QUIET_HOURS_END == 0, (
+            f"Expected QUIET_HOURS_END=0 (off), got {jarvis_agent.QUIET_HOURS_END}"
         )
 
     def test_quiet_hours_window_default(self):
-        # Must be 1200.0 (20 min) — not 300 (5 min). Natural pauses exceed 5 min.
+        # Window kept at 1200s (20 min) — used only when START != END.
         import importlib
         import jarvis_agent
         importlib.reload(jarvis_agent)
         assert jarvis_agent.QUIET_HOURS_WINDOW_SEC == 1200.0, (
             f"Expected QUIET_HOURS_WINDOW_SEC=1200.0, got {jarvis_agent.QUIET_HOURS_WINDOW_SEC}"
+        )
+
+    def test_quiet_hours_disabled_when_start_equals_end(self):
+        # The _in_quiet_hours() function returns False when START == END,
+        # which is the production default post-2026-05-10.
+        import importlib
+        import jarvis_agent
+        importlib.reload(jarvis_agent)
+        assert jarvis_agent._in_quiet_hours() is False, (
+            "With START == END == 0, quiet-hours must be permanently OFF"
         )
 
     def test_quiet_hours_window_env_override(self):
