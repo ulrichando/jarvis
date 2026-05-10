@@ -112,9 +112,9 @@ _WEATHER_WHEN = (
 def register_weather() -> None:
     """Register the weather subagent.
 
-    DISABLED BY DEFAULT 2026-05-08 — opt in with `JARVIS_SUBAGENT_WEATHER=1`.
-    Disabled alongside summarize/researcher etc. while supervisor delegate
-    routing is being repaired (see specialists/summarize.py for context).
+    Re-enabled 2026-05-09 (audit recommendation D-2): clean prompt, no
+    hijack history, JARVIS otherwise has zero weather capability.
+    Per-spec opt-out via `JARVIS_SUBAGENT_WEATHER=0`.
     """
     import os
     register_subagent(SubagentSpec(
@@ -124,5 +124,5 @@ def register_weather() -> None:
         tool_factory=_weather_tools,
         ack_phrase="Checking.",
         max_history_items=8,
-        enabled=os.environ.get("JARVIS_SUBAGENT_WEATHER", "0") == "1",
+        enabled=os.environ.get("JARVIS_SUBAGENT_WEATHER", "1") == "1",
     ))
