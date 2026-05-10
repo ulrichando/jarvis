@@ -458,39 +458,16 @@ _TTS_BREAKER = CircuitBreaker("tts", fail_threshold=3, cooldown_s=20, timeout_s=
 _LLM_BREAKER = CircuitBreaker("llm", fail_threshold=2, cooldown_s=30, timeout_s=12)
 
 
-def _build_breaker_status_block(
-    breakers: list | None = None,
-) -> str:
-    """Return a one-line system-status block when any upstream breaker
-    is OPEN or HALF-OPEN, else "". Audit recommendation F (2026-05-09):
-    inject upstream-degradation visibility into JARVIS_INSTRUCTIONS so
-    the supervisor LLM acknowledges latency / fallback paths rather
-    than going silent.
-
-    Pre-fix behaviour: when Groq STT/TTS/LLM breaker opened, the user
-    waited on the FallbackAdapter (DeepSeek, ~10-30s slower) without
-    any voiced acknowledgment.
-
-    Default breakers = the module's three (_STT_BREAKER / _TTS_BREAKER
-    / _LLM_BREAKER) so on_user_turn_completed can call with no arg.
-    """
-    from resilience.circuit_breaker import STATE_OPEN, STATE_HALF_OPEN
+def _build_breaker_status_block(breakers: list | None = None) -> str:
+    """Back-compat wrapper around `pipeline.instructions_assembly.
+    build_breaker_status_block` — defaults to the module's three
+    breakers when called with no args (so on_user_turn_completed can
+    call with no arg + tests/test_breaker_status_block.py keeps the
+    original API)."""
+    from pipeline.instructions_assembly import build_breaker_status_block
     if breakers is None:
         breakers = [_STT_BREAKER, _TTS_BREAKER, _LLM_BREAKER]
-    degraded = [b.name for b in breakers if b.state in (STATE_OPEN, STATE_HALF_OPEN)]
-    if not degraded:
-        return ""
-    names = ", ".join(degraded)
-    return (
-        "\n\n═══ SYSTEM STATUS — UPSTREAM DEGRADED ═══\n\n"
-        f"Provider breaker(s) currently open or probing: {names}. "
-        f"The fallback path is in use; replies may be slower than usual. "
-        f"If the user notices the latency, acknowledge briefly without "
-        f"theater — e.g. \"Groq's slow tonight, on the fallback.\" / "
-        f"\"Bear with me, the primary's degraded.\" Don't apologize "
-        f"unless asked. Don't preface every reply with the status; "
-        f"only mention it when latency is noticed or asked about."
-    )
+    return build_breaker_status_block(breakers)
 
 
 class _LoggingGroqTTS(groq.TTS):
@@ -2088,49 +2065,19 @@ from pipeline.short_input_gate import (
 #   - _load_learned_rules() is called in entrypoint() — once per job,
 #     not at module load — so a rule added mid-session is picked up on
 #     the next voice-client reconnect / agent restart.
-MAX_LEARNED_RULES    = 100
-_LEARNED_RULES_PATH  = Path.home() / ".jarvis" / "learned_rules.md"
-_PROPOSALS_PATH      = Path.home() / ".jarvis" / "learned_rules.proposals.md"
-
-
-def _load_learned_rules() -> str:
-    """
-    Read ~/.jarvis/learned_rules.md and return a system-prompt block.
-    Returns "" if the file is missing or empty — caller appends this
-    to the instruction string so an empty return is harmless.
-    """
-    try:
-        content = _LEARNED_RULES_PATH.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return ""
-    except Exception as e:
-        logger.warning(f"[learned-rules] read failed: {e}")
-        return ""
-    # Only lines that look like bullet points (start with '-')
-    lines = [l for l in content.splitlines() if l.strip().startswith("-")]
-    if not lines:
-        return ""
-    # Keep the most recent MAX_LEARNED_RULES; oldest are silently dropped
-    # from the injection (not from the file).
-    if len(lines) > MAX_LEARNED_RULES:
-        lines = lines[-MAX_LEARNED_RULES:]
-    rules_text = "\n".join(lines)
-    return (
-        "\n\n═══ LEARNED BEHAVIORAL RULES ═══\n\n"
-        "These rules were added by Ulrich via voice corrections or confirmed\n"
-        "from log analysis. They are BINDING — treat them as higher priority\n"
-        "than any default behavior described elsewhere in this prompt:\n\n"
-        + rules_text
-    )
-
-
-def _count_pending_proposals() -> int:
-    """Return the number of PENDING rule proposals. 0 on any error."""
-    try:
-        from tools.log_analyzer import count_pending
-        return count_pending()
-    except Exception:
-        return 0
+# Learned-rules + breaker-status block builders moved to
+# pipeline/instructions_assembly.py (Step 7 of the 10/10 refactor).
+# Re-exporting under the legacy underscored names so existing call
+# sites and tests are untouched. The constants are also re-exported
+# (callers below append to LEARNED_RULES_PATH and read PROPOSALS_PATH
+# from this module).
+from pipeline.instructions_assembly import (
+    MAX_LEARNED_RULES,
+    LEARNED_RULES_PATH as _LEARNED_RULES_PATH,
+    PROPOSALS_PATH     as _PROPOSALS_PATH,
+    load_learned_rules    as _load_learned_rules,
+    count_pending_proposals as _count_pending_proposals,
+)
 
 
 # System-prompt appendix fed to the CLI for every voice invocation.
