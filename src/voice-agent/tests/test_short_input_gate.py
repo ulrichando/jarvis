@@ -223,15 +223,15 @@ def test_original_confab_triggers_still_deflected(text):
 # ── _JARVIS_NAME_RE / inline-regex sync (added 2026-05-09) ───────────
 #
 # Property: every Whisper-name variant accepted by _BARE_VOCATIVE_RE
-# (jarvis_agent.py:884-885) must ALSO match _JARVIS_NAME_RE
-# (jarvis_agent.py:864-867) AND the inline vocative-strip regex inside
-# _is_command() (jarvis_agent.py:4397-4398). Drift here causes silent
+# (jarvis_agent.py:888-889) must ALSO match _JARVIS_NAME_RE
+# (jarvis_agent.py:864-868) AND the inline vocative-strip regex inside
+# _is_command() (jarvis_agent.py:4403-4404). Drift here causes silent
 # wake-word drops:
-#   * Quiet-hours guard (jarvis_agent.py:7243): a "yaris, mute"
+#   * Quiet-hours guard (jarvis_agent.py:7249): a "yaris, mute"
 #     transcript at 3am with no recent interaction → StopResponse.
-#   * Mute commands (jarvis_agent.py:7224): "yaris, mute" returns
-#     had_vocative=False, fails the vocative requirement, mute is
-#     silently rejected.
+#   * Mute gate inside _is_command() (jarvis_agent.py:4425): "yaris,
+#     mute" returns had_vocative=False, fails the vocative requirement,
+#     mute is silently rejected.
 #
 # Background: 2026-05-09 the bare-vocative bypass added 6 new variants
 # (yaris/yeris/yoris/jarius/jarrus/jorius) to _BARE_VOCATIVE_RE only.
@@ -257,7 +257,7 @@ def test_is_command_strips_extended_whisper_variant_vocative_for_mute(variant):
     "yaris, mute" / "jarius, mute" get had_vocative=True and the mute fires."""
     assert _is_command(f"{variant}, mute", _MUTE_PATTERNS) is True, (
         f"_is_command rejected mute with vocative {variant!r}; "
-        f"inline regex at jarvis_agent.py:4397-4398 out of sync"
+        f"inline regex at jarvis_agent.py:4403-4404 out of sync"
     )
 
 
@@ -268,5 +268,5 @@ def test_is_command_strips_extended_whisper_variant_vocative_for_strict_wake(var
     with everyday speech in multi-person rooms, so the vocative is mandatory)."""
     assert _is_command(f"{variant}, are you there", _WAKE_PATTERNS) is True, (
         f"_is_command rejected strict wake with vocative {variant!r}; "
-        f"inline regex at jarvis_agent.py:4397-4398 out of sync"
+        f"inline regex at jarvis_agent.py:4403-4404 out of sync"
     )

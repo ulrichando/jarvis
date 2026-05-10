@@ -881,7 +881,7 @@ _BARE_VOCATIVE_RE = re.compile(
     r"(?:(?:hey|yo|hi|ok(?:ay)?|so|alright|hello|i\s+said|please)\s+)*"
     # The name itself, matching Whisper variants. MUST stay bidirectionally
     # in sync with _JARVIS_NAME_RE (line 864) AND the inline vocative-strip
-    # regex inside _is_command() (line 4397). Add a new STT variant here →
+    # regex inside _is_command() (line 4403). Add a new STT variant here →
     # add it to BOTH other sites; same in reverse. The 2026-05-09 spec
     # review caught a one-way drift after the 6 trailing variants were
     # added here only — quiet-hours guard silently dropped wake words.
@@ -4396,7 +4396,7 @@ def _is_command(text: str, patterns: tuple[re.Pattern, ...]) -> bool:
         # Strip a leading "jarvis" / "jervis" / "javis" / "joris" / etc.
         # vocative, remembering whether one was actually present.
         # MUST stay in sync with _JARVIS_NAME_RE (line 864) and the
-        # _BARE_VOCATIVE_RE alternation (line 884). All three sites accept
+        # _BARE_VOCATIVE_RE alternation (line 888). All three sites accept
         # the same Whisper-variant set; drift here causes mute/wake commands
         # with mis-transcribed vocatives to be rejected.
         stripped = re.sub(
