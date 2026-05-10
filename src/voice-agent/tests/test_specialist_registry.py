@@ -131,8 +131,7 @@ def test_tool_factory_is_lazy():
 def test_package_autoregisters_desktop():
     """Phase 4: desktop is enabled in the registry. The legacy
     JarvisAgent.transfer_to_desktop method has been retired; the
-    registry's RegistrySpecialist now owns the handoff for both
-    desktop and planner."""
+    registry's RegistrySpecialist now owns the handoff."""
     from specialists import desktop as desktop_mod
     desktop_mod.register_desktop()
 
@@ -144,26 +143,6 @@ def test_package_autoregisters_desktop():
     assert "task_done" in spec.instructions   # the back-handoff convention is documented
 
 
-# ── Phase 3: planner specialist ────────────────────────────────────────
-
-
-def test_planner_spec_is_registered_and_enabled():
-    """Phase 3 added the planner specialist via the registry pattern.
-    Unlike desktop (disabled, legacy method owns it), planner is the
-    first registry-driven specialist that ships enabled=True."""
-    from specialists import planner as planner_mod
-    planner_mod.register_planner()
-
-    spec = get("planner")
-    assert spec is not None
-    assert spec.transfer_tool == "transfer_to_planner"
-    assert "run_jarvis_cli" in spec.instructions  # references the right primary tool
-    assert spec.enabled is True
-
-
-def test_planner_appears_in_all_specs():
-    from specialists import planner as planner_mod
-    planner_mod.register_planner()
-
-    names = [s.name for s in all_specs()]
-    assert "planner" in names
+# Planner specialist was retired 2026-05-05 — replaced by in-process
+# plan-mode tools (tools/plan_mode.py). Tests for `register_planner()`
+# removed 2026-05-09 alongside `specialists/planner.py` deletion.

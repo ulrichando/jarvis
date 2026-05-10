@@ -35,7 +35,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
     "specialists.registry",
     "specialists.agent",
     "specialists.desktop",
-    "specialists.planner",
     "specialists.browser",
     "specialists.summarize",
     "specialists.weather",
@@ -112,7 +111,6 @@ def test_build_all_transfer_tools_includes_delegate():
     from specialists.registry import (
         clear, clear_subagents, _REGISTRY, SUBAGENT_REGISTRY,
     )
-    from specialists.planner import register_planner
     from specialists.desktop import register_desktop
     from specialists.browser import register_browser
     from specialists.summarize import register_summarize
@@ -122,7 +120,6 @@ def test_build_all_transfer_tools_includes_delegate():
 
     clear()
     clear_subagents()
-    register_planner()
     register_desktop()
     register_browser()
     register_summarize()
@@ -131,10 +128,9 @@ def test_build_all_transfer_tools_includes_delegate():
 
     tools = build_all_transfer_tools()
     tool_names = {getattr(t, "name", None) or t.info.name for t in tools}
-    # Three legacy transfer_to_X tools + one delegate tool = 4 total.
-    # (delegate covers all SubagentSpecs internally — count stays at 4
+    # Two legacy transfer_to_X tools + one delegate tool = 3 total.
+    # (delegate covers all SubagentSpecs internally — count stays at 3
     # whether you have 1 subagent or 100. That's the whole point.)
-    assert "transfer_to_planner" in tool_names
     assert "transfer_to_desktop" in tool_names
     assert "transfer_to_browser" in tool_names
     assert "delegate" in tool_names
@@ -152,24 +148,22 @@ def test_build_all_transfer_tools_includes_delegate():
 def test_specialist_registry_discovers_three_enabled_specs():
     """Adding a specialist is one file + one register() call; this
     sanity check ensures the registry actually picks up the three
-    we expect (planner, desktop, browser) and didn't lose one to a
-    typo or rename.
+    we expect (desktop, browser) and didn't lose one to a typo or
+    rename.
 
     Other tests in the suite (test_specialist_registry,
     test_browser_specialist) call registry.clear() in their setup,
     so we re-register the production specs explicitly here rather
     than rely on import order."""
     from specialists.registry import _REGISTRY, clear
-    from specialists.planner import register_planner
     from specialists.desktop import register_desktop
     from specialists.browser import register_browser
 
     clear()
-    register_planner()
     register_desktop()
     register_browser()
 
     enabled = {name for name, spec in _REGISTRY.items() if spec.enabled}
-    assert {"planner", "desktop", "browser"}.issubset(enabled), (
-        f"expected planner/desktop/browser enabled, got {enabled}"
+    assert {"desktop", "browser"}.issubset(enabled), (
+        f"expected desktop/browser enabled, got {enabled}"
     )
