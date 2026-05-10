@@ -458,6 +458,41 @@ _TTS_BREAKER = CircuitBreaker("tts", fail_threshold=3, cooldown_s=20, timeout_s=
 _LLM_BREAKER = CircuitBreaker("llm", fail_threshold=2, cooldown_s=30, timeout_s=12)
 
 
+def _build_breaker_status_block(
+    breakers: list | None = None,
+) -> str:
+    """Return a one-line system-status block when any upstream breaker
+    is OPEN or HALF-OPEN, else "". Audit recommendation F (2026-05-09):
+    inject upstream-degradation visibility into JARVIS_INSTRUCTIONS so
+    the supervisor LLM acknowledges latency / fallback paths rather
+    than going silent.
+
+    Pre-fix behaviour: when Groq STT/TTS/LLM breaker opened, the user
+    waited on the FallbackAdapter (DeepSeek, ~10-30s slower) without
+    any voiced acknowledgment.
+
+    Default breakers = the module's three (_STT_BREAKER / _TTS_BREAKER
+    / _LLM_BREAKER) so on_user_turn_completed can call with no arg.
+    """
+    from resilience.circuit_breaker import STATE_OPEN, STATE_HALF_OPEN
+    if breakers is None:
+        breakers = [_STT_BREAKER, _TTS_BREAKER, _LLM_BREAKER]
+    degraded = [b.name for b in breakers if b.state in (STATE_OPEN, STATE_HALF_OPEN)]
+    if not degraded:
+        return ""
+    names = ", ".join(degraded)
+    return (
+        "\n\n═══ SYSTEM STATUS — UPSTREAM DEGRADED ═══\n\n"
+        f"Provider breaker(s) currently open or probing: {names}. "
+        f"The fallback path is in use; replies may be slower than usual. "
+        f"If the user notices the latency, acknowledge briefly without "
+        f"theater — e.g. \"Groq's slow tonight, on the fallback.\" / "
+        f"\"Bear with me, the primary's degraded.\" Don't apologize "
+        f"unless asked. Don't preface every reply with the status; "
+        f"only mention it when latency is noticed or asked about."
+    )
+
+
 class _LoggingGroqTTS(groq.TTS):
     """groq.TTS that logs Groq's response body on non-2xx."""
 
@@ -8298,20 +8333,25 @@ async def entrypoint(ctx: JobContext) -> None:
         # take effect on the next agent restart — meaning when the user
         # corrects JARVIS mid-session ("remember, always use default
         # profile"), the correction sits on disk for hours unread.
-        nonlocal _rules_mtime, _last_memory_block
+        nonlocal _rules_mtime, _last_memory_block, _last_breaker_block
         try:
             cur_mtime = _LEARNED_RULES_PATH.stat().st_mtime
             rules_block = _load_learned_rules() if cur_mtime != _rules_mtime \
                 else learned_rules_block
             new_memory_block = _build_memory_block()
+            # Audit-rec F: refresh breaker block on every turn so the
+            # supervisor's prompt reflects current upstream health.
+            new_breaker_block = _build_breaker_status_block()
 
             rules_changed = cur_mtime != _rules_mtime
             memory_changed = new_memory_block != _last_memory_block
+            breaker_changed = new_breaker_block != _last_breaker_block
 
-            if rules_changed or memory_changed:
+            if rules_changed or memory_changed or breaker_changed:
                 new_instructions = (
                     _instructions_prefix + rules_block
                     + _instructions_suffix + new_memory_block
+                    + new_breaker_block
                 )
 
                 async def _push_instructions():
@@ -8328,6 +8368,14 @@ async def entrypoint(ctx: JobContext) -> None:
                                 f"[memory] block refreshed "
                                 f"({len(new_memory_block)} chars)"
                             )
+                        if breaker_changed:
+                            transition = (
+                                "→ degraded" if new_breaker_block else "→ healthy"
+                            )
+                            logger.info(
+                                f"[breaker-status] block refreshed "
+                                f"({len(new_breaker_block)} chars) {transition}"
+                            )
                     except Exception as e:
                         logger.warning(f"[instructions] hot-reload push failed: {e}")
 
@@ -8338,6 +8386,8 @@ async def entrypoint(ctx: JobContext) -> None:
                     _rules_mtime = cur_mtime
                 if memory_changed:
                     _last_memory_block = new_memory_block
+                if breaker_changed:
+                    _last_breaker_block = new_breaker_block
         except FileNotFoundError:
             pass
         except Exception as e:
@@ -9021,8 +9071,15 @@ async def entrypoint(ctx: JobContext) -> None:
     _memory_block = _build_memory_block()
     _last_memory_block = _memory_block
 
+    # Audit-rec F (2026-05-09): inject breaker status into the prompt so
+    # the supervisor knows when to acknowledge upstream-provider degradation
+    # rather than going silent during a fallback. Empty string when all
+    # breakers are healthy (zero prompt cost in the steady state).
+    _breaker_block = _build_breaker_status_block()
+    _last_breaker_block = _breaker_block
+
     _jarvis_agent = JarvisAgent(
-        instructions=(_instructions_prefix + learned_rules_block + _instructions_suffix + _memory_block),
+        instructions=(_instructions_prefix + learned_rules_block + _instructions_suffix + _memory_block + _breaker_block),
         # Pre-load recent prior turns from conversations.db so the
         # LLM sees what was discussed before this job started.
         # Without this, every voice-client reconnect = amnesia.
