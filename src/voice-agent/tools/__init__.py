@@ -6,21 +6,22 @@ Inside this package the redundant `jarvis_` prefix is dropped — the
 package namespace already supplies it.
 
 Tools available:
-  - browser           : ext-bridge driver for the legacy browser specialist
-  - browser_ext       : 37 ext_* DOM-driving tools (legacy specialist)
-  - browser_v2        : autonomous browser-use agent (currently disabled,
-                        see specialists/browser_v2.py:108-125)
+  - bash              : safe shell exec (claude-code-derived)
+  - browser_ext       : 38 ext_* DOM-driving tools, hub→Chrome extension WS
   - code_reviewer     : Groq-backed code review subagent
   - computer_use      : 9 desktop-control tools (xdotool / scrot / Gemini Vision)
+  - file_*            : direct in-process read/edit/write (claude-code-derived)
   - github            : `gh`-CLI subagent for issue / PR / repo operations
   - log_analyzer      : pattern-extracts from voice-agent log files
-  - memory            : durable-fact memory (remember / recall / list)
+  - memory            : durable-fact memory (remember / recall / list / forget)
   - memory_recall     : semantic search over conversation history
+  - plan_mode         : enter/exit plan mode + present_plan (claude-code-derived)
+  - token_estimation  : pre-flight token-budget checker for chat_ctx
   - validator         : Groq-backed outcome validator subagent
 
+`browser` and `browser_v2` modules were removed 2026-05-09 — the
+extension-driven `browser_ext` is the only browser path now.
+
 Stage A reorganization 2026-05-05 (RFC-001). Files were previously at
-voice-agent's top level as `jarvis_<name>.py`. Backward-compat shims at
-the old paths log a `jarvis.layout-shim` debug line on import and
-re-export the public surface; shims will be removed after 7 days of
-zero shim-hit telemetry (W-007a.2).
+voice-agent's top level as `jarvis_<name>.py`.
 """

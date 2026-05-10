@@ -75,7 +75,7 @@ async def validate_outcome(
 
     USE WHEN:
       - You just ran a tool and want to double-check before voicing
-        "Done, sir" / "X is open" / past-tense success.
+        "Done." / "X is open" / past-tense success.
       - The user explicitly asks "are you sure" / "did that really
         work" / "verify it."
       - A previous reply got pushback ("that's not right") — call this
@@ -85,7 +85,7 @@ async def validate_outcome(
         user_request: What the user originally asked for, verbatim.
         tool_result: The raw string the tool returned (or an error
                      description).
-        claimed_outcome: The proposed narration ("Chrome opened, sir.").
+        claimed_outcome: The proposed narration ("Chrome opened.").
 
     Returns:
         "VERIFIED: <reason>" if the claim matches the result.
