@@ -270,3 +270,85 @@ def test_is_command_strips_extended_whisper_variant_vocative_for_strict_wake(var
         f"_is_command rejected strict wake with vocative {variant!r}; "
         f"inline regex at jarvis_agent.py:4403-4404 out of sync"
     )
+
+
+# ── Pardon? spiral fix (2026-05-09 — live evidence post-restart) ─────
+#
+# Live telemetry 2026-05-09T22:10+ showed 33% of post-restart turns ended
+# with "Pardon?" because the gate over-deflected legitimate inputs:
+#   * 2-word interrogatives ending with "?" — "What's EMI?" / "What now?"
+#   * Spaced variants of allowlist words — "All right." (allowlist has
+#     "alright" with no space; the spaced form fell through)
+#   * Vocatives with comma after preamble filler — "Hello, Jervis." (the
+#     preamble matcher used \s+ instead of [,\s]+ so the comma failed
+#     the bypass and the input fell into the gate as a 2-word ambiguous)
+# The user explicitly complained on the live mic ("What's with your
+# pardon? You are killing me, bro.") and JARVIS Pardon-d the complaint.
+#
+# These cases must reach the LLM, not be deflected.
+
+@pytest.mark.parametrize("text", [
+    # Verbatim from live telemetry turn 1513
+    "What's EMI?",
+    # WH-question shapes
+    "What now?",
+    "What's that?",
+    "Why?",
+    "Who's there?",
+    "Where is it?",
+    "When?",
+    "How come?",
+    # Generic ?-terminated short interrogatives
+    "Really, though?",
+    "Got it?",
+])
+def test_short_interrogatives_reach_llm(text):
+    """Questions that end with '?' or start with a WH-word carry semantic
+    intent — the gate must not deflect them. Live regression: 'What's EMI?'
+    got 'Pardon?' (telemetry id 1513) which prompted the user's explicit
+    complaint at id 1515."""
+    assert _is_ambiguous_short_input(text) is False, (
+        f"Expected interrogative {text!r} to reach the LLM (got True)"
+    )
+
+
+@pytest.mark.parametrize("text", [
+    # "alright" (one word) is in the allowlist; the spaced form "All right"
+    # is the same response and must also pass.
+    "All right.",
+    "all right",
+    "All right!",
+    # "Thank you" — already in allowlist with \s* but verify
+    "Thank you",
+    "Thank you.",
+])
+def test_spaced_allowlist_variants_reach_llm(text):
+    """Two-word forms of allowlist responses are the same intent as the
+    one-word forms; the allowlist must accept both. Live regression:
+    'All right.' (telemetry id 1532) got 'Pardon?'."""
+    assert _is_ambiguous_short_input(text) is False, (
+        f"Expected allowlist variant {text!r} to reach the LLM (got True)"
+    )
+
+
+@pytest.mark.parametrize("text", [
+    # Verbatim from live telemetry turn 1504
+    "Hello, Jervis.",
+    # Other preamble + vocative shapes that should bypass
+    "Hey, Jarvis.",
+    "Hi, Jarvis!",
+    "Yo, Jarvis?",
+    "Okay, Jarvis.",
+    "OK, Jarvis,",
+    # Whisper variants behind the comma
+    "Hello, Joris.",
+    "Hey, Yaris?",
+])
+def test_vocatives_with_comma_after_preamble_bypass_gate(text):
+    """`_BARE_VOCATIVE_RE` must tolerate a comma between the preamble
+    filler and the name — natural English speech often pauses with a
+    comma there ('Hello, Jarvis.' / 'Hey, Jarvis.'). Live regression:
+    'Hello, Jervis.' (telemetry id 1504) got 'Pardon?'."""
+    assert _is_ambiguous_short_input(text) is False, (
+        f"Expected vocative-with-comma {text!r} to bypass gate (got True)"
+    )

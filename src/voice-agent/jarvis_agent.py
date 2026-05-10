@@ -877,8 +877,13 @@ _JARVIS_NAME_RE        = re.compile(
 # Rejects:  jarvis open browser / jarvis what time / jarvis remember this
 _BARE_VOCATIVE_RE = re.compile(
     r"^\s*"
-    # Optional preamble — common wake-fillers before the name:
-    r"(?:(?:hey|yo|hi|ok(?:ay)?|so|alright|hello|i\s+said|please)\s+)*"
+    # Optional preamble — common wake-fillers before the name. The
+    # filler may be followed by either whitespace OR a comma+whitespace
+    # ("Hello, Jarvis." is natural English; the comma-less form
+    # "Hello Jarvis" was the only one matched until 2026-05-09 and the
+    # comma form silently fell into the short-input gate as 2-word
+    # ambiguous → "Pardon?".
+    r"(?:(?:hey|yo|hi|ok(?:ay)?|so|alright|hello|i\s+said|please)[,\s]+)*"
     # The name itself, matching Whisper variants. MUST stay bidirectionally
     # in sync with _JARVIS_NAME_RE (line 864) AND the inline vocative-strip
     # regex inside _is_command() (line 4403). Add a new STT variant here →
@@ -4465,13 +4470,40 @@ _AMBIGUOUS_SHORT_ALLOWLIST = re.compile(
     # Affirmations / acks — let these flow to the LLM for natural reply
     r"yes|yeah|yep|yup|sure|right|okay|ok|fine|cool|nice|"
     r"thanks|thank\s*you|nope|no|nah|"
-    # Single-word polite responses
-    r"alright|bye|goodbye|cheers|gotcha|"
+    # Single-word polite responses. Both "alright" (one `l`, no space)
+    # and "all right" (two `l`s, spaced) carry the same intent; the
+    # spaced form was tripping the gate before 2026-05-09.
+    r"alright|all\s+right|bye|goodbye|cheers|gotcha|"
     # Reaction words that benefit from LLM's emotional response
     r"wow|sweet|awesome|amazing|great|good|perfect"
     r")"
     r"[\s,.!?]*$",
     re.IGNORECASE,
+)
+
+
+# Short interrogatives carry semantic intent — questions ending with `?`
+# (≥2 words) and bare WH-stems ("Why?", "What now?") must reach the
+# supervisor LLM rather than getting "Pardon?". Live evidence
+# 2026-05-09T22:10+: 33% of post-restart turns were "Pardon?", many of
+# them legitimate questions like "What's EMI?" (telemetry id 1513).
+#
+# Conservative shape: 1-word non-WH inputs ending with `?` (e.g. "Hush?",
+# "Hmm?") still get deflected — they're indistinguishable from the
+# original confab triggers and the user typically wants silence on those.
+_INTERROGATIVE_BYPASS = re.compile(
+    r"^\s*"
+    r"(?:"
+    # 2+ tokens ending with `?` — clearly a content-bearing question
+    r"\S+\s+\S+.*\?"
+    r"|"
+    # WH-stem (even bare, like "Why?" / "What?" / "How?"). Word boundary
+    # after the stem prevents matching "Whatever" / "however" — those
+    # remain in the gate.
+    r"(?:what|who|where|when|why|how|which|whose)(?:'?(?:s|re|ll))?\b.*"
+    r")"
+    r"\s*$",
+    re.IGNORECASE | re.DOTALL,
 )
 
 
@@ -4525,6 +4557,12 @@ def _is_ambiguous_short_input(text: str) -> bool:
     # Interrupt kill-phrases — let them flow to the LLM as conversational
     # input outside the mid-speech kill-phrase window.
     if _GATE_BYPASS_KILL_PHRASES.match(text):
+        return False
+    # Short interrogatives — "What's EMI?", "Why?", "Got it?" carry
+    # semantic intent and must reach the LLM. Live regression
+    # 2026-05-09: 33% of post-restart turns were "Pardon?", many of
+    # them legitimate WH-questions or ?-terminated short interrogatives.
+    if _INTERROGATIVE_BYPASS.match(text):
         return False
     # Recall queries are short but should hit the recall force-router,
     # not be deflected. Mostly >=3 words in practice but check anyway.
