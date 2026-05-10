@@ -258,9 +258,9 @@ def install() -> None:
                     real_name, args_json[:80],
                 )
                 soft_msg = (
-                    "Let me try that differently, sir."
+                    "Let me try that differently."
                     if real_name == "delegate"
-                    else "One moment, sir — let me rephrase that."
+                    else "One moment — let me rephrase that."
                 )
                 soft_chunk = agents_llm.ChatChunk(
                     id=f"soft_{uuid.uuid4().hex[:8]}",
@@ -335,7 +335,7 @@ def install() -> None:
                     id=f"soft_{uuid.uuid4().hex[:8]}",
                     delta=agents_llm.ChoiceDelta(
                         role="assistant",
-                        content="One moment, sir — let me try that again.",
+                        content="One moment — let me try that again.",
                     ),
                 )
                 try:

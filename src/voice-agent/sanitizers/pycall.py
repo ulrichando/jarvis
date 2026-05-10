@@ -58,7 +58,7 @@ logger = logging.getLogger("jarvis.pycall_sanitizer")
 # real reply was produced). Short + neutral so it works regardless of
 # what the actual task was. Match the persona register from
 # JARVIS_INSTRUCTIONS (no archaic phrasing).
-_FALLBACK_ACK = "Done, sir."
+_FALLBACK_ACK = "Done."
 
 
 # W-020 (2026-05-05): meta-silence replies are when the LLM emits the
