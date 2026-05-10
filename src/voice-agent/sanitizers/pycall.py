@@ -374,9 +374,7 @@ def sanitize_text_for_tts(text: str) -> str:
     """Return `text` with any tool-call-as-text leak suppressed.
 
     Public helper for code paths that don't go through the streaming
-    `_parse_choice` patch — notably `supervisor_graph.llm_adapter`,
-    which constructs ChatChunks directly from LangGraph's AIMessage
-    content and otherwise bypasses every sanitizer.
+    `_parse_choice` patch.
 
     If the input matches a leak shape (Python-call, XML attr/bare,
     JSON array, meta-silence), returns "". Otherwise returns the
