@@ -1,8 +1,8 @@
 """
-JARVIS desktop computer-use: Gemini vision + xdotool control.
+JARVIS desktop computer-use: Kimi vision + xdotool control.
 
 Tools (all @function_tool, registered in jarvis_agent.py):
-    computer_use  — start session; first screenshot → Gemini describe
+    computer_use  — start session; first screenshot → vision describe
     computer_stop — end session
     click         — xdotool click at (x, y)
     type_text     — xdotool type + optional Enter
@@ -10,7 +10,11 @@ Tools (all @function_tool, registered in jarvis_agent.py):
     drag          — xdotool drag from→to
     key_press     — xdotool key combination (e.g. "ctrl+t")
     wait          — sleep N ms, then re-describe screen
-    screenshot    — one-shot screenshot + Gemini describe (no session needed)
+    screenshot    — one-shot screenshot + vision describe (no session needed)
+
+Vision backend is Kimi (Moonshot) by default with Ollama as the local
+fallback — see tools/_vision_backend.py for the backend dispatch.
+Gemini was removed 2026-05-11 after live "API is disabled" failures.
 
 Safety guards:
     _FAILURE_LIMIT consecutive failures → stop and explain
@@ -32,21 +36,22 @@ from livekit.agents import function_tool
 logger = logging.getLogger("jarvis.computer_use")
 
 # Vision-backend primitives extracted to tools/_vision_backend.py 2026-05-10
-# (Step 7 of the audit). Re-exported under legacy underscored names so the
-# in-file callers (`_resolved_vision_backend`, `_gemini_describe`, etc.) +
-# the `VISION_BACKEND` / `OLLAMA_*` / `GEMINI_MODEL` constants stay reachable
-# via `from tools.computer_use import X` (no caller change).
+# (Step 7 of the audit). Re-exported under underscored aliases so the
+# in-file callers (`_resolved_vision_backend`, `_vision_describe`, etc.) +
+# the `VISION_BACKEND` / `OLLAMA_*` / `KIMI_VISION_MODEL` constants stay
+# reachable via `from tools.computer_use import X` (no caller change).
+# Gemini ripped out 2026-05-11 — see _vision_backend.py docstring.
 from tools._vision_backend import (
     VISION_BACKEND,
     OLLAMA_VISION_MODEL,
     OLLAMA_URL,
-    GEMINI_MODEL,
+    KIMI_VISION_MODEL,
     ollama_reachable        as _ollama_reachable,
     resolved_vision_backend as _resolved_vision_backend,
-    get_gemini_client       as _get_gemini_client,
+    get_kimi_client         as _get_kimi_client,
     ollama_describe         as _ollama_describe,
-    gemini_describe_raw     as _gemini_describe_raw,
-    gemini_describe         as _gemini_describe,
+    kimi_describe_raw       as _kimi_describe_raw,
+    vision_describe         as _vision_describe,
 )
 
 # Default video device for webcam_capture. Resolution order (first wins):
@@ -78,7 +83,7 @@ WEBCAM_PROMPT = (
     "people present (count, posture, facing direction, expression), "
     "the room/environment, anything notable. Be specific and concise."
 )
-GEMINI_SCREEN_PROMPT = (
+VISION_SCREEN_PROMPT = (
     "You are helping a voice assistant control a desktop computer. "
     "Describe the current screen state: what application is open, all "
     "visible UI elements (buttons, text fields, menus, links), and their "
@@ -87,9 +92,9 @@ GEMINI_SCREEN_PROMPT = (
 )
 # Casual "what's on my screen" prompt — used by the one-shot screenshot()
 # tool. No coordinates, no element list — just 1-2 sentences. The detailed
-# prompt above adds 10-15s to Gemini latency because it produces a long
+# prompt above can add 10-15s of latency because it produces a long
 # structured response; this one returns in 1-3s.
-GEMINI_QUICK_SCREEN_PROMPT = (
+VISION_QUICK_SCREEN_PROMPT = (
     "In one or two sentences, describe what's on this screen — what app "
     "is open, what the user appears to be doing. No coordinates, no "
     "element list. Speak naturally as if telling someone over the phone."
@@ -118,11 +123,12 @@ class _Session:
 _active_session: _Session | None = None
 
 
-# Max edge length for screenshots sent to Gemini. 2560x1600 PNGs are
-# ~400 KB and the upload dominates round-trip latency (~15s observed).
-# Downscaling to 1280 max + JPEG at quality 75 cuts payload to ~60 KB
-# without losing readable UI text. Gemini's vision encoder uses tiles
-# either way — extra resolution past ~1024 is mostly wasted.
+# Max edge length for screenshots sent to the vision backend. 2560x1600
+# PNGs are ~400 KB and the upload dominates round-trip latency (~15s
+# observed). Downscaling to 1280 max + JPEG at quality 75 cuts payload
+# to ~60 KB without losing readable UI text. Both Kimi and Ollama's
+# vision models tile images internally — extra resolution past ~1024
+# is mostly wasted.
 _SCREENSHOT_MAX_EDGE = int(os.environ.get("JARVIS_SCREENSHOT_MAX_EDGE", "1280"))
 _SCREENSHOT_JPEG_QUALITY = int(os.environ.get("JARVIS_SCREENSHOT_JPEG_Q", "75"))
 
@@ -180,7 +186,7 @@ def _take_screenshot() -> tuple[bytes, str]:
 
 
 async def _screenshot_and_describe() -> str:
-    """Take screenshot, send to Gemini, return description.
+    """Take screenshot, describe via the vision backend, return text.
 
     Logs per-stage timing so latency regressions are visible.
     """
@@ -188,11 +194,11 @@ async def _screenshot_and_describe() -> str:
     img_bytes, mime = _take_screenshot()
     t_capture = time.monotonic() - t0
     t1 = time.monotonic()
-    desc = await _gemini_describe(img_bytes, mime_type=mime)
-    t_gemini = time.monotonic() - t1
+    desc = await _vision_describe(img_bytes, mime_type=mime)
+    t_vision = time.monotonic() - t1
     logger.info(
         f"[computer-use] screenshot+describe: capture={t_capture*1000:.0f}ms "
-        f"gemini={t_gemini*1000:.0f}ms img={len(img_bytes)/1024:.0f}KB ({mime})"
+        f"vision={t_vision*1000:.0f}ms img={len(img_bytes)/1024:.0f}KB ({mime})"
     )
     return desc
 
@@ -308,9 +314,10 @@ async def computer_use(task: str) -> str:
     """Start a computer-use session to control the desktop visually.
 
     Call this when the user wants JARVIS to operate the computer — click
-    buttons, type into fields, navigate apps. Gemini Vision describes the
-    screen after each action; you (the LLM) decide the next click/type.
-    Call computer_stop when the task is done.
+    buttons, type into fields, navigate apps. The vision backend (Kimi
+    by default, Ollama if reachable) describes the screen after each
+    action; you (the LLM) decide the next click/type. Call computer_stop
+    when the task is done.
 
     Only one session can run at a time.
 
@@ -544,109 +551,17 @@ async def wait(ms: int = 500) -> str:
         return _fmt_result(False, error=str(e))
 
 
-async def _gemini_live_describe(
-    duration_s: int,
-    instruction: str,
-    frame_interval_s: float = 1.5,
-) -> str:
-    """Open a Gemini Live websocket session, stream screenshot frames
-    for duration_s seconds, return the concatenated text response.
-
-    Uses gemini-3.1-flash-live-preview (matching the Google AI Studio
-    sample). Returns text-only output (audio modality not used because
-    JARVIS has its own TTS pipeline). Raises ComputerUseError on quota
-    exhaustion (1011) — Live API needs paid Gemini billing.
-    """
-    from google import genai
-    from google.genai import types as genai_types
-    key = os.environ.get("GOOGLE_API_KEY", "")
-    if not key:
-        raise ComputerUseError("GOOGLE_API_KEY not set")
-
-    client = genai.Client(api_key=key)
-    config = genai_types.LiveConnectConfig(
-        response_modalities=["TEXT"],
-        media_resolution=genai_types.MediaResolution.MEDIA_RESOLUTION_MEDIUM,
-        context_window_compression=genai_types.ContextWindowCompressionConfig(
-            trigger_tokens=104857,
-            sliding_window=genai_types.SlidingWindow(target_tokens=52428),
-        ),
-        system_instruction=genai_types.Content(
-            parts=[genai_types.Part(text=(
-                "You are JARVIS's eyes via continuous screen share. "
-                "Describe what changes between frames as a stream of "
-                "short observations. No preamble, no closer."
-            ))],
-        ),
-    )
-
-    chunks: list[str] = []
-    try:
-        async with client.aio.live.connect(
-            model="models/gemini-3.1-flash-live-preview",
-            config=config,
-        ) as session:
-            # Send the user's instruction as the opening turn
-            await session.send_client_content(
-                turns=[genai_types.Content(
-                    role="user",
-                    parts=[genai_types.Part(text=instruction)],
-                )],
-                turn_complete=False,  # we'll keep the turn open with frames
-            )
-
-            # Background task: capture and send screen frames
-            stop_at = time.monotonic() + duration_s
-            async def _stream_frames():
-                while time.monotonic() < stop_at:
-                    img_bytes, mime = _take_screenshot()
-                    await session.send_realtime_input(
-                        video=genai_types.Blob(data=img_bytes, mime_type=mime),
-                    )
-                    await asyncio.sleep(frame_interval_s)
-
-            frame_task = asyncio.create_task(_stream_frames())
-            try:
-                async for msg in session.receive():
-                    if msg.text:
-                        chunks.append(msg.text)
-                    sc = getattr(msg, "server_content", None)
-                    if sc and sc.model_turn:
-                        for part in sc.model_turn.parts or []:
-                            if part.text:
-                                chunks.append(part.text)
-                    if time.monotonic() >= stop_at:
-                        break
-            finally:
-                frame_task.cancel()
-                try:
-                    await frame_task
-                except asyncio.CancelledError:
-                    pass
-    except Exception as e:
-        msg = str(e)
-        if "1011" in msg or "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower():
-            raise ComputerUseError(
-                "Gemini Live API needs paid billing on this project. "
-                "Free tier returns 1011 quota errors immediately. "
-                "Enable billing at console.cloud.google.com → APIs & Services → Billing, "
-                "then this tool will work."
-            ) from e
-        raise
-
-    return "".join(chunks).strip() or "(no description from Live session)"
-
-
 async def _live_screen_polling(
     duration_s: int,
     interval_s: float = 2.0,
     on_frame=None,
 ):
-    """Free-tier streaming: poll screenshot+describe every interval_s.
+    """Stream screen observations: poll screenshot+describe every interval_s.
 
     Each frame's description is yielded via on_frame callback (if given)
-    AND collected into the final return string. Uses Gemini Flash
-    one-shot calls — works on the free tier. No Live API needed.
+    AND collected into the final return string. Uses the dispatching
+    vision backend — Kimi cloud or Ollama local — so it works without
+    any GCP setup.
 
     The `focus` is baked into a per-frame prompt that emphasizes brevity
     and only-what-changed.
@@ -662,7 +577,7 @@ async def _live_screen_polling(
     while time.monotonic() < stop_at:
         try:
             img_bytes, mime = _take_screenshot()
-            desc = await _gemini_describe(
+            desc = await _vision_describe(
                 img_bytes, mime_type=mime, prompt=POLL_PROMPT,
             )
             desc = desc.strip()
@@ -689,15 +604,15 @@ async def _live_screen_polling(
 
 @function_tool
 async def live_screen(duration_s: int = 10, focus: str = "") -> str:
-    """Stream screen observations for N seconds via polling Gemini Flash.
+    """Stream screen observations for N seconds via polling the vision backend.
 
-    Free-tier compatible — captures a screenshot every ~2 seconds, asks
-    Gemini Flash for a one-sentence description, returns the joined
-    descriptions. Works on the free Google API tier (no Live API,
-    no paid billing required).
+    Captures a screenshot every ~2 seconds, asks the configured vision
+    model for a one-sentence description, returns the joined descriptions.
+    Works on whatever JARVIS_VISION_BACKEND points at (default: auto →
+    Ollama if local, else Kimi).
 
     For one-shot "what's on my screen right now", use screenshot()
-    instead — single frame, one Gemini call.
+    instead — single frame, one vision call.
 
     Args:
         duration_s: How long to stream (1..60, default 10).
@@ -720,7 +635,7 @@ async def live_screen(duration_s: int = 10, focus: str = "") -> str:
 
 @function_tool
 async def screenshot() -> str:
-    """Take a screenshot and return a brief Gemini description of the screen.
+    """Take a screenshot and return a brief description of the screen.
 
     Does NOT require an active computer_use session — use this for one-off
     "what's on the screen right now?" voice questions. Returns 1-2 sentences
@@ -734,15 +649,15 @@ async def screenshot() -> str:
         img_bytes, mime = _take_screenshot()
         t_capture = time.monotonic() - t0
         t1 = time.monotonic()
-        desc = await _gemini_describe(
+        desc = await _vision_describe(
             img_bytes,
             mime_type=mime,
-            prompt=GEMINI_QUICK_SCREEN_PROMPT,
+            prompt=VISION_QUICK_SCREEN_PROMPT,
         )
-        t_gemini = time.monotonic() - t1
+        t_vision = time.monotonic() - t1
         logger.info(
             f"[computer-use] one-shot screenshot: capture={t_capture*1000:.0f}ms "
-            f"gemini={t_gemini*1000:.0f}ms img={len(img_bytes)/1024:.0f}KB"
+            f"vision={t_vision*1000:.0f}ms img={len(img_bytes)/1024:.0f}KB"
         )
         return desc
     except Exception as e:
@@ -767,7 +682,7 @@ from tools.face_id import (
 
 @function_tool
 async def webcam_capture(prompt: str | None = None) -> str:
-    """Capture a frame from the webcam and return a Gemini description.
+    """Capture a frame from the webcam and return a description.
 
     Use when the user asks what JARVIS sees, who's in the room, what
     they look like, what they're wearing, what's on their face, etc.
@@ -789,7 +704,7 @@ async def webcam_capture(prompt: str | None = None) -> str:
     try:
         loop = asyncio.get_running_loop()
         frame = await loop.run_in_executor(None, _take_webcam_frame)
-        desc = await _gemini_describe(
+        desc = await _vision_describe(
             frame,
             mime_type="image/jpeg",
             prompt=p,

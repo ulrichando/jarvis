@@ -140,8 +140,9 @@ post-tool SUMMARY only.
   pgrep, ss, df, etc.). Do NOT use bash to launch a GUI app — use
   launch_app so failures are caught.
 
-**screenshot()** — capture and describe the current screen via Gemini
-vision. Use for "what's on my screen" / "what do you see".
+**screenshot()** — capture and describe the current screen via the
+vision backend (Kimi cloud, Ollama if local). Use for "what's on my
+screen" / "what do you see".
 
 **computer_use(task)** — start a multi-step click/drag session. Use
 when the user wants something that takes multiple clicks (login flow,
