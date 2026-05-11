@@ -67,8 +67,12 @@ def test_ext_post_returns_structured_error_when_bridge_down(monkeypatch):
     # Point at a definitely-unused port
     monkeypatch.setenv("JARVIS_BRIDGE_URL", "http://localhost:1")
 
-    # Import AFTER monkeypatch so the env wins
+    # Reload BOTH the base module (where BRIDGE_URL is read at import
+    # time) AND the shim (which re-exports _post). Post-2026-05-10
+    # browser_ext split, BRIDGE_URL lives in tools._browser_ext_base.
     import importlib
+    import tools._browser_ext_base
+    importlib.reload(tools._browser_ext_base)
     import tools.browser_ext
     importlib.reload(tools.browser_ext)
 
