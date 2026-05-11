@@ -2,6 +2,7 @@ import { convertRequest, convertResponse } from './convert.js'
 import { convertOpenAIStreamToAnthropic, type StreamStats } from './stream.js'
 import { getProvider, getProviderForModel, type Provider } from './providers.js'
 import { fetchWithRetry } from './retry.js'
+import { forwardAnthropicNative } from './anthropicPassthrough.js'
 import { logRequest, newRequestId, type RequestLog } from './logger.js'
 import {
   buildSyntheticWebSearchResponse,
@@ -230,6 +231,26 @@ async function handleMessagesRequest(req: Request, url: URL): Promise<Response> 
 
   baseLog.provider = primaryProvider.name
   baseLog.upstream_model = primaryProvider.model
+
+  // Anthropic-native passthrough: Anthropic's /messages endpoint
+  // already speaks the CLI's wire shape, so converting to OpenAI's
+  // chat-completions would break the round-trip. Forward the request
+  // body verbatim (with x-api-key auth swapped in) and stream the
+  // SSE response back unchanged. See anthropicPassthrough.ts for the
+  // full implementation. No cross-provider fallback on this path —
+  // if Anthropic is down we surface the error rather than translate
+  // mid-request (the registry's fallback chain assumes shape parity).
+  if (primaryProvider.name === 'anthropic') {
+    return forwardAnthropicNative({
+      provider: primaryProvider,
+      anthropicReq,
+      incomingHeaders: req.headers,
+      isStream,
+      requestId,
+      onFinish: finish,
+      baseLog,
+    })
+  }
 
   let openaiReq: any
   try {
