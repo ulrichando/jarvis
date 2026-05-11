@@ -85,8 +85,14 @@ def _load_user_keys_env() -> None:
             v = v.strip().strip('"').strip("'")
             if k and v:
                 os.environ[k] = v   # override repo .env
-    except Exception:
-        pass
+    except Exception as _e:
+        # Logger isn't bound yet at this point in module init; use the
+        # root logger so the failure is observable when DEBUG logging
+        # is enabled. Bootstrap-only path; failure here means keys.env
+        # exists but is unparseable (perm error, malformed line, etc.).
+        logging.getLogger("jarvis.config").warning(
+            f"[keys.env] load failed (non-fatal): {_e}"
+        )
 
 _load_user_keys_env()
 from livekit.plugins import groq, openai as lk_openai, silero
@@ -867,15 +873,18 @@ def _mark_tool_start(name: str) -> None:
     try:
         _TOOL_BUSY_FILE.parent.mkdir(parents=True, exist_ok=True)
         _TOOL_BUSY_FILE.write_text(f"{name}\n{int(time.time())}\n", encoding="utf-8")
-    except Exception:
-        pass
+    except Exception as _e:
+        # Tray-busy indicator file write — non-fatal; tray will fall
+        # back to inferred-thinking detection. Log at DEBUG so a real
+        # FS / permission bug is still observable when needed.
+        logger.debug(f"[tool-busy] write failed: {_e}")
 
 
 def _mark_tool_end() -> None:
     try:
         _TOOL_BUSY_FILE.unlink(missing_ok=True)
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug(f"[tool-busy] unlink failed: {_e}")
 
 
 # Definitive "agent is thinking" signal. Touched the moment STT
@@ -893,8 +902,8 @@ def _mark_thinking_start() -> None:
         _AGENT_THINKING_FILE.write_text(
             str(int(time.time())), encoding="utf-8",
         )
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug(f"[agent-thinking] write failed: {_e}")
 
 
 def _mark_thinking_end() -> None:
