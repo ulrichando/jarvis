@@ -31,14 +31,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
     "tools.computer_use",
     "tools.browser",
     "tools.browser_ext",
-    "specialists",
-    "specialists.registry",
-    "specialists.agent",
-    "specialists.desktop",
-    "specialists.browser",
-    "specialists.summarize",
-    "specialists.weather",
-    "specialists.researcher",
+    "subagents",
+    "subagents.registry",
+    "subagents.agent",
+    "subagents.desktop",
+    "subagents.browser",
+    "subagents.summarize",
+    "subagents.weather",
+    "subagents.researcher",
 ])
 def test_module_imports_clean(mod):
     """Each must import without raising. Module-level patches like
@@ -69,8 +69,8 @@ def test_critical_patches_install_idempotently():
 
 
 def test_jarvis_agent_exposes_required_tools():
-    """The supervisor + specialists pull these by name from
-    jarvis_agent. A rename / accidental delete here breaks specialist
+    """The supervisor + subagents pull these by name from
+    jarvis_agent. A rename / accidental delete here breaks subagent
     construction at session start."""
     import jarvis_agent
     required = (
@@ -83,13 +83,13 @@ def test_jarvis_agent_exposes_required_tools():
 
 def test_subagent_registry_includes_builtin_subagents():
     """The summarize / weather / researcher subagents should
-    auto-register when specialists/ is imported. Verifies the
-    SubagentSpec / delegate path is wired end-to-end at production
+    auto-register when subagents/ is imported. Verifies the
+    DelegatedSubagent / delegate path is wired end-to-end at production
     startup."""
-    from specialists.registry import SUBAGENT_REGISTRY, clear_subagents
-    from specialists.summarize import register_summarize
-    from specialists.weather import register_weather
-    from specialists.researcher import register_researcher
+    from subagents.registry import SUBAGENT_REGISTRY, clear_subagents
+    from subagents.summarize import register_summarize
+    from subagents.weather import register_weather
+    from subagents.researcher import register_researcher
 
     # Other tests (test_subagent_registry) clear the SUBAGENT_REGISTRY
     # in their fixtures and may leave it empty when run before this.
@@ -107,16 +107,16 @@ def test_subagent_registry_includes_builtin_subagents():
 def test_build_all_transfer_tools_includes_delegate():
     """build_all_transfer_tools should return BOTH the per-spec
     transfer_to_X tools AND the single delegate(role, task) tool
-    when there are SubagentSpecs registered."""
-    from specialists.registry import (
+    when there are DelegatedSubagents registered."""
+    from subagents.registry import (
         clear, clear_subagents, _REGISTRY, SUBAGENT_REGISTRY,
     )
-    from specialists.desktop import register_desktop
-    from specialists.browser import register_browser
-    from specialists.summarize import register_summarize
-    from specialists.weather import register_weather
-    from specialists.researcher import register_researcher
-    from specialists.agent import build_all_transfer_tools
+    from subagents.desktop import register_desktop
+    from subagents.browser import register_browser
+    from subagents.summarize import register_summarize
+    from subagents.weather import register_weather
+    from subagents.researcher import register_researcher
+    from subagents.agent import build_all_transfer_tools
 
     clear()
     clear_subagents()
@@ -129,7 +129,7 @@ def test_build_all_transfer_tools_includes_delegate():
     tools = build_all_transfer_tools()
     tool_names = {getattr(t, "name", None) or t.info.name for t in tools}
     # Two legacy transfer_to_X tools + one delegate tool = 3 total.
-    # (delegate covers all SubagentSpecs internally — count stays at 3
+    # (delegate covers all DelegatedSubagents internally — count stays at 3
     # whether you have 1 subagent or 100. That's the whole point.)
     assert "transfer_to_desktop" in tool_names
     assert "transfer_to_browser" in tool_names
@@ -145,19 +145,19 @@ def test_build_all_transfer_tools_includes_delegate():
         )
 
 
-def test_specialist_registry_discovers_three_enabled_specs():
-    """Adding a specialist is one file + one register() call; this
-    sanity check ensures the registry actually picks up the three
-    we expect (desktop, browser) and didn't lose one to a typo or
-    rename.
+def test_handoff_subagent_registry_discovers_enabled_specs():
+    """Adding a handoff subagent is one file + one register() call;
+    this sanity check ensures the registry actually picks up the
+    two we expect (desktop, browser) and didn't lose one to a typo
+    or rename.
 
     Other tests in the suite (test_specialist_registry,
     test_browser_specialist) call registry.clear() in their setup,
     so we re-register the production specs explicitly here rather
     than rely on import order."""
-    from specialists.registry import _REGISTRY, clear
-    from specialists.desktop import register_desktop
-    from specialists.browser import register_browser
+    from subagents.registry import _REGISTRY, clear
+    from subagents.desktop import register_desktop
+    from subagents.browser import register_browser
 
     clear()
     register_desktop()

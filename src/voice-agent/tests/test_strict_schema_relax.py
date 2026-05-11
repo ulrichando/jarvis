@@ -264,14 +264,14 @@ def test_every_registered_specialist_tool_uses_legacy_shape(reinstall_relax):
     specialist or tool can't accidentally bypass this test.
     """
     from livekit.agents.llm import utils as _lk_utils
-    from specialists.registry import all_specs, all_subagents, _REGISTRY
+    from subagents.registry import all_specs, all_subagents, _REGISTRY
 
     # Defensive: other test files' fixtures (test_specialists_health.py
     # in particular) clear the registry in teardown, leaving us empty
     # if their tests ran first. Re-run the package-level registration
     # so we test against the real production set.
     if not _REGISTRY:
-        from specialists import _register_builtins
+        from subagents import _register_builtins
         _register_builtins()
 
     failures: list[str] = []

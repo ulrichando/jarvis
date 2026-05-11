@@ -1,4 +1,4 @@
-"""Tests for the SpecialistSpec registry pattern.
+"""Tests for the HandoffSubagent registry pattern.
 
 Pure Python — no LiveKit imports required. The generic specialist Agent
 construction is covered separately by integration tests; this file only
@@ -11,8 +11,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from specialists.registry import (
-    SpecialistSpec, register, all_specs, get, clear,
+from subagents.registry import (
+    HandoffSubagent, register, all_specs, get, clear,
 )
 
 
@@ -25,8 +25,8 @@ def _reset_registry():
     clear()
 
 
-def _spec(name: str = "test", **kwargs) -> SpecialistSpec:
-    """Build a minimal SpecialistSpec for tests."""
+def _spec(name: str = "test", **kwargs) -> HandoffSubagent:
+    """Build a minimal HandoffSubagent for tests."""
     defaults = dict(
         name=name,
         transfer_tool=f"transfer_to_{name}",
@@ -35,7 +35,7 @@ def _spec(name: str = "test", **kwargs) -> SpecialistSpec:
         tool_factory=lambda: [],
     )
     defaults.update(kwargs)
-    return SpecialistSpec(**defaults)
+    return HandoffSubagent(**defaults)
 
 
 def test_register_and_lookup():
@@ -131,8 +131,8 @@ def test_tool_factory_is_lazy():
 def test_package_autoregisters_desktop():
     """Phase 4: desktop is enabled in the registry. The legacy
     JarvisAgent.transfer_to_desktop method has been retired; the
-    registry's RegistrySpecialist now owns the handoff."""
-    from specialists import desktop as desktop_mod
+    registry's RegistrySubagent now owns the handoff."""
+    from subagents import desktop as desktop_mod
     desktop_mod.register_desktop()
 
     spec = get("desktop")

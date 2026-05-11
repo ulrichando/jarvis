@@ -1,4 +1,4 @@
-"""Validator subagent — wraps `validate_outcome` as a SubagentSpec
+"""Validator subagent — wraps `validate_outcome` as a DelegatedSubagent
 routable via the supervisor's `delegate(role, task)` tool.
 
 Pattern lineage: Skyvern 2.0 Planner-Actor-Validator (the third leg);
@@ -7,15 +7,15 @@ checker. The shared insight across these systems: a separate verifier
 with clean context catches roughly half of an executor's regressions
 (Cognition: ~2 bugs/PR caught, 58% severe).
 
-Why SubagentSpec (not SpecialistSpec): validation is one-shot — input
+Why DelegatedSubagent (not HandoffSubagent): validation is one-shot — input
 is (user_request, tool_result, claimed_outcome), output is one string.
-No multi-turn flow. SubagentSpec lets it ride the existing
+No multi-turn flow. DelegatedSubagent lets it ride the existing
 delegate(role, task) plumbing without bloating the supervisor's tool
 list.
 """
 from __future__ import annotations
 
-from .registry import SubagentSpec, register_subagent
+from .registry import DelegatedSubagent, register_subagent
 from ._ack_phrases import ACK_VALIDATOR
 
 
@@ -78,7 +78,7 @@ def register_validator() -> None:
         os.environ.get("JARVIS_SUBAGENT_VALIDATOR", "0") == "1"
     )
 
-    register_subagent(SubagentSpec(
+    register_subagent(DelegatedSubagent(
         name="validator",
         when_to_use=_VALIDATOR_WHEN,
         instructions=VALIDATOR_INSTRUCTIONS,

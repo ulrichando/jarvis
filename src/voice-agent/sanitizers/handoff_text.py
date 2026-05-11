@@ -63,7 +63,7 @@ _HANDOFF_STATE: dict[str, bool] = {}
 
 # Anything matching this is a supervisor → specialist handoff. The
 # `delegate` form is the single sub-agent dispatcher; transfer_to_X
-# covers all SpecialistSpecs (browser, desktop, planner, …).
+# covers all HandoffSubagents (browser, desktop, planner, …).
 _HANDOFF_RE = re.compile(r"^(?:transfer_to_[a-z][a-z0-9_]*|delegate)$")
 
 

@@ -1,4 +1,4 @@
-"""Summarize subagent — first specialist using the SubagentSpec / delegate
+"""Summarize subagent — first specialist using the DelegatedSubagent / delegate
 pattern. Pure-prompt, zero tools, demonstrates the path end-to-end.
 
 The supervisor invokes via `delegate(role="summarize", task="<text or
@@ -7,14 +7,14 @@ sentence summary in the chat_ctx, and calls `task_done(summary)` to
 hand back. The supervisor voices the result.
 
 This is intentionally minimal — when the prompt-bloat cost of one more
-SpecialistSpec is the concern, this is the proof that SubagentSpec
+HandoffSubagent is the concern, this is the proof that DelegatedSubagent
 costs nothing extra in supervisor prompt size.
 """
 from __future__ import annotations
 
 import os
 
-from .registry import SubagentSpec, register_subagent
+from .registry import DelegatedSubagent, register_subagent
 from ._ack_phrases import ACK_SUMMARIZE
 
 
@@ -66,7 +66,7 @@ You: task_done("user changed their mind")
 
 def _summarize_tools() -> list:
     """No tools — this specialist is pure-prompt. The framework still
-    requires `task_done` which `RegistrySpecialist` provides natively."""
+    requires `task_done` which `RegistrySubagent` provides natively."""
     return []
 
 
@@ -88,7 +88,7 @@ def register_summarize() -> None:
     refusals in one window. Re-enable once token-aware pruning lands
     and the supervisor's `delegate(...)` routing is tightened.
     """
-    register_subagent(SubagentSpec(
+    register_subagent(DelegatedSubagent(
         name="summarize",
         when_to_use=_SUMMARIZE_WHEN,
         instructions=SUMMARIZE_INSTRUCTIONS,
