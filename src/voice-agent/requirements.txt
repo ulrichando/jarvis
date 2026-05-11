@@ -14,10 +14,10 @@ livekit-agents[silero,openai,groq]~=1.5
 # in jarvis_agent.py.
 convex~=0.7
 
-# Gemini vision for desktop computer-use (screen description). The
-# voice agent calls Gemini Flash with a screenshot to get a structured
-# UI description, then Groq/DeepSeek decides the next click/type.
-google-genai~=1.73
+# Vision backend uses Kimi (Moonshot) via the OpenAI-compatible SDK
+# already in the dep graph — no extra package needed. Gemini's
+# google-genai client was removed 2026-05-11 after the "API is
+# disabled" failure left vision unavailable in production.
 
 # Face ID — InsightFace buffalo_l (RetinaFace + ArcFace ResNet-50),
 # the production-grade open-source face stack used by AWS Rekognition
