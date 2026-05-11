@@ -66,6 +66,13 @@ _STRONG_CLAIMS = [
     re.compile(r"\b(?:posted|tweeted|sent|emailed|messaged|saved|uploaded|downloaded|deleted)\s+(?:the |it|that)?", re.I),
     # Generic completion + screenshot
     re.compile(r"\b(?:screenshot|picture) (?:has been )?taken\b", re.I),
+    # Screen-share state claims — added 2026-05-11 evening after live
+    # failure: user said "stop screen share", Claude replied "Screen
+    # sharing off." WITHOUT firing set_screen_share. ffmpeg kept
+    # running and /status still reported sharing_screen=true.
+    # Must require tool evidence of set_screen_share within the
+    # lookback window or the supervisor is hallucinating.
+    re.compile(r"\bscreen[-\s]?shar(?:ing|e)\s+(?:is\s+)?(?:on|off|started|stopped|active|inactive)\b", re.I),
     # Bare success word ("Done, sir." / "Task completed." / "Finished.") —
     # must terminate with sentence-end punctuation OR be followed by a
     # known success-noun. The trailing-clause check was missing
