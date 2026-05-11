@@ -248,32 +248,13 @@ class RegistrySpecialist(Agent):
         except Exception:
             pass
 
-        # V2: write ToolResult to the blackboard so grounding_gate can
-        # later validate any "I opened the tab" claims the supervisor
-        # may emit. Gated on JARVIS_BLACKBOARD=1 — disabled by default
-        # so v1-only deployments are unaffected.
-        if os.environ.get("JARVIS_BLACKBOARD", "0") == "1":
-            try:
-                from blackboard.client import BlackboardClient
-                from blackboard.schema import ToolResult
-                import time as _time
-
-                bb = BlackboardClient()
-                bb.write_tool_result(ToolResult(
-                    tool=f"{self._spec.name}_task_done",
-                    args={"summary": summary},
-                    result=summary,
-                    ok=True,
-                    ts=_time.time(),
-                    call_id=f"task_done_{self._spec.name}_{int(_time.time() * 1000)}",
-                ))
-            except Exception as e:
-                # Never let a blackboard write fail the handoff.
-                logger.warning(
-                    "[specialist:%s] blackboard write failed (non-fatal): %s",
-                    self._spec.name, e,
-                )
-
+        # Pre-2026-05-10 this branch wrote a ToolResult to a Redis-backed
+        # `blackboard` keyed for the (now-deleted) grounding_gate to read.
+        # With supervisor_graph (incl. grounding_gate) removed in f38c358
+        # and vision_tap removed in 5065a4b, no production code reads the
+        # blackboard — both `Intent` and `ScreenFact` lost their writers
+        # too. The whole subsystem is gone; this comment is the only
+        # remnant.
         return self._supervisor, summary
 
 
