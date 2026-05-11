@@ -55,6 +55,14 @@ class HandoffSubagent:
         max_history_items: number of recent chat_ctx items carried into
                            the specialist on handoff. None = no truncation.
         enabled: gate for hot-disabling without unregistering.
+        llm_factory: optional zero-arg callable returning an LLM or
+                     RealtimeModel for this specialist. When None
+                     (default), the specialist inherits the supervisor's
+                     LLM. Use this to route a specialist through a
+                     different provider — e.g. screen_share uses
+                     Gemini Live (RealtimeModel) for sub-second vision
+                     while the supervisor stays on Claude Haiku +
+                     Groq Orpheus.
     """
     name: str
     transfer_tool: str
@@ -64,6 +72,7 @@ class HandoffSubagent:
     ack_phrase: str = "Right away."
     max_history_items: Optional[int] = 12
     enabled: bool = True
+    llm_factory: Optional[Callable[[], object]] = None
 
 
 # Global registry. Use the module functions below — don't mutate this

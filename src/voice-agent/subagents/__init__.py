@@ -54,6 +54,11 @@ def _register_builtins() -> None:
     # browser_v2 self-disables when GROQ/DeepSeek key or browser-use
     # are missing — safe to always call register_browser_v2().
     browser_v2.register_browser_v2()
+    # screen_share Live specialist — self-disables unless
+    # JARVIS_SUBAGENT_SCREEN_SHARE=1. Uses Gemini Live RealtimeModel
+    # for real-time vision during screen-share sessions.
+    from . import screen_share
+    screen_share.register_screen_share()
     # DelegatedSubagent path — new specialists go here so they don't bloat
     # the supervisor's prompt with one transfer_to_X tool each.
     summarize.register_summarize()
