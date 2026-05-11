@@ -34,9 +34,13 @@ from .registry import (
     DelegatedSubagent, register_subagent, all_subagents, get_subagent, clear_subagents,
 )
 
-# Auto-register built-in subagents + subagents on package import.
-# Each module's register_X() helper is idempotent (re-registration
-# overwrites), so importing this package twice is safe.
+# Auto-register built-in handoff + delegated subagents on package
+# import. Each module's register_X() helper is idempotent
+# (re-registration overwrites), so importing this package twice
+# is safe. HandoffSubagent specs each expose a `transfer_to_X`
+# function_tool on the supervisor; DelegatedSubagent specs all
+# share a single `delegate(role, task)` tool so adding one doesn't
+# bloat the supervisor's prompt with another transfer_to_X.
 def _register_builtins() -> None:
     from . import (
         desktop, browser, browser_v2,
@@ -59,8 +63,9 @@ def _register_builtins() -> None:
     # for real-time vision during screen-share sessions.
     from . import screen_share
     screen_share.register_screen_share()
-    # DelegatedSubagent path — new subagents go here so they don't bloat
-    # the supervisor's prompt with one transfer_to_X tool each.
+    # DelegatedSubagent path — new delegated subagents go here so they
+    # don't bloat the supervisor's prompt with one transfer_to_X tool
+    # each. All seven share the single `delegate(role, task)` tool.
     summarize.register_summarize()
     weather.register_weather()
     researcher.register_researcher()
