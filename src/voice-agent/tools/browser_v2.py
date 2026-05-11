@@ -1,5 +1,5 @@
 """Browser-task v2 — wraps the open-source `browser-use` agent loop as
-a single `@function_tool` for JARVIS's browser specialist.
+a single `@function_tool` for JARVIS's browser subagent.
 
 Replaces the 25 ext_* DOM-action tools + Chrome extension + Bun bridge
 with one library call. browser-use:
@@ -195,7 +195,7 @@ async def browser_task_v2(task: str) -> str:
 
 def is_available() -> bool:
     """True if browser_task_v2 has the keys + libs it needs to run.
-    Used by the specialist registry to decide whether to enable
+    Used by the subagent registry to decide whether to enable
     browser_v2 at startup."""
     if not (os.environ.get("GROQ_API_KEY") or os.environ.get("DEEPSEEK_API_KEY")):
         return False

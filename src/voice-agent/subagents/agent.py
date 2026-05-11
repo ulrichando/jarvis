@@ -1,4 +1,4 @@
-"""Generic specialist Agent — built from a HandoffSubagent.
+"""Generic subagent Agent — built from a HandoffSubagent.
 
 Used by `build_transfer_tools()` to construct a spec-driven Agent on
 the fly when the supervisor's `transfer_to_X` fires. The hand-back
@@ -23,7 +23,7 @@ from .registry import HandoffSubagent
 
 logger = logging.getLogger("jarvis.subagent")
 
-# Bailout-phrase allowlist for the no-real-tool gate. When a specialist
+# Bailout-phrase allowlist for the no-real-tool gate. When a subagent
 # is wrongly routed (e.g. supervisor handed it conversational input
 # that isn't a desktop/browser action), the spec instructions say
 # "call task_done IMMEDIATELY with 'user changed topic'" — but the
@@ -39,7 +39,7 @@ logger = logging.getLogger("jarvis.subagent")
 # in 2 minutes for "user located laundry basket" / "user appears to be
 # describing X" / "user appears to be requesting mute" — supervisor
 # was routing conversational input ("Jarvis, mute" / "I love you,
-# dear" / "double") to the desktop specialist. The specialist tried
+# dear" / "double") to the desktop subagent. The subagent tried
 # to bail honestly per its Rule 3, the gate refused, the LLM then
 # produced "I'm here to assist with desktop-related tasks" boilerplate
 # which got voiced. Allow the bailout to actually happen.
@@ -48,15 +48,15 @@ _BAILOUT_SUMMARY_RE = re.compile(
     \b(?:
         user\s+(?:changed|switched)\s+topic
       | (?:not|isn'?t|is\s+not)\s+(?:a\s+)?(?:desktop|browser|relevant|valid)
-      | wrong\s+specialist
-      | needs?\s+(?:the\s+)?(?:browser|desktop|planner|supervisor)\s+specialist
+      | wrong\s+(?:subagent|subagent)
+      | needs?\s+(?:the\s+)?(?:browser|desktop|planner|supervisor)\s+(?:subagent|subagent)
       | cannot\s+(?:accomplish|act\s+on|handle)
       | nothing\s+to\s+(?:do|act\s+on)
       | no\s+(?:desktop|browser)\s+(?:action|tool)
       | handing\s+back\s+to\s+(?:the\s+)?supervisor
       | not\s+a\s+request\s+I\s+can\s+act\s+on
       # Environmental gates (added 2026-05-08) — situations where the
-      # specialist's underlying service is unreachable. These aren't
+      # subagent's underlying service is unreachable. These aren't
       # fabricated outcomes; they're "the door is locked" statements.
       # Tightly anchored so a confab can't slip through with the same
       # words ("connection issue" must be paired with "extension"/"tool"/
@@ -64,9 +64,9 @@ _BAILOUT_SUMMARY_RE = re.compile(
       | (?:extension|tool|service|browser|chrome|firefox)\s+(?:is\s+)?(?:not\s+connected|unavailable|offline|not\s+available)
       | (?:bridge|extension)\s+disconnected
       | google\s+chrome\s+isn'?t\s+available
-      # 2026-05-09 — weather specialist's location-failure phrasing
+      # 2026-05-09 — weather subagent's location-failure phrasing
       | couldn'?t\s+determine\s+(?:your\s+|the\s+)?location
-      # 2026-05-11 — screen-share specialist self-bails when the
+      # 2026-05-11 — screen-share subagent self-bails when the
       # supervisor routed here but no video stream is reachable
       # (user wasn't actually sharing, or the track hasn't started
       # publishing yet). Supervisor can then fall back to screenshot().
@@ -81,56 +81,18 @@ _BAILOUT_SUMMARY_RE = re.compile(
 # refusals on a single handoff, force-allow task_done with a
 # generic-bailout summary so the user isn't trapped in silence
 # while the LLM keeps re-rolling the same confab. Captured live
-# 2026-05-08 16:33:14–16:33:23: desktop specialist looped 3×
+# 2026-05-08 16:33:14–16:33:23: desktop subagent looped 3×
 # "Browser opened, sir." (refused each time) → 9s of silence to
 # the user. With a retry ceiling, the third REFUSE forces a
 # graceful handback so the supervisor can voice an apology.
 #
-# Read at RUNTIME (not module-import time) so operators editing
-# the systemd unit's Environment= line see the change without a
-# worker restart. JARVIS_SUBAGENT_NO_TOOL_RETRY_CEILING is the
-# canonical env name; JARVIS_SPECIALIST_NO_TOOL_RETRY_CEILING is
-# the legacy name kept for backward compat (read if the new name
-# isn't set; logged once on first read so the operator can migrate).
-_LEGACY_ENV_WARNED: set[str] = set()
-
-def _env_int_with_legacy(new_name: str, legacy_name: str, default: int) -> int:
-    """Read int env var by new name first, then legacy. Log once on
-    first read of a legacy var so the operator knows to rename."""
-    if new_name in os.environ:
-        return int(os.environ[new_name])
-    if legacy_name in os.environ:
-        if legacy_name not in _LEGACY_ENV_WARNED:
-            _LEGACY_ENV_WARNED.add(legacy_name)
-            logger.warning(
-                f"[subagent] env var {legacy_name!r} is deprecated; "
-                f"rename to {new_name!r}. Honoring legacy value for now."
-            )
-        return int(os.environ[legacy_name])
-    return default
-
-
-def _env_str_with_legacy(new_name: str, legacy_name: str, default: str) -> str:
-    """String version of _env_int_with_legacy."""
-    if new_name in os.environ:
-        return os.environ[new_name]
-    if legacy_name in os.environ:
-        if legacy_name not in _LEGACY_ENV_WARNED:
-            _LEGACY_ENV_WARNED.add(legacy_name)
-            logger.warning(
-                f"[subagent] env var {legacy_name!r} is deprecated; "
-                f"rename to {new_name!r}. Honoring legacy value for now."
-            )
-        return os.environ[legacy_name]
-    return default
-
-
+# Read at RUNTIME (not module-import time) so operators editing the
+# systemd unit's Environment= line see the change without a worker
+# restart. The env var was JARVIS_SPECIALIST_NO_TOOL_RETRY_CEILING
+# before the 2026-05-11 terminology sweep — any old unit file must be
+# updated to the new name.
 def _no_tool_retry_ceiling() -> int:
-    return _env_int_with_legacy(
-        "JARVIS_SUBAGENT_NO_TOOL_RETRY_CEILING",
-        "JARVIS_SPECIALIST_NO_TOOL_RETRY_CEILING",
-        3,
-    )
+    return int(os.environ.get("JARVIS_SUBAGENT_NO_TOOL_RETRY_CEILING", "3"))
 
 
 class RegistrySubagent(Agent):
@@ -148,12 +110,12 @@ class RegistrySubagent(Agent):
         supervisor: Agent,
         chat_ctx: ChatContext | None = None,
     ):
-        # Per-specialist LLM override. Most specs leave llm_factory=None
-        # and inherit the supervisor's LLM. The screen_share specialist
+        # Per-subagent LLM override. Most specs leave llm_factory=None
+        # and inherit the supervisor's LLM. The screen_share subagent
         # uses this to swap in a Gemini Live RealtimeModel so it gets
         # sub-second responses with continuous vision context — the
         # supervisor stays on Claude Haiku + Orpheus when this
-        # specialist isn't active.
+        # subagent isn't active.
         kwargs: dict = {
             "instructions": spec.instructions,
             "tools": spec.tool_factory(),
@@ -173,7 +135,7 @@ class RegistrySubagent(Agent):
         self._supervisor = supervisor
         # High-water mark of chat_ctx at handoff start. task_done's
         # tool-gate looks at items appended AFTER this index to decide
-        # whether the specialist did real work this handoff.
+        # whether the subagent did real work this handoff.
         self._handoff_start_idx: int = 0
         # Counter for consecutive task_done refusals on this handoff.
         # Resets on enter. Ceiling enforced in task_done.
@@ -184,7 +146,7 @@ class RegistrySubagent(Agent):
         # Reset the no-tool retry counter for this fresh handoff.
         self._no_tool_refusals = 0
         # Record where this handoff begins. Anything appended to
-        # chat_ctx.items past this index is the specialist's own work
+        # chat_ctx.items past this index is the subagent's own work
         # (its tool calls + outputs). task_done uses this to enforce
         # the "do real work before exiting" rule programmatically.
         try:
@@ -212,7 +174,7 @@ class RegistrySubagent(Agent):
                      follow-up to the user.
         """
         # ── No-bailout-first gate ─────────────────────────────────────
-        # Specialist instructions explicitly forbid task_done as the
+        # Subagent instructions explicitly forbid task_done as the
         # first tool call (see browser.py:31-52, "NO BAILOUT-FIRST
         # RULE"). The LLM ignores those instructions periodically —
         # observed 2026-05-02 23:35 (YouTube search hallucinated as
@@ -222,9 +184,7 @@ class RegistrySubagent(Agent):
         # JARVIS was deaf). This is the structural enforcement: count
         # real (non-task_done) tool calls in this handoff window; if
         # zero, refuse the exit and force the LLM to actually act.
-        # JARVIS_SUBAGENT_TOOL_GATE=0 disables (legacy:
-        # JARVIS_SPECIALIST_TOOL_GATE — still honored with a deprecation
-        # warning on first read).
+        # JARVIS_SUBAGENT_TOOL_GATE=0 disables.
         #
         # Per-subagent opt-out: spec.tools_required=False skips this
         # gate entirely. Added 2026-05-11 evening for the screen_share
@@ -233,11 +193,7 @@ class RegistrySubagent(Agent):
         # gate's purpose is to catch confabulating LLMs that bail
         # before acting; irrelevant when there are no tools to act with.
         spec_requires_tools = getattr(self._spec, "tools_required", True)
-        gate_enabled = _env_str_with_legacy(
-            "JARVIS_SUBAGENT_TOOL_GATE",
-            "JARVIS_SPECIALIST_TOOL_GATE",
-            "1",
-        ) == "1"
+        gate_enabled = os.environ.get("JARVIS_SUBAGENT_TOOL_GATE", "1") == "1"
         if gate_enabled and spec_requires_tools:
             try:
                 ceiling = _no_tool_retry_ceiling()
@@ -284,7 +240,7 @@ class RegistrySubagent(Agent):
                             f"{ceiling}). "
                             f"Summary attempted: {summary[:120]!r}"
                         )
-                        # Stay on the specialist; the corrective string is
+                        # Stay on the subagent; the corrective string is
                         # returned as the tool result the LLM will read
                         # next. Phrased to be unambiguous: which tool to
                         # try first matters less than NOT returning to
@@ -299,14 +255,14 @@ class RegistrySubagent(Agent):
                             "isn't yours to handle, call task_done with one of "
                             "these exact bailout phrases: 'user changed topic', "
                             "'not a desktop task', 'not a browser task', 'wrong "
-                            "specialist — needs the X specialist', 'cannot "
+                            "subagent — needs the X subagent', 'cannot "
                             "accomplish with these tools — handing back to "
                             "supervisor'. Do not retry with a generic summary.",
                         )
             except Exception as e:
                 # Soft-fail: never let the gate itself block a real
                 # task_done. Better to let one confab through than to
-                # wedge every specialist.
+                # wedge every subagent.
                 logger.warning(
                     f"[subagent:{self._spec.name}] tool-gate check failed: "
                     f"{type(e).__name__}: {e} — proceeding with task_done"
@@ -343,13 +299,13 @@ def build_transfer_tool(spec: HandoffSubagent):
     supervisor is needed and there's no chicken-and-egg with agent
     construction.
 
-    Carries chat_ctx forward so the specialist sees the user's request
+    Carries chat_ctx forward so the subagent sees the user's request
     without restating it.
     """
     description = (
-        f"Hand off to the {spec.name} specialist.\n\n"
+        f"Hand off to the {spec.name} subagent.\n\n"
         f"{spec.when_to_use}\n\n"
-        f"After the specialist completes, control returns here "
+        f"After the subagent completes, control returns here "
         f"automatically with a one-sentence summary.\n\n"
         f"Args:\n"
         f"    request: The user's request, verbatim or paraphrased."
@@ -380,53 +336,53 @@ def build_transfer_tool(spec: HandoffSubagent):
         except Exception:
             ctx = None
 
-        # Stash the specialist name on the session so the assistant
+        # Stash the subagent name on the session so the assistant
         # `_on_item` telemetry hook in jarvis_agent.py can record it
         # alongside route/emotion.
         try:
-            session._jarvis_last_specialist = spec.name
+            session._jarvis_last_subagent = spec.name
         except Exception:
             pass
 
         logger.info(
-            f"[handoff] → {spec.name} specialist (request: {request[:80]!r})"
+            f"[handoff] → {spec.name} subagent (request: {request[:80]!r})"
         )
-        # Mark tool-busy for the FULL duration of the specialist run so
+        # Mark tool-busy for the FULL duration of the subagent run so
         # the tray icon stays amber until task_done. Without this, the
         # framework's `agent_state_changed` flips back to "idle" between
-        # the supervisor's transfer and the specialist's first action,
+        # the supervisor's transfer and the subagent's first action,
         # making the tray flicker green mid-task. Lazy import to dodge
-        # circular jarvis_agent ↔ specialists registration.
+        # circular jarvis_agent ↔ subagents registration.
         try:
             from jarvis_agent import _mark_tool_start
-            _mark_tool_start(f"specialist:{spec.name}")
+            _mark_tool_start(f"subagent:{spec.name}")
         except Exception:
             pass
 
         # Defensive: catch tool-factory failures (e.g. ImportError from
-        # a typo'd specialist module) so the supervisor sees a concrete
+        # a typo'd subagent module) so the supervisor sees a concrete
         # error string instead of the framework's generic "exception
         # occurred while executing tool". Captured live 2026-05-01:
         # browser_v2's `from jarvis_agent import task_done` ImportError
         # crashed the handoff silently — supervisor's parallel tool call
         # masked it. The supervisor saw nothing actionable.
         try:
-            specialist = RegistrySubagent(
+            subagent = RegistrySubagent(
                 spec=spec,
                 supervisor=supervisor,
                 chat_ctx=ctx,
             )
         except Exception as e:
             logger.exception(
-                f"[handoff] {spec.name} specialist failed to construct"
+                f"[handoff] {spec.name} subagent failed to construct"
             )
             # Stay on supervisor; return an error string the LLM can
             # narrate or recover from.
             return (
                 supervisor,
-                f"(specialist {spec.name} unavailable: {type(e).__name__}: {e})",
+                f"(subagent {spec.name} unavailable: {type(e).__name__}: {e})",
             )
-        return (specialist, spec.ack_phrase)
+        return (subagent, spec.ack_phrase)
 
     return _transfer
 
@@ -460,7 +416,7 @@ def build_delegate_tool():
         for s in available
     )
     description = (
-        "Delegate the user's request to a specialist sub-agent. "
+        "Delegate the user's request to a subagent sub-agent. "
         "Pick the role whose description best matches the request.\n\n"
         "Available roles:\n"
         f"{role_list}\n\n"
@@ -487,7 +443,7 @@ def build_delegate_tool():
             # LLM's mistake; surface it so the user can rephrase.
             return (
                 context.session.current_agent,
-                f"Sorry — I don't have a {role!r} specialist. "
+                f"Sorry — I don't have a {role!r} subagent. "
                 f"Available: {', '.join(available_names[:10])}.",
             )
 
@@ -501,7 +457,7 @@ def build_delegate_tool():
             ctx = None
 
         try:
-            session._jarvis_last_specialist = spec.name
+            session._jarvis_last_subagent = spec.name
         except Exception:
             pass
 
@@ -534,14 +490,14 @@ def build_delegate_tool():
 
 
 def build_all_transfer_tools() -> list[Any]:
-    """All registered specialists' transfer tools + the single delegate
+    """All registered subagents' transfer tools + the single delegate
     tool covering subagents. Ready to attach to the supervisor's
     `tools=[…]` list at construction.
 
     Returns the per-name `transfer_to_X` tools for legacy HandoffSubagents
     (planner / desktop / browser today) PLUS one `delegate(role, task)`
     tool covering all DelegatedSubagents. Both can coexist — the supervisor
-    picks `transfer_to_X` for the existing 3 specialists and `delegate`
+    picks `transfer_to_X` for the existing 3 subagents and `delegate`
     for everything new.
     """
     from .registry import all_specs

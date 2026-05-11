@@ -1,6 +1,6 @@
 """Plan mode — port of claude-code's plan.tsx + EnterPlanModeTool + plans.ts.
 
-Replaces the legacy `transfer_to_planner` specialist (which routed to
+Replaces the legacy `transfer_to_planner` subagent (which routed to
 deepseek-v4-pro via run_jarvis_cli for multi-step coding work). Plan mode
 is a leaner pattern: the supervisor itself enters a "no writes allowed"
 phase, explores the codebase with the read/grep/glob tools, drafts a

@@ -1,6 +1,6 @@
 """HandoffSubagent + registry — pure-Python, zero LiveKit imports.
 
-Each specialist is a `HandoffSubagent` dataclass. The supervisor reads
+Each subagent is a `HandoffSubagent` dataclass. The supervisor reads
 the registry at agent startup and generates one `transfer_to_X`
 function_tool per registered, enabled spec.
 
@@ -35,7 +35,7 @@ __all__ = [
 
 @dataclass
 class HandoffSubagent:
-    """Declarative spec for a specialist sub-agent.
+    """Declarative spec for a subagent sub-agent.
 
     Fields:
         name: short identifier — `desktop`, `browser`, `planner`, …
@@ -44,29 +44,29 @@ class HandoffSubagent:
                        `transfer_to_{name}`.
         when_to_use: one-line description — populates the function_tool
                      docstring the LLM reads when picking a route.
-        instructions: the specialist's system prompt. Keep tight (~100
+        instructions: the subagent's system prompt. Keep tight (~100
                       lines) so tool-call discipline stays sharp.
         tool_factory: zero-arg callable returning the list of @function_tool
-                      objects the specialist gets. Lazy because LiveKit
+                      objects the subagent gets. Lazy because LiveKit
                       decorators have to run inside the agent process,
                       not at registry import time.
         ack_phrase: brief voiced ack when the supervisor hands off to
-                    this specialist. Defaults to "Right away."
+                    this subagent. Defaults to "Right away."
         max_history_items: number of recent chat_ctx items carried into
-                           the specialist on handoff. None = no truncation.
+                           the subagent on handoff. None = no truncation.
         enabled: gate for hot-disabling without unregistering.
         llm_factory: optional zero-arg callable returning an LLM or
-                     RealtimeModel for this specialist. When None
-                     (default), the specialist inherits the supervisor's
-                     LLM. Use this to route a specialist through a
+                     RealtimeModel for this subagent. When None
+                     (default), the subagent inherits the supervisor's
+                     LLM. Use this to route a subagent through a
                      different provider — e.g. screen_share uses
                      Gemini Live (RealtimeModel) for sub-second vision
                      while the supervisor stays on Claude Haiku +
                      Groq Orpheus.
-        tools_required: when True (default), the specialist tool-gate
+        tools_required: when True (default), the subagent tool-gate
                      refuses `task_done` if no real (non-task_done)
                      tool fired this handoff. Set False for tool-less
-                     specialists like screen_share whose RealtimeModel
+                     subagents like screen_share whose RealtimeModel
                      produces the work directly (audio + transcription
                      stream) without going through function_tool calls.
                      The gate's purpose is to catch confabulating
@@ -92,8 +92,8 @@ _REGISTRY: dict[str, HandoffSubagent] = {}
 
 
 def register(spec: HandoffSubagent) -> None:
-    """Register a specialist. Re-registering the same name overwrites —
-    intentional, lets a specialist module be re-imported without errors
+    """Register a subagent. Re-registering the same name overwrites —
+    intentional, lets a subagent module be re-imported without errors
     (test reloads, hot-reloads). Logs/warns the caller if it cares."""
     if not spec.name:
         raise ValueError("HandoffSubagent.name must be non-empty")
@@ -129,8 +129,8 @@ def clear() -> None:
 #
 # DelegatedSubagent → supervisor exposes a single `delegate(role, task)` tool
 # that covers ALL registered subagents. Token cost is constant in N.
-# Use for new specialists where prompt-bloat matters more than per-tool
-# specificity. The 3 existing specialists (planner / desktop / browser)
+# Use for new subagents where prompt-bloat matters more than per-tool
+# specificity. The 3 existing subagents (planner / desktop / browser)
 # stay on `HandoffSubagent` for back-compat.
 
 

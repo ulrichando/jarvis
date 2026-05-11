@@ -366,7 +366,7 @@ def test_record_extraction_disabled_when_env_zero(monkeypatch):
 
 def test_record_extraction_runtime_env_change(monkeypatch):
     """N is read at runtime so operators can adjust without restart
-    (mirrors the 2026-05-08 specialist-gate runtime-read pattern)."""
+    (mirrors the 2026-05-08 subagent-gate runtime-read pattern)."""
     import pipeline.memory_consolidator as mc
     monkeypatch.setenv("JARVIS_MEMORY_CONSOLIDATOR", "1")
     mc._EXTRACTIONS_SINCE_LAST_CONSOLIDATE = 0

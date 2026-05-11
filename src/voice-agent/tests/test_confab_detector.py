@@ -274,22 +274,22 @@ def test_pydantic_style_with_tool_use_block():
     assert not is_confab
 
 
-# ── 2026-05-06 specialist-handoff false-positive fix ────────────────
+# ── 2026-05-06 subagent-handoff false-positive fix ────────────────
 
 
 def test_transfer_to_browser_handoff_counts_as_evidence():
-    """2026-05-06 turn 1110 (live-captured): browser specialist
+    """2026-05-06 turn 1110 (live-captured): browser subagent
     truthfully said 'I have opened a new tab' after firing
     ext_new_tab via the bridge. Bridge confirmed the tab was
     created. But the supervisor's session.history doesn't include
-    the specialist's internal tool calls — only the supervisor's
+    the subagent's internal tool calls — only the supervisor's
     own `transfer_to_browser` tool call. Pre-fix the detector
     flagged the truthful statement as confab and dropped it from
     chat_ctx, leaving a hole that confused future turns.
 
     Fix: treat `transfer_to_*` / `delegate` handoff calls as tool
-    evidence. The handoff itself proves the specialist had a chance
-    to do real work; we don't have visibility into the specialist's
+    evidence. The handoff itself proves the subagent had a chance
+    to do real work; we don't have visibility into the subagent's
     own ChatContext from this code path."""
     prior = [
         _user_msg("open a new tab"),

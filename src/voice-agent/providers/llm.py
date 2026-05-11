@@ -635,7 +635,7 @@ def build_dispatching_llm() -> DispatchingLLM:
     # max_retries=3 which means up to 4 attempts × ~2 s backoff = ~10 s
     # of silence on a 4xx-but-classified-retryable error (e.g. tool-call
     # validation failure). 2026-05-02 13:20 incident: a desktop
-    # specialist hung for ~2 minutes because its LLM cycled through
+    # subagent hung for ~2 minutes because its LLM cycled through
     # Groq → retry → DeepSeek → retry → Groq with the prior 8 s/req
     # timeout. Tightened to 5 s/req and 0 retries — single fail-over
     # is enough; the FallbackAdapter handles the cross-provider hop.

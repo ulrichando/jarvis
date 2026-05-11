@@ -129,7 +129,7 @@ def _format_result(result) -> str:
     if isinstance(result, str):
         return result
     if isinstance(result, tuple):
-        # Specialist transfer tools return (Agent, str). Voice the str.
+        # Subagent transfer tools return (Agent, str). Voice the str.
         for elem in result:
             if isinstance(elem, str):
                 return elem
@@ -202,12 +202,12 @@ def install() -> None:
                 #     cleanly — primarily the `transfer_to_*` family
                 #     (request: str). This is what restores the user's
                 #     actual intent ("open a tab" → handoff fires →
-                #     specialist runs).
+                #     subagent runs).
                 #
                 # (B) Soft-recovery apology chunk. Use for tools where
                 #     the LLM's malformation usually corrupts args too
                 #     (delegate, observed 2026-05-04) or where running
-                #     out of order would be wrong (specialist-internal
+                #     out of order would be wrong (subagent-internal
                 #     tools like ext_* / task_done — those shouldn't
                 #     even reach this stream from the supervisor turn).
                 #     User hears something, breaker stays closed, next
@@ -216,7 +216,7 @@ def install() -> None:
                 # The pre-449fc89 behavior was raise-everything, which
                 # tripped _LLM_BREAKER and left the user with silence.
                 # The 449fc89 behavior was soft-recover-everything,
-                # which swallowed every transfer_to_X — no specialist
+                # which swallowed every transfer_to_X — no subagent
                 # ever fired (live-observed 2026-05-04 13:07: two
                 # browser handoffs, both swallowed, user heard
                 # "rephrase that" on each instead of getting a tab).

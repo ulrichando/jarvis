@@ -19,7 +19,7 @@ from ._ack_phrases import ACK_RESEARCHER
 
 
 RESEARCHER_INSTRUCTIONS = """\
-You are JARVIS's researcher specialist. The supervisor handed control
+You are JARVIS's researcher subagent. The supervisor handed control
 to you because the user wants information they don't already have —
 a fact lookup, a comparison, a "what's the latest on X", a
 "summarize this article", or any question whose answer needs the web.
