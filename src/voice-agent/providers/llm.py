@@ -1,21 +1,34 @@
 """Groq LLM resilience adapters.
 
-This module owns the breakered-stream wrapper that gates the first
-chunk of every LLM response through `LLM_BREAKER`. Subsequent
-extractions (full `BreakeredGroqLLM`, dispatcher builders) land here
-in follow-up commits — for now the file's small surface is just
-`BreakeredLLMStream` so the dependency chain stays untangled.
+Hoisted from `jarvis_agent.py` over 2026-05-10 (Steps 5b/5c of the
+10/10 refactor):
 
-Hoisted from `jarvis_agent.py` 2026-05-10 (Step 5b of the 10/10
-refactor).
+  - `BreakeredLLMStream` (5b) — first-chunk breaker gate + validation-
+    error OPEN→CLOSED revert.
+  - `BreakeredGroqLLM` (5c) — groq.LLM subclass that gates `chat()`
+    through `LLM_BREAKER`, runs pre-flight token estimation, and
+    hard-prunes the chat_ctx when the estimate is HARD-pressure.
+  - `LAST_PREFLIGHT` (5c) — singleton dict the start-of-turn pre-flight
+    writes and the end-of-turn telemetry write reads. Module-level
+    so jarvis_agent can `from providers.llm import LAST_PREFLIGHT`
+    and read it without a callback.
+  - `ctx_items_token_estimate` / `prune_chat_ctx_for_budget` (5c) —
+    pruning helpers used by the pre-flight branch and by the
+    test_token_prune_2026_05_08 test suite.
+
+The dispatcher builder (`make_speech_llm`, `_build_dispatching_llm`)
+follows in step 5d.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 from livekit.agents import APIConnectionError, APITimeoutError
+from livekit.plugins import groq
 
+from resilience import LLM_BREAKER
 from resilience.circuit_breaker import (
     CircuitOpenError,
     STATE_CLOSED,
@@ -24,6 +37,102 @@ from resilience.circuit_breaker import (
 
 
 logger = logging.getLogger("jarvis-agent")
+
+
+# ── Pre-flight singleton ─────────────────────────────────────────────
+# Pre-flight estimate for the most recent supervisor LLM call.
+# Module-level dict (one voice session per worker process) so the
+# per-turn telemetry write at end-of-turn can read what the start-
+# of-turn pre-flight saw.
+#
+# 2026-05-06: was a ContextVar — that broke because livekit-agents
+# runs the LLM `chat()` and the session's per-turn telemetry write
+# in DIFFERENT asyncio tasks, so the ContextVar reader always saw
+# the default. A plain dict is correct here: one process = one
+# session = one supervisor LLM at a time, so there's no concurrent
+# overwrite to worry about.
+LAST_PREFLIGHT: dict = {"tokens": None, "pressure": None, "model": None}
+
+
+# ── Token-aware chat_ctx pruning helpers ─────────────────────────────
+
+def ctx_items_token_estimate(items) -> int:
+    """Cheap estimate of tokens consumed by a list of chat_ctx items.
+    Mirrors the stringification used in `BreakeredGroqLLM.chat`'s
+    pre-flight so the two stay in sync."""
+    from tools.token_estimation import estimate_tokens
+    s = ""
+    for it in items:
+        s += str(getattr(it, "content", it)) + "\n"
+    return estimate_tokens(s)
+
+
+def prune_chat_ctx_for_budget(chat_ctx, target_tokens: int):
+    """Return a new ChatContext with oldest non-system items dropped
+    until the estimate fits within `target_tokens`.
+
+    Always preserves:
+      - All system messages (the JARVIS_INSTRUCTIONS preamble — losing
+        these is exactly the failure mode B in the 2026-05-08 audit:
+        once the system prompt evaporates, the supervisor LLM
+        hallucinates `delegate(role='summarize', ...)` for every turn).
+      - Paired FunctionCall / FunctionCallOutput by call_id (dropping
+        one without the other produces a 4xx from the API: a tool
+        result with no preceding call is invalid).
+
+    Returns the original chat_ctx unchanged when no pruning is needed
+    (estimate already fits) or when chat_ctx is empty.
+    """
+    try:
+        from livekit.agents.llm import ChatContext, ChatMessage
+    except Exception:
+        return chat_ctx
+
+    items = list(getattr(chat_ctx, "items", None) or [])
+    if not items:
+        return chat_ctx
+
+    if ctx_items_token_estimate(items) <= target_tokens:
+        return chat_ctx
+
+    # Mark which indices are protected (system messages always kept).
+    is_system = [
+        isinstance(it, ChatMessage)
+        and getattr(it, "role", None) == "system"
+        for it in items
+    ]
+
+    # Build call_id -> indices map so we drop pairs together.
+    call_id_to_indices: dict[str, list[int]] = {}
+    for i, it in enumerate(items):
+        cid = getattr(it, "call_id", None)
+        if cid:
+            call_id_to_indices.setdefault(cid, []).append(i)
+
+    # Drop oldest non-system items, expanding to pair-mates, until
+    # the remaining items fit. Scan from the front (oldest) so the
+    # most recent context survives — that's where the user's current
+    # request and recent tool results live.
+    drop: set[int] = set()
+    for i, it in enumerate(items):
+        if is_system[i] or i in drop:
+            continue
+        # Drop this item AND its pair (if any).
+        candidates = {i}
+        cid = getattr(it, "call_id", None)
+        if cid:
+            for j in call_id_to_indices.get(cid, []):
+                if not is_system[j]:
+                    candidates.add(j)
+        # Don't drop system items.
+        candidates = {k for k in candidates if not is_system[k]}
+        drop |= candidates
+        kept = [t for k, t in enumerate(items) if k not in drop]
+        if ctx_items_token_estimate(kept) <= target_tokens:
+            break
+
+    pruned = [t for k, t in enumerate(items) if k not in drop]
+    return ChatContext(items=pruned)
 
 
 class BreakeredLLMStream:
@@ -129,3 +238,140 @@ class BreakeredLLMStream:
     # transparent to the caller.
     def __getattr__(self, name):
         return getattr(self._inner, name)
+
+
+# ── BreakeredGroqLLM ─────────────────────────────────────────────────
+
+class BreakeredGroqLLM(groq.LLM):
+    """`groq.LLM` whose `chat()` returns a stream gated by `LLM_BREAKER`.
+    The first chunk read goes through the breaker; later chunks pass
+    through unmodified. When the breaker is open or the breaker's own
+    timeout fires, the FallbackAdapter sees `APIConnectionError` /
+    `APITimeoutError` and cascades to the next LLM (typically DeepSeek)
+    within ms instead of the upstream's ~30 s default.
+
+    Also runs a pre-flight token-estimation pass per turn (port from
+    claude-code's services/tokenEstimation.ts) and stashes the result
+    on `LAST_PREFLIGHT` so the per-turn telemetry write can pick it up.
+    Pressure-state at WARN/HARD logs a `[token-estimation]` line so
+    the operator sees context filling up before Groq returns 413.
+    """
+
+    def chat(self, *args, **kw):
+        # Pre-flight token estimation. Best-effort; never raises.
+        try:
+            from tools.token_estimation import (
+                estimate_tokens,
+                context_pressure_state,
+                MAX_CONTEXT_TOKENS,
+            )
+            chat_ctx = kw.get("chat_ctx")
+            tools = kw.get("tools") or []
+            # Cheap stringification — duck-typed across LiveKit
+            # ChatContext / FunctionTool versions. The exact byte
+            # count differs from upstream tokenization but is
+            # consistent per-process so threshold tracking works.
+            ctx_str = ""
+            try:
+                items = getattr(chat_ctx, "items", None) or []
+                for it in items:
+                    ctx_str += str(getattr(it, "content", it)) + "\n"
+            except Exception:
+                ctx_str = str(chat_ctx) if chat_ctx is not None else ""
+            tools_str = ""
+            try:
+                for t in tools:
+                    info = getattr(t, "info", None)
+                    if info is not None:
+                        tools_str += (
+                            (getattr(info, "name", "") or "")
+                            + " "
+                            + (getattr(info, "description", "") or "")
+                            + "\n"
+                        )
+                    else:
+                        tools_str += str(t) + "\n"
+            except Exception:
+                pass
+            est = estimate_tokens(ctx_str) + estimate_tokens(tools_str)
+            pressure = context_pressure_state(est)
+            label = getattr(self, "_jarvis_label", "?")
+            # Stash for the per-turn telemetry write to read. Plain
+            # dict update (not ContextVar) — see the LAST_PREFLIGHT
+            # comment above for why.
+            LAST_PREFLIGHT["tokens"] = est
+            LAST_PREFLIGHT["pressure"] = pressure
+            LAST_PREFLIGHT["model"] = label
+            if pressure != "ok":
+                logger.warning(
+                    f"[token-estimation] {label} pressure={pressure} "
+                    f"est_tokens={est} max={MAX_CONTEXT_TOKENS}"
+                )
+            # Token-aware hard prune (added 2026-05-08, fix B in the
+            # voice-channel audit). Live-captured pre-flight at 17:51
+            # showed est_tokens=293321 against max=128000 and the
+            # supervisor LLM degenerated into "delegate to summarize"
+            # for every utterance because Groq silently truncated the
+            # JARVIS_INSTRUCTIONS preamble.
+            #
+            # Approach: when the estimate exceeds a safe budget (target
+            # leaves ~13K headroom for response output + tool overhead),
+            # build a pruned ChatContext by dropping oldest non-system
+            # items until the estimate fits. Replace kw["chat_ctx"]
+            # only for THIS call — the AgentSession keeps the full
+            # history; we just send less to the LLM.
+            if (
+                pressure == "hard"
+                and chat_ctx is not None
+                and os.environ.get("JARVIS_TOKEN_AWARE_PRUNE", "1") == "1"
+            ):
+                # Target leaves headroom for tools (already counted) +
+                # ~8K for response output. Anything over WARN_TOKENS
+                # post-prune still fires the warning above so the
+                # operator knows pruning was active.
+                target = max(40_000, MAX_CONTEXT_TOKENS - 13_000) - estimate_tokens(tools_str)
+                pruned = prune_chat_ctx_for_budget(chat_ctx, target)
+                pruned_items = getattr(pruned, "items", None) or []
+                original_items = getattr(chat_ctx, "items", None) or []
+                if len(pruned_items) < len(original_items):
+                    dropped = len(original_items) - len(pruned_items)
+                    new_est = ctx_items_token_estimate(pruned_items) + estimate_tokens(tools_str)
+                    logger.warning(
+                        f"[token-prune] dropped {dropped} oldest non-system "
+                        f"items: {len(original_items)}→{len(pruned_items)} "
+                        f"items, est {est}→{new_est} tokens"
+                    )
+                    kw["chat_ctx"] = pruned
+                    LAST_PREFLIGHT["tokens"] = new_est
+                    LAST_PREFLIGHT["pressure"] = context_pressure_state(new_est)
+        except Exception:
+            # Pre-flight is purely diagnostic — never block the call.
+            pass
+        inner_stream = super().chat(*args, **kw)
+        return BreakeredLLMStream(inner_stream, LLM_BREAKER)
+
+    @staticmethod
+    async def _call_with_breaker_for_test():
+        """Test seam — exercises only the breaker-open path with a
+        no-op coroutine. Cheap to invoke and proves the breaker
+        conversion (`CircuitOpenError` → `APIConnectionError`,
+        `asyncio.TimeoutError` → `APITimeoutError`) works in
+        isolation. Like the TTS seam (Task 3), the LLM factory is
+        straightforward enough that we don't need the seam itself to
+        drive construction.
+
+        Limitation: this seam does NOT exercise the full caller
+        contract (e.g. `async with stream: async for chunk in stream:`
+        used by livekit-agents). Tests that need to verify the wrapper
+        honours protocol methods must construct the wrapper class
+        directly and drive it through async with + async for — see
+        test_breaker_llm_open_raises_apiconnection_error for the
+        pattern."""
+        async def _no_op():
+            return None
+        try:
+            return await LLM_BREAKER.call(_no_op)
+        except CircuitOpenError as e:
+            raise APIConnectionError() from e
+        except asyncio.TimeoutError:
+            raise APITimeoutError() from None
