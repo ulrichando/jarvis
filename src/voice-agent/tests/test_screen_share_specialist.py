@@ -171,18 +171,19 @@ class TestLLMFactoryWiring:
 
 
 class TestModelSelection:
-    def test_default_model_is_25_native_audio(self):
-        """Per researcher 2026-05-11: 2.5-flash-native-audio-preview-12-2025
-        is the model AI Studio Stream uses. 3.1-flash-live-preview is
-        broken (1011 INTERNAL, python-genai #2238)."""
+    def test_default_model_is_31_flash_live_preview(self):
+        """User-requested 2026-05-11 evening: gemini-3.1-flash-live-preview
+        is the model with audio-to-audio + continuous video streaming.
+        Earlier 1011 INTERNAL errors were the deprecated send_realtime_input
+        (media=...) call shape — fixed in this codepath which uses video=.
+        3.1's trade-off vs 2.5-native-audio is immutable tools/context
+        mid-session, acceptable for a short specialist handoff."""
         from subagents import screen_share as ss
         with patch.dict(os.environ, {}, clear=False) as env:
             env.pop("JARVIS_SCREEN_SHARE_LIVE_MODEL", None)
-            # Re-read the module-level constant (it was set at import time;
-            # we just verify it's the right default by re-importing).
             import importlib
             importlib.reload(ss)
-            assert ss.SCREEN_SHARE_LIVE_MODEL == "gemini-2.5-flash-native-audio-preview-12-2025"
+            assert ss.SCREEN_SHARE_LIVE_MODEL == "gemini-3.1-flash-live-preview"
 
     def test_model_override_via_env(self):
         from subagents import screen_share as ss
@@ -195,6 +196,61 @@ class TestModelSelection:
             env.pop("JARVIS_SCREEN_SHARE_LIVE_MODEL", None)
             import importlib
             importlib.reload(ss)
+
+    def test_default_voice_is_aoede(self):
+        """Aoede picked for natural-sounding tech narration. Override
+        via JARVIS_SCREEN_SHARE_LIVE_VOICE; 30 voices available."""
+        from subagents import screen_share as ss
+        with patch.dict(os.environ, {}, clear=False) as env:
+            env.pop("JARVIS_SCREEN_SHARE_LIVE_VOICE", None)
+            import importlib
+            importlib.reload(ss)
+            assert ss.SCREEN_SHARE_LIVE_VOICE == "Aoede"
+
+    def test_context_window_default_is_32k(self):
+        """Without sliding-window compression, audio+video Live sessions
+        die at 2 minutes. 32k tokens is generous enough for ~30 min."""
+        from subagents import screen_share as ss
+        with patch.dict(os.environ, {}, clear=False) as env:
+            env.pop("JARVIS_SCREEN_SHARE_LIVE_CONTEXT_TOKENS", None)
+            import importlib
+            importlib.reload(ss)
+            assert ss.SCREEN_SHARE_LIVE_CONTEXT_TOKENS == 32000
+
+
+class TestLiveConfigShape:
+    """Verify _build_screen_share_llm constructs RealtimeModel with the
+    research-recommended config: AUDIO modality, voice, transcription,
+    sliding-window context compression, session resumption. All on the
+    user-requested gemini-3.1-flash-live-preview."""
+
+    def test_realtime_model_called_with_full_config(self):
+        from subagents import screen_share as ss
+        # Patch the actual class on the real module — preserves
+        # pydantic's module-globals + everything else, just swaps
+        # the constructor we're testing.
+        from livekit.plugins.google import realtime as lk_realtime
+        captured = {}
+
+        class _Capture:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        with patch.object(lk_realtime, "RealtimeModel", _Capture):
+            ss._build_screen_share_llm()
+
+        # The five critical config bits researcher flagged:
+        assert captured["model"] == "gemini-3.1-flash-live-preview"
+        assert captured["voice"] == "Aoede"
+        # Modality must be AUDIO (TEXT is the broken path on 3.1).
+        from google.genai import types as gt
+        assert gt.Modality.AUDIO in captured["modalities"]
+        # Transcription must be enabled so text rides alongside audio.
+        assert captured["output_audio_transcription"] is not None
+        # Context compression must be set — otherwise session dies at 2 min.
+        assert captured["context_window_compression"] is not None
+        # Session resumption must be set — recovers from transient drops.
+        assert captured["session_resumption"] is not None
 
 
 # ── Integration: live Gemini call (gated) ──────────────────────────
