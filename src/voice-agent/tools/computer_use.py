@@ -38,18 +38,24 @@ logger = logging.getLogger("jarvis.computer_use")
 # Vision-backend primitives extracted to tools/_vision_backend.py 2026-05-10
 # (Step 7 of the audit). Re-exported under underscored aliases so the
 # in-file callers (`_resolved_vision_backend`, `_vision_describe`, etc.) +
-# the `VISION_BACKEND` / `OLLAMA_*` / `KIMI_VISION_MODEL` constants stay
-# reachable via `from tools.computer_use import X` (no caller change).
-# Gemini ripped out 2026-05-11 — see _vision_backend.py docstring.
+# the `VISION_BACKEND` / `OLLAMA_*` / `GEMINI_VISION_MODEL` /
+# `KIMI_VISION_MODEL` constants stay reachable via
+# `from tools.computer_use import X` (no caller change).
+# Gemini ripped out → re-added 2026-05-11 (evening) as the cloud
+# primary, with Kimi retained as an auto-fallback when Gemini's GCP
+# API-disabled / quota / 5xx markers fire. See _vision_backend.py.
 from tools._vision_backend import (
     VISION_BACKEND,
     OLLAMA_VISION_MODEL,
     OLLAMA_URL,
+    GEMINI_VISION_MODEL,
     KIMI_VISION_MODEL,
     ollama_reachable        as _ollama_reachable,
     resolved_vision_backend as _resolved_vision_backend,
+    get_gemini_client       as _get_gemini_client,
     get_kimi_client         as _get_kimi_client,
     ollama_describe         as _ollama_describe,
+    gemini_describe_raw     as _gemini_describe_raw,
     kimi_describe_raw       as _kimi_describe_raw,
     vision_describe         as _vision_describe,
 )
