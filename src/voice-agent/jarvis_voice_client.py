@@ -363,110 +363,28 @@ def _watchdog_thread() -> None:
 # so we don't collide with bridge (8765) / speech sidecar (8766).
 STATUS_PORT   = int(os.environ.get("JARVIS_VOICE_CLIENT_PORT", "8767"))
 
-# CLI-model switching. The tray POSTs to /cli-model; we write the
-# chosen model ID to this file. The voice-agent's run_jarvis_cli
-# reads the file on every spawn and exports JARVIS_PROVIDER +
-# JARVIS_MODEL to the CLI subprocess — so switching takes effect on
-# the very next tool call, no restart required. start.sh also reads
-# this file so interactive terminal sessions stay in sync.
-CLI_MODEL_FILE      = Path.home() / ".jarvis" / "cli-model"
-DEFAULT_CLI_MODEL   = "deepseek-v4-pro"
-
-# Speech-LLM (voice-side) switching. Same file/endpoint pattern as
-# CLI model but a switch DOES require a restart of the agent unit
-# (its LLM is built once at session start; can't hot-swap). voice-
-# client kicks `systemctl --user restart jarvis-voice-agent` after
-# writing the file. The voice-client itself stays up — the SFU
-# preserves the room while the agent rejoins.
-SPEECH_MODEL_FILE      = Path.home() / ".jarvis" / "voice-model"
-
-# TTS provider switching. Format: "<provider>:<voice_id_or_name>"
-# Only `groq:<voice>` is supported post-2026-05-01 (ElevenLabs removed).
-TTS_PROVIDER_FILE      = Path.home() / ".jarvis" / "tts-provider"
-
-def _default_tts_provider() -> str:
-    return "groq:troy"
-
-def _ensure_tts_provider_file() -> None:
-    if not TTS_PROVIDER_FILE.exists():
-        TTS_PROVIDER_FILE.parent.mkdir(parents=True, exist_ok=True)
-        TTS_PROVIDER_FILE.write_text(_default_tts_provider() + "\n", encoding="utf-8")
-
-TTS_PROVIDERS_AVAILABLE = {
-    "groq:troy":   "Groq Orpheus · Troy",
-    "groq:austin": "Groq Orpheus · Austin",
-}
-
-# Same path as jarvis_agent.py's _TOOL_BUSY_FILE — written when a
-# tool starts, deleted when it ends. Voice-client polls existence
-# (cheap stat call) on every /status hit.
-TOOL_BUSY_FILE         = Path.home() / ".jarvis" / ".tool-running"
-SILENT_MODE_FILE       = Path.home() / ".jarvis" / ".silent-mode"
-
-# Agent's LLM-thinking flag. Same pattern: present means LLM is
-# generating. Has a staleness check below — if the file is older
-# than AGENT_THINKING_MAX_AGE we ignore it. This handles the
-# "agent decided to stay silent" case (directed-at-me filter
-# rejects an ambient mic trigger): no assistant turn ever lands to
-# clear the flag, but it goes stale and the tray drops gold
-# automatically.
-#
-# 2026-05-02: bumped 10s → 60s. The agent now refreshes the flag
-# on every `agent_state_changed → thinking` event, so under normal
-# operation it never hits the TTL. The 60s ceiling is purely a
-# safety belt against a stuck agent process leaving stale flags.
-# The previous 10s TTL was tighter than the longest legitimate
-# thinking window (browser_v2 = 25s, planner = 60s+).
-AGENT_THINKING_FILE    = Path.home() / ".jarvis" / ".agent-thinking"
-AGENT_THINKING_MAX_AGE = 60   # seconds
-
-
-def _agent_is_thinking() -> bool:
-    """True if the thinking flag file exists AND is recent enough."""
-    try:
-        # Use mtime — the agent rewrites the file on each new turn,
-        # so stat is enough; we don't need to read the contents.
-        age = time.time() - AGENT_THINKING_FILE.stat().st_mtime
-        return age < AGENT_THINKING_MAX_AGE
-    except FileNotFoundError:
-        return False
-    except Exception:
-        return False
-DEFAULT_SPEECH_MODEL   = "llama-3.3-70b-versatile"
-SPEECH_MODELS_AVAILABLE = (
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
-    "qwen/qwen3-32b",
-    "openai/gpt-oss-120b",
-    "meta-llama/llama-4-scout-17b-16e-instruct",
-    # DeepSeek family — re-enabled after deepseek_roundtrip.install()
-    # patches livekit-plugins-openai to echo reasoning_content on
-    # assistant tool-call messages.
-    "deepseek-chat",
-    "deepseek-v4-flash",
-    "deepseek-v4-pro",
-    # Kimi K2.6 voice entries are DISABLED 2026-05-05. K2.6 emits
-    # built-in tool calls (web_search, etc.) that aren't in
-    # request.tools, and Moonshot's API rejects every such request
-    # with `tool call validation failed`. Every supervisor turn fails
-    # on first content and the LLM circuit breaker trips. See the
-    # corresponding gate in jarvis_agent.py SPEECH_MODELS — the
-    # entries return when JARVIS_KIMI_VOICE_EXPERIMENTAL=1, but they
-    # are kept out of the default tray picker until proper
-    # integration lands (shim tools or server-side filtering).
+# Tray-config layer extracted to voice_client_tray_config.py 2026-05-10
+# (Step 7 of the audit). Re-exported under legacy underscored names so
+# the HTTP handlers + watchdogs stay untouched.
+from voice_client_tray_config import (
+    CLI_MODEL_FILE,
+    DEFAULT_CLI_MODEL,
+    CLI_MODELS_AVAILABLE,
+    SPEECH_MODEL_FILE,
+    DEFAULT_SPEECH_MODEL,
+    SPEECH_MODELS_AVAILABLE,
+    TTS_PROVIDER_FILE,
+    TTS_PROVIDERS_AVAILABLE,
+    TOOL_BUSY_FILE,
+    SILENT_MODE_FILE,
+    AGENT_THINKING_FILE,
+    AGENT_THINKING_MAX_AGE,
+    default_tts_provider     as _default_tts_provider,
+    ensure_tts_provider_file as _ensure_tts_provider_file,
+    read_speech_model        as _read_speech_model,
+    read_cli_model           as _read_cli_model,
+    agent_is_thinking        as _agent_is_thinking,
 )
-
-
-def _read_speech_model() -> str:
-    try:
-        name = SPEECH_MODEL_FILE.read_text(encoding="utf-8").strip()
-        if name in SPEECH_MODELS_AVAILABLE:
-            return name
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        log.warning(f"could not read {SPEECH_MODEL_FILE}: {e}")
-    return DEFAULT_SPEECH_MODEL
 
 
 async def _restart_agent_unit() -> None:
@@ -511,33 +429,6 @@ async def _restart_agent_unit() -> None:
         )
     except Exception as e:
         log.warning(f"could not restart self: {e}")
-# Whitelist mirroring CLI_MODELS in jarvis_agent.py — duplicated as a
-# literal tuple so the voice-client doesn't have to import heavy
-# livekit plugin machinery just to validate a string.
-CLI_MODELS_AVAILABLE = (
-    "deepseek-chat",
-    "deepseek-reasoner",
-    "deepseek-v4-flash",
-    "deepseek-v4-pro",
-    "qwen/qwen3-32b",
-    "llama-3.3-70b-versatile",
-    "meta-llama/llama-4-scout-17b-16e-instruct",
-    "openai/gpt-oss-120b",
-)
-
-
-def _read_cli_model() -> str:
-    try:
-        name = CLI_MODEL_FILE.read_text(encoding="utf-8").strip()
-        if name in CLI_MODELS_AVAILABLE:
-            return name
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        log.warning(f"could not read {CLI_MODEL_FILE}: {e}")
-    return DEFAULT_CLI_MODEL
-
-
 @dataclass
 class ClientState:
     """
