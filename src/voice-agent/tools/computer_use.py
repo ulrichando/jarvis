@@ -128,7 +128,25 @@ _SCREENSHOT_JPEG_QUALITY = int(os.environ.get("JARVIS_SCREENSHOT_JPEG_Q", "75"))
 
 
 def _take_screenshot() -> tuple[bytes, str]:
-    """Take a screenshot, downscale + JPEG-encode, return (bytes, mime_type)."""
+    """Take a screenshot, downscale + JPEG-encode, return (bytes, mime_type).
+
+    Preference order:
+      1. Live LiveKit screen-share frame, if the voice-client is actively
+         publishing AND the latest frame is <2 s old. Saves ~150 ms vs.
+         scrot+PNG and avoids touching the display server entirely.
+      2. scrot fallback. Always available, but slower.
+    """
+    # Live-frame fast path. Returns None when no screen-share is active
+    # or the cached frame is stale.
+    try:
+        from pipeline.screen_share_sink import latest_jpeg_global
+        cached = latest_jpeg_global(max_age_s=2.0)
+        if cached is not None:
+            return cached, "image/jpeg"
+    except Exception:
+        # Don't let an import/runtime error in the sink break screenshots.
+        pass
+
     # NamedTemporaryFile pre-creates the file; without `-o` scrot
     # refuses to overwrite and silently writes to <name>_000.png
     # instead, leaving the path we read empty (0 bytes).
