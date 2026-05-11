@@ -14,10 +14,15 @@ livekit-agents[silero,openai,groq,anthropic]~=1.5
 # in jarvis_agent.py.
 convex~=0.7
 
-# Vision backend uses Kimi (Moonshot) via the OpenAI-compatible SDK
-# already in the dep graph — no extra package needed. Gemini's
-# google-genai client was removed 2026-05-11 after the "API is
-# disabled" failure left vision unavailable in production.
+# Vision backend has THREE paths:
+#   1. Ollama (local, qwen2.5vl:3b) — no extra package.
+#   2. Gemini (Google Generative Language) — primary cloud path.
+#      Re-introduced 2026-05-11 evening after the morning's Kimi swap
+#      proved too slow (~11s vs ~3-4s on gemini-2.5-flash-lite).
+#   3. Kimi (Moonshot) — fallback when Gemini hits the API-disabled /
+#      quota / 5xx markers. Uses openai-python with swapped base_url,
+#      already in the dep graph below.
+google-genai~=1.65
 
 # Face ID — InsightFace buffalo_l (RetinaFace + ArcFace ResNet-50),
 # the production-grade open-source face stack used by AWS Rekognition
