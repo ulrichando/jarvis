@@ -1,0 +1,79 @@
+name: voice-agent-tests
+
+# Runs the voice-agent pytest suite on every push/PR that touches
+# src/voice-agent/**. Mirrors the local command used by /voice-tests:
+#
+#   cd src/voice-agent
+#   .venv/bin/python -m pytest tests/ -q \
+#     --ignore=tests/test_browser_ext_contract.py \
+#     --ignore=tests/test_supervisor_vision.py \
+#     --ignore=tests/test_github_subagent.py
+#
+# The 3 ignored suites need external services (browser extension,
+# GitHub API, vision model) that aren't available in CI.
+#
+# Secrets: not provided. Production-style env vars get DUMMY values
+# so import-time validators don't reject the test process. The unit
+# tests use mocks/fixtures and never hit the real upstream APIs.
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "src/voice-agent/**"
+      - ".github/workflows/voice-agent-tests.yml"
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "src/voice-agent/**"
+      - ".github/workflows/voice-agent-tests.yml"
+
+jobs:
+  pytest:
+    name: pytest (linux, python 3.13)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/voice-agent
+    env:
+      # Bootstrap values — the agent reads these at import time. Real
+      # values aren't needed because no test makes a live SFU
+      # connection (they use mocks for AgentSession). Setting these
+      # prevents `os.environ["LIVEKIT_URL"]` style KeyErrors.
+      LIVEKIT_URL: ws://127.0.0.1:7880
+      LIVEKIT_API_KEY: ci-dummy-key
+      LIVEKIT_API_SECRET: ci-dummy-secret
+      GOOGLE_API_KEY: ci-dummy-google-key
+      GROQ_API_KEY: ci-dummy-groq-key
+      DEEPSEEK_API_KEY: ci-dummy-deepseek-key
+      DISPLAY: ":0"
+      JARVIS_GRAPH_DISABLED: "1"   # skip LangGraph slow-path init in CI
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: src/voice-agent/requirements.txt
+
+      - name: Install voice-agent system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ffmpeg \
+            libsndfile1
+
+      - name: pip install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio
+
+      - name: Run pytest
+        run: |
+          python -m pytest tests/ -q \
+            --ignore=tests/test_browser_ext_contract.py \
+            --ignore=tests/test_supervisor_vision.py \
+            --ignore=tests/test_github_subagent.py
