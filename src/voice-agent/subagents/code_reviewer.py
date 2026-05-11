@@ -6,13 +6,13 @@ checker. The shared design: a separate reviewer with no shared history
 catches what the writer missed (~2 bugs/PR, 58% severe per Cognition's
 production data).
 
-SubagentSpec (not SpecialistSpec) because review is one-shot — input
+DelegatedSubagent (not HandoffSubagent) because review is one-shot — input
 is (code, focus, context), output is one structured string. No
 multi-turn flow needed.
 """
 from __future__ import annotations
 
-from .registry import SubagentSpec, register_subagent
+from .registry import DelegatedSubagent, register_subagent
 from ._ack_phrases import ACK_CODE_REVIEWER
 
 
@@ -72,7 +72,7 @@ def register_code_reviewer() -> None:
         os.environ.get("JARVIS_SUBAGENT_CODE_REVIEWER", "0") == "1"
     )
 
-    register_subagent(SubagentSpec(
+    register_subagent(DelegatedSubagent(
         name="code_reviewer",
         when_to_use=_CODE_REVIEWER_WHEN,
         instructions=CODE_REVIEWER_INSTRUCTIONS,

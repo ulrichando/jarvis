@@ -4,12 +4,12 @@ Search past conversations stored in ~/.jarvis/conversations.db.
 Pattern lineage: ChatGPT/Claude memory tools, but local + privacy-
 preserving. SQLite LIKE-match — no embeddings, no external service.
 
-SubagentSpec because recall is one-shot: input is a query string,
+DelegatedSubagent because recall is one-shot: input is a query string,
 output is a formatted voice summary of matches.
 """
 from __future__ import annotations
 
-from .registry import SubagentSpec, register_subagent
+from .registry import DelegatedSubagent, register_subagent
 from ._ack_phrases import ACK_MEMORY_RECALL
 
 
@@ -68,7 +68,7 @@ def register_memory_recall() -> None:
         os.environ.get("JARVIS_SUBAGENT_MEMORY_RECALL", "0") == "1"
     )
 
-    register_subagent(SubagentSpec(
+    register_subagent(DelegatedSubagent(
         name="memory_recall",
         when_to_use=_MEMORY_RECALL_WHEN,
         instructions=MEMORY_RECALL_INSTRUCTIONS,

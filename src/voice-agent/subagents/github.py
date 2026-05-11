@@ -1,6 +1,6 @@
 """GitHub connector subagent — read-only PR + issue lookup via `gh`.
 
-SubagentSpec because all 4 tools share the delegate(role, task)
+DelegatedSubagent because all 4 tools share the delegate(role, task)
 plumbing and don't need their own conversation thread. The supervisor
 delegates with a goal string; this subagent's LLM picks among the 4
 github_* tools internally.
@@ -10,7 +10,7 @@ destructive-verb gating.
 """
 from __future__ import annotations
 
-from .registry import SubagentSpec, register_subagent
+from .registry import DelegatedSubagent, register_subagent
 from ._ack_phrases import ACK_GITHUB
 
 
@@ -81,7 +81,7 @@ def register_github() -> None:
         os.environ.get("JARVIS_SUBAGENT_GITHUB", "0") == "1"
     )
 
-    register_subagent(SubagentSpec(
+    register_subagent(DelegatedSubagent(
         name="github",
         when_to_use=_GITHUB_WHEN,
         instructions=GITHUB_INSTRUCTIONS,

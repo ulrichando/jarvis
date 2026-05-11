@@ -111,17 +111,17 @@ def test_recall_finds_matching_turn(monkeypatch, tmp_path):
 
 
 def test_memory_recall_subagent_registered():
-    from specialists.registry import clear_subagents, SUBAGENT_REGISTRY
+    from subagents.registry import clear_subagents, SUBAGENT_REGISTRY
     clear_subagents()
-    from specialists.memory_recall import register_memory_recall
+    from subagents.memory_recall import register_memory_recall
     register_memory_recall()
     assert "memory_recall" in SUBAGENT_REGISTRY
 
 
 def test_memory_recall_factory_builds():
-    from specialists.registry import clear_subagents
+    from subagents.registry import clear_subagents
     clear_subagents()
-    from specialists.memory_recall import register_memory_recall, _memory_recall_tools
+    from subagents.memory_recall import register_memory_recall, _memory_recall_tools
     register_memory_recall()
     tools = _memory_recall_tools()
     assert isinstance(tools, list) and len(tools) >= 1

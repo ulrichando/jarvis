@@ -4,12 +4,12 @@ path: instead of one all-in-one black box, the LLM emits one DOM-
 level command per turn and steps the task forward (Manus pattern).
 
 The 38 ext_* @function_tools live in `tools.browser_ext.py`; this
-file just wraps them in a SpecialistSpec so the LLM reaches them
+file just wraps them in a HandoffSubagent so the LLM reaches them
 through the same registry handoff as desktop.
 """
 from __future__ import annotations
 
-from .registry import SpecialistSpec, register
+from .registry import HandoffSubagent, register
 from ._ack_phrases import ACK_BROWSER
 
 
@@ -360,7 +360,7 @@ def register_browser() -> None:
     extension isn't connected at runtime, the bridge returns a
     structured `extension not connected` error and the specialist
     voices it back instead of hanging."""
-    register(SpecialistSpec(
+    register(HandoffSubagent(
         name="browser",
         transfer_tool="transfer_to_browser",
         when_to_use=_BROWSER_WHEN,

@@ -40,10 +40,10 @@ def _run(coro):
 
 def _make_specialist():
     from livekit.agents.llm import ChatContext, ChatMessage
-    from specialists.agent import RegistrySpecialist
-    from specialists.registry import SpecialistSpec
+    from subagents.agent import RegistrySubagent
+    from subagents.registry import HandoffSubagent
 
-    spec = SpecialistSpec(
+    spec = HandoffSubagent(
         name="desktop",
         transfer_tool="transfer_to_desktop",
         when_to_use="x",
@@ -54,7 +54,7 @@ def _make_specialist():
         enabled=True,
     )
     supervisor = MagicMock()
-    specialist = RegistrySpecialist(spec=spec, supervisor=supervisor)
+    specialist = RegistrySubagent(spec=spec, supervisor=supervisor)
     specialist._handoff_start_idx = 1
     # Single pre-handoff item so handoff-window starts at index 1.
     specialist._chat_ctx = ChatContext(items=[

@@ -13,8 +13,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from specialists.registry import clear, get
-from specialists import browser as browser_mod
+from subagents.registry import clear, get
+from subagents import browser as browser_mod
 
 
 @pytest.fixture(autouse=True)

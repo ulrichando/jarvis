@@ -24,9 +24,9 @@ def test_is_available_reflects_gh_state():
 
 
 def test_github_subagent_registered():
-    from specialists.registry import clear_subagents, SUBAGENT_REGISTRY
+    from subagents.registry import clear_subagents, SUBAGENT_REGISTRY
     clear_subagents()
-    from specialists.github import register_github
+    from subagents.github import register_github
     register_github()
     assert "github" in SUBAGENT_REGISTRY
     spec = SUBAGENT_REGISTRY["github"]
@@ -35,9 +35,9 @@ def test_github_subagent_registered():
 
 
 def test_github_factory_builds():
-    from specialists.registry import clear_subagents
+    from subagents.registry import clear_subagents
     clear_subagents()
-    from specialists.github import register_github, _github_tools
+    from subagents.github import register_github, _github_tools
     register_github()
     tools = _github_tools()
     assert isinstance(tools, list) and len(tools) == 4
@@ -73,7 +73,7 @@ def test_invalid_state_rejected():
 
 def test_subagent_is_read_only():
     """v1 must NOT expose write tools (comment, merge, close)."""
-    from specialists.github import _github_tools
+    from subagents.github import _github_tools
     tools = _github_tools()
     names = [getattr(getattr(t, "_func", t), "__name__", "") for t in tools]
     forbidden = ("github_comment", "github_merge_pr", "github_close_issue")

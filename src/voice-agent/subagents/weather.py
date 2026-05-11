@@ -10,7 +10,7 @@ manual override) and bash + curl for the actual wttr.in fetch.
 """
 from __future__ import annotations
 
-from .registry import SubagentSpec, register_subagent
+from .registry import DelegatedSubagent, register_subagent
 from ._ack_phrases import ACK_WEATHER
 
 
@@ -118,7 +118,7 @@ def register_weather() -> None:
     Per-spec opt-out via `JARVIS_SUBAGENT_WEATHER=0`.
     """
     import os
-    register_subagent(SubagentSpec(
+    register_subagent(DelegatedSubagent(
         name="weather",
         when_to_use=_WEATHER_WHEN,
         instructions=WEATHER_INSTRUCTIONS,
