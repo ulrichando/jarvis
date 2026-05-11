@@ -103,11 +103,27 @@ class RegistrySubagent(Agent):
         supervisor: Agent,
         chat_ctx: ChatContext | None = None,
     ):
-        super().__init__(
-            instructions=spec.instructions,
-            tools=spec.tool_factory(),
-            chat_ctx=chat_ctx,
-        )
+        # Per-specialist LLM override. Most specs leave llm_factory=None
+        # and inherit the supervisor's LLM. The screen_share specialist
+        # uses this to swap in a Gemini Live RealtimeModel so it gets
+        # sub-second responses with continuous vision context — the
+        # supervisor stays on Claude Haiku + Orpheus when this
+        # specialist isn't active.
+        kwargs: dict = {
+            "instructions": spec.instructions,
+            "tools": spec.tool_factory(),
+            "chat_ctx": chat_ctx,
+        }
+        if spec.llm_factory is not None:
+            try:
+                kwargs["llm"] = spec.llm_factory()
+            except Exception as e:
+                logger.warning(
+                    f"[specialist:{spec.name}] llm_factory raised "
+                    f"{type(e).__name__}: {e} — falling back to "
+                    f"supervisor's LLM"
+                )
+        super().__init__(**kwargs)
         self._spec = spec
         self._supervisor = supervisor
         # High-water mark of chat_ctx at handoff start. task_done's
