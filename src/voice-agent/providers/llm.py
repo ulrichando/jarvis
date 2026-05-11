@@ -45,6 +45,25 @@ from resilience.circuit_breaker import (
 logger = logging.getLogger("jarvis.llm")
 
 
+__all__ = [
+    # Tray-driven model picker
+    "SPEECH_MODEL_FILE",
+    "DEFAULT_SPEECH_MODEL",
+    "SPEECH_MODELS",
+    "read_speech_model",
+    "make_speech_llm",
+    # Token-aware pre-flight + pruning
+    "LAST_PREFLIGHT",
+    "ctx_items_token_estimate",
+    "prune_chat_ctx_for_budget",
+    # Breakered stream + LLM
+    "BreakeredLLMStream",
+    "BreakeredGroqLLM",
+    # Per-route dispatcher build
+    "build_dispatching_llm",
+]
+
+
 # ── User-selected speech LLM (tray pick) ─────────────────────────────
 # The tray UI writes the active id to ~/.jarvis/voice-model (or to the
 # hub's state.db). entrypoint() calls `make_speech_llm()` once per job

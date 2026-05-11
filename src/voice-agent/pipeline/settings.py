@@ -23,6 +23,9 @@ from pathlib import Path
 logger = logging.getLogger("jarvis.settings")
 
 
+__all__ = ["read_unified_setting"]
+
+
 def read_unified_setting(key: str, file_path: Path) -> str | None:
     # 1. State.db (canonical post-2026-05-03)
     try:

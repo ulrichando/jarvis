@@ -24,6 +24,16 @@ from pathlib import Path
 logger = logging.getLogger("jarvis.prompt_builder")
 
 
+__all__ = [
+    "MAX_LEARNED_RULES",
+    "LEARNED_RULES_PATH",
+    "PROPOSALS_PATH",
+    "load_learned_rules",
+    "count_pending_proposals",
+    "build_breaker_status_block",
+]
+
+
 # ── Learned-rules block ──────────────────────────────────────────────
 # Cap on how many rules to inject; oldest beyond this are silently
 # dropped from the injection (the file itself is untouched).
