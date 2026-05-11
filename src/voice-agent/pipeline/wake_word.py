@@ -26,6 +26,10 @@ from __future__ import annotations
 
 import re
 
+
+__all__ = ["NAME_ALTERNATION", "NAME_RE", "BARE_VOCATIVE_RE", "INLINE_STRIP_RE"]
+
+
 # ── The one source of truth ──────────────────────────────────────────
 # Add new Whisper-variant names HERE. The 3 compiled regexes below
 # pick up the change automatically.
