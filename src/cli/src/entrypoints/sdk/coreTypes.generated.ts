@@ -658,7 +658,7 @@ export type ModelInfo = {
   displayName: string
   description: string
   supportsEffort?: boolean
-  supportedEffortLevels?: Array<'low' | 'medium' | 'high' | 'max'>
+  supportedEffortLevels?: Array<'low' | 'medium' | 'high' | 'xhigh' | 'max'>
   supportsAdaptiveThinking?: boolean
   supportsFastMode?: boolean
   supportsAutoMode?: boolean
@@ -692,7 +692,7 @@ export type AgentDefinition = {
   maxTurns?: number
   background?: boolean
   memory?: 'user' | 'project' | 'local'
-  effort?: 'low' | 'medium' | 'high' | 'max' | number
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | number
   permissionMode?: PermissionMode
 }
 

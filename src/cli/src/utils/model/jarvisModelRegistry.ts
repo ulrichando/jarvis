@@ -372,7 +372,11 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     provider: 'anthropic',
     upstreamModel: 'claude-haiku-4-5',
     tiers: ['fast', 'balanced'],
-    capabilities: ['adaptive_thinking', 'effort', 'max_effort'],
+    // Haiku 4.5 supports adaptive thinking but NOT the explicit
+    // effort/max_effort tiers (verified 2026-05-11 against
+    // /v1/messages — the API returns 'This model does not support
+    // the effort parameter' when output_config.effort is set).
+    capabilities: ['adaptive_thinking'],
     visibleInPicker: true,
     fallback: ['claude-sonnet-4-6', 'deepseek-v4-flash'],
   },
