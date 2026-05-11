@@ -439,7 +439,13 @@ function EffortLevelIndicator(t0) {
   return t4;
 }
 function cycleEffortLevel(current: EffortLevel, direction: 'left' | 'right', includeMax: boolean): EffortLevel {
-  const levels: EffortLevel[] = includeMax ? ['low', 'medium', 'high', 'max'] : ['low', 'medium', 'high'];
+  // `xhigh` ships in every cycle because Anthropic's API accepts it on
+  // Opus 4.x / Sonnet 4.6 without the same Opus-only gate as `max`.
+  // The `includeMax` switch still controls whether the cycle terminates
+  // at `max` (Opus-only) or stops one rung earlier.
+  const levels: EffortLevel[] = includeMax
+    ? ['low', 'medium', 'high', 'xhigh', 'max']
+    : ['low', 'medium', 'high', 'xhigh'];
   // If the current level isn't in the cycle (e.g. 'max' after switching to a
   // non-Opus model), clamp to 'high'.
   const idx = levels.indexOf(current);
