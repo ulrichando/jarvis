@@ -75,7 +75,7 @@ class TestGeminiDescribe:
         mock_client = MagicMock()
         mock_client.models.generate_content.return_value = mock_response
 
-        with patch("tools.computer_use._get_gemini_client", return_value=mock_client):
+        with patch("tools._vision_backend.get_gemini_client", return_value=mock_client):
             run(cu._gemini_describe(b"\x89PNG"))
 
         call_kwargs = mock_client.models.generate_content.call_args.kwargs
@@ -89,7 +89,7 @@ class TestGeminiDescribe:
         mock_client = MagicMock()
         mock_client.models.generate_content.return_value = mock_response
 
-        with patch("tools.computer_use._get_gemini_client", return_value=mock_client):
+        with patch("tools._vision_backend.get_gemini_client", return_value=mock_client):
             result = run(cu._gemini_describe(b"\x89PNG"))
 
         assert result == "Desktop: Kitty terminal in foreground"
@@ -102,7 +102,7 @@ class TestGeminiDescribe:
         mock_client = MagicMock()
         mock_client.models.generate_content.return_value = mock_response
 
-        with patch("tools.computer_use._get_gemini_client", return_value=mock_client):
+        with patch("tools._vision_backend.get_gemini_client", return_value=mock_client):
             result = run(cu._gemini_describe(b"\x89PNG"))
 
         assert "no description" in result.lower()
