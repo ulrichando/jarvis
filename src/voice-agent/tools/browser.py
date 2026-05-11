@@ -45,7 +45,7 @@ from pathlib import Path
 
 from livekit.agents import function_tool
 
-logger = logging.getLogger("jarvis-agent.browser")
+logger = logging.getLogger("jarvis.browser")
 
 # Where the JARVIS-only Chrome profile lives. Created on first launch
 # if missing. The user can pre-populate it by running

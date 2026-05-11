@@ -43,7 +43,7 @@ from typing import Any, Optional
 import aiohttp
 from livekit.agents import function_tool
 
-logger = logging.getLogger("jarvis-agent.browser-ext")
+logger = logging.getLogger("jarvis.browser_ext")
 
 _BRIDGE_URL = os.environ.get("JARVIS_BRIDGE_URL", "http://localhost:8765")
 _DEFAULT_TIMEOUT_MS = int(os.environ.get("JARVIS_EXT_TIMEOUT_MS", "10000"))

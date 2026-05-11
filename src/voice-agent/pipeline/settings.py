@@ -20,7 +20,7 @@ import logging
 from pathlib import Path
 
 
-logger = logging.getLogger("jarvis-agent")
+logger = logging.getLogger("jarvis.settings")
 
 
 def read_unified_setting(key: str, file_path: Path) -> str | None:
