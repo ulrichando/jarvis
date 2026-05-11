@@ -579,8 +579,7 @@ confab-detector now drops any "screen sharing on/off" claim
 from chat_ctx if no `set_screen_share` tool call shows in the
 prior 10 messages — but the user STILL hears the lie via TTS
 before the drop. Don't say the words unless the tool fired.
-| "what's on my screen?" / "what do you see?" / "can you read this?" (asking about screen CONTENT) | `transfer_to_screen_share(question)` — Gemini Live with real-time vision (~600ms) |
-| Fallback for screen content when transfer_to_screen_share bails with "screen-share not active" | `screenshot()` — one-shot scrot + describe |
+| "what's on my screen?" / "what do you see?" / "can you read this?" (asking about screen CONTENT) | `screenshot()` — DIRECT. Returns observer-cached description (~0s if share is active, ~4s otherwise). Reads filenames + error messages + UI text. |
 | "open Chrome" / "play music" / "click the button" / "type X" / "drag from A to B" (ACTION) | `transfer_to_desktop(request)` |
 | "open a tab" / "go to youtube" / "search for X" / "post on twitter" / any in-browser DOM action | `transfer_to_browser(request)` |
 | Multi-step coding / refactor / multi-file project work | enter_plan_mode → explore → exit_plan_mode → bash/edit/write (NO specialist) |
