@@ -7,6 +7,12 @@ provider-specific compat shims (DeepSeek-shape reasoning_content
 round-trip).
 
 Modules:
+  - anthropic_strict_schema : walks every Anthropic tool schema and
+                         forces `additionalProperties: false` on every
+                         object node — required because Anthropic
+                         rejects tools without it, and strict_schema_relax
+                         (load-bearing for Groq) emits legacy shapes
+                         that don't set it (live failure 2026-05-11)
   - deepseek_roundtrip : echoes `reasoning_content` on assistant tool-call
                          messages so DeepSeek-style providers don't
                          reject the tool result as malformed
@@ -24,6 +30,10 @@ Modules:
   - pycall             : detects tool-call-as-text leaks (`<function...
                          >` pattern) and blanks the leaked content
                          (was pycall_sanitizer.py)
+  - strict_schema_relax: forces every tool through the legacy schema
+                         generator (no additionalProperties:false, no
+                         function.strict=True) so Groq/Moonshot accept
+                         mixed defaults+required tools
   - tool_name          : recovers the real tool name when the LLM emits
                          a malformed/typo'd tool name; soft-recovers if
                          the tool requires runtime context
