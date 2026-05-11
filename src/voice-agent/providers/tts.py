@@ -44,7 +44,7 @@ from livekit.agents import (
 )
 from livekit.plugins import groq
 from livekit.plugins.groq.tts import ChunkedStream as _GroqChunkedStream
-import tts.edge as edge_tts_plugin
+from providers import edge_tts as edge_tts_plugin
 
 from pipeline.dispatching_tts import DispatchingTTS
 from pipeline.settings import read_unified_setting

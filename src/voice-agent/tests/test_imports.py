@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
     "pipeline.turn_graph",
     "pipeline.dispatching_llm",
     "pipeline.dispatching_tts",
-    "tts.edge",
+    "providers.edge_tts",
     "tools.computer_use",
     "tools.browser",
     "tools.browser_ext",
