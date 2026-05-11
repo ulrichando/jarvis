@@ -1339,17 +1339,27 @@ fn main() {
             }
 
             // ── System tray ──
-            let chat_item    = MenuItemBuilder::with_id("open_chat",    "Open Chat Panel").build(app)?;
+            // "Open Chat Panel" tray entry removed 2026-05-10 — the
+            // floating chat overlay is no longer the primary surface
+            // (web app + voice cover the same surface area). The
+            // global shortcut Ctrl+Shift+Space still toggles it for
+            // power users; the "open_chat" match arm below stays for
+            // that path. To restore the menu entry, add a
+            // MenuItemBuilder::with_id("open_chat", "Open Chat Panel")
+            // and re-insert it in the MenuBuilder chain.
             let mute_item    = MenuItemBuilder::with_id("mute",         "Mute / Unmute Voice").build(app)?;
+            // Toggle the LiveKit screen-share publisher in the voice-
+            // client. Click = POST /screen-share with no body, which
+            // the Python handler treats as "flip current state". A
+            // green tray icon + the voice agent's screen-share sink
+            // pick up the new video track automatically.
+            let share_item   = MenuItemBuilder::with_id("share_screen", "Start / Stop Screen Share").build(app)?;
 
             // Removed 2026-04-30 (tray-trim Phase 1): Stop Computer Use,
-            // 📷 Camera source submenu, and 🖥 Start Screen Sharing
-            // shortcuts. The underlying file-watcher mechanisms in
-            // jarvis_agent.py / jarvis_computer_use.py are unchanged —
-            // only the always-visible tray entries went. CU is killable
-            // by voice ("stop"); screen-share is reachable by voice
-            // ("share my screen"); camera source is a one-time setup
-            // that can live in ~/.jarvis/webcam-device directly.
+            // 📷 Camera source submenu. The 🖥 Screen Share entry was
+            // restored 2026-05-10 (LiveKit publisher landed) with the
+            // new toggle wiring above. CU is still killable by voice
+            // ("stop"); camera source lives in ~/.jarvis/webcam-device.
 
             let sep1         = PredefinedMenuItem::separator(app)?;
             let browser_item = MenuItemBuilder::with_id("open_browser", "Open in Browser").build(app)?;
@@ -1500,8 +1510,8 @@ fn main() {
             let quit_item    = MenuItemBuilder::with_id("quit",         "Quit JARVIS").build(app)?;
 
             let menu = MenuBuilder::new(app)
-                .item(&chat_item)
                 .item(&mute_item)
+                .item(&share_item)
                 .item(&sep1)
                 .item(&browser_item)
                 .item(&logs_item)
@@ -1581,11 +1591,26 @@ fn main() {
                                 let _ = w.emit("tray-toggle-mute", ());
                             }
                         }
+                        "share_screen" => {
+                            // Toggle the voice-client's LiveKit screen-
+                            // share publisher. No body → handler defaults
+                            // to flip-current-state. Spawn detached so
+                            // the tray click doesn't block the menu
+                            // event loop on the HTTP round-trip.
+                            let _ = std::process::Command::new("curl")
+                                .args(["-s", "-X", "POST",
+                                       "http://127.0.0.1:8767/screen-share",
+                                       "-H", "Content-Type: application/json",
+                                       "-d", "{}"])
+                                .spawn();
+                            if let Some(w) = app.get_webview_window("main") {
+                                let _ = w.emit("tray-toggle-screen-share", ());
+                            }
+                        }
                         // Handlers removed 2026-04-30: camera_rgb, camera_ir,
-                        // start_screen_share, stop_computer_use. The tray
-                        // entries that triggered them were also removed —
-                        // see the comment in the menu-builder block above
-                        // for rationale.
+                        // stop_computer_use. The `share_screen` handler
+                        // above replaces the previous file-trigger
+                        // screen-share path.
 
                         "open_browser" => {
                             // Big-company pattern (JupyterLab / VS Code Server /
