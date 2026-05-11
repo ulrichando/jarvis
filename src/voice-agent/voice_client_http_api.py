@@ -1,0 +1,413 @@
+"""HTTP control plane for the voice client.
+
+The Tauri UI (and any future client) polls / posts to this server to
+read the voice-session snapshot + drive the mute / speak / stop /
+model-switch surface. Kept on a distinct port from the bridge (8765)
+and the speech sidecar (8766).
+
+Encapsulated as `VoiceClientHttpApi` so the handlers can access the
+shared `state` + the mutable `_mic_pub` / `_room` references without
+relying on module-level globals. Pass current-value accessors
+(`get_mic_pub`, `get_room`) at construction; the handlers call them
+at request time so they always see the live values even as
+`run_once` rebuilds the room across reconnects.
+
+Routes:
+  GET  /status        → snapshot of current state
+  GET  /health        → same as /status (probed by systemd/launch.sh)
+  POST /mute          → toggle local mic track mute
+  POST /speak         → ask agent to voice text via TTS
+  POST /stop          → interrupt current agent utterance
+  POST /user-input    → inject synthetic user turn into AgentSession
+  GET  /cli-model     → current CLI model + allowlist
+  POST /cli-model     → write CLI model choice
+  GET  /voice-model   → current speech LLM + allowlist
+  POST /voice-model   → write speech LLM choice + restart agent
+  GET  /tts-provider  → current TTS provider + allowlist
+  POST /tts-provider  → write TTS provider + restart agent
+  OPTIONS /{any}      → CORS preflight
+
+Hoisted from `jarvis_voice_client.py` 2026-05-10 (Step 7 of the
+audit).
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+from dataclasses import asdict
+from typing import Any, Awaitable, Callable, Optional
+
+from aiohttp import web
+
+from voice_client_tray_config import (
+    CLI_MODEL_FILE,
+    CLI_MODELS_AVAILABLE,
+    SPEECH_MODEL_FILE,
+    SPEECH_MODELS_AVAILABLE,
+    TTS_PROVIDER_FILE,
+    TTS_PROVIDERS_AVAILABLE,
+    TOOL_BUSY_FILE,
+    SILENT_MODE_FILE,
+    agent_is_thinking,
+    read_cli_model,
+    read_speech_model,
+)
+
+
+__all__ = ["STATUS_PORT", "VoiceClientHttpApi"]
+
+
+# Distinct port from bridge (8765) / speech sidecar (8766).
+STATUS_PORT: int = int(os.environ.get("JARVIS_VOICE_CLIENT_PORT", "8767"))
+
+
+# CORS headers used on every response. Permissive on purpose — the
+# Tauri webview polls us from `tauri://localhost` and the web app
+# polls from the local dev origin; both need preflight-free access.
+_CORS_HEADERS = {
+    "Access-Control-Allow-Origin":  "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+}
+
+
+class VoiceClientHttpApi:
+    """Aiohttp control-plane server with explicit state injection.
+
+    Construct once at startup with:
+      - `state`: the shared ClientState snapshot the /status endpoint
+        publishes.
+      - `get_mic_pub`: returns the current `LocalTrackPublication` (or
+        None when no room is connected). The /mute handler calls this
+        at request time, so it sees the live publication even after a
+        room reconnect.
+      - `get_room`: returns the current `rtc.Room` (or None). The
+        /speak, /stop, /user-input handlers use it to publish data
+        packets.
+      - `restart_agent_unit`: async callable invoked when /voice-model
+        or /tts-provider changes the selection (the agent's LLM and
+        TTS chain are built at session start; switching requires a
+        restart).
+      - `log`: logger to use for status / error messages.
+    """
+
+    def __init__(
+        self,
+        *,
+        state: Any,
+        get_mic_pub: Callable[[], Any],
+        get_room: Callable[[], Any],
+        restart_agent_unit: Callable[[], Awaitable[None]],
+        log: logging.Logger,
+    ) -> None:
+        self.state = state
+        self.get_mic_pub = get_mic_pub
+        self.get_room = get_room
+        self.restart_agent_unit = restart_agent_unit
+        self.log = log
+
+    # ── Server bring-up ────────────────────────────────────────────
+
+    def build_app(self) -> web.Application:
+        app = web.Application()
+        app.router.add_get("/status",  self.status)
+        app.router.add_get("/health",  self.status)   # systemd / launch.sh probe
+        app.router.add_post("/mute",   self.mute)
+        app.router.add_post("/speak",      self.speak)
+        app.router.add_post("/stop",       self.stop)
+        app.router.add_post("/user-input", self.user_input)
+        app.router.add_get("/cli-model",   self.cli_model)
+        app.router.add_post("/cli-model",  self.cli_model)
+        app.router.add_get("/voice-model",   self.speech_model)
+        app.router.add_post("/voice-model",  self.speech_model)
+        app.router.add_get("/tts-provider",  self.tts_provider)
+        app.router.add_post("/tts-provider", self.tts_provider)
+        app.router.add_route("OPTIONS", "/{tail:.*}", self.cors)
+        return app
+
+    async def start_server(self, port: int = STATUS_PORT) -> web.AppRunner:
+        """Bring up the status HTTP server alongside the LiveKit loop."""
+        app = self.build_app()
+        runner = web.AppRunner(app, access_log=None)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", port)
+        await site.start()
+        self.log.info(f"[http] status/command server on :{port}")
+        return runner
+
+    # ── Handlers ───────────────────────────────────────────────────
+
+    async def status(self, _: web.Request) -> web.Response:
+        """GET /status — snapshot of the current client state."""
+        # Refresh cli_model + speech_model from disk on every poll. The
+        # files are small, reads are cheap, and this avoids any
+        # sync-with-tray race.
+        self.state.cli_model    = read_cli_model()
+        self.state.speech_model = read_speech_model()
+        try:
+            self.state.tts_provider = TTS_PROVIDER_FILE.read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            self.state.tts_provider = ""
+        # Cheap stat call — flag file is touched/removed by the agent's
+        # tool wrappers around every run_jarvis_cli call.
+        self.state.tool_running  = TOOL_BUSY_FILE.exists()
+        self.state.silent_mode   = SILENT_MODE_FILE.exists()
+        # Definitive thinking signal — but only when the agent isn't
+        # actively speaking. If TTS is playing we know the agent finished
+        # its LLM phase, so suppress agent_thinking even if the file
+        # hasn't been cleared yet (avoids gold→blue→gold flicker between
+        # `conversation_item_added` and the speaking-track event).
+        self.state.agent_thinking = agent_is_thinking() and not self.state.speaking
+        return web.json_response(asdict(self.state), headers=_CORS_HEADERS)
+
+    async def mute(self, req: web.Request) -> web.Response:
+        """POST /mute  body={mute: bool}  → toggle local mic track mute.
+
+        We mute at the track-publication layer rather than stopping
+        the PortAudio stream so re-joining is instant (no sample-rate
+        / device re-open latency). LiveKit carries the mute bit to
+        the agent, which stops running STT on our (now-silent) audio.
+        """
+        mic_pub = self.get_mic_pub()
+        if mic_pub is None:
+            return web.json_response({"error": "not connected"}, status=503)
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        target = bool(body.get("mute", not self.state.muted))  # default = toggle
+        try:
+            # LocalAudioTrack.mute/unmute are sync in livekit-rtc Python —
+            # they only flip a flag that the engine picks up on the next
+            # audio frame. No await.
+            if target:
+                mic_pub.track.mute()
+            else:
+                mic_pub.track.unmute()
+            self.state.muted = target
+            return web.json_response(
+                {"muted": target},
+                headers={"Access-Control-Allow-Origin": "*"},
+            )
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def speak(self, req: web.Request) -> web.Response:
+        """POST /speak {text} → ask the agent to voice `text` via its TTS.
+
+        Under the hood we publish a LiveKit data-channel message that
+        the agent is listening for (see jarvis_agent.py's data_received
+        handler). The agent calls session.say(text) which streams TTS
+        through the same audio track the conversation uses, so playback
+        is a no-op on our side — we already subscribe to that track."""
+        room = self.get_room()
+        if room is None or not self.state.connected:
+            return web.json_response({"error": "not connected"}, status=503)
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        text = (body.get("text") or "").strip()
+        if not text:
+            return web.json_response({"error": "missing text"}, status=400)
+        try:
+            payload = json.dumps({"type": "speak", "text": text}).encode("utf-8")
+            await room.local_participant.publish_data(payload, reliable=True)
+            return web.json_response(
+                {"queued": True, "chars": len(text)},
+                headers={"Access-Control-Allow-Origin": "*"},
+            )
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def stop(self, _: web.Request) -> web.Response:
+        """POST /stop → ask the agent to interrupt its current utterance."""
+        room = self.get_room()
+        if room is None or not self.state.connected:
+            return web.json_response({"error": "not connected"}, status=503)
+        try:
+            payload = json.dumps({"type": "stop"}).encode("utf-8")
+            await room.local_participant.publish_data(payload, reliable=True)
+            return web.json_response(
+                {"stopped": True},
+                headers={"Access-Control-Allow-Origin": "*"},
+            )
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def user_input(self, req: web.Request) -> web.Response:
+        """POST /user-input {text} → inject `text` as a synthetic user
+        turn into the active voice session.
+
+        Distinct from /speak: /speak makes JARVIS read text aloud (TTS
+        only, no LLM). /user-input feeds the text into the AgentSession
+        as if it had come from STT — JARVIS's LLM processes it,
+        generates a reply, and the reply gets voiced via TTS. Both the
+        user turn and the agent's reply publish to the hub event bus
+        (events:conversation), which the hub daemon consumes into
+        ~/.jarvis/hub/state.db AND fans out via
+        broadcasts:conversation, so a web client subscribed via SSE
+        sees the round trip live.
+
+        Used by the web voice-transcript page to let the user follow
+        up via typing without breaking out a mic."""
+        room = self.get_room()
+        if room is None or not self.state.connected:
+            return web.json_response({"error": "not connected"}, status=503)
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        text = (body.get("text") or "").strip()
+        if not text:
+            return web.json_response({"error": "missing text"}, status=400)
+        try:
+            payload = json.dumps({"type": "user_input", "text": text}).encode("utf-8")
+            await room.local_participant.publish_data(payload, reliable=True)
+            return web.json_response(
+                {"queued": True, "chars": len(text)},
+                headers={"Access-Control-Allow-Origin": "*"},
+            )
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def cli_model(self, req: web.Request) -> web.Response:
+        """GET  /cli-model                          → {"model": "<id>", "available": [...]}
+        POST /cli-model {"model": "deepseek-chat"} → write the choice
+
+        The model ID is whatever the CLI's jarvisModelRegistry.ts knows
+        about. The voice-agent's run_jarvis_cli reads the file on every
+        spawn, so the change takes effect on the next CLI invocation
+        without restarting any process."""
+        cors = {"Access-Control-Allow-Origin": "*"}
+        if req.method == "GET":
+            return web.json_response({
+                "model":     read_cli_model(),
+                "available": list(CLI_MODELS_AVAILABLE),
+            }, headers=cors)
+
+        # POST
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        name = (body.get("model") or body.get("name") or "").strip()
+        if name not in CLI_MODELS_AVAILABLE:
+            return web.json_response(
+                {"error": f"unknown CLI model: {name!r}",
+                 "available": list(CLI_MODELS_AVAILABLE)},
+                status=400, headers=cors,
+            )
+        try:
+            CLI_MODEL_FILE.parent.mkdir(parents=True, exist_ok=True)
+            CLI_MODEL_FILE.write_text(name + "\n", encoding="utf-8")
+            self.state.cli_model = name
+            return web.json_response({"model": name}, headers=cors)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500, headers=cors)
+
+    async def speech_model(self, req: web.Request) -> web.Response:
+        """GET  /voice-model                   → {"model": "<id>", "available": [...]}
+        POST /voice-model {"model": "X"}    → write the choice + restart agent
+
+        Switching speech model requires a quick agent restart (~5 s amber
+        "JARVIS booting" in the pill) because AgentSession's LLM is built
+        once at session start. The voice-client itself stays up — the
+        SFU keeps the room alive and the new agent rejoins automatically."""
+        cors = {"Access-Control-Allow-Origin": "*"}
+        if req.method == "GET":
+            return web.json_response({
+                "model":     read_speech_model(),
+                "available": list(SPEECH_MODELS_AVAILABLE),
+            }, headers=cors)
+
+        # POST
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        name = (body.get("model") or body.get("name") or "").strip()
+        if name not in SPEECH_MODELS_AVAILABLE:
+            return web.json_response(
+                {"error": f"unknown speech model: {name!r}",
+                 "available": list(SPEECH_MODELS_AVAILABLE)},
+                status=400, headers=cors,
+            )
+        try:
+            # No-op if value unchanged. Without this guard a stray
+            # re-POST (e.g. the tray re-syncing on launch) would tear
+            # down a live agent session — including any in-flight
+            # specialist handoff.
+            current = read_speech_model()
+            if current == name:
+                return web.json_response(
+                    {"model": name, "restarting": False, "unchanged": True},
+                    headers=cors,
+                )
+            SPEECH_MODEL_FILE.parent.mkdir(parents=True, exist_ok=True)
+            SPEECH_MODEL_FILE.write_text(name + "\n", encoding="utf-8")
+            self.state.speech_model = name
+            # Fire-and-forget — agent restart takes ~3-5 s; the user
+            # sees the pill flip to amber "JARVIS booting" and back to
+            # green.
+            asyncio.create_task(self.restart_agent_unit())
+            return web.json_response(
+                {"model": name, "restarting": True}, headers=cors,
+            )
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500, headers=cors)
+
+    async def tts_provider(self, req: web.Request) -> web.Response:
+        """GET  /tts-provider                              → current provider + available list
+        POST /tts-provider {"provider": "groq:troy"}    → write choice + restart agent"""
+        cors = {"Access-Control-Allow-Origin": "*"}
+        if req.method == "GET":
+            try:
+                current = TTS_PROVIDER_FILE.read_text(encoding="utf-8").strip()
+            except FileNotFoundError:
+                current = ""
+            return web.json_response({
+                "provider":  current,
+                "available": TTS_PROVIDERS_AVAILABLE,
+            }, headers=cors)
+
+        # POST
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        provider = (body.get("provider") or "").strip()
+        if provider not in TTS_PROVIDERS_AVAILABLE:
+            return web.json_response(
+                {"error": f"unknown TTS provider: {provider!r}",
+                 "available": TTS_PROVIDERS_AVAILABLE},
+                status=400, headers=cors,
+            )
+        try:
+            # No-op if value unchanged — same rationale as /voice-model.
+            try:
+                current = TTS_PROVIDER_FILE.read_text(encoding="utf-8").strip()
+            except FileNotFoundError:
+                current = ""
+            if current == provider:
+                return web.json_response(
+                    {"provider": provider, "restarting": False, "unchanged": True},
+                    headers=cors,
+                )
+            TTS_PROVIDER_FILE.parent.mkdir(parents=True, exist_ok=True)
+            TTS_PROVIDER_FILE.write_text(provider + "\n", encoding="utf-8")
+            asyncio.create_task(self.restart_agent_unit())
+            return web.json_response(
+                {"provider": provider, "restarting": True}, headers=cors,
+            )
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500, headers=cors)
+
+    async def cors(self, _: web.Request) -> web.Response:
+        """OPTIONS preflight for any /... route."""
+        return web.Response(status=204, headers={
+            **_CORS_HEADERS,
+            "Access-Control-Max-Age": "86400",
+        })
