@@ -309,12 +309,12 @@ from resilience import (
 
 
 def _build_breaker_status_block(breakers: list | None = None) -> str:
-    """Back-compat wrapper around `pipeline.instructions_assembly.
+    """Back-compat wrapper around `pipeline.prompt_builder.
     build_breaker_status_block` — defaults to the module's three
     breakers when called with no args (so on_user_turn_completed can
     call with no arg + tests/test_breaker_status_block.py keeps the
     original API)."""
-    from pipeline.instructions_assembly import build_breaker_status_block
+    from pipeline.prompt_builder import build_breaker_status_block
     if breakers is None:
         breakers = [_STT_BREAKER, _TTS_BREAKER, _LLM_BREAKER]
     return build_breaker_status_block(breakers)
@@ -381,7 +381,7 @@ QUIET_HOURS_WINDOW_SEC = float(os.environ.get("JARVIS_QUIET_WINDOW_SEC", "1200")
 # silent drift (e.g. quiet-hours guard dropping wake words after a
 # variant was added to only one site). Now all 3 derive from one
 # NAME_ALTERNATION constant. Add new STT variants in vocative.py.
-from pipeline.vocative import (
+from pipeline.wake_word import (
     NAME_RE          as _JARVIS_NAME_RE,
     BARE_VOCATIVE_RE as _BARE_VOCATIVE_RE,
     INLINE_STRIP_RE  as _INLINE_VOCATIVE_STRIP_RE,
@@ -1055,7 +1055,7 @@ def _is_command(text: str, patterns: tuple[re.Pattern, ...]) -> bool:
             continue
         # Strip a leading vocative ("jarvis" / "jervis" / "javis" / "joris" /
         # the 'l' variants / etc.), remembering whether one was actually
-        # present. The regex comes from pipeline.vocative — same alternation
+        # present. The regex comes from pipeline.wake_word — same alternation
         # source as _JARVIS_NAME_RE and _BARE_VOCATIVE_RE, so all 3 sites
         # stay synchronized automatically.
         stripped = _INLINE_VOCATIVE_STRIP_RE.sub("", body)
@@ -1134,7 +1134,7 @@ from pipeline.short_input_gate import (
 # sites and tests are untouched. The constants are also re-exported
 # (callers below append to LEARNED_RULES_PATH and read PROPOSALS_PATH
 # from this module).
-from pipeline.instructions_assembly import (
+from pipeline.prompt_builder import (
     MAX_LEARNED_RULES,
     LEARNED_RULES_PATH as _LEARNED_RULES_PATH,
     PROPOSALS_PATH     as _PROPOSALS_PATH,
@@ -4372,7 +4372,7 @@ async def entrypoint(ctx: JobContext) -> None:
     # tap waits for track_subscribed events, so attaching here is
     # safe regardless of whether the user joined before or after us.
     try:
-        from pipeline.acoustic_tap import AcousticTap
+        from pipeline.prosody import AcousticTap
         _tap = AcousticTap()
         _tap.attach_to_room(ctx.room)
         session._jarvis_acoustic_tap = _tap
