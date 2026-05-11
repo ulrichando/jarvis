@@ -207,21 +207,29 @@ _SCREEN_SHARE_WHEN = (
 
 
 def register_screen_share() -> None:
-    """Register the screen-share Live specialist. Idempotent."""
+    """Register the screen-share Live subagent. Idempotent."""
     register(HandoffSubagent(
         name="screen_share",
         transfer_tool="transfer_to_screen_share",
         when_to_use=_SCREEN_SHARE_WHEN,
         instructions=SCREEN_SHARE_INSTRUCTIONS,
         tool_factory=_screen_share_tools,
-        ack_phrase="Looking.",
+        # No ack_phrase. The supervisor (Claude+Orpheus) would
+        # otherwise voice "Looking." right before this subagent's
+        # Gemini Live (Aoede voice) starts speaking — two voices
+        # in one conceptual turn was the "voice mismatch" UX user
+        # reported 2026-05-11. Empty ack = silent handoff; the
+        # subagent's first audio chunk is the user's first audible
+        # cue that anything is happening.
+        ack_phrase="",
         max_history_items=4,
         # Gated off by default until verified live — flip
-        # JARVIS_SUBAGENT_SCREEN_SHARE=1 to enable. The 1011
-        # INTERNAL bug on gemini-3.1-flash-live-preview means
-        # the underlying API is still flaky on some accounts;
-        # we don't want a broken specialist breaking
-        # screen-share for users who haven't tested it.
+        # JARVIS_SUBAGENT_SCREEN_SHARE=1 to enable.
         enabled=os.environ.get("JARVIS_SUBAGENT_SCREEN_SHARE", "0") == "1",
         llm_factory=_build_screen_share_llm,
+        # The Live subagent has zero function tools. The tool-gate's
+        # "must call a real tool" rule was refusing every task_done
+        # exit and locking the subagent in a retry loop. Opt out:
+        # the RealtimeModel produces the work, not function_tools.
+        tools_required=False,
     ))

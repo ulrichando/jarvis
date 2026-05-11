@@ -63,6 +63,15 @@ class HandoffSubagent:
                      Gemini Live (RealtimeModel) for sub-second vision
                      while the supervisor stays on Claude Haiku +
                      Groq Orpheus.
+        tools_required: when True (default), the specialist tool-gate
+                     refuses `task_done` if no real (non-task_done)
+                     tool fired this handoff. Set False for tool-less
+                     specialists like screen_share whose RealtimeModel
+                     produces the work directly (audio + transcription
+                     stream) without going through function_tool calls.
+                     The gate's purpose is to catch confabulating
+                     LLMs that bail before acting — irrelevant when
+                     there's nothing to act with.
     """
     name: str
     transfer_tool: str
@@ -73,6 +82,7 @@ class HandoffSubagent:
     max_history_items: Optional[int] = 12
     enabled: bool = True
     llm_factory: Optional[Callable[[], object]] = None
+    tools_required: bool = True
 
 
 # Global registry. Use the module functions below — don't mutate this
