@@ -1,7 +1,7 @@
-"""Groq LLM resilience adapters.
+"""Groq LLM resilience adapters + per-route dispatcher build.
 
-Hoisted from `jarvis_agent.py` over 2026-05-10 (Steps 5b/5c of the
-10/10 refactor):
+Hoisted from `jarvis_agent.py` over 2026-05-10 (Steps 5b/5c/5d of
+the 10/10 refactor):
 
   - `BreakeredLLMStream` (5b) — first-chunk breaker gate + validation-
     error OPEN→CLOSED revert.
@@ -15,9 +15,13 @@ Hoisted from `jarvis_agent.py` over 2026-05-10 (Steps 5b/5c of the
   - `ctx_items_token_estimate` / `prune_chat_ctx_for_budget` (5c) —
     pruning helpers used by the pre-flight branch and by the
     test_token_prune_2026_05_08 test suite.
+  - `build_dispatching_llm` (5d) — assembles the per-route Maya-class
+    DispatchingLLM (BANTER/TASK/REASONING/EMOTIONAL → distinct Groq
+    variants, each wrapped in a FallbackAdapter(groq, deepseek-v4)).
 
-The dispatcher builder (`make_speech_llm`, `_build_dispatching_llm`)
-follows in step 5d.
+`SPEECH_MODELS` + `make_speech_llm` (the tray-driven model picker)
+remain in jarvis_agent for now — they depend on
+`_read_unified_setting` which still lives there.
 """
 from __future__ import annotations
 
@@ -26,8 +30,9 @@ import logging
 import os
 
 from livekit.agents import APIConnectionError, APITimeoutError
-from livekit.plugins import groq
+from livekit.plugins import groq, openai as lk_openai
 
+from pipeline.dispatching_llm import DispatchingLLM
 from resilience import LLM_BREAKER
 from resilience.circuit_breaker import (
     CircuitOpenError,
@@ -375,3 +380,132 @@ class BreakeredGroqLLM(groq.LLM):
             raise APIConnectionError() from e
         except asyncio.TimeoutError:
             raise APITimeoutError() from None
+
+
+# ── Per-route DispatchingLLM build ───────────────────────────────────
+
+def build_dispatching_llm() -> DispatchingLLM:
+    """Construct route → inner-LLM mapping using Groq variants, each
+    wrapped in a FallbackAdapter([groq, deepseek-v4]) so a Groq-edge
+    connection blip falls through to DeepSeek instead of losing the
+    turn.
+
+    BANTER     → llama-3.1-8b-instant (fastest)
+    TASK       → llama-3.3-70b-versatile (current default, tools)
+    REASONING  → qwen/qwen3-32b (structured reasoning)
+    EMOTIONAL  → llama-4-scout (warmer temperament, temp 0.7)
+
+    DeepSeek-v4-flash is the per-route safety net since it has a
+    different network edge than Groq. Phase 10.2 sanitizer + Phase
+    10.3 deepseek_roundtrip patches still apply transparently.
+    """
+    # Tight retry profile across all dispatcher LLMs. Default is
+    # max_retries=3 which means up to 4 attempts × ~2 s backoff = ~10 s
+    # of silence on a 4xx-but-classified-retryable error (e.g. tool-call
+    # validation failure). 2026-05-02 13:20 incident: a desktop
+    # specialist hung for ~2 minutes because its LLM cycled through
+    # Groq → retry → DeepSeek → retry → Groq with the prior 8 s/req
+    # timeout. Tightened to 5 s/req and 0 retries — single fail-over
+    # is enough; the FallbackAdapter handles the cross-provider hop.
+    # Worst case now: 5s Groq + 5s DeepSeek = 10s ceiling, vs the
+    # ~120s observed previously.
+    LLM_KWARGS = {"max_retries": 0, "timeout": 5.0}
+
+    # Build a single shared DeepSeek instance; the FallbackAdapter chain
+    # passes it as the second-tier provider on each route.
+    ds_fallback = None
+    ds_key = os.environ.get("DEEPSEEK_API_KEY", "")
+    if ds_key:
+        try:
+            # 2026-05-02: switched fallback from deepseek-chat (V3,
+            # non-thinking) to deepseek-v4-flash. Rationale: Groq has
+            # been throwing "Failed to call a function" frequently, so
+            # the fallback fires often. V4-flash is ~30% faster than
+            # V3 chat AND has better tool-call accuracy (V4 family
+            # was trained on more agentic data). reasoning_content
+            # round-trip is handled by deepseek_roundtrip.install()
+            # at the top of jarvis_agent. Override via env if you want
+            # a different fallback model.
+            ds_fallback = lk_openai.LLM(
+                model=os.environ.get("JARVIS_DS_FALLBACK_MODEL", "deepseek-v4-flash"),
+                api_key=ds_key,
+                base_url="https://api.deepseek.com/v1",
+                temperature=0.6,
+            )
+            ds_fallback._jarvis_label = "deepseek:chat"
+            logger.info("[dispatch] DeepSeek fallback armed for all routes")
+        except Exception as e:
+            logger.warning(f"[dispatch] DeepSeek fallback construction failed: {e}")
+            ds_fallback = None
+    else:
+        logger.info("[dispatch] DEEPSEEK_API_KEY missing, no cross-provider fallback")
+
+    def _wrap(primary):
+        """Wrap a Groq LLM in FallbackAdapter([groq, deepseek]) so a
+        Groq blip transparently routes to DeepSeek. Preserves
+        _jarvis_label for telemetry."""
+        if ds_fallback is None:
+            return primary
+        try:
+            from livekit.agents.llm import FallbackAdapter as _LLMFallback
+            wrapped = _LLMFallback([primary, ds_fallback])
+            wrapped._jarvis_label = getattr(primary, "_jarvis_label", "?")
+            return wrapped
+        except Exception as e:
+            logger.warning(f"[dispatch] LLM FallbackAdapter wrap failed ({e}); using primary alone")
+            return primary
+
+    # NOTE 2026-05-02: prompt_cache_key was added on commit 892e5e7
+    # for latency, then REVERTED on commit-after-this — Groq's API
+    # returns HTTP 400 'property prompt_cache_key is unsupported' on
+    # every call that includes it. The parameter exists on the
+    # livekit-plugins-openai client (OpenAI proper supports it) but
+    # Groq's compatibility layer rejects it. Don't re-add until
+    # Groq announces support. Latency improvement still pending —
+    # next try should be Groq's `service_tier` field instead.
+    main_raw = BreakeredGroqLLM(
+        model="llama-3.3-70b-versatile", temperature=0.6, **LLM_KWARGS,
+    )
+    main_raw._jarvis_label = "groq:llama-3.3-70b-versatile"
+    main = _wrap(main_raw)
+
+    try:
+        banter_raw = BreakeredGroqLLM(
+            model="llama-3.1-8b-instant", temperature=0.6, **LLM_KWARGS,
+        )
+        banter_raw._jarvis_label = "groq:llama-3.1-8b-instant"
+        banter = _wrap(banter_raw)
+    except Exception as e:
+        logger.warning(f"[dispatch] BANTER LLM construction failed: {e}; using main")
+        banter = main
+
+    try:
+        reasoning_raw = BreakeredGroqLLM(
+            model="qwen/qwen3-32b", temperature=0.6, **LLM_KWARGS,
+        )
+        reasoning_raw._jarvis_label = "groq:qwen3-32b"
+        reasoning = _wrap(reasoning_raw)
+    except Exception as e:
+        logger.warning(f"[dispatch] REASONING LLM construction failed: {e}; using main")
+        reasoning = main
+
+    try:
+        emotional_raw = BreakeredGroqLLM(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            temperature=0.7, **LLM_KWARGS,
+        )
+        emotional_raw._jarvis_label = "groq:llama-4-scout"
+        emotional = _wrap(emotional_raw)
+    except Exception as e:
+        logger.warning(f"[dispatch] EMOTIONAL LLM construction failed: {e}; using main")
+        emotional = main
+
+    return DispatchingLLM(
+        inners={
+            "BANTER":    banter,
+            "TASK":      main,
+            "REASONING": reasoning,
+            "EMOTIONAL": emotional,
+        },
+        fallback=main,
+    )
