@@ -14,6 +14,25 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 
+__all__ = [
+    # Handoff-style sub-agents (sticky multi-turn, `transfer_to_X`)
+    "HandoffSubagent",
+    "register",
+    "all_specs",
+    "get",
+    "clear",
+    # Delegated-style sub-agents (one-shot, `delegate(role, task)`)
+    "DelegatedSubagent",
+    "register_subagent",
+    "all_subagents",
+    "get_subagent",
+    "clear_subagents",
+    # Internal registries (exposed for tests; not for direct mutation)
+    "_REGISTRY",
+    "SUBAGENT_REGISTRY",
+]
+
+
 @dataclass
 class HandoffSubagent:
     """Declarative spec for a specialist sub-agent.

@@ -24,6 +24,9 @@ from livekit.agents import tts
 from livekit.agents.types import DEFAULT_API_CONNECT_OPTIONS, APIConnectOptions
 from livekit.agents.utils import shortuuid
 
+__all__ = ["EdgeTTS", "SAMPLE_RATE", "NUM_CHANNELS", "DEFAULT_VOICE"]
+
+
 # Edge-TTS streams MP3 at 24 kHz mono. The AudioEmitter resamples
 # downstream to whatever the room expects.
 SAMPLE_RATE = 24000

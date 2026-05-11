@@ -55,6 +55,14 @@ from resilience.circuit_breaker import CircuitOpenError
 logger = logging.getLogger("jarvis.tts")
 
 
+__all__ = [
+    "LoggingGroqChunkedStream",
+    "LoggingGroqTTS",
+    "build_tts_chain",
+    "build_dispatching_tts",
+]
+
+
 # ── Groq TTS error-body logging shim ─────────────────────────────────
 
 class LoggingGroqChunkedStream(_GroqChunkedStream):
