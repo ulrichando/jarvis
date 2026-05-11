@@ -29,7 +29,7 @@ from pathlib import Path
 
 from livekit.agents import function_tool
 
-logger = logging.getLogger("jarvis-computer-use")
+logger = logging.getLogger("jarvis.computer_use")
 
 # Vision backend selection. "ollama" runs entirely on-device (free,
 # private, no API quota) but slower (~5-15s/frame on RTX 2060 6GB).

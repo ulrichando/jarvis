@@ -22,7 +22,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-logger = logging.getLogger("jarvis-agent.analyzer")
+logger = logging.getLogger("jarvis.log_analyzer")
 
 CONVO_DB_PATH   = Path.home() / ".jarvis" / "conversations.db"
 RULES_PATH      = Path.home() / ".jarvis" / "learned_rules.md"

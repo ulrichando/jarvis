@@ -180,12 +180,12 @@ if _HUB_DIR not in _sys.path:
 try:
     from client import HubClient as _HubClient  # noqa: E402
     _HUB = _HubClient.from_url(source="voice")
-    logging.getLogger("jarvis-agent.hub").info(
+    logging.getLogger("jarvis.hub").info(
         "voice publisher ready (source='voice')"
     )
 except Exception as _hub_err:
     _HUB = None
-    logging.getLogger("jarvis-agent.hub").warning(
+    logging.getLogger("jarvis.hub").warning(
         f"disabled — could not initialize: {_hub_err}"
     )
 
@@ -197,7 +197,7 @@ except Exception as _hub_err:
 import tools.memory  # noqa: E402
 
 _MEMORY_AVAILABLE = tools.memory.is_available()
-logging.getLogger("jarvis-agent.memory").info(
+logging.getLogger("jarvis.memory_layer").info(
     f"memory layer {'enabled' if _MEMORY_AVAILABLE else 'disabled'}"
 )
 
@@ -218,7 +218,7 @@ from pipeline.turn_telemetry import init_db, log_turn, log_launch_attempt, DEFAU
 # jarvis_agent only when a specialist is actually instantiated.
 from subagents.agent import build_all_transfer_tools
 
-logger = logging.getLogger("jarvis-agent")
+logger = logging.getLogger("jarvis")
 
 # Desktop computer-use tools — Gemini vision describes the screen,
 # xdotool drives mouse/keyboard. Tools are registered in the
