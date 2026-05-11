@@ -11,6 +11,7 @@ env-var reads at import.
 """
 from __future__ import annotations
 
+import datetime
 import logging
 import os
 import sys
@@ -75,6 +76,25 @@ API_SECRET: str = os.environ.get("LIVEKIT_API_SECRET", "")
 IDENTITY: str   = os.environ.get("JARVIS_VOICE_IDENTITY", "desktop-ulrich")
 ROOM_NAME: str  = os.environ.get("JARVIS_VOICE_ROOM",     "jarvis")
 
+# JWT TTL — how long the token is valid before the SFU rejects it.
+# Default 24h. Live failure 2026-05-11 15:26-15:35 UTC: voice-client
+# minted a token, ran for 2h 2min, then the SFU returned 401
+# "validation failed, token is expired (exp)" on every internal
+# reconnect attempt. The LiveKit Rust engine's restart-connection
+# logic reuses the original token — when that token expires mid-
+# session, the inner reconnect loop spirals into 401s, the asyncio
+# loop wedges, the watchdog kills the process, and the user hears
+# nothing for ~2 minutes while systemd waits to restart.
+# Setting TTL to 24h means a single voice-client process can sustain
+# an all-day session without any token-driven reconnect failures.
+# The LiveKit SDK default is 6h but the local livekit-server appears
+# to cap at ~2h regardless (the empirical failure window). Override
+# via JARVIS_VOICE_TOKEN_TTL_HOURS if you need to test against a
+# different server policy.
+TOKEN_TTL_HOURS: float = float(
+    os.environ.get("JARVIS_VOICE_TOKEN_TTL_HOURS", "24")
+)
+
 
 def mint_token() -> str:
     """Mint a LiveKit JWT in-process.
@@ -93,6 +113,7 @@ def mint_token() -> str:
         api.AccessToken(API_KEY, API_SECRET)
         .with_identity(IDENTITY)
         .with_name("Ulrich (desktop)")
+        .with_ttl(datetime.timedelta(hours=TOKEN_TTL_HOURS))
         .with_grants(api.VideoGrants(
             room_join=True,
             room=ROOM_NAME,
