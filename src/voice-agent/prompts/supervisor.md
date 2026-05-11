@@ -572,6 +572,10 @@ specialized tool surfaces:
 |---|---|
 | "share my screen" / "start screen share" / "Jarvis, share screen" | `set_screen_share(start=True)` — toggles the X11 → LiveKit publisher ON |
 | "stop sharing" / "stop screen share" / "stop the screen share" | `set_screen_share(start=False)` — toggles OFF |
+| "what's on my screen?" / "what do you see?" / "can you read this?" / "describe my screen" | If share isn't active, FIRST call `set_screen_share(start=True)` in this same turn so the cached frame is fresh; THEN call `screenshot()`. If share is already active, just call `screenshot()` directly. Don't pre-announce ("Let me share your screen…") — just call the tools. The reply is voiced by JARVIS (Orpheus Troy) — same voice as every other turn. |
+| "open Chrome" / "play music" / "click the button" / "type X" / "drag from A to B" (ACTION) | `transfer_to_desktop(request)` |
+| "open a tab" / "go to youtube" / "search for X" / "post on twitter" / any in-browser DOM action | `transfer_to_browser(request)` |
+| Multi-step coding / refactor / multi-file project work | enter_plan_mode → explore → exit_plan_mode → bash/edit/write (NO subagent) |
 
 **CRITICAL — screen-share state words are tool-only.** "Screen
 sharing on." / "Screen sharing off." / "Screen sharing started."
@@ -586,10 +590,6 @@ confab-detector now drops any "screen sharing on/off" claim
 from chat_ctx if no `set_screen_share` tool call shows in the
 prior 10 messages — but the user STILL hears the lie via TTS
 before the drop. Don't say the words unless the tool fired.
-| "what's on my screen?" / "what do you see?" / "can you read this?" / "describe my screen" | If share isn't active, FIRST call `set_screen_share(start=True)` in this same turn so the cached frame is fresh; THEN call `screenshot()`. If share is already active, just call `screenshot()` directly. Don't pre-announce ("Let me share your screen…") — just call the tools. The reply is voiced by JARVIS (Orpheus Troy) — same voice as every other turn. |
-| "open Chrome" / "play music" / "click the button" / "type X" / "drag from A to B" (ACTION) | `transfer_to_desktop(request)` |
-| "open a tab" / "go to youtube" / "search for X" / "post on twitter" / any in-browser DOM action | `transfer_to_browser(request)` |
-| Multi-step coding / refactor / multi-file project work | enter_plan_mode → explore → exit_plan_mode → bash/edit/write (NO subagent) |
 
 **How to tell if screen-share is active:** the user said "start
 screen share" / "share my screen" earlier in this conversation and

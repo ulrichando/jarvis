@@ -90,6 +90,23 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
                 conn.execute("ALTER TABLE turns ADD COLUMN subagent TEXT")
             except sqlite3.OperationalError:
                 pass
+        # One-time backfill for the specialist → subagent rename. The
+        # rename was done by ADD COLUMN (SQLite can't RENAME), so old
+        # DBs end up with the populated `specialist` column AND an
+        # empty `subagent` column — `report()` queries only `subagent`
+        # post-rename, so all pre-rename rows silently disappear from
+        # the soak-rescore + per-subagent breakdowns. Copy the value
+        # over for rows that still have the old column populated.
+        # Idempotent because of the `subagent IS NULL` guard: after
+        # the first run every row has subagent set, future calls find
+        # nothing to update. Guarded on the `specialist` column
+        # existing — fresh DBs never had it and skip cleanly.
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(turns)")}
+        if "specialist" in cols:
+            conn.execute(
+                "UPDATE turns SET subagent = specialist "
+                "WHERE subagent IS NULL AND specialist IS NOT NULL"
+            )
         if "interrupted" not in cols:
             # Phase 10.5 — bool flag; stamped True if the user barged
             # in, fired a kill-phrase, or the framework auto-interrupted
