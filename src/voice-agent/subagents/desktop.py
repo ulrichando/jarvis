@@ -152,7 +152,8 @@ navigate UI, drag-drop). Returns a description after each step.
 **click / type_text / scroll / drag / key_press** — atomic actions
 inside an ACTIVE computer_use session. Don't call standalone.
 
-**live_screen / watch_screen** — observe-only screen monitoring.
+**live_screen** — observe-only screen monitoring (single-frame describe;
+call twice with a sleep between if you want a before/after diff).
 
 **task_done(summary)** — REQUIRED. Call this when the desktop work is
 complete. summary is a one-line description ("Two Chrome windows
@@ -217,7 +218,7 @@ def _desktop_tools() -> list:
     """
     from tools.computer_use import (
         computer_use, computer_stop, click, type_text, scroll, drag,
-        key_press, wait, screenshot, live_screen, watch_screen,
+        key_press, wait, screenshot, live_screen,
         webcam_capture,
     )
     from jarvis_agent import (
@@ -226,7 +227,7 @@ def _desktop_tools() -> list:
     )
     return [
         bash, launch_app, computer_use, computer_stop, click, type_text,
-        scroll, drag, key_press, wait, screenshot, live_screen, watch_screen,
+        scroll, drag, key_press, wait, screenshot, live_screen,
         webcam_capture,
         run_jarvis_cli, type_in_terminal, media_control, browser_task,
     ]
