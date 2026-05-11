@@ -4434,6 +4434,138 @@ def _register_state_tracking_handlers(session) -> None:
             logger.debug(f"[interrupt-detect] skipped: {e}")
 
 
+def _build_runtime_id_block(active_speech_id: str) -> str:
+    """Build the WHO YOU ARE prompt block with current model identity.
+    Step 8d of the 10/10 refactor. Reads the CLI model live from the
+    file so a tray switch is reflected on the next session start.
+
+    Used by the supervisor to answer "what model are you?" / "what's
+    powering you?" correctly — without this, the LLM gives the vague
+    "I'm a conversational AI" because LLMs don't know their own
+    underlying model unless told.
+    """
+    cli_model_id = read_cli_model()
+    cli_def = CLI_MODELS.get(cli_model_id, {})
+    cli_label = cli_def.get("label", cli_model_id)
+    speech_label = SPEECH_MODELS.get(active_speech_id, {}).get(
+        "label", active_speech_id,
+    )
+    return (
+        "\n\n═══ WHO YOU ARE ═══\n\n"
+        "When the user asks what model you're using, what's powering\n"
+        "you, what stack you're on, or similar identity questions,\n"
+        "answer plainly with the active configuration:\n"
+        f"  - Speech LLM (the one composing this reply): {speech_label}.\n"
+        f"  - Tool model (the one that runs run_jarvis_cli): {cli_label}.\n"
+        f"  - Speech-to-text: {VOICE_STT_LABEL}.\n"
+        f"  - Text-to-speech: {VOICE_TTS_LABEL}.\n"
+        "If the user asks a vaguer 'what model' question, lead with\n"
+        "the speech LLM and offer the tool model as 'and for tool work'.\n"
+        "Don't say you don't know — you do, it's right here."
+    )
+
+
+def _build_memory_block() -> str:
+    """Build the memory section of the system prompt — top-N curated
+    facts from the memory layer. Step 8d. Returns empty string when
+    the memory layer is unavailable or has no facts to inject.
+
+    Called once at session start and again on every turn (so web-side
+    edits to the memory store propagate without a restart). The
+    per-turn caller compares against the last-pushed block and skips
+    no-op updates.
+    """
+    if not _MEMORY_AVAILABLE:
+        return ""
+    try:
+        block = tools.memory.format_memories_for_prompt()
+        if not block:
+            return ""
+        return "\n\n" + block
+    except Exception as e:
+        logger.warning(f"[memory] block render failed: {e}")
+        return ""
+
+
+def _build_pending_proposals_block() -> tuple[str, int]:
+    """Check ~/.jarvis/learned_rules.proposals.md for pending log-
+    analysis proposals. Returns (prompt_block, pending_count).
+    Step 8d. Block is empty when no proposals; non-empty block tells
+    the supervisor to offer a review on the first turn.
+    """
+    pending_count = _count_pending_proposals()
+    pending_block = ""
+    if pending_count > 0:
+        pending_block = (
+            f"\n\n[STARTUP NOTE: there are {pending_count} pending rule "
+            f"proposal(s) from log analysis in "
+            f"~/.jarvis/learned_rules.proposals.md. On first opportunity "
+            f"offer: \"I have {pending_count} rule proposal(s) from my "
+            f"logs — want to review them now or later?\"]"
+        )
+        logger.info(f"[learned-rules] {pending_count} pending proposal(s) at startup")
+    return pending_block, pending_count
+
+
+def _build_initial_prompt_state(active_speech_id: str) -> dict:
+    """Assemble every piece of state the supervisor system-prompt
+    depends on at session start. Step 8d of the 10/10 refactor —
+    consolidates 5 previously-inline blocks in entrypoint() (runtime
+    id, learned-rules load, pending-proposals notice, memory facts,
+    breaker status) into one named phase.
+
+    Returns a dict with everything entrypoint needs to construct the
+    JarvisAgent + later refresh the prompt mid-session:
+
+      - instructions_prefix : JARVIS_INSTRUCTIONS + WHO-YOU-ARE
+      - instructions_suffix : pending-proposals notice (or "")
+      - learned_rules_block : current contents of learned_rules.md
+      - rules_mtime         : mtime of learned_rules.md for hot-reload
+      - memory_block        : top-N curated facts (or "")
+      - breaker_block       : upstream-provider health (or "")
+      - initial_instructions: the assembled full system prompt
+    """
+    runtime_id_block = _build_runtime_id_block(active_speech_id)
+    learned_rules_block = _load_learned_rules()
+    pending_block, _pending_count = _build_pending_proposals_block()
+
+    # Stash static parts so the per-turn rule-reload can reconstruct
+    # the full instructions when learned_rules.md changes mid-session,
+    # without re-deriving the session-bound pieces.
+    instructions_prefix = JARVIS_INSTRUCTIONS + runtime_id_block
+    instructions_suffix = pending_block
+
+    try:
+        rules_mtime = _LEARNED_RULES_PATH.stat().st_mtime
+    except FileNotFoundError:
+        rules_mtime = 0.0
+
+    memory_block = _build_memory_block()
+
+    # Audit-rec F (2026-05-09): inject breaker status into the prompt
+    # so the supervisor knows when to acknowledge upstream-provider
+    # degradation rather than going silent during a fallback. Empty
+    # string when all breakers are healthy (zero prompt cost in the
+    # steady state).
+    breaker_block = _build_breaker_status_block()
+
+    return {
+        "instructions_prefix":  instructions_prefix,
+        "instructions_suffix":  instructions_suffix,
+        "learned_rules_block":  learned_rules_block,
+        "rules_mtime":          rules_mtime,
+        "memory_block":         memory_block,
+        "breaker_block":        breaker_block,
+        "initial_instructions": (
+            instructions_prefix
+            + learned_rules_block
+            + instructions_suffix
+            + memory_block
+            + breaker_block
+        ),
+    }
+
+
 async def entrypoint(ctx: JobContext) -> None:
     """
     Runs once per client that joins a room. This is the actual
@@ -5495,89 +5627,22 @@ async def entrypoint(ctx: JobContext) -> None:
     _register_session_error_handlers(session)
     _register_session_crash_watchdog(session, _bg_tasks)
 
-    # Build the system prompt with current model info appended, so the
-    # LLM can answer "what model are you?" correctly. Without this it
-    # gives a vague "I'm a conversational AI" answer because LLMs
-    # don't know their own underlying model unless told. Reads the
-    # CLI model live from the file so a tray switch is reflected on
-    # the next session start (or in-place chat-ctx update).
-    cli_model_id = read_cli_model()
-    cli_def = CLI_MODELS.get(cli_model_id, {})
-    cli_label = cli_def.get("label", cli_model_id)
-    speech_label = SPEECH_MODELS.get(active_speech_id, {}).get(
-        "label", active_speech_id,
-    )
-    runtime_id_block = (
-        "\n\n═══ WHO YOU ARE ═══\n\n"
-        "When the user asks what model you're using, what's powering\n"
-        "you, what stack you're on, or similar identity questions,\n"
-        "answer plainly with the active configuration:\n"
-        f"  - Speech LLM (the one composing this reply): {speech_label}.\n"
-        f"  - Tool model (the one that runs run_jarvis_cli): {cli_label}.\n"
-        f"  - Speech-to-text: {VOICE_STT_LABEL}.\n"
-        f"  - Text-to-speech: {VOICE_TTS_LABEL}.\n"
-        "If the user asks a vaguer 'what model' question, lead with\n"
-        "the speech LLM and offer the tool model as 'and for tool work'.\n"
-        "Don't say you don't know — you do, it's right here."
-    )
-
-    # ── Learned rules injection ────────────────────────────────────────
-    # Load ~/.jarvis/learned_rules.md and append to the system prompt.
-    # Done here (not at module load) so rules added mid-session are
-    # picked up on the next job dispatch without a full process restart.
-    learned_rules_block = _load_learned_rules()
-
-    # Check for pending log-analysis proposals. If there are any,
-    # add a brief notice to the system prompt so JARVIS can offer to
-    # review them without having to call list_pending_proposals first.
-    pending_count = _count_pending_proposals()
-    pending_block = ""
-    if pending_count > 0:
-        pending_block = (
-            f"\n\n[STARTUP NOTE: there are {pending_count} pending rule "
-            f"proposal(s) from log analysis in "
-            f"~/.jarvis/learned_rules.proposals.md. On first opportunity "
-            f"offer: \"I have {pending_count} rule proposal(s) from my "
-            f"logs — want to review them now or later?\"]"
-        )
-        logger.info(f"[learned-rules] {pending_count} pending proposal(s) at startup")
-
-    # Stash static parts so the per-turn rule-reload can reconstruct the
-    # full instructions when learned_rules.md changes mid-session, without
-    # re-deriving runtime_id_block / pending_block (those are session-bound).
-    _instructions_prefix = JARVIS_INSTRUCTIONS + runtime_id_block
-    _instructions_suffix = pending_block
-    try:
-        _rules_mtime = _LEARNED_RULES_PATH.stat().st_mtime
-    except FileNotFoundError:
-        _rules_mtime = 0.0
-
-    # Memory block — top-N curated facts, rebuilt per turn so web-side
-    # edits propagate. Track last-pushed string to skip no-op updates.
-    def _build_memory_block() -> str:
-        if not _MEMORY_AVAILABLE:
-            return ""
-        try:
-            block = tools.memory.format_memories_for_prompt()
-            if not block:
-                return ""
-            return "\n\n" + block
-        except Exception as e:
-            logger.warning(f"[memory] block render failed: {e}")
-            return ""
-
-    _memory_block = _build_memory_block()
-    _last_memory_block = _memory_block
-
-    # Audit-rec F (2026-05-09): inject breaker status into the prompt so
-    # the supervisor knows when to acknowledge upstream-provider degradation
-    # rather than going silent during a fallback. Empty string when all
-    # breakers are healthy (zero prompt cost in the steady state).
-    _breaker_block = _build_breaker_status_block()
-    _last_breaker_block = _breaker_block
+    # Assemble the system-prompt state — Step 8d of the 10/10 refactor.
+    # See `_build_initial_prompt_state` for what each piece contains
+    # (WHO YOU ARE block + learned rules + pending proposals + memory
+    # facts + upstream-provider health).
+    _ps = _build_initial_prompt_state(active_speech_id)
+    _instructions_prefix = _ps["instructions_prefix"]
+    _instructions_suffix = _ps["instructions_suffix"]
+    learned_rules_block  = _ps["learned_rules_block"]
+    _rules_mtime         = _ps["rules_mtime"]
+    _memory_block        = _ps["memory_block"]
+    _last_memory_block   = _memory_block
+    _breaker_block       = _ps["breaker_block"]
+    _last_breaker_block  = _breaker_block
 
     _jarvis_agent = JarvisAgent(
-        instructions=(_instructions_prefix + learned_rules_block + _instructions_suffix + _memory_block + _breaker_block),
+        instructions=_ps["initial_instructions"],
         # Pre-load recent prior turns from conversations.db so the
         # LLM sees what was discussed before this job started.
         # Without this, every voice-client reconnect = amnesia.
