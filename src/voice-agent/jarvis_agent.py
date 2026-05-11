@@ -624,6 +624,28 @@ CLI_MODELS: dict[str, dict] = {
         "model":    "openai/gpt-oss-120b",
         "label":    "Groq · gpt-oss-120b",
     },
+    # Anthropic Claude — three tiers mirroring the Claude Code /model
+    # picker. Provider name 'anthropic' matches the CLI-side entry in
+    # src/cli/src/utils/model/jarvisModelRegistry.ts; the upstream
+    # model IDs are passed verbatim. CLI subprocess gets the proxy
+    # via ANTHROPIC_BASE_URL=http://localhost:4000 from _cli_env.
+    # Must stay in sync with CLI_MODELS_AVAILABLE in
+    # voice_client_tray_config.py (the tray-side whitelist).
+    "claude-opus-4-7": {
+        "provider": "anthropic",
+        "model":    "claude-opus-4-7",
+        "label":    "Anthropic · Claude Opus 4.7",
+    },
+    "claude-sonnet-4-6": {
+        "provider": "anthropic",
+        "model":    "claude-sonnet-4-6",
+        "label":    "Anthropic · Claude Sonnet 4.6",
+    },
+    "claude-haiku-4-5": {
+        "provider": "anthropic",
+        "model":    "claude-haiku-4-5",
+        "label":    "Anthropic · Claude Haiku 4.5",
+    },
     # Kimi K2.6 — all four UI modes hit the same upstream API model
     # `kimi-k2.6`. The Instant/Thinking/Agent/Swarm split is a
     # client-side preset (system prompt + tools), not a separate API.
