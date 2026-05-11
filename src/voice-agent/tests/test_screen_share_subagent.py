@@ -100,7 +100,7 @@ class TestSpecRegistration:
     def test_spec_has_empty_ack_phrase(self):
         """No voiced 'Looking.' / 'Right away.' ack from the
         supervisor (Orpheus) before the subagent's Gemini Live
-        (Aoede voice) starts speaking — otherwise the user hears
+        (Charon voice) starts speaking — otherwise the user hears
         two voices in one conceptual turn (the 'voice mismatch'
         reported 2026-05-11). Empty ack = silent handoff."""
         from subagents import registry
@@ -225,15 +225,17 @@ class TestModelSelection:
             import importlib
             importlib.reload(ss)
 
-    def test_default_voice_is_aoede(self):
-        """Aoede picked for natural-sounding tech narration. Override
-        via JARVIS_SCREEN_SHARE_LIVE_VOICE; 30 voices available."""
+    def test_default_voice_is_charon(self):
+        """Charon picked 2026-05-11 evening — closest male Gemini Live
+        voice to JARVIS's Groq Orpheus 'troy'. Female Aoede made
+        screen-share feel like a different speaker had taken over.
+        Override via JARVIS_SCREEN_SHARE_LIVE_VOICE; 30 voices available."""
         from subagents import screen_share as ss
         with patch.dict(os.environ, {}, clear=False) as env:
             env.pop("JARVIS_SCREEN_SHARE_LIVE_VOICE", None)
             import importlib
             importlib.reload(ss)
-            assert ss.SCREEN_SHARE_LIVE_VOICE == "Aoede"
+            assert ss.SCREEN_SHARE_LIVE_VOICE == "Charon"
 
     def test_context_window_default_is_32k(self):
         """Without sliding-window compression, audio+video Live sessions
@@ -269,7 +271,7 @@ class TestLiveConfigShape:
 
         # The five critical config bits researcher flagged:
         assert captured["model"] == "gemini-3.1-flash-live-preview"
-        assert captured["voice"] == "Aoede"
+        assert captured["voice"] == "Charon"
         # Modality must be AUDIO (TEXT is the broken path on 3.1).
         from google.genai import types as gt
         assert gt.Modality.AUDIO in captured["modalities"]
