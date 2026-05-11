@@ -3697,8 +3697,30 @@ def _build_llm_stack() -> dict:
     """
     active_speech_id, active_speech_llm = make_speech_llm()
 
+    # If the user explicitly picked a non-default speech model in the
+    # tray, treat that pick as authoritative for EVERY route — disable
+    # the per-route dispatcher so BANTER/TASK/REASONING/EMOTIONAL all
+    # flow through the user's selected LLM. Without this, the dispatcher
+    # silently overrides the tray pick with Groq variants per-route, and
+    # short utterances ("Hello Jarvis") get hot-swapped to llama-3.1-8b
+    # by the BANTER fast-path — making the tray pick a no-op in practice.
+    # Live discovery 2026-05-11 after a user picked Claude Haiku 4.5 and
+    # reported "replies sound the same" (they were still Groq).
+    user_pinned_llm = active_speech_id != DEFAULT_SPEECH_MODEL
+
     # Maya-class dispatcher build.
-    if os.environ.get("JARVIS_DISPATCH_DISABLED", "0") != "1":
+    if user_pinned_llm:
+        # User pinned a specific supervisor — skip the dispatcher
+        # entirely so per-turn route swapping can't override their pick.
+        dispatch_llm = None
+        dispatch_tts = None
+        llm_arg = active_speech_llm
+        tts_arg = tts.FallbackAdapter(_build_tts_chain())
+        logger.info(
+            f"[dispatch] user-pinned speech LLM ({active_speech_id}) — "
+            f"per-route dispatcher disabled, all turns go through this model"
+        )
+    elif os.environ.get("JARVIS_DISPATCH_DISABLED", "0") != "1":
         try:
             dispatch_llm = _build_dispatching_llm()
             dispatch_tts = _build_dispatching_tts()
