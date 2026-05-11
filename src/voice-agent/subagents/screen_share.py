@@ -60,11 +60,18 @@ SCREEN_SHARE_LIVE_MODEL: str = os.environ.get(
 
 # Gemini Live voice. Options (~30 total — see api_proto.py in the
 # livekit-plugins-google package): Puck (default), Charon, Kore,
-# Fenrir, Aoede, Zephyr, etc. Aoede picked here as a natural-
-# sounding voice that pairs well with technical screen narration.
+# Fenrir, Aoede, Zephyr, etc.
+#
+# Charon: deep, serious male voice — closest to JARVIS's Groq
+# Orpheus "troy" voice the user is used to. Doesn't match
+# perfectly (different vocoder, different prosody) but stays in
+# the same register (low-male, technical-but-warm) instead of
+# the female Aoede that made every screen-share answer feel like
+# a different speaker had taken over. Live failure 2026-05-11
+# 16:39 — user explicitly asked for a JARVIS-matching voice.
 SCREEN_SHARE_LIVE_VOICE: str = os.environ.get(
     "JARVIS_SCREEN_SHARE_LIVE_VOICE",
-    "Aoede",
+    "Charon",
 )
 
 # Target tokens for the sliding-window context compression. Without
