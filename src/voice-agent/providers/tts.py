@@ -47,6 +47,7 @@ from livekit.plugins.groq.tts import ChunkedStream as _GroqChunkedStream
 import tts.edge as edge_tts_plugin
 
 from pipeline.dispatching_tts import DispatchingTTS
+from pipeline.settings import read_unified_setting
 from resilience import TTS_BREAKER
 from resilience.circuit_breaker import CircuitOpenError
 
@@ -252,15 +253,11 @@ def build_tts_chain(tts_provider_file) -> list:
     by the tray, passed in so this module doesn't reach back into
     jarvis_agent for it.
     """
-    # Lazy import so providers.tts can be imported before jarvis_agent
-    # finishes constructing the _read_unified_setting helper.
-    from jarvis_agent import _read_unified_setting
-
     groq_voice = os.getenv("JARVIS_TTS_VOICE", "troy")
     edge_voice = os.getenv("JARVIS_EDGE_VOICE", "en-US-GuyNeural")
 
     primary = None
-    spec = _read_unified_setting("tts-provider", tts_provider_file)
+    spec = read_unified_setting("tts-provider", tts_provider_file)
     if spec and ":" in spec:
         provider, voice = spec.split(":", 1)
         provider = provider.strip()
