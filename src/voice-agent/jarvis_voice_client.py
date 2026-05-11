@@ -94,269 +94,21 @@ NUM_CHANNELS  = 1
 FRAME_MS      = 10
 FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000  # 480
 
-# ── Asyncio loop watchdog ────────────────────────────────────────────
-# We've seen the asyncio loop stall every few hours: HTTP server on
-# :8767 stops responding (curl times out), tray + UI pill desync from
-# the actual room state, and the only fix is `systemctl restart
-# jarvis-voice-client`. Root causes vary (LiveKit FFI callbacks doing
-# heavy work synchronously, sounddevice GIL contention, …) but the
-# symptom is always: the loop stops servicing tasks.
-#
-# Fix: an OS-thread watchdog (NOT an asyncio task — those wouldn't run
-# either when the loop is stuck). The asyncio side updates a shared
-# timestamp every WATCHDOG_HEARTBEAT_SEC; the OS thread polls that
-# timestamp every WATCHDOG_POLL_SEC. If the heartbeat goes stale by
-# more than WATCHDOG_STALE_SEC, the thread os._exit(1)'s the process
-# so systemd's Restart=on-failure brings up a fresh, leak-free copy.
-WATCHDOG_HEARTBEAT_SEC = 5.0
-WATCHDOG_POLL_SEC      = 10.0
-WATCHDOG_STALE_SEC     = 60.0
-
-_last_heartbeat: float = time.monotonic()
-_heartbeat_lock = threading.Lock()
-
-# Captured by main() at startup so the watchdog OS thread can ask the
-# asyncio loop for its task list at the moment of stall. Without this,
-# asyncio.all_tasks() defaults to the current thread's running loop —
-# which is None inside the watchdog thread, returning an empty list.
-_main_loop: asyncio.AbstractEventLoop | None = None
-
-
-async def _heartbeat_loop(shutdown: asyncio.Event) -> None:
-    """Asyncio task: stamps the shared timestamp every few seconds.
-    The watchdog OS thread checks this timestamp; if it goes stale,
-    it kills the process."""
-    global _last_heartbeat
-    while not shutdown.is_set():
-        with _heartbeat_lock:
-            _last_heartbeat = time.monotonic()
-        try:
-            await asyncio.wait_for(shutdown.wait(), timeout=WATCHDOG_HEARTBEAT_SEC)
-        except asyncio.TimeoutError:
-            pass
-
-
-# How long to wait for agent_present before assuming the agent worker
-# missed the dispatch (race: client connected before worker registered).
-# Self-heal by restarting so the preflight delete_room forces a fresh
-# dispatch into the now-registered worker.
-#
-# 2026-05-02: lowered 45s → 10s. Production voice products (Vapi,
-# Retell, Pipecat) use sub-15-second dispatch timeouts. 45s of
-# silence is unusable in a voice loop — the user has time to give
-# up, repeat themselves, and start troubleshooting before the
-# watchdog fires. 10s is short enough that a single missed dispatch
-# is recovered within the user's "is this thing working?" window.
-AGENT_DISPATCH_TIMEOUT_SEC = 10.0
-
-# How long after voice activity with no DB update before we declare
-# the Groq STT connection dead and restart both services.  The failure
-# mode: TCP CLOSE-WAIT on the Groq HTTPS socket — the agent looks
-# healthy (connected, agent_present) but audio frames go into a dead
-# socket, so STT transcripts never arrive and no turns get saved.
-# 4 minutes is long enough to cover a legitimate long tool call (those
-# do update the DB mid-run) but short enough that the user doesn't
-# wait half an hour before JARVIS self-heals.
-STALE_STT_SEC = 4 * 60
-
-# Updated whenever the local participant becomes an active speaker.
-# Written from the asyncio event loop; read from the same loop in the
-# watchdog — no lock needed.
-_last_voice_active_ts: float = 0.0
-
-
-async def _agent_presence_watchdog(shutdown: asyncio.Event) -> None:
-    """If we're connected but agent_present stays False for too long,
-    the SFU never dispatched a job (timing race between agent restart
-    and our room connection). Restart ourselves to force a fresh dispatch."""
-    # Give a grace window from startup — the SFU can take a few seconds
-    # to route the job even under normal conditions.
-    await asyncio.sleep(AGENT_DISPATCH_TIMEOUT_SEC)
-    while not shutdown.is_set():
-        if state.connected and not state.agent_present:
-            log.warning(
-                f"[presence-watchdog] connected but no agent after "
-                f"{AGENT_DISPATCH_TIMEOUT_SEC:.0f}s — restarting to force dispatch"
-            )
-            try:
-                await asyncio.create_subprocess_exec(
-                    "systemctl", "--user", "restart", "jarvis-voice-client",
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                )
-            except Exception as e:
-                log.warning(f"[presence-watchdog] restart failed: {e}")
-            return
-        try:
-            await asyncio.wait_for(shutdown.wait(), timeout=15.0)
-        except asyncio.TimeoutError:
-            pass
-
-
-async def _stale_stt_watchdog(shutdown: asyncio.Event) -> None:
-    """Detect and self-heal a dead Groq STT connection.
-
-    Failure mode: after several hours the HTTPS socket to Groq enters
-    CLOSE-WAIT — the agent appears healthy (connected, agent_present)
-    but audio frames go into a dead socket and STT transcripts never
-    arrive.  Symptom: user speaks, VAD fires (listening=True), but no
-    turn lands in conversations.db and JARVIS stays silent forever.
-
-    Detection: if voice was active recently but conversations.db hasn't
-    been updated since before the voice ended, the STT pipeline is
-    stuck.  We restart both jarvis-voice-agent (drops the dead socket)
-    and jarvis-voice-client (forces a fresh LiveKit room + job
-    dispatch).
-    """
-    # Wait past the first STALE_STT_SEC window before starting checks
-    # so a fresh startup doesn't false-fire before the first turn.
-    await asyncio.sleep(STALE_STT_SEC + 30)
-    _restart_fired = False
-    db_path = Path.home() / ".jarvis" / "conversations.db"
-    while not shutdown.is_set():
-        try:
-            if not _restart_fired:
-                _check_stale_stt(db_path)
-        except Exception as e:
-            log.debug(f"[turn-watchdog] check error: {e}")
-        try:
-            await asyncio.wait_for(shutdown.wait(), timeout=30.0)
-        except asyncio.TimeoutError:
-            pass
-
-
-def _check_stale_stt(db_path: Path) -> None:
-    """Fire once if the STT connection appears dead; schedule a restart."""
-    global _last_voice_active_ts
-    if _last_voice_active_ts == 0.0:
-        return  # no voice activity this session yet
-    now = time.time()
-    voice_age = now - _last_voice_active_ts
-    # Only care about voice that ended between 90 s and STALE_STT_SEC ago.
-    # <90 s: may still be processing (LLM + TTS can take a moment).
-    # >STALE_STT_SEC: too old to blame on a stale STT connection.
-    if voice_age < 90 or voice_age > STALE_STT_SEC:
-        return
-    # Don't fire if the agent is actively doing something — those
-    # update the DB at the end, so we'd false-positive mid-tool.
-    if state.listening or state.speaking or state.tool_running or state.agent_thinking:
-        return
-    # Check whether conversations.db was updated after the voice ended.
-    try:
-        db_mtime = db_path.stat().st_mtime
-    except FileNotFoundError:
-        return
-    if db_mtime >= _last_voice_active_ts:
-        return  # DB was updated after voice ended — turn landed, all good
-    # Voice ended but no DB update — STT is dead.
-    log.warning(
-        f"[turn-watchdog] voice active {voice_age:.0f}s ago, "
-        f"DB last updated {now - db_mtime:.0f}s ago — "
-        "Groq STT connection appears dead, restarting agent"
-    )
-    # Clear the timestamp so the check doesn't re-fire while the
-    # restart is in progress (takes ~5 s before this process exits).
-    _last_voice_active_ts = 0.0
-    asyncio.create_task(_restart_agent_unit(), name="stale-stt-restart")
-
-
-def _dump_stall_diagnostics(age: float) -> None:
-    """Dump every Python thread stack and every pending asyncio task,
-    routed to log.error so the next stall NAMES its culprit instead of
-    leaving us with `loop heartbeat stale (N s old)` and nothing else.
-
-    Called from `_watchdog_thread` (an OS thread, not the asyncio loop)
-    immediately before `os._exit(1)`. Best-effort: any failure here is
-    swallowed so we never block the kill path that systemd relies on
-    for clean restart.
-
-    The slow_callback_duration knob set in main() catches *slow* but
-    *finishing* callbacks; this routine catches *fully wedged* loops
-    where a callback never finishes (blocking I/O, GIL-held C extension,
-    sync-over-async). The two diagnostics complement each other.
-    """
-    log.error(
-        "[watchdog-diag] === STALL %0.0fs OLD — DUMPING DIAGNOSTICS ===",
-        age,
-    )
-
-    # 1. Every Python thread's current stack via faulthandler. Catches
-    #    GIL-held C extensions: the offending C call is on the main
-    #    thread frame at the top.
-    try:
-        log.error("[watchdog-diag] --- all-thread tracebacks ---")
-        # faulthandler writes to a file descriptor; route to stderr (2)
-        # which is captured into /tmp/jarvis-voice-client.log per the
-        # systemd unit's StandardError=append:.
-        faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
-    except Exception as e:
-        log.error("[watchdog-diag] faulthandler dump failed: %r", e)
-
-    # 2. Every asyncio task on the captured main loop, with stack.
-    #    Catches sync-over-async + long-running coroutines that never
-    #    yield. Use the captured _main_loop because asyncio.all_tasks()
-    #    inside this OS thread can't auto-resolve the right loop.
-    try:
-        if _main_loop is None:
-            log.error(
-                "[watchdog-diag] _main_loop unset — main() did not capture "
-                "the running loop. asyncio task dump skipped."
-            )
-        else:
-            tasks = asyncio.all_tasks(loop=_main_loop)
-            log.error(
-                "[watchdog-diag] --- %d asyncio task(s) on main loop ---",
-                len(tasks),
-            )
-            for t in tasks:
-                try:
-                    name = t.get_name() if hasattr(t, "get_name") else "?"
-                    coro = getattr(t, "get_coro", lambda: None)()
-                    coro_name = getattr(coro, "__qualname__", repr(coro))
-                    log.error(
-                        "[watchdog-diag] task %r coro=%s done=%s",
-                        name, coro_name, t.done(),
-                    )
-                    # t.get_stack() returns frame objects; format and join.
-                    frames = t.get_stack(limit=20)
-                    if frames:
-                        formatted = "".join(traceback.format_list(
-                            traceback.extract_stack(frames[-1])
-                        ))
-                        log.error(
-                            "[watchdog-diag] task %r stack:\n%s",
-                            name, formatted,
-                        )
-                except Exception as e:
-                    log.error(
-                        "[watchdog-diag] failed to dump task %r: %r",
-                        t, e,
-                    )
-    except Exception as e:
-        log.error("[watchdog-diag] asyncio task dump failed: %r", e)
-
-
-def _watchdog_thread() -> None:
-    """OS thread: kills the process if the asyncio loop stops
-    updating the heartbeat. Daemon so it doesn't block normal exit."""
-    # First update happens after the heartbeat task starts; give it
-    # a generous grace window before we'd ever consider firing.
-    grace_until = time.monotonic() + WATCHDOG_STALE_SEC + 30
-    while True:
-        time.sleep(WATCHDOG_POLL_SEC)
-        if time.monotonic() < grace_until:
-            continue
-        with _heartbeat_lock:
-            age = time.monotonic() - _last_heartbeat
-        if age > WATCHDOG_STALE_SEC:
-            log.error(
-                f"[watchdog] asyncio loop heartbeat stale ({age:.0f}s old) — "
-                f"killing process so systemd restarts us"
-            )
-            _dump_stall_diagnostics(age)
-            # os._exit (not sys.exit) — the loop is dead, atexit
-            # handlers would deadlock waiting on it.
-            os._exit(1)
+# ── Watchdog (loop wedge + agent presence + stale STT) ──────────
+# Extracted to voice_client_watchdog.py 2026-05-10 (Step 7 of the
+# audit). The class encapsulates all watchdog state (_last_heartbeat,
+# _last_voice_active_ts, _main_loop) so the module-level globals are
+# gone. Instantiation happens after `state = ClientState()` below;
+# main() starts the OS thread + 3 async tasks, and the room event
+# handler calls `_watchdog.mark_voice_active()` on local speech.
+from voice_client_watchdog import (
+    LoopWatchdog,
+    WATCHDOG_HEARTBEAT_SEC,
+    WATCHDOG_POLL_SEC,
+    WATCHDOG_STALE_SEC,
+    AGENT_DISPATCH_TIMEOUT_SEC,
+    STALE_STT_SEC,
+)
 
 # Small HTTP control plane the Tauri UI (and any future client) polls
 # to know what this voice session is doing. Kept on a distinct port
@@ -488,6 +240,10 @@ _mic_pub_ref: Optional[rtc.LocalTrackPublication] = None
 # Set inside run_once(); lets /speak publish data packets without
 # every handler having to carry the Room reference around.
 _room_ref: Optional[rtc.Room] = None
+
+# Forward-declare; bound after `_restart_agent_unit` is defined (it's
+# the callback the stale-STT watchdog needs).
+_watchdog: Optional[LoopWatchdog] = None
 
 
 # ── Tiny HTTP control plane ────────────────────────────────────────────
@@ -890,13 +646,12 @@ async def run_once(shutdown: asyncio.Event) -> None:
         # VU crosses a threshold. Use this for the listening/speaking
         # indicator on the Tauri UI side — no need for a separate VAD
         # in-client because the SFU already computes it centrally.
-        global _last_voice_active_ts
         local_active  = any(p.identity == IDENTITY for p in speakers)
         remote_active = any(p.identity != IDENTITY for p in speakers)
         state.listening = local_active
         state.speaking  = remote_active
-        if local_active:
-            _last_voice_active_ts = time.time()
+        if local_active and _watchdog is not None:
+            _watchdog.mark_voice_active()
 
     @room.on("participant_connected")
     def _on_participant_connected(participant: rtc.RemoteParticipant) -> None:
@@ -1101,20 +856,23 @@ async def main() -> None:
     #     The 2026-05-05 stalls (3 in 24h: 09:56, 10:26, 11:15) emitted
     #     ZERO slow-callback warnings, proving (a) alone is not enough.
     #
-    # Capturing the running loop into the module global lets the
-    # OS-thread watchdog ask asyncio for the task list at stall time.
-    global _main_loop
-    _main_loop = loop
+    # Capturing the running loop into the watchdog lets the OS thread
+    # ask asyncio for the task list at stall time.
     loop.slow_callback_duration = 0.5
 
-    # Asyncio loop watchdog. The OS thread runs forever (daemon=True
-    # so it doesn't block exit); the asyncio task heartbeats every
-    # few seconds. If the loop stalls, the thread kills the process
-    # and systemd Restart=on-failure brings us back fresh.
-    threading.Thread(target=_watchdog_thread, name="loop-watchdog", daemon=True).start()
-    asyncio.create_task(_heartbeat_loop(shutdown), name="heartbeat")
-    asyncio.create_task(_agent_presence_watchdog(shutdown), name="presence-watchdog")
-    asyncio.create_task(_stale_stt_watchdog(shutdown), name="stale-stt-watchdog")
+    # Instantiate the watchdog now that `state` + `_restart_agent_unit`
+    # are available. Class encapsulates all watchdog state so we no
+    # longer need module-level globals for _last_heartbeat / _main_loop.
+    global _watchdog
+    _watchdog = LoopWatchdog(
+        state=state,
+        log=log,
+        restart_agent_unit=_restart_agent_unit,
+    )
+    _watchdog.start_os_thread(loop)
+    asyncio.create_task(_watchdog.heartbeat_loop(shutdown), name="heartbeat")
+    asyncio.create_task(_watchdog.agent_presence_watchdog(shutdown), name="presence-watchdog")
+    asyncio.create_task(_watchdog.stale_stt_watchdog(shutdown), name="stale-stt-watchdog")
     log.info(
         f"[watchdog] enabled — heartbeat every {WATCHDOG_HEARTBEAT_SEC}s, "
         f"kill if stale > {WATCHDOG_STALE_SEC}s"
