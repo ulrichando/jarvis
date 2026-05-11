@@ -1,4 +1,4 @@
-"""Generic specialist Agent — built from a SpecialistSpec.
+"""Generic specialist Agent — built from a HandoffSubagent.
 
 Used by `build_transfer_tools()` to construct a spec-driven Agent on
 the fly when the supervisor's `transfer_to_X` fires. The hand-back
@@ -19,7 +19,7 @@ from typing import Any
 from livekit.agents import Agent, RunContext, function_tool
 from livekit.agents.llm import ChatContext, FunctionCall
 
-from .registry import SpecialistSpec
+from .registry import HandoffSubagent
 
 logger = logging.getLogger("jarvis-agent.specialist")
 
@@ -88,8 +88,8 @@ def _no_tool_retry_ceiling() -> int:
     return int(os.environ.get("JARVIS_SPECIALIST_NO_TOOL_RETRY_CEILING", "3"))
 
 
-class RegistrySpecialist(Agent):
-    """Specialist Agent built from a SpecialistSpec.
+class RegistrySubagent(Agent):
+    """Specialist Agent built from a HandoffSubagent.
 
     On enter: logs the active specialist. On task_done: hands back to
     the supervisor with the spec's summary. Tool list is whatever the
@@ -99,7 +99,7 @@ class RegistrySpecialist(Agent):
     def __init__(
         self,
         *,
-        spec: SpecialistSpec,
+        spec: HandoffSubagent,
         supervisor: Agent,
         chat_ctx: ChatContext | None = None,
     ):
@@ -258,7 +258,7 @@ class RegistrySpecialist(Agent):
         return self._supervisor, summary
 
 
-def build_transfer_tool(spec: SpecialistSpec):
+def build_transfer_tool(spec: HandoffSubagent):
     """Generate ONE `transfer_to_X` function_tool for `spec`.
 
     The supervisor reference comes from `self` at call-time — LiveKit
@@ -280,7 +280,7 @@ def build_transfer_tool(spec: SpecialistSpec):
     )
 
     # NOTE: no `self` parameter. When @function_tool is used as a
-    # class method (e.g. `task_done` on RegistrySpecialist), Python's
+    # class method (e.g. `task_done` on RegistrySubagent), Python's
     # method machinery handles `self` before LiveKit introspects.
     # When it's used on a closure-returned function passed via the
     # supervisor's `tools=[…]` list, LiveKit's Pydantic-schema builder
@@ -335,7 +335,7 @@ def build_transfer_tool(spec: SpecialistSpec):
         # crashed the handoff silently — supervisor's parallel tool call
         # masked it. The supervisor saw nothing actionable.
         try:
-            specialist = RegistrySpecialist(
+            specialist = RegistrySubagent(
                 spec=spec,
                 supervisor=supervisor,
                 chat_ctx=ctx,
@@ -357,11 +357,11 @@ def build_transfer_tool(spec: SpecialistSpec):
 
 def build_delegate_tool():
     """Generate the single `delegate(role, task)` function_tool that
-    covers ALL registered SubagentSpecs.
+    covers ALL registered DelegatedSubagents.
 
     Why one tool instead of one-per-subagent:
       - Token cost in supervisor prompt is constant in N. With 100
-        SpecialistSpecs the per-turn input grows by ~30k tokens — at
+        HandoffSubagents the per-turn input grows by ~30k tokens — at
         Groq's processing rate that's +1500ms TTFW. With one delegate
         tool the cost is ~600 tokens flat, regardless of N.
       - Adding a 101st subagent doesn't change the supervisor's prompt
@@ -433,9 +433,9 @@ def build_delegate_tool():
             f"[delegate] → {spec.name} (task: {task[:80]!r})"
         )
 
-        # Reuse RegistrySpecialist by adapting SubagentSpec fields onto
-        # SpecialistSpec — saves us a parallel Agent class.
-        adapter_spec = SpecialistSpec(
+        # Reuse RegistrySubagent by adapting DelegatedSubagent fields onto
+        # HandoffSubagent — saves us a parallel Agent class.
+        adapter_spec = HandoffSubagent(
             name=spec.name,
             transfer_tool=f"(via delegate)",
             when_to_use=spec.when_to_use,
@@ -446,7 +446,7 @@ def build_delegate_tool():
             enabled=spec.enabled,
         )
         return (
-            RegistrySpecialist(
+            RegistrySubagent(
                 spec=adapter_spec,
                 supervisor=supervisor,
                 chat_ctx=ctx,
@@ -462,9 +462,9 @@ def build_all_transfer_tools() -> list[Any]:
     tool covering subagents. Ready to attach to the supervisor's
     `tools=[…]` list at construction.
 
-    Returns the per-name `transfer_to_X` tools for legacy SpecialistSpecs
+    Returns the per-name `transfer_to_X` tools for legacy HandoffSubagents
     (planner / desktop / browser today) PLUS one `delegate(role, task)`
-    tool covering all SubagentSpecs. Both can coexist — the supervisor
+    tool covering all DelegatedSubagents. Both can coexist — the supervisor
     picks `transfer_to_X` for the existing 3 specialists and `delegate`
     for everything new.
     """

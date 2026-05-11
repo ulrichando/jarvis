@@ -43,9 +43,9 @@ def test_validate_outcome_truncates_huge_inputs():
 def test_validator_subagent_registered():
     """The validator subagent must register without crashing even when
     GROQ key is absent (it'll register disabled, that's correct)."""
-    from specialists.registry import clear_subagents, SUBAGENT_REGISTRY
+    from subagents.registry import clear_subagents, SUBAGENT_REGISTRY
     clear_subagents()
-    from specialists.validator import register_validator
+    from subagents.validator import register_validator
     register_validator()
     assert "validator" in SUBAGENT_REGISTRY
     spec = SUBAGENT_REGISTRY["validator"]
@@ -57,9 +57,9 @@ def test_validator_subagent_registered():
 def test_validator_subagent_factory_builds():
     """Tool factory must build cleanly — catches import regressions
     same as the browser_v2 task_done bug we hit on 2026-05-01."""
-    from specialists.registry import clear_subagents
+    from subagents.registry import clear_subagents
     clear_subagents()
-    from specialists.validator import register_validator, _validator_tools
+    from subagents.validator import register_validator, _validator_tools
     register_validator()
     tools = _validator_tools()
     assert isinstance(tools, list) and len(tools) >= 1

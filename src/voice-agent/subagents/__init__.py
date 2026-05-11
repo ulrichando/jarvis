@@ -3,9 +3,9 @@
 Adding a new specialist is one file:
 
     # src/voice-agent/specialists/myspecialist.py
-    from .registry import SpecialistSpec, register
+    from .registry import HandoffSubagent, register
 
-    register(SpecialistSpec(
+    register(HandoffSubagent(
         name="research",
         transfer_tool="transfer_to_research",
         when_to_use="multi-step web research, gathering quotes, comparing prices",
@@ -30,8 +30,8 @@ All specialists now live in this package; the legacy
 `jarvis_specialist_agents.py` shim was retired 2026-05-01.
 """
 from .registry import (
-    SpecialistSpec, register, all_specs, get, clear,
-    SubagentSpec, register_subagent, all_subagents, get_subagent, clear_subagents,
+    HandoffSubagent, register, all_specs, get, clear,
+    DelegatedSubagent, register_subagent, all_subagents, get_subagent, clear_subagents,
 )
 
 # Auto-register built-in specialists + subagents on package import.
@@ -54,7 +54,7 @@ def _register_builtins() -> None:
     # browser_v2 self-disables when GROQ/DeepSeek key or browser-use
     # are missing — safe to always call register_browser_v2().
     browser_v2.register_browser_v2()
-    # SubagentSpec path — new specialists go here so they don't bloat
+    # DelegatedSubagent path — new specialists go here so they don't bloat
     # the supervisor's prompt with one transfer_to_X tool each.
     summarize.register_summarize()
     weather.register_weather()
@@ -70,7 +70,7 @@ def _register_builtins() -> None:
 _register_builtins()
 
 __all__ = [
-    "SpecialistSpec", "register", "all_specs", "get", "clear",
-    "SubagentSpec", "register_subagent", "all_subagents",
+    "HandoffSubagent", "register", "all_specs", "get", "clear",
+    "DelegatedSubagent", "register_subagent", "all_subagents",
     "get_subagent", "clear_subagents",
 ]

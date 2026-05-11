@@ -216,7 +216,7 @@ from pipeline.turn_telemetry import init_db, log_turn, log_launch_attempt, DEFAU
 # JarvisAgent's tools=[…] at construction. No circular import: the
 # specialists' tool_factories are lazy callables that import from
 # jarvis_agent only when a specialist is actually instantiated.
-from specialists.agent import build_all_transfer_tools
+from subagents.agent import build_all_transfer_tools
 
 logger = logging.getLogger("jarvis-agent")
 
@@ -3550,7 +3550,7 @@ class JarvisAgent(Agent):
     #
     # The legacy class-method `transfer_to_desktop` was removed in
     # Phase 4 of the registry migration (2026-04-30); the registry's
-    # RegistrySpecialist + DESKTOP_INSTRUCTIONS reproduces it 1:1.
+    # RegistrySubagent + DESKTOP_INSTRUCTIONS reproduces it 1:1.
 
     async def on_user_turn_completed(
         self, turn_ctx: ChatContext, new_message: ChatMessage,

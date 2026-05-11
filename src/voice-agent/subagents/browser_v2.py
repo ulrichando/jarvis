@@ -13,7 +13,7 @@ returns False, and we register disabled).
 """
 from __future__ import annotations
 
-from .registry import SpecialistSpec, register
+from .registry import HandoffSubagent, register
 
 
 BROWSER_V2_INSTRUCTIONS = """\
@@ -79,7 +79,7 @@ You: task_done("<summary>")
 
 def _browser_v2_tools() -> list:
     """Lazy import so browser-use's heavy startup doesn't block
-    registry import. `task_done` is auto-attached by RegistrySpecialist
+    registry import. `task_done` is auto-attached by RegistrySubagent
     — don't import it (regression captured live 2026-05-01: ImportError
     crashed the handoff)."""
     from tools.browser_v2 import browser_task_v2
@@ -124,7 +124,7 @@ def register_browser_v2() -> None:
     # the jarvis-screen extension — DOES type, click, scroll for real).
     enabled = False
 
-    register(SpecialistSpec(
+    register(HandoffSubagent(
         name="browser_v2",
         transfer_tool="transfer_to_browser_v2",
         when_to_use=_BROWSER_V2_WHEN,
