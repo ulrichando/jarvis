@@ -32,6 +32,17 @@ from pathlib import Path
 from livekit.agents import APIConnectionError, APITimeoutError
 from livekit.plugins import groq, openai as lk_openai
 
+# Anthropic — Claude Haiku 4.5 as a tray-selectable speech model and
+# as the third fallback rung after Groq + DeepSeek. Optional dep: if
+# the plugin isn't installed we skip the Anthropic surface entirely
+# rather than crash boot.
+try:
+    from livekit.plugins import anthropic as lk_anthropic
+    _ANTHROPIC_AVAILABLE = True
+except Exception:  # pragma: no cover — install-only guard
+    lk_anthropic = None
+    _ANTHROPIC_AVAILABLE = False
+
 from pipeline.dispatching_llm import DispatchingLLM
 from pipeline.settings import read_unified_setting
 from resilience import LLM_BREAKER
@@ -140,6 +151,14 @@ SPEECH_MODELS: dict[str, dict] = {
             temperature=0.6,
         ),
     },
+    # Anthropic Claude — Haiku 4.5 is the fast, cheap voice-ready model.
+    # Added 2026-05-11. `caching="ephemeral"` engages Anthropic's prompt
+    # caching on the system prompt + chat_ctx prefix — typical 80-90 %
+    # input-token discount on a stable JARVIS_INSTRUCTIONS preamble, so
+    # the per-turn cost is dominated by the small output (~200 tokens).
+    # Model id is passed as a raw string because the plugin's typed
+    # ChatModels literal (1.5.8) predates Haiku 4.5; Anthropic's
+    # /messages endpoint accepts the string verbatim.
     # Kimi K2.6 — Moonshot OpenAI-compat. DISABLED for voice as of
     # 2026-05-05: K2.6 spontaneously emits its built-in `web_search`
     # tool call even when not in `request.tools`, and Moonshot rejects
@@ -152,6 +171,16 @@ SPEECH_MODELS: dict[str, dict] = {
     # registering shim tools for K2.6's built-ins, or filtering them
     # from the request server-side).
 }
+if _ANTHROPIC_AVAILABLE and os.environ.get("ANTHROPIC_API_KEY", ""):
+    SPEECH_MODELS["claude-haiku-4-5"] = {
+        "label": "Anthropic · Claude Haiku 4.5",
+        "build": lambda: lk_anthropic.LLM(
+            model="claude-haiku-4-5",
+            api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
+            temperature=0.6,
+            caching="ephemeral",
+        ),
+    }
 if os.environ.get("JARVIS_KIMI_VOICE_EXPERIMENTAL", "0") == "1":
     SPEECH_MODELS["kimi-k2.6-instant"] = {
         "label": "Kimi · K2.6 Instant (experimental)",
@@ -617,15 +646,40 @@ def build_dispatching_llm() -> DispatchingLLM:
     else:
         logger.info("[dispatch] DEEPSEEK_API_KEY missing, no cross-provider fallback")
 
+    # Third fallback rung: Anthropic Claude Haiku 4.5. Only ever fires if
+    # both Groq (primary) AND DeepSeek (rung 2) fail back-to-back —
+    # historically rare (4/142 sessions on this host). Paid per-token,
+    # so we keep it disabled when no ANTHROPIC_API_KEY is present.
+    anth_fallback = None
+    anth_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if _ANTHROPIC_AVAILABLE and anth_key:
+        try:
+            anth_fallback = lk_anthropic.LLM(
+                model="claude-haiku-4-5",
+                api_key=anth_key,
+                temperature=0.6,
+                caching="ephemeral",
+            )
+            anth_fallback._jarvis_label = "anthropic:claude-haiku-4-5"
+            logger.info("[dispatch] Anthropic Claude Haiku 4.5 fallback armed (rung 3)")
+        except Exception as e:
+            logger.warning(f"[dispatch] Anthropic fallback construction failed: {e}")
+            anth_fallback = None
+
     def _wrap(primary):
-        """Wrap a Groq LLM in FallbackAdapter([groq, deepseek]) so a
-        Groq blip transparently routes to DeepSeek. Preserves
-        _jarvis_label for telemetry."""
-        if ds_fallback is None:
+        """Wrap a Groq LLM in FallbackAdapter([groq, deepseek, anthropic])
+        so successive provider blips transparently route through to the
+        next rung. Preserves _jarvis_label for telemetry."""
+        rungs = [primary]
+        if ds_fallback is not None:
+            rungs.append(ds_fallback)
+        if anth_fallback is not None:
+            rungs.append(anth_fallback)
+        if len(rungs) == 1:
             return primary
         try:
             from livekit.agents.llm import FallbackAdapter as _LLMFallback
-            wrapped = _LLMFallback([primary, ds_fallback])
+            wrapped = _LLMFallback(rungs)
             wrapped._jarvis_label = getattr(primary, "_jarvis_label", "?")
             return wrapped
         except Exception as e:

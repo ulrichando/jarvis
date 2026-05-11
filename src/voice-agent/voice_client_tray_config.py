@@ -107,6 +107,9 @@ SPEECH_MODELS_AVAILABLE: tuple[str, ...] = (
     "deepseek-chat",
     "deepseek-v4-flash",
     "deepseek-v4-pro",
+    # Anthropic — Haiku 4.5. Added 2026-05-11 alongside the Anthropic
+    # rung in build_dispatching_llm. Requires ANTHROPIC_API_KEY in env.
+    "claude-haiku-4-5",
     # Kimi K2.6 voice entries are DISABLED 2026-05-05. K2.6 emits
     # built-in tool calls (web_search, etc.) that aren't in
     # request.tools, and Moonshot's API rejects every such request
