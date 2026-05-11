@@ -237,6 +237,56 @@ _SCREEN_SHARE_WHEN = (
 )
 
 
+async def _ensure_screen_share_active(context, request, supervisor):
+    """Pre-transfer hook: idempotently turn the screen-share track on
+    before handing off to the Live subagent.
+
+    Live failure pattern this guards against: supervisor calls
+    `transfer_to_screen_share(...)` directly without first calling
+    `set_screen_share(start=True)`. Gemini Live opens its WebSocket,
+    the publisher hasn't started the SOURCE_SCREENSHARE track, the
+    subagent receives zero video frames, and either bails (best
+    case) or hallucinates from prior chat context (worst case,
+    documented in SCREEN_SHARE_INSTRUCTIONS).
+
+    Prompt rules in supervisor.md tell the LLM to always call
+    set_screen_share first — but soft rules are a probability, not a
+    guarantee. This hook makes the prerequisite a code-level
+    invariant: the screen-share track WILL be on by the time the
+    Live subagent's `on_enter` fires.
+
+    The voice-client's /screen-share endpoint is idempotent — calling
+    start=True when already sharing is a no-op (returns sharing=true).
+    So we always call it; no need to query state first.
+
+    Returns None to proceed with the transfer. Returns an abort string
+    only when the voice-client is unreachable — handing off to a
+    Live session that can never receive video is worse than telling
+    the supervisor "I couldn't turn screen-share on, ask me again."
+    """
+    # Lazy import so subagents/screen_share.py stays cheap at registry
+    # import time (tools.screen_share_control pulls aiohttp).
+    from tools.screen_share_control import toggle_screen_share
+
+    sharing, message = await toggle_screen_share(start=True)
+    if sharing is None:
+        # HTTP error / voice-client unreachable. Bail before constructing
+        # the subagent — Gemini Live would just sit on the WebSocket
+        # waiting for frames that aren't coming. The error string the
+        # supervisor sees is the same one the function_tool path would
+        # have produced.
+        logger.warning(
+            f"[screen_share.pre_transfer] toggle failed; aborting handoff "
+            f"({message})"
+        )
+        return message
+    logger.info(
+        f"[screen_share.pre_transfer] track active "
+        f"(sharing={sharing}); proceeding to handoff"
+    )
+    return None
+
+
 def register_screen_share() -> None:
     """Register the screen-share Live subagent. Idempotent."""
     register(HandoffSubagent(
@@ -263,4 +313,12 @@ def register_screen_share() -> None:
         # exit and locking the subagent in a retry loop. Opt out:
         # the RealtimeModel produces the work, not function_tools.
         tools_required=False,
+        # Programmatic tool-sequencing guard: ensure the screen-share
+        # track is on BEFORE the Live subagent's WebSocket opens.
+        # Replaces the supervisor-prompt rule "always call
+        # set_screen_share first" with a code-level invariant — Sonnet
+        # 4.6 is better than Haiku at following prose rules but still
+        # not 100%. The hook is idempotent; firing on every transfer
+        # is fine.
+        pre_transfer=_ensure_screen_share_active,
     ))

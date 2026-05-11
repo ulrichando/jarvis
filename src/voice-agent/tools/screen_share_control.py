@@ -36,6 +36,55 @@ _VOICE_CLIENT_URL: str = os.environ.get(
 )
 
 
+async def toggle_screen_share(start: bool) -> tuple[bool | None, str]:
+    """Low-level toggle: POST to the voice-client's /screen-share endpoint.
+
+    Factored out of `set_screen_share` so the screen_share subagent's
+    pre_transfer hook can reuse the exact same network path (idempotent
+    "ensure screen-share is on" before handing off to the Live
+    subagent). Returns a `(sharing, message)` tuple where `sharing` is
+    the new state on HTTP 200 or None on error, and `message` is a
+    human-readable line — the supervisor's tool_result on success/
+    failure, the pre_transfer's abort string on failure.
+    """
+    try:
+        import aiohttp
+    except Exception as e:
+        return None, f"(screen-share control unavailable: {e})"
+
+    payload = {"start": bool(start), "ack": False}
+    try:
+        async with aiohttp.ClientSession() as sess:
+            async with sess.post(
+                f"{_VOICE_CLIENT_URL}/screen-share",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=5.0),
+            ) as resp:
+                body_text = await resp.text()
+                if resp.status == 200:
+                    try:
+                        data = json.loads(body_text)
+                    except Exception:
+                        data = {}
+                    sharing = bool(data.get("sharing"))
+                    return (
+                        sharing,
+                        "screen sharing started" if sharing
+                        else "screen sharing stopped",
+                    )
+                return (
+                    None,
+                    f"(screen-share toggle failed: HTTP {resp.status} — "
+                    f"{body_text[:120]})",
+                )
+    except asyncio.TimeoutError:
+        return None, "(screen-share toggle timed out — voice-client may be wedged)"
+    except aiohttp.ClientConnectorError:
+        return None, "(voice-client unreachable on :8767)"
+    except Exception as e:
+        return None, f"(screen-share toggle errored: {type(e).__name__}: {e})"
+
+
 @function_tool
 async def set_screen_share(start: bool) -> str:
     """Turn the user's screen-share on or off via voice command.
@@ -57,36 +106,5 @@ async def set_screen_share(start: bool) -> str:
     Returns the new state on success, or a one-line error for the
     supervisor to relay if the voice-client isn't reachable.
     """
-    # aiohttp is already in the voice-client dep tree; lazy-import so
-    # the tool module stays cheap to load.
-    try:
-        import aiohttp
-    except Exception as e:
-        return f"(screen-share control unavailable: {e})"
-
-    payload = {"start": bool(start), "ack": False}
-    try:
-        async with aiohttp.ClientSession() as sess:
-            async with sess.post(
-                f"{_VOICE_CLIENT_URL}/screen-share",
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=5.0),
-            ) as resp:
-                body_text = await resp.text()
-                if resp.status == 200:
-                    try:
-                        data = json.loads(body_text)
-                    except Exception:
-                        data = {}
-                    sharing = bool(data.get("sharing"))
-                    return "screen sharing started" if sharing else "screen sharing stopped"
-                return (
-                    f"(screen-share toggle failed: HTTP {resp.status} — "
-                    f"{body_text[:120]})"
-                )
-    except asyncio.TimeoutError:
-        return "(screen-share toggle timed out — voice-client may be wedged)"
-    except aiohttp.ClientConnectorError:
-        return "(voice-client unreachable on :8767)"
-    except Exception as e:
-        return f"(screen-share toggle errored: {type(e).__name__}: {e})"
+    _, message = await toggle_screen_share(start)
+    return message
