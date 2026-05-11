@@ -4605,6 +4605,21 @@ async def entrypoint(ctx: JobContext) -> None:
     except Exception as e:
         logger.warning(f"[screen-share-sink] init failed: {e}")
 
+    # Continuous screen-share observer. Polls vision_describe() every
+    # JARVIS_SCREEN_OBSERVER_INTERVAL_S (default 5s) while the
+    # screen-share track is active and caches the latest description on
+    # session._jarvis_latest_screen_description. The screenshot() tool
+    # checks that cache first — when it's fresh, the user's "what's on
+    # my screen?" returns in ~0s instead of paying the ~4s Gemini
+    # round-trip. Designed 2026-05-11 evening after Gemini Live API
+    # smoke-test showed no advantage over polling for our intermittent-
+    # query pattern. Toggle via JARVIS_SCREEN_OBSERVER_ENABLED=0.
+    try:
+        from pipeline import screen_share_observer
+        screen_share_observer.attach_to_room(ctx.room, session)
+    except Exception as e:
+        logger.warning(f"[screen-observer] init failed: {e}")
+
     # Bind the session for the stamp_first_token TTS filter (Phase 7).
     # The filter list was built at session-construction time and can't
     # reach back into the session via closure capture; this container
