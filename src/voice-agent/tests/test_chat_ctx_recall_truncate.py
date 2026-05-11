@@ -17,6 +17,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pipeline.chat_ctx import (
@@ -130,3 +132,37 @@ def test_recall_cap_value_is_reasonable():
         "too tight kills real one-sentence answers, "
         "too loose lets essay-priming through"
     )
+
+
+# ── Disabled-specialist poison filter ──────────────────────────────
+
+
+class TestDisabledSpecialistFilter:
+    """Live failure 2026-05-11 15:51 UTC: chat history from a session
+    where the screen_share specialist was enabled poisoned a session
+    where it's disabled. Claude said 'Let me transfer to the screen
+    specialist', tried `transfer_to_screen_share`, got "unknown AI
+    function", then said 'I don't have that transfer tool available'.
+    Drop those priming turns from chat_ctx so Claude doesn't have a
+    precedent to copy.
+    """
+
+    @pytest.mark.parametrize("text", [
+        "Let me transfer to the screen specialist who can read details better.",
+        "I'll use transfer_to_screen_share for richer vision.",
+        "Switching to the screen-share specialist for live reading.",
+        "Let me switch to the screen specialist.",
+    ])
+    def test_specialist_mention_dropped(self, text):
+        assert scrub_recalled_assistant_text(text) is None, (
+            f"recalled turn mentioning disabled specialist must be dropped: {text!r}"
+        )
+
+    @pytest.mark.parametrize("text", [
+        "Chrome is open with three tabs.",  # normal reply
+        "I can see VS Code on the left.",
+        "Got it.",
+        "Screen sharing on.",  # NOT a specialist mention — pass through
+    ])
+    def test_unrelated_text_passes(self, text):
+        assert scrub_recalled_assistant_text(text) == text
