@@ -29,7 +29,7 @@ from typing import Optional
 
 from livekit.agents.llm import function_tool
 
-logger = logging.getLogger("jarvis-browser-v2")
+logger = logging.getLogger("jarvis.browser_v2")
 
 
 # CDP endpoint we try to attach to first. If unreachable, browser-use

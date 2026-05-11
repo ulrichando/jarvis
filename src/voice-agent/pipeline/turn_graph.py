@@ -62,7 +62,7 @@ from pipeline.turn_router import (
     update_baseline,
 )
 
-logger = logging.getLogger("jarvis-agent.turn-graph")
+logger = logging.getLogger("jarvis.turn_graph")
 
 
 # Per-turn state. Mutable through node returns; LangGraph merges by key.

@@ -52,7 +52,7 @@ from resilience import TTS_BREAKER
 from resilience.circuit_breaker import CircuitOpenError
 
 
-logger = logging.getLogger("jarvis-agent")
+logger = logging.getLogger("jarvis.tts")
 
 
 # ── Groq TTS error-body logging shim ─────────────────────────────────

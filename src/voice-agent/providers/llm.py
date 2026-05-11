@@ -42,7 +42,7 @@ from resilience.circuit_breaker import (
 )
 
 
-logger = logging.getLogger("jarvis-agent")
+logger = logging.getLogger("jarvis.llm")
 
 
 # ── User-selected speech LLM (tray pick) ─────────────────────────────

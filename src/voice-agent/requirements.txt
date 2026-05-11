@@ -37,8 +37,11 @@ setuptools<70
 # LangChain's unified init_chat_model so the provider is pluggable
 # (Groq default; DeepSeek/OpenAI/Anthropic via JARVIS_ROUTER_PROVIDER).
 # Set JARVIS_GRAPH_DISABLED=1 to revert to the inline async dispatcher.
-langgraph>=1.0
-langgraph-checkpoint-sqlite>=3.0.3
-langchain>=1.0
-langchain-groq>=1.0
+#
+# Pinned with `~=` (semver-aware: accept patches + minors, refuse majors)
+# so a 2.x release can't pip-install silently and break the graph.
+langgraph~=1.0
+langgraph-checkpoint-sqlite~=3.0
+langchain~=1.0
+langchain-groq~=1.0
 langchain-openai~=1.2
