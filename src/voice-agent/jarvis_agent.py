@@ -674,187 +674,27 @@ DEFAULT_CLI_MODEL = "deepseek-v4-pro"
 #
 # Defaults to llama-3.3-70b on Groq for low first-token latency
 # (~200 ms). Other options trade latency for capability.
-SPEECH_MODEL_FILE     = Path.home() / ".jarvis" / "voice-model"
-DEFAULT_SPEECH_MODEL  = "llama-3.3-70b-versatile"
+#
+# Extracted 2026-05-10 (Step 5e of the 10/10 refactor):
+#   - _read_unified_setting → pipeline.settings.read_unified_setting
+#   - SPEECH_MODEL_FILE / DEFAULT_SPEECH_MODEL / SPEECH_MODELS /
+#     read_speech_model / make_speech_llm → providers.llm
+# Re-exported under the legacy names so the in-file call sites
+# (entrypoint, SPEECH_MODELS read for telemetry, CLI-model reader)
+# keep working unchanged.
+from pipeline.settings import read_unified_setting as _read_unified_setting
+from providers.llm import (
+    SPEECH_MODEL_FILE,
+    DEFAULT_SPEECH_MODEL,
+    SPEECH_MODELS,
+    read_speech_model,
+    make_speech_llm,
+)
 
 # TTS provider switching — written by the tray via /tts-provider on
 # the voice client. Format: "<provider>:<voice>", e.g. "groq:troy".
 # Only `groq:<voice>` is accepted post-2026-05-01 (ElevenLabs removed).
 TTS_PROVIDER_FILE = Path.home() / ".jarvis" / "tts-provider"
-
-
-def _read_unified_setting(key: str, file_path: Path) -> str | None:
-    """Read a setting via state.db (canonical, populated by the hub
-    daemon's settings_watcher) with a flat-file fallback for the
-    transition window when state.db isn't yet populated.
-
-    Returns None if neither path yields a value — caller decides what
-    the default means. See spec 2026-05-03-jarvis-unified-settings."""
-    # 1. State.db (canonical post-2026-05-03)
-    try:
-        from hub.client import HubClient as _HubClient
-        v = _HubClient.read_setting_sync(key)
-        if v:
-            return v
-    except Exception:
-        pass  # SDK unavailable / state.db missing — fall through
-    # 2. Flat file (legacy, still written by the tray)
-    try:
-        v = file_path.read_text(encoding="utf-8").strip()
-        return v if v else None
-    except FileNotFoundError:
-        return None
-    except Exception as e:
-        logger.warning(f"could not read {file_path}: {e}")
-        return None
-
-# IDs match the upstream model names verbatim so the registry stays
-# legible. Each entry: (provider+model labels for display, factory
-# building the LLM). Factories raise on missing API key — the
-# read_speech_model() helper falls back to the default if so.
-SPEECH_MODELS: dict[str, dict] = {
-    "llama-3.3-70b-versatile": {
-        "label": "Groq · llama 3.3 70B",
-        "build": lambda: groq.LLM(model="llama-3.3-70b-versatile", temperature=0.6),
-    },
-    "llama-3.1-8b-instant": {
-        # Tiny + fastest. Function calling is acceptable for simple
-        # tool routing but loses nuance on long multi-step replies.
-        "label": "Groq · llama 3.1 8B instant",
-        "build": lambda: groq.LLM(model="llama-3.1-8b-instant", temperature=0.6),
-    },
-    "qwen/qwen3-32b": {
-        # Strong tool calling, slightly slower than llama 3.3 70b but
-        # markedly more reliable at structured function calls.
-        "label": "Groq · qwen3-32b",
-        "build": lambda: groq.LLM(model="qwen/qwen3-32b", temperature=0.6),
-    },
-    "openai/gpt-oss-120b": {
-        # Same model the CLI tool uses by default. Robust at tool
-        # calls; somewhat slower first token (~400 ms).
-        "label": "Groq · gpt-oss-120b",
-        "build": lambda: groq.LLM(model="openai/gpt-oss-120b", temperature=0.6),
-    },
-    "meta-llama/llama-4-scout-17b-16e-instruct": {
-        "label": "Groq · llama 4 scout",
-        "build": lambda: groq.LLM(
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
-            temperature=0.6,
-        ),
-    },
-    # DeepSeek family — needs reasoning_content round-trip on
-    # assistant tool-call messages, handled by deepseek_roundtrip.install()
-    # at the top of this file. v4-pro is best at tools; v4-flash trades
-    # accuracy for ~30% latency reduction; deepseek-chat (V3) is the
-    # non-thinking baseline (probe shows it never emits
-    # reasoning_content even with the flag absent, so the patch's
-    # capture path is dead for it).
-    "deepseek-chat": {
-        "label": "DeepSeek · chat (V3, non-thinking)",
-        "build": lambda: lk_openai.LLM(
-            model="deepseek-chat",
-            api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
-            base_url="https://api.deepseek.com/v1",
-            temperature=0.6,
-        ),
-    },
-    "deepseek-v4-flash": {
-        "label": "DeepSeek · v4 flash",
-        "build": lambda: lk_openai.LLM(
-            model="deepseek-v4-flash",
-            api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
-            base_url="https://api.deepseek.com/v1",
-            temperature=0.6,
-        ),
-    },
-    "deepseek-v4-pro": {
-        "label": "DeepSeek · v4 pro",
-        "build": lambda: lk_openai.LLM(
-            model="deepseek-v4-pro",
-            api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
-            base_url="https://api.deepseek.com/v1",
-            temperature=0.6,
-        ),
-    },
-    # Kimi K2.6 — Moonshot OpenAI-compat. DISABLED for voice as of
-    # 2026-05-05: K2.6 spontaneously emits its built-in `web_search`
-    # tool call even when not in `request.tools`, and Moonshot rejects
-    # the request with `tool call validation failed: attempted to call
-    # tool 'web_search' which was not in request.tools`. Every
-    # supervisor turn fails on first content; circuit breaker opens;
-    # user hears nothing. Gated behind JARVIS_KIMI_VOICE_EXPERIMENTAL=1
-    # so it stays out of the tray picker by default — the flag is
-    # there for the next attempt at proper integration (either
-    # registering shim tools for K2.6's built-ins, or filtering them
-    # from the request server-side).
-}
-if os.environ.get("JARVIS_KIMI_VOICE_EXPERIMENTAL", "0") == "1":
-    SPEECH_MODELS["kimi-k2.6-instant"] = {
-        "label": "Kimi · K2.6 Instant (experimental)",
-        "build": lambda: lk_openai.LLM(
-            model="kimi-k2.6",
-            api_key=os.environ.get("KIMI_API_KEY", ""),
-            base_url="https://api.moonshot.ai/v1",
-            temperature=0.6,
-        ),
-    }
-    SPEECH_MODELS["kimi-k2.6-thinking"] = {
-        "label": "Kimi · K2.6 Thinking (experimental)",
-        "build": lambda: lk_openai.LLM(
-            model="kimi-k2.6",
-            api_key=os.environ.get("KIMI_API_KEY", ""),
-            base_url="https://api.moonshot.ai/v1",
-            temperature=0.4,
-        ),
-    }
-    SPEECH_MODELS["kimi-k2.6-agent"] = {
-        "label": "Kimi · K2.6 Agent (experimental)",
-        "build": lambda: lk_openai.LLM(
-            model="kimi-k2.6",
-            api_key=os.environ.get("KIMI_API_KEY", ""),
-            base_url="https://api.moonshot.ai/v1",
-            temperature=0.6,
-        ),
-    }
-    SPEECH_MODELS["kimi-k2.6-swarm"] = {
-        "label": "Kimi · K2.6 Swarm (experimental)",
-        "build": lambda: lk_openai.LLM(
-            model="kimi-k2.6",
-            api_key=os.environ.get("KIMI_API_KEY", ""),
-            base_url="https://api.moonshot.ai/v1",
-            temperature=0.7,
-        ),
-    }
-
-
-def read_speech_model() -> str:
-    """Return the active speech model ID, or the default if unset/invalid.
-
-    Reads via the unified-settings SDK (state.db) first, falling back
-    to the flat file written by the tray UI."""
-    name = _read_unified_setting("voice-model", SPEECH_MODEL_FILE)
-    if name in SPEECH_MODELS:
-        return name
-    if name:
-        logger.warning(
-            f"unknown speech model {name!r}, falling back to {DEFAULT_SPEECH_MODEL}"
-        )
-    return DEFAULT_SPEECH_MODEL
-
-
-def make_speech_llm() -> tuple[str, object]:
-    """Build the chosen speech LLM, falling back to default on failure."""
-    name = read_speech_model()
-    try:
-        llm = SPEECH_MODELS[name]["build"]()
-        logger.info(f"speech LLM: {name} ({SPEECH_MODELS[name]['label']})")
-        return name, llm
-    except Exception as e:
-        logger.error(
-            f"failed to build speech LLM {name!r} ({e}); "
-            f"falling back to {DEFAULT_SPEECH_MODEL}"
-        )
-        return DEFAULT_SPEECH_MODEL, SPEECH_MODELS[DEFAULT_SPEECH_MODEL]["build"]()
 
 
 # Extracted to providers/llm.py 2026-05-10 (Step 5d of the 10/10
