@@ -241,7 +241,6 @@ from tools.computer_use import (
     screenshot,
     live_screen,
     webcam_capture,
-    watch_screen,
     face_register,
     face_identify,
     face_list,
