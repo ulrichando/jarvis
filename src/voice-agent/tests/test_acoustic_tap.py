@@ -16,7 +16,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from taps.acoustic import AcousticTap, _RmsSample, _DB_FLOOR
+from pipeline.acoustic_tap import AcousticTap, _RmsSample, _DB_FLOOR
 
 
 def test_empty_tap_returns_zero():
@@ -66,7 +66,7 @@ def test_buffer_caps_oldest_eviction():
     """The deque has a fixed maxlen — older samples drop off when
     the buffer fills. This prevents unbounded memory growth on a
     long-running session."""
-    from taps.acoustic import _BUFFER_MAXLEN
+    from pipeline.acoustic_tap import _BUFFER_MAXLEN
     tap = AcousticTap()
     # Push more than maxlen
     for i in range(_BUFFER_MAXLEN + 50):

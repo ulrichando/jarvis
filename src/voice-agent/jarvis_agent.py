@@ -4372,7 +4372,7 @@ async def entrypoint(ctx: JobContext) -> None:
     # tap waits for track_subscribed events, so attaching here is
     # safe regardless of whether the user joined before or after us.
     try:
-        from taps.acoustic import AcousticTap
+        from pipeline.acoustic_tap import AcousticTap
         _tap = AcousticTap()
         _tap.attach_to_room(ctx.room)
         session._jarvis_acoustic_tap = _tap
