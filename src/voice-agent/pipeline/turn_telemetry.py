@@ -35,7 +35,7 @@ DEFAULT_DB_PATH = Path(
     )
 ).expanduser()
 
-# Base schema — does NOT include `specialist`. That column is added
+# Base schema — does NOT include `subagent`. That column is added
 # afterwards by the online migration so a pre-Phase-6 db that already
 # has the table (without the column) doesn't trip on a CREATE INDEX
 # referencing a column that hasn't been migrated in yet.
@@ -63,7 +63,7 @@ CREATE INDEX IF NOT EXISTS idx_turns_route  ON turns(route);
 -- across all sessions. Lets the report surface per-binary OK / MISSING
 -- / CRASHED counts so we can spot patterns like "users keep asking for
 -- 'notepad' but it isn't installed → suggest adding mousepad to the
--- specialist's app-name lookup".
+-- subagent's app-name lookup".
 CREATE TABLE IF NOT EXISTS launch_attempts (
     id INTEGER PRIMARY KEY,
     ts_utc TEXT NOT NULL,
@@ -85,9 +85,9 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
         # NOT EXISTS isn't supported by SQLite, so we check first and
         # tolerate the dup-column race that an exception would suggest.
         cols = {r[1] for r in conn.execute("PRAGMA table_info(turns)")}
-        if "specialist" not in cols:
+        if "subagent" not in cols:
             try:
-                conn.execute("ALTER TABLE turns ADD COLUMN specialist TEXT")
+                conn.execute("ALTER TABLE turns ADD COLUMN subagent TEXT")
             except sqlite3.OperationalError:
                 pass
         if "interrupted" not in cols:
@@ -138,7 +138,7 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
                 )
             except sqlite3.OperationalError:
                 pass
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_turns_specialist ON turns(specialist)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_turns_subagent ON turns(subagent)")
 
 
 def log_turn(
@@ -155,7 +155,7 @@ def log_turn(
     user_followup_30s: bool,
     route_fallback: bool,
     notes: str = "",
-    specialist: Optional[str] = None,
+    subagent: Optional[str] = None,
     interrupted: bool = False,
     input_tokens: Optional[int] = None,
     output_tokens: Optional[int] = None,
@@ -165,7 +165,7 @@ def log_turn(
 ) -> None:
     """Write one row. Any exception is swallowed so telemetry never blocks voice.
 
-    `specialist` is the registry name (`desktop`, `planner`, `browser`, …)
+    `subagent` is the registry name (`desktop`, `planner`, `browser`, …)
     of the sub-agent that owned this turn — set when a `transfer_to_X`
     handoff fired during the turn, None otherwise.
 
@@ -183,7 +183,7 @@ def log_turn(
                 """INSERT INTO turns
                    (ts_utc, user_text, jarvis_text, emotion, route, llm_used,
                     voice_used, ttfw_ms, total_audio_ms, user_followup_30s,
-                    route_fallback, notes, specialist, interrupted,
+                    route_fallback, notes, subagent, interrupted,
                     input_tokens, output_tokens, cost_usd, context_pressure,
                     memory_auto_extracted)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -192,7 +192,7 @@ def log_turn(
                     user_text, jarvis_text, emotion, route, llm_used,
                     voice_used, ttfw_ms, total_audio_ms,
                     int(user_followup_30s), int(route_fallback), notes,
-                    specialist, int(interrupted),
+                    subagent, int(interrupted),
                     input_tokens, output_tokens, cost_usd, context_pressure,
                     int(memory_auto_extracted),
                 ),
@@ -355,22 +355,22 @@ def report(
             parts = ", ".join(f"{e}={c}" for e, c in emo_rows)
             out.append(f"emotion distribution: {parts}")
 
-        # ── Specialist usage distribution ─────────────────────────
-        # `specialist` is None for turns the supervisor handled directly
+        # ── Subagent usage distribution ─────────────────────────
+        # `subagent` is None for turns the supervisor handled directly
         # (no handoff), and a registry name (desktop/planner/browser/…)
-        # when a transfer_to_X fired. Lets us see which specialists are
+        # when a transfer_to_X fired. Lets us see which subagents are
         # dead weight (hint to disable) and which are over-used (hint
         # to split further).
         spec_rows = list(conn.execute(
-            f"""SELECT COALESCE(specialist, 'supervisor'), COUNT(*)
+            f"""SELECT COALESCE(subagent, 'supervisor'), COUNT(*)
                 FROM turns{where_sql}
-                GROUP BY specialist ORDER BY 2 DESC""",
+                GROUP BY subagent ORDER BY 2 DESC""",
             where_args,
         ))
         if spec_rows:
             spec_pct = lambda c: f"{c}/{n} ({c/n:.0%})"
             parts = ", ".join(f"{s}={spec_pct(c)}" for s, c in spec_rows)
-            out.append(f"specialist usage: {parts}")
+            out.append(f"subagent usage: {parts}")
 
         # ── Interruption rate (overall + per-route) ───────────────
         # Phase 10.5 — surfaces the impact of per-route + per-emotion

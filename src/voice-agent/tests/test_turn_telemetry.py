@@ -11,10 +11,10 @@ def _seed(db_path, rows):
     so we can pin ts_utc for the --days slicing test without sleeping.
 
     Row shape: (ts, user, jarvis, emotion, route, llm, voice, ttfw,
-    audio, followup, fb, notes [, specialist])."""
+    audio, followup, fb, notes [, subagent])."""
     init_db(db_path)
     with sqlite3.connect(db_path) as c:
-        # Detect whether rows include the specialist column (Phase 6+)
+        # Detect whether rows include the subagent column (Phase 6+)
         first = rows[0] if rows else ()
         has_spec = len(first) >= 13
         if has_spec:
@@ -22,7 +22,7 @@ def _seed(db_path, rows):
                 """INSERT INTO turns
                    (ts_utc, user_text, jarvis_text, emotion, route, llm_used,
                     voice_used, ttfw_ms, total_audio_ms, user_followup_30s,
-                    route_fallback, notes, specialist)
+                    route_fallback, notes, subagent)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 rows,
             )
@@ -157,10 +157,10 @@ def test_parse_days_arg():
     assert _parse_days_arg(["x.py", "--days"]) is None              # missing
 
 
-# ── Phase 6: specialist column + report breakdown ─────────────────────
+# ── Phase 6: subagent column + report breakdown ─────────────────────
 
 
-def test_log_turn_writes_specialist_column(tmp_path):
+def test_log_turn_writes_subagent_column(tmp_path):
     db_path = tmp_path / "telemetry.db"
     init_db(db_path)
     log_turn(
@@ -175,16 +175,16 @@ def test_log_turn_writes_specialist_column(tmp_path):
         total_audio_ms=1200,
         user_followup_30s=False,
         route_fallback=False,
-        specialist="desktop",
+        subagent="desktop",
     )
     rows = sqlite3.connect(db_path).execute(
-        "SELECT specialist FROM turns"
+        "SELECT subagent FROM turns"
     ).fetchall()
     assert rows == [("desktop",)]
 
 
-def test_log_turn_specialist_defaults_to_null(tmp_path):
-    """When no handoff happened on a turn, specialist should be NULL —
+def test_log_turn_subagent_defaults_to_null(tmp_path):
+    """When no handoff happened on a turn, subagent should be NULL —
     those rows show up under 'supervisor' in the report."""
     db_path = tmp_path / "telemetry.db"
     init_db(db_path)
@@ -198,13 +198,13 @@ def test_log_turn_specialist_defaults_to_null(tmp_path):
         user_followup_30s=False, route_fallback=False,
     )
     row = sqlite3.connect(db_path).execute(
-        "SELECT specialist FROM turns"
+        "SELECT subagent FROM turns"
     ).fetchone()
     assert row == (None,)
 
 
 def test_init_db_migrates_existing_schema(tmp_path):
-    """When init_db hits a pre-Phase-6 db (no specialist column),
+    """When init_db hits a pre-Phase-6 db (no subagent column),
     it should add the column without dropping data."""
     db_path = tmp_path / "telemetry.db"
     # Build an old-shape table BEFORE calling init_db
@@ -230,17 +230,17 @@ def test_init_db_migrates_existing_schema(tmp_path):
 
     with sqlite3.connect(db_path) as c:
         cols = {r[1] for r in c.execute("PRAGMA table_info(turns)")}
-        assert "specialist" in cols
+        assert "subagent" in cols
         # Old row preserved
         cnt = c.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
         assert cnt == 1
 
 
-def test_report_shows_specialist_distribution(tmp_path):
+def test_report_shows_subagent_distribution(tmp_path):
     db = tmp_path / "t.db"
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     rows = [
-        # Two desktop, one planner, one browser, two supervisor (NULL specialist)
+        # Two desktop, one planner, one browser, two supervisor (NULL subagent)
         (now, "u", "j", "neutral", "TASK", "g", "v", 600, 900, 0, 0, "", "desktop"),
         (now, "u", "j", "neutral", "TASK", "g", "v", 700, 1000, 0, 0, "", "desktop"),
         (now, "u", "j", "neutral", "REASONING", "g", "v", 1500, 2200, 0, 0, "", "planner"),
@@ -250,7 +250,7 @@ def test_report_shows_specialist_distribution(tmp_path):
     ]
     _seed(db, rows)
     out = report(db)
-    assert "specialist usage:" in out
+    assert "subagent usage:" in out
     # Expect to see all four buckets
     assert "desktop=2/6" in out
     assert "planner=1/6" in out
@@ -283,7 +283,7 @@ def test_init_db_adds_cost_columns(tmp_path):
                 user_followup_30s INTEGER,
                 route_fallback INTEGER,
                 notes TEXT,
-                specialist TEXT,
+                subagent TEXT,
                 interrupted INTEGER DEFAULT 0
             )"""
         )

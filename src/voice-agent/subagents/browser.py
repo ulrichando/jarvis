@@ -1,4 +1,4 @@
-"""Browser specialist — drives a real Chrome via the jarvis-screen
+"""Browser subagent — drives a real Chrome via the jarvis-screen
 extension. Replaces the legacy `browser_task` (browser-use library)
 path: instead of one all-in-one black box, the LLM emits one DOM-
 level command per turn and steps the task forward (Manus pattern).
@@ -14,7 +14,7 @@ from ._ack_phrases import ACK_BROWSER
 
 
 BROWSER_INSTRUCTIONS = """\
-You are JARVIS's browser specialist. The supervisor handed control to
+You are JARVIS's browser subagent. The supervisor handed control to
 you because the user wants something done in a real Chrome browser:
 log in to a site, post a tweet, check Gmail, scroll a feed, fill a
 form, navigate a multi-step UI.
@@ -42,7 +42,7 @@ Past failure 2026-05-06 turn 1104 (this is the canonical past
 failure — read it carefully):
 
   user: "Sounds like you weren't able to perform it."
-  you (browser specialist) replied: "A new tab is open in your
+  you (browser subagent) replied: "A new tab is open in your
        browser, sir."
 
 You said this WITHOUT calling ext_new_tab in this handoff. You
@@ -117,7 +117,7 @@ fallback is `ext_screenshot()` (to see what's on screen) or
 `web_search(engine="google", query=<the request verbatim>)` — NEVER
 task_done with a guessed summary.
 
-Past failure 2026-05-02 23:35: specialist activated for "search YouTube
+Past failure 2026-05-02 23:35: subagent activated for "search YouTube
 for cooking videos", emitted task_done("Intruder incidents reported,
 reviewing security protocols") as its FIRST and ONLY tool call. No
 search ran. The summary was hallucinated from background TV dialogue
@@ -158,7 +158,7 @@ calling a tool — those are CONFABULATIONS, not examples to follow.
    confabulating success.
 
    **Past failure 2026-05-01**: user said "Open a new tab on the
-   browser." Browser specialist replied "Done, sir." with NO tool
+   browser." Browser subagent replied "Done, sir." with NO tool
    call (Groq rejected its function-call attempt mid-stream). The
    user noticed immediately because the screen showed no new tab.
    This is the worst failure mode — voicing a fake reality. Always
@@ -177,8 +177,8 @@ calling a tool — those are CONFABULATIONS, not examples to follow.
 
      - "user changed topic to <X>"
      - "not a browser task — handing back to supervisor"
-     - "wrong specialist — needs the desktop specialist"
-     - "wrong specialist — needs the supervisor"
+     - "wrong subagent — needs the desktop subagent"
+     - "wrong subagent — needs the supervisor"
      - "cannot accomplish with browser tools — handing back to supervisor"
 
    DO NOT freelance phrasing — the framework will refuse it and
@@ -335,7 +335,7 @@ You: task_done("'hello world' typed in Twitter compose. Confirm post?")
 
 
 def _browser_tools() -> list:
-    """Lazy import of the 25 ext_* @function_tools. Done at specialist-
+    """Lazy import of the 25 ext_* @function_tools. Done at subagent-
     construction time so tools.browser_ext.py only loads if the user
     actually triggers a browser handoff (saves startup memory)."""
     from tools.browser_ext import ALL_TOOLS
@@ -354,11 +354,11 @@ _BROWSER_WHEN = (
 
 
 def register_browser() -> None:
-    """Register the browser specialist. `enabled=True` ships it live —
+    """Register the browser subagent. `enabled=True` ships it live —
     the bridge endpoint and the extension command channel were both
     completed in earlier phases of the extension migration. If the
     extension isn't connected at runtime, the bridge returns a
-    structured `extension not connected` error and the specialist
+    structured `extension not connected` error and the subagent
     voices it back instead of hanging."""
     register(HandoffSubagent(
         name="browser",
@@ -368,7 +368,7 @@ def register_browser() -> None:
         tool_factory=_browser_tools,
         ack_phrase=ACK_BROWSER,
         # 2026-05-02: dropped 12 → 4. The 12-turn chat_ctx was
-        # poisoning the specialist — recall seeded prior hallucinated
+        # poisoning the subagent — recall seeded prior hallucinated
         # successes ("A new tab is open, sir." with no tool fired)
         # and the LLM pattern-matched against them, producing fresh
         # confabulations. 4 turns = the user's request + minimal

@@ -134,7 +134,7 @@ def test_state_cleared_when_envelope_balances():
     # State should be cleared by now.
     assert "resp_clear" not in pycall_sanitizer._PYCALL_STATE
 
-# ── F-arch-011 / W-015: XML-attribute form + specialist-tool leaks ─────
+# ── F-arch-011 / W-015: XML-attribute form + subagent-tool leaks ─────
 
 
 def test_suppresses_xml_attribute_form():
@@ -165,10 +165,10 @@ def test_suppresses_xml_attribute_form():
     assert "</function>" not in full, full
 
 
-def test_suppresses_specialist_tool_leak_from_non_local_llm():
+def test_suppresses_subagent_tool_leak_from_non_local_llm():
     """Live-captured 2026-05-05 22:07: supervisor LLM emitted
     `task_done("user changed topic")` as plain content. `task_done`
-    is a per-specialist auto-attached tool — never in the supervisor
+    is a per-subagent auto-attached tool — never in the supervisor
     LLM's tool_ctx. The original guard skipped because of that.
 
     Must be suppressed: no LLM should EVER speak `task_done(...)` to
@@ -184,14 +184,14 @@ def test_suppresses_specialist_tool_leak_from_non_local_llm():
 
     leak = 'task_done("user changed topic") '
     c = _make_choice(leak)
-    inf_llm.LLMStream._parse_choice(self_mock, "resp_specialist_1", c, thinking)
+    inf_llm.LLMStream._parse_choice(self_mock, "resp_subagent_1", c, thinking)
     assert "task_done" not in (c.delta.content or ""), (
-        f"specialist-internal tool leaked: {c.delta.content!r}"
+        f"subagent-internal tool leaked: {c.delta.content!r}"
     )
 
 
 def test_suppresses_ext_prefix_tool_leak():
-    """Browser specialist tools all have the `ext_*` prefix. The XML
+    """Browser subagent tools all have the `ext_*` prefix. The XML
     form already covers `<function=ext_X>` but the Python form
     `ext_navigate(url)` should also be suppressed even when the LLM
     that's currently active doesn't have ext_navigate registered

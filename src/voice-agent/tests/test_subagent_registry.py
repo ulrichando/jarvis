@@ -2,7 +2,7 @@
 
 The hybrid sub-agent architecture (one `delegate(role, task)` tool
 covering N subagents) replaces the per-spec `transfer_to_X` tool path
-for new specialists. Token cost in the supervisor's prompt becomes
+for new subagents. Token cost in the supervisor's prompt becomes
 constant in N instead of linear.
 
 These tests cover:

@@ -22,7 +22,7 @@ Why a graph here, given the logic already worked imperatively:
 1. **Replayable** — every node is a pure function of (state, config). Saving
    the state at any point lets us replay a turn for debugging.
 2. **Extensible** — the user wants more sub-agents soon (planner, browser,
-   research). Each specialist becomes a downstream node from `swap_route`,
+   research). Each subagent becomes a downstream node from `swap_route`,
    not another async branch in a 100-line function.
 3. **Cross-domain reuse** — the LangChain ChatModel used by `run_classifier`
    is the same primitive used by future RAG / document QA / tool agents.
@@ -40,7 +40,7 @@ Things that explicitly stayed in jarvis_agent.py / LiveKit:
   with `ainvoke` from inside the listener; we await it before returning.
 - All filters/middleware on the LLM stream.
 
-Phase 2 (NOT in this spike): replace `transfer_to_desktop` / future specialists
+Phase 2 (NOT in this spike): replace `transfer_to_desktop` / future subagents
 with subgraphs invoked from `swap_route` based on the classified route.
 """
 from __future__ import annotations

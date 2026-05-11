@@ -1,4 +1,4 @@
-"""Summarize subagent — first specialist using the DelegatedSubagent / delegate
+"""Summarize subagent — first subagent using the DelegatedSubagent / delegate
 pattern. Pure-prompt, zero tools, demonstrates the path end-to-end.
 
 The supervisor invokes via `delegate(role="summarize", task="<text or
@@ -19,7 +19,7 @@ from ._ack_phrases import ACK_SUMMARIZE
 
 
 SUMMARIZE_INSTRUCTIONS = """\
-You are JARVIS's summarize specialist. The supervisor handed control
+You are JARVIS's summarize subagent. The supervisor handed control
 to you because the user wants a short summary of something — a long
 message, a topic, an article, a thread of conversation, anything that
 can be condensed.
@@ -65,7 +65,7 @@ You: task_done("user changed their mind")
 
 
 def _summarize_tools() -> list:
-    """No tools — this specialist is pure-prompt. The framework still
+    """No tools — this subagent is pure-prompt. The framework still
     requires `task_done` which `RegistrySubagent` provides natively."""
     return []
 

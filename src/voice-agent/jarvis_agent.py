@@ -158,7 +158,7 @@ pycall_sanitizer.install()
 # Drop anticipatory text alongside transfer_to_*/delegate calls. The
 # supervisor LLM sometimes emits a fake confirmation ("A new tab is
 # open.") in the same turn as a handoff tool call — TTS plays
-# the lie before the specialist runs. confab_detector blocks the DB
+# the lie before the subagent runs. confab_detector blocks the DB
 # save but TTS already streamed; this patches _parse_choice to blank
 # delta.content from the moment a handoff is detected. Stacks on top
 # of dsml_sanitizer + pycall_sanitizer.
@@ -173,7 +173,7 @@ sanitizers.denial_detector.install()
 
 # Wrap LLM streams in asyncio.wait_for so stalled Groq connections
 # raise TimeoutError after JARVIS_LLM_IDLE_TIMEOUT (default 30s)
-# instead of hanging forever. Captured live 2026-05-02: specialist
+# instead of hanging forever. Captured live 2026-05-02: subagent
 # on_enter fired then 3+ minutes of dead air — connect-only timeout
 # couldn't see the stall. Patches LLMStream._run; stacks on top of
 # the other sanitizers.
@@ -231,12 +231,12 @@ from pipeline.dispatching_llm import DispatchingLLM
 from pipeline.dispatching_tts import DispatchingTTS
 from pipeline.turn_telemetry import init_db, log_turn, log_launch_attempt, DEFAULT_DB_PATH
 
-# Specialist registry — auto-registers built-in specs on import
-# (see specialists/__init__.py). build_all_transfer_tools() returns
+# Subagent registry — auto-registers built-in specs on import
+# (see subagents/__init__.py). build_all_transfer_tools() returns
 # the @function_tool list for every enabled spec; gets attached to
 # JarvisAgent's tools=[…] at construction. No circular import: the
-# specialists' tool_factories are lazy callables that import from
-# jarvis_agent only when a specialist is actually instantiated.
+# subagents' tool_factories are lazy callables that import from
+# jarvis_agent only when a subagent is actually instantiated.
 from subagents.agent import build_all_transfer_tools
 
 logger = logging.getLogger("jarvis")
@@ -274,7 +274,7 @@ from tools.bash import bash as _bash_tool
 from tools.file_read import read as _read_tool
 from tools.file_edit import edit as _edit_tool
 from tools.file_write import write as _write_tool
-# Plan mode (replaces the legacy planner specialist) — ported from
+# Plan mode (replaces the legacy planner subagent) — ported from
 # claude-code's commands/plan/plan.tsx + tools/EnterPlanModeTool +
 # utils/plans.ts. The supervisor itself enters plan mode for non-trivial
 # implementation tasks; write tools refuse until exit_plan_mode runs.
@@ -693,7 +693,7 @@ JARVIS_CLI_SCRIPT = os.environ.get(
 # Default 120 s (was 60 s). Multi-step design / refactor work
 # routinely needs 60-90 s end-to-end on deepseek-v4-pro; the lower
 # default was killing turns mid-write and leaving the planner
-# specialist with no concrete result to summarise. Override via
+# subagent with no concrete result to summarise. Override via
 # env when you want a different cap.
 JARVIS_CLI_TIMEOUT_S = int(os.environ.get("JARVIS_CLI_TIMEOUT_S", "120"))
 
@@ -2678,7 +2678,7 @@ async def web_search(query: str, max_results: int = 5) -> str:
         if ia:
             logger.info(f"[web_search] Instant Answer fallback returned for {q!r}")
             return ia
-        # Fallback B: instruct LLM to escalate to browser specialist.
+        # Fallback B: instruct LLM to escalate to browser subagent.
         return (
             "Search backend (DuckDuckGo) is rate-limiting this IP and "
             "blocked the query with a CAPTCHA. The keyless Instant Answer "
@@ -2686,7 +2686,7 @@ async def web_search(query: str, max_results: int = 5) -> str:
             "with a rephrased query — every variation hits the same block. "
             "Three honest options, in order of preference:\n"
             "  (a) **Escalate to transfer_to_browser** — the browser "
-            "      specialist drives the user's real signed-in Chrome via "
+            "      subagent drives the user's real signed-in Chrome via "
             "      the bridge extension, which bypasses server-side rate "
             "      limits. Best for research-style queries. Hand off with "
             "      transfer_to_browser('search Google for <query>').\n"
@@ -2694,7 +2694,7 @@ async def web_search(query: str, max_results: int = 5) -> str:
             "      explicitly (\"as of my training data\" / \"I'm not sure\").\n"
             "  (c) Ask the user for a specific URL and use web_fetch on it.\n"
             "Voice path: 'Search is currently blocked by the backend — "
-            "want me to have the browser specialist look it up in your Chrome, "
+            "want me to have the browser subagent look it up in your Chrome, "
             "or answer from what I know?'"
         )
 
@@ -3307,10 +3307,10 @@ from pipeline.barge_in import (
 #     "I'm back" acknowledgment; mute phrases also pass through so
 #     it can voice "going silent" once before suppressing.
 class JarvisAgent(Agent):
-    # Specialist handoffs (transfer_to_desktop, transfer_to_planner, …)
-    # are now supplied via the `specialists/` registry — see
+    # Subagent handoffs (transfer_to_desktop, transfer_to_planner, …)
+    # are now supplied via the `subagents/` registry — see
     # `build_all_transfer_tools()` in the JarvisAgent instantiation
-    # below. Adding a new specialist is one file under specialists/,
+    # below. Adding a new subagent is one file under subagents/,
     # one register() call, no edits here.
     #
     # The legacy class-method `transfer_to_desktop` was removed in
@@ -3641,12 +3641,12 @@ def prewarm(proc: JobProcess) -> None:
     )
 
 
-def _pick_supervisor_llm(*, specialist_tools, legacy_llm):
+def _pick_supervisor_llm(*, subagent_tools, legacy_llm):
     """Returns the legacy dispatcher LLM. Pre-2026-05-10 this was a
     feature-flag picker for the LangGraph supervisor (gated behind
     `JARVIS_LANGGRAPH_SUPERVISOR=1`); the alt supervisor was deleted
     after sitting default-off through 2 spec-review cycles with no
-    plan to flip it on. `specialist_tools` arg kept for call-site
+    plan to flip it on. `subagent_tools` arg kept for call-site
     compatibility but no longer used."""
     return legacy_llm
 
@@ -4397,13 +4397,13 @@ async def entrypoint(ctx: JobContext) -> None:
     tts_arg            = _stack["tts_arg"]
 
     llm_arg = _pick_supervisor_llm(
-        specialist_tools=build_all_transfer_tools(),
+        subagent_tools=build_all_transfer_tools(),
         legacy_llm=llm_arg,
     )
 
     session = AgentSession(
         # 2026-05-02: raised from livekit's default 3 to 15. Browser
-        # specialist chains commonly need 5+ tool calls (navigate,
+        # subagent chains commonly need 5+ tool calls (navigate,
         # wait_for_load, observe, type, keypress) and 3 was burning
         # the budget on retries — 'maximum number of function calls
         # steps reached' truncated the chain mid-task. 15 leaves
@@ -4740,11 +4740,11 @@ async def entrypoint(ctx: JobContext) -> None:
                         ttfw_ms = int((time.monotonic() - start) * 1000)
                     else:
                         ttfw_ms = 0
-                    # Capture specialist BEFORE clearing — read once,
+                    # Capture subagent BEFORE clearing — read once,
                     # then None-out so the next turn doesn't reuse a
                     # stale value when the supervisor handles it
                     # directly (no handoff).
-                    specialist = getattr(session, "_jarvis_last_specialist", None)
+                    subagent = getattr(session, "_jarvis_last_subagent", None)
                     if _dispatch_llm is not None:
                         llm_used = _dispatch_llm.last_llm_label
                         voice_used = _dispatch_tts.last_voice_id
@@ -4799,7 +4799,7 @@ async def entrypoint(ctx: JobContext) -> None:
                         total_audio_ms=audio_ms_acc,
                         user_followup_30s=False,  # backfilled at report-time
                         route_fallback=False,
-                        specialist=specialist,
+                        subagent=subagent,
                         interrupted=interrupted_flag,
                         input_tokens=in_tok,
                         output_tokens=out_tok,
@@ -4811,7 +4811,7 @@ async def entrypoint(ctx: JobContext) -> None:
                     session._jarvis_last_output_tokens = None
                     # Reset for next turn so a fresh handoff stamps
                     # the value and absent handoffs leave it None.
-                    session._jarvis_last_specialist = None
+                    session._jarvis_last_subagent = None
                     session._jarvis_was_interrupted = False
                     # Reset total_audio_ms accumulator (and any open
                     # speaking-segment start) so the next turn starts
@@ -4888,7 +4888,7 @@ async def entrypoint(ctx: JobContext) -> None:
         # the orchestrator/router only. ALL action work (open apps,
         # click, type, drag, screenshot, browser automation, multi-step
         # plans, media playback) goes through transfer_to_desktop
-        # → DesktopActionsAgent specialist. The narration trap (LLM
+        # → DesktopActionsAgent subagent. The narration trap (LLM
         # claims "I've opened Chrome" without firing any tool) was the
         # downstream symptom of giving the supervisor too many tools.
         # With nothing it can do directly, it MUST handoff for action.
@@ -4902,12 +4902,12 @@ async def entrypoint(ctx: JobContext) -> None:
         #   - The ONE handoff: transfer_to_desktop
         #
         # What was removed:
-        #   - bash → desktop specialist
-        #   - run_jarvis_cli → desktop specialist (multi-step plans)
-        #   - media_control → desktop specialist (playback)
-        #   - type_in_terminal → desktop specialist
-        #   - computer_use family + screenshot family → desktop specialist
-        #   - browser_task → desktop specialist (specialist's tools list)
+        #   - bash → desktop subagent
+        #   - run_jarvis_cli → desktop subagent (multi-step plans)
+        #   - media_control → desktop subagent (playback)
+        #   - type_in_terminal → desktop subagent
+        #   - computer_use family + screenshot family → desktop subagent
+        #   - browser_task → desktop subagent (subagent's tools list)
         # All preserved on DesktopActionsAgent; nothing was lost.
         tools=[
             # Direct in-process tools (claude-code-grade, ported M1)
@@ -4921,7 +4921,7 @@ async def entrypoint(ctx: JobContext) -> None:
             _read_tool,
             _edit_tool,
             _write_tool,
-            # Plan mode (replaces the legacy planner specialist).
+            # Plan mode (replaces the legacy planner subagent).
             # enter_plan_mode → bash/edit/write refuse, supervisor
             # explores via read/grep/glob and drafts a plan;
             # exit_plan_mode(plan=...) records and re-enables writes.
@@ -4939,12 +4939,12 @@ async def entrypoint(ctx: JobContext) -> None:
             # Location — IP geo + Wi-Fi BSSID + manual override.
             # set_location is on the supervisor so phrases like
             # "I'm in Cleveland" / "set my location to X" persist
-            # without going through a specialist handoff.
+            # without going through a subagent handoff.
             get_location,
             set_location,
             # screenshot — read-only "what's on my screen?" tool.
             # Added to the supervisor 2026-05-11 evening after the
-            # desktop-specialist routing produced a capability-denial
+            # desktop-subagent routing produced a capability-denial
             # bug (Claude said "I don't have a screenshot tool active"
             # instead of either calling the tool or transferring).
             # screenshot() is read-only and stateless — no narration-
@@ -4988,12 +4988,12 @@ async def entrypoint(ctx: JobContext) -> None:
             face_identify,
             face_list,
             face_delete,
-            # Registry-supplied specialist handoffs. The legacy
+            # Registry-supplied subagent handoffs. The legacy
             # `transfer_to_desktop` on this class still owns the
             # desktop spec (registered with enabled=False to avoid the
             # name collision); the registry contributes additional
             # transfer tools (planner, browser when shipped, etc.).
-            # Adding a new specialist = one file under specialists/,
+            # Adding a new subagent = one file under subagents/,
             # one register() call, no edits here.
             *build_all_transfer_tools(),
         ],
@@ -5048,7 +5048,7 @@ async def entrypoint(ctx: JobContext) -> None:
         # -Output- variants were deprecated in livekit-agents 1.5.)
         #
         # video_input=True is REQUIRED for the screen_share Live
-        # specialist — without it, RoomOptions.get_video_input_options()
+        # subagent — without it, RoomOptions.get_video_input_options()
         # returns None, the AgentSession never subscribes to any video
         # track, and the RealtimeModel's push_video is never called
         # (verified by reading agent_session.py:1428 + room_io/types.py:147).

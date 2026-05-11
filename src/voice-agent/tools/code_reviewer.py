@@ -66,7 +66,7 @@ Rules:
 
 def _format_for_prompt(value: Any, cap: int = 8000) -> str:
     """Cap input size — code review of >8KB is too coarse to be useful
-    via a single LLM call. Use planner specialist for whole-repo work."""
+    via a single LLM call. Use planner subagent for whole-repo work."""
     s = str(value)
     return s if len(s) <= cap else s[:cap] + "\n…(truncated, review first portion only)"
 

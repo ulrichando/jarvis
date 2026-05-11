@@ -1,8 +1,8 @@
-"""Screen-share Live specialist — handles "what's on my screen?" with
+"""Screen-share Live subagent — handles "what's on my screen?" with
 real-time vision via Gemini Live (RealtimeModel).
 
 When screen-share is active AND the user asks about the screen, the
-supervisor transfers here. This specialist uses
+supervisor transfers here. This subagent uses
 `gemini-2.5-flash-native-audio-preview-12-2025` over the Live API
 (WebSocket bidirectional streaming) — frames flow continuously into
 the model, the model has standing visual context, and the user's
@@ -18,7 +18,7 @@ Architectural notes (researcher 2026-05-11):
     `google.realtime.RealtimeModel` wraps this for us — text comes
     via transcription events on the same WebSocket.
 
-  - Persona shifts when this specialist is active: Gemini's native
+  - Persona shifts when this subagent is active: Gemini's native
     voice replaces Groq Orpheus, and JARVIS's "no sir, compact,
     calibrated" instructions are only loosely respected. Best-effort
     via the spec's system prompt below.
@@ -50,7 +50,7 @@ logger = logging.getLogger("jarvis.subagent.screen_share")
 # were the deprecated send_realtime_input(media=Blob) shape, fixed now.
 # 3.1's trade-off vs 2.5-native-audio: tools/instructions/chat context
 # are IMMUTABLE mid-session — you can't update them without reconnecting.
-# Fine for our screen-share specialist (short, contained handoffs);
+# Fine for our screen-share subagent (short, contained handoffs);
 # would be limiting if it were the main supervisor.
 SCREEN_SHARE_LIVE_MODEL: str = os.environ.get(
     "JARVIS_SCREEN_SHARE_LIVE_MODEL",
@@ -78,7 +78,7 @@ SCREEN_SHARE_LIVE_CONTEXT_TOKENS: int = int(os.environ.get(
 
 
 SCREEN_SHARE_INSTRUCTIONS = """\
-You are JARVIS's screen-share specialist. The user has their screen
+You are JARVIS's screen-share subagent. The user has their screen
 shared with you live, and you can SEE what's on it in real time.
 
 YOUR ONE JOB: answer the user's question about the screen in ONE
@@ -129,7 +129,7 @@ answer, call task_done IMMEDIATELY with one of these EXACT phrases:
   - "not a screen-share task"
   - "handing back to supervisor"
 
-The framework's specialist tool-gate enforces this — text-only exits
+The framework's subagent tool-gate enforces this — text-only exits
 without an exact bailout phrase get refused and you'll loop. Use
 one of the five above verbatim.
 """
@@ -145,7 +145,7 @@ def _screen_share_tools() -> list:
 
 def _build_screen_share_llm():
     """Construct the Gemini Live RealtimeModel for the screen-share
-    specialist. Lazy import so livekit-plugins-google isn't pulled
+    subagent. Lazy import so livekit-plugins-google isn't pulled
     at registry-import time (it brings in google-genai which is heavy).
 
     Configuration is the researcher-recommended shape for
@@ -200,7 +200,7 @@ _SCREEN_SHARE_WHEN = (
     "reads text (filenames, error messages, headings) far better "
     "than the screenshot() fallback. ALWAYS prefer this over "
     "screenshot() when the user is asking about screen content. "
-    "If the user isn't actively sharing, this specialist will "
+    "If the user isn't actively sharing, this subagent will "
     "self-bail and the supervisor can fall back to screenshot(). "
     "Pass the user's literal question as the argument."
 )

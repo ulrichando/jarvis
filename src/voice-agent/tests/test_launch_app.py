@@ -12,7 +12,7 @@ the wrapper depends on:
   - log_launch_attempt              → telemetry side effect we verify
 
 We also confirm the path / args / outcome strings match what the
-desktop specialist's prompt teaches the LLM to interpret.
+desktop subagent's prompt teaches the LLM to interpret.
 """
 import asyncio
 import sys

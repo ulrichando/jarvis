@@ -221,14 +221,14 @@ def test_sanitizer_re_emits_transfer_to_X_as_tool_call():
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Fix 4: Specialist task_done gate refuses bailout
+# Fix 4: Subagent task_done gate refuses bailout
 # ─────────────────────────────────────────────────────────────────────
 
-def test_specialist_task_done_refuses_when_no_real_tool_ran():
+def test_subagent_task_done_refuses_when_no_real_tool_ran():
     """RegistrySubagent.task_done must refuse (return self with a
     corrective message) when chat_ctx since handoff contains no
     FunctionCall items other than task_done itself. The browser
-    specialist's instructions explicitly forbid task_done as the
+    subagent's instructions explicitly forbid task_done as the
     first tool call; this enforces it programmatically.
     """
     from livekit.agents.llm import FunctionCall, ChatContext, ChatMessage
@@ -247,13 +247,13 @@ def test_specialist_task_done_refuses_when_no_real_tool_ran():
     )
 
     supervisor = MagicMock()
-    specialist = RegistrySubagent(spec=spec, supervisor=supervisor)
+    subagent = RegistrySubagent(spec=spec, supervisor=supervisor)
 
     # Simulate on_enter: handoff started at index 2 (some history present)
-    specialist._handoff_start_idx = 2
+    subagent._handoff_start_idx = 2
     # Items 0-1 are pre-handoff. Items 2+ are this handoff.
     # Only a task_done was emitted — no real tool call.
-    specialist._chat_ctx = ChatContext(items=[
+    subagent._chat_ctx = ChatContext(items=[
         ChatMessage(role="user", content=["pre-handoff"]),
         ChatMessage(role="assistant", content=["pre-handoff"]),
         # Inside handoff: only task_done
@@ -262,19 +262,19 @@ def test_specialist_task_done_refuses_when_no_real_tool_ran():
 
     ctx = MagicMock()
 
-    next_agent, msg = _run(specialist.task_done(ctx, "Opened a tab, sir."))
+    next_agent, msg = _run(subagent.task_done(ctx, "Opened a tab, sir."))
 
-    # Must STAY on specialist, NOT transition to supervisor
-    assert next_agent is specialist, (
-        "expected gate to keep us on specialist; transitioned to %r" % next_agent
+    # Must STAY on subagent, NOT transition to supervisor
+    assert next_agent is subagent, (
+        "expected gate to keep us on subagent; transitioned to %r" % next_agent
     )
     # Message must be a corrective string telling the LLM to call a real tool
     assert "REFUSED" in msg
     assert "tool" in msg.lower()
 
 
-def test_specialist_task_done_passes_when_real_tool_ran():
-    """When the specialist DID run a real tool (e.g. ext_new_tab) before
+def test_subagent_task_done_passes_when_real_tool_ran():
+    """When the subagent DID run a real tool (e.g. ext_new_tab) before
     task_done, the gate must let task_done through normally — return
     (supervisor, summary)."""
     from livekit.agents.llm import FunctionCall, ChatContext, ChatMessage
@@ -293,9 +293,9 @@ def test_specialist_task_done_passes_when_real_tool_ran():
     )
 
     supervisor = MagicMock()
-    specialist = RegistrySubagent(spec=spec, supervisor=supervisor)
-    specialist._handoff_start_idx = 1
-    specialist._chat_ctx = ChatContext(items=[
+    subagent = RegistrySubagent(spec=spec, supervisor=supervisor)
+    subagent._handoff_start_idx = 1
+    subagent._chat_ctx = ChatContext(items=[
         ChatMessage(role="user", content=["pre"]),
         # Real tool fired before task_done
         FunctionCall(call_id="c1", arguments="{}", name="ext_new_tab"),
@@ -303,15 +303,15 @@ def test_specialist_task_done_passes_when_real_tool_ran():
     ])
 
     ctx = MagicMock()
-    next_agent, msg = _run(specialist.task_done(ctx, "Opened a tab, sir."))
+    next_agent, msg = _run(subagent.task_done(ctx, "Opened a tab, sir."))
 
     assert next_agent is supervisor
     assert msg == "Opened a tab, sir."
 
 
-def test_specialist_task_done_gate_disabled_via_env():
-    """JARVIS_SPECIALIST_TOOL_GATE=0 must bypass the gate entirely so
-    operators can debug a specialist that's getting unfairly gated.
+def test_subagent_task_done_gate_disabled_via_env():
+    """JARVIS_SUBAGENT_TOOL_GATE=0 must bypass the gate entirely so
+    operators can debug a subagent that's getting unfairly gated.
     """
     from livekit.agents.llm import FunctionCall, ChatContext, ChatMessage
     from subagents.agent import RegistrySubagent
@@ -323,15 +323,15 @@ def test_specialist_task_done_gate_disabled_via_env():
         ack_phrase="ok", max_history_items=4, enabled=True,
     )
     supervisor = MagicMock()
-    specialist = RegistrySubagent(spec=spec, supervisor=supervisor)
-    specialist._handoff_start_idx = 0
-    specialist._chat_ctx = ChatContext(items=[
+    subagent = RegistrySubagent(spec=spec, supervisor=supervisor)
+    subagent._handoff_start_idx = 0
+    subagent._chat_ctx = ChatContext(items=[
         FunctionCall(call_id="c1", arguments="{}", name="task_done"),
     ])
     ctx = MagicMock()
 
-    with patch.dict(os.environ, {"JARVIS_SPECIALIST_TOOL_GATE": "0"}):
-        next_agent, msg = _run(specialist.task_done(ctx, "fake summary"))
+    with patch.dict(os.environ, {"JARVIS_SUBAGENT_TOOL_GATE": "0"}):
+        next_agent, msg = _run(subagent.task_done(ctx, "fake summary"))
 
     assert next_agent is supervisor
     assert msg == "fake summary"

@@ -120,7 +120,7 @@ _NEGATION_PATTERNS = [
     re.compile(r"\b(?:I'?m unable|cannot|can'?t|wasn'?t able|won'?t be able|failed|error)\b", re.I),
     re.compile(r"\bnot (?:open|launched|posted|sent|saved|able|possible)\b", re.I),
     re.compile(r"\b(?:haven'?t|hadn'?t|didn'?t|don'?t|do not|did not) (?:opened|done|posted|sent|launched|saved)\b", re.I),
-    re.compile(r"\bneed(?:s)? (?:the |a )?(?:specialist|tool|context)\b", re.I),
+    re.compile(r"\bneed(?:s)? (?:the |a )?(?:subagent|tool|context)\b", re.I),
 ]
 
 
@@ -129,27 +129,27 @@ _NEGATION_PATTERNS = [
 # LiveKit messages can be plain dicts, ChatMessage objects, or
 # Pydantic models depending on the path.
 #
-# 2026-05-06 turn 1110 (live-captured): specialist truthfully said
+# 2026-05-06 turn 1110 (live-captured): subagent truthfully said
 # "I have opened a new tab" after firing ext_new_tab; bridge tab list
 # confirmed a new tab was created. But this detector flagged it as
 # confab and dropped from chat_ctx — false positive. Two causes:
-#   1. Lookback window was 3 messages, too tight for specialist
-#      handoffs (user + transfer_to_* + specialist-internal calls
+#   1. Lookback window was 3 messages, too tight for subagent
+#      handoffs (user + transfer_to_* + subagent-internal calls
 #      easily push real tool evidence past the 3-message edge).
 #   2. The supervisor's session.history may not include the
-#      specialist's internal ext_* tool calls — they live on the
-#      specialist's own ChatContext.
+#      subagent's internal ext_* tool calls — they live on the
+#      subagent's own ChatContext.
 # Fix: widen to 10 messages AND treat the supervisor's own
 # `transfer_to_*` as tool evidence (the handoff itself proves the
-# specialist had a chance to do work).
+# subagent had a chance to do work).
 _TOOL_EVIDENCE_LOOKBACK = 10
 
 
 def _name_implies_handoff(name: str) -> bool:
     """transfer_to_* / delegate are supervisor handoff tool calls.
-    When we see one in recent history, we must trust the specialist's
+    When we see one in recent history, we must trust the subagent's
     follow-up text as the truth — we have no visibility into the
-    specialist's own ChatContext from the supervisor's save path."""
+    subagent's own ChatContext from the supervisor's save path."""
     if not name:
         return False
     return name.startswith("transfer_to_") or name == "delegate"
@@ -173,8 +173,8 @@ def _has_recent_extraction_evidence() -> bool:
 def _has_tool_evidence(prior_messages: list[Any]) -> bool:
     """True if any of the last _TOOL_EVIDENCE_LOOKBACK messages contains
     a tool_call / tool_result / handoff. Widened from 3 → 10 to handle
-    specialist handoffs (user → supervisor handoff → specialist ext_*
-    calls → specialist text reply easily exceeds 3 messages).
+    subagent handoffs (user → supervisor handoff → subagent ext_*
+    calls → subagent text reply easily exceeds 3 messages).
 
         user: "open chrome"
         assistant (tool_calls=[launch_app(...)])         ← evidence
@@ -183,17 +183,17 @@ def _has_tool_evidence(prior_messages: list[Any]) -> bool:
                                                             turn we're
                                                             checking
 
-    Or in the specialist-handoff case:
+    Or in the subagent-handoff case:
 
         user: "open a new tab"
         assistant (tool_calls=[transfer_to_browser])     ← evidence
                                                             (handoff alone
                                                             counts; the
-                                                            specialist's
+                                                            subagent's
                                                             internal ext_*
                                                             calls aren't
                                                             visible here)
-        … specialist runs ext_new_tab on its own context …
+        … subagent runs ext_new_tab on its own context …
         assistant: "I have opened a new tab"             ← THIS is the
                                                             turn we're
                                                             checking
@@ -222,7 +222,7 @@ def _has_tool_evidence(prior_messages: list[Any]) -> bool:
         # LiveKit ChatContext FunctionCall items have `name` and `arguments`
         # at the top level (no role, no content list). Treat any function
         # call in the window as evidence — including transfer_to_* which
-        # implies a specialist did work we can't see.
+        # implies a subagent did work we can't see.
         name = _msg_attr(msg, "name")
         if name and (
             _name_implies_handoff(name)
