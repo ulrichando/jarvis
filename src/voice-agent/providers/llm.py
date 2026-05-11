@@ -1,7 +1,7 @@
 """Groq LLM resilience adapters + per-route dispatcher build.
 
-Hoisted from `jarvis_agent.py` over 2026-05-10 (Steps 5b/5c/5d of
-the 10/10 refactor):
+Hoisted from `jarvis_agent.py` over 2026-05-10 (Steps 5b/5c/5d/5e
+of the 10/10 refactor):
 
   - `BreakeredLLMStream` (5b) — first-chunk breaker gate + validation-
     error OPEN→CLOSED revert.
@@ -18,21 +18,22 @@ the 10/10 refactor):
   - `build_dispatching_llm` (5d) — assembles the per-route Maya-class
     DispatchingLLM (BANTER/TASK/REASONING/EMOTIONAL → distinct Groq
     variants, each wrapped in a FallbackAdapter(groq, deepseek-v4)).
-
-`SPEECH_MODELS` + `make_speech_llm` (the tray-driven model picker)
-remain in jarvis_agent for now — they depend on
-`_read_unified_setting` which still lives there.
+  - `SPEECH_MODELS` registry + `read_speech_model` + `make_speech_llm`
+    (5e) — tray-driven model picker for the user-selected supervisor
+    LLM, reading the active id via `pipeline.settings.read_unified_setting`.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
+from pathlib import Path
 
 from livekit.agents import APIConnectionError, APITimeoutError
 from livekit.plugins import groq, openai as lk_openai
 
 from pipeline.dispatching_llm import DispatchingLLM
+from pipeline.settings import read_unified_setting
 from resilience import LLM_BREAKER
 from resilience.circuit_breaker import (
     CircuitOpenError,
@@ -42,6 +43,163 @@ from resilience.circuit_breaker import (
 
 
 logger = logging.getLogger("jarvis-agent")
+
+
+# ── User-selected speech LLM (tray pick) ─────────────────────────────
+# The tray UI writes the active id to ~/.jarvis/voice-model (or to the
+# hub's state.db). entrypoint() calls `make_speech_llm()` once per job
+# so a /voice-model POST + systemctl restart picks up the new file on
+# the very next dispatch.
+SPEECH_MODEL_FILE: Path = Path.home() / ".jarvis" / "voice-model"
+DEFAULT_SPEECH_MODEL: str = "llama-3.3-70b-versatile"
+
+# IDs match the upstream model names verbatim so the registry stays
+# legible. Each entry: (provider+model labels for display, factory
+# building the LLM). Factories raise on missing API key — the
+# read_speech_model() helper falls back to the default if so.
+SPEECH_MODELS: dict[str, dict] = {
+    "llama-3.3-70b-versatile": {
+        "label": "Groq · llama 3.3 70B",
+        "build": lambda: groq.LLM(model="llama-3.3-70b-versatile", temperature=0.6),
+    },
+    "llama-3.1-8b-instant": {
+        # Tiny + fastest. Function calling is acceptable for simple
+        # tool routing but loses nuance on long multi-step replies.
+        "label": "Groq · llama 3.1 8B instant",
+        "build": lambda: groq.LLM(model="llama-3.1-8b-instant", temperature=0.6),
+    },
+    "qwen/qwen3-32b": {
+        # Strong tool calling, slightly slower than llama 3.3 70b but
+        # markedly more reliable at structured function calls.
+        "label": "Groq · qwen3-32b",
+        "build": lambda: groq.LLM(model="qwen/qwen3-32b", temperature=0.6),
+    },
+    "openai/gpt-oss-120b": {
+        # Same model the CLI tool uses by default. Robust at tool
+        # calls; somewhat slower first token (~400 ms).
+        "label": "Groq · gpt-oss-120b",
+        "build": lambda: groq.LLM(model="openai/gpt-oss-120b", temperature=0.6),
+    },
+    "meta-llama/llama-4-scout-17b-16e-instruct": {
+        "label": "Groq · llama 4 scout",
+        "build": lambda: groq.LLM(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            temperature=0.6,
+        ),
+    },
+    # DeepSeek family — needs reasoning_content round-trip on
+    # assistant tool-call messages, handled by deepseek_roundtrip.install()
+    # at the top of jarvis_agent. v4-pro is best at tools; v4-flash trades
+    # accuracy for ~30% latency reduction; deepseek-chat (V3) is the
+    # non-thinking baseline (probe shows it never emits
+    # reasoning_content even with the flag absent, so the patch's
+    # capture path is dead for it).
+    "deepseek-chat": {
+        "label": "DeepSeek · chat (V3, non-thinking)",
+        "build": lambda: lk_openai.LLM(
+            model="deepseek-chat",
+            api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
+            base_url="https://api.deepseek.com/v1",
+            temperature=0.6,
+        ),
+    },
+    "deepseek-v4-flash": {
+        "label": "DeepSeek · v4 flash",
+        "build": lambda: lk_openai.LLM(
+            model="deepseek-v4-flash",
+            api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
+            base_url="https://api.deepseek.com/v1",
+            temperature=0.6,
+        ),
+    },
+    "deepseek-v4-pro": {
+        "label": "DeepSeek · v4 pro",
+        "build": lambda: lk_openai.LLM(
+            model="deepseek-v4-pro",
+            api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
+            base_url="https://api.deepseek.com/v1",
+            temperature=0.6,
+        ),
+    },
+    # Kimi K2.6 — Moonshot OpenAI-compat. DISABLED for voice as of
+    # 2026-05-05: K2.6 spontaneously emits its built-in `web_search`
+    # tool call even when not in `request.tools`, and Moonshot rejects
+    # the request with `tool call validation failed: attempted to call
+    # tool 'web_search' which was not in request.tools`. Every
+    # supervisor turn fails on first content; circuit breaker opens;
+    # user hears nothing. Gated behind JARVIS_KIMI_VOICE_EXPERIMENTAL=1
+    # so it stays out of the tray picker by default — the flag is
+    # there for the next attempt at proper integration (either
+    # registering shim tools for K2.6's built-ins, or filtering them
+    # from the request server-side).
+}
+if os.environ.get("JARVIS_KIMI_VOICE_EXPERIMENTAL", "0") == "1":
+    SPEECH_MODELS["kimi-k2.6-instant"] = {
+        "label": "Kimi · K2.6 Instant (experimental)",
+        "build": lambda: lk_openai.LLM(
+            model="kimi-k2.6",
+            api_key=os.environ.get("KIMI_API_KEY", ""),
+            base_url="https://api.moonshot.ai/v1",
+            temperature=0.6,
+        ),
+    }
+    SPEECH_MODELS["kimi-k2.6-thinking"] = {
+        "label": "Kimi · K2.6 Thinking (experimental)",
+        "build": lambda: lk_openai.LLM(
+            model="kimi-k2.6",
+            api_key=os.environ.get("KIMI_API_KEY", ""),
+            base_url="https://api.moonshot.ai/v1",
+            temperature=0.4,
+        ),
+    }
+    SPEECH_MODELS["kimi-k2.6-agent"] = {
+        "label": "Kimi · K2.6 Agent (experimental)",
+        "build": lambda: lk_openai.LLM(
+            model="kimi-k2.6",
+            api_key=os.environ.get("KIMI_API_KEY", ""),
+            base_url="https://api.moonshot.ai/v1",
+            temperature=0.6,
+        ),
+    }
+    SPEECH_MODELS["kimi-k2.6-swarm"] = {
+        "label": "Kimi · K2.6 Swarm (experimental)",
+        "build": lambda: lk_openai.LLM(
+            model="kimi-k2.6",
+            api_key=os.environ.get("KIMI_API_KEY", ""),
+            base_url="https://api.moonshot.ai/v1",
+            temperature=0.7,
+        ),
+    }
+
+
+def read_speech_model() -> str:
+    """Return the active speech model ID, or the default if unset/invalid.
+
+    Reads via the unified-settings SDK (state.db) first, falling back
+    to the flat file written by the tray UI."""
+    name = read_unified_setting("voice-model", SPEECH_MODEL_FILE)
+    if name in SPEECH_MODELS:
+        return name
+    if name:
+        logger.warning(
+            f"unknown speech model {name!r}, falling back to {DEFAULT_SPEECH_MODEL}"
+        )
+    return DEFAULT_SPEECH_MODEL
+
+
+def make_speech_llm() -> tuple[str, object]:
+    """Build the chosen speech LLM, falling back to default on failure."""
+    name = read_speech_model()
+    try:
+        llm = SPEECH_MODELS[name]["build"]()
+        logger.info(f"speech LLM: {name} ({SPEECH_MODELS[name]['label']})")
+        return name, llm
+    except Exception as e:
+        logger.error(
+            f"failed to build speech LLM {name!r} ({e}); "
+            f"falling back to {DEFAULT_SPEECH_MODEL}"
+        )
+        return DEFAULT_SPEECH_MODEL, SPEECH_MODELS[DEFAULT_SPEECH_MODEL]["build"]()
 
 
 # ── Pre-flight singleton ─────────────────────────────────────────────
