@@ -82,6 +82,13 @@ CLI_MODELS_AVAILABLE: tuple[str, ...] = (
     "llama-3.3-70b-versatile",
     "meta-llama/llama-4-scout-17b-16e-instruct",
     "openai/gpt-oss-120b",
+    # Anthropic Claude — added 2026-05-11. Three tiers mirroring the
+    # Claude Code /model picker: Opus 4.7 (most capable), Sonnet 4.6
+    # (everyday), Haiku 4.5 (fastest). Matched in the CLI's
+    # jarvisModelRegistry under provider='anthropic'.
+    "claude-opus-4-7",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5",
 )
 
 
