@@ -174,11 +174,24 @@ SPEECH_MODELS: dict[str, dict] = {
 if _ANTHROPIC_AVAILABLE and os.environ.get("ANTHROPIC_API_KEY", ""):
     SPEECH_MODELS["claude-haiku-4-5"] = {
         "label": "Anthropic · Claude Haiku 4.5",
+        # `_strict_tool_schema=False` drops the `"strict": true` flag
+        # from each Anthropic tool dict and uses the legacy-shape
+        # parameters block. Defense-in-depth — does NOT by itself
+        # fix the 2026-05-11 400 "tools.0.custom: For 'object' type,
+        # additionalProperties must be explicitly set to false"
+        # rejection (legacy schemas don't set additionalProperties at
+        # all). The actual fix is the anthropic_strict_schema sanitizer
+        # in jarvis_agent.py, which walks every nested object in the
+        # schema tree and sets additionalProperties=false. Keeping
+        # strict=False here removes Anthropic-side strict validation
+        # of the model's tool args, matching the lenient stance the
+        # strict_schema_relax patch already takes for Groq.
         "build": lambda: lk_anthropic.LLM(
             model="claude-haiku-4-5",
             api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
             temperature=0.6,
             caching="ephemeral",
+            _strict_tool_schema=False,
         ),
     }
 if os.environ.get("JARVIS_KIMI_VOICE_EXPERIMENTAL", "0") == "1":
@@ -659,6 +672,12 @@ def build_dispatching_llm() -> DispatchingLLM:
                 api_key=anth_key,
                 temperature=0.6,
                 caching="ephemeral",
+                # See the SPEECH_MODELS entry above for the full
+                # rationale. tl;dr: defense-in-depth only — the real
+                # fix for the additionalProperties=false rejection
+                # is the anthropic_strict_schema sanitizer in
+                # jarvis_agent.py.
+                _strict_tool_schema=False,
             )
             anth_fallback._jarvis_label = "anthropic:claude-haiku-4-5"
             logger.info("[dispatch] Anthropic Claude Haiku 4.5 fallback armed (rung 3)")

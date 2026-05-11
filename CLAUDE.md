@@ -34,6 +34,7 @@ JARVIS has full `sudo NOPASSWD` root via `/etc/sudoers.d/jarvis` — every shell
   - `dsml.py` — DeepSeek meta-language sanitizer
   - `tool_name.py` — coerces tool name shapes
   - `deepseek_roundtrip.py`, `strict_schema_relax.py` — provider-shape fixups
+  - `anthropic_strict_schema.py` — forces `additionalProperties: false` on every object in Anthropic tool schemas (Anthropic rejects without it; strict_schema_relax produces legacy shapes that omit it)
   - `handoff_text.py` — drops anticipatory text content from supervisor turns containing `transfer_to_*` / `delegate`
 - **Resilience** ([resilience/](src/voice-agent/resilience/)) — circuit breaker, idle timeout, reconnect ladder, track guard, watchdog.
 - **Confab detector** — [confab_detector.py](src/voice-agent/confab_detector.py) refuses to write turns to the conversation DB when the assistant claims success without tool evidence in the prior 10 messages.
@@ -63,7 +64,7 @@ JARVIS has full `sudo NOPASSWD` root via `/etc/sudoers.d/jarvis` — every shell
 
 ## Active design decisions — the load-bearing constraints
 
-- **Three load-bearing monkey-patches** on import (must not be removed): `deepseek_roundtrip`, `tool_name_sanitizer`, `AcousticTap`. See [sanitizers/__init__.py](src/voice-agent/sanitizers/__init__.py).
+- **Four load-bearing monkey-patches** on import (must not be removed): `deepseek_roundtrip`, `tool_name_sanitizer`, `AcousticTap`, `anthropic_strict_schema` (added 2026-05-11 — without it every Anthropic supervisor or fallback turn returns 400 `additionalProperties must be explicitly set to false`). See [sanitizers/__init__.py](src/voice-agent/sanitizers/__init__.py).
 - **Specialist tool-gate** refuses `task_done` with no real tool. Narrow bailout allowlist (`_BAILOUT_SUMMARY_RE` in [subagents/agent.py](src/voice-agent/subagents/agent.py)) lets wrongly-routed specialists exit; retry ceiling (`_NO_TOOL_RETRY_CEILING`, default 3) force-bails after consecutive refusals so the user isn't stuck in silence. Adding new specialists: their prompt must list the exact bailout phrases the gate honors.
 - **STAY-IN-SUPERVISOR rule.** Conversational/ambiguous user input ("Jarvis, mute" / "I love you" / vague fragments / yes-no replies) stays in the supervisor — never `transfer_to_*`. Specialists need a nameable target. See [jarvis_agent.py::JARVIS_INSTRUCTIONS](src/voice-agent/jarvis_agent.py) "STAY-IN-SUPERVISOR RULE" section.
 - **`min_words` per route** ([pipeline/turn_router.py::_ROUTE_BASE](src/voice-agent/pipeline/turn_router.py)): BANTER=1, TASK=3, REASONING=3, EMOTIONAL=3. TASK was bumped 2→3 on 2026-05-07 to filter 2-word backchannels ("yeah okay" / "got it"). Kill-phrase regex at [jarvis_agent.py:7410](src/voice-agent/jarvis_agent.py#L7410) bypasses min_words for deliberate "stop / wait / cancel".
