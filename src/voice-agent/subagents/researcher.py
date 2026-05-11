@@ -14,7 +14,7 @@ hallucination).
 """
 from __future__ import annotations
 
-from .registry import SubagentSpec, register_subagent
+from .registry import DelegatedSubagent, register_subagent
 from ._ack_phrases import ACK_RESEARCHER
 
 
@@ -115,7 +115,7 @@ def register_researcher() -> None:
     Per-spec opt-out via `JARVIS_SUBAGENT_RESEARCHER=0`.
     """
     import os
-    register_subagent(SubagentSpec(
+    register_subagent(DelegatedSubagent(
         name="researcher",
         when_to_use=_RESEARCHER_WHEN,
         instructions=RESEARCHER_INSTRUCTIONS,

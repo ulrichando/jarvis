@@ -17,11 +17,11 @@ remain ≤4 words to keep the handoff transition snappy.
 """
 from __future__ import annotations
 
-# SpecialistSpec (transfer_to_X) phrases
+# HandoffSubagent (transfer_to_X) phrases
 ACK_DESKTOP        = "Right away."
 ACK_BROWSER        = "On it."
 
-# SubagentSpec (delegate role=X) phrases
+# DelegatedSubagent (delegate role=X) phrases
 ACK_SUMMARIZE      = "One sec."
 ACK_WEATHER        = "Checking."
 ACK_RESEARCHER     = "Looking into it."

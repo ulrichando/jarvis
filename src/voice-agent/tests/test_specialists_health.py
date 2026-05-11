@@ -30,10 +30,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 def _reset_and_register():
     """Each test starts with the registry registered fresh from the
     real specialist modules (not mocks). Cleanup after."""
-    from specialists.registry import clear, clear_subagents
+    from subagents.registry import clear, clear_subagents
     clear()
     clear_subagents()
-    from specialists import (
+    from subagents import (
         desktop, browser, browser_v2,
         summarize, weather, researcher, validator, code_reviewer,
         memory_recall, github,
@@ -94,7 +94,7 @@ BANNED_REGISTER_PHRASES = [
 
 @pytest.mark.parametrize("name", SPECIALIST_NAMES)
 def test_specialist_registered_and_enabled(name):
-    from specialists.registry import get
+    from subagents.registry import get
     spec = get(name)
     assert spec is not None, f"{name} specialist not registered"
     assert spec.enabled is True, f"{name} specialist disabled"
@@ -103,7 +103,7 @@ def test_specialist_registered_and_enabled(name):
 
 @pytest.mark.parametrize("name", SUBAGENT_NAMES)
 def test_subagent_registered_and_enabled(name):
-    from specialists.registry import get_subagent
+    from subagents.registry import get_subagent
     spec = get_subagent(name)
     assert spec is not None, f"{name} subagent not registered"
     assert spec.enabled is True
@@ -117,7 +117,7 @@ def test_specialist_tool_factory_builds(name):
     """Tool factory must run cleanly — catches Pydantic / decorator
     regressions like the 2026-05-01 `_confirmed` leading-underscore
     bug that crashed every LLM call before any HTTP."""
-    from specialists.registry import get
+    from subagents.registry import get
     spec = get(name)
     tools = spec.tool_factory()
     assert isinstance(tools, list)
@@ -126,7 +126,7 @@ def test_specialist_tool_factory_builds(name):
 
 @pytest.mark.parametrize("name", SUBAGENT_NAMES)
 def test_subagent_tool_factory_builds(name):
-    from specialists.registry import get_subagent
+    from subagents.registry import get_subagent
     spec = get_subagent(name)
     tools = spec.tool_factory()
     assert isinstance(tools, list)
@@ -145,7 +145,7 @@ def test_all_tool_schemas_build_strict(name):
     `_confirmed` parameter rejected by Pydantic v2.10).
     """
     from livekit.agents.llm.utils import function_arguments_to_pydantic_model
-    from specialists.registry import get, get_subagent
+    from subagents.registry import get, get_subagent
     spec = get(name) or get_subagent(name)
     assert spec is not None
     failures = []
@@ -170,7 +170,7 @@ def test_specialist_prompt_avoids_banned_register(name):
     *suggested* output — the user has explicitly objected ("you sound
     too funny"). Banned phrases that appear inside ❌ DON'T-USE blocks
     are exempt — those are warnings to the LLM."""
-    from specialists.registry import get
+    from subagents.registry import get
     spec = get(name)
     instr = spec.instructions
     for phrase in BANNED_REGISTER_PHRASES:
@@ -218,13 +218,13 @@ def test_supervisor_has_anti_confabulation_rule():
 
 
 def test_desktop_specialist_has_anti_confabulation_rule():
-    from specialists.registry import get
+    from subagents.registry import get
     spec = get("desktop")
     assert "NEVER claim success without a tool result" in spec.instructions
 
 
 def test_browser_specialist_has_anti_confabulation_rule():
-    from specialists.registry import get
+    from subagents.registry import get
     spec = get("browser")
     assert "NEVER claim success without a tool result" in spec.instructions
 
@@ -453,7 +453,7 @@ def test_browser_has_navigate_and_close_tab_distinguished():
     """ext_navigate REPLACES the active tab; ext_new_tab CREATES one.
     The browser specialist instructions must tell the LLM the
     difference (was the root cause of the bug)."""
-    from specialists.registry import get
+    from subagents.registry import get
     instr = get("browser").instructions
     assert "ext_new_tab" in instr
     assert "open a new tab" in instr.lower()
@@ -466,7 +466,7 @@ def test_no_disabled_specialists_in_registry_for_long():
     """Anything with enabled=False shouldn't be cluttering the
     registry — disable means delete. (Loose check: hard-coded list of
     expected enabled names; tightens future cleanup work.)"""
-    from specialists.registry import _REGISTRY, SUBAGENT_REGISTRY
+    from subagents.registry import _REGISTRY, SUBAGENT_REGISTRY
     expected_enabled = set(SPECIALIST_NAMES) | set(SUBAGENT_NAMES)
     if _BROWSER_V2_ENABLED:
         expected_enabled.add("browser_v2")
@@ -507,7 +507,7 @@ def test_browser_v2_specialist_registered():
     assertion below MUST be updated to `assert spec.enabled == is_available()`
     so we re-link enabled state to key availability.
     """
-    from specialists.registry import _REGISTRY
+    from subagents.registry import _REGISTRY
     assert "browser_v2" in _REGISTRY
     spec = _REGISTRY["browser_v2"]
     assert spec.transfer_tool == "transfer_to_browser_v2"
@@ -550,7 +550,7 @@ def test_browser_v2_tool_factory_builds_when_enabled():
     The factory itself works regardless of `enabled`; this test is
     about the import + decorator path, not the gate.
     """
-    from specialists.registry import _REGISTRY
+    from subagents.registry import _REGISTRY
     spec = _REGISTRY.get("browser_v2")
     assert spec is not None, (
         "browser_v2 not registered — `register_browser_v2()` did not run"
@@ -563,7 +563,7 @@ def test_browser_v2_tool_factory_builds_when_enabled():
 
 
 def test_no_specialist_imports_task_done_from_jarvis_agent():
-    """task_done lives on RegistrySpecialist (specialists/agent.py:55)
+    """task_done lives on RegistrySubagent (specialists/agent.py:55)
     and is auto-attached when a specialist activates. Importing it from
     jarvis_agent ImportErrors at handoff time and crashes the
     specialist. Regression captured live 2026-05-01: browser_v2
@@ -584,7 +584,7 @@ def test_no_specialist_imports_task_done_from_jarvis_agent():
                     offenders.append(f"{f.name}: {line.strip()}")
     assert not offenders, (
         f"Specialists must NOT import task_done from jarvis_agent "
-        f"(it's a RegistrySpecialist method). Offenders:\n  "
+        f"(it's a RegistrySubagent method). Offenders:\n  "
         + "\n  ".join(offenders)
     )
 
@@ -596,7 +596,7 @@ def test_specialist_handoff_constructs_without_error(name):
     runtime ImportErrors / decorator bugs that only surface during a
     real handoff (which is what happened with browser_v2's spurious
     task_done import on 2026-05-01)."""
-    from specialists.registry import get
+    from subagents.registry import get
     spec = get(name)
     if spec is None or not spec.enabled:
         pytest.skip(f"{name} not enabled in this environment")

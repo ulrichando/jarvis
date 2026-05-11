@@ -1,6 +1,6 @@
-"""SpecialistSpec + registry — pure-Python, zero LiveKit imports.
+"""HandoffSubagent + registry — pure-Python, zero LiveKit imports.
 
-Each specialist is a `SpecialistSpec` dataclass. The supervisor reads
+Each specialist is a `HandoffSubagent` dataclass. The supervisor reads
 the registry at agent startup and generates one `transfer_to_X`
 function_tool per registered, enabled spec.
 
@@ -15,7 +15,7 @@ from typing import Callable, Optional
 
 
 @dataclass
-class SpecialistSpec:
+class HandoffSubagent:
     """Declarative spec for a specialist sub-agent.
 
     Fields:
@@ -50,27 +50,27 @@ class SpecialistSpec:
 # Global registry. Use the module functions below — don't mutate this
 # dict directly (the helpers handle name collisions and re-registration
 # semantics).
-_REGISTRY: dict[str, SpecialistSpec] = {}
+_REGISTRY: dict[str, HandoffSubagent] = {}
 
 
-def register(spec: SpecialistSpec) -> None:
+def register(spec: HandoffSubagent) -> None:
     """Register a specialist. Re-registering the same name overwrites —
     intentional, lets a specialist module be re-imported without errors
     (test reloads, hot-reloads). Logs/warns the caller if it cares."""
     if not spec.name:
-        raise ValueError("SpecialistSpec.name must be non-empty")
+        raise ValueError("HandoffSubagent.name must be non-empty")
     if not spec.transfer_tool:
-        raise ValueError("SpecialistSpec.transfer_tool must be non-empty")
+        raise ValueError("HandoffSubagent.transfer_tool must be non-empty")
     _REGISTRY[spec.name] = spec
 
 
-def all_specs() -> list[SpecialistSpec]:
+def all_specs() -> list[HandoffSubagent]:
     """All enabled specs, in registration order. Disabled specs are
     skipped here so the supervisor only sees what the user wants."""
     return [s for s in _REGISTRY.values() if s.enabled]
 
 
-def get(name: str) -> Optional[SpecialistSpec]:
+def get(name: str) -> Optional[HandoffSubagent]:
     """Lookup by name. None if missing OR disabled (matches all_specs
     semantics — callers shouldn't get a disabled spec by accident)."""
     s = _REGISTRY.get(name)
@@ -83,24 +83,24 @@ def clear() -> None:
     _REGISTRY.clear()
 
 
-# ── SubagentSpec — same shape, different routing ─────────────────────
+# ── DelegatedSubagent — same shape, different routing ─────────────────────
 #
-# SpecialistSpec → supervisor exposes ONE `transfer_to_{name}` tool per
+# HandoffSubagent → supervisor exposes ONE `transfer_to_{name}` tool per
 # spec. Doesn't scale past ~25 specs (each tool def costs ~300 prompt
 # tokens; supervisor TTFW grows linearly with N).
 #
-# SubagentSpec → supervisor exposes a single `delegate(role, task)` tool
+# DelegatedSubagent → supervisor exposes a single `delegate(role, task)` tool
 # that covers ALL registered subagents. Token cost is constant in N.
 # Use for new specialists where prompt-bloat matters more than per-tool
 # specificity. The 3 existing specialists (planner / desktop / browser)
-# stay on `SpecialistSpec` for back-compat.
+# stay on `HandoffSubagent` for back-compat.
 
 
 @dataclass
-class SubagentSpec:
+class DelegatedSubagent:
     """Declarative spec for a sub-agent reachable via `delegate(role, task)`.
 
-    Same fields as SpecialistSpec minus `transfer_tool` (there is no
+    Same fields as HandoffSubagent minus `transfer_tool` (there is no
     per-spec transfer tool — `delegate` handles routing by name).
     """
     name: str
@@ -112,23 +112,23 @@ class SubagentSpec:
     enabled: bool = True
 
 
-SUBAGENT_REGISTRY: dict[str, SubagentSpec] = {}
+SUBAGENT_REGISTRY: dict[str, DelegatedSubagent] = {}
 
 
-def register_subagent(spec: SubagentSpec) -> None:
+def register_subagent(spec: DelegatedSubagent) -> None:
     """Register a subagent. Re-registering the same name overwrites,
-    matching `register()` semantics for SpecialistSpec."""
+    matching `register()` semantics for HandoffSubagent."""
     if not spec.name:
-        raise ValueError("SubagentSpec.name must be non-empty")
+        raise ValueError("DelegatedSubagent.name must be non-empty")
     SUBAGENT_REGISTRY[spec.name] = spec
 
 
-def all_subagents() -> list[SubagentSpec]:
+def all_subagents() -> list[DelegatedSubagent]:
     """All enabled subagents in registration order."""
     return [s for s in SUBAGENT_REGISTRY.values() if s.enabled]
 
 
-def get_subagent(name: str) -> Optional[SubagentSpec]:
+def get_subagent(name: str) -> Optional[DelegatedSubagent]:
     """Lookup by name. None if missing OR disabled."""
     s = SUBAGENT_REGISTRY.get(name)
     return s if s and s.enabled else None

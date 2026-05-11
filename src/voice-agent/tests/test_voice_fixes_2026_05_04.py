@@ -4,7 +4,7 @@ Each test is self-contained and exercises ONE fix:
   1. VAD prewarm uses production-tuned thresholds (asymmetric + tuned padding)
   2. _is_garbage_transcript drops Whisper silence-hallucinations
   3. tool_name_sanitizer re-emits transfer_to_X as proper tool_calls
-  4. RegistrySpecialist.task_done refuses bailout when no real tool ran
+  4. RegistrySubagent.task_done refuses bailout when no real tool ran
   5. _BreakeredLLMStream uncounts validation errors against the breaker
 """
 import asyncio
@@ -225,17 +225,17 @@ def test_sanitizer_re_emits_transfer_to_X_as_tool_call():
 # ─────────────────────────────────────────────────────────────────────
 
 def test_specialist_task_done_refuses_when_no_real_tool_ran():
-    """RegistrySpecialist.task_done must refuse (return self with a
+    """RegistrySubagent.task_done must refuse (return self with a
     corrective message) when chat_ctx since handoff contains no
     FunctionCall items other than task_done itself. The browser
     specialist's instructions explicitly forbid task_done as the
     first tool call; this enforces it programmatically.
     """
     from livekit.agents.llm import FunctionCall, ChatContext, ChatMessage
-    from specialists.agent import RegistrySpecialist
-    from specialists.registry import SpecialistSpec
+    from subagents.agent import RegistrySubagent
+    from subagents.registry import HandoffSubagent
 
-    spec = SpecialistSpec(
+    spec = HandoffSubagent(
         name="browser",
         transfer_tool="transfer_to_browser",
         when_to_use="x",
@@ -247,7 +247,7 @@ def test_specialist_task_done_refuses_when_no_real_tool_ran():
     )
 
     supervisor = MagicMock()
-    specialist = RegistrySpecialist(spec=spec, supervisor=supervisor)
+    specialist = RegistrySubagent(spec=spec, supervisor=supervisor)
 
     # Simulate on_enter: handoff started at index 2 (some history present)
     specialist._handoff_start_idx = 2
@@ -278,10 +278,10 @@ def test_specialist_task_done_passes_when_real_tool_ran():
     task_done, the gate must let task_done through normally — return
     (supervisor, summary)."""
     from livekit.agents.llm import FunctionCall, ChatContext, ChatMessage
-    from specialists.agent import RegistrySpecialist
-    from specialists.registry import SpecialistSpec
+    from subagents.agent import RegistrySubagent
+    from subagents.registry import HandoffSubagent
 
-    spec = SpecialistSpec(
+    spec = HandoffSubagent(
         name="browser",
         transfer_tool="transfer_to_browser",
         when_to_use="x",
@@ -293,7 +293,7 @@ def test_specialist_task_done_passes_when_real_tool_ran():
     )
 
     supervisor = MagicMock()
-    specialist = RegistrySpecialist(spec=spec, supervisor=supervisor)
+    specialist = RegistrySubagent(spec=spec, supervisor=supervisor)
     specialist._handoff_start_idx = 1
     specialist._chat_ctx = ChatContext(items=[
         ChatMessage(role="user", content=["pre"]),
@@ -314,16 +314,16 @@ def test_specialist_task_done_gate_disabled_via_env():
     operators can debug a specialist that's getting unfairly gated.
     """
     from livekit.agents.llm import FunctionCall, ChatContext, ChatMessage
-    from specialists.agent import RegistrySpecialist
-    from specialists.registry import SpecialistSpec
+    from subagents.agent import RegistrySubagent
+    from subagents.registry import HandoffSubagent
 
-    spec = SpecialistSpec(
+    spec = HandoffSubagent(
         name="browser", transfer_tool="transfer_to_browser",
         when_to_use="x", instructions="x", tool_factory=lambda: [],
         ack_phrase="ok", max_history_items=4, enabled=True,
     )
     supervisor = MagicMock()
-    specialist = RegistrySpecialist(spec=spec, supervisor=supervisor)
+    specialist = RegistrySubagent(spec=spec, supervisor=supervisor)
     specialist._handoff_start_idx = 0
     specialist._chat_ctx = ChatContext(items=[
         FunctionCall(call_id="c1", arguments="{}", name="task_done"),

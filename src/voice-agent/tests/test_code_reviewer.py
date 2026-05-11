@@ -39,9 +39,9 @@ def test_format_for_prompt_truncates_huge_inputs():
 def test_code_reviewer_subagent_registered():
     """The code-reviewer subagent must register without crashing even
     when GROQ key is absent (registers disabled)."""
-    from specialists.registry import clear_subagents, SUBAGENT_REGISTRY
+    from subagents.registry import clear_subagents, SUBAGENT_REGISTRY
     clear_subagents()
-    from specialists.code_reviewer import register_code_reviewer
+    from subagents.code_reviewer import register_code_reviewer
     register_code_reviewer()
     assert "code_reviewer" in SUBAGENT_REGISTRY
     spec = SUBAGENT_REGISTRY["code_reviewer"]
@@ -53,9 +53,9 @@ def test_code_reviewer_subagent_registered():
 def test_code_reviewer_factory_builds():
     """Tool factory must build cleanly — catches the same import
     regression class as the validator/browser_v2 task_done bug."""
-    from specialists.registry import clear_subagents
+    from subagents.registry import clear_subagents
     clear_subagents()
-    from specialists.code_reviewer import (
+    from subagents.code_reviewer import (
         register_code_reviewer,
         _code_reviewer_tools,
     )

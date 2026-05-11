@@ -1,4 +1,4 @@
-"""Desktop-action specialist — registered via the SpecialistSpec
+"""Desktop-action specialist — registered via the HandoffSubagent
 pattern. Mirrors the legacy `DesktopActionsAgent` for backwards
 compat: same prompt, same tools, same handoff behaviour.
 
@@ -7,7 +7,7 @@ To CUSTOMIZE: copy this file as a template and adjust spec fields.
 """
 from __future__ import annotations
 
-from .registry import SpecialistSpec, register
+from .registry import HandoffSubagent, register
 from ._ack_phrases import ACK_DESKTOP
 
 
@@ -252,7 +252,7 @@ def register_desktop() -> None:
     has been retired in the same commit; the registry now owns the
     handoff for both desktop and planner.
     """
-    register(SpecialistSpec(
+    register(HandoffSubagent(
         name="desktop",
         transfer_tool="transfer_to_desktop",
         when_to_use=_DESKTOP_WHEN,
