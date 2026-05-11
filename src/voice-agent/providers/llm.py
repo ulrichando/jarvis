@@ -186,10 +186,23 @@ if _ANTHROPIC_AVAILABLE and os.environ.get("ANTHROPIC_API_KEY", ""):
         # strict=False here removes Anthropic-side strict validation
         # of the model's tool args, matching the lenient stance the
         # strict_schema_relax patch already takes for Groq.
+        #
+        # max_tokens=200 caps response length at ~150 words / ~10s
+        # of audio. Claude Haiku 4.5 over-elaborates philosophical
+        # questions by default — live failure 2026-05-11 at 05:53 UTC:
+        # "What's in your mind?" → 574-char monologue. Soft prompt
+        # rules (the 30-word ceiling in supervisor.md) lose to
+        # in-context priming from prior long replies; max_tokens is
+        # a hard forcing function the model cannot ignore. Cost: a
+        # genuinely long-form question ("explain MVCC in depth")
+        # gets clipped mid-thought, but the recall-truncate logic
+        # in pipeline/chat_ctx.py means even those don't poison
+        # future sessions.
         "build": lambda: lk_anthropic.LLM(
             model="claude-haiku-4-5",
             api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
             temperature=0.6,
+            max_tokens=200,
             caching="ephemeral",
             _strict_tool_schema=False,
         ),
@@ -671,12 +684,14 @@ def build_dispatching_llm() -> DispatchingLLM:
                 model="claude-haiku-4-5",
                 api_key=anth_key,
                 temperature=0.6,
+                max_tokens=200,
                 caching="ephemeral",
                 # See the SPEECH_MODELS entry above for the full
                 # rationale. tl;dr: defense-in-depth only — the real
                 # fix for the additionalProperties=false rejection
                 # is the anthropic_strict_schema sanitizer in
-                # jarvis_agent.py.
+                # jarvis_agent.py. max_tokens=200 caps response
+                # verbosity same as the speech-model path.
                 _strict_tool_schema=False,
             )
             anth_fallback._jarvis_label = "anthropic:claude-haiku-4-5"
