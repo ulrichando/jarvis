@@ -262,6 +262,7 @@ from tools.computer_use import (
     face_delete,
 )
 from tools.browser import browser_task
+from tools.screen_share_control import set_screen_share
 
 # ── Direct in-process tools ported from claude-code (M1 — 2026-05-05) ─
 # These four replace the run_jarvis_cli + jarvis-cli round-trip for
@@ -4952,6 +4953,13 @@ async def entrypoint(ctx: JobContext) -> None:
             # in ~0s when screen-share is active, so direct-on-supervisor
             # is also a speed win.
             screenshot,
+            # set_screen_share — voice-command toggle for the screen-
+            # share track. "share my screen" / "stop sharing" etc.
+            # Lets the user start sharing without reaching for the
+            # tray. POSTs to voice-client :8767/screen-share with
+            # ack=false so the supervisor handles the voiced reply
+            # itself (no double-ack).
+            set_screen_share,
             # Memory — recall_conversation searches transcript history;
             # remember/forget/list_memories operate on the durable
             # facts store (state.db.memories) that survives chat delete.
