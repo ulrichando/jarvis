@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from pathlib import Path
 
 from livekit import api
 
@@ -29,6 +30,43 @@ __all__ = [
 
 
 log = logging.getLogger("jarvis.voice_client")
+
+
+def _load_user_keys_env() -> None:
+    """Load ~/.jarvis/keys.env into os.environ (override semantics).
+
+    Same shape as `jarvis_agent._load_user_keys_env`. CRITICAL for the
+    voice-client process: secrets (LIVEKIT_API_KEY / LIVEKIT_API_SECRET
+    / GOOGLE_API_KEY) migrated to ~/.jarvis/keys.env 2026-05-10. The
+    voice-agent process loads them at import via its own copy of this
+    function; the voice-client process (separate systemd unit, separate
+    Python interpreter) didn't — which left mint_token() hitting its
+    sys.exit(2) "API key not set" guard on every start, putting the
+    unit in a fast restart loop and the tray red. Loading the keys
+    file here happens BEFORE the API_KEY / API_SECRET reads below,
+    so the env-driven module constants pick up the real values.
+
+    Missing file is fine — graceful no-op. Failures parsing a line are
+    swallowed at WARNING level.
+    """
+    p = Path.home() / ".jarvis" / "keys.env"
+    if not p.exists():
+        return
+    try:
+        for line in p.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k = k.strip()
+            v = v.strip().strip('"').strip("'")
+            if k and v:
+                os.environ[k] = v   # override repo .env (matches voice-agent semantics)
+    except Exception as _e:
+        log.warning(f"[keys.env] load failed (non-fatal): {_e}")
+
+
+_load_user_keys_env()
 
 
 URL: str        = os.environ.get("LIVEKIT_URL",        "ws://127.0.0.1:7880")
