@@ -58,7 +58,7 @@ from livekit.agents import (
     function_tool,
     tts,
 )
-import tts.edge as edge_tts_plugin
+from providers import edge_tts as edge_tts_plugin
 # RoomOptions isn't re-exported from the top-level `livekit.agents`
 # module — it lives under the voice room_io submodule. Import
 # directly to dodge the ImportError.
