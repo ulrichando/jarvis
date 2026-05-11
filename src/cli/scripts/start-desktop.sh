@@ -23,6 +23,16 @@ if [ -f "$ROOT/.env.local" ]; then
   source "$ROOT/.env.local"
   set +a
 fi
+# Also load ~/.jarvis/keys.env (user-local secret store, gitignored).
+# Mirrors the voice-agent's `_load_user_keys_env()` pattern. Values
+# here OVERRIDE .env.local on collision, so newer keys placed here
+# (e.g. ANTHROPIC_API_KEY for the proxy's anthropic-native passthrough)
+# take effect without editing the repo's .env files.
+if [ -f "$HOME/.jarvis/keys.env" ]; then
+  set -a
+  source "$HOME/.jarvis/keys.env"
+  set +a
+fi
 
 case "${1:-}" in
   deepseek|groq|openai|gemini|ollama)
