@@ -44,10 +44,37 @@ logger = logging.getLogger("jarvis.subagent.screen_share")
 
 
 # Default model — overridable via env for future bumps without code change.
+# User explicitly requested gemini-3.1-flash-live-preview 2026-05-11
+# evening after I confirmed it works with audio-to-audio + continuous
+# video via send_realtime_input(video=Blob) — the earlier 1011 errors
+# were the deprecated send_realtime_input(media=Blob) shape, fixed now.
+# 3.1's trade-off vs 2.5-native-audio: tools/instructions/chat context
+# are IMMUTABLE mid-session — you can't update them without reconnecting.
+# Fine for our screen-share specialist (short, contained handoffs);
+# would be limiting if it were the main supervisor.
 SCREEN_SHARE_LIVE_MODEL: str = os.environ.get(
     "JARVIS_SCREEN_SHARE_LIVE_MODEL",
-    "gemini-2.5-flash-native-audio-preview-12-2025",
+    "gemini-3.1-flash-live-preview",
 )
+
+
+# Gemini Live voice. Options (~30 total — see api_proto.py in the
+# livekit-plugins-google package): Puck (default), Charon, Kore,
+# Fenrir, Aoede, Zephyr, etc. Aoede picked here as a natural-
+# sounding voice that pairs well with technical screen narration.
+SCREEN_SHARE_LIVE_VOICE: str = os.environ.get(
+    "JARVIS_SCREEN_SHARE_LIVE_VOICE",
+    "Aoede",
+)
+
+# Target tokens for the sliding-window context compression. Without
+# this, audio+video sessions hit Google's hard 2-minute cap and
+# disconnect. 32k is generous enough for a multi-turn screen-share
+# session without spending excessively on context tokens.
+SCREEN_SHARE_LIVE_CONTEXT_TOKENS: int = int(os.environ.get(
+    "JARVIS_SCREEN_SHARE_LIVE_CONTEXT_TOKENS",
+    "32000",
+))
 
 
 SCREEN_SHARE_INSTRUCTIONS = """\
@@ -117,16 +144,51 @@ def _screen_share_tools() -> list:
 
 
 def _build_screen_share_llm():
-    """Construct the Gemini Live RealtimeModel. Lazy import so
-    livekit-plugins-google isn't pulled at registry-import time
-    (it brings in google-genai which is heavy)."""
+    """Construct the Gemini Live RealtimeModel for the screen-share
+    specialist. Lazy import so livekit-plugins-google isn't pulled
+    at registry-import time (it brings in google-genai which is heavy).
+
+    Configuration is the researcher-recommended shape for
+    gemini-3.1-flash-live-preview running in a Linux voice agent:
+
+      - modalities=[AUDIO] is the only valid choice on 3.1 (TEXT
+        modality returns 1011 INTERNAL, python-genai #2238).
+        output_audio_transcription is enabled so text rides
+        alongside the audio bytes — the supervisor reads the text
+        for chat history.
+
+      - context_window_compression with a sliding 32k-token window is
+        REQUIRED for any session lasting >2 minutes. Without it,
+        Google force-disconnects audio+video sessions at the
+        2-minute mark.
+
+      - session_resumption enables automatic reconnect on transient
+        WebSocket drops, preserving conversation + visual context
+        for up to 2 hours of disconnect time.
+    """
     from livekit.plugins import google as lk_google
+    from google.genai import types as gt
+
     return lk_google.realtime.RealtimeModel(
         model=SCREEN_SHARE_LIVE_MODEL,
-        modalities=["AUDIO"],  # text path is broken (genai #2238)
+        voice=SCREEN_SHARE_LIVE_VOICE,
+        modalities=[gt.Modality.AUDIO],
         instructions=SCREEN_SHARE_INSTRUCTIONS,
         # output_audio_transcription is enabled by default in the
-        # LiveKit plugin so text rides alongside the audio.
+        # LiveKit plugin (passes AudioTranscriptionConfig()), but
+        # we set it explicitly to make the contract visible.
+        output_audio_transcription=gt.AudioTranscriptionConfig(),
+        # Sliding-window context compression — without this, audio+
+        # video sessions die at 2 min. 32k tokens ≈ 30+ minutes of
+        # multi-turn screen narration before any drop.
+        context_window_compression=gt.ContextWindowCompressionConfig(
+            sliding_window=gt.SlidingWindow(
+                target_tokens=SCREEN_SHARE_LIVE_CONTEXT_TOKENS,
+            ),
+        ),
+        # Automatic reconnect on transient WebSocket drops.
+        session_resumption=gt.SessionResumptionConfig(),
+        temperature=0.7,
     )
 
 

@@ -288,6 +288,14 @@ fn _repo_env_files() -> Vec<std::path::PathBuf> {
 /// rule: "Don't restart `jarvis-voice-agent.service` while a session
 /// is active. Check `~/.local/share/jarvis/turn_telemetry.db` for the
 /// latest `ts_utc`; if within 60 s, ask the user first."
+///
+/// Currently no production callers — the tray-Quit handler used to
+/// consult this and skip systemctl stop on a recent turn, but that
+/// was wrong UX (Quit is explicit user intent, they DO want to
+/// interrupt) and was removed 2026-05-11. Kept for the unit tests
+/// and as a building block if a future "Pause" / "Restart" tray
+/// option wants the same guard.
+#[allow(dead_code)]
 fn voice_session_within_60s() -> bool {
     let home = match std::env::var("HOME") {
         Ok(h) => h,
@@ -1798,50 +1806,45 @@ fn main() {
                         "tts_gr_troy"   => switch_tts_provider(app, "groq:troy"),
                         "tts_gr_austin" => switch_tts_provider(app, "groq:austin"),
                         "quit" => {
-                            // "Quit JARVIS" stops everything the user
+                            // "Quit JARVIS" stops EVERYTHING the user
                             // perceives as JARVIS — not just the overlay.
-                            // The voice agent + voice client run as
-                            // separate systemd user units and would
-                            // happily keep listening if we only called
-                            // app.exit(0). Stop them first, then exit.
+                            // Live failure 2026-05-11: user clicked Quit
+                            // and reported "only the icon stopped, the
+                            // services kept running". Two bugs were in
+                            // the prior implementation:
                             //
-                            // BUT: CLAUDE.md operational rule — don't
-                            // restart/stop jarvis-voice-agent while a
-                            // session is active. Tray Quit is a one-click
-                            // destructive action with no confirmation
-                            // dialog surface, so the conservative path is:
-                            // if a turn happened within the last 60 s,
-                            // skip the systemctl stop, just hide the
-                            // desktop, and leave the voice services
-                            // running. The user can use the CLI's
-                            // `voice-restart --force` (or `systemctl
-                            // --user stop jarvis-voice-agent`) for an
-                            // explicit override.
-                            if voice_session_within_60s() {
-                                eprintln!(
-                                    "[jarvis-desktop] Quit: voice session active \
-                                     (turn within 60 s) — exiting overlay only, \
-                                     leaving voice services running. Use \
-                                     `voice-restart --force` to override."
-                                );
-                                app.exit(0);
-                                return;
-                            }
-                            // No active session — safe to stop everything.
+                            //  1. A 60s session-active guard that skipped
+                            //     the systemctl stop entirely if a turn
+                            //     had happened recently — conservative-
+                            //     for-restart logic that wrongly inherited
+                            //     into Quit. Quit is explicit user intent;
+                            //     they DO want to interrupt the in-flight.
+                            //     Removed.
+                            //
+                            //  2. Only stopped voice-agent + voice-client,
+                            //     leaving jarvis-bridge (:8765) and
+                            //     jarvis-proxy (:4000) running. Now stops
+                            //     all four units.
+                            //
                             // Spawn detached so we don't block the tray
                             // event handler. Failure is non-fatal — if
-                            // the units were already stopped or systemctl
-                            // isn't available, the desktop still exits.
+                            // a unit isn't installed via systemd (some
+                            // services have a fallback nohup launch path),
+                            // systemctl returns non-zero and we still exit.
                             let _ = std::process::Command::new("systemctl")
                                 .args([
                                     "--user", "stop",
                                     "jarvis-voice-agent",
                                     "jarvis-voice-client",
+                                    "jarvis-bridge",
+                                    "jarvis-proxy",
                                 ])
                                 .spawn();
-                            // Give systemctl ~500 ms to issue the SIGTERM
-                            // before we kill the desktop, so the agent
-                            // gets a chance to clean up SFU room state.
+                            // Give systemctl ~500 ms to issue SIGTERMs
+                            // so the voice-agent has a chance to clean up
+                            // SFU room state. Without this, the room can
+                            // be left holding stale agent participants
+                            // that block re-dispatch on next launch.
                             std::thread::sleep(std::time::Duration::from_millis(500));
                             app.exit(0);
                         }
