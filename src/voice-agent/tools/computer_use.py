@@ -641,20 +641,28 @@ async def live_screen(duration_s: int = 10, focus: str = "") -> str:
 
 @function_tool
 async def screenshot() -> str:
-    """Take a screenshot and return a brief description of the screen.
+    """FALLBACK screen-vision tool. Takes a one-shot screenshot via
+    scrot and runs it through Gemini Flash Lite for description.
 
-    Does NOT require an active computer_use session — use this for one-off
-    "what's on the screen right now?" voice questions. Returns 1-2 sentences
-    suitable for speaking aloud (no coordinates, no UI element list).
+    PREFER `transfer_to_screen_share(question)` for any user question
+    about screen content — that specialist uses Gemini Live with
+    continuous vision and reads text content (filenames, error
+    messages, headings) much better. `transfer_to_screen_share`
+    will self-bail back to the supervisor if the user isn't
+    actually sharing their screen, at which point falling back to
+    this `screenshot()` is correct.
 
-    Fast path: if the continuous screen-share observer
-    (pipeline.screen_share_observer) has a fresh cached description,
-    return it without paying the ~4s vision-LLM round-trip. Falls
-    back to a fresh capture + vision_describe when the cache is stale
-    or the observer isn't running (no screen-share active).
+    When to use this tool DIRECTLY (without transferring first):
+      - The user explicitly said something like "just take a quick
+        screenshot" / "snapshot the screen", treating it as a
+        utility command rather than a question
+      - You just got "screen-share not active" / "no video frames
+        received" back from transfer_to_screen_share — this is the
+        fallback path
 
     For computer-use action loops where coordinates are needed, the
-    computer_use → click/type tools use the detailed prompt automatically.
+    computer_use → click/type tools use a different detailed prompt
+    automatically.
     """
     # Fast path: continuous-observer cache. Only fires when a
     # screen-share track is currently subscribed AND the observer's

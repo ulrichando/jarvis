@@ -117,8 +117,14 @@ class TestPollLoop:
         args = fake_describe.call_args.args
         assert args[0] == b"\xff\xd8\xff\xe0FAKE_JPEG"
         assert kwargs.get("mime_type") == "image/jpeg"
-        # The prompt should be the observer's short voice-friendly one.
-        assert "one or two sentences" in kwargs.get("prompt", "")
+        # The prompt should be the observer's content-rich version
+        # that explicitly asks Gemini to READ text on the screen
+        # (filenames, errors, headings) — not just describe the app.
+        prompt = kwargs.get("prompt", "")
+        assert "filenames" in prompt or "readable text" in prompt, (
+            f"observer prompt regressed to a generic shape — must ask Gemini "
+            f"to read text content. Got prompt[:120]={prompt[:120]!r}"
+        )
 
     def test_caches_description_on_session_and_global(self):
         session = _FakeSession()

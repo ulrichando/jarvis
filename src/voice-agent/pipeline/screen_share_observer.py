@@ -95,14 +95,26 @@ OBSERVER_MAX_AGE_S: float  = float(os.environ.get("JARVIS_SCREEN_OBSERVER_MAX_AG
 _GLOBAL_LATEST: Optional[tuple[str, float]] = None
 
 
-# Prompt for the periodic describe call. Kept short + voice-friendly
-# — the supervisor weaves this into a reply, so a single tight
-# sentence beats a paragraph of UI element coordinates.
+# Prompt for the periodic describe call. The supervisor reads this
+# from cache when the user asks about the screen, then composes the
+# voice reply. So the cache needs to be CONTENT-RICH — filenames,
+# error messages, headings — not just "a code editor is open".
+# 2-4 sentences. The supervisor compresses further for voice.
+# Live failure 2026-05-11 12:48: observer cached only generic
+# descriptions ("This is a screenshot of Visual Studio Code, where
+# the user is looking at a file"), so when the user asked "can you
+# read this .gitignore file?" JARVIS replied "I can't make out the
+# specific file names" — Gemini Flash Lite CAN read the text, we
+# just told it not to.
 _OBSERVER_PROMPT: str = (
-    "In one or two sentences, describe what's on this screen — what "
-    "app is open, what the user appears to be doing. No coordinates, "
-    "no element list. Speak naturally as if telling someone over the "
-    "phone."
+    "Describe what's on this screen in 2-4 sentences for a voice "
+    "assistant to relay later. INCLUDE the app name AND any readable "
+    "text that matters: filenames open in editors, the specific "
+    "error message or stack trace, page titles, headings, or the URL "
+    "bar. If a code editor is open, name the file. If a terminal is "
+    "showing output, quote the relevant line. If a web page is open, "
+    "name the site and the headline. Skip pure decoration. The user "
+    "WILL ask about specific text content — capture it now."
 )
 
 

@@ -96,12 +96,24 @@ VISION_SCREEN_PROMPT: str = (
     "Be specific and concise — the assistant will decide what to click or type."
 )
 
-# Casual "what's on my screen" prompt used by the one-shot screenshot
-# tool. No coordinates, no element list — just 1-2 sentences.
+# "what's on my screen" prompt used by the one-shot screenshot tool
+# AND the continuous screen-share observer. Asks Gemini to READ text
+# content (filenames, error messages, headings) rather than just say
+# "a code editor is open" — the dumbed-down v1 produced only generic
+# descriptions and the user couldn't get answers to "what's the
+# filename?" / "what does the error say?" (live failure 2026-05-11
+# 12:48 UTC). 2-4 sentences. Voice-ready (the supervisor will
+# compress further) but content-rich.
 VISION_QUICK_SCREEN_PROMPT: str = (
-    "In one or two sentences, describe what's on this screen — what app "
-    "is open, what the user appears to be doing. No coordinates, no "
-    "element list. Speak naturally as if telling someone over the phone."
+    "Describe what's on this screen in 2-4 sentences for a voice "
+    "assistant to relay to the user. INCLUDE the app name AND any "
+    "readable text that matters: filenames open in editors, the "
+    "specific error message or stack trace, page titles, headings, "
+    "or the URL bar. If a code editor is open, name the file "
+    "(e.g. 'jarvis_agent.py'). If a terminal is showing output or "
+    "an error, quote the relevant line. If a web page is open, name "
+    "the site and the headline. Skip pure decoration. The user is "
+    "asking BECAUSE THEY WANT TO KNOW THE TEXT — not just the app."
 )
 
 
