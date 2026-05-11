@@ -4021,6 +4021,114 @@ def _build_llm_stack() -> dict:
     }
 
 
+def _spawn_background_log_analyzer() -> None:
+    """Spawn the behavioral-analyzer background task. Step 8b of the
+    10/10 refactor. The analyzer scans the last 7 days of
+    conversations.db + agent log for repeated failure patterns and
+    stages candidate rules in `learned_rules.proposals.md`. Bounded
+    to 60 s; all errors caught. A cooldown (12 h) inside the analyzer
+    prevents re-running on every client reconnect."""
+    async def _run_analyzer_bg() -> None:
+        try:
+            # Delay 10 s so the session is fully active before we
+            # fire any network calls (Groq API for LLM proposal gen).
+            await asyncio.sleep(10)
+            from tools.log_analyzer import run_analysis
+            n = await asyncio.wait_for(run_analysis(), timeout=60.0)
+            if n > 0:
+                logger.info(f"[analyzer] {n} new proposal(s) staged")
+        except asyncio.TimeoutError:
+            logger.warning("[analyzer] analysis timed out after 60s")
+        except Exception as e:
+            logger.warning(f"[analyzer] background task error: {e}")
+
+    asyncio.create_task(_run_analyzer_bg())
+
+
+def _spawn_screen_share_watcher(session) -> None:
+    """Spawn the tray-screen-share file watcher. Step 8b of the 10/10
+    refactor. Polls `~/.jarvis/start-screen-share` once a second;
+    when the file appears (written by the tray's "Start Screen
+    Sharing" menu), reads the duration, deletes the sentinel, and
+    runs `live_screen(N)`. The per-frame description is voiced via
+    `session.say()` so the user hears it without an LLM round-trip."""
+    SCREEN_SHARE_FILE = Path.home() / ".jarvis" / "start-screen-share"
+
+    async def _watch_screen_share() -> None:
+        # Use the polling helper directly so we can stream each frame's
+        # description via session.say() as it arrives, instead of waiting
+        # for the full session to end.
+        from tools.computer_use import _live_screen_polling
+        while True:
+            try:
+                await asyncio.sleep(1.0)
+                if not SCREEN_SHARE_FILE.exists():
+                    continue
+                try:
+                    raw = SCREEN_SHARE_FILE.read_text(encoding="utf-8").strip()
+                    duration = int(raw) if raw.isdigit() else 30
+                except Exception:
+                    duration = 30
+                try:
+                    SCREEN_SHARE_FILE.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                logger.info(f"[screen-share] tray-triggered, {duration}s polling")
+                try:
+                    await session.say(f"Watching your screen for {duration} seconds.")
+                except Exception:
+                    pass
+
+                async def _voice_frame(desc: str) -> None:
+                    try:
+                        await session.say(desc)
+                    except Exception as e:
+                        logger.warning(f"[screen-share] frame say() failed: {e}")
+
+                try:
+                    await _live_screen_polling(
+                        duration_s=duration,
+                        interval_s=2.5,
+                        on_frame=_voice_frame,
+                    )
+                except Exception as e:
+                    logger.warning(f"[screen-share] polling error: {e}")
+                    try:
+                        await session.say(f"Screen-share failed: {e}")
+                    except Exception:
+                        pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"[screen-share] watcher error: {e}")
+
+    asyncio.create_task(_watch_screen_share())
+
+
+def _spawn_worker_heartbeat() -> None:
+    """Spawn the worker-heartbeat background task. Step 8b of the
+    10/10 refactor. Closes the supervisor-vs-worker watchdog gap:
+    the worker subprocess can't reach systemd directly (NotifyAccess=main
+    rejects sd_notify from non-supervisor PIDs), so it drops a
+    timestamp into `/tmp/jarvis-worker-heartbeat` that the supervisor's
+    main-sd-watchdog reads. If the worker's asyncio loop wedges, this
+    coroutine stops firing, the supervisor stops pinging systemd, and
+    systemd restarts within WatchdogSec."""
+    HEARTBEAT_PATH = Path("/tmp/jarvis-worker-heartbeat")
+
+    async def _worker_heartbeat() -> None:
+        while True:
+            try:
+                tmp = HEARTBEAT_PATH.with_suffix(".tmp")
+                tmp.write_text(str(time.monotonic()))
+                tmp.replace(HEARTBEAT_PATH)
+            except Exception as e:
+                logger.warning(f"[worker-heartbeat] write failed: {e}")
+            await asyncio.sleep(3.0)
+
+    asyncio.create_task(_worker_heartbeat())
+
+
 async def entrypoint(ctx: JobContext) -> None:
     """
     Runs once per client that joins a room. This is the actual
@@ -5559,106 +5667,12 @@ async def entrypoint(ctx: JobContext) -> None:
         room_options=RoomOptions(close_on_disconnect=False),
     )
 
-    # ── Background log analysis ───────────────────────────────────────
-    # Run the behavioral analyzer as a detached background task.
-    # It scans the last 7 days of conversations.db + agent log for
-    # repeated failure patterns and stages candidate rules in
-    # learned_rules.proposals.md. Bounded to 30s; all errors caught.
-    # A cooldown (12 h) prevents re-running on every client reconnect.
-    async def _run_analyzer_bg() -> None:
-        try:
-            # Delay 10 s so the session is fully active before we
-            # fire any network calls (Groq API for LLM proposal gen).
-            await asyncio.sleep(10)
-            from tools.log_analyzer import run_analysis
-            n = await asyncio.wait_for(run_analysis(), timeout=60.0)
-            if n > 0:
-                logger.info(f"[analyzer] {n} new proposal(s) staged")
-        except asyncio.TimeoutError:
-            logger.warning("[analyzer] analysis timed out after 60s")
-        except Exception as e:
-            logger.warning(f"[analyzer] background task error: {e}")
-
-    asyncio.create_task(_run_analyzer_bg())
-
-    # ── Tray screen-share watcher ─────────────────────────────────────
-    # Polls ~/.jarvis/start-screen-share every second. When the file
-    # appears (written by the tray's "Start Screen Sharing" menu), reads
-    # the duration, deletes the sentinel, and runs live_screen(N). The
-    # description is voiced via session.say() so the user hears it
-    # without going through the LLM (saves a round-trip).
-    SCREEN_SHARE_FILE = Path.home() / ".jarvis" / "start-screen-share"
-    async def _watch_screen_share() -> None:
-        # Use the polling helper directly so we can stream each frame's
-        # description via session.say() as it arrives, instead of waiting
-        # for the full session to end.
-        from tools.computer_use import _live_screen_polling
-        while True:
-            try:
-                await asyncio.sleep(1.0)
-                if not SCREEN_SHARE_FILE.exists():
-                    continue
-                try:
-                    raw = SCREEN_SHARE_FILE.read_text(encoding="utf-8").strip()
-                    duration = int(raw) if raw.isdigit() else 30
-                except Exception:
-                    duration = 30
-                try:
-                    SCREEN_SHARE_FILE.unlink(missing_ok=True)
-                except Exception:
-                    pass
-                logger.info(f"[screen-share] tray-triggered, {duration}s polling")
-                try:
-                    await session.say(f"Watching your screen for {duration} seconds.")
-                except Exception:
-                    pass
-
-                async def _voice_frame(desc: str) -> None:
-                    try:
-                        await session.say(desc)
-                    except Exception as e:
-                        logger.warning(f"[screen-share] frame say() failed: {e}")
-
-                try:
-                    await _live_screen_polling(
-                        duration_s=duration,
-                        interval_s=2.5,
-                        on_frame=_voice_frame,
-                    )
-                except Exception as e:
-                    logger.warning(f"[screen-share] polling error: {e}")
-                    try:
-                        await session.say(f"Screen-share failed: {e}")
-                    except Exception:
-                        pass
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.warning(f"[screen-share] watcher error: {e}")
-
-    asyncio.create_task(_watch_screen_share())
-
-    # ── Worker heartbeat ──────────────────────────────────────────────
-    # Closes the supervisor-vs-worker watchdog gap acknowledged at
-    # jarvis_agent.py:6167. The worker subprocess can't reach systemd
-    # (NotifyAccess=main rejects sd_notify from non-supervisor PIDs),
-    # so it instead drops a timestamp into a file the supervisor reads.
-    # If the worker's asyncio loop wedges, this coroutine stops firing
-    # and the supervisor's main-sd-watchdog notices a stale timestamp
-    # and stops pinging systemd → systemd restarts within WatchdogSec.
-    HEARTBEAT_PATH = Path("/tmp/jarvis-worker-heartbeat")
-
-    async def _worker_heartbeat() -> None:
-        while True:
-            try:
-                tmp = HEARTBEAT_PATH.with_suffix(".tmp")
-                tmp.write_text(str(time.monotonic()))
-                tmp.replace(HEARTBEAT_PATH)
-            except Exception as e:
-                logger.warning(f"[worker-heartbeat] write failed: {e}")
-            await asyncio.sleep(3.0)
-
-    asyncio.create_task(_worker_heartbeat())
+    # Spawn the three background watchers — each is a fire-and-forget
+    # task whose lifetime is bound to the job. Extracted 2026-05-10
+    # (Step 8b of the 10/10 refactor).
+    _spawn_background_log_analyzer()
+    _spawn_screen_share_watcher(session)
+    _spawn_worker_heartbeat()
 
     # Handle one-shot "speak this text" requests from any client in
     # the room. session.say() voices the text directly without an
