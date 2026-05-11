@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
     "jarvis_agent",
     "sanitizers.deepseek_roundtrip",
     "sanitizers.tool_name",
-    "taps.acoustic",
+    "pipeline.acoustic_tap",
     "pipeline.turn_router",
     "pipeline.turn_telemetry",
     "pipeline.turn_graph",
