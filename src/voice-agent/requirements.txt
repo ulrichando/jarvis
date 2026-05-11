@@ -22,7 +22,15 @@ convex~=0.7
 #   3. Kimi (Moonshot) — fallback when Gemini hits the API-disabled /
 #      quota / 5xx markers. Uses openai-python with swapped base_url,
 #      already in the dep graph below.
-google-genai~=1.65
+# 2.0+ required by livekit-plugins-google 1.5.6's RealtimeModel — it
+# uses types.HistoryConfig in _build_connect_config when the model's
+# mutable_chat_context=False (true for gemini-3.1-flash-live-preview).
+# Without this bump, every Live session crashes with
+# AttributeError: module 'google.genai.types' has no attribute 'HistoryConfig'
+# (live failure 2026-05-11 13:14 UTC). browser-use 0.12.6 pins
+# google-genai==1.65.0 — that pin is ignored; live testing confirms
+# browser-use still works with 2.0.
+google-genai>=2.0,<3.0
 
 # Face ID — InsightFace buffalo_l (RetinaFace + ArcFace ResNet-50),
 # the production-grade open-source face stack used by AWS Rekognition
