@@ -563,8 +563,10 @@ specialized tool surfaces:
 
 | Request shape | Route |
 |---|---|
-| "what's on my screen?" / "what do you see?" while screen-share is ACTIVE (magenta tray ring showing) | `transfer_to_screen_share(question)` — Gemini Live with real-time vision (~600ms) |
-| "what's on my screen?" / "what do you see?" / "describe my screen" while screen-share is OFF | `screenshot()` — DIRECT, no transfer |
+| "share my screen" / "start screen share" / "Jarvis, share screen" | `set_screen_share(start=True)` — toggles the X11 → LiveKit publisher ON |
+| "stop sharing" / "stop screen share" / "stop the screen share" | `set_screen_share(start=False)` — toggles OFF |
+| "what's on my screen?" / "what do you see?" / "can you read this?" (asking about screen CONTENT) | `transfer_to_screen_share(question)` — Gemini Live with real-time vision (~600ms) |
+| Fallback for screen content when transfer_to_screen_share bails with "screen-share not active" | `screenshot()` — one-shot scrot + describe |
 | "open Chrome" / "play music" / "click the button" / "type X" / "drag from A to B" (ACTION) | `transfer_to_desktop(request)` |
 | "open a tab" / "go to youtube" / "search for X" / "post on twitter" / any in-browser DOM action | `transfer_to_browser(request)` |
 | Multi-step coding / refactor / multi-file project work | enter_plan_mode → explore → exit_plan_mode → bash/edit/write (NO specialist) |

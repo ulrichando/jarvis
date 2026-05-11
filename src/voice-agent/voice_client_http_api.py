@@ -320,18 +320,27 @@ class VoiceClientHttpApi:
             # user hears confirmation without having to look at the
             # tray. Fire-and-forget; if /speak fails the toggle still
             # succeeded and the tray label flips at the next poll.
-            try:
-                # No "sir" — persona drops butler register (see
-                # supervisor.md TONE section, 2026-05-09 overhaul).
-                phrase = (
-                    "Screen sharing on."
-                    if self.state.sharing_screen
-                    else "Screen sharing off."
-                )
-                payload = json.dumps({"type": "speak", "text": phrase}).encode("utf-8")
-                await room.local_participant.publish_data(payload, reliable=True)
-            except Exception as e:
-                self.log.debug(f"[screen-share] voice-ack publish failed: {e}")
+            #
+            # Caller can suppress this with `ack: false` in the POST
+            # body — used by the supervisor's set_screen_share tool
+            # so the supervisor composes its own one-line reply
+            # instead of the user hearing two acks back-to-back
+            # (one from this data-publish, one from the supervisor's
+            # reply to the tool result). Default behavior is unchanged
+            # (tray clicks still get the audible ack).
+            if body.get("ack") is not False:
+                try:
+                    # No "sir" — persona drops butler register (see
+                    # supervisor.md TONE section, 2026-05-09 overhaul).
+                    phrase = (
+                        "Screen sharing on."
+                        if self.state.sharing_screen
+                        else "Screen sharing off."
+                    )
+                    payload = json.dumps({"type": "speak", "text": phrase}).encode("utf-8")
+                    await room.local_participant.publish_data(payload, reliable=True)
+                except Exception as e:
+                    self.log.debug(f"[screen-share] voice-ack publish failed: {e}")
             return web.json_response(
                 {"sharing": self.state.sharing_screen}, headers=cors,
             )
