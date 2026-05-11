@@ -147,11 +147,14 @@ export default function App() {
   //   listening → cyan   (user's voice is active)
   //   thinking  → amber  (booting / LLM generating)
   //   idle      → green  (ready, nothing active)
-  const lastTrayStateRef = useRef('idle')
-  const pushTrayState = useCallback((state) => {
-    if (state === lastTrayStateRef.current) return
-    lastTrayStateRef.current = state
-    invoke('set_tray_state', { state }).catch(console.error)
+  // PLUS a magenta outer ring overlaid when screen-share is live so
+  // the user can tell at a glance that JARVIS is observing.
+  const lastTrayStateRef = useRef({ state: 'idle', sharing: false })
+  const pushTrayState = useCallback((state, sharing) => {
+    const prev = lastTrayStateRef.current
+    if (state === prev.state && sharing === prev.sharing) return
+    lastTrayStateRef.current = { state, sharing }
+    invoke('set_tray_state', { state, sharing }).catch(console.error)
   }, [])
 
   const openChat = useCallback(() => {
@@ -217,8 +220,8 @@ export default function App() {
     else if (speech.booting)             next = 'booting'
     else if (speech.processing)          next = 'thinking'
     else                                  next = 'idle'
-    pushTrayState(next)
-  }, [wsStatus, voiceMuted, speech.connected, speech.speaking, speech.voiceActive, speech.silentMode, speech.booting, speech.processing, pushTrayState])
+    pushTrayState(next, !!speech.sharingScreen)
+  }, [wsStatus, voiceMuted, speech.connected, speech.speaking, speech.voiceActive, speech.silentMode, speech.booting, speech.processing, speech.sharingScreen, pushTrayState])
 
   // ── Tray menu label sync ────────────────────────────────────────────
   // Pushes the active CLI / speech / TTS model IDs into the three

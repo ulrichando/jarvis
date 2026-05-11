@@ -128,12 +128,17 @@ fn tint_source(r: u8, g: u8, b: u8) -> (u32, u32, Vec<u8>) {
 
 /// Return (width, height, rgba) for the given state. Tauri wraps the
 /// buffer in Image::new_owned at the call site.
-fn tray_image_for(state: &str) -> (u32, u32, Vec<u8>) {
+///
+/// `sharing` adds a magenta outer ring on top of the state-tinted icon
+/// to indicate the screen-share track is live (added 2026-05-11).
+/// Two-axis indicator: center colour = voice state, ring = sharing
+/// on/off. Both signals visible simultaneously.
+fn tray_image_for(state: &str, sharing: bool) -> (u32, u32, Vec<u8>) {
     // Colours chosen to match the VoiceClientPill (top-right of the
     // overlay) 1:1 so the tray and the pill never tell you different
     // stories. Tuned to read clearly against both dark and light XFCE
     // panels.
-    match state {
+    let (w, h, mut rgba) = match state {
         "talking"   => tint_source( 68, 147, 248),   // blue   — JARVIS speaking
         "listening" => tint_source( 34, 211, 238),   // cyan   — you speaking
         "booting"   => tint_source(168,  85, 247),   // purple — service cold-starting
@@ -141,6 +146,64 @@ fn tray_image_for(state: &str) -> (u32, u32, Vec<u8>) {
         "muted"     => tint_source( 20,  20,  20),   // black  — mic muted
         "offline"   => tint_source(239,  68,  68),   // red    — voice client down
         _           => tint_source( 63, 185,  80),   // green  — idle / ready
+    };
+    if sharing {
+        apply_sharing_ring(&mut rgba, w, h);
+    }
+    (w, h, rgba)
+}
+
+
+/// Paint a magenta ring at the outer edge of the tray buffer to
+/// indicate JARVIS is observing a live screen-share. Sits in the
+/// transparent margin around the existing concentric-ring icon —
+/// doesn't overwrite the state-tinted body, just adds a halo.
+///
+/// Magenta (236, 72, 153) is distinct from all 7 state colours
+/// (red/green/blue/cyan/purple/amber/black) so the ring is
+/// unmistakable against any state.
+fn apply_sharing_ring(rgba: &mut [u8], w: u32, h: u32) {
+    let cx = w as f32 / 2.0;
+    let cy = h as f32 / 2.0;
+    // Sit the ring at the outer 3 px of the buffer — the source PNG
+    // has a transparent margin there so we're painting on empty
+    // pixels, not over the icon's own outer ring.
+    let outer = (w.min(h) as f32) / 2.0 - 0.5;
+    let inner = outer - 3.0;
+    const MR: u8 = 236;
+    const MG: u8 =  72;
+    const MB: u8 = 153;
+    for y in 0..h {
+        for x in 0..w {
+            let dx = x as f32 + 0.5 - cx;
+            let dy = y as f32 + 0.5 - cy;
+            let d = (dx * dx + dy * dy).sqrt();
+            // Anti-aliased band: fully opaque in [inner, outer-0.5],
+            // soft edge for the outermost half-pixel so the ring
+            // doesn't shimmer against the tray background.
+            let alpha: f32 = if d >= inner && d <= outer - 0.5 {
+                1.0
+            } else if d > outer - 0.5 && d <= outer {
+                outer - d + 0.5
+            } else if d < inner && d >= inner - 0.5 {
+                d - inner + 0.5
+            } else {
+                0.0
+            };
+            if alpha <= 0.0 {
+                continue;
+            }
+            let i = ((y * w + x) * 4) as usize;
+            // Composite the magenta ring OVER the existing pixel
+            // (most of which is transparent here, so this is just
+            // a write — but the alpha math handles the rare overlap
+            // with the icon's own outermost ring gracefully).
+            let a = (alpha * 255.0).clamp(0.0, 255.0) as u8;
+            rgba[i]     = MR;
+            rgba[i + 1] = MG;
+            rgba[i + 2] = MB;
+            rgba[i + 3] = rgba[i + 3].max(a);
+        }
     }
 }
 
@@ -587,11 +650,15 @@ fn set_panel_rect(x: i32, y: i32, w: i32, h: i32, state: State<PanelRect>) -> Re
 }
 
 /// Set the system-tray icon colour to reflect the current app state.
-/// Accepted values: "idle" | "listening" | "talking" | "booting" | "thinking" | "offline".
+/// Accepted values: "idle" | "listening" | "talking" | "booting" | "thinking" | "offline" | "muted".
 /// "idle" and "listening" both render green (the mic is live either way).
+///
+/// `sharing` overlays a magenta outer ring on top of the state tint
+/// to indicate the voice-client is publishing the screen-share track.
+/// Two-axis indicator: center colour = voice state, ring = sharing on.
 #[tauri::command]
-fn set_tray_state(state: &str, tray: State<TrayHandle>) -> Result<(), String> {
-    let (w, h, rgba) = tray_image_for(state);
+fn set_tray_state(state: &str, sharing: bool, tray: State<TrayHandle>) -> Result<(), String> {
+    let (w, h, rgba) = tray_image_for(state, sharing);
     let image = Image::new_owned(rgba, w, h);
     let guard = tray.0.lock().map_err(|e| e.to_string())?;
     if let Some(t) = guard.as_ref() {
@@ -1576,7 +1643,7 @@ fn main() {
             // Start the tray on the green "idle" indicator — React will
             // push state updates via set_tray_state as soon as the webview
             // boots and the WS reports status.
-            let (iw, ih, idle_rgba) = tray_image_for("idle");
+            let (iw, ih, idle_rgba) = tray_image_for("idle", false);
             let idle_icon = Image::new_owned(idle_rgba, iw, ih);
             let tray = TrayIconBuilder::new()
                 .icon(idle_icon)
