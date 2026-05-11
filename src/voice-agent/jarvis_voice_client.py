@@ -72,11 +72,18 @@ logging.basicConfig(
 )
 log = logging.getLogger("jarvis.voice_client")
 
-URL          = os.environ.get("LIVEKIT_URL",        "ws://127.0.0.1:7880")
-API_KEY      = os.environ.get("LIVEKIT_API_KEY",    "")
-API_SECRET   = os.environ.get("LIVEKIT_API_SECRET", "")
-IDENTITY     = os.environ.get("JARVIS_VOICE_IDENTITY", "desktop-ulrich")
-ROOM_NAME    = os.environ.get("JARVIS_VOICE_ROOM",     "jarvis")
+# LiveKit auth + room-identity extracted to voice_client_auth.py 2026-05-10
+# (Step 7 of the audit). Re-imported so existing references to URL /
+# API_KEY / API_SECRET / IDENTITY / ROOM_NAME inside this file still
+# resolve.
+from voice_client_auth import (
+    URL,
+    API_KEY,
+    API_SECRET,
+    IDENTITY,
+    ROOM_NAME,
+    mint_token,
+)
 
 # 48 kHz mono matches both Orpheus TTS output and what sink_aec / mic_aec
 # expose in PipeWire. 10 ms frames (480 samples) is the typical WebRTC
@@ -912,29 +919,6 @@ async def start_http_server() -> web.AppRunner:
     await site.start()
     log.info(f"[http] status/command server on :{STATUS_PORT}")
     return runner
-
-
-def mint_token() -> str:
-    """
-    Mint a LiveKit JWT in-process. The bridge has a /api/livekit/token
-    endpoint for the (now-shelved) webview client; here we already have
-    the API secret in env, so we skip the HTTP round-trip.
-    """
-    if not API_KEY or not API_SECRET:
-        log.error("LIVEKIT_API_KEY / LIVEKIT_API_SECRET not set — refusing to start")
-        sys.exit(2)
-    return (
-        api.AccessToken(API_KEY, API_SECRET)
-        .with_identity(IDENTITY)
-        .with_name("Ulrich (desktop)")
-        .with_grants(api.VideoGrants(
-            room_join=True,
-            room=ROOM_NAME,
-            can_publish=True,
-            can_subscribe=True,
-        ))
-        .to_jwt()
-    )
 
 
 async def play_subscribed_track(track: rtc.RemoteAudioTrack) -> None:
