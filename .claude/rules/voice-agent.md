@@ -8,7 +8,7 @@ paths:
 
 These constraints are load-bearing. Don't remove or weaken without the user's sign-off.
 
-**Three monkey-patches must remain installed.** [sanitizers/__init__.py](../../src/voice-agent/sanitizers/__init__.py) installs `deepseek_roundtrip`, `tool_name_sanitizer`, and the AcousticTap. Removing any one breaks DeepSeek + Groq reliability. They're idempotent — safe to re-import, never to delete.
+**Four monkey-patches must remain installed.** [jarvis_agent.py](../../src/voice-agent/jarvis_agent.py) installs `deepseek_roundtrip`, `tool_name_sanitizer`, the AcousticTap, and `anthropic_strict_schema` (added 2026-05-11 — Anthropic rejects any tool whose object nodes don't set `additionalProperties: false`, and `strict_schema_relax` emits legacy schemas that omit it; the sanitizer fixes the schema post-build). Removing any one breaks DeepSeek + Groq + Anthropic reliability. They're idempotent — safe to re-import, never to delete.
 
 **Specialist tool gate refuses no-tool `task_done`.** [specialists/agent.py](../../src/voice-agent/specialists/agent.py)'s `task_done` walks chat_ctx since handoff start; if no real (non-`task_done`) tool fired, the call is refused. Narrow bailout-phrase allowlist (`_BAILOUT_SUMMARY_RE`) covers `user changed topic`, `not a desktop task`, `wrong specialist`, `cannot accomplish`, `handing back to supervisor`. New specialists' prompts must list these EXACT phrases — freelance phrasings get refused and the specialist loops.
 

@@ -116,6 +116,21 @@ deepseek_roundtrip.install()
 import sanitizers.strict_schema_relax as strict_schema_relax
 strict_schema_relax.install()
 
+# Force `additionalProperties: false` on every nested object inside
+# every Anthropic tool schema. Anthropic's /v1/messages endpoint
+# rejects any tool whose object-typed sub-schema doesn't set this
+# explicitly — captured live 2026-05-11 as `tools.0.custom: For
+# 'object' type, additionalProperties must be explicitly set to
+# false` on every supervisor turn while Claude Haiku 4.5 was the
+# routed speech model. The strict_schema_relax patch above gives
+# us legacy schemas (no additionalProperties anywhere), which is
+# fine for Groq but a hard reject for Anthropic. This patch runs
+# AFTER strict_schema_relax — it walks the schema tree produced
+# by parse_function_tools('anthropic', ...) and sets the flag on
+# every object node. Idempotent.
+import sanitizers.anthropic_strict_schema as anthropic_strict_schema
+anthropic_strict_schema.install()
+
 # Recover from `tool call validation failed: attempted to call tool
 # '<name> {<json>}' which was not in request.tools` — the recurring
 # bug where some Groq models jam JSON args into the name field.
