@@ -17,14 +17,14 @@ coupled:
   - `build_tts_chain` / `build_dispatching_tts` — assemble the
     FallbackAdapter([groq, edge]) chains the AgentSession uses.
 
-Telemetry callbacks live in jarvis_agent:
-  - `_record_synthesis(session, input_chars, audio_bytes)` writes a
-    row to the per-turn barge-in position table.
-  - `_active_session_for_telemetry[0]` holds the live AgentSession so
-    `_record_synthesis` can find it.
+Telemetry callbacks:
+  - `record_synthesis(session, input_chars, audio_bytes)` (from
+    pipeline.barge_in) writes a row to the per-turn position table.
+  - `_active_session_for_telemetry[0]` (in jarvis_agent) holds the
+    live AgentSession so `record_synthesis` can find it.
 
-The chunked-stream class imports both lazily inside `_run` so this
-module doesn't pull jarvis_agent into scope at import time.
+The chunked-stream class imports both inside `_run` so this module
+doesn't pull jarvis_agent into scope at import time.
 """
 from __future__ import annotations
 
@@ -67,11 +67,12 @@ __all__ = [
 
 class LoggingGroqChunkedStream(_GroqChunkedStream):
     async def _run(self, output_emitter) -> None:
-        # Lazy import — these telemetry callbacks live in jarvis_agent.
-        # Module load order: jarvis_agent imports providers.tts; this
-        # function runs only after both are loaded, so the import
-        # resolves cleanly without a circular-import boot trap.
-        from jarvis_agent import _record_synthesis, _active_session_for_telemetry
+        # `record_synthesis` lives in pipeline.barge_in — direct import,
+        # no circular risk. `_active_session_for_telemetry` still lives
+        # in jarvis_agent (session-bound state); lazy-imported to dodge
+        # circular-load risk at module init.
+        from pipeline.barge_in import record_synthesis
+        from jarvis_agent import _active_session_for_telemetry
 
         # Track audio bytes emitted this synthesize() call so we can
         # append a position-table entry for barge-in truncation.
@@ -112,7 +113,7 @@ class LoggingGroqChunkedStream(_GroqChunkedStream):
             output_emitter.flush()
             # Record this (silent) call in the position table so subsequent
             # synthesize() calls in the same turn see correct running totals.
-            _record_synthesis(
+            record_synthesis(
                 _active_session_for_telemetry[0],
                 len(self._input_text or ""),
                 nonlocal_audio_bytes[0],
@@ -199,7 +200,7 @@ class LoggingGroqChunkedStream(_GroqChunkedStream):
         # Record this synthesize() call's position-table entry. Runs ONLY
         # on success path — on breaker exception above, the audio wasn't
         # actually played so we don't append.
-        _record_synthesis(
+        record_synthesis(
             _active_session_for_telemetry[0],
             len(self._input_text or ""),
             nonlocal_audio_bytes[0],

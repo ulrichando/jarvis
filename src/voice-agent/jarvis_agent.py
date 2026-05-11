@@ -3267,98 +3267,16 @@ async def cap_sir_count(text):
     yield "".join(out)
 
 
-def _flatten_chat_content(content: object) -> str:
-    """ChatMessage.content can be a string, a list of mixed parts
-    (strings + ImageContent + etc), or None. Flatten to a plain
-    string — the DB only stores text."""
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for p in content:
-            if isinstance(p, str):
-                parts.append(p)
-            else:
-                # Non-string content (images, tool calls). Skip —
-                # don't pollute the transcript.
-                continue
-        return " ".join(parts).strip()
-    return str(content)
-
-
-# Groq Orpheus output is 48 kHz mono 16-bit WAV → 48000 × 1 × 2 = 96 bytes/ms.
-# Used by _record_synthesis to convert audio bytes → ms for the position
-# table. The 44-byte WAV header rounds to <1 ms — ignored.
-_GROQ_ORPHEUS_BYTES_PER_MS = 96
-
-
-def _record_synthesis(session, input_chars: int, audio_bytes: int) -> None:
-    """Append one entry to the session's TTS position table after a
-    completed synthesize() call. Idempotent; tolerant of missing session
-    or missing attr.
-
-    Spec: docs/superpowers/specs/2026-05-07-barge-in-truncation-design.md
-    """
-    if session is None:
-        return
-    table = getattr(session, "_jarvis_tts_position_table", None)
-    if table is None:
-        table = []
-        session._jarvis_tts_position_table = table
-    audio_ms = audio_bytes // _GROQ_ORPHEUS_BYTES_PER_MS
-    if table:
-        prev_ms, prev_chars = table[-1]
-    else:
-        prev_ms, prev_chars = 0, 0
-    table.append((prev_ms + audio_ms, prev_chars + input_chars))
-
-
-def _truncate_to_heard_portion(item, position_table, audio_end_ms):
-    """Cut an assistant turn's text to only the audio that played.
-
-    Used by the barge-in truncation gate in `_on_item`. When the user
-    interrupts mid-reply, this returns the heard portion of `item.content`
-    and mutates `item.content` in place so chat_ctx for the next turn
-    reflects only what was heard. Matches OpenAI Realtime's
-    `conversation.item.truncate(audio_end_ms=N)` semantic.
-
-    Spec: docs/superpowers/specs/2026-05-07-barge-in-truncation-design.md
-
-    Args:
-        item: livekit-agents chat-ctx item with `.content` (str or [str]).
-        position_table: list of (cumulative_ms, cumulative_chars) tuples,
-            one entry per synthesize() call in this assistant turn.
-        audio_end_ms: ms of audio actually heard (= _jarvis_agent_audio_ms_acc).
-
-    Returns:
-        (truncated_text: str, mutated: bool). `mutated` is True iff
-        item.content was rewritten to a strictly shorter form.
-    """
-    full_text = _flatten_chat_content(getattr(item, "content", None)) or ""
-    if not position_table:
-        return full_text, False
-
-    # Walk to the last entry whose cumulative_ms ≤ audio_end_ms.
-    cut_chars = 0
-    for cum_ms, cum_chars in position_table:
-        if cum_ms <= audio_end_ms:
-            cut_chars = cum_chars
-        else:
-            break
-
-    if cut_chars >= len(full_text):
-        # User heard everything (or position table over-reports).
-        return full_text, False
-
-    truncated = full_text[:cut_chars]
-    # Mutate in place so chat_ctx reflects heard-only on next LLM turn.
-    if isinstance(item.content, list):
-        item.content = [truncated]
-    else:
-        item.content = truncated
-    return truncated, True
+# Barge-in truncation helpers — extracted to pipeline/barge_in.py
+# 2026-05-10 (Step 9 of the audit). Re-exported under legacy
+# underscored names so existing tests + the providers/tts.py lazy
+# import + the entrypoint barge-in call sites stay untouched.
+from pipeline.barge_in import (
+    GROQ_ORPHEUS_BYTES_PER_MS as _GROQ_ORPHEUS_BYTES_PER_MS,
+    flatten_chat_content      as _flatten_chat_content,
+    record_synthesis          as _record_synthesis,
+    truncate_to_heard_portion as _truncate_to_heard_portion,
+)
 
 
 # ── Agent subclass: silent-mode gating ─────────────────────────────────
