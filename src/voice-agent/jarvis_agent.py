@@ -263,6 +263,7 @@ from tools.computer_use import (
 )
 from tools.browser import browser_task
 from tools.screen_share_control import set_screen_share
+from tools.skill_runner import list_skills, run_skill
 
 # ── Direct in-process tools ported from claude-code (M1 — 2026-05-05) ─
 # These four replace the run_jarvis_cli + jarvis-cli round-trip for
@@ -4960,6 +4961,13 @@ async def entrypoint(ctx: JobContext) -> None:
             # ack=false so the supervisor handles the voiced reply
             # itself (no double-ack).
             set_screen_share,
+            # Skills system — Claude-Code-parity. Skills are markdown
+            # recipes in ~/.jarvis/skills/<name>/SKILL.md and the
+            # bundled src/voice-agent/skills/. list_skills enumerates
+            # them; run_skill loads the body as a turn-scoped
+            # instruction the supervisor follows using existing tools.
+            list_skills,
+            run_skill,
             # Memory — recall_conversation searches transcript history;
             # remember/forget/list_memories operate on the durable
             # facts store (state.db.memories) that survives chat delete.
