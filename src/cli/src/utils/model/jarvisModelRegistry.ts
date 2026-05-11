@@ -336,6 +336,13 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
   // Claude Code /model picker shape: Opus (most capable, complex work),
   // Sonnet (everyday workhorse), Haiku (fastest, simple tasks). All
   // three support adaptive thinking. ANTHROPIC_API_KEY required.
+  // Capabilities are mirrored from the /v1/models response on this key
+  // (2026-05-11): all three current-gen Claude tiers support `effort`
+  // at low/medium/high/max, and `thinking: adaptive`. Exposing every
+  // level here makes the CLI's EffortPicker show the four-option list
+  // for all three models instead of falling back to the substring
+  // heuristic in utils/effort.ts (which excludes anything matching
+  // 'haiku'/'sonnet'/'opus' for non-1P).
   {
     id: 'claude-opus-4-7',
     label: 'Claude Opus 4.7',
@@ -354,7 +361,7 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     provider: 'anthropic',
     upstreamModel: 'claude-sonnet-4-6',
     tiers: ['default', 'balanced', 'reasoning', 'long_context', 'orchestration'],
-    capabilities: ['adaptive_thinking'],
+    capabilities: ['adaptive_thinking', 'effort', 'max_effort'],
     visibleInPicker: true,
     fallback: ['deepseek-v4-pro', 'qwen/qwen3-32b'],
   },
@@ -365,7 +372,7 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     provider: 'anthropic',
     upstreamModel: 'claude-haiku-4-5',
     tiers: ['fast', 'balanced'],
-    capabilities: ['adaptive_thinking'],
+    capabilities: ['adaptive_thinking', 'effort', 'max_effort'],
     visibleInPicker: true,
     fallback: ['claude-sonnet-4-6', 'deepseek-v4-flash'],
   },
