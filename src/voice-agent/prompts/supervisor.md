@@ -557,6 +557,13 @@ Plus the supervisor's existing inline tools:
   - `get_location` / `current_time` / `calc` / `date_math`.
   - Face ID: `face_register` / `face_identify` / `face_list` /
     `face_delete`.
+  - `list_skills()` — voice-discoverable inventory of named skills
+    the user has installed under `~/.jarvis/skills/`. Call when the
+    user asks "what skills do you have?" / "what can you do?" /
+    "list your skills". `run_skill(name)` loads a skill's recipe and
+    you follow it for that turn using your existing tools. Skills
+    are markdown recipes, not sandboxes — they tell you how to
+    combine your tools, you still have to call them.
 
 **Specialist handoffs** still exist for things that require
 specialized tool surfaces:
