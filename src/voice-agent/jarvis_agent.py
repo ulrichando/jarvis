@@ -3442,6 +3442,43 @@ class JarvisAgent(Agent):
             self.session.say("Pardon?", allow_interruptions=True)
             raise StopResponse()
 
+        # Deterministic intent router (added 2026-05-11 evening).
+        # High-confidence voice commands match a regex, fire the
+        # tool sequence directly, and bypass the supervisor LLM.
+        # Removes the LLM from the failure path for the common
+        # voice-controlled actions ("share my screen", "stop sharing",
+        # "what's on my screen?"). See pipeline/intent_router.py for
+        # the registry. Exceptions from any executor MUST NOT block
+        # the user's turn — caught here and falls through to the LLM.
+        try:
+            from pipeline.intent_router import match as _match_intent
+            intent = _match_intent(text)
+        except Exception as e:
+            intent = None
+            logger.warning(
+                f"[intent-router] match failed: {type(e).__name__}: {e}"
+            )
+        if intent is not None:
+            try:
+                await intent.executor()
+            except Exception as e:
+                logger.warning(
+                    f"[intent-router] {intent.name} executor failed: "
+                    f"{type(e).__name__}: {e} — falling through to LLM"
+                )
+                intent = None
+        if intent is not None and intent.short_circuit:
+            logger.info(
+                f"[intent-router] short-circuit {intent.name} "
+                f"(reply={intent.reply!r})"
+            )
+            self.session.say(intent.reply, allow_interruptions=True)
+            raise StopResponse()
+        # Non-short-circuit intents have already fired their side
+        # effects; fall through so the LLM can produce its verbal reply
+        # with the world state already mutated (e.g. for SCREEN_SHARE_QUERY
+        # the share is on by the time the LLM picks the transfer tool).
+
         # Layer 1 (Phase 2 of memory-layer fix) — auto-extract memorable
         # facts from the user transcript in parallel with the supervisor
         # LLM call. Bypasses the LLM's tool-choice surface entirely; writes
