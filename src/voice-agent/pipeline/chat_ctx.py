@@ -140,6 +140,16 @@ def scrub_recalled_assistant_text(text: str) -> str | None:
     # Drop whole-reply meta-silence ("Silence." etc).
     if META_SILENCE_RE.match(cleaned):
         return None
+    # Drop turns that mention the disabled screen_share specialist —
+    # they prime Claude to call `transfer_to_screen_share`, which
+    # doesn't exist anymore. Live failure 2026-05-11 15:51 UTC: chat
+    # history from a session where the specialist was enabled leaked
+    # into a session where it's disabled, Claude said "Let me transfer
+    # to the screen specialist", then realized the tool was missing
+    # ("I don't have that transfer tool available") — user confused.
+    # Drop the recalled turn entirely so Claude has no precedent.
+    if _DISABLED_SPECIALIST_RE.search(cleaned):
+        return None
     # Trim leading archaic openers ("Quite.", "Indeed.", …).
     m = ARCHAIC_OPENER_RE.match(cleaned)
     if m:
@@ -153,6 +163,18 @@ def scrub_recalled_assistant_text(text: str) -> str | None:
     if len(cleaned) > RECALL_ASSISTANT_MAX_CHARS:
         cleaned = _truncate_to_sentence(cleaned, RECALL_ASSISTANT_MAX_CHARS)
     return cleaned
+
+
+# Recalled-turn poison filter: drop assistant lines that mention the
+# disabled screen_share specialist. Specifically the phrases that
+# prime Claude to attempt `transfer_to_screen_share` — a tool that
+# was registered in past sessions but is now gated off.
+_DISABLED_SPECIALIST_RE = re.compile(
+    r"(?:transfer_to_screen_share"
+    r"|screen[-\s]share\s+specialist"
+    r"|let\s+me\s+(?:transfer\s+(?:to|you)|switch\s+to)\s+(?:the\s+)?screen)",
+    re.IGNORECASE,
+)
 
 
 # ── Loader: recent prior turns from state.db ─────────────────────────
