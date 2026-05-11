@@ -79,6 +79,10 @@ def attach_to_room(room: rtc.Room, session) -> None:
             return
 
         log.info(f"[screen-share-sink] subscribed to {participant.identity} screen track")
+        # Stash the subscribe-time so the unsubscribe handler can
+        # compute lifetime — useful for diagnosing the "track died
+        # after N seconds" pattern.
+        room._jarvis_screen_share_sink_sub_at = time.monotonic()
         task = asyncio.create_task(
             _consume(track, session),
             name=f"screen-share-sink-{participant.identity}",
@@ -94,7 +98,22 @@ def attach_to_room(room: rtc.Room, session) -> None:
             return
         if getattr(publication, "source", None) != rtc.TrackSource.SOURCE_SCREENSHARE:
             return
-        log.info(f"[screen-share-sink] {participant.identity} unsubscribed screen track")
+        # Diagnostic: how long did the track live? On the 2026-05-11
+        # 13:50:48 → 13:50:51 (3-second) failure we couldn't tell
+        # whether the user toggled off, the publisher hiccupped, or
+        # the LiveKit engine dropped the subscription. Logging the
+        # lifetime + reason here makes the next occurrence visible.
+        sub_at = getattr(room, "_jarvis_screen_share_sink_sub_at", None)
+        lifetime = (
+            f", lived {time.monotonic() - sub_at:.1f}s"
+            if sub_at is not None
+            else ""
+        )
+        reason = getattr(publication, "track_unsubscribe_reason", None) or "?"
+        log.info(
+            f"[screen-share-sink] {participant.identity} unsubscribed "
+            f"screen track (reason={reason}{lifetime})"
+        )
         t = getattr(room, "_jarvis_screen_share_sink_task", None)
         if t is not None and not t.done():
             t.cancel()
