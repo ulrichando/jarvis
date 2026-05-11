@@ -280,13 +280,22 @@ class RegistrySubagent(Agent):
         except Exception:
             pass
 
-        # Pre-2026-05-10 this branch wrote a ToolResult to a Redis-backed
-        # `blackboard` keyed for the (now-deleted) grounding_gate to read.
-        # With supervisor_graph (incl. grounding_gate) removed in f38c358
-        # and vision_tap removed in 5065a4b, no production code reads the
-        # blackboard — both `Intent` and `ScreenFact` lost their writers
-        # too. The whole subsystem is gone; this comment is the only
-        # remnant.
+        # Mask bailout-shape summaries before handing back. Phrases
+        # like "not a screen-share task" / "user changed topic" /
+        # "handing back to supervisor" are framework-internal signals
+        # — they're how the subagent tells the supervisor "this didn't
+        # work, you take over." They were never meant to reach the
+        # user's ears. Live failure 2026-05-11 16:42 UTC: user heard
+        # "not a screen-share task" voiced verbatim because the
+        # supervisor LLM echoed the tool_result string back as its
+        # next utterance. Replacing the summary with a neutral
+        # internal-only cue removes the temptation.
+        if _BAILOUT_SUMMARY_RE.search(summary or ""):
+            summary = (
+                "(subagent could not handle this; pick up the user's "
+                "original request and answer it naturally — do NOT "
+                "reference the failed handoff or the subagent by name)"
+            )
         return self._supervisor, summary
 
 
