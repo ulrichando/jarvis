@@ -5,6 +5,7 @@ export type JarvisProviderName =
   | 'openai'
   | 'ollama'
   | 'kimi'
+  | 'anthropic'
 
 export type JarvisModelTier =
   | 'default'
@@ -102,6 +103,21 @@ const JARVIS_PROVIDER_DEFINITIONS: Record<
     supportsToolChoice: true,
     maxTools: 16,
     maxOutputTokens: 16384,
+  },
+  anthropic: {
+    // Anthropic Claude — native Messages API. The CLI's openai-shaped
+    // chat client treats this as an OpenAI-compatible endpoint via the
+    // anthropic provider; the @anthropic-ai/sdk is already in the dep
+    // graph (vendored Claude Code shape). Sonnet 4.6 is the workhorse:
+    // 1M ctx, 128K output, strong agentic tool calls, $3/$15 per M.
+    // Haiku 4.5 is also wired but it's voice-only (see voice-agent's
+    // SPEECH_MODELS); CLI's tool chains are too deep for it.
+    baseUrl: 'https://api.anthropic.com/v1',
+    apiKeyEnvVar: 'ANTHROPIC_API_KEY',
+    defaultModel: 'claude-sonnet-4-6',
+    supportsToolChoice: true,
+    maxTools: 64,
+    maxOutputTokens: 32768,
   },
 }
 
@@ -315,6 +331,43 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     tiers: ['long_context'],
     capabilities: [],
     visibleInPicker: true,
+  },
+  // Anthropic Claude — added 2026-05-11. Three tiers mirroring the
+  // Claude Code /model picker shape: Opus (most capable, complex work),
+  // Sonnet (everyday workhorse), Haiku (fastest, simple tasks). All
+  // three support adaptive thinking. ANTHROPIC_API_KEY required.
+  {
+    id: 'claude-opus-4-7',
+    label: 'Claude Opus 4.7',
+    description: 'Opus 4.7 with 1M context · Most capable for complex work',
+    provider: 'anthropic',
+    upstreamModel: 'claude-opus-4-7',
+    tiers: ['reasoning', 'long_context', 'orchestration'],
+    capabilities: ['adaptive_thinking', 'effort', 'max_effort'],
+    visibleInPicker: true,
+    fallback: ['claude-sonnet-4-6', 'deepseek-v4-pro'],
+  },
+  {
+    id: 'claude-sonnet-4-6',
+    label: 'Claude Sonnet 4.6',
+    description: 'Sonnet 4.6 · Best for everyday tasks',
+    provider: 'anthropic',
+    upstreamModel: 'claude-sonnet-4-6',
+    tiers: ['default', 'balanced', 'reasoning', 'long_context', 'orchestration'],
+    capabilities: ['adaptive_thinking'],
+    visibleInPicker: true,
+    fallback: ['deepseek-v4-pro', 'qwen/qwen3-32b'],
+  },
+  {
+    id: 'claude-haiku-4-5',
+    label: 'Claude Haiku 4.5',
+    description: 'Haiku 4.5 · Fastest for quick answers',
+    provider: 'anthropic',
+    upstreamModel: 'claude-haiku-4-5',
+    tiers: ['fast', 'balanced'],
+    capabilities: ['adaptive_thinking'],
+    visibleInPicker: true,
+    fallback: ['claude-sonnet-4-6', 'deepseek-v4-flash'],
   },
 ] as const
 
