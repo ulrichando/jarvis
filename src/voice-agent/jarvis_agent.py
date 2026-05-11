@@ -5030,7 +5030,21 @@ async def entrypoint(ctx: JobContext) -> None:
         # reconnects but JARVIS is silent.
         # (Use RoomOptions, not RoomInputOptions — the -Input- /
         # -Output- variants were deprecated in livekit-agents 1.5.)
-        room_options=RoomOptions(close_on_disconnect=False),
+        #
+        # video_input=True is REQUIRED for the screen_share Live
+        # specialist — without it, RoomOptions.get_video_input_options()
+        # returns None, the AgentSession never subscribes to any video
+        # track, and the RealtimeModel's push_video is never called
+        # (verified by reading agent_session.py:1428 + room_io/types.py:147).
+        # The existing screen_share_sink hooks track_subscribed
+        # directly on the Room (separate code path) so this flag doesn't
+        # affect the polling-observer path either way. Cost: subscribes
+        # to ANY remote video track from the linked participant; the
+        # only video we publish is the screen-share, so this is fine.
+        room_options=RoomOptions(
+            close_on_disconnect=False,
+            video_input=True,
+        ),
     )
 
     # Spawn the three background watchers — each is a fire-and-forget
