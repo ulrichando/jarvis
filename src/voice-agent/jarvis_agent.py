@@ -4940,6 +4940,18 @@ async def entrypoint(ctx: JobContext) -> None:
             # without going through a specialist handoff.
             get_location,
             set_location,
+            # screenshot — read-only "what's on my screen?" tool.
+            # Added to the supervisor 2026-05-11 evening after the
+            # desktop-specialist routing produced a capability-denial
+            # bug (Claude said "I don't have a screenshot tool active"
+            # instead of either calling the tool or transferring).
+            # screenshot() is read-only and stateless — no narration-
+            # trap risk (the tool result IS the description; the LLM
+            # weaves it into the reply rather than fabricating one).
+            # With the screen_share_observer caching, the call returns
+            # in ~0s when screen-share is active, so direct-on-supervisor
+            # is also a speed win.
+            screenshot,
             # Memory — recall_conversation searches transcript history;
             # remember/forget/list_memories operate on the durable
             # facts store (state.db.memories) that survives chat delete.

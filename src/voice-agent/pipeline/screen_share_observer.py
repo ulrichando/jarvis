@@ -212,7 +212,11 @@ async def _poll_loop(session) -> None:
             pair = (text, time.monotonic())
             session._jarvis_latest_screen_description = pair
             _GLOBAL_LATEST = pair
-            log.debug(
+            # INFO-level — so the live log shows the loop is running.
+            # 12 calls/min at the default interval; not noisy enough to
+            # drown other events out, and the visibility is worth it
+            # for "is the observer alive?" debugging.
+            log.info(
                 f"[screen-observer] iter={iteration} described in {elapsed:.2f}s: "
                 f"{text[:80]}"
             )
