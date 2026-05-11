@@ -19,6 +19,7 @@ Routes:
   POST /speak         → ask agent to voice text via TTS
   POST /stop          → interrupt current agent utterance
   POST /user-input    → inject synthetic user turn into AgentSession
+  POST /screen-share  → start/stop X11 → LiveKit video publish
   GET  /cli-model     → current CLI model + allowlist
   POST /cli-model     → write CLI model choice
   GET  /voice-model   → current speech LLM + allowlist
@@ -99,12 +100,16 @@ class VoiceClientHttpApi:
         state: Any,
         get_mic_pub: Callable[[], Any],
         get_room: Callable[[], Any],
+        get_screen_share: Optional[Callable[[], Any]] = None,
         restart_agent_unit: Callable[[], Awaitable[None]],
         log: logging.Logger,
     ) -> None:
         self.state = state
         self.get_mic_pub = get_mic_pub
         self.get_room = get_room
+        # Optional so older callers / tests that don't pass it still
+        # work — POST /screen-share returns 503 in that case.
+        self.get_screen_share = get_screen_share
         self.restart_agent_unit = restart_agent_unit
         self.log = log
 
@@ -118,6 +123,7 @@ class VoiceClientHttpApi:
         app.router.add_post("/speak",      self.speak)
         app.router.add_post("/stop",       self.stop)
         app.router.add_post("/user-input", self.user_input)
+        app.router.add_post("/screen-share", self.screen_share)
         app.router.add_get("/cli-model",   self.cli_model)
         app.router.add_post("/cli-model",  self.cli_model)
         app.router.add_get("/voice-model",   self.speech_model)
@@ -272,6 +278,56 @@ class VoiceClientHttpApi:
             )
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
+
+    async def screen_share(self, req: web.Request) -> web.Response:
+        """POST /screen-share {start: bool} → toggle X11 → LiveKit publish.
+
+        `start: true` spawns ffmpeg + publishes a SOURCE_SCREENSHARE
+        video track to the current room. `start: false` (or omitted)
+        tears the publisher down.
+
+        OFF on every fresh process — desktop capture is opt-in. The
+        body may omit `start` to default to a toggle.
+        """
+        cors = {"Access-Control-Allow-Origin": "*"}
+        ss = self.get_screen_share() if self.get_screen_share else None
+        if ss is None:
+            return web.json_response(
+                {"error": "screen-share unavailable in this build"},
+                status=503, headers=cors,
+            )
+        room = self.get_room()
+        if room is None or not self.state.connected:
+            return web.json_response(
+                {"error": "not connected"}, status=503, headers=cors,
+            )
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        # Default = toggle. Explicit `start: bool` wins.
+        if "start" in body:
+            target = bool(body["start"])
+        else:
+            target = not ss.is_active()
+        try:
+            if target:
+                await ss.start(room)
+            else:
+                await ss.stop()
+            self.state.sharing_screen = ss.is_active()
+            return web.json_response(
+                {"sharing": self.state.sharing_screen}, headers=cors,
+            )
+        except FileNotFoundError as e:
+            return web.json_response(
+                {"error": f"capture backend unavailable: {e}"},
+                status=500, headers=cors,
+            )
+        except Exception as e:
+            return web.json_response(
+                {"error": str(e)}, status=500, headers=cors,
+            )
 
     async def cli_model(self, req: web.Request) -> web.Response:
         """GET  /cli-model                          → {"model": "<id>", "available": [...]}
