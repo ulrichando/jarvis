@@ -4301,6 +4301,139 @@ def _register_session_crash_watchdog(session, bg_tasks: set) -> None:
         t.add_done_callback(bg_tasks.discard)
 
 
+# Kill-phrase regex used by the mid-speech interrupt handler. Module-level
+# so `_register_state_tracking_handlers` doesn't recompile on every job.
+# Per-route min_words=2-3 means single-word "stop" or "wait" won't fire
+# the framework's interrupt under REASONING or EMOTIONAL turns. We watch
+# partial transcripts for explicit kill phrases and call session.interrupt()
+# directly — bypassing min_words.
+_KILL_PHRASES = re.compile(
+    r"\b("
+    r"stop|wait|hold on|shut up|hush|pause|quiet|enough|cancel|nevermind|never mind"
+    # Polite-stop phrases. User naturally says these to mean "let me speak"
+    # but framework VAD/duration thresholds often miss them on short audio.
+    r"|one sec|one second|give me a (sec|second|moment)|hold up|hang on"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _register_state_tracking_handlers(session) -> None:
+    """Wire up the 5 small `@session.on(...)` handlers that mirror VAD
+    + agent state into telemetry, tray flags, and barge-in detection.
+    Step 8d of the 10/10 refactor.
+
+    Registered:
+      - user_state_changed → stamp speech start/end on session for
+        the dispatcher's speech_rate_wpm derivation.
+      - agent_state_changed → mirror state into _AGENT_THINKING_FILE +
+        _TOOL_BUSY_FILE so the tray + /status endpoint reflect reality
+        without TTL guesswork. Also accumulates total_audio_ms across
+        multi-segment turns.
+      - user_input_transcribed → mark thinking start + reset the per-turn
+        tool-call counter on each FINAL transcript.
+      - user_input_transcribed → kill-phrase fast interrupt. Watches
+        for "stop" / "wait" / "hush" / etc. mid-speech and calls
+        session.interrupt() directly, bypassing per-route min_words
+        which would otherwise drop single-word interrupts.
+      - user_state_changed → barge-in detection. Stamps
+        _jarvis_was_interrupted=True when the user starts speaking
+        while the agent is still mid-utterance.
+    """
+
+    @session.on("user_state_changed")
+    def _on_user_state(ev) -> None:
+        try:
+            new_state = getattr(ev, "new_state", None)
+            old_state = getattr(ev, "old_state", None)
+            now = time.monotonic()
+            if new_state == "speaking" and old_state != "speaking":
+                session._jarvis_speech_started_at = now
+            elif old_state == "speaking" and new_state != "speaking":
+                session._jarvis_speech_ended_at = now
+        except Exception as e:
+            logger.debug(f"[acoustic] state-change skipped: {e}")
+
+    # Mirror the framework's authoritative agent_state into the
+    # thinking flag file so the tray can stay amber for the FULL
+    # duration of LLM + tool work — no TTL guesswork. Captured live
+    # 2026-05-02: tray reverted to green during a 15s browser_v2
+    # task because the prior 10s TTL on _AGENT_THINKING_FILE expired
+    # mid-tool. Refreshing the flag on every state change beats the
+    # TTL into irrelevance.
+    #
+    # ALSO clears the _TOOL_BUSY_FILE flag when state returns to
+    # idle/listening/speaking. Captured live 2026-05-02 13:28: the
+    # desktop subagent emitted a screenshot description as text but
+    # skipped task_done, so the tool-busy flag from the transfer
+    # never got cleared — tray stayed amber for 7 minutes and
+    # `/status.tool_running` reported True forever. Trusting the
+    # framework's state machine over per-tool cleanup is the robust fix.
+    @session.on("agent_state_changed")
+    def _on_agent_state(ev) -> None:
+        new_state = getattr(ev, "new_state", None)
+        old_state = getattr(ev, "old_state", None)
+        if new_state == "thinking":
+            _mark_thinking_start()
+        elif new_state in ("idle", "listening", "speaking"):
+            _mark_thinking_end()
+            _mark_tool_end()
+
+        # total_audio_ms tracking: accumulate every "speaking" segment
+        # within a turn. Multi-segment turn (speaking → thinking →
+        # speaking after a tool call) sums correctly; a barge-in
+        # captures the partial duration. Read + reset at turn-end in
+        # the log_turn() block.
+        try:
+            _now_mono = time.monotonic()
+            if new_state == "speaking" and old_state != "speaking":
+                session._jarvis_agent_speaking_started_at = _now_mono
+            elif old_state == "speaking" and new_state != "speaking":
+                started = getattr(session, "_jarvis_agent_speaking_started_at", None)
+                if started is not None:
+                    seg_ms = int((_now_mono - started) * 1000)
+                    if seg_ms > 0:
+                        prior = getattr(session, "_jarvis_agent_audio_ms_acc", 0) or 0
+                        session._jarvis_agent_audio_ms_acc = prior + seg_ms
+                    session._jarvis_agent_speaking_started_at = None
+        except Exception as e:
+            logger.debug(f"[total_audio_ms] tracking skipped: {e}")
+
+    # STT finalised a user turn — LLM is about to start generating.
+    # Touch the thinking flag so the tray goes gold immediately.
+    @session.on("user_input_transcribed")
+    def _on_user_input(ev) -> None:
+        if getattr(ev, "is_final", True):
+            _mark_thinking_start()
+            _reset_tool_call_count()
+
+    @session.on("user_input_transcribed")
+    def _on_user_input_kill_phrase(ev) -> None:
+        try:
+            text = (getattr(ev, "transcript", "") or "").strip()
+            if not text or not _KILL_PHRASES.search(text):
+                return
+            agent_state = getattr(session, "agent_state", "")
+            if agent_state != "speaking":
+                return
+            logger.info(f"[kill-phrase] '{text[:60]!r}' detected mid-speech → forcing interrupt")
+            session.interrupt()
+            session._jarvis_was_interrupted = True
+        except Exception as e:
+            logger.debug(f"[kill-phrase] check skipped: {e}")
+
+    @session.on("user_state_changed")
+    def _on_user_state_for_interrupt(ev) -> None:
+        try:
+            new_state = getattr(ev, "new_state", None)
+            if new_state == "speaking":
+                agent_state = getattr(session, "agent_state", "")
+                if agent_state == "speaking":
+                    session._jarvis_was_interrupted = True
+        except Exception as e:
+            logger.debug(f"[interrupt-detect] skipped: {e}")
+
+
 async def entrypoint(ctx: JobContext) -> None:
     """
     Runs once per client that joins a room. This is the actual
@@ -4776,138 +4909,10 @@ async def entrypoint(ctx: JobContext) -> None:
         except Exception as e:
             logger.warning(f"[convo-db] save failed: {e}")
 
-    # ── Acoustic emotion signal ────────────────────────────────────
-    # Stamp utterance start/end timestamps off user_state_changed so
-    # the dispatcher can compute speech_rate_wpm and feed AudioMeta
-    # for the speech-rate path in detect_emotion. Iteration-3 of /loop
-    # voice-intelligence: the rate path was plumbed but never populated
-    # because user_input_transcribed has no rate attr. We derive it
-    # from VAD state transitions instead.
-    @session.on("user_state_changed")
-    def _on_user_state(ev) -> None:
-        try:
-            new_state = getattr(ev, "new_state", None)
-            old_state = getattr(ev, "old_state", None)
-            now = time.monotonic()
-            if new_state == "speaking" and old_state != "speaking":
-                session._jarvis_speech_started_at = now
-            elif old_state == "speaking" and new_state != "speaking":
-                session._jarvis_speech_ended_at = now
-        except Exception as e:
-            logger.debug(f"[acoustic] state-change skipped: {e}")
-
-    # Mirror the framework's authoritative agent_state into the
-    # thinking flag file so the tray can stay amber for the FULL
-    # duration of LLM + tool work — no TTL guesswork. Captured live
-    # 2026-05-02: tray reverted to green during a 15s browser_v2
-    # task because the prior 10s TTL on _AGENT_THINKING_FILE expired
-    # mid-tool. Refreshing the flag on every state change beats the
-    # TTL into irrelevance.
-    #
-    # ALSO clears the _TOOL_BUSY_FILE flag when state returns to
-    # idle/listening/speaking. Captured live 2026-05-02 13:28: the
-    # desktop specialist emitted a screenshot description as text
-    # but skipped task_done, so the tool-busy flag from the
-    # transfer never got cleared — tray stayed amber for 7 minutes
-    # and `/status.tool_running` reported True forever. Trusting
-    # the framework's state machine over per-tool cleanup is the
-    # robust fix.
-    @session.on("agent_state_changed")
-    def _on_agent_state(ev) -> None:
-        new_state = getattr(ev, "new_state", None)
-        old_state = getattr(ev, "old_state", None)
-        if new_state == "thinking":
-            _mark_thinking_start()
-        elif new_state in ("idle", "listening", "speaking"):
-            _mark_thinking_end()
-            # If we're back to a non-working state, no tool can be
-            # legitimately running. Clear the flag — better than
-            # leaving it stale across a failed task_done.
-            _mark_tool_end()
-
-        # total_audio_ms tracking: accumulate every "speaking" segment
-        # within a turn. A multi-segment turn (speaking → thinking →
-        # speaking after a tool call) sums correctly; a barge-in
-        # captures the partial duration. Read + reset happens at
-        # turn-end in the log_turn() block. Was hardcoded to 0 with
-        # "not measured in v1" comment — now actually wired.
-        try:
-            _now_mono = time.monotonic()
-            if new_state == "speaking" and old_state != "speaking":
-                session._jarvis_agent_speaking_started_at = _now_mono
-            elif old_state == "speaking" and new_state != "speaking":
-                started = getattr(session, "_jarvis_agent_speaking_started_at", None)
-                if started is not None:
-                    seg_ms = int((_now_mono - started) * 1000)
-                    if seg_ms > 0:
-                        prior = getattr(session, "_jarvis_agent_audio_ms_acc", 0) or 0
-                        session._jarvis_agent_audio_ms_acc = prior + seg_ms
-                    session._jarvis_agent_speaking_started_at = None
-        except Exception as e:
-            logger.debug(f"[total_audio_ms] tracking skipped: {e}")
-
-    # STT finalised a user turn — LLM is about to start generating
-    # (or the agent will decide to stay silent if the directed-at-me
-    # filter rejects it). Touch the thinking flag so the tray goes
-    # gold immediately. Without this, gold doesn't show until the
-    # tool actually starts running for tool-using turns.
-    @session.on("user_input_transcribed")
-    def _on_user_input(ev) -> None:
-        # Only flip on FINAL transcripts — partial chunks fire too.
-        if getattr(ev, "is_final", True):
-            _mark_thinking_start()
-            # Reset the per-turn tool-call counter so each new user
-            # turn gets a fresh budget. Otherwise long sessions slowly
-            # accumulate tool calls and trip the limit prematurely.
-            _reset_tool_call_count()
-
-    # Kill-phrase fast interrupt. Per-route min_words=2-3 means single-word
-    # "stop" or "wait" won't fire the framework's interrupt under REASONING
-    # or EMOTIONAL turns. We watch partial transcripts for explicit kill
-    # phrases and call session.interrupt() directly — bypassing min_words.
-    # Only fires when JARVIS is currently speaking (user_state hasn't
-    # flipped to "speaking" yet because partial transcripts don't always
-    # imply the framework has decided to interrupt).
-    _KILL_PHRASES = re.compile(
-        r"\b("
-        r"stop|wait|hold on|shut up|hush|pause|quiet|enough|cancel|nevermind|never mind"
-        # Polite-stop phrases. User naturally says these to mean "let me speak"
-        # but framework VAD/duration thresholds often miss them on short audio.
-        r"|one sec|one second|give me a (sec|second|moment)|hold up|hang on"
-        r")\b",
-        re.IGNORECASE,
-    )
-
-    @session.on("user_input_transcribed")
-    def _on_user_input_kill_phrase(ev) -> None:
-        try:
-            text = (getattr(ev, "transcript", "") or "").strip()
-            if not text or not _KILL_PHRASES.search(text):
-                return
-            # Only act if JARVIS is currently speaking — otherwise the user
-            # is just saying "wait" as part of normal conversation.
-            agent_state = getattr(session, "agent_state", "")
-            if agent_state != "speaking":
-                return
-            logger.info(f"[kill-phrase] '{text[:60]!r}' detected mid-speech → forcing interrupt")
-            session.interrupt()
-            session._jarvis_was_interrupted = True
-        except Exception as e:
-            logger.debug(f"[kill-phrase] check skipped: {e}")
-
-    # Phase 10.5 — barge-in detection. If the user starts speaking
-    # while the agent is still mid-utterance, that's a real interrupt.
-    # Stamp it so the per-turn telemetry write picks it up.
-    @session.on("user_state_changed")
-    def _on_user_state_for_interrupt(ev) -> None:
-        try:
-            new_state = getattr(ev, "new_state", None)
-            if new_state == "speaking":
-                agent_state = getattr(session, "agent_state", "")
-                if agent_state == "speaking":
-                    session._jarvis_was_interrupted = True
-        except Exception as e:
-            logger.debug(f"[interrupt-detect] skipped: {e}")
+    # Wire the 5 small state-tracking event handlers (Step 8d). The
+    # big `_on_user_input_for_dispatch` Maya-class router that follows
+    # this section captures more local state and stays inline for now.
+    _register_state_tracking_handlers(session)
 
     @session.on("user_input_transcribed")
     def _on_user_input_for_dispatch(ev) -> None:
