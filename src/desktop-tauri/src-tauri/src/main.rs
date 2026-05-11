@@ -165,14 +165,17 @@ fn tray_image_for(state: &str, sharing: bool) -> (u32, u32, Vec<u8>) {
 fn apply_sharing_ring(rgba: &mut [u8], w: u32, h: u32) {
     let cx = w as f32 / 2.0;
     let cy = h as f32 / 2.0;
-    // Sit the ring at the outer 3 px of the buffer — the source PNG
-    // has a transparent margin there so we're painting on empty
-    // pixels, not over the icon's own outer ring.
+    // Ring width bumped from 3px to 5px on 2026-05-11 evening after
+    // the user reported the indicator wasn't visible. Most Linux
+    // panels downscale the 48x48 icon to ~22-28px — a 3px ring becomes
+    // ~1.5px wide which is easy to miss. 5px stays clearly visible
+    // even at 22px panel size.
     let outer = (w.min(h) as f32) / 2.0 - 0.5;
-    let inner = outer - 3.0;
-    const MR: u8 = 236;
-    const MG: u8 =  72;
-    const MB: u8 = 153;
+    let inner = outer - 5.0;
+    // Brighter magenta-pink for high contrast against any state colour.
+    const MR: u8 = 255;
+    const MG: u8 =  20;
+    const MB: u8 = 147;
     for y in 0..h {
         for x in 0..w {
             let dx = x as f32 + 0.5 - cx;

@@ -153,6 +153,10 @@ export default function App() {
   const pushTrayState = useCallback((state, sharing) => {
     const prev = lastTrayStateRef.current
     if (state === prev.state && sharing === prev.sharing) return
+    // Diagnostic — logs go to /tmp/jarvis-desktop.log via the WebView's
+    // stderr capture. Lets us confirm in the field whether the React
+    // poller is actually picking up state changes from /status.
+    console.log(`[tray] state=${state} sharing=${sharing} (prev: ${prev.state}/${prev.sharing})`)
     lastTrayStateRef.current = { state, sharing }
     invoke('set_tray_state', { state, sharing }).catch(console.error)
   }, [])
