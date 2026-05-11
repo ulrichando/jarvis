@@ -290,9 +290,17 @@ async def ollama_describe(
     loop = asyncio.get_running_loop()
 
     def _call() -> str:
-        # 180s timeout — first call loads ~3-5GB of model weights to GPU
-        # which can take 30-90s. Subsequent calls are 1-5s once warm.
-        with urllib.request.urlopen(req, timeout=180) as resp:
+        # 8s timeout — Ollama in production is either warm (1-5s) or
+        # unresponsive. The previous 180s cap let a hung qwen2.5vl
+        # block the voice loop for THREE MINUTES while the user
+        # waited for a screen-share answer (live failure 2026-05-11
+        # 12:25-12:29 UTC). With this cap, a cold-start that exceeds
+        # 8s falls through to Gemini cleanly — annoying for the first
+        # request of the day, but never user-visible as silence.
+        # If you genuinely want to wait for a slow cold-start, set
+        # JARVIS_OLLAMA_TIMEOUT_S in the env (read at call time).
+        timeout_s = float(os.environ.get("JARVIS_OLLAMA_TIMEOUT_S", "8"))
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
             data = json.loads(resp.read())
         text = (data.get("response") or "").strip()
         return text or "(no description returned)"
