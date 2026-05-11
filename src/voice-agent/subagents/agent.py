@@ -66,6 +66,12 @@ _BAILOUT_SUMMARY_RE = re.compile(
       | google\s+chrome\s+isn'?t\s+available
       # 2026-05-09 — weather specialist's location-failure phrasing
       | couldn'?t\s+determine\s+(?:your\s+|the\s+)?location
+      # 2026-05-11 — screen-share specialist self-bails when the
+      # supervisor routed here but no video stream is reachable
+      # (user wasn't actually sharing, or the track hasn't started
+      # publishing yet). Supervisor can then fall back to screenshot().
+      | screen[-\s]share\s+(?:not\s+active|isn'?t\s+active|off)
+      | no\s+video\s+frames(?:\s+received)?
     )
     """
 )

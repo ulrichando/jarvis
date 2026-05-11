@@ -88,6 +88,13 @@ You: task_done("user changed topic")
 
 ═══ BAILOUT ═══
 
+If you can't see any screen content (the user isn't actually sharing
+their screen, or the video stream hasn't started yet), call task_done
+IMMEDIATELY with one of these EXACT phrases so the supervisor can
+fall back to screenshot():
+  - "screen-share not active"
+  - "no video frames received"
+
 If the user asks something NOT about the screen ("what time is it",
 "open Chrome", "tell me a joke"), or just acknowledges your last
 answer, call task_done IMMEDIATELY with one of these EXACT phrases:
@@ -97,7 +104,7 @@ answer, call task_done IMMEDIATELY with one of these EXACT phrases:
 
 The framework's specialist tool-gate enforces this — text-only exits
 without an exact bailout phrase get refused and you'll loop. Use
-one of the three above verbatim.
+one of the five above verbatim.
 """
 
 
@@ -124,14 +131,16 @@ def _build_screen_share_llm():
 
 
 _SCREEN_SHARE_WHEN = (
-    "Use ONLY when screen-share is ACTIVE (the user toggled the "
-    "tray's Start Screen Share, or the magenta-ring tray indicator "
-    "is showing) AND the user is asking about WHAT'S ON the screen "
-    "right now. Examples: 'what's on my screen?', 'what do you see?', "
-    "'describe my screen', 'can you see this?', 'what's that error?'. "
-    "Do NOT call when screen-share is OFF — use the direct screenshot() "
-    "tool for those cases. Do NOT call for non-screen questions even "
-    "while sharing is on (those stay on the supervisor)."
+    "PREFERRED tool for any screen-content question: 'what's on my "
+    "screen?', 'what do you see?', 'describe my screen', 'can you "
+    "read this?', 'can you see this file?', 'what's that error?', "
+    "'what does it say?'. Uses Gemini Live for REAL-TIME vision — "
+    "reads text (filenames, error messages, headings) far better "
+    "than the screenshot() fallback. ALWAYS prefer this over "
+    "screenshot() when the user is asking about screen content. "
+    "If the user isn't actively sharing, this specialist will "
+    "self-bail and the supervisor can fall back to screenshot(). "
+    "Pass the user's literal question as the argument."
 )
 
 
