@@ -1,4 +1,4 @@
-"""Unit tests for tools.computer_use — screenshot, Gemini, xdotool, session."""
+"""Unit tests for tools.computer_use — screenshot, Kimi vision, xdotool, session."""
 from __future__ import annotations
 
 import asyncio
@@ -63,56 +63,70 @@ class TestTakeScreenshot:
         assert mime == "image/jpeg"
 
 
-# ── Gemini describe ───────────────────────────────────────────────────
+# ── Kimi vision describe ──────────────────────────────────────────────
 
 
-class TestGeminiDescribe:
-    def test_calls_generate_content_with_correct_model(self):
+def _mock_kimi_response(text: str | None):
+    """Build a MagicMock that quacks like an openai.ChatCompletion response."""
+    msg = MagicMock()
+    msg.content = text
+    choice = MagicMock()
+    choice.message = msg
+    resp = MagicMock()
+    resp.choices = [choice]
+    return resp
+
+
+class TestKimiVisionDescribe:
+    def test_calls_chat_completions_with_correct_model(self):
         import tools.computer_use as cu
 
-        mock_response = MagicMock()
-        mock_response.text = "Chrome browser is open"
         mock_client = MagicMock()
-        mock_client.models.generate_content.return_value = mock_response
+        mock_client.chat.completions.create.return_value = _mock_kimi_response(
+            "Chrome browser is open"
+        )
 
-        with patch("tools._vision_backend.get_gemini_client", return_value=mock_client):
-            run(cu._gemini_describe(b"\x89PNG"))
+        with patch("tools._vision_backend.get_kimi_client", return_value=mock_client):
+            run(cu._kimi_describe_raw(b"\x89PNG"))
 
-        call_kwargs = mock_client.models.generate_content.call_args.kwargs
-        assert call_kwargs["model"] == cu.GEMINI_MODEL
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["model"] == cu.KIMI_VISION_MODEL
+        # User message is a list with image_url + text parts
+        msgs = call_kwargs["messages"]
+        user = next(m for m in msgs if m["role"] == "user")
+        assert any(part.get("type") == "image_url" for part in user["content"])
+        assert any(part.get("type") == "text"      for part in user["content"])
 
     def test_returns_text_from_response(self):
         import tools.computer_use as cu
 
-        mock_response = MagicMock()
-        mock_response.text = "Desktop: Kitty terminal in foreground"
         mock_client = MagicMock()
-        mock_client.models.generate_content.return_value = mock_response
+        mock_client.chat.completions.create.return_value = _mock_kimi_response(
+            "Desktop: Kitty terminal in foreground"
+        )
 
-        with patch("tools._vision_backend.get_gemini_client", return_value=mock_client):
-            result = run(cu._gemini_describe(b"\x89PNG"))
+        with patch("tools._vision_backend.get_kimi_client", return_value=mock_client):
+            result = run(cu._kimi_describe_raw(b"\x89PNG"))
 
         assert result == "Desktop: Kitty terminal in foreground"
 
     def test_falls_back_when_response_text_is_none(self):
         import tools.computer_use as cu
 
-        mock_response = MagicMock()
-        mock_response.text = None
         mock_client = MagicMock()
-        mock_client.models.generate_content.return_value = mock_response
+        mock_client.chat.completions.create.return_value = _mock_kimi_response(None)
 
-        with patch("tools._vision_backend.get_gemini_client", return_value=mock_client):
-            result = run(cu._gemini_describe(b"\x89PNG"))
+        with patch("tools._vision_backend.get_kimi_client", return_value=mock_client):
+            result = run(cu._kimi_describe_raw(b"\x89PNG"))
 
         assert "no description" in result.lower()
 
     def test_raises_when_api_key_missing(self):
         import tools.computer_use as cu
 
-        with patch.dict(os.environ, {"GOOGLE_API_KEY": ""}):
-            with pytest.raises(cu.ComputerUseError, match="GOOGLE_API_KEY"):
-                cu._get_gemini_client()
+        with patch.dict(os.environ, {"KIMI_API_KEY": ""}):
+            with pytest.raises(cu.ComputerUseError, match="KIMI_API_KEY"):
+                cu._get_kimi_client()
 
 
 # ── xdotool ───────────────────────────────────────────────────────────
@@ -341,7 +355,7 @@ class TestActionTools:
 
         with patch.object(cu, "_take_screenshot",
                           return_value=(b"\xff\xd8\xff", "image/jpeg")), \
-             patch.object(cu, "_gemini_describe",
+             patch.object(cu, "_vision_describe",
                           AsyncMock(return_value="bare desktop")):
             result = run(cu.screenshot())
 
