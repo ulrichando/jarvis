@@ -49,9 +49,13 @@ export default function useVoiceClient({ muted = false } = {}) {
   // App.jsx's tray-menu label sync — exposed here so the consolidated
   // poll loop is the single source of truth (the legacy TrayLabelSync
   // component was deleted to remove its duplicate /status fetch).
-  const [cliModel,     setCliModel]     = useState(null)
-  const [speechModel,  setSpeechModel]  = useState(null)
-  const [ttsProvider,  setTtsProvider]  = useState(null)
+  const [cliModel,      setCliModel]      = useState(null)
+  const [speechModel,   setSpeechModel]   = useState(null)
+  const [ttsProvider,   setTtsProvider]   = useState(null)
+  // True when the voice-client is publishing the X11 screen-share
+  // track. Drives the tray's dynamic "Stop Screen Share ✓" label
+  // and any future indicator the chat/pill might want to render.
+  const [sharingScreen, setSharingScreen] = useState(false)
   // True once the agent worker has joined the room AND the SFU link
   // is up. The SFU connection reports `connected` ~100 ms after
   // boot; the agent takes another 1-2 s to accept the job. The tray
@@ -98,6 +102,7 @@ export default function useVoiceClient({ muted = false } = {}) {
         setCliModel(s.cli_model || null)
         setSpeechModel(s.speech_model || null)
         setTtsProvider(s.tts_provider || null)
+        setSharingScreen(!!s.sharing_screen)
 
         // ── Definitive thinking signals ────────────────────────────
         // We dropped the prior heuristic (inferring "thinking" from
@@ -185,7 +190,7 @@ export default function useVoiceClient({ muted = false } = {}) {
   return {
     connected,
     listening, recording, voiceActive, processing, booting, silentMode, speaking, audioLevel,
-    cliModel, speechModel, ttsProvider,
+    cliModel, speechModel, ttsProvider, sharingScreen,
     startRecording: () => {},
     stopRecording:  () => {},
     speak,

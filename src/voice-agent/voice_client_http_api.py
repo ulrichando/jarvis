@@ -316,6 +316,20 @@ class VoiceClientHttpApi:
             else:
                 await ss.stop()
             self.state.sharing_screen = ss.is_active()
+            # Voice ack — ask the agent to speak the new state so the
+            # user hears confirmation without having to look at the
+            # tray. Fire-and-forget; if /speak fails the toggle still
+            # succeeded and the tray label flips at the next poll.
+            try:
+                phrase = (
+                    "Screen sharing started, sir."
+                    if self.state.sharing_screen
+                    else "Screen sharing stopped, sir."
+                )
+                payload = json.dumps({"type": "speak", "text": phrase}).encode("utf-8")
+                await room.local_participant.publish_data(payload, reliable=True)
+            except Exception as e:
+                self.log.debug(f"[screen-share] voice-ack publish failed: {e}")
             return web.json_response(
                 {"sharing": self.state.sharing_screen}, headers=cors,
             )

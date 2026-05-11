@@ -229,6 +229,7 @@ export default function App() {
   const lastToolRef   = useRef(null)
   const lastSpeechRef = useRef(null)
   const lastTtsRef    = useRef(null)
+  const lastShareRef  = useRef(null)
   useEffect(() => {
     if (lastToolRef.current === speech.cliModel) return
     lastToolRef.current = speech.cliModel
@@ -244,6 +245,11 @@ export default function App() {
     lastTtsRef.current = speech.ttsProvider
     invoke('set_tts_label', { name: speech.ttsProvider || '' }).catch(console.error)
   }, [speech.ttsProvider])
+  useEffect(() => {
+    if (lastShareRef.current === speech.sharingScreen) return
+    lastShareRef.current = speech.sharingScreen
+    invoke('set_share_label', { active: !!speech.sharingScreen }).catch(console.error)
+  }, [speech.sharingScreen])
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────
   useEffect(() => {
