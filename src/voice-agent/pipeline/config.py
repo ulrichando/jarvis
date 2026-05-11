@@ -68,6 +68,8 @@ __all__ = [
     "FACE_THRESHOLD", "FACE_ENROLL_FRAMES", "FACE_LIVENESS_FRAMES",
     "IR_DEVICE", "WEBCAM_DEVICE", "WEBCAM_RES",
     "SCREENSHOT_JPEG_Q", "SCREENSHOT_MAX_EDGE", "VISION_BACKEND",
+    "SCREEN_OBSERVER_ENABLED", "SCREEN_OBSERVER_INTERVAL_S",
+    "SCREEN_OBSERVER_MAX_AGE_S",
     # Browser / external
     "BROWSER_CDP_URL", "EXT_TIMEOUT_MS", "BRIDGE_URL", "LOCAL_API_TOKEN",
     # Voice client
@@ -250,6 +252,17 @@ WEBCAM_RES: str          = _str("JARVIS_WEBCAM_RES", "640x480")
 SCREENSHOT_JPEG_Q: int   = _int("JARVIS_SCREENSHOT_JPEG_Q", 75)
 SCREENSHOT_MAX_EDGE: int = _int("JARVIS_SCREENSHOT_MAX_EDGE", 1920)
 VISION_BACKEND: str      = _str("JARVIS_VISION_BACKEND", "auto")
+
+# Continuous screen-share observer (pipeline/screen_share_observer.py).
+# When ENABLED and a SOURCE_SCREENSHARE track is subscribed, the
+# observer polls vision_describe() every INTERVAL_S seconds on the
+# latest cached frame and parks the text description on the session.
+# screenshot() reads that cache so "what's on my screen?" returns in
+# ~0s instead of ~4s. Designed 2026-05-11 evening after Gemini Live
+# API smoke-test showed Live offered no advantage for our usage.
+SCREEN_OBSERVER_ENABLED: bool   = _str("JARVIS_SCREEN_OBSERVER_ENABLED", "1") not in ("0", "false", "")
+SCREEN_OBSERVER_INTERVAL_S: float = float(_str("JARVIS_SCREEN_OBSERVER_INTERVAL_S", "5.0"))
+SCREEN_OBSERVER_MAX_AGE_S: float  = float(_str("JARVIS_SCREEN_OBSERVER_MAX_AGE_S", "10.0"))
 
 
 # ── Browser / external services ──────────────────────────────────────
