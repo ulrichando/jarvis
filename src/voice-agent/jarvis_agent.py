@@ -171,6 +171,15 @@ sanitizers.handoff_text.install()
 import sanitizers.denial_detector
 sanitizers.denial_detector.install()
 
+# Internal-phrase scrubber — blanks framework-only terminology
+# (bailout phrases like "not a screen-share task", "handing back
+# to supervisor", "wrong subagent", "user changed topic") from the
+# assistant's voiced output. Last line of defense after task_done's
+# own bailout-summary masking. Live failure 2026-05-11 16:42 UTC:
+# user heard "not a screen-share task" voiced verbatim.
+import sanitizers.internal_phrase
+sanitizers.internal_phrase.install()
+
 # Wrap LLM streams in asyncio.wait_for so stalled Groq connections
 # raise TimeoutError after JARVIS_LLM_IDLE_TIMEOUT (default 30s)
 # instead of hanging forever. Captured live 2026-05-02: subagent

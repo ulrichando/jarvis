@@ -87,7 +87,12 @@ def _make_subagent():
 ])
 def test_bailout_phrases_pass_gate(summary):
     """Phrases on the bailout allowlist must let task_done through
-    when no real tool fired."""
+    when no real tool fired. The original `summary` string itself is
+    NOT preserved on the way back to the supervisor — bailout-shape
+    summaries are framework-internal signals that get masked so the
+    supervisor doesn't echo them as voiced text (fix for the
+    2026-05-11 16:42 UTC "not a screen-share task" voice leak).
+    """
     from livekit.agents.llm import FunctionCall
     subagent, supervisor = _make_subagent()
     subagent._chat_ctx.items.append(
@@ -98,7 +103,14 @@ def test_bailout_phrases_pass_gate(summary):
         f"expected handoff to supervisor for bailout summary {summary!r}, "
         f"got next_agent={next_agent!r}"
     )
-    assert msg == summary
+    # The masked summary tells the supervisor (as tool_result context)
+    # to pick up the user's request — it must NOT contain the original
+    # bailout phrase verbatim.
+    assert summary.lower() not in msg.lower(), (
+        f"original bailout text leaked through to the supervisor — "
+        f"got msg={msg!r}, expected mask"
+    )
+    assert "subagent could not handle" in msg.lower()
 
 
 # ── Confab phrases — must STILL be refused on first call ─────────────
@@ -172,9 +184,11 @@ def test_retry_ceiling_force_bailout_after_three_refusals(monkeypatch):
     assert next_agent_3 is supervisor, (
         "after retry ceiling, gate must force-allow handoff to supervisor"
     )
-    # The summary the supervisor sees is the safe generic, not the confab.
-    assert "handing back to supervisor" in msg_3.lower() or \
-           "cannot accomplish" in msg_3.lower()
+    # The summary the supervisor sees is the masked internal-only
+    # cue (was "cannot accomplish — handing back to supervisor"
+    # pre-2026-05-11; now masked since those are bailout phrases
+    # the supervisor would otherwise voice).
+    assert "subagent could not handle" in msg_3.lower()
 
 
 def test_retry_counter_resets_on_new_handoff():
@@ -224,7 +238,4 @@ def test_retry_ceiling_runtime_env_read(monkeypatch):
         "runtime env change must take effect on next task_done; "
         f"got next_agent={next_agent_2!r} (expected supervisor)"
     )
-    assert (
-        "handing back to supervisor" in msg_2.lower()
-        or "cannot accomplish" in msg_2.lower()
-    )
+    assert "subagent could not handle" in msg_2.lower()
