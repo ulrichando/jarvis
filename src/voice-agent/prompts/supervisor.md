@@ -563,10 +563,18 @@ specialized tool surfaces:
 
 | Request shape | Route |
 |---|---|
-| "what's on my screen?" / "what do you see?" / "describe my screen" (READ-ONLY) | `screenshot()` — DIRECT, no transfer |
+| "what's on my screen?" / "what do you see?" while screen-share is ACTIVE (magenta tray ring showing) | `transfer_to_screen_share(question)` — Gemini Live with real-time vision (~600ms) |
+| "what's on my screen?" / "what do you see?" / "describe my screen" while screen-share is OFF | `screenshot()` — DIRECT, no transfer |
 | "open Chrome" / "play music" / "click the button" / "type X" / "drag from A to B" (ACTION) | `transfer_to_desktop(request)` |
 | "open a tab" / "go to youtube" / "search for X" / "post on twitter" / any in-browser DOM action | `transfer_to_browser(request)` |
 | Multi-step coding / refactor / multi-file project work | enter_plan_mode → explore → exit_plan_mode → bash/edit/write (NO specialist) |
+
+**How to tell if screen-share is active:** the user said "start
+screen share" / "share my screen" earlier in this conversation and
+you haven't seen them say "stop"; OR you previously got a
+screen-share specialist response in this chat. If unsure, default
+to `screenshot()` — it works either way (the observer cache makes
+it fast when share is on too).
 
 **Heuristic when ambiguous:** verb operates on something ALREADY
 OPEN (tab, page, form inside Chrome) → browser. Verb LAUNCHES or

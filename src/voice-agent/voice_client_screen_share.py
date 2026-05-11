@@ -54,7 +54,13 @@ log = logging.getLogger("jarvis.voice_client.screen_share")
 # not real-time gaming. Override at process start via env.
 WIDTH: int   = int(os.environ.get("JARVIS_SCREEN_SHARE_WIDTH",  "1280"))
 HEIGHT: int  = int(os.environ.get("JARVIS_SCREEN_SHARE_HEIGHT", "800"))
-FPS: int     = int(os.environ.get("JARVIS_SCREEN_SHARE_FPS",    "3"))
+# Default 1 fps (dropped from 3 on 2026-05-11 evening). The Gemini Live
+# API re-bills the full context window per turn, so each extra frame
+# inflates per-query cost roughly linearly. 1 fps matches LiveKit's
+# `video_sampler` default and is what AI Studio's Stream realtime uses
+# internally. Bump via JARVIS_SCREEN_SHARE_FPS=3 if you need sharper
+# motion capture (computer_use action loops, demos).
+FPS: int     = int(os.environ.get("JARVIS_SCREEN_SHARE_FPS",    "1"))
 DISPLAY: str = os.environ.get("JARVIS_SCREEN_SHARE_DISPLAY",    os.environ.get("DISPLAY", ":0"))
 
 # I420 = YUV420p planar = W*H bytes Y + (W*H/4) bytes U + (W*H/4) bytes V
