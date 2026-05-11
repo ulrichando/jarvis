@@ -3925,6 +3925,102 @@ def _clear_stale_silent_mode() -> None:
         logger.debug(f"[silent-mode] stale-clear check failed: {e}")
 
 
+def _build_llm_stack() -> dict:
+    """Assemble the LLM/TTS providers + LangGraph slow-path classifier
+    that AgentSession consumes. Step 8a of the 10/10 refactor —
+    factored out of entrypoint() so the LLM-stack build is a single
+    named phase rather than ~60 inline lines.
+
+    Returns a dict with the eight pieces of state the rest of
+    entrypoint() needs:
+      - speech_id       : str        — tray-pick id, for telemetry
+      - speech_llm      : groq.LLM   — single-LLM fallback path
+      - dispatch_llm    : DispatchingLLM | None — Maya per-route LLM
+      - dispatch_tts    : DispatchingTTS | None — Maya per-route TTS
+      - turn_graph      : LangGraph slow-path | None
+      - turn_classifier : LangChain classifier | None
+      - llm_arg         : LLM passed to AgentSession (dispatcher.fallback
+                          when active, else speech_llm)
+      - tts_arg         : TTS passed to AgentSession (same pattern)
+
+    Env flags honoured:
+      - JARVIS_DISPATCH_DISABLED=1  → skip Maya dispatcher, fall back
+      - JARVIS_GRAPH_DISABLED=1     → skip LangGraph slow-path
+    """
+    active_speech_id, active_speech_llm = make_speech_llm()
+
+    # Maya-class dispatcher build.
+    if os.environ.get("JARVIS_DISPATCH_DISABLED", "0") != "1":
+        try:
+            dispatch_llm = _build_dispatching_llm()
+            dispatch_tts = _build_dispatching_tts()
+            llm_arg = dispatch_llm.fallback   # default; per-turn callback overrides
+            tts_arg = dispatch_tts.fallback
+            logger.info("[dispatch] LLM dispatcher resolved: " + ", ".join(
+                f"{r}={getattr(llm, '_jarvis_label', repr(llm))}"
+                for r, llm in dispatch_llm.inners.items()
+            ))
+            logger.info("[dispatch] TTS dispatcher resolved: " + ", ".join(
+                f"{r}={getattr(t, 'voice_id', repr(t))}"
+                for r, t in dispatch_tts.inners.items()
+            ))
+        except Exception as e:
+            logger.error(f"[dispatch] dispatcher build failed: {e}; reverting to single-LLM")
+            dispatch_llm = None
+            dispatch_tts = None
+            llm_arg = active_speech_llm
+            tts_arg = tts.FallbackAdapter(_build_tts_chain())
+    else:
+        dispatch_llm = None
+        dispatch_tts = None
+        llm_arg = active_speech_llm
+        tts_arg = tts.FallbackAdapter(_build_tts_chain())
+
+    # LangGraph slow-path dispatcher + classifier. Default-on; kill via
+    # JARVIS_GRAPH_DISABLED=1. The graph handles classifier → swap_route
+    # → inject_prefix → tune_interrupt; the synchronous BANTER fast-path
+    # stays inline elsewhere so listeners can complete the swap before
+    # the framework reads session._llm.
+    turn_graph = None
+    turn_classifier = None
+    if (
+        dispatch_llm is not None
+        and os.environ.get("JARVIS_GRAPH_DISABLED", "0") != "1"
+    ):
+        try:
+            from pipeline.turn_graph import build_turn_graph, make_classifier
+            turn_graph = build_turn_graph()
+            turn_classifier = make_classifier()
+            logger.info(
+                f"[turn-graph] active "
+                f"(classifier={'configured' if turn_classifier else 'disabled (no key)'})"
+            )
+        except Exception as e:
+            logger.error(f"[turn-graph] build failed; falling back to inline: {e}")
+    else:
+        # Pre-refactor quirk preserved 2026-05-10: when the slow-path
+        # graph is unavailable (either explicitly disabled or because
+        # the dispatcher build failed), the original code overrode
+        # llm_arg / tts_arg to the single-LLM path. This branch keeps
+        # that behavior so dispatcher-only-without-graph traffic still
+        # goes through the speech_llm + FallbackAdapter chain rather
+        # than the dispatcher's fallback. Audit if telemetry shows
+        # this is suboptimal.
+        llm_arg = active_speech_llm
+        tts_arg = tts.FallbackAdapter(_build_tts_chain())
+
+    return {
+        "speech_id":       active_speech_id,
+        "speech_llm":      active_speech_llm,
+        "dispatch_llm":    dispatch_llm,
+        "dispatch_tts":    dispatch_tts,
+        "turn_graph":      turn_graph,
+        "turn_classifier": turn_classifier,
+        "llm_arg":         llm_arg,
+        "tts_arg":         tts_arg,
+    }
+
+
 async def entrypoint(ctx: JobContext) -> None:
     """
     Runs once per client that joins a room. This is the actual
@@ -3964,66 +4060,18 @@ async def entrypoint(ctx: JobContext) -> None:
     # incidental restarts. The user toggles it explicitly via voice
     # ("wake up") when they want JARVIS back.
 
-    # Build the speech LLM from the user's tray pick (or default).
-    # Done HERE rather than at module load so a /voice-model POST +
-    # systemctl restart picks up the new file on the very next job.
-    active_speech_id, _active_speech_llm = make_speech_llm()
-
-    # Maya-class dispatcher build. JARVIS_DISPATCH_DISABLED=1 reverts.
-    if os.environ.get("JARVIS_DISPATCH_DISABLED", "0") != "1":
-        try:
-            _dispatch_llm = _build_dispatching_llm()
-            _dispatch_tts = _build_dispatching_tts()
-            llm_arg = _dispatch_llm.fallback   # default; per-turn callback overrides
-            tts_arg = _dispatch_tts.fallback
-            logger.info("[dispatch] LLM dispatcher resolved: " + ", ".join(
-                f"{r}={getattr(llm, "_jarvis_label", repr(llm))}"
-                for r, llm in _dispatch_llm.inners.items()
-            ))
-            logger.info("[dispatch] TTS dispatcher resolved: " + ", ".join(
-                f"{r}={getattr(t, 'voice_id', repr(t))}"
-                for r, t in _dispatch_tts.inners.items()
-            ))
-        except Exception as e:
-            logger.error(f"[dispatch] dispatcher build failed: {e}; reverting to single-LLM")
-            _dispatch_llm = None
-            _dispatch_tts = None
-            llm_arg = _active_speech_llm
-            tts_arg = tts.FallbackAdapter(_build_tts_chain())
-    else:
-        _dispatch_llm = None
-        _dispatch_tts = None
-
-    # Build the LangGraph dispatcher + LangChain classifier ONCE at
-    # startup. The classifier is provider-pluggable via env
-    # (JARVIS_ROUTER_PROVIDER, JARVIS_ROUTER_MODEL); defaults to
-    # Groq llama-3.1-8b-instant. JARVIS_GRAPH_DISABLED=1 reverts to
-    # the inline async classify_and_swap path. Phase-1 of LangGraph
-    # migration: the graph handles the slow-path (classifier →
-    # swap_route → inject_prefix → tune_interrupt). The synchronous
-    # BANTER fast-path stays inline above so listeners still complete
-    # the swap before the framework reads session._llm.
-    if (
-        _dispatch_llm is not None
-        and os.environ.get("JARVIS_GRAPH_DISABLED", "0") != "1"
-    ):
-        try:
-            from pipeline.turn_graph import build_turn_graph, make_classifier
-            _turn_graph = build_turn_graph()
-            _turn_classifier = make_classifier()
-            logger.info(
-                f"[turn-graph] active "
-                f"(classifier={'configured' if _turn_classifier else 'disabled (no key)'})"
-            )
-        except Exception as e:
-            logger.error(f"[turn-graph] build failed; falling back to inline: {e}")
-            _turn_graph = None
-            _turn_classifier = None
-    else:
-        _turn_graph = None
-        _turn_classifier = None
-        llm_arg = _active_speech_llm
-        tts_arg = tts.FallbackAdapter(_build_tts_chain())
+    # Build the LLM/TTS provider stack from the user's tray pick. Done
+    # HERE rather than at module load so a /voice-model POST + systemctl
+    # restart picks up the new file on the very next job.
+    _stack = _build_llm_stack()
+    active_speech_id   = _stack["speech_id"]
+    _active_speech_llm = _stack["speech_llm"]
+    _dispatch_llm      = _stack["dispatch_llm"]
+    _dispatch_tts      = _stack["dispatch_tts"]
+    _turn_graph        = _stack["turn_graph"]
+    _turn_classifier   = _stack["turn_classifier"]
+    llm_arg            = _stack["llm_arg"]
+    tts_arg            = _stack["tts_arg"]
 
     llm_arg = _pick_supervisor_llm(
         specialist_tools=build_all_transfer_tools(),
