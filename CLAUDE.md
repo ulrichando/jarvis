@@ -23,9 +23,9 @@ JARVIS has full `sudo NOPASSWD` root via `/etc/sudoers.d/jarvis` — every shell
 [src/voice-agent/jarvis_agent.py](src/voice-agent/jarvis_agent.py) is the entrypoint (~8400 lines). It wires:
 
 - **Supervisor agent** — Groq llama-3.3-70b primary; FallbackAdapter cascade to llama-3.1-8b / DeepSeek / others. Owns conversation, routing, direct tools (bash/read/edit/write/plan-mode + memory + face ID).
-- **Specialist registry** — [specialists/registry.py](src/voice-agent/specialists/registry.py) + [specialists/agent.py](src/voice-agent/specialists/agent.py). Two flavors:
-  - `SpecialistSpec` (one `transfer_to_X` tool each): `desktop`, `browser`, `browser_v2`. Desktop+browser enabled by default; browser_v2 self-disables until 3 known bugs are fixed.
-  - `SubagentSpec` (single `delegate(role, task)` tool covers all): `summarize`, `weather`, `researcher`, `validator`, `code_reviewer`, `memory_recall`, `github`. **All seven gated off by default 2026-05-08** behind `JARVIS_SUBAGENT_<NAME>=1` env vars after live capture showed `summarize` hijacking trivial conversation ("Yeah", "Okay" → 5s of "The user is expressing gratitude" voiced back). Re-enable individually as the supervisor's `delegate` routing is hardened.
+- **Specialist registry** — [subagents/registry.py](src/voice-agent/subagents/registry.py) + [subagents/agent.py](src/voice-agent/subagents/agent.py). Two flavors:
+  - `HandoffSubagent` (one `transfer_to_X` tool each): `desktop`, `browser`, `browser_v2`. Desktop+browser enabled by default; browser_v2 self-disables until 3 known bugs are fixed.
+  - `DelegatedSubagent` (single `delegate(role, task)` tool covers all): `summarize`, `weather`, `researcher`, `validator`, `code_reviewer`, `memory_recall`, `github`. **All seven gated off by default 2026-05-08** behind `JARVIS_SUBAGENT_<NAME>=1` env vars after live capture showed `summarize` hijacking trivial conversation ("Yeah", "Okay" → 5s of "The user is expressing gratitude" voiced back). Re-enable individually as the supervisor's `delegate` routing is hardened.
   - `planner` is retired (replaced by direct in-process tools + plan-mode).
   - Each spec has `transfer_tool`, `when_to_use`, `instructions`, `tool_factory`, `ack_phrase`, `max_history_items`.
 - **Pipeline** — [pipeline/turn_router.py](src/voice-agent/pipeline/turn_router.py) classifies BANTER / TASK / REASONING / EMOTIONAL → picks LLM + TTS + interrupt tuning. [pipeline/turn_telemetry.py](src/voice-agent/pipeline/turn_telemetry.py) writes every turn to SQLite at `~/.local/share/jarvis/turn_telemetry.db`. [pipeline/turn_graph.py](src/voice-agent/pipeline/turn_graph.py) is the LangGraph slow-path dispatcher (default on; kill-switch `JARVIS_GRAPH_DISABLED=1`).
@@ -37,7 +37,7 @@ JARVIS has full `sudo NOPASSWD` root via `/etc/sudoers.d/jarvis` — every shell
   - `handoff_text.py` — drops anticipatory text content from supervisor turns containing `transfer_to_*` / `delegate`
 - **Resilience** ([resilience/](src/voice-agent/resilience/)) — circuit breaker, idle timeout, reconnect ladder, track guard, watchdog.
 - **Confab detector** — [confab_detector.py](src/voice-agent/confab_detector.py) refuses to write turns to the conversation DB when the assistant claims success without tool evidence in the prior 10 messages.
-- **Specialist tool gate** — [specialists/agent.py](src/voice-agent/specialists/agent.py): `task_done` is refused if no real (non-`task_done`) tool fired this handoff. Narrow bailout-phrase allowlist (`user changed topic`, `not a desktop task`, `wrong specialist`, `cannot accomplish`, `handing back to supervisor`, plus environmental gates `extension not connected` / `Google Chrome isn't available` / `tool unavailable`) lets wrongly-routed specialists exit cleanly. After `JARVIS_SPECIALIST_NO_TOOL_RETRY_CEILING` (default 3) consecutive refusals on a single handoff, the gate force-allows a graceful "Cannot accomplish — handing back to supervisor" so the user isn't trapped in silence.
+- **Specialist tool gate** — [subagents/agent.py](src/voice-agent/subagents/agent.py): `task_done` is refused if no real (non-`task_done`) tool fired this handoff. Narrow bailout-phrase allowlist (`user changed topic`, `not a desktop task`, `wrong specialist`, `cannot accomplish`, `handing back to supervisor`, plus environmental gates `extension not connected` / `Google Chrome isn't available` / `tool unavailable`) lets wrongly-routed specialists exit cleanly. After `JARVIS_SPECIALIST_NO_TOOL_RETRY_CEILING` (default 3) consecutive refusals on a single handoff, the gate force-allows a graceful "Cannot accomplish — handing back to supervisor" so the user isn't trapped in silence.
 
 ## Operational rules — durable, override defaults
 
@@ -64,7 +64,7 @@ JARVIS has full `sudo NOPASSWD` root via `/etc/sudoers.d/jarvis` — every shell
 ## Active design decisions — the load-bearing constraints
 
 - **Three load-bearing monkey-patches** on import (must not be removed): `deepseek_roundtrip`, `tool_name_sanitizer`, `AcousticTap`. See [sanitizers/__init__.py](src/voice-agent/sanitizers/__init__.py).
-- **Specialist tool-gate** refuses `task_done` with no real tool. Narrow bailout allowlist (`_BAILOUT_SUMMARY_RE` in [specialists/agent.py](src/voice-agent/specialists/agent.py)) lets wrongly-routed specialists exit; retry ceiling (`_NO_TOOL_RETRY_CEILING`, default 3) force-bails after consecutive refusals so the user isn't stuck in silence. Adding new specialists: their prompt must list the exact bailout phrases the gate honors.
+- **Specialist tool-gate** refuses `task_done` with no real tool. Narrow bailout allowlist (`_BAILOUT_SUMMARY_RE` in [subagents/agent.py](src/voice-agent/subagents/agent.py)) lets wrongly-routed specialists exit; retry ceiling (`_NO_TOOL_RETRY_CEILING`, default 3) force-bails after consecutive refusals so the user isn't stuck in silence. Adding new specialists: their prompt must list the exact bailout phrases the gate honors.
 - **STAY-IN-SUPERVISOR rule.** Conversational/ambiguous user input ("Jarvis, mute" / "I love you" / vague fragments / yes-no replies) stays in the supervisor — never `transfer_to_*`. Specialists need a nameable target. See [jarvis_agent.py::JARVIS_INSTRUCTIONS](src/voice-agent/jarvis_agent.py) "STAY-IN-SUPERVISOR RULE" section.
 - **`min_words` per route** ([pipeline/turn_router.py::_ROUTE_BASE](src/voice-agent/pipeline/turn_router.py)): BANTER=1, TASK=3, REASONING=3, EMOTIONAL=3. TASK was bumped 2→3 on 2026-05-07 to filter 2-word backchannels ("yeah okay" / "got it"). Kill-phrase regex at [jarvis_agent.py:7410](src/voice-agent/jarvis_agent.py#L7410) bypasses min_words for deliberate "stop / wait / cancel".
 - **`resume_false_interruption` is OFF on purpose.** LiveKit's `pause()` is broken on the SFU output (gates new frames but doesn't clear the queue). Disabling routes every barge-in to `interrupt() → clear_buffer() → clear_queue()`, which actually works. Don't re-enable without verifying the SFU path.
@@ -94,9 +94,9 @@ JARVIS has full `sudo NOPASSWD` root via `/etc/sudoers.d/jarvis` — every shell
 
 ## File-shape conventions
 
-- **Voice-agent specialist instructions** ([specialists/desktop.py](src/voice-agent/specialists/desktop.py), [specialists/browser.py](src/voice-agent/specialists/browser.py)) include `═══ NEVER WRITE PROTOCOL SHAPES AS REPLY TEXT ═══` sections — these block the LLM from emitting `task_done(...)`/`<function>...</function>`/JSON-array tool-call leaks as voiced text. Mirror the section when adding new specialists.
+- **Voice-agent specialist instructions** ([subagents/desktop.py](src/voice-agent/subagents/desktop.py), [subagents/browser.py](src/voice-agent/subagents/browser.py)) include `═══ NEVER WRITE PROTOCOL SHAPES AS REPLY TEXT ═══` sections — these block the LLM from emitting `task_done(...)`/`<function>...</function>`/JSON-array tool-call leaks as voiced text. Mirror the section when adding new specialists.
 - **Specialist `ack_phrase`** is the only supervisor-side voice the user hears between the handoff and the specialist's `task_done` summary. Keep it dignified-butler register ("Right away, sir." / "Of course, sir." / "At once, sir.").
-- **Adding a new specialist:** see [specialists/HOW_TO_ADD_A_SPECIALIST.md](src/voice-agent/specialists/HOW_TO_ADD_A_SPECIALIST.md).
+- **Adding a new specialist:** see [subagents/HOW_TO_ADD_A_SUBAGENT.md](src/voice-agent/subagents/HOW_TO_ADD_A_SUBAGENT.md).
 
 ## Voice intelligence rubric
 
