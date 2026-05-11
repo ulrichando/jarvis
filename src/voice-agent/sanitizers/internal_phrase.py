@@ -46,8 +46,8 @@ _INTERNAL_PHRASES = [
     # Bailout-summary tokens from subagents/agent.py::_BAILOUT_SUMMARY_RE
     r"user\s+(?:changed|switched)\s+topic",
     r"not\s+(?:a\s+)?(?:desktop|browser|screen[-\s]?share|relevant|valid)\s+task",
-    r"wrong\s+(?:specialist|subagent)",
-    r"needs?\s+(?:the\s+)?(?:browser|desktop|planner|supervisor)\s+(?:specialist|subagent)",
+    r"wrong\s+subagent",
+    r"needs?\s+(?:the\s+)?(?:browser|desktop|planner|supervisor)\s+subagent",
     r"cannot\s+(?:accomplish|act\s+on|handle)",
     r"handing\s+back\s+to\s+(?:the\s+)?supervisor",
     r"not\s+a\s+request\s+I\s+can\s+act\s+on",
@@ -64,7 +64,7 @@ _INTERNAL_PHRASES = [
     # Past-failure phrases that occasionally leak — keep tight
     # anchoring so we don't blank legitimate uses of the word
     # "subagent" / "supervisor" inside meta-conversation.
-    r"transferring\s+(?:to|you)\s+(?:the\s+)?(?:screen[-\s]?share|desktop|browser)\s+(?:subagent|specialist)",
+    r"transferring\s+(?:to|you)\s+(?:the\s+)?(?:screen[-\s]?share|desktop|browser)\s+subagent",
     r"transfer(?:ring|red)?\s+(?:to|back)\s+(?:the\s+)?supervisor",
 ]
 

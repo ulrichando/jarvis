@@ -33,7 +33,6 @@ class TestWholeReplyBlanking:
         "user changed topic",
         "user switched topic",
         "wrong subagent",
-        "wrong specialist",
         "needs the browser subagent",
         "needs browser subagent",
         "handing back to supervisor",
