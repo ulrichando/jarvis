@@ -199,19 +199,19 @@ class TestLLMFactoryWiring:
 
 
 class TestModelSelection:
-    def test_default_model_is_31_flash_live_preview(self):
-        """User-requested 2026-05-11 evening: gemini-3.1-flash-live-preview
-        is the model with audio-to-audio + continuous video streaming.
-        Earlier 1011 INTERNAL errors were the deprecated send_realtime_input
-        (media=...) call shape — fixed in this codepath which uses video=.
-        3.1's trade-off vs 2.5-native-audio is immutable tools/context
-        mid-session, acceptable for a short subagent handoff."""
+    def test_default_model_is_25_native_audio(self):
+        """Swapped 2026-05-11 evening from gemini-3.1-flash-live-preview
+        → 2.5-native-audio after live failure where 3.1 produced
+        server content with "no active generation" — user got 44s of
+        silence. 2.5-native-audio has mutable mid-session context
+        (no HistoryConfig path) and is the more battle-tested
+        Live model. 3.1 stays as an env override."""
         from subagents import screen_share as ss
         with patch.dict(os.environ, {}, clear=False) as env:
             env.pop("JARVIS_SCREEN_SHARE_LIVE_MODEL", None)
             import importlib
             importlib.reload(ss)
-            assert ss.SCREEN_SHARE_LIVE_MODEL == "gemini-3.1-flash-live-preview"
+            assert ss.SCREEN_SHARE_LIVE_MODEL == "gemini-2.5-flash-native-audio-preview-12-2025"
 
     def test_model_override_via_env(self):
         from subagents import screen_share as ss
@@ -270,7 +270,7 @@ class TestLiveConfigShape:
             ss._build_screen_share_llm()
 
         # The five critical config bits researcher flagged:
-        assert captured["model"] == "gemini-3.1-flash-live-preview"
+        assert captured["model"] == "gemini-2.5-flash-native-audio-preview-12-2025"
         assert captured["voice"] == "Charon"
         # Modality must be AUDIO (TEXT is the broken path on 3.1).
         from google.genai import types as gt
