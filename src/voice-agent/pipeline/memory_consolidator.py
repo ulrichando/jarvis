@@ -159,7 +159,7 @@ _YOUNG_EXCLUSION_SECONDS_DEFAULT = 300  # 5 min
 
 def _young_exclusion_seconds() -> int:
     """Read at runtime so operator env edits take effect without restart
-    (matches the 2026-05-08 specialist-gate runtime-read pattern)."""
+    (matches the 2026-05-08 subagent-gate runtime-read pattern)."""
     try:
         return int(os.environ.get(
             "JARVIS_MEMORY_CONSOLIDATE_YOUNG_EXCLUSION_S",

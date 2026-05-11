@@ -151,8 +151,8 @@ def test_handoff_subagent_registry_discovers_enabled_specs():
     two we expect (desktop, browser) and didn't lose one to a typo
     or rename.
 
-    Other tests in the suite (test_specialist_registry,
-    test_browser_specialist) call registry.clear() in their setup,
+    Other tests in the suite (test_subagent_registry,
+    test_browser_subagent) call registry.clear() in their setup,
     so we re-register the production specs explicitly here rather
     than rely on import order."""
     from subagents.registry import _REGISTRY, clear

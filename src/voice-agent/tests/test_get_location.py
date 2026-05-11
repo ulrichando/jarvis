@@ -1,5 +1,5 @@
 """Tests for get_location — IP geolocation tool used by weather and
-any other location-aware specialist.
+any other location-aware subagent.
 
 We don't hit the live network here — that would be flaky in CI. Instead
 we exercise:

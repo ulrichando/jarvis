@@ -175,7 +175,7 @@ def test_format_result_string_passthrough():
 
 
 def test_format_result_tuple_extracts_string():
-    """Specialist transfer tools return (Agent, str). Use the str."""
+    """Subagent transfer tools return (Agent, str). Use the str."""
     from sanitizers.tool_name import _format_result
 
     class FakeAgent: pass

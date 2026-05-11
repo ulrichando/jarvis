@@ -1,7 +1,7 @@
-"""Central registry for specialist `ack_phrase` strings.
+"""Central registry for subagent `ack_phrase` strings.
 
 The `ack_phrase` is the only supervisor-side voice the user hears
-between the handoff and the specialist's `task_done` summary. Per
+between the handoff and the subagent's `task_done` summary. Per
 spec, it should sit in the peer-engineer register (no honorifics,
 no archaic verbs).
 
@@ -12,7 +12,7 @@ Centralizing here for two reasons:
      these into `~/.jarvis/cache/voice/` and play them with zero
      TTS latency on handoff.
 
-Each name follows the pattern `ACK_{SPECIALIST_NAME}`. Values must
+Each name follows the pattern `ACK_{SUBAGENT_NAME}`. Values must
 remain ≤4 words to keep the handoff transition snappy.
 """
 from __future__ import annotations

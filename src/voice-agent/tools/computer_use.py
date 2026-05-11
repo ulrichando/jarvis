@@ -645,7 +645,7 @@ async def screenshot() -> str:
     scrot and runs it through Gemini Flash Lite for description.
 
     PREFER `transfer_to_screen_share(question)` for any user question
-    about screen content — that specialist uses Gemini Live with
+    about screen content — that subagent uses Gemini Live with
     continuous vision and reads text content (filenames, error
     messages, headings) much better. `transfer_to_screen_share`
     will self-bail back to the supervisor if the user isn't

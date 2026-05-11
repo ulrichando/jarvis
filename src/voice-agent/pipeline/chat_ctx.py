@@ -59,7 +59,7 @@ TOOL_LEAK_RE: re.Pattern[str] = re.compile(
     r"|<\|tool_call\|>.*?<\|/tool_call\|>"
     # JSON array of tool-call objects (W-016)
     r"|\[\s*\{\s*\"(?:name|tool|function)\"\s*:.*?\]"
-    # Python call form for known specialist-internal tools (W-015)
+    # Python call form for known subagent-internal tools (W-015)
     r"|task_done\s*\([^)]*\)"
     r"|<\|end_header_id\|>"
     # W-019 (2026-05-05): prompt-label preambles.
@@ -140,15 +140,15 @@ def scrub_recalled_assistant_text(text: str) -> str | None:
     # Drop whole-reply meta-silence ("Silence." etc).
     if META_SILENCE_RE.match(cleaned):
         return None
-    # Drop turns that mention the disabled screen_share specialist —
+    # Drop turns that mention the disabled screen_share subagent —
     # they prime Claude to call `transfer_to_screen_share`, which
     # doesn't exist anymore. Live failure 2026-05-11 15:51 UTC: chat
-    # history from a session where the specialist was enabled leaked
+    # history from a session where the subagent was enabled leaked
     # into a session where it's disabled, Claude said "Let me transfer
-    # to the screen specialist", then realized the tool was missing
+    # to the screen subagent", then realized the tool was missing
     # ("I don't have that transfer tool available") — user confused.
     # Drop the recalled turn entirely so Claude has no precedent.
-    if _DISABLED_SPECIALIST_RE.search(cleaned):
+    if _DISABLED_SUBAGENT_RE.search(cleaned):
         return None
     # Trim leading archaic openers ("Quite.", "Indeed.", …).
     m = ARCHAIC_OPENER_RE.match(cleaned)
@@ -166,12 +166,12 @@ def scrub_recalled_assistant_text(text: str) -> str | None:
 
 
 # Recalled-turn poison filter: drop assistant lines that mention the
-# disabled screen_share specialist. Specifically the phrases that
+# disabled screen_share subagent. Specifically the phrases that
 # prime Claude to attempt `transfer_to_screen_share` — a tool that
 # was registered in past sessions but is now gated off.
-_DISABLED_SPECIALIST_RE = re.compile(
+_DISABLED_SUBAGENT_RE = re.compile(
     r"(?:transfer_to_screen_share"
-    r"|screen[-\s]share\s+specialist"
+    r"|screen[-\s]share\s+subagent"
     r"|let\s+me\s+(?:transfer\s+(?:to|you)|switch\s+to)\s+(?:the\s+)?screen)",
     re.IGNORECASE,
 )

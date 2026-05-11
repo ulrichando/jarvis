@@ -1,16 +1,16 @@
-"""Cross-specialist health tests.
+"""Cross-subagent health tests.
 
-Asserts the production-visible guarantees for every specialist + subagent:
+Asserts the production-visible guarantees for every subagent + subagent:
 
   1. Registered and enabled
   2. Tool factory builds without import / decorator error
   3. Every @function_tool builds a strict OpenAI/Pydantic schema
      (catches the leading-underscore parameter bug + similar)
-  4. Specialist prompt does NOT contain casual-register phrases the
+  4. Subagent prompt does NOT contain casual-register phrases the
      user has explicitly objected to (Got it, Yeah, Heck yes, etc.)
-  5. Specialist prompt DOES contain the dignified-register phrasing
+  5. Subagent prompt DOES contain the dignified-register phrasing
 
-The matrix runs the same battery against all six specialists/subagents
+The matrix runs the same battery against all six subagents/subagents
 so future additions inherit the discipline automatically.
 """
 from __future__ import annotations
@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 @pytest.fixture(autouse=True)
 def _reset_and_register():
     """Each test starts with the registry registered fresh from the
-    real specialist modules (not mocks). Cleanup after."""
+    real subagent modules (not mocks). Cleanup after."""
     from subagents.registry import clear, clear_subagents
     clear()
     clear_subagents()
@@ -53,15 +53,20 @@ def _reset_and_register():
     clear_subagents()
 
 
-# ── Specialist matrix ─────────────────────────────────────────────────
+# ── Subagent matrix ─────────────────────────────────────────────────
 
 
-SPECIALIST_NAMES = ["desktop", "browser"]
-SUBAGENT_NAMES = ["summarize", "weather", "researcher"]
+# Two registries — HandoffSubagent ones (one transfer_to_X tool each)
+# vs DelegatedSubagent ones (single `delegate(role,...)` tool). They
+# live in separate dicts and use different getters; pre-2026-05-11
+# this file had both lists shadowing the same name SPECIALIST_NAMES /
+# SUBAGENT_NAMES which made the rename collide. Disambiguated.
+HANDOFF_SUBAGENT_NAMES   = ["desktop", "browser"]
+DELEGATED_SUBAGENT_NAMES = ["summarize", "weather", "researcher"]
 
-# Conditionally tested specialists — present-in-registry but only
+# Conditionally tested subagents — present-in-registry but only
 # enabled when their dep keys are available. The matrix tests below
-# parametrize against enabled specialists only.
+# parametrize against enabled subagents only.
 import os as _os
 _BROWSER_V2_ENABLED = bool(
     _os.environ.get("GROQ_API_KEY") or _os.environ.get("DEEPSEEK_API_KEY")
@@ -92,16 +97,16 @@ BANNED_REGISTER_PHRASES = [
 # ── Registration health ───────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("name", SPECIALIST_NAMES)
-def test_specialist_registered_and_enabled(name):
+@pytest.mark.parametrize("name", HANDOFF_SUBAGENT_NAMES)
+def test_subagent_registered_and_enabled(name):
     from subagents.registry import get
     spec = get(name)
-    assert spec is not None, f"{name} specialist not registered"
-    assert spec.enabled is True, f"{name} specialist disabled"
+    assert spec is not None, f"{name} subagent not registered"
+    assert spec.enabled is True, f"{name} subagent disabled"
     assert spec.transfer_tool == f"transfer_to_{name}"
 
 
-@pytest.mark.parametrize("name", SUBAGENT_NAMES)
+@pytest.mark.parametrize("name", DELEGATED_SUBAGENT_NAMES)
 def test_subagent_registered_and_enabled(name):
     from subagents.registry import get_subagent
     spec = get_subagent(name)
@@ -112,8 +117,8 @@ def test_subagent_registered_and_enabled(name):
 # ── Tool factory builds (catches import / decorator regressions) ──────
 
 
-@pytest.mark.parametrize("name", SPECIALIST_NAMES)
-def test_specialist_tool_factory_builds(name):
+@pytest.mark.parametrize("name", HANDOFF_SUBAGENT_NAMES)
+def test_subagent_tool_factory_builds(name):
     """Tool factory must run cleanly — catches Pydantic / decorator
     regressions like the 2026-05-01 `_confirmed` leading-underscore
     bug that crashed every LLM call before any HTTP."""
@@ -124,7 +129,7 @@ def test_specialist_tool_factory_builds(name):
     assert len(tools) > 0, f"{name} has zero tools"
 
 
-@pytest.mark.parametrize("name", SUBAGENT_NAMES)
+@pytest.mark.parametrize("name", DELEGATED_SUBAGENT_NAMES)
 def test_subagent_tool_factory_builds(name):
     from subagents.registry import get_subagent
     spec = get_subagent(name)
@@ -136,9 +141,9 @@ def test_subagent_tool_factory_builds(name):
 # ── Schema correctness (the bug that broke Jarvis 2026-05-01) ─────────
 
 
-@pytest.mark.parametrize("name", SPECIALIST_NAMES + SUBAGENT_NAMES)
+@pytest.mark.parametrize("name", HANDOFF_SUBAGENT_NAMES + DELEGATED_SUBAGENT_NAMES)
 def test_all_tool_schemas_build_strict(name):
-    """Every @function_tool exposed by every specialist MUST build a
+    """Every @function_tool exposed by every subagent MUST build a
     strict Pydantic model — that's the path Groq's schema validator
     walks. Failures here = LLM call fails at schema-build time, agent
     goes silent on every prompt (bug captured live 2026-05-01,
@@ -156,7 +161,7 @@ def test_all_tool_schemas_build_strict(name):
         except Exception as e:
             failures.append(f"{tool_name}: {e}")
     assert not failures, (
-        f"{name} specialist has tools with invalid schemas:\n  "
+        f"{name} subagent has tools with invalid schemas:\n  "
         + "\n  ".join(failures)
     )
 
@@ -164,9 +169,9 @@ def test_all_tool_schemas_build_strict(name):
 # ── Persona register (no casual phrasing in instructions) ─────────────
 
 
-@pytest.mark.parametrize("name", SPECIALIST_NAMES)
-def test_specialist_prompt_avoids_banned_register(name):
-    """Specialist prompts must not include casual-register phrases as
+@pytest.mark.parametrize("name", HANDOFF_SUBAGENT_NAMES)
+def test_subagent_prompt_avoids_banned_register(name):
+    """Subagent prompts must not include casual-register phrases as
     *suggested* output — the user has explicitly objected ("you sound
     too funny"). Banned phrases that appear inside ❌ DON'T-USE blocks
     are exempt — those are warnings to the LLM."""
@@ -200,7 +205,7 @@ def test_specialist_prompt_avoids_banned_register(name):
 
 def test_supervisor_has_anti_confabulation_rule():
     """The supervisor prompt must contain a rule against false-success
-    claims. Captured live 2026-05-01: desktop specialist hallucinated
+    claims. Captured live 2026-05-01: desktop subagent hallucinated
     'A new tab is open, sir.' with no tool fired.
 
     Updated 2026-05-05 (W-021 prompt rewrite): structural anchor is now
@@ -217,13 +222,13 @@ def test_supervisor_has_anti_confabulation_rule():
     )
 
 
-def test_desktop_specialist_has_anti_confabulation_rule():
+def test_desktop_subagent_has_anti_confabulation_rule():
     from subagents.registry import get
     spec = get("desktop")
     assert "NEVER claim success without a tool result" in spec.instructions
 
 
-def test_browser_specialist_has_anti_confabulation_rule():
+def test_browser_subagent_has_anti_confabulation_rule():
     from subagents.registry import get
     spec = get("browser")
     assert "NEVER claim success without a tool result" in spec.instructions
@@ -234,13 +239,13 @@ def test_supervisor_has_anti_tool_call_text_rule():
     forbid writing tool-call protocol shapes as reply text. Live-
     captured turn 962 (22:29 UTC, EMOTIONAL/llama-4-scout, "Jarvis?"):
     JARVIS replied with `task_done("Opened the OSU website, sir.")`
-    verbatim — the LLM was confused by a prior specialist's task_done
+    verbatim — the LLM was confused by a prior subagent's task_done
     in chat_ctx and parroted the protocol. TTS read it aloud which
     sounded non-English to the user.
 
     The cure is structural: the prompt must NAME each of the leak
     forms we've seen, mark them banned, and explain that task_done
-    is specialist-internal so the supervisor never types it. This
+    is subagent-internal so the supervisor never types it. This
     test pins the section so a future prompt rewrite can't silently
     drop the discipline.
     """
@@ -277,11 +282,11 @@ def test_supervisor_has_anti_tool_call_text_rule():
         "anti-tool-call section missing the JSON-array-form example"
     )
 
-    # The 'specialist-internal' rationale must be present — the LLM
+    # The 'subagent-internal' rationale must be present — the LLM
     # needs to know WHY task_done is off-limits, not just that it is.
-    assert "task_done" in instr and "specialist" in instr.lower(), (
+    assert "task_done" in instr and "subagent" in instr.lower(), (
         "anti-tool-call section missing the rationale that task_done "
-        "is specialist-internal — without it the LLM may still type "
+        "is subagent-internal — without it the LLM may still type "
         "task_done in supervisor replies"
     )
 
@@ -290,11 +295,11 @@ def test_supervisor_has_post_handoff_relay_rule():
     """W-017 (2026-05-05): user reported "JARVIS doesn't follow up
     when task is completed by subagent." Root cause: the prompt
     didn't explicitly tell the supervisor what to do after a
-    specialist's task_done lands in chat_ctx. So sometimes the
+    subagent's task_done lands in chat_ctx. So sometimes the
     supervisor stayed silent (user thought JARVIS forgot) or
     parroted task_done verbatim.
 
-    The cure is a positive rule: "after a specialist hands back,
+    The cure is a positive rule: "after a subagent hands back,
     relay their summary in plain English." Pin the section.
     """
     from jarvis_agent import JARVIS_INSTRUCTIONS
@@ -302,12 +307,12 @@ def test_supervisor_has_post_handoff_relay_rule():
 
     # Section header — W-021 (2026-05-05) renamed to
     # "AFTER A TOOL OR HANDOFF" to cover both plain-tool returns and
-    # specialist hand-backs (the relay rule is identical). Anchor on
+    # subagent hand-backs (the relay rule is identical). Anchor on
     # the new header.
     assert "AFTER A TOOL OR HANDOFF" in instr, (
         "supervisor prompt missing the post-tool/handoff relay section "
         "— without it, supervisor stays silent or parrots task_done "
-        "after specialist completion"
+        "after subagent completion"
     )
 
     # The positive guidance: relay in plain English.
@@ -320,7 +325,7 @@ def test_supervisor_has_post_handoff_relay_rule():
     assert "silence" in instr.lower(), (
         "post-handoff section missing the silence-counter-example — "
         "the LLM needs to see explicitly that staying silent after "
-        "a specialist hands back is wrong (user thinks JARVIS forgot)"
+        "a subagent hands back is wrong (user thinks JARVIS forgot)"
     )
 
     # Counter-example: verbatim parroting of task_done is bad.
@@ -330,8 +335,8 @@ def test_supervisor_has_post_handoff_relay_rule():
     )
 
 
-# test_planner_specialist_has_truthfulness_section was retired
-# 2026-05-09 alongside the planner specialist itself. The anti-
+# test_planner_subagent_has_truthfulness_section was retired
+# 2026-05-09 alongside the planner subagent itself. The anti-
 # confabulation discipline it guarded now lives in the in-process
 # plan-mode tool's prompt and the supervisor's "NEVER CLAIM AN ACTION
 # YOU DIDN'T TAKE" section in JARVIS_INSTRUCTIONS.
@@ -451,7 +456,7 @@ def test_extension_manifest_has_debugger_permission():
 
 def test_browser_has_navigate_and_close_tab_distinguished():
     """ext_navigate REPLACES the active tab; ext_new_tab CREATES one.
-    The browser specialist instructions must tell the LLM the
+    The browser subagent instructions must tell the LLM the
     difference (was the root cause of the bug)."""
     from subagents.registry import get
     instr = get("browser").instructions
@@ -459,15 +464,15 @@ def test_browser_has_navigate_and_close_tab_distinguished():
     assert "open a new tab" in instr.lower()
 
 
-# ── Specialist names are honest — no orphan registrations ────────────
+# ── Subagent names are honest — no orphan registrations ────────────
 
 
-def test_no_disabled_specialists_in_registry_for_long():
+def test_no_disabled_subagents_in_registry_for_long():
     """Anything with enabled=False shouldn't be cluttering the
     registry — disable means delete. (Loose check: hard-coded list of
     expected enabled names; tightens future cleanup work.)"""
     from subagents.registry import _REGISTRY, SUBAGENT_REGISTRY
-    expected_enabled = set(SPECIALIST_NAMES) | set(SUBAGENT_NAMES)
+    expected_enabled = set(HANDOFF_SUBAGENT_NAMES) | set(DELEGATED_SUBAGENT_NAMES)
     if _BROWSER_V2_ENABLED:
         expected_enabled.add("browser_v2")
     if _VALIDATOR_ENABLED:
@@ -486,20 +491,20 @@ def test_no_disabled_specialists_in_registry_for_long():
     # add-here gate prevents quiet enables.
     unexpected = actual_enabled - expected_enabled
     assert not unexpected, (
-        f"Unexpected enabled specialists/subagents (add to expected list "
+        f"Unexpected enabled subagents/subagents (add to expected list "
         f"or remove): {unexpected}"
     )
 
 
-# ── browser_v2 specialist (conditional on GROQ/DeepSeek availability) ─
+# ── browser_v2 subagent (conditional on GROQ/DeepSeek availability) ─
 
 
-def test_browser_v2_specialist_registered():
+def test_browser_v2_subagent_registered():
     """browser_v2 must always REGISTER (even when disabled), so the
     supervisor's tool-routing logic sees a recognized name rather than
     a missing-spec error.
 
-    Per `specialists/browser_v2.py:108-125`, browser_v2 is HARD-CODED
+    Per `subagents/browser_v2.py:108-125`, browser_v2 is HARD-CODED
     disabled until three documented bugs are fixed (CDP attach to
     user's Chrome, Groq response_format=json_schema rejection, and the
     `actions[-1]` subscript TypeError on the bound method). The test
@@ -529,7 +534,7 @@ def test_browser_v2_module_importable_without_key():
 def test_browser_v2_self_disables_when_no_keys(monkeypatch):
     """is_available() returns False when both Groq and DeepSeek keys
     are absent. Critical for graceful-degradation behaviour: the
-    specialist registers but stays out of the supervisor's tool list."""
+    subagent registers but stays out of the supervisor's tool list."""
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     import importlib
@@ -546,7 +551,7 @@ def test_browser_v2_tool_factory_builds_when_enabled():
     """The tool factory must build cleanly when the dep keys are
     present. Reads from `_REGISTRY` directly because `registry.get()`
     returns None for any spec with `enabled=False`, and browser_v2 is
-    intentionally hard-disabled (see test_browser_v2_specialist_registered).
+    intentionally hard-disabled (see test_browser_v2_subagent_registered).
     The factory itself works regardless of `enabled`; this test is
     about the import + decorator path, not the gate.
     """
@@ -562,20 +567,20 @@ def test_browser_v2_tool_factory_builds_when_enabled():
     )
 
 
-def test_no_specialist_imports_task_done_from_jarvis_agent():
-    """task_done lives on RegistrySubagent (specialists/agent.py:55)
-    and is auto-attached when a specialist activates. Importing it from
+def test_no_subagent_imports_task_done_from_jarvis_agent():
+    """task_done lives on RegistrySubagent (subagents/agent.py:55)
+    and is auto-attached when a subagent activates. Importing it from
     jarvis_agent ImportErrors at handoff time and crashes the
-    specialist. Regression captured live 2026-05-01: browser_v2
+    subagent. Regression captured live 2026-05-01: browser_v2
     imported `task_done` from jarvis_agent → ImportError → handoff
     failed silently → supervisor's parallel web_fetch saved the turn,
     masking the bug."""
     from pathlib import Path
-    spec_dir = Path(__file__).parent.parent / "specialists"
+    spec_dir = Path(__file__).parent.parent / "subagents"
     offenders = []
     for f in spec_dir.glob("*.py"):
         text = f.read_text()
-        # Crude but effective: any specialist that does
+        # Crude but effective: any subagent that does
         # `from jarvis_agent import ... task_done ...` is broken.
         if "from jarvis_agent import" in text and "task_done" in text:
             # Walk the import lines to be sure.
@@ -583,14 +588,14 @@ def test_no_specialist_imports_task_done_from_jarvis_agent():
                 if line.startswith("from jarvis_agent import") and "task_done" in line:
                     offenders.append(f"{f.name}: {line.strip()}")
     assert not offenders, (
-        f"Specialists must NOT import task_done from jarvis_agent "
+        f"Subagents must NOT import task_done from jarvis_agent "
         f"(it's a RegistrySubagent method). Offenders:\n  "
         + "\n  ".join(offenders)
     )
 
 
-@pytest.mark.parametrize("name", SPECIALIST_NAMES + ["browser_v2"])
-def test_specialist_handoff_constructs_without_error(name):
+@pytest.mark.parametrize("name", HANDOFF_SUBAGENT_NAMES + ["browser_v2"])
+def test_subagent_handoff_constructs_without_error(name):
     """Smoke test the full handoff path: tool_factory must build, and
     the registry's transfer-tool builder must not crash. Catches
     runtime ImportErrors / decorator bugs that only surface during a

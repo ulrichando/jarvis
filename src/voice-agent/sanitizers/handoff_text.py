@@ -13,8 +13,8 @@ The supervisor LLM (Groq llama-3.3-70b) emitted in a SINGLE response:
                                        navigate to YouTube.")
 
 The framework streamed the text to TTS while ALSO firing the tool call.
-The user heard a fake confirmation BEFORE the browser specialist ran.
-The specialist then ran for real and said "New tab opened and navigated
+The user heard a fake confirmation BEFORE the browser subagent ran.
+The subagent then ran for real and said "New tab opened and navigated
 to YouTube." — leading the user to perceive "first attempt failed,
 second attempt worked." (`confab_detector` blocked the DB save so the
 chat_ctx wasn't poisoned, but TTS had already played.)
@@ -36,7 +36,7 @@ Patch `inference.llm.LLMStream._parse_choice`:
   4. The tool call itself flows through normally; the framework
      voices the spec's `ack_phrase` after dispatch — that's the only
      supervisor-side voice the user should hear.
-  5. Specialist's `task_done(summary)` voices the actual outcome
+  5. Subagent's `task_done(summary)` voices the actual outcome
      after the work completes.
 
 Trade-off accepted: text emitted BEFORE the transfer_to_* delta arrives
@@ -61,7 +61,7 @@ logger = logging.getLogger("jarvis.handoff_text_suppressor")
 # "is the supervisor handing off in this stream?"
 _HANDOFF_STATE: dict[str, bool] = {}
 
-# Anything matching this is a supervisor → specialist handoff. The
+# Anything matching this is a supervisor → subagent handoff. The
 # `delegate` form is the single sub-agent dispatcher; transfer_to_X
 # covers all HandoffSubagents (browser, desktop, planner, …).
 _HANDOFF_RE = re.compile(r"^(?:transfer_to_[a-z][a-z0-9_]*|delegate)$")
@@ -70,7 +70,7 @@ _HANDOFF_RE = re.compile(r"^(?:transfer_to_[a-z][a-z0-9_]*|delegate)$")
 def _chat_ctx_has_pending_handoff(stream: Any) -> bool:
     """Cross-stream guard. Walk the recent chat_ctx tail to decide
     whether a transfer_to_*/delegate was emitted earlier in this turn
-    WITHOUT a corresponding task_done since — i.e. a specialist is
+    WITHOUT a corresponding task_done since — i.e. a subagent is
     currently running and any text content from a NEW supervisor
     stream (e.g. FallbackAdapter retried with DeepSeek) is
     necessarily anticipatory/hallucinated.
@@ -187,7 +187,7 @@ def install() -> None:
 
             # 2. Cross-stream check: chat_ctx tail shows a pending
             #    handoff with no task_done yet. Catches the FallbackAdapter
-            #    case where stream B (DeepSeek) runs while specialist
+            #    case where stream B (DeepSeek) runs while subagent
             #    spawned by stream A is still working. Cached per id so
             #    we only walk chat_ctx once per stream.
             if (
@@ -197,7 +197,7 @@ def install() -> None:
             ):
                 logger.warning(
                     "[handoff-suppressor] suppressing supervisor text on"
-                    " stream %s — chat_ctx shows pending handoff (specialist"
+                    " stream %s — chat_ctx shows pending handoff (subagent"
                     " still running)",
                     id[:12] if id else "?",
                 )

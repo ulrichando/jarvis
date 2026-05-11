@@ -134,35 +134,35 @@ def test_recall_cap_value_is_reasonable():
     )
 
 
-# ── Disabled-specialist poison filter ──────────────────────────────
+# ── Disabled-subagent poison filter ──────────────────────────────
 
 
-class TestDisabledSpecialistFilter:
+class TestDisabledSubagentFilter:
     """Live failure 2026-05-11 15:51 UTC: chat history from a session
-    where the screen_share specialist was enabled poisoned a session
+    where the screen_share subagent was enabled poisoned a session
     where it's disabled. Claude said 'Let me transfer to the screen
-    specialist', tried `transfer_to_screen_share`, got "unknown AI
+    subagent', tried `transfer_to_screen_share`, got "unknown AI
     function", then said 'I don't have that transfer tool available'.
     Drop those priming turns from chat_ctx so Claude doesn't have a
     precedent to copy.
     """
 
     @pytest.mark.parametrize("text", [
-        "Let me transfer to the screen specialist who can read details better.",
+        "Let me transfer to the screen subagent who can read details better.",
         "I'll use transfer_to_screen_share for richer vision.",
-        "Switching to the screen-share specialist for live reading.",
-        "Let me switch to the screen specialist.",
+        "Switching to the screen-share subagent for live reading.",
+        "Let me switch to the screen subagent.",
     ])
-    def test_specialist_mention_dropped(self, text):
+    def test_subagent_mention_dropped(self, text):
         assert scrub_recalled_assistant_text(text) is None, (
-            f"recalled turn mentioning disabled specialist must be dropped: {text!r}"
+            f"recalled turn mentioning disabled subagent must be dropped: {text!r}"
         )
 
     @pytest.mark.parametrize("text", [
         "Chrome is open with three tabs.",  # normal reply
         "I can see VS Code on the left.",
         "Got it.",
-        "Screen sharing on.",  # NOT a specialist mention — pass through
+        "Screen sharing on.",  # NOT a subagent mention — pass through
     ])
     def test_unrelated_text_passes(self, text):
         assert scrub_recalled_assistant_text(text) == text

@@ -1,4 +1,4 @@
-"""Desktop-action specialist — registered via the HandoffSubagent
+"""Desktop-action subagent — registered via the HandoffSubagent
 pattern. Mirrors the legacy `DesktopActionsAgent` for backwards
 compat: same prompt, same tools, same handoff behaviour.
 
@@ -12,9 +12,9 @@ from ._ack_phrases import ACK_DESKTOP
 
 
 # Canonical home of DESKTOP_INSTRUCTIONS — lifted from the retired
-# jarvis_specialist_agents.py shim (deleted 2026-05-01).
+# jarvis_subagent_agents.py shim (deleted 2026-05-01).
 DESKTOP_INSTRUCTIONS = """\
-You are the desktop-action specialist for JARVIS. The supervisor agent
+You are the desktop-action subagent for JARVIS. The supervisor agent
 (also named JARVIS) handed control to you because the user asked for
 something requiring desktop interaction — opening an app, taking a
 screenshot, clicking, dragging, typing on the screen, etc.
@@ -32,7 +32,7 @@ reply text is a bug — re-emit as a real tool call):
   ❌ `task_done("...")` — it's a TOOL, not reply text. Type those
      characters only inside a real tool_call.
   ❌ `<function>name</function>` — XML bare-tag form
-     (live-captured 2026-05-06 turn 1093 from browser specialist;
+     (live-captured 2026-05-06 turn 1093 from browser subagent;
      same class of leak applies here).
   ❌ `<function=name>{...}</function>` — XML attribute form.
   ❌ `[{"name":"...","parameters":{...}}]` — JSON-array form
@@ -63,7 +63,7 @@ post-tool SUMMARY only.
    call to `task_done(summary)`. No exceptions. Even after a
    `screenshot()` that returns a long description, you MUST emit
    `task_done` so the framework knows you're finished. Captured
-   live 2026-05-02 13:28: screenshot specialist returned a paragraph
+   live 2026-05-02 13:28: screenshot subagent returned a paragraph
    describing the screen but never called task_done — the tray
    indicator stayed amber for 7 minutes, the tool-busy flag never
    cleared, and the supervisor couldn't accept new turns.
@@ -80,8 +80,8 @@ post-tool SUMMARY only.
 
      - "user changed topic to <X>"
      - "not a desktop task — handing back to supervisor"
-     - "wrong specialist — needs the browser specialist"
-     - "wrong specialist — needs the supervisor"
+     - "wrong subagent — needs the browser subagent"
+     - "wrong subagent — needs the supervisor"
      - "cannot accomplish with desktop tools — handing back to supervisor"
 
    DO NOT freelance phrasing like "user appears to be discussing X"
@@ -100,14 +100,14 @@ post-tool SUMMARY only.
    notices every time.
 
    **Past failure 2026-05-01**: user asked "Open a new tab on the
-   browser." This was wrongly routed here (it's a browser-specialist
+   browser." This was wrongly routed here (it's a browser-subagent
    task — Ctrl+T inside Chrome via the extension). Instead of bailing
-   with task_done("wrong specialist — needs browser"), this specialist
+   with task_done("wrong subagent — needs browser"), this subagent
    replied "A new tab is open, sir." with NO tool call. No tab was
    opened. Pure lie. The CORRECT response when you can't accomplish
    a task with your tools is:
        task_done("cannot accomplish with desktop tools — needs the
-                 browser specialist for in-tab actions.")
+                 browser subagent for in-tab actions.")
    The supervisor will route to the right place.
 
 5. **WHAT YOU CANNOT DO** (handoff back via task_done):
@@ -210,7 +210,7 @@ You: task_done("user changed topic to weather")
 
 def _desktop_tools() -> list:
     """Lazy tool import — runs only when the supervisor actually
-    constructs the specialist. Keeps livekit + heavy plugins out of
+    constructs the subagent. Keeps livekit + heavy plugins out of
     the registry-import critical path.
 
     Mirrors the tool list jarvis_agent.py used to pass into the
@@ -244,12 +244,12 @@ _DESKTOP_WHEN = (
 
 
 def register_desktop() -> None:
-    """Register the desktop specialist. Idempotent — re-registration
+    """Register the desktop subagent. Idempotent — re-registration
     overwrites, so this is safe to call from `__init__.py` on every
     import.
 
     Phase 4 of the registry migration: desktop is now `enabled=True`
-    after the planner specialist proved the registry pattern works
+    after the planner subagent proved the registry pattern works
     end-to-end. The legacy `JarvisAgent.transfer_to_desktop` method
     has been retired in the same commit; the registry now owns the
     handoff for both desktop and planner.

@@ -1,10 +1,10 @@
-"""Browser specialist v2 — wraps the open-source `browser-use` agent
+"""Browser subagent v2 — wraps the open-source `browser-use` agent
 loop instead of the 25 ext_* DOM tools + Chrome extension.
 
-Coexists with the legacy `browser` specialist (registered alongside,
+Coexists with the legacy `browser` subagent (registered alongside,
 both `enabled=True`). The supervisor's routing prompt picks v2 for
 multi-step web tasks ("log in, fill this form, post X") and falls back
-to the legacy specialist for single-DOM-action work ("just navigate",
+to the legacy subagent for single-DOM-action work ("just navigate",
 "just screenshot the page").
 
 To DISABLE: set `enabled=False` in register_browser_v2() below — or
@@ -17,7 +17,7 @@ from .registry import HandoffSubagent, register
 
 
 BROWSER_V2_INSTRUCTIONS = """\
-You are JARVIS's browser specialist (v2). The supervisor handed control
+You are JARVIS's browser subagent (v2). The supervisor handed control
 to you because the user wants something done in the browser that takes
 more than one DOM action — login + fill form + submit, multi-page
 navigation, extract-then-act, etc.
@@ -37,7 +37,7 @@ plans the steps, drives the browser, and returns a summary. Then call
    request. Pass what they said. browser-use will interpret it.
 
 3. **NEVER claim success without a tool result proving it.** Same
-   rule as the legacy browser specialist. If browser_task_v2 returns
+   rule as the legacy browser subagent. If browser_task_v2 returns
    an error, voice the error truthfully — don't pretend it worked.
 
 4. **DESTRUCTIVE-VERB GUARD.** If the user's request is destructive
@@ -98,11 +98,11 @@ _BROWSER_V2_WHEN = (
 
 
 def register_browser_v2() -> None:
-    """Register the v2 browser specialist. Idempotent.
+    """Register the v2 browser subagent. Idempotent.
 
     Auto-disables itself if browser_task_v2 can't run (no GROQ /
     DeepSeek key, or browser-use import fails). That way registering
-    can't crash agent startup; the specialist just doesn't appear
+    can't crash agent startup; the subagent just doesn't appear
     in the supervisor's tool list when its deps are missing.
     """
     # 2026-05-02: hard-disabled. Three independent failures stack on
@@ -120,7 +120,7 @@ def register_browser_v2() -> None:
     # Until those three bugs are fixed and the user's Chrome is
     # configured with --remote-debugging-port=9222, leave it OFF and
     # let the supervisor route browser work to the regular `browser`
-    # specialist (37 ext_* tools driving the user's real Chrome via
+    # subagent (37 ext_* tools driving the user's real Chrome via
     # the jarvis-screen extension — DOES type, click, scroll for real).
     enabled = False
 
