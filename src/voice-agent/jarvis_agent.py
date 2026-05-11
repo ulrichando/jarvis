@@ -4556,6 +4556,18 @@ async def entrypoint(ctx: JobContext) -> None:
         logger.warning(f"[acoustic-tap] init failed: {e}")
         session._jarvis_acoustic_tap = None
 
+    # LiveKit screen-share consumer. Whenever the voice-client publishes
+    # its SOURCE_SCREENSHARE track, this sink decodes the latest frame
+    # to JPEG and parks it on `session._jarvis_latest_screen_frame`.
+    # tools.computer_use._take_screenshot prefers the cached frame if
+    # it's <2 s old, so "what's on my screen?" doesn't pay scrot's
+    # ~150 ms PNG-encode round-trip while the screen-share is active.
+    try:
+        from pipeline import screen_share_sink
+        screen_share_sink.attach_to_room(ctx.room, session)
+    except Exception as e:
+        logger.warning(f"[screen-share-sink] init failed: {e}")
+
     # Bind the session for the stamp_first_token TTS filter (Phase 7).
     # The filter list was built at session-construction time and can't
     # reach back into the session via closure capture; this container
