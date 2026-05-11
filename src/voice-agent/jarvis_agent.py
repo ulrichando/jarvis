@@ -226,7 +226,7 @@ from subagents.agent import build_all_transfer_tools
 
 logger = logging.getLogger("jarvis")
 
-# Desktop computer-use tools — Gemini vision describes the screen,
+# Desktop computer-use tools — Kimi vision describes the screen,
 # xdotool drives mouse/keyboard. Tools are registered in the
 # tools=[] list of session.start() below.
 from tools.computer_use import (

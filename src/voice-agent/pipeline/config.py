@@ -249,7 +249,7 @@ WEBCAM_DEVICE: str       = _str("JARVIS_WEBCAM_DEVICE", "/dev/video0")
 WEBCAM_RES: str          = _str("JARVIS_WEBCAM_RES", "640x480")
 SCREENSHOT_JPEG_Q: int   = _int("JARVIS_SCREENSHOT_JPEG_Q", 75)
 SCREENSHOT_MAX_EDGE: int = _int("JARVIS_SCREENSHOT_MAX_EDGE", 1920)
-VISION_BACKEND: str      = _str("JARVIS_VISION_BACKEND", "gemini")
+VISION_BACKEND: str      = _str("JARVIS_VISION_BACKEND", "kimi")
 
 
 # ── Browser / external services ──────────────────────────────────────

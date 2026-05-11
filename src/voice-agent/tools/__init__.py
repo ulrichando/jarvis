@@ -9,7 +9,7 @@ Tools available:
   - bash              : safe shell exec (claude-code-derived)
   - browser_ext       : 38 ext_* DOM-driving tools, hub→Chrome extension WS
   - code_reviewer     : Groq-backed code review subagent
-  - computer_use      : 9 desktop-control tools (xdotool / scrot / Gemini Vision)
+  - computer_use      : 9 desktop-control tools (xdotool / scrot / Kimi vision)
   - file_*            : direct in-process read/edit/write (claude-code-derived)
   - github            : `gh`-CLI subagent for issue / PR / repo operations
   - log_analyzer      : pattern-extracts from voice-agent log files
