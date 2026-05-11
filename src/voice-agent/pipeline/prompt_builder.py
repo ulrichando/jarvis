@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-logger = logging.getLogger("jarvis.instructions_assembly")
+logger = logging.getLogger("jarvis.prompt_builder")
 
 
 # ── Learned-rules block ──────────────────────────────────────────────

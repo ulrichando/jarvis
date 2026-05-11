@@ -21,7 +21,7 @@ from livekit.agents.llm import ChatContext, FunctionCall
 
 from .registry import HandoffSubagent
 
-logger = logging.getLogger("jarvis-agent.specialist")
+logger = logging.getLogger("jarvis.subagent")
 
 # Bailout-phrase allowlist for the no-real-tool gate. When a specialist
 # is wrongly routed (e.g. supervisor handed it conversational input

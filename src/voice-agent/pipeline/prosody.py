@@ -29,7 +29,7 @@ from dataclasses import dataclass
 import numpy as np
 from livekit import rtc
 
-logger = logging.getLogger("jarvis.acoustic_tap")
+logger = logging.getLogger("jarvis.prosody")
 
 # Floor for log10 conversion. Silence rounds to -80 dB rather than -inf.
 _DB_FLOOR = -80.0

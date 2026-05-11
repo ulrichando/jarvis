@@ -70,7 +70,7 @@ logging.basicConfig(
     level=os.environ.get("JARVIS_VOICE_LOG_LEVEL", "INFO"),
     format="%(asctime)s %(levelname)-7s %(name)s %(message)s",
 )
-log = logging.getLogger("voice-client")
+log = logging.getLogger("jarvis.voice_client")
 
 URL          = os.environ.get("LIVEKIT_URL",        "ws://127.0.0.1:7880")
 API_KEY      = os.environ.get("LIVEKIT_API_KEY",    "")
