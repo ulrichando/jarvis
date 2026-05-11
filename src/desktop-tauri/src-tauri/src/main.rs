@@ -46,6 +46,12 @@ struct TtsLabel(Mutex<Option<MenuItem<Wry>>>);
 /// Ordered to match TTS_VOICES.
 struct TtsVoiceItems(Mutex<Vec<MenuItem<Wry>>>);
 
+/// Handle to the "Start / Stop Screen Share" tray entry. Stashed in
+/// state so the `set_share_label` command can rewrite it from the
+/// status poll — label flips to "Stop Screen Share ✓" when the
+/// voice-client is publishing, "Start Screen Share" when not.
+struct ShareLabel(Mutex<Option<MenuItem<Wry>>>);
+
 /// The source tray artwork (icons/tray.png — the concentric-ring /
 /// reactor design). Embedded into the binary at compile time so the
 /// icon can be tinted per-state at runtime without touching disk.
@@ -821,6 +827,21 @@ fn set_provider_label(name: &str, label: State<ProviderLabel>) -> Result<(), Str
     Ok(())
 }
 
+/// Update the "Start / Stop Screen Share" tray entry to reflect the
+/// voice-client's current `sharing_screen` state. Called from the
+/// React status poll once per /status tick — the label flips between
+/// "Stop Screen Share ✓" (active) and "Start Screen Share" (idle) so
+/// the user can tell at a glance without curling /status.
+#[tauri::command]
+fn set_share_label(active: bool, label: State<ShareLabel>) -> Result<(), String> {
+    let text = if active { "Stop Screen Share  ✓" } else { "Start Screen Share" };
+    let guard = label.0.lock().map_err(|e| e.to_string())?;
+    if let Some(item) = guard.as_ref() {
+        item.set_text(text).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn get_primary_monitor_info(window: WebviewWindow) -> Result<serde_json::Value, String> {
     let monitor = window
@@ -1198,6 +1219,7 @@ fn main() {
         .manage(SpeechLabel(Mutex::new(None)))
         .manage(TtsLabel(Mutex::new(None)))
         .manage(TtsVoiceItems(Mutex::new(Vec::new())))
+        .manage(ShareLabel(Mutex::new(None)))
         .setup(move |app| {
             let window = app.get_webview_window("main").unwrap();
             let window_for_poll = window.clone();
@@ -1522,6 +1544,14 @@ fn main() {
                 .item(&quit_item)
                 .build()?;
 
+            // Stash the share menu item now that the MenuBuilder has
+            // consumed its borrow — moving it any earlier would steal
+            // the value before .item(&share_item) above.
+            {
+                let sh: State<ShareLabel> = app.state();
+                *sh.0.lock().unwrap() = Some(share_item);
+            }
+
             let chat_open_tray = Arc::clone(&chat_open);
 
             // Start the tray on the green "idle" indicator — React will
@@ -1842,6 +1872,7 @@ fn main() {
             set_provider_label,
             set_speech_label,
             set_tts_label,
+            set_share_label,
             get_primary_monitor_info,
             keys_read,
             keys_set,
