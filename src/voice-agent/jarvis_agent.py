@@ -4138,6 +4138,169 @@ def _spawn_worker_heartbeat() -> None:
     asyncio.create_task(_worker_heartbeat())
 
 
+def _register_session_error_handlers(session) -> None:
+    """Wire up the `@session.on("error")` handler — Step 8c of the
+    10/10 refactor. Two error classes are surfaced:
+
+      * LLM validation errors (`tool call validation failed` /
+        `APIConnectionError`) — voice a "had trouble, rephrase?"
+        fallback so the conversation continues instead of going
+        silent. Throttled to 1 voiced apology per 15 s.
+
+      * TTS errors (`TTSError`) — append the unspoken text to
+        `~/.jarvis/tts-failures.log`, pop a desktop notification once
+        per 60 s, and log a WARNING. Classifies the error so the
+        notification reads "rate-limited" / "timed out" / "bad
+        request" / etc. instead of always "rate-limited" (which was
+        misleading for the timeout-heavy reality).
+
+    Both handlers are throttled because the framework's retry loops
+    can flap fast and would otherwise spam the user with notifications
+    or apology voices.
+    """
+    _tts_fail_marker = Path.home() / ".jarvis" / "tts-failures.log"
+    _last_notify_ts = [0.0]   # boxed so the closure can mutate it
+    # Throttle the LLM-error fallback voice so a flapping bug doesn't
+    # spam "had trouble, try again" every 200ms during retry loops.
+    _llm_fallback_last_ts = [0.0]
+
+    @session.on("error")
+    def _on_error(ev) -> None:
+        try:
+            from livekit.agents import tts as _lk_tts  # local to avoid top-level slow path
+            err = getattr(ev, "error", None)
+
+            # ── LLM error fallback voice (Phase 9.2) ──────────────────
+            # When the recurring 'tool call validation failed' bug fires
+            # (LLM jams JSON args into tool_call.name field), the
+            # framework's retry loop exhausts and JARVIS goes silent.
+            # User has no idea what happened. Catch the malformed-tool-
+            # call class of APIConnectionError and voice a fallback so
+            # the conversation continues. Throttled to 1/15s so a tight
+            # retry loop doesn't bury the user in apologies.
+            try:
+                from livekit.agents import APIConnectionError as _APIConnectionError
+                from livekit.agents import llm as _lk_llm
+                err_msg = str(err) if err else ""
+                is_llm_validation_err = (
+                    isinstance(err, _APIConnectionError)
+                    or "tool call validation failed" in err_msg
+                    or "Connection error" in err_msg  # the wrapper symptom
+                )
+                if is_llm_validation_err:
+                    now_ts = time.time()
+                    if now_ts - _llm_fallback_last_ts[0] > 15.0:
+                        _llm_fallback_last_ts[0] = now_ts
+                        # session.say is sync in livekit-agents 1.5+,
+                        # returns a SpeechHandle. Calling it directly
+                        # dispatches synthesis on the framework's task.
+                        try:
+                            session.say(
+                                "Sorry, I had trouble with that. "
+                                "Could you rephrase?",
+                                allow_interruptions=True,
+                            )
+                            logger.info(
+                                f"[llm-fallback] voiced apology after LLM error: {err_msg[:120]!r}"
+                            )
+                        except Exception as say_err:
+                            logger.debug(f"[llm-fallback] say() failed: {say_err}")
+                    return  # don't fall through to TTS-error branch
+            except ImportError:
+                pass  # framework's APIConnectionError import shape changed
+
+            if not isinstance(err, _lk_tts.TTSError):
+                return
+            # Best-effort grab of the in-flight text — if we can't,
+            # at least log the timestamp and error message.
+            failed_text = getattr(err, "input_text", "") or getattr(err, "text", "")
+            now = time.time()
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
+            try:
+                _tts_fail_marker.parent.mkdir(parents=True, exist_ok=True)
+                with _tts_fail_marker.open("a", encoding="utf-8") as f:
+                    f.write(f"[{stamp}] {err}\n")
+                    if failed_text:
+                        f.write(f"  text: {failed_text[:500]}\n")
+            except Exception as _e:
+                logger.debug(f"[tts-fail] log write failed: {_e}")
+            # Classify the error so the desktop notification tells the
+            # user what's actually wrong instead of always saying
+            # "rate-limited" (the prior wording was misleading for
+            # network timeouts, which are most of what we see).
+            err_type_name = type(err).__name__
+            err_msg = str(err)
+            status_code = getattr(err, "status_code", None)
+            if "Timeout" in err_type_name or "timed out" in err_msg.lower():
+                title = "JARVIS — TTS slow / timing out"
+                body = (
+                    "Groq TTS isn't responding fast enough. JARVIS heard "
+                    "you but the speech synthesis call timed out. Often "
+                    "this is just transient Groq-side load — try again "
+                    "in a few seconds."
+                )
+            elif status_code == 429 or (
+                status_code == 400 and "quota" in err_msg.lower()
+            ):
+                title = "JARVIS — TTS rate-limited"
+                body = (
+                    "Groq TTS quota hit. Wait a minute or switch the "
+                    "speech model in the tray (anything but Orpheus uses "
+                    "a different quota bucket)."
+                )
+            elif status_code == 400:
+                title = "JARVIS — TTS bad request"
+                body = (
+                    "Groq TTS rejected the request payload. Usually "
+                    "transient on Groq's side; the framework will retry."
+                )
+            else:
+                title = "JARVIS — TTS error"
+                body = f"{err_type_name}: {err_msg[:160]}"
+
+            # Throttle notifications to one per 60 s so a flood of
+            # retries doesn't spam the desktop.
+            if now - _last_notify_ts[0] > 60:
+                _last_notify_ts[0] = now
+                try:
+                    _subprocess.Popen(
+                        ["notify-send", "-u", "normal", "-t", "6000",
+                         title, body],
+                        stdout=_subprocess.DEVNULL,
+                        stderr=_subprocess.DEVNULL,
+                    )
+                except FileNotFoundError:
+                    pass  # notify-send not installed; the log file is enough
+            logger.warning(f"TTS error logged to {_tts_fail_marker}: {err}")
+        except Exception as e:
+            logger.debug(f"_on_error handler hiccup: {e}")
+
+
+def _register_session_crash_watchdog(session, bg_tasks: set) -> None:
+    """Wire up the `@session.on("close")` watchdog — Step 8c of the
+    10/10 refactor. When Groq STT has a transient network failure,
+    the framework retries 3 times then marks the session
+    "unrecoverable". The worker process stays alive but the
+    AgentSession is dead — JARVIS goes silent with no feedback.
+    Detect this via `CloseEvent.error` and trigger a voice-client
+    restart so `_agent_presence_watchdog` forces a fresh room + new
+    AgentSession (~5-8 s total recovery time)."""
+
+    @session.on("close")
+    def _on_session_close(ev) -> None:
+        if not _session_close_needs_restart(ev):
+            return  # clean shutdown (model switch, tray quit) — don't restart
+        logger.error(
+            f"[session-watchdog] AgentSession died with error: {getattr(ev, 'error', '?')}. "
+            "Scheduling voice-client restart in 3s."
+        )
+        t = asyncio.create_task(
+            _restart_voice_client_after_crash(), name="session-watchdog-restart"
+        )
+        bg_tasks.add(t)
+        t.add_done_callback(bg_tasks.discard)
+
+
 async def entrypoint(ctx: JobContext) -> None:
     """
     Runs once per client that joins a room. This is the actual
@@ -5320,153 +5483,12 @@ async def entrypoint(ctx: JobContext) -> None:
         _bg_tasks.add(task)
         task.add_done_callback(_bg_tasks.discard)
 
-    # ── TTS-error surfacing ────────────────────────────────────────
-    # Groq Orpheus has tight free-tier limits; on rate-limit the
-    # framework logs warnings and silently drops the utterance, which
-    # leaves the user wondering if JARVIS broke. Hook the session
-    # error event, recognise TTS failures specifically, and:
-    #   1. Append the unspoken text to a log file the user can tail
-    #      (~/.jarvis/tts-failures.log) so nothing is lost
-    #   2. Pop a desktop notification once per minute so the cause
-    #      is obvious without being spammy
-    _tts_fail_marker = Path.home() / ".jarvis" / "tts-failures.log"
-    _last_notify_ts = [0.0]   # boxed so the closure can mutate it
-
-    # Throttle the LLM-error fallback voice so a flapping bug doesn't
-    # spam "had trouble, try again" every 200ms during retry loops.
-    _llm_fallback_last_ts = [0.0]
-
-    @session.on("error")
-    def _on_error(ev) -> None:
-        try:
-            from livekit.agents import tts as _lk_tts  # local to avoid top-level slow path
-            err = getattr(ev, "error", None)
-
-            # ── LLM error fallback voice (Phase 9.2) ──────────────────
-            # When the recurring 'tool call validation failed' bug fires
-            # (LLM jams JSON args into tool_call.name field), the
-            # framework's retry loop exhausts and JARVIS goes silent.
-            # User has no idea what happened. Catch the malformed-tool-
-            # call class of APIConnectionError and voice a fallback so
-            # the conversation continues. Throttled to 1/15s so a tight
-            # retry loop doesn't bury the user in apologies.
-            try:
-                from livekit.agents import APIConnectionError as _APIConnectionError
-                from livekit.agents import llm as _lk_llm
-                err_msg = str(err) if err else ""
-                is_llm_validation_err = (
-                    isinstance(err, _APIConnectionError)
-                    or "tool call validation failed" in err_msg
-                    or "Connection error" in err_msg  # the wrapper symptom
-                )
-                if is_llm_validation_err:
-                    now_ts = time.time()
-                    if now_ts - _llm_fallback_last_ts[0] > 15.0:
-                        _llm_fallback_last_ts[0] = now_ts
-                        # session.say is sync in livekit-agents 1.5+,
-                        # returns a SpeechHandle. Calling it directly
-                        # dispatches synthesis on the framework's task.
-                        try:
-                            session.say(
-                                "Sorry, I had trouble with that. "
-                                "Could you rephrase?",
-                                allow_interruptions=True,
-                            )
-                            logger.info(
-                                f"[llm-fallback] voiced apology after LLM error: {err_msg[:120]!r}"
-                            )
-                        except Exception as say_err:
-                            logger.debug(f"[llm-fallback] say() failed: {say_err}")
-                    return  # don't fall through to TTS-error branch
-            except ImportError:
-                pass  # framework's APIConnectionError import shape changed
-
-            if not isinstance(err, _lk_tts.TTSError):
-                return
-            # Best-effort grab of the in-flight text — if we can't,
-            # at least log the timestamp and error message.
-            failed_text = getattr(err, "input_text", "") or getattr(err, "text", "")
-            now = time.time()
-            stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
-            try:
-                _tts_fail_marker.parent.mkdir(parents=True, exist_ok=True)
-                with _tts_fail_marker.open("a", encoding="utf-8") as f:
-                    f.write(f"[{stamp}] {err}\n")
-                    if failed_text:
-                        f.write(f"  text: {failed_text[:500]}\n")
-            except Exception:
-                pass
-            # Classify the error so the desktop notification tells the
-            # user what's actually wrong instead of always saying
-            # "rate-limited" (the prior wording was misleading for
-            # network timeouts, which are most of what we see).
-            err_type_name = type(err).__name__
-            err_msg = str(err)
-            status_code = getattr(err, "status_code", None)
-            if "Timeout" in err_type_name or "timed out" in err_msg.lower():
-                title = "JARVIS — TTS slow / timing out"
-                body = (
-                    "Groq TTS isn't responding fast enough. JARVIS heard "
-                    "you but the speech synthesis call timed out. Often "
-                    "this is just transient Groq-side load — try again "
-                    "in a few seconds."
-                )
-            elif status_code == 429 or (
-                status_code == 400 and "quota" in err_msg.lower()
-            ):
-                title = "JARVIS — TTS rate-limited"
-                body = (
-                    "Groq TTS quota hit. Wait a minute or switch the "
-                    "speech model in the tray (anything but Orpheus uses "
-                    "a different quota bucket)."
-                )
-            elif status_code == 400:
-                title = "JARVIS — TTS bad request"
-                body = (
-                    "Groq TTS rejected the request payload. Usually "
-                    "transient on Groq's side; the framework will retry."
-                )
-            else:
-                title = "JARVIS — TTS error"
-                body = f"{err_type_name}: {err_msg[:160]}"
-
-            # Throttle notifications to one per 60 s so a flood of
-            # retries doesn't spam the desktop.
-            if now - _last_notify_ts[0] > 60:
-                _last_notify_ts[0] = now
-                try:
-                    _subprocess.Popen(
-                        ["notify-send", "-u", "normal", "-t", "6000",
-                         title, body],
-                        stdout=_subprocess.DEVNULL,
-                        stderr=_subprocess.DEVNULL,
-                    )
-                except FileNotFoundError:
-                    pass  # notify-send not installed; the log file is enough
-            logger.warning(f"TTS error logged to {_tts_fail_marker}: {err}")
-        except Exception as e:
-            logger.debug(f"_on_error handler hiccup: {e}")
-
-    # ── Session crash watchdog ────────────────────────────────────────
-    # When Groq STT has a transient network failure, the framework
-    # retries 3 times then marks the session "unrecoverable". The worker
-    # process stays alive but the AgentSession is dead — JARVIS goes
-    # silent with no feedback. Detect this via CloseEvent.error and
-    # trigger a voice-client restart so _agent_presence_watchdog forces
-    # a fresh room + new AgentSession (~5-8 s total recovery time).
-    @session.on("close")
-    def _on_session_close(ev) -> None:
-        if not _session_close_needs_restart(ev):
-            return  # clean shutdown (model switch, tray quit) — don't restart
-        logger.error(
-            f"[session-watchdog] AgentSession died with error: {getattr(ev, 'error', '?')}. "
-            "Scheduling voice-client restart in 3s."
-        )
-        t = asyncio.create_task(
-            _restart_voice_client_after_crash(), name="session-watchdog-restart"
-        )
-        _bg_tasks.add(t)
-        t.add_done_callback(_bg_tasks.discard)
+    # Wire session-level event handlers — Step 8c of the 10/10 refactor.
+    # See `_register_session_error_handlers` for the TTS / LLM-fallback
+    # behavior and `_register_session_crash_watchdog` for the
+    # close-event → voice-client-restart path.
+    _register_session_error_handlers(session)
+    _register_session_crash_watchdog(session, _bg_tasks)
 
     # Build the system prompt with current model info appended, so the
     # LLM can answer "what model are you?" correctly. Without this it
