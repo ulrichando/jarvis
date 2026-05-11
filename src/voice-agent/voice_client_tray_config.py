@@ -114,8 +114,14 @@ SPEECH_MODELS_AVAILABLE: tuple[str, ...] = (
     "deepseek-chat",
     "deepseek-v4-flash",
     "deepseek-v4-pro",
-    # Anthropic — Haiku 4.5. Added 2026-05-11 alongside the Anthropic
-    # rung in build_dispatching_llm. Requires ANTHROPIC_API_KEY in env.
+    # Anthropic — added 2026-05-11 alongside the Anthropic rung in
+    # build_dispatching_llm. Requires ANTHROPIC_API_KEY in env.
+    # Three tiers mirror the CLI picker:
+    #   Opus 4.7  — most capable, slowest, ~10x Haiku cost
+    #   Sonnet 4.6 — everyday default for serious reasoning
+    #   Haiku 4.5 — fastest + cheapest, for low-stakes turns
+    "claude-opus-4-7",
+    "claude-sonnet-4-6",
     "claude-haiku-4-5",
     # Kimi K2.6 voice entries are DISABLED 2026-05-05. K2.6 emits
     # built-in tool calls (web_search, etc.) that aren't in
