@@ -482,43 +482,14 @@ class _LoggingGroqTTS(groq.TTS):
         )
 
 
-class _BreakeredGroqSTT(groq.STT):
-    """groq.STT wrapped by _STT_BREAKER. On CircuitOpenError, raises
-    livekit.agents.APIConnectionError so FallbackAdapter (if any STT
-    fallback is configured) takes over without waiting the full
-    upstream timeout."""
-
-    async def _recognize_impl(self, *args, **kw):
-        try:
-            return await _STT_BREAKER.call(super()._recognize_impl, *args, **kw)
-        except CircuitOpenError as e:
-            raise _APIConnectionError() from e
-        except asyncio.TimeoutError:
-            # Breaker's own 8s timeout fired (separate from the
-            # underlying STT's timeout). Surface as APITimeoutError
-            # so livekit-agents' retry / fallback path handles it
-            # uniformly with other timeout sources.
-            raise _APITimeoutError() from None
-
-    async def _call_with_breaker_for_test(self):
-        """Test seam — instance method so the test exercises
-        _build_breakered_stt() construction, catching factory regressions
-        (wrong model string, broken constructor signature) at test time
-        rather than at production startup. The body itself only probes
-        the breaker-open path; production calls go through _recognize_impl."""
-        async def _no_op():
-            return None
-        try:
-            return await _STT_BREAKER.call(_no_op)
-        except CircuitOpenError as e:
-            raise _APIConnectionError() from e
-        except asyncio.TimeoutError:
-            raise _APITimeoutError() from None
-
-
-def _build_breakered_stt() -> _BreakeredGroqSTT:
-    """Constructor used by the JarvisAgent wiring at session.start()."""
-    return _BreakeredGroqSTT(model="whisper-large-v3-turbo", language="en")
+# Extracted to providers/stt.py 2026-05-10 (Step 5a of the 10/10
+# refactor). Re-exported under the legacy underscored names so the
+# call sites + test (test_breaker_shims.py exercises
+# _build_breakered_stt) stay untouched.
+from providers.stt import (
+    BreakeredGroqSTT as _BreakeredGroqSTT,
+    build_breakered_stt as _build_breakered_stt,
+)
 
 
 class _BreakeredLLMStream:
