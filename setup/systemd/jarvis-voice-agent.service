@@ -1,0 +1,95 @@
+[Unit]
+Description=JARVIS voice agent (LiveKit worker: STT → LLM → TTS via Groq)
+# Needs the SFU to be listening before we try to connect.
+After=network-online.target livekit-server.service
+Wants=network-online.target
+Requires=livekit-server.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+WatchdogSec=120s
+WorkingDirectory=%h/Documents/Projects/jarvis/src/voice-agent
+# Load LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET from the
+# voice-agent's own .env, AND load GROQ_API_KEY from the shared
+# cli/.env.local. Two EnvironmentFile directives; later-loaded wins
+# on collision, which is fine — they don't overlap in practice.
+EnvironmentFile=%h/Documents/Projects/jarvis/src/voice-agent/.env
+EnvironmentFile=%h/Documents/Projects/jarvis/src/cli/.env.local
+# Local bridge bearer token (KEY=VALUE format, chmod 600). Sent on
+# every voice-agent → bridge HTTP call. Optional file (`-` prefix)
+# so the unit doesn't fail to start before P0c is run.
+EnvironmentFile=-%h/.jarvis/local-api-token.env
+# `start` (not `dev`) — production mode, no file-watch, JSON logs.
+# Uses the venv's interpreter directly so we don't need `source
+# .venv/bin/activate` in the ExecStart.
+ExecStart=%h/Documents/Projects/jarvis/src/voice-agent/.venv/bin/python %h/Documents/Projects/jarvis/src/voice-agent/jarvis_agent.py start
+# Auto-recover from crashes / Groq API hiccups / SFU restart.
+Restart=always
+RestartSec=5
+# The agents SDK emits JSON structured logs — append rather than
+# overwrite so we can scroll back across restarts during debugging.
+# Was /tmp/jarvis-voice-agent.log until 2026-05-07; switched because
+# /tmp gets aggressively cleared/rotated (live: lost the 11:57 SFU
+# disconnect evidence within 2h, no journal fallback because logs
+# go to file not journald). New path persists across reboots.
+# Rotation handled by scripts/rotate-jarvis-logs.sh on a daily timer.
+StandardOutput=append:%h/.local/share/jarvis/logs/voice-agent.log
+StandardError=append:%h/.local/share/jarvis/logs/voice-agent.log
+
+# ────────────────────────────────────────────────────────────────────
+# Sandbox hardening (added 2026-05-11)
+# ────────────────────────────────────────────────────────────────────
+# Defense-in-depth: limit the blast radius if a misbehaving LLM /
+# STT mistranscription / prompt injection causes the bash tool to
+# run something unintended. These directives are ADDITIVE — none of
+# them block the normal voice-agent workload. Specifically NOT set:
+#
+#   NoNewPrivileges       — would block sudo (kernel rejects setuid
+#                            escalation under NoNewPrivileges).
+#                            JARVIS needs sudo per CLAUDE.md.
+#   ProtectHome           — voice-agent writes to ~/.jarvis and
+#                            ~/.local/share/jarvis on every turn.
+#   PrivateDevices        — voice-agent needs /dev/snd for audio
+#                            and /dev/video* for the webcam tools.
+#   ProtectSystem=strict  — would block apt install / sudoers edits
+#                            etc. that the user occasionally asks
+#                            JARVIS to do. (Skipped to keep "no UX
+#                            cost" — re-enable later if desired.)
+#   MemoryDenyWriteExecute — PyTorch / ML runtimes use W+X memory.
+#   SystemCallFilter      — too risky for incremental hardening.
+
+# Each voice-agent worker gets its own /tmp namespace. Stops a stray
+# bash subprocess from reading other processes' temp files (e.g.
+# the launcher lock, browser session caches, etc.).
+PrivateTmp=yes
+
+# Read-only mounts on stuff JARVIS legitimately never writes to.
+# A misbehaving `bash("rm -rf /etc")` becomes EROFS.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# Block creation of new setuid/setgid binaries (existing setuid
+# binaries like /usr/bin/sudo still work — this only prevents new
+# ones from being made, e.g. `chmod u+s /tmp/x` is a no-op).
+RestrictSUIDSGID=yes
+
+# Block namespace creation — voice-agent doesn't unshare/chroot.
+RestrictNamespaces=yes
+
+# Block exotic personality flags (e.g. READ_IMPLIES_EXEC) that
+# legitimate code never sets.
+LockPersonality=yes
+
+# Drop all capabilities except the bare minimum a user-mode process
+# already gets. The voice-agent runs as the user 'ulrich' so it had
+# no extra caps to begin with — this is a belt-and-suspenders bound
+# in case anything in the dep tree tries to acquire one via setcap.
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=default.target
