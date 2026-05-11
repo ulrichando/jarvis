@@ -612,6 +612,9 @@ fn cli_model_pretty(id: &str) -> Option<&'static str> {
         "llama-3.3-70b-versatile"                        => Some("Groq · llama 3.3 70B"),
         "meta-llama/llama-4-scout-17b-16e-instruct"      => Some("Groq · llama 4 scout"),
         "openai/gpt-oss-120b"                            => Some("Groq · gpt-oss-120b"),
+        "claude-opus-4-7"                                => Some("Claude · Opus 4.7"),
+        "claude-sonnet-4-6"                              => Some("Claude · Sonnet 4.6"),
+        "claude-haiku-4-5"                               => Some("Claude · Haiku 4.5"),
         _ => None,
     }
 }
@@ -1493,6 +1496,12 @@ fn main() {
             let m_llama33      = MenuItemBuilder::with_id("model_llama-3.3-70b-versatile",                    "Use Groq · llama 3.3 70B").build(app)?;
             let m_llama4       = MenuItemBuilder::with_id("model_meta-llama/llama-4-scout-17b-16e-instruct",  "Use Groq · llama 4 scout").build(app)?;
             let m_gptoss       = MenuItemBuilder::with_id("model_openai/gpt-oss-120b",                        "Use Groq · gpt-oss-120b").build(app)?;
+            // Anthropic Claude — three tiers added 2026-05-11. Labels
+            // mirror the Claude Code /model picker phrasing so the
+            // expected meaning carries over.
+            let m_claude_opus   = MenuItemBuilder::with_id("model_claude-opus-4-7",                            "Use Claude · Opus 4.7  (1M ctx · most capable)").build(app)?;
+            let m_claude_sonnet = MenuItemBuilder::with_id("model_claude-sonnet-4-6",                          "Use Claude · Sonnet 4.6 (everyday tasks)").build(app)?;
+            let m_claude_haiku  = MenuItemBuilder::with_id("model_claude-haiku-4-5",                           "Use Claude · Haiku 4.5  (fastest)").build(app)?;
             let tool_submenu = SubmenuBuilder::new(app, "Tool model ▸")
                 .item(&m_ds_chat)
                 .item(&m_ds_reason)
@@ -1502,6 +1511,9 @@ fn main() {
                 .item(&m_llama33)
                 .item(&m_llama4)
                 .item(&m_gptoss)
+                .item(&m_claude_opus)
+                .item(&m_claude_sonnet)
+                .item(&m_claude_haiku)
                 .build()?;
 
             let tts_sep = PredefinedMenuItem::separator(app)?;
@@ -1702,6 +1714,9 @@ fn main() {
                         "model_llama-3.3-70b-versatile"                    => switch_cli_model(app, "llama-3.3-70b-versatile"),
                         "model_meta-llama/llama-4-scout-17b-16e-instruct"  => switch_cli_model(app, "meta-llama/llama-4-scout-17b-16e-instruct"),
                         "model_openai/gpt-oss-120b"                        => switch_cli_model(app, "openai/gpt-oss-120b"),
+                        "model_claude-opus-4-7"                            => switch_cli_model(app, "claude-opus-4-7"),
+                        "model_claude-sonnet-4-6"                          => switch_cli_model(app, "claude-sonnet-4-6"),
+                        "model_claude-haiku-4-5"                           => switch_cli_model(app, "claude-haiku-4-5"),
                         // Speech-model picks (these trigger an agent restart)
                         "speech_llama-3.3-70b-versatile"                   => switch_speech_model(app, "llama-3.3-70b-versatile"),
                         "speech_llama-3.1-8b-instant"                      => switch_speech_model(app, "llama-3.1-8b-instant"),
