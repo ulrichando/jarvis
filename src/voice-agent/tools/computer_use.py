@@ -647,9 +647,32 @@ async def screenshot() -> str:
     "what's on the screen right now?" voice questions. Returns 1-2 sentences
     suitable for speaking aloud (no coordinates, no UI element list).
 
+    Fast path: if the continuous screen-share observer
+    (pipeline.screen_share_observer) has a fresh cached description,
+    return it without paying the ~4s vision-LLM round-trip. Falls
+    back to a fresh capture + vision_describe when the cache is stale
+    or the observer isn't running (no screen-share active).
+
     For computer-use action loops where coordinates are needed, the
     computer_use → click/type tools use the detailed prompt automatically.
     """
+    # Fast path: continuous-observer cache. Only fires when a
+    # screen-share track is currently subscribed AND the observer's
+    # last poll succeeded within OBSERVER_MAX_AGE_S.
+    try:
+        from pipeline.screen_share_observer import latest_description_global
+        cached = latest_description_global()
+        if cached is not None:
+            logger.info(
+                f"[computer-use] screenshot served from observer cache "
+                f"({len(cached)} chars, ~0ms)"
+            )
+            return cached
+    except Exception:
+        # Observer module not available or session not yet set up —
+        # silently fall through to the on-demand path.
+        pass
+
     try:
         t0 = time.monotonic()
         img_bytes, mime = _take_screenshot()
