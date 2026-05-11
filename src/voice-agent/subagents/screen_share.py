@@ -54,7 +54,16 @@ logger = logging.getLogger("jarvis.subagent.screen_share")
 # would be limiting if it were the main supervisor.
 SCREEN_SHARE_LIVE_MODEL: str = os.environ.get(
     "JARVIS_SCREEN_SHARE_LIVE_MODEL",
-    "gemini-3.1-flash-live-preview",
+    # Swapped from gemini-3.1-flash-live-preview → 2.5-native-audio
+    # on 2026-05-11 evening after live failure: subagent activated,
+    # Gemini Live generated server content, but LiveKit plugin warned
+    # "received server content but no active generation" and the user
+    # got 44s of silence. The 2.5-native-audio variant is the more
+    # battle-tested Live model (mutable mid-session context = no
+    # HistoryConfig path, fewer plugin-side state mismatches). 3.1
+    # is preserved as an env override for when its plugin support
+    # matures.
+    "gemini-2.5-flash-native-audio-preview-12-2025",
 )
 
 
