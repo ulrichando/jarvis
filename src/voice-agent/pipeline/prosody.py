@@ -31,6 +31,10 @@ from livekit import rtc
 
 logger = logging.getLogger("jarvis.prosody")
 
+
+__all__ = ["AcousticTap"]
+
+
 # Floor for log10 conversion. Silence rounds to -80 dB rather than -inf.
 _DB_FLOOR = -80.0
 

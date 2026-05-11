@@ -27,6 +27,9 @@ from resilience import STT_BREAKER
 from resilience.circuit_breaker import CircuitOpenError
 
 
+__all__ = ["BreakeredGroqSTT", "build_breakered_stt"]
+
+
 class BreakeredGroqSTT(groq.STT):
     """groq.STT wrapped by `STT_BREAKER`. On `CircuitOpenError`, raises
     `APIConnectionError` so FallbackAdapter (if any STT fallback is

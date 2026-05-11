@@ -39,6 +39,9 @@ implementation.
 from __future__ import annotations
 
 
+__all__ = ["CONFAB_TRIGGERS", "is_ambiguous_short_input"]
+
+
 # ── The blocklist ────────────────────────────────────────────────────
 # Only utterances that have been LIVE-OBSERVED to cause the supervisor
 # LLM to reach for chat_ctx topical content on contentless input.
