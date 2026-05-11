@@ -702,9 +702,13 @@ export const SettingsSchema = lazySchema(() =>
         ),
       effortLevel: z
         .enum(
+          // `xhigh` is generally available (Anthropic accepts it for
+          // Opus 4.x / Sonnet 4.6 without ant-only gating); only `max`
+          // stays restricted to ant accounts on disk so non-ants don't
+          // persist a level they can't use against 1P.
           process.env.USER_TYPE === 'ant'
-            ? ['low', 'medium', 'high', 'max']
-            : ['low', 'medium', 'high'],
+            ? ['low', 'medium', 'high', 'xhigh', 'max']
+            : ['low', 'medium', 'high', 'xhigh'],
         )
         .optional()
         .catch(undefined)

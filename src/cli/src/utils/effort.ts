@@ -18,6 +18,11 @@ export const EFFORT_LEVELS = [
   'low',
   'medium',
   'high',
+  // `xhigh` was added 2026-05-11 — Anthropic's API accepts it on
+  // Opus 4.x / Sonnet 4.6 even though /v1/models doesn't list it
+  // explicitly. Sits between `high` and `max` in budget terms;
+  // useful for hard tasks where `max` would burn excess tokens.
+  'xhigh',
   'max',
 ] as const satisfies readonly EffortLevel[]
 
@@ -99,7 +104,7 @@ export function parseEffortValue(value: unknown): EffortValue | undefined {
 export function toPersistableEffort(
   value: EffortValue | undefined,
 ): EffortLevel | undefined {
-  if (value === 'low' || value === 'medium' || value === 'high') {
+  if (value === 'low' || value === 'medium' || value === 'high' || value === 'xhigh') {
     return value
   }
   if (value === 'max' && process.env.USER_TYPE === 'ant') {
@@ -211,9 +216,14 @@ export function convertEffortValueToLevel(value: EffortValue): EffortLevel {
     return isEffortLevel(value) ? value : 'high'
   }
   if (process.env.USER_TYPE === 'ant' && typeof value === 'number') {
+    // Numeric ant-only effort knob mapped onto the 5-tier ladder.
+    // The thresholds align with the public level breakpoints: <=50 low,
+    // <=85 medium, <=100 high, <=128 xhigh (Anthropic's documented
+    // upper bound), beyond that = max.
     if (value <= 50) return 'low'
     if (value <= 85) return 'medium'
     if (value <= 100) return 'high'
+    if (value <= 128) return 'xhigh'
     return 'max'
   }
   return 'high'
@@ -233,6 +243,8 @@ export function getEffortLevelDescription(level: EffortLevel): string {
       return 'Balanced approach with standard implementation and testing'
     case 'high':
       return 'Comprehensive implementation with extensive testing and documentation'
+    case 'xhigh':
+      return 'Extra-high effort — extended reasoning on complex multi-step problems'
     case 'max':
       return 'Maximum capability with deepest reasoning'
   }

@@ -234,6 +234,12 @@ function resolveGroqReasoningEffort(req: any): 'low' | 'medium' | 'high' | undef
   if (effort === 'low' || effort === 'medium' || effort === 'high') {
     return effort
   }
+  // Groq's reasoning_effort only accepts low/medium/high. Anthropic's
+  // 'xhigh' and 'max' are super-set tiers — map them to the strongest
+  // Groq tier so cross-provider fallback preserves user intent.
+  if (effort === 'xhigh' || effort === 'max') {
+    return 'high'
+  }
   return undefined
 }
 
@@ -249,7 +255,9 @@ function resolveDeepSeekThinking(
   if (effort === 'low') {
     return { type: 'disabled' }
   }
-  if (effort === 'medium' || effort === 'high') {
+  // DeepSeek exposes binary thinking, not graded effort — every level
+  // at or above 'medium' (including 'xhigh' and 'max') maps to enabled.
+  if (effort === 'medium' || effort === 'high' || effort === 'xhigh' || effort === 'max') {
     return { type: 'enabled' }
   }
 

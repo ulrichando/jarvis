@@ -252,7 +252,7 @@ export type SDKControlGetSettingsResponse = {
   }>
   applied?: {
     model: string
-    effort: 'low' | 'medium' | 'high' | 'max' | null
+    effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null
   }
 }
 

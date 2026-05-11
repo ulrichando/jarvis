@@ -34,7 +34,7 @@ export type InferShape<T extends AnyZodRawShape> = {
 // Effort Types
 // ============================================================================
 
-export type EffortLevel = 'low' | 'medium' | 'high' | 'max'
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 // ============================================================================
 // MCP Tool Definition
