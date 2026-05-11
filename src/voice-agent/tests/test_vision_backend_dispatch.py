@@ -210,3 +210,68 @@ class TestGetGeminiClient:
             client = vb.get_gemini_client()
         Client.assert_called_once_with(api_key="test-key-stub")
         assert client is mock_client
+
+
+# ── Ollama timeout regression guard ─────────────────────────────────
+
+
+class TestOllamaTimeoutCap:
+    """Live failure 2026-05-11 12:25-12:29 UTC: user asked 'can you
+    see my screen?', ollama hung for the full default timeout (180s)
+    before falling through to Gemini. Total wait: 189s. User long
+    gone. This test pins the new short cap so a future bump
+    can't sneak the 3-minute regression back in.
+    """
+
+    def test_default_ollama_timeout_is_short(self):
+        """ollama_describe must use a timeout ≤ 15s by default.
+        Anything longer is voice-loop-fatal."""
+        import io
+        import urllib.request
+        from unittest.mock import patch
+        captured = {}
+
+        class _FakeResp(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+            def read(self): return b'{"response": "fake"}'
+
+        def fake_urlopen(req, timeout=None):
+            captured["timeout"] = timeout
+            return _FakeResp()
+
+        with patch.dict("os.environ", {}, clear=False) as env:
+            env.pop("JARVIS_OLLAMA_TIMEOUT_S", None)
+            with patch.object(urllib.request, "urlopen", fake_urlopen):
+                run(vb.ollama_describe(b"\x89PNG"))
+
+        assert captured["timeout"] is not None
+        assert captured["timeout"] <= 15, (
+            f"ollama timeout regressed to {captured['timeout']}s — must stay <=15s "
+            "to keep voice replies responsive. See POSTMORTEM live failure "
+            "2026-05-11 12:25-12:29 UTC."
+        )
+
+    def test_ollama_timeout_overridable_via_env(self):
+        """Env override lets the user opt into a longer wait for
+        slow cold-starts. Useful for first-call-of-day scenarios
+        where loading model weights legitimately takes 30+s."""
+        import io
+        import urllib.request
+        from unittest.mock import patch
+        captured = {}
+
+        class _FakeResp(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+            def read(self): return b'{"response": "fake"}'
+
+        def fake_urlopen(req, timeout=None):
+            captured["timeout"] = timeout
+            return _FakeResp()
+
+        with patch.dict("os.environ", {"JARVIS_OLLAMA_TIMEOUT_S": "30"}, clear=False), \
+             patch.object(urllib.request, "urlopen", fake_urlopen):
+            run(vb.ollama_describe(b"\x89PNG"))
+
+        assert captured["timeout"] == 30
