@@ -115,6 +115,10 @@ from voice_client_watchdog import (
 # back so the main()-level reference + any external imports stay valid.
 from voice_client_http_api import STATUS_PORT, VoiceClientHttpApi
 
+# Screen-share publisher (X11 → LiveKit video). OFF by default; turned
+# on via POST /screen-share or the tray toggle. See module docstring.
+from voice_client_screen_share import ScreenShare
+
 # Tray-config layer extracted to voice_client_tray_config.py 2026-05-10
 # (Step 7 of the audit). Re-exported under legacy underscored names so
 # the HTTP handlers + watchdogs stay untouched.
@@ -222,6 +226,11 @@ class ClientState:
     # still work, but JARVIS won't respond. Distinct from `muted`
     # (hardware track mute). UI maps this to the black indicator.
     silent_mode:   bool = False
+    # True while the screen-share publisher is active (ffmpeg piping
+    # x11grab frames into a LiveKit video track). Toggled by
+    # POST /screen-share. UI uses this to render a "sharing screen"
+    # indicator next to the mute pill.
+    sharing_screen: bool = False
     # Active TTS provider spec (e.g., "groq:troy").
     # Read from TTS_PROVIDER_FILE on every /status hit.
     tts_provider:  str = ""
@@ -244,6 +253,12 @@ _room_ref: Optional[rtc.Room] = None
 # Forward-declare; bound after `_restart_agent_unit` is defined (it's
 # the callback the stale-STT watchdog needs).
 _watchdog: Optional[LoopWatchdog] = None
+
+# Process-wide screen-share publisher. Constructed once at module load
+# so the HTTP handler can flip it on/off without worrying about which
+# Room instance is live — the publisher itself takes the Room as a
+# start() argument, so reconnects don't strand state.
+_screen_share = ScreenShare()
 
 
 async def play_subscribed_track(track: rtc.RemoteAudioTrack) -> None:
@@ -505,6 +520,14 @@ async def run_once(shutdown: asyncio.Event) -> None:
             task.cancel()
     finally:
         log.info("tearing down")
+        # Tear down screen-share BEFORE clearing _room_ref so the
+        # publisher's unpublish_track call hits the still-connected room.
+        try:
+            if _screen_share.is_active():
+                await _screen_share.stop()
+                state.sharing_screen = False
+        except Exception as e:
+            log.warning(f"[teardown] screen-share stop failed: {e}")
         _room_ref = None
         _mic_pub_ref = None
         mic_stream.stop()
@@ -581,6 +604,7 @@ async def main() -> None:
         state=state,
         get_mic_pub=lambda: _mic_pub_ref,
         get_room=lambda: _room_ref,
+        get_screen_share=lambda: _screen_share,
         restart_agent_unit=_restart_agent_unit,
         log=log,
     )
