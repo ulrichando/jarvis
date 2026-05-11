@@ -10,7 +10,7 @@ the tool isn't in the current LLM's live `tool_ctx` — supervisor tools
 can leak from a sub-LLM that wouldn't otherwise know them, and the
 `ext_*` family is open-ended.
 
-Update `KNOWN_LEAK_NAMES` when adding a new specialist tool that's
+Update `KNOWN_LEAK_NAMES` when adding a new subagent tool that's
 likely to leak from a different LLM's content stream.
 
 Hoisted from `sanitizers/pycall.py` 2026-05-10 (Step 7 of the audit).
@@ -21,12 +21,12 @@ from __future__ import annotations
 __all__ = ["KNOWN_LEAK_NAMES", "is_known_leak"]
 
 
-# Specialist-internal tools + commonly-leaked names — even though the
+# Subagent-internal tools + commonly-leaked names — even though the
 # CURRENT LLM may not have them in its tool_ctx, the supervisor or a
 # downstream LLM emitting them as plain content is unambiguously a
 # leak (the user can't be saying "task_done" as legitimate prose).
 KNOWN_LEAK_NAMES: frozenset[str] = frozenset({
-    # Specialist task-done sentinel — auto-attached, never in the
+    # Subagent task-done sentinel — auto-attached, never in the
     # supervisor LLM's tool_ctx but supervisor-LLM-emitted as text on
     # confused turns.
     "task_done",
@@ -67,7 +67,7 @@ KNOWN_LEAK_NAMES: frozenset[str] = frozenset({
 def is_known_leak(name: str, live_known: frozenset[str] | set[str]) -> bool:
     """True if `name` is plausibly a JARVIS tool whose appearance as
     plain content text is a leak. Combines the live tool_ctx with the
-    specialist-internal whitelist + the `ext_*` prefix convention."""
+    subagent-internal whitelist + the `ext_*` prefix convention."""
     if name in live_known:
         return True
     if name in KNOWN_LEAK_NAMES:
@@ -77,7 +77,7 @@ def is_known_leak(name: str, live_known: frozenset[str] | set[str]) -> bool:
         # might emit any of them as text content.
         return True
     if name.startswith("transfer_to_") and len(name) > 12:
-        # Future specialists' transfer tools, generated at registry
+        # Future subagents' transfer tools, generated at registry
         # time — defensive cover.
         return True
     return False

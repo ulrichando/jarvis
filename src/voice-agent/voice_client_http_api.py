@@ -420,7 +420,7 @@ class VoiceClientHttpApi:
             # No-op if value unchanged. Without this guard a stray
             # re-POST (e.g. the tray re-syncing on launch) would tear
             # down a live agent session — including any in-flight
-            # specialist handoff.
+            # subagent handoff.
             current = read_speech_model()
             if current == name:
                 return web.json_response(

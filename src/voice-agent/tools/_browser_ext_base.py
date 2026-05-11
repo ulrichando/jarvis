@@ -86,7 +86,7 @@ async def post(action: str, **args: Any) -> dict:
 
 def summarize(result: dict, max_chars: int = 800) -> str:
     """Convert the bridge's structured response to a string the LLM
-    can voice. The browser specialist's prompt expects one short
+    can voice. The browser subagent's prompt expects one short
     sentence, so we trim verbose payloads (DOM summaries, page text)
     here rather than relying on the LLM's discipline."""
     if not result.get("ok"):

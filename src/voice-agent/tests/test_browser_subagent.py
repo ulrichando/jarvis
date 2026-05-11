@@ -1,4 +1,4 @@
-"""Tests for the browser specialist + tools.browser_ext client.
+"""Tests for the browser subagent + tools.browser_ext client.
 
 Smoke-level — verifies the registry spec is well-formed and the HTTP
 client returns the expected `{ok: False, ...}` shape on unreachable
@@ -49,10 +49,10 @@ def test_browser_spec_loads_all_ext_tools():
 
 
 def test_browser_instructions_mention_destructive_gate():
-    """The prompt must teach the specialist to confirm before posting,
+    """The prompt must teach the subagent to confirm before posting,
     sending, buying, etc. Without this the LLM may post a tweet from
     ambient room noise — verified failure mode in the legacy
-    browser_task path that this specialist replaces."""
+    browser_task path that this subagent replaces."""
     browser_mod.register_browser()
     spec = get("browser")
     # Match by an explicit substring — confirmation gate is non-negotiable
@@ -63,7 +63,7 @@ def test_browser_instructions_mention_destructive_gate():
 def test_ext_post_returns_structured_error_when_bridge_down(monkeypatch):
     """If the bridge isn't running, the client should return a
     `{ok: False, error: ...}` dict instead of raising — gives the LLM
-    actionable text instead of crashing the specialist."""
+    actionable text instead of crashing the subagent."""
     # Point at a definitely-unused port
     monkeypatch.setenv("JARVIS_BRIDGE_URL", "http://localhost:1")
 

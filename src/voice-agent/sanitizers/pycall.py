@@ -18,18 +18,18 @@ additional leak forms not previously covered:
       <function=ext_screenshot>null</function>
 
   Turn 907 (TASK, llama-3.3-70b-versatile), user said "Open Amazon":
-      task_done("user...    [from a SPECIALIST tool name]
+      task_done("user...    [from a SUBAGENT tool name]
 
 The XML-attribute form (`<function=name>...</function>`) was missed
 by the original Python-call regex. The `task_done(...)` form WAS the
 right shape, but the original `name in self._tool_ctx.function_tools`
 guard only covers tools the *current* LLM has registered — `task_done`
-is a per-specialist tool, never in the supervisor LLM's tool_ctx, so
+is a per-subagent tool, never in the supervisor LLM's tool_ctx, so
 the guard skipped suppression. Both leak forms are now caught:
 
   - Python form: `name(...)` matched against a UNION of the live
     tool_ctx + a static `_KNOWN_LEAK_NAMES` whitelist of
-    specialist-internal + commonly-leaked names.
+    subagent-internal + commonly-leaked names.
   - XML form: `<function=name>` triggers regardless — the
     angle-bracket envelope is unambiguously a tool-call leak.
 

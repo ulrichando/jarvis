@@ -24,7 +24,7 @@ Modules:
                          delimiter) and re-emits them as proper
                          FunctionToolCall chunks (was dsml_sanitizer.py)
   - handoff_text       : suppresses supervisor text content during a
-                         handoff stream so the framework's specialist-
+                         handoff stream so the framework's subagent-
                          spoken outcome is what reaches TTS
                          (was handoff_text_suppressor.py)
   - pycall             : detects tool-call-as-text leaks (`<function...

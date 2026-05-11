@@ -13,7 +13,7 @@ to the tool result).
 
 Added 2026-05-11 evening at user request — completes the screen-
 share UX: voice-to-start, then ask about content. Pairs with the
-screen_share Live specialist (subagents/screen_share.py) which
+screen_share Live subagent (subagents/screen_share.py) which
 takes over for content questions once the share is active.
 """
 from __future__ import annotations
@@ -47,7 +47,7 @@ async def set_screen_share(start: bool) -> str:
         → set_screen_share(start=False)
 
     Once sharing is on, the user can ask "what's on my screen?" and
-    the screen_share specialist will answer with real-time vision.
+    the screen_share subagent will answer with real-time vision.
     Sharing is off by default on every fresh process — desktop
     capture is opt-in for privacy.
 

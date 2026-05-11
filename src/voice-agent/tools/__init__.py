@@ -1,7 +1,7 @@
 """voice-agent tool implementations.
 
 Each module here exposes one or more `@function_tool`-decorated callables
-that the supervisor or a specialist hands to the LLM as a callable tool.
+that the supervisor or a subagent hands to the LLM as a callable tool.
 Inside this package the redundant `jarvis_` prefix is dropped — the
 package namespace already supplies it.
 

@@ -1,14 +1,14 @@
-"""Tests for the screen-share Live specialist.
+"""Tests for the screen-share Live subagent.
 
 Smoke tests verify:
   - Spec registers correctly (idempotent re-register).
-  - llm_factory is wired into RegistrySubagent (i.e., the specialist
+  - llm_factory is wired into RegistrySubagent (i.e., the subagent
     will receive a RealtimeModel instead of inheriting the
     supervisor's Claude Haiku LLM).
   - Spec auto-disables unless JARVIS_SUBAGENT_SCREEN_SHARE=1 — guards
     against shipping a broken Live integration to users who haven't
     explicitly opted in.
-  - The bailout-phrase rule (specialist tool gate) honors the spec's
+  - The bailout-phrase rule (subagent tool gate) honors the spec's
     declared bailout phrases verbatim.
 
 Does NOT make real Gemini Live API calls — those are gated behind
@@ -71,9 +71,9 @@ class TestSpecRegistration:
 
     def test_spec_has_llm_factory(self):
         """Critical: the spec MUST provide its own llm_factory so the
-        specialist gets a RealtimeModel instead of inheriting Claude
+        subagent gets a RealtimeModel instead of inheriting Claude
         Haiku from the supervisor. Without this, the whole point of
-        the specialist (Live API for real-time vision) is lost."""
+        the subagent (Live API for real-time vision) is lost."""
         from subagents import registry
         from subagents import screen_share as ss
         registry.clear()
@@ -169,7 +169,7 @@ class TestLLMFactoryWiring:
 
     def test_factory_exception_falls_back_to_inheritance(self):
         """If the llm_factory raises (Gemini SDK not installed, key
-        missing, etc.), the specialist should still construct — just
+        missing, etc.), the subagent should still construct — just
         without the custom LLM, falling back to supervisor inheritance.
         Better degraded behavior than a crash on handoff."""
         from subagents.registry import HandoffSubagent
@@ -205,7 +205,7 @@ class TestModelSelection:
         Earlier 1011 INTERNAL errors were the deprecated send_realtime_input
         (media=...) call shape — fixed in this codepath which uses video=.
         3.1's trade-off vs 2.5-native-audio is immutable tools/context
-        mid-session, acceptable for a short specialist handoff."""
+        mid-session, acceptable for a short subagent handoff."""
         from subagents import screen_share as ss
         with patch.dict(os.environ, {}, clear=False) as env:
             env.pop("JARVIS_SCREEN_SHARE_LIVE_MODEL", None)
@@ -291,7 +291,7 @@ class TestLiveConfigShape:
 class TestLiveIntegration:
     """Real Gemini Live session smoke. Gated behind two env vars so
     CI never pays. Run manually with:
-        GOOGLE_API_KEY=... JARVIS_RUN_LIVE_TESTS=1 pytest tests/test_screen_share_specialist.py -k Live -v
+        GOOGLE_API_KEY=... JARVIS_RUN_LIVE_TESTS=1 pytest tests/test_screen_share_subagent.py -k Live -v
     """
 
     def test_realtime_model_constructs(self):

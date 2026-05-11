@@ -17,7 +17,7 @@ require a 700-line scroll. The base/responsibility split puts
 related tools next to each other and keeps the shared infrastructure
 (`post` + `summarize`) in one canonical place.
 
-Why a re-export shim: jarvis_agent + the browser specialists
+Why a re-export shim: jarvis_agent + the browser subagents
 register tools via `from tools.browser_ext import ext_navigate,
 ext_click, ...`. Re-exporting under the original names keeps every
 call site working without modification.
@@ -121,7 +121,7 @@ __all__ = [
 
 
 # All 38 tools (26 base + 4 Phase A + 4 Phase B + 3 Phase C + 1 search
-# shortcut), in the order the prompt references them. Specialists pull
+# shortcut), in the order the prompt references them. Subagents pull
 # this in via tool_factory.
 ALL_TOOLS = [
     # Search shortcut (1) — try first for any "search X for Y" request

@@ -245,10 +245,10 @@ def test_real_production_tools_use_legacy_shape(reinstall_relax):
 # ── W-010 coverage test (POSTMORTEM-001 action item) ──────────────────
 
 
-def test_every_registered_specialist_tool_uses_legacy_shape(reinstall_relax):
+def test_every_registered_subagent_tool_uses_legacy_shape(reinstall_relax):
     """W-010 (POSTMORTEM-001 action): the structural contract above
     must hold across **every production tool the supervisor or any
-    specialist actually exposes to the LLM** — not just hand-picked
+    subagent actually exposes to the LLM** — not just hand-picked
     ones. This test would have caught all three W-009 iterations:
 
       iter 1: dropped `required` only → strict shape with partial
@@ -259,14 +259,14 @@ def test_every_registered_specialist_tool_uses_legacy_shape(reinstall_relax):
               defaults → fails 'must not set function.strict=True'.
       iter 3: forces every tool to legacy → passes.
 
-    Iterates over every registered specialist + subagent + their
+    Iterates over every registered subagent + subagent + their
     tool_factory output. Reads the live registry, so adding a new
-    specialist or tool can't accidentally bypass this test.
+    subagent or tool can't accidentally bypass this test.
     """
     from livekit.agents.llm import utils as _lk_utils
     from subagents.registry import all_specs, all_subagents, _REGISTRY
 
-    # Defensive: other test files' fixtures (test_specialists_health.py
+    # Defensive: other test files' fixtures (test_subagents_health.py
     # in particular) clear the registry in teardown, leaving us empty
     # if their tests ran first. Re-run the package-level registration
     # so we test against the real production set.
@@ -282,7 +282,7 @@ def test_every_registered_specialist_tool_uses_legacy_shape(reinstall_relax):
             tools = spec.tool_factory()
         except Exception as e:
             # tool_factory failures are a different test's problem
-            # (test_specialists_health.test_specialist_tool_factory_builds);
+            # (test_subagents_health.test_subagent_tool_factory_builds);
             # don't double-fail here.
             continue
         for t in tools:
@@ -319,7 +319,7 @@ def test_every_registered_specialist_tool_uses_legacy_shape(reinstall_relax):
 
 def test_supervisor_top_level_tools_use_legacy_shape(reinstall_relax):
     """The supervisor (jarvis_agent) imports several @function_tool
-    decorated functions directly — they aren't in any specialist's
+    decorated functions directly — they aren't in any subagent's
     tool_factory but they ARE sent to the LLM via the supervisor's
     own tool list. Bug captured live 2026-05-05 21:16 UTC: `bash` is
     one such tool and was producing the wrong shape during iter 2.

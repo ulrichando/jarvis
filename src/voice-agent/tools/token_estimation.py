@@ -60,7 +60,7 @@ _PRICING_USD_PER_1M: dict[str, tuple[float, float]] = {
     # EMOTIONAL-tier.
     "llama-4-scout":            (0.11, 0.34),
     "meta-llama/llama-4-scout-17b-16e-instruct": (0.11, 0.34),
-    # Specialist code reviewer / experimental.
+    # Subagent code reviewer / experimental.
     "openai/gpt-oss-120b":      (0.15, 0.60),
     # Kimi modes (gated behind JARVIS_KIMI_VOICE_EXPERIMENTAL).
     "kimi-k2.6":                (0.30, 1.50),
