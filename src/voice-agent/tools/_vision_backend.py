@@ -2,7 +2,7 @@
 
 Low-level image-describe pipeline shared by every "what's on the
 screen?" feature (computer_use perception loop, screenshot tool,
-live_screen, watch_screen, webcam_capture, face_id cross-checks).
+live_screen, webcam_capture, face_id cross-checks).
 
 Backend selection:
   * `JARVIS_VISION_BACKEND=auto` (default) — use Ollama if reachable
