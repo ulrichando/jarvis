@@ -48,8 +48,8 @@ _BAILOUT_SUMMARY_RE = re.compile(
     \b(?:
         user\s+(?:changed|switched)\s+topic
       | (?:not|isn'?t|is\s+not)\s+(?:a\s+)?(?:desktop|browser|relevant|valid)
-      | wrong\s+(?:subagent|subagent)
-      | needs?\s+(?:the\s+)?(?:browser|desktop|planner|supervisor)\s+(?:subagent|subagent)
+      | wrong\s+subagent
+      | needs?\s+(?:the\s+)?(?:browser|desktop|planner|supervisor)\s+subagent
       | cannot\s+(?:accomplish|act\s+on|handle)
       | nothing\s+to\s+(?:do|act\s+on)
       | no\s+(?:desktop|browser)\s+(?:action|tool)
