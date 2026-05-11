@@ -321,10 +321,12 @@ class VoiceClientHttpApi:
             # tray. Fire-and-forget; if /speak fails the toggle still
             # succeeded and the tray label flips at the next poll.
             try:
+                # No "sir" — persona drops butler register (see
+                # supervisor.md TONE section, 2026-05-09 overhaul).
                 phrase = (
-                    "Screen sharing started, sir."
+                    "Screen sharing on."
                     if self.state.sharing_screen
-                    else "Screen sharing stopped, sir."
+                    else "Screen sharing off."
                 )
                 payload = json.dumps({"type": "speak", "text": phrase}).encode("utf-8")
                 await room.local_participant.publish_data(payload, reliable=True)
