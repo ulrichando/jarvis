@@ -338,6 +338,36 @@ def build_transfer_tool(spec: HandoffSubagent):
     ) -> tuple[Agent, str]:
         session = context.session
         supervisor = session.current_agent
+
+        # Pre-transfer hook: idempotent prerequisite setup before the
+        # subagent is constructed. Spec authors use this to enforce
+        # tool sequencing that the supervisor LLM keeps forgetting in
+        # prose-only prompts (e.g. screen_share's hook ensures the
+        # screen-share track is on so the Live subagent never lands
+        # with no video frames). Returning a non-None string aborts
+        # the transfer; the supervisor sees it as the tool_result and
+        # can voice a graceful failure. Exceptions are caught here
+        # rather than propagated — a buggy hook must not crash the
+        # handoff machinery.
+        if spec.pre_transfer is not None:
+            try:
+                abort = await spec.pre_transfer(context, request, supervisor)
+            except Exception as e:
+                logger.exception(
+                    f"[handoff] {spec.name} pre_transfer raised; aborting"
+                )
+                return (
+                    supervisor,
+                    f"(prerequisite for {spec.name} failed: "
+                    f"{type(e).__name__}: {e})",
+                )
+            if abort is not None:
+                logger.info(
+                    f"[handoff] {spec.name} pre_transfer aborted "
+                    f"(reason: {abort!r})"
+                )
+                return (supervisor, abort)
+
         try:
             ctx = supervisor.chat_ctx.copy(exclude_instructions=True)
             if spec.max_history_items is not None:

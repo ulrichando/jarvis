@@ -11,7 +11,7 @@ works (decorator side-effects).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 
 __all__ = [
@@ -72,6 +72,21 @@ class HandoffSubagent:
                      The gate's purpose is to catch confabulating
                      LLMs that bail before acting — irrelevant when
                      there's nothing to act with.
+        pre_transfer: optional async hook fired immediately BEFORE the
+                     subagent is constructed. Use it to enforce
+                     prerequisites that would otherwise rely on the
+                     supervisor LLM remembering to call a setup tool
+                     first — e.g. screen_share's pre_transfer
+                     idempotently turns the screen-share track on so
+                     the Live subagent never lands with no video frames.
+                     Signature: `async (context, request, supervisor)
+                     -> Optional[str]`. Return None to proceed, or an
+                     error string to abort the transfer (the string is
+                     handed back to the supervisor as a tool_result so
+                     the LLM can voice a graceful failure). Errors
+                     thrown by the hook are caught and converted to
+                     abort strings — the hook should never crash the
+                     handoff.
     """
     name: str
     transfer_tool: str
@@ -83,6 +98,7 @@ class HandoffSubagent:
     enabled: bool = True
     llm_factory: Optional[Callable[[], object]] = None
     tools_required: bool = True
+    pre_transfer: Optional[Callable[..., Awaitable[Optional[str]]]] = None
 
 
 # Global registry. Use the module functions below — don't mutate this
