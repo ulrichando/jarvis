@@ -1985,14 +1985,12 @@ def _is_command(text: str, patterns: tuple[re.Pattern, ...]) -> bool:
 
 # ── Short-input ambiguity gate ────────────────────────────────────────
 # Extracted to pipeline/short_input_gate.py 2026-05-10 (Step 3 of the
-# 10/10 refactor). The gate function + its 3 bypass regexes live in
-# their own module now; this stub just re-exports under the legacy
-# underscored names so existing tests + call sites are untouched.
+# 10/10 refactor). The gate was inverted 2026-05-10 (3rd-fix-pivot)
+# from broad bypass-regex matching to an explicit blocklist of known
+# confab-trigger utterances; the old ALLOWLIST_RE / INTERROGATIVE_BYPASS_RE
+# / KILL_PHRASE_BYPASS_RE re-exports are gone with them.
 from pipeline.short_input_gate import (
     is_ambiguous_short_input as _is_ambiguous_short_input,
-    ALLOWLIST_RE              as _AMBIGUOUS_SHORT_ALLOWLIST,
-    INTERROGATIVE_BYPASS_RE   as _INTERROGATIVE_BYPASS,
-    KILL_PHRASE_BYPASS_RE     as _GATE_BYPASS_KILL_PHRASES,
 )
 
 
@@ -4547,22 +4545,14 @@ class JarvisAgent(Agent):
         # the quiet-hours window don't need a vocative.
         _touch_interaction()
 
-        # Short-input ambiguity gate (2026-05-08). Catches short non-pattern
-        # inputs that would otherwise let the LLM hallucinate a topic from
-        # chat_ctx. Live evidence: "Hush!" → 19s of Cameroon history,
-        # "One second" → 18s of English history (6/6 short-input + >5s-audio
-        # turns were confabulations). Routes to deterministic "Pardon?"
-        # without calling the LLM.
-        #
-        # Fires AFTER: garbage/silent/mute/quiet-hours gates (those handle
-        # their own early-exit paths above).
-        # 2026-05-09: bypass list inside _is_ambiguous_short_input now
-        # excludes bare vocatives ("Jarvis." + Whisper variants — they need
-        # to reach the bare-vocative fast-path below for canonical "Yes?")
-        # and short interrupt phrases ("stop"/"wait"/"cancel"/
-        # "nevermind" — they need a real LLM reply outside the mid-speech
-        # kill-phrase window). The original confab triggers ("Hush!",
-        # "One second", "Whatever", "Maybe") still get deflected here.
+        # Short-input ambiguity gate. Inverted 2026-05-10: the gate now
+        # uses a small explicit blocklist of known confab-trigger
+        # utterances ("hush" / "one sec" / "whatever" / "maybe" / etc.)
+        # rather than the previous broad "deflect-unless-bypassed"
+        # approach which kept producing false positives on legit short
+        # inputs (greetings, Whisper variants, foreign words, etc.).
+        # See pipeline/short_input_gate.py for the trigger list and
+        # design rationale.
         if _is_ambiguous_short_input(text):
             logger.info(
                 f"[short-input-gate] deflecting ambiguous short input: {text[:60]!r}"
