@@ -29,6 +29,19 @@ logger = logging.getLogger("jarvis.chat_ctx")
 # ── Config ───────────────────────────────────────────────────────────
 RECENT_TURNS_LIMIT: int = 12
 
+# Cap recalled assistant turns at this many characters. Long historical
+# replies (a 574-char essay, a 1099-char monologue on entropy) get
+# truncated to the first sentence before re-injection — otherwise
+# they prime Claude Haiku 4.5 to copy the same long shape on every
+# subsequent similar question. Live failure 2026-05-11: user asked
+# "What's in your mind?" twice in 9 minutes, got the exact same
+# 574-char architecture essay both times because the first one was
+# in chat_ctx via recall. The 30-word ceiling rule in supervisor.md
+# loses to in-context examples; trimming the examples is the fix.
+# 250 chars ≈ 5s of audio — generous enough to keep a real one-
+# sentence answer intact, tight enough to kill essays.
+RECALL_ASSISTANT_MAX_CHARS: int = 250
+
 
 # ── Filter 1: leaked tool-call text ──────────────────────────────────
 TOOL_LEAK_RE: re.Pattern[str] = re.compile(
@@ -94,9 +107,29 @@ ARCHAIC_OPENER_RE: re.Pattern[str] = re.compile(
 )
 
 
+def _truncate_to_sentence(s: str, max_chars: int) -> str:
+    """Truncate to <=max_chars at the nearest sentence boundary at or
+    before the cap. Falls back to a hard char cap with an ellipsis if
+    no boundary is found in the leading window."""
+    if len(s) <= max_chars:
+        return s
+    window = s[:max_chars]
+    # Look for end-of-sentence punctuation followed by space/end.
+    # Search right-to-left so we keep as much as possible under the cap.
+    for i in range(len(window) - 1, 0, -1):
+        if window[i] in ".!?" and (i + 1 == len(window) or window[i + 1] in " \n\t"):
+            return window[: i + 1].rstrip()
+    # No sentence break found — hard truncate, no ellipsis (the recall
+    # is in-context priming, not user-facing text; cleaner without the
+    # "…" which the model might mistake for a deliberate trailing).
+    return window.rstrip()
+
+
 def scrub_recalled_assistant_text(text: str) -> str | None:
     """Apply the SAME register/silence/tool-leak filters used in the
-    live TTS chain to assistant turns being re-injected into chat_ctx.
+    live TTS chain to assistant turns being re-injected into chat_ctx,
+    then cap length at RECALL_ASSISTANT_MAX_CHARS so long historical
+    replies don't prime the model to copy the long shape.
 
     Returns the cleaned text, or None if the whole reply should be
     dropped (e.g. it was just a meta-silence ack).
@@ -114,6 +147,11 @@ def scrub_recalled_assistant_text(text: str) -> str | None:
         if not rest:
             return None  # whole reply was just the archaic opener
         cleaned = rest[0].upper() + rest[1:]
+    # Length cap: stop long historical answers from priming Claude
+    # to mimic on the next similar question. See module-level
+    # RECALL_ASSISTANT_MAX_CHARS comment for the live failure.
+    if len(cleaned) > RECALL_ASSISTANT_MAX_CHARS:
+        cleaned = _truncate_to_sentence(cleaned, RECALL_ASSISTANT_MAX_CHARS)
     return cleaned
 
 
