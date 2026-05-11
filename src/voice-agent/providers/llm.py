@@ -172,6 +172,20 @@ SPEECH_MODELS: dict[str, dict] = {
     # from the request server-side).
 }
 if _ANTHROPIC_AVAILABLE and os.environ.get("ANTHROPIC_API_KEY", ""):
+    # Shared kwargs across Anthropic tiers — same `_strict_tool_schema`,
+    # `caching`, and `max_tokens` discipline applies to every Claude
+    # speech model. Pulled into a helper so adding a tier is a single
+    # `model=` line.
+    def _make_anthropic_speech_llm(model_id: str):
+        return lk_anthropic.LLM(
+            model=model_id,
+            api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
+            temperature=0.6,
+            max_tokens=200,
+            caching="ephemeral",
+            _strict_tool_schema=False,
+        )
+
     SPEECH_MODELS["claude-haiku-4-5"] = {
         "label": "Anthropic · Claude Haiku 4.5",
         # `_strict_tool_schema=False` drops the `"strict": true` flag
@@ -198,14 +212,26 @@ if _ANTHROPIC_AVAILABLE and os.environ.get("ANTHROPIC_API_KEY", ""):
         # gets clipped mid-thought, but the recall-truncate logic
         # in pipeline/chat_ctx.py means even those don't poison
         # future sessions.
-        "build": lambda: lk_anthropic.LLM(
-            model="claude-haiku-4-5",
-            api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
-            temperature=0.6,
-            max_tokens=200,
-            caching="ephemeral",
-            _strict_tool_schema=False,
-        ),
+        "build": lambda: _make_anthropic_speech_llm("claude-haiku-4-5"),
+    }
+    # Sonnet 4.6 — middle tier. Better instruction-following and tool
+    # selection than Haiku at the cost of ~2-3x per token + ~300ms
+    # extra first-byte latency. Added 2026-05-11 in response to the
+    # ongoing orchestration failures (skipped prerequisites, echoed
+    # bailout phrases, wrong-tool selection) that Haiku's reasoning
+    # capacity couldn't reliably avoid even with hardened prompts.
+    # Same `_strict_tool_schema=False` + `caching="ephemeral"` discipline.
+    SPEECH_MODELS["claude-sonnet-4-6"] = {
+        "label": "Anthropic · Claude Sonnet 4.6",
+        "build": lambda: _make_anthropic_speech_llm("claude-sonnet-4-6"),
+    }
+    # Opus 4.7 — most capable tier. ~10x Haiku cost, ~800ms extra
+    # first-byte latency. Probably too slow for the "Yes?" pings but
+    # available for tray selection when reasoning quality matters
+    # more than latency (e.g., extended coding sessions through voice).
+    SPEECH_MODELS["claude-opus-4-7"] = {
+        "label": "Anthropic · Claude Opus 4.7",
+        "build": lambda: _make_anthropic_speech_llm("claude-opus-4-7"),
     }
 if os.environ.get("JARVIS_KIMI_VOICE_EXPERIMENTAL", "0") == "1":
     SPEECH_MODELS["kimi-k2.6-instant"] = {
@@ -672,16 +698,24 @@ def build_dispatching_llm() -> DispatchingLLM:
     else:
         logger.info("[dispatch] DEEPSEEK_API_KEY missing, no cross-provider fallback")
 
-    # Third fallback rung: Anthropic Claude Haiku 4.5. Only ever fires if
-    # both Groq (primary) AND DeepSeek (rung 2) fail back-to-back —
+    # Third fallback rung: Anthropic Claude Sonnet 4.6. Only ever fires
+    # if both Groq (primary) AND DeepSeek (rung 2) fail back-to-back —
     # historically rare (4/142 sessions on this host). Paid per-token,
     # so we keep it disabled when no ANTHROPIC_API_KEY is present.
+    # Sonnet (not Haiku) on the fallback rung: when both Groq and
+    # DeepSeek are blipping the turn is already degraded, so a smarter
+    # model is worth the extra ~300ms + ~3x cost — the alternative is
+    # the user hearing nothing. Override via JARVIS_ANTHROPIC_FALLBACK_MODEL
+    # if cost becomes a concern.
     anth_fallback = None
     anth_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if _ANTHROPIC_AVAILABLE and anth_key:
         try:
+            anth_model = os.environ.get(
+                "JARVIS_ANTHROPIC_FALLBACK_MODEL", "claude-sonnet-4-6"
+            )
             anth_fallback = lk_anthropic.LLM(
-                model="claude-haiku-4-5",
+                model=anth_model,
                 api_key=anth_key,
                 temperature=0.6,
                 max_tokens=200,
@@ -694,8 +728,8 @@ def build_dispatching_llm() -> DispatchingLLM:
                 # verbosity same as the speech-model path.
                 _strict_tool_schema=False,
             )
-            anth_fallback._jarvis_label = "anthropic:claude-haiku-4-5"
-            logger.info("[dispatch] Anthropic Claude Haiku 4.5 fallback armed (rung 3)")
+            anth_fallback._jarvis_label = f"anthropic:{anth_model}"
+            logger.info(f"[dispatch] Anthropic {anth_model} fallback armed (rung 3)")
         except Exception as e:
             logger.warning(f"[dispatch] Anthropic fallback construction failed: {e}")
             anth_fallback = None
