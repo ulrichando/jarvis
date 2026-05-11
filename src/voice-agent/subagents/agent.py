@@ -88,16 +88,55 @@ _BAILOUT_SUMMARY_RE = re.compile(
 #
 # Read at RUNTIME (not module-import time) so operators editing
 # the systemd unit's Environment= line see the change without a
-# worker restart, matching the JARVIS_SPECIALIST_TOOL_GATE pattern
-# below.
+# worker restart. JARVIS_SUBAGENT_NO_TOOL_RETRY_CEILING is the
+# canonical env name; JARVIS_SPECIALIST_NO_TOOL_RETRY_CEILING is
+# the legacy name kept for backward compat (read if the new name
+# isn't set; logged once on first read so the operator can migrate).
+_LEGACY_ENV_WARNED: set[str] = set()
+
+def _env_int_with_legacy(new_name: str, legacy_name: str, default: int) -> int:
+    """Read int env var by new name first, then legacy. Log once on
+    first read of a legacy var so the operator knows to rename."""
+    if new_name in os.environ:
+        return int(os.environ[new_name])
+    if legacy_name in os.environ:
+        if legacy_name not in _LEGACY_ENV_WARNED:
+            _LEGACY_ENV_WARNED.add(legacy_name)
+            logger.warning(
+                f"[subagent] env var {legacy_name!r} is deprecated; "
+                f"rename to {new_name!r}. Honoring legacy value for now."
+            )
+        return int(os.environ[legacy_name])
+    return default
+
+
+def _env_str_with_legacy(new_name: str, legacy_name: str, default: str) -> str:
+    """String version of _env_int_with_legacy."""
+    if new_name in os.environ:
+        return os.environ[new_name]
+    if legacy_name in os.environ:
+        if legacy_name not in _LEGACY_ENV_WARNED:
+            _LEGACY_ENV_WARNED.add(legacy_name)
+            logger.warning(
+                f"[subagent] env var {legacy_name!r} is deprecated; "
+                f"rename to {new_name!r}. Honoring legacy value for now."
+            )
+        return os.environ[legacy_name]
+    return default
+
+
 def _no_tool_retry_ceiling() -> int:
-    return int(os.environ.get("JARVIS_SPECIALIST_NO_TOOL_RETRY_CEILING", "3"))
+    return _env_int_with_legacy(
+        "JARVIS_SUBAGENT_NO_TOOL_RETRY_CEILING",
+        "JARVIS_SPECIALIST_NO_TOOL_RETRY_CEILING",
+        3,
+    )
 
 
 class RegistrySubagent(Agent):
-    """Specialist Agent built from a HandoffSubagent.
+    """Subagent Agent built from a HandoffSubagent.
 
-    On enter: logs the active specialist. On task_done: hands back to
+    On enter: logs the active subagent. On task_done: hands back to
     the supervisor with the spec's summary. Tool list is whatever the
     spec's tool_factory returns at construction time.
     """
@@ -125,7 +164,7 @@ class RegistrySubagent(Agent):
                 kwargs["llm"] = spec.llm_factory()
             except Exception as e:
                 logger.warning(
-                    f"[specialist:{spec.name}] llm_factory raised "
+                    f"[subagent:{spec.name}] llm_factory raised "
                     f"{type(e).__name__}: {e} — falling back to "
                     f"supervisor's LLM"
                 )
@@ -141,7 +180,7 @@ class RegistrySubagent(Agent):
         self._no_tool_refusals: int = 0
 
     async def on_enter(self) -> None:
-        logger.info(f"[specialist:{self._spec.name}] active")
+        logger.info(f"[subagent:{self._spec.name}] active")
         # Reset the no-tool retry counter for this fresh handoff.
         self._no_tool_refusals = 0
         # Record where this handoff begins. Anything appended to
@@ -152,13 +191,13 @@ class RegistrySubagent(Agent):
             self._handoff_start_idx = len(self.chat_ctx.items)
         except Exception as e:
             logger.warning(
-                f"[specialist:{self._spec.name}] couldn't read chat_ctx "
+                f"[subagent:{self._spec.name}] couldn't read chat_ctx "
                 f"on_enter: {e}; tool-gate will be soft"
             )
             self._handoff_start_idx = 0
 
     async def on_exit(self) -> None:
-        logger.info(f"[specialist:{self._spec.name}] handing back to supervisor")
+        logger.info(f"[subagent:{self._spec.name}] handing back to supervisor")
 
     @function_tool()
     async def task_done(
@@ -183,7 +222,9 @@ class RegistrySubagent(Agent):
         # JARVIS was deaf). This is the structural enforcement: count
         # real (non-task_done) tool calls in this handoff window; if
         # zero, refuse the exit and force the LLM to actually act.
-        # JARVIS_SPECIALIST_TOOL_GATE=0 disables.
+        # JARVIS_SUBAGENT_TOOL_GATE=0 disables (legacy:
+        # JARVIS_SPECIALIST_TOOL_GATE — still honored with a deprecation
+        # warning on first read).
         #
         # Per-subagent opt-out: spec.tools_required=False skips this
         # gate entirely. Added 2026-05-11 evening for the screen_share
@@ -192,7 +233,12 @@ class RegistrySubagent(Agent):
         # gate's purpose is to catch confabulating LLMs that bail
         # before acting; irrelevant when there are no tools to act with.
         spec_requires_tools = getattr(self._spec, "tools_required", True)
-        if os.environ.get("JARVIS_SPECIALIST_TOOL_GATE", "1") == "1" and spec_requires_tools:
+        gate_enabled = _env_str_with_legacy(
+            "JARVIS_SUBAGENT_TOOL_GATE",
+            "JARVIS_SPECIALIST_TOOL_GATE",
+            "1",
+        ) == "1"
+        if gate_enabled and spec_requires_tools:
             try:
                 ceiling = _no_tool_retry_ceiling()
                 since_handoff = self.chat_ctx.items[self._handoff_start_idx:]
@@ -208,7 +254,7 @@ class RegistrySubagent(Agent):
                     # that can't double as a confabulated success claim.
                     if _BAILOUT_SUMMARY_RE.search(summary or ""):
                         logger.info(
-                            f"[specialist:{self._spec.name}] task_done bailout "
+                            f"[subagent:{self._spec.name}] task_done bailout "
                             f"(no tool fired, allowed): {summary[:120]!r}"
                         )
                         # Fall through to the normal handoff below.
@@ -219,7 +265,7 @@ class RegistrySubagent(Agent):
                         # re-rolling the same confab. The supervisor
                         # voices a brief apology when it relays.
                         logger.warning(
-                            f"[specialist:{self._spec.name}] task_done "
+                            f"[subagent:{self._spec.name}] task_done "
                             f"FORCE-BAILED after {self._no_tool_refusals + 1} "
                             f"no-tool refusals. Original summary: "
                             f"{(summary or '')[:120]!r}"
@@ -231,7 +277,7 @@ class RegistrySubagent(Agent):
                     else:
                         self._no_tool_refusals += 1
                         logger.warning(
-                            f"[specialist:{self._spec.name}] task_done REFUSED — "
+                            f"[subagent:{self._spec.name}] task_done REFUSED — "
                             f"no real tool call this handoff "
                             f"(items_since={len(since_handoff)}, "
                             f"refusal #{self._no_tool_refusals}/"
@@ -262,12 +308,12 @@ class RegistrySubagent(Agent):
                 # task_done. Better to let one confab through than to
                 # wedge every specialist.
                 logger.warning(
-                    f"[specialist:{self._spec.name}] tool-gate check failed: "
+                    f"[subagent:{self._spec.name}] tool-gate check failed: "
                     f"{type(e).__name__}: {e} — proceeding with task_done"
                 )
 
         logger.info(
-            f"[specialist:{self._spec.name}] task_done → '{summary[:80]}'"
+            f"[subagent:{self._spec.name}] task_done → '{summary[:80]}'"
         )
         # Clear the tool-busy flag — pair with _mark_tool_start in
         # _transfer above. Tray returns to idle/listening as soon as

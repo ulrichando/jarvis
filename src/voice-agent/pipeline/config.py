@@ -58,7 +58,10 @@ __all__ = [
     "SUBAGENT_SUMMARIZE", "SUBAGENT_WEATHER", "SUBAGENT_RESEARCHER",
     "SUBAGENT_VALIDATOR", "SUBAGENT_CODE_REVIEWER",
     "SUBAGENT_MEMORY_RECALL", "SUBAGENT_GITHUB",
-    # Specialist tool gate (env-var name preserves legacy prefix)
+    # Subagent tool gate — canonical names; legacy SPECIALIST_*
+    # aliases exported too for back-compat with old `from pipeline.
+    # config import` consumers.
+    "SUBAGENT_TOOL_GATE", "SUBAGENT_NO_TOOL_RETRY_CEILING",
     "SPECIALIST_TOOL_GATE", "SPECIALIST_NO_TOOL_RETRY_CEILING",
     # Memory
     "MEMORY_CONSOLIDATOR", "MEMORY_CONSOLIDATE_EVERY_N", "MEMORY_TOP_N",
@@ -218,13 +221,45 @@ SUBAGENT_MEMORY_RECALL: bool = _bool("JARVIS_SUBAGENT_MEMORY_RECALL", False)
 SUBAGENT_GITHUB: bool        = _bool("JARVIS_SUBAGENT_GITHUB", False)
 
 
-# ── Specialist tool gate (env-var name preserves legacy prefix) ──────
-# RegistrySubagent.task_done refuses to fire without a real tool. Env
-# var names retain the `JARVIS_SPECIALIST_` prefix so user-side systemd
-# overrides aren't broken by the 2026-05-10 specialists→subagents rename.
+# ── Subagent tool gate ────────────────────────────────────────────────
+# RegistrySubagent.task_done refuses to fire without a real tool.
+# Canonical env names use the `JARVIS_SUBAGENT_` prefix (matching the
+# subagents/ package). Legacy `JARVIS_SPECIALIST_*` names from the
+# pre-2026-05-10 naming are still read with a deprecation warning;
+# see subagents/agent.py::_env_int_with_legacy.
 
-SPECIALIST_TOOL_GATE: bool             = _bool("JARVIS_SPECIALIST_TOOL_GATE", True)
-SPECIALIST_NO_TOOL_RETRY_CEILING: int  = _int("JARVIS_SPECIALIST_NO_TOOL_RETRY_CEILING", 3)
+def _subagent_bool(new_name: str, legacy_name: str, default: bool) -> bool:
+    """Read bool env var by new name first, then legacy. No warning here
+    — the agent module logs once on first read of a legacy var."""
+    raw = os.environ.get(new_name) or os.environ.get(legacy_name)
+    if raw is None:
+        return default
+    return raw.lower() in ("1", "true", "yes", "on")
+
+
+def _subagent_int(new_name: str, legacy_name: str, default: int) -> int:
+    raw = os.environ.get(new_name) or os.environ.get(legacy_name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+SUBAGENT_TOOL_GATE: bool             = _subagent_bool(
+    "JARVIS_SUBAGENT_TOOL_GATE", "JARVIS_SPECIALIST_TOOL_GATE", True
+)
+SUBAGENT_NO_TOOL_RETRY_CEILING: int  = _subagent_int(
+    "JARVIS_SUBAGENT_NO_TOOL_RETRY_CEILING",
+    "JARVIS_SPECIALIST_NO_TOOL_RETRY_CEILING",
+    3,
+)
+
+# Legacy aliases — still exported so any caller still doing
+# `from pipeline.config import SPECIALIST_TOOL_GATE` keeps working.
+SPECIALIST_TOOL_GATE = SUBAGENT_TOOL_GATE
+SPECIALIST_NO_TOOL_RETRY_CEILING = SUBAGENT_NO_TOOL_RETRY_CEILING
 
 
 # ── Memory ───────────────────────────────────────────────────────────
