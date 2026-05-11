@@ -6,7 +6,7 @@
 #   source .venv/bin/activate
 #   pip install -r requirements.txt
 
-livekit-agents[silero,openai,groq]~=1.5
+livekit-agents[silero,openai,groq,anthropic]~=1.5
 
 # Convex client used for the conversations.db mirror. Mirror is best-
 # effort: if the package is missing or the backend is unreachable, the

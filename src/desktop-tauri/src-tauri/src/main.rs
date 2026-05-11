@@ -628,6 +628,7 @@ fn speech_model_pretty(id: &str) -> Option<&'static str> {
         "deepseek-chat"                                  => Some("DeepSeek · chat"),
         "deepseek-v4-flash"                              => Some("DeepSeek · v4 flash"),
         "deepseek-v4-pro"                                => Some("DeepSeek · v4 pro"),
+        "claude-haiku-4-5"                               => Some("Claude · Haiku 4.5"),
         _ => None,
     }
 }
@@ -1432,6 +1433,11 @@ fn main() {
             let v_dschat    = MenuItemBuilder::with_id("speech_deepseek-chat",                                  "Use DeepSeek · chat (V3, fast)").build(app)?;
             let v_dsv4flash = MenuItemBuilder::with_id("speech_deepseek-v4-flash",                              "Use DeepSeek · v4 flash").build(app)?;
             let v_dsv4pro   = MenuItemBuilder::with_id("speech_deepseek-v4-pro",                                "Use DeepSeek · v4 pro (best tools)").build(app)?;
+            // Anthropic — Haiku 4.5 (added 2026-05-11). Requires
+            // ANTHROPIC_API_KEY in env. Slower TTFW than Groq (~700ms
+            // vs ~200ms) but quality+persona match are strong; also
+            // serves as rung 3 of the FallbackAdapter cascade.
+            let v_claude35  = MenuItemBuilder::with_id("speech_claude-haiku-4-5",                              "Use Anthropic · Claude Haiku 4.5").build(app)?;
             let speech_submenu = SubmenuBuilder::new(app, "Speech model ▸")
                 .item(&v_llama33)
                 .item(&v_llama8b)
@@ -1441,6 +1447,7 @@ fn main() {
                 .item(&v_dschat)
                 .item(&v_dsv4flash)
                 .item(&v_dsv4pro)
+                .item(&v_claude35)
                 .build()?;
 
             // ── TTS VOICE submenu (nested under Models) ──
@@ -1704,6 +1711,7 @@ fn main() {
                         "speech_deepseek-chat"                             => switch_speech_model(app, "deepseek-chat"),
                         "speech_deepseek-v4-flash"                         => switch_speech_model(app, "deepseek-v4-flash"),
                         "speech_deepseek-v4-pro"                           => switch_speech_model(app, "deepseek-v4-pro"),
+                        "speech_claude-haiku-4-5"                          => switch_speech_model(app, "claude-haiku-4-5"),
                         // TTS-voice picks (no agent restart — file written, read on next utterance)
                         "tts_gr_troy"   => switch_tts_provider(app, "groq:troy"),
                         "tts_gr_austin" => switch_tts_provider(app, "groq:austin"),
