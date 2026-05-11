@@ -184,7 +184,15 @@ class RegistrySubagent(Agent):
         # real (non-task_done) tool calls in this handoff window; if
         # zero, refuse the exit and force the LLM to actually act.
         # JARVIS_SPECIALIST_TOOL_GATE=0 disables.
-        if os.environ.get("JARVIS_SPECIALIST_TOOL_GATE", "1") == "1":
+        #
+        # Per-subagent opt-out: spec.tools_required=False skips this
+        # gate entirely. Added 2026-05-11 evening for the screen_share
+        # subagent, whose RealtimeModel produces work via audio +
+        # transcription streaming — no function tools to count. The
+        # gate's purpose is to catch confabulating LLMs that bail
+        # before acting; irrelevant when there are no tools to act with.
+        spec_requires_tools = getattr(self._spec, "tools_required", True)
+        if os.environ.get("JARVIS_SPECIALIST_TOOL_GATE", "1") == "1" and spec_requires_tools:
             try:
                 ceiling = _no_tool_retry_ceiling()
                 since_handoff = self.chat_ctx.items[self._handoff_start_idx:]

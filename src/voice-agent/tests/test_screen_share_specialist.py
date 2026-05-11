@@ -83,6 +83,34 @@ class TestSpecRegistration:
         assert spec.llm_factory is not None
         assert callable(spec.llm_factory)
 
+    def test_spec_opts_out_of_tool_gate(self):
+        """The screen_share subagent has zero function tools — the
+        RealtimeModel produces work via audio + transcription, not
+        function_tools. The tool-gate's 'must call a real tool'
+        rule would refuse every task_done and lock the subagent in
+        a retry loop. tools_required=False is the opt-out."""
+        from subagents import registry
+        from subagents import screen_share as ss
+        registry.clear()
+        with patch.dict(os.environ, {"JARVIS_SUBAGENT_SCREEN_SHARE": "1"}):
+            ss.register_screen_share()
+        spec = registry._REGISTRY["screen_share"]
+        assert spec.tools_required is False
+
+    def test_spec_has_empty_ack_phrase(self):
+        """No voiced 'Looking.' / 'Right away.' ack from the
+        supervisor (Orpheus) before the subagent's Gemini Live
+        (Aoede voice) starts speaking — otherwise the user hears
+        two voices in one conceptual turn (the 'voice mismatch'
+        reported 2026-05-11). Empty ack = silent handoff."""
+        from subagents import registry
+        from subagents import screen_share as ss
+        registry.clear()
+        with patch.dict(os.environ, {"JARVIS_SUBAGENT_SCREEN_SHARE": "1"}):
+            ss.register_screen_share()
+        spec = registry._REGISTRY["screen_share"]
+        assert spec.ack_phrase == ""
+
 
 # ── LLM factory wiring ─────────────────────────────────────────────
 
