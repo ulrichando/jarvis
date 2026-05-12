@@ -107,6 +107,7 @@ def _call_anthropic(model: str, prompt: str, max_tokens: int) -> str:
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
+            "user-agent": "jarvis-evolution/1.0 (+judge_call.anthropic)",
         },
         method="POST",
     )
@@ -134,6 +135,7 @@ def _call_deepseek(model: str, prompt: str, max_tokens: int) -> str:
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            "User-Agent": "jarvis-evolution/1.0 (+judge_call.deepseek)",
         },
         method="POST",
     )
@@ -161,6 +163,7 @@ def _call_openai(model: str, prompt: str, max_tokens: int) -> str:
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            "User-Agent": "jarvis-evolution/1.0 (+judge_call.openai)",
         },
         method="POST",
     )
