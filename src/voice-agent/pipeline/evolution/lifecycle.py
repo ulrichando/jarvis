@@ -28,6 +28,8 @@ __all__ = [
     "rollback",
     "record_negative_signal",
     "apply_archival_proposals",
+    "promote_eligible_staged",
+    "propose_core_promotion",
     "BULK_RETIREMENT_THRESHOLD",
 ]
 
@@ -186,3 +188,95 @@ def apply_archival_proposals(
         except AnchorWriteRefused:
             routed_to_hitl += 1
     return {"auto_archived": auto_archived, "routed_to_hitl": routed_to_hitl}
+
+
+from datetime import date, datetime, timedelta
+
+STAGED_SHADOW_DAYS = 7
+ACCEPTED_REINFORCEMENT_DAYS = 30
+ACCEPTED_REINFORCEMENT_COUNT = 10
+
+
+def _parse_date(s: Optional[str]) -> Optional[date]:
+    if not s:
+        return None
+    try:
+        return datetime.strptime(s[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def promote_eligible_staged(
+    store: RuleStore, *, today: Optional[str] = None,
+) -> int:
+    from . import golden_eval
+
+    today_date = _parse_date(today) or datetime.utcnow().date()
+    loaded = store.load()
+    if not loaded.staged:
+        return 0
+
+    report = golden_eval.run(
+        rules=loaded.anchor + loaded.core + loaded.accepted + loaded.staged
+    )
+    if not golden_eval.promotion_eligible(report):
+        audit_log.append_event(
+            kind="promotion_blocked",
+            reason="golden eval below threshold",
+            signature_reflex_pass_rate=report.get("signature_reflex_pass_rate"),
+            judge_pass_rate=report.get("judge_pass_rate"),
+        )
+        logger.info("[lifecycle] golden eval below threshold; no promotions")
+        return 0
+
+    promoted = 0
+    for r in list(loaded.staged):
+        created = _parse_date(r.created)
+        if not created:
+            continue
+        if (today_date - created).days < STAGED_SHADOW_DAYS:
+            continue
+        clean = Rule(
+            id=r.id, tier="accepted",
+            text=r.text.replace("[STAGED] ", "", 1) if r.text.startswith("[STAGED] ") else r.text,
+            created=r.created, reinforced=today_date.isoformat(),
+            turns=r.turns, supersedes=r.supersedes, proposal=r.proposal,
+            evidence=r.evidence,
+        )
+        # save_rule only removes from the destination bucket, so move the
+        # rule first then overwrite the metadata in the accepted bucket.
+        store.update_tier(r.id, new_tier="accepted")
+        store.save_rule(clean)
+        audit_log.append_event(
+            kind="tier_transition",
+            rule_id=r.id, from_tier="staged", to_tier="accepted",
+            reason=f"{STAGED_SHADOW_DAYS}d shadow + golden eval pass",
+        )
+        promoted += 1
+    logger.info(f"[lifecycle] promoted {promoted} staged → accepted")
+    return promoted
+
+
+def propose_core_promotion(
+    store: RuleStore, *, reinforcement_counts: dict[str, int],
+    today: Optional[str] = None,
+) -> list[str]:
+    today_date = _parse_date(today) or datetime.utcnow().date()
+    loaded = store.load()
+    eligible: list[str] = []
+    for r in loaded.accepted:
+        created = _parse_date(r.created)
+        if not created:
+            continue
+        if (today_date - created).days < ACCEPTED_REINFORCEMENT_DAYS:
+            continue
+        if reinforcement_counts.get(r.id, 0) < ACCEPTED_REINFORCEMENT_COUNT:
+            continue
+        eligible.append(r.id)
+        audit_log.append_event(
+            kind="core_promotion_proposed",
+            rule_id=r.id,
+            reinforcement_count=reinforcement_counts.get(r.id, 0),
+            age_days=(today_date - created).days,
+        )
+    return eligible
