@@ -53,3 +53,31 @@ def test_observe_dedups_consecutive_corrections_within_window(tmp_path, monkeypa
 
     assert first is not None
     assert second is None
+
+
+def test_proposal_carries_rule_field_for_auto_stage(tmp_path, monkeypatch):
+    """Regression: live_capture proposals MUST carry a 'rule' field
+    because lifecycle.auto_stage reads proposal['rule']. Without this,
+    Task 7.4's wireup catches a KeyError every time live_capture fires
+    in production with JARVIS_EVOLUTION_LOGGING_ONLY=0.
+    """
+    from pipeline.evolution import live_capture, audit_log
+    monkeypatch.setattr(audit_log, "LOG_PATH", tmp_path / "audit.jsonl")
+
+    capture = live_capture.LiveCapture()
+    capture.observe(
+        turn_id="t-1",
+        user_text="open chrome",
+        jarvis_text="Launching Chromium…",
+    )
+    proposal = capture.observe(
+        turn_id="t-2",
+        user_text="don't open chromium",
+        jarvis_text="(silence)",
+    )
+
+    assert proposal is not None
+    assert "rule" in proposal
+    assert isinstance(proposal["rule"], str)
+    assert proposal["rule"].strip()
+    assert "chromium" in proposal["rule"].lower() or "chromium" in proposal["prior_jarvis"].lower()
