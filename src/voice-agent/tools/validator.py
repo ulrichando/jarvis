@@ -142,5 +142,6 @@ async def validate_outcome(
 
 
 def is_available() -> bool:
-    """True if the validator can run. Mirrors browser_v2's pattern."""
+    """True if the validator can run — gated on a Groq key being set,
+    same graceful-degrade shape every key-gated subagent uses."""
     return bool(os.environ.get("GROQ_API_KEY"))

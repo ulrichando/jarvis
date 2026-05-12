@@ -43,7 +43,7 @@ from .registry import (
 # bloat the supervisor's prompt with another transfer_to_X.
 def _register_builtins() -> None:
     from . import (
-        desktop, browser, browser_v2,
+        desktop, browser,
         summarize, weather, researcher, validator, code_reviewer,
         memory_recall, github,
     )
@@ -53,11 +53,11 @@ def _register_builtins() -> None:
     # via the in-process bash/edit/write tools. Loses deepseek-v4-pro
     # for multi-step coding but gains direct execution and removes
     # the run_jarvis_cli subprocess hop.
+    # browser_v2 retired 2026-05-12 — disabled twin with three known
+    # unfixed bugs (CDP attach, Groq json_schema, actions[-1] subscript).
+    # Voice agent has one browser subagent, period: subagents/browser.py.
     desktop.register_desktop()
     browser.register_browser()
-    # browser_v2 self-disables when GROQ/DeepSeek key or browser-use
-    # are missing — safe to always call register_browser_v2().
-    browser_v2.register_browser_v2()
     # screen_share Live subagent — self-disables unless
     # JARVIS_SUBAGENT_SCREEN_SHARE=1. Uses Gemini Live RealtimeModel
     # for real-time vision during screen-share sessions.

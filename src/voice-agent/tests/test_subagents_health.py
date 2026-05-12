@@ -34,13 +34,12 @@ def _reset_and_register():
     clear()
     clear_subagents()
     from subagents import (
-        desktop, browser, browser_v2,
+        desktop, browser,
         summarize, weather, researcher, validator, code_reviewer,
         memory_recall, github,
     )
     desktop.register_desktop()
     browser.register_browser()
-    browser_v2.register_browser_v2()
     summarize.register_summarize()
     weather.register_weather()
     researcher.register_researcher()
@@ -68,9 +67,6 @@ DELEGATED_SUBAGENT_NAMES = ["summarize", "weather", "researcher"]
 # enabled when their dep keys are available. The matrix tests below
 # parametrize against enabled subagents only.
 import os as _os
-_BROWSER_V2_ENABLED = bool(
-    _os.environ.get("GROQ_API_KEY") or _os.environ.get("DEEPSEEK_API_KEY")
-)
 _VALIDATOR_ENABLED = bool(_os.environ.get("GROQ_API_KEY"))
 _CODE_REVIEWER_ENABLED = bool(_os.environ.get("GROQ_API_KEY"))
 from pathlib import Path as _Path
@@ -473,8 +469,6 @@ def test_no_disabled_subagents_in_registry_for_long():
     expected enabled names; tightens future cleanup work.)"""
     from subagents.registry import _REGISTRY, SUBAGENT_REGISTRY
     expected_enabled = set(HANDOFF_SUBAGENT_NAMES) | set(DELEGATED_SUBAGENT_NAMES)
-    if _BROWSER_V2_ENABLED:
-        expected_enabled.add("browser_v2")
     if _VALIDATOR_ENABLED:
         expected_enabled.add("validator")
     if _CODE_REVIEWER_ENABLED:
@@ -493,77 +487,6 @@ def test_no_disabled_subagents_in_registry_for_long():
     assert not unexpected, (
         f"Unexpected enabled subagents/subagents (add to expected list "
         f"or remove): {unexpected}"
-    )
-
-
-# ── browser_v2 subagent (conditional on GROQ/DeepSeek availability) ─
-
-
-def test_browser_v2_subagent_registered():
-    """browser_v2 must always REGISTER (even when disabled), so the
-    supervisor's tool-routing logic sees a recognized name rather than
-    a missing-spec error.
-
-    Per `subagents/browser_v2.py:108-125`, browser_v2 is HARD-CODED
-    disabled until three documented bugs are fixed (CDP attach to
-    user's Chrome, Groq response_format=json_schema rejection, and the
-    `actions[-1]` subscript TypeError on the bound method). The test
-    enforces that intentional disable: when the disable is lifted, the
-    assertion below MUST be updated to `assert spec.enabled == is_available()`
-    so we re-link enabled state to key availability.
-    """
-    from subagents.registry import _REGISTRY
-    assert "browser_v2" in _REGISTRY
-    spec = _REGISTRY["browser_v2"]
-    assert spec.transfer_tool == "transfer_to_browser_v2"
-    assert spec.enabled is False, (
-        "browser_v2 is intentionally disabled per browser_v2.py:108-125. "
-        "If the three known bugs are fixed and this assertion now fails, "
-        "update the test to compare with is_available() instead."
-    )
-
-
-def test_browser_v2_module_importable_without_key():
-    """Importing tools.browser_v2 should never raise — even when
-    GROQ/DeepSeek keys are missing. is_available() is the gate."""
-    import tools.browser_v2
-    assert hasattr(tools.browser_v2, "browser_task_v2")
-    assert hasattr(tools.browser_v2, "is_available")
-
-
-def test_browser_v2_self_disables_when_no_keys(monkeypatch):
-    """is_available() returns False when both Groq and DeepSeek keys
-    are absent. Critical for graceful-degradation behaviour: the
-    subagent registers but stays out of the supervisor's tool list."""
-    monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
-    import importlib
-    import tools.browser_v2
-    importlib.reload(tools.browser_v2)
-    assert tools.browser_v2.is_available() is False
-
-
-@pytest.mark.skipif(
-    not _BROWSER_V2_ENABLED,
-    reason="browser_v2 needs GROQ_API_KEY or DEEPSEEK_API_KEY",
-)
-def test_browser_v2_tool_factory_builds_when_enabled():
-    """The tool factory must build cleanly when the dep keys are
-    present. Reads from `_REGISTRY` directly because `registry.get()`
-    returns None for any spec with `enabled=False`, and browser_v2 is
-    intentionally hard-disabled (see test_browser_v2_subagent_registered).
-    The factory itself works regardless of `enabled`; this test is
-    about the import + decorator path, not the gate.
-    """
-    from subagents.registry import _REGISTRY
-    spec = _REGISTRY.get("browser_v2")
-    assert spec is not None, (
-        "browser_v2 not registered — `register_browser_v2()` did not run"
-    )
-    tools = spec.tool_factory()
-    assert any(
-        getattr(getattr(t, "_func", t), "__name__", "") == "browser_task_v2"
-        for t in tools
     )
 
 
@@ -594,13 +517,14 @@ def test_no_subagent_imports_task_done_from_jarvis_agent():
     )
 
 
-@pytest.mark.parametrize("name", HANDOFF_SUBAGENT_NAMES + ["browser_v2"])
+@pytest.mark.parametrize("name", HANDOFF_SUBAGENT_NAMES)
 def test_subagent_handoff_constructs_without_error(name):
     """Smoke test the full handoff path: tool_factory must build, and
     the registry's transfer-tool builder must not crash. Catches
     runtime ImportErrors / decorator bugs that only surface during a
-    real handoff (which is what happened with browser_v2's spurious
-    task_done import on 2026-05-01)."""
+    real handoff (regression class: 2026-05-01 retired browser_v2
+    spuriously imported task_done from jarvis_agent → ImportError →
+    handoff failed silently)."""
     from subagents.registry import get
     spec = get(name)
     if spec is None or not spec.enabled:
