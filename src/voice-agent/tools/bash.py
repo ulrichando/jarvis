@@ -20,7 +20,6 @@ import asyncio
 import logging
 import os
 import re
-import shlex
 from typing import Optional
 
 from livekit.agents.llm import function_tool
@@ -40,77 +39,134 @@ _MAX_TIMEOUT_S = 600
 _MAX_OUTPUT_CHARS = 30_000
 
 # Destructive-command patterns. Lifted from claude-code's
-# BashTool/destructiveCommandWarning.ts. Voice supervisor uses this list
-# in the PUSH BACK rule — match here means we annotate the result so the
-# supervisor's chat_ctx carries the warning into its next turn.
-_DESTRUCTIVE_PATTERNS = [
-    (r"\brm\s+-rf?\s+/", "rm -rf with absolute path"),
-    (r"\brm\s+-rf?\s+~", "rm -rf with home expansion"),
-    (r"\bdd\s+if=", "dd to disk"),
-    (r"\bmkfs\.", "mkfs (formatting filesystem)"),
-    (r":\(\)\{\s*:\|", "fork bomb"),
-    (r"\bgit\s+push\s+(?:--force|-f)\b", "git force push"),
-    (r"\bgit\s+reset\s+--hard\b", "git reset --hard"),
-    (r"\bgit\s+clean\s+-[fd]+\b", "git clean -fd"),
-    (r"\bDROP\s+TABLE\b", "SQL DROP TABLE", re.I),
-    (r"\bTRUNCATE\s+TABLE\b", "SQL TRUNCATE TABLE", re.I),
-    (r"\bsudo\s+rm\b", "sudo rm"),
-    (r">\s*/dev/sd[a-z]", "writing to a raw disk device"),
+# BashTool/destructiveCommandWarning.ts. Voice supervisor uses this
+# list in the PUSH BACK rule — match here means we annotate the
+# result so the supervisor's chat_ctx carries the warning into its
+# next turn.
+#
+# Each entry is (compiled_regex, label). Pre-compiling keeps the
+# fast-path branch-free and lets each pattern carry its own flags
+# without the 2-tuple-vs-3-tuple shape mess the old code had.
+_DESTRUCTIVE_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\brm\s+-rf?\s+/"),                       "rm -rf with absolute path"),
+    (re.compile(r"\brm\s+-rf?\s+~"),                       "rm -rf with home expansion"),
+    (re.compile(r"\bdd\s+if="),                            "dd to disk"),
+    (re.compile(r"\bmkfs\."),                              "mkfs (formatting filesystem)"),
+    (re.compile(r":\(\)\{\s*:\|"),                         "fork bomb"),
+    (re.compile(r"\bgit\s+push\s+(?:--force|-f)\b"),       "git force push"),
+    (re.compile(r"\bgit\s+reset\s+--hard\b"),              "git reset --hard"),
+    (re.compile(r"\bgit\s+clean\s+-[fd]+\b"),              "git clean -fd"),
+    (re.compile(r"\bDROP\s+TABLE\b", re.I),                "SQL DROP TABLE"),
+    (re.compile(r"\bTRUNCATE\s+TABLE\b", re.I),            "SQL TRUNCATE TABLE"),
+    (re.compile(r"\bsudo\s+rm\b"),                         "sudo rm"),
+    (re.compile(r">\s*/dev/sd[a-z]"),                      "writing to a raw disk device"),
 ]
 
-# Banned commands voice supervisor should never invoke directly. claude-code
-# soft-redirects these to dedicated tools; voice has dedicated tools for
-# read/write/edit too — bash should NOT be how the supervisor reads files.
+# Banned commands the supervisor should NEVER invoke through bash —
+# they have dedicated in-process tools (read/edit) which are faster
+# and cleaner. Soft redirect, not a security gate. Match is hit when
+# the banned name appears at a CLAUSE START (start of the command,
+# or right after `;` / `&&` / `||` / `|` / `(` / backtick) — so
+# `grep cat /etc/passwd` is NOT flagged (cat is an argument), but
+# `ls; cat foo` IS (cat is a new command).
 _BANNED_COMMANDS = {"cat", "head", "tail", "sed", "awk", "less", "more"}
 _BANNED_HINT = {
-    "cat": "use the read tool",
+    "cat":  "use the read tool",
     "head": "use the read tool",
     "tail": "use the read tool",
-    "sed": "use the edit tool",
-    "awk": "use the edit tool",
     "less": "use the read tool",
     "more": "use the read tool",
-    "echo": "output text directly to the user — don't echo it via bash",
+    "sed":  "use the edit tool",
+    "awk":  "use the edit tool",
 }
+# Matches identifiers (command names) at the start of the command or
+# immediately after a shell clause boundary. Supports:
+#   start-of-string, `;`, `|`, `||`, `(`, `&&`, backtick, redirect-
+#   subshell `$(`.
+# Backslash-escaped names (`\cat foo`) are NOT matched — explicit
+# user escape hatch.
+_CLAUSE_RE = re.compile(r"(?:^|[;|(`]|&&|\|\||\$\()\s*([A-Za-z_][\w-]*)")
+
+# Snap window for newline-aligned truncation. The cut moves up to
+# this many characters in either direction to land on a `\n` boundary
+# so the supervisor doesn't see a partial line that looks like noise.
+_TRUNCATE_SNAP_WINDOW = 200
 
 
 def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
+    """Return `text` if under `limit`, else a head+tail elision that
+    snaps each cut point to the nearest newline within a small window
+    so the truncated boundary lands cleanly on a line break."""
     if len(text) <= limit:
         return text
-    head = text[: limit // 2]
-    tail = text[-limit // 2 :]
+
+    head_target = limit // 2
+    tail_target = limit - head_target
+
+    # Snap head end: prefer the LAST newline at or before
+    # head_target (so the elision happens AFTER a complete line),
+    # widening up to SNAP_WINDOW chars forward if no newline appears
+    # before the target.
+    head_search_lo = max(0, head_target - _TRUNCATE_SNAP_WINDOW)
+    head_search_hi = min(len(text), head_target + _TRUNCATE_SNAP_WINDOW)
+    head_nl = text.rfind("\n", head_search_lo, head_target + 1)
+    if head_nl < 0:
+        head_nl = text.find("\n", head_target, head_search_hi)
+    head_end = head_nl if head_nl >= 0 else head_target
+
+    # Snap tail start: prefer the FIRST newline at or after
+    # (len-tail_target), so the elision RESUMES at a complete line.
+    tail_start_target = len(text) - tail_target
+    tail_search_lo = max(0, tail_start_target - _TRUNCATE_SNAP_WINDOW)
+    tail_search_hi = min(len(text), tail_start_target + _TRUNCATE_SNAP_WINDOW)
+    tail_nl = text.find("\n", tail_start_target, tail_search_hi)
+    if tail_nl < 0:
+        tail_nl = text.rfind("\n", tail_search_lo, tail_start_target)
+    tail_start = (tail_nl + 1) if tail_nl >= 0 else tail_start_target
+
+    # Defensive: if snapping pulled head_end past tail_start (small
+    # input + large snap window), bail back to the unsnapped midpoint.
+    if head_end >= tail_start:
+        head_end = head_target
+        tail_start = tail_start_target
+
+    head = text[:head_end].rstrip()
+    tail = text[tail_start:].lstrip()
+    omitted = len(text) - len(head) - len(tail)
     return (
         f"{head}\n\n"
         f"[output truncated: {len(text):,} chars total, "
-        f"showing first {limit//2} + last {limit//2}]\n\n"
+        f"~{omitted:,} chars omitted from the middle]\n\n"
         f"{tail}"
     )
 
 
 def _check_destructive(command: str) -> Optional[str]:
-    for entry in _DESTRUCTIVE_PATTERNS:
-        if len(entry) == 3:
-            pattern, label, flags = entry
-            if re.search(pattern, command, flags):
-                return label
-        else:
-            pattern, label = entry
-            if re.search(pattern, command):
-                return label
+    for pattern, label in _DESTRUCTIVE_PATTERNS:
+        if pattern.search(command):
+            return label
     return None
 
 
-def _check_banned(command: str) -> Optional[str]:
-    """Return a hint string if the command starts with a banned utility.
-    Best-effort heuristic — not a security control, just a coaching nudge
-    so the LLM picks the right tool."""
-    try:
-        first = shlex.split(command)[0] if command.strip() else ""
-    except ValueError:
+def _check_banned(command: str) -> Optional[tuple[str, str]]:
+    """Return `(banned_name, hint)` if any clause in `command` starts
+    with a banned utility, else `None`.
+
+    Scans every command position — start of string OR right after a
+    shell clause boundary (`;`, `&&`, `||`, `|`, `(`, `` ` ``, `$(`).
+    `grep cat /etc/passwd` is NOT flagged (cat is mid-token, an
+    argument). `ls; cat foo` IS flagged on the cat.
+
+    Best-effort coaching, not a security control. The LLM can still
+    invoke a banned command via `\\cat foo`, here-docs, or pipes
+    constructed across multiple bash() calls.
+    """
+    if not command.strip():
         return None
-    base = os.path.basename(first)
-    if base in _BANNED_COMMANDS:
-        return _BANNED_HINT.get(base, "use a dedicated tool")
+    for match in _CLAUSE_RE.finditer(command):
+        base = os.path.basename(match.group(1))
+        if base in _BANNED_COMMANDS:
+            return base, _BANNED_HINT.get(base, "use a dedicated tool")
     return None
 
 
@@ -123,22 +179,25 @@ async def bash(
 ) -> str:
     """Execute a shell command via /bin/bash and return stdout+stderr.
 
-    The working directory persists between commands (the agent process's
-    cwd), but shell state does not — every invocation is a fresh shell.
-    Environment is initialized from Ulrich's profile.
+    Every invocation is a FRESH /bin/bash subshell — `cd`, exported
+    variables, and aliases do NOT carry over from one bash() call to
+    the next. The starting directory is always the voice-agent's
+    working directory (`src/voice-agent/`). Use absolute paths, or
+    chain steps with `&&` / `;` in a SINGLE command so they share
+    one shell instance:
 
-    AVOID using this tool to run `cat`, `head`, `tail`, `sed`, `awk`, or
-    `echo` commands — use the dedicated tools instead (read/edit). Each
-    dedicated tool gives a much better experience than bash for the same
-    operation.
+        bash("cd /tmp && ls -la && rm dead.lock")
+
+    AVOID using this tool to run `cat`, `head`, `tail`, `sed`, `awk`,
+    `less`, or `more` — they have dedicated in-process tools
+    (read/edit) which are faster and cleaner. The banned-command
+    check is a soft coaching redirect, not a security gate.
 
     Instructions:
       - If the command will create new directories or files, first run
         `ls` to verify the parent directory exists.
       - Always quote file paths that contain spaces.
-      - Use absolute paths and avoid `cd` between commands. The cwd is
-        the voice-agent's process directory; `cd` only affects the
-        single command's subshell.
+      - Prefer absolute paths over chained `cd` for clarity.
       - You may specify an optional `timeout` in seconds (max 600).
         Default 120 s.
       - For long-running commands you don't need the result of right now,
@@ -173,12 +232,15 @@ async def bash(
     if gate:
         return gate
 
-    # Soft coaching: if the LLM reaches for cat/head/tail, redirect.
-    banned_hint = _check_banned(cmd)
-    if banned_hint:
-        first = shlex.split(cmd)[0] if cmd else ""
+    # Soft coaching: if the LLM reaches for cat/head/tail anywhere
+    # in the command (start, or after a `;`/`&&`/`|`/`(`/etc.),
+    # redirect to the dedicated tool. The escape hatch is to prepend
+    # `\` to the command name.
+    banned = _check_banned(cmd)
+    if banned is not None:
+        banned_name, banned_hint = banned
         return (
-            f"Suggestion: instead of `{first}`, "
+            f"Suggestion: instead of `{banned_name}`, "
             f"{banned_hint}. (If you really meant bash, prepend `\\` to "
             f"the command name, but the dedicated tool is faster.)"
         )
