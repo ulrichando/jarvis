@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
+import time
 import urllib.error
 import urllib.request
 
@@ -18,6 +20,11 @@ __all__ = ["judge_call", "JudgeError"]
 
 
 logger = logging.getLogger("jarvis.evolution.judge_call")
+
+
+_MAX_ATTEMPTS = 3
+_BASE_BACKOFF_S = 1.0
+_BACKOFF_SLEEP = time.sleep  # monkey-patchable for tests
 
 
 class JudgeError(RuntimeError):
@@ -31,6 +38,57 @@ _KNOWN_DEEPSEEK = {
     "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-chat",
 }
 _KNOWN_OPENAI = {"gpt-5", "gpt-5-mini", "openai/gpt-oss-120b"}
+
+
+def _should_retry(http_code: int | None) -> bool:
+    """Retry on 429 + transient 5xx, give up on other 4xx."""
+    if http_code is None:
+        return True  # network error — retry
+    if http_code == 429:
+        return True
+    if 500 <= http_code <= 599:
+        return True
+    return False
+
+
+def _backoff_seconds(attempt: int, retry_after: str | None) -> float:
+    if retry_after:
+        try:
+            return max(float(retry_after), 0.0)
+        except (TypeError, ValueError):
+            pass
+    return _BASE_BACKOFF_S * (2 ** attempt) + random.uniform(0, 0.25)
+
+
+def _retrying_post(req: urllib.request.Request) -> bytes:
+    """POST with up to _MAX_ATTEMPTS retries on transient failures.
+
+    Returns the response body as bytes on success. Raises JudgeError
+    if all attempts exhausted, or on a non-retryable 4xx.
+    """
+    last_error: Exception | None = None
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as e:
+            last_error = e
+            if not _should_retry(getattr(e, "code", None)):
+                raise JudgeError(f"http {e.code}: {e}") from e
+            retry_after = None
+            if hasattr(e, "headers") and e.headers is not None:
+                retry_after = e.headers.get("Retry-After")
+            elif hasattr(e, "hdrs") and e.hdrs is not None:
+                retry_after = e.hdrs.get("Retry-After")
+            if attempt < _MAX_ATTEMPTS - 1:
+                _BACKOFF_SLEEP(_backoff_seconds(attempt, retry_after))
+                continue
+        except urllib.error.URLError as e:
+            last_error = e
+            if attempt < _MAX_ATTEMPTS - 1:
+                _BACKOFF_SLEEP(_backoff_seconds(attempt, None))
+                continue
+    raise JudgeError(f"all {_MAX_ATTEMPTS} attempts failed: {last_error}")
 
 
 def _call_anthropic(model: str, prompt: str, max_tokens: int) -> str:
@@ -53,11 +111,11 @@ def _call_anthropic(model: str, prompt: str, max_tokens: int) -> str:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+        body = _retrying_post(req)
+        data = json.loads(body.decode("utf-8"))
         return data["content"][0]["text"]
-    except (urllib.error.URLError, KeyError, json.JSONDecodeError) as e:
-        raise JudgeError(f"anthropic call failed: {e}") from e
+    except (KeyError, json.JSONDecodeError) as e:
+        raise JudgeError(f"anthropic parse failed: {e}") from e
 
 
 def _call_deepseek(model: str, prompt: str, max_tokens: int) -> str:
@@ -80,11 +138,11 @@ def _call_deepseek(model: str, prompt: str, max_tokens: int) -> str:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+        body = _retrying_post(req)
+        data = json.loads(body.decode("utf-8"))
         return data["choices"][0]["message"]["content"]
-    except (urllib.error.URLError, KeyError, json.JSONDecodeError) as e:
-        raise JudgeError(f"deepseek call failed: {e}") from e
+    except (KeyError, json.JSONDecodeError) as e:
+        raise JudgeError(f"deepseek parse failed: {e}") from e
 
 
 def _call_openai(model: str, prompt: str, max_tokens: int) -> str:
@@ -107,11 +165,11 @@ def _call_openai(model: str, prompt: str, max_tokens: int) -> str:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+        body = _retrying_post(req)
+        data = json.loads(body.decode("utf-8"))
         return data["choices"][0]["message"]["content"]
-    except (urllib.error.URLError, KeyError, json.JSONDecodeError) as e:
-        raise JudgeError(f"openai call failed: {e}") from e
+    except (KeyError, json.JSONDecodeError) as e:
+        raise JudgeError(f"openai parse failed: {e}") from e
 
 
 def judge_call(model: str, prompt: str, *, max_tokens: int = 600) -> str:
