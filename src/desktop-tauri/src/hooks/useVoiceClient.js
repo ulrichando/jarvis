@@ -68,10 +68,24 @@ export default function useVoiceClient({ muted = false } = {}) {
   const [audioLevel]                    = useState(0)
 
   // ── Status poll loop ───────────────────────────────────────────────
-  // 2 Hz (500 ms tick). Single source of truth for everything driven
+  // 10 Hz (100 ms tick). Single source of truth for everything driven
   // by /status — App.jsx reads from this hook for both tray-icon
   // colour and tray-menu label sync. The duplicate poll inside the
   // legacy VoiceClientPill / TrayLabelSync was removed 2026-04-30.
+  //
+  // Bumped 2 Hz → 10 Hz on 2026-05-11 after the user reported the
+  // tray colour was visibly out of sync with what JARVIS was doing.
+  // Voice-client side updates state.listening / state.speaking
+  // INSTANTLY via the LiveKit `active_speakers_changed` event, but
+  // the React poll was capping observable latency at 500 ms — short
+  // events (a 200 ms "Yes?" reply or a half-second backchannel) could
+  // be missed entirely between ticks, leaving the tray green during
+  // turns. 100 ms is well under the human perceptual threshold (≤200 ms
+  // reads as "instant") and the /status handler is cheap — five file
+  // stats + a state-dict serialize — so the loop's cost stays well
+  // under 1 % CPU. `pushTrayState` in App.jsx already dedupes by
+  // (state, sharing) so Rust only repaints on actual changes; the
+  // higher poll rate just narrows the *detection* window.
   // Direct "processing" state. Driven entirely by definitive flags
   // the agent writes: `tool_running` (a function tool is in flight)
   // and `agent_thinking` (the LLM is generating tokens). Plus the
@@ -129,7 +143,7 @@ export default function useVoiceClient({ muted = false } = {}) {
           lastActiveRef.current = null
         }
       }
-      if (alive) t = setTimeout(tick, 500)
+      if (alive) t = setTimeout(tick, 100)
     }
     tick()
     return () => {
