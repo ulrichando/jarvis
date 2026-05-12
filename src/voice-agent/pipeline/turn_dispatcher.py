@@ -35,9 +35,9 @@ Pipeline (each FINAL transcript runs through):
 
 State management:
   * `prompt_state: dict` — shared with `_build_initial_prompt_state`.
-    The handler reads `instructions_prefix`, `instructions_suffix`,
-    `learned_rules_block` and mutates `rules_mtime`,
-    `last_memory_block`, `last_breaker_block` in place.
+    The handler reads `instructions_prefix`, `learned_rules_block`
+    and mutates `rules_mtime`, `last_memory_block`,
+    `last_breaker_block` in place.
   * Everything else is either a session attribute mutation or a
     `bg_tasks` set spawn.
 
@@ -166,7 +166,7 @@ def make_dispatch_handler(
             if rules_changed or memory_changed or breaker_changed:
                 new_instructions = (
                     prompt_state["instructions_prefix"] + rules_block
-                    + prompt_state["instructions_suffix"] + new_memory_block
+                    + new_memory_block
                     + new_breaker_block
                 )
 
