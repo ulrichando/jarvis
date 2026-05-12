@@ -81,3 +81,45 @@ def test_archival_proposals_skip_replay(patch_replay):
     )
     assert r.passed is True
     assert "archival" in r.reason.lower()
+
+
+def test_concurrent_renders_respect_semaphore_bound(patch_replay, monkeypatch):
+    """Pre-fix: 600 calls run sequentially. Post-fix: bounded by
+    semaphore(concurrency)."""
+    from pipeline.evolution.evaluator import replay_delta
+
+    _, monkeypatch_inner = patch_replay
+
+    # Track concurrent in-flight render+judge calls.
+    in_flight = {"current": 0, "max": 0}
+    import threading
+    lock = threading.Lock()
+
+    original_render = replay_delta._render_response
+
+    def slow_render(turn, rule_text, with_rule):
+        import time as t
+        with lock:
+            in_flight["current"] += 1
+            in_flight["max"] = max(in_flight["max"], in_flight["current"])
+        t.sleep(0.01)
+        with lock:
+            in_flight["current"] -= 1
+        return f"WITH={with_rule} RULE={rule_text} Q={turn['user_text']}"
+
+    monkeypatch.setattr(replay_delta, "_render_response", slow_render)
+    monkeypatch.setattr(
+        replay_delta, "_judge_pair",
+        lambda *a, **k: "improved",
+    )
+
+    r = replay_delta.replay_delta_stage(
+        {"rule": "test"}, sample_size=20, concurrency=4,
+    )
+    assert r.passed is True
+    assert in_flight["max"] <= 4, (
+        f"semaphore did not bound concurrency: max={in_flight['max']}"
+    )
+    assert in_flight["max"] >= 2, (
+        f"expected actual parallelism > 1, got max={in_flight['max']}"
+    )
