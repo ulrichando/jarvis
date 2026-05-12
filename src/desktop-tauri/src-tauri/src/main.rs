@@ -1010,6 +1010,31 @@ fn find_project_root() -> Option<std::path::PathBuf> {
     Some(p.to_path_buf())
 }
 
+/// Locate the bun executable. Returns the first match from PATH, or
+/// the standard user-install location at `$HOME/.bun/bin/bun`, or
+/// None if neither resolves. The tray's PATH (set by systemd-user /
+/// .desktop launchers) typically lacks `~/.bun/bin` even though the
+/// user installed bun there via the official installer — so a bare
+/// `Command::new("bun")` returns ENOENT and the auto-spawn flow
+/// silently degrades to the diagnostic window. Resolving here lets
+/// `try_spawn_web` find bun regardless of how the tray was started.
+fn find_bun_executable() -> Option<std::path::PathBuf> {
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    for dir in path_var.split(':').filter(|s| !s.is_empty()) {
+        let candidate = std::path::PathBuf::from(dir).join("bun");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let user_bun = std::path::PathBuf::from(home).join(".bun/bin/bun");
+        if user_bun.is_file() {
+            return Some(user_bun);
+        }
+    }
+    None
+}
+
 /// Spawn `bun run dev` in src/web as a detached background process.
 /// Fire-and-forget — no PID tracking. Matches the launch.sh pattern
 /// where backend services (proxy, bridge, voice) survive tray exits.
@@ -1045,7 +1070,13 @@ fn try_spawn_web() -> bool {
         Ok(f) => f,
         Err(_) => return false,
     };
-    let mut cmd = std::process::Command::new("bun");
+    let Some(bun) = find_bun_executable() else {
+        eprintln!(
+            "[JARVIS] try_spawn_web: bun not found in PATH or ~/.bun/bin — install via `curl -fsSL https://bun.sh/install | bash`"
+        );
+        return false;
+    };
+    let mut cmd = std::process::Command::new(&bun);
     cmd.arg("run").arg("dev")
         .current_dir(&web_dir)
         .stdin(std::process::Stdio::null())
@@ -1054,7 +1085,8 @@ fn try_spawn_web() -> bool {
     match cmd.spawn() {
         Ok(child) => {
             eprintln!(
-                "[JARVIS] try_spawn_web: spawned bun run dev (pid={}) in {} — log {}",
+                "[JARVIS] try_spawn_web: spawned {} run dev (pid={}) in {} — log {}",
+                bun.display(),
                 child.id(),
                 web_dir.display(),
                 log_path,
@@ -1066,7 +1098,10 @@ fn try_spawn_web() -> bool {
             true
         }
         Err(e) => {
-            eprintln!("[JARVIS] try_spawn_web: spawn failed: {e}");
+            eprintln!(
+                "[JARVIS] try_spawn_web: spawn failed for {}: {e}",
+                bun.display()
+            );
             false
         }
     }
