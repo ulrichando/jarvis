@@ -27,9 +27,7 @@ logger = logging.getLogger("jarvis.prompt_builder")
 __all__ = [
     "MAX_LEARNED_RULES",
     "LEARNED_RULES_PATH",
-    "PROPOSALS_PATH",
     "load_learned_rules",
-    "count_pending_proposals",
     "build_breaker_status_block",
 ]
 
@@ -39,9 +37,10 @@ __all__ = [
 # dropped from the injection (the file itself is untouched).
 MAX_LEARNED_RULES: int = 100
 
-# Sources for the learned-rules + log-analyzer-proposal stores.
+# Source of the learned-rules store. PROPOSALS_PATH was retired
+# 2026-05-12 alongside tools/log_analyzer.py — autonomous evolution
+# via pipeline.evolution.* is the only producer now.
 LEARNED_RULES_PATH: Path = Path.home() / ".jarvis" / "learned_rules.md"
-PROPOSALS_PATH:     Path = Path.home() / ".jarvis" / "learned_rules.proposals.md"
 
 
 def load_learned_rules() -> str:
@@ -77,19 +76,6 @@ def load_learned_rules() -> str:
         "than any default behavior described elsewhere in this prompt:\n\n"
         + rules_text
     )
-
-
-def count_pending_proposals() -> int:
-    """Return the number of PENDING rule proposals. 0 on any error.
-
-    Lazy-imports `tools.log_analyzer.count_pending` so this module
-    doesn't pull tool surface at import time.
-    """
-    try:
-        from tools.log_analyzer import count_pending
-        return count_pending()
-    except Exception:
-        return 0
 
 
 # ── Breaker-status block ─────────────────────────────────────────────

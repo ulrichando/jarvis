@@ -12,15 +12,18 @@ Tools available:
   - computer_use      : 9 desktop-control tools (xdotool / scrot / Kimi vision)
   - file_*            : direct in-process read/edit/write (claude-code-derived)
   - github            : `gh`-CLI subagent for issue / PR / repo operations
-  - log_analyzer      : pattern-extracts from voice-agent log files
   - memory            : durable-fact memory (remember / recall / list / forget)
   - memory_recall     : semantic search over conversation history
   - plan_mode         : enter/exit plan mode + present_plan (claude-code-derived)
   - token_estimation  : pre-flight token-budget checker for chat_ctx
   - validator         : Groq-backed outcome validator subagent
 
-`browser` and `browser_v2` modules were removed 2026-05-09 — the
-extension-driven `browser_ext` is the only browser path now.
+`log_analyzer` was retired 2026-05-12 — autonomous self-evolution
+via pipeline.evolution.* superseded it, leaving the legacy proposals
+file orphaned and the background loop burning cycles for nothing.
+
+`browser` and `browser_v2` modules were removed 2026-05-09/2026-05-12
+— the extension-driven `browser_ext` is the only browser path now.
 
 Stage A reorganization 2026-05-05 (RFC-001). Files were previously at
 voice-agent's top level as `jarvis_<name>.py`.
