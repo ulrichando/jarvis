@@ -34,7 +34,6 @@ KNOWN_LEAK_NAMES: frozenset[str] = frozenset({
     # as content text.
     "transfer_to_desktop",
     "transfer_to_browser",
-    "transfer_to_browser_v2",
     "transfer_to_planner",
     "delegate",
     # Browser ext_* tools — prefixed; bulk-prevented in is_known_leak.
