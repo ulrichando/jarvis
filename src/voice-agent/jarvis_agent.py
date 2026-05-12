@@ -292,6 +292,17 @@ from tools.plan_mode import (
     exit_plan_mode as _exit_plan_mode_tool,
     read_plan as _read_plan_tool,
 )
+# Task family — port of claude-code's TaskCreate / TaskGet / TaskList /
+# TaskUpdate + TodoWrite (bulk). Storage: ~/.jarvis/voice-tasks/<list-id>/.
+# Default list is durable across voice sessions; set JARVIS_TASK_LIST_ID
+# to scope a list to a feature or workstream. Added 2026-05-12.
+from tools.tasks import (
+    task_create as _task_create_tool,
+    task_list as _task_list_tool,
+    task_update as _task_update_tool,
+    task_delete as _task_delete_tool,
+    todo_write as _todo_write_tool,
+)
 
 
 # ── Groq TTS error-body logging shim ──────────────────────────────────
@@ -5010,6 +5021,17 @@ async def entrypoint(ctx: JobContext) -> None:
             # instruction the supervisor follows using existing tools.
             list_skills,
             run_skill,
+            # Task family — port of claude-code's TaskCreate / TaskGet /
+            # TaskList / TaskUpdate + TodoWrite (2026-05-12). Use for
+            # multi-step user requests: maintain ONE in_progress task
+            # at a time, mark completed as soon as done. Storage at
+            # ~/.jarvis/voice-tasks/<list-id>/, durable across sessions
+            # by default; JARVIS_TASK_LIST_ID env scopes per-feature.
+            _task_create_tool,
+            _task_list_tool,
+            _task_update_tool,
+            _task_delete_tool,
+            _todo_write_tool,
             # Memory — recall_conversation searches transcript history;
             # remember/forget/list_memories operate on the durable
             # facts store (state.db.memories) that survives chat delete.
