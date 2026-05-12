@@ -218,3 +218,67 @@ def test_promotion_blocked_when_golden_eval_fails(store, monkeypatch, tmp_path):
 
     loaded = store.load()
     assert any(r.id == "R-0202" for r in loaded.staged)
+
+
+def test_negative_counts_rebuild_from_audit_log_across_restart(
+    store, tmp_path, monkeypatch
+):
+    """Pre-fix: _negative_counts is in-memory only. After a restart,
+    a rule that had 2 strikes goes back to 0 — quarantine is weaker
+    than designed. Post-fix: rebuild from audit log on first use."""
+    import json
+    from pipeline.evolution import lifecycle, audit_log
+    from pipeline.evolution.schema import Rule
+
+    log_path = tmp_path / "audit.jsonl"
+    monkeypatch.setattr(audit_log, "LOG_PATH", log_path)
+
+    # Simulate a "before restart" session: 2 negative signals recorded
+    # for R-0050.
+    store.save_rule(Rule(id="R-0050", tier="accepted",
+                          text="rule under test", created="2026-05-01"))
+    lifecycle.record_negative_signal(store, rule_id="R-0050", turn_id="t-1")
+    lifecycle.record_negative_signal(store, rule_id="R-0050", turn_id="t-2")
+    assert lifecycle._negative_counts.get("R-0050", 0) == 2
+
+    # Simulate a restart: wipe the in-memory counter + the rebuilt flag.
+    lifecycle._negative_counts.clear()
+    lifecycle._rebuilt_flag = False
+
+    # Now the 3rd strike should still trigger quarantine because the
+    # rebuild from the audit log restores the count to 2.
+    lifecycle.record_negative_signal(store, rule_id="R-0050", turn_id="t-3")
+
+    loaded = store.load()
+    quarantined = [r for r in loaded.archived if r.id == "R-0050"]
+    assert len(quarantined) == 1, (
+        f"R-0050 should be quarantined after 3 signals across restart; "
+        f"archived={[r.id for r in loaded.archived]}"
+    )
+
+
+def test_quarantine_resets_count_in_rebuild(store, tmp_path, monkeypatch):
+    """After quarantine archives a rule, the rebuilt count for that
+    rule should be 0 (because the rule is archived; subsequent strikes
+    against it shouldn't accumulate)."""
+    import json
+    from pipeline.evolution import lifecycle, audit_log
+    from pipeline.evolution.schema import Rule
+
+    log_path = tmp_path / "audit.jsonl"
+    monkeypatch.setattr(audit_log, "LOG_PATH", log_path)
+
+    store.save_rule(Rule(id="R-0060", tier="accepted",
+                          text="rule under test", created="2026-05-01"))
+    lifecycle.record_negative_signal(store, rule_id="R-0060", turn_id="t-1")
+    lifecycle.record_negative_signal(store, rule_id="R-0060", turn_id="t-2")
+    lifecycle.record_negative_signal(store, rule_id="R-0060", turn_id="t-3")
+
+    # Now quarantine has fired. Simulate restart.
+    lifecycle._negative_counts.clear()
+    lifecycle._rebuilt_flag = False
+
+    # Force rebuild.
+    lifecycle._ensure_negative_counts_rebuilt()
+    # R-0060 was archived → its count should be 0 in the rebuild.
+    assert lifecycle._negative_counts.get("R-0060", 0) == 0
