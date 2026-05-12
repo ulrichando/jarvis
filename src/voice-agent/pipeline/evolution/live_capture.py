@@ -89,10 +89,23 @@ class LiveCapture:
             return None
         self._recent_corrections.append(normalized)
 
+        prior_summary = (prior.jarvis_text or "").strip()[:120]
+        if prior_summary:
+            synthesized_rule = (
+                f"When the user expresses a correction ('{phrase}'), "
+                f"avoid repeating the pattern that led to: \"{prior_summary}\""
+            )
+        else:
+            synthesized_rule = (
+                f"When the user expresses a correction with phrase '{phrase}', "
+                f"adjust behavior accordingly."
+            )
+
         proposal = {
             "source": "live_capture",
             "matched_phrase": phrase,
             "pattern": f"User correction triggered by '{phrase}'",
+            "rule": synthesized_rule,
             "evidence_quote": user_text,
             "evidence_turns": [prior.turn_id, turn_id],
             "prior_jarvis": prior.jarvis_text,

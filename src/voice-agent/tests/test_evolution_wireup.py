@@ -52,3 +52,35 @@ def test_observe_turn_swallows_producer_exceptions(tmp_path, monkeypatch):
 
     wireup.reset_for_test()
     wireup.observe_turn(turn_id="t-1", user_text="x", jarvis_text="y")
+
+
+def test_wireup_auto_stages_live_capture_proposal_in_logging_only(
+    tmp_path, monkeypatch
+):
+    """End-to-end: a correction phrase fires live_capture, which produces a
+    proposal with a 'rule' field, which auto_stage receives WITHOUT
+    raising. In logging-only mode, audit_log captures 'would_stage'."""
+    from pipeline.evolution import audit_log, wireup
+    monkeypatch.setenv("JARVIS_EVOLUTION_LOGGING_ONLY", "1")
+    audit_path = tmp_path / "audit.jsonl"
+    monkeypatch.setattr(audit_log, "LOG_PATH", audit_path)
+
+    wireup.reset_for_test()
+
+    wireup.observe_turn(
+        turn_id="t-1",
+        user_text="open chrome",
+        jarvis_text="Launching Chromium…",
+    )
+    wireup.observe_turn(
+        turn_id="t-2",
+        user_text="don't open chromium",
+        jarvis_text="(silence)",
+    )
+
+    import json
+    lines = audit_path.read_text().strip().splitlines() if audit_path.exists() else []
+    parsed = [json.loads(l) for l in lines]
+    kinds = [p.get("kind") for p in parsed]
+    assert "live_capture_proposal" in kinds
+    assert "would_stage" in kinds
