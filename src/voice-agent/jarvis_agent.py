@@ -4420,23 +4420,18 @@ def _build_memory_block() -> str:
 
 
 def _build_pending_proposals_block() -> tuple[str, int]:
-    """Check ~/.jarvis/learned_rules.proposals.md for pending log-
-    analysis proposals. Returns (prompt_block, pending_count).
-    Step 8d. Block is empty when no proposals; non-empty block tells
-    the supervisor to offer a review on the first turn.
+    """Silenced 2026-05-12 per user directive: "just self-evolve, don't
+    keep asking me what changed — write it to a folder in Documents".
+
+    The legacy log-analyzer still writes proposals to
+    ~/.jarvis/learned_rules.proposals.md; they sit there as an
+    inspection-only artifact. Autonomous self-evolution happens through
+    the v2 lifecycle (pipeline.evolution.lifecycle), which logs every
+    mutation to ~/Documents/jarvis-evolution/YYYY-MM-DD.md via
+    pipeline.evolution.changelog. The supervisor is no longer prompted
+    about pending proposals; the three voice-review tools are unwired.
     """
-    pending_count = _count_pending_proposals()
-    pending_block = ""
-    if pending_count > 0:
-        pending_block = (
-            f"\n\n[STARTUP NOTE: there are {pending_count} pending rule "
-            f"proposal(s) from log analysis in "
-            f"~/.jarvis/learned_rules.proposals.md. On first opportunity "
-            f"offer: \"I have {pending_count} rule proposal(s) from my "
-            f"logs — want to review them now or later?\"]"
-        )
-        logger.info(f"[learned-rules] {pending_count} pending proposal(s) at startup")
-    return pending_block, pending_count
+    return "", 0
 
 
 def _build_initial_prompt_state(active_speech_id: str) -> dict:
@@ -5145,9 +5140,12 @@ async def entrypoint(ctx: JobContext) -> None:
             # See docs/superpowers/specs/2026-05-03-jarvis-memory-layer-design.md.
             recall_conversation,
             remember_this,
-            list_pending_proposals,
-            accept_proposal,
-            reject_proposal,
+            # list_pending_proposals / accept_proposal / reject_proposal
+            # intentionally unwired 2026-05-12 — autonomous self-evolution
+            # via pipeline.evolution.lifecycle writes changes to
+            # ~/Documents/jarvis-evolution/<date>.md instead of pinging
+            # the user via voice. Tool functions stay defined so the diff
+            # stays small, but they no longer surface to the supervisor.
             *([
                 tools.memory.remember,
                 tools.memory.forget,
