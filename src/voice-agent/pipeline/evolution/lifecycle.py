@@ -18,7 +18,7 @@ import time
 from collections import Counter
 from typing import Optional
 
-from . import audit_log
+from . import audit_log, changelog
 from .schema import Rule
 from .store import AnchorWriteRefused, RuleStore
 
@@ -143,6 +143,14 @@ def auto_stage(
         source=proposal.get("source"),
         evidence_turns=rule.turns,
     )
+    changelog.append(
+        action="auto-staged",
+        rule_id=rule_id,
+        rule_text=rule.text,
+        source=proposal.get("source"),
+        reason="passed 5-stage evaluator → entered 7-day shadow",
+        evidence_turns=rule.turns,
+    )
     logger.info(f"[lifecycle] staged {rule_id}: {rule.text[:80]}")
     return rule_id
 
@@ -196,6 +204,13 @@ def rollback(
         from_tier=from_tier,
         to_tier="archived",
         reason=reason,
+    )
+    changelog.append(
+        action="archived",
+        rule_id=rule_id,
+        rule_text=archived_target.text,
+        reason=reason,
+        extras={"from_tier": from_tier, "retirement_reason": retirement_reason},
     )
 
 
@@ -315,6 +330,13 @@ def promote_eligible_staged(
             kind="tier_transition",
             rule_id=r.id, from_tier="staged", to_tier="accepted",
             reason=f"{STAGED_SHADOW_DAYS}d shadow + golden eval pass",
+        )
+        changelog.append(
+            action="promoted-to-accepted",
+            rule_id=r.id,
+            rule_text=clean.text,
+            reason=f"{STAGED_SHADOW_DAYS}d shadow + golden eval passed",
+            evidence_turns=clean.turns,
         )
         promoted += 1
     logger.info(f"[lifecycle] promoted {promoted} staged → accepted")
