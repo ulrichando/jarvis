@@ -25,6 +25,7 @@ from pathlib import Path
 logger = logging.getLogger("jarvis.log_analyzer")
 
 CONVO_DB_PATH   = Path.home() / ".jarvis" / "conversations.db"
+TELEMETRY_DB_PATH = Path.home() / ".local" / "share" / "jarvis" / "turn_telemetry.db"
 RULES_PATH      = Path.home() / ".jarvis" / "learned_rules.md"
 PROPOSALS_PATH  = Path.home() / ".jarvis" / "learned_rules.proposals.md"
 AGENT_LOG_PATH  = Path("/tmp/jarvis-voice-agent.log")
@@ -180,6 +181,63 @@ def _gather_evidence() -> dict:
         except Exception as e:
             logger.warning(f"[analyzer] log read failed: {e}")
 
+    return ev
+
+
+def _gather_telemetry_evidence(lookback_days: int = LOOKBACK_DAYS) -> dict:
+    """Mine `turn_telemetry.db` for evolution-relevant signals.
+
+    The previous evidence source (`conversations.db`) is unreliable —
+    it has been zero-byte since 2026-05-04 in production. Telemetry is
+    written on every turn by `pipeline/turn_telemetry.py`, so this is
+    the live source.
+
+    Signals returned (4):
+      - correction_turns: user phrases like "stop doing", "you're wrong"
+      - interrupted_turns: turns flagged interrupted=1 in telemetry
+      - route_fallback_turns: turns where route_fallback fired
+      - hard_pressure_turns: turns at context_pressure='hard'
+    """
+    ev: dict = {
+        "correction_turns": [],
+        "interrupted_turns": [],
+        "route_fallback_turns": [],
+        "hard_pressure_turns": [],
+    }
+    if not TELEMETRY_DB_PATH.exists():
+        return ev
+    cutoff_iso = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ",
+        time.gmtime(time.time() - lookback_days * 86400),
+    )
+    try:
+        with sqlite3.connect(str(TELEMETRY_DB_PATH), timeout=2.0) as conn:
+            rows = conn.execute(
+                "SELECT ts_utc, user_text, jarvis_text, route, interrupted, "
+                "       route_fallback, context_pressure "
+                "FROM turns WHERE ts_utc >= ? ORDER BY ts_utc ASC",
+                (cutoff_iso,),
+            ).fetchall()
+    except Exception as e:
+        logger.warning(f"[analyzer] telemetry read failed: {e}")
+        return ev
+
+    for ts, utext, jtext, route, interrupted, rfb, pressure in rows:
+        utext = (utext or "").strip()
+        jtext = (jtext or "").strip()
+        if not utext and not jtext:
+            continue
+        label = f"{ts} [{route or '?'}]"
+
+        low_u = utext.lower()
+        if any(w in low_u for w in _CORRECTION_WORDS):
+            ev["correction_turns"].append(f"{label} user: {utext[:160]}")
+        if interrupted:
+            ev["interrupted_turns"].append(f"{label} user: {utext[:120]}")
+        if rfb:
+            ev["route_fallback_turns"].append(f"{label} user: {utext[:120]}")
+        if pressure == "hard":
+            ev["hard_pressure_turns"].append(f"{label} user: {utext[:120]}")
     return ev
 
 
