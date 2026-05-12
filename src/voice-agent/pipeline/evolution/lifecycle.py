@@ -122,11 +122,26 @@ def rollback(
         logger.warning(f"[lifecycle] rollback target {rule_id} not found")
         return
     # update_tier moves the rule between buckets; then save_rule
-    # writes the archived metadata (retired, reason).
+    # writes the archived metadata (retired, reason). NOTE: since I-4's
+    # lock-then-reread, update_tier replaces the in-store cache with a
+    # fresh snapshot whose Rule objects differ in identity from `target`
+    # above. Re-fetch the freshly-parsed object so save_rule's tier
+    # routing sees tier="archived" and the retired/reason mutations
+    # land on the right object.
     store.update_tier(rule_id, new_tier="archived")
-    target.retired = _today()
-    target.reason = retirement_reason
-    store.save_rule(target)
+    refreshed = store.load()
+    archived_target = next(
+        (r for r in refreshed.archived if r.id == rule_id), None
+    )
+    if archived_target is None:  # pragma: no cover - update_tier just placed it
+        logger.warning(
+            f"[lifecycle] rollback: {rule_id} missing from archived after "
+            "update_tier; aborting metadata write"
+        )
+        return
+    archived_target.retired = _today()
+    archived_target.reason = retirement_reason
+    store.save_rule(archived_target)
     audit_log.append_event(
         kind="tier_transition",
         rule_id=rule_id,

@@ -158,3 +158,46 @@ def test_load_rejects_unknown_tier_in_learned(tmp_path):
     store = RuleStore(anchor_path=anchor, learned_path=learned)
     with pytest.raises(SchemaError, match="unknown tier"):
         store.load()
+
+
+def test_concurrent_save_rule_does_not_lose_updates(store_paths, tmp_path):
+    """Two writers both calling save_rule must not lose either rule.
+
+    Pre-fix: writer A loads state-S, writer B loads state-S in parallel,
+    both mutate independently, both os.replace — one update lost.
+
+    Post-fix: writer A holds LOCK_EX on the sibling .lock file; writer B
+    blocks, then on acquisition re-reads disk and sees A's commit, so
+    its mutation is applied on top of A's, not on top of stale S.
+    """
+    from pipeline.evolution.store import RuleStore
+    from pipeline.evolution.schema import Rule
+    import threading
+
+    anchor, learned, _ = store_paths
+    barrier = threading.Barrier(2)
+    errors: list[BaseException] = []
+
+    def writer(rule_id: str, text: str) -> None:
+        try:
+            store = RuleStore(anchor_path=anchor, learned_path=learned)
+            store.load()
+            barrier.wait()
+            store.save_rule(Rule(id=rule_id, tier="accepted", text=text,
+                                  created="2026-05-12"))
+        except BaseException as e:
+            errors.append(e)
+
+    t_a = threading.Thread(target=writer, args=("R-9000", "writer A"))
+    t_b = threading.Thread(target=writer, args=("R-9001", "writer B"))
+    t_a.start(); t_b.start()
+    t_a.join(timeout=5); t_b.join(timeout=5)
+
+    assert errors == [], f"writers errored: {errors}"
+
+    final_store = RuleStore(anchor_path=anchor, learned_path=learned)
+    loaded = final_store.load()
+    ids = {r.id for r in loaded.accepted}
+    assert "R-9000" in ids, "writer A's rule was lost"
+    assert "R-9001" in ids, "writer B's rule was lost"
+    assert "R-0001" in ids, "pre-existing rule was lost"
