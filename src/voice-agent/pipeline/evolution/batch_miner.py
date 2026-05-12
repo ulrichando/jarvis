@@ -135,6 +135,7 @@ def _propose_with_llm(evidence: dict) -> list[dict]:
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
+                "User-Agent": "jarvis-evolution/1.0 (+batch_miner)",
             },
             method="POST",
         )
@@ -143,7 +144,22 @@ def _propose_with_llm(evidence: dict) -> list[dict]:
         raw = data["choices"][0]["message"]["content"].strip()
         if raw.startswith("```"):
             raw = raw.strip("`").lstrip("json").strip()
-        parsed = json.loads(raw)
+        # llama-3.1-8b-instant frequently appends trailing prose after
+        # the JSON array ("Hope this helps!", a follow-up object, etc.).
+        # json.loads is strict; use raw_decode to consume only the
+        # first valid JSON value. Fall back to a bracket-match
+        # extractor if raw_decode can't find a value at offset 0.
+        try:
+            parsed, _end = json.JSONDecoder().raw_decode(raw)
+        except json.JSONDecodeError:
+            start = raw.find("[")
+            if start < 0:
+                return []
+            try:
+                parsed, _end = json.JSONDecoder().raw_decode(raw[start:])
+            except json.JSONDecodeError as e:
+                logger.warning(f"[miner] JSON extraction failed: {e}")
+                return []
         if not isinstance(parsed, list):
             return []
         out: list[dict] = []
