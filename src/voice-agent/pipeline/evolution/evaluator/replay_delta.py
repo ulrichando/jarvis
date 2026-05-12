@@ -6,18 +6,16 @@ the system prompt, one without), and ask Sonnet to label each
 pair {improved, neutral, regressed}. The rule passes iff
 `regressed == 0 AND improved >= 3`.
 
-This is the strongest gate — it tests behavioral impact on real
-conversation. Three injection points are mocked in tests:
-
-  - _sample_historical_turns(n): pulls from turn_telemetry.db
-  - _render_response(turn, rule, with_rule): renders supervisor
-    output for one turn (calls Sonnet)
-  - _judge_pair(before, after, rule): labels the diff
-
-The stage parallelises render calls; default concurrency=8.
+Parallelism: per-turn render+render+judge fan-out under
+asyncio.Semaphore(concurrency=DEFAULT_CONCURRENCY=8). 200 turns
+× 3 sequential calls ≈ 50 min wall-clock dropped to ~6-8 min.
+Injection points (_sample_historical_turns, _render_response,
+_judge_pair) stay sync — wrapped via asyncio.to_thread so existing
+tests' monkey-patches continue to apply.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import sqlite3
 from pathlib import Path
@@ -35,6 +33,9 @@ logger = logging.getLogger("jarvis.evolution.replay_delta")
 TELEMETRY_DB_PATH: Path = (
     Path.home() / ".local" / "share" / "jarvis" / "turn_telemetry.db"
 )
+
+
+DEFAULT_CONCURRENCY: int = 8
 
 
 def _sample_historical_turns(n: int) -> list[dict]:
@@ -120,8 +121,46 @@ def _judge_pair(before: str, after: str, rule: str, user_text: str = "") -> str:
     return "neutral"
 
 
+def _run_parallel_replay(
+    turns: list[dict], rule: str, concurrency: int,
+) -> list[str]:
+    """Run the per-turn render+render+judge fan-out under a bounded
+    semaphore. Returns verdicts in input order.
+
+    Each turn does three sync calls (before-render, after-render,
+    judge_pair). They share a semaphore so at most `concurrency`
+    turns are in flight simultaneously.
+    """
+    async def one_turn(t: dict, sem: asyncio.Semaphore) -> str:
+        async with sem:
+            before = await asyncio.to_thread(_render_response, t, rule, False)
+            after = await asyncio.to_thread(_render_response, t, rule, True)
+            verdict = await asyncio.to_thread(
+                _judge_pair, before, after, rule, t["user_text"],
+            )
+        return verdict
+
+    async def gather_all() -> list[str]:
+        sem = asyncio.Semaphore(max(1, concurrency))
+        tasks = [one_turn(t, sem) for t in turns]
+        return await asyncio.gather(*tasks)
+
+    try:
+        return asyncio.run(gather_all())
+    except RuntimeError:
+        # If there's already a loop in this thread (rare for a sync
+        # evaluator stage but defensive), spawn a fresh loop in a
+        # worker thread.
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(lambda: asyncio.run(gather_all())).result()
+
+
 def replay_delta_stage(
-    proposal: dict, *, sample_size: int = 200
+    proposal: dict,
+    *,
+    sample_size: int = 200,
+    concurrency: int = DEFAULT_CONCURRENCY,
 ) -> EvaluatorResult:
     if proposal.get("kind", "").startswith("archive_"):
         return EvaluatorResult(
@@ -140,11 +179,9 @@ def replay_delta_stage(
             stage="replay_delta", passed=False,
             reason="no historical turns available for replay",
         )
-    verdicts: list[str] = []
-    for t in turns:
-        before = _render_response(t, rule, with_rule=False)
-        after = _render_response(t, rule, with_rule=True)
-        verdicts.append(_judge_pair(before, after, rule, user_text=t["user_text"]))
+
+    verdicts = _run_parallel_replay(turns, rule, concurrency)
+
     regressed = sum(1 for v in verdicts if v == "regressed")
     improved = sum(1 for v in verdicts if v == "improved")
     neutral = sum(1 for v in verdicts if v == "neutral")
@@ -153,6 +190,7 @@ def replay_delta_stage(
         "regressed": regressed,
         "improved": improved,
         "neutral": neutral,
+        "concurrency": concurrency,
     }
     if regressed > 0:
         return EvaluatorResult(
@@ -165,7 +203,7 @@ def replay_delta_stage(
         return EvaluatorResult(
             stage="replay_delta",
             passed=False,
-            reason=f"only {improved} improvement(s) — need >=3",
+            reason=f"only {improved} improvement(s) — need ≥3",
             detail=detail,
         )
     return EvaluatorResult(
