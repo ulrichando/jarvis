@@ -321,6 +321,15 @@ from tools.monitor import (
     monitor_stop as _monitor_stop_tool,
     monitor_list as _monitor_list_tool,
 )
+# Git worktrees — port of claude-code's EnterWorktree / ExitWorktree
+# with list_worktrees. Spawns isolated checkouts at
+# <repo>/.worktrees/<name>/ on fresh branches so the supervisor can
+# try a fix on a side branch without polluting main. Added 2026-05-12.
+from tools.worktree import (
+    enter_worktree as _enter_worktree_tool,
+    exit_worktree as _exit_worktree_tool,
+    list_worktrees as _list_worktrees_tool,
+)
 
 
 # ── Groq TTS error-body logging shim ──────────────────────────────────
@@ -5067,6 +5076,15 @@ async def entrypoint(ctx: JobContext) -> None:
             _monitor_status_tool,
             _monitor_stop_tool,
             _monitor_list_tool,
+            # Git worktrees (2026-05-12) — port of claude-code's
+            # EnterWorktree / ExitWorktree. Spawns isolated checkouts
+            # under <repo>/.worktrees/<name>/ on a fresh branch so
+            # the supervisor can run experiments / destructive ops
+            # without touching the user's main checkout. See GIT
+            # WORKTREES section of supervisor.md.
+            _enter_worktree_tool,
+            _exit_worktree_tool,
+            _list_worktrees_tool,
             # Memory — recall_conversation searches transcript history;
             # remember/forget/list_memories operate on the durable
             # facts store (state.db.memories) that survives chat delete.
