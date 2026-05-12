@@ -38,6 +38,37 @@ def test_detects_dead_subsystem_refs():
     assert "R-3" not in ids
 
 
+def test_dead_subsystem_ignores_negated_keywords():
+    """Regression: 2026-05-12 — first autonomous archival false-positively
+    retired R-0007 ("Never open chromium for this") because the keyword
+    scan was negation-blind. Rules that forbid a dead keyword must NOT
+    be flagged; rules that use the dead behavior still must be.
+    """
+    from pipeline.evolution.contradiction_detector import find_dead_subsystem_rules
+
+    rules = [
+        # Negated: should be SKIPPED.
+        Rule(id="R-keep-1", tier="accepted",
+             text="Use google-chrome. Never open chromium for this."),
+        Rule(id="R-keep-2", tier="accepted",
+             text="Don't use elevenlabs — TTS goes through Groq Orpheus."),
+        Rule(id="R-keep-3", tier="accepted",
+             text="Never say 'yes, sir' — answer with 'Yes?' instead."),
+        # Non-negated: must STILL be flagged.
+        Rule(id="R-archive-1", tier="accepted",
+             text="Use chromium with --new-window for the browser."),
+        Rule(id="R-archive-2", tier="accepted",
+             text="Always reply 'yes, sir' to bare-name pings."),
+    ]
+
+    flagged_ids = {r.id for r in find_dead_subsystem_rules(rules)}
+    assert "R-keep-1" not in flagged_ids
+    assert "R-keep-2" not in flagged_ids
+    assert "R-keep-3" not in flagged_ids
+    assert "R-archive-1" in flagged_ids
+    assert "R-archive-2" in flagged_ids
+
+
 def test_run_detector_emits_archival_proposals(tmp_path, monkeypatch):
     from pipeline.evolution import contradiction_detector, audit_log
     monkeypatch.setattr(audit_log, "LOG_PATH", tmp_path / "audit.jsonl")
