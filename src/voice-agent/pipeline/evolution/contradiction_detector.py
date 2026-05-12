@@ -39,9 +39,48 @@ _DEAD_KEYWORDS = [
     "chromium",
 ]
 
+# Negation markers that, when they precede a dead-keyword hit in the
+# same clause, indicate the rule is FORBIDDING the dead behavior — i.e.
+# the rule is exactly the kind we want to KEEP, not archive. Added
+# 2026-05-12 after the first autonomous archival false-positively
+# retired R-0007 ("Never open chromium for this") because the substring
+# match was negation-blind.
+_NEGATION_MARKERS = (
+    "never", "don't", "do not", "avoid", "not use", "no longer",
+    "stop using", "stop saying", "instead of", "rather than", "not ",
+)
+
 
 def _similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+
+def _keyword_is_negated(text_low: str, keyword: str) -> bool:
+    """True if every occurrence of `keyword` in `text_low` is preceded
+    (within the same clause, ~40 chars back) by a negation marker. If
+    any occurrence is non-negated, return False (so the rule is still
+    a dead-subsystem candidate).
+    """
+    idx = 0
+    saw_at_least_one = False
+    while True:
+        pos = text_low.find(keyword, idx)
+        if pos < 0:
+            break
+        saw_at_least_one = True
+        # Look back ~40 chars but clip at the previous clause boundary
+        # (. ; — / newline) so "Use Foo. Never use Bar" doesn't get
+        # mis-attributed.
+        window_start = max(0, pos - 40)
+        window = text_low[window_start:pos]
+        for sep in (". ", "; ", " — ", "\n"):
+            cut = window.rfind(sep)
+            if cut >= 0:
+                window = window[cut + len(sep):]
+        if not any(m in window for m in _NEGATION_MARKERS):
+            return False
+        idx = pos + len(keyword)
+    return saw_at_least_one
 
 
 def find_duplicates(
@@ -62,8 +101,13 @@ def find_dead_subsystem_rules(rules: Iterable[Rule]) -> list[Rule]:
         if r.tier not in ("accepted", "staged"):
             continue
         low = r.text.lower()
-        if any(k in low for k in _DEAD_KEYWORDS):
+        for k in _DEAD_KEYWORDS:
+            if k not in low:
+                continue
+            if _keyword_is_negated(low, k):
+                continue
             hits.append(r)
+            break
     return hits
 
 

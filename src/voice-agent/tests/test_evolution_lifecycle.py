@@ -23,7 +23,7 @@ schema_version: 2
 @pytest.fixture
 def store(tmp_path, monkeypatch):
     from pipeline.evolution.store import RuleStore
-    from pipeline.evolution import audit_log
+    from pipeline.evolution import audit_log, changelog
 
     anchor = tmp_path / "anchor.md"
     learned = tmp_path / "learned.md"
@@ -35,6 +35,9 @@ def store(tmp_path, monkeypatch):
         '- <!-- id=R-0001 tier=accepted --> Reply "Yes?" to bare Jarvis pings.\n'
     )
     monkeypatch.setattr(audit_log, "LOG_PATH", tmp_path / "audit.jsonl")
+    # Redirect the human-readable changelog so test runs don't pollute
+    # ~/Documents/jarvis-evolution/.
+    monkeypatch.setattr(changelog, "CHANGELOG_DIR", tmp_path / "changelog")
     return RuleStore(anchor_path=anchor, learned_path=learned)
 
 
