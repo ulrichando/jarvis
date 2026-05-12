@@ -119,6 +119,43 @@ def cmd_migrate_v2(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_refresh_anchor_baseline(args: argparse.Namespace) -> int:
+    import hashlib
+    from pipeline.evolution import audit_log
+    from pipeline.evolution.schema import parse_rules_v2, serialize_rules_v2
+
+    store = _store_from_env()
+    anchor_text = store.anchor_path.read_text(encoding="utf-8")
+    new_sha = hashlib.sha256(anchor_text.encode("utf-8")).hexdigest()
+
+    if not store.learned_path.exists():
+        print(f"learned file does not exist: {store.learned_path}", file=sys.stderr)
+        return 1
+
+    parsed = parse_rules_v2(store.learned_path.read_text(encoding="utf-8"))
+    old_sha = parsed.frontmatter.get("anchor_baseline_sha256", "")
+    if old_sha == new_sha:
+        print(f"baseline already current: {new_sha[:12]}…")
+        return 0
+
+    parsed.frontmatter["anchor_baseline_sha256"] = new_sha
+    store.learned_path.write_text(
+        serialize_rules_v2(parsed), encoding="utf-8"
+    )
+    audit_log.append_event(
+        kind="anchor_baseline_refreshed",
+        old_sha=old_sha,
+        new_sha=new_sha,
+        anchor_path=str(store.anchor_path),
+    )
+    print(f"refreshed anchor baseline:")
+    print(f"  old: {old_sha[:12] if old_sha else '(unset)'}…")
+    print(f"  new: {new_sha[:12]}…")
+    print(f"  wrote {store.learned_path}")
+    print(f"  audit_log {audit_log.LOG_PATH}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -145,6 +182,10 @@ def main() -> int:
     p_mig.add_argument("--out", type=Path, default=None)
     p_mig.add_argument("--in-place", action="store_true")
     p_mig.set_defaults(func=cmd_migrate_v2)
+
+    p_refresh = sub.add_parser("refresh-anchor-baseline",
+                               help="Update anchor_baseline_sha256 after legitimate anchor edit")
+    p_refresh.set_defaults(func=cmd_refresh_anchor_baseline)
 
     args = ap.parse_args()
     return args.func(args)
