@@ -309,6 +309,18 @@ from tools.tasks import (
 # user's next utterance against the option labels (see TASK TRACKING
 # section's neighbour in prompts/supervisor.md). Added 2026-05-12.
 from tools.ask_user_question import ask_user_question as _ask_user_question_tool
+# Background-command monitoring — voice-adapted port of claude-code's
+# Monitor (poll-based for voice's user-initiated cadence rather than
+# push-based). Spawn long-running commands in the background, poll
+# their status by id later. State is worker-scoped in-memory; child
+# processes die with the worker so no orphans accumulate. Added
+# 2026-05-12.
+from tools.monitor import (
+    monitor_start as _monitor_start_tool,
+    monitor_status as _monitor_status_tool,
+    monitor_stop as _monitor_stop_tool,
+    monitor_list as _monitor_list_tool,
+)
 
 
 # ── Groq TTS error-body logging shim ──────────────────────────────────
@@ -5045,6 +5057,16 @@ async def entrypoint(ctx: JobContext) -> None:
             # option labels (see CLARIFYING WITH OPTIONS section of
             # supervisor.md).
             _ask_user_question_tool,
+            # Background-command monitoring (2026-05-12) — port of
+            # claude-code's Monitor, voice-adapted to poll-on-demand
+            # instead of push-into-conversation. Spawn long runners
+            # like `tail -f`, `npm run dev`, polling loops; check
+            # their progress later by id without blocking the turn.
+            # See BACKGROUND MONITORS section of supervisor.md.
+            _monitor_start_tool,
+            _monitor_status_tool,
+            _monitor_stop_tool,
+            _monitor_list_tool,
             # Memory — recall_conversation searches transcript history;
             # remember/forget/list_memories operate on the durable
             # facts store (state.db.memories) that survives chat delete.
