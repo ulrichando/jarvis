@@ -140,3 +140,81 @@ def test_bulk_retirement_guard_routes_to_hitl(store):
 
     assert routed["auto_archived"] == 0
     assert routed["routed_to_hitl"] == 6
+
+
+def test_promote_eligible_staged_to_accepted(store, monkeypatch, tmp_path):
+    from pipeline.evolution import lifecycle, audit_log, golden_eval
+    from pipeline.evolution.schema import Rule
+
+    monkeypatch.setattr(audit_log, "LOG_PATH", tmp_path / "audit.jsonl")
+    monkeypatch.setattr(
+        golden_eval, "run", lambda rules: {
+            "signature_reflex_pass_rate": 0.96,
+            "judge_pass_rate": 0.86,
+            "total": 50, "misses": [],
+        },
+    )
+
+    old = "2026-05-01"
+    store.save_rule(Rule(
+        id="R-0200", tier="staged", text="[STAGED] use Default profile",
+        created=old, reinforced=old,
+    ))
+
+    lifecycle.promote_eligible_staged(store, today="2026-05-12")
+
+    loaded = store.load()
+    accepted_ids = [r.id for r in loaded.accepted]
+    staged_ids = [r.id for r in loaded.staged]
+    assert "R-0200" in accepted_ids
+    assert "R-0200" not in staged_ids
+
+
+def test_recent_staged_rule_not_promoted(store, monkeypatch, tmp_path):
+    from pipeline.evolution import lifecycle, audit_log, golden_eval
+    from pipeline.evolution.schema import Rule
+
+    monkeypatch.setattr(audit_log, "LOG_PATH", tmp_path / "audit.jsonl")
+    monkeypatch.setattr(
+        golden_eval, "run", lambda rules: {
+            "signature_reflex_pass_rate": 1.0, "judge_pass_rate": 1.0,
+            "total": 50, "misses": [],
+        },
+    )
+
+    today = "2026-05-12"
+    store.save_rule(Rule(
+        id="R-0201", tier="staged", text="[STAGED] recent rule",
+        created=today, reinforced=today,
+    ))
+
+    lifecycle.promote_eligible_staged(store, today=today)
+
+    loaded = store.load()
+    staged_ids = [r.id for r in loaded.staged]
+    assert "R-0201" in staged_ids
+
+
+def test_promotion_blocked_when_golden_eval_fails(store, monkeypatch, tmp_path):
+    from pipeline.evolution import lifecycle, audit_log, golden_eval
+    from pipeline.evolution.schema import Rule
+
+    monkeypatch.setattr(audit_log, "LOG_PATH", tmp_path / "audit.jsonl")
+    monkeypatch.setattr(
+        golden_eval, "run", lambda rules: {
+            "signature_reflex_pass_rate": 0.80,
+            "judge_pass_rate": 0.90,
+            "total": 50, "misses": [],
+        },
+    )
+
+    old = "2026-05-01"
+    store.save_rule(Rule(
+        id="R-0202", tier="staged", text="[STAGED] eligible by age",
+        created=old, reinforced=old,
+    ))
+
+    lifecycle.promote_eligible_staged(store, today="2026-05-12")
+
+    loaded = store.load()
+    assert any(r.id == "R-0202" for r in loaded.staged)
