@@ -988,15 +988,17 @@ from pipeline.short_input_gate import (
 # effectively a user-editable extension of JARVIS_INSTRUCTIONS that
 # grows over time without touching the source code.
 #
-# Two sources populate the file:
+# Two sources used to populate the file:
 #   1. Voice corrections — the `remember_this` tool, called when the
 #      user says "remember that" / "that was wrong" / "note for future".
 #      Written immediately; JARVIS treats them as in-effect for the
 #      rest of the current session via its conversation context.
-#   2. Log analysis — tools.log_analyzer.run_analysis(), which runs
-#      as a background task on startup and stages candidate rules into
-#      learned_rules.proposals.md for human review. Proposals never
-#      auto-apply; the user reviews them by voice.
+#   2. Autonomous self-evolution — pipeline.evolution.* mines telemetry,
+#      runs proposals through the 5-stage evaluator, and auto-stages /
+#      archives / promotes rules without HITL voice prompts. Every
+#      mutation lands in ~/Documents/jarvis-evolution/<date>.md via
+#      pipeline.evolution.changelog. The legacy tools/log_analyzer.py
+#      that wrote to learned_rules.proposals.md was retired 2026-05-12.
 #
 # Design constraints:
 #   - Rules are append-only; old entries are never auto-deleted.
@@ -1009,15 +1011,14 @@ from pipeline.short_input_gate import (
 # Learned-rules + breaker-status block builders moved to
 # pipeline/instructions_assembly.py (Step 7 of the 10/10 refactor).
 # Re-exporting under the legacy underscored names so existing call
-# sites and tests are untouched. The constants are also re-exported
-# (callers below append to LEARNED_RULES_PATH and read PROPOSALS_PATH
-# from this module).
+# sites and tests are untouched. Callers below append to
+# LEARNED_RULES_PATH (the only constant that survived the 2026-05-12
+# log_analyzer retirement — PROPOSALS_PATH and count_pending_proposals
+# went with it).
 from pipeline.prompt_builder import (
     MAX_LEARNED_RULES,
     LEARNED_RULES_PATH as _LEARNED_RULES_PATH,
-    PROPOSALS_PATH     as _PROPOSALS_PATH,
     load_learned_rules    as _load_learned_rules,
-    count_pending_proposals as _count_pending_proposals,
 )
 
 
@@ -1792,103 +1793,10 @@ async def remember_this(rule: str) -> str:
         return f"(failed to save rule: {e})"
 
 
-@function_tool
-async def list_pending_proposals() -> str:
-    """List pending behavioral rule proposals generated from log analysis.
-
-    Call this when the user says:
-      - "review pending rules" / "review proposals" / "what rules are pending"
-      - "show me the pending rules" / "any suggestions from the logs"
-
-    Returns a numbered list of PENDING proposals. Read each one aloud and
-    ask the user: "Accept, reject, or skip?" Then call accept_proposal(n)
-    or reject_proposal(n) accordingly.
-    """
-    try:
-        if not _PROPOSALS_PATH.exists():
-            return "No proposals to review yet — the analyzer hasn't generated any. Tell the user."
-        from tools.log_analyzer import _load_existing_proposals
-        proposals = _load_existing_proposals()
-        pending = [(i + 1, p) for i, p in enumerate(proposals)
-                   if p.get("status") == "PENDING"]
-        if not pending:
-            return "No pending proposals — all have been reviewed. Tell the user."
-        lines = [f"Found {len(pending)} pending proposal(s):\n"]
-        for n, p in pending:
-            lines.append(
-                f"Proposal {n}: {p.get('rule', '(no rule text)')}"
-                + (f" — based on: {p.get('pattern', '')}" if p.get("pattern") else "")
-            )
-        return "\n".join(lines)
-    except Exception as e:
-        logger.warning(f"[proposals] list failed: {e}")
-        return f"Could not load proposals [{type(e).__name__}]. Tell the user briefly."
-
-
-@function_tool
-async def accept_proposal(proposal_number: int) -> str:
-    """Accept a pending rule proposal and move it to the live rules file.
-
-    Call this after the user says 'accept' or 'yes' for a specific proposal
-    shown by list_pending_proposals. The rule is appended to
-    ~/.jarvis/learned_rules.md and takes effect from the next session start.
-
-    Args:
-        proposal_number: The 1-based proposal number from list_pending_proposals.
-    """
-    try:
-        from tools.log_analyzer import _load_existing_proposals, _write_proposals
-        proposals = _load_existing_proposals()
-        pending_indices = [i for i, p in enumerate(proposals)
-                           if p.get("status") == "PENDING"]
-        # proposal_number is 1-based among PENDING proposals
-        if proposal_number < 1 or proposal_number > len(pending_indices):
-            return f"Proposal {proposal_number} not found. Tell the user and offer to list pending proposals again."
-        real_idx = pending_indices[proposal_number - 1]
-        rule = proposals[real_idx].get("rule", "").strip()
-        if not rule:
-            return "That proposal has no rule text — treating as rejected. Tell the user."
-        # Mark accepted in file
-        proposals[real_idx]["status"] = "ACCEPTED"
-        await asyncio.to_thread(_write_proposals, proposals)
-        # Append to live rules
-        today = time.strftime("%Y-%m-%d")
-        entry = f"- [{today}] {rule}\n"
-        _LEARNED_RULES_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _LEARNED_RULES_PATH.open("a", encoding="utf-8") as f:
-            f.write(entry)
-        logger.info(f"[learned-rules] accepted proposal {proposal_number}: {rule[:80]}")
-        return f"Accepted. Rule added: '{rule}'. Takes full effect from next session."
-    except Exception as e:
-        logger.warning(f"[proposals] accept failed: {e}")
-        return f"Could not accept the proposal [{type(e).__name__}]. Tell the user briefly."
-
-
-@function_tool
-async def reject_proposal(proposal_number: int) -> str:
-    """Reject a pending rule proposal (marks it rejected, does not add to rules).
-
-    Call this after the user says 'reject' or 'no' for a specific proposal.
-
-    Args:
-        proposal_number: The 1-based proposal number from list_pending_proposals.
-    """
-    try:
-        from tools.log_analyzer import _load_existing_proposals, _write_proposals
-        proposals = _load_existing_proposals()
-        pending_indices = [i for i, p in enumerate(proposals)
-                           if p.get("status") == "PENDING"]
-        if proposal_number < 1 or proposal_number > len(pending_indices):
-            return f"Proposal {proposal_number} not found. Tell the user and offer to list pending proposals again."
-        real_idx = pending_indices[proposal_number - 1]
-        rule = proposals[real_idx].get("rule", "")
-        proposals[real_idx]["status"] = "REJECTED"
-        await asyncio.to_thread(_write_proposals, proposals)
-        logger.info(f"[learned-rules] rejected proposal {proposal_number}: {rule[:80]}")
-        return f"Rejected. Proposal {proposal_number} won't be applied."
-    except Exception as e:
-        logger.warning(f"[proposals] reject failed: {e}")
-        return f"Could not reject the proposal [{type(e).__name__}]. Tell the user briefly."
+# list_pending_proposals / accept_proposal / reject_proposal — retired
+# 2026-05-12 alongside tools/log_analyzer.py. Autonomous self-evolution
+# (pipeline.evolution.*) replaced them; every mutation now lands in
+# ~/Documents/jarvis-evolution/<date>.md without voice prompting.
 
 
 # ── Direct primitive tools ────────────────────────────────────────────
@@ -3876,28 +3784,12 @@ def _build_llm_stack() -> dict:
     }
 
 
-def _spawn_background_log_analyzer() -> None:
-    """Spawn the behavioral-analyzer background task. Step 8b of the
-    10/10 refactor. The analyzer scans the last 7 days of
-    conversations.db + agent log for repeated failure patterns and
-    stages candidate rules in `learned_rules.proposals.md`. Bounded
-    to 60 s; all errors caught. A cooldown (12 h) inside the analyzer
-    prevents re-running on every client reconnect."""
-    async def _run_analyzer_bg() -> None:
-        try:
-            # Delay 10 s so the session is fully active before we
-            # fire any network calls (Groq API for LLM proposal gen).
-            await asyncio.sleep(10)
-            from tools.log_analyzer import run_analysis
-            n = await asyncio.wait_for(run_analysis(), timeout=60.0)
-            if n > 0:
-                logger.info(f"[analyzer] {n} new proposal(s) staged")
-        except asyncio.TimeoutError:
-            logger.warning("[analyzer] analysis timed out after 60s")
-        except Exception as e:
-            logger.warning(f"[analyzer] background task error: {e}")
-
-    asyncio.create_task(_run_analyzer_bg())
+# _spawn_background_log_analyzer — retired 2026-05-12 alongside
+# tools/log_analyzer.py. Autonomous self-evolution via
+# pipeline.evolution.* is the only producer of behavioral-rule
+# proposals now (background loops live in
+# pipeline/evolution/wireup.py, spawned by
+# _spawn_evolution_background_tasks below).
 
 
 def _evolution_voice_tools() -> list:
@@ -4419,19 +4311,9 @@ def _build_memory_block() -> str:
         return ""
 
 
-def _build_pending_proposals_block() -> tuple[str, int]:
-    """Silenced 2026-05-12 per user directive: "just self-evolve, don't
-    keep asking me what changed — write it to a folder in Documents".
-
-    The legacy log-analyzer still writes proposals to
-    ~/.jarvis/learned_rules.proposals.md; they sit there as an
-    inspection-only artifact. Autonomous self-evolution happens through
-    the v2 lifecycle (pipeline.evolution.lifecycle), which logs every
-    mutation to ~/Documents/jarvis-evolution/YYYY-MM-DD.md via
-    pipeline.evolution.changelog. The supervisor is no longer prompted
-    about pending proposals; the three voice-review tools are unwired.
-    """
-    return "", 0
+# _build_pending_proposals_block — deleted 2026-05-12 alongside the
+# rest of the log_analyzer subsystem. Autonomous evolution doesn't
+# need a pending-review nag injected into the supervisor prompt.
 
 
 def _build_initial_prompt_state(active_speech_id: str) -> dict:
@@ -4445,7 +4327,6 @@ def _build_initial_prompt_state(active_speech_id: str) -> dict:
     JarvisAgent + later refresh the prompt mid-session:
 
       - instructions_prefix : JARVIS_INSTRUCTIONS + WHO-YOU-ARE
-      - instructions_suffix : pending-proposals notice (or "")
       - learned_rules_block : current contents of learned_rules.md
       - rules_mtime         : mtime of learned_rules.md for hot-reload
       - memory_block        : top-N curated facts (or "")
@@ -4454,13 +4335,11 @@ def _build_initial_prompt_state(active_speech_id: str) -> dict:
     """
     runtime_id_block = _build_runtime_id_block(active_speech_id)
     learned_rules_block = _load_learned_rules()
-    pending_block, _pending_count = _build_pending_proposals_block()
 
     # Stash static parts so the per-turn rule-reload can reconstruct
     # the full instructions when learned_rules.md changes mid-session,
     # without re-deriving the session-bound pieces.
     instructions_prefix = JARVIS_INSTRUCTIONS + runtime_id_block
-    instructions_suffix = pending_block
 
     try:
         rules_mtime = _LEARNED_RULES_PATH.stat().st_mtime
@@ -4478,7 +4357,6 @@ def _build_initial_prompt_state(active_speech_id: str) -> dict:
 
     return {
         "instructions_prefix":  instructions_prefix,
-        "instructions_suffix":  instructions_suffix,
         "learned_rules_block":  learned_rules_block,
         "rules_mtime":          rules_mtime,
         "memory_block":         memory_block,
@@ -4486,7 +4364,6 @@ def _build_initial_prompt_state(active_speech_id: str) -> dict:
         "initial_instructions": (
             instructions_prefix
             + learned_rules_block
-            + instructions_suffix
             + memory_block
             + breaker_block
         ),
@@ -5034,7 +4911,6 @@ async def entrypoint(ctx: JobContext) -> None:
     # facts + upstream-provider health).
     _ps = _build_initial_prompt_state(active_speech_id)
     _instructions_prefix = _ps["instructions_prefix"]
-    _instructions_suffix = _ps["instructions_suffix"]
     learned_rules_block  = _ps["learned_rules_block"]
     _rules_mtime         = _ps["rules_mtime"]
     _memory_block        = _ps["memory_block"]
@@ -5240,10 +5116,11 @@ async def entrypoint(ctx: JobContext) -> None:
         ),
     )
 
-    # Spawn the three background watchers — each is a fire-and-forget
-    # task whose lifetime is bound to the job. Extracted 2026-05-10
-    # (Step 8b of the 10/10 refactor).
-    _spawn_background_log_analyzer()
+    # Spawn the background watchers — each is a fire-and-forget task
+    # whose lifetime is bound to the job. Extracted 2026-05-10 (Step
+    # 8b of the 10/10 refactor). The log-analyzer watcher was retired
+    # 2026-05-12 alongside tools/log_analyzer.py — evolution's wireup
+    # now owns proposal mining.
     _spawn_evolution_background_tasks()
     _spawn_screen_share_watcher(session)
     _spawn_worker_heartbeat()
