@@ -6,13 +6,50 @@ wrapper around the shared `_browser_ext_base.post` helper; the
 4-way split groups them by responsibility so the LLM-facing API
 surface is easier to navigate when adding new tools or debugging
 a specific behavior class.
+
+Navigation tools (`ext_navigate`, `ext_new_tab`, `web_search`)
+additionally bring Chrome to the foreground via `_focus_chrome_window`
+after a successful post. Added 2026-05-12 after a live session where
+JARVIS opened Google Maps in a background Chrome window while the
+user was looking at VS Code — the navigation succeeded but the user
+couldn't see it, so the supervisor's "Maps is open" narrative was
+indistinguishable from a hallucination.
 """
 from __future__ import annotations
 
+import logging
+import subprocess
 from typing import Optional
 from livekit.agents import function_tool
 
 from tools._browser_ext_base import post, summarize
+
+
+_logger = logging.getLogger("jarvis.tools.browser_ext_nav")
+
+
+def _focus_chrome_window() -> None:
+    """Best-effort: activate the most-recently-active Chrome window.
+
+    Runs `wmctrl -a "Google Chrome"` — substring-matches the window
+    title; every Chrome window ends with " - Google Chrome". Silent
+    on failure (wmctrl not installed, no Chrome window open, or any
+    bare crash all collapse to a no-op). The nav already landed; the
+    tool result must not depend on whether window-focus succeeded.
+
+    NOT called from `ext_back` / `ext_forward` — those run during a
+    sequence the user is already watching, and surprise-focusing
+    Chrome in the middle of unrelated work would be worse than the
+    back-button cost.
+    """
+    try:
+        subprocess.run(
+            ["wmctrl", "-a", "Google Chrome"],
+            check=False, timeout=2.0,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception as e:
+        _logger.debug(f"[focus-chrome] swallowed: {e}")
 
 
 # Production agents (browser-use, Stagehand) skip the search-box
@@ -43,7 +80,10 @@ async def ext_navigate(url: str) -> str:
     Args:
         url: Full URL including protocol (https://example.com).
     """
-    return summarize(await post("navigate", url=url))
+    result = await post("navigate", url=url)
+    if result.get("ok"):
+        _focus_chrome_window()
+    return summarize(result)
 
 
 @function_tool
@@ -67,7 +107,10 @@ async def ext_new_tab(url: Optional[str] = None) -> str:
     # `required` AND drops `additionalProperties:false` so the resulting
     # hybrid-valid schema lets the LLM omit `url`. See POSTMORTEM-001
     # for the regression caught + fixed mid-session.
-    return summarize(await post("new_tab", url=url or ""))
+    result = await post("new_tab", url=url or "")
+    if result.get("ok"):
+        _focus_chrome_window()
+    return summarize(result)
 
 
 @function_tool
@@ -145,6 +188,7 @@ async def web_search(engine: str, query: str, new_tab: bool = False) -> str:
     if not result.get("ok"):
         return summarize(result)
 
+    _focus_chrome_window()
     pretty_engine = eng if eng in _SEARCH_URLS else f"Google (engine={eng!r} unknown)"
     return f"Searched {pretty_engine} for {query!r}."
 
