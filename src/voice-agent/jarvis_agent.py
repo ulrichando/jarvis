@@ -330,6 +330,15 @@ from tools.worktree import (
     exit_worktree as _exit_worktree_tool,
     list_worktrees as _list_worktrees_tool,
 )
+# Symbol search — LSP-lite via git grep. Voice-adapted subset of
+# claude-code's LSP tool: "where is symbol X defined" and "where is
+# X used" via regex over the repo's tracked files. Full LSP semantics
+# (cross-module rename, type info at position) need a real language
+# server — defer. Added 2026-05-12.
+from tools.code_search import (
+    find_definitions as _find_definitions_tool,
+    find_references as _find_references_tool,
+)
 
 
 # ── Groq TTS error-body logging shim ──────────────────────────────────
@@ -5085,6 +5094,12 @@ async def entrypoint(ctx: JobContext) -> None:
             _enter_worktree_tool,
             _exit_worktree_tool,
             _list_worktrees_tool,
+            # Symbol search (2026-05-12) — LSP-lite via git grep.
+            # find_definitions: where IS symbol X defined?
+            # find_references: where is X used? See CODE SEARCH section
+            # of supervisor.md.
+            _find_definitions_tool,
+            _find_references_tool,
             # Memory — recall_conversation searches transcript history;
             # remember/forget/list_memories operate on the durable
             # facts store (state.db.memories) that survives chat delete.
