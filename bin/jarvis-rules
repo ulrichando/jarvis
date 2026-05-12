@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""JARVIS rules CLI — list / review / diff / revert / migrate-v2."""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "src" / "voice-agent"))
+
+from pipeline.evolution.store import RuleStore  # noqa: E402
+
+
+def _store_from_env() -> RuleStore:
+    anchor = Path(os.environ.get(
+        "JARVIS_RULES_ANCHOR_PATH",
+        REPO_ROOT / "src" / "voice-agent" / "prompts" / "anchor_rules.md",
+    ))
+    learned = Path(os.environ.get(
+        "JARVIS_RULES_LEARNED_PATH",
+        Path.home() / ".jarvis" / "learned_rules.md",
+    ))
+    return RuleStore(anchor_path=anchor, learned_path=learned)
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    store = _store_from_env()
+    loaded = store.load()
+    buckets = [
+        ("ANCHOR", loaded.anchor),
+        ("CORE", loaded.core),
+        ("ACCEPTED", loaded.accepted),
+        ("STAGED", loaded.staged),
+        ("ARCHIVED", loaded.archived),
+    ]
+    for title, rules in buckets:
+        if args.tier and args.tier.upper() != title:
+            continue
+        print(f"\n═══ {title} ({len(rules)}) ═══\n")
+        for r in rules:
+            print(f"  {r.id} [{r.created or '?'}] {r.text[:100]}")
+    return 0
+
+
+def cmd_diff(args: argparse.Namespace) -> int:
+    store = _store_from_env()
+    loaded = store.load()
+    for r in loaded.all_rules:
+        if r.id == args.rule_id:
+            print(f"id: {r.id}")
+            print(f"tier: {r.tier}")
+            print(f"created: {r.created}")
+            print(f"reinforced: {r.reinforced}")
+            print(f"turns: {r.turns}")
+            print(f"supersedes: {r.supersedes}")
+            print(f"superseded_by: {r.superseded_by}")
+            print(f"proposal: {r.proposal}")
+            print(f"evidence: {r.evidence[:200]}")
+            print(f"evaluator: {r.evaluator}")
+            print(f"shadow_until: {r.shadow_until}")
+            print()
+            print(f"text: {r.text}")
+            return 0
+    print(f"rule {args.rule_id} not found", file=sys.stderr)
+    return 1
+
+
+def cmd_revert(args: argparse.Namespace) -> int:
+    from pipeline.evolution import lifecycle
+    from pipeline.evolution.store import AnchorWriteRefused
+
+    store = _store_from_env()
+    try:
+        lifecycle.rollback(
+            store, rule_id=args.rule_id,
+            reason=args.reason or "cli revert",
+            retirement_reason=args.reason or "cli_revert",
+        )
+    except AnchorWriteRefused as e:
+        print(f"refused: {e}", file=sys.stderr)
+        return 2
+    print(f"reverted {args.rule_id}")
+    return 0
+
+
+def cmd_review(args: argparse.Namespace) -> int:
+    store = _store_from_env()
+    loaded = store.load()
+    if not loaded.staged:
+        print("No staged rules.")
+        return 0
+    print(f"\n═══ STAGED ({len(loaded.staged)}) ═══\n")
+    for r in loaded.staged:
+        print(f"  {r.id} [{r.created}] {r.text}")
+    print()
+    print("To accept (promote to accepted), wait for the 7-day shadow.")
+    print("To revert, run: bin/jarvis-rules revert R-NNNN --reason '...'")
+    return 0
+
+
+def cmd_migrate_v2(args: argparse.Namespace) -> int:
+    import shutil
+    from pipeline.evolution.migrate import migrate_v1_to_v2
+
+    learned = args.learned or (Path.home() / ".jarvis" / "learned_rules.md")
+    anchor = args.anchor or (REPO_ROOT / "src" / "voice-agent" / "prompts" / "anchor_rules.md")
+    if args.in_place:
+        backup = learned.with_suffix(".v1.bak.md")
+        if not backup.exists():
+            shutil.copy(learned, backup)
+            print(f"backed up v1 to {backup}")
+        out = learned
+    else:
+        out = args.out or learned.with_suffix(".v2.md")
+    migrate_v1_to_v2(v1_path=learned, anchor_path=anchor, out_path=out)
+    print(f"wrote v2 → {out}")
+    return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p_list = sub.add_parser("list")
+    p_list.add_argument("--tier", default=None)
+    p_list.set_defaults(func=cmd_list)
+
+    p_diff = sub.add_parser("diff")
+    p_diff.add_argument("rule_id")
+    p_diff.set_defaults(func=cmd_diff)
+
+    p_revert = sub.add_parser("revert")
+    p_revert.add_argument("rule_id")
+    p_revert.add_argument("--reason", default=None)
+    p_revert.set_defaults(func=cmd_revert)
+
+    p_review = sub.add_parser("review")
+    p_review.set_defaults(func=cmd_review)
+
+    p_mig = sub.add_parser("migrate-v2")
+    p_mig.add_argument("--learned", type=Path, default=None)
+    p_mig.add_argument("--anchor", type=Path, default=None)
+    p_mig.add_argument("--out", type=Path, default=None)
+    p_mig.add_argument("--in-place", action="store_true")
+    p_mig.set_defaults(func=cmd_migrate_v2)
+
+    args = ap.parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
