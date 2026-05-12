@@ -7,7 +7,10 @@ from typing import Iterable
 from .base import EvaluatorResult, Stage
 
 
-__all__ = ["EvaluatorPipeline", "EvaluatorResult", "Stage", "judge_call"]
+__all__ = [
+    "EvaluatorPipeline", "EvaluatorResult", "Stage", "judge_call",
+    "build_default_pipeline",
+]
 
 
 logger = logging.getLogger("jarvis.evolution.evaluator")
@@ -36,3 +39,19 @@ class EvaluatorPipeline:
             if not r.passed:
                 break
         return results
+
+
+def build_default_pipeline() -> EvaluatorPipeline:
+    """The 5-stage pipeline in canonical order."""
+    from .provenance import provenance_stage
+    from .persona_anchor import persona_anchor_stage
+    from .replay_delta import replay_delta_stage
+    from .red_team import red_team_stage
+    from .poll_ensemble import poll_ensemble_stage
+    return EvaluatorPipeline(stages=[
+        provenance_stage,
+        persona_anchor_stage,
+        replay_delta_stage,
+        red_team_stage,
+        poll_ensemble_stage,
+    ])
