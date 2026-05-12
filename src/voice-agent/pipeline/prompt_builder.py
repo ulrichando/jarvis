@@ -47,9 +47,16 @@ PROPOSALS_PATH:     Path = Path.home() / ".jarvis" / "learned_rules.proposals.md
 def load_learned_rules() -> str:
     """Read `LEARNED_RULES_PATH` and return a system-prompt block.
 
-    Returns "" if the file is missing or empty — caller appends this
-    to the instruction string so an empty return is harmless.
+    When `JARVIS_LEARNED_RULES_V2=1`, dispatches to the v2 loader
+    which understands tiered sections + anchor sha-check. Otherwise
+    keeps the legacy bullet-prefix reader unchanged.
     """
+    import os
+    if os.environ.get("JARVIS_LEARNED_RULES_V2") == "1":
+        from pipeline.learned_rules_v2 import load_learned_rules_v2
+        v2_block = load_learned_rules_v2()
+        if v2_block:
+            return v2_block
     try:
         content = LEARNED_RULES_PATH.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -57,12 +64,9 @@ def load_learned_rules() -> str:
     except Exception as e:
         logger.warning(f"[learned-rules] read failed: {e}")
         return ""
-    # Only lines that look like bullet points (start with '-')
     lines = [l for l in content.splitlines() if l.strip().startswith("-")]
     if not lines:
         return ""
-    # Keep the most recent MAX_LEARNED_RULES; oldest are silently dropped
-    # from the injection (not from the file).
     if len(lines) > MAX_LEARNED_RULES:
         lines = lines[-MAX_LEARNED_RULES:]
     rules_text = "\n".join(lines)
