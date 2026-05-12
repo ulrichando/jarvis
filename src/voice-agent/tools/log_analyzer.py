@@ -181,6 +181,11 @@ def _gather_evidence() -> dict:
         except Exception as e:
             logger.warning(f"[analyzer] log read failed: {e}")
 
+    tel = _gather_telemetry_evidence(LOOKBACK_DAYS)
+    ev["correction_turns"].extend(tel["correction_turns"])
+    ev.setdefault("interrupted_turns", []).extend(tel["interrupted_turns"])
+    ev.setdefault("route_fallback_turns", []).extend(tel["route_fallback_turns"])
+    ev.setdefault("hard_pressure_turns", []).extend(tel["hard_pressure_turns"])
     return ev
 
 
@@ -256,6 +261,9 @@ def _call_llm_for_proposals(ev: dict) -> list[dict]:
     has_signal = (
         ev["night_responses"]
         or ev["correction_turns"]
+        or ev.get("interrupted_turns")
+        or ev.get("route_fallback_turns")
+        or ev.get("hard_pressure_turns")
         or (ev["log_snippets"] and len(ev["log_snippets"]) > 50)
     )
     if not has_signal:
@@ -284,6 +292,18 @@ def _call_llm_for_proposals(ev: dict) -> list[dict]:
         f"User correction turns ({len(ev['correction_turns'])} total):\n"
         + _fmt(ev["correction_turns"])
         if ev["correction_turns"] else "",
+
+        f"Interrupted turns ({len(ev.get('interrupted_turns', []))} total):\n"
+        + _fmt(ev.get("interrupted_turns", []))
+        if ev.get("interrupted_turns") else "",
+
+        f"Route fallback turns ({len(ev.get('route_fallback_turns', []))} total):\n"
+        + _fmt(ev.get("route_fallback_turns", []))
+        if ev.get("route_fallback_turns") else "",
+
+        f"Hard context-pressure turns ({len(ev.get('hard_pressure_turns', []))} total):\n"
+        + _fmt(ev.get("hard_pressure_turns", []))
+        if ev.get("hard_pressure_turns") else "",
 
         f"Relevant log lines:\n{ev['log_snippets'][:2500]}"
         if ev["log_snippets"] else "",
