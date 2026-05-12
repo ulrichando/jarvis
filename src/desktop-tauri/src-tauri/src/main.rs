@@ -710,6 +710,8 @@ fn speech_model_pretty(id: &str) -> Option<&'static str> {
         "deepseek-v4-flash"                              => Some("DeepSeek · v4 flash"),
         "deepseek-v4-pro"                                => Some("DeepSeek · v4 pro"),
         "claude-haiku-4-5"                               => Some("Claude · Haiku 4.5"),
+        "claude-sonnet-4-6"                              => Some("Claude · Sonnet 4.6"),
+        "claude-opus-4-7"                                => Some("Claude · Opus 4.7"),
         _ => None,
     }
 }
@@ -1549,11 +1551,16 @@ fn main() {
             let v_dschat    = MenuItemBuilder::with_id("speech_deepseek-chat",                                  "Use DeepSeek · chat (V3, fast)").build(app)?;
             let v_dsv4flash = MenuItemBuilder::with_id("speech_deepseek-v4-flash",                              "Use DeepSeek · v4 flash").build(app)?;
             let v_dsv4pro   = MenuItemBuilder::with_id("speech_deepseek-v4-pro",                                "Use DeepSeek · v4 pro (best tools)").build(app)?;
-            // Anthropic — Haiku 4.5 (added 2026-05-11). Requires
-            // ANTHROPIC_API_KEY in env. Slower TTFW than Groq (~700ms
-            // vs ~200ms) but quality+persona match are strong; also
-            // serves as rung 3 of the FallbackAdapter cascade.
-            let v_claude35  = MenuItemBuilder::with_id("speech_claude-haiku-4-5",                              "Use Anthropic · Claude Haiku 4.5").build(app)?;
+            // Anthropic — three tiers added 2026-05-11 (Haiku 4.5 via
+            // 1ae780f, Sonnet 4.6 + Opus 4.7 via e681914). Require
+            // ANTHROPIC_API_KEY in env. Slower TTFW than Groq (~700 ms
+            // Haiku → ~1.2 s Opus vs ~200 ms Groq) but quality + persona
+            // match are strong; Sonnet is the everyday-supervisor pick
+            // when orchestration reliability matters more than latency.
+            // Haiku also serves as rung-3 of the FallbackAdapter cascade.
+            let v_claude_haiku  = MenuItemBuilder::with_id("speech_claude-haiku-4-5",  "Use Anthropic · Claude Haiku 4.5  (fastest, ~700 ms)").build(app)?;
+            let v_claude_sonnet = MenuItemBuilder::with_id("speech_claude-sonnet-4-6", "Use Anthropic · Claude Sonnet 4.6  (everyday, recommended)").build(app)?;
+            let v_claude_opus   = MenuItemBuilder::with_id("speech_claude-opus-4-7",   "Use Anthropic · Claude Opus 4.7  (most capable, slowest)").build(app)?;
             let speech_submenu = SubmenuBuilder::new(app, "Speech model ▸")
                 .item(&v_llama33)
                 .item(&v_llama8b)
@@ -1563,7 +1570,9 @@ fn main() {
                 .item(&v_dschat)
                 .item(&v_dsv4flash)
                 .item(&v_dsv4pro)
-                .item(&v_claude35)
+                .item(&v_claude_haiku)
+                .item(&v_claude_sonnet)
+                .item(&v_claude_opus)
                 .build()?;
 
             // ── TTS VOICE submenu (nested under Models) ──
@@ -1840,6 +1849,8 @@ fn main() {
                         "speech_deepseek-v4-flash"                         => switch_speech_model(app, "deepseek-v4-flash"),
                         "speech_deepseek-v4-pro"                           => switch_speech_model(app, "deepseek-v4-pro"),
                         "speech_claude-haiku-4-5"                          => switch_speech_model(app, "claude-haiku-4-5"),
+                        "speech_claude-sonnet-4-6"                         => switch_speech_model(app, "claude-sonnet-4-6"),
+                        "speech_claude-opus-4-7"                           => switch_speech_model(app, "claude-opus-4-7"),
                         // TTS-voice picks (no agent restart — file written, read on next utterance)
                         "tts_gr_troy"   => switch_tts_provider(app, "groq:troy"),
                         "tts_gr_austin" => switch_tts_provider(app, "groq:austin"),
