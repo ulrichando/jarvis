@@ -201,8 +201,8 @@ async def bash(
         # Detached subprocess; result not awaited. Voice rarely needs this
         # but it's in the spec for parity with claude-code.
         try:
-            await asyncio.create_subprocess_shell(
-                cmd,
+            await asyncio.create_subprocess_exec(
+                "/bin/bash", "-c", cmd,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
                 start_new_session=True,
@@ -212,8 +212,13 @@ async def bash(
             return f"Failed to start background process: {type(e).__name__}: {e}"
 
     try:
-        proc = await asyncio.create_subprocess_shell(
-            cmd,
+        # create_subprocess_shell uses /bin/sh (dash on Kali), which
+        # silently mishandles bashisms — `[[ ]]`, brace expansion,
+        # arrays, `((...))`, `$'...'`, etc. The docstring promises bash
+        # and claude-code's coaching assumes bash, so we exec
+        # /bin/bash -c <cmd> directly. 2026-05-12 fix.
+        proc = await asyncio.create_subprocess_exec(
+            "/bin/bash", "-c", cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
