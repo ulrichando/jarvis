@@ -109,10 +109,39 @@ systemctl --user is-active livekit-server.service 2>&1 | sed 's/^/  livekit-serv
 systemctl --user is-active jarvis-bridge.service 2>&1 | sed 's/^/  bridge: /'
 echo
 
+echo "─── 7. Autonomous transitions (~/Documents/jarvis-evolution/<date>.md) ───"
+CHANGELOG_DIR="$HOME/Documents/jarvis-evolution"
+TODAY_FILE="$CHANGELOG_DIR/$DATE_LOCAL.md"
+YESTERDAY_LOCAL="$(date -d 'yesterday' '+%Y-%m-%d')"
+YDAY_FILE="$CHANGELOG_DIR/$YESTERDAY_LOCAL.md"
+echo "  changelog dir: $CHANGELOG_DIR"
+if [[ -d "$CHANGELOG_DIR" ]]; then
+    for f in "$YDAY_FILE" "$TODAY_FILE"; do
+        if [[ -f "$f" ]]; then
+            echo "  -- $(basename "$f") --"
+            # grep -c prints the count and exits 1 if zero matches —
+            # using "|| echo 0" would double-print. Just assign directly.
+            STG=$(grep -c '^## .* — AUTO-STAGED ' "$f" 2>/dev/null) || STG=0
+            ARC=$(grep -c '^## .* — ARCHIVED ' "$f" 2>/dev/null) || ARC=0
+            PRO=$(grep -c '^## .* — PROMOTED-TO-ACCEPTED ' "$f" 2>/dev/null) || PRO=0
+            RES=$(grep -c '^## .* — RESTORED ' "$f" 2>/dev/null) || RES=0
+            echo "    auto-staged: $STG    archived: $ARC    promoted: $PRO    restored: $RES"
+            echo "    --- entries ---"
+            sed 's/^/      /' "$f"
+        fi
+    done
+    if [[ ! -f "$TODAY_FILE" && ! -f "$YDAY_FILE" ]]; then
+        echo "  (no changelog files for today or yesterday — no autonomous transitions)"
+    fi
+else
+    echo "  (directory absent — autonomous-mode evolution has never written here)"
+fi
+echo
+
 echo "===================================================="
 echo " Verdict heuristic (manual review still required):"
-echo "   - STAGED count = 0 + would_stage > 0 → soak healthy"
-echo "   - STAGED count > 0 → JARVIS_EVOLUTION_LOGGING_ONLY"
-echo "       got cleared by accident; investigate"
+echo "   - autonomous-mode: section 7 entries are the source"
+echo "       of truth; review them for false positives"
+echo "       (like the R-0007 dead-subsystem incident 2026-05-12)"
 echo "   - many [evolution] WARNINGs → producer/evaluator bug"
 echo "===================================================="
