@@ -79,3 +79,133 @@ def test_gather_telemetry_evidence_handles_missing_db(tmp_path, monkeypatch):
 
     assert ev["correction_turns"] == []
     assert ev["interrupted_turns"] == []
+
+
+def test_run_analysis_calls_llm_when_telemetry_has_signal(
+    tmp_path, monkeypatch
+):
+    """Regression test for the dead-conversations.db bug.
+
+    Before this fix, run_analysis read evidence only from
+    conversations.db. Since that file has been 0-bytes in
+    production since 2026-05-04, has_signal returned False and
+    the LLM call was skipped — no proposals for a week.
+
+    This test exercises the REAL has_signal gate (not a
+    monkey-patch of _call_llm_for_proposals): conversations.db
+    is empty, telemetry has signal, expect the network call
+    to be attempted (means has_signal returned True).
+    """
+    telemetry = tmp_path / "turn_telemetry.db"
+    _seed_telemetry(telemetry)
+    empty_convo = tmp_path / "conversations.db"
+    empty_convo.touch()
+    proposals_path = tmp_path / "proposals.md"
+    rules_path = tmp_path / "rules.md"
+
+    from tools import log_analyzer
+    monkeypatch.setattr(log_analyzer, "TELEMETRY_DB_PATH", telemetry)
+    monkeypatch.setattr(log_analyzer, "CONVO_DB_PATH", empty_convo)
+    monkeypatch.setattr(log_analyzer, "PROPOSALS_PATH", proposals_path)
+    monkeypatch.setattr(log_analyzer, "RULES_PATH", rules_path)
+    monkeypatch.setattr(log_analyzer, "ANALYSIS_COOLDOWN_H", 0)
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+
+    network_calls: list[str] = []
+
+    class FakeResponse:
+        def __init__(self, payload: bytes) -> None:
+            self._payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self) -> bytes:
+            return self._payload
+
+    def fake_urlopen(req, *args, **kwargs):
+        network_calls.append(getattr(req, "full_url", str(req)))
+        body = (
+            b'{"choices":[{"message":{"content":'
+            b'"[{\\"pattern\\":\\"p\\",\\"evidence\\":\\"e\\",\\"rule\\":\\"test rule\\"}]"'
+            b'}}]}'
+        )
+        return FakeResponse(body)
+
+    monkeypatch.setattr(
+        log_analyzer.urllib.request, "urlopen", fake_urlopen
+    )
+
+    import asyncio
+    n = asyncio.run(log_analyzer.run_analysis())
+
+    assert network_calls, (
+        "has_signal returned False — telemetry wire-up regressed; "
+        "the LLM call was skipped despite live telemetry signal"
+    )
+    assert any("groq.com" in url for url in network_calls)
+    assert n == 1
+    assert "test rule" in proposals_path.read_text()
+
+
+def test_run_analysis_skips_llm_when_no_signal_anywhere(
+    tmp_path, monkeypatch
+):
+    """Inverse of the regression test — both sources empty, gate
+    should still block. Belt-and-suspenders against an over-eager
+    has_signal that always returns True."""
+    empty_telemetry = tmp_path / "turn_telemetry.db"
+    import sqlite3
+    with sqlite3.connect(empty_telemetry) as conn:
+        conn.executescript("""
+            CREATE TABLE turns (
+                id INTEGER PRIMARY KEY,
+                ts_utc TEXT NOT NULL,
+                user_text TEXT NOT NULL,
+                jarvis_text TEXT NOT NULL,
+                route TEXT,
+                interrupted INTEGER DEFAULT 0,
+                route_fallback INTEGER DEFAULT 0,
+                context_pressure TEXT,
+                subagent TEXT
+            );
+        """)
+    empty_convo = tmp_path / "conversations.db"
+    empty_convo.touch()
+    proposals_path = tmp_path / "proposals.md"
+    rules_path = tmp_path / "rules.md"
+
+    from tools import log_analyzer
+    monkeypatch.setattr(log_analyzer, "TELEMETRY_DB_PATH", empty_telemetry)
+    monkeypatch.setattr(log_analyzer, "CONVO_DB_PATH", empty_convo)
+    monkeypatch.setattr(log_analyzer, "PROPOSALS_PATH", proposals_path)
+    monkeypatch.setattr(log_analyzer, "RULES_PATH", rules_path)
+    monkeypatch.setattr(log_analyzer, "ANALYSIS_COOLDOWN_H", 0)
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    # Also blank AGENT_LOG_PATH so the log-snippets path can't smuggle
+    # a signal in via the existing _gather_evidence body.
+    blank_log = tmp_path / "voice-agent.log"
+    blank_log.write_text("")
+    monkeypatch.setattr(log_analyzer, "AGENT_LOG_PATH", blank_log)
+
+    network_calls: list[str] = []
+
+    def fake_urlopen(req, *args, **kwargs):
+        network_calls.append(getattr(req, "full_url", str(req)))
+        raise AssertionError(
+            "has_signal returned True with no evidence — "
+            "the gate should have blocked the LLM call"
+        )
+
+    monkeypatch.setattr(
+        log_analyzer.urllib.request, "urlopen", fake_urlopen
+    )
+
+    import asyncio
+    n = asyncio.run(log_analyzer.run_analysis())
+
+    assert network_calls == []
+    assert n == 0
