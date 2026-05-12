@@ -7,6 +7,8 @@ git-tracked and human-edited only.
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import os
 import logging
@@ -38,6 +40,27 @@ _DEFAULT_ANCHOR_PATH = (
     Path(__file__).resolve().parents[2] / "prompts" / "anchor_rules.md"
 )
 _DEFAULT_LEARNED_PATH = Path.home() / ".jarvis" / "learned_rules.md"
+
+
+@contextlib.contextmanager
+def _with_learned_lock(learned_path):
+    """Advisory exclusive lock on a sibling .lock file.
+
+    Serializes multi-writer access to learned_rules.md. Inside the
+    context, the caller must re-read state from disk before mutating
+    — another writer may have committed since acquisition.
+    """
+    lock_path = Path(str(learned_path) + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_WRONLY, 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        finally:
+            os.close(lock_fd)
 
 
 class AnchorTamperingError(RuntimeError):
@@ -170,32 +193,34 @@ class RuleStore:
                 f"refused to write rule {rule.id} with tier=anchor; "
                 "anchor edits go through the git-tracked anchor file"
             )
-        loaded = self._ensure_loaded()
-        bucket = getattr(loaded, rule.tier, None)
-        if bucket is None:
-            raise SchemaError(f"unknown tier: {rule.tier!r}")
-        bucket[:] = [r for r in bucket if r.id != rule.id]
-        bucket.append(rule)
-        self._write_learned(loaded)
+        with _with_learned_lock(self.learned_path):
+            loaded = self.load()  # re-read inside the lock
+            bucket = getattr(loaded, rule.tier, None)
+            if bucket is None:
+                raise SchemaError(f"unknown tier: {rule.tier!r}")
+            bucket[:] = [r for r in bucket if r.id != rule.id]
+            bucket.append(rule)
+            self._write_learned(loaded)
 
     def update_tier(self, rule_id: str, *, new_tier: str) -> None:
         if new_tier == "anchor":
             raise AnchorWriteRefused(
                 f"refused to promote rule {rule_id} to anchor tier"
             )
-        loaded = self._ensure_loaded()
-        target: Optional[Rule] = None
-        for bucket_name in ("core", "accepted", "staged", "archived"):
-            bucket = getattr(loaded, bucket_name)
-            for r in bucket:
-                if r.id == rule_id:
-                    target = r
+        with _with_learned_lock(self.learned_path):
+            loaded = self.load()  # re-read inside the lock
+            target: Optional[Rule] = None
+            for bucket_name in ("core", "accepted", "staged", "archived"):
+                bucket = getattr(loaded, bucket_name)
+                for r in bucket:
+                    if r.id == rule_id:
+                        target = r
+                        break
+                if target is not None:
+                    bucket[:] = [r for r in bucket if r.id != rule_id]
                     break
-            if target is not None:
-                bucket[:] = [r for r in bucket if r.id != rule_id]
-                break
-        if target is None:
-            raise KeyError(f"rule {rule_id!r} not found")
-        target.tier = new_tier
-        getattr(loaded, new_tier).append(target)
-        self._write_learned(loaded)
+            if target is None:
+                raise KeyError(f"rule {rule_id!r} not found")
+            target.tier = new_tier
+            getattr(loaded, new_tier).append(target)
+            self._write_learned(loaded)
