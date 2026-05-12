@@ -303,6 +303,12 @@ from tools.tasks import (
     task_delete as _task_delete_tool,
     todo_write as _todo_write_tool,
 )
+# Structured multiple-choice asks — voice-adapted port of
+# claude-code's AskUserQuestion. Tool returns a voice-friendly
+# phrasing; supervisor must voice verbatim, then STOP and match the
+# user's next utterance against the option labels (see TASK TRACKING
+# section's neighbour in prompts/supervisor.md). Added 2026-05-12.
+from tools.ask_user_question import ask_user_question as _ask_user_question_tool
 
 
 # ── Groq TTS error-body logging shim ──────────────────────────────────
@@ -5032,6 +5038,13 @@ async def entrypoint(ctx: JobContext) -> None:
             _task_update_tool,
             _task_delete_tool,
             _todo_write_tool,
+            # Structured multiple-choice asks (2026-05-12) — voice-
+            # adapted port of claude-code's AskUserQuestion. Tool
+            # returns voice-friendly phrasing; supervisor voices it
+            # verbatim then STOPS, matches next user utterance against
+            # option labels (see CLARIFYING WITH OPTIONS section of
+            # supervisor.md).
+            _ask_user_question_tool,
             # Memory — recall_conversation searches transcript history;
             # remember/forget/list_memories operate on the durable
             # facts store (state.db.memories) that survives chat delete.
