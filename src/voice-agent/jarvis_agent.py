@@ -3900,6 +3900,92 @@ def _spawn_background_log_analyzer() -> None:
     asyncio.create_task(_run_analyzer_bg())
 
 
+def _evolution_voice_tools() -> list:
+    """Return the evolution voice-tool list when the flag is on.
+
+    Gated behind `JARVIS_EVOLUTION_ENABLED=1` so the supervisor's
+    tool surface is unchanged in production. Import failure is
+    swallowed so a broken evolution module can never block agent
+    construction.
+    """
+    if os.environ.get("JARVIS_EVOLUTION_ENABLED") != "1":
+        return []
+    try:
+        from tools.evolution_voice import (
+            evolution_status, evolution_report,
+            revert_rule, review_staged_rules, promote_rule,
+        )
+        return [
+            evolution_status, evolution_report,
+            revert_rule, review_staged_rules, promote_rule,
+        ]
+    except Exception as e:
+        logger.warning(f"[evolution] voice-tool registration skipped: {e}")
+        return []
+
+
+def _spawn_evolution_background_tasks() -> None:
+    """Spawn the three self-evolution background loops (Task 7.4).
+
+    Gated behind `JARVIS_EVOLUTION_ENABLED=1` — production behavior
+    is unchanged when the flag is absent. Each loop swallows
+    exceptions and continues; a producer crash can't take down the
+    session.
+
+      * mining loop:        12 h period, batch_miner.mine()
+      * contradiction loop: 24 h period, contradiction_detector.run()
+      * report loop:        24 h period, evolution.report.write_daily()
+    """
+    if os.environ.get("JARVIS_EVOLUTION_ENABLED") != "1":
+        return
+
+    from pipeline.evolution.wireup import (
+        run_mining_cycle, run_contradiction_cycle,
+    )
+    from pipeline.evolution import report
+
+    async def _evolution_mining_loop():
+        # 10 s warm-up so we don't fire LLM calls during the boot
+        # storm.
+        await asyncio.sleep(10)
+        while True:
+            try:
+                await run_mining_cycle()
+            except Exception as e:
+                logger.warning(f"[evolution] mining loop: {e}")
+            await asyncio.sleep(12 * 3600)
+
+    async def _evolution_contradiction_loop():
+        await asyncio.sleep(15)
+        while True:
+            try:
+                await run_contradiction_cycle()
+            except Exception as e:
+                logger.warning(f"[evolution] contradiction loop: {e}")
+            await asyncio.sleep(24 * 3600)
+
+    async def _evolution_report_loop():
+        await asyncio.sleep(20)
+        while True:
+            try:
+                await asyncio.to_thread(report.write_daily)
+            except Exception as e:
+                logger.warning(f"[evolution] report loop: {e}")
+            await asyncio.sleep(24 * 3600)
+
+    # Hold strong refs in the module-level bg-task set so the GC
+    # doesn't reap them mid-loop.
+    for coro in (
+        _evolution_mining_loop(),
+        _evolution_contradiction_loop(),
+        _evolution_report_loop(),
+    ):
+        t = asyncio.create_task(coro)
+        _bg_tasks.add(t)
+        t.add_done_callback(_bg_tasks.discard)
+    logger.info("[evolution] background loops scheduled (mining/contradiction/report)")
+
+
 def _spawn_screen_share_watcher(session) -> None:
     """Spawn the tray-screen-share file watcher. Step 8b of the 10/10
     refactor. Polls `~/.jarvis/start-screen-share` once a second;
@@ -4896,6 +4982,23 @@ async def entrypoint(ctx: JobContext) -> None:
                     session._jarvis_first_token_at_monotonic = None
                 except Exception as te:
                     logger.debug(f"[telemetry] write skipped: {te}")
+                # Self-evolution observer (Task 7.4) — gated, additive,
+                # strictly off the user-facing path. Any exception is
+                # logged at debug and never bubbles. Reads user_text +
+                # jarvis_text out of the same locals the log_turn block
+                # just used; turn_id is synthesized from the session's
+                # turn counter.
+                if os.environ.get("JARVIS_EVOLUTION_ENABLED") == "1":
+                    try:
+                        from pipeline.evolution.wireup import observe_turn
+                        _turn_n = getattr(session, "_jarvis_turn_count", 0) or 0
+                        observe_turn(
+                            turn_id=f"t-{_turn_n}" if _turn_n else "t-unknown",
+                            user_text=getattr(session, "_jarvis_turn_user_text", "") or "",
+                            jarvis_text=text or "",
+                        )
+                    except Exception as ee:
+                        logger.debug(f"[evolution] observe_turn failed: {ee}")
                 # Trim chat_ctx if it has grown too long. Access via
                 # session.chat_ctx.messages — the live list the agent's
                 # LLM receives on every turn. Keep the most recent
@@ -5051,6 +5154,14 @@ async def entrypoint(ctx: JobContext) -> None:
                 tools.memory.list_memories,
                 tools.memory.audit_memories,
             ] if _MEMORY_AVAILABLE else []),
+            # Self-evolution voice tools (Task 7.4) — gated behind
+            # `JARVIS_EVOLUTION_ENABLED=1` so production behavior is
+            # unchanged until the soak phase. Read-only / explicit-
+            # action surface for the user to inspect + steer the
+            # learned-rules lifecycle. Anchor-tier rules are not
+            # writable from this surface (anchor edits go through
+            # commit + review).
+            *(_evolution_voice_tools()),
             # Face ID — read-only CV
             face_register,
             face_identify,
@@ -5135,6 +5246,7 @@ async def entrypoint(ctx: JobContext) -> None:
     # task whose lifetime is bound to the job. Extracted 2026-05-10
     # (Step 8b of the 10/10 refactor).
     _spawn_background_log_analyzer()
+    _spawn_evolution_background_tasks()
     _spawn_screen_share_watcher(session)
     _spawn_worker_heartbeat()
 
