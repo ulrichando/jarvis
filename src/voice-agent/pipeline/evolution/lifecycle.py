@@ -42,6 +42,54 @@ NEGATIVE_SIGNAL_QUARANTINE_THRESHOLD: int = 3
 
 
 _negative_counts: Counter[str] = Counter()
+_rebuilt_flag: bool = False
+
+
+def _ensure_negative_counts_rebuilt() -> None:
+    """Lazy-rebuild the in-memory negative_signal counter from the
+    audit log on first call. Idempotent — flag set on first run.
+
+    Replays negative_signal events to restore per-rule counts that
+    were lost on agent restart. tier_transition events that archive
+    a rule (quarantine / rollback) reset its count to 0.
+
+    Never raises. The audit log is expected to be present + valid;
+    a missing or malformed file leaves the counter empty.
+    """
+    global _rebuilt_flag
+    if _rebuilt_flag:
+        return
+    _rebuilt_flag = True
+    try:
+        if not audit_log.LOG_PATH.exists():
+            return
+        text = audit_log.LOG_PATH.read_text(encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"[lifecycle] negative_counts rebuild read failed: {e}")
+        return
+    import json as _json
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = _json.loads(line)
+        except _json.JSONDecodeError:
+            continue
+        rid = ev.get("rule_id")
+        if not rid:
+            continue
+        kind = ev.get("kind")
+        if kind == "negative_signal":
+            count = int(ev.get("count", 0) or 0)
+            if count:
+                _negative_counts[rid] = count
+        elif kind == "tier_transition" and ev.get("to_tier") == "archived":
+            _negative_counts.pop(rid, None)
+    logger.info(
+        f"[lifecycle] rebuilt negative_counts: "
+        f"{len(_negative_counts)} active rule(s)"
+    )
 
 
 def _next_rule_id(store: RuleStore) -> str:
@@ -154,6 +202,7 @@ def rollback(
 def record_negative_signal(
     store: RuleStore, *, rule_id: str, turn_id: str,
 ) -> None:
+    _ensure_negative_counts_rebuilt()
     _negative_counts[rule_id] += 1
     audit_log.append_event(
         kind="negative_signal", rule_id=rule_id, turn_id=turn_id,
