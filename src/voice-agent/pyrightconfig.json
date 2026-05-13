@@ -1,0 +1,17 @@
+{
+  "//": "Pyright/Pylance config for the voice-agent dir. Tells the IDE where the venv lives so imports like `livekit.agents.llm` resolve. The voice-agent uses a per-project .venv (src/voice-agent/.venv/) pinning livekit-agents to a specific version; the project-root .venv won't have it.",
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.13",
+  "include": [
+    "."
+  ],
+  "exclude": [
+    ".venv",
+    "__pycache__",
+    "**/.pytest_cache",
+    "tests/snapshots"
+  ],
+  "reportMissingImports": "warning",
+  "reportMissingTypeStubs": "none"
+}
