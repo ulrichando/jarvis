@@ -33,9 +33,22 @@ __all__ = ["NAME_ALTERNATION", "NAME_RE", "BARE_VOCATIVE_RE", "INLINE_STRIP_RE"]
 # ── The one source of truth ──────────────────────────────────────────
 # Add new Whisper-variant names HERE. The 3 compiled regexes below
 # pick up the change automatically.
+#
+# 2026-05-13: broadened from `j[aeo][rl]?vis` to `j[aeiou]+[rl]*[aeiou]*vis`
+# after live capture (turns 2093-2095) showed STT producing
+# "Jauravis", "Jaurvis", "Jaervis", "Joaurvis" — all missed by the
+# previous single-vowel-with-optional-r/l pattern. The new pattern
+# allows: one or more vowels, then zero-or-more r/l, then zero-or-
+# more vowels, then "vis". Catches:
+#   javis, jarvis, jervis, jorvis, jalvis, julvis, jelvis (1-vowel)
+#   jaurvis, jauravis, jaervis, joaurvis, jaurevis, jaeurevis (multi-vowel)
+# Risk of false-positive: a few real English `j`-words ending in
+# "vis" (rare — "Javis" / "Jevis" are uncommon names) might wake
+# JARVIS spuriously. Acceptable cost.
 NAME_ALTERNATION: str = (
-    r"j[aeo][rl]?vis|joris|jervis|jarvest|jaravis"
-    r"|y[aeo][rl]?vis|g[aeo][rl]?vis|h[aeo][rl]?vis"
+    r"j[aeiou]+[rl]*[aeiou]*vis"
+    r"|joris|jervis|jarvest|jaravis|jeris|jarves|jarvess"
+    r"|y[aeiou]+[rl]*[aeiou]*vis|g[aeiou]+[rl]*[aeiou]*vis|h[aeiou]+[rl]*[aeiou]*vis"
     r"|jorvis|jarbis"
     r"|yaris|yeris|yoris|jarius|jarrus|jorius"
 )
