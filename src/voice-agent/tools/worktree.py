@@ -57,6 +57,8 @@ from typing import Optional
 
 from livekit.agents.llm import function_tool
 
+from pipeline.hooks import fire_hook
+
 
 __all__ = ["enter_worktree", "exit_worktree", "list_worktrees"]
 
@@ -178,6 +180,12 @@ async def enter_worktree(name: str = "", base_branch: str = "") -> str:
         return f"git worktree add failed: {err_text.strip() or out.strip() or 'unknown error'}"
 
     _logger.info(f"[worktree] created {nm} at {wt_path} (branch {branch})")
+    await fire_hook("worktree_created", {
+        "name": nm,
+        "path": str(wt_path),
+        "branch": branch,
+        "base": base or "HEAD",
+    })
     return (
         f"Worktree {nm} created at {wt_path}\n"
         f"Branch: {branch} (off {base or 'current HEAD'})\n"
@@ -236,6 +244,12 @@ async def exit_worktree(name: str, force: bool = False) -> str:
 
     _logger.info(f"[worktree] removed {nm} (force={force})")
     branch = f"{_BRANCH_PREFIX}{nm}"
+    await fire_hook("worktree_removed", {
+        "name": nm,
+        "path": str(wt_path),
+        "branch": branch,
+        "force": bool(force),
+    })
     return (
         f"Worktree {nm} removed. Branch {branch} left intact — delete with "
         f"`git branch -D {branch}` if you don't want it."
