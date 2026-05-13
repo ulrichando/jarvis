@@ -49,7 +49,17 @@ _INTERNAL_PHRASES = [
     r"wrong\s+subagent",
     r"needs?\s+(?:the\s+)?(?:browser|desktop|planner|supervisor)\s+subagent",
     r"cannot\s+(?:accomplish|act\s+on|handle)",
-    r"handing\s+back\s+to\s+(?:the\s+)?supervisor",
+    # "hand back" / "hand off" / "hand over" / "hand control" — verb-
+    # forms of the framework-internal handoff. Live failure 2026-05-13:
+    # user heard "handing back a task" (the original regex required a
+    # specific suffix "to supervisor"). The broader pattern below
+    # catches the verb form + ANY optional connective + ANY optional
+    # internal noun, so "handing back a task" / "hand off to the
+    # supervisor" / "handed control back" all blank cleanly.
+    r"hand(?:ing|ed|s)?\s+(?:back|off|over|control)(?:\s+(?:to|a|the|control|over))*(?:\s+(?:task|tasks?|supervisor|subagent|operations?|control))?",
+    # "to the supervisor" without the verb (in case the verb leaks
+    # past the above pattern via word ordering).
+    r"to\s+(?:the\s+)?supervisor",
     r"not\s+a\s+request\s+I\s+can\s+act\s+on",
     r"screen[-\s]share\s+(?:not\s+active|isn'?t\s+active|off)",
     r"no\s+video\s+frames(?:\s+received)?",
@@ -66,6 +76,15 @@ _INTERNAL_PHRASES = [
     # "subagent" / "supervisor" inside meta-conversation.
     r"transferring\s+(?:to|you)\s+(?:the\s+)?(?:screen[-\s]?share|desktop|browser)\s+subagent",
     r"transfer(?:ring|red)?\s+(?:to|back)\s+(?:the\s+)?supervisor",
+    # "Sir" / "ma'am" honorifics. The user has a long-standing no-
+    # honorifics rule (CLAUDE.md drop-butler-register overhaul). The
+    # supervisor prompt explicitly bans them but the LLM occasionally
+    # emits "sir" anyway, especially when chat_ctx contains older
+    # turns where the rule wasn't in place. Live failure 2026-05-13:
+    # user heard "Both Gmail and YouTube are now open in separate
+    # tabs, sir." Blanking here is the last-line defense.
+    r"sir",
+    r"ma'?am",
 ]
 
 # Pre-compile a single OR regex over all phrases.
@@ -82,8 +101,9 @@ def sanitize(text: str) -> str:
       whitespace and punctuation), return an empty string — the
       whole utterance was framework noise.
     - Otherwise, replace each matched internal phrase with a space
-      and collapse adjacent whitespace. The surrounding speech
-      survives.
+      and collapse adjacent whitespace. Dangling punctuation
+      stranded by a blanked phrase ("tabs, ." after blanking ", sir")
+      is tidied so TTS doesn't pronounce orphan commas.
     """
     if not text:
         return text
@@ -91,6 +111,10 @@ def sanitize(text: str) -> str:
     if _INTERNAL_RE.fullmatch(stripped):
         return ""
     cleaned = _INTERNAL_RE.sub(" ", text)
+    # Drop dangling commas / semicolons before terminal punctuation:
+    # "tabs, ." → "tabs.", "Yes ." → "Yes." (cosmetic, voice-friendly).
+    cleaned = re.sub(r"[,;]\s+([.!?])", r"\1", cleaned)
+    cleaned = re.sub(r"\s+([.!?])", r"\1", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned
 
