@@ -243,3 +243,136 @@ def test_truncate_handles_tiny_input_above_limit():
     text = "abcdefghijklmnopqrstuvwxyz" * 10  # 260 chars
     out = _truncate(text, limit=50)
     assert "[output truncated:" in out
+
+
+# ── cwd persistence (2026-05-12) ────────────────────────────────
+
+
+import asyncio
+import pytest
+
+from tools.bash import (
+    _CWD_SENTINEL,
+    _extract_new_cwd,
+    _wrap_for_cwd_capture,
+    bash,
+    reset_cwd_for_test,
+)
+
+
+def _unwrap(tool):
+    for attr in ("__livekit_agents_func", "_func", "fnc", "func", "callable"):
+        f = getattr(tool, attr, None)
+        if callable(f):
+            return f
+    if callable(tool):
+        return tool
+    raise RuntimeError(f"can't unwrap {tool!r}")
+
+
+def _call(tool, **kwargs):
+    return asyncio.run(_unwrap(tool)(**kwargs))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_bash_cwd():
+    """Every test starts with a fresh cwd cache so test-order doesn't
+    matter and a `cd /tmp` in one test can't bleed into another."""
+    reset_cwd_for_test()
+    yield
+    reset_cwd_for_test()
+
+
+def test_wrap_for_cwd_capture_uses_newlines_not_semicolons():
+    """A trailing `#` comment inside cmd must NOT consume the
+    wrapper's pwd-capture line. Newline separation avoids that."""
+    wrapped = _wrap_for_cwd_capture("echo hi  # trailing comment")
+    # The sentinel printf and exit must be on lines AFTER cmd, not
+    # `;`-chained.
+    assert "\n" in wrapped
+    sentinel_line_idx = wrapped.find(_CWD_SENTINEL)
+    newline_before = wrapped.rfind("\n", 0, sentinel_line_idx)
+    assert newline_before >= 0, "sentinel must be preceded by a newline"
+
+
+def test_extract_new_cwd_finds_sentinel_line():
+    text = f"some output\n\n{_CWD_SENTINEL}/tmp/foo\n"
+    stripped, new_cwd = _extract_new_cwd(text)
+    assert new_cwd == "/tmp/foo"
+    # Sentinel line must NOT appear in the visible output.
+    assert _CWD_SENTINEL not in stripped
+
+
+def test_extract_new_cwd_missing_sentinel_returns_none():
+    text = "just plain output\nnothing to see\n"
+    stripped, new_cwd = _extract_new_cwd(text)
+    assert new_cwd is None
+    assert stripped == text
+
+
+def test_cwd_persists_across_two_bash_calls():
+    _call(bash, command="cd /tmp")
+    out = _call(bash, command="pwd")
+    # `/tmp` followed by exit marker — output may include extras
+    # depending on shell init, but pwd's first line must be /tmp.
+    first_line = out.splitlines()[0]
+    assert first_line == "/tmp", f"expected /tmp, got {first_line!r}"
+
+
+def test_cwd_persists_after_chained_cd():
+    """`cd /tmp && ls` should leave us in /tmp for the next call."""
+    _call(bash, command="cd /tmp && ls > /dev/null")
+    out = _call(bash, command="pwd")
+    assert out.splitlines()[0] == "/tmp"
+
+
+def test_cwd_unchanged_when_cmd_doesnt_cd():
+    """A pwd-only command obviously doesn't change cwd, but the
+    wrapper still captures the pwd → cache stays consistent."""
+    first = _call(bash, command="pwd").splitlines()[0]
+    second = _call(bash, command="pwd").splitlines()[0]
+    assert first == second
+
+
+def test_sentinel_never_appears_in_returned_output():
+    """User must NEVER see the sentinel string in the supervisor's
+    chat_ctx — it's an internal protocol."""
+    out = _call(bash, command="echo hello")
+    assert _CWD_SENTINEL not in out
+
+
+def test_disable_persistence_via_env(monkeypatch):
+    """JARVIS_BASH_PERSIST_CWD=0 opt-out: no sentinel wrapping,
+    no cwd cache update. cd inside a call doesn't survive."""
+    _call(bash, command="cd /tmp && pwd")  # warms the cache to /tmp
+    monkeypatch.setenv("JARVIS_BASH_PERSIST_CWD", "0")
+    # First call after opt-out — cache still /tmp from before, but
+    # the next call doesn't update it. cd to / and then pwd should
+    # show / because the same call is one shell.
+    out = _call(bash, command="cd / && pwd")
+    assert out.splitlines()[0] == "/"
+    # Persistence is off, so the cache shouldn't update. The next
+    # call should start from the process cwd (NOT /), since
+    # bash_cwd = None when persist is off.
+    out2 = _call(bash, command="pwd")
+    # Just confirm no sentinel leaked and the call succeeded.
+    assert _CWD_SENTINEL not in out2
+    assert "[exit 0]" in out2
+
+
+def test_exit_code_preserved_through_wrapper():
+    """The wrapper captures $? before printing the sentinel and
+    re-exits with it — `exit 42` must surface as [exit 42] to the
+    caller, not [exit 0]."""
+    out = _call(bash, command="exit 42")
+    assert "[exit 42]" in out
+
+
+def test_trailing_comment_in_cmd_doesnt_break_wrapper():
+    """Regression: with `;`-chained wrapper stanzas, a `#` comment
+    in cmd ate the sentinel printf. The newline-separated wrapper
+    handles this correctly."""
+    out = _call(bash, command="echo ok  # trailing comment")
+    assert "ok" in out
+    assert "[exit 0]" in out
+    assert _CWD_SENTINEL not in out

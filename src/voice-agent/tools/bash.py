@@ -38,6 +38,25 @@ _MAX_TIMEOUT_S = 600
 # Hard cap on returned text. claude-code uses 30 000 chars; we match.
 _MAX_OUTPUT_CHARS = 30_000
 
+# Working-directory persistence across bash() calls. Mirrors claude-
+# code's BashTool behavior: `cd /some/path` in one call persists for
+# the next. Env vars and aliases STILL don't persist (each invocation
+# is a fresh /bin/bash -c subshell) — only cwd. Added 2026-05-12.
+#
+# Initialised lazily on first use to the voice-agent process cwd.
+# Tests can reset via `reset_cwd_for_test()`. Disable persistence by
+# setting `JARVIS_BASH_PERSIST_CWD=0` (matches the upstream env var
+# `CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1` to disable in claude-code,
+# inverted polarity — JARVIS defaults to ENABLED, opt-out via =0).
+_BASH_CWD: Optional[str] = None
+
+# Unique sentinel printed by the wrapper after the user's command so
+# we can capture the new cwd from stdout. 16 hex chars of randomness
+# baked into the literal so a command can't accidentally produce it
+# (the user would have to know this literal to forge it, and even
+# then, only the LAST occurrence on a line by itself is parsed).
+_CWD_SENTINEL = "__JARVIS_BASH_CWD_E2F1B0D49C7A6F38__"
+
 # Destructive-command patterns. Lifted from claude-code's
 # BashTool/destructiveCommandWarning.ts. Voice supervisor uses this
 # list in the PUSH BACK rule — match here means we annotate the
@@ -148,6 +167,71 @@ def _check_destructive(command: str) -> Optional[str]:
     return None
 
 
+def _get_bash_cwd() -> str:
+    """Resolve the current persistent bash cwd (initialised lazily)."""
+    global _BASH_CWD
+    if _BASH_CWD is None:
+        _BASH_CWD = os.getcwd()
+    return _BASH_CWD
+
+
+def _set_bash_cwd(path: str) -> None:
+    """Update the persistent cwd. No validation here — the caller
+    has already extracted it from a successful pwd output."""
+    global _BASH_CWD
+    _BASH_CWD = path
+
+
+def reset_cwd_for_test() -> None:
+    """Clear the persistent cwd. Test-only — production never calls this."""
+    global _BASH_CWD
+    _BASH_CWD = None
+
+
+def _wrap_for_cwd_capture(cmd: str) -> str:
+    """Return a wrapped command that prints the sentinel + final pwd
+    on stdout so the bash() caller can update the persistent cwd.
+
+    Preserves the user command's exit status: `$?` is captured into
+    `__jrc` immediately after the user command, then restored via
+    `exit $__jrc` at the end.
+
+    NEWLINES, not semicolons, separate the wrapper stanzas from
+    `cmd`. A trailing `#` comment inside `cmd` would consume `;`-
+    chained wrapper stanzas; a newline terminates the comment and
+    starts a fresh statement. Same reason no brace group: `{ cmd; }`
+    breaks when cmd has a trailing comment.
+    """
+    return (
+        f"{cmd}\n"
+        f"__jrc=$?\n"
+        f"printf '\\n%s%s\\n' '{_CWD_SENTINEL}' \"$(pwd)\"\n"
+        f"exit $__jrc"
+    )
+
+
+def _extract_new_cwd(stdout_text: str) -> tuple[str, Optional[str]]:
+    """Find the trailing sentinel-prefixed cwd line; return
+    (stripped_stdout, new_cwd_or_None). If the sentinel isn't there
+    (e.g. command crashed before the wrapper's printf), return the
+    text unchanged and None.
+    """
+    idx = stdout_text.rfind(_CWD_SENTINEL)
+    if idx < 0:
+        return stdout_text, None
+    # Path is the rest of the line after the sentinel.
+    end = stdout_text.find("\n", idx)
+    line_tail = stdout_text[idx + len(_CWD_SENTINEL):end if end >= 0 else None]
+    new_cwd = line_tail.strip() or None
+    # Strip the sentinel-line (and the preceding newline if present)
+    # from the visible output so the supervisor doesn't see it.
+    sentinel_line_start = stdout_text.rfind("\n", 0, idx)
+    if sentinel_line_start < 0:
+        sentinel_line_start = 0
+    stripped = stdout_text[:sentinel_line_start]
+    return stripped.rstrip("\n"), new_cwd
+
+
 def _check_banned(command: str) -> Optional[tuple[str, str]]:
     """Return `(banned_name, hint)` if any clause in `command` starts
     with a banned utility, else `None`.
@@ -179,14 +263,20 @@ async def bash(
 ) -> str:
     """Execute a shell command via /bin/bash and return stdout+stderr.
 
-    Every invocation is a FRESH /bin/bash subshell — `cd`, exported
-    variables, and aliases do NOT carry over from one bash() call to
-    the next. The starting directory is always the voice-agent's
-    working directory (`src/voice-agent/`). Use absolute paths, or
-    chain steps with `&&` / `;` in a SINGLE command so they share
-    one shell instance:
+    Each call is a FRESH /bin/bash subshell — exported variables and
+    aliases do NOT carry over. The WORKING DIRECTORY does persist,
+    though: a `cd /some/path` in one call survives to the next bash()
+    call within this voice-agent process. Mirrors claude-code's
+    Bash tool semantics; the starting cwd is the voice-agent's
+    process directory (`src/voice-agent/`).
 
-        bash("cd /tmp && ls -la && rm dead.lock")
+    Set `JARVIS_BASH_PERSIST_CWD=0` to disable cwd persistence and
+    return to fresh-cwd-every-call.
+
+    For multi-step work where env vars or aliases DO need to share
+    a shell, chain in one call:
+
+        bash("cd /tmp && export FOO=1 && ./run.sh")
 
     AVOID using this tool to run `cat`, `head`, `tail`, `sed`, `awk`,
     `less`, or `more` — they have dedicated in-process tools
@@ -259,15 +349,21 @@ async def bash(
 
     logger.info(f"bash → {description or cmd[:60]}{' [destructive]' if destructive else ''}")
 
+    persist_cwd = os.environ.get("JARVIS_BASH_PERSIST_CWD", "1") == "1"
+    bash_cwd = _get_bash_cwd() if persist_cwd else None
+
     if run_in_background:
         # Detached subprocess; result not awaited. Voice rarely needs this
-        # but it's in the spec for parity with claude-code.
+        # but it's in the spec for parity with claude-code. Background
+        # commands DON'T update the persistent cwd — they're independent
+        # of the foreground conversation flow.
         try:
             await asyncio.create_subprocess_exec(
                 "/bin/bash", "-c", cmd,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
                 start_new_session=True,
+                cwd=bash_cwd,
             )
             return f"Started in background: {description or cmd[:60]}."
         except Exception as e:
@@ -279,10 +375,17 @@ async def bash(
         # arrays, `((...))`, `$'...'`, etc. The docstring promises bash
         # and claude-code's coaching assumes bash, so we exec
         # /bin/bash -c <cmd> directly. 2026-05-12 fix.
+        #
+        # Cwd persistence (2026-05-12): start in the per-session cached
+        # cwd and use a wrapped command that prints the new cwd via
+        # the unique sentinel so we can update the cache after the
+        # call. If persistence is disabled (env=0) the wrap is skipped.
+        exec_cmd = _wrap_for_cwd_capture(cmd) if persist_cwd else cmd
         proc = await asyncio.create_subprocess_exec(
-            "/bin/bash", "-c", cmd,
+            "/bin/bash", "-c", exec_cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            cwd=bash_cwd,
         )
         try:
             stdout_b, stderr_b = await asyncio.wait_for(
@@ -301,6 +404,14 @@ async def bash(
     out = stdout_b.decode("utf-8", errors="replace")
     err = stderr_b.decode("utf-8", errors="replace")
     rc = proc.returncode
+
+    # Cwd persistence: pull the wrapper's pwd marker out of stdout
+    # AND update the persistent cache. Only fires when persist_cwd
+    # is on AND the wrapper actually completed (no timeout/kill).
+    if persist_cwd:
+        out, new_cwd = _extract_new_cwd(out)
+        if new_cwd:
+            _set_bash_cwd(new_cwd)
 
     parts = []
     if destructive:
