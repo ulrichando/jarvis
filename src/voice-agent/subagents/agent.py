@@ -109,6 +109,7 @@ class RegistrySubagent(Agent):
         spec: HandoffSubagent,
         supervisor: Agent,
         chat_ctx: ChatContext | None = None,
+        worktree_path: Optional[str] = None,
     ):
         # Per-subagent LLM override. Most specs leave llm_factory=None
         # and inherit the supervisor's LLM. The screen_share subagent
@@ -116,8 +117,34 @@ class RegistrySubagent(Agent):
         # sub-second responses with continuous vision context — the
         # supervisor stays on Claude Haiku + Orpheus when this
         # subagent isn't active.
+
+        # If the spec requested filesystem isolation, the transfer
+        # tool has already created a worktree and is passing the path
+        # here. Inject the absolute path into the subagent's
+        # instructions so the LLM operates inside it. The subagent's
+        # bash() / read() / edit() / write() tools have no per-spec
+        # cwd switching, so the path-in-prompt is the enforcement
+        # mechanism — instruct the subagent to use absolute paths or
+        # `cd <worktree> && cmd` patterns.
+        instructions = spec.instructions
+        if worktree_path:
+            instructions = instructions + (
+                f"\n\n═══ ISOLATION WORKTREE ═══\n\n"
+                f"You are running INSIDE an isolated git worktree at:\n"
+                f"  {worktree_path}\n\n"
+                f"Any file operations (read / edit / write / bash) must\n"
+                f"target absolute paths inside that directory, OR use\n"
+                f"`cd {worktree_path} && ...` patterns. DO NOT touch\n"
+                f"files outside the worktree — the user's main checkout\n"
+                f"must stay clean. On `task_done`, the worktree auto-\n"
+                f"cleans IF you left no uncommitted changes. If you\n"
+                f"committed work, the branch survives and the user can\n"
+                f"PR it; if you have uncommitted changes the worktree\n"
+                f"is preserved with a warning logged."
+            )
+
         kwargs: dict = {
-            "instructions": spec.instructions,
+            "instructions": instructions,
             "tools": spec.tool_factory(),
             "chat_ctx": chat_ctx,
         }
@@ -133,6 +160,7 @@ class RegistrySubagent(Agent):
         super().__init__(**kwargs)
         self._spec = spec
         self._supervisor = supervisor
+        self._worktree_path: Optional[str] = worktree_path
         # High-water mark of chat_ctx at handoff start. task_done's
         # tool-gate looks at items appended AFTER this index to decide
         # whether the subagent did real work this handoff.
@@ -296,6 +324,25 @@ class RegistrySubagent(Agent):
                 "original request and answer it naturally — do NOT "
                 "reference the failed handoff or the subagent by name)"
             )
+
+        # Isolation worktree cleanup — fires only if the spec opted
+        # into `isolation="worktree"` AND the create succeeded at
+        # handoff time. Best-effort: clean worktree removes cleanly;
+        # dirty worktree is left for the user to review. Never blocks
+        # the hand-back to supervisor.
+        if self._worktree_path:
+            try:
+                from ._isolation import cleanup_isolation_worktree
+                outcome = await cleanup_isolation_worktree(self._worktree_path)
+                logger.info(
+                    f"[subagent:{self._spec.name}] isolation cleanup: {outcome}"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[subagent:{self._spec.name}] isolation cleanup raised "
+                    f"{type(e).__name__}: {e}"
+                )
+
         return self._supervisor, summary
 
 
@@ -398,6 +445,29 @@ def build_transfer_tool(spec: HandoffSubagent):
         except Exception:
             pass
 
+        # Per-handoff filesystem isolation. If the spec opts in with
+        # `isolation="worktree"`, spawn a fresh `<repo>/.worktrees/
+        # <name>-<short_id>/` checkout NOW (before the subagent
+        # constructs) and pass the absolute path to RegistrySubagent.
+        # The subagent's instructions get a TRAILING block telling the
+        # LLM to operate inside that directory. On task_done, cleanup
+        # fires automatically (clean → removed; dirty → kept + logged).
+        # Failure to create the worktree falls back to running WITHOUT
+        # isolation — better degraded than a hard handoff abort.
+        worktree_path: Optional[str] = None
+        if getattr(spec, "isolation", None) == "worktree":
+            try:
+                from ._isolation import create_isolation_worktree
+                wt = await create_isolation_worktree(spec.name)
+                if wt is not None:
+                    worktree_path = str(wt)
+            except Exception as e:
+                logger.warning(
+                    f"[handoff] {spec.name} isolation worktree creation "
+                    f"raised {type(e).__name__}: {e} — running without "
+                    f"isolation"
+                )
+
         # Defensive: catch tool-factory failures (e.g. ImportError from
         # a typo'd subagent module) so the supervisor sees a concrete
         # error string instead of the framework's generic "exception
@@ -410,6 +480,7 @@ def build_transfer_tool(spec: HandoffSubagent):
                 spec=spec,
                 supervisor=supervisor,
                 chat_ctx=ctx,
+                worktree_path=worktree_path,
             )
         except Exception as e:
             logger.exception(
