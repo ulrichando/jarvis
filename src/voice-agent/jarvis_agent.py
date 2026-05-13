@@ -5215,6 +5215,17 @@ async def entrypoint(ctx: JobContext) -> None:
     _spawn_screen_share_watcher(session)
     _spawn_worker_heartbeat()
 
+    # Fire the session_start hook — let user-installed shell scripts
+    # at ~/.jarvis/hooks/session_start/ react to each new voice job.
+    # Fire-and-forget; failures log at WARNING. Added 2026-05-12.
+    try:
+        from pipeline.hooks import fire_hook
+        await fire_hook("session_start", {
+            "active_speech_id": active_speech_id,
+        })
+    except Exception as _e:
+        logger.warning(f"[hooks] session_start fire failed: {_e}")
+
     # Handle one-shot "speak this text" requests from any client in
     # the room. session.say() voices the text directly without an
     # LLM round-trip — used by the Tauri UI to voice typed-chat

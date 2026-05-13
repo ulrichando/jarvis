@@ -49,6 +49,8 @@ from typing import Any, Optional
 
 from livekit.agents.llm import function_tool
 
+from pipeline.hooks import fire_hook
+
 
 __all__ = [
     "TASKS_DIR",
@@ -200,6 +202,9 @@ async def task_create(content: str, active_form: str = "") -> str:
         return state, task["id"]
 
     new_id = _mutate(_add)
+    await fire_hook("task_created", {
+        "task_id": new_id, "content": c, "active_form": af, "list_id": _list_id(),
+    })
     return f"Task #{new_id} created: {c[:100]}"
 
 
@@ -279,6 +284,8 @@ async def task_update(
     new_content = (content or "").strip() or None
     new_active = (active_form or "").strip() or None
 
+    completed_now = {"flag": False, "content": ""}
+
     def _mut(state: dict):
         task = _find_task(state, task_id)
         if task is None:
@@ -286,6 +293,9 @@ async def task_update(
         changes: list[str] = []
         if new_status and task.get("status") != new_status:
             changes.append(f"status: {task.get('status')} → {new_status}")
+            if new_status == "completed":
+                completed_now["flag"] = True
+                completed_now["content"] = task.get("content", "")
             task["status"] = new_status
         if new_content and task.get("content") != new_content:
             changes.append(f"content updated")
@@ -298,7 +308,14 @@ async def task_update(
         task["updated"] = _now_iso()
         return state, f"Task #{task_id}: " + ", ".join(changes) + "."
 
-    return _mutate(_mut)
+    result = _mutate(_mut)
+    if completed_now["flag"]:
+        await fire_hook("task_completed", {
+            "task_id": str(task_id).strip(),
+            "content": completed_now["content"],
+            "list_id": _list_id(),
+        })
+    return result
 
 
 @function_tool
