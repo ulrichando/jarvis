@@ -175,3 +175,124 @@ async def test_bridge_ext_connected_returns_false_on_unreachable(monkeypatch):
     # Wrong port → connection refused → False
     monkeypatch.setattr(browser, "_BRIDGE_URL", "http://127.0.0.1:1")
     assert (await browser._bridge_ext_connected()) is False
+
+
+# ── _resolve_open_intent (the "Open X" parser) ──────────────────
+
+
+@pytest.mark.parametrize("req,expected", [
+    # Known sites (case-insensitive)
+    ("Open YouTube",                        "https://www.youtube.com/"),
+    ("open youtube please",                 "https://www.youtube.com/"),
+    ("Go to gmail",                         "https://mail.google.com/"),
+    ("Take me to GitHub",                   "https://github.com/"),
+    ("Open Twitter",                        "https://twitter.com/"),
+    ("open chatgpt",                        "https://chatgpt.com/"),
+    # Explicit URL in request — preserved verbatim
+    ("Navigate to https://x.com/home",      "https://x.com/home"),
+    ("Open https://example.com/path?q=1",   "https://example.com/path?q=1"),
+    # Bare-domain heuristic
+    ("Open example.com",                    "https://example.com/"),
+    ("open mysite.dev",                     "https://mysite.dev/"),
+    # Vague — no resolution
+    ("do something in the browser",         None),
+    ("close the tab",                       None),
+    ("",                                    None),
+    ("   ",                                 None),
+])
+def test_resolve_open_intent(req, expected):
+    from subagents.browser import _resolve_open_intent
+    assert _resolve_open_intent(req) == expected
+
+
+# ── pre-navigate path in the hook ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_hook_pre_navigates_when_request_names_site(monkeypatch, browser_mod):
+    """The big fix from 2026-05-13. When the request is 'Open YouTube',
+    the hook navigates BEFORE returning None — so the subagent
+    activates with Chrome already on the target page."""
+    _stub_probe(monkeypatch, browser_mod, [True])  # already connected
+    _stub_launch(monkeypatch, browser_mod)
+    nav_state = {"called_with": None, "ok": True}
+
+    async def _stub_navigate(url):
+        nav_state["called_with"] = url
+        return nav_state["ok"]
+
+    async def _stub_focus():
+        nav_state["focused"] = True
+
+    monkeypatch.setattr(browser_mod, "_bridge_navigate", _stub_navigate)
+    monkeypatch.setattr(browser_mod, "_bridge_focus_chrome", _stub_focus)
+
+    result = await browser_mod._ensure_chrome_extension_connected(
+        context=None, request="Open YouTube", supervisor=None,
+    )
+    assert result is None
+    assert nav_state["called_with"] == "https://www.youtube.com/"
+    assert nav_state.get("focused") is True
+
+
+@pytest.mark.asyncio
+async def test_hook_skips_pre_nav_when_request_vague(monkeypatch, browser_mod):
+    """If the request doesn't name a destination, leave navigation to
+    the subagent's LLM."""
+    _stub_probe(monkeypatch, browser_mod, [True])
+    _stub_launch(monkeypatch, browser_mod)
+    nav_state = {"called": False}
+
+    async def _stub_navigate(url):
+        nav_state["called"] = True
+        return True
+
+    monkeypatch.setattr(browser_mod, "_bridge_navigate", _stub_navigate)
+
+    result = await browser_mod._ensure_chrome_extension_connected(
+        context=None, request="Help me fill out the form on this page",
+        supervisor=None,
+    )
+    assert result is None
+    assert nav_state["called"] is False
+
+
+@pytest.mark.asyncio
+async def test_hook_does_not_abort_on_pre_nav_failure(monkeypatch, browser_mod):
+    """Pre-nav failure (bridge HTTP error, etc.) MUST NOT abort the
+    handoff — let the subagent attempt the navigation through its
+    own retry path."""
+    _stub_probe(monkeypatch, browser_mod, [True])
+    _stub_launch(monkeypatch, browser_mod)
+
+    async def _failing_nav(url):
+        return False  # bridge said no
+
+    monkeypatch.setattr(browser_mod, "_bridge_navigate", _failing_nav)
+
+    result = await browser_mod._ensure_chrome_extension_connected(
+        context=None, request="Open YouTube", supervisor=None,
+    )
+    # None = proceed with handoff (subagent will retry).
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_prenav_disable_env_skips_navigate(monkeypatch, browser_mod):
+    """JARVIS_BROWSER_PRENAV_DISABLE=1 keeps the probe + launch
+    layers but skips the pre-navigation step. Useful for testing the
+    subagent's own navigate path."""
+    monkeypatch.setenv("JARVIS_BROWSER_PRENAV_DISABLE", "1")
+    _stub_probe(monkeypatch, browser_mod, [True])
+    _stub_launch(monkeypatch, browser_mod)
+    nav_state = {"called": False}
+
+    async def _stub_navigate(url):
+        nav_state["called"] = True
+        return True
+
+    monkeypatch.setattr(browser_mod, "_bridge_navigate", _stub_navigate)
+    await browser_mod._ensure_chrome_extension_connected(
+        context=None, request="Open YouTube", supervisor=None,
+    )
+    assert nav_state["called"] is False

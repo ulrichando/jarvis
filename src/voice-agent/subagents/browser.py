@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
 from typing import Optional
 
@@ -422,6 +423,78 @@ _CHROME_LAUNCH_CMD = ["setsid", "-f", "google-chrome", "--profile-directory=Defa
 _PRELAUNCH_WAIT_S = float(os.environ.get("JARVIS_BROWSER_PRELAUNCH_WAIT_S", "8.0"))
 _PRELAUNCH_POLL_S = float(os.environ.get("JARVIS_BROWSER_PRELAUNCH_POLL_S", "0.3"))
 
+# Pre-navigation table for "Open X" requests. When the supervisor's
+# `request` matches one of these tokens (or contains an explicit URL),
+# the pre_transfer hook navigates DIRECTLY via the bridge BEFORE the
+# subagent activates — so the subagent's LLM doesn't have a chance to
+# confabulate task_done as its first action while the user hears 20s
+# of silence. Live failure 2026-05-13 01:11-01:12 UTC: "open Twitter"
+# took two attempts because the first attempt's subagent LLM emitted
+# task_done("Navigated to Twitter") with no real navigate, gate
+# REFUSED, LLM retried (eventually firing ext_navigate), but the user
+# had already given up and asked again.
+#
+# Site → URL mapping (lower-case, matched as a substring of request).
+_SITE_URLS: dict[str, str] = {
+    "youtube":   "https://www.youtube.com/",
+    "gmail":     "https://mail.google.com/",
+    "mail":      "https://mail.google.com/",
+    "twitter":   "https://twitter.com/",
+    "x.com":     "https://x.com/",
+    "amazon":    "https://www.amazon.com/",
+    "google":    "https://www.google.com/",
+    "github":    "https://github.com/",
+    "reddit":    "https://www.reddit.com/",
+    "wikipedia": "https://en.wikipedia.org/",
+    "maps":      "https://www.google.com/maps",
+    "facebook":  "https://www.facebook.com/",
+    "instagram": "https://www.instagram.com/",
+    "linkedin":  "https://www.linkedin.com/",
+    "netflix":   "https://www.netflix.com/",
+    "spotify":   "https://open.spotify.com/",
+    "claude":    "https://claude.ai/",
+    "chatgpt":   "https://chatgpt.com/",
+}
+
+_URL_RE = re.compile(r"https?://\S+")
+
+
+def _resolve_open_intent(request: str) -> Optional[str]:
+    """Extract a target URL from a transfer_to_browser request like
+    'Open YouTube' / 'Go to gmail.com' / 'Navigate to https://x.com'.
+
+    Returns the canonical URL or None. None means 'request isn't an
+    Open-X — let the subagent figure it out the slow way.'
+
+    Resolution order:
+      1. Explicit URL in the request → use it verbatim.
+      2. Known-site keyword (youtube / gmail / etc.) → table lookup.
+      3. `.com` / `.org` / `.net` heuristic (bare domain words like
+         'example.com') → prepend https://.
+    """
+    if not request:
+        return None
+    req = request.strip()
+    req_low = req.lower()
+
+    # 1. Explicit URL anywhere in the request.
+    m = _URL_RE.search(req)
+    if m:
+        url = m.group(0).rstrip(").,;:!?\"'")
+        return url
+
+    # 2. Known-site keyword.
+    for keyword, url in _SITE_URLS.items():
+        if keyword in req_low:
+            return url
+
+    # 3. Bare-domain heuristic (e.g. `open example.com`).
+    bare = re.search(r"\b([a-z0-9][a-z0-9-]{1,62}\.(?:com|org|net|io|dev|app|co|ai|gg|me|tv))\b", req_low)
+    if bare:
+        return f"https://{bare.group(1)}/"
+
+    return None
+
 
 async def _bridge_ext_connected() -> bool:
     """GET /api/ext_status → {"connected": bool}.
@@ -445,6 +518,54 @@ async def _bridge_ext_connected() -> bool:
     except Exception as e:
         logger.debug(f"[browser.pre_transfer] ext_status probe failed: {e}")
         return False
+
+
+async def _bridge_navigate(url: str) -> bool:
+    """POST `/api/ext_browse` with `action=navigate` and the given
+    URL. Returns True on success. Logs on failure but never raises.
+    """
+    try:
+        import aiohttp
+        timeout = aiohttp.ClientTimeout(total=10.0)
+        async with aiohttp.ClientSession(timeout=timeout) as s:
+            async with s.post(
+                f"{_BRIDGE_URL}/api/ext_browse",
+                json={"action": "navigate", "args": {"url": url}},
+            ) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    logger.warning(
+                        f"[browser.pre_transfer] navigate {url} → "
+                        f"HTTP {resp.status}: {body[:200]}"
+                    )
+                    return False
+                data = await resp.json()
+                if not data.get("ok"):
+                    logger.warning(
+                        f"[browser.pre_transfer] navigate {url} → "
+                        f"bridge error: {data.get('error', 'unknown')}"
+                    )
+                    return False
+                return True
+    except Exception as e:
+        logger.warning(f"[browser.pre_transfer] navigate {url} raised: {e}")
+        return False
+
+
+async def _bridge_focus_chrome() -> None:
+    """Bring Chrome to front via wmctrl. Best-effort, silent on failure.
+    Mirror of `tools.browser_ext_nav._focus_chrome_window` but as a
+    direct subprocess so the pre_transfer hook doesn't import the
+    @function_tool module."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "wmctrl", "-a", "Google Chrome",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.wait(), timeout=2.0)
+    except Exception:
+        pass
 
 
 async def _launch_chrome() -> bool:
@@ -503,41 +624,77 @@ async def _ensure_chrome_extension_connected(context, request, supervisor):
     if os.environ.get("JARVIS_BROWSER_PRELAUNCH_DISABLE") == "1":
         return None
 
-    # Step 1: already-connected fast path.
-    if await _bridge_ext_connected():
-        return None
-
-    # Step 2: launch.
-    logger.info(
-        "[browser.pre_transfer] extension not connected; launching Chrome"
-    )
-    launched = await _launch_chrome()
-    if not launched:
-        return (
-            "Couldn't launch Chrome (setsid/google-chrome failed). "
-            "Open Chrome manually and try again."
+    # ── Step 1: ensure Chrome + extension are up ─────────────────
+    connected = await _bridge_ext_connected()
+    if not connected:
+        logger.info(
+            "[browser.pre_transfer] extension not connected; launching Chrome"
         )
-
-    # Step 3 + 4: poll for connection.
-    deadline = time.monotonic() + _PRELAUNCH_WAIT_S
-    while time.monotonic() < deadline:
-        await asyncio.sleep(_PRELAUNCH_POLL_S)
-        if await _bridge_ext_connected():
-            elapsed = _PRELAUNCH_WAIT_S - (deadline - time.monotonic())
-            logger.info(
-                f"[browser.pre_transfer] extension connected after "
-                f"{elapsed:.1f}s"
+        launched = await _launch_chrome()
+        if not launched:
+            return (
+                "Couldn't launch Chrome (setsid/google-chrome failed). "
+                "Open Chrome manually and try again."
             )
-            return None
+        deadline = time.monotonic() + _PRELAUNCH_WAIT_S
+        while time.monotonic() < deadline:
+            await asyncio.sleep(_PRELAUNCH_POLL_S)
+            if await _bridge_ext_connected():
+                elapsed = _PRELAUNCH_WAIT_S - (deadline - time.monotonic())
+                logger.info(
+                    f"[browser.pre_transfer] extension connected after "
+                    f"{elapsed:.1f}s"
+                )
+                connected = True
+                break
+        if not connected:
+            logger.warning(
+                f"[browser.pre_transfer] extension never connected within "
+                f"{_PRELAUNCH_WAIT_S}s; bailing"
+            )
+            return (
+                "Chrome is starting but the extension hasn't registered yet — "
+                "give it a few more seconds and ask again."
+            )
 
-    logger.warning(
-        f"[browser.pre_transfer] extension never connected within "
-        f"{_PRELAUNCH_WAIT_S}s; bailing"
+    # ── Step 2: pre-navigate if the request is an "Open X" intent ──
+    #
+    # When the supervisor's `request` clearly names a destination (a
+    # known site OR an explicit URL OR a bare domain), navigate
+    # DIRECTLY here so the subagent's first LLM call sees Chrome
+    # already on the target page. This eliminates the ~22s confab
+    # latency caught live 2026-05-13 01:11-01:12 (subagent LLM
+    # emitted task_done with no real tool call, got REFUSED, retried,
+    # eventually navigated — user had already asked again by then).
+    #
+    # Skipping pre-navigate when:
+    #   - request is empty (caller just wanted Chrome up — fine)
+    #   - request is vague ("do something in the browser") — let the
+    #     subagent figure it out
+    #   - opted out via env
+    if os.environ.get("JARVIS_BROWSER_PRENAV_DISABLE") == "1":
+        return None
+    if not request:
+        return None
+    target = _resolve_open_intent(request)
+    if target is None:
+        return None
+    logger.info(
+        f"[browser.pre_transfer] pre-navigating to {target} (from "
+        f"request {request[:80]!r})"
     )
-    return (
-        "Chrome is starting but the extension hasn't registered yet — "
-        "give it a few more seconds and ask again."
-    )
+    ok = await _bridge_navigate(target)
+    if not ok:
+        # Don't abort the handoff on pre-nav failure — let the subagent
+        # try (it has retries built in via the tool gate).
+        logger.warning(
+            f"[browser.pre_transfer] pre-navigate to {target} failed; "
+            f"letting the subagent attempt it"
+        )
+        return None
+    # Successful pre-nav → also focus Chrome so the user sees the page.
+    await _bridge_focus_chrome()
+    return None
 
 
 def register_browser() -> None:
