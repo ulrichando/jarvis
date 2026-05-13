@@ -364,7 +364,14 @@ def build_transfer_tool(spec: HandoffSubagent):
         f"After the subagent completes, control returns here "
         f"automatically with a one-sentence summary.\n\n"
         f"Args:\n"
-        f"    request: The user's request, verbatim or paraphrased."
+        f"    request: The user's request, VERBATIM. Pass exactly what\n"
+        f"        the user said (or the closest STT transcription). DO\n"
+        f"        NOT paraphrase, summarize, or add inferred destinations.\n"
+        f"        Live failure 2026-05-13: user said 'open YouTube',\n"
+        f"        supervisor passed request='Open Gmail' (inferred from\n"
+        f"        stale chat_ctx), subagent obediently opened Gmail.\n"
+        f"        Pass the user's actual phrasing; the subagent decides\n"
+        f"        the right action from there."
     )
 
     # NOTE: no `self` parameter. When @function_tool is used as a
