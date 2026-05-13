@@ -22,6 +22,8 @@ from . import audit_log, changelog
 from .schema import Rule
 from .store import AnchorWriteRefused, RuleStore
 
+from pipeline.hooks import fire_hook_sync
+
 
 __all__ = [
     "auto_stage",
@@ -151,6 +153,14 @@ def auto_stage(
         reason="passed 5-stage evaluator → entered 7-day shadow",
         evidence_turns=rule.turns,
     )
+    fire_hook_sync("evolution_tier_transition", {
+        "action": "auto-staged",
+        "rule_id": rule_id,
+        "from_tier": "proposed",
+        "to_tier": "staged",
+        "source": proposal.get("source"),
+        "rule_text": rule.text,
+    })
     logger.info(f"[lifecycle] staged {rule_id}: {rule.text[:80]}")
     return rule_id
 
@@ -212,6 +222,15 @@ def rollback(
         reason=reason,
         extras={"from_tier": from_tier, "retirement_reason": retirement_reason},
     )
+    fire_hook_sync("evolution_tier_transition", {
+        "action": "archived",
+        "rule_id": rule_id,
+        "from_tier": from_tier,
+        "to_tier": "archived",
+        "reason": reason,
+        "retirement_reason": retirement_reason,
+        "rule_text": archived_target.text,
+    })
 
 
 def record_negative_signal(
@@ -338,6 +357,14 @@ def promote_eligible_staged(
             reason=f"{STAGED_SHADOW_DAYS}d shadow + golden eval passed",
             evidence_turns=clean.turns,
         )
+        fire_hook_sync("evolution_tier_transition", {
+            "action": "promoted-to-accepted",
+            "rule_id": r.id,
+            "from_tier": "staged",
+            "to_tier": "accepted",
+            "reason": f"{STAGED_SHADOW_DAYS}d shadow + golden eval passed",
+            "rule_text": clean.text,
+        })
         promoted += 1
     logger.info(f"[lifecycle] promoted {promoted} staged → accepted")
     return promoted
