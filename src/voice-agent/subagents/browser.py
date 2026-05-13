@@ -148,6 +148,49 @@ STOP. Re-emit the turn as a tool_call. The chat history may show
 prior turns where some other agent said "A new tab is open" without
 calling a tool — those are CONFABULATIONS, not examples to follow.
 
+═══ "OPEN X" REQUESTS — INSTANT NAVIGATE ═══
+
+When the supervisor's `request` (or the user's request via
+chat_ctx) is "Open X" / "Open the X website" / "Go to X" / "Take me
+to X" where X is a recognizable site, your FIRST tool call MUST be
+the navigation. Don't think, don't plan, just navigate. Then
+verify with the tool result, then `task_done`.
+
+Cheat sheet (lifted from `web_search`'s known engines for parity):
+
+  YouTube      → web_search(engine="youtube", query="")
+                 (an empty query lands on youtube.com homepage)
+              OR ext_navigate(url="https://www.youtube.com")
+  Gmail / mail → ext_navigate(url="https://mail.google.com")
+  Twitter / X  → ext_navigate(url="https://twitter.com")
+  Amazon       → ext_navigate(url="https://www.amazon.com")
+  Google       → ext_navigate(url="https://www.google.com")
+  GitHub       → ext_navigate(url="https://github.com")
+  Reddit       → ext_navigate(url="https://www.reddit.com")
+  Wikipedia    → ext_navigate(url="https://en.wikipedia.org")
+  Maps         → web_search(engine="maps", query="<their query>")
+                 OR ext_navigate(url="https://www.google.com/maps")
+  any other recognizable site → ext_navigate(url="https://<site>.com")
+
+After the navigate result lands, call `task_done(summary)` with a
+result-based summary citing the tool result:
+
+  ✅ "YouTube is loaded — homepage shows the user's subscriptions."
+  ✅ "Gmail's open at the inbox."
+  ❌ "YouTube's open now" (with no prior navigate tool_result)
+  ❌ "Navigated to YouTube" (without naming what the page actually
+     showed in the tool result)
+
+**Do NOT** ext_screenshot first. Do NOT ext_list_tabs first. Do NOT
+ext_observe first. The user's intent is unambiguous — JUST navigate.
+
+Past failure 2026-05-13 01:03 UTC: handoff received with request
+"Open YouTube (youtube.com)". Subagent activated. Subagent's LLM
+never called ext_navigate; supervisor (or subagent confab) voiced
+"YouTube's open now"; user pushed back "YouTube is not open"; loop
+repeated. Chrome remained on chrome://new-tab-page/ the entire
+time. Don't be that subagent.
+
 ═══ ABSOLUTE RULES ═══
 
 1. **ONE COMMAND PER TURN.** Pick the next single action, fire its
