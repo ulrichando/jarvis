@@ -99,6 +99,16 @@ class HandoffSubagent:
     llm_factory: Optional[Callable[[], object]] = None
     tools_required: bool = True
     pre_transfer: Optional[Callable[..., Awaitable[Optional[str]]]] = None
+    # Per-handoff filesystem isolation. Currently the only supported
+    # value is `"worktree"` — port of claude-code's subagent
+    # `isolation: worktree` frontmatter. When set, the transfer-tool
+    # spawns a fresh `<repo>/.worktrees/<name>-<short_id>/` checkout
+    # before the subagent activates, injects the absolute path into
+    # the subagent's instructions, and auto-cleans on `task_done`
+    # (if clean). Future values could include `"container"` etc.
+    # Default None — most subagents (desktop / browser / screen_share)
+    # don't touch the filesystem and don't need isolation.
+    isolation: Optional[str] = None
 
 
 # Global registry. Use the module functions below — don't mutate this
