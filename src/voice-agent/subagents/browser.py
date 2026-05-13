@@ -6,11 +6,28 @@ level command per turn and steps the task forward (Manus pattern).
 The 38 ext_* @function_tools live in `tools.browser_ext.py`; this
 file just wraps them in a HandoffSubagent so the LLM reaches them
 through the same registry handoff as desktop.
+
+A `pre_transfer` hook (`_ensure_chrome_extension_connected`) guards
+the handoff: if the bridge reports the extension as disconnected,
+the hook launches `google-chrome --profile-directory=Default` and
+waits up to ~8s for the extension to register. Without this, "open
+YouTube" on a cold-Chrome system handed off to the subagent only
+for it to bail with "extension not connected" — JARVIS told the
+user the system was broken when in fact Chrome just wasn't open.
 """
 from __future__ import annotations
 
+import asyncio
+import logging
+import os
+import time
+from typing import Optional
+
 from .registry import HandoffSubagent, register
 from ._ack_phrases import ACK_BROWSER
+
+
+logger = logging.getLogger("jarvis.subagents.browser")
 
 
 BROWSER_INSTRUCTIONS = """\
@@ -353,13 +370,144 @@ _BROWSER_WHEN = (
 )
 
 
+# Pre-transfer hook config — overridable via env for tests / opt-out.
+# `JARVIS_BROWSER_PRELAUNCH_DISABLE=1` keeps the supervisor's behavior
+# from before this hook landed (transfer fires whatever the bridge
+# state, subagent bails if extension not connected).
+_BRIDGE_URL = os.environ.get("JARVIS_BRIDGE_URL", "http://127.0.0.1:8765")
+_CHROME_LAUNCH_CMD = ["setsid", "-f", "google-chrome", "--profile-directory=Default"]
+_PRELAUNCH_WAIT_S = float(os.environ.get("JARVIS_BROWSER_PRELAUNCH_WAIT_S", "8.0"))
+_PRELAUNCH_POLL_S = float(os.environ.get("JARVIS_BROWSER_PRELAUNCH_POLL_S", "0.3"))
+
+
+async def _bridge_ext_connected() -> bool:
+    """GET /api/ext_status → {"connected": bool}.
+
+    Returns False on any error (bridge down, network glitch, bad
+    JSON). The hook treats False the same way regardless of root
+    cause — try to launch Chrome and see if that fixes it. Keeps
+    the hook simple at the cost of one redundant launch when the
+    bridge itself is unreachable.
+    """
+    try:
+        # Lazy aiohttp import — kept out of registry-load path.
+        import aiohttp
+        timeout = aiohttp.ClientTimeout(total=2.0)
+        async with aiohttp.ClientSession(timeout=timeout) as s:
+            async with s.get(f"{_BRIDGE_URL}/api/ext_status") as resp:
+                if resp.status != 200:
+                    return False
+                data = await resp.json()
+                return bool(data.get("connected"))
+    except Exception as e:
+        logger.debug(f"[browser.pre_transfer] ext_status probe failed: {e}")
+        return False
+
+
+async def _launch_chrome() -> bool:
+    """Fire `setsid -f google-chrome --profile-directory=Default`.
+
+    Detached via setsid+`-f` so the chrome process group survives
+    voice-agent restarts; the launch itself returns immediately.
+    Returns False if `setsid` can't even spawn (PATH issue).
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *_CHROME_LAUNCH_CMD,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        # setsid -f exits ~immediately after forking Chrome.
+        await asyncio.wait_for(proc.wait(), timeout=2.0)
+        return proc.returncode == 0
+    except Exception as e:
+        logger.warning(f"[browser.pre_transfer] Chrome launch failed: {e}")
+        return False
+
+
+async def _ensure_chrome_extension_connected(context, request, supervisor):
+    """Pre-transfer hook: idempotently ensure Chrome is running AND
+    the jarvis-screen extension is connected to the bridge BEFORE
+    the browser subagent's `on_enter` fires.
+
+    Live failure 2026-05-13 00:28 UTC: user said "open YouTube" with
+    Chrome not running. Supervisor fired transfer_to_browser, browser
+    subagent's ext_navigate hit the bridge, bridge returned 503
+    "extension not connected", subagent bailed, user heard "the
+    browser extension isn't connected" with no automatic recovery.
+
+    The fix lifts the launch-Chrome-first responsibility from the
+    soft prompt rules into a code-level invariant — same pattern
+    `_ensure_screen_share_active` uses for the screen_share subagent.
+
+    Steps:
+      1. GET /api/ext_status. If connected → return None (proceed).
+      2. Not connected → `setsid -f google-chrome --profile-directory
+         =Default`. The flag set is what supervisor.md:2316 specifies.
+      3. Poll ext_status every PRELAUNCH_POLL_S until connected or
+         PRELAUNCH_WAIT_S elapsed.
+      4. Connected → return None. Timed out → return abort string
+         the supervisor voices ("Chrome is starting, give it a sec").
+
+    Idempotent: a re-fire on an already-connected extension just
+    runs step 1 and returns. Safe to call on every transfer.
+
+    Opt-out: `JARVIS_BROWSER_PRELAUNCH_DISABLE=1` skips the whole
+    hook and proceeds straight to the subagent — useful for testing
+    the bare bridge path or if the user is managing Chrome manually.
+    """
+    if os.environ.get("JARVIS_BROWSER_PRELAUNCH_DISABLE") == "1":
+        return None
+
+    # Step 1: already-connected fast path.
+    if await _bridge_ext_connected():
+        return None
+
+    # Step 2: launch.
+    logger.info(
+        "[browser.pre_transfer] extension not connected; launching Chrome"
+    )
+    launched = await _launch_chrome()
+    if not launched:
+        return (
+            "Couldn't launch Chrome (setsid/google-chrome failed). "
+            "Open Chrome manually and try again."
+        )
+
+    # Step 3 + 4: poll for connection.
+    deadline = time.monotonic() + _PRELAUNCH_WAIT_S
+    while time.monotonic() < deadline:
+        await asyncio.sleep(_PRELAUNCH_POLL_S)
+        if await _bridge_ext_connected():
+            elapsed = _PRELAUNCH_WAIT_S - (deadline - time.monotonic())
+            logger.info(
+                f"[browser.pre_transfer] extension connected after "
+                f"{elapsed:.1f}s"
+            )
+            return None
+
+    logger.warning(
+        f"[browser.pre_transfer] extension never connected within "
+        f"{_PRELAUNCH_WAIT_S}s; bailing"
+    )
+    return (
+        "Chrome is starting but the extension hasn't registered yet — "
+        "give it a few more seconds and ask again."
+    )
+
+
 def register_browser() -> None:
     """Register the browser subagent. `enabled=True` ships it live —
     the bridge endpoint and the extension command channel were both
-    completed in earlier phases of the extension migration. If the
-    extension isn't connected at runtime, the bridge returns a
-    structured `extension not connected` error and the subagent
-    voices it back instead of hanging."""
+    completed in earlier phases of the extension migration.
+
+    The `pre_transfer` hook (`_ensure_chrome_extension_connected`)
+    auto-launches Chrome if the extension isn't connected, so the
+    handoff doesn't fail when Chrome happens to be cold. Added
+    2026-05-13 after a live failure where JARVIS told the user "the
+    browser extension isn't connected" instead of just opening it.
+    """
     register(HandoffSubagent(
         name="browser",
         transfer_tool="transfer_to_browser",
@@ -375,4 +523,5 @@ def register_browser() -> None:
         # immediate context, no historical pollution.
         max_history_items=4,
         enabled=True,
+        pre_transfer=_ensure_chrome_extension_connected,
     ))
