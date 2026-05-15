@@ -17,12 +17,17 @@ else
   DESKTOP_BIN="$DESKTOP_BIN_DEBUG"
 fi
 
-# Load API keys
-if [ -f "$ROOT/.env.local" ]; then
-  set -a
-  source "$ROOT/.env.local"
-  set +a
-fi
+# Load API keys. Order (bash `KEY=value` source = last-wins on collision):
+#   1) repo-root .env       — centralized LLM provider keys
+#                             (consolidated 2026-05-15)
+#   2) .env.local            — per-machine overlay (proxy flags etc.)
+for envfile in "$PROJECT_ROOT/.env" "$ROOT/.env.local"; do
+  if [ -f "$envfile" ]; then
+    set -a
+    source "$envfile"
+    set +a
+  fi
+done
 # Also load ~/.jarvis/keys.env (user-local secret store, gitignored).
 # Mirrors the voice-agent's `_load_user_keys_env()` pattern. Values
 # here OVERRIDE .env.local on collision, so newer keys placed here

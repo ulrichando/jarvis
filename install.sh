@@ -116,6 +116,17 @@ install_cli() {
   if [ "${JARVIS_SKIP_CLI:-0}" = "1" ]; then warn "skipping CLI (JARVIS_SKIP_CLI=1)"; return; fi
   section "Installing CLI"
   (cd "$INSTALL_DIR/src/cli" && bun install --silent)
+  # src/hub/ is the TypeScript event-hub SDK used by src/cli/src/bridge/
+  # (which the Tauri tray polls on 127.0.0.1:8765 for status). The
+  # bridge imports from src/hub/client-core.ts, and bun resolves
+  # 'ioredis' walking up from THAT file — so it has to be installed
+  # in src/hub/node_modules, not src/cli/. (Live failure 2026-05-15:
+  # without this, start-desktop.sh's bridge child crashed at boot with
+  # "Cannot find package 'ioredis'", tray stayed red.)
+  if [ -f "$INSTALL_DIR/src/hub/package.json" ]; then
+    (cd "$INSTALL_DIR/src/hub" && bun install --silent)
+    ok "hub TS deps installed (resolves ioredis for src/cli/src/bridge)"
+  fi
   mkdir -p "$LOCAL_BIN"
   ln -sf "$INSTALL_DIR/bin/jarvis"         "$LOCAL_BIN/jarvis"
   ln -sf "$INSTALL_DIR/bin/jarvis-desktop" "$LOCAL_BIN/jarvis-desktop"
