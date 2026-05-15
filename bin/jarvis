@@ -5,7 +5,8 @@
 
 set -euo pipefail
 
-JARVIS_ROOT="/home/ulrich/Documents/Projects/jarvis/src/cli"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+JARVIS_ROOT="$SCRIPT_DIR/../src/cli"
 SCRIPTS="$JARVIS_ROOT/scripts"
 
 exec bash "$SCRIPTS/start.sh" "$@"
