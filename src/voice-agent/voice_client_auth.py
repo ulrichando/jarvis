@@ -34,7 +34,12 @@ log = logging.getLogger("jarvis.voice_client")
 
 
 def _load_user_keys_env() -> None:
-    """Load ~/.jarvis/keys.env into os.environ (override semantics).
+    """Load repo-root .env then ~/.jarvis/keys.env into os.environ.
+
+    Priority chain (lowest → highest):
+      1) Repo-root .env — centralized LLM provider keys
+         (consolidated 2026-05-15; was duplicated across subproject .env files).
+      2) ~/.jarvis/keys.env — user override; always wins.
 
     Same shape as `jarvis_agent._load_user_keys_env`. CRITICAL for the
     voice-client process: secrets (LIVEKIT_API_KEY / LIVEKIT_API_SECRET
@@ -43,17 +48,15 @@ def _load_user_keys_env() -> None:
     function; the voice-client process (separate systemd unit, separate
     Python interpreter) didn't — which left mint_token() hitting its
     sys.exit(2) "API key not set" guard on every start, putting the
-    unit in a fast restart loop and the tray red. Loading the keys
-    file here happens BEFORE the API_KEY / API_SECRET reads below,
-    so the env-driven module constants pick up the real values.
+    unit in a fast restart loop and the tray red. Loading happens
+    BEFORE the API_KEY / API_SECRET reads below, so the env-driven
+    module constants pick up the real values.
 
-    Missing file is fine — graceful no-op. Failures parsing a line are
-    swallowed at WARNING level.
+    Missing file at either layer is fine — graceful no-op. Failures
+    parsing a line are swallowed at WARNING level.
     """
-    p = Path.home() / ".jarvis" / "keys.env"
-    if not p.exists():
-        return
-    try:
+
+    def _parse(p: Path) -> None:
         for line in p.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
@@ -62,9 +65,20 @@ def _load_user_keys_env() -> None:
             k = k.strip()
             v = v.strip().strip('"').strip("'")
             if k and v:
-                os.environ[k] = v   # override repo .env (matches voice-agent semantics)
-    except Exception as _e:
-        log.warning(f"[keys.env] load failed (non-fatal): {_e}")
+                os.environ[k] = v
+
+    # parents[2] = src/voice-agent → src → repo root
+    sources = [
+        Path(__file__).resolve().parents[2] / ".env",
+        Path.home() / ".jarvis" / "keys.env",
+    ]
+    for src in sources:
+        if not src.exists():
+            continue
+        try:
+            _parse(src)
+        except Exception as _e:
+            log.warning(f"[env-load] {src.name} parse failed (non-fatal): {_e}")
 
 
 _load_user_keys_env()

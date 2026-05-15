@@ -27,7 +27,12 @@ function loadEnvFile(filePath) {
   }
 }
 
+// First-set-wins semantics (see loadEnvFile above). Load .env.local
+// FIRST so per-machine overrides take precedence, then fill any gaps
+// from the repo-root .env (centralized LLM provider keys, consolidated
+// 2026-05-15).
 loadEnvFile(join(root, '.env.local'))
+loadEnvFile(resolve(root, '..', '..', '.env'))
 
 // Mark as development so native-install checks are skipped
 if (!process.env.NODE_ENV) {
