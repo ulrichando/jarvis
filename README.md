@@ -41,7 +41,7 @@ cd ~/Documents/Projects/jarvis
 | `cargo` (Rust) | Desktop backend | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
 | `systemd --user` | Voice agent + hub services | already present on most Linux distros |
 
-External services the voice agent expects on the same box: a LiveKit SFU (`livekit-server.service`) and Redis (`redis-server.service`). These are NOT auto-installed; you'll get clearer errors after starting the units.
+External services: a LiveKit SFU (the binary is bundled in the repo and `install.sh` registers a user systemd unit `livekit-server.service` + auto-generates `~/.jarvis/livekit-keys.yaml`) and Redis. Redis is system-level — `install.sh` tries `sudo systemctl enable --now redis-server.service`; if your sudo prompts for a password, you'll have to run that one line manually.
 
 ## After install
 
@@ -60,9 +60,19 @@ KIMI_API_KEY=...
 
 All four subprojects read this file (consolidated 2026-05-15 — no more duplicate keys across subproject `.env.local` files). Subproject-specific vars (`LIVEKIT_*`, `NEXT_PUBLIC_*`, `DATABASE_URL`) stay in their respective `src/<sub>/.env.local`. The Tauri tray UI writes user overrides to `~/.jarvis/keys.env`, which always wins.
 
-### 2. Start the voice agent
+### 2. Start the SFU, hub, and voice agent
 
 ```bash
+# Redis (system-level; one-time, if install.sh couldn't auto-enable it)
+sudo systemctl enable --now redis-server.service
+
+# LiveKit SFU (user-level, bundled binary)
+systemctl --user start livekit-server.service
+
+# JARVIS hub (talks to Redis)
+systemctl --user start jarvis-hub.service
+
+# Voice agent — the brain. Tail logs to confirm it connected.
 systemctl --user start jarvis-voice-agent.service
 journalctl --user -u jarvis-voice-agent.service -f
 ```
