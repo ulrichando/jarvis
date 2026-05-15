@@ -30,7 +30,7 @@ convex~=0.7
 # (live failure 2026-05-11 13:14 UTC). browser-use 0.12.6 pins
 # google-genai==1.65.0 — that pin is ignored; live testing confirms
 # browser-use still works with 2.0.
-google-genai>=2.0,<3.0
+google-genai>=2.3.0,<3.0
 
 # Face ID — InsightFace buffalo_l (RetinaFace + ArcFace ResNet-50),
 # the production-grade open-source face stack used by AWS Rekognition
@@ -40,10 +40,10 @@ google-genai>=2.0,<3.0
 # Multi-frame averaged enrollment + IR/RGB cross-camera anti-spoof are
 # implemented in jarvis_computer_use.py:face_register/face_identify.
 insightface~=0.7
-onnxruntime~=1.20
+onnxruntime~=1.26
 # pkg_resources (transitively required by older deps); pin to a setuptools
 # version that still ships it (82+ removed pkg_resources).
-setuptools<70
+setuptools<83
 
 # LangChain + LangGraph orchestration. The voice loop's per-turn dispatch
 # is expressed as a StateGraph in turn_graph.py; the classifier uses
@@ -53,8 +53,8 @@ setuptools<70
 #
 # Pinned with `~=` (semver-aware: accept patches + minors, refuse majors)
 # so a 2.x release can't pip-install silently and break the graph.
-langgraph~=1.0
-langgraph-checkpoint-sqlite~=3.0
-langchain~=1.0
-langchain-groq~=1.0
+langgraph~=1.2
+langgraph-checkpoint-sqlite~=3.1
+langchain~=1.3
+langchain-groq~=1.1
 langchain-openai~=1.2
