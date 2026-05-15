@@ -1,0 +1,62 @@
+[Unit]
+Description=JARVIS voice client (native PortAudio mic/speaker bridge to LiveKit SFU)
+# WebKit2GTK can't reliably do WebRTC PeerConnection, so the desktop
+# UI offloads voice I/O to this native Python process. It joins the
+# LiveKit room as identity=desktop-ulrich, publishes the mic, and
+# plays the agent's audio track via PortAudio → ALSA/PipeWire.
+# Voice-agent is a Wants (not Requires) — voice-client can run alone
+# and will retry connecting, but they're operationally paired.
+After=network-online.target livekit-server.service jarvis-voice-agent.service
+Wants=network-online.target jarvis-voice-agent.service
+Requires=livekit-server.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+# Voice-client pings WATCHDOG=1 every 5 s from inside its asyncio loop
+# (jarvis_voice_client.py:582). 30 s gives 6× ping margin before
+# systemd kills + restarts on a wedge.
+WatchdogSec=30s
+WorkingDirectory=%h/Documents/Projects/jarvis/src/voice-agent
+# Canonical source of LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET
+# is the voice-agent's own .env. Repo-root .env (centralized 2026-05-15)
+# is loaded after as an optional override, then per-tree overlays.
+EnvironmentFile=%h/Documents/Projects/jarvis/src/voice-agent/.env
+EnvironmentFile=-%h/Documents/Projects/jarvis/.env
+EnvironmentFile=-%h/Documents/Projects/jarvis/src/cli/.env.local
+# Local bridge bearer token (KEY=VALUE format, chmod 600). Optional
+# (`-` prefix) so the unit doesn't fail before P0c is run.
+EnvironmentFile=-%h/.jarvis/local-api-token.env
+# Use the voice-agent's venv directly so we don't need to source it
+# in ExecStart — the voice-client lives in the same package layout
+# and shares deps (livekit + sounddevice + sdnotify).
+ExecStart=%h/Documents/Projects/jarvis/src/voice-agent/.venv/bin/python %h/Documents/Projects/jarvis/src/voice-agent/jarvis_voice_client.py
+# Auto-recover from PortAudio glitches / SFU restart / LiveKit
+# session drops. RestartSec=5 matches the voice-agent unit.
+Restart=always
+RestartSec=5
+# Append to dedicated log so it doesn't intermix with voice-agent.log.
+# Rotation handled by scripts/rotate-jarvis-logs.sh on a daily timer.
+StandardOutput=append:%h/.local/share/jarvis/logs/voice-client.log
+StandardError=append:%h/.local/share/jarvis/logs/voice-client.log
+
+# ────────────────────────────────────────────────────────────────────
+# Sandbox hardening — mirrors the voice-agent unit. Intentionally NOT
+# set: NoNewPrivileges (would block sudo), ProtectHome (writes to
+# ~/.local/share/jarvis), PrivateDevices (needs /dev/snd for PortAudio),
+# ProtectSystem=strict, MemoryDenyWriteExecute (PortAudio uses W+X).
+# ────────────────────────────────────────────────────────────────────
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=default.target
