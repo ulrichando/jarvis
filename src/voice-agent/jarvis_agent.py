@@ -3676,6 +3676,7 @@ def prewarm(proc: JobProcess) -> None:
         "(activation=0.5, deactivation=0.25, min_speech=0.1, "
         "min_silence=0.4, prefix_pad=0.6)"
     )
+    _spawn_worker_heartbeat()
 
 
 def _pick_supervisor_llm(*, subagent_tools, legacy_llm):
@@ -4000,17 +4001,33 @@ def _spawn_screen_share_watcher(session) -> None:
 
 
 def _spawn_worker_heartbeat() -> None:
-    """Spawn the worker-heartbeat background task. Step 8b of the
-    10/10 refactor. Closes the supervisor-vs-worker watchdog gap:
-    the worker subprocess can't reach systemd directly (NotifyAccess=main
-    rejects sd_notify from non-supervisor PIDs), so it drops a
-    timestamp into `/tmp/jarvis-worker-heartbeat` that the supervisor's
-    main-sd-watchdog reads. If the worker's asyncio loop wedges, this
-    coroutine stops firing, the supervisor stops pinging systemd, and
-    systemd restarts within WatchdogSec."""
-    HEARTBEAT_PATH = Path("/tmp/jarvis-worker-heartbeat")
+    """Drop a /tmp/jarvis-worker-heartbeat timestamp every 3 s so the
+    supervisor's main-sd-watchdog can prove the worker subprocess is
+    alive. Step 8b of the 10/10 refactor (2026-05-10), reworked
+    2026-05-15.
 
-    async def _worker_heartbeat() -> None:
+    Runs as a daemon thread spawned from `prewarm()` (per worker
+    subprocess), NOT as an asyncio task inside `entrypoint()` (per
+    job). Why the rework: the asyncio-task version only fired once a
+    client joined a LiveKit room. An idle worker never wrote the file,
+    the supervisor watchdog withheld WATCHDOG=1 after its 60 s grace,
+    and systemd SIGABRTed the entire process tree at WatchdogSec=120s
+    — chicken-and-egg, since no client could connect to a worker that
+    kept dying. Daemon-thread version writes regardless of jobs, so a
+    fresh service stays alive until the first connection.
+
+    Trade-off: a thread can't detect an asyncio-loop wedge (a sync
+    call blocking the loop won't block this thread). The 2026-05-04
+    incident class motivating wedge-detect is still covered by
+    resilience/watchdog.py running inside the loop; this file proves
+    only the worker subprocess (interpreter + thread scheduler) is
+    alive. Idempotent: multiple worker subprocesses writing the same
+    file is fine — atomic rename, time.monotonic() is system-wide on
+    Linux."""
+    HEARTBEAT_PATH = Path("/tmp/jarvis-worker-heartbeat")
+    import threading as _threading
+
+    def _heartbeat_loop() -> None:
         while True:
             try:
                 tmp = HEARTBEAT_PATH.with_suffix(".tmp")
@@ -4018,9 +4035,13 @@ def _spawn_worker_heartbeat() -> None:
                 tmp.replace(HEARTBEAT_PATH)
             except Exception as e:
                 logger.warning(f"[worker-heartbeat] write failed: {e}")
-            await asyncio.sleep(3.0)
+            time.sleep(3.0)
 
-    asyncio.create_task(_worker_heartbeat())
+    _threading.Thread(
+        target=_heartbeat_loop,
+        name="worker-heartbeat",
+        daemon=True,
+    ).start()
 
 
 def _register_session_error_handlers(session) -> None:
@@ -5227,7 +5248,6 @@ async def entrypoint(ctx: JobContext) -> None:
     # now owns proposal mining.
     _spawn_evolution_background_tasks()
     _spawn_screen_share_watcher(session)
-    _spawn_worker_heartbeat()
 
     # Fire the session_start hook — let user-installed shell scripts
     # at ~/.jarvis/hooks/session_start/ react to each new voice job.
@@ -5363,14 +5383,20 @@ if __name__ == "__main__":
 
     def _main_watchdog_thread() -> None:
         """Ping systemd every 5s from the main supervisor process —
-        BUT only when the worker subprocess is fresh. The worker
-        coroutine writes /tmp/jarvis-worker-heartbeat every 3s; if it
-        stops (loop wedge) the supervisor stops pinging too, so
-        systemd's WatchdogSec=120s restarts the entire process tree.
+        BUT only when the worker subprocess is fresh. Each worker
+        subprocess spawns a daemon thread in `prewarm()` that writes
+        /tmp/jarvis-worker-heartbeat every 3s; if it stops (subprocess
+        died / Python interpreter wedged) the supervisor stops pinging
+        too, so systemd's WatchdogSec=120s restarts the entire process
+        tree.
 
-        Grace period of 60s on startup so the worker has time to spawn
-        and write its first heartbeat. After grace, a heartbeat older
-        than 30s is treated as stale → no ping."""
+        Grace period of 60s on startup so the worker subprocess has
+        time to spawn and prewarm. After grace, a heartbeat older than
+        30s is treated as stale → no ping. Pre-2026-05-15 the heartbeat
+        producer lived in `entrypoint()` (per job) which meant an idle
+        worker — no client connected — never wrote the file and the
+        service died in a kill-loop. Moved to prewarm so the worker
+        proves liveness from startup, independent of jobs."""
         import os as _os
         from pathlib import Path as _Path
         HB = _Path("/tmp/jarvis-worker-heartbeat")
