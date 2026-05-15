@@ -1,7 +1,9 @@
-# Virtual environment
-.venv/
-venv/
-env/
+# Virtual environment — anchor to repo root only so we don't shadow
+# src/cli/src/commands/env/ (the bug fixed by old-master PR #4,
+# re-applied here after the feat-v3 force-push lost it).
+/.venv/
+/venv/
+/env/
 
 # Build artifacts
 target/
