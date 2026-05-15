@@ -1,7 +1,7 @@
-# Virtual environment
-.venv/
-venv/
-env/
+# Virtual environment (anchor to repo root so we don't shadow src/commands/env/)
+/.venv/
+/venv/
+/env/
 
 # Build artifacts
 target/
