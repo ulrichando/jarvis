@@ -8,6 +8,27 @@
 
 livekit-agents[silero,openai,groq,anthropic]~=1.5
 
+# Microsoft Edge-TTS — neural voices reachable without auth/quota.
+# Wrapped in providers/edge_tts.py as a livekit-agents TTS adapter.
+# Imported at the top of jarvis_agent.py, so a missing dep crashes the
+# entire agent at import time (live failure 2026-05-15 — first run
+# after fresh install died here because the import was added before
+# anyone added the package to requirements).
+edge-tts~=7.0
+
+# systemd notify-protocol helper. jarvis-voice-agent.service is
+# Type=notify with WatchdogSec=120s — the unit fails to start at all
+# if the process never sends READY=1, and gets killed mid-flight if
+# it doesn't ping the watchdog. Imported in jarvis_agent.py:5358 and
+# resilience/watchdog.py:19 (live failure 2026-05-15 second start).
+sdnotify~=0.3
+
+# Redis client for the JARVIS event hub (jarvis-hub.service). Hub-less
+# operation is gracefully degraded — voice-agent logs 'hub disabled' and
+# continues — but with redis installed, conversation mirror + cross-
+# process event bus actually work. Pairs with redis-server.service.
+redis~=5.0
+
 # Convex client used for the conversations.db mirror. Mirror is best-
 # effort: if the package is missing or the backend is unreachable, the
 # agent logs a warning and continues SQLite-only. See _get_convex_client
