@@ -5422,5 +5422,11 @@ if __name__ == "__main__":
             # min(cpu_count, 4); we pin the explicit value so it
             # doesn't shrink on lower-cpu hosts.
             num_idle_processes=4,
+            # livekit-agents binds a health HTTP server on 8081 by
+            # default (prod_default in worker.py). Override to 8181
+            # to dodge port collisions with other tooling on the same
+            # box. JARVIS_WORKER_PORT in the systemd unit's env
+            # (or .env loaded by EnvironmentFile=) overrides at runtime.
+            port=int(os.environ.get("JARVIS_WORKER_PORT", "8181")),
         ),
     )
