@@ -288,12 +288,14 @@ install_desktop() {
   ok "frontend built (dist/)"
 
   (cd "$dt/src-tauri" && cargo build --release)
-  local bin="$dt/src-tauri/target/release/jarvis"
+  # Cargo names the binary after [package].name in Cargo.toml — currently
+  # 'jarvis-desktop'. NOT 'jarvis' (that's the productName in
+  # tauri.conf.json, which only affects window title + the bundled
+  # .app/.deb metadata, not the bare ELF).
+  local bin="$dt/src-tauri/target/release/jarvis-desktop"
   if [ -x "$bin" ]; then
-    ok "desktop binary at $bin"
+    ok "desktop binary at $bin ($(du -h "$bin" | cut -f1))"
   else
-    # Tauri output name follows productName in tauri.conf.json — let
-    # the user know to look around if our default guess missed.
     warn "expected $bin not found — check $dt/src-tauri/target/release/ for the binary name"
   fi
 
@@ -304,7 +306,7 @@ install_desktop() {
 install_desktop_entry() {
   local apps_dir="$HOME/.local/share/applications"
   local entry="$apps_dir/jarvis.desktop"
-  local exec_path="$INSTALL_DIR/src/desktop-tauri/src-tauri/target/release/jarvis"
+  local exec_path="$INSTALL_DIR/src/desktop-tauri/src-tauri/target/release/jarvis-desktop"
   local icon_path="$INSTALL_DIR/src/desktop-tauri/src-tauri/icons/128x128.png"
 
   mkdir -p "$apps_dir"
@@ -424,9 +426,10 @@ print_summary() {
          jarvis
     4. Start the web app (optional):
          cd $INSTALL_DIR/src/web && bun dev
-    5. Run the desktop app:
-         $INSTALL_DIR/src/desktop-tauri/src-tauri/target/release/jarvis
-       (or wherever cargo placed the binary)
+    5. Run the desktop app (Tauri):
+         $INSTALL_DIR/src/desktop-tauri/src-tauri/target/release/jarvis-desktop
+       (or click 'JARVIS' in your app launcher — Ctrl+Shift+Space toggles
+       click-through once it's running)
 
   Re-run this script anytime to re-install or update a channel.
   Skip channels with JARVIS_SKIP_{CLI,VOICE,DESKTOP,WEB}=1.
