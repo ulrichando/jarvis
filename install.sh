@@ -307,7 +307,12 @@ install_desktop_entry() {
   local apps_dir="$HOME/.local/share/applications"
   local entry="$apps_dir/jarvis.desktop"
   local exec_path="$INSTALL_DIR/src/desktop-tauri/src-tauri/target/release/jarvis-desktop"
-  local icon_path="$INSTALL_DIR/src/desktop-tauri/src-tauri/icons/128x128.png"
+  # The Tauri default icons (src-tauri/icons/{32x32,128x128,tray}.png)
+  # are placeholder Tauri logos from `tauri init` (cyan circle, ~500 B).
+  # The actual JARVIS branding is the concentric-rings logo committed
+  # with the Chrome extension. Reuse it so the app-menu entry matches
+  # what JARVIS looks like everywhere else.
+  local icon_path="$INSTALL_DIR/src/extensions/jarvis-screen/icon128.png"
 
   mkdir -p "$apps_dir"
   cat > "$entry" <<EOF
