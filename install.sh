@@ -177,13 +177,17 @@ install_systemd_units() {
     -e "s|/home/[^/]*/Documents/Projects/jarvis|$INSTALL_DIR|g"
     -e "s|/home/[^/]*/jarvis|$INSTALL_DIR|g"
   )
-  for src in jarvis-voice-agent.service jarvis-hub.service livekit-server.service; do
+  for src in jarvis-voice-agent.service jarvis-voice-client.service jarvis-hub.service livekit-server.service; do
     sed "${sed_path_subs[@]}" "$INSTALL_DIR/setup/systemd/$src" > "$USER_SYSTEMD/$src"
     ok "installed unit: $USER_SYSTEMD/$src"
   done
 
   systemctl --user daemon-reload
-  for unit in livekit-server.service jarvis-hub.service jarvis-voice-agent.service; do
+  # Enable order matters: SFU + Redis first, then agent + client (client
+  # Wants= the agent but doesn't Require= it, so order is preference not
+  # correctness). voice-client is the desktop-side audio bridge — without
+  # it the Tauri UI's status pill stays red even when the agent is alive.
+  for unit in livekit-server.service jarvis-hub.service jarvis-voice-agent.service jarvis-voice-client.service; do
     systemctl --user enable "$unit" >/dev/null 2>&1 \
       && ok "enabled $unit (NOT started — configure .env first)" \
       || warn "could not enable $unit"
@@ -430,14 +434,17 @@ print_summary() {
 
   Next steps:
     1. Edit $INSTALL_DIR/.env and fill in real API keys.
-    2. Start the SFU + hub + voice agent (in this order — voice-agent
-       requires livekit-server, jarvis-hub requires Redis):
+    2. Start the SFU + hub + voice agent + voice client (in this order —
+       voice-agent requires livekit-server, jarvis-hub requires Redis,
+       voice-client is the desktop's native PortAudio bridge):
          sudo systemctl enable --now redis-server.service   # if not done
          systemctl --user start livekit-server.service
          systemctl --user start jarvis-hub.service
          systemctl --user start jarvis-voice-agent.service
+         systemctl --user start jarvis-voice-client.service
        Logs:
          journalctl --user -u jarvis-voice-agent.service -f
+         journalctl --user -u jarvis-voice-client.service -f
     3. Try the CLI:
          jarvis
     4. Start the web app (optional):
