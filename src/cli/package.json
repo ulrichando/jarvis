@@ -69,7 +69,7 @@
     "picomatch": "^4.0.4",
     "proper-lockfile": "^4.1.2",
     "qrcode": "^1.5.4",
-    "react": "^19.2.5",
+    "react": "^19.2.6",
     "react-reconciler": "^0.33.0",
     "semver": "^7.7.4",
     "shell-quote": "^1.8.3",
