@@ -159,32 +159,69 @@ install_voice_agent() {
 install_systemd_units() {
   if ! have systemctl; then warn "no systemctl; skipping systemd unit install"; return; fi
   mkdir -p "$USER_SYSTEMD"
+  mkdir -p "$HOME/.local/share/jarvis/logs"   # voice-agent + livekit-server log dest
 
-  # Substitute hardcoded paths in unit files so they work for any
-  # install location. Voice-agent unit uses %h/Documents/Projects/jarvis
-  # for most paths but hardcodes that subpath. Hub unit hardcodes the
-  # full /home/ulrich/... path. Both need rewriting.
-  local unit_voice="$USER_SYSTEMD/jarvis-voice-agent.service"
-  local unit_hub="$USER_SYSTEMD/jarvis-hub.service"
-
-  sed \
-    -e "s|%h/Documents/Projects/jarvis|$INSTALL_DIR|g" \
-    -e "s|/home/[^/]*/Documents/Projects/jarvis|$INSTALL_DIR|g" \
-    -e "s|/home/[^/]*/jarvis|$INSTALL_DIR|g" \
-    "$INSTALL_DIR/setup/systemd/jarvis-voice-agent.service" > "$unit_voice"
-  sed \
-    -e "s|/home/[^/]*/Documents/Projects/jarvis|$INSTALL_DIR|g" \
-    -e "s|/home/[^/]*/jarvis|$INSTALL_DIR|g" \
-    "$INSTALL_DIR/setup/systemd/jarvis-hub.service" > "$unit_hub"
-  ok "installed unit: $unit_voice"
-  ok "installed unit: $unit_hub"
+  local sed_path_subs=(
+    -e "s|%h/Documents/Projects/jarvis|$INSTALL_DIR|g"
+    -e "s|/home/[^/]*/Documents/Projects/jarvis|$INSTALL_DIR|g"
+    -e "s|/home/[^/]*/jarvis|$INSTALL_DIR|g"
+  )
+  for src in jarvis-voice-agent.service jarvis-hub.service livekit-server.service; do
+    sed "${sed_path_subs[@]}" "$INSTALL_DIR/setup/systemd/$src" > "$USER_SYSTEMD/$src"
+    ok "installed unit: $USER_SYSTEMD/$src"
+  done
 
   systemctl --user daemon-reload
-  for unit in jarvis-voice-agent.service jarvis-hub.service; do
+  for unit in livekit-server.service jarvis-hub.service jarvis-voice-agent.service; do
     systemctl --user enable "$unit" >/dev/null 2>&1 \
       && ok "enabled $unit (NOT started — configure .env first)" \
       || warn "could not enable $unit"
   done
+}
+
+# ── External services: LiveKit keys + Redis ──────────────────────────────
+setup_livekit_keys() {
+  local keys="$HOME/.jarvis/livekit-keys.yaml"
+  if [ -s "$keys" ]; then
+    ok "LiveKit keys already at $keys"
+    return
+  fi
+  mkdir -p "$HOME/.jarvis"
+  # generate-keys writes a `keys:` block (apikey: secret) to stdout —
+  # exactly the shape livekit.yaml's key_file directive expects.
+  if "$INSTALL_DIR/src/voice-agent/livekit-server.bin" generate-keys > "$keys" 2>/dev/null; then
+    chmod 600 "$keys"
+    ok "generated $keys (chmod 600)"
+  else
+    warn "couldn't generate LiveKit keys; create $keys manually:"
+    sub "$INSTALL_DIR/src/voice-agent/livekit-server.bin generate-keys > $keys"
+    sub "chmod 600 $keys"
+  fi
+}
+
+setup_redis() {
+  # jarvis-hub talks to redis at 127.0.0.1:6379. We use the system
+  # redis-server.service (not a user unit) because it's the conventional
+  # path and your distro almost certainly installs it that way.
+  if ! have redis-server; then
+    warn "redis-server not installed — needed by jarvis-hub.service"
+    sub "Install: sudo apt install redis-server   (Debian/Ubuntu/Kali)"
+    sub "         sudo pacman -S redis            (Arch)"
+    return
+  fi
+  if systemctl is-active --quiet redis-server.service 2>/dev/null; then
+    ok "redis-server.service is already active"
+    return
+  fi
+  # Try to enable + start; if sudo prompts for password and we're in
+  # a non-interactive curl-pipe, this will fail. Falls through to
+  # printed instructions.
+  if sudo -n systemctl enable --now redis-server.service >/dev/null 2>&1; then
+    ok "enabled + started redis-server.service"
+  else
+    warn "could not auto-start redis-server (sudo not NOPASSWD); run manually:"
+    sub "sudo systemctl enable --now redis-server.service"
+  fi
 }
 
 # ── Channel: Desktop (Tauri) ─────────────────────────────────────────────
@@ -252,17 +289,28 @@ chrome_extension_step() {
   Chrome blocks third-party extensions from being side-loaded by curl.
 
   To load it:
-    1. Opening chrome://extensions in your default browser...
+    1. Open chrome://extensions in Chrome/Chromium
     2. Toggle 'Developer mode' (top-right)
     3. Click 'Load unpacked'
     4. Select: $INSTALL_DIR/src/extensions/jarvis-screen/
 
 EOF
-  if have xdg-open; then
-    xdg-open "chrome://extensions/" >/dev/null 2>&1 &
-    ok "chrome://extensions/ opened in your default browser"
+  # chrome:// URLs only work in a Chromium-based browser. xdg-open will
+  # route to the default browser, which is usually Firefox — and
+  # Firefox can't render chrome:// URLs. Try each known Chromium-family
+  # browser by name; if none is found, just print the path so the
+  # user can copy/paste.
+  local chrome_bin=""
+  for cand in google-chrome google-chrome-stable chromium chromium-browser brave-browser microsoft-edge; do
+    if have "$cand"; then chrome_bin="$cand"; break; fi
+  done
+  if [ -n "$chrome_bin" ]; then
+    "$chrome_bin" "chrome://extensions/" >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+    ok "opened chrome://extensions/ in $chrome_bin"
   else
-    warn "xdg-open not found — open chrome://extensions yourself"
+    warn "no Chromium-based browser found on PATH — open the URL manually"
+    sub "Path to copy: $INSTALL_DIR/src/extensions/jarvis-screen/"
   fi
 }
 
@@ -275,7 +323,11 @@ print_summary() {
 
   Next steps:
     1. Edit $INSTALL_DIR/.env and fill in real API keys.
-    2. Start the voice agent:
+    2. Start the SFU + hub + voice agent (in this order — voice-agent
+       requires livekit-server, jarvis-hub requires Redis):
+         sudo systemctl enable --now redis-server.service   # if not done
+         systemctl --user start livekit-server.service
+         systemctl --user start jarvis-hub.service
          systemctl --user start jarvis-voice-agent.service
        Logs:
          journalctl --user -u jarvis-voice-agent.service -f
@@ -311,6 +363,8 @@ main() {
   install_web
   install_voice_agent
   install_desktop
+  setup_livekit_keys
+  setup_redis
   setup_env_template
   chrome_extension_step
   print_summary
