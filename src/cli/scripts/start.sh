@@ -28,15 +28,15 @@ export DISABLE_NON_ESSENTIAL_MODEL_CALLS=1
 export DISABLE_AUTOUPDATER=1
 export DISABLE_COST_WARNINGS=1
 
-# Load API keys.
-# .env.providers is loaded FIRST so .env.local can override individual
-# values without forcing duplication. .env.providers holds the broad
-# provider catalog (DEEPSEEK / GROQ / GOOGLE / OPENAI / …); .env.local
-# is the per-machine overlay (auth flags, custom JARVIS_PROVIDER).
-# Pre-2026-05-01 this only loaded .env.local — meaning GOOGLE_API_KEY
-# (lived in .env.providers) was missing and the new GetLocationTool
-# fell through to IP geolocation despite a working key being on disk.
-for envfile in "$ROOT/.env.providers" "$ROOT/.env.local"; do
+# Load API keys. Order matters (bash `KEY=value` source semantics =
+# last-source wins on collision):
+#   1) repo-root .env  — centralized LLM provider keys
+#                        (consolidated 2026-05-15)
+#   2) .env.local      — per-machine overlay (JARVIS_PROVIDER,
+#                        auth flags, anything subproject-specific)
+# .env.providers was deleted 2026-05-15; its values were placeholder
+# strings duplicated from .env.local / root .env, no information lost.
+for envfile in "$ROOT/../../.env" "$ROOT/.env.local"; do
   if [ -f "$envfile" ]; then
     set -a
     source "$envfile"
