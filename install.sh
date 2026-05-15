@@ -180,8 +180,11 @@ install_systemd_units() {
   ok "installed unit: $unit_hub"
 
   systemctl --user daemon-reload
-  systemctl --user enable jarvis-voice-agent.service >/dev/null 2>&1 || warn "could not enable jarvis-voice-agent.service"
-  ok "enabled jarvis-voice-agent.service (NOT started — configure .env first)"
+  for unit in jarvis-voice-agent.service jarvis-hub.service; do
+    systemctl --user enable "$unit" >/dev/null 2>&1 \
+      && ok "enabled $unit (NOT started — configure .env first)" \
+      || warn "could not enable $unit"
+  done
 }
 
 # ── Channel: Desktop (Tauri) ─────────────────────────────────────────────
