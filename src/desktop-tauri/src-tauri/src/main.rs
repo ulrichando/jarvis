@@ -260,11 +260,15 @@ fn xdotool_raise(win_name: &str) {
 // ── API key management ────────────────────────────────────────────────────
 // Two-tier key storage:
 //   1) ~/.jarvis/keys.env (user override, highest priority)
-//   2) Repo defaults: src/voice-agent/.env, src/cli/.env.local,
-//      src/cli/.env.providers (lower priority)
+//   2) Repo defaults, first-wins order:
+//        .env  (centralized LLM provider keys, 2026-05-15)
+//        src/voice-agent/.env
+//        src/cli/.env.local
 // keys_read merges them with source labels. keys_set always writes to
 // the user override. keys_clear can target either tier (with
-// confirmation handled by the UI).
+// confirmation handled by the UI). src/cli/.env.providers was removed
+// 2026-05-15 (all values were placeholders duplicated from the canonical
+// sources).
 fn _keys_file() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     std::path::PathBuf::from(home).join(".jarvis").join("keys.env")
@@ -274,9 +278,9 @@ fn _repo_env_files() -> Vec<std::path::PathBuf> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     let base = std::path::PathBuf::from(&home).join("Documents/Projects/jarvis");
     vec![
+        base.join(".env"),                  // centralized LLM keys (first-wins)
         base.join("src/voice-agent/.env"),
         base.join("src/cli/.env.local"),
-        base.join("src/cli/.env.providers"),
     ]
 }
 
@@ -459,9 +463,8 @@ fn _repo_keys_read_map() -> std::collections::BTreeMap<String, String> {
 }
 
 /// Find which repo .env file contains the given key. Returns the
-/// first match (we try in priority order: voice-agent → cli/.env.local
-/// → cli/.env.providers). Used by keys_clear to know which file to
-/// modify.
+/// first match (we try in priority order: root .env → voice-agent →
+/// cli/.env.local). Used by keys_clear to know which file to modify.
 fn _find_repo_key_file(key: &str) -> Option<std::path::PathBuf> {
     for path in _repo_env_files() {
         if _parse_env_file(&path).contains_key(key) {
@@ -499,7 +502,7 @@ fn _keys_write_map(map: &std::collections::BTreeMap<String, String>) -> Result<(
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let mut buf = String::from("# JARVIS API keys — managed by the tray UI.\n");
-    buf.push_str("# Lines here OVERRIDE keys in src/voice-agent/.env and src/cli/.env.local.\n");
+    buf.push_str("# Lines here OVERRIDE keys in repo-root .env, src/voice-agent/.env, and src/cli/.env.local.\n");
     buf.push_str("# Empty value = key not set.\n\n");
     for (k, v) in map.iter() {
         if v.is_empty() { continue; }

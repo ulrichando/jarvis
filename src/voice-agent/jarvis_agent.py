@@ -64,18 +64,21 @@ from providers import edge_tts as edge_tts_plugin
 # directly to dodge the ImportError.
 from livekit.agents.voice.room_io import RoomOptions
 
-# Load user-managed API keys from ~/.jarvis/keys.env BEFORE any
-# provider client is constructed. Tray UI writes/clears keys here.
-# Repo .env files are still loaded by systemd (EnvironmentFile=...);
-# keys.env values WIN on collision so the user-set key always
-# overrides the repo default. Missing file is fine — graceful no-op.
+# Load env BEFORE any provider client is constructed.
+# Priority chain (lowest → highest), each layer overrides the previous:
+#   1) Repo-root .env  — centralized LLM provider keys
+#      (GROQ/DEEPSEEK/GOOGLE/etc., consolidated 2026-05-15).
+#      systemd EnvironmentFile= also loads repo files, but the explicit
+#      load here ensures `python jarvis_agent.py` (pytest, ad-hoc runs)
+#      sees the keys without depending on systemd.
+#   2) ~/.jarvis/keys.env — user override (Tray UI writes/clears here).
+#      Always wins on collision so a user-set key beats the repo default.
+# Missing files at any layer are fine — graceful no-op.
 def _load_user_keys_env() -> None:
     import os
     from pathlib import Path
-    p = Path.home() / ".jarvis" / "keys.env"
-    if not p.exists():
-        return
-    try:
+
+    def _parse(p: Path) -> None:
         for line in p.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
@@ -84,15 +87,26 @@ def _load_user_keys_env() -> None:
             k = k.strip()
             v = v.strip().strip('"').strip("'")
             if k and v:
-                os.environ[k] = v   # override repo .env
-    except Exception as _e:
-        # Logger isn't bound yet at this point in module init; use the
-        # root logger so the failure is observable when DEBUG logging
-        # is enabled. Bootstrap-only path; failure here means keys.env
-        # exists but is unparseable (perm error, malformed line, etc.).
-        logging.getLogger("jarvis.config").warning(
-            f"[keys.env] load failed (non-fatal): {_e}"
-        )
+                os.environ[k] = v
+
+    # parents[2] = src/voice-agent → src → repo root
+    sources = [
+        Path(__file__).resolve().parents[2] / ".env",
+        Path.home() / ".jarvis" / "keys.env",
+    ]
+    for src in sources:
+        if not src.exists():
+            continue
+        try:
+            _parse(src)
+        except Exception as _e:
+            # Logger isn't bound yet at this point in module init; use
+            # the root logger so the failure is observable when DEBUG
+            # logging is enabled. Failure here means the file exists
+            # but is unparseable (perm error, malformed line, etc.).
+            logging.getLogger("jarvis.config").warning(
+                f"[env-load] {src.name} parse failed (non-fatal): {_e}"
+            )
 
 _load_user_keys_env()
 from livekit.plugins import groq, openai as lk_openai, silero
