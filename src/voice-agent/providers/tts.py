@@ -193,10 +193,21 @@ class LoggingGroqChunkedStream(_GroqChunkedStream):
 
         try:
             await TTS_BREAKER.call(_do_real_run)
+            logger.info(
+                "[tts] Orpheus rendered %d bytes (voice=%s, text=%r)",
+                nonlocal_audio_bytes[0], self._opts.voice,
+                (self._input_text or "")[:40],
+            )
         except CircuitOpenError as e:
+            logger.warning("[tts] Orpheus skipped — breaker open; FallbackAdapter will use EdgeTTS")
             raise APIConnectionError() from e
         except asyncio.TimeoutError:
+            logger.warning("[tts] Orpheus TIMEOUT — FallbackAdapter will use EdgeTTS")
             raise APITimeoutError() from None
+        except Exception as e:
+            logger.warning("[tts] Orpheus FAILED (%s: %s) — FallbackAdapter will use EdgeTTS",
+                           type(e).__name__, str(e)[:120])
+            raise
         # Record this synthesize() call's position-table entry. Runs ONLY
         # on success path — on breaker exception above, the audio wasn't
         # actually played so we don't append.
