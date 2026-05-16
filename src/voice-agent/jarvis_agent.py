@@ -112,6 +112,16 @@ _load_user_keys_env()
 from livekit.plugins import groq, openai as lk_openai, silero
 # ElevenLabs removed 2026-05-01 — see _build_dispatching_tts comment.
 
+# Tray-config readers for the voice-mode switch (text-LLM-chain vs
+# OpenAI Realtime API). The voice-client writes the tray files; the
+# agent reads them on every job-dispatch (= session start) so a
+# tray click → restart cycle flips the entire pipeline cleanly.
+from voice_client_tray_config import (
+    read_voice_mode as _read_voice_mode,
+    read_realtime_model as _read_realtime_model,
+    read_realtime_voice as _read_realtime_voice,
+)
+
 # Round-trip DeepSeek's reasoning_content field. livekit-plugins-openai
 # 1.5.x doesn't track it, which makes V4-flash / V4-pro reject any
 # multi-turn request whose prior assistant message contained tool_calls
@@ -4523,7 +4533,64 @@ async def entrypoint(ctx: JobContext) -> None:
         legacy_llm=llm_arg,
     )
 
-    session = AgentSession(
+    # ── OpenAI Realtime mode (tray-switchable) ──────────────────────────
+    # Swaps the text-LLM + Whisper-STT + Orpheus-TTS chain for a single
+    # OpenAI RealtimeModel. Voice is generated natively by the model
+    # (no text→TTS roundtrip), STT is built-in, and the model receives
+    # audio + tool definitions over a WebSocket. JARVIS's existing tools,
+    # subagent system, memory pipeline, and chat_ctx recall continue to
+    # work — only the LLM↔STT↔TTS plumbing changes.
+    #
+    # OFF by default. Flip via the tray ("Voice mode ▸ OpenAI Realtime")
+    # which writes ~/.jarvis/voice-mode and bounces this agent. Model +
+    # voice pickers live in sibling files (~/.jarvis/realtime-model,
+    # ~/.jarvis/realtime-voice). For debug, env vars JARVIS_REALTIME_MODE
+    # / _MODEL / _VOICE override the file values.
+    #
+    # Cost note: gpt-realtime-mini ≈ $3/hr active vs. ~$0.30/hr on the
+    # text path. See docs/2026-05-15-pre-realtime-snapshot.md for the
+    # full revert procedure.
+    # Tray file is authoritative; env var only overrides for debug.
+    _voice_mode = _read_voice_mode()
+    _env_voice_mode = os.environ.get("JARVIS_REALTIME_MODE", "")
+    if _env_voice_mode == "1":
+        _voice_mode = "realtime"
+    elif _env_voice_mode == "0":
+        _voice_mode = "text"
+    if _voice_mode == "realtime":
+        from livekit.plugins.openai.realtime import RealtimeModel as _RealtimeModel
+        _rt_voice = os.environ.get("JARVIS_REALTIME_VOICE") or _read_realtime_voice()
+        _rt_model = os.environ.get("JARVIS_REALTIME_MODEL") or _read_realtime_model()
+        _rt_llm = _RealtimeModel(model=_rt_model, voice=_rt_voice)
+        logger.info(
+            "[realtime] mode active — model=%r voice=%r "
+            "(text-mode stt/tts/transforms bypassed)",
+            _rt_model, _rt_voice,
+        )
+        session = AgentSession(
+            # Tools, max steps, interruption/endpointing knobs all
+            # carry over identically. The RealtimeModel handles VAD,
+            # STT, and TTS internally — those AgentSession kwargs are
+            # OMITTED so the framework's own realtime path engages.
+            max_tool_steps=15,
+            llm=_rt_llm,
+            turn_handling={
+                "interruption": {
+                    "enabled": True,
+                    "min_duration": 0.4,
+                    "min_words": 3,
+                    "resume_false_interruption": False,
+                    "false_interruption_timeout": None,
+                },
+                "endpointing": {
+                    "min_delay": 0.4,
+                    "max_delay": 4.0,
+                },
+                "preemptive_generation": {"enabled": False},
+            },
+        )
+    else:
+        session = AgentSession(
         # 2026-05-02: raised from livekit's default 3 to 15. Browser
         # subagent chains commonly need 5+ tool calls (navigate,
         # wait_for_load, observe, type, keypress) and 3 was burning
@@ -5014,8 +5081,35 @@ async def entrypoint(ctx: JobContext) -> None:
     _breaker_block       = _ps["breaker_block"]
     _last_breaker_block  = _breaker_block
 
+    # The full JARVIS prompt is ~34k tokens. OpenAI's Realtime API caps
+    # `session.instructions` at 16k tokens — anything more is rejected
+    # with `Instructions cannot be longer than 16384 tokens`. Truncate
+    # for the Realtime prototype only; text-mode keeps the full prompt.
+    # Tool-usage examples and granular routing rules at the prompt's
+    # tail are the first thing cut — the model can infer those from the
+    # tool schemas themselves once it has the core persona + register
+    # rules at the top.
+    _initial_instructions = _ps["initial_instructions"]
+    if _voice_mode == "realtime":
+        _REALTIME_INSTR_CHAR_CAP = int(
+            os.environ.get("JARVIS_REALTIME_INSTR_CHAR_CAP", "48000")
+        )
+        if len(_initial_instructions) > _REALTIME_INSTR_CHAR_CAP:
+            _orig_len = len(_initial_instructions)
+            _initial_instructions = (
+                _initial_instructions[:_REALTIME_INSTR_CHAR_CAP]
+                + "\n\n[…instructions truncated to fit Realtime API 16k-token limit; "
+                "remaining persona/tool rules are conveyed via tool schemas + chat_ctx…]"
+            )
+            logger.info(
+                "[realtime] truncated instructions: %d → %d chars (~%d → ~%d tokens) "
+                "to satisfy OpenAI Realtime session.instructions ≤16384 cap",
+                _orig_len, len(_initial_instructions),
+                _orig_len // 4, len(_initial_instructions) // 4,
+            )
+
     _jarvis_agent = JarvisAgent(
-        instructions=_ps["initial_instructions"],
+        instructions=_initial_instructions,
         # Pre-load recent prior turns from conversations.db so the
         # LLM sees what was discussed before this job started.
         # Without this, every voice-client reconnect = amnesia.
