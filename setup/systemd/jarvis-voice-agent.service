@@ -15,6 +15,14 @@ WorkingDirectory=%h/Documents/Projects/jarvis/src/voice-agent
 # cli/.env.local. Two EnvironmentFile directives; later-loaded wins
 # on collision, which is fine — they don't overlap in practice.
 EnvironmentFile=%h/Documents/Projects/jarvis/src/voice-agent/.env
+# Repo-root .env is the centralized LLM key store (GROQ_API_KEY,
+# OPENAI_API_KEY, ANTHROPIC_API_KEY, DEEPSEEK_API_KEY — centralized
+# 2026-05-15). Without this line every Groq/OpenAI/Anthropic call
+# 401s, the LLM cascade falls through to whatever still has creds,
+# and Orpheus TTS — which lives behind GROQ_API_KEY — silently swaps
+# to EdgeTTS via the FallbackAdapter, so the user hears robotic voice
+# instead of Troy. Optional (`-` prefix) so a key-less install starts.
+EnvironmentFile=-%h/Documents/Projects/jarvis/.env
 EnvironmentFile=%h/Documents/Projects/jarvis/src/cli/.env.local
 # Local bridge bearer token (KEY=VALUE format, chmod 600). Sent on
 # every voice-agent → bridge HTTP call. Optional file (`-` prefix)
