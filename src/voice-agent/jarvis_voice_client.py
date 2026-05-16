@@ -131,6 +131,27 @@ if _APM_NS or _APM_AGC or _APM_HPF or _APM_AEC:
         auto_gain_control=_APM_AGC,
     )
 
+# ── Local listening-indicator detection ───────────────────────────────
+# We compute mic frame RMS in `_mic_cb` and flip `state.listening`
+# directly instead of relying on the SFU's `active_speakers_changed`
+# event — the event was unreliable in production (never fired on a
+# 2026-05-15 Latitude 7480 / LiveKit 1.5.9 setup), leaving the tray
+# stuck on `idle` (green) regardless of who was talking.
+#
+# `state.speaking` is driven equally locally in `play_subscribed_track`:
+# we set it true while we're actively rendering a remote audio track,
+# false when the stream ends. Both halves of the indicator are now
+# local-only signals; no SFU round-trip needed.
+#
+# RMS threshold tuned for 16-bit PCM AGC-normalized speech (~2000-10000
+# during speech, ~50-500 in silence). 800 catches normal voice with
+# headroom and rejects keyboard / fan noise.
+_LISTENING_RMS_THRESHOLD = float(os.environ.get("JARVIS_LISTENING_RMS_THRESHOLD", "800"))
+# Once tripped, hold listening=True for this many seconds after the
+# last above-threshold frame. Stops the indicator from flickering in
+# the gaps between syllables.
+_LISTENING_HOLD_S = float(os.environ.get("JARVIS_LISTENING_HOLD_S", "0.3"))
+
 # ── Watchdog (loop wedge + agent presence + stale STT) ──────────
 # Extracted to voice_client_watchdog.py 2026-05-10 (Step 7 of the
 # audit). The class encapsulates all watchdog state (_last_heartbeat,
@@ -325,6 +346,11 @@ async def play_subscribed_track(track: rtc.RemoteAudioTrack) -> None:
     )
     out.start()
     log.info(f"[playback] OPEN track={track.sid} sr={SAMPLE_RATE}Hz ch={NUM_CHANNELS} device={AUDIO_OUTPUT_DEVICE!r}")
+    # `state.speaking` drives the tray's "talking" (blue) color and
+    # gates the mic-side listening detector to suppress echo. Setting
+    # it locally here means the indicator is accurate the moment audio
+    # starts flowing, no SFU active_speakers round-trip needed.
+    state.speaking = True
     try:
         async for event in stream:
             frame = event.frame
@@ -339,6 +365,7 @@ async def play_subscribed_track(track: rtc.RemoteAudioTrack) -> None:
     except Exception as e:
         log.warning(f"[playback] stream error: {e}")
     finally:
+        state.speaking = False
         out.stop()
         out.close()
         log.info(f"[playback] CLOSE track={track.sid}")
@@ -377,14 +404,16 @@ async def run_once(shutdown: asyncio.Event) -> None:
 
     @room.on("active_speakers_changed")
     def _on_speakers(speakers) -> None:
-        # LiveKit flags a participant as an "active speaker" when their
-        # VU crosses a threshold. Use this for the listening/speaking
-        # indicator on the Tauri UI side — no need for a separate VAD
-        # in-client because the SFU already computes it centrally.
-        local_active  = any(p.identity == IDENTITY for p in speakers)
-        remote_active = any(p.identity != IDENTITY for p in speakers)
-        state.listening = local_active
-        state.speaking  = remote_active
+        # The SFU's active_speakers_changed event was originally the
+        # authoritative source for the listening/speaking indicators,
+        # but on LiveKit 1.5.9 it never fired on the local 7480 setup
+        # (2026-05-15) — the tray stayed `idle` no matter who was
+        # talking. We now drive `state.listening` from mic-side RMS in
+        # `_mic_cb` and `state.speaking` from `play_subscribed_track`'s
+        # render loop, both local signals. This handler is kept only
+        # for the watchdog liveness ping, which is cheap and harmless
+        # to leave wired even when the event isn't firing reliably.
+        local_active = any(p.identity == IDENTITY for p in speakers)
         if local_active and _watchdog is not None:
             _watchdog.mark_voice_active()
 
@@ -530,6 +559,15 @@ async def run_once(shutdown: asyncio.Event) -> None:
     # through `process_stream` for NS + AGC + HPF (+ optional AEC) BEFORE
     # publication. APM mutates the frame buffer in place; it requires
     # exactly 10 ms of audio, which is what FRAME_MS gives us.
+    #
+    # We also compute a quick RMS on the (APM-processed) frame to drive
+    # `state.listening` locally — see module-level comment on why we
+    # don't trust the SFU's active_speakers_changed event for this.
+    # Skipped while `state.speaking` is true so speaker→mic echo
+    # (we leave AEC off in voice-client; PipeWire's module-echo-cancel
+    # handles it system-wide) doesn't flap the indicator into "you're
+    # talking!" every time JARVIS is the one talking.
+    _listening_until = [0.0]  # mutable closure cell; one-element list
     def _mic_cb(indata, frames, _time, status) -> None:
         if status:
             log.debug(f"[mic] portaudio status: {status}")
@@ -544,6 +582,18 @@ async def run_once(shutdown: asyncio.Event) -> None:
                 _apm.process_stream(frame)
             except Exception as e:
                 log.warning(f"[mic] APM process_stream failed: {e}")
+        if not state.speaking:
+            pcm = np.frombuffer(frame.data, dtype=np.int16)
+            if len(pcm):
+                rms = float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2)))
+                now = time.monotonic()
+                if rms > _LISTENING_RMS_THRESHOLD:
+                    state.listening = True
+                    _listening_until[0] = now + _LISTENING_HOLD_S
+                    if _watchdog is not None:
+                        _watchdog.mark_voice_active()
+                elif now > _listening_until[0]:
+                    state.listening = False
         asyncio.run_coroutine_threadsafe(source.capture_frame(frame), loop)
 
     mic_stream = sd.InputStream(
