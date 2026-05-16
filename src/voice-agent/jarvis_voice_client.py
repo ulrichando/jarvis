@@ -592,9 +592,13 @@ async def run_once(shutdown: asyncio.Event) -> None:
     # publication. APM mutates the frame buffer in place; it requires
     # exactly 10 ms of audio, which is what FRAME_MS gives us.
     #
-    # We also compute a quick RMS on the (APM-processed) frame to drive
-    # `state.listening` locally — see module-level comment on why we
-    # don't trust the SFU's active_speakers_changed event for this.
+    # CRITICAL: we compute RMS for `state.listening` on the *RAW* input
+    # BEFORE APM. AGC is on by default and aggressively amplifies quiet
+    # ambient noise to normalize speech loudness — that gave a post-APM
+    # RMS floor well above the threshold even in a silent room, so the
+    # indicator pinned to `listening=True` forever (live failure
+    # 2026-05-15: 4 polls/sec all `listening=True` with nobody talking,
+    # tray stuck on cyan). Raw RMS is whatever the mic actually heard.
     # Skipped while `state.speaking` is true so speaker→mic echo
     # (we leave AEC off in voice-client; PipeWire's module-echo-cancel
     # handles it system-wide) doesn't flap the indicator into "you're
@@ -603,6 +607,11 @@ async def run_once(shutdown: asyncio.Event) -> None:
     def _mic_cb(indata, frames, _time, status) -> None:
         if status:
             log.debug(f"[mic] portaudio status: {status}")
+        # RMS on raw audio (pre-APM, pre-AGC) for the listening detector.
+        if not state.speaking and len(indata):
+            raw_rms = float(np.sqrt(np.mean(indata.astype(np.float32) ** 2)))
+        else:
+            raw_rms = 0.0
         frame = rtc.AudioFrame(
             data=indata.tobytes(),
             sample_rate=SAMPLE_RATE,
@@ -622,17 +631,14 @@ async def run_once(shutdown: asyncio.Event) -> None:
             # timeout-clear runs because the whole block is gated).
             state.listening = False
         else:
-            pcm = np.frombuffer(frame.data, dtype=np.int16)
-            if len(pcm):
-                rms = float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2)))
-                now = time.monotonic()
-                if rms > _LISTENING_RMS_THRESHOLD:
-                    state.listening = True
-                    _listening_until[0] = now + _LISTENING_HOLD_S
-                    if _watchdog is not None:
-                        _watchdog.mark_voice_active()
-                elif now > _listening_until[0]:
-                    state.listening = False
+            now = time.monotonic()
+            if raw_rms > _LISTENING_RMS_THRESHOLD:
+                state.listening = True
+                _listening_until[0] = now + _LISTENING_HOLD_S
+                if _watchdog is not None:
+                    _watchdog.mark_voice_active()
+            elif now > _listening_until[0]:
+                state.listening = False
         asyncio.run_coroutine_threadsafe(source.capture_frame(frame), loop)
 
     mic_stream = sd.InputStream(
