@@ -110,12 +110,24 @@ def sanitize(text: str) -> str:
     stripped = text.strip(" \t\n.,!?'\"")
     if _INTERNAL_RE.fullmatch(stripped):
         return ""
+    # Fast path: no internal phrase in this chunk → return as-is so we
+    # don't perturb its whitespace. Critical for streaming chunks: BPE
+    # tokens carry their leading space (" well", " thanks") and any
+    # .strip() / whitespace-collapse below would eat that leading
+    # space, producing the "wellthanks." mash heard 2026-05-15 with
+    # gpt-5.1 streaming output.
+    if not _INTERNAL_RE.search(text):
+        return text
     cleaned = _INTERNAL_RE.sub(" ", text)
     # Drop dangling commas / semicolons before terminal punctuation:
     # "tabs, ." → "tabs.", "Yes ." → "Yes." (cosmetic, voice-friendly).
     cleaned = re.sub(r"[,;]\s+([.!?])", r"\1", cleaned)
     cleaned = re.sub(r"\s+([.!?])", r"\1", cleaned)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    # Collapse runs of whitespace to a single space (the substitution
+    # above may have introduced one), but do NOT strip leading/trailing
+    # — for per-chunk streaming, that strip is what eats inter-word
+    # spaces of BPE-tokenized streams.
+    cleaned = re.sub(r"\s+", " ", cleaned)
     return cleaned
 
 
