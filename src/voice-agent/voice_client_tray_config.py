@@ -89,6 +89,18 @@ CLI_MODELS_AVAILABLE: tuple[str, ...] = (
     "claude-opus-4-7",
     "claude-sonnet-4-6",
     "claude-haiku-4-5",
+    # OpenAI proper — full GPT-5 family + GPT-4o, added 2026-05-15.
+    # Need the matching provider entry in the CLI-side
+    # jarvisModelRegistry for `jarvis` to actually consume these; until
+    # that's confirmed, the tray exposes them but the CLI may reject.
+    "gpt-5-nano",
+    "gpt-5-mini",
+    "gpt-5",
+    "gpt-5.1",
+    "gpt-5.1-chat-latest",
+    "gpt-5-pro",
+    "gpt-5-codex",
+    "gpt-4o",
 )
 
 
