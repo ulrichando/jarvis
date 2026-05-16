@@ -106,11 +106,16 @@ SPEECH_MODEL_FILE: Path     = Path.home() / ".jarvis" / "voice-model"
 DEFAULT_SPEECH_MODEL: str   = "gpt-5-mini"
 
 SPEECH_MODELS_AVAILABLE: tuple[str, ...] = (
-    # OpenAI proper — added 2026-05-15. gpt-5-mini is the new default
-    # (voice latency-friendly + good tool calling); gpt-5.1 is the
-    # heavier sibling for multi-step delegation accuracy.
+    # OpenAI proper — full GPT-5 family + gpt-4o legacy. Added
+    # 2026-05-15. Order matches latency tier (fastest → slowest).
+    "gpt-5-nano",
     "gpt-5-mini",
+    "gpt-5",
     "gpt-5.1",
+    "gpt-5.1-chat-latest",
+    "gpt-5-pro",
+    "gpt-5-codex",
+    "gpt-4o",
     "llama-3.3-70b-versatile",
     "llama-3.1-8b-instant",
     "qwen/qwen3-32b",

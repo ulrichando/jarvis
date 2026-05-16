@@ -187,18 +187,54 @@ if os.environ.get("OPENAI_API_KEY", ""):
     # The GPT-5 family rejects any non-default temperature (the API
     # returns `unsupported_value: 'temperature' does not support 0.6
     # with this model. Only the default (1) value is supported`), so we
-    # omit the kwarg entirely instead of pinning it to 1.0 — letting
-    # the plugin's omit-when-default path keep the request payload
-    # clean. Live failure 2026-05-15: gpt-5-mini build with
-    # temperature=0.6 → every supervisor turn 400'd → fallback cascade
-    # to DeepSeek → Anthropic (no credits) → EdgeTTS.
+    # omit the kwarg entirely. gpt-4o and earlier accept temperature.
+    # Live failure 2026-05-15: gpt-5-mini build with temperature=0.6 →
+    # every supervisor turn 400'd → fallback cascade to EdgeTTS.
+    #
+    # Tier guide (latency vs. capability):
+    #   gpt-5-nano       → fastest + cheapest, weakest tool calling
+    #   gpt-5-mini       → voice sweet spot (~300-500 ms first token)
+    #   gpt-5            → base tier, ~50 % slower than mini but smarter
+    #   gpt-5.1          → latest generation, best general quality
+    #   gpt-5.1-chat-latest → pinned chat variant (auto-rolls)
+    #   gpt-5-pro        → most capable, materially slower (reserve
+    #                       for multi-step delegations where accuracy
+    #                       outweighs latency)
+    #   gpt-5-codex      → code-specialized; route here for coding turns
+    #   gpt-4o           → legacy classic, supports temperature, fast
+    SPEECH_MODELS["gpt-5-nano"] = {
+        "label": "OpenAI · GPT-5 nano (fastest)",
+        "build": lambda: lk_openai.LLM(model="gpt-5-nano"),
+    }
     SPEECH_MODELS["gpt-5-mini"] = {
         "label": "OpenAI · GPT-5 mini",
         "build": lambda: lk_openai.LLM(model="gpt-5-mini"),
     }
+    SPEECH_MODELS["gpt-5"] = {
+        "label": "OpenAI · GPT-5",
+        "build": lambda: lk_openai.LLM(model="gpt-5"),
+    }
     SPEECH_MODELS["gpt-5.1"] = {
         "label": "OpenAI · GPT-5.1",
         "build": lambda: lk_openai.LLM(model="gpt-5.1"),
+    }
+    SPEECH_MODELS["gpt-5.1-chat-latest"] = {
+        "label": "OpenAI · GPT-5.1 chat-latest",
+        "build": lambda: lk_openai.LLM(model="gpt-5.1-chat-latest"),
+    }
+    SPEECH_MODELS["gpt-5-pro"] = {
+        "label": "OpenAI · GPT-5 pro (most capable, slowest)",
+        "build": lambda: lk_openai.LLM(model="gpt-5-pro"),
+    }
+    SPEECH_MODELS["gpt-5-codex"] = {
+        "label": "OpenAI · GPT-5 codex (code-specialized)",
+        "build": lambda: lk_openai.LLM(model="gpt-5-codex"),
+    }
+    # gpt-4o still accepts temperature, so we keep the matching 0.6
+    # used across the other speech models.
+    SPEECH_MODELS["gpt-4o"] = {
+        "label": "OpenAI · GPT-4o (classic, supports temperature)",
+        "build": lambda: lk_openai.LLM(model="gpt-4o", temperature=0.6),
     }
 
 if _ANTHROPIC_AVAILABLE and os.environ.get("ANTHROPIC_API_KEY", ""):
