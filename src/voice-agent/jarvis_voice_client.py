@@ -146,11 +146,24 @@ if _APM_NS or _APM_AGC or _APM_HPF or _APM_AEC:
 # RMS threshold tuned for 16-bit PCM AGC-normalized speech (~2000-10000
 # during speech, ~50-500 in silence). 800 catches normal voice with
 # headroom and rejects keyboard / fan noise.
-_LISTENING_RMS_THRESHOLD = float(os.environ.get("JARVIS_LISTENING_RMS_THRESHOLD", "800"))
+_LISTENING_RMS_THRESHOLD = float(os.environ.get("JARVIS_LISTENING_RMS_THRESHOLD", "1500"))
 # Once tripped, hold listening=True for this many seconds after the
-# last above-threshold frame. Stops the indicator from flickering in
-# the gaps between syllables.
-_LISTENING_HOLD_S = float(os.environ.get("JARVIS_LISTENING_HOLD_S", "0.3"))
+# last above-threshold frame. Stops the indicator from flickering
+# between syllables and ignores brief gaps in normal speech cadence.
+_LISTENING_HOLD_S = float(os.environ.get("JARVIS_LISTENING_HOLD_S", "0.6"))
+
+# Same idea on the playback side: the LiveKit agent's audio track is
+# opened the moment the agent joins and stays open for the whole
+# session (silence frames flow continuously). If we set state.speaking
+# = True for the entire stream's lifetime, the indicator would be
+# pinned blue from the moment the agent joins, regardless of whether
+# JARVIS is actually voicing anything. RMS-gate it the same way as
+# listening. Hold is generous (1.2 s) because EdgeTTS / Orpheus emit
+# noticeable inter-phrase silence — a tighter hold makes the indicator
+# flap between every comma, which then unmasks the mic for half a
+# second and bounces the listening indicator on speaker→mic echo.
+_SPEAKING_RMS_THRESHOLD = float(os.environ.get("JARVIS_SPEAKING_RMS_THRESHOLD", "800"))
+_SPEAKING_HOLD_S = float(os.environ.get("JARVIS_SPEAKING_HOLD_S", "1.2"))
 
 # ── Watchdog (loop wedge + agent presence + stale STT) ──────────
 # Extracted to voice_client_watchdog.py 2026-05-10 (Step 7 of the
@@ -346,17 +359,26 @@ async def play_subscribed_track(track: rtc.RemoteAudioTrack) -> None:
     )
     out.start()
     log.info(f"[playback] OPEN track={track.sid} sr={SAMPLE_RATE}Hz ch={NUM_CHANNELS} device={AUDIO_OUTPUT_DEVICE!r}")
-    # `state.speaking` drives the tray's "talking" (blue) color and
-    # gates the mic-side listening detector to suppress echo. Setting
-    # it locally here means the indicator is accurate the moment audio
-    # starts flowing, no SFU active_speakers round-trip needed.
-    state.speaking = True
+    # `state.speaking` drives the tray's "talking" (blue) colour. The
+    # remote track stays open the whole session (silence frames flow
+    # continuously between TTS utterances), so we RMS-gate it the same
+    # way as listening: only flip true on real audio energy, with a
+    # short hold so the indicator doesn't flicker between words.
+    last_speaking_audio = 0.0
     try:
         async for event in stream:
             frame = event.frame
             # frame.data is a bytes-like buffer of int16 LE samples.
             # Reshape (samples, channels) for sounddevice.
             pcm = np.frombuffer(frame.data, dtype=np.int16).reshape(-1, NUM_CHANNELS)
+            if len(pcm):
+                rms = float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2)))
+                now = time.monotonic()
+                if rms > _SPEAKING_RMS_THRESHOLD:
+                    state.speaking = True
+                    last_speaking_audio = now
+                elif state.speaking and (now - last_speaking_audio) > _SPEAKING_HOLD_S:
+                    state.speaking = False
             # write() is non-blocking-ish — it copies into PortAudio's
             # internal ring, the audio thread drains. If we ever fall
             # behind, it returns a buffer-underflow warning; harmless
@@ -582,7 +604,14 @@ async def run_once(shutdown: asyncio.Event) -> None:
                 _apm.process_stream(frame)
             except Exception as e:
                 log.warning(f"[mic] APM process_stream failed: {e}")
-        if not state.speaking:
+        if state.speaking:
+            # Agent is rendering audio — force the indicator off so it
+            # can transition cleanly into "talking" (blue). Without this
+            # clear, any latched listening=True from before /speak
+            # started stays true for the entire playback (no
+            # timeout-clear runs because the whole block is gated).
+            state.listening = False
+        else:
             pcm = np.frombuffer(frame.data, dtype=np.int16)
             if len(pcm):
                 rms = float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2)))
