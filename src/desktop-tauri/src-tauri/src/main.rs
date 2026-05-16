@@ -703,8 +703,6 @@ fn cli_model_pretty(id: &str) -> Option<&'static str> {
         "gpt-5"                                          => Some("OpenAI · GPT-5"),
         "gpt-5.1"                                        => Some("OpenAI · GPT-5.1"),
         "gpt-5.1-chat-latest"                            => Some("OpenAI · GPT-5.1 chat"),
-        "gpt-5-pro"                                      => Some("OpenAI · GPT-5 pro"),
-        "gpt-5-codex"                                    => Some("OpenAI · GPT-5 codex"),
         "gpt-4o"                                         => Some("OpenAI · GPT-4o"),
         _ => None,
     }
@@ -731,8 +729,6 @@ fn speech_model_pretty(id: &str) -> Option<&'static str> {
         "gpt-5"                                          => Some("OpenAI · GPT-5"),
         "gpt-5.1"                                        => Some("OpenAI · GPT-5.1"),
         "gpt-5.1-chat-latest"                            => Some("OpenAI · GPT-5.1 chat"),
-        "gpt-5-pro"                                      => Some("OpenAI · GPT-5 pro"),
-        "gpt-5-codex"                                    => Some("OpenAI · GPT-5 codex"),
         "gpt-4o"                                         => Some("OpenAI · GPT-4o"),
         _ => None,
     }
@@ -1592,8 +1588,6 @@ fn main() {
             let v_gpt_5         = MenuItemBuilder::with_id("speech_gpt-5",               "Use OpenAI · GPT-5 (base)").build(app)?;
             let v_gpt_5_1       = MenuItemBuilder::with_id("speech_gpt-5.1",             "Use OpenAI · GPT-5.1 (latest)").build(app)?;
             let v_gpt_5_1_chat  = MenuItemBuilder::with_id("speech_gpt-5.1-chat-latest", "Use OpenAI · GPT-5.1 chat-latest").build(app)?;
-            let v_gpt_5_pro     = MenuItemBuilder::with_id("speech_gpt-5-pro",           "Use OpenAI · GPT-5 pro (most capable, slowest)").build(app)?;
-            let v_gpt_5_codex   = MenuItemBuilder::with_id("speech_gpt-5-codex",         "Use OpenAI · GPT-5 codex (code-specialized)").build(app)?;
             let v_gpt_4o        = MenuItemBuilder::with_id("speech_gpt-4o",              "Use OpenAI · GPT-4o (legacy)").build(app)?;
             let speech_submenu = SubmenuBuilder::new(app, "Speech model ▸")
                 .item(&v_llama33)
@@ -1612,8 +1606,6 @@ fn main() {
                 .item(&v_gpt_5)
                 .item(&v_gpt_5_1)
                 .item(&v_gpt_5_1_chat)
-                .item(&v_gpt_5_pro)
-                .item(&v_gpt_5_codex)
                 .item(&v_gpt_4o)
                 .build()?;
 
@@ -1676,8 +1668,6 @@ fn main() {
             let m_gpt_5         = MenuItemBuilder::with_id("model_gpt-5",                 "Use OpenAI · GPT-5").build(app)?;
             let m_gpt_5_1       = MenuItemBuilder::with_id("model_gpt-5.1",               "Use OpenAI · GPT-5.1").build(app)?;
             let m_gpt_5_1_chat  = MenuItemBuilder::with_id("model_gpt-5.1-chat-latest",   "Use OpenAI · GPT-5.1 chat-latest").build(app)?;
-            let m_gpt_5_pro     = MenuItemBuilder::with_id("model_gpt-5-pro",             "Use OpenAI · GPT-5 pro").build(app)?;
-            let m_gpt_5_codex   = MenuItemBuilder::with_id("model_gpt-5-codex",           "Use OpenAI · GPT-5 codex").build(app)?;
             let m_gpt_4o        = MenuItemBuilder::with_id("model_gpt-4o",                "Use OpenAI · GPT-4o").build(app)?;
             let tool_submenu = SubmenuBuilder::new(app, "Tool model ▸")
                 .item(&m_ds_chat)
@@ -1696,8 +1686,6 @@ fn main() {
                 .item(&m_gpt_5)
                 .item(&m_gpt_5_1)
                 .item(&m_gpt_5_1_chat)
-                .item(&m_gpt_5_pro)
-                .item(&m_gpt_5_codex)
                 .item(&m_gpt_4o)
                 .build()?;
 
@@ -1907,8 +1895,6 @@ fn main() {
                         "model_gpt-5"                                      => switch_cli_model(app, "gpt-5"),
                         "model_gpt-5.1"                                    => switch_cli_model(app, "gpt-5.1"),
                         "model_gpt-5.1-chat-latest"                        => switch_cli_model(app, "gpt-5.1-chat-latest"),
-                        "model_gpt-5-pro"                                  => switch_cli_model(app, "gpt-5-pro"),
-                        "model_gpt-5-codex"                                => switch_cli_model(app, "gpt-5-codex"),
                         "model_gpt-4o"                                     => switch_cli_model(app, "gpt-4o"),
                         // Speech-model picks (these trigger an agent restart)
                         "speech_llama-3.3-70b-versatile"                   => switch_speech_model(app, "llama-3.3-70b-versatile"),
@@ -1927,8 +1913,6 @@ fn main() {
                         "speech_gpt-5"                                     => switch_speech_model(app, "gpt-5"),
                         "speech_gpt-5.1"                                   => switch_speech_model(app, "gpt-5.1"),
                         "speech_gpt-5.1-chat-latest"                       => switch_speech_model(app, "gpt-5.1-chat-latest"),
-                        "speech_gpt-5-pro"                                 => switch_speech_model(app, "gpt-5-pro"),
-                        "speech_gpt-5-codex"                               => switch_speech_model(app, "gpt-5-codex"),
                         "speech_gpt-4o"                                    => switch_speech_model(app, "gpt-4o"),
                         // TTS-voice picks (no agent restart — file written, read on next utterance)
                         "tts_gr_troy"   => switch_tts_provider(app, "groq:troy"),
