@@ -3073,7 +3073,11 @@ async def stamp_first_token(text):
     non-empty/non-whitespace chunk of an LLM stream. MUST be the first
     filter in tts_text_transforms so we time pre-filter LLM output
     rather than post-filter; otherwise hedge-drops or preamble-strips
-    would mask early tokens that DID reach this pipeline."""
+    would mask early tokens that DID reach this pipeline.
+
+    Also logs every chunk verbatim (repr) while debugging the
+    no-space-in-TTS issue (2026-05-15). Remove or gate behind env
+    var once the root cause is found."""
     first = True
     async for chunk in text:
         if first and chunk and chunk.strip():
@@ -3084,6 +3088,8 @@ async def stamp_first_token(text):
                 except Exception:
                     pass
             first = False
+        if chunk and os.environ.get("JARVIS_DEBUG_TTS_CHUNKS", "0") == "1":
+            logger.info(f"[tts-debug] LLM chunk={chunk!r}")
         yield chunk
 
 
@@ -4028,9 +4034,17 @@ def _spawn_worker_heartbeat() -> None:
     import threading as _threading
 
     def _heartbeat_loop() -> None:
+        # PID-scoped .tmp filename so 4 worker subprocesses don't race
+        # on the same file — pre-fix log showed dozens of `[worker-
+        # heartbeat] write failed: No such file or directory:
+        # '/tmp/jarvis-worker-heartbeat.tmp' -> '/tmp/jarvis-worker-heartbeat'`
+        # per minute because one worker's `replace()` consumed the .tmp
+        # before the next worker's `replace()` could find it. Atomic
+        # rename to the SAME target file is fine — the target is the
+        # shared latched heartbeat — but the .tmp source must be unique.
+        tmp = HEARTBEAT_PATH.with_suffix(f".tmp.{os.getpid()}")
         while True:
             try:
-                tmp = HEARTBEAT_PATH.with_suffix(".tmp")
                 tmp.write_text(str(time.monotonic()))
                 tmp.replace(HEARTBEAT_PATH)
             except Exception as e:
