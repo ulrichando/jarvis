@@ -100,9 +100,17 @@ CLI_MODELS_AVAILABLE: tuple[str, ...] = (
 # client itself stays up — the SFU preserves the room while the
 # agent rejoins.
 SPEECH_MODEL_FILE: Path     = Path.home() / ".jarvis" / "voice-model"
-DEFAULT_SPEECH_MODEL: str   = "llama-3.3-70b-versatile"
+# OpenAI gpt-5-mini default since 2026-05-15: Anthropic credit pool ran
+# out, Groq llama remains as a backup tray pick. gpt-5-mini gives the
+# best fast-tool-calling balance on api.openai.com for the voice loop.
+DEFAULT_SPEECH_MODEL: str   = "gpt-5-mini"
 
 SPEECH_MODELS_AVAILABLE: tuple[str, ...] = (
+    # OpenAI proper — added 2026-05-15. gpt-5-mini is the new default
+    # (voice latency-friendly + good tool calling); gpt-5.1 is the
+    # heavier sibling for multi-step delegation accuracy.
+    "gpt-5-mini",
+    "gpt-5.1",
     "llama-3.3-70b-versatile",
     "llama-3.1-8b-instant",
     "qwen/qwen3-32b",
@@ -115,11 +123,9 @@ SPEECH_MODELS_AVAILABLE: tuple[str, ...] = (
     "deepseek-v4-flash",
     "deepseek-v4-pro",
     # Anthropic — added 2026-05-11 alongside the Anthropic rung in
-    # build_dispatching_llm. Requires ANTHROPIC_API_KEY in env.
-    # Three tiers mirror the CLI picker:
-    #   Opus 4.7  — most capable, slowest, ~10x Haiku cost
-    #   Sonnet 4.6 — everyday default for serious reasoning
-    #   Haiku 4.5 — fastest + cheapest, for low-stakes turns
+    # build_dispatching_llm. Requires ANTHROPIC_API_KEY in env. Kept
+    # in the picker even with credits exhausted so the entries return
+    # automatically when the account is topped up.
     "claude-opus-4-7",
     "claude-sonnet-4-6",
     "claude-haiku-4-5",
