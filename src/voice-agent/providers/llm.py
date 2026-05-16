@@ -192,16 +192,20 @@ if os.environ.get("OPENAI_API_KEY", ""):
     # every supervisor turn 400'd → fallback cascade to EdgeTTS.
     #
     # Tier guide (latency vs. capability):
-    #   gpt-5-nano       → fastest + cheapest, weakest tool calling
-    #   gpt-5-mini       → voice sweet spot (~300-500 ms first token)
-    #   gpt-5            → base tier, ~50 % slower than mini but smarter
-    #   gpt-5.1          → latest generation, best general quality
+    #   gpt-5-nano          → fastest + cheapest, weakest tool calling
+    #   gpt-5-mini          → voice sweet spot (~300-500 ms first token)
+    #   gpt-5               → base tier, ~50 % slower than mini but smarter
+    #   gpt-5.1             → latest generation, best general quality
     #   gpt-5.1-chat-latest → pinned chat variant (auto-rolls)
-    #   gpt-5-pro        → most capable, materially slower (reserve
-    #                       for multi-step delegations where accuracy
-    #                       outweighs latency)
-    #   gpt-5-codex      → code-specialized; route here for coding turns
-    #   gpt-4o           → legacy classic, supports temperature, fast
+    #   gpt-4o              → legacy classic, supports temperature, fast
+    #
+    # NOT registered: gpt-5-pro and gpt-5-codex are documented in the
+    # /v1/models listing but the API rejects them on /v1/chat/completions
+    # with `invalid_request_error: This model is only supported in
+    # v1/responses and not in v1/chat/completions.` Verified 2026-05-15
+    # against the user's key. lk_openai uses Chat Completions, so these
+    # two would break every supervisor turn. Re-add when livekit-plugins-openai
+    # ships a Responses-API adapter.
     SPEECH_MODELS["gpt-5-nano"] = {
         "label": "OpenAI · GPT-5 nano (fastest)",
         "build": lambda: lk_openai.LLM(model="gpt-5-nano"),
@@ -221,14 +225,6 @@ if os.environ.get("OPENAI_API_KEY", ""):
     SPEECH_MODELS["gpt-5.1-chat-latest"] = {
         "label": "OpenAI · GPT-5.1 chat-latest",
         "build": lambda: lk_openai.LLM(model="gpt-5.1-chat-latest"),
-    }
-    SPEECH_MODELS["gpt-5-pro"] = {
-        "label": "OpenAI · GPT-5 pro (most capable, slowest)",
-        "build": lambda: lk_openai.LLM(model="gpt-5-pro"),
-    }
-    SPEECH_MODELS["gpt-5-codex"] = {
-        "label": "OpenAI · GPT-5 codex (code-specialized)",
-        "build": lambda: lk_openai.LLM(model="gpt-5-codex"),
     }
     # gpt-4o still accepts temperature, so we keep the matching 0.6
     # used across the other speech models.
