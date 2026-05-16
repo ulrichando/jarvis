@@ -849,6 +849,83 @@ fn switch_speech_model(app: &tauri::AppHandle, id: &'static str) {
     }
 }
 
+// ── Voice mode + Realtime model + Realtime voice pickers ──────────
+// Added 2026-05-15. The voice-client side exposes /voice-mode,
+// /realtime-model, /realtime-voice — see voice_client_http_api.py.
+// Each POST writes ~/.jarvis/{voice-mode|realtime-model|realtime-voice}
+// and triggers a jarvis-voice-agent restart so the new session
+// topology takes effect.
+
+#[allow(dead_code)]  // kept for future ✓-marker rendering
+fn voice_mode_pretty(id: &str) -> Option<&'static str> {
+    match id {
+        "text"     => Some("Text LLM + Orpheus TTS"),
+        "realtime" => Some("OpenAI Realtime API"),
+        _ => None,
+    }
+}
+
+#[allow(dead_code)]  // kept for future ✓-marker rendering
+fn realtime_model_pretty(id: &str) -> Option<&'static str> {
+    match id {
+        "gpt-realtime"      => Some("gpt-realtime (full)"),
+        "gpt-realtime-mini" => Some("gpt-realtime-mini (~3× cheaper)"),
+        _ => None,
+    }
+}
+
+#[allow(dead_code)]  // kept for future ✓-marker rendering
+fn realtime_voice_pretty(id: &str) -> Option<&'static str> {
+    match id {
+        "marin"   => Some("Marin (default)"),
+        "alloy"   => Some("Alloy"),
+        "ash"     => Some("Ash"),
+        "ballad"  => Some("Ballad"),
+        "coral"   => Some("Coral"),
+        "echo"    => Some("Echo"),
+        "sage"    => Some("Sage"),
+        "shimmer" => Some("Shimmer"),
+        "verse"   => Some("Verse"),
+        _ => None,
+    }
+}
+
+fn switch_voice_mode(_app: &tauri::AppHandle, mode: &'static str) {
+    let body = format!(r#"{{"mode":"{mode}"}}"#);
+    let _ = std::process::Command::new("curl")
+        .args([
+            "-s", "-X", "POST",
+            "http://127.0.0.1:8767/voice-mode",
+            "-H", "Content-Type: application/json",
+            "-d", &body,
+        ])
+        .spawn();
+}
+
+fn switch_realtime_model(_app: &tauri::AppHandle, model: &'static str) {
+    let body = format!(r#"{{"model":"{model}"}}"#);
+    let _ = std::process::Command::new("curl")
+        .args([
+            "-s", "-X", "POST",
+            "http://127.0.0.1:8767/realtime-model",
+            "-H", "Content-Type: application/json",
+            "-d", &body,
+        ])
+        .spawn();
+}
+
+fn switch_realtime_voice(_app: &tauri::AppHandle, voice: &'static str) {
+    let body = format!(r#"{{"voice":"{voice}"}}"#);
+    let _ = std::process::Command::new("curl")
+        .args([
+            "-s", "-X", "POST",
+            "http://127.0.0.1:8767/realtime-voice",
+            "-H", "Content-Type: application/json",
+            "-d", &body,
+        ])
+        .spawn();
+}
+
 /// Update the "Speech: …" line inside the Models tray submenu.
 /// React calls this whenever the voice-client `/status` reports a
 /// new speech_model field. Empty string = "no choice yet".
@@ -1690,6 +1767,49 @@ fn main() {
                 .build()?;
 
             let tts_sep = PredefinedMenuItem::separator(app)?;
+
+            // ── Voice mode / Realtime model / Realtime voice submenus ──
+            // Added 2026-05-15. Voice mode flips between the historic
+            // text-LLM chain (Whisper+supervisor+Orpheus) and a single
+            // OpenAI RealtimeModel. The model + voice pickers only
+            // matter when mode=realtime; they're harmless in text mode.
+            let vm_text     = MenuItemBuilder::with_id("voice_mode_text",     "Use text LLM + Orpheus TTS (cheap)").build(app)?;
+            let vm_realtime = MenuItemBuilder::with_id("voice_mode_realtime", "Use OpenAI Realtime API (~10× more expensive)").build(app)?;
+            let voice_mode_submenu = SubmenuBuilder::new(app, "Voice mode ▸")
+                .item(&vm_text)
+                .item(&vm_realtime)
+                .build()?;
+
+            let rt_m_full = MenuItemBuilder::with_id("realtime_model_gpt-realtime",      "Use OpenAI · gpt-realtime (full)").build(app)?;
+            let rt_m_mini = MenuItemBuilder::with_id("realtime_model_gpt-realtime-mini", "Use OpenAI · gpt-realtime-mini (~3× cheaper)").build(app)?;
+            let realtime_model_submenu = SubmenuBuilder::new(app, "Realtime model ▸")
+                .item(&rt_m_full)
+                .item(&rt_m_mini)
+                .build()?;
+
+            let rt_v_marin   = MenuItemBuilder::with_id("realtime_voice_marin",   "Marin (default)").build(app)?;
+            let rt_v_alloy   = MenuItemBuilder::with_id("realtime_voice_alloy",   "Alloy").build(app)?;
+            let rt_v_ash     = MenuItemBuilder::with_id("realtime_voice_ash",     "Ash").build(app)?;
+            let rt_v_ballad  = MenuItemBuilder::with_id("realtime_voice_ballad",  "Ballad").build(app)?;
+            let rt_v_coral   = MenuItemBuilder::with_id("realtime_voice_coral",   "Coral").build(app)?;
+            let rt_v_echo    = MenuItemBuilder::with_id("realtime_voice_echo",    "Echo").build(app)?;
+            let rt_v_sage    = MenuItemBuilder::with_id("realtime_voice_sage",    "Sage").build(app)?;
+            let rt_v_shimmer = MenuItemBuilder::with_id("realtime_voice_shimmer", "Shimmer").build(app)?;
+            let rt_v_verse   = MenuItemBuilder::with_id("realtime_voice_verse",   "Verse").build(app)?;
+            let realtime_voice_submenu = SubmenuBuilder::new(app, "Realtime voice ▸")
+                .item(&rt_v_marin)
+                .item(&rt_v_alloy)
+                .item(&rt_v_ash)
+                .item(&rt_v_ballad)
+                .item(&rt_v_coral)
+                .item(&rt_v_echo)
+                .item(&rt_v_sage)
+                .item(&rt_v_shimmer)
+                .item(&rt_v_verse)
+                .build()?;
+
+            let realtime_sep = PredefinedMenuItem::separator(app)?;
+
             let provider_submenu = SubmenuBuilder::new(app, "Models")
                 .item(&speech_current)
                 .item(&provider_current)
@@ -1699,6 +1819,10 @@ fn main() {
                 .item(&tool_submenu)
                 .item(&tts_sep)
                 .item(&tts_submenu)
+                .item(&realtime_sep)
+                .item(&voice_mode_submenu)
+                .item(&realtime_model_submenu)
+                .item(&realtime_voice_submenu)
                 .build()?;
 
             // Hand dynamic header items to managed state so the label
@@ -1917,6 +2041,20 @@ fn main() {
                         // TTS-voice picks (no agent restart — file written, read on next utterance)
                         "tts_gr_troy"   => switch_tts_provider(app, "groq:troy"),
                         "tts_gr_austin" => switch_tts_provider(app, "groq:austin"),
+                        // Voice-mode / Realtime model + voice pickers (2026-05-15)
+                        "voice_mode_text"                  => switch_voice_mode(app, "text"),
+                        "voice_mode_realtime"              => switch_voice_mode(app, "realtime"),
+                        "realtime_model_gpt-realtime"      => switch_realtime_model(app, "gpt-realtime"),
+                        "realtime_model_gpt-realtime-mini" => switch_realtime_model(app, "gpt-realtime-mini"),
+                        "realtime_voice_marin"             => switch_realtime_voice(app, "marin"),
+                        "realtime_voice_alloy"             => switch_realtime_voice(app, "alloy"),
+                        "realtime_voice_ash"               => switch_realtime_voice(app, "ash"),
+                        "realtime_voice_ballad"            => switch_realtime_voice(app, "ballad"),
+                        "realtime_voice_coral"             => switch_realtime_voice(app, "coral"),
+                        "realtime_voice_echo"              => switch_realtime_voice(app, "echo"),
+                        "realtime_voice_sage"              => switch_realtime_voice(app, "sage"),
+                        "realtime_voice_shimmer"           => switch_realtime_voice(app, "shimmer"),
+                        "realtime_voice_verse"             => switch_realtime_voice(app, "verse"),
                         "quit" => {
                             // "Quit JARVIS" stops EVERYTHING the user
                             // perceives as JARVIS — not just the overlay.
