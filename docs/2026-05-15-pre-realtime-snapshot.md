@@ -108,23 +108,27 @@ quality, sub-second latency, and native interruption handling.
 
 ## Revert procedure (if Realtime prototype is rejected)
 
-```bash
-# 1. Disable the env flag (kept off by default; only set when prototyping)
-unset JARVIS_REALTIME_MODE
-# or in ~/.jarvis/voice-realtime-mode if file-based
-rm -f ~/.jarvis/voice-realtime-mode
+The Realtime prototype is now a tray switch (commit `9c979f75`), so
+revert is one click:
 
-# 2. Restart the agent
-systemctl --user restart jarvis-voice-agent.service
+1. **Tray click**: right-click → Models → Voice mode ▸ → "Use text LLM
+   + Orpheus TTS (cheap)". The voice-client writes `~/.jarvis/voice-mode
+   = text` and bounces `jarvis-voice-agent.service`. Within ~5 s the
+   text pipeline is live again. No code changes needed.
+2. **CLI equivalent** (if the tray isn't running): `echo text >
+   ~/.jarvis/voice-mode && systemctl --user restart
+   jarvis-voice-agent.service`.
+3. **Env override** for debug (forces text mode regardless of file):
+   `JARVIS_REALTIME_MODE=0` in `.env` or `local-api-token.env`.
+4. **Full code revert** (if the prototype itself is buggy and needs
+   to come out): `git revert 9c979f75` (safe, leaves a revert commit).
+   Or hard-reset to the snapshot tip:
+   ```bash
+   git reset --hard 80f836fe       # destructive
+   git push --force-with-lease     # only if you really mean it
+   ```
 
-# 3. If the code was committed, revert to the checkpoint
-cd /home/ulrich/Documents/Projects/jarvis
-git revert <realtime-commit-sha>           # safe — leaves a revert commit
-# OR (heavier) hard-reset to the snapshot tip:
-git reset --hard 80f836fe                  # destructive
-git push --force-with-lease                # only if you really mean it
-```
-
-The Realtime branch is gated entirely behind `JARVIS_REALTIME_MODE=1`.
-Even with the code merged, the env flag stays OFF by default — the
-old text-based path is the no-flag behavior.
+`~/.jarvis/voice-mode` defaults to `text` if the file is missing or
+contains an unrecognized value — fresh installs and typos both land
+on the cheap path. Even with the realtime code merged, the text-mode
+behavior is the no-action default.
