@@ -81,7 +81,7 @@ __all__ = [
 # so a /voice-model POST + systemctl restart picks up the new file on
 # the very next dispatch.
 SPEECH_MODEL_FILE: Path = Path.home() / ".jarvis" / "voice-model"
-DEFAULT_SPEECH_MODEL: str = "llama-3.3-70b-versatile"
+DEFAULT_SPEECH_MODEL: str = "gpt-5-mini"
 
 # IDs match the upstream model names verbatim so the registry stays
 # legible. Each entry: (provider+model labels for display, factory
@@ -171,6 +171,36 @@ SPEECH_MODELS: dict[str, dict] = {
     # registering shim tools for K2.6's built-ins, or filtering them
     # from the request server-side).
 }
+# OpenAI proper (api.openai.com) — added 2026-05-15 as a fallback now
+# that the Anthropic credit pool is exhausted. Same lk_openai plugin
+# the DeepSeek entries use; default base_url is api.openai.com and the
+# api_key is read from OPENAI_API_KEY by the plugin.
+#
+# Pick guidance:
+#   - gpt-5-mini → voice default. Modern lineage, ~300-500 ms first
+#     token, solid tool calling. Best balance for the "Jarvis, …" loop.
+#   - gpt-5.1    → heavier sibling. ~500 ms more latency, but the best
+#     tool-calling accuracy in this tier for multi-step delegations.
+# Both gated on OPENAI_API_KEY so a key-less install doesn't pin a
+# broken default.
+if os.environ.get("OPENAI_API_KEY", ""):
+    # The GPT-5 family rejects any non-default temperature (the API
+    # returns `unsupported_value: 'temperature' does not support 0.6
+    # with this model. Only the default (1) value is supported`), so we
+    # omit the kwarg entirely instead of pinning it to 1.0 — letting
+    # the plugin's omit-when-default path keep the request payload
+    # clean. Live failure 2026-05-15: gpt-5-mini build with
+    # temperature=0.6 → every supervisor turn 400'd → fallback cascade
+    # to DeepSeek → Anthropic (no credits) → EdgeTTS.
+    SPEECH_MODELS["gpt-5-mini"] = {
+        "label": "OpenAI · GPT-5 mini",
+        "build": lambda: lk_openai.LLM(model="gpt-5-mini"),
+    }
+    SPEECH_MODELS["gpt-5.1"] = {
+        "label": "OpenAI · GPT-5.1",
+        "build": lambda: lk_openai.LLM(model="gpt-5.1"),
+    }
+
 if _ANTHROPIC_AVAILABLE and os.environ.get("ANTHROPIC_API_KEY", ""):
     # Shared kwargs across Anthropic tiers — same `_strict_tool_schema`,
     # `caching`, and `max_tokens` discipline applies to every Claude
