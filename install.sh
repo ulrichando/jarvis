@@ -262,6 +262,47 @@ setup_livekit_keys() {
   fi
 }
 
+# ── PipeWire / WirePlumber: auto-profile so mic + speakers coexist ───────
+# Some hardware (notably Dell Latitudes with Realtek ALC256/ALC3246)
+# ships WirePlumber with `api.acp.auto-profile=false`, which hides the
+# combined analog-stereo+input profile and forces apps onto `pro-audio`.
+# pro-audio then grabs the raw `hw:` device exclusively, blocking other
+# apps from sharing the mic. Installing this config flips both knobs
+# on; it's a no-op on hardware that already exposes the duplex profile.
+# Live failure 2026-05-15 — without it the voice-client locked the mic
+# against every other app on the box.
+install_audio_profile() {
+  if [ "${JARVIS_SKIP_AUDIO_PROFILE:-0}" = "1" ]; then
+    warn "skipping audio-profile config (JARVIS_SKIP_AUDIO_PROFILE=1)"; return
+  fi
+  if ! have wpctl; then
+    warn "no wpctl — PipeWire/WirePlumber not installed, skipping audio-profile config"
+    return
+  fi
+  local src="$INSTALL_DIR/setup/audio/99-jarvis-auto-profile.conf"
+  local dst="/etc/wireplumber/wireplumber.conf.d/99-jarvis-auto-profile.conf"
+  if [ ! -f "$src" ]; then
+    warn "audio-profile template missing at $src — skipping"; return
+  fi
+  # `sudo -n` so a non-interactive curl-pipe install doesn't hang. If
+  # sudo isn't NOPASSWD, fall through to instructions.
+  if sudo -n mkdir -p "$(dirname "$dst")" 2>/dev/null \
+     && sudo -n cp "$src" "$dst" 2>/dev/null; then
+    ok "installed $dst"
+    # Reload WirePlumber (user-level) so the new rule is picked up. The
+    # next time the user has a wedge-y profile they'll also need to clear
+    # ~/.local/state/wireplumber/default-profile, but on a fresh install
+    # there's no saved override yet so a plain restart is enough.
+    if systemctl --user restart wireplumber.service >/dev/null 2>&1; then
+      ok "reloaded wireplumber.service"
+    fi
+  else
+    warn "could not auto-install audio-profile config (sudo not NOPASSWD); run manually:"
+    sub "sudo mkdir -p $(dirname "$dst") && sudo cp $src $dst"
+    sub "systemctl --user restart wireplumber.service"
+  fi
+}
+
 setup_redis() {
   # jarvis-hub talks to redis at 127.0.0.1:6379. We use the system
   # redis-server.service (not a user unit) because it's the conventional
@@ -480,6 +521,7 @@ main() {
   install_desktop
   setup_livekit_keys
   setup_redis
+  install_audio_profile
   setup_env_template
   chrome_extension_step
   print_summary
