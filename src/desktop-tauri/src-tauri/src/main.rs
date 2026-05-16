@@ -696,6 +696,16 @@ fn cli_model_pretty(id: &str) -> Option<&'static str> {
         "claude-opus-4-7"                                => Some("Claude · Opus 4.7"),
         "claude-sonnet-4-6"                              => Some("Claude · Sonnet 4.6"),
         "claude-haiku-4-5"                               => Some("Claude · Haiku 4.5"),
+        // OpenAI proper — full GPT-5 family + GPT-4o, added 2026-05-15
+        // alongside the matching SPEECH_MODELS entries in providers/llm.py.
+        "gpt-5-nano"                                     => Some("OpenAI · GPT-5 nano"),
+        "gpt-5-mini"                                     => Some("OpenAI · GPT-5 mini"),
+        "gpt-5"                                          => Some("OpenAI · GPT-5"),
+        "gpt-5.1"                                        => Some("OpenAI · GPT-5.1"),
+        "gpt-5.1-chat-latest"                            => Some("OpenAI · GPT-5.1 chat"),
+        "gpt-5-pro"                                      => Some("OpenAI · GPT-5 pro"),
+        "gpt-5-codex"                                    => Some("OpenAI · GPT-5 codex"),
+        "gpt-4o"                                         => Some("OpenAI · GPT-4o"),
         _ => None,
     }
 }
@@ -715,6 +725,15 @@ fn speech_model_pretty(id: &str) -> Option<&'static str> {
         "claude-haiku-4-5"                               => Some("Claude · Haiku 4.5"),
         "claude-sonnet-4-6"                              => Some("Claude · Sonnet 4.6"),
         "claude-opus-4-7"                                => Some("Claude · Opus 4.7"),
+        // OpenAI proper — full GPT-5 family + GPT-4o, added 2026-05-15.
+        "gpt-5-nano"                                     => Some("OpenAI · GPT-5 nano"),
+        "gpt-5-mini"                                     => Some("OpenAI · GPT-5 mini"),
+        "gpt-5"                                          => Some("OpenAI · GPT-5"),
+        "gpt-5.1"                                        => Some("OpenAI · GPT-5.1"),
+        "gpt-5.1-chat-latest"                            => Some("OpenAI · GPT-5.1 chat"),
+        "gpt-5-pro"                                      => Some("OpenAI · GPT-5 pro"),
+        "gpt-5-codex"                                    => Some("OpenAI · GPT-5 codex"),
+        "gpt-4o"                                         => Some("OpenAI · GPT-4o"),
         _ => None,
     }
 }
@@ -1564,6 +1583,18 @@ fn main() {
             let v_claude_haiku  = MenuItemBuilder::with_id("speech_claude-haiku-4-5",  "Use Anthropic · Claude Haiku 4.5  (fastest, ~700 ms)").build(app)?;
             let v_claude_sonnet = MenuItemBuilder::with_id("speech_claude-sonnet-4-6", "Use Anthropic · Claude Sonnet 4.6  (everyday, recommended)").build(app)?;
             let v_claude_opus   = MenuItemBuilder::with_id("speech_claude-opus-4-7",   "Use Anthropic · Claude Opus 4.7  (most capable, slowest)").build(app)?;
+            // OpenAI proper — full GPT-5 family + GPT-4o, added 2026-05-15.
+            // Ordered fastest → slowest within tier; GPT-5 family rejects
+            // any non-default temperature so the registry-side build()
+            // omits the kwarg (see providers/llm.py).
+            let v_gpt_5_nano    = MenuItemBuilder::with_id("speech_gpt-5-nano",          "Use OpenAI · GPT-5 nano (fastest)").build(app)?;
+            let v_gpt_5_mini    = MenuItemBuilder::with_id("speech_gpt-5-mini",          "Use OpenAI · GPT-5 mini (voice sweet spot)").build(app)?;
+            let v_gpt_5         = MenuItemBuilder::with_id("speech_gpt-5",               "Use OpenAI · GPT-5 (base)").build(app)?;
+            let v_gpt_5_1       = MenuItemBuilder::with_id("speech_gpt-5.1",             "Use OpenAI · GPT-5.1 (latest)").build(app)?;
+            let v_gpt_5_1_chat  = MenuItemBuilder::with_id("speech_gpt-5.1-chat-latest", "Use OpenAI · GPT-5.1 chat-latest").build(app)?;
+            let v_gpt_5_pro     = MenuItemBuilder::with_id("speech_gpt-5-pro",           "Use OpenAI · GPT-5 pro (most capable, slowest)").build(app)?;
+            let v_gpt_5_codex   = MenuItemBuilder::with_id("speech_gpt-5-codex",         "Use OpenAI · GPT-5 codex (code-specialized)").build(app)?;
+            let v_gpt_4o        = MenuItemBuilder::with_id("speech_gpt-4o",              "Use OpenAI · GPT-4o (legacy)").build(app)?;
             let speech_submenu = SubmenuBuilder::new(app, "Speech model ▸")
                 .item(&v_llama33)
                 .item(&v_llama8b)
@@ -1576,6 +1607,14 @@ fn main() {
                 .item(&v_claude_haiku)
                 .item(&v_claude_sonnet)
                 .item(&v_claude_opus)
+                .item(&v_gpt_5_nano)
+                .item(&v_gpt_5_mini)
+                .item(&v_gpt_5)
+                .item(&v_gpt_5_1)
+                .item(&v_gpt_5_1_chat)
+                .item(&v_gpt_5_pro)
+                .item(&v_gpt_5_codex)
+                .item(&v_gpt_4o)
                 .build()?;
 
             // ── TTS VOICE submenu (nested under Models) ──
@@ -1627,6 +1666,19 @@ fn main() {
             let m_claude_opus   = MenuItemBuilder::with_id("model_claude-opus-4-7",                            "Use Claude · Opus 4.7  (1M ctx · most capable)").build(app)?;
             let m_claude_sonnet = MenuItemBuilder::with_id("model_claude-sonnet-4-6",                          "Use Claude · Sonnet 4.6 (everyday tasks)").build(app)?;
             let m_claude_haiku  = MenuItemBuilder::with_id("model_claude-haiku-4-5",                           "Use Claude · Haiku 4.5  (fastest)").build(app)?;
+            // OpenAI proper — full GPT-5 family + GPT-4o, added 2026-05-15.
+            // CLI-side support depends on the cli's model registry (in
+            // src/cli/) accepting these IDs; tray exposes them so user
+            // can pick. If the CLI doesn't yet recognize a given ID it
+            // will surface its own error.
+            let m_gpt_5_nano    = MenuItemBuilder::with_id("model_gpt-5-nano",            "Use OpenAI · GPT-5 nano").build(app)?;
+            let m_gpt_5_mini    = MenuItemBuilder::with_id("model_gpt-5-mini",            "Use OpenAI · GPT-5 mini").build(app)?;
+            let m_gpt_5         = MenuItemBuilder::with_id("model_gpt-5",                 "Use OpenAI · GPT-5").build(app)?;
+            let m_gpt_5_1       = MenuItemBuilder::with_id("model_gpt-5.1",               "Use OpenAI · GPT-5.1").build(app)?;
+            let m_gpt_5_1_chat  = MenuItemBuilder::with_id("model_gpt-5.1-chat-latest",   "Use OpenAI · GPT-5.1 chat-latest").build(app)?;
+            let m_gpt_5_pro     = MenuItemBuilder::with_id("model_gpt-5-pro",             "Use OpenAI · GPT-5 pro").build(app)?;
+            let m_gpt_5_codex   = MenuItemBuilder::with_id("model_gpt-5-codex",           "Use OpenAI · GPT-5 codex").build(app)?;
+            let m_gpt_4o        = MenuItemBuilder::with_id("model_gpt-4o",                "Use OpenAI · GPT-4o").build(app)?;
             let tool_submenu = SubmenuBuilder::new(app, "Tool model ▸")
                 .item(&m_ds_chat)
                 .item(&m_ds_reason)
@@ -1639,6 +1691,14 @@ fn main() {
                 .item(&m_claude_opus)
                 .item(&m_claude_sonnet)
                 .item(&m_claude_haiku)
+                .item(&m_gpt_5_nano)
+                .item(&m_gpt_5_mini)
+                .item(&m_gpt_5)
+                .item(&m_gpt_5_1)
+                .item(&m_gpt_5_1_chat)
+                .item(&m_gpt_5_pro)
+                .item(&m_gpt_5_codex)
+                .item(&m_gpt_4o)
                 .build()?;
 
             let tts_sep = PredefinedMenuItem::separator(app)?;
@@ -1842,6 +1902,14 @@ fn main() {
                         "model_claude-opus-4-7"                            => switch_cli_model(app, "claude-opus-4-7"),
                         "model_claude-sonnet-4-6"                          => switch_cli_model(app, "claude-sonnet-4-6"),
                         "model_claude-haiku-4-5"                           => switch_cli_model(app, "claude-haiku-4-5"),
+                        "model_gpt-5-nano"                                 => switch_cli_model(app, "gpt-5-nano"),
+                        "model_gpt-5-mini"                                 => switch_cli_model(app, "gpt-5-mini"),
+                        "model_gpt-5"                                      => switch_cli_model(app, "gpt-5"),
+                        "model_gpt-5.1"                                    => switch_cli_model(app, "gpt-5.1"),
+                        "model_gpt-5.1-chat-latest"                        => switch_cli_model(app, "gpt-5.1-chat-latest"),
+                        "model_gpt-5-pro"                                  => switch_cli_model(app, "gpt-5-pro"),
+                        "model_gpt-5-codex"                                => switch_cli_model(app, "gpt-5-codex"),
+                        "model_gpt-4o"                                     => switch_cli_model(app, "gpt-4o"),
                         // Speech-model picks (these trigger an agent restart)
                         "speech_llama-3.3-70b-versatile"                   => switch_speech_model(app, "llama-3.3-70b-versatile"),
                         "speech_llama-3.1-8b-instant"                      => switch_speech_model(app, "llama-3.1-8b-instant"),
@@ -1854,6 +1922,14 @@ fn main() {
                         "speech_claude-haiku-4-5"                          => switch_speech_model(app, "claude-haiku-4-5"),
                         "speech_claude-sonnet-4-6"                         => switch_speech_model(app, "claude-sonnet-4-6"),
                         "speech_claude-opus-4-7"                           => switch_speech_model(app, "claude-opus-4-7"),
+                        "speech_gpt-5-nano"                                => switch_speech_model(app, "gpt-5-nano"),
+                        "speech_gpt-5-mini"                                => switch_speech_model(app, "gpt-5-mini"),
+                        "speech_gpt-5"                                     => switch_speech_model(app, "gpt-5"),
+                        "speech_gpt-5.1"                                   => switch_speech_model(app, "gpt-5.1"),
+                        "speech_gpt-5.1-chat-latest"                       => switch_speech_model(app, "gpt-5.1-chat-latest"),
+                        "speech_gpt-5-pro"                                 => switch_speech_model(app, "gpt-5-pro"),
+                        "speech_gpt-5-codex"                               => switch_speech_model(app, "gpt-5-codex"),
+                        "speech_gpt-4o"                                    => switch_speech_model(app, "gpt-4o"),
                         // TTS-voice picks (no agent restart — file written, read on next utterance)
                         "tts_gr_troy"   => switch_tts_provider(app, "groq:troy"),
                         "tts_gr_austin" => switch_tts_provider(app, "groq:austin"),
