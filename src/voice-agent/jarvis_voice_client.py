@@ -94,6 +94,43 @@ NUM_CHANNELS  = 1
 FRAME_MS      = 10
 FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000  # 480
 
+# ── PortAudio device routing ─────────────────────────────────────────
+# PortAudio on this venv is compiled with only the ALSA host API (no
+# native libpulse backend). Without an explicit device name, sounddevice
+# defaults to ALSA's first card and grabs `hw:1,0` EXCLUSIVELY at the
+# kernel level — Zoom / Discord / browser then can't access the mic
+# while voice-client is running. Routing via the `pulse` device (which
+# is ALSA's `default` PCM plug-routed through pipewire-pulse) puts
+# voice-client on PipeWire's normal graph, where any number of clients
+# can share the same source. Defaults are env-overridable in case the
+# user has a non-pipewire stack.
+AUDIO_INPUT_DEVICE  = os.environ.get("JARVIS_AUDIO_INPUT_DEVICE",  "pulse")
+AUDIO_OUTPUT_DEVICE = os.environ.get("JARVIS_AUDIO_OUTPUT_DEVICE", "pulse")
+
+# ── WebRTC APM (noise suppression + AGC + HPF) ───────────────────────
+# Chromium's WebRTC AudioProcessingModule cleans up the mic before it
+# hits the SFU. NS removes background hiss/fans, AGC levels the speech
+# volume so the STT model sees consistent loudness, HPF strips rumble.
+# Echo-cancellation is intentionally OFF here — `play_subscribed_track`
+# would need to feed every playback frame through `process_reverse_stream`
+# to drive the AEC, which is a bigger change; we lean on PipeWire's
+# system-level `module-echo-cancel` (or LiveKit's server-side AEC) for
+# echo handling instead. Disable any of these via env var. Module-level
+# so AGC state persists across reconnects.
+_APM_NS  = os.environ.get("JARVIS_APM_NS",  "1") == "1"
+_APM_AGC = os.environ.get("JARVIS_APM_AGC", "1") == "1"
+_APM_HPF = os.environ.get("JARVIS_APM_HPF", "1") == "1"
+_APM_AEC = os.environ.get("JARVIS_APM_AEC", "0") == "1"
+_apm: Optional["rtc.apm.AudioProcessingModule"] = None
+if _APM_NS or _APM_AGC or _APM_HPF or _APM_AEC:
+    from livekit.rtc import apm as _lk_apm
+    _apm = _lk_apm.AudioProcessingModule(
+        echo_cancellation=_APM_AEC,
+        noise_suppression=_APM_NS,
+        high_pass_filter=_APM_HPF,
+        auto_gain_control=_APM_AGC,
+    )
+
 # ── Watchdog (loop wedge + agent presence + stale STT) ──────────
 # Extracted to voice_client_watchdog.py 2026-05-10 (Step 7 of the
 # audit). The class encapsulates all watchdog state (_last_heartbeat,
@@ -280,9 +317,14 @@ async def play_subscribed_track(track: rtc.RemoteAudioTrack) -> None:
         # Keep latency low — we don't need a big ring buffer for voice.
         blocksize=FRAME_SAMPLES,
         latency="low",
+        # `pulse` here is ALSA's `default` PCM auto-routed through
+        # pipewire-pulse (see module-level AUDIO_OUTPUT_DEVICE comment).
+        # Without this, PortAudio grabs hw:X,Y directly and locks the
+        # speaker against other apps. Env-overridable.
+        device=AUDIO_OUTPUT_DEVICE,
     )
     out.start()
-    log.info(f"[playback] OPEN track={track.sid} sr={SAMPLE_RATE}Hz ch={NUM_CHANNELS}")
+    log.info(f"[playback] OPEN track={track.sid} sr={SAMPLE_RATE}Hz ch={NUM_CHANNELS} device={AUDIO_OUTPUT_DEVICE!r}")
     try:
         async for event in stream:
             frame = event.frame
@@ -483,6 +525,11 @@ async def run_once(shutdown: asyncio.Event) -> None:
     # PortAudio callback runs in a realtime thread. Marshal each frame
     # back to the asyncio loop so capture_frame (which awaits) runs on
     # the right thread. run_coroutine_threadsafe is exactly that bridge.
+    #
+    # If WebRTC APM is enabled (`_apm` non-None), the frame is passed
+    # through `process_stream` for NS + AGC + HPF (+ optional AEC) BEFORE
+    # publication. APM mutates the frame buffer in place; it requires
+    # exactly 10 ms of audio, which is what FRAME_MS gives us.
     def _mic_cb(indata, frames, _time, status) -> None:
         if status:
             log.debug(f"[mic] portaudio status: {status}")
@@ -492,6 +539,11 @@ async def run_once(shutdown: asyncio.Event) -> None:
             num_channels=NUM_CHANNELS,
             samples_per_channel=frames,
         )
+        if _apm is not None:
+            try:
+                _apm.process_stream(frame)
+            except Exception as e:
+                log.warning(f"[mic] APM process_stream failed: {e}")
         asyncio.run_coroutine_threadsafe(source.capture_frame(frame), loop)
 
     mic_stream = sd.InputStream(
@@ -501,9 +553,16 @@ async def run_once(shutdown: asyncio.Event) -> None:
         blocksize=FRAME_SAMPLES,
         callback=_mic_cb,
         latency="low",
+        # See module-level AUDIO_INPUT_DEVICE comment — routes through
+        # pipewire-pulse so other apps can share the mic concurrently.
+        device=AUDIO_INPUT_DEVICE,
     )
     mic_stream.start()
-    log.info("[mic] capture started")
+    log.info(
+        f"[mic] capture started device={AUDIO_INPUT_DEVICE!r} "
+        f"apm={'on' if _apm else 'off'} "
+        f"(ns={_APM_NS} agc={_APM_AGC} hpf={_APM_HPF} aec={_APM_AEC})"
+    )
 
     try:
         # Block until either the process is shutting down (SIGTERM/INT)
