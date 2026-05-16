@@ -348,9 +348,19 @@ async def play_subscribed_track(track: rtc.RemoteAudioTrack) -> None:
         samplerate=SAMPLE_RATE,
         channels=NUM_CHANNELS,
         dtype="int16",
-        # Keep latency low — we don't need a big ring buffer for voice.
+        # 10 ms blocksize is right for tight A/V sync, but PortAudio's
+        # pulse plugin pipeline + scheduling jitter make `latency="low"`
+        # too tight on this stack — live failure 2026-05-15 logged 183
+        # `ALSA underrun occurred` in 500 lines. Each underrun = a brief
+        # gap or zero-fill in playback, which is exactly the chopped/
+        # robotic timbre the user reported. 200 ms gives ~20 frames of
+        # ring-buffer headroom — invisible to human ears for conversation
+        # (Zoom et al. run with 100–300 ms output latency) and plenty
+        # for the scheduler + LiveKit RTC AudioStream jitter combined.
+        # Earlier attempt with 80 ms still produced ~7 underruns/sec on
+        # the second sequential /speak; 200 ms held clean.
         blocksize=FRAME_SAMPLES,
-        latency="low",
+        latency=float(os.environ.get("JARVIS_PLAYBACK_LATENCY_S", "0.2")),
         # `pulse` here is ALSA's `default` PCM auto-routed through
         # pipewire-pulse (see module-level AUDIO_OUTPUT_DEVICE comment).
         # Without this, PortAudio grabs hw:X,Y directly and locks the
