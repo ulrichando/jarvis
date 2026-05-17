@@ -718,6 +718,40 @@ CLI_MODELS: dict[str, dict] = {
         "model":    "claude-haiku-4-5",
         "label":    "Anthropic · Claude Haiku 4.5",
     },
+    # OpenAI GPT-5 family — added 2026-05-17 after live-failure
+    # "unknown CLI model 'gpt-5.1', falling back to deepseek-v4-pro"
+    # (deepseek-v4-pro is retired per commit 1f9e1ff4). Provider name
+    # 'openai' matches the CLI-side entry in
+    # src/cli/src/utils/model/jarvisModelRegistry.ts; the upstream
+    # model IDs are passed verbatim. CLI subprocess gets the proxy
+    # via JARVIS_PROXY_URL → http://localhost:4000 from _cli_env.
+    # Must stay in sync with CLI_MODELS_AVAILABLE in
+    # voice_client_tray_config.py (the tray-side whitelist).
+    "gpt-5-nano": {
+        "provider": "openai",
+        "model":    "gpt-5-nano",
+        "label":    "OpenAI · GPT-5 nano",
+    },
+    "gpt-5-mini": {
+        "provider": "openai",
+        "model":    "gpt-5-mini",
+        "label":    "OpenAI · GPT-5 mini",
+    },
+    "gpt-5": {
+        "provider": "openai",
+        "model":    "gpt-5",
+        "label":    "OpenAI · GPT-5",
+    },
+    "gpt-5.1": {
+        "provider": "openai",
+        "model":    "gpt-5.1",
+        "label":    "OpenAI · GPT-5.1",
+    },
+    "gpt-5-pro": {
+        "provider": "openai",
+        "model":    "gpt-5-pro",
+        "label":    "OpenAI · GPT-5 pro",
+    },
     # Kimi K2.6 — all four UI modes hit the same upstream API model
     # `kimi-k2.6`. The Instant/Thinking/Agent/Swarm split is a
     # client-side preset (system prompt + tools), not a separate API.
@@ -3696,11 +3730,18 @@ def prewarm(proc: JobProcess) -> None:
     # production tuning recommends per-environment calibration since
     # one set of numbers can't fit both quiet podcast booths and laptop-
     # in-a-cafe deployments.
+    # Industry-standard "balanced" preset (2026-05-17 research). The
+    # five values converge across OpenAI Realtime, Gemini Live, Pipecat,
+    # Vapi, and LiveKit's own silero/vad.py defaults. min_speech=0.05
+    # matches Silero's default and prevents the "JARVIS cuts itself off
+    # mid-sentence" failure mode (a 200ms TTS-reverb pop used to trip
+    # the interrupt path). min_silence=0.70 is Vapi's anti-early-cut-in
+    # recommendation — mid-sentence pauses average 400–700ms.
     _vad_activation = float(os.environ.get("JARVIS_VAD_ACTIVATION_THRESHOLD", "0.6"))
-    _vad_deactivation = float(os.environ.get("JARVIS_VAD_DEACTIVATION_THRESHOLD", "0.3"))
-    _vad_min_speech = float(os.environ.get("JARVIS_VAD_MIN_SPEECH_S", "0.1"))
-    _vad_min_silence = float(os.environ.get("JARVIS_VAD_MIN_SILENCE_S", "0.4"))
-    _vad_prefix_pad = float(os.environ.get("JARVIS_VAD_PREFIX_PAD_S", "0.6"))
+    _vad_deactivation = float(os.environ.get("JARVIS_VAD_DEACTIVATION_THRESHOLD", "0.4"))
+    _vad_min_speech = float(os.environ.get("JARVIS_VAD_MIN_SPEECH_S", "0.05"))
+    _vad_min_silence = float(os.environ.get("JARVIS_VAD_MIN_SILENCE_S", "0.70"))
+    _vad_prefix_pad = float(os.environ.get("JARVIS_VAD_PREFIX_PAD_S", "0.50"))
     proc.userdata["vad"] = silero.VAD.load(
         activation_threshold=_vad_activation,
         deactivation_threshold=_vad_deactivation,
@@ -4178,8 +4219,14 @@ def _register_session_error_handlers(session) -> None:
                                 "Could you rephrase?",
                                 allow_interruptions=True,
                             )
+                            # Label by actual error source (the same handler
+                            # catches stt_error too — the apology log was
+                            # misleading when investigating cascades).
+                            src = "STT" if "stt_error" in err_msg else (
+                                "LLM" if "llm_error" in err_msg else "session"
+                            )
                             logger.info(
-                                f"[llm-fallback] voiced apology after LLM error: {err_msg[:120]!r}"
+                                f"[llm-fallback] voiced apology after {src} error: {err_msg[:120]!r}"
                             )
                         except Exception as say_err:
                             logger.debug(f"[llm-fallback] say() failed: {say_err}")
