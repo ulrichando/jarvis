@@ -20,9 +20,12 @@ def browser_mod(monkeypatch):
     fully mockable."""
     from subagents import browser
     monkeypatch.delenv("JARVIS_BROWSER_PRELAUNCH_DISABLE", raising=False)
-    # Shorten the wait/poll so tests don't sit for 8s.
+    # Shorten the wait/poll so tests don't sit for 15s. Split into
+    # fast/slow phases 2026-05-17 — both knobs need overriding.
     monkeypatch.setattr(browser, "_PRELAUNCH_WAIT_S", 0.5)
-    monkeypatch.setattr(browser, "_PRELAUNCH_POLL_S", 0.05)
+    monkeypatch.setattr(browser, "_PRELAUNCH_POLL_FAST_S", 0.05)
+    monkeypatch.setattr(browser, "_PRELAUNCH_POLL_SLOW_S", 0.05)
+    monkeypatch.setattr(browser, "_PRELAUNCH_POLL_FAST_FOR_S", 0.2)
     return browser
 
 

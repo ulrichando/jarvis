@@ -243,48 +243,177 @@ async function captureAndAnalyze(query) {
 }
 
 // ── v3.0 — WS command channel to JARVIS bridge ───────────────────────
+//
+// Reconnect contract (hardened 2026-05-17 per pre_transfer-timeout
+// investigation; the previous version used a fixed 3 s reconnect with
+// no initial retry and no hello-ack timeout, so a single bridge-down
+// blip on Chrome startup would leave the extension off-line for the
+// full pre_transfer window and the user would hear "Chrome is starting
+// but the extension hasn't registered yet"):
+//
+//   - First open is attempted immediately on SW boot.
+//   - On any failure (open error / close / hello-ack timeout) we
+//     reconnect with exponential backoff: 500ms → 1s → 2s → 4s → 8s,
+//     plus jitter, capped at 8 s. Resets to 500ms after a successful
+//     hello-ack.
+//   - Hello-ack timeout is 5 s. If the bridge accepts the socket but
+//     never sends `extension_hello_ack` (auth drop, bridge bug, network
+//     glitch mid-handshake) we force-close and back off. Without this,
+//     a half-dead socket would burn 25 s of ping-keepalive before the
+//     extension noticed.
+//   - Keepalive ping is 25 s (unchanged); it now also tracks pong
+//     freshness and force-reconnects after 2 missed pongs (60 s).
+//
+// Why these values: Chrome cold start to extension-SW-ready is
+// observed at 2-5 s on this box; bridge restart-to-listening is
+// <500 ms. 500 ms initial back-off catches the fast path; 8 s cap
+// keeps a slow-rolling bridge from being thundering-herded.
 
 const WS_URL = 'ws://localhost:8765/ws';
 const WS_KEEPALIVE_MS = 25_000;
+const WS_HELLO_ACK_TIMEOUT_MS = 5_000;
+const WS_BACKOFF_INITIAL_MS = 500;
+const WS_BACKOFF_MAX_MS = 8_000;
+const WS_MAX_MISSED_PONGS = 2;
+
 let ws = null;
 let wsKeepaliveTimer = null;
+let wsHelloAckTimer = null;
+let wsReconnectTimer = null;
+let wsBackoffMs = WS_BACKOFF_INITIAL_MS;
+let wsLastPongTs = 0;
+let wsMissedPongs = 0;
+let wsHelloAcked = false;
+
+function _scheduleReconnect(reason) {
+  if (wsReconnectTimer) return;  // already scheduled
+  // Jitter ±25% so 5 extension instances (impossible but safe) don't
+  // re-hammer the bridge in lock-step after a transient outage.
+  const jitter = (Math.random() * 0.5 - 0.25) * wsBackoffMs;
+  const delay = Math.max(100, Math.round(wsBackoffMs + jitter));
+  console.log(`[jarvis-ext] WS reconnect in ${delay}ms (${reason})`);
+  wsReconnectTimer = setTimeout(() => {
+    wsReconnectTimer = null;
+    _connectWS();
+  }, delay);
+  // Exponential bump for next attempt, capped.
+  wsBackoffMs = Math.min(WS_BACKOFF_MAX_MS, wsBackoffMs * 2);
+}
+
+function _teardownSocket() {
+  if (wsKeepaliveTimer) { clearInterval(wsKeepaliveTimer); wsKeepaliveTimer = null; }
+  if (wsHelloAckTimer)  { clearTimeout(wsHelloAckTimer);   wsHelloAckTimer  = null; }
+  try { if (ws) ws.close(); } catch {}
+  ws = null;
+  wsHelloAcked = false;
+}
 
 function _connectWS() {
-  try { if (ws) ws.close(); } catch {}
-  ws = new WebSocket(WS_URL);
+  _teardownSocket();
+  let socket;
+  try {
+    socket = new WebSocket(WS_URL);
+  } catch (e) {
+    console.warn('[jarvis-ext] WS construct failed', e);
+    _scheduleReconnect('construct-failed');
+    return;
+  }
+  ws = socket;
 
-  ws.addEventListener('open', () => {
+  socket.addEventListener('open', () => {
     console.log('[jarvis-ext] WS connected');
-    // Identify ourselves so the bridge calls registerExtensionWS for this socket.
-    ws.send(JSON.stringify({ type: 'extension_hello', version: '3.0.0' }));
-    if (wsKeepaliveTimer) clearInterval(wsKeepaliveTimer);
-    wsKeepaliveTimer = setInterval(() => {
-      try { ws.send(JSON.stringify({ type: 'ping' })); } catch {}
-    }, WS_KEEPALIVE_MS);
+    try {
+      socket.send(JSON.stringify({ type: 'extension_hello', version: '3.0.0' }));
+    } catch (e) {
+      console.warn('[jarvis-ext] WS hello send failed', e);
+      _teardownSocket();
+      _scheduleReconnect('hello-send-failed');
+      return;
+    }
+    // Force-reconnect if ack never lands. Without this a half-dead
+    // socket survives until the 25 s keepalive ping fails.
+    wsHelloAckTimer = setTimeout(() => {
+      if (!wsHelloAcked) {
+        console.warn('[jarvis-ext] hello_ack timeout — reconnecting');
+        _teardownSocket();
+        _scheduleReconnect('hello-ack-timeout');
+      }
+    }, WS_HELLO_ACK_TIMEOUT_MS);
   });
 
-  ws.addEventListener('message', async (ev) => {
+  socket.addEventListener('message', async (ev) => {
+    if (socket !== ws) return;  // stale socket — ignore
     let cmd;
     try { cmd = JSON.parse(ev.data); }
     catch { return; }
-    if (cmd.type === 'pong' || cmd.type === 'extension_hello_ack') return;
+    if (cmd.type === 'extension_hello_ack') {
+      wsHelloAcked = true;
+      wsBackoffMs = WS_BACKOFF_INITIAL_MS;
+      wsLastPongTs = Date.now();
+      wsMissedPongs = 0;
+      if (wsHelloAckTimer) { clearTimeout(wsHelloAckTimer); wsHelloAckTimer = null; }
+      // Now safe to start keepalive — bridge has accepted us.
+      if (wsKeepaliveTimer) clearInterval(wsKeepaliveTimer);
+      wsKeepaliveTimer = setInterval(() => {
+        if (socket.readyState !== WebSocket.OPEN) return;
+        // Track missed pongs to detect zombie sockets the OS doesn't
+        // report as closed (NAT timeout, suspended SW resume w/ stale
+        // FD). Force a reconnect after WS_MAX_MISSED_PONGS in a row.
+        if (wsLastPongTs && (Date.now() - wsLastPongTs) > WS_KEEPALIVE_MS * 1.5) {
+          wsMissedPongs += 1;
+          if (wsMissedPongs >= WS_MAX_MISSED_PONGS) {
+            console.warn('[jarvis-ext] WS missed pongs — reconnecting');
+            _teardownSocket();
+            _scheduleReconnect('missed-pongs');
+            return;
+          }
+        }
+        try { socket.send(JSON.stringify({ type: 'ping' })); } catch {}
+      }, WS_KEEPALIVE_MS);
+      return;
+    }
+    if (cmd.type === 'extension_hello_nack') {
+      // Bridge rejected the hello (auth fail). Don't tight-loop — back
+      // off all the way to max so a misconfigured token doesn't burn
+      // the user's CPU re-handshaking 8 times a minute.
+      console.warn('[jarvis-ext] hello_nack', cmd.reason);
+      wsBackoffMs = WS_BACKOFF_MAX_MS;
+      _teardownSocket();
+      _scheduleReconnect('hello-nack');
+      return;
+    }
+    if (cmd.type === 'pong') {
+      wsLastPongTs = Date.now();
+      wsMissedPongs = 0;
+      return;
+    }
     if (!cmd.cmd_id) return;
     const result = await dispatchCommand(cmd);
-    try { ws.send(JSON.stringify({ cmd_id: cmd.cmd_id, ...result })); } catch {}
+    try { socket.send(JSON.stringify({ cmd_id: cmd.cmd_id, ...result })); } catch {}
   });
 
-  ws.addEventListener('close', () => {
-    console.log('[jarvis-ext] WS closed; reconnecting in 3s');
-    if (wsKeepaliveTimer) clearInterval(wsKeepaliveTimer);
-    setTimeout(_connectWS, 3000);
+  socket.addEventListener('close', (ev) => {
+    if (socket !== ws) return;  // tear-down we initiated
+    console.log(`[jarvis-ext] WS closed code=${ev.code} reason=${ev.reason || '-'}`);
+    _teardownSocket();
+    _scheduleReconnect(`close-${ev.code}`);
   });
 
-  ws.addEventListener('error', (e) => console.warn('[jarvis-ext] WS error', e));
+  socket.addEventListener('error', (e) => {
+    if (socket !== ws) return;
+    console.warn('[jarvis-ext] WS error', e?.message || e);
+    // Don't reconnect here — 'error' is always followed by 'close',
+    // which is the canonical reconnect trigger.
+  });
 }
 
-// Run on SW startup AND on resume.
+// Run on SW startup. Top-level execution happens on every SW wake —
+// onStartup additionally fires on full browser cold start.
 _connectWS();
-chrome.runtime.onStartup.addListener(_connectWS);
+chrome.runtime.onStartup.addListener(() => {
+  wsBackoffMs = WS_BACKOFF_INITIAL_MS;  // fresh browser session, fast reconnect
+  _connectWS();
+});
 
 async function dispatchCommand({ action, args = {}, confirmed = false }) {
   // Some actions are bg-context-only (chrome.tabs / chrome.cookies).
