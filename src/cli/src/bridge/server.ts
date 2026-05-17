@@ -61,6 +61,41 @@ const REQUIRE_AUTH = process.env.JARVIS_REQUIRE_LOCAL_AUTH === '1'
 const LOCAL_TOKEN  = process.env.JARVIS_LOCAL_API_TOKEN ?? ''
 const PUBLIC_PATHS = new Set(['/health', '/api/ready', '/api/version', '/api/theme'])
 
+// Allowlist of origins permitted to cross-origin call the bridge. The
+// Tauri webview is `tauri://localhost`; the Chrome extension is
+// `chrome-extension://<id>`. Drops the CORS=* wildcard that let any
+// malicious web page hit /api/livekit/token to mint room JWTs (global
+// review §P0-2). Set JARVIS_BRIDGE_CORS_ALLOW (comma-separated) to
+// extend, e.g. to add the dev-server origin during development.
+const CORS_ALLOWLIST = new Set<string>([
+  'tauri://localhost',
+  'app://localhost',
+  'http://localhost:3000',  // Tauri dev server
+  'http://127.0.0.1:3000',
+  ...(process.env.JARVIS_BRIDGE_CORS_ALLOW ?? '').split(',').map(s => s.trim()).filter(Boolean),
+])
+
+function corsHeaders(req: Request, methods: string): Record<string, string> {
+  // Echo back the Origin if it's allowlisted OR a chrome-extension://
+  // scheme (which carries the extension's UUID and changes per install
+  // so we can't pin it ahead of time). Anything else → no CORS header,
+  // browser blocks the response.
+  const origin = req.headers.get('Origin') ?? ''
+  let allow = ''
+  if (CORS_ALLOWLIST.has(origin)) {
+    allow = origin
+  } else if (origin.startsWith('chrome-extension://')) {
+    allow = origin
+  }
+  const headers: Record<string, string> = {
+    'Access-Control-Allow-Methods': methods,
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Vary': 'Origin',
+  }
+  if (allow) headers['Access-Control-Allow-Origin'] = allow
+  return headers
+}
+
 function isAuthorized(req: Request, urlObj: URL): boolean {
   if (!REQUIRE_AUTH) return true
   if (PUBLIC_PATHS.has(urlObj.pathname)) return true
@@ -348,14 +383,11 @@ async function handleAnalyzeScreen(req: Request): Promise<Response> {
  * if we ever want separate contexts.
  */
 async function handleLiveKitToken(req: Request): Promise<Response> {
-  // Permissive CORS so the Tauri webview's cross-origin POST isn't
-  // blocked at preflight. Same reasoning as the OPTIONS handler in
-  // the main fetch dispatcher.
-  const cors = {
-    'Access-Control-Allow-Origin':  '*',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-  }
+  // CORS via allowlist (2026-05-16 §P0-2). Tauri webview + Chrome ext
+  // can mint; arbitrary web pages cannot — closes the most severe
+  // attack from the global review (any browsed page could previously
+  // mint a JWT, join the room as "jarvis-agent", and speak commands).
+  const cors = corsHeaders(req, 'POST, OPTIONS')
   if (!LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
     return Response.json(
       { error: 'LIVEKIT_API_KEY / LIVEKIT_API_SECRET not configured on bridge' },
@@ -402,16 +434,13 @@ const server = Bun.serve({
       return new Response('WebSocket upgrade failed', { status: 400 })
     }
 
-    // Blanket CORS for /api/* — the Tauri webview runs at tauri://localhost
-    // (or app:// depending on version) and fetches to http://127.0.0.1:8765
-    // are cross-origin. For non-simple requests (POST w/ application/json)
-    // WebKit sends a preflight OPTIONS first. Without these headers every
-    // preflight fails with "Load failed" and the real request is blocked.
-    // Matches the permissive policy already in place on the speech sidecar.
+    // CORS via allowlist (2026-05-16 §P0-2). Tauri webview at
+    // `tauri://localhost`/`app://localhost` + Chrome ext at
+    // `chrome-extension://<id>` echo back; arbitrary web pages do not.
+    // Closes the previous `*` policy that let any malicious tab mint
+    // LiveKit JWTs, model-swap, or query chat-history.
     const cors = {
-      'Access-Control-Allow-Origin':  '*',
-      'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      ...corsHeaders(req, 'GET, POST, DELETE, OPTIONS'),
       'Access-Control-Max-Age':       '86400',
     }
     if (req.method === 'OPTIONS' && url.pathname.startsWith('/api/')) {
@@ -521,10 +550,38 @@ const server = Bun.serve({
       // Extension identification — register this WS as the extension channel.
       // The extension sends {type:'extension_hello'} as its first message so we
       // can discriminate it from regular chat-panel / desktop clients.
+      //
+      // Auth (2026-05-16 §P0-3): require the bearer token in the hello
+      // payload when REQUIRE_AUTH is on. Without this, any local process
+      // can send {type:'extension_hello'} and IMPERSONATE the extension —
+      // the bridge would then forward every ext_browse call from the
+      // voice agent to the impostor, exfiltrating cookies / localStorage /
+      // session_state on every authenticated tab. The token is the same
+      // one isAuthorized() uses for /api/* requests.
       if (msg.type === 'extension_hello') {
+        if (REQUIRE_AUTH && msg.token !== LOCAL_TOKEN) {
+          console.warn('[bridge] extension_hello rejected — missing/invalid token')
+          try { ws.send(JSON.stringify({ type: 'extension_hello_nack', reason: 'auth' })) } catch {}
+          try { ws.close(1008, 'auth') } catch {}
+          return
+        }
         registerExtensionWS(ws as unknown as WebSocket)
         console.log('[bridge] extension WebSocket registered')
         try { ws.send(JSON.stringify({ type: 'extension_hello_ack' })) } catch {}
+        return
+      }
+
+      // Same auth gate for client-initiated `query` messages — the WS
+      // upgrade auth (token via ?token= or Sec-WebSocket-Protocol) only
+      // gates the handshake; once connected, any sender could spam
+      // /api/think-equivalent queries through the WS. Require the token
+      // on the first user message after upgrade, OR require it on every
+      // query, depending on JARVIS_BRIDGE_PER_MSG_AUTH (default per-msg
+      // because conservatively safer). Echoes the existing isAuthorized()
+      // contract for /api/* endpoints.
+      if (REQUIRE_AUTH && msg.type === 'query' && msg.token !== LOCAL_TOKEN) {
+        console.warn('[bridge] query rejected — missing/invalid token')
+        try { ws.send(JSON.stringify({ type: 'chat_response', text: '(auth required)' })) } catch {}
         return
       }
 
