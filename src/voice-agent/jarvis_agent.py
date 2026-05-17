@@ -4758,7 +4758,11 @@ async def entrypoint(ctx: JobContext) -> None:
     # in the UI. Handler is cheap (one INSERT per turn, write → close)
     # so no need to offload to a thread.
     convo_session_id = str(uuid.uuid4())
-    logger.info(f"[convo-db] session {convo_session_id}  → {CONVO_DB_PATH}")
+    # Persistence path: voice turns flow through HubClient → Redis stream
+    # `events:conversation` → hub daemon → ~/.jarvis/hub/state.db
+    # (since Phase 12, 2026-05-03). The old direct CONVO_DB_PATH write
+    # was retired 2026-05-17 (commit 3363cd3d).
+    logger.info(f"[convo-db] session {convo_session_id} → ~/.jarvis/hub/state.db (via hub)")
 
     # Session-state for the dispatcher prefix. Turn count drives the
     # [Turn N · session Mm] hint that tells the LLM where it is in the
