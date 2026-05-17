@@ -89,8 +89,11 @@ def is_garbage_transcript(text: str) -> tuple[bool, str]:
     if not s:
         return True, "empty"
 
-    # Pure punctuation / ellipsis / "..." — no alphanumeric content
-    if not re.search(r"[a-z0-9]", s):
+    # Pure punctuation / ellipsis / "..." — no alphanumeric content.
+    # Use Unicode-aware alpha check so non-Latin scripts (Hanzi, Kana,
+    # Cyrillic, Hangul) are NOT misclassified as punctuation-only and
+    # can flow through to the non-latin-fragment check below.
+    if not any(c.isalnum() for c in text):
         return True, "punctuation-only"
 
     # Single bare filler token alone — drop. (Punctuation stripped.)
@@ -114,5 +117,25 @@ def is_garbage_transcript(text: str) -> tuple[bool, str]:
     norm = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]+", " ", s)).strip()
     if norm in WHISPER_HALLUCINATIONS:
         return True, f"whisper-hallucination:{norm}"
+
+    # Non-Latin script fragment. Whisper turbo, fed sub-speech audio
+    # from a background TV in another language, transcribes in that
+    # language's native script — Cyrillic ("Добрый день"), Kana
+    # ("クリノイズアイマ"), Hanzi ("再見"), Hangul, etc. JARVIS is
+    # English-only per CLAUDE.md, so any fragment that's mostly
+    # non-Latin alphabetic AND short is almost certainly bleed-through.
+    # 50% threshold so mixed-script real speech ("the iPhone is 漂亮")
+    # passes; 12-char cap so legitimate short responses aren't trapped
+    # if they happen to contain a non-Latin character.
+    # Live evidence (2026-05-16 telemetry audit): 14+ recent turns had
+    # foreign-script user_text, three triggered >700 s LLM stalls,
+    # one (turn 160) produced a hallucinated Bosnian reply. Source:
+    # docs/reviews/2026-05-16/jarvis-review-ai.md §P0-1.
+    raw_text = text  # keep original case + Unicode for script check
+    alpha = [c for c in raw_text if c.isalpha()]
+    if alpha and len(raw_text) < 12:
+        non_latin = sum(1 for c in alpha if not ("a" <= c.lower() <= "z"))
+        if non_latin / len(alpha) > 0.5:
+            return True, f"non-latin-fragment:{raw_text[:20]!r}"
 
     return False, ""
