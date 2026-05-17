@@ -194,6 +194,17 @@ sanitizers.denial_detector.install()
 import sanitizers.internal_phrase
 sanitizers.internal_phrase.install()
 
+# Output-language sanitizer — blanks supervisor replies that drift
+# into a non-Latin script when the user spoke English. Companion to
+# pipeline/stt_gate.py's INPUT non-Latin gate; catches the rare case
+# where a fallback model (DeepSeek v4-pro most notoriously) returns
+# Cyrillic/Kana/Hanzi to a Latin-script English input. Live failure
+# 2026-05-16 turn 160: user said "That's the" (3-word Latin) and got
+# back a Bosnian formal-letter reply. Added 2026-05-17 per enterprise
+# plan §P0-VOICE-2.
+import sanitizers.output_language
+sanitizers.output_language.install()
+
 # Wrap LLM streams in asyncio.wait_for so stalled Groq connections
 # raise TimeoutError after JARVIS_LLM_IDLE_TIMEOUT (default 30s)
 # instead of hanging forever. Captured live 2026-05-02: subagent
