@@ -164,7 +164,41 @@ install_voice_agent() {
   "$va/.venv/bin/pip" install --quiet -r "$va/requirements.txt"
   ok "deps installed"
 
+  install_playwright_chromium "$va"
   install_systemd_units
+}
+
+# ── Channel: Playwright Chromium (~200MB, gated) ─────────────────────────
+# Fetches the bundled Chromium binary Playwright needs for the browser
+# subagent's CDP fallback path (tools/browser_cdp.py). Skip with
+# JARVIS_SKIP_CDP=1 — the voice-agent still imports and runs without
+# the binary; only the CDP fallback path bails with a clear error. The
+# extension path is always available.
+install_playwright_chromium() {
+  local va="$1"
+  if [ "${JARVIS_SKIP_CDP:-0}" = "1" ]; then
+    warn "skipping Playwright Chromium (JARVIS_SKIP_CDP=1) — CDP fallback won't work"
+    return
+  fi
+  # Already installed? Skip re-download.
+  if [ -d "$HOME/.cache/ms-playwright" ] && ls "$HOME/.cache/ms-playwright" 2>/dev/null | grep -q "chromium"; then
+    ok "Playwright Chromium already cached"
+    return
+  fi
+  sub "About to download ~200MB of Chromium for browser CDP fallback"
+  sub "(skip with JARVIS_SKIP_CDP=1; extension path always available)"
+  # Non-interactive installs (e.g. curl|bash) → auto-yes.
+  if [ ! -t 0 ]; then
+    sub "non-interactive shell — proceeding with download"
+  else
+    read -r -p "  Download Playwright Chromium now? [Y/n] " reply
+    if [ "${reply:-Y}" != "Y" ] && [ "${reply:-Y}" != "y" ] && [ -n "$reply" ]; then
+      warn "skipped — run 'playwright install chromium' later if you want the fallback"
+      return
+    fi
+  fi
+  "$va/.venv/bin/playwright" install chromium
+  ok "Playwright Chromium installed"
 }
 
 install_systemd_units() {
