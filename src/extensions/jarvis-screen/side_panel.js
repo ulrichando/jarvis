@@ -102,6 +102,20 @@ let mentionSelIdx  = 0
 // ── Markdown renderer ────────────────────────────────────────────────────────
 
 function renderMarkdown(text) {
+  // SECURITY-CRITICAL: the three .replace() calls below escape every
+  // HTML control character in the LLM-streamed input BEFORE the
+  // markdown patterns construct `<pre><code>`, `<strong>`, etc. tags
+  // around it. This is what makes `div.innerHTML = html` safe on
+  // untrusted bridge output. If you ever:
+  //   - reorder the escapes after the pattern replacements, OR
+  //   - add a pattern that injects raw user content into an HTML
+  //     attribute (e.g. `[text](url)` link parsing), OR
+  //   - remove the &/&lt;/&gt; replacements,
+  // an LLM-output of `<img src=x onerror=alert(1)>` becomes live HTML
+  // executing inside the extension origin — which has <all_urls> +
+  // cookies + debugger permissions. The blast radius is "every site
+  // Ulrich is logged into." Don't drift this.
+  // Verified 2026-05-17 per enterprise plan §P0-SEC-11.
   const div = document.createElement('div')
   div.className = 'bubble-body'
 
