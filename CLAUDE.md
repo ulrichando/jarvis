@@ -13,10 +13,11 @@ JARVIS is Ulrich's voice-first AI assistant. Real-time speech in, real-time spee
 | Web app | Next.js / React | [src/web/](src/web/) |
 | CLI agent (`jarvis`) | TypeScript / Bun, Claude Code shape | [src/cli/](src/cli/) |
 | Browser extension | TS, talks to bridge over WS | [src/extensions/](src/extensions/) |
-| Hub (jarvis-bridge.service) | Python on `127.0.0.1:8765`, brokers HTTP→Chrome ext via WS | [src/hub/](src/hub/) |
-| AI-native OS rice (Misty Scone) | Arch + custom desktop, copies cli/desktop-tauri | [src/os/desktop/](src/os/desktop/) |
+| Bridge | Bun/TypeScript HTTP+WS on `127.0.0.1:8765`, started by `src/cli/scripts/start-desktop.sh` when the desktop launches (no systemd unit; dies when desktop closes). Brokers HTTP→Chrome ext over WS. Auth required via `JARVIS_REQUIRE_LOCAL_AUTH=1` + `~/.jarvis/local-api-token.env` (added 2026-05-16 per global review §P0-1) | [src/cli/src/bridge/](src/cli/src/bridge/) |
+| Hub (jarvis-hub.service) | Python Redis Streams consumer that materializes `~/.jarvis/hub/state.db` from `events:conversation`/`events:settings`/`events:memory` — NOT the bridge despite the previous CLAUDE.md misnaming | [src/hub/](src/hub/) |
+| AI-native OS rice (Misty Scone) | Arch + custom desktop, copies cli/desktop-tauri (aspirational — `src/os/desktop/` not present in current checkout) | [src/os/desktop/](src/os/desktop/) |
 
-JARVIS has full `sudo NOPASSWD` root via `/etc/sudoers.d/jarvis` — every shell tool runs as root. Treat that as a load-bearing constraint, not a typo.
+JARVIS's `bash` tool runs as the local user (`ulrich`). **As of 2026-05-16 there is NO `/etc/sudoers.d/jarvis` NOPASSWD entry** — earlier docs claimed there was; live `sudo -n true` test confirmed it requires a password. Threat model: a misbehaving LLM / prompt injection through user mic can execute anything under the user's $HOME + run any tool without sudo. If you ever add the sudoers entry, document its scoped `Cmnd_Alias` here so future readers can audit the blast radius — do NOT restore a blanket NOPASSWD.
 
 ## Voice-agent architecture
 
@@ -91,7 +92,8 @@ JARVIS has full `sudo NOPASSWD` root via `/etc/sudoers.d/jarvis` — every shell
 | Desktop dev (Tauri) | `cd src/desktop-tauri && npm run tauri dev` |
 | Desktop release | `npm run build && cargo build --release` (BOTH steps) |
 | Run jarvis CLI | `bin/jarvis` (Claude-Code-shaped, has gstack skill access) |
-| Hub status | `systemctl --user status jarvis-bridge.service` |
+| Hub status | `systemctl --user status jarvis-hub.service` |
+| Bridge status | `pgrep -fa 'bridge/server.ts'` (Bun process, no systemd unit) |
 
 ## File-shape conventions
 
