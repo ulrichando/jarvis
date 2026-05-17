@@ -1,0 +1,17 @@
+[Unit]
+Description=JARVIS — hourly local snapshot trigger
+Documentation=file:%h/Documents/Projects/jarvis/scripts/jarvis-backup-local.sh
+
+[Timer]
+# Hourly snapshot, on the hour. Persistent=true catches up after the
+# laptop returns from suspend/sleep — without it, an overnight close
+# means no backup ran for the lid-closed window.
+OnCalendar=hourly
+Persistent=true
+# Smear by up to 5 minutes so we don't co-fire with other on-the-hour
+# user timers (log-rotate, retention-prune).
+RandomizedDelaySec=300s
+Unit=jarvis-backup-local.service
+
+[Install]
+WantedBy=timers.target
