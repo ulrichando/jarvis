@@ -70,7 +70,17 @@ import os as _os
 _VALIDATOR_ENABLED = bool(_os.environ.get("GROQ_API_KEY"))
 _CODE_REVIEWER_ENABLED = bool(_os.environ.get("GROQ_API_KEY"))
 from pathlib import Path as _Path
-_MEMORY_RECALL_ENABLED = (_Path.home() / ".jarvis" / "conversations.db").exists()
+# Memory_recall's real enable gate (subagents/memory_recall.py:62-69):
+# tools.memory_recall.is_available() (state.db existence — hub-owned
+# post-2026-05-03 Phase 12) AND env var JARVIS_SUBAGENT_MEMORY_RECALL=1.
+# Pre-2026-05-17 this test used conversations.db.exists() as proxy,
+# but that DB is retired (deleted 2026-05-17 per enterprise plan
+# §P0-DATA-9). Now check the actual gate.
+_STATE_DB_EXISTS = (_Path.home() / ".jarvis" / "hub" / "state.db").exists()
+_MEMORY_RECALL_ENABLED = (
+    _STATE_DB_EXISTS
+    and _os.environ.get("JARVIS_SUBAGENT_MEMORY_RECALL", "0") == "1"
+)
 import shutil as _shutil
 _GITHUB_ENABLED = bool(_shutil.which("gh")) and (
     _Path.home() / ".config" / "gh" / "hosts.yml"
