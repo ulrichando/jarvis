@@ -57,11 +57,19 @@ class CircuitBreaker:
         fail_threshold: int = 3,
         cooldown_s: float = 20.0,
         timeout_s: float = 8.0,
+        non_failure_classifier: Optional[Callable[[BaseException], bool]] = None,
     ) -> None:
+        """`non_failure_classifier` returns True for exceptions that
+        should NOT count toward the failure threshold (rate-limit 429s,
+        validation errors, credit-exhausted 401s — these are upstream
+        states that won't be improved by tripping the breaker; the
+        FallbackAdapter cascade should rotate to a different provider
+        instead). Default: None = every exception counts (legacy)."""
         self.name = name
         self.fail_threshold = fail_threshold
         self.cooldown_s = cooldown_s
         self.timeout_s = timeout_s
+        self.non_failure_classifier = non_failure_classifier
         self.state: str = STATE_CLOSED
         self.failures: int = 0
         self.opened_at: float = 0.0
@@ -87,8 +95,21 @@ class CircuitBreaker:
             )
             self._reset()
             return result
-        except Exception:
-            self._record_failure()
+        except Exception as exc:
+            # Allow upstream "expected" errors (rate-limit 429, validation,
+            # credit-exhausted 401) to flow through without counting
+            # toward the failure threshold. FallbackAdapter rotates the
+            # provider on these; tripping the breaker would only block
+            # recovery. A classifier crash falls back to the conservative
+            # legacy path (count as failure).
+            skip_failure = False
+            if self.non_failure_classifier is not None:
+                try:
+                    skip_failure = bool(self.non_failure_classifier(exc))
+                except Exception:
+                    skip_failure = False
+            if not skip_failure:
+                self._record_failure()
             raise
 
     def _record_failure(self) -> None:
