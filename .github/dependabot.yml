@@ -1,0 +1,57 @@
+# Dependabot configuration — security-only mode.
+#
+# Background: version-update PRs were noisy enough that the original
+# config was deleted 2026-05-15 (commit 9bbb1285). Re-enabling here in
+# SECURITY-ONLY mode: GitHub still opens PRs for known CVE fixes, but
+# never for "new minor version available" noise.
+#
+# Per the 2026-05-17 enterprise plan §P0-DEP-3: not having ANY
+# automated dep refresh on a 4-tree polyglot repo with 4 active CVEs
+# (axios 1.15.0, marked 18.0.0, next 16.2.4, otel exporter) is the
+# wrong default. `open-pull-requests-limit: 0` blocks version-update
+# PRs; GitHub Security Updates remain ON per the repo's security
+# settings (Settings → Code security → Dependabot security updates).
+
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/src/voice-agent"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0   # security-only
+
+  - package-ecosystem: "npm"
+    directory: "/src/web"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0   # security-only
+
+  - package-ecosystem: "npm"
+    directory: "/src/cli"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0   # security-only
+
+  - package-ecosystem: "npm"
+    directory: "/src/hub"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0   # security-only
+
+  - package-ecosystem: "npm"
+    directory: "/src/extensions/jarvis-screen"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0   # security-only
+
+  - package-ecosystem: "cargo"
+    directory: "/src/desktop-tauri/src-tauri"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0   # security-only
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0   # security-only
