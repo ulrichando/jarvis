@@ -76,6 +76,43 @@ export JARVIS_LOCAL_API_TOKEN
 export JARVIS_REQUIRE_LOCAL_AUTH=1
 echo "[jarvis] bridge auth ENABLED (JARVIS_REQUIRE_LOCAL_AUTH=1)"
 
+# ── Idempotent unit-file sync (added 2026-05-17) ──────────────────────
+# Auto-deploy any setup/systemd/*.service or *.timer changes on every
+# launch. Without this, hub sandbox tweaks / timer-unit changes ship
+# in git but never reach systemd until the user re-runs install.sh.
+# Pattern: diff repo template vs installed unit; if different, cp +
+# daemon-reload. Already-running services are NOT restarted (those
+# stay live with their old definition until the user explicitly
+# restarts them — see CLAUDE.md operational rule on voice-agent).
+USER_SYSTEMD="$HOME/.config/systemd/user"
+SETUP_SYSTEMD="$PROJECT_ROOT/setup/systemd"
+if [ -d "$SETUP_SYSTEMD" ] && [ -d "$USER_SYSTEMD" ]; then
+  changed=0
+  for src in "$SETUP_SYSTEMD"/*.service "$SETUP_SYSTEMD"/*.timer; do
+    [ -f "$src" ] || continue
+    name="$(basename "$src")"
+    dst="$USER_SYSTEMD/$name"
+    if [ ! -f "$dst" ] || ! cmp -s "$src" "$dst"; then
+      # Run the same sed-path-subs install.sh does. Inline since
+      # this script can't source install.sh's functions.
+      sed -e "s|%h/Documents/Projects/jarvis|$PROJECT_ROOT|g" \
+          -e "s|/home/[^/]*/Documents/Projects/jarvis|$PROJECT_ROOT|g" \
+          -e "s|/home/[^/]*/jarvis|$PROJECT_ROOT|g" \
+          "$src" > "$dst" && echo "[jarvis] unit updated: $name" && changed=1
+    fi
+  done
+  if [ "$changed" = "1" ]; then
+    systemctl --user daemon-reload && echo "[jarvis] systemd daemon reloaded"
+    # Enable any newly-shipped timer units (idempotent).
+    for unit in jarvis-backup-local.timer jarvis-log-rotate.timer jarvis-retention-prune.timer; do
+      if [ -f "$USER_SYSTEMD/$unit" ] && ! systemctl --user is-enabled "$unit" >/dev/null 2>&1; then
+        systemctl --user enable --now "$unit" >/dev/null 2>&1 \
+          && echo "[jarvis] enabled $unit"
+      fi
+    done
+  fi
+fi
+
 # ── Kill stale processes ──────────────────────────────────────────────
 pkill -f "bun.*proxy/server.ts" 2>/dev/null || true
 pkill -f "bun.*bridge/server.ts" 2>/dev/null || true
