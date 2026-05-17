@@ -1,0 +1,15 @@
+[Unit]
+Description=JARVIS — daily log-rotation trigger
+Documentation=file:%h/Documents/Projects/jarvis/scripts/rotate-jarvis-logs.sh
+
+[Timer]
+# Daily at 02:00 local time. Persistent=true catches up after laptop
+# was off through 02:00. CLAUDE.md claimed this timer existed but it
+# was never on disk — voice-agent.log grew to 55 MB before this commit.
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+RandomizedDelaySec=600s
+Unit=jarvis-log-rotate.service
+
+[Install]
+WantedBy=timers.target
