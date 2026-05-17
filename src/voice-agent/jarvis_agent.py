@@ -3681,17 +3681,38 @@ def prewarm(proc: JobProcess) -> None:
     # high ambient noise; 0.5 was triggering Whisper STT on background
     # producing hallucinated transcripts. 0.7 was too strict (missed
     # softer speech). 0.6 is the middle ground.
+    #
+    # 2026-05-17: thresholds env-overridable for tuning without code
+    # change. Per CLAUDE.md anti-rec, don't loosen activation below
+    # 0.5 except for live-debug. Set via:
+    #   Environment="JARVIS_VAD_ACTIVATION_THRESHOLD=0.45"
+    #   Environment="JARVIS_VAD_DEACTIVATION_THRESHOLD=0.25"
+    # in ~/.config/systemd/user/jarvis-voice-agent.service.d/override.conf
+    # then `systemctl --user daemon-reload && restart`.
+    # All five Silero VAD params env-overridable as of 2026-05-17.
+    # Defaults: original "moderate room" tuning. Noisy-environment users
+    # should raise activation_threshold + min_silence_duration; quiet
+    # office can leave defaults. See industry guidance: Silero VAD
+    # production tuning recommends per-environment calibration since
+    # one set of numbers can't fit both quiet podcast booths and laptop-
+    # in-a-cafe deployments.
+    _vad_activation = float(os.environ.get("JARVIS_VAD_ACTIVATION_THRESHOLD", "0.6"))
+    _vad_deactivation = float(os.environ.get("JARVIS_VAD_DEACTIVATION_THRESHOLD", "0.3"))
+    _vad_min_speech = float(os.environ.get("JARVIS_VAD_MIN_SPEECH_S", "0.1"))
+    _vad_min_silence = float(os.environ.get("JARVIS_VAD_MIN_SILENCE_S", "0.4"))
+    _vad_prefix_pad = float(os.environ.get("JARVIS_VAD_PREFIX_PAD_S", "0.6"))
     proc.userdata["vad"] = silero.VAD.load(
-        activation_threshold=0.6,
-        deactivation_threshold=0.3,
-        min_speech_duration=0.1,
-        min_silence_duration=0.4,
-        prefix_padding_duration=0.6,
+        activation_threshold=_vad_activation,
+        deactivation_threshold=_vad_deactivation,
+        min_speech_duration=_vad_min_speech,
+        min_silence_duration=_vad_min_silence,
+        prefix_padding_duration=_vad_prefix_pad,
     )
     logger.info(
-        "Silero VAD loaded in prewarm "
-        "(activation=0.6, deactivation=0.3, min_speech=0.1, "
-        "min_silence=0.4, prefix_pad=0.6)"
+        f"Silero VAD loaded in prewarm "
+        f"(activation={_vad_activation}, deactivation={_vad_deactivation}, "
+        f"min_speech={_vad_min_speech}, min_silence={_vad_min_silence}, "
+        f"prefix_pad={_vad_prefix_pad})"
     )
     _spawn_worker_heartbeat()
 
