@@ -219,8 +219,22 @@ class LoopWatchdog:
                 pass
 
     def _check_stale_stt(self, db_path: Path) -> None:
-        """Fire once if the STT connection appears dead; schedule a
-        restart."""
+        """Detect a possibly-dead Groq STT connection. Logs a warning;
+        optionally restarts the agent (opt-in via env, default OFF as
+        of 2026-05-17).
+
+        Background: this watchdog was originally an auto-restart in
+        response to repeated dead-Groq-socket failures. In practice it
+        fires false-positives whenever the user makes a non-STT-producing
+        utterance (cough, throat-clear, sub-VAD-threshold speech,
+        garbage-gated transcript) — voice was detected (RMS > listening
+        threshold) but no turn lands → mtime stale → restart agent →
+        kills active conversation state. The cure was worse than the
+        disease.
+
+        New default behavior: log a warning but DON'T restart. Set
+        JARVIS_STALE_STT_AUTO_RESTART=1 to restore the old auto-restart
+        behavior if the dead-socket problem returns."""
         if self._last_voice_active_ts == 0.0:
             return  # no voice activity this session yet
         now = time.time()
@@ -246,16 +260,21 @@ class LoopWatchdog:
             return
         if db_mtime >= self._last_voice_active_ts:
             return  # DB was updated — turn landed, all good
-        # Voice ended but no DB update — STT is dead.
+        # Voice ended but no DB update — could be stale STT, OR could
+        # be a garbage-gated / sub-threshold utterance.
+        import os as _os
+        auto_restart = _os.environ.get("JARVIS_STALE_STT_AUTO_RESTART", "0") == "1"
+        action = "restarting agent" if auto_restart else "NOT auto-restarting (JARVIS_STALE_STT_AUTO_RESTART=0)"
         self.log.warning(
             f"[turn-watchdog] voice active {voice_age:.0f}s ago, "
             f"DB last updated {now - db_mtime:.0f}s ago — "
-            "Groq STT connection appears dead, restarting agent"
+            f"could be dead Groq STT OR garbage-gated turn; {action}"
         )
-        # Clear the timestamp so the check doesn't re-fire while the
-        # restart is in progress (takes ~5 s before this process exits).
+        # Clear the timestamp so the check doesn't re-fire repeatedly
+        # on the same stuck condition.
         self._last_voice_active_ts = 0.0
-        asyncio.create_task(self.restart_agent_unit(), name="stale-stt-restart")
+        if auto_restart:
+            asyncio.create_task(self.restart_agent_unit(), name="stale-stt-restart")
 
     # ── OS-thread watchdog (loop wedge detection) ──────────────────
 
