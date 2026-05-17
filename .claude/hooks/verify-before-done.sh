@@ -72,8 +72,13 @@ if [[ -n "${SUITES[voice-agent]:-}" ]]; then
     test -x src/voice-agent/.venv/bin/python
 fi
 if [[ -n "${SUITES[desktop-tauri]:-}" ]]; then
+  # `npm run build` alone produces dist/ but does NOT re-embed it into
+  # the Rust binary. The .claude/rules/desktop-tauri.md rule says both
+  # steps are required to ship JS changes. `cargo check --release`
+  # catches cfg drift, Rust-side syntax errors, and the embed step's
+  # codegen, in ~30s incrementally without the full link cost.
   run_suite "desktop-tauri" \
-    "cd src/desktop-tauri && npm run build" \
+    "cd src/desktop-tauri && npm run build && cd src-tauri && cargo check --release" \
     test -d src/desktop-tauri/node_modules
 fi
 if [[ -n "${SUITES[web]:-}" ]]; then
