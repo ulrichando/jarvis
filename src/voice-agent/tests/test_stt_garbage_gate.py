@@ -121,3 +121,43 @@ def test_repeated_must_be_two_or_more_words():
 def test_two_distinct_short_words_pass():
     """'ok then' is NOT a filler stutter."""
     assert _is_garbage_transcript("ok then")[0] is False
+
+
+# ── non-Latin script gate (added 2026-05-16 per global review §P0-1) ──
+# Whisper transcribes background TV in the foreign language's native
+# script. JARVIS is English-only; short non-Latin fragments are
+# bleed-through, not real input.
+
+
+@pytest.mark.parametrize("text", [
+    "再見",           # Hanzi
+    "クリノイズアイマ",  # Kana
+    "Добрый день",    # Cyrillic, 11 chars
+    "Hajdu",           # Latin-script Hungarian — should NOT trip (passes)
+    "안녕하세요",       # Hangul
+])
+def test_non_latin_short_fragments(text):
+    """Short non-Latin scripts are dropped; short Latin-script names pass."""
+    is_garbage, reason = _is_garbage_transcript(text)
+    if any(not ("a" <= c.lower() <= "z") and c.isalpha() for c in text):
+        assert is_garbage, f"{text!r} should drop as non-latin-fragment; got {reason!r}"
+        assert reason.startswith("non-latin"), f"got reason {reason!r}"
+    else:
+        assert not is_garbage, f"Latin-only {text!r} must pass; got {reason!r}"
+
+
+def test_long_non_latin_passes_to_supervisor():
+    """A user genuinely speaking 50+ chars of another language should
+    reach the supervisor — the gate is a SHORT-fragment safety net,
+    not a language detector. Per global review §P0-1, threshold is
+    12 chars: anything longer is the user's responsibility."""
+    long_japanese = "今日は天気がいいですね、散歩に行きませんか"
+    is_garbage, _ = _is_garbage_transcript(long_japanese)
+    assert not is_garbage, "long foreign-language input shouldn't trip the short-fragment gate"
+
+
+def test_mixed_script_passes():
+    """'iPhone is 漂亮' (Latin majority, one Hanzi) must pass — the
+    50% threshold gates pure foreign-script fragments only."""
+    is_garbage, reason = _is_garbage_transcript("iPhone is OK")
+    assert not is_garbage, f"mixed-script ASCII shouldn't drop; got {reason!r}"
