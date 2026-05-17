@@ -31,7 +31,15 @@ import {
 } from "./lib/docker.mjs";
 
 const PORT = Number(process.env.JARVIS_PTY_PORT ?? 8769);
-const HOST = process.env.JARVIS_PTY_HOST ?? "0.0.0.0";
+// Bind 127.0.0.1 by default — pre-2026-05-17 this defaulted to
+// 0.0.0.0 which exposed an unauthenticated PTY shell to every device
+// on the LAN. Anyone on the WiFi could `wscat ws://192.168.x.x:8769/pty`
+// and get a `$SHELL` session as the local user (no auth, no allowlist).
+// The next.js app itself binds 127.0.0.1 in package.json scripts; this
+// matches that posture. Set JARVIS_PTY_HOST explicitly to override for
+// LAN-accessible workbench deployments — and add auth before doing so.
+// Per enterprise plan §P0-SEC-5.
+const HOST = process.env.JARVIS_PTY_HOST ?? "127.0.0.1";
 const WORKSPACES_ROOT =
   process.env.JARVIS_WORKSPACES_ROOT ??
   path.join(os.homedir(), ".jarvis", "workspaces");
