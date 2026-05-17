@@ -29,12 +29,6 @@ sdnotify~=0.3
 # process event bus actually work. Pairs with redis-server.service.
 redis~=5.0
 
-# Convex client used for the conversations.db mirror. Mirror is best-
-# effort: if the package is missing or the backend is unreachable, the
-# agent logs a warning and continues SQLite-only. See _get_convex_client
-# in jarvis_agent.py.
-convex~=0.7
-
 # Vision backend has THREE paths:
 #   1. Ollama (local, qwen2.5vl:3b) — no extra package.
 #   2. Gemini (Google Generative Language) — primary cloud path.
