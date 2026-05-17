@@ -36,9 +36,13 @@ def test_vad_prewarm_uses_production_thresholds():
     """prewarm() must call silero.VAD.load with the asymmetric +
     tuned-padding production config — not silero defaults. Single-knob
     tuning was a regression (let too much room tone through to
-    Whisper). The 2026-05-04 production config:
-      activation=0.5  (strict to OPEN)
-      deactivation=0.25  (loose to STAY OPEN — hysteresis)
+    Whisper). The 2026-05-04 production config was 0.5/0.25; bumped on
+    2026-05-16 to 0.6/0.3 after the user's mic at 150% gain caused
+    ambient-noise hallucinations (Russian/Japanese/Serbian transcripts
+    on background TV). Anti-recommendation in CLAUDE.md: do NOT loosen
+    activation below 0.5 — earlier failure history.
+      activation=0.6  (strict to OPEN, bumped from 0.5)
+      deactivation=0.3  (loose to STAY OPEN — hysteresis, bumped from 0.25)
       min_speech=0.1  (filter single-frame transients)
       min_silence=0.4  (snappy turn close)
       prefix_padding=0.6  (catch leading audio when VAD fires late)
@@ -60,8 +64,8 @@ def test_vad_prewarm_uses_production_thresholds():
         jarvis_agent.prewarm(proc)
 
     assert captured_kwargs == {
-        "activation_threshold": 0.5,
-        "deactivation_threshold": 0.25,
+        "activation_threshold": 0.6,
+        "deactivation_threshold": 0.3,
         "min_speech_duration": 0.1,
         "min_silence_duration": 0.4,
         "prefix_padding_duration": 0.6,
