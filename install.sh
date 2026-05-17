@@ -430,7 +430,11 @@ KIMI_API_KEY=
 # LANGCHAIN_API_KEY=
 # LANGCHAIN_PROJECT=jarvis
 EOF
-  ok "created $INSTALL_DIR/.env (fill in your real keys before starting the voice agent)"
+  # Lock the file to 0600 so other local users / containers / web pages
+  # can't read the API keys. (Per security review 2026-05-16: previously
+  # 0664; 22 prod API keys exposed.)
+  chmod 600 "$INSTALL_DIR/.env"
+  ok "created $INSTALL_DIR/.env (chmod 600 — fill in your real keys before starting the voice agent)"
 }
 
 # ── Chrome extension instructions ────────────────────────────────────────
