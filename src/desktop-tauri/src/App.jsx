@@ -211,12 +211,13 @@ export default function App() {
   // booting > thinking > idle. Booting (purple) and thinking (amber)
   // are distinct states so the tray colour conveys what JARVIS is
   // doing without needing the floating pill (removed 2026-04-30).
-  // We check `speech.connected` (voice-client :8767 HTTP) AND wsStatus
-  // (Python bridge :8765 WS) so either process being down trips the
-  // offline state.
+  // We use `speech.connected` (voice-client :8767 HTTP) as the offline
+  // signal. The Python bridge on :8765 is optional infrastructure (used
+  // by the Chrome extension / chat panel) — its absence shouldn't make
+  // the voice indicator red since voice works fine without it.
   useEffect(() => {
     let next = 'idle'
-    if (wsStatus === 'disconnected' || !speech.connected) next = 'offline'
+    if (!speech.connected) next = 'offline'
     else if (voiceMuted)                   next = 'muted'
     else if (speech.silentMode)            next = 'muted'
     else if (speech.speaking)             next = 'talking'
@@ -225,7 +226,7 @@ export default function App() {
     else if (speech.processing)          next = 'thinking'
     else                                  next = 'idle'
     pushTrayState(next, !!speech.sharingScreen)
-  }, [wsStatus, voiceMuted, speech.connected, speech.speaking, speech.voiceActive, speech.silentMode, speech.booting, speech.processing, speech.sharingScreen, pushTrayState])
+  }, [voiceMuted, speech.connected, speech.speaking, speech.voiceActive, speech.silentMode, speech.booting, speech.processing, speech.sharingScreen, pushTrayState])
 
   // ── Tray menu label sync ────────────────────────────────────────────
   // Pushes the active CLI / speech / TTS model IDs into the three
