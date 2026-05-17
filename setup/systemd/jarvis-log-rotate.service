@@ -5,6 +5,11 @@ After=network.target
 
 [Service]
 Type=oneshot
+# Pre-create the logs dir (defense-in-depth — install.sh handles
+# this too, but a deleted dir shouldn't kill the next rotation
+# cycle with status=226/NAMESPACE — sandbox refuses to bind-mount
+# non-existent ReadWritePaths).
+ExecStartPre=/bin/mkdir -p %h/.local/share/jarvis/logs
 ExecStart=%h/Documents/Projects/jarvis/scripts/rotate-jarvis-logs.sh
 
 # Rotation script touches files in ~/.local/share/jarvis/logs/ only.
