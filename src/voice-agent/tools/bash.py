@@ -7,8 +7,13 @@ shell commands. Voice supervisor calls bash() directly; result returns in
 Description text + usage rules ported from claude-code's BashTool/prompt.ts
 so the model gets the same coaching it would get in claude-code. Voice
 nuances:
-  - JARVIS runs as `ulrich` with full sudo NOPASSWD (per /etc/sudoers.d/jarvis).
-    No sandboxing, no permission prompts — voice has no UI to prompt with.
+  - JARVIS runs as `ulrich`. **As of 2026-05-16, there is NO sudoers
+    NOPASSWD entry** (earlier docs claimed otherwise; live `sudo -n` test
+    confirmed it requires a password). Commands that need sudo fail fast
+    with "a password is required" — this is a feature, not a bug. No
+    sandboxing of $HOME-scoped operations; voice has no UI to prompt
+    with, so destructive commands are detected via _DESTRUCTIVE_PATTERNS
+    and surfaced as a warning in the result text (not blocked).
   - Output is truncated for voice TTS sanity (30 KB hard cap).
   - Destructive-command detection routes the warning into the supervisor's
     chat_ctx instead of throwing — the supervisor prompt's PUSH BACK
