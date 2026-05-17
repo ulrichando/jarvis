@@ -170,7 +170,11 @@ def install() -> None:
 
     inf_llm.LLMStream._parse_choice = patched
     inf_llm.LLMStream._jarvis_output_language_patched = True
-    logger.info(
-        "output-language sanitizer installed "
+    # print() not logger.info() — install runs at module-load before
+    # the agents framework wires up its structlog formatter, so
+    # logger.info messages here would vanish. Matches the DSML +
+    # Pycall sanitizers' visibility pattern.
+    print(
+        f"Output-language sanitizer installed "
         f"(threshold={_NON_LATIN_THRESHOLD:.2f}, min_len={_MIN_BUFFER_LEN})"
     )
