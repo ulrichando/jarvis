@@ -396,11 +396,62 @@ You: task_done("'hello world' typed in Twitter compose. Confirm post?")
 
 
 def _browser_tools() -> list:
-    """Lazy import of the 25 ext_* @function_tools. Done at subagent-
-    construction time so tools.browser_ext.py only loads if the user
-    actually triggers a browser handoff (saves startup memory)."""
-    from tools.browser_ext import ALL_TOOLS
-    return list(ALL_TOOLS)
+    """Pick the tool surface based on extension connectivity.
+
+    Router (added 2026-05-17 per docs/superpowers/specs/2026-05-17-
+    browser-cdp-fallback-design.md):
+      - Extension connected to bridge → return ALL_TOOLS from
+        tools.browser_ext (38 actions on the user's real Chrome).
+      - Extension NOT connected → return CDP_TOOLS from
+        tools.browser_cdp (10 actions on a bundled Chromium driven
+        via Playwright — gives JARVIS an "always works" browser even
+        if the extension is broken / crashed / not loaded).
+
+    The probe is a sync HTTP call to /api/ext_status with a 1s timeout.
+    Bridge is local (127.0.0.1:8765), so the probe budget is tens of
+    milliseconds in practice. If the bridge itself is unreachable we
+    treat that as "extension not connected" and fall back to CDP.
+
+    Tools surface is identical-named in both modules — the supervisor
+    sees `ext_navigate / ext_click / ...` either way, so a single
+    prompt covers both backends.
+
+    Opt-out: JARVIS_BROWSER_DISABLE_CDP_FALLBACK=1 forces the extension
+    surface even when not connected (subagent will then bail with the
+    extension's existing "not connected" error path).
+    """
+    import os
+    if _is_extension_connected_sync() or \
+       os.environ.get("JARVIS_BROWSER_DISABLE_CDP_FALLBACK") == "1":
+        from tools.browser_ext import ALL_TOOLS
+        logger.info("[browser] router → extension backend (ALL_TOOLS)")
+        return list(ALL_TOOLS)
+    from tools.browser_cdp import CDP_TOOLS
+    logger.info("[browser] router → CDP backend (CDP_TOOLS)")
+    return list(CDP_TOOLS)
+
+
+def _is_extension_connected_sync() -> bool:
+    """Synchronous probe of /api/ext_status. Returns False on any
+    error (timeout, bridge down, bad JSON). Used by `_browser_tools()`
+    which is called sync from the registry construction path.
+
+    Mirrors the async `_bridge_ext_connected()` defined later in this
+    file — kept separate so we don't drag aiohttp into the sync path.
+    """
+    import json
+    import urllib.error
+    import urllib.request
+    try:
+        with urllib.request.urlopen(
+            f"{_BRIDGE_URL}/api/ext_status", timeout=1.0
+        ) as resp:
+            if resp.status != 200:
+                return False
+            data = json.loads(resp.read().decode("utf-8"))
+            return bool(data.get("connected"))
+    except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+        return False
 
 
 _BROWSER_WHEN = (
