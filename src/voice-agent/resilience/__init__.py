@@ -27,7 +27,53 @@ Now that the providers are moving to their own modules (Step 5/6 of
 the 10/10 refactor), the breakers must be importable from a stable
 location to avoid circular imports.
 """
+from __future__ import annotations
+
 from resilience.circuit_breaker import CircuitBreaker
+
+
+def _is_expected_provider_error(exc: BaseException) -> bool:
+    """Return True for upstream "expected" errors that should NOT count
+    toward the breaker's failure threshold. The FallbackAdapter rotates
+    providers on these; tripping the breaker only blocks recovery.
+
+    Recognized signals (matched against the full __cause__ / __context__
+    chain since livekit-agents wraps everything as APIConnectionError):
+
+      - Groq rate-limit-exceeded 429 ("Rate limit reached for ... TPM")
+      - Validation errors from upstream tool-call malformation
+        ("failed to call a function", "tool call validation failed")
+      - Anthropic credit_exhausted / Anthropic auth 401 fragments
+
+    Walks the exception chain so wrapped errors are still matched.
+    Added 2026-05-16 per global review §P0-16 + audio review §P0;
+    promotes the inline validation-error revert from BreakeredLLMStream
+    into a single source of truth.
+    """
+    msgs: list[str] = []
+    cur: BaseException | None = exc
+    seen: set[int] = set()
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        msgs.append(str(cur).lower())
+        cur = cur.__cause__ or cur.__context__
+    blob = " | ".join(msgs)
+    return any(s in blob for s in (
+        # Validation errors — LLM emitted a malformed tool call. The
+        # tool_name_sanitizer / downstream recovery handle the malform.
+        "failed to call a function",
+        "tool call validation failed",
+        "failed_generation",
+        "please adjust your prompt",
+        # Rate-limit / quota — provider-side, will recover on its own.
+        "rate_limit_exceeded",
+        "rate limit reached",
+        "tokens per min",
+        "requests per min",
+        "credit_exhausted",
+        "insufficient_quota",
+    ))
+
 
 # Per-upstream circuit breakers. A DNS / API blip on one upstream
 # (e.g. STT) no longer drags TTS + LLM down with a 30-s timeout each.
@@ -43,6 +89,9 @@ from resilience.circuit_breaker import CircuitBreaker
 #   - LLM: fail_threshold=2, cooldown_s=30, timeout_s=12. LLM stalls
 #     are more expensive (each timeout costs the user 12 s of silence)
 #     so the threshold is tighter.
-STT_BREAKER = CircuitBreaker("stt", fail_threshold=3, cooldown_s=20, timeout_s=8)
-TTS_BREAKER = CircuitBreaker("tts", fail_threshold=3, cooldown_s=20, timeout_s=8)
-LLM_BREAKER = CircuitBreaker("llm", fail_threshold=2, cooldown_s=30, timeout_s=12)
+#   - 2026-05-16: all three now classify rate-limit + validation errors
+#     as non-failures so a single 429 doesn't open the breaker for 30s.
+_BREAKER_KW = dict(non_failure_classifier=_is_expected_provider_error)
+STT_BREAKER = CircuitBreaker("stt", fail_threshold=3, cooldown_s=20, timeout_s=8, **_BREAKER_KW)
+TTS_BREAKER = CircuitBreaker("tts", fail_threshold=3, cooldown_s=20, timeout_s=8, **_BREAKER_KW)
+LLM_BREAKER = CircuitBreaker("llm", fail_threshold=2, cooldown_s=30, timeout_s=12, **_BREAKER_KW)
