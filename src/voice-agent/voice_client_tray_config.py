@@ -46,16 +46,6 @@ __all__ = [
     "SPEECH_MODELS_AVAILABLE",
     "TTS_PROVIDER_FILE",
     "TTS_PROVIDERS_AVAILABLE",
-    # Voice mode (text vs OpenAI Realtime API) — 2026-05-15
-    "VOICE_MODE_FILE",
-    "DEFAULT_VOICE_MODE",
-    "VOICE_MODES_AVAILABLE",
-    "REALTIME_MODEL_FILE",
-    "DEFAULT_REALTIME_MODEL",
-    "REALTIME_MODELS_AVAILABLE",
-    "REALTIME_VOICE_FILE",
-    "DEFAULT_REALTIME_VOICE",
-    "REALTIME_VOICES_AVAILABLE",
     # State flag files
     "TOOL_BUSY_FILE",
     "SILENT_MODE_FILE",
@@ -66,9 +56,6 @@ __all__ = [
     "ensure_tts_provider_file",
     "read_speech_model",
     "read_cli_model",
-    "read_voice_mode",
-    "read_realtime_model",
-    "read_realtime_voice",
     "agent_is_thinking",
 ]
 
@@ -188,43 +175,6 @@ def ensure_tts_provider_file() -> None:
         TTS_PROVIDER_FILE.write_text(default_tts_provider() + "\n", encoding="utf-8")
 
 
-# ── Voice mode: text-LLM chain vs OpenAI Realtime API ──────────────
-# `text` is the historic JARVIS path (separate STT + supervisor LLM
-# + Orpheus TTS, configurable via SPEECH_MODEL_FILE above). `realtime`
-# swaps all three for a single OpenAI RealtimeModel — voice generated
-# natively by the model, sub-second latency, native interruption. The
-# tray writes this file; jarvis_agent reads it on session start and
-# forks the AgentSession build accordingly. Switch ALWAYS requires
-# an agent restart since the session topology changes.
-# Default = `text` so a key-less / cost-cautious install stays on the
-# cheap path. Flip via tray or `echo realtime > ~/.jarvis/voice-mode`.
-VOICE_MODE_FILE: Path        = Path.home() / ".jarvis" / "voice-mode"
-DEFAULT_VOICE_MODE: str      = "text"
-VOICE_MODES_AVAILABLE: tuple[str, ...] = ("text", "realtime")
-
-# Realtime API model picker — only meaningful when VOICE_MODE_FILE is
-# `realtime`. Both Chat-Completions-only IDs (gpt-5-pro / gpt-5-codex)
-# are EXCLUDED here too — they're Responses-only and don't have a
-# Realtime endpoint. The two listed have parity feature sets; mini is
-# ~3× cheaper, full is ~25% better at long-form reasoning.
-REALTIME_MODEL_FILE: Path    = Path.home() / ".jarvis" / "realtime-model"
-DEFAULT_REALTIME_MODEL: str  = "gpt-realtime-mini"
-REALTIME_MODELS_AVAILABLE: tuple[str, ...] = (
-    "gpt-realtime",
-    "gpt-realtime-mini",
-)
-
-# Realtime voice picker (OpenAI's built-in voices for the Realtime API).
-# Default `marin` matches the lk_openai plugin's default. All 9 voices
-# work without account-tier gating.
-REALTIME_VOICE_FILE: Path    = Path.home() / ".jarvis" / "realtime-voice"
-DEFAULT_REALTIME_VOICE: str  = "marin"
-REALTIME_VOICES_AVAILABLE: tuple[str, ...] = (
-    "marin", "alloy", "ash", "ballad", "coral", "echo",
-    "sage", "shimmer", "verse",
-)
-
-
 # ── State flag files (set/cleared by jarvis_agent) ──────────────────
 # Same paths as jarvis_agent.py's `_TOOL_BUSY_FILE` etc. — written
 # when a tool starts, deleted when it ends. Voice-client polls
@@ -261,52 +211,6 @@ def read_speech_model() -> str:
     except Exception as e:
         logger.warning(f"could not read {SPEECH_MODEL_FILE}: {e}")
     return DEFAULT_SPEECH_MODEL
-
-
-def read_voice_mode() -> str:
-    """Read the active voice mode (`text` or `realtime`) from the
-    tray file. Falls back to the safe default (`text`) if missing
-    or unrecognized — so a fresh install never accidentally lands on
-    the 10×-more-expensive Realtime path."""
-    try:
-        name = VOICE_MODE_FILE.read_text(encoding="utf-8").strip()
-        if name in VOICE_MODES_AVAILABLE:
-            return name
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        logger.warning(f"could not read {VOICE_MODE_FILE}: {e}")
-    return DEFAULT_VOICE_MODE
-
-
-def read_realtime_model() -> str:
-    """Read the chosen OpenAI Realtime model. Only meaningful when
-    `read_voice_mode() == "realtime"`; otherwise jarvis_agent ignores
-    it and uses the text-mode supervisor model instead."""
-    try:
-        name = REALTIME_MODEL_FILE.read_text(encoding="utf-8").strip()
-        if name in REALTIME_MODELS_AVAILABLE:
-            return name
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        logger.warning(f"could not read {REALTIME_MODEL_FILE}: {e}")
-    return DEFAULT_REALTIME_MODEL
-
-
-def read_realtime_voice() -> str:
-    """Read the chosen OpenAI Realtime voice. Only meaningful when
-    `read_voice_mode() == "realtime"`; otherwise the text-mode TTS
-    provider (TTS_PROVIDER_FILE) decides the voice."""
-    try:
-        name = REALTIME_VOICE_FILE.read_text(encoding="utf-8").strip()
-        if name in REALTIME_VOICES_AVAILABLE:
-            return name
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        logger.warning(f"could not read {REALTIME_VOICE_FILE}: {e}")
-    return DEFAULT_REALTIME_VOICE
 
 
 def read_cli_model() -> str:
