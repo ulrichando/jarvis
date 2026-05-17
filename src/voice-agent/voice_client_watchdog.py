@@ -15,7 +15,7 @@ Three layered detectors keep the voice-client process resilient:
 
   3. **Stale-STT watchdog** — detects a dead Groq STT connection
      (TCP CLOSE-WAIT): voice activity was recent, but
-     `conversations.db` hasn't been updated since the voice ended.
+     `turn_telemetry.db` hasn't been updated since the voice ended.
      Restarts the agent unit to drop the dead socket.
 
 State is encapsulated in the `LoopWatchdog` class so the watchdog
@@ -191,19 +191,23 @@ class LoopWatchdog:
         enters CLOSE-WAIT — the agent appears healthy (connected,
         agent_present) but audio frames go into a dead socket and STT
         transcripts never arrive. Symptom: user speaks, VAD fires
-        (listening=True), but no turn lands in conversations.db and
+        (listening=True), but no turn lands in turn_telemetry.db and
         JARVIS stays silent forever.
 
-        Detection: if voice was active recently but conversations.db
+        Detection: if voice was active recently but turn_telemetry.db
         hasn't been updated since before the voice ended, the STT
         pipeline is stuck. We restart both jarvis-voice-agent (drops
         the dead socket) and jarvis-voice-client (forces a fresh
-        LiveKit room + job dispatch)."""
+        LiveKit room + job dispatch).
+
+        Updated 2026-05-17 per enterprise plan §P0-DATA-9:
+        conversations.db retired Phase 12; turn_telemetry.db is the
+        live per-turn-write signal."""
         # Wait past the first STALE_STT_SEC window before starting
         # checks so a fresh startup doesn't false-fire before the
         # first turn.
         await asyncio.sleep(STALE_STT_SEC + 30)
-        db_path = Path.home() / ".jarvis" / "conversations.db"
+        db_path = Path.home() / ".local" / "share" / "jarvis" / "turn_telemetry.db"
         while not shutdown.is_set():
             try:
                 self._check_stale_stt(db_path)
@@ -234,8 +238,8 @@ class LoopWatchdog:
             or self.state.tool_running or self.state.agent_thinking
         ):
             return
-        # Check whether conversations.db was updated after the voice
-        # ended.
+        # Check whether turn_telemetry.db was updated after the voice
+        # ended (per-turn-write file; mtime advances with every log_turn).
         try:
             db_mtime = db_path.stat().st_mtime
         except FileNotFoundError:
