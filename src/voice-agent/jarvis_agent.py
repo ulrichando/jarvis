@@ -1634,19 +1634,11 @@ async def media_control(action: str, player: str = "spotify") -> str:
         return out or f"({player} has no metadata)"
     return f"{action} sent to {player}"
 #
-# Voice turns are written to ~/.jarvis/conversations.db — the same
-# SQLite file the bridge's storage.ts writes typed-chat turns to.
-# Lets the web UI's conversation sidebar, the CLI's semantic recall,
-# and the chat history all see voice moments.
-#
-# Schema (maintained by the bridge, we only INSERT):
-#   turns(id INT PK, session_id TEXT, ts INT UNIX, role TEXT, text TEXT)
-#
-# Concurrency: both bridge (bun:sqlite) and this process (python
-# sqlite3) open the same file. WAL mode (enabled by the bridge at
-# startup) makes concurrent writers safe as long as each holds the
-# connection briefly — our pattern: open → insert → close.
-CONVO_DB_PATH = Path.home() / ".jarvis" / "conversations.db"
+# Voice persistence path (single source of truth as of Phase 12,
+# 2026-05-03): writes go through HubClient.publish() → Redis stream
+# `events:conversation` → hub daemon → ~/.jarvis/hub/state.db. The
+# old ~/.jarvis/conversations.db direct-write path is removed.
+# CONVO_DB_PATH constant deleted 2026-05-17 per enterprise plan §P0-DATA-9.
 
 # ── Voice persistence path ───────────────────────────────────────────
 # _save_turn() publishes a `conversation.message.created` event via
