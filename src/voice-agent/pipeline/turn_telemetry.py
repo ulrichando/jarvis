@@ -148,6 +148,16 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
         # per-turn memory extractor ran via the auto-extraction path
         # (regex / heuristic), False when it ran via LLM-extraction or
         # wasn't triggered. Lets us compute auto-extraction rate over time.
+        # Anthropic prompt-cache hit count (global review §P0-17). Zero
+        # for providers without caching; non-zero confirms livekit-plugins-
+        # anthropic's `caching="ephemeral"` kwarg is actually firing.
+        if "prompt_cached_tokens" not in cols:
+            try:
+                conn.execute(
+                    "ALTER TABLE turns ADD COLUMN prompt_cached_tokens INTEGER DEFAULT 0"
+                )
+            except sqlite3.OperationalError:
+                pass
         if "memory_auto_extracted" not in cols:
             try:
                 conn.execute(
@@ -179,6 +189,7 @@ def log_turn(
     cost_usd: Optional[float] = None,
     context_pressure: Optional[str] = None,
     memory_auto_extracted: bool = False,
+    prompt_cached_tokens: int = 0,
 ) -> None:
     """Write one row. Any exception is swallowed so telemetry never blocks voice.
 
@@ -202,8 +213,8 @@ def log_turn(
                     voice_used, ttfw_ms, total_audio_ms, user_followup_30s,
                     route_fallback, notes, subagent, interrupted,
                     input_tokens, output_tokens, cost_usd, context_pressure,
-                    memory_auto_extracted)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    memory_auto_extracted, prompt_cached_tokens)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     user_text, jarvis_text, emotion, route, llm_used,
@@ -211,7 +222,7 @@ def log_turn(
                     int(user_followup_30s), int(route_fallback), notes,
                     subagent, int(interrupted),
                     input_tokens, output_tokens, cost_usd, context_pressure,
-                    int(memory_auto_extracted),
+                    int(memory_auto_extracted), int(prompt_cached_tokens),
                 ),
             )
     except Exception:
