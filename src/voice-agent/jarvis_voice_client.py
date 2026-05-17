@@ -143,9 +143,22 @@ if _APM_NS or _APM_AGC or _APM_HPF or _APM_AEC:
 # false when the stream ends. Both halves of the indicator are now
 # local-only signals; no SFU round-trip needed.
 #
+# ARCHITECTURAL TRADE-OFF (global review §P0-20, 2026-05-16):
+# The listening flag is **RMS-driven, not VAD-driven**. The voice-agent
+# runs Silero VAD in a separate process and its activation/deactivation
+# is the ground truth for "is the user speaking right now"; the
+# voice-client doesn't have access to that signal without an IPC hop.
+# Result: ambient noise > LISTENING_RMS_THRESHOLD trips the indicator
+# even when Silero correctly rejects it as non-speech, leading to
+# "stuck cyan" complaints. The Q2 fix is to publish Silero's user-state
+# from the agent over a LiveKit data channel and subscribe here.
+# Until then, the threshold needs to clear typical room-tone RMS for
+# the user's environment — bumped to 28k for the Latitude 7480 / Intel
+# HDA pipeline 2026-05-16.
+#
 # RMS threshold tuned for 16-bit PCM AGC-normalized speech (~2000-10000
-# during speech, ~50-500 in silence). 800 catches normal voice with
-# headroom and rejects keyboard / fan noise.
+# during speech, ~50-500 in silence in a quiet room; up to ~25000 in
+# noisy environments with mic gain).
 _LISTENING_RMS_THRESHOLD = float(os.environ.get("JARVIS_LISTENING_RMS_THRESHOLD", "1500"))
 # Once tripped, hold listening=True for this many seconds after the
 # last above-threshold frame. Stops the indicator from flickering
@@ -639,6 +652,16 @@ async def run_once(shutdown: asyncio.Event) -> None:
                     _watchdog.mark_voice_active()
             elif now > _listening_until[0]:
                 state.listening = False
+        # Speak-time mic suppression (added 2026-05-16 after echo-loop
+        # diagnosis confirmed JARVIS hearing its own replies through
+        # the speaker → Whisper transcribing them → supervisor
+        # responding to its own previous reply). Without AEC, the only
+        # reliable defense is to NOT publish mic frames while the agent
+        # is actively speaking. Trade-off: user can't barge in mid-reply.
+        # Acceptable until working AEC lands (Q2 roadmap item).
+        # Opt-out for users with headphones (no echo): JARVIS_MIC_DURING_SPEAK=1.
+        if state.speaking and os.environ.get("JARVIS_MIC_DURING_SPEAK", "0") != "1":
+            return
         asyncio.run_coroutine_threadsafe(source.capture_frame(frame), loop)
 
     mic_stream = sd.InputStream(
