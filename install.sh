@@ -170,28 +170,129 @@ install_voice_agent() {
 install_systemd_units() {
   if ! have systemctl; then warn "no systemctl; skipping systemd unit install"; return; fi
   mkdir -p "$USER_SYSTEMD"
-  mkdir -p "$HOME/.local/share/jarvis/logs"   # voice-agent + livekit-server log dest
+
+  # Pre-create state + log dirs the units' ReadWritePaths= bind-mounts
+  # require. Without these, the sandboxed units fail bring-up with
+  # status=226/NAMESPACE (systemd refuses to bind-mount a non-existent
+  # path even if the ExecStart script would create it). The units
+  # have ExecStartPre fallbacks too — this is belt-and-suspenders.
+  mkdir -p "$HOME/.local/share/jarvis/logs"   # voice-agent + hub + livekit-server log dest
+  mkdir -p "$HOME/.jarvis/hub"                # hub state.db lives here
+  mkdir -p "$HOME/.jarvis/snapshots"           # hourly backup snapshots
+  chmod 700 "$HOME/.jarvis/snapshots"          # contains conversation + memory content
 
   local sed_path_subs=(
     -e "s|%h/Documents/Projects/jarvis|$INSTALL_DIR|g"
     -e "s|/home/[^/]*/Documents/Projects/jarvis|$INSTALL_DIR|g"
     -e "s|/home/[^/]*/jarvis|$INSTALL_DIR|g"
   )
+
+  # Always-on services (voice-agent, voice-client, hub, livekit-server).
   for src in jarvis-voice-agent.service jarvis-voice-client.service jarvis-hub.service livekit-server.service; do
     sed "${sed_path_subs[@]}" "$INSTALL_DIR/setup/systemd/$src" > "$USER_SYSTEMD/$src"
     ok "installed unit: $USER_SYSTEMD/$src"
   done
 
+  # Timer-driven maintenance units (added 2026-05-17). 3 services + 3
+  # timers: hourly backup snapshot, daily log rotation, monthly
+  # telemetry retention prune. The .service files are oneshots; the
+  # .timer files are what get enabled.
+  for src in \
+      jarvis-backup-local.service jarvis-backup-local.timer \
+      jarvis-log-rotate.service jarvis-log-rotate.timer \
+      jarvis-retention-prune.service jarvis-retention-prune.timer; do
+    if [ -f "$INSTALL_DIR/setup/systemd/$src" ]; then
+      sed "${sed_path_subs[@]}" "$INSTALL_DIR/setup/systemd/$src" > "$USER_SYSTEMD/$src"
+      ok "installed unit: $USER_SYSTEMD/$src"
+    fi
+  done
+
   systemctl --user daemon-reload
-  # Enable order matters: SFU + Redis first, then agent + client (client
-  # Wants= the agent but doesn't Require= it, so order is preference not
-  # correctness). voice-client is the desktop-side audio bridge — without
-  # it the Tauri UI's status pill stays red even when the agent is alive.
+
+  # Enable always-on services (NOT started — user runs them after
+  # configuring .env). Enable order matters: SFU + Redis first, then
+  # agent + client.
   for unit in livekit-server.service jarvis-hub.service jarvis-voice-agent.service jarvis-voice-client.service; do
     systemctl --user enable "$unit" >/dev/null 2>&1 \
       && ok "enabled $unit (NOT started — configure .env first)" \
       || warn "could not enable $unit"
   done
+
+  # Enable + start the maintenance timers — these are safe to start
+  # immediately (they don't depend on .env or running provider APIs).
+  # First fire happens per OnCalendar (hourly / 02:00 daily / 03:00
+  # monthly-1st); Persistent=true catches up if laptop was off.
+  for unit in jarvis-backup-local.timer jarvis-log-rotate.timer jarvis-retention-prune.timer; do
+    if [ -f "$USER_SYSTEMD/$unit" ]; then
+      systemctl --user enable --now "$unit" >/dev/null 2>&1 \
+        && ok "enabled + started $unit" \
+        || warn "could not enable $unit"
+    fi
+  done
+}
+
+# ── Bubblewrap (bash-tool sandbox runtime) ───────────────────────────────
+install_bubblewrap() {
+  if have bwrap; then
+    ok "bubblewrap already installed ($(bwrap --version 2>/dev/null | head -1))"
+    return
+  fi
+  # bubblewrap is the user-namespace sandbox the bash tool wraps every
+  # subprocess in (tools/bash.py, added 2026-05-17 per enterprise plan
+  # §P0-SEC-7). Without it, the bash tool falls back to unsandboxed
+  # /bin/bash -c — works but loses the ~/.ssh/AWS/GPG tmpfs masks
+  # and the network-namespace gate. apt + pacman covered; other distros
+  # warn-only since the user-namespace approach is universal but
+  # package names vary.
+  if have apt-get && [ "$JARVIS_DRY_RUN" != "1" ]; then
+    info "installing bubblewrap via apt..."
+    if sudo -n apt-get install -y bubblewrap >/dev/null 2>&1; then
+      ok "bubblewrap installed"
+    else
+      warn "couldn't apt-install bubblewrap (sudo? offline?); the bash tool will run un-sandboxed."
+      warn "to enable: sudo apt install bubblewrap"
+    fi
+  elif have pacman && [ "$JARVIS_DRY_RUN" != "1" ]; then
+    info "installing bubblewrap via pacman..."
+    if sudo -n pacman -S --noconfirm bubblewrap >/dev/null 2>&1; then
+      ok "bubblewrap installed"
+    else
+      warn "couldn't pacman-install bubblewrap; the bash tool will run un-sandboxed."
+      warn "to enable: sudo pacman -S bubblewrap"
+    fi
+  else
+    warn "bubblewrap NOT installed (no apt/pacman detected). The bash"
+    warn "tool will run un-sandboxed. Install bubblewrap manually if"
+    warn "you want ~/.ssh/AWS/GPG tmpfs masking + network namespace gate."
+    warn "Documented at: src/voice-agent/tools/bash.py (§P0-SEC-7)"
+  fi
+}
+
+# ── Bridge auth token (pre-generated for first-run UX) ────────────────────
+generate_bridge_token() {
+  local token_file="$HOME/.jarvis/local-api-token.env"
+  if [ -f "$token_file" ]; then
+    ok "bridge token already exists at $token_file"
+    return
+  fi
+  mkdir -p "$HOME/.jarvis"
+  umask 077
+  # 32 bytes urandom → base64 → 43 url-safe chars (no padding).
+  local token
+  token="$(head -c 32 /dev/urandom | base64 | tr -d '+/=' | head -c 43)"
+  printf 'JARVIS_LOCAL_API_TOKEN=%s\n' "$token" > "$token_file"
+  chmod 600 "$token_file"
+  ok "generated bridge auth token at $token_file (chmod 600)"
+  # Plumb the token into src/web/.env.local too so the Next.js
+  # middleware's bearer check (src/web/src/middleware.ts) has the
+  # value at `next start` time without depending on start-desktop.sh
+  # having already run.
+  local web_env="$INSTALL_DIR/src/web/.env.local"
+  if [ -f "$web_env" ] && ! grep -q "^JARVIS_LOCAL_API_TOKEN=" "$web_env"; then
+    printf '\n# Bearer token for /api/* middleware (matches the bridge token).\nJARVIS_LOCAL_API_TOKEN=%s\nJARVIS_REQUIRE_LOCAL_AUTH=1\n' "$token" >> "$web_env"
+    chmod 600 "$web_env"
+    ok "appended JARVIS_LOCAL_API_TOKEN + REQUIRE_LOCAL_AUTH=1 to $web_env"
+  fi
 }
 
 # ── External services: LiveKit keys + Redis ──────────────────────────────
@@ -429,6 +530,15 @@ KIMI_API_KEY=
 # LANGCHAIN_TRACING_V2=true
 # LANGCHAIN_API_KEY=
 # LANGCHAIN_PROJECT=jarvis
+
+# Sandbox / safety knobs (uncomment to override defaults)
+# JARVIS_BASH_BWRAP=0           # disable bash-tool bubblewrap sandbox
+#                               # (test / debug only — reduces blast-radius
+#                               # protection on ~/.ssh, ~/.aws, ~/.gnupg)
+# JARVIS_REQUIRE_LOCAL_AUTH=1   # require Bearer token on bridge + web /api/*
+#                               # (default on when start-desktop.sh launches;
+#                               # set explicitly if you bypass that script)
+# JARVIS_DAILY_COST_CEILING_USD=5  # canary alert threshold (P1-OBS-1)
 EOF
   # Lock the file to 0600 so other local users / containers / web pages
   # can't read the API keys. (Per security review 2026-05-16: previously
@@ -523,6 +633,8 @@ main() {
   install_web
   install_voice_agent
   install_desktop
+  install_bubblewrap     # bash-tool sandbox runtime (§P0-SEC-7)
+  generate_bridge_token  # ~/.jarvis/local-api-token.env + web .env.local
   setup_livekit_keys
   setup_redis
   install_audio_profile
