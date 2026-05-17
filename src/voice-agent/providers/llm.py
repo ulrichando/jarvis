@@ -82,7 +82,24 @@ __all__ = [
 # so a /voice-model POST + systemctl restart picks up the new file on
 # the very next dispatch.
 SPEECH_MODEL_FILE: Path = Path.home() / ".jarvis" / "voice-model"
-DEFAULT_SPEECH_MODEL: str = "gpt-5-mini"
+# DEFAULT_SPEECH_MODEL is the model used when ~/.jarvis/voice-model
+# is missing/unreadable. It ALSO defines the "no-pin baseline" for the
+# pin-redesign logic in jarvis_agent.py:_build_llm_stack —
+# `user_pinned_llm = active_speech_id != DEFAULT_SPEECH_MODEL`. If the
+# user picks the same model that is the default, the pin logic treats
+# that as "no pin" and per-route dispatcher defaults take over (BANTER
+# = llama-3.1-8b, TASK = llama-3.3-70b, etc.). For the user to get
+# OpenAI gpt-5-mini on the TASK route, the default must be SOMETHING
+# OTHER THAN gpt-5-mini.
+#
+# Set to llama-3.3-70b-versatile (Groq) on 2026-05-17 so:
+# - Picking gpt-5-mini in the tray → user_pinned_llm=True →
+#   build_dispatching_llm(task_override=gpt-5-mini) → TASK route
+#   gets OpenAI (per user request 2026-05-17).
+# - Picking llama-3.3-70b-versatile (the default) → no pin →
+#   per-route dispatcher takes over with Groq specialists.
+# - JARVIS_PIN_ALL_ROUTES=1 still works when a non-default is picked.
+DEFAULT_SPEECH_MODEL: str = "llama-3.3-70b-versatile"
 
 # IDs match the upstream model names verbatim so the registry stays
 # legible. Each entry: (provider+model labels for display, factory
