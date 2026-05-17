@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Optional
 
 from livekit.agents.llm import function_tool
 
@@ -78,7 +79,7 @@ def _spoken_options(options: list[str]) -> str:
 @function_tool
 async def ask_user_question(
     question: str,
-    options_json: str,
+    options_json: Optional[str] = None,
     header: str = "",
     multi_select: bool = False,
 ) -> str:
@@ -120,6 +121,21 @@ async def ask_user_question(
         return "Question must be non-empty."
     if not q.endswith("?"):
         return "Question must end with '?'. Rephrase as a question."
+
+    # Coerce null/missing options_json → error response instead of
+    # propagating to json.loads (TypeError). Live 2026-05-17: supervisor
+    # LLM kept emitting `options_json: null` which failed Groq's strict
+    # tool-schema validation (`expected string, but got null`) and
+    # triggered FallbackAdapter cascade + the "Sorry, I had trouble"
+    # canned apology. Now: schema is Optional[str] so null is accepted;
+    # this function returns an instructive error string so the
+    # supervisor sees the correction in its next-turn ChatContext.
+    if options_json is None or not options_json.strip():
+        return (
+            "ask_user_question requires options_json — a JSON array of "
+            "2-4 option label strings, e.g. '[\"Yes\", \"No\"]'. "
+            "Without choices, just ask the question in prose instead."
+        )
 
     try:
         opts_raw = json.loads(options_json)
