@@ -16,6 +16,16 @@ livekit-agents[silero,openai,groq,anthropic]~=1.5
 # anyone added the package to requirements).
 edge-tts~=7.0
 
+# Playwright — drives a bundled Chromium via CDP for the browser
+# subagent's fallback path. When the Chrome extension isn't connected
+# (cold Chrome, extension crashed, user disabled it), tools/browser_cdp.py
+# takes over and the subagent stays usable. Pinned to major 1.x; the
+# CDP surface and async API have been stable since 1.40+. Adding this
+# also requires running `playwright install chromium` to fetch the
+# ~200MB browser binary — install.sh prompts for confirmation since
+# it's a one-time large download. Skip-flag: JARVIS_SKIP_CDP=1.
+playwright>=1.49.0,<2.0
+
 # systemd notify-protocol helper. jarvis-voice-agent.service is
 # Type=notify with WatchdogSec=120s — the unit fails to start at all
 # if the process never sends READY=1, and gets killed mid-flight if
