@@ -10,14 +10,20 @@ nuances:
   - JARVIS runs as `ulrich`. **As of 2026-05-16, there is NO sudoers
     NOPASSWD entry** (earlier docs claimed otherwise; live `sudo -n` test
     confirmed it requires a password). Commands that need sudo fail fast
-    with "a password is required" — this is a feature, not a bug. No
-    sandboxing of $HOME-scoped operations; voice has no UI to prompt
-    with, so destructive commands are detected via _DESTRUCTIVE_PATTERNS
-    and surfaced as a warning in the result text (not blocked).
+    with "a password is required" — this is a feature, not a bug.
+  - **Bubblewrap (bwrap) sandbox (added 2026-05-17 per enterprise plan
+    §P0-SEC-7).** Every command runs inside a bwrap user-namespace
+    sandbox by default: ~/.ssh, ~/.aws, ~/.gnupg are tmpfs-masked so
+    a misbehaving LLM / prompt injection can't exfiltrate them, and
+    network is unshare'd by default (set `network=True` in the tool
+    call to opt in for `npm install`, `git pull`, `curl` etc.). Audit-
+    log every `network=True` invocation. Disable globally with
+    `JARVIS_BASH_BWRAP=0` (NOT recommended — restored to opt-out
+    only for tests / debugging).
   - Output is truncated for voice TTS sanity (30 KB hard cap).
-  - Destructive-command detection routes the warning into the supervisor's
-    chat_ctx instead of throwing — the supervisor prompt's PUSH BACK
-    section handles voicing the concern.
+  - The hardest destructive patterns (`rm -rf /`, `mkfs.*`, `dd of=/dev/sd*`,
+    `curl|sh`, `wget|sh`) are REFUSED, not annotated. Softer ones
+    (sudo rm, git reset --hard, SQL DROP TABLE) annotate.
 """
 from __future__ import annotations
 
@@ -85,6 +91,92 @@ _DESTRUCTIVE_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bsudo\s+rm\b"),                         "sudo rm"),
     (re.compile(r">\s*/dev/sd[a-z]"),                      "writing to a raw disk device"),
 ]
+
+# REFUSED patterns — bash() returns an error WITHOUT executing. Subset of
+# the worst destructive shapes where annotate-and-run is too risky:
+# pipe-to-shell from network sources, raw-disk writes, mkfs, dd-to-disk,
+# rm -rf of root or home. The supervisor prompt's PUSH BACK rule is the
+# soft defense; this is the hard floor. Added 2026-05-17 per enterprise
+# plan §P0-SEC-7.
+#
+# Each pattern matches the same shape as _DESTRUCTIVE_PATTERNS but only
+# the truly-irreversible-on-personal-laptop subset. The annotate-only
+# list above remains the broader safety net.
+_REFUSE_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\brm\s+-rf?\s+/(?:\s|$|[^a-z])"),  "rm -rf / (would wipe filesystem)"),
+    (re.compile(r"\brm\s+-rf?\s+\$HOME(?:/|$|\s)"),  "rm -rf $HOME (would wipe user data)"),
+    (re.compile(r"\bmkfs\.[a-z0-9]"),                 "mkfs (formatting filesystem)"),
+    (re.compile(r"\bdd\s+(?:if=\S+\s+)?of=/dev/sd[a-z]"), "dd writing to raw disk device"),
+    (re.compile(r"\b(?:curl|wget)\b[^|]*\|\s*(?:sudo\s+)?(?:ba)?sh\b"),
+                                                       "pipe-to-shell from network (curl|sh / wget|sh)"),
+]
+
+
+def _check_refuse(command: str) -> Optional[str]:
+    for pattern, label in _REFUSE_PATTERNS:
+        if pattern.search(command):
+            return label
+    return None
+
+
+# Bubblewrap sandbox — added 2026-05-17 per enterprise plan §P0-SEC-7.
+# bwrap is the Flatpak sandbox runtime; runs unprivileged via user
+# namespaces. On Kali / Debian: `apt install bubblewrap`.
+#
+# Default profile: full / read-write bind (so cwd-relative ops just
+# work) but tmpfs-mask the secret directories (.ssh, .aws, .gnupg)
+# so a misbehaving LLM / mic prompt-injection can't `cat ~/.ssh/id_*`
+# or exfiltrate cloud creds. --new-session blocks TIOCSTI ioctl
+# attacks on the controlling terminal. --unshare-net is opt-out via
+# the network=True tool param so npm install / git pull / curl still
+# work when explicitly requested.
+#
+# Disable entirely with JARVIS_BASH_BWRAP=0 (NOT recommended — restored
+# only for test fixtures that pre-date the sandbox). Test fixtures
+# can also opt out per-call via the existing bash() flow.
+_BWRAP_AVAILABLE = os.path.exists("/usr/bin/bwrap")
+_BWRAP_ENABLED = os.environ.get("JARVIS_BASH_BWRAP", "1") == "1" and _BWRAP_AVAILABLE
+
+
+def _bwrap_argv(
+    inner_cmd: str,
+    cwd: Optional[str],
+    network: bool,
+) -> list[str]:
+    """Build the bwrap argv that wraps `/bin/bash -c <inner_cmd>`.
+
+    Profile:
+      - Full / bind so $HOME, /usr, /etc, /var read-write (matches the
+        pre-sandbox behaviour for cwd-rooted edits — JARVIS legitimately
+        needs to write to ~/.jarvis, ~/.local/share/jarvis, the repo).
+      - Tmpfs masks on ~/.ssh, ~/.aws, ~/.gnupg, ~/.config/gh —
+        secret directories the bash tool has no legitimate reason to
+        read or write.
+      - --dev-bind /dev /dev (audio + video + tty access stays usable
+        for tool chains like `aplay`, `v4l2-ctl`).
+      - --proc /proc + --new-session.
+      - --unshare-net unless network=True.
+    """
+    home = os.environ.get("HOME", "")
+    argv = [
+        "/usr/bin/bwrap",
+        "--die-with-parent",       # bwrap dies if parent dies
+        "--new-session",            # block TIOCSTI ioctl on controlling terminal
+        "--bind", "/", "/",         # full passthrough as base layer
+        "--proc", "/proc",
+        "--dev-bind", "/dev", "/dev",
+    ]
+    # Mask sensitive directories. tmpfs at the same path hides whatever
+    # bwrap bound there from the first --bind / /.
+    for masked in (".ssh", ".aws", ".gnupg", ".config/gh"):
+        if home:
+            argv.extend(["--tmpfs", os.path.join(home, masked)])
+    if not network:
+        argv.append("--unshare-net")
+    if cwd:
+        argv.extend(["--chdir", cwd])
+    argv.extend(["/bin/bash", "-c", inner_cmd])
+    return argv
 
 # Banned commands the supervisor should NEVER invoke through bash —
 # they have dedicated in-process tools (read/edit) which are faster
@@ -265,6 +357,7 @@ async def bash(
     description: str = "",
     timeout: int = _DEFAULT_TIMEOUT_S,
     run_in_background: bool = False,
+    network: bool = False,
 ) -> str:
     """Execute a shell command via /bin/bash and return stdout+stderr.
 
@@ -288,6 +381,14 @@ async def bash(
     (read/edit) which are faster and cleaner. The banned-command
     check is a soft coaching redirect, not a security gate.
 
+    **SANDBOXED BY DEFAULT** (bubblewrap user namespace, added
+    2026-05-17). Network is UNSHARED — pass `network=True` for any
+    command that legitimately needs network access (npm install,
+    git pull, curl, apt update, pip install, …). ~/.ssh, ~/.aws,
+    ~/.gnupg, ~/.config/gh are tmpfs-masked regardless so secrets
+    can't leak through a misrouted command. Disable the sandbox
+    globally with `JARVIS_BASH_BWRAP=0` (test/debug only).
+
     Instructions:
       - If the command will create new directories or files, first run
         `ls` to verify the parent directory exists.
@@ -295,6 +396,9 @@ async def bash(
       - Prefer absolute paths over chained `cd` for clarity.
       - You may specify an optional `timeout` in seconds (max 600).
         Default 120 s.
+      - Pass `network=True` only when needed — every network=True call
+        gets logged. The default-off posture closes the most common
+        prompt-injection exfil path.
       - For long-running commands you don't need the result of right now,
         pass `run_in_background=True` and you'll be notified when done.
         DO NOT also use `&` in the command — the runner handles that.
@@ -313,6 +417,10 @@ async def bash(
         timeout:           Seconds before the command is killed (max 600).
         run_in_background: True to run async; False (default) waits for
                            completion.
+        network:           True to allow network egress (npm/curl/git pull).
+                           Default False — sandbox unshares the network
+                           namespace so commands can't reach the LAN /
+                           internet. Audit-logged when True.
     """
     cmd = (command or "").strip()
     if not cmd:
@@ -340,11 +448,33 @@ async def bash(
             f"the command name, but the dedicated tool is faster.)"
         )
 
+    # HARD refuse on irreversible-on-personal-laptop patterns.
+    # rm -rf / · mkfs · dd of=/dev/sd* · curl|sh / wget|sh. Returns
+    # an error string the supervisor can voice back to the user
+    # rather than executing the command. Added 2026-05-17 per
+    # enterprise plan §P0-SEC-7.
+    refuse_label = _check_refuse(cmd)
+    if refuse_label is not None:
+        logger.warning(f"bash REFUSED — {refuse_label}: {cmd[:80]!r}")
+        return (
+            f"Refused: {refuse_label}. This pattern is blocked at the bash "
+            f"tool to prevent accidental destructive operations from voice "
+            f"prompt-injection or LLM hallucination. If you genuinely need "
+            f"this, the user should run it manually in a terminal."
+        )
+
     # Destructive-command annotation. We DO run the command — voice has
     # full root and the user is the admin — but we tag the result so the
     # supervisor's chat_ctx carries the warning. The supervisor prompt's
     # PUSH BACK section will voice the concern.
     destructive = _check_destructive(cmd)
+
+    # Audit-log every network=True invocation. The sandbox default is
+    # network-off; opt-in events are the highest-signal "what is JARVIS
+    # actually doing with internet access" indicator. Surfaces in
+    # `journalctl --user -u jarvis-voice-agent` greppable for `[net=on]`.
+    if network and _BWRAP_ENABLED:
+        logger.warning(f"bash [net=on] → {description or cmd[:80]!r}")
 
     # Clamp timeout.
     try:
@@ -357,18 +487,32 @@ async def bash(
     persist_cwd = os.environ.get("JARVIS_BASH_PERSIST_CWD", "1") == "1"
     bash_cwd = _get_bash_cwd() if persist_cwd else None
 
+    # Build the subprocess argv. With bwrap enabled, the wrapper
+    # becomes `/usr/bin/bwrap [opts] /bin/bash -c <cmd>`. Without bwrap,
+    # the plain `/bin/bash -c <cmd>` path is used (test fixtures + the
+    # JARVIS_BASH_BWRAP=0 escape hatch). The cwd-capture wrapping is
+    # applied to the INNER command in both cases.
+    exec_cmd = _wrap_for_cwd_capture(cmd) if persist_cwd else cmd
+
+    def _build_argv() -> tuple[list[str], Optional[str]]:
+        if _BWRAP_ENABLED:
+            # bwrap handles cwd via --chdir; don't double-set on subprocess.
+            return _bwrap_argv(exec_cmd, cwd=bash_cwd, network=network), None
+        return ["/bin/bash", "-c", exec_cmd], bash_cwd
+
     if run_in_background:
         # Detached subprocess; result not awaited. Voice rarely needs this
         # but it's in the spec for parity with claude-code. Background
         # commands DON'T update the persistent cwd — they're independent
         # of the foreground conversation flow.
+        argv, sp_cwd = _build_argv()
         try:
             await asyncio.create_subprocess_exec(
-                "/bin/bash", "-c", cmd,
+                *argv,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
                 start_new_session=True,
-                cwd=bash_cwd,
+                cwd=sp_cwd,
             )
             return f"Started in background: {description or cmd[:60]}."
         except Exception as e:
@@ -385,12 +529,12 @@ async def bash(
         # cwd and use a wrapped command that prints the new cwd via
         # the unique sentinel so we can update the cache after the
         # call. If persistence is disabled (env=0) the wrap is skipped.
-        exec_cmd = _wrap_for_cwd_capture(cmd) if persist_cwd else cmd
+        argv, sp_cwd = _build_argv()
         proc = await asyncio.create_subprocess_exec(
-            "/bin/bash", "-c", exec_cmd,
+            *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=bash_cwd,
+            cwd=sp_cwd,
         )
         try:
             stdout_b, stderr_b = await asyncio.wait_for(
