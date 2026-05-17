@@ -1,0 +1,15 @@
+[Unit]
+Description=JARVIS — monthly telemetry-retention prune trigger
+Documentation=file:%h/Documents/Projects/jarvis/scripts/jarvis-retention-prune.sh
+
+[Timer]
+# Monthly on the 1st at 03:00 local. Persistent=true catches up if
+# the laptop was off on the 1st. The script is idempotent so a
+# late run is safe.
+OnCalendar=*-*-01 03:00:00
+Persistent=true
+RandomizedDelaySec=600s
+Unit=jarvis-retention-prune.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,34 @@
+[Unit]
+Description=JARVIS — prune turn_telemetry.db older than retention window
+Documentation=file:%h/Documents/Projects/jarvis/scripts/jarvis-retention-prune.sh
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/Documents/Projects/jarvis/scripts/jarvis-retention-prune.sh
+
+# Prune script reads + writes ~/.local/share/jarvis/turn_telemetry.db
+# only. state.db is explicitly NOT pruned (user-curated content).
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/jarvis
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged ~@resources ~@reboot ~@module ~@swap ~@debug ~@raw-io
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=default.target

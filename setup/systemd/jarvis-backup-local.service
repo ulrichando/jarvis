@@ -1,0 +1,37 @@
+[Unit]
+Description=JARVIS — atomic SQLite snapshot of state.db + turn_telemetry.db
+Documentation=file:%h/Documents/Projects/jarvis/scripts/jarvis-backup-local.sh
+# Don't run during a backup-target's own startup ordering chaos.
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/Documents/Projects/jarvis/scripts/jarvis-backup-local.sh
+
+# Snapshot script writes to ~/.jarvis/snapshots/ and reads
+# ~/.jarvis/hub/state.db + ~/.local/share/jarvis/turn_telemetry.db.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.jarvis/snapshots
+ReadOnlyPaths=%h/.jarvis/hub %h/.local/share/jarvis
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged ~@resources ~@reboot ~@module ~@swap ~@debug ~@raw-io
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=default.target
