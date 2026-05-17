@@ -63,12 +63,15 @@ def test_vad_prewarm_uses_production_thresholds():
     with patch.object(jarvis_agent.silero, "VAD", _FakeVAD):
         jarvis_agent.prewarm(proc)
 
+    # Industry-standard balanced preset (commit 9bac99fc). See
+    # docs note: convergence across OpenAI Realtime, Gemini Live,
+    # Pipecat, Vapi, LiveKit's own silero/vad.py.
     assert captured_kwargs == {
         "activation_threshold": 0.6,
-        "deactivation_threshold": 0.3,
-        "min_speech_duration": 0.1,
-        "min_silence_duration": 0.4,
-        "prefix_padding_duration": 0.6,
+        "deactivation_threshold": 0.4,
+        "min_speech_duration": 0.05,
+        "min_silence_duration": 0.70,
+        "prefix_padding_duration": 0.50,
     }
     assert "vad" in proc.userdata
 

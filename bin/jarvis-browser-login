@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Launch the CDP-fallback Chromium in visible mode so the user can
+# sign into Gmail / X / Claude / etc. once. Sessions persist in
+# ~/.jarvis/cdp-profile/ across runs.
+#
+# Use when the Chrome extension is broken / not loaded and the user
+# wants the CDP fallback to have logged-in access to sites. Only
+# needed once per site — Playwright stores cookies + localStorage in
+# the profile dir.
+#
+# Closes when the user closes the Chromium window.
+#
+# Added 2026-05-17 as part of the browser CDP fallback (commit pending).
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VOICE_AGENT_DIR="$REPO_ROOT/src/voice-agent"
+PYTHON="$VOICE_AGENT_DIR/.venv/bin/python"
+
+if [[ ! -x "$PYTHON" ]]; then
+    echo "Error: voice-agent venv not found at $PYTHON" >&2
+    echo "Run install.sh or: python3 -m venv $VOICE_AGENT_DIR/.venv && pip install -r $VOICE_AGENT_DIR/requirements.txt" >&2
+    exit 1
+fi
+
+if ! "$PYTHON" -c "import playwright" 2>/dev/null; then
+    echo "Error: playwright not installed in voice-agent venv" >&2
+    echo "Run: $VOICE_AGENT_DIR/.venv/bin/pip install playwright && $VOICE_AGENT_DIR/.venv/bin/playwright install chromium" >&2
+    exit 1
+fi
+
+echo "JARVIS Browser — login mode"
+echo "  Profile: ~/.jarvis/cdp-profile/"
+echo "  Sign into any sites you want JARVIS to access via the CDP fallback."
+echo "  Cookies + localStorage persist across runs."
+echo "  Close the Chromium window when done."
+echo
+
+cd "$VOICE_AGENT_DIR"
+JARVIS_CDP_HEADLESS=0 exec "$PYTHON" -c "
+import asyncio
+import sys
+sys.path.insert(0, '.')
+from tools.cdp_chrome import get_cdp_chrome
+
+async def main():
+    cdp = await get_cdp_chrome()
+    page = await cdp.get_page()
+    await page.goto('about:blank')
+    print('[jarvis-browser-login] window open — sign in then close when done')
+    # Block on the close event of the context. Playwright doesn't
+    # raise when the user closes the window, so poll context.pages.
+    while True:
+        try:
+            pages = cdp._context.pages
+            if not pages:
+                break
+            # Check if the page is still alive by reading its url —
+            # raises if browser was closed.
+            for p in pages:
+                _ = p.url
+        except Exception:
+            break
+        await asyncio.sleep(2.0)
+    print('[jarvis-browser-login] window closed — sessions saved')
+    await cdp.shutdown()
+
+asyncio.run(main())
+"
