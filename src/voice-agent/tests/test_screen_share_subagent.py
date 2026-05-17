@@ -17,6 +17,7 @@ JARVIS_RUN_LIVE_TESTS=1 are both set.
 """
 from __future__ import annotations
 
+import importlib.util
 import os
 import sys
 from pathlib import Path
@@ -248,6 +249,10 @@ class TestModelSelection:
             assert ss.SCREEN_SHARE_LIVE_CONTEXT_TOKENS == 32000
 
 
+@pytest.mark.skipif(
+    importlib.util.find_spec("livekit.plugins.google") is None,
+    reason="livekit-plugins-google optional dep (JARVIS_SUBAGENT_SCREEN_SHARE feature) not installed",
+)
 class TestLiveConfigShape:
     """Verify _build_screen_share_llm constructs RealtimeModel with the
     research-recommended config: AUDIO modality, voice, transcription,
