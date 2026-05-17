@@ -5,6 +5,9 @@ After=network.target
 
 [Service]
 Type=oneshot
+# Pre-create the data dir (defense-in-depth against deletion or
+# fresh install). Same sandbox-bind-mount rationale as backup-local.
+ExecStartPre=/bin/mkdir -p %h/.local/share/jarvis
 ExecStart=%h/Documents/Projects/jarvis/scripts/jarvis-retention-prune.sh
 
 # Prune script reads + writes ~/.local/share/jarvis/turn_telemetry.db

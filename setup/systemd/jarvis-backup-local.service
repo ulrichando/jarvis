@@ -6,6 +6,15 @@ After=network.target
 
 [Service]
 Type=oneshot
+# Pre-create the snapshot dir AND the parent ~/.jarvis dir (mkdir -p
+# handles both). Without this, ReadWritePaths below fails the sandbox
+# bring-up with status=226/NAMESPACE on first-run / post-deletion
+# because systemd refuses to bind-mount a non-existent path. Defense-
+# in-depth: install.sh creates the dir too, but a future `rm -rf
+# ~/.jarvis/snapshots` shouldn't kill the next backup cycle.
+# Mode 700 — snapshots contain conversation + memory content.
+ExecStartPre=/bin/mkdir -p %h/.jarvis/snapshots
+ExecStartPre=/bin/chmod 700 %h/.jarvis/snapshots
 ExecStart=%h/Documents/Projects/jarvis/scripts/jarvis-backup-local.sh
 
 # Snapshot script writes to ~/.jarvis/snapshots/ and reads
