@@ -27,7 +27,17 @@ logger = logging.getLogger("jarvis.chat_ctx")
 
 
 # ── Config ───────────────────────────────────────────────────────────
+# Default 12 turns. Realtime mode overrides via JARVIS_RECENT_TURNS=4
+# (set in jarvis_agent.py before seed_chat_ctx() is called) because
+# each prior turn costs 500-1000 tokens and OpenAI Realtime's 40k TPM
+# means 12 prior turns + 6k instructions + tools burns the per-request
+# budget. Read at CALL time (not import time) so the realtime override
+# takes effect even when this module was imported earlier.
+import os as _os
 RECENT_TURNS_LIMIT: int = 12
+
+def _current_recent_turns_limit() -> int:
+    return int(_os.environ.get("JARVIS_RECENT_TURNS", str(RECENT_TURNS_LIMIT)))
 
 # Cap recalled assistant turns at this many characters. Long historical
 # replies (a 574-char essay, a 1099-char monologue on entropy) get
@@ -178,9 +188,11 @@ _DISABLED_SUBAGENT_RE = re.compile(
 
 
 # ── Loader: recent prior turns from state.db ─────────────────────────
-def load_recent_turns(limit: int = RECENT_TURNS_LIMIT) -> list[tuple[str, str]]:
+def load_recent_turns(limit: int | None = None) -> list[tuple[str, str]]:
     """Return the most recent (role, text) pairs from state.db, OLDEST
     first. Empty list on any error or if the DB doesn't exist yet."""
+    if limit is None:
+        limit = _current_recent_turns_limit()
     state_db = Path.home() / ".jarvis" / "hub" / "state.db"
     if not state_db.exists():
         return []

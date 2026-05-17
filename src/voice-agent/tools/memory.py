@@ -390,7 +390,10 @@ def format_memories_for_prompt(top_n: int | None = None) -> str:
     included so heavily-referenced memories rise.
     """
     if top_n is None:
-        top_n = int(os.environ.get("JARVIS_MEMORY_TOP_N", "30"))
+        # Unified default to 8 (matches pipeline/config.py:MEMORY_TOP_N)
+        # — was 30 here, which silently flooded every supervisor prompt
+        # with 30 (largely-polluted) memories. Per global review §P0-8.
+        top_n = int(os.environ.get("JARVIS_MEMORY_TOP_N", "8"))
     rows = _read_memories_via_sdk(limit=top_n)
     if not rows:
         return ""
