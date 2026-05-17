@@ -28,6 +28,7 @@ import asyncio
 import logging
 import os
 from pathlib import Path
+from typing import Any, Optional
 
 from livekit.agents import APIConnectionError, APITimeoutError
 from livekit.plugins import groq, openai as lk_openai
@@ -142,15 +143,13 @@ SPEECH_MODELS: dict[str, dict] = {
             temperature=0.6,
         ),
     },
-    "deepseek-v4-pro": {
-        "label": "DeepSeek · v4 pro",
-        "build": lambda: lk_openai.LLM(
-            model="deepseek-v4-pro",
-            api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
-            base_url="https://api.deepseek.com/v1",
-            temperature=0.6,
-        ),
-    },
+    # deepseek-v4-pro RETIRED 2026-05-16 per global review §P0-3.
+    # Telemetry: 66 of 200 recent turns through v4-pro; 22 took >30s;
+    # three took >700s; turn 160 produced a hallucinated Bosnian reply.
+    # v4-flash + deepseek-chat (V3) remain available for users who
+    # specifically want DeepSeek; the supervisor LLM cascade no longer
+    # falls through to v4-pro automatically. Re-add a fixed version if
+    # DeepSeek upstream resolves the long-tail latency.
     # Anthropic Claude — Haiku 4.5 is the fast, cheap voice-ready model.
     # Added 2026-05-11. `caching="ephemeral"` engages Anthropic's prompt
     # caching on the system prompt + chat_ctx prefix — typical 80-90 %
@@ -379,6 +378,26 @@ def make_speech_llm() -> tuple[str, object]:
 LAST_PREFLIGHT: dict = {"tokens": None, "pressure": None, "model": None}
 
 
+# Cache for the pre-flight chat_ctx + tools stringification. Each turn,
+# only the LAST item in chat_ctx is new — items 0..N-2 are the same as
+# last turn. Without a cache, stringifying 80 items × ~1k chars +
+# system prompt of 134k bytes is ~200-500ms of blocking CPU on a
+# 2-core box (global review §P0-18 / perf review). Cache by
+# (id(chat_ctx), len(items), id(last_item)) — invalidates when a new
+# item is appended (the id of items[-1] changes) or when the chat_ctx
+# instance changes (new session). Tools rarely change so cached
+# tools_str invalidates by `(id(tools), len(tools))`.
+#
+# Single-session-per-process assumption already documented above for
+# LAST_PREFLIGHT — same applies here.
+_PREFLIGHT_CACHE: dict = {
+    "ctx_key": None,    # (id, len, id(last))
+    "ctx_str": "",
+    "tools_key": None,  # (id, len)
+    "tools_str": "",
+}
+
+
 # ── Token-aware chat_ctx pruning helpers ─────────────────────────────
 
 def ctx_items_token_estimate(items) -> int:
@@ -592,30 +611,50 @@ class BreakeredGroqLLM(groq.LLM):
             )
             chat_ctx = kw.get("chat_ctx")
             tools = kw.get("tools") or []
-            # Cheap stringification — duck-typed across LiveKit
-            # ChatContext / FunctionTool versions. The exact byte
-            # count differs from upstream tokenization but is
-            # consistent per-process so threshold tracking works.
+            # Cheap stringification with memoization. Cache invalidates
+            # only when chat_ctx grows / changes — typical case is "one
+            # new item appended since last turn", which hits the cache
+            # for items 0..N-2. Saves ~200-500ms blocking on every turn
+            # for an 80-item ctx + 134k system prompt.
             ctx_str = ""
             try:
                 items = getattr(chat_ctx, "items", None) or []
-                for it in items:
-                    ctx_str += str(getattr(it, "content", it)) + "\n"
+                ctx_key = (
+                    id(chat_ctx),
+                    len(items),
+                    id(items[-1]) if items else None,
+                )
+                if _PREFLIGHT_CACHE["ctx_key"] == ctx_key:
+                    ctx_str = _PREFLIGHT_CACHE["ctx_str"]
+                else:
+                    parts = []
+                    for it in items:
+                        parts.append(str(getattr(it, "content", it)))
+                    ctx_str = "\n".join(parts) + ("\n" if parts else "")
+                    _PREFLIGHT_CACHE["ctx_key"] = ctx_key
+                    _PREFLIGHT_CACHE["ctx_str"] = ctx_str
             except Exception:
                 ctx_str = str(chat_ctx) if chat_ctx is not None else ""
             tools_str = ""
             try:
-                for t in tools:
-                    info = getattr(t, "info", None)
-                    if info is not None:
-                        tools_str += (
-                            (getattr(info, "name", "") or "")
-                            + " "
-                            + (getattr(info, "description", "") or "")
-                            + "\n"
-                        )
-                    else:
-                        tools_str += str(t) + "\n"
+                tools_key = (id(tools), len(tools))
+                if _PREFLIGHT_CACHE["tools_key"] == tools_key:
+                    tools_str = _PREFLIGHT_CACHE["tools_str"]
+                else:
+                    parts = []
+                    for t in tools:
+                        info = getattr(t, "info", None)
+                        if info is not None:
+                            parts.append(
+                                (getattr(info, "name", "") or "")
+                                + " "
+                                + (getattr(info, "description", "") or "")
+                            )
+                        else:
+                            parts.append(str(t))
+                    tools_str = "\n".join(parts) + ("\n" if parts else "")
+                    _PREFLIGHT_CACHE["tools_key"] = tools_key
+                    _PREFLIGHT_CACHE["tools_str"] = tools_str
             except Exception:
                 pass
             est = estimate_tokens(ctx_str) + estimate_tokens(tools_str)
@@ -704,14 +743,20 @@ class BreakeredGroqLLM(groq.LLM):
 
 # ── Per-route DispatchingLLM build ───────────────────────────────────
 
-def build_dispatching_llm() -> DispatchingLLM:
+def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM:
     """Construct route → inner-LLM mapping using Groq variants, each
     wrapped in a FallbackAdapter([groq, deepseek-v4]) so a Groq-edge
     connection blip falls through to DeepSeek instead of losing the
     turn.
 
+    `task_override`: when not None, replaces ONLY the TASK route's
+    inner LLM (BANTER/REASONING/EMOTIONAL stay on their fast/specialist
+    defaults). Used by jarvis_agent's pin-redesigned flow per global
+    review §P0-12 — pinning a model in the tray now overrides TASK
+    without losing BANTER's 8b fast-path on short utterances.
+
     BANTER     → llama-3.1-8b-instant (fastest)
-    TASK       → llama-3.3-70b-versatile (current default, tools)
+    TASK       → llama-3.3-70b-versatile (default) OR task_override
     REASONING  → qwen/qwen3-32b (structured reasoning)
     EMOTIONAL  → llama-4-scout (warmer temperament, temp 0.7)
 
@@ -861,12 +906,13 @@ def build_dispatching_llm() -> DispatchingLLM:
         logger.warning(f"[dispatch] EMOTIONAL LLM construction failed: {e}; using main")
         emotional = main
 
+    task_inner = task_override if task_override is not None else main
     return DispatchingLLM(
         inners={
             "BANTER":    banter,
-            "TASK":      main,
+            "TASK":      task_inner,
             "REASONING": reasoning,
             "EMOTIONAL": emotional,
         },
-        fallback=main,
+        fallback=task_inner,
     )
