@@ -46,10 +46,27 @@ WARN_TOKENS = 100_000
 # Emergency: trigger context cleanup. ~90% of context.
 HARD_TOKENS = 115_000
 
-# Per-million-token pricing for Groq models, USD. Source:
-# https://console.groq.com/docs/models (rates as of 2026-05).
-# Format: model_id -> (input $/1M, output $/1M).
+# Per-million-token pricing across all supervisor + subagent LLMs JARVIS
+# calls. USD; format: model_id -> (input $/1M, output $/1M). Rates as of
+# 2026-05-17 public list prices. Verify against provider pricing pages
+# before any major spend audit:
+#   Groq:      https://console.groq.com/docs/models
+#   Anthropic: https://www.anthropic.com/pricing
+#   OpenAI:    https://openai.com/api/pricing/
+#   DeepSeek:  https://api-docs.deepseek.com/quick_start/pricing
+#   Google:    https://ai.google.dev/gemini-api/docs/pricing
+#
+# Pre-2026-05-17: only Groq + DeepSeek + Kimi entries existed. Result:
+# 173 of 196 recent turns had cost_usd=NULL because Anthropic + OpenAI
+# + Google models had no rates to multiply tokens against (global
+# review §P0-17 / 2026-05-17 plan §P0-OBS-1).
+#
+# Rates that include prompt-caching: the dict captures NON-cached rates;
+# log_turn() multiplies (input_tokens - prompt_cached_tokens) at the
+# full rate and prompt_cached_tokens at a separate cache rate via
+# _CACHE_READ_DISCOUNT below.
 _PRICING_USD_PER_1M: dict[str, tuple[float, float]] = {
+    # ── Groq ────────────────────────────────────────────────────────
     # TASK-tier supervisor model.
     "llama-3.3-70b-versatile":  (0.59, 0.79),
     # BANTER-tier (chitchat / fast).
@@ -64,9 +81,70 @@ _PRICING_USD_PER_1M: dict[str, tuple[float, float]] = {
     "openai/gpt-oss-120b":      (0.15, 0.60),
     # Kimi modes (gated behind JARVIS_KIMI_VOICE_EXPERIMENTAL).
     "kimi-k2.6":                (0.30, 1.50),
-    # DeepSeek (fallback for Groq outages).
+    # ── DeepSeek ────────────────────────────────────────────────────
+    # v4-pro retired 2026-05-16 but the rate stays in case archival
+    # telemetry needs to be re-costed.
     "deepseek-v4-pro":          (0.27, 1.10),
+    "deepseek-v4-flash":        (0.14, 0.28),
+    "deepseek-chat":            (0.27, 1.10),  # V3 main chat model
+    "deepseek-reasoner":        (0.55, 2.19),  # R1-style reasoning model
+    # ── Anthropic ───────────────────────────────────────────────────
+    # Voice supervisor + screen-share subagent. Caching="ephemeral"
+    # set on these; verify hit rate via prompt_cached_tokens column.
+    "claude-haiku-4-5":         (1.00,  5.00),
+    "claude-haiku-4-5-20251001": (1.00,  5.00),
+    "claude-sonnet-4-6":        (3.00, 15.00),
+    "claude-opus-4-7":          (15.00, 75.00),
+    # Legacy / canonical-ID aliases (livekit-plugins-anthropic prefixes).
+    "anthropic:claude-haiku-4-5":  (1.00,  5.00),
+    "anthropic:claude-sonnet-4-6": (3.00, 15.00),
+    "anthropic:claude-opus-4-7":  (15.00, 75.00),
+    # ── OpenAI ──────────────────────────────────────────────────────
+    # GPT-5 family added 2026-05-15. Voice supervisor candidates.
+    "gpt-5-nano":               (0.05,  0.20),
+    "gpt-5-mini":               (0.15,  0.60),
+    "gpt-5":                    (1.25,  5.00),
+    "gpt-5.1":                  (2.00,  8.00),
+    "gpt-5-pro":                (10.00, 30.00),
+    # Legacy 4o for any straggler telemetry.
+    "gpt-4o":                   (2.50, 10.00),
+    "gpt-4o-mini":              (0.15,  0.60),
+    # ── Google Gemini ───────────────────────────────────────────────
+    # Used for vision subagent + screen-share live (gemini-2.5-flash-lite).
+    "gemini-2.5-flash":         (0.30,  2.50),
+    "gemini-2.5-flash-lite":    (0.10,  0.40),
+    "gemini-2.5-pro":           (1.25, 10.00),
+    # Vendor-prefixed alias.
+    "google:gemini-2.5-flash":      (0.30,  2.50),
+    "google:gemini-2.5-flash-lite": (0.10,  0.40),
+    "google:gemini-2.5-pro":        (1.25, 10.00),
 }
+
+# Cache-read discount multiplier per provider. Cached input tokens are
+# billed at <input rate> * <discount>. Hardcoded by family because the
+# pricing-page math differs per provider (Anthropic 10%, OpenAI 10%,
+# DeepSeek ~2%, Groq ~50% but only on some models). Lookup by id prefix.
+_CACHE_READ_DISCOUNT: dict[str, float] = {
+    "claude-":         0.10,  # Anthropic ephemeral cache: 10% of input
+    "anthropic:":      0.10,
+    "gpt-5":           0.10,  # OpenAI auto-cache (1024+ tokens, 5-24h): 10%
+    "gpt-4o":          0.50,  # 4o cache discount is smaller
+    "deepseek-":       0.02,  # DeepSeek context cache: 2% of input
+    "gemini-2.5-":     0.10,  # Gemini implicit cache: 10%
+    "google:gemini-":  0.10,
+    "llama-":          0.50,  # Groq KV cache: 50% (only on some models)
+    "qwen":            0.50,
+    "kimi-":           0.50,
+}
+
+
+def cache_read_rate(model_id: str) -> float:
+    """Return the cache-read multiplier for `model_id`. Defaults to 1.0
+    (no discount — full input rate) when no prefix matches."""
+    for prefix, discount in _CACHE_READ_DISCOUNT.items():
+        if model_id.startswith(prefix):
+            return discount
+    return 1.0
 
 
 def estimate_tokens(text: str) -> int:
