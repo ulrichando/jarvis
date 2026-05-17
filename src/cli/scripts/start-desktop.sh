@@ -52,6 +52,30 @@ esac
 export JARVIS_DISABLE_AUTH="${JARVIS_DISABLE_AUTH:-1}"
 export JARVIS_MODEL_REGISTRY_ENABLED=1
 
+# Bridge auth (added 2026-05-16 per global review §P0-1). Without this,
+# any local process or malicious web page can mint LiveKit JWTs, hijack
+# the OpenAI model, and execute Chrome-extension actions on every
+# authenticated tab. Generate a 32-byte token at install/first-run; the
+# bridge (server.ts:64-76) requires it on /api/* + the /ws upgrade.
+TOKEN_FILE="${HOME}/.jarvis/local-api-token.env"
+if [ ! -f "$TOKEN_FILE" ]; then
+  mkdir -p "${HOME}/.jarvis"
+  umask 077
+  printf 'JARVIS_LOCAL_API_TOKEN=%s\n' \
+    "$(head -c 32 /dev/urandom | base64 | tr -d '+/=' | head -c 43)" \
+    > "$TOKEN_FILE"
+  chmod 600 "$TOKEN_FILE"
+  echo "[jarvis] generated $TOKEN_FILE (chmod 600)"
+fi
+# Load + export the token. The bridge reads JARVIS_LOCAL_API_TOKEN from
+# its env; voice-agent reads from the same file via systemd EnvironmentFile
+# already wired in jarvis-voice-agent.service.
+# shellcheck disable=SC1090
+. "$TOKEN_FILE"
+export JARVIS_LOCAL_API_TOKEN
+export JARVIS_REQUIRE_LOCAL_AUTH=1
+echo "[jarvis] bridge auth ENABLED (JARVIS_REQUIRE_LOCAL_AUTH=1)"
+
 # ── Kill stale processes ──────────────────────────────────────────────
 pkill -f "bun.*proxy/server.ts" 2>/dev/null || true
 pkill -f "bun.*bridge/server.ts" 2>/dev/null || true
