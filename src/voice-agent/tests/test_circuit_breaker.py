@@ -131,3 +131,95 @@ def test_breaker_half_open_does_not_serialize_concurrent_probes(monkeypatch):
     results = _run(_both())
     assert results == ["ok", "ok"]
     assert cb.state == STATE_CLOSED
+
+
+# ── non_failure_classifier (added 2026-05-16 per global review §P0-16)
+# Classified exceptions (rate-limit 429, validation) flow through
+# WITHOUT counting toward the failure threshold so the breaker doesn't
+# trip on upstream states that won't be improved by tripping.
+
+
+def test_breaker_classified_exception_does_not_count_as_failure():
+    def _classifier(exc):
+        return "rate_limit" in str(exc).lower()
+
+    async def _rate_limited():
+        raise RuntimeError("Error: rate_limit_exceeded")
+
+    cb = CircuitBreaker(
+        "test", fail_threshold=2, cooldown_s=10,
+        non_failure_classifier=_classifier,
+    )
+    # Three rate-limit raises in a row — breaker stays CLOSED.
+    for _ in range(3):
+        with pytest.raises(RuntimeError):
+            _run(cb.call(_rate_limited))
+    assert cb.state == STATE_CLOSED
+    assert cb.failures == 0
+
+
+def test_breaker_non_classified_exception_still_counts():
+    def _classifier(exc):
+        return "rate_limit" in str(exc).lower()
+
+    cb = CircuitBreaker(
+        "test", fail_threshold=2, cooldown_s=10,
+        non_failure_classifier=_classifier,
+    )
+    # Generic failure — classifier returns False → breaker counts it.
+    with pytest.raises(RuntimeError):
+        _run(cb.call(_fail))
+    with pytest.raises(RuntimeError):
+        _run(cb.call(_fail))
+    assert cb.state == STATE_OPEN
+
+
+def test_breaker_classifier_crash_falls_back_to_counting():
+    """If the classifier itself raises, treat as failure (conservative)."""
+    def _crash_classifier(exc):
+        raise ValueError("classifier broke")
+
+    cb = CircuitBreaker(
+        "test", fail_threshold=1, cooldown_s=10,
+        non_failure_classifier=_crash_classifier,
+    )
+    with pytest.raises(RuntimeError):
+        _run(cb.call(_fail))
+    # Classifier crash → conservative → failure counted → breaker opens.
+    assert cb.state == STATE_OPEN
+
+
+def test_resilience_classifier_recognizes_groq_signals():
+    """The shipped classifier in resilience/__init__.py recognizes the
+    error fragments we've observed in live telemetry."""
+    from resilience import _is_expected_provider_error
+
+    # Groq 429 (live capture)
+    e = RuntimeError(
+        "Error code: 429 - Rate limit reached for model "
+        "llama-3.3-70b-versatile tokens per min (TPM) rate_limit_exceeded"
+    )
+    assert _is_expected_provider_error(e)
+
+    # Validation error (live capture 2026-05-04)
+    e = RuntimeError("openai.APIError: Failed to call a function. Please adjust your prompt.")
+    assert _is_expected_provider_error(e)
+
+    # Plain transport error — NOT classified, should still count.
+    e = ConnectionError("ECONNREFUSED")
+    assert not _is_expected_provider_error(e)
+
+
+def test_resilience_classifier_walks_chained_exceptions():
+    """livekit-agents wraps openai errors as APIConnectionError; the
+    classifier must walk __cause__ to find the real signal."""
+    from resilience import _is_expected_provider_error
+
+    inner = RuntimeError("rate_limit_exceeded on Groq")
+    try:
+        try:
+            raise inner
+        except RuntimeError as e:
+            raise ConnectionError("Connection error.") from e
+    except ConnectionError as e:
+        assert _is_expected_provider_error(e)
