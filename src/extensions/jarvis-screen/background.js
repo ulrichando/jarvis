@@ -1,5 +1,21 @@
 // JARVIS — background service worker v2.0
 
+// SECURITY POSTURE (2026-05-17): destructive-command safety gates for
+// the WS command dispatcher (exec_js, set_cookies, payment-domain
+// submit, credential-keyword detection) are currently LLM-PROMPT-ONLY.
+// The earlier safety.js module shipped CommonJS (`module.exports`)
+// which doesn't load in an MV3 service worker, so the documented
+// "deterministic safety gates" were inert from day one. File deleted
+// 2026-05-17 per enterprise plan §P0-SEC-12; defense now lives in:
+//   1. The bridge's `confirmed=true` requirement on ext_browse calls
+//      (server-side check in src/cli/src/bridge/ext_browse.ts).
+//   2. The voice supervisor's prompt rule against destructive actions
+//      without user confirmation (prompts/supervisor.md).
+//   3. The bridge bearer-token requirement on /ws (commit f0150fb4).
+// To restore deterministic in-extension gates, add `"type": "module"`
+// to manifest.json's background entry, rewrite safety.js as
+// `export { ... }`, and import here. Tracked as P1 follow-up.
+
 // Brain URL — local only
 const PRIMARY_BRAIN   = 'http://localhost:8765'
 let JARVIS_URL = PRIMARY_BRAIN
