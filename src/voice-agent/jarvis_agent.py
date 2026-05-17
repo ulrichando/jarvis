@@ -112,16 +112,6 @@ _load_user_keys_env()
 from livekit.plugins import groq, openai as lk_openai, silero
 # ElevenLabs removed 2026-05-01 — see _build_dispatching_tts comment.
 
-# Tray-config readers for the voice-mode switch (text-LLM-chain vs
-# OpenAI Realtime API). The voice-client writes the tray files; the
-# agent reads them on every job-dispatch (= session start) so a
-# tray click → restart cycle flips the entire pipeline cleanly.
-from voice_client_tray_config import (
-    read_voice_mode as _read_voice_mode,
-    read_realtime_model as _read_realtime_model,
-    read_realtime_voice as _read_realtime_voice,
-)
-
 # Round-trip DeepSeek's reasoning_content field. livekit-plugins-openai
 # 1.5.x doesn't track it, which makes V4-flash / V4-pro reject any
 # multi-turn request whose prior assistant message contained tool_calls
@@ -1897,54 +1887,15 @@ def _truncate(text: str, cap: int = _DIRECT_TOOL_OUTPUT_CAP) -> str:
     return text[:cap] + f"\n…[truncated {len(text) - cap} bytes]"
 
 
-@function_tool
-async def bash(command: str, timeout: int = 30) -> str:
-    """Run a one-shot shell command and return its stdout+stderr.
-
-    Use this for ATOMIC single-step asks the user wants the result of
-    immediately:
-      - "what time is it"                   → date
-      - "how much disk space"               → df -h /
-      - "what's my IP"                      → ip route get 1
-      - "open Firefox"                      → setsid -f firefox >/dev/null 2>&1
-      - "kill spotify"                      → pkill spotify
-      - "what's running on port 4000"       → ss -tlnp | grep :4000
-
-    Do NOT use for:
-      - Music control                       → use media_control
-      - Visible terminal work               → use type_in_terminal
-      - Multi-step / multi-tool tasks       → use run_jarvis_cli
-
-    Output is capped at ~3 KB. Long-running commands are killed at
-    `timeout` seconds (default 30, max 90).
-    """
-    command = (command or "").strip()
-    if not command:
-        return "(no command supplied)"
-    timeout = max(1, min(int(timeout or 30), 90))
-    logger.info(f"bash → {command[:100]}")
-    try:
-        proc = await asyncio.create_subprocess_shell(
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            stdin=asyncio.subprocess.DEVNULL,
-            cwd=str(Path.home()),
-        )
-    except Exception as e:
-        return f"(spawn failed: {e})"
-    try:
-        out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        proc.terminate()
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=2.0)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-        return f"(killed after {timeout}s)"
-    text = out_b.decode("utf-8", errors="replace").rstrip()
-    return _truncate(text or f"(no output, exit={proc.returncode})")
+# Legacy bash() body removed 2026-05-16 per global review §P0-19.
+# The canonical implementation is `tools/bash.py::bash` (imported as
+# `_bash_tool` above and registered in JarvisAgent's tools=[…] below).
+# We re-export it as the module-level `bash` so:
+#   - subagents/desktop.py's `from jarvis_agent import bash` still works
+#   - tests/test_strict_schema_relax.py's `bash` attribute probe still finds it
+#   - there's only ONE implementation, eliminating the registration-order
+#     footgun the legacy 47-line version created.
+bash = _bash_tool
 
 
 @function_tool
@@ -3680,16 +3631,20 @@ def prewarm(proc: JobProcess) -> None:
           docs.pipecat.ai/server/utilities/turn-management/user-turn-strategies,
           platform.openai.com/docs/guides/realtime-vad
     """
+    # activation=0.6 (bumped from 0.5 on 2026-05-16) — user's room has
+    # high ambient noise; 0.5 was triggering Whisper STT on background
+    # producing hallucinated transcripts. 0.7 was too strict (missed
+    # softer speech). 0.6 is the middle ground.
     proc.userdata["vad"] = silero.VAD.load(
-        activation_threshold=0.5,
-        deactivation_threshold=0.25,
+        activation_threshold=0.6,
+        deactivation_threshold=0.3,
         min_speech_duration=0.1,
         min_silence_duration=0.4,
         prefix_padding_duration=0.6,
     )
     logger.info(
         "Silero VAD loaded in prewarm "
-        "(activation=0.5, deactivation=0.25, min_speech=0.1, "
+        "(activation=0.6, deactivation=0.3, min_speech=0.1, "
         "min_silence=0.4, prefix_pad=0.6)"
     )
     _spawn_worker_heartbeat()
@@ -3769,31 +3724,57 @@ def _build_llm_stack() -> dict:
     active_speech_id, active_speech_llm = make_speech_llm()
 
     # If the user explicitly picked a non-default speech model in the
-    # tray, treat that pick as authoritative for EVERY route — disable
-    # the per-route dispatcher so BANTER/TASK/REASONING/EMOTIONAL all
-    # flow through the user's selected LLM. Without this, the dispatcher
-    # silently overrides the tray pick with Groq variants per-route, and
-    # short utterances ("Hello Jarvis") get hot-swapped to llama-3.1-8b
-    # by the BANTER fast-path — making the tray pick a no-op in practice.
-    # Live discovery 2026-05-11 after a user picked Claude Haiku 4.5 and
-    # reported "replies sound the same" (they were still Groq).
+    # tray, treat that as the **TASK-route override** by default
+    # (`JARVIS_PIN_ALL_ROUTES=0`, the new default per global review §P0-12):
+    # BANTER stays on the 8b fast-path; REASONING stays on qwen3-32b;
+    # EMOTIONAL stays on llama-4-scout. The pin replaces only TASK so
+    # the user gets their picked model for "real work" turns without
+    # losing the latency win on backchannels.
+    #
+    # Set `JARVIS_PIN_ALL_ROUTES=1` to restore the previous "pin overrides
+    # everything" behavior — useful if the user genuinely wants their
+    # picked model for short banter too (e.g. testing a specific model's
+    # personality).
+    #
+    # Live discovery 2026-05-11: user picked Claude Haiku 4.5 and
+    # reported "replies sound the same" — they were still Groq, because
+    # of the unconditional pin-disables-dispatcher branch. 2026-05-16
+    # global review found the reverse problem: pinning llama-3.3-70b
+    # for cost defeated BANTER's 8b fast-path on "Hi Jarvis" turns
+    # (TTFW jumped from ~700ms to ~5s).
     user_pinned_llm = active_speech_id != DEFAULT_SPEECH_MODEL
+    pin_all_routes = os.environ.get("JARVIS_PIN_ALL_ROUTES", "0") == "1"
 
     # Maya-class dispatcher build.
-    if user_pinned_llm:
-        # User pinned a specific supervisor — skip the dispatcher
-        # entirely so per-turn route swapping can't override their pick.
+    if user_pinned_llm and pin_all_routes:
+        # Legacy behavior — user explicitly opted in via env var.
         dispatch_llm = None
         dispatch_tts = None
         llm_arg = active_speech_llm
         tts_arg = tts.FallbackAdapter(_build_tts_chain())
         logger.info(
             f"[dispatch] user-pinned speech LLM ({active_speech_id}) — "
-            f"per-route dispatcher disabled, all turns go through this model"
+            f"per-route dispatcher disabled (JARVIS_PIN_ALL_ROUTES=1), "
+            f"all turns go through this model"
         )
     elif os.environ.get("JARVIS_DISPATCH_DISABLED", "0") != "1":
         try:
-            dispatch_llm = _build_dispatching_llm()
+            # When user_pinned_llm is True (and we're in the new
+            # default mode, not JARVIS_PIN_ALL_ROUTES), the pin replaces
+            # only the TASK route. The 8b BANTER fast-path, qwen
+            # REASONING path, and llama-4-scout EMOTIONAL path stay
+            # on their specialist defaults. Per global review §P0-12.
+            task_override = active_speech_llm if user_pinned_llm else None
+            # Ensure the pinned LLM has a `_jarvis_label` — the dispatcher
+            # log and the turn-telemetry `llm_used` field both fall back
+            # to `repr(llm)` (giving "livekit.plugins.groq.services.LLM")
+            # when this is missing. Use the tray pick's ID as the label.
+            if task_override is not None and not getattr(task_override, "_jarvis_label", None):
+                try:
+                    task_override._jarvis_label = active_speech_id
+                except Exception:
+                    pass
+            dispatch_llm = _build_dispatching_llm(task_override=task_override)
             dispatch_tts = _build_dispatching_tts()
             llm_arg = dispatch_llm.fallback   # default; per-turn callback overrides
             tts_arg = dispatch_tts.fallback
@@ -4363,6 +4344,32 @@ def _register_state_tracking_handlers(session) -> None:
         except Exception as e:
             logger.debug(f"[interrupt-detect] skipped: {e}")
 
+    # Per-turn LLM usage capture (global review §P0-17). Wires the
+    # AgentSession's `metrics_collected` event into session._jarvis_last_*
+    # fields so log_turn reads non-None values and `cost_usd` actually
+    # gets computed. Critically captures `prompt_cached_tokens` so we
+    # can VERIFY Anthropic's `caching="ephemeral"` is hitting
+    # (telemetry-only, no behaviour change). The event is "deprecated"
+    # upstream but still emits; the replacement `session_usage_updated`
+    # is cumulative-per-session, not per-turn, which doesn't fit our
+    # one-row-per-turn telemetry shape.
+    @session.on("metrics_collected")
+    def _on_metrics_collected(ev) -> None:
+        try:
+            m = getattr(ev, "metrics", None)
+            if m is None:
+                return
+            # LLMMetrics has: prompt_tokens, completion_tokens,
+            # prompt_cached_tokens, total_tokens. Other metric types
+            # (STT/TTS/VAD/EOU) reuse the event but the fields differ.
+            if getattr(m, "type", None) != "llm_metrics":
+                return
+            session._jarvis_last_input_tokens = getattr(m, "prompt_tokens", None)
+            session._jarvis_last_output_tokens = getattr(m, "completion_tokens", None)
+            session._jarvis_last_cache_read_tokens = getattr(m, "prompt_cached_tokens", 0) or 0
+        except Exception as e:
+            logger.debug(f"[metrics-capture] skipped: {e}")
+
 
 def _build_runtime_id_block(active_speech_id: str) -> str:
     """Build the WHO YOU ARE prompt block with current model identity.
@@ -4533,64 +4540,7 @@ async def entrypoint(ctx: JobContext) -> None:
         legacy_llm=llm_arg,
     )
 
-    # ── OpenAI Realtime mode (tray-switchable) ──────────────────────────
-    # Swaps the text-LLM + Whisper-STT + Orpheus-TTS chain for a single
-    # OpenAI RealtimeModel. Voice is generated natively by the model
-    # (no text→TTS roundtrip), STT is built-in, and the model receives
-    # audio + tool definitions over a WebSocket. JARVIS's existing tools,
-    # subagent system, memory pipeline, and chat_ctx recall continue to
-    # work — only the LLM↔STT↔TTS plumbing changes.
-    #
-    # OFF by default. Flip via the tray ("Voice mode ▸ OpenAI Realtime")
-    # which writes ~/.jarvis/voice-mode and bounces this agent. Model +
-    # voice pickers live in sibling files (~/.jarvis/realtime-model,
-    # ~/.jarvis/realtime-voice). For debug, env vars JARVIS_REALTIME_MODE
-    # / _MODEL / _VOICE override the file values.
-    #
-    # Cost note: gpt-realtime-mini ≈ $3/hr active vs. ~$0.30/hr on the
-    # text path. See docs/2026-05-15-pre-realtime-snapshot.md for the
-    # full revert procedure.
-    # Tray file is authoritative; env var only overrides for debug.
-    _voice_mode = _read_voice_mode()
-    _env_voice_mode = os.environ.get("JARVIS_REALTIME_MODE", "")
-    if _env_voice_mode == "1":
-        _voice_mode = "realtime"
-    elif _env_voice_mode == "0":
-        _voice_mode = "text"
-    if _voice_mode == "realtime":
-        from livekit.plugins.openai.realtime import RealtimeModel as _RealtimeModel
-        _rt_voice = os.environ.get("JARVIS_REALTIME_VOICE") or _read_realtime_voice()
-        _rt_model = os.environ.get("JARVIS_REALTIME_MODEL") or _read_realtime_model()
-        _rt_llm = _RealtimeModel(model=_rt_model, voice=_rt_voice)
-        logger.info(
-            "[realtime] mode active — model=%r voice=%r "
-            "(text-mode stt/tts/transforms bypassed)",
-            _rt_model, _rt_voice,
-        )
-        session = AgentSession(
-            # Tools, max steps, interruption/endpointing knobs all
-            # carry over identically. The RealtimeModel handles VAD,
-            # STT, and TTS internally — those AgentSession kwargs are
-            # OMITTED so the framework's own realtime path engages.
-            max_tool_steps=15,
-            llm=_rt_llm,
-            turn_handling={
-                "interruption": {
-                    "enabled": True,
-                    "min_duration": 0.4,
-                    "min_words": 3,
-                    "resume_false_interruption": False,
-                    "false_interruption_timeout": None,
-                },
-                "endpointing": {
-                    "min_delay": 0.4,
-                    "max_delay": 4.0,
-                },
-                "preemptive_generation": {"enabled": False},
-            },
-        )
-    else:
-        session = AgentSession(
+    session = AgentSession(
         # 2026-05-02: raised from livekit's default 3 to 15. Browser
         # subagent chains commonly need 5+ tool calls (navigate,
         # wait_for_load, observe, type, keypress) and 3 was burning
@@ -4929,6 +4879,15 @@ async def entrypoint(ctx: JobContext) -> None:
                         ttfw_ms = int((time.monotonic() - start) * 1000)
                     else:
                         ttfw_ms = 0
+                    # Clamp zombie values >60s to NULL — sometimes a
+                    # rejected turn (silent-mode, garbage gate, short
+                    # input) leaves the start-monotonic set so the NEXT
+                    # turn inherits the stale start. Global review §P0-15
+                    # found three telemetry rows with TTFW >1M ms from
+                    # this exact bug. Clear after write (below) closes
+                    # the loop; this clamp protects the column shape.
+                    if ttfw_ms > 60_000:
+                        ttfw_ms = None
                     # Capture subagent BEFORE clearing — read once,
                     # then None-out so the next turn doesn't reuse a
                     # stale value when the supervisor handles it
@@ -4977,6 +4936,17 @@ async def entrypoint(ctx: JobContext) -> None:
                     spk_start = getattr(session, "_jarvis_agent_speaking_started_at", None)
                     if spk_start is not None:
                         audio_ms_acc += int((time.monotonic() - spk_start) * 1000)
+                    # memory_auto_extracted: True iff the per-turn extractor
+                    # successfully published a memory in the last 30s. Uses
+                    # the same has_recent_extraction_evidence() check the
+                    # confab-detector uses, so the flag in telemetry tracks
+                    # the same signal we credit for "save" confab evidence.
+                    try:
+                        from pipeline.memory_extractor import has_recent_extraction_evidence
+                        mem_extracted = has_recent_extraction_evidence()
+                    except Exception:
+                        mem_extracted = False
+                    cache_read = getattr(session, "_jarvis_last_cache_read_tokens", 0) or 0
                     log_turn(
                         user_text=getattr(session, "_jarvis_turn_user_text", "") or "",
                         jarvis_text=text or "",
@@ -4994,10 +4964,13 @@ async def entrypoint(ctx: JobContext) -> None:
                         output_tokens=out_tok,
                         cost_usd=cost,
                         context_pressure=pressure,
+                        memory_auto_extracted=mem_extracted,
+                        prompt_cached_tokens=cache_read,
                     )
                     # Reset usage stash for next turn.
                     session._jarvis_last_input_tokens = None
                     session._jarvis_last_output_tokens = None
+                    session._jarvis_last_cache_read_tokens = 0
                     # Reset for next turn so a fresh handoff stamps
                     # the value and absent handoffs leave it None.
                     session._jarvis_last_subagent = None
@@ -5015,6 +4988,11 @@ async def entrypoint(ctx: JobContext) -> None:
                     # Reset first-token marker too so the next
                     # turn measures from its own stream start.
                     session._jarvis_first_token_at_monotonic = None
+                    # Reset turn-start monotonic so a NEXT rejected
+                    # turn (silent-mode / garbage gate) can't inherit
+                    # this turn's start and produce a >1M ms TTFW
+                    # zombie. Per global review §P0-15.
+                    session._jarvis_turn_start_monotonic = None
                 except Exception as te:
                     logger.debug(f"[telemetry] write skipped: {te}")
                 # Self-evolution observer (Task 7.4) — gated, additive,
@@ -5081,32 +5059,7 @@ async def entrypoint(ctx: JobContext) -> None:
     _breaker_block       = _ps["breaker_block"]
     _last_breaker_block  = _breaker_block
 
-    # The full JARVIS prompt is ~34k tokens. OpenAI's Realtime API caps
-    # `session.instructions` at 16k tokens — anything more is rejected
-    # with `Instructions cannot be longer than 16384 tokens`. Truncate
-    # for the Realtime prototype only; text-mode keeps the full prompt.
-    # Tool-usage examples and granular routing rules at the prompt's
-    # tail are the first thing cut — the model can infer those from the
-    # tool schemas themselves once it has the core persona + register
-    # rules at the top.
     _initial_instructions = _ps["initial_instructions"]
-    if _voice_mode == "realtime":
-        _REALTIME_INSTR_CHAR_CAP = int(
-            os.environ.get("JARVIS_REALTIME_INSTR_CHAR_CAP", "48000")
-        )
-        if len(_initial_instructions) > _REALTIME_INSTR_CHAR_CAP:
-            _orig_len = len(_initial_instructions)
-            _initial_instructions = (
-                _initial_instructions[:_REALTIME_INSTR_CHAR_CAP]
-                + "\n\n[…instructions truncated to fit Realtime API 16k-token limit; "
-                "remaining persona/tool rules are conveyed via tool schemas + chat_ctx…]"
-            )
-            logger.info(
-                "[realtime] truncated instructions: %d → %d chars (~%d → ~%d tokens) "
-                "to satisfy OpenAI Realtime session.instructions ≤16384 cap",
-                _orig_len, len(_initial_instructions),
-                _orig_len // 4, len(_initial_instructions) // 4,
-            )
 
     _jarvis_agent = JarvisAgent(
         instructions=_initial_instructions,
