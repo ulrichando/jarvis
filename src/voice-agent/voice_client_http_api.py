@@ -51,19 +51,9 @@ from voice_client_tray_config import (
     TTS_PROVIDERS_AVAILABLE,
     TOOL_BUSY_FILE,
     SILENT_MODE_FILE,
-    # Voice-mode (text vs Realtime API) switch — 2026-05-15
-    VOICE_MODE_FILE,
-    VOICE_MODES_AVAILABLE,
-    REALTIME_MODEL_FILE,
-    REALTIME_MODELS_AVAILABLE,
-    REALTIME_VOICE_FILE,
-    REALTIME_VOICES_AVAILABLE,
     agent_is_thinking,
     read_cli_model,
     read_speech_model,
-    read_voice_mode,
-    read_realtime_model,
-    read_realtime_voice,
 )
 
 
@@ -140,16 +130,6 @@ class VoiceClientHttpApi:
         app.router.add_post("/voice-model",  self.speech_model)
         app.router.add_get("/tts-provider",  self.tts_provider)
         app.router.add_post("/tts-provider", self.tts_provider)
-        # Voice-mode + Realtime-model + Realtime-voice (tray-driven
-        # switch between text-LLM chain and OpenAI Realtime API).
-        # Mirrors the speech_model/tts_provider pattern: GET returns
-        # current + allowlist, POST writes the file + bounces agent.
-        app.router.add_get("/voice-mode",      self.voice_mode)
-        app.router.add_post("/voice-mode",     self.voice_mode)
-        app.router.add_get("/realtime-model",  self.realtime_model)
-        app.router.add_post("/realtime-model", self.realtime_model)
-        app.router.add_get("/realtime-voice",  self.realtime_voice)
-        app.router.add_post("/realtime-voice", self.realtime_voice)
         app.router.add_route("OPTIONS", "/{tail:.*}", self.cors)
         return app
 
@@ -186,15 +166,7 @@ class VoiceClientHttpApi:
         # hasn't been cleared yet (avoids gold→blue→gold flicker between
         # `conversation_item_added` and the speaking-track event).
         self.state.agent_thinking = agent_is_thinking() and not self.state.speaking
-        # Splice the voice-mode/realtime-* fields onto the response
-        # without touching ClientState. asdict() walks the dataclass;
-        # we add three extra keys on top so the tray can render the
-        # current selection with a ✓ without an extra round-trip.
-        payload = asdict(self.state)
-        payload["voice_mode"]     = read_voice_mode()
-        payload["realtime_model"] = read_realtime_model()
-        payload["realtime_voice"] = read_realtime_voice()
-        return web.json_response(payload, headers=_CORS_HEADERS)
+        return web.json_response(asdict(self.state), headers=_CORS_HEADERS)
 
     async def mute(self, req: web.Request) -> web.Response:
         """POST /mute  body={mute: bool}  → toggle local mic track mute.
@@ -513,99 +485,6 @@ class VoiceClientHttpApi:
             )
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500, headers=cors)
-
-    async def _picker_handler(
-        self,
-        req: web.Request,
-        *,
-        label: str,
-        body_key: str,
-        file_path,
-        reader,
-        allowed,
-    ) -> web.Response:
-        """Shared GET+POST handler for tray-style file-backed picker
-        endpoints. GET returns the current value + the allowlist.
-        POST writes the chosen value and triggers an agent restart.
-        Used by /voice-mode, /realtime-model, /realtime-voice — all of
-        which share the SPEECH_MODEL_FILE pattern (single string in a
-        file, requires agent restart to take effect since the
-        AgentSession topology is built once per session)."""
-        cors = {"Access-Control-Allow-Origin": "*"}
-        if req.method == "GET":
-            return web.json_response({
-                body_key: reader(),
-                "available": list(allowed),
-            }, headers=cors)
-        try:
-            body = await req.json()
-        except Exception:
-            body = {}
-        value = (body.get(body_key) or "").strip()
-        if value not in allowed:
-            return web.json_response(
-                {"error": f"unknown {label}: {value!r}",
-                 "available": list(allowed)},
-                status=400, headers=cors,
-            )
-        try:
-            current = reader()
-            if current == value:
-                return web.json_response(
-                    {body_key: value, "restarting": False, "unchanged": True},
-                    headers=cors,
-                )
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-            file_path.write_text(value + "\n", encoding="utf-8")
-            asyncio.create_task(self.restart_agent_unit())
-            return web.json_response(
-                {body_key: value, "restarting": True}, headers=cors,
-            )
-        except Exception as e:
-            return web.json_response({"error": str(e)}, status=500, headers=cors)
-
-    async def voice_mode(self, req: web.Request) -> web.Response:
-        """GET/POST /voice-mode — flip between text-LLM chain and
-        OpenAI Realtime API. POST body: {"mode": "text"|"realtime"}.
-        Restarting the agent is the price of switching since the
-        AgentSession topology differs (text mode = vad+stt+llm+tts;
-        realtime = single RealtimeModel handling all three)."""
-        return await self._picker_handler(
-            req,
-            label="voice mode",
-            body_key="mode",
-            file_path=VOICE_MODE_FILE,
-            reader=read_voice_mode,
-            allowed=VOICE_MODES_AVAILABLE,
-        )
-
-    async def realtime_model(self, req: web.Request) -> web.Response:
-        """GET/POST /realtime-model — pick gpt-realtime (full) or
-        gpt-realtime-mini (~3x cheaper). Only meaningful while
-        voice-mode is `realtime`; ignored otherwise."""
-        return await self._picker_handler(
-            req,
-            label="realtime model",
-            body_key="model",
-            file_path=REALTIME_MODEL_FILE,
-            reader=read_realtime_model,
-            allowed=REALTIME_MODELS_AVAILABLE,
-        )
-
-    async def realtime_voice(self, req: web.Request) -> web.Response:
-        """GET/POST /realtime-voice — pick one of OpenAI's nine
-        Realtime voices (marin / alloy / ash / ballad / coral / echo /
-        sage / shimmer / verse). Only meaningful when voice-mode is
-        `realtime`; in text mode the Orpheus voice from TTS_PROVIDER
-        decides."""
-        return await self._picker_handler(
-            req,
-            label="realtime voice",
-            body_key="voice",
-            file_path=REALTIME_VOICE_FILE,
-            reader=read_realtime_voice,
-            allowed=REALTIME_VOICES_AVAILABLE,
-        )
 
     async def cors(self, _: web.Request) -> web.Response:
         """OPTIONS preflight for any /... route."""
