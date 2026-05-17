@@ -186,22 +186,32 @@ ongoing work. If yes, output exactly one line in the form \
 '<category>: <one-sentence summary>'. Categories: user, feedback, \
 project, reference. If no memorable fact, output exactly: SKIP.
 
-Examples:
-
-USER: "we charge them six hundred dollars for six months"
-OUTPUT: project: Coding Kiddos charges $600 for 6 months ($100/mo) per student.
+Examples — note the subjects are DIVERSE (different domains, different \
+projects, different proper nouns). When extracting from new speech, \
+copy the SHAPE, not any specific name or domain from the examples \
+below. Background TV audio that Whisper hallucinates as English does \
+NOT contain real user facts — output SKIP.
 
 USER: "my wife's name is Lizzy"
 OUTPUT: user: Ulrich's wife is named Lizzy.
 
-USER: "we teach python javascript and lua"
-OUTPUT: project: Coding Kiddos curriculum covers Python, JavaScript, and Lua.
-
 USER: "i run pretva, a ride hailing service in cameroon"
 OUTPUT: user: Ulrich runs Pretva, a ride-hailing service in Cameroon.
 
+USER: "i have a background in medical psychology"
+OUTPUT: user: Ulrich has a background in medical psychology.
+
+USER: "we use proxmox for the home lab and run six vms on a single node"
+OUTPUT: project: Home lab runs Proxmox on a single node, ~6 VMs.
+
+USER: "jarvis runs on a dell latitude 7480 with an intel i7-7600u"
+OUTPUT: reference: Primary JARVIS hardware: Dell Latitude 7480, Intel i7-7600U (2C/4T Kaby Lake).
+
 USER: "every time i ask jarvis to remember he says he can't"
 OUTPUT: feedback: User reports JARVIS denies its own memory capability when asked. Why: the supervisor LLM defaults to 'I'm a conversational AI without memory' from training data. How to apply: prefer the auto-extractor and denial-detector layers over relying on the supervisor LLM to call remember() proactively.
+
+USER: "stop ending replies with 'is there anything else i can help with'"
+OUTPUT: feedback: User dislikes trailing "anything else I can help with" / closer phrases. How to apply: cap the reply at substantive content; don't append follow-up offers unless the user asked.
 
 USER: "i'm thirsty"
 OUTPUT: SKIP
@@ -218,6 +228,12 @@ OUTPUT: SKIP
 USER: "what's the weather like"
 OUTPUT: SKIP
 
+USER: "再見"
+OUTPUT: SKIP
+
+USER: "Thank you for watching"
+OUTPUT: SKIP
+
 ANTI-EXAMPLES (these shapes are FORBIDDEN — they are conversation \
 narration, not facts; output SKIP instead):
   ✗ "The user is asking about X" — narration
@@ -226,9 +242,17 @@ narration, not facts; output SKIP instead):
   ✗ "It seems to be X" — narration
   ✗ "User wants to know about X" — narration
 
+ALSO FORBIDDEN — copying example subjects when speech doesn't \
+mention them (this is how the memory store ended up polluted with \
+fictional "Coding Kiddos" narration on background TV audio):
+  ✗ Outputting "Coding Kiddos ..." when the user didn't say it
+  ✗ Outputting "Pretva ..." when the user didn't say it
+  ✗ Outputting "Ulrich's ..." when the speech is generic
+  ✗ Any proper noun not present in the user's actual line
+
 A FACT looks like:
-  ✓ "Ulrich's wife is named Lizzy."
-  ✓ "Coding Kiddos charges $600 for 6 months."
+  ✓ "Ulrich's wife is named Lizzy."  (when user said Lizzy)
+  ✓ "Home lab runs Proxmox on a single node."  (when user said Proxmox)
   ✓ "User prefers responses to start with content, not 'Sure thing'."
 
 USER: "{transcript}"
