@@ -420,8 +420,17 @@ _BROWSER_WHEN = (
 # state, subagent bails if extension not connected).
 _BRIDGE_URL = os.environ.get("JARVIS_BRIDGE_URL", "http://127.0.0.1:8765")
 _CHROME_LAUNCH_CMD = ["setsid", "-f", "google-chrome", "--profile-directory=Default"]
-_PRELAUNCH_WAIT_S = float(os.environ.get("JARVIS_BROWSER_PRELAUNCH_WAIT_S", "8.0"))
-_PRELAUNCH_POLL_S = float(os.environ.get("JARVIS_BROWSER_PRELAUNCH_POLL_S", "0.3"))
+# Bumped 8 → 15 s on 2026-05-17. Cold Chrome on this box reliably
+# takes 8-10 s from `setsid` to first WS-open (profile load + 20+
+# extensions hydrating + service worker boot), then the extension
+# reconnect ladder needs another 0.5-1 s for hello+ack. 8 s was hit
+# repeatedly in logs ("extension never connected within 8.0s").
+_PRELAUNCH_WAIT_S = float(os.environ.get("JARVIS_BROWSER_PRELAUNCH_WAIT_S", "15.0"))
+# Two-phase polling: fast early to catch warm Chrome (most cases),
+# slower late so we don't slam the bridge during the slow tail.
+_PRELAUNCH_POLL_FAST_S = float(os.environ.get("JARVIS_BROWSER_PRELAUNCH_POLL_FAST_S", "0.15"))
+_PRELAUNCH_POLL_SLOW_S = float(os.environ.get("JARVIS_BROWSER_PRELAUNCH_POLL_SLOW_S", "0.40"))
+_PRELAUNCH_POLL_FAST_FOR_S = float(os.environ.get("JARVIS_BROWSER_PRELAUNCH_POLL_FAST_FOR_S", "3.0"))
 
 # Pre-navigation table for "Open X" requests. When the supervisor's
 # `request` matches one of these tokens (or contains an explicit URL),
@@ -636,21 +645,37 @@ async def _ensure_chrome_extension_connected(context, request, supervisor):
                 "Couldn't launch Chrome (setsid/google-chrome failed). "
                 "Open Chrome manually and try again."
             )
-        deadline = time.monotonic() + _PRELAUNCH_WAIT_S
+        start = time.monotonic()
+        deadline = start + _PRELAUNCH_WAIT_S
+        fast_until = start + _PRELAUNCH_POLL_FAST_FOR_S
+        next_log_at = start + 5.0  # heartbeat log every ~5s during the wait
         while time.monotonic() < deadline:
-            await asyncio.sleep(_PRELAUNCH_POLL_S)
+            now = time.monotonic()
+            poll = (
+                _PRELAUNCH_POLL_FAST_S if now < fast_until
+                else _PRELAUNCH_POLL_SLOW_S
+            )
+            await asyncio.sleep(poll)
             if await _bridge_ext_connected():
-                elapsed = _PRELAUNCH_WAIT_S - (deadline - time.monotonic())
+                elapsed = time.monotonic() - start
                 logger.info(
                     f"[browser.pre_transfer] extension connected after "
-                    f"{elapsed:.1f}s"
+                    f"{elapsed:.2f}s"
                 )
                 connected = True
                 break
+            if time.monotonic() >= next_log_at:
+                logger.info(
+                    f"[browser.pre_transfer] still waiting for extension "
+                    f"({time.monotonic() - start:.1f}s elapsed of "
+                    f"{_PRELAUNCH_WAIT_S}s)"
+                )
+                next_log_at += 5.0
         if not connected:
+            elapsed = time.monotonic() - start
             logger.warning(
                 f"[browser.pre_transfer] extension never connected within "
-                f"{_PRELAUNCH_WAIT_S}s; bailing"
+                f"{elapsed:.1f}s; bailing"
             )
             return (
                 "Chrome is starting but the extension hasn't registered yet — "
