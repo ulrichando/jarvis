@@ -471,6 +471,20 @@ async def run_once(shutdown: asyncio.Event) -> None:
         # that should ever join is the agent.
         log.info(f"[room] participant joined: {participant.identity}")
         state.agent_present = True
+        # Republish mic on EVERY agent participant_connected — gives
+        # the new LiveKit Job a fresh track SID to subscribe to,
+        # avoiding the zombie-subscription bug observed 2026-05-17/18
+        # (3 back-to-back reconnect cycles each landed with no STT
+        # events firing for ~50min). Each agent Job has a unique
+        # identity (`agent-AJ_*`), so a new participant_connected
+        # event always implies a new Job. Cost: one ~50ms SID swap
+        # per connect (negligible — audio frames keep flowing through
+        # the same AudioSource). Opt-out: JARVIS_REPUBLISH_ON_AGENT_REJOIN=0.
+        if not participant.identity.startswith("agent-"):
+            return
+        if os.environ.get("JARVIS_REPUBLISH_ON_AGENT_REJOIN", "1") != "1":
+            return
+        asyncio.create_task(_republish_mic_track())
 
     @room.on("participant_disconnected")
     def _on_participant_disconnected(participant: rtc.RemoteParticipant) -> None:
@@ -595,6 +609,48 @@ async def run_once(shutdown: asyncio.Event) -> None:
     # active room per process, and the alternative (passing refs
     # through every handler) is much noisier.
     _mic_pub_ref = mic_pub
+
+    # `_republish_mic_track` — invoked from `_on_participant_connected`
+    # when the agent re-joins. Gives the new LiveKit Job a fresh track
+    # SID to subscribe to, sidestepping the zombie-subscription bug
+    # observed 2026-05-17 (3 reconnect cycles each landed with no STT
+    # events ever firing). Reuses the same AudioSource so the mic
+    # callback's `source.capture_frame(...)` keeps flowing — only the
+    # LocalAudioTrack + LocalTrackPublication get swapped. The new
+    # publish completes BEFORE the old unpublish so audio doesn't drop
+    # to silence mid-rotation.
+    nonlocal_mic = {"track": mic_track, "pub": mic_pub}
+    async def _republish_mic_track() -> None:
+        global _mic_pub_ref  # module-level global the HTTP mute handler reads
+        old_pub = nonlocal_mic["pub"]
+        old_track = nonlocal_mic["track"]
+        try:
+            new_track = rtc.LocalAudioTrack.create_audio_track("mic", source)
+            new_pub = await room.local_participant.publish_track(
+                new_track,
+                rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE),
+            )
+            nonlocal_mic["track"] = new_track
+            nonlocal_mic["pub"] = new_pub
+            _mic_pub_ref = new_pub
+            log.info(
+                f"[mic] republished — new sid={new_pub.sid} "
+                f"(was {old_pub.sid})"
+            )
+        except Exception as e:
+            log.warning(f"[mic] republish FAILED: {type(e).__name__}: {e}")
+            return  # keep old pub in place
+        # Unpublish old AFTER the new one is live — minimizes audio gap.
+        try:
+            await room.local_participant.unpublish_track(old_pub.sid)
+            log.info(f"[mic] old sid={old_pub.sid} unpublished")
+        except Exception as e:
+            log.warning(
+                f"[mic] old unpublish failed (harmless if remote already "
+                f"dropped it): {type(e).__name__}: {e}"
+            )
+        # old_track is implicitly dropped; the SFU has already replaced
+        # the subscription on the agent side.
 
     # PortAudio callback runs in a realtime thread. Marshal each frame
     # back to the asyncio loop so capture_frame (which awaits) runs on

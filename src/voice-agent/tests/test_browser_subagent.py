@@ -36,7 +36,13 @@ def test_browser_spec_registers_enabled():
     assert "transfer_to_desktop" in spec.when_to_use  # negative-routing example
 
 
-def test_browser_spec_loads_all_ext_tools():
+def test_browser_spec_loads_all_ext_tools(monkeypatch):
+    """When the extension reports connected, the spec's tool_factory
+    returns the full ext_* surface. Router added 2026-05-17 (CDP
+    fallback spec) means tool_factory now probes /api/ext_status —
+    force the probe to True so we're testing the extension path.
+    The CDP path is covered by test_browser_router.py."""
+    monkeypatch.setattr(browser_mod, "_is_extension_connected_sync", lambda: True)
     browser_mod.register_browser()
     spec = get("browser")
     tools = spec.tool_factory()
