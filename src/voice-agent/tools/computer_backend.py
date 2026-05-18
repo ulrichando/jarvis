@@ -205,7 +205,8 @@ _BUTTON_NUM = {"left": "1", "middle": "2", "right": "3"}
 
 
 async def click(
-    x: int, y: int, button: str = "left", modifiers: list[str] = []
+    x: int, y: int, button: str = "left",
+    modifiers: list[str] | None = None,
 ) -> None:
     """Move cursor to (x,y) and click with the named button. Optional
     modifier keys (shift/ctrl/alt/super) are held during the click."""
