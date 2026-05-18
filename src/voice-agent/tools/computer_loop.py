@@ -289,6 +289,7 @@ async def run(
                 model_used=active_model, action="api_error",
                 params_json=json.dumps({"error": str(e)[:200]}),
                 success=False, notes="anthropic call raised",
+                pwd_check_state=pw_state,
             )
             return LoopResult(
                 ok=False, summary=f"API error: {e}",
@@ -305,6 +306,7 @@ async def run(
                 model_used=active_model, action="bail",
                 params_json=json.dumps({"reason": "budget", "cost": cost_usd}),
                 success=False, notes=f"budget breach: ${cost_usd:.4f} > ${budget_usd:.4f}",
+                pwd_check_state=pw_state,
             )
             return LoopResult(
                 ok=False,
@@ -360,6 +362,7 @@ async def run(
                         "summary": summary_text,
                     }),
                     success=True,
+                    pwd_check_state=pw_state,
                 )
                 return LoopResult(
                     ok=True, summary=summary_text,
