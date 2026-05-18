@@ -118,6 +118,23 @@ class RegistrySubagent(Agent):
         # supervisor stays on Claude Haiku + Orpheus when this
         # subagent isn't active.
 
+        # Base instructions: either the spec's dynamic `instructions_factory`
+        # (when present — used by browser to disclose CDP-vs-extension
+        # backend per the 2026-05-18 capability-disclosure audit) or the
+        # static `instructions` field. Factory errors fall back to the
+        # static field rather than crashing the handoff.
+        instructions = spec.instructions
+        if spec.instructions_factory is not None:
+            try:
+                dyn = spec.instructions_factory()
+                if dyn:
+                    instructions = dyn
+            except Exception as e:
+                logger.warning(
+                    f"[subagent:{spec.name}] instructions_factory raised "
+                    f"{type(e).__name__}: {e}; using static instructions"
+                )
+
         # If the spec requested filesystem isolation, the transfer
         # tool has already created a worktree and is passing the path
         # here. Inject the absolute path into the subagent's
@@ -126,7 +143,6 @@ class RegistrySubagent(Agent):
         # cwd switching, so the path-in-prompt is the enforcement
         # mechanism — instruct the subagent to use absolute paths or
         # `cd <worktree> && cmd` patterns.
-        instructions = spec.instructions
         if worktree_path:
             instructions = instructions + (
                 f"\n\n═══ ISOLATION WORKTREE ═══\n\n"
@@ -474,6 +490,26 @@ def build_transfer_tool(spec: HandoffSubagent):
                     f"raised {type(e).__name__}: {e} — running without "
                     f"isolation"
                 )
+
+        # Custom Agent class on the spec — bypass RegistrySubagent and
+        # construct the user-supplied class directly. Used by computer_use
+        # whose on_enter runs an Anthropic Computer Use loop.
+        if getattr(spec, "agent_class", None) is not None:
+            try:
+                subagent = spec.agent_class(
+                    spec=spec,
+                    supervisor=supervisor,
+                    chat_ctx=ctx,
+                )
+            except Exception as e:
+                logger.exception(
+                    f"[handoff] {spec.name} custom agent_class construct failed"
+                )
+                return (
+                    supervisor,
+                    f"(subagent {spec.name} unavailable: {type(e).__name__}: {e})",
+                )
+            return (subagent, spec.ack_phrase)
 
         # Defensive: catch tool-factory failures (e.g. ImportError from
         # a typo'd subagent module) so the supervisor sees a concrete

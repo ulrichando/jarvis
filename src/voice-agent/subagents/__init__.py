@@ -63,6 +63,11 @@ def _register_builtins() -> None:
     # for real-time vision during screen-share sessions.
     from . import screen_share
     screen_share.register_screen_share()
+    # computer_use subagent — self-disables unless
+    # JARVIS_SUBAGENT_COMPUTER_USE=1. Runs a direct Anthropic
+    # Computer Use loop via ComputerUseAgent.on_enter().
+    from . import computer_use
+    computer_use.register_computer_use()
     # DelegatedSubagent path — new delegated subagents go here so they
     # don't bloat the supervisor's prompt with one transfer_to_X tool
     # each. All seven share the single `delegate(role, task)` tool.

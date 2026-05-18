@@ -5381,6 +5381,8 @@ async def entrypoint(ctx: JobContext) -> None:
                     except Exception:
                         mem_extracted = False
                     cache_read = getattr(session, "_jarvis_last_cache_read_tokens", 0) or 0
+                    cua_steps = getattr(session, "_jarvis_last_cua_steps", None)
+                    cua_cost = getattr(session, "_jarvis_last_cua_cost", None)
                     # Browser-backend stash from subagents/browser.py::_browser_tools
                     # — populated only when the browser subagent ran this turn.
                     # We read the module global and clear it after use so the
@@ -5413,6 +5415,8 @@ async def entrypoint(ctx: JobContext) -> None:
                         memory_auto_extracted=mem_extracted,
                         prompt_cached_tokens=cache_read,
                         browser_backend=browser_backend_used,
+                        computer_use_steps=cua_steps,
+                        computer_use_cost_usd=cua_cost,
                     )
                     # Reset usage stash for next turn.
                     session._jarvis_last_input_tokens = None
@@ -5422,6 +5426,8 @@ async def entrypoint(ctx: JobContext) -> None:
                     # the value and absent handoffs leave it None.
                     session._jarvis_last_subagent = None
                     session._jarvis_was_interrupted = False
+                    session._jarvis_last_cua_steps = None
+                    session._jarvis_last_cua_cost = None
                     # Reset total_audio_ms accumulator (and any open
                     # speaking-segment start) so the next turn starts
                     # clean. Without this, multi-turn sessions would
