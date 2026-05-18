@@ -27,7 +27,7 @@ from .registry import HandoffSubagent, register
 logger = logging.getLogger("jarvis.subagents.computer_use")
 
 
-__all__ = ["register_computer_use", "_ensure_x11_session"]
+__all__ = ["register_computer_use", "_ensure_x11_session", "build_safety_confirm_cb"]
 
 
 COMPUTER_USE_INSTRUCTIONS = """\
@@ -101,6 +101,38 @@ def _computer_use_tools() -> list:
     `computer` tool is passed directly to the Anthropic client inside
     the loop, not via the LiveKit tool framework."""
     return []
+
+
+def build_safety_confirm_cb(session, timeout_s: float = 30.0):
+    """Build a callback the loop uses to voice destructive-action
+    confirmations and await user yes/no.
+
+    Mechanism:
+      1. Push the phrase to TTS via session.say().
+      2. Set session._cua_confirm_future = Future() so the supervisor's
+         on_user_turn_completed hook can resolve it with True/False
+         parsed from the next user transcript.
+      3. Wait up to `timeout_s`; default-deny on timeout.
+    """
+    async def cb(phrase: str) -> bool:
+        fut = asyncio.get_event_loop().create_future()
+        session._cua_confirm_future = fut
+        session._cua_confirm_phrase = phrase
+        try:
+            await session.say(f"{phrase} Say yes or no.")
+        except Exception as e:
+            logger.warning(f"[cua.safety_confirm] session.say raised: {e}")
+        try:
+            return await asyncio.wait_for(fut, timeout=timeout_s)
+        except asyncio.TimeoutError:
+            logger.info(
+                f"[cua.safety_confirm] timeout after {timeout_s}s; default-deny"
+            )
+            return False
+        finally:
+            session._cua_confirm_future = None
+            session._cua_confirm_phrase = None
+    return cb
 
 
 def register_computer_use() -> None:

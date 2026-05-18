@@ -434,6 +434,7 @@ from providers.tts import LoggingGroqTTS as _LoggingGroqTTS
 from providers.stt import (
     BreakeredGroqSTT as _BreakeredGroqSTT,
     build_breakered_stt as _build_breakered_stt,
+    build_stt_chain as _build_stt_chain,
 )
 
 
@@ -2075,16 +2076,69 @@ async def launch_app(binary: str, args: str = "") -> str:
     return f"OK: launched '{bin_only}'"
 
 
-# Cache the geolocation result for ~10 min so repeated weather /
-# "where am I" turns don't hammer the IP-info API. The user's location
-# rarely changes within a single voice session.
-_LOCATION_CACHE: dict[str, object] = {"value": None, "ts": 0.0}
-_LOCATION_TTL_S = 600.0
-# Optional manual override path. If this file exists, its contents
-# (single line, free-form e.g. "Yaoundé, Cameroon") become the canonical
-# location, ignoring IP-based geolocation entirely. Useful when the IP
-# resolves to the wrong city (VPN, mobile carrier NAT, etc.).
-_LOCATION_OVERRIDE_PATH = Path.home() / ".jarvis" / "location-override"
+# ── Location tools ───────────────────────────────────────────────────
+# JARVIS exposes TWO location tools, deliberately split per the 2026-05-17
+# audit (Siri/Google/Alexa all separate these; see prompts/supervisor.md
+# "LOCATION QUESTIONS"):
+#
+#   saved_address()    — user's declared address (file-backed, set by
+#                        the user). The canonical answer to "what's my
+#                        address". Returns "no saved address" when unset
+#                        so the LLM asks rather than guessing.
+#   current_location() — IP/Wi-Fi/Google live lookup. Returns a string
+#                        with embedded precision marker so the LLM
+#                        cannot voice detail finer than what the
+#                        underlying signal supports.
+#
+# Past failure 2026-05-17 22:45 UTC: the unified get_location() returned
+# "Columbus, Ohio, US" (IP geo); user asked "be more specific"; the
+# supervisor LLM confabulated "Parsons Avenue, Columbus, Ohio" — no GPS
+# hardware, no Wi-Fi accuracy, no source for a street. The split + the
+# precision marker make this confab structurally impossible: an LLM
+# voicing a street when precision=city is now contradicting its own
+# tool result.
+
+# Cache the live-lookup result for ~10 min so repeated "where am I"
+# turns don't hammer ipinfo/Google. saved_address has no cache — file
+# read is ~ms.
+_CURRENT_LOCATION_CACHE: dict[str, object] = {"value": None, "ts": 0.0}
+_CURRENT_LOCATION_TTL_S = 600.0
+# Path for the user's saved address. Renamed from `location-override`
+# 2026-05-17 to reflect that this is the user's declared address (not
+# an override for live geolocation). The bad value sitting at the old
+# path was deleted in the same change; legacy paths are not migrated
+# because the prior contents were observed to be IP-geo guesses that
+# should not propagate.
+_SAVED_ADDRESS_PATH = Path.home() / ".jarvis" / "saved-address"
+
+
+# Precision bands used by current_location to advertise how trustworthy
+# its answer is. Mirrors Google Geocoding API's `location_type` enum
+# (ROOFTOP / RANGE_INTERPOLATED / GEOMETRIC_CENTER / APPROXIMATE) but
+# uses voice-friendlier names. The supervisor prompt forbids voicing
+# any detail finer than the returned band.
+_PRECISION_STREET = "street"        # < 50 m — confident street/road
+_PRECISION_BLOCK = "block"          # < 500 m — neighborhood
+_PRECISION_CITY = "city"            # < 5 km — city accurate
+_PRECISION_REGION = "region"        # < 50 km — state/province
+_PRECISION_COUNTRY = "country"      # else — country only
+
+def _precision_from_accuracy_m(accuracy_m: float | None) -> str:
+    """Map a Google Geolocation accuracy radius to a coarse precision
+    band the LLM can reason about. Conservative: under 50m claims
+    street but never rooftop (we have no exact-match signal — Google's
+    API rounds to building only with strong AP density)."""
+    if accuracy_m is None:
+        return _PRECISION_CITY  # IP fallback default — never claim block/street
+    if accuracy_m < 50:
+        return _PRECISION_STREET
+    if accuracy_m < 500:
+        return _PRECISION_BLOCK
+    if accuracy_m < 5000:
+        return _PRECISION_CITY
+    if accuracy_m < 50000:
+        return _PRECISION_REGION
+    return _PRECISION_COUNTRY
 
 
 async def _collect_wifi_bssids() -> list[dict]:
@@ -2104,7 +2158,7 @@ async def _collect_wifi_bssids() -> list[dict]:
         )
         out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=4.0)
     except Exception as e:
-        logger.debug(f"[get_location] nmcli scan failed: {e}")
+        logger.debug(f"[current_location] nmcli scan failed: {e}")
         return []
     aps: list[dict] = []
     for line in out_b.decode("utf-8", errors="replace").splitlines()[:12]:
@@ -2130,10 +2184,19 @@ async def _collect_wifi_bssids() -> list[dict]:
     return aps
 
 
-async def _google_geolocate(api_key: str, aps: list[dict]) -> tuple[float, float] | None:
+async def _google_geolocate(
+    api_key: str, aps: list[dict]
+) -> tuple[float, float, float | None] | None:
     """Hit Google Geolocation API with the BSSID list. Returns
-    (lat, lng) or None on any failure (403=API not enabled, network
-    out, no AP match)."""
+    (lat, lng, accuracy_m) or None on any failure.
+
+    `accuracy_m` is Google's reported 95%-confidence radius in meters —
+    typically ~20m on dense Wi-Fi BSSID hits, hundreds-to-thousands on
+    cell/IP fallback. Pass through to the caller so it can advertise a
+    precision band, not just a coordinate. The accuracy field may be
+    absent on some responses; caller treats None as "unknown" and
+    defaults to city precision.
+    """
     if not api_key or not aps:
         return None
     import json as _json
@@ -2150,38 +2213,68 @@ async def _google_geolocate(api_key: str, aps: list[dict]) -> tuple[float, float
         out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=6.0)
         data = _json.loads(out_b.decode("utf-8", errors="replace"))
     except Exception as e:
-        logger.debug(f"[get_location] Google geolocate failed: {e}")
+        logger.debug(f"[current_location] Google geolocate failed: {e}")
         return None
     if "error" in data:
-        # 403 means the API isn't enabled on the user's project. Log
-        # once, fall through to IP geo. User can enable at:
-        # https://console.developers.google.com/apis/api/geolocation.googleapis.com/overview
-        msg = data["error"].get("message", "")
-        if "has not been used" in msg or "PERMISSION_DENIED" in msg:
+        # 403 = API not enabled on the user's GCP project — distinct
+        # from "key is invalid" (that returns a different shape). The
+        # warning text below avoids the previously-misleading "key
+        # missing" phrasing — Ulrich's key was valid; only the project
+        # didn't have the Geolocation/Geocoding APIs activated. Extract
+        # the project id from the error so the operator can jump
+        # straight to the right enablement URL.
+        err = data["error"]
+        msg = err.get("message", "")
+        project = ""
+        for detail in err.get("details", []) or []:
+            metadata = detail.get("metadata") or {}
+            consumer = metadata.get("consumer", "")
+            if consumer:
+                project = consumer.replace("projects/", "")
+                break
+        if "PERMISSION_DENIED" in msg or "has not been used" in msg or "blocked" in msg.lower():
             logger.warning(
-                "[get_location] Google Geolocation API disabled — "
-                "enable at console.developers.google.com to get Wi-Fi "
-                "BSSID-based accuracy"
+                "[current_location] Google Geolocation API not enabled "
+                "on project=%s (key itself is valid — falling through "
+                "to IP geo). Enable at "
+                "console.cloud.google.com/apis/library/"
+                "geolocation.googleapis.com?project=%s and "
+                ".../geocoding-backend.googleapis.com?project=%s",
+                project or "<unknown>", project, project,
             )
         else:
-            logger.debug(f"[get_location] Google geo error: {msg[:120]}")
+            logger.debug(f"[current_location] Google geo error: {msg[:120]}")
         return None
     loc = data.get("location") or {}
     if "lat" in loc and "lng" in loc:
-        return (float(loc["lat"]), float(loc["lng"]))
+        accuracy = data.get("accuracy")
+        try:
+            accuracy_m = float(accuracy) if accuracy is not None else None
+        except (TypeError, ValueError):
+            accuracy_m = None
+        return (float(loc["lat"]), float(loc["lng"]), accuracy_m)
     return None
 
 
-async def _reverse_geocode(lat: float, lng: float) -> str | None:
-    """Coords → most-specific human-readable address via Nominatim.
+async def _reverse_geocode(
+    lat: float, lng: float, precision: str
+) -> str | None:
+    """Coords → human-readable string, **clipped to the precision band**.
 
-    Uses zoom=18 (street-level) so the neighborhood, road, and suburb
-    surface in the address dict — then we assemble a layered string:
-    'Road · Neighborhood, City, State, Country'. Where Nominatim
-    doesn't return a road or neighborhood (often, for residential
-    grids), we gracefully fall back to city-level.
+    Critical: the caller passes the precision band derived from the
+    geolocation accuracy. We MUST NOT emit a road or neighborhood when
+    precision is city/region/country, even if Nominatim returns one —
+    the closest road to a city-level coordinate is meaningless and
+    invites confabulation downstream (e.g. the 2026-05-17 "Parsons
+    Avenue" failure where the supervisor extended an IP-geo "Columbus,
+    Ohio" answer into a fake street).
+
+    Returns a comma-joined string capped at the precision band, or None
+    on lookup failure.
     """
     import json as _json
+    # zoom=18 still gets the rich address dict back; we just choose
+    # what to keep based on `precision`.
     url = (
         f"https://nominatim.openstreetmap.org/reverse"
         f"?format=json&lat={lat}&lon={lng}&zoom=18"
@@ -2197,12 +2290,9 @@ async def _reverse_geocode(lat: float, lng: float) -> str | None:
         out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=6.0)
         data = _json.loads(out_b.decode("utf-8", errors="replace"))
     except Exception as e:
-        logger.debug(f"[get_location] reverse-geocode failed: {e}")
+        logger.debug(f"[current_location] reverse-geocode failed: {e}")
         return None
     addr = data.get("address") or {}
-    # Layered fields, most-specific first. We pick at most one
-    # micro-locator (road or neighbourhood) to keep the string voice-
-    # friendly — both is too long for TTS.
     road = addr.get("road")
     neighbourhood = (
         addr.get("neighbourhood") or addr.get("suburb") or addr.get("quarter")
@@ -2214,67 +2304,219 @@ async def _reverse_geocode(lat: float, lng: float) -> str | None:
     region = addr.get("state") or addr.get("region")
     country = addr.get("country")
 
-    # Choose the micro-locator: road > neighborhood > nothing.
-    micro = road or neighbourhood
-    parts = [p for p in (micro, city, region, country) if p]
-    return ", ".join(parts) if parts else None
+    # Precision ceiling — strip detail that the source signal can't
+    # actually justify.
+    if precision == _PRECISION_COUNTRY:
+        parts = [country]
+    elif precision == _PRECISION_REGION:
+        parts = [region, country]
+    elif precision == _PRECISION_CITY:
+        parts = [city, region, country]
+    elif precision == _PRECISION_BLOCK:
+        parts = [neighbourhood, city, region, country]
+    else:  # _PRECISION_STREET
+        parts = [road or neighbourhood, city, region, country]
+    cleaned = [p for p in parts if p]
+    return ", ".join(cleaned) if cleaned else None
 
 
 @function_tool
-async def get_location() -> str:
-    """Return the user's approximate physical location.
+async def saved_address() -> str:
+    """Return the user's declared home/work/whatever address.
 
-    Use for "where am I" / "what city am I in" / "what's the weather
-    here" (chain into weather subagent) / "find restaurants near me".
+    Use this for "what's my address" / "where do I live" / "what's my
+    home address" / anything where the user means a SPECIFIC place
+    they OWN. This is the canonical answer — read from a file the
+    user set via `set_saved_address`.
 
-    NEVER use this for time queries — `current_time(timezone)` is
-    faster and doesn't need geo. Use this only when the answer
-    genuinely depends on physical location.
+    Returns either the saved value verbatim, or a clear "unset" string
+    when no address has been saved. **The LLM must NOT guess on unset
+    — ask the user, then call set_saved_address to store the answer.**
+
+    Distinct from `current_location()` which does live IP/Wi-Fi
+    positioning — that returns an approximate city, not an address.
+    No geolocation API will ever give you the user's apartment number.
+    """
+    try:
+        if _SAVED_ADDRESS_PATH.exists():
+            value = _SAVED_ADDRESS_PATH.read_text(encoding="utf-8").strip()
+            if value:
+                return f"Saved address: {value} (set by user)."
+    except Exception as e:
+        logger.debug(f"[saved_address] read failed: {e}")
+    return (
+        "No saved address. Ask the user where they live or what "
+        "address to use, then call set_saved_address(address) to "
+        "store it. Do NOT guess. Do NOT voice an IP-geo result as "
+        "an address — that's current_location's job and it's only "
+        "city-accurate at best."
+    )
+
+
+@function_tool
+async def set_saved_address(address: str) -> str:
+    """Persist the user's declared address.
+
+    Call when the user says something like "remember my address is X" /
+    "save my location as X" / "set my address to X" / "for weather use
+    Y". Writes verbatim to `~/.jarvis/saved-address` so future
+    `saved_address()` calls return it directly.
+
+    Args:
+        address: Free-form address string (e.g. "Douala, Cameroon",
+              "1234 Main St, Cleveland, Ohio, US", "Tokyo"). Stored
+              verbatim. Pass an empty string to clear.
+    """
+    address = (address or "").strip()
+    try:
+        _SAVED_ADDRESS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if not address:
+            if _SAVED_ADDRESS_PATH.exists():
+                _SAVED_ADDRESS_PATH.unlink()
+            return "Saved address cleared."
+        _SAVED_ADDRESS_PATH.write_text(address + "\n", encoding="utf-8")
+        return f"Got it — saved your address as: {address}."
+    except Exception as e:
+        return f"Could not save address [{type(e).__name__}]. Tell the user briefly."
+
+
+@function_tool
+async def current_location() -> str:
+    """Return the device's approximate live location.
+
+    Use for "where am I (right now)" / "what city am I in" / "weather
+    here" (chain into weather subagent) / "find pharmacies near me" /
+    time-zone lookups / anything that needs APPROXIMATE positioning.
+
+    **This is NEVER the user's address.** A laptop with no GPS gets
+    coordinates from Wi-Fi or IP signals — those give a city or
+    neighborhood at best. For the user's actual home/work address,
+    call `saved_address()` instead.
+
+    Returns a string with an embedded precision marker:
+
+        "Columbus, Ohio, US (precision=city; source=ip-geolocation).
+         Cannot resolve a street address from this signal; for the
+         user's home/work address, call saved_address."
+
+    **CRITICAL — THE PRECISION RULE.** The string contains
+    `precision=<level>` ∈ {country, region, city, block, street}.
+    NEVER voice location detail finer than the precision allows:
+      precision=city   → city + region + country (NO STREET)
+      precision=block  → neighborhood + city OK
+      precision=street → road name OK
+
+    On total failure returns "Location unavailable". Then ask the
+    user; offer set_saved_address if they want a permanent pin.
 
     Lookup order (most accurate first):
-      1. ~/.jarvis/location-override file (manual override).
-      2. ~10-min in-memory cache from a prior call.
-      3. Google Geolocation API (Wi-Fi BSSID → coords → reverse geocode)
-         when GOOGLE_API_KEY is set.
+      1. ~10-min in-memory cache from a prior call (same precision).
+      2. Browser extension's navigator.geolocation (Chrome's built-in
+         production key — no GCP project enablement needed). Only
+         fires when the extension is connected to the bridge; fast
+         fall-through otherwise (auto_launch=False).
+      3. Google Geolocation API (Wi-Fi BSSID → coords → reverse geocode,
+         clipped to precision band) when GOOGLE_API_KEY is set AND
+         the API is enabled on the project.
       4. ipinfo.io / ip-api.com IP-based geo (city-level, VPN-fragile).
-
-    Returns a one-line description like "Cleveland, Ohio, US". On
-    total failure returns "Location unavailable — try setting it
-    manually with set_location." Tell the user; offer set_location.
     """
-    # 1. Manual override
-    try:
-        if _LOCATION_OVERRIDE_PATH.exists():
-            override = _LOCATION_OVERRIDE_PATH.read_text(
-                encoding="utf-8"
-            ).strip()
-            if override:
-                return override
-    except Exception as e:
-        logger.debug(f"[get_location] override read failed: {e}")
-
-    # 2. Cache
     now = time.monotonic()
-    cached = _LOCATION_CACHE["value"]
-    if cached and (now - float(_LOCATION_CACHE["ts"])) < _LOCATION_TTL_S:
+
+    # 1. Cache (only for the live-lookup path; saved_address has no cache).
+    cached = _CURRENT_LOCATION_CACHE["value"]
+    if cached and (now - float(_CURRENT_LOCATION_CACHE["ts"])) < _CURRENT_LOCATION_TTL_S:
         return str(cached)
 
-    # 3. Wi-Fi BSSID + Google Geolocation API
+    # 2. Browser extension's navigator.geolocation — preferred when the
+    # extension is connected. Chrome's Network Location Provider uses
+    # Google's built-in production key, sidestepping the "enable the
+    # API on your GCP project" friction. Same Wi-Fi BSSID accuracy
+    # ceiling as the direct Google path.
+    try:
+        from tools.browser_ext_geolocate import fetch_browser_geolocation
+        geo = await fetch_browser_geolocation(timeout_ms=8000)
+    except Exception as e:
+        geo = {"ok": False, "error": f"helper raised: {e}"}
+    if geo.get("ok"):
+        try:
+            lat = float(geo["lat"])
+            lng = float(geo["lng"])
+            accuracy_raw = geo.get("accuracy_m")
+            accuracy_m = float(accuracy_raw) if accuracy_raw is not None else None
+            precision = _precision_from_accuracy_m(accuracy_m)
+            location = await _reverse_geocode(lat, lng, precision)
+            if location:
+                acc_str = (
+                    f"~{int(accuracy_m)}m" if accuracy_m is not None
+                    else "unknown"
+                )
+                formatted = (
+                    f"{location} (precision={precision}; "
+                    f"accuracy={acc_str}; source=browser-wifi). "
+                    f"For the user's home/work address use saved_address."
+                )
+                logger.info(
+                    f"[current_location] browser-ext → {location} "
+                    f"(precision={precision}, accuracy_m={accuracy_m})"
+                )
+                _CURRENT_LOCATION_CACHE["value"] = formatted
+                _CURRENT_LOCATION_CACHE["ts"] = now
+                return formatted
+        except Exception as e:
+            logger.debug(f"[current_location] browser-ext parse failed: {e}")
+    else:
+        err = str(geo.get("error", "")).lower()
+        # Quiet on the expected "Chrome's closed" case; hint at the
+        # Linux-specific geoclue-down case.
+        if "extension not connected" in err:
+            pass  # fast fall-through
+        elif "position_unavailable" in err or geo.get("code") == 2:
+            logger.warning(
+                "[current_location] browser geolocation POSITION_UNAVAILABLE "
+                "— Linux geoclue likely not running (D-Bus activatable on "
+                "most distros; verify with `systemctl status geoclue`)"
+            )
+        elif "permission_denied" in err or geo.get("code") == 1:
+            logger.warning(
+                "[current_location] browser geolocation PERMISSION_DENIED "
+                "— first call needs the user to grant location to the "
+                "extension's offscreen origin in Chrome"
+            )
+        else:
+            logger.debug(f"[current_location] browser-ext skipped: {geo.get('error')}")
+
+    # 3. Wi-Fi BSSID + Google Geolocation API (direct curl; needs the
+    #    Geolocation API enabled on the user's GCP project).
     google_key = os.environ.get("GOOGLE_API_KEY", "")
     if google_key:
         aps = await _collect_wifi_bssids()
         if aps:
-            coords = await _google_geolocate(google_key, aps)
-            if coords:
-                location = await _reverse_geocode(*coords)
+            fix = await _google_geolocate(google_key, aps)
+            if fix:
+                lat, lng, accuracy_m = fix
+                precision = _precision_from_accuracy_m(accuracy_m)
+                location = await _reverse_geocode(lat, lng, precision)
                 if location:
-                    logger.info(f"[get_location] Google/Wi-Fi → {location}")
-                    _LOCATION_CACHE["value"] = location
-                    _LOCATION_CACHE["ts"] = now
-                    return location
+                    acc_str = (
+                        f"~{int(accuracy_m)}m" if accuracy_m is not None
+                        else "unknown"
+                    )
+                    formatted = (
+                        f"{location} (precision={precision}; "
+                        f"accuracy={acc_str}; source=google-wifi). "
+                        f"For the user's home/work address use saved_address."
+                    )
+                    logger.info(
+                        f"[current_location] Google/Wi-Fi → {location} "
+                        f"(precision={precision}, accuracy_m={accuracy_m})"
+                    )
+                    _CURRENT_LOCATION_CACHE["value"] = formatted
+                    _CURRENT_LOCATION_CACHE["ts"] = now
+                    return formatted
 
-    # 4. IP geolocation. Two providers in order: ipinfo.io is faster
-    # but rate-limited; ip-api.com is the no-auth fallback.
+    # 3. IP geolocation. Two providers: ipinfo.io faster but rate-limited,
+    # ip-api.com is the no-auth fallback. Both are city-level by physics
+    # — never claim block/street precision from this path.
     async def _try(url: str, parse) -> str | None:
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -2287,7 +2529,7 @@ async def get_location() -> str:
             data = _json.loads(out_b.decode("utf-8", errors="replace"))
             return parse(data)
         except Exception as e:
-            logger.debug(f"[get_location] {url} failed: {e}")
+            logger.debug(f"[current_location] {url} failed: {e}")
             return None
 
     def _parse_ipinfo(d: dict) -> str | None:
@@ -2304,48 +2546,23 @@ async def get_location() -> str:
         parts = [p for p in (city, region, country) if p]
         return ", ".join(parts) if parts else None
 
-    location = await _try("https://ipinfo.io/json", _parse_ipinfo)
-    if not location:
-        location = await _try("http://ip-api.com/json/", _parse_ipapi)
+    ip_location = await _try("https://ipinfo.io/json", _parse_ipinfo)
+    if not ip_location:
+        ip_location = await _try("http://ip-api.com/json/", _parse_ipapi)
 
-    if location:
-        _LOCATION_CACHE["value"] = location
-        _LOCATION_CACHE["ts"] = now
-        return location
-    return "Location unavailable. Tell the user briefly and offer to set it manually with set_location."
-
-
-@function_tool
-async def set_location(city: str) -> str:
-    """Persist a manual location override.
-
-    The user said something like "I'm in Cleveland" / "set my location
-    to Columbus" / "for weather use Tokyo". Write the value to
-    `~/.jarvis/location-override` so future get_location() calls return
-    it directly, ignoring IP geo and Wi-Fi lookups.
-
-    Args:
-        city: Free-form location string (e.g. "Cleveland, Ohio, US",
-              "Tokyo, Japan", or just "Cleveland"). Stored verbatim.
-              Pass an empty string to clear the override.
-    """
-    city = (city or "").strip()
-    try:
-        _LOCATION_OVERRIDE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        if not city:
-            if _LOCATION_OVERRIDE_PATH.exists():
-                _LOCATION_OVERRIDE_PATH.unlink()
-            # Bust the cache so next get_location does a fresh lookup
-            _LOCATION_CACHE["value"] = None
-            _LOCATION_CACHE["ts"] = 0.0
-            return "Location override cleared. I'll use auto-detection."
-        _LOCATION_OVERRIDE_PATH.write_text(city + "\n", encoding="utf-8")
-        # Bust the cache so this turn's reply uses the new value.
-        _LOCATION_CACHE["value"] = None
-        _LOCATION_CACHE["ts"] = 0.0
-        return f"Got it — using {city} as your location from now on."
-    except Exception as e:
-        return f"Could not save location override [{type(e).__name__}]. Tell the user briefly."
+    if ip_location:
+        formatted = (
+            f"{ip_location} (precision=city; source=ip-geolocation). "
+            f"Cannot resolve a street address from this signal; for the "
+            f"user's home/work address, call saved_address."
+        )
+        _CURRENT_LOCATION_CACHE["value"] = formatted
+        _CURRENT_LOCATION_CACHE["ts"] = now
+        return formatted
+    return (
+        "Location unavailable. Tell the user briefly and ask them which "
+        "city/address to use; offer set_saved_address for a permanent pin."
+    )
 
 
 @function_tool
@@ -3367,6 +3584,31 @@ class JarvisAgent(Agent):
     async def on_user_turn_completed(
         self, turn_ctx: ChatContext, new_message: ChatMessage,
     ) -> None:
+        # Computer-use safety-confirm channel: if the subagent is
+        # waiting on a user yes/no, parse the transcript and resolve
+        # its Future. Don't continue normal turn processing — the
+        # subagent owns the floor until it task_done's.
+        cua_fut = getattr(self.session, "_cua_confirm_future", None)
+        if cua_fut is not None and not cua_fut.done():
+            transcript = ""
+            try:
+                transcript = (new_message.text_content() or "").strip().lower()
+            except Exception:
+                pass
+            yes = transcript in {"yes", "y", "yeah", "yep", "go", "go ahead",
+                                  "proceed", "do it", "ok", "okay", "confirmed"}
+            no = transcript in {"no", "n", "nope", "stop", "cancel", "don't",
+                                 "skip", "abort", "wait", "hold on"}
+            if yes:
+                cua_fut.set_result(True)
+                return
+            if no:
+                cua_fut.set_result(False)
+                return
+            # Ambiguous — treat as no (default-deny per spec §6.D).
+            cua_fut.set_result(False)
+            return
+
         # Pull the transcript however we can — different livekit-agents
         # versions stash it in slightly different places. Try the
         # canonical text_content() first; fall back to digging through
@@ -3730,15 +3972,21 @@ def prewarm(proc: JobProcess) -> None:
     # production tuning recommends per-environment calibration since
     # one set of numbers can't fit both quiet podcast booths and laptop-
     # in-a-cafe deployments.
-    # Industry-standard "balanced" preset (2026-05-17 research). The
-    # five values converge across OpenAI Realtime, Gemini Live, Pipecat,
-    # Vapi, and LiveKit's own silero/vad.py defaults. min_speech=0.05
-    # matches Silero's default and prevents the "JARVIS cuts itself off
-    # mid-sentence" failure mode (a 200ms TTS-reverb pop used to trip
-    # the interrupt path). min_silence=0.70 is Vapi's anti-early-cut-in
-    # recommendation — mid-sentence pauses average 400–700ms.
-    _vad_activation = float(os.environ.get("JARVIS_VAD_ACTIVATION_THRESHOLD", "0.6"))
-    _vad_deactivation = float(os.environ.get("JARVIS_VAD_DEACTIVATION_THRESHOLD", "0.4"))
+    # Industry-standard "balanced" preset (2026-05-17 research +
+    # quiet-room correction). The five values converge across OpenAI
+    # Realtime, Gemini Live, Pipecat, Vapi, and LiveKit's own
+    # silero/vad.py defaults. min_speech=0.05 matches Silero's default
+    # and prevents the "JARVIS cuts itself off mid-sentence" failure
+    # mode (a 200ms TTS-reverb pop used to trip the interrupt path).
+    # min_silence=0.70 is Vapi's anti-early-cut-in recommendation —
+    # mid-sentence pauses average 400–700ms.
+    #
+    # activation backed off 0.6 → 0.5 same day after live silent-mic
+    # incident: the "noisy room" 0.6 value over-filtered normal speech
+    # in a measured-RMS-285 (quiet) room. 0.5 = OpenAI Realtime +
+    # Silero default = balanced for typical rooms.
+    _vad_activation = float(os.environ.get("JARVIS_VAD_ACTIVATION_THRESHOLD", "0.5"))
+    _vad_deactivation = float(os.environ.get("JARVIS_VAD_DEACTIVATION_THRESHOLD", "0.35"))
     _vad_min_speech = float(os.environ.get("JARVIS_VAD_MIN_SPEECH_S", "0.05"))
     _vad_min_silence = float(os.environ.get("JARVIS_VAD_MIN_SILENCE_S", "0.70"))
     _vad_prefix_pad = float(os.environ.get("JARVIS_VAD_PREFIX_PAD_S", "0.50"))
@@ -4426,8 +4674,16 @@ def _register_state_tracking_handlers(session) -> None:
 
     # STT finalised a user turn — LLM is about to start generating.
     # Touch the thinking flag so the tray goes gold immediately.
+    # Also bumps the audio-silence watchdog so it doesn't trip — any
+    # transcript (interim or final) proves audio is flowing from the
+    # voice-client to the agent through a healthy LiveKit subscription.
     @session.on("user_input_transcribed")
     def _on_user_input(ev) -> None:
+        try:
+            from resilience import audio_silence_watchdog as _asw
+            _asw.mark_audio_activity()
+        except Exception:
+            pass
         if getattr(ev, "is_final", True):
             _mark_thinking_start()
             _reset_tool_call_count()
@@ -4449,12 +4705,43 @@ def _register_state_tracking_handlers(session) -> None:
 
     @session.on("user_state_changed")
     def _on_user_state_for_interrupt(ev) -> None:
+        """VAD-direct barge-in (Path A step 1, 2026-05-18).
+
+        The framework's own barge-in path waits for STT min_words +
+        min_duration confirmation before firing interrupt. With Groq
+        Whisper Turbo (non-streaming) that confirmation only arrives
+        AFTER the user stops talking — way too late. This handler
+        fires `session.interrupt()` the moment Silero VAD reports the
+        user started speaking (≈50–100 ms after voice onset), without
+        waiting for STT.
+
+        That in turn task-cancels the active TTS `_run()`, which fires
+        the CancelledError catch in `providers/tts.py` and aborts the
+        Orpheus HTTP socket. End-to-end: VAD onset → interrupt → TTS
+        cancel → resp.close() in <300 ms.
+
+        Trade-off: a 50 ms cough / breath now interrupts JARVIS.
+        Mitigations already in place (Silero min_speech=0.05 s,
+        PipeWire echo-cancel-source, APM noise-suppression).
+        """
         try:
             new_state = getattr(ev, "new_state", None)
-            if new_state == "speaking":
-                agent_state = getattr(session, "agent_state", "")
-                if agent_state == "speaking":
-                    session._jarvis_was_interrupted = True
+            if new_state != "speaking":
+                return
+            agent_state = getattr(session, "agent_state", "")
+            if agent_state != "speaking":
+                return
+            # Mark for telemetry first (preserves the old behaviour
+            # other code may rely on).
+            session._jarvis_was_interrupted = True
+            # Fire the interrupt. session.interrupt() returns a future;
+            # we don't await — the cancellation propagates through the
+            # framework's task graph and the TTS stream gets cancelled
+            # by the StreamAdapter on its own loop.
+            logger.info(
+                "[vad-barge-in] user started speaking during TTS → forcing interrupt"
+            )
+            session.interrupt()
         except Exception as e:
             logger.debug(f"[interrupt-detect] skipped: {e}")
 
@@ -4614,6 +4901,20 @@ async def entrypoint(ctx: JobContext) -> None:
     await ctx.connect()
     logger.info(f"joined room: {ctx.room.name}")
 
+    # Audio-silence watchdog: mark this fresh job's start clock + spawn
+    # the background deadman loop. If the LiveKit subscription lands in
+    # a zombie state (job dispatched but no audio frames flow — observed
+    # 2026-05-17 with three back-to-back occurrences each followed by
+    # ~50min of silence), the watchdog forces sys.exit(1) after 90s and
+    # systemd respawns us with a clean subscription. Idempotent — the
+    # second call returns the existing task instead of spawning twice.
+    try:
+        from resilience import audio_silence_watchdog as _asw
+        _asw.mark_job_started()
+        _asw.start_audio_silence_watchdog_task()
+    except Exception as e:
+        logger.warning(f"[audio-silence] wiring failed: {type(e).__name__}: {e}")
+
     # Initialize Maya-class telemetry SQLite. Failures are silent.
     try:
         init_db(DEFAULT_DB_PATH)
@@ -4664,11 +4965,16 @@ async def entrypoint(ctx: JobContext) -> None:
         # runaway loops.
         max_tool_steps=15,
         vad=ctx.proc.userdata["vad"],
-        # Groq Whisper Turbo — same model as the old sidecar, but
-        # streaming. First partial transcripts arrive while the user
-        # is still talking, so turn latency drops from ~500 ms
-        # (whole-clip upload) to ~100 ms (just the tail decoder).
-        stt=_build_breakered_stt(),
+        # STT chain (2026-05-18): Deepgram Nova-3 streaming primary,
+        # Groq Whisper Turbo failover. Deepgram delivers partial
+        # transcripts every ~150 ms over WebSocket — that's what lets
+        # the framework's STT-confirmed barge-in path fire while the
+        # user is still talking (Whisper Turbo is non-streaming and
+        # final-only, which made barge-in unworkable). Falls through
+        # to Whisper-only when DEEPGRAM_API_KEY is unset / Deepgram
+        # plugin missing / Deepgram construction errors — safe to
+        # ship without the key, just slower barge-in.
+        stt=_build_stt_chain(vad=ctx.proc.userdata.get("vad")),
         # Speech LLM — switchable via the tray's "Models" submenu.
         # Default is llama-3.3-70b on Groq for ~200 ms first-token
         # latency. Switching writes ~/.jarvis/voice-model and bounces
@@ -4695,6 +5001,16 @@ async def entrypoint(ctx: JobContext) -> None:
         turn_handling={
             "interruption": {
                 "enabled": True,
+                # Mode 2026-05-18: explicit "vad" rather than absent
+                # (auto-detect). Absent would try AdaptiveInterruption
+                # via livekit.cloud/agent-gateway first — JARVIS runs
+                # local LiveKit (LIVEKIT_URL=ws://127.0.0.1:7880) and
+                # has no Cloud inference key, so the auto-detect probe
+                # fails silently and falls back to VAD anyway. Setting
+                # explicitly avoids the wasted probe and makes intent
+                # clear. Switch to "adaptive" only if/when JARVIS moves
+                # to LiveKit Cloud or self-hosts agent-gateway.
+                "mode": "vad",
                 # min_words and min_duration are AND-gated in the
                 # framework: interrupt fires only after VAD has crossed
                 # min_duration AND STT has produced ≥ min_words words.
@@ -5065,6 +5381,18 @@ async def entrypoint(ctx: JobContext) -> None:
                     except Exception:
                         mem_extracted = False
                     cache_read = getattr(session, "_jarvis_last_cache_read_tokens", 0) or 0
+                    # Browser-backend stash from subagents/browser.py::_browser_tools
+                    # — populated only when the browser subagent ran this turn.
+                    # We read the module global and clear it after use so the
+                    # next turn starts None (no stale 'ext'/'cdp' value).
+                    browser_backend_used: Optional[str] = None
+                    if subagent == "browser":
+                        try:
+                            from subagents import browser as _browser_mod
+                            browser_backend_used = _browser_mod._LAST_CHOSEN_BACKEND
+                            _browser_mod._LAST_CHOSEN_BACKEND = None
+                        except Exception:
+                            browser_backend_used = None
                     log_turn(
                         user_text=getattr(session, "_jarvis_turn_user_text", "") or "",
                         jarvis_text=text or "",
@@ -5084,6 +5412,7 @@ async def entrypoint(ctx: JobContext) -> None:
                         context_pressure=pressure,
                         memory_auto_extracted=mem_extracted,
                         prompt_cached_tokens=cache_read,
+                        browser_backend=browser_backend_used,
                     )
                     # Reset usage stash for next turn.
                     session._jarvis_last_input_tokens = None
@@ -5239,12 +5568,16 @@ async def entrypoint(ctx: JobContext) -> None:
             calc,
             glob_files,
             grep_files,
-            # Location — IP geo + Wi-Fi BSSID + manual override.
-            # set_location is on the supervisor so phrases like
-            # "I'm in Cleveland" / "set my location to X" persist
-            # without going through a subagent handoff.
-            get_location,
-            set_location,
+            # Location — split into TWO tools 2026-05-17:
+            #   saved_address     — user's declared address (file-backed)
+            #   current_location  — IP/Wi-Fi/Google live lookup (with
+            #                       precision marker; LLM cannot voice
+            #                       detail finer than the band)
+            #   set_saved_address — writer for saved_address
+            # See prompts/supervisor.md "LOCATION QUESTIONS" for routing.
+            saved_address,
+            current_location,
+            set_saved_address,
             # screenshot — read-only "what's on my screen?" tool.
             # Added to the supervisor 2026-05-11 evening after the
             # desktop-subagent routing produced a capability-denial
