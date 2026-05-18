@@ -90,17 +90,18 @@ from pipeline.turn_router import compute_interrupt_tuning
 
 def test_route_base_neutral_emotion():
     """With neutral emotion, the route base values should pass through
-    unchanged — verifies overlay doesn't perturb the baseline."""
-    assert compute_interrupt_tuning("BANTER",    "neutral") == (1, 0.3)
-    # TASK bumped 2→3 on 2026-05-07 to filter 2-word backchannels
-    # ("yeah okay", "got it"). See pipeline/turn_router.py::_ROUTE_BASE.
-    assert compute_interrupt_tuning("TASK",      "neutral") == (3, 0.4)
-    assert compute_interrupt_tuning("REASONING", "neutral") == (3, 0.5)
-    assert compute_interrupt_tuning("EMOTIONAL", "neutral") == (3, 0.6)
+    unchanged — verifies overlay doesn't perturb the baseline.
+    All routes dropped to min_words=0 on 2026-05-18 — see
+    pipeline/turn_router.py::_ROUTE_BASE for the Whisper-no-interims
+    reasoning."""
+    assert compute_interrupt_tuning("BANTER",    "neutral") == (0, 0.3)
+    assert compute_interrupt_tuning("TASK",      "neutral") == (0, 0.4)
+    assert compute_interrupt_tuning("REASONING", "neutral") == (0, 0.5)
+    assert compute_interrupt_tuning("EMOTIONAL", "neutral") == (0, 0.6)
 
 
 def test_unknown_route_defaults_to_task_base():
-    assert compute_interrupt_tuning("BLARG", "neutral") == (3, 0.4)
+    assert compute_interrupt_tuning("BLARG", "neutral") == (0, 0.4)
 
 
 def test_frustrated_overlay_adds_padding():
@@ -128,12 +129,13 @@ def test_sad_overlay_increases_min_duration_most():
 
 
 def test_floor_prevents_disabling_interrupts():
-    """An aggressive overlay can't push min_words below 1 or
-    min_duration below 0.2 — LiveKit needs both > 0."""
-    # Hypothetical: BANTER (1, 0.3) + urgent (-1, -0.1) → would be (0, 0.2)
-    # but the floor on min_words clamps to 1.
+    """An aggressive overlay can't push min_words below 0 or
+    min_duration below 0.2. LiveKit's InterruptionOptions accepts
+    min_words=0 (its own default), so the floor was relaxed from
+    1 → 0 on 2026-05-18 to enable VAD-only barge-in (Whisper STT
+    is non-streaming so word-count-confirmed barge-in is dead)."""
     mw, md = compute_interrupt_tuning("BANTER", "urgent")
-    assert mw >= 1
+    assert mw >= 0
     assert md >= 0.2
 
 

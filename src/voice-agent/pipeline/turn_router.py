@@ -317,16 +317,35 @@ def route_from_classifier_output(raw: str) -> Route:
 # All three dispatch sites (LangGraph node, BANTER fast-path, legacy
 # async classifier path) call this helper so behaviour stays uniform.
 _ROUTE_BASE = {
-    "BANTER":    (1, 0.3),
-    # TASK bumped 2→3 (2026-05-07): filters 2-word backchannels like
-    # "yeah okay" / "got it" / "mhm okay" / "right right" that slipped
-    # past min_words=2 and killed real TTS replies. Cost: ~200 ms more
-    # latency on deliberate 2-word interrupts ("stop talking" / "wait
-    # please"); kill-phrase fast-path at jarvis_agent.py:7410 still
-    # catches single-word "stop|wait|hush|cancel|..." past min_words.
-    "TASK":      (3, 0.4),
-    "REASONING": (3, 0.5),
-    "EMOTIONAL": (3, 0.6),
+    # 2026-05-18 — all routes dropped to min_words=0 to enable
+    # VAD-driven barge-in. JARVIS uses Groq Whisper Large v3 Turbo
+    # STT which does NOT produce interim transcripts — final-only.
+    # That meant "min_words=3" required STT confirmation that NEVER
+    # arrives until AFTER the user stops talking, by which time the
+    # framework had already treated the utterance as a new turn
+    # instead of an interrupt. Live failure 2026-05-18 03:13-03:14
+    # UTC: user said "stop" multiple times during a 23s TTS; framework
+    # treated each as a new turn, TTS finished completely, my new
+    # Orpheus-cancel path never fired (it needs the framework to
+    # task-cancel the TTS stream — which only happens on barge-in).
+    #
+    # min_words=0 + min_duration retained = "VAD detects speech for
+    # min_duration seconds → interrupt regardless of word count".
+    # Trade-off: a cough / breath / chair creak / "uh" of >= the
+    # min_duration window will fire a false interrupt. Mitigations
+    # already in place: PipeWire echo-cancel-source (no TTS-bleed),
+    # APM noise-suppression in voice-client, JARVIS_LISTENING_RMS_
+    # THRESHOLD=4000 (high RMS bar), Silero VAD activation=0.5.
+    #
+    # Per-emotion overlay still applies (+1 word for frustrated/sad),
+    # so emotional turns stay slightly more patient.
+    #
+    # History (pre-change):
+    #   BANTER=1, TASK=3, REASONING=3, EMOTIONAL=3
+    "BANTER":    (0, 0.3),
+    "TASK":      (0, 0.4),
+    "REASONING": (0, 0.5),
+    "EMOTIONAL": (0, 0.6),
 }
 _EMOTION_OVERLAY = {
     "frustrated": (+1, +0.2),  # don't kill them mid-vent
@@ -341,13 +360,15 @@ _EMOTION_OVERLAY = {
 def compute_interrupt_tuning(route: str, emotion: str) -> tuple[int, float]:
     """Return (min_words, min_duration) for the given route + emotion.
 
-    Floors at min_words=1 and min_duration=0.2 so an aggressive overlay
-    can't disable interrupts entirely (LiveKit's framework wants both
-    > 0).
+    Floors at min_words=0 (since 2026-05-18 — see _ROUTE_BASE comment;
+    Whisper-without-interims means STT-confirmed barge-in is dead, so
+    we rely on VAD only) and min_duration=0.2 so an aggressive overlay
+    can't push the duration below the framework's responsive floor.
+    LiveKit InterruptionOptions accepts min_words=0 (its own default).
     """
     base_w, base_d = _ROUTE_BASE.get(route, _ROUTE_BASE["TASK"])
     adj_w, adj_d = _EMOTION_OVERLAY.get(emotion, (0, 0.0))
-    mw = max(1, base_w + adj_w)
+    mw = max(0, base_w + adj_w)
     md = max(0.2, round(base_d + adj_d, 2))
     return mw, md
 
