@@ -95,7 +95,12 @@ PYEOF
 SCENARIO="${1:-all}"
 
 if [[ "$SCENARIO" == "open-app" || "$SCENARIO" == "all" ]]; then
-    run_scenario "open-app" "open the Files manager" 8 0.15
+    # Budget calibrated from 2026-05-18 first soak: opening Files on
+    # Kali XFCE took 12 steps / $0.42 (the WM has no obvious activities
+    # button; model navigates by trial-clicking the panel). 15-step /
+    # $0.50 budget leaves variance headroom. Tighter on Activities-
+    # forward WMs (GNOME), looser on tile-based ones.
+    run_scenario "open-app" "open the Files manager" 15 0.50
 fi
 
 if [[ "$SCENARIO" == "click-button" || "$SCENARIO" == "all" ]]; then
