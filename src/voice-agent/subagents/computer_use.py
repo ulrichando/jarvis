@@ -228,11 +228,18 @@ def register_computer_use() -> None:
         name="computer_use",
         transfer_tool="transfer_to_computer_use",
         when_to_use=(
-            "Use when the user wants direct GUI control on the desktop — "
-            "drive an unfamiliar GUI app, complete a multi-step UI flow, "
-            "navigate dialogs, anything where pointing-and-clicking matters. "
-            "Not for shell-only tasks (use bash) or simple browser actions "
-            "(use transfer_to_browser)."
+            "Use when the task needs you to LOOK AT THE SCREEN, plan a "
+            "click sequence by visual inspection, and execute it — "
+            "driving an unfamiliar GUI app, navigating a multi-step "
+            "dialog, reading on-screen text and acting on it, finding a "
+            "widget you can't address by name. The model takes a "
+            "screenshot, decides where to click, clicks, screenshots "
+            "again. Trigger phrases: 'click the X menu', 'find the X "
+            "button', 'open X and navigate to Y', 'look at my screen and "
+            "Z', 'select the X option in the open Y dialog'. NOT for "
+            "blind-coord OS actions like launching apps by name (use "
+            "transfer_to_desktop) or web-page interactions (use "
+            "transfer_to_browser)."
         ),
         instructions=COMPUTER_USE_INSTRUCTIONS,
         tool_factory=_computer_use_tools,
