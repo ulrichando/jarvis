@@ -109,15 +109,17 @@ def test_fast_path_skips_classifier_and_swaps_banter():
     assert result["classifier_skipped"] is True
     classifier.ainvoke.assert_not_called()
     assert session._llm is dispatcher._inners["BANTER"]
-    # BANTER neutral: route base (1, 0.3) + neutral overlay (0, 0) = (1, 0.3)
-    assert session.options.interruption == {"min_words": 1, "min_duration": 0.3}
+    # BANTER neutral: route base (0, 0.3) + neutral overlay (0, 0) = (0, 0.3).
+    # All routes moved to min_words=0 on 2026-05-18 for VAD-only barge-in.
+    assert session.options.interruption == {"min_words": 0, "min_duration": 0.3}
 
 
 def test_fast_path_applies_urgent_emotion_overlay():
     """Phase-7: BANTER fast-path with urgent speech (high WPM relative
-    to baseline) should snap interrupts down — the overlay floors at
-    (1, 0.2) since BANTER's base (1, 0.3) + urgent (-1, -0.1) = (0, 0.2)
-    pre-floor."""
+    to baseline) should snap interrupts down. BANTER base (0, 0.3) +
+    urgent overlay (-1, -0.1) → (-1, 0.2) pre-floor; floors clamp to
+    (0, 0.2). Floor on min_words relaxed from 1 → 0 on 2026-05-18 for
+    VAD-only barge-in."""
     g = build_turn_graph()
     session = _mk_session("hey jarvis")
     dispatcher, tts_dispatcher = _mk_dispatcher(), _mk_tts_dispatcher()
@@ -129,7 +131,7 @@ def test_fast_path_applies_urgent_emotion_overlay():
         session=session, dispatcher=dispatcher,
         tts_dispatcher=tts_dispatcher, classifier=classifier,
     )
-    assert session.options.interruption["min_words"] == 1   # floor
+    assert session.options.interruption["min_words"] == 0   # floor
     assert session.options.interruption["min_duration"] == 0.2  # floor
 
 
@@ -149,7 +151,8 @@ def test_non_fast_path_runs_classifier_and_picks_its_route():
     assert result.get("classifier_skipped") is False
     classifier.ainvoke.assert_called_once()
     assert session._llm is dispatcher._inners["REASONING"]
-    assert session.options.interruption == {"min_words": 3, "min_duration": 0.5}
+    # REASONING base (0, 0.5) + neutral (0, 0) — see _ROUTE_BASE.
+    assert session.options.interruption == {"min_words": 0, "min_duration": 0.5}
 
 
 def test_classifier_garbage_falls_back_to_task():
