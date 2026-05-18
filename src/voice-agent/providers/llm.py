@@ -858,15 +858,33 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
             logger.warning(f"[dispatch] Anthropic fallback construction failed: {e}")
             anth_fallback = None
 
+    def _model_id_from_label(label: str) -> str:
+        """Extract the bare model-id from any label shape:
+           'claude-haiku-4-5'              → 'claude-haiku-4-5'    (TASK pin)
+           'anthropic:claude-sonnet-4-6'   → 'claude-sonnet-4-6'   (specialist)
+           'groq:llama-3.1-8b-instant'     → 'llama-3.1-8b-instant'
+        Used to detect when primary == anth_fallback so the
+        FallbackAdapter doesn't get the same model twice."""
+        return label.split(":", 1)[-1] if ":" in label else label
+
     def _wrap(primary):
-        """Wrap a Groq LLM in FallbackAdapter([groq, deepseek, anthropic])
+        """Wrap a primary LLM in FallbackAdapter([primary, deepseek, anthropic])
         so successive provider blips transparently route through to the
-        next rung. Preserves _jarvis_label for telemetry."""
+        next rung. Preserves _jarvis_label for telemetry.
+
+        2026-05-18: REASONING specialist is now Sonnet 4.6 — the same
+        model as the rung-3 anth_fallback — so we skip the duplicate
+        rung for it. EMOTIONAL is Haiku, which is a DIFFERENT Anthropic
+        model from Sonnet (different rate limits / quotas), so it
+        keeps the Sonnet rung as a smart-but-slow recovery."""
         rungs = [primary]
         if ds_fallback is not None:
             rungs.append(ds_fallback)
         if anth_fallback is not None:
-            rungs.append(anth_fallback)
+            anth_id = _model_id_from_label(getattr(anth_fallback, "_jarvis_label", ""))
+            primary_id = _model_id_from_label(getattr(primary, "_jarvis_label", ""))
+            if primary_id != anth_id:
+                rungs.append(anth_fallback)
         if len(rungs) == 1:
             return primary
         try:
@@ -902,22 +920,57 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
         logger.warning(f"[dispatch] BANTER LLM construction failed: {e}; using main")
         banter = main
 
+    # REASONING — promoted to Anthropic Sonnet 4.6 (2026-05-18).
+    # Sonnet leads τ-bench (87.5% multi-turn tool use) and BFCL across
+    # the user's full provider stack. REASONING is slow-path-only
+    # (multi-step queries), so the ~300ms TTFT bump vs qwen3-32b is in
+    # budget. Same max_tokens=200 cap + prompt caching as the speech
+    # path. Falls back to qwen3-32b if Anthropic isn't reachable at
+    # build time — keeps no-credit / no-key boots working.
     try:
-        reasoning_raw = BreakeredGroqLLM(
-            model="qwen/qwen3-32b", temperature=0.6, **LLM_KWARGS,
-        )
-        reasoning_raw._jarvis_label = "groq:qwen3-32b"
+        if _ANTHROPIC_AVAILABLE and anth_key:
+            reasoning_raw = lk_anthropic.LLM(
+                model="claude-sonnet-4-6",
+                api_key=anth_key,
+                temperature=0.6,
+                max_tokens=200,
+                caching="ephemeral",
+                _strict_tool_schema=False,
+            )
+            reasoning_raw._jarvis_label = "anthropic:claude-sonnet-4-6"
+        else:
+            reasoning_raw = BreakeredGroqLLM(
+                model="qwen/qwen3-32b", temperature=0.6, **LLM_KWARGS,
+            )
+            reasoning_raw._jarvis_label = "groq:qwen3-32b"
         reasoning = _wrap(reasoning_raw)
     except Exception as e:
         logger.warning(f"[dispatch] REASONING LLM construction failed: {e}; using main")
         reasoning = main
 
+    # EMOTIONAL — promoted to Anthropic Haiku 4.5 (2026-05-18). Haiku
+    # has markedly better emotional read + warmth than llama-4-scout,
+    # and at ~0.7s TTFT it's well inside the budget for "I'm sad" /
+    # "I love you" turns (not latency-critical like BANTER). Keeps
+    # temperature 0.7 for warmth, same max_tokens cap. Falls back to
+    # llama-4-scout if Anthropic isn't reachable.
     try:
-        emotional_raw = BreakeredGroqLLM(
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
-            temperature=0.7, **LLM_KWARGS,
-        )
-        emotional_raw._jarvis_label = "groq:llama-4-scout"
+        if _ANTHROPIC_AVAILABLE and anth_key:
+            emotional_raw = lk_anthropic.LLM(
+                model="claude-haiku-4-5",
+                api_key=anth_key,
+                temperature=0.7,
+                max_tokens=200,
+                caching="ephemeral",
+                _strict_tool_schema=False,
+            )
+            emotional_raw._jarvis_label = "anthropic:claude-haiku-4-5"
+        else:
+            emotional_raw = BreakeredGroqLLM(
+                model="meta-llama/llama-4-scout-17b-16e-instruct",
+                temperature=0.7, **LLM_KWARGS,
+            )
+            emotional_raw._jarvis_label = "groq:llama-4-scout"
         emotional = _wrap(emotional_raw)
     except Exception as e:
         logger.warning(f"[dispatch] EMOTIONAL LLM construction failed: {e}; using main")
