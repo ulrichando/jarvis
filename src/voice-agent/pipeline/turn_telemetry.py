@@ -165,6 +165,56 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
                 )
             except sqlite3.OperationalError:
                 pass
+        # 2026-05-18 — which browser backend the browser subagent ran
+        # on this turn: 'ext' (Chrome extension) or 'cdp' (Playwright
+        # bundled Chromium fallback) or NULL (no browser subagent this
+        # turn). Lets the operator audit how often CDP fallback fires
+        # — high rate means the user's Chrome extension is misconfigured
+        # and the fix is non-degradation rather than just CDP routing.
+        if "browser_backend" not in cols:
+            try:
+                conn.execute(
+                    "ALTER TABLE turns ADD COLUMN browser_backend TEXT"
+                )
+            except sqlite3.OperationalError:
+                pass
+        # 2026-05-18 — computer_use subagent telemetry. Two scalar
+        # columns on `turns` (per-turn step count + cost), plus a
+        # full audit table for per-action records. Spec:
+        # docs/superpowers/specs/2026-05-18-jarvis-computer-use-parity-design.md
+        if "computer_use_steps" not in cols:
+            try:
+                conn.execute(
+                    "ALTER TABLE turns ADD COLUMN computer_use_steps INTEGER"
+                )
+            except sqlite3.OperationalError:
+                pass
+        if "computer_use_cost_usd" not in cols:
+            try:
+                conn.execute(
+                    "ALTER TABLE turns ADD COLUMN computer_use_cost_usd REAL"
+                )
+            except sqlite3.OperationalError:
+                pass
+        # Audit table — one row per computer_use_loop action.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS computer_use_actions (
+                id INTEGER PRIMARY KEY,
+                ts_utc TEXT NOT NULL,
+                handoff_id TEXT NOT NULL,
+                step INTEGER NOT NULL,
+                model_used TEXT,
+                action TEXT NOT NULL,
+                params_json TEXT,
+                success INTEGER NOT NULL,
+                screenshot_path TEXT,
+                notes TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_cua_handoff
+                ON computer_use_actions(handoff_id);
+            CREATE INDEX IF NOT EXISTS idx_cua_ts
+                ON computer_use_actions(ts_utc);
+        """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_turns_subagent ON turns(subagent)")
 
 
@@ -190,6 +240,9 @@ def log_turn(
     context_pressure: Optional[str] = None,
     memory_auto_extracted: bool = False,
     prompt_cached_tokens: int = 0,
+    browser_backend: Optional[str] = None,
+    computer_use_steps: Optional[int] = None,
+    computer_use_cost_usd: Optional[float] = None,
 ) -> None:
     """Write one row. Any exception is swallowed so telemetry never blocks voice.
 
@@ -204,6 +257,14 @@ def log_turn(
     field. `cost_usd` is computed via tools.token_estimation.cost_usd().
     `context_pressure` is "ok" / "warn" / "hard" from the pre-flight
     estimate at turn start.
+
+    `browser_backend` is 'ext' / 'cdp' / None — set by the browser
+    subagent's tool-factory router (2026-05-18). NULL on non-browser
+    turns so a GROUP BY counts only meaningful rows.
+
+    `computer_use_steps` is the total action count if a computer_use
+    subagent handled this turn, None otherwise. `computer_use_cost_usd`
+    is the sum of per-action costs (2026-05-18).
     """
     try:
         with sqlite3.connect(db_path) as conn:
@@ -213,8 +274,10 @@ def log_turn(
                     voice_used, ttfw_ms, total_audio_ms, user_followup_30s,
                     route_fallback, notes, subagent, interrupted,
                     input_tokens, output_tokens, cost_usd, context_pressure,
-                    memory_auto_extracted, prompt_cached_tokens)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    memory_auto_extracted, prompt_cached_tokens,
+                    browser_backend,
+                    computer_use_steps, computer_use_cost_usd)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     user_text, jarvis_text, emotion, route, llm_used,
@@ -223,10 +286,47 @@ def log_turn(
                     subagent, int(interrupted),
                     input_tokens, output_tokens, cost_usd, context_pressure,
                     int(memory_auto_extracted), int(prompt_cached_tokens),
+                    browser_backend,
+                    computer_use_steps, computer_use_cost_usd,
                 ),
             )
     except Exception:
         return  # silent — see module docstring
+
+
+def log_computer_use_action(
+    *,
+    db_path: Path = DEFAULT_DB_PATH,
+    handoff_id: str,
+    step: int,
+    model_used: Optional[str],
+    action: str,
+    params_json: Optional[str] = None,
+    success: bool = True,
+    screenshot_path: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> None:
+    """Append one row to the `computer_use_actions` audit table.
+
+    Failures are swallowed silently — same posture as `log_turn`. The
+    computer_use loop must never crash because the audit DB is locked
+    or full.
+    """
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """INSERT INTO computer_use_actions
+                   (ts_utc, handoff_id, step, model_used, action,
+                    params_json, success, screenshot_path, notes)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    handoff_id, step, model_used, action,
+                    params_json, int(success), screenshot_path, notes,
+                ),
+            )
+    except Exception:
+        return
 
 
 def log_launch_attempt(
