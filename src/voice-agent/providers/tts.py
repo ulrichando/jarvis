@@ -32,6 +32,7 @@ import asyncio
 import logging
 import os
 import re
+import time
 
 import aiohttp as _aiohttp
 from livekit.agents import (
@@ -133,6 +134,7 @@ class LoggingGroqChunkedStream(_GroqChunkedStream):
                 "input": self._input_text,
                 "response_format": "wav",
             }
+            _stream_start = time.monotonic()  # for cancel-latency log
             try:
                 async with self._tts._ensure_session().post(
                     api_url,
@@ -176,10 +178,32 @@ class LoggingGroqChunkedStream(_GroqChunkedStream):
                         num_channels=1,
                         mime_type="audio/wav",
                     )
-                    async for data, _ in resp.content.iter_chunks():
-                        output_emitter.push(data)
-                        nonlocal_audio_bytes[0] += len(data)
-                    output_emitter.flush()
+                    try:
+                        async for data, _ in resp.content.iter_chunks():
+                            output_emitter.push(data)
+                            nonlocal_audio_bytes[0] += len(data)
+                        output_emitter.flush()
+                    except asyncio.CancelledError:
+                        # Barge-in fired — framework cancelled _run() at
+                        # the task level. Close the aiohttp response
+                        # immediately so the Groq Orpheus socket aborts
+                        # instead of streaming the full WAV that we'd
+                        # just drop. This is the difference between
+                        # JARVIS stopping in ~300 ms (target) vs ~1-3 s
+                        # (current symptom — observed live, see
+                        # docs/superpowers/specs/2026-05-18-barge-in-
+                        # interrupt-fix-design.md). The async-with on
+                        # the response below WILL close it eventually,
+                        # but only after the current chunk-read syscall
+                        # returns — proactive close() kills the socket
+                        # mid-read and the kernel sends RST to Groq.
+                        elapsed_ms = (time.monotonic() - _stream_start) * 1000
+                        logger.info(
+                            "[tts] Orpheus cancelled after %.0fms (%d bytes, voice=%s)",
+                            elapsed_ms, nonlocal_audio_bytes[0], self._opts.voice,
+                        )
+                        resp.close()
+                        raise
             except asyncio.TimeoutError:
                 raise APITimeoutError() from None
             except APIError:
