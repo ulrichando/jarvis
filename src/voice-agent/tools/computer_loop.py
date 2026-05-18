@@ -176,6 +176,24 @@ async def run(
     })
 
     for iteration in range(1, max_iters + 1):
+        # Cancel event (user barged in via voice or tray)
+        if cancel_event.is_set():
+            return LoopResult(
+                ok=False,
+                summary=f"user interrupted after {steps} steps",
+                steps=steps, cost_usd=cost_usd,
+                reason="interrupted", handoff_id=handoff_id,
+            )
+
+        # Wall-clock watchdog — bail if the loop has been running too long
+        if (time.monotonic() - started_at) > wall_timeout_s:
+            return LoopResult(
+                ok=False,
+                summary=f"wall-clock timeout ({wall_timeout_s:.0f}s) after {steps} steps",
+                steps=steps, cost_usd=cost_usd,
+                reason="bailed", handoff_id=handoff_id,
+            )
+
         steps += 1
 
         # Plan
@@ -216,6 +234,21 @@ async def run(
             )
 
         cost_usd += _compute_cost(response.usage, active_model)
+
+        # Budget cap — bail when accumulated cost exceeds the budget.
+        if cost_usd > budget_usd:
+            _log_action(
+                handoff_id=handoff_id, step=iteration,
+                model_used=active_model, action="bail",
+                params_json=json.dumps({"reason": "budget", "cost": cost_usd}),
+                success=False, notes=f"budget breach: ${cost_usd:.4f} > ${budget_usd:.4f}",
+            )
+            return LoopResult(
+                ok=False,
+                summary=f"task exceeded ${budget_usd} budget after {steps} steps",
+                steps=steps, cost_usd=cost_usd,
+                reason="budget", handoff_id=handoff_id,
+            )
 
         # Find the tool_use block in the response. Anthropic returns
         # BetaToolUseBlock objects with .type=="tool_use"; the dict path

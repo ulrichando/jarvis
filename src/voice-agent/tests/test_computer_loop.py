@@ -109,3 +109,129 @@ async def test_loop_happy_path_completes_after_two_steps(loop_env):
     assert result.summary == "Done."
     assert result.steps == 2
     assert len(audit) >= 2
+
+
+@pytest.mark.asyncio
+async def test_loop_bails_on_budget_breach(loop_env):
+    """After the first call, cost_usd exceeds budget → bail with
+    reason='budget'."""
+    from tools.computer_loop import run
+
+    script, calls, audit = loop_env
+    # 1M input tokens × $3/M = $3 cost — way over the $0.10 budget
+    script.append(FakeResponse(
+        content=[FakeToolUse("computer", {"action": "left_click", "coordinate": [50, 50]})],
+        usage=FakeUsage(input_tokens=1_000_000, output_tokens=0),
+    ))
+
+    cancel = asyncio.Event()
+    result = await run(
+        task="x", anthropic_client=None,
+        safety_confirm_cb=lambda p: asyncio.sleep(0, result=True),
+        cancel_event=cancel,
+        budget_usd=0.10,
+    )
+    assert result.reason == "budget"
+    assert result.cost_usd > 0.10
+
+
+@pytest.mark.asyncio
+async def test_loop_bails_on_max_iters(loop_env):
+    """If max_iters=2 and model never emits task_done, bail."""
+    from tools.computer_loop import run
+
+    script, calls, audit = loop_env
+    for _ in range(5):
+        script.append(FakeResponse(
+            content=[FakeToolUse("computer", {"action": "left_click", "coordinate": [10, 10]})],
+            usage=FakeUsage(),
+        ))
+
+    cancel = asyncio.Event()
+    result = await run(
+        task="x", anthropic_client=None,
+        safety_confirm_cb=lambda p: asyncio.sleep(0, result=True),
+        cancel_event=cancel,
+        max_iters=2,
+    )
+    assert result.reason == "max_iters"
+    assert result.steps == 2
+
+
+@pytest.mark.asyncio
+async def test_loop_bails_on_cancel_event(loop_env, monkeypatch):
+    """cancel_event.set() between iterations bails with reason=interrupted."""
+    from tools.computer_loop import run
+
+    script, calls, audit = loop_env
+    cancel = asyncio.Event()
+
+    # First response triggers cancel; second response would task_done
+    # but we shouldn't get there.
+    script.append(FakeResponse(
+        content=[FakeToolUse("computer", {"action": "left_click", "coordinate": [10, 10]})],
+        usage=FakeUsage(),
+    ))
+    script.append(FakeResponse(
+        content=[FakeToolUse("computer", {"action": "task_done", "summary": "should not reach"})],
+        usage=FakeUsage(),
+    ))
+
+    # Monkeypatch _execute_action to set the cancel event after the
+    # first action runs.
+    from tools import computer_loop
+    orig = computer_loop._execute_action
+    async def cancel_after(*a, **kw):
+        cancel.set()
+        return await orig(*a, **kw)
+    monkeypatch.setattr(computer_loop, "_execute_action", cancel_after)
+
+    result = await run(
+        task="x", anthropic_client=None,
+        safety_confirm_cb=lambda p: asyncio.sleep(0, result=True),
+        cancel_event=cancel,
+    )
+    assert result.reason == "interrupted"
+
+
+@pytest.mark.asyncio
+async def test_loop_bails_on_wall_timeout(loop_env, monkeypatch):
+    """wall_timeout_s triggers before the second API call."""
+    from tools import computer_loop
+    from tools.computer_loop import run
+
+    script, calls, audit = loop_env
+    # Provide one response for the first iteration
+    script.append(FakeResponse(
+        content=[FakeToolUse("computer", {"action": "left_click", "coordinate": [10, 10]})],
+        usage=FakeUsage(),
+    ))
+
+    cancel = asyncio.Event()
+    # Monkeypatch time.monotonic to return elapsed time > wall_timeout_s
+    # The check happens at the start of iteration 2, before any API call
+    import time as _t
+    real_monotonic = _t.monotonic
+    call_count = [0]
+    base = real_monotonic()
+
+    def fake_monotonic():
+        call_count[0] += 1
+        # On the first call (in run() initialization), return base time
+        # On all subsequent calls, return base + 999 (way past wall_timeout_s=1.0)
+        if call_count[0] == 1:
+            return base
+        return base + 999.0
+
+    monkeypatch.setattr(computer_loop, "time", _t)
+    monkeypatch.setattr(_t, "monotonic", fake_monotonic)
+
+    result = await run(
+        task="x", anthropic_client=None,
+        safety_confirm_cb=lambda p: asyncio.sleep(0, result=True),
+        cancel_event=cancel,
+        wall_timeout_s=1.0,
+    )
+    monkeypatch.setattr(_t, "monotonic", real_monotonic)
+    assert result.reason == "bailed"
+    assert "timeout" in result.summary.lower()
