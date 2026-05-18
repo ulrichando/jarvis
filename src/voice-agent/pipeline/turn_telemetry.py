@@ -215,6 +215,22 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
             CREATE INDEX IF NOT EXISTS idx_cua_ts
                 ON computer_use_actions(ts_utc);
         """)
+        # 2026-05-18 — pwd_check_state per-action audit. Lets the operator
+        # query fast-path/slow-path/fail-open ratios over time and alert
+        # when fail-open exceeds the soak-acceptable threshold (~5%).
+        # Spec: docs/superpowers/specs/2026-05-18-cua-password-check-failopen-design.md
+        cua_cols = {
+            r[1] for r in conn.execute(
+                "PRAGMA table_info(computer_use_actions)"
+            )
+        }
+        if "pwd_check_state" not in cua_cols:
+            try:
+                conn.execute(
+                    "ALTER TABLE computer_use_actions ADD COLUMN pwd_check_state TEXT"
+                )
+            except sqlite3.OperationalError:
+                pass
         conn.execute("CREATE INDEX IF NOT EXISTS idx_turns_subagent ON turns(subagent)")
 
 
@@ -305,6 +321,7 @@ def log_computer_use_action(
     success: bool = True,
     screenshot_path: Optional[str] = None,
     notes: Optional[str] = None,
+    pwd_check_state: Optional[str] = None,
 ) -> None:
     """Append one row to the `computer_use_actions` audit table.
 
@@ -317,12 +334,14 @@ def log_computer_use_action(
             conn.execute(
                 """INSERT INTO computer_use_actions
                    (ts_utc, handoff_id, step, model_used, action,
-                    params_json, success, screenshot_path, notes)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    params_json, success, screenshot_path, notes,
+                    pwd_check_state)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     handoff_id, step, model_used, action,
                     params_json, int(success), screenshot_path, notes,
+                    pwd_check_state,
                 ),
             )
     except Exception:
