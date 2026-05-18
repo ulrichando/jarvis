@@ -72,3 +72,106 @@ async def test_take_screenshot_returns_png_bytes(monkeypatch):
     png = await computer_backend.take_screenshot()
     assert isinstance(png, bytes)
     assert png.startswith(b"\x89PNG")
+
+
+@pytest.mark.asyncio
+async def test_click_invokes_xdotool_with_right_argv(monkeypatch):
+    """A left-click at (340, 220) should run `xdotool mousemove ... click 1`."""
+    from tools import computer_backend
+    captured = {}
+
+    async def fake_exec(*argv, **kw):
+        captured["argv"] = argv
+        class Proc:
+            returncode = 0
+            async def communicate(self): return (b"", b"")
+            async def wait(self): return 0
+        return Proc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    await computer_backend.click(340, 220)
+    argv = captured["argv"]
+    assert "xdotool" in argv[0]
+    assert "mousemove" in argv
+    assert "--sync" in argv
+    assert "340" in argv and "220" in argv
+    assert "click" in argv
+    assert "1" in argv          # left button
+
+
+@pytest.mark.asyncio
+async def test_click_with_modifier_holds_key(monkeypatch):
+    """A shift+click adds keydown/keyup around the click."""
+    from tools import computer_backend
+    seen_argvs = []
+
+    async def fake_exec(*argv, **kw):
+        seen_argvs.append(argv)
+        class Proc:
+            returncode = 0
+            async def communicate(self): return (b"", b"")
+            async def wait(self): return 0
+        return Proc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    await computer_backend.click(100, 100, modifiers=["shift"])
+    # Should have called keydown shift, click, keyup shift (3 invocations
+    # OR a single combined xdotool call with --clearmodifiers).
+    joined = " ".join(" ".join(a) for a in seen_argvs)
+    assert "shift" in joined.lower()
+
+
+@pytest.mark.asyncio
+async def test_type_text_invokes_xdotool_type(monkeypatch):
+    from tools import computer_backend
+    captured = {}
+
+    async def fake_exec(*argv, **kw):
+        captured["argv"] = argv
+        class Proc:
+            returncode = 0
+            async def communicate(self): return (b"", b"")
+            async def wait(self): return 0
+        return Proc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    await computer_backend.type_text("hello world")
+    argv = captured["argv"]
+    assert "type" in argv
+    assert "hello world" in argv
+
+
+@pytest.mark.asyncio
+async def test_key_combo_invokes_xdotool_key(monkeypatch):
+    from tools import computer_backend
+    captured = {}
+
+    async def fake_exec(*argv, **kw):
+        captured["argv"] = argv
+        class Proc:
+            returncode = 0
+            async def communicate(self): return (b"", b"")
+            async def wait(self): return 0
+        return Proc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    await computer_backend.key_combo("ctrl+s")
+    argv = captured["argv"]
+    assert "key" in argv
+    assert "ctrl+s" in argv
+
+
+@pytest.mark.asyncio
+async def test_xdotool_nonzero_raises_backenderror(monkeypatch):
+    from tools import computer_backend
+
+    async def fake_exec(*argv, **kw):
+        class Proc:
+            returncode = 1
+            async def communicate(self): return (b"", b"some error")
+            async def wait(self): return 1
+        return Proc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    with pytest.raises(computer_backend.BackendError):
+        await computer_backend.click(0, 0)
