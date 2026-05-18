@@ -1,5 +1,8 @@
 """Tests for tools/computer_backend.py — screenshot capture + coordinate
-scaling. Backend ops (xdotool) tested in test_computer_backend_input.py."""
+scaling + xdotool input ops (click/type/key/scroll/drag/mouse_move).
+
+All I/O boundaries (mss, scrot, xdotool) are monkey-patched so the
+tests run without a display."""
 import asyncio
 import io
 
