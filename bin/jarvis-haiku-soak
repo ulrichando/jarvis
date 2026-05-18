@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+# Compare Claude Haiku 4.5 against the previous default (gpt-5-mini)
+# on real voice turns since the switch. Run after ~20-40 minutes of
+# live voice testing. No code changes — pure SQL roll-up against
+# ~/.local/share/jarvis/turn_telemetry.db.
+#
+# Usage:
+#   jarvis-haiku-soak              # last 2 hours
+#   jarvis-haiku-soak 6            # last 6 hours
+#   jarvis-haiku-soak 24           # last day
+#
+# What we look at:
+#   - turn count, by route
+#   - p50 / p95 TTFW (time to first word, the user-perceived latency)
+#   - mean tokens out (response length — checks Haiku's 'over-elaborate'
+#     historical failure mode)
+#   - tool-call evidence:
+#       * subagent handoff success ratio
+#       * confab-detector refusal rate (LLM claimed without tool fired)
+#   - cost per turn (USD)
+
+set -euo pipefail
+
+HOURS="${1:-2}"
+DB="$HOME/.local/share/jarvis/turn_telemetry.db"
+if [[ ! -f "$DB" ]]; then
+    echo "missing telemetry db: $DB" >&2; exit 1
+fi
+
+CUTOFF_SQL="datetime('now', '-${HOURS} hours')"
+
+echo "=== Haiku 4.5 vs gpt-5-mini comparison — last ${HOURS}h ==="
+echo
+echo "── turn counts by model × route ──"
+sqlite3 -header -column "$DB" "
+SELECT
+    llm_used,
+    route,
+    COUNT(*) AS turns,
+    SUM(CASE WHEN interrupted THEN 1 ELSE 0 END) AS interrupted,
+    SUM(CASE WHEN route_fallback THEN 1 ELSE 0 END) AS route_fallback
+FROM turns
+WHERE ts_utc >= ${CUTOFF_SQL}
+  AND llm_used IN ('claude-haiku-4-5', 'gpt-5-mini')
+GROUP BY llm_used, route
+ORDER BY llm_used, route;
+"
+echo
+echo "── TTFW p50 / p95 (ms) ──"
+sqlite3 -header -column "$DB" "
+WITH samples AS (
+    SELECT llm_used, route, ttfw_ms,
+           ROW_NUMBER() OVER (PARTITION BY llm_used, route ORDER BY ttfw_ms) AS rn,
+           COUNT(*) OVER (PARTITION BY llm_used, route) AS n
+    FROM turns
+    WHERE ts_utc >= ${CUTOFF_SQL}
+      AND llm_used IN ('claude-haiku-4-5', 'gpt-5-mini')
+      AND ttfw_ms > 0
+)
+SELECT llm_used, route,
+       MAX(CASE WHEN rn = MAX(1, CAST(n*0.5 AS INTEGER)) THEN ttfw_ms END) AS p50_ms,
+       MAX(CASE WHEN rn = MAX(1, CAST(n*0.95 AS INTEGER)) THEN ttfw_ms END) AS p95_ms,
+       MAX(ttfw_ms) AS max_ms,
+       n
+FROM samples
+GROUP BY llm_used, route
+ORDER BY llm_used, route;
+"
+echo
+echo "── response length (output tokens — Haiku's historical over-elaborate failure mode) ──"
+sqlite3 -header -column "$DB" "
+SELECT llm_used,
+       COUNT(*) AS turns,
+       ROUND(AVG(output_tokens), 1) AS mean_out_tok,
+       MAX(output_tokens) AS max_out_tok,
+       SUM(CASE WHEN output_tokens > 150 THEN 1 ELSE 0 END) AS long_replies
+FROM turns
+WHERE ts_utc >= ${CUTOFF_SQL}
+  AND llm_used IN ('claude-haiku-4-5', 'gpt-5-mini')
+  AND output_tokens IS NOT NULL
+GROUP BY llm_used
+ORDER BY llm_used;
+"
+echo
+echo "── subagent handoff routing ──"
+sqlite3 -header -column "$DB" "
+SELECT llm_used,
+       COALESCE(subagent, '(direct)') AS subagent,
+       COUNT(*) AS turns
+FROM turns
+WHERE ts_utc >= ${CUTOFF_SQL}
+  AND llm_used IN ('claude-haiku-4-5', 'gpt-5-mini')
+GROUP BY llm_used, subagent
+ORDER BY llm_used, turns DESC;
+"
+echo
+echo "── cost (USD) ──"
+sqlite3 -header -column "$DB" "
+SELECT llm_used,
+       COUNT(*) AS turns,
+       ROUND(SUM(cost_usd), 4) AS total_usd,
+       ROUND(AVG(cost_usd), 5) AS per_turn_usd
+FROM turns
+WHERE ts_utc >= ${CUTOFF_SQL}
+  AND llm_used IN ('claude-haiku-4-5', 'gpt-5-mini')
+  AND cost_usd > 0
+GROUP BY llm_used
+ORDER BY llm_used;
+"
+echo
+echo "── recent Haiku turns (last 10, user/jarvis text peek) ──"
+sqlite3 -separator ' | ' "$DB" "
+SELECT substr(ts_utc, 12, 8), route, COALESCE(subagent, '-'),
+       substr(COALESCE(user_text, ''), 1, 60),
+       substr(COALESCE(jarvis_text, ''), 1, 80)
+FROM turns
+WHERE ts_utc >= ${CUTOFF_SQL}
+  AND llm_used = 'claude-haiku-4-5'
+ORDER BY ts_utc DESC
+LIMIT 10;
+"
+echo
+echo "── recent leak/confab events (last 10) ──"
+LOG="$HOME/.local/share/jarvis/logs/voice-agent.log"
+if [[ -f "$LOG" ]]; then
+    grep -E '"\[pycall\] leak|\[handoff-suppressor\]|\[confab' "$LOG" 2>/dev/null \
+      | tail -10 \
+      | python3 -c "
+import sys, json
+for line in sys.stdin:
+    try:
+        d = json.loads(line)
+        print(d.get('timestamp','')[:19], d.get('message','')[:160])
+    except Exception:
+        pass
+"
+fi
+
+echo
+echo "── interpretation guide ──"
+cat <<'EOF'
+  TTFW: Haiku should beat gpt-5-mini by ~600ms on TASK (~0.7s vs ~1.4s)
+        per public 2026 benchmarks. If not — Anthropic regional latency
+        or Anthropic prompt cache miss on cold turn.
+  Long-replies: Haiku's max_tokens=200 cap is in providers/llm.py. If
+        long_replies > 0 with output_tokens hitting exactly 200, that's
+        the cap firing (clipping is OK; over-elaboration was the failure).
+  Routing: any 'subagent=null' on a 'find/click/look' user_text is a
+        miss — should have gone to computer_use. If pattern shows up,
+        the supervisor prompt + 2026-05-18 disambiguation needs another
+        pass.
+  Cost: Haiku is ~3x cheaper per output token than gpt-5-mini AND has
+        80-90% input discount via Anthropic prompt caching on the stable
+        JARVIS_INSTRUCTIONS preamble.
+EOF
