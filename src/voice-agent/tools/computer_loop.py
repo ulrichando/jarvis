@@ -80,6 +80,7 @@ _backend_key: Optional[Callable[..., Awaitable]] = None
 _log_action: Optional[Callable[..., None]] = None
 _is_password_visible: Optional[Callable[..., Awaitable[bool]]] = None
 _parse_destructive: Optional[Callable[..., Optional[str]]] = None
+_check_password_visible: Optional[Callable[..., Awaitable[tuple[bool, str]]]] = None
 
 
 def _bind_production_seams() -> None:
@@ -88,12 +89,14 @@ def _bind_production_seams() -> None:
     global _anthropic_call, _take_screenshot, _scale_for_model
     global _enumerate_widgets, _backend_click, _backend_type, _backend_key
     global _log_action, _is_password_visible, _parse_destructive
+    global _check_password_visible
 
     from tools import computer_backend, computer_atspi
     from pipeline.turn_telemetry import log_computer_use_action
     from tools.computer_safety import (
         is_password_field_visible,
         parse_destructive_intent,
+        check_password_visible,
     )
 
     async def _do_anthropic(**kw):
@@ -114,6 +117,7 @@ def _bind_production_seams() -> None:
     _log_action = log_computer_use_action
     _is_password_visible = is_password_field_visible
     _parse_destructive = parse_destructive_intent
+    _check_password_visible = check_password_visible
 
 
 _bind_production_seams()
@@ -232,17 +236,21 @@ async def run(
 
         steps += 1
 
-        # Safety pre-check: password field visible → hard-stop
-        pw_visible = await _is_password_visible(scaled, widgets)
+        # Safety pre-check: password field visible → hard-stop.
+        # check_password_visible has bounded latency (≤1.5s) and
+        # returns a state tag for audit. See tools/computer_safety.py.
+        pw_visible, pw_state = await _check_password_visible(scaled, widgets)
         if pw_visible:
             logger.warning(
-                f"[cua:{handoff_id}] password field visible — hard-stop"
+                f"[cua:{handoff_id}] password field visible — hard-stop "
+                f"(state={pw_state})"
             )
             _log_action(
                 handoff_id=handoff_id, step=iteration,
                 model_used=active_model, action="bail",
                 params_json=json.dumps({"reason": "password_visible"}),
                 success=False, notes="password field detected; aborting",
+                pwd_check_state=pw_state,
             )
             return LoopResult(
                 ok=False,
@@ -396,6 +404,7 @@ async def run(
                 model_used=active_model, action="task_done",
                 params_json=json.dumps(action_input),
                 success=True,
+                pwd_check_state=pw_state,
             )
             return LoopResult(
                 ok=True, summary=summary,
@@ -428,6 +437,7 @@ async def run(
                     params_json=json.dumps(action_input),
                     success=False, notes="user declined destructive action",
                     screenshot_path=screenshot_path,
+                    pwd_check_state=pw_state,
                 )
                 tool_use_id = (
                     getattr(tool_use, "id", None) or
@@ -467,6 +477,7 @@ async def run(
             params_json=json.dumps(action_input),
             success=success, notes=notes,
             screenshot_path=screenshot_path,
+            pwd_check_state=pw_state,
         )
         # Append assistant turn + tool_result turn
         tool_use_id = (
