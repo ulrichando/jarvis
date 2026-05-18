@@ -682,54 +682,40 @@ fn set_tray_state(state: &str, sharing: bool, tray: State<TrayHandle>) -> Result
 }
 
 /// Map a CLI model ID to a short pretty label for the tray.
-/// IDs and labels mirror jarvis_agent.py's CLI_MODELS dict.
+/// Pretty label for the active CLI/tool model id.
+/// 2026-05-18: pruned to the 6 curated entries that match
+/// voice_client_tray_config.py CLI_MODELS_AVAILABLE. Dropped IDs
+/// (deepseek-*, llama-3.3-70b, llama-4-scout, gpt-oss-120b,
+/// gpt-5-nano, gpt-5, gpt-5.1-chat-latest, gpt-4o) fall through to
+/// None — the indicator caller renders the raw id in that case,
+/// which only fires if state.db has a legacy value.
 fn cli_model_pretty(id: &str) -> Option<&'static str> {
     match id {
-        "deepseek-chat"                                  => Some("DeepSeek · chat"),
-        "deepseek-reasoner"                              => Some("DeepSeek · reasoner"),
-        "deepseek-v4-flash"                              => Some("DeepSeek · v4 flash"),
-        "deepseek-v4-pro"                                => Some("DeepSeek · v4 pro"),
-        "qwen/qwen3-32b"                                 => Some("Groq · qwen3-32b"),
-        "llama-3.3-70b-versatile"                        => Some("Groq · llama 3.3 70B"),
-        "meta-llama/llama-4-scout-17b-16e-instruct"      => Some("Groq · llama 4 scout"),
-        "openai/gpt-oss-120b"                            => Some("Groq · gpt-oss-120b"),
-        "claude-opus-4-7"                                => Some("Claude · Opus 4.7"),
         "claude-sonnet-4-6"                              => Some("Claude · Sonnet 4.6"),
+        "claude-opus-4-7"                                => Some("Claude · Opus 4.7"),
         "claude-haiku-4-5"                               => Some("Claude · Haiku 4.5"),
-        // OpenAI proper — full GPT-5 family + GPT-4o, added 2026-05-15
-        // alongside the matching SPEECH_MODELS entries in providers/llm.py.
-        "gpt-5-nano"                                     => Some("OpenAI · GPT-5 nano"),
-        "gpt-5-mini"                                     => Some("OpenAI · GPT-5 mini"),
-        "gpt-5"                                          => Some("OpenAI · GPT-5"),
         "gpt-5.1"                                        => Some("OpenAI · GPT-5.1"),
-        "gpt-5.1-chat-latest"                            => Some("OpenAI · GPT-5.1 chat"),
-        "gpt-4o"                                         => Some("OpenAI · GPT-4o"),
+        "gpt-5-mini"                                     => Some("OpenAI · GPT-5 mini"),
+        "qwen/qwen3-32b"                                 => Some("Groq · qwen3-32b"),
         _ => None,
     }
 }
 
-/// Map a speech model ID to a short pretty label.
-/// Mirrors jarvis_agent.py's SPEECH_MODELS dict.
+/// Pretty label for the active speech model id.
+/// 2026-05-18: pruned to the 6 curated entries that match
+/// voice_client_tray_config.py SPEECH_MODELS_AVAILABLE. Dropped IDs
+/// (llama-3.1-8b-instant, llama-3.3-70b-versatile, llama-4-scout,
+/// gpt-oss-120b, deepseek-*, gpt-5-nano, gpt-5, gpt-5.1-chat-latest,
+/// gpt-4o) fall through to None — the indicator caller renders the
+/// raw id in that case.
 fn speech_model_pretty(id: &str) -> Option<&'static str> {
     match id {
-        "llama-3.3-70b-versatile"                        => Some("Groq · llama 3.3 70B"),
-        "llama-3.1-8b-instant"                           => Some("Groq · llama 3.1 8B instant"),
-        "qwen/qwen3-32b"                                 => Some("Groq · qwen3-32b"),
-        "openai/gpt-oss-120b"                            => Some("Groq · gpt-oss-120b"),
-        "meta-llama/llama-4-scout-17b-16e-instruct"      => Some("Groq · llama 4 scout"),
-        "deepseek-chat"                                  => Some("DeepSeek · chat"),
-        "deepseek-v4-flash"                              => Some("DeepSeek · v4 flash"),
-        "deepseek-v4-pro"                                => Some("DeepSeek · v4 pro"),
         "claude-haiku-4-5"                               => Some("Claude · Haiku 4.5"),
         "claude-sonnet-4-6"                              => Some("Claude · Sonnet 4.6"),
         "claude-opus-4-7"                                => Some("Claude · Opus 4.7"),
-        // OpenAI proper — full GPT-5 family + GPT-4o, added 2026-05-15.
-        "gpt-5-nano"                                     => Some("OpenAI · GPT-5 nano"),
         "gpt-5-mini"                                     => Some("OpenAI · GPT-5 mini"),
-        "gpt-5"                                          => Some("OpenAI · GPT-5"),
         "gpt-5.1"                                        => Some("OpenAI · GPT-5.1"),
-        "gpt-5.1-chat-latest"                            => Some("OpenAI · GPT-5.1 chat"),
-        "gpt-4o"                                         => Some("OpenAI · GPT-4o"),
+        "qwen/qwen3-32b"                                 => Some("Groq · qwen3-32b"),
         _ => None,
     }
 }
@@ -1554,59 +1540,26 @@ fn main() {
 
             // ── SPEECH submenu (nested under Models) ──
             // Switching speech requires an agent restart (~5 s amber).
-            // Items mirror jarvis_agent.py's SPEECH_MODELS dict.
-            let v_llama33   = MenuItemBuilder::with_id("speech_llama-3.3-70b-versatile",                       "Use Groq · llama 3.3 70B").build(app)?;
-            let v_llama8b   = MenuItemBuilder::with_id("speech_llama-3.1-8b-instant",                          "Use Groq · llama 3.1 8B instant").build(app)?;
-            let v_qwen      = MenuItemBuilder::with_id("speech_qwen/qwen3-32b",                                "Use Groq · qwen3-32b").build(app)?;
-            let v_gptoss    = MenuItemBuilder::with_id("speech_openai/gpt-oss-120b",                           "Use Groq · gpt-oss-120b").build(app)?;
-            let v_llama4    = MenuItemBuilder::with_id("speech_meta-llama/llama-4-scout-17b-16e-instruct",     "Use Groq · llama 4 scout").build(app)?;
-            // DeepSeek family — voice agent installs deepseek_roundtrip
-            // patches at startup so V4 thinking mode round-trips
-            // reasoning_content cleanly across multi-turn handoffs.
-            // V3 chat is the fast everyday pick (~400ms TTFW, no
-            // thinking); v4-flash trades accuracy for speed; v4-pro
-            // is the best at tool-call discipline (~600-1000ms TTFW).
-            let v_dschat    = MenuItemBuilder::with_id("speech_deepseek-chat",                                  "Use DeepSeek · chat (V3, fast)").build(app)?;
-            let v_dsv4flash = MenuItemBuilder::with_id("speech_deepseek-v4-flash",                              "Use DeepSeek · v4 flash").build(app)?;
-            let v_dsv4pro   = MenuItemBuilder::with_id("speech_deepseek-v4-pro",                                "Use DeepSeek · v4 pro (best tools)").build(app)?;
-            // Anthropic — three tiers added 2026-05-11 (Haiku 4.5 via
-            // 1ae780f, Sonnet 4.6 + Opus 4.7 via e681914). Require
-            // ANTHROPIC_API_KEY in env. Slower TTFW than Groq (~700 ms
-            // Haiku → ~1.2 s Opus vs ~200 ms Groq) but quality + persona
-            // match are strong; Sonnet is the everyday-supervisor pick
-            // when orchestration reliability matters more than latency.
-            // Haiku also serves as rung-3 of the FallbackAdapter cascade.
-            let v_claude_haiku  = MenuItemBuilder::with_id("speech_claude-haiku-4-5",  "Use Anthropic · Claude Haiku 4.5  (fastest, ~700 ms)").build(app)?;
-            let v_claude_sonnet = MenuItemBuilder::with_id("speech_claude-sonnet-4-6", "Use Anthropic · Claude Sonnet 4.6  (everyday, recommended)").build(app)?;
+            // 2026-05-18: curated to 6 entries matching
+            // voice_client_tray_config.py SPEECH_MODELS_AVAILABLE.
+            // Haiku 4.5 is the default (best TTFT/tool-quality balance,
+            // ~0.7s vs gpt-5-mini ~1.34s). Sonnet for tool-heavy work,
+            // Opus for extended reasoning. gpt-5-mini / 5.1 are the
+            // OpenAI alternatives when Anthropic credit is a concern.
+            // qwen3-32b is the strongest Groq option (no API quota).
+            let v_claude_haiku  = MenuItemBuilder::with_id("speech_claude-haiku-4-5",  "Use Anthropic · Claude Haiku 4.5  (default, ~0.7s)").build(app)?;
+            let v_claude_sonnet = MenuItemBuilder::with_id("speech_claude-sonnet-4-6", "Use Anthropic · Claude Sonnet 4.6  (best tool calling)").build(app)?;
             let v_claude_opus   = MenuItemBuilder::with_id("speech_claude-opus-4-7",   "Use Anthropic · Claude Opus 4.7  (most capable, slowest)").build(app)?;
-            // OpenAI proper — full GPT-5 family + GPT-4o, added 2026-05-15.
-            // Ordered fastest → slowest within tier; GPT-5 family rejects
-            // any non-default temperature so the registry-side build()
-            // omits the kwarg (see providers/llm.py).
-            let v_gpt_5_nano    = MenuItemBuilder::with_id("speech_gpt-5-nano",          "Use OpenAI · GPT-5 nano (fastest)").build(app)?;
-            let v_gpt_5_mini    = MenuItemBuilder::with_id("speech_gpt-5-mini",          "Use OpenAI · GPT-5 mini (voice sweet spot)").build(app)?;
-            let v_gpt_5         = MenuItemBuilder::with_id("speech_gpt-5",               "Use OpenAI · GPT-5 (base)").build(app)?;
-            let v_gpt_5_1       = MenuItemBuilder::with_id("speech_gpt-5.1",             "Use OpenAI · GPT-5.1 (latest)").build(app)?;
-            let v_gpt_5_1_chat  = MenuItemBuilder::with_id("speech_gpt-5.1-chat-latest", "Use OpenAI · GPT-5.1 chat-latest").build(app)?;
-            let v_gpt_4o        = MenuItemBuilder::with_id("speech_gpt-4o",              "Use OpenAI · GPT-4o (legacy)").build(app)?;
+            let v_gpt_5_mini    = MenuItemBuilder::with_id("speech_gpt-5-mini",        "Use OpenAI · GPT-5 mini (alternative)").build(app)?;
+            let v_gpt_5_1       = MenuItemBuilder::with_id("speech_gpt-5.1",           "Use OpenAI · GPT-5.1 (best OpenAI tools)").build(app)?;
+            let v_qwen          = MenuItemBuilder::with_id("speech_qwen/qwen3-32b",    "Use Groq · qwen3-32b (no-API-quota option)").build(app)?;
             let speech_submenu = SubmenuBuilder::new(app, "Speech model ▸")
-                .item(&v_llama33)
-                .item(&v_llama8b)
-                .item(&v_qwen)
-                .item(&v_gptoss)
-                .item(&v_llama4)
-                .item(&v_dschat)
-                .item(&v_dsv4flash)
-                .item(&v_dsv4pro)
                 .item(&v_claude_haiku)
                 .item(&v_claude_sonnet)
                 .item(&v_claude_opus)
-                .item(&v_gpt_5_nano)
                 .item(&v_gpt_5_mini)
-                .item(&v_gpt_5)
                 .item(&v_gpt_5_1)
-                .item(&v_gpt_5_1_chat)
-                .item(&v_gpt_4o)
+                .item(&v_qwen)
                 .build()?;
 
             // ── TTS VOICE submenu (nested under Models) ──
@@ -1644,49 +1597,27 @@ fn main() {
             // ── TOOL submenu (nested under Models) ──
             // No restart needed — every run_jarvis_cli call re-reads
             // ~/.jarvis/cli-model and exports JARVIS_PROVIDER+MODEL.
-            let m_ds_chat      = MenuItemBuilder::with_id("model_deepseek-chat",                              "Use DeepSeek · chat").build(app)?;
-            let m_ds_reason    = MenuItemBuilder::with_id("model_deepseek-reasoner",                          "Use DeepSeek · reasoner").build(app)?;
-            let m_ds_v4_flash  = MenuItemBuilder::with_id("model_deepseek-v4-flash",                          "Use DeepSeek · v4 flash").build(app)?;
-            let m_ds_v4_pro    = MenuItemBuilder::with_id("model_deepseek-v4-pro",                            "Use DeepSeek · v4 pro").build(app)?;
-            let m_qwen         = MenuItemBuilder::with_id("model_qwen/qwen3-32b",                             "Use Groq · qwen3-32b").build(app)?;
-            let m_llama33      = MenuItemBuilder::with_id("model_llama-3.3-70b-versatile",                    "Use Groq · llama 3.3 70B").build(app)?;
-            let m_llama4       = MenuItemBuilder::with_id("model_meta-llama/llama-4-scout-17b-16e-instruct",  "Use Groq · llama 4 scout").build(app)?;
-            let m_gptoss       = MenuItemBuilder::with_id("model_openai/gpt-oss-120b",                        "Use Groq · gpt-oss-120b").build(app)?;
-            // Anthropic Claude — three tiers added 2026-05-11. Labels
-            // mirror the Claude Code /model picker phrasing so the
-            // expected meaning carries over.
-            let m_claude_opus   = MenuItemBuilder::with_id("model_claude-opus-4-7",                            "Use Claude · Opus 4.7  (1M ctx · most capable)").build(app)?;
-            let m_claude_sonnet = MenuItemBuilder::with_id("model_claude-sonnet-4-6",                          "Use Claude · Sonnet 4.6 (everyday tasks)").build(app)?;
-            let m_claude_haiku  = MenuItemBuilder::with_id("model_claude-haiku-4-5",                           "Use Claude · Haiku 4.5  (fastest)").build(app)?;
-            // OpenAI proper — full GPT-5 family + GPT-4o, added 2026-05-15.
-            // CLI-side support depends on the cli's model registry (in
-            // src/cli/) accepting these IDs; tray exposes them so user
-            // can pick. If the CLI doesn't yet recognize a given ID it
-            // will surface its own error.
-            let m_gpt_5_nano    = MenuItemBuilder::with_id("model_gpt-5-nano",            "Use OpenAI · GPT-5 nano").build(app)?;
-            let m_gpt_5_mini    = MenuItemBuilder::with_id("model_gpt-5-mini",            "Use OpenAI · GPT-5 mini").build(app)?;
-            let m_gpt_5         = MenuItemBuilder::with_id("model_gpt-5",                 "Use OpenAI · GPT-5").build(app)?;
-            let m_gpt_5_1       = MenuItemBuilder::with_id("model_gpt-5.1",               "Use OpenAI · GPT-5.1").build(app)?;
-            let m_gpt_5_1_chat  = MenuItemBuilder::with_id("model_gpt-5.1-chat-latest",   "Use OpenAI · GPT-5.1 chat-latest").build(app)?;
-            let m_gpt_4o        = MenuItemBuilder::with_id("model_gpt-4o",                "Use OpenAI · GPT-4o").build(app)?;
+            // 2026-05-18: curated to 6 entries matching
+            // voice_client_tray_config.py CLI_MODELS_AVAILABLE.
+            // Sonnet 4.6 is the default (τ-bench leader 87.5% for
+            // multi-turn tool use). Opus for hardest multi-step work.
+            // Haiku for fast single-shot calls. gpt-5.1 / 5-mini are
+            // OpenAI alternatives. qwen3-32b is the no-API-quota
+            // option. DeepSeek family retired (94-96% hallucination
+            // per Artificial Analysis 2026).
+            let m_claude_sonnet = MenuItemBuilder::with_id("model_claude-sonnet-4-6", "Use Claude · Sonnet 4.6 (default, best tool calling)").build(app)?;
+            let m_claude_opus   = MenuItemBuilder::with_id("model_claude-opus-4-7",   "Use Claude · Opus 4.7  (1M ctx · most capable)").build(app)?;
+            let m_claude_haiku  = MenuItemBuilder::with_id("model_claude-haiku-4-5",  "Use Claude · Haiku 4.5  (fastest)").build(app)?;
+            let m_gpt_5_1       = MenuItemBuilder::with_id("model_gpt-5.1",           "Use OpenAI · GPT-5.1 (best OpenAI tools)").build(app)?;
+            let m_gpt_5_mini    = MenuItemBuilder::with_id("model_gpt-5-mini",        "Use OpenAI · GPT-5 mini (alternative)").build(app)?;
+            let m_qwen          = MenuItemBuilder::with_id("model_qwen/qwen3-32b",    "Use Groq · qwen3-32b (no-API-quota option)").build(app)?;
             let tool_submenu = SubmenuBuilder::new(app, "Tool model ▸")
-                .item(&m_ds_chat)
-                .item(&m_ds_reason)
-                .item(&m_ds_v4_flash)
-                .item(&m_ds_v4_pro)
-                .item(&m_qwen)
-                .item(&m_llama33)
-                .item(&m_llama4)
-                .item(&m_gptoss)
-                .item(&m_claude_opus)
                 .item(&m_claude_sonnet)
+                .item(&m_claude_opus)
                 .item(&m_claude_haiku)
-                .item(&m_gpt_5_nano)
-                .item(&m_gpt_5_mini)
-                .item(&m_gpt_5)
                 .item(&m_gpt_5_1)
-                .item(&m_gpt_5_1_chat)
-                .item(&m_gpt_4o)
+                .item(&m_gpt_5_mini)
+                .item(&m_qwen)
                 .build()?;
 
             let tts_sep = PredefinedMenuItem::separator(app)?;
@@ -1880,41 +1811,24 @@ fn main() {
                                 .build();
                             }
                         }
-                        "model_deepseek-chat"                              => switch_cli_model(app, "deepseek-chat"),
-                        "model_deepseek-reasoner"                          => switch_cli_model(app, "deepseek-reasoner"),
-                        "model_deepseek-v4-flash"                          => switch_cli_model(app, "deepseek-v4-flash"),
-                        "model_deepseek-v4-pro"                            => switch_cli_model(app, "deepseek-v4-pro"),
-                        "model_qwen/qwen3-32b"                             => switch_cli_model(app, "qwen/qwen3-32b"),
-                        "model_llama-3.3-70b-versatile"                    => switch_cli_model(app, "llama-3.3-70b-versatile"),
-                        "model_meta-llama/llama-4-scout-17b-16e-instruct"  => switch_cli_model(app, "meta-llama/llama-4-scout-17b-16e-instruct"),
-                        "model_openai/gpt-oss-120b"                        => switch_cli_model(app, "openai/gpt-oss-120b"),
-                        "model_claude-opus-4-7"                            => switch_cli_model(app, "claude-opus-4-7"),
+                        // Tool/CLI-model picks (no restart needed)
+                        // 2026-05-18: curated to 6 entries matching
+                        // CLI_MODELS_AVAILABLE in voice_client_tray_config.py
                         "model_claude-sonnet-4-6"                          => switch_cli_model(app, "claude-sonnet-4-6"),
+                        "model_claude-opus-4-7"                            => switch_cli_model(app, "claude-opus-4-7"),
                         "model_claude-haiku-4-5"                           => switch_cli_model(app, "claude-haiku-4-5"),
-                        "model_gpt-5-nano"                                 => switch_cli_model(app, "gpt-5-nano"),
-                        "model_gpt-5-mini"                                 => switch_cli_model(app, "gpt-5-mini"),
-                        "model_gpt-5"                                      => switch_cli_model(app, "gpt-5"),
                         "model_gpt-5.1"                                    => switch_cli_model(app, "gpt-5.1"),
-                        "model_gpt-5.1-chat-latest"                        => switch_cli_model(app, "gpt-5.1-chat-latest"),
-                        "model_gpt-4o"                                     => switch_cli_model(app, "gpt-4o"),
+                        "model_gpt-5-mini"                                 => switch_cli_model(app, "gpt-5-mini"),
+                        "model_qwen/qwen3-32b"                             => switch_cli_model(app, "qwen/qwen3-32b"),
                         // Speech-model picks (these trigger an agent restart)
-                        "speech_llama-3.3-70b-versatile"                   => switch_speech_model(app, "llama-3.3-70b-versatile"),
-                        "speech_llama-3.1-8b-instant"                      => switch_speech_model(app, "llama-3.1-8b-instant"),
-                        "speech_qwen/qwen3-32b"                            => switch_speech_model(app, "qwen/qwen3-32b"),
-                        "speech_openai/gpt-oss-120b"                       => switch_speech_model(app, "openai/gpt-oss-120b"),
-                        "speech_meta-llama/llama-4-scout-17b-16e-instruct" => switch_speech_model(app, "meta-llama/llama-4-scout-17b-16e-instruct"),
-                        "speech_deepseek-chat"                             => switch_speech_model(app, "deepseek-chat"),
-                        "speech_deepseek-v4-flash"                         => switch_speech_model(app, "deepseek-v4-flash"),
-                        "speech_deepseek-v4-pro"                           => switch_speech_model(app, "deepseek-v4-pro"),
+                        // 2026-05-18: curated to 6 entries matching
+                        // SPEECH_MODELS_AVAILABLE in voice_client_tray_config.py
                         "speech_claude-haiku-4-5"                          => switch_speech_model(app, "claude-haiku-4-5"),
                         "speech_claude-sonnet-4-6"                         => switch_speech_model(app, "claude-sonnet-4-6"),
                         "speech_claude-opus-4-7"                           => switch_speech_model(app, "claude-opus-4-7"),
-                        "speech_gpt-5-nano"                                => switch_speech_model(app, "gpt-5-nano"),
                         "speech_gpt-5-mini"                                => switch_speech_model(app, "gpt-5-mini"),
-                        "speech_gpt-5"                                     => switch_speech_model(app, "gpt-5"),
                         "speech_gpt-5.1"                                   => switch_speech_model(app, "gpt-5.1"),
-                        "speech_gpt-5.1-chat-latest"                       => switch_speech_model(app, "gpt-5.1-chat-latest"),
-                        "speech_gpt-4o"                                    => switch_speech_model(app, "gpt-4o"),
+                        "speech_qwen/qwen3-32b"                            => switch_speech_model(app, "qwen/qwen3-32b"),
                         // TTS-voice picks (no agent restart — file written, read on next utterance)
                         "tts_gr_troy"   => switch_tts_provider(app, "groq:troy"),
                         "tts_gr_austin" => switch_tts_provider(app, "groq:austin"),
