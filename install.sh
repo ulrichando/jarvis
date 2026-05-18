@@ -463,6 +463,27 @@ setup_redis() {
   fi
 }
 
+# ── Computer-use subagent dependencies (optional) ────────────────────────
+check_computer_use_deps() {
+  # Computer-use subagent dependencies (optional — only needed if
+  # JARVIS_SUBAGENT_COMPUTER_USE=1 is set). Probe and hint; don't fail
+  # the install if absent.
+  echo
+  sub "Checking computer_use subagent deps (optional)..."
+  if ! "$INSTALL_DIR/src/voice-agent/.venv/bin/python" -c "import mss" 2>/dev/null; then
+    warn "mss not installed in voice-agent venv. To enable computer_use:"
+    sub "$INSTALL_DIR/src/voice-agent/.venv/bin/pip install mss"
+  fi
+  if ! dpkg -l python3-pyatspi >/dev/null 2>&1; then
+    warn "python3-pyatspi not installed. To enable a11y grounding:"
+    sub "sudo apt install -y python3-pyatspi gir1.2-atspi-2.0"
+  fi
+  if ! which xdpyinfo >/dev/null 2>&1; then
+    warn "xdpyinfo not found. For X11 session probing:"
+    sub "sudo apt install -y x11-utils"
+  fi
+}
+
 # ── Channel: Desktop (Tauri) ─────────────────────────────────────────────
 install_desktop() {
   if [ "${JARVIS_SKIP_DESKTOP:-0}" = "1" ]; then warn "skipping Desktop (JARVIS_SKIP_DESKTOP=1)"; return; fi
@@ -671,6 +692,7 @@ main() {
   generate_bridge_token  # ~/.jarvis/local-api-token.env + web .env.local
   setup_livekit_keys
   setup_redis
+  check_computer_use_deps  # optional probes for computer_use subagent
   install_audio_profile
   setup_env_template
   chrome_extension_step
