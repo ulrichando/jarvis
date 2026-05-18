@@ -71,3 +71,46 @@ async def test_pre_transfer_aborts_when_xdpyinfo_fails(monkeypatch):
     )
     assert result is not None
     assert "X11" in result or "display" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_safety_confirm_cb_round_trip():
+    """The safety_confirm_cb posts a phrase to the supervisor session,
+    awaits the next user turn's yes/no via a Future, returns the bool."""
+    from subagents.computer_use import build_safety_confirm_cb
+
+    class FakeSession:
+        def __init__(self):
+            self.spoken = []
+            self._cua_confirm_future = None
+            self._cua_confirm_phrase = None
+        async def say(self, text):
+            self.spoken.append(text)
+
+    sess = FakeSession()
+    cb = build_safety_confirm_cb(sess, timeout_s=1.0)
+    fut = asyncio.create_task(cb("Click Delete? "))
+
+    # Simulate user replying "yes" after a short delay
+    await asyncio.sleep(0.05)
+    assert sess._cua_confirm_future is not None
+    sess._cua_confirm_future.set_result(True)
+
+    result = await fut
+    assert result is True
+    assert "Click Delete?" in sess.spoken[0]
+
+
+@pytest.mark.asyncio
+async def test_safety_confirm_cb_timeout_returns_false():
+    from subagents.computer_use import build_safety_confirm_cb
+
+    class FakeSession:
+        def __init__(self):
+            self._cua_confirm_future = None
+        async def say(self, text): pass
+
+    sess = FakeSession()
+    cb = build_safety_confirm_cb(sess, timeout_s=0.1)
+    result = await cb("Delete X?")
+    assert result is False
