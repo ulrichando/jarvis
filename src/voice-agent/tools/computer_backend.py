@@ -176,3 +176,108 @@ def scale_for_model(png: bytes) -> tuple[bytes, float, float]:
     buf = io.BytesIO()
     scaled.save(buf, format="PNG", optimize=False)
     return buf.getvalue(), src_w / tgt_w, src_h / tgt_h
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Input Operations (xdotool wrappers)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+async def _run_xdotool(*args: str) -> None:
+    """Run xdotool with the given args. Raises BackendError on
+    non-zero exit or missing binary."""
+    if not shutil.which("xdotool"):
+        raise BackendError("xdotool is not installed; run `apt install xdotool`")
+    proc = await asyncio.create_subprocess_exec(
+        "xdotool", *args,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, err = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+    if proc.returncode != 0:
+        raise BackendError(
+            f"xdotool returncode={proc.returncode}: "
+            f"{err.decode(errors='replace')[:200]}"
+        )
+
+
+_BUTTON_NUM = {"left": "1", "middle": "2", "right": "3"}
+
+
+async def click(
+    x: int, y: int, button: str = "left", modifiers: list[str] = []
+) -> None:
+    """Move cursor to (x,y) and click with the named button. Optional
+    modifier keys (shift/ctrl/alt/super) are held during the click."""
+    btn = _BUTTON_NUM.get(button, "1")
+    # --clearmodifiers undoes any sticky modifiers before our op; we add
+    # our own modifiers explicitly via keydown/keyup so the click only
+    # sees what we asked for.
+    if modifiers:
+        keyspec = "+".join(modifiers)
+        await _run_xdotool(
+            "mousemove", "--sync", str(x), str(y),
+            "keydown", keyspec,
+            "click", "--clearmodifiers", btn,
+            "keyup", keyspec,
+        )
+    else:
+        await _run_xdotool(
+            "mousemove", "--sync", str(x), str(y),
+            "click", "--clearmodifiers", btn,
+        )
+
+
+async def double_click(x: int, y: int) -> None:
+    await _run_xdotool(
+        "mousemove", "--sync", str(x), str(y),
+        "click", "--repeat", "2", "--delay", "50", "--clearmodifiers", "1",
+    )
+
+
+async def right_click(x: int, y: int) -> None:
+    await click(x, y, button="right")
+
+
+async def drag(
+    start: tuple[int, int], end: tuple[int, int]
+) -> None:
+    sx, sy = start
+    ex, ey = end
+    await _run_xdotool(
+        "mousemove", "--sync", str(sx), str(sy),
+        "mousedown", "1",
+        "mousemove", "--sync", str(ex), str(ey),
+        "mouseup", "1",
+    )
+
+
+async def mouse_move(x: int, y: int) -> None:
+    await _run_xdotool("mousemove", "--sync", str(x), str(y))
+
+
+async def type_text(text: str, delay_ms: int = 12) -> None:
+    """Type the given text at the current cursor position. Delay between
+    keystrokes is 12ms by default (matches Anthropic's reference)."""
+    await _run_xdotool("type", "--delay", str(delay_ms), text)
+
+
+async def key_combo(combo: str) -> None:
+    """Press a key combination like 'ctrl+s', 'Return', 'Escape'."""
+    await _run_xdotool("key", "--clearmodifiers", combo)
+
+
+async def scroll(
+    x: int, y: int, direction: str, amount: int
+) -> None:
+    """Scroll at (x,y) by `amount` clicks in `direction`
+    (up/down/left/right)."""
+    # xdotool scroll wheel: button 4=up, 5=down, 6=left, 7=right.
+    btn_map = {"up": "4", "down": "5", "left": "6", "right": "7"}
+    btn = btn_map.get(direction)
+    if btn is None:
+        raise BackendError(f"unknown scroll direction: {direction}")
+    await _run_xdotool(
+        "mousemove", "--sync", str(x), str(y),
+        "click", "--repeat", str(amount), "--clearmodifiers", btn,
+    )
