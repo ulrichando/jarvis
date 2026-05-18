@@ -106,8 +106,16 @@ if [[ "$SCENARIO" == "click-button" || "$SCENARIO" == "all" ]]; then
 <button id="b" onclick="document.title='CLICKED'">Confirm</button>
 </body></html>
 HTML
-    setsid -f xdg-open file:///tmp/cua-soak.html >/dev/null 2>&1
-    sleep 2
+    # google-chrome directly — xdg-open routes .html to Thunar on
+    # some Kali setups (the file manager confuses the model into
+    # describing instead of clicking). Falls back to xdg-open only
+    # if google-chrome isn't installed.
+    if command -v google-chrome >/dev/null 2>&1; then
+        setsid -f google-chrome --new-window file:///tmp/cua-soak.html >/dev/null 2>&1
+    else
+        setsid -f xdg-open file:///tmp/cua-soak.html >/dev/null 2>&1
+    fi
+    sleep 3
     run_scenario "click-button" "click the Confirm button on the open page" 4 0.08
 fi
 
@@ -118,8 +126,16 @@ if [[ "$SCENARIO" == "type-into-field" || "$SCENARIO" == "all" ]]; then
 <input id="f" placeholder="type here">
 </body></html>
 HTML
-    setsid -f xdg-open file:///tmp/cua-soak.html >/dev/null 2>&1
-    sleep 2
+    # google-chrome directly — xdg-open routes .html to Thunar on
+    # some Kali setups (the file manager confuses the model into
+    # describing instead of clicking). Falls back to xdg-open only
+    # if google-chrome isn't installed.
+    if command -v google-chrome >/dev/null 2>&1; then
+        setsid -f google-chrome --new-window file:///tmp/cua-soak.html >/dev/null 2>&1
+    else
+        setsid -f xdg-open file:///tmp/cua-soak.html >/dev/null 2>&1
+    fi
+    sleep 3
     run_scenario "type-into-field" "type 'hello world' into the input field" 5 0.10
 fi
 
