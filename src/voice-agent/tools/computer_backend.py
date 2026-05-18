@@ -102,9 +102,8 @@ async def take_screenshot() -> bytes:
     """
     if _mss_available:
         try:
-            return await asyncio.get_event_loop().run_in_executor(
-                None, _take_screenshot_mss
-            )
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, _take_screenshot_mss)
         except Exception as e:
             logger.warning(f"[computer_backend] mss failed: {e}; trying scrot")
     # scrot fallback
