@@ -300,17 +300,19 @@ async def test_loop_blocked_after_opus_also_stuck(loop_env):
 @pytest.mark.asyncio
 async def test_loop_blocks_on_password_field(loop_env, monkeypatch):
     """If password is visible at the start of an iteration, hard-stop
-    with reason='blocked' before calling Anthropic."""
+    with reason='blocked' before calling Anthropic. With the
+    2026-05-18 fail-open hardening, the seam now returns a tuple
+    (visible, state); the loop threads `state` into the audit row."""
     from tools.computer_loop import run
     from tools import computer_loop
 
     script, calls, audit = loop_env
 
-    # Make is_password_field_visible return True
-    async def fake_pw(png, widgets):
-        return True
+    # Make check_password_visible return (True, "slowpath")
+    async def fake_check(png, widgets):
+        return True, "slowpath"
     monkeypatch.setattr(
-        computer_loop, "_is_password_visible", fake_pw
+        computer_loop, "_check_password_visible", fake_check
     )
 
     cancel = asyncio.Event()
@@ -323,6 +325,56 @@ async def test_loop_blocks_on_password_field(loop_env, monkeypatch):
     assert result.reason == "blocked"
     assert "password" in result.summary.lower()
     assert len(calls) == 0   # never called Anthropic
+
+    # The bail audit row should carry the password-check state
+    bail_rows = [a for a in audit if a.get("action") == "bail"]
+    assert bail_rows, "expected a bail audit row"
+    assert bail_rows[0].get("pwd_check_state") == "slowpath"
+
+
+@pytest.mark.asyncio
+async def test_loop_records_pwd_check_state_on_success(loop_env, monkeypatch):
+    """Even when the password check is NEGATIVE (allow the action),
+    the state ('fastpath_miss' or 'slowpath') must be threaded into
+    the per-action audit row."""
+    from tools.computer_loop import run
+    from tools import computer_loop
+
+    script, calls, audit = loop_env
+
+    async def fake_check(png, widgets):
+        return False, "fastpath_miss"
+    monkeypatch.setattr(
+        computer_loop, "_check_password_visible", fake_check
+    )
+
+    script.append(FakeResponse(
+        content=[FakeToolUse("computer", {"action": "left_click", "coordinate": [50, 50]})],
+        usage=FakeUsage(),
+    ))
+    script.append(FakeResponse(
+        content=[FakeToolUse("computer", {"action": "task_done", "summary": "Done."})],
+        usage=FakeUsage(),
+    ))
+
+    cancel = asyncio.Event()
+    result = await run(
+        task="click something",
+        anthropic_client=None,
+        safety_confirm_cb=lambda p: asyncio.sleep(0, result=True),
+        cancel_event=cancel,
+    )
+
+    assert result.ok is True
+    assert result.reason == "completed"
+    # Each non-bail audit row should have the password-check state.
+    action_rows = [
+        a for a in audit
+        if a.get("action") in {"left_click", "task_done"}
+    ]
+    assert action_rows
+    for row in action_rows:
+        assert row.get("pwd_check_state") == "fastpath_miss"
 
 
 @pytest.mark.asyncio
