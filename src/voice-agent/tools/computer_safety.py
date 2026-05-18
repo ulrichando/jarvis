@@ -20,7 +20,11 @@ from tools.computer_atspi import Widget
 logger = logging.getLogger("jarvis.computer_safety")
 
 
-__all__ = ["parse_destructive_intent", "is_password_field_visible"]
+__all__ = [
+    "parse_destructive_intent",
+    "is_password_field_visible",
+    "check_password_visible",
+]
 
 
 # Words that, when present in a button label or typed command, require
@@ -36,6 +40,18 @@ _DESTRUCTIVE_SHELL_RE = re.compile(
     r"\b(?:rm\s+-rf|rm\s+-r|dd\s+if=|mkfs|format|shred|wipefs|"
     r"sudo\s+rm|sudo\s+dd|chmod\s+-R\s+000|chown\s+-R\s+0:0)\b",
     re.IGNORECASE,
+)
+
+# Hard timeout for the Gemini fallback in check_password_visible.
+# Research-validated 2026-05-18: 1.5s preserves the 30-iter loop's
+# wall-clock budget (30 × 1.5 = 45s worst case vs 30 × 10 = 300s
+# without the cap). Tighter values (e.g. 0.8s) save more wall-clock
+# but increase fail-open ratio on slow Gemini days. Overridable via
+# env: JARVIS_PASSWORD_CHECK_TIMEOUT_S. Spec:
+# docs/superpowers/specs/2026-05-18-cua-password-check-failopen-design.md
+import os as _os
+_GEMINI_TIMEOUT_S: float = float(
+    _os.environ.get("JARVIS_PASSWORD_CHECK_TIMEOUT_S", "1.5")
 )
 
 
@@ -125,22 +141,75 @@ async def _gemini_password_check(png: bytes) -> bool:
         return False
 
 
+async def check_password_visible(
+    png: bytes, widgets: list[Widget]
+) -> tuple[bool, str]:
+    """Two-layer password-field detection with bounded latency.
+
+    Returns (visible, state) where state is one of:
+      - "fastpath_hit":   AT-SPI saw a password_text widget. Microseconds.
+      - "fastpath_miss":  AT-SPI returned widgets but none were password
+                          fields. Microseconds.
+      - "slowpath":       AT-SPI empty; Gemini fallback ran and answered
+                          within _GEMINI_TIMEOUT_S. ~hundreds of ms in
+                          the happy case.
+      - "failopen":       Gemini timed out or raised. Returns False
+                          (fail-open) by default, True (fail-closed)
+                          when JARVIS_PASSWORD_CHECK_STRICT=1.
+
+    Rationale: Anthropic's reference computer_use_demo/loop.py ships
+    NO client-side password check — they trust model training plus a
+    server-side prompt-injection classifier. JARVIS's check is
+    defense-in-depth that MUST NOT dominate latency. Per the
+    2026-05-18 industry-validation research and OS-Harm benchmark
+    (arxiv 2506.14866), fail-open on this layer is correct because
+    Sonnet 4.6's own training is the primary defense.
+    """
+    # Layer 1 — AT-SPI fast path (microseconds)
+    for w in widgets:
+        if w.role == "password_text":
+            return True, "fastpath_hit"
+    if widgets:
+        return False, "fastpath_miss"
+
+    # Layer 2 — Gemini fallback (bounded by _GEMINI_TIMEOUT_S)
+    import asyncio as _asyncio
+    import hashlib as _hashlib
+    import time as _time
+    started = _time.monotonic()
+    try:
+        result = await _asyncio.wait_for(
+            _gemini_password_check(png),
+            timeout=_GEMINI_TIMEOUT_S,
+        )
+        return bool(result), "slowpath"
+    except (_asyncio.TimeoutError, Exception) as e:
+        elapsed_ms = int((_time.monotonic() - started) * 1000)
+        strict = _os.environ.get("JARVIS_PASSWORD_CHECK_STRICT") == "1"
+        shot_hash = _hashlib.md5(png).hexdigest()[:12] if png else "empty"
+        logger.warning(
+            f"[computer_safety] password check failed open "
+            f"(cause={type(e).__name__}, elapsed_ms={elapsed_ms}, "
+            f"shot_hash={shot_hash}, widgets_count={len(widgets)}, "
+            f"strict_mode={strict})"
+        )
+        return strict, "failopen"
+
+
 async def is_password_field_visible(
     png: bytes, widgets: list[Widget]
 ) -> bool:
-    """True if the screen appears to have a focused password input.
+    """Back-compat wrapper around check_password_visible.
 
-    Two-layer check:
-      Layer 1: any widget with role == "password_text" (AT-SPI).
-      Layer 2: Gemini Flash Lite on the screenshot — only consulted
-               when AT-SPI returned no widgets at all (sparse
-               accessibility tree).
+    Existing callers that only need the bool (no state tag) get the
+    same semantics. New callers should use check_password_visible
+    directly to capture the state for audit logging.
+
+    Note: this wrapper inherits the bounded-latency behaviour of
+    check_password_visible — the unbounded Gemini call that existed
+    pre-2026-05-18 is gone. Callers that relied on infinite waits will
+    now fail-open on Gemini timeout (or fail-closed if
+    JARVIS_PASSWORD_CHECK_STRICT=1).
     """
-    for w in widgets:
-        if w.role == "password_text":
-            return True
-    if not widgets:
-        # AT-SPI is sparse — fall back to vision.
-        return await _gemini_password_check(png)
-    # AT-SPI returned widgets but no password_text → trust it.
-    return False
+    visible, _state = await check_password_visible(png, widgets)
+    return visible
