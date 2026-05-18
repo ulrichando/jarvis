@@ -90,12 +90,23 @@ _bind_production_seams()
 
 
 def _compute_cost(usage, model: str) -> float:
-    """Per-call USD cost from Anthropic usage block + model name."""
+    """Per-call USD cost from Anthropic usage block + model name.
+
+    Includes cache-read tokens at 10% of the base input rate
+    (Anthropic's documented cache-read pricing). Cache write is
+    priced at 1.25x input and not yet tracked here — Anthropic's
+    `cache_creation_input_tokens` field can be added later if soak
+    telemetry shows large cache-write volume.
+    """
     rates = _PRICING.get(model, {"input": 3.0, "output": 15.0})
     in_tokens = getattr(usage, "input_tokens", 0) or 0
     out_tokens = getattr(usage, "output_tokens", 0) or 0
-    return (in_tokens / 1_000_000) * rates["input"] + \
-           (out_tokens / 1_000_000) * rates["output"]
+    cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+    return (
+        (in_tokens / 1_000_000) * rates["input"]
+        + (out_tokens / 1_000_000) * rates["output"]
+        + (cache_read / 1_000_000) * rates["input"] * 0.10
+    )
 
 
 def _png_to_image_block(png: bytes) -> dict:
@@ -181,6 +192,13 @@ async def run(
                     "display_number": 1,
                 }],
                 messages=messages,
+                # The "computer-use-2025-11-24" header isn't yet in the
+                # installed anthropic SDK's AnthropicBetaParam Literal
+                # (v0.102.0 only knows -10-22 and -01-24), but it IS the
+                # documented header for the computer_20251124 tool type
+                # we pass below. Passing via extra_headers bypasses the
+                # Literal validation. Bump the header string when
+                # Anthropic announces a successor.
                 extra_headers={"anthropic-beta": "computer-use-2025-11-24"},
             )
         except Exception as e:
@@ -199,12 +217,13 @@ async def run(
 
         cost_usd += _compute_cost(response.usage, active_model)
 
-        # Find the tool_use block in the response
+        # Find the tool_use block in the response. Anthropic returns
+        # BetaToolUseBlock objects with .type=="tool_use"; the dict path
+        # covers test fixtures that use plain dicts.
         tool_use = None
         for block in response.content:
             if getattr(block, "type", None) == "tool_use" or \
-               (isinstance(block, dict) and block.get("type") == "tool_use") or \
-               hasattr(block, "name"):
+               (isinstance(block, dict) and block.get("type") == "tool_use"):
                 tool_use = block
                 break
         if tool_use is None:
@@ -215,14 +234,13 @@ async def run(
                 reason="bailed", handoff_id=handoff_id,
             )
 
-        action_name = (
-            tool_use.input.get("action") if hasattr(tool_use, "input")
-            else tool_use["input"]["action"]
-        )
-        action_input = (
-            tool_use.input if hasattr(tool_use, "input")
-            else tool_use["input"]
-        )
+        # tool_use can be a real Anthropic BetaToolUseBlock (attribute
+        # access) or a dict-shaped test fixture (subscript access).
+        if isinstance(tool_use, dict):
+            action_input = tool_use["input"]
+        else:
+            action_input = tool_use.input
+        action_name = action_input.get("action") if isinstance(action_input, dict) else None
 
         # task_done = clean exit
         if action_name == "task_done":
@@ -287,7 +305,7 @@ async def _execute_action(
     try:
         if name == "left_click":
             x, y = params["coordinate"]
-            await _backend_click(int(x * scale_x), int(y * scale_y))
+            await _backend_click(round(x * scale_x), round(y * scale_y))
         elif name == "type":
             await _backend_type(params.get("text", ""))
         elif name == "key":
