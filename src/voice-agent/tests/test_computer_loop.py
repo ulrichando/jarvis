@@ -295,3 +295,83 @@ async def test_loop_blocked_after_opus_also_stuck(loop_env):
     )
 
     assert result.reason == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_loop_blocks_on_password_field(loop_env, monkeypatch):
+    """If password is visible at the start of an iteration, hard-stop
+    with reason='blocked' before calling Anthropic."""
+    from tools.computer_loop import run
+    from tools import computer_loop
+
+    script, calls, audit = loop_env
+
+    # Make is_password_field_visible return True
+    async def fake_pw(png, widgets):
+        return True
+    monkeypatch.setattr(
+        computer_loop, "_is_password_visible", fake_pw
+    )
+
+    cancel = asyncio.Event()
+    result = await run(
+        task="login", anthropic_client=None,
+        safety_confirm_cb=lambda p: asyncio.sleep(0, result=True),
+        cancel_event=cancel,
+    )
+
+    assert result.reason == "blocked"
+    assert "password" in result.summary.lower()
+    assert len(calls) == 0   # never called Anthropic
+
+
+@pytest.mark.asyncio
+async def test_loop_voice_confirms_destructive_click(loop_env, monkeypatch):
+    """When the model clicks on a Delete button, the loop calls
+    safety_confirm_cb. If user denies, action is skipped."""
+    from tools.computer_loop import run
+    from tools import computer_loop
+    from tools.computer_atspi import Widget
+
+    script, calls, audit = loop_env
+
+    # First response: click on a Delete button
+    script.append(FakeResponse(
+        content=[FakeToolUse("computer", {"action": "left_click", "coordinate": [50, 50]})],
+        usage=FakeUsage(),
+    ))
+    # Second response: task_done
+    script.append(FakeResponse(
+        content=[FakeToolUse("computer", {"action": "task_done", "summary": "done (after skip)"})],
+        usage=FakeUsage(),
+    ))
+
+    # Mock widgets to put a Delete button at the click coordinate
+    fake_widgets = [
+        Widget(role="push_button", bounds=(40, 40, 80, 30),
+               text="Delete", enabled=True, active=False),
+    ]
+    monkeypatch.setattr(
+        computer_loop, "_enumerate_widgets", lambda: fake_widgets
+    )
+
+    # Record whether the click backend was called
+    click_calls: list = []
+    async def fake_click(*a, **kw):
+        click_calls.append((a, kw))
+    monkeypatch.setattr(computer_loop, "_backend_click", fake_click)
+
+    confirm_calls: list[str] = []
+    async def deny(phrase):
+        confirm_calls.append(phrase)
+        return False
+    cancel = asyncio.Event()
+    result = await run(
+        task="x", anthropic_client=None,
+        safety_confirm_cb=deny,
+        cancel_event=cancel,
+    )
+    assert result.reason == "completed"
+    assert len(confirm_calls) == 1
+    assert "Delete" in confirm_calls[0]
+    assert len(click_calls) == 0   # action skipped
