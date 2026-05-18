@@ -97,6 +97,50 @@ def test_no_op_on_normal_text():
     assert "".join(voiced) == "".join(chunks), "normal prose was corrupted"
 
 
+def test_suppresses_dotted_pycall_leak():
+    """2026-05-18 live capture: supervisor LLM emitted
+    `computer.screenshot()` as voiced text (a single chunk, after
+    narrating its intent). The pycall regex was bare-name-only so the
+    dotted method form leaked through to TTS. The user heard literal
+    'computer dot screenshot open paren close paren' — robotic
+    sounding. Capture: ~/.local/share/jarvis/logs/voice-agent.log
+    2026-05-18T15:36:10."""
+    from livekit.agents.inference import llm as inf_llm
+    pycall_sanitizer.install()
+
+    # `screenshot` IS a live supervisor tool (jarvis_agent.py).
+    self_mock = _make_self_mock({"screenshot", "task_done"})
+    import threading
+    thinking = threading.Event()
+
+    leak = "computer.screenshot()"
+    c = _make_choice(leak)
+    inf_llm.LLMStream._parse_choice(self_mock, "resp_dotted_1", c, thinking)
+    assert "computer" not in c.delta.content, (
+        f"dotted tool-call leaked to TTS: {c.delta.content!r}"
+    )
+    assert "screenshot" not in c.delta.content, c.delta.content
+
+
+def test_dotted_pycall_unknown_tail_not_suppressed():
+    """`John.Smith(` in natural prose — `Smith` is NOT a tool. Must
+    NOT trigger suppression. Belt-and-suspenders against the dotted
+    pattern being too aggressive."""
+    from livekit.agents.inference import llm as inf_llm
+    pycall_sanitizer.install()
+
+    self_mock = _make_self_mock({"screenshot", "task_done"})
+    import threading
+    thinking = threading.Event()
+
+    natural = "I went to John.Smith(university) yesterday."
+    c = _make_choice(natural)
+    inf_llm.LLMStream._parse_choice(self_mock, "resp_dotted_2", c, thinking)
+    assert c.delta.content == natural, (
+        f"falsely suppressed natural prose: {c.delta.content!r}"
+    )
+
+
 def test_no_trigger_on_unknown_function_name():
     """If the prefix matches `name(` but `name` isn't in the tool
     map, treat as natural English (e.g. someone says 'foo(bar)' as

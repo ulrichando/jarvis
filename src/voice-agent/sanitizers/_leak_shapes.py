@@ -136,9 +136,24 @@ def could_extend_to_meta_silence(buffer: str) -> bool:
 
 # ── Per-shape final-detect regexes ──────────────────────────────────
 
-# Match `<identifier>(`, capturing the identifier. Used to detect
+# Match `<identifier>(` (bare) OR `<ns>.<ns>.<identifier>(` (dotted).
+# Captures the FINAL identifier (the actual tool name). Used to detect
 # tool-call-as-text leaks at the start of a stream.
-PYCALL_OPEN_RE: re.Pattern[str] = re.compile(r"^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\(")
+#
+# Bare-name only was the original 2026-05-02 design. Live capture
+# 2026-05-18T15:36:10 surfaced the dotted form: supervisor LLM emitted
+# `computer.screenshot()` after narrating "I'll take a screenshot"
+# (the `computer.` namespace is the Anthropic computer-use SUBAGENT
+# tool, not a supervisor tool — pure hallucination). TTS read the
+# literal string aloud; user heard "computer dot screenshot open paren
+# close paren" → robotic. Generalizing to dotted forms catches this
+# and any future `tools.X()` / `ns.X()` leaks. The final-identifier
+# capture means `is_known_leak` still filters on the live tool name
+# (`John.Smith(university)` captures `Smith`, which isn't a tool, so
+# natural prose isn't false-positively suppressed).
+PYCALL_OPEN_RE: re.Pattern[str] = re.compile(
+    r"^\s*(?:[a-zA-Z_][a-zA-Z0-9_]*\.)*([a-zA-Z_][a-zA-Z0-9_]*)\s*\("
+)
 
 # Match `<function=name>` (HTML/XML attribute form, captured live
 # 2026-05-05 from llama-3.1-8b-instant on BANTER turns). The closing
