@@ -1,17 +1,31 @@
 """Safety gates for the computer-use loop.
 
-Two functions, both pure / side-effect-free outside their inputs:
+Three functions, all pure / side-effect-free outside their inputs:
   - parse_destructive_intent(action, widgets) -> Optional[str]
     Returns a confirmation phrase or None.
+  - check_password_visible(png, widgets) -> tuple[bool, str]
+    Bounded-latency (≤_GEMINI_TIMEOUT_S, default 1.5s) password-field
+    detection. Returns (visible, state) where state is one of
+    'fastpath_hit' / 'fastpath_miss' / 'slowpath' / 'failopen'.
+    Fail-open on timeout by default; fail-closed when
+    JARVIS_PASSWORD_CHECK_STRICT=1.
   - is_password_field_visible(png, widgets) -> bool
-    Layer 1: AT-SPI password_text role. Layer 2: Gemini fallback.
+    Back-compat wrapper around check_password_visible.
 
-Spec: docs/superpowers/specs/2026-05-18-jarvis-computer-use-parity-design.md §4
+Env vars:
+  - JARVIS_PASSWORD_CHECK_TIMEOUT_S (default 1.5) — Gemini timeout.
+  - JARVIS_PASSWORD_CHECK_STRICT (default unset) — '1' to fail-closed.
+
+Spec: docs/superpowers/specs/2026-05-18-cua-password-check-failopen-design.md
 """
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import logging
+import os
 import re
+import time
 from typing import Optional
 
 from tools.computer_atspi import Widget
@@ -49,9 +63,8 @@ _DESTRUCTIVE_SHELL_RE = re.compile(
 # but increase fail-open ratio on slow Gemini days. Overridable via
 # env: JARVIS_PASSWORD_CHECK_TIMEOUT_S. Spec:
 # docs/superpowers/specs/2026-05-18-cua-password-check-failopen-design.md
-import os as _os
 _GEMINI_TIMEOUT_S: float = float(
-    _os.environ.get("JARVIS_PASSWORD_CHECK_TIMEOUT_S", "1.5")
+    os.environ.get("JARVIS_PASSWORD_CHECK_TIMEOUT_S", "1.5")
 )
 
 
@@ -173,20 +186,17 @@ async def check_password_visible(
         return False, "fastpath_miss"
 
     # Layer 2 — Gemini fallback (bounded by _GEMINI_TIMEOUT_S)
-    import asyncio as _asyncio
-    import hashlib as _hashlib
-    import time as _time
-    started = _time.monotonic()
+    started = time.monotonic()
     try:
-        result = await _asyncio.wait_for(
+        result = await asyncio.wait_for(
             _gemini_password_check(png),
             timeout=_GEMINI_TIMEOUT_S,
         )
         return bool(result), "slowpath"
-    except (_asyncio.TimeoutError, Exception) as e:
-        elapsed_ms = int((_time.monotonic() - started) * 1000)
-        strict = _os.environ.get("JARVIS_PASSWORD_CHECK_STRICT") == "1"
-        shot_hash = _hashlib.md5(png).hexdigest()[:12] if png else "empty"
+    except (asyncio.TimeoutError, Exception) as e:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        strict = os.environ.get("JARVIS_PASSWORD_CHECK_STRICT") == "1"
+        shot_hash = hashlib.md5(png).hexdigest()[:12] if png else "empty"
         logger.warning(
             f"[computer_safety] password check failed open "
             f"(cause={type(e).__name__}, elapsed_ms={elapsed_ms}, "
