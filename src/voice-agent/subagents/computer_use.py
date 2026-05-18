@@ -21,13 +21,20 @@ import logging
 import os
 from typing import Optional
 
+from livekit.agents import Agent
+
 from .registry import HandoffSubagent, register
 
 
 logger = logging.getLogger("jarvis.subagents.computer_use")
 
 
-__all__ = ["register_computer_use", "_ensure_x11_session", "build_safety_confirm_cb"]
+__all__ = [
+    "register_computer_use",
+    "_ensure_x11_session",
+    "build_safety_confirm_cb",
+    "ComputerUseAgent",
+]
 
 
 COMPUTER_USE_INSTRUCTIONS = """\
@@ -135,6 +142,83 @@ def build_safety_confirm_cb(session, timeout_s: float = 30.0):
     return cb
 
 
+class ComputerUseAgent(Agent):
+    """LiveKit Agent that overrides on_enter to launch the
+    computer_use loop. The supervisor handoff returns here after the
+    loop emits task_done.
+
+    The loop runs against a direct anthropic.AsyncAnthropic client,
+    NOT through LiveKit's LLM adapter — see tools/computer_loop.py."""
+
+    def __init__(self, *, spec, supervisor, chat_ctx, **kw):
+        super().__init__(
+            instructions=spec.instructions,
+            tools=[],
+            chat_ctx=chat_ctx,
+            **kw,
+        )
+        self._spec = spec
+        self._supervisor = supervisor
+
+    async def on_enter(self) -> None:
+        """Pull the user's last request from chat_ctx, run the loop,
+        voice the summary, hand back to supervisor."""
+        import os as _os
+        from anthropic import AsyncAnthropic
+        from tools.computer_loop import run as run_loop
+
+        # Extract the user's request from the last user turn in chat_ctx.
+        request = "GUI task"
+        try:
+            items = getattr(self.chat_ctx, "items", None) or []
+            for item in reversed(items):
+                if getattr(item, "role", None) == "user":
+                    content = getattr(item, "content", None)
+                    if isinstance(content, list) and content:
+                        request = str(content[-1])[:500]
+                    elif isinstance(content, str):
+                        request = content[:500]
+                    break
+        except Exception as e:
+            logger.warning(f"[computer_use.on_enter] chat_ctx extract failed: {e}")
+
+        api_key = _os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            await self.session.say(
+                "Computer-use needs an Anthropic API key — none configured."
+            )
+            return
+
+        client = AsyncAnthropic(api_key=api_key)
+        cancel = asyncio.Event()
+
+        confirm_cb = build_safety_confirm_cb(self.session, timeout_s=30.0)
+
+        try:
+            result = await run_loop(
+                task=request,
+                anthropic_client=client,
+                safety_confirm_cb=confirm_cb,
+                cancel_event=cancel,
+            )
+        except Exception as e:
+            logger.exception("[computer_use] loop raised")
+            await self.session.say(f"Couldn't complete the task — {e}")
+            return
+
+        # Stash steps + cost on the session so jarvis_agent's per-turn
+        # telemetry write can pick them up and write to the new
+        # computer_use_steps / computer_use_cost_usd columns.
+        try:
+            self.session._jarvis_last_cua_steps = result.steps
+            self.session._jarvis_last_cua_cost = result.cost_usd
+        except Exception:
+            pass
+
+        # Voice the summary and let the supervisor's normal flow take over.
+        await self.session.say(result.summary)
+
+
 def register_computer_use() -> None:
     """Register the computer_use subagent — only when explicitly
     enabled via env. Default OFF until soak telemetry justifies."""
@@ -157,5 +241,6 @@ def register_computer_use() -> None:
         enabled=True,
         tools_required=False,   # tool-less; loop owns its own audit
         pre_transfer=_ensure_x11_session,
+        agent_class=ComputerUseAgent,
     ))
     logger.info("[computer_use] subagent registered (env flag is ON)")
