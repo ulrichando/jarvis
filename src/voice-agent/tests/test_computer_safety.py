@@ -99,3 +99,86 @@ async def test_password_visible_via_gemini_fallback(monkeypatch):
         computer_safety, "_gemini_password_check", fake_gemini
     )
     assert await is_password_field_visible(png=b"img", widgets=[]) is True
+
+
+# ── check_password_visible (2026-05-18 fail-open hardening) ──
+
+@pytest.mark.asyncio
+async def test_check_password_visible_fastpath_hit():
+    """AT-SPI password_text widget → instant return (no Gemini call)."""
+    from tools.computer_safety import check_password_visible
+    widgets = [_widget("password_text", "")]
+    visible, state = await check_password_visible(png=b"", widgets=widgets)
+    assert visible is True
+    assert state == "fastpath_hit"
+
+
+@pytest.mark.asyncio
+async def test_check_password_visible_fastpath_miss():
+    """AT-SPI returned other widgets but no password_text → instant False."""
+    from tools.computer_safety import check_password_visible
+    widgets = [_widget("text", "user@example.com")]
+    visible, state = await check_password_visible(png=b"", widgets=widgets)
+    assert visible is False
+    assert state == "fastpath_miss"
+
+
+@pytest.mark.asyncio
+async def test_check_password_visible_slowpath_success(monkeypatch):
+    """AT-SPI empty + Gemini returns True quickly → state='slowpath'."""
+    from tools.computer_safety import check_password_visible
+    from tools import computer_safety
+    async def fast_gemini(png):
+        return True
+    monkeypatch.setattr(computer_safety, "_gemini_password_check", fast_gemini)
+    visible, state = await check_password_visible(png=b"img", widgets=[])
+    assert visible is True
+    assert state == "slowpath"
+
+
+@pytest.mark.asyncio
+async def test_check_password_visible_failopen_on_timeout(monkeypatch):
+    """AT-SPI empty + Gemini hangs past timeout → fail OPEN (False, 'failopen')."""
+    import asyncio
+    from tools.computer_safety import check_password_visible
+    from tools import computer_safety
+    async def slow_gemini(png):
+        await asyncio.sleep(10.0)
+        return True
+    monkeypatch.setattr(computer_safety, "_gemini_password_check", slow_gemini)
+    monkeypatch.setattr(computer_safety, "_GEMINI_TIMEOUT_S", 0.05)
+    monkeypatch.delenv("JARVIS_PASSWORD_CHECK_STRICT", raising=False)
+    visible, state = await check_password_visible(png=b"img", widgets=[])
+    assert visible is False  # default: fail-open
+    assert state == "failopen"
+
+
+@pytest.mark.asyncio
+async def test_check_password_visible_failopen_strict_mode(monkeypatch):
+    """STRICT=1 + timeout → fail CLOSED (returns True so loop bails)."""
+    import asyncio
+    from tools.computer_safety import check_password_visible
+    from tools import computer_safety
+    async def slow_gemini(png):
+        await asyncio.sleep(10.0)
+        return False
+    monkeypatch.setattr(computer_safety, "_gemini_password_check", slow_gemini)
+    monkeypatch.setattr(computer_safety, "_GEMINI_TIMEOUT_S", 0.05)
+    monkeypatch.setenv("JARVIS_PASSWORD_CHECK_STRICT", "1")
+    visible, state = await check_password_visible(png=b"img", widgets=[])
+    assert visible is True  # strict: fail-closed
+    assert state == "failopen"
+
+
+@pytest.mark.asyncio
+async def test_check_password_visible_failopen_on_exception(monkeypatch):
+    """AT-SPI empty + Gemini raises → fail-open (default mode)."""
+    from tools.computer_safety import check_password_visible
+    from tools import computer_safety
+    async def broken_gemini(png):
+        raise RuntimeError("provider unreachable")
+    monkeypatch.setattr(computer_safety, "_gemini_password_check", broken_gemini)
+    monkeypatch.delenv("JARVIS_PASSWORD_CHECK_STRICT", raising=False)
+    visible, state = await check_password_visible(png=b"img", widgets=[])
+    assert visible is False
+    assert state == "failopen"
