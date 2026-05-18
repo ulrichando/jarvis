@@ -235,3 +235,63 @@ async def test_loop_bails_on_wall_timeout(loop_env, monkeypatch):
     monkeypatch.setattr(_t, "monotonic", real_monotonic)
     assert result.reason == "bailed"
     assert "timeout" in result.summary.lower()
+
+
+@pytest.mark.asyncio
+async def test_loop_escalates_sonnet_to_opus_after_no_progress(loop_env):
+    """3 identical actions with no screenshot change → switch model
+    from Sonnet to Opus on the 4th call."""
+    from tools.computer_loop import run
+
+    script, calls, audit = loop_env
+    # 3 identical clicks (will trigger no-progress detection)
+    for _ in range(3):
+        script.append(FakeResponse(
+            content=[FakeToolUse("computer", {"action": "left_click", "coordinate": [100, 100]})],
+            usage=FakeUsage(),
+        ))
+    # 4th call should be on Opus; it returns task_done
+    script.append(FakeResponse(
+        content=[FakeToolUse("computer", {"action": "task_done", "summary": "done"})],
+        usage=FakeUsage(),
+        model="claude-opus-4-7",
+    ))
+
+    cancel = asyncio.Event()
+    result = await run(
+        task="x", anthropic_client=None,
+        safety_confirm_cb=lambda p: asyncio.sleep(0, result=True),
+        cancel_event=cancel,
+        no_progress_escalation_after=3,
+    )
+
+    assert result.reason == "completed"
+    # Calls 1-3 on sonnet, call 4 on opus
+    assert calls[0]["model"] == "claude-sonnet-4-6"
+    assert calls[1]["model"] == "claude-sonnet-4-6"
+    assert calls[2]["model"] == "claude-sonnet-4-6"
+    assert calls[3]["model"] == "claude-opus-4-7"
+
+
+@pytest.mark.asyncio
+async def test_loop_blocked_after_opus_also_stuck(loop_env):
+    """3 identical actions on Sonnet, then 3 more on Opus → bail with
+    reason='blocked'."""
+    from tools.computer_loop import run
+
+    script, calls, audit = loop_env
+    for _ in range(6):
+        script.append(FakeResponse(
+            content=[FakeToolUse("computer", {"action": "left_click", "coordinate": [100, 100]})],
+            usage=FakeUsage(),
+        ))
+
+    cancel = asyncio.Event()
+    result = await run(
+        task="x", anthropic_client=None,
+        safety_confirm_cb=lambda p: asyncio.sleep(0, result=True),
+        cancel_event=cancel,
+        no_progress_escalation_after=3,
+    )
+
+    assert result.reason == "blocked"
