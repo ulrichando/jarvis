@@ -87,6 +87,18 @@ class HandoffSubagent:
                      thrown by the hook are caught and converted to
                      abort strings — the hook should never crash the
                      handoff.
+        instructions_factory: optional zero-arg callable that returns
+                     the instructions string to use FOR THIS HANDOFF.
+                     When set, takes precedence over the static
+                     `instructions` field. Use to inject backend
+                     identity / capability disclosure that depends on
+                     runtime state (e.g. browser subagent appends a
+                     CDP-active marker when the Chrome extension isn't
+                     connected, telling the LLM about the reduced
+                     tool surface — per the 2026-05-18 industry-
+                     validation findings on capability-narrowing
+                     transparency). Falls back to `instructions` if
+                     the callable raises.
     """
     name: str
     transfer_tool: str
@@ -99,6 +111,7 @@ class HandoffSubagent:
     llm_factory: Optional[Callable[[], object]] = None
     tools_required: bool = True
     pre_transfer: Optional[Callable[..., Awaitable[Optional[str]]]] = None
+    instructions_factory: Optional[Callable[[], str]] = None
     # Per-handoff filesystem isolation. Currently the only supported
     # value is `"worktree"` — port of claude-code's subagent
     # `isolation: worktree` frontmatter. When set, the transfer-tool
@@ -109,6 +122,13 @@ class HandoffSubagent:
     # Default None — most subagents (desktop / browser / screen_share)
     # don't touch the filesystem and don't need isolation.
     isolation: Optional[str] = None
+    # Optional Agent subclass override. When set, the handoff
+    # construction (`build_transfer_tool` in agent.py) instantiates
+    # `agent_class(spec=..., supervisor=..., chat_ctx=...)` instead of
+    # the default RegistrySubagent. Used by computer_use whose on_enter
+    # kicks off a long-running Anthropic loop outside the normal
+    # LiveKit tool-driven flow.
+    agent_class: Optional[type] = None
 
 
 # Global registry. Use the module functions below — don't mutate this
