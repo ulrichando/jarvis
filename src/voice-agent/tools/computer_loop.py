@@ -56,6 +56,8 @@ _backend_click: Optional[Callable[..., Awaitable]] = None
 _backend_type: Optional[Callable[..., Awaitable]] = None
 _backend_key: Optional[Callable[..., Awaitable]] = None
 _log_action: Optional[Callable[..., None]] = None
+_is_password_visible: Optional[Callable[..., Awaitable[bool]]] = None
+_parse_destructive: Optional[Callable[..., Optional[str]]] = None
 
 
 def _bind_production_seams() -> None:
@@ -63,10 +65,14 @@ def _bind_production_seams() -> None:
     import time; tests overwrite the seams after import."""
     global _anthropic_call, _take_screenshot, _scale_for_model
     global _enumerate_widgets, _backend_click, _backend_type, _backend_key
-    global _log_action
+    global _log_action, _is_password_visible, _parse_destructive
 
     from tools import computer_backend, computer_atspi
     from pipeline.turn_telemetry import log_computer_use_action
+    from tools.computer_safety import (
+        is_password_field_visible,
+        parse_destructive_intent,
+    )
 
     async def _do_anthropic(**kw):
         # kw includes `client` (we strip it before forwarding); allows
@@ -84,6 +90,8 @@ def _bind_production_seams() -> None:
     _backend_type = computer_backend.type_text
     _backend_key = computer_backend.key_combo
     _log_action = log_computer_use_action
+    _is_password_visible = is_password_field_visible
+    _parse_destructive = parse_destructive_intent
 
 
 _bind_production_seams()
@@ -202,6 +210,25 @@ async def run(
 
         steps += 1
 
+        # Safety pre-check: password field visible → hard-stop
+        pw_visible = await _is_password_visible(scaled, widgets)
+        if pw_visible:
+            logger.warning(
+                f"[cua:{handoff_id}] password field visible — hard-stop"
+            )
+            _log_action(
+                handoff_id=handoff_id, step=iteration,
+                model_used=active_model, action="bail",
+                params_json=json.dumps({"reason": "password_visible"}),
+                success=False, notes="password field detected; aborting",
+            )
+            return LoopResult(
+                ok=False,
+                summary="password / sensitive screen detected — handing back to supervisor",
+                steps=steps, cost_usd=cost_usd,
+                reason="blocked", handoff_id=handoff_id,
+            )
+
         # Plan
         try:
             response = await _anthropic_call(
@@ -295,6 +322,49 @@ async def run(
                 steps=steps, cost_usd=cost_usd,
                 reason="completed", handoff_id=handoff_id,
             )
+
+        # Destructive-intent gate: voice-confirm before executing the
+        # action; on denial, skip + replan.
+        confirm_phrase = _parse_destructive(
+            {"action": action_name, **action_input}, widgets
+        )
+        if confirm_phrase is not None:
+            try:
+                user_ok = await asyncio.wait_for(
+                    safety_confirm_cb(confirm_phrase),
+                    timeout=30.0,
+                )
+            except asyncio.TimeoutError:
+                user_ok = False
+            if not user_ok:
+                _log_action(
+                    handoff_id=handoff_id, step=iteration,
+                    model_used=active_model, action=action_name,
+                    params_json=json.dumps(action_input),
+                    success=False, notes="user declined destructive action",
+                )
+                # Re-screenshot and re-append tool_result as "skipped"
+                # so the model gets feedback to replan.
+                png = await _take_screenshot()
+                scaled, sx, sy = _scale_for_model(png)
+                widgets = _enumerate_widgets()
+                tool_use_id = (
+                    getattr(tool_use, "id", None) or
+                    (tool_use["id"] if isinstance(tool_use, dict) else "toolu_xyz")
+                )
+                messages.append({"role": "assistant", "content": [
+                    {"type": "tool_use", "id": tool_use_id,
+                     "name": "computer", "input": action_input},
+                ]})
+                messages.append({"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": tool_use_id,
+                     "content": [
+                         {"type": "text", "text":
+                          "ERROR: user declined this destructive action — try a different approach"},
+                         _png_to_image_block(scaled),
+                     ]},
+                ]})
+                continue
 
         # Execute the action (happy path; safety + caps added in later tasks)
         success, notes = await _execute_action(
