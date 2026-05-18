@@ -157,6 +157,12 @@ async def run(
     messages: list[dict] = []
     started_at = time.monotonic()
 
+    # No-progress detection state: last N (screenshot_hash, action_key)
+    # tuples. If all N match, we either escalate Sonnet→Opus (first
+    # time) or bail with reason='blocked' (already escalated).
+    progress_history: list[tuple[str, str]] = []
+    escalated: bool = False
+
     # Initial screenshot + widgets → first user message
     png = await _take_screenshot()
     scaled, sx, sy = _scale_for_model(png)
@@ -321,6 +327,44 @@ async def run(
                  _png_to_image_block(scaled),
              ]},
         ]})
+
+        # Update progress history. Hash the screenshot we just took
+        # post-action, plus the action key (name + coord). If the last
+        # N tuples all match, escalate or block.
+        import hashlib
+        scr_hash = hashlib.md5(scaled).hexdigest()[:12]
+        coord = action_input.get("coordinate", [None, None])
+        action_key = f"{action_name}:{coord[0]}:{coord[1]}"
+        progress_history.append((scr_hash, action_key))
+        if len(progress_history) > no_progress_escalation_after:
+            progress_history.pop(0)
+        if (
+            len(progress_history) >= no_progress_escalation_after
+            and all(
+                progress_history[0] == p for p in progress_history
+            )
+        ):
+            if not escalated:
+                logger.info(
+                    f"[cua:{handoff_id}] no progress {no_progress_escalation_after}"
+                    f"x — escalating {active_model} → {model_escalation}"
+                )
+                active_model = model_escalation
+                escalated = True
+                # Reset history so we give Opus a fresh window before
+                # bailing on its own stuckness.
+                progress_history = []
+            else:
+                logger.warning(
+                    f"[cua:{handoff_id}] still stuck after escalation; bailing"
+                )
+                return LoopResult(
+                    ok=False,
+                    summary=f"stuck on same action even after escalation to "
+                            f"{model_escalation} ({steps} steps)",
+                    steps=steps, cost_usd=cost_usd,
+                    reason="blocked", handoff_id=handoff_id,
+                )
 
     # Iteration cap hit without task_done
     return LoopResult(
