@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# Manual soak runs for computer_use subagent. NOT in CI (requires real
+# desktop + Anthropic API key + live X11).
+#
+# Usage:
+#   bin/jarvis-cua-soak [scenario]
+#   scenarios: open-app | click-button | type-into-field | all
+#
+# Writes one JSONL line per scenario to ~/.local/share/jarvis/cua-soak-runs.jsonl
+# so we can track cost/step regression across runs.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VOICE_AGENT_DIR="$REPO_ROOT/src/voice-agent"
+PYTHON="$VOICE_AGENT_DIR/.venv/bin/python"
+OUT_FILE="$HOME/.local/share/jarvis/cua-soak-runs.jsonl"
+
+mkdir -p "$(dirname "$OUT_FILE")"
+
+if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+    echo "ANTHROPIC_API_KEY not set — soak needs it." >&2
+    exit 1
+fi
+if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+    echo "WAYLAND_DISPLAY=$WAYLAND_DISPLAY — soak needs X11." >&2
+    exit 1
+fi
+if ! xdpyinfo >/dev/null 2>&1; then
+    echo "xdpyinfo failed — no live X11 display." >&2
+    exit 1
+fi
+
+run_scenario() {
+    local NAME="$1"
+    local TASK="$2"
+    local MAX_STEPS="$3"
+    local MAX_COST="$4"
+
+    echo "─── soak: $NAME ──────"
+    echo "  task: $TASK"
+    echo "  budgets: ≤${MAX_STEPS} steps, ≤\$${MAX_COST}"
+
+    "$PYTHON" <<PYEOF
+import asyncio, json, os, sys, time
+sys.path.insert(0, "$VOICE_AGENT_DIR")
+from anthropic import AsyncAnthropic
+from tools.computer_loop import run
+
+async def main():
+    client = AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    cancel = asyncio.Event()
+    async def deny(phrase):
+        print(f"  [confirm] {phrase} — DECLINED (soak mode)")
+        return False
+    started = time.time()
+    result = await run(
+        task="$TASK",
+        anthropic_client=client,
+        safety_confirm_cb=deny,
+        cancel_event=cancel,
+    )
+    row = {
+        "ts_utc":      time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "scenario":    "$NAME",
+        "task":        "$TASK",
+        "ok":          result.ok,
+        "reason":      result.reason,
+        "steps":       result.steps,
+        "cost_usd":    round(result.cost_usd, 4),
+        "summary":     result.summary,
+        "elapsed_s":   round(time.time() - started, 2),
+        "handoff_id":  result.handoff_id,
+    }
+    print(f"  result: reason={row['reason']} steps={row['steps']} "
+          f"cost=\${row['cost_usd']:.4f}")
+    with open("$OUT_FILE", "a") as f:
+        f.write(json.dumps(row) + "\n")
+    # Pass/fail bounds
+    if not result.ok:
+        print(f"  FAIL: {result.summary}")
+        sys.exit(1)
+    if result.steps > $MAX_STEPS:
+        print(f"  FAIL: steps={result.steps} > {$MAX_STEPS}")
+        sys.exit(1)
+    if result.cost_usd > $MAX_COST:
+        print(f"  FAIL: cost=\${result.cost_usd:.4f} > \$${MAX_COST}")
+        sys.exit(1)
+    print("  PASS")
+
+asyncio.run(main())
+PYEOF
+}
+
+SCENARIO="${1:-all}"
+
+if [[ "$SCENARIO" == "open-app" || "$SCENARIO" == "all" ]]; then
+    run_scenario "open-app" "open the Files manager" 8 0.15
+fi
+
+if [[ "$SCENARIO" == "click-button" || "$SCENARIO" == "all" ]]; then
+    # Spin up a test page with a single button
+    cat > /tmp/cua-soak.html <<HTML
+<!DOCTYPE html><html><body>
+<h1>CUA Soak</h1>
+<button id="b" onclick="document.title='CLICKED'">Confirm</button>
+</body></html>
+HTML
+    setsid -f xdg-open file:///tmp/cua-soak.html >/dev/null 2>&1
+    sleep 2
+    run_scenario "click-button" "click the Confirm button on the open page" 4 0.08
+fi
+
+if [[ "$SCENARIO" == "type-into-field" || "$SCENARIO" == "all" ]]; then
+    cat > /tmp/cua-soak.html <<HTML
+<!DOCTYPE html><html><body>
+<h1>CUA Soak</h1>
+<input id="f" placeholder="type here">
+</body></html>
+HTML
+    setsid -f xdg-open file:///tmp/cua-soak.html >/dev/null 2>&1
+    sleep 2
+    run_scenario "type-into-field" "type 'hello world' into the input field" 5 0.10
+fi
+
+echo
+echo "Results appended to: $OUT_FILE"
