@@ -128,34 +128,70 @@ def _take_screenshot_mss() -> bytes:
 
 
 async def _take_screenshot_scrot() -> bytes:
-    """scrot fallback. Writes to a temp file and reads back."""
+    """Subprocess-based screenshot fallback chain when mss fails or
+    isn't installed. Tries scrot, then ImageMagick's `import`. Returns
+    PNG bytes from the first working tool. Raises BackendError only
+    when ALL fallbacks are missing — clear hint about which apt
+    package to install.
+
+    Live failure 2026-05-18: mss raised ScreenShotError 'Requested
+    capture size exceeds the allocated buffer' on the FIRST grab call
+    on a HiDPI Kali display (1822x1024 fractional-scaled). scrot
+    wasn't installed; ImageMagick's `import` is the reliable fallback
+    that ships with imagemagick on most distros. Adding both keeps
+    the chain robust across distros.
+    """
     import tempfile
     import os
-    if not shutil.which("scrot"):
-        raise BackendError("neither mss nor scrot is available for screenshot")
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-        path = f.name
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "scrot", "-p", path,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, err = await asyncio.wait_for(proc.communicate(), timeout=5.0)
-        if proc.returncode != 0:
-            raise BackendError(
-                f"scrot returncode={proc.returncode}: {err.decode(errors='replace')[:200]}"
-            )
-        with open(path, "rb") as fh:
-            data = fh.read()
-        if not data:
-            raise BackendError("scrot produced empty file")
-        return data
-    finally:
+
+    tools: list[tuple[str, list]] = [
+        # scrot: tiny, fast, X11-only. Most reliable when installed.
+        ("scrot",  ["scrot", "-p", "__PATH__"]),
+        # ImageMagick `import`: ships with imagemagick, works on every
+        # X11 system. Slower than scrot (~150ms vs ~50ms) but reliable.
+        ("import", ["import", "-window", "root", "__PATH__"]),
+    ]
+
+    last_err: Optional[str] = None
+    for tool_name, argv_template in tools:
+        if not shutil.which(tool_name):
+            last_err = f"{tool_name} not installed"
+            continue
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            path = f.name
         try:
-            os.unlink(path)
-        except OSError:
-            pass
+            argv = [path if a == "__PATH__" else a for a in argv_template]
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, err = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+            if proc.returncode != 0:
+                last_err = (
+                    f"{tool_name} returncode={proc.returncode}: "
+                    f"{err.decode(errors='replace')[:200]}"
+                )
+                continue
+            with open(path, "rb") as fh:
+                data = fh.read()
+            if not data:
+                last_err = f"{tool_name} produced empty file"
+                continue
+            return data
+        except Exception as e:
+            last_err = f"{tool_name} raised {type(e).__name__}: {e}"
+            continue
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+    raise BackendError(
+        f"all screenshot fallbacks failed (last: {last_err}). "
+        f"Install one: `sudo apt install -y scrot` OR "
+        f"`sudo apt install -y imagemagick`"
+    )
 
 
 def scale_for_model(png: bytes) -> tuple[bytes, float, float]:
