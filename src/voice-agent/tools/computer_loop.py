@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
 
@@ -32,6 +34,26 @@ _PRICING = {
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
     "claude-opus-4-7":   {"input": 15.0, "output": 75.0},
 }
+
+
+# Screenshot dump directory. One subdir per handoff_id, one file per
+# loop step. 7-day rotation extended by the existing
+# `jarvis-log-rotate.timer` script (in bin/).
+_SCREENSHOT_DIR = Path.home() / ".local" / "share" / "jarvis" / "computer_use" / "screenshots"
+
+
+def _dump_screenshot(handoff_id: str, step: int, png: bytes) -> Optional[str]:
+    """Write a screenshot to disk. Returns the path string for the
+    audit row, or None on any failure (telemetry-best-effort)."""
+    try:
+        dir_path = _SCREENSHOT_DIR / handoff_id
+        dir_path.mkdir(parents=True, exist_ok=True)
+        file_path = dir_path / f"{step:03d}.png"
+        file_path.write_bytes(png)
+        return str(file_path)
+    except Exception as e:
+        logger.debug(f"[computer_loop] screenshot dump failed: {e}")
+        return None
 
 
 @dataclass
@@ -337,17 +359,18 @@ async def run(
             except asyncio.TimeoutError:
                 user_ok = False
             if not user_ok:
+                # Re-screenshot first so we have a path for the audit.
+                png = await _take_screenshot()
+                scaled, sx, sy = _scale_for_model(png)
+                widgets = _enumerate_widgets()
+                screenshot_path = _dump_screenshot(handoff_id, iteration, png)
                 _log_action(
                     handoff_id=handoff_id, step=iteration,
                     model_used=active_model, action=action_name,
                     params_json=json.dumps(action_input),
                     success=False, notes="user declined destructive action",
+                    screenshot_path=screenshot_path,
                 )
-                # Re-screenshot and re-append tool_result as "skipped"
-                # so the model gets feedback to replan.
-                png = await _take_screenshot()
-                scaled, sx, sy = _scale_for_model(png)
-                widgets = _enumerate_widgets()
                 tool_use_id = (
                     getattr(tool_use, "id", None) or
                     (tool_use["id"] if isinstance(tool_use, dict) else "toolu_xyz")
@@ -370,17 +393,23 @@ async def run(
         success, notes = await _execute_action(
             action_name, action_input, sx, sy,
         )
+
+        # Capture post-action screenshot for next iteration AND audit
+        png = await _take_screenshot()
+        scaled, sx, sy = _scale_for_model(png)
+        widgets = _enumerate_widgets()
+
+        # Persist screenshot to disk for the audit trail; ok if it
+        # fails (best-effort logging).
+        screenshot_path = _dump_screenshot(handoff_id, iteration, png)
+
         _log_action(
             handoff_id=handoff_id, step=iteration,
             model_used=active_model, action=action_name,
             params_json=json.dumps(action_input),
             success=success, notes=notes,
+            screenshot_path=screenshot_path,
         )
-
-        # Capture post-action screenshot for next iteration
-        png = await _take_screenshot()
-        scaled, sx, sy = _scale_for_model(png)
-        widgets = _enumerate_widgets()
         # Append assistant turn + tool_result turn
         tool_use_id = (
             getattr(tool_use, "id", None) or
@@ -401,7 +430,6 @@ async def run(
         # Update progress history. Hash the screenshot we just took
         # post-action, plus the action key (name + coord). If the last
         # N tuples all match, escalate or block.
-        import hashlib
         scr_hash = hashlib.md5(scaled).hexdigest()[:12]
         coord = action_input.get("coordinate", [None, None])
         action_key = f"{action_name}:{coord[0]}:{coord[1]}"

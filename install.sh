@@ -482,6 +482,10 @@ check_computer_use_deps() {
     warn "xdpyinfo not found. For X11 session probing:"
     sub "sudo apt install -y x11-utils"
   fi
+  if ! which xdotool >/dev/null 2>&1; then
+    echo "  [hint] xdotool not found. Critical for input ops (click/type/key):"
+    echo "    sudo apt install -y xdotool"
+  fi
 }
 
 # ── Channel: Desktop (Tauri) ─────────────────────────────────────────────
