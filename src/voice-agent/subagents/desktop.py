@@ -235,11 +235,14 @@ def _desktop_tools() -> list:
 
 
 _DESKTOP_WHEN = (
-    "Use whenever the user wants something done on the Linux desktop: "
-    "open an app (Chrome / VS Code / terminal / file manager), launch "
-    "N copies, take a screenshot, click somewhere on screen, drag "
-    "something, type into a focused window, or any multi-step UI "
-    "manipulation."
+    "Use for OS-level actions where the user names the target by NAME "
+    "(not by appearance on screen): launch an app (Chrome / VS Code / "
+    "terminal / file manager / etc.), kill a process, take a screenshot, "
+    "run a known keyboard shortcut, type into the currently-focused "
+    "window. Operates BLIND — has xdotool but no screen vision, so "
+    "fine for 'open X' or 'press Ctrl+T' but NOT for 'click the File "
+    "menu' or 'find the volume slider' (those need vision — use "
+    "transfer_to_computer_use)."
 )
 
 
