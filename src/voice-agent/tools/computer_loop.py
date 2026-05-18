@@ -308,16 +308,74 @@ async def run(
         # Find the tool_use block in the response. Anthropic returns
         # BetaToolUseBlock objects with .type=="tool_use"; the dict path
         # covers test fixtures that use plain dicts.
+        # Also collect text blocks so we can return a useful summary
+        # when the model emits end_turn without a tool call.
         tool_use = None
+        text_chunks: list[str] = []
         for block in response.content:
-            if getattr(block, "type", None) == "tool_use" or \
-               (isinstance(block, dict) and block.get("type") == "tool_use"):
+            btype = (
+                block.get("type") if isinstance(block, dict)
+                else getattr(block, "type", None)
+            )
+            if btype == "tool_use" and tool_use is None:
                 tool_use = block
-                break
+            elif btype == "text":
+                t = (
+                    block.get("text") if isinstance(block, dict)
+                    else getattr(block, "text", None)
+                )
+                if t:
+                    text_chunks.append(str(t))
+
+        # No tool_use block: the model is either DONE (stop_reason=
+        # "end_turn") or OUT OF TOKENS (stop_reason="max_tokens"), or
+        # something genuinely went wrong. Anthropic's computer_20251124
+        # tool surface has no `task_done` action — completion is signaled
+        # by an end_turn response with the summary in a text block.
+        # Live soak 2026-05-18 surfaced this: scenarios were bailing
+        # with "model emitted no tool_use" when the model was actually
+        # reporting completion.
         if tool_use is None:
-            logger.warning(f"[cua:{handoff_id}] no tool_use in response")
+            stop_reason = (
+                getattr(response, "stop_reason", None) or
+                (response.get("stop_reason") if isinstance(response, dict) else None)
+            )
+            summary_text = " ".join(text_chunks)[:500].strip() or (
+                "task completed without explicit summary"
+            )
+            if stop_reason == "end_turn":
+                _log_action(
+                    handoff_id=handoff_id, step=iteration,
+                    model_used=active_model, action="task_done",
+                    params_json=json.dumps({
+                        "stop_reason": "end_turn",
+                        "summary": summary_text,
+                    }),
+                    success=True,
+                )
+                return LoopResult(
+                    ok=True, summary=summary_text,
+                    steps=steps, cost_usd=cost_usd,
+                    reason="completed", handoff_id=handoff_id,
+                )
+            if stop_reason == "max_tokens":
+                logger.warning(
+                    f"[cua:{handoff_id}] response cut off at max_tokens; "
+                    f"partial: {summary_text!r}"
+                )
+                return LoopResult(
+                    ok=False,
+                    summary=f"model output cut off (max_tokens); partial: {summary_text}",
+                    steps=steps, cost_usd=cost_usd,
+                    reason="bailed", handoff_id=handoff_id,
+                )
+            logger.warning(
+                f"[cua:{handoff_id}] no tool_use in response "
+                f"(stop_reason={stop_reason!r}, text={summary_text!r})"
+            )
             return LoopResult(
-                ok=False, summary="model emitted no tool_use",
+                ok=False,
+                summary=f"model emitted no tool_use (stop_reason={stop_reason})",
                 steps=steps, cost_usd=cost_usd,
                 reason="bailed", handoff_id=handoff_id,
             )
