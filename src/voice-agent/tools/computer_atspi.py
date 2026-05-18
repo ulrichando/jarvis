@@ -42,6 +42,25 @@ _CACHE_TS: float = 0.0
 _CACHE_TTL_S: float = 0.1   # 100 ms — matches §4 spec
 
 
+# Roles we keep when enumerating — interactive widgets the LLM might
+# want to click/type into, plus readable labels. Anything not in this
+# set is filtered out by `_accessible_to_widget`. Module-level set so
+# we don't reallocate on every node visit (~thousands per enumeration
+# on widget-heavy apps).
+_INTERESTING_ROLES: set[str] = {
+    "push_button", "toggle_button", "radio_button", "check_box",
+    "menu_item", "menu", "tab", "tab_list",
+    "text", "entry", "password_text", "combo_box",
+    "list_item", "tree_item", "link",
+    "slider", "spin_button", "scroll_bar",
+}
+
+
+# AT-SPI 2.0 coordinate type constants. We use SCREEN (native screen
+# pixels) so getExtents returns coords usable by xdotool/mss directly.
+_COORD_TYPE_SCREEN = 0
+
+
 def _get_desktop():
     """Return the pyatspi desktop root, or raise on failure.
 
@@ -84,22 +103,14 @@ def _accessible_to_widget(acc) -> Optional[Widget]:
         role = acc.getRoleName()
     except Exception:
         return None
-    # Only keep widgets that are likely interactive or readable.
-    interesting_roles = {
-        "push_button", "toggle_button", "radio_button", "check_box",
-        "menu_item", "menu", "tab", "tab_list",
-        "text", "entry", "password_text", "combo_box",
-        "list_item", "tree_item", "link",
-        "slider", "spin_button", "scroll_bar",
-    }
-    if role not in interesting_roles:
+    if role not in _INTERESTING_ROLES:
         return None
     try:
         comp = acc.queryComponent()
     except Exception:
         return None
     try:
-        extents = comp.getExtents(0)  # COORD_TYPE_SCREEN = 0
+        extents = comp.getExtents(_COORD_TYPE_SCREEN)
     except Exception:
         return None
     if extents.width <= 0 or extents.height <= 0:
