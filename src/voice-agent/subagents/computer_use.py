@@ -122,7 +122,7 @@ def build_safety_confirm_cb(session, timeout_s: float = 30.0):
       3. Wait up to `timeout_s`; default-deny on timeout.
     """
     async def cb(phrase: str) -> bool:
-        fut = asyncio.get_event_loop().create_future()
+        fut = asyncio.get_running_loop().create_future()
         session._cua_confirm_future = fut
         session._cua_confirm_phrase = phrase
         try:

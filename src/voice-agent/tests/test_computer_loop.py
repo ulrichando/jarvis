@@ -375,3 +375,41 @@ async def test_loop_voice_confirms_destructive_click(loop_env, monkeypatch):
     assert len(confirm_calls) == 1
     assert "Delete" in confirm_calls[0]
     assert len(click_calls) == 0   # action skipped
+
+
+@pytest.mark.asyncio
+async def test_loop_dumps_screenshots_to_disk(loop_env, tmp_path, monkeypatch):
+    """Every action's post-screenshot is written to
+    ~/.local/share/jarvis/computer_use/screenshots/<handoff_id>/<step>.png
+    and the path is passed to _log_action."""
+    from tools import computer_loop
+    from tools.computer_loop import run
+
+    script, calls, audit = loop_env
+    # Redirect the screenshot dump to a tmp dir for the test
+    monkeypatch.setattr(computer_loop, "_SCREENSHOT_DIR", tmp_path)
+
+    script.append(FakeResponse(
+        content=[FakeToolUse("computer", {"action": "left_click", "coordinate": [50, 50]})],
+        usage=FakeUsage(),
+    ))
+    script.append(FakeResponse(
+        content=[FakeToolUse("computer", {"action": "task_done", "summary": "Done."})],
+        usage=FakeUsage(),
+    ))
+
+    cancel = asyncio.Event()
+    result = await run(
+        task="x", anthropic_client=None,
+        safety_confirm_cb=lambda p: asyncio.sleep(0, result=True),
+        cancel_event=cancel,
+    )
+    assert result.ok
+    # At least one audit row should have a screenshot_path (the
+    # left_click iteration; task_done doesn't dump).
+    paths_seen = [a.get("screenshot_path") for a in audit]
+    real_paths = [p for p in paths_seen if p]
+    assert real_paths, f"expected at least one screenshot_path; got {paths_seen}"
+    # And the file must exist on disk.
+    from pathlib import Path as _P
+    assert _P(real_paths[0]).exists(), f"file not found: {real_paths[0]}"
