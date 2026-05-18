@@ -68,37 +68,48 @@ __all__ = [
 # no restart required. start.sh also reads this file so interactive
 # terminal sessions stay in sync.
 CLI_MODEL_FILE: Path     = Path.home() / ".jarvis" / "cli-model"
-DEFAULT_CLI_MODEL: str   = "deepseek-v4-pro"
+# Default: claude-sonnet-4-6 (2026-05-18) per user-driven curation.
+# Sonnet 4.6 leads τ-bench 87.5% for multi-turn tool use — the CLI is
+# pure tool-driven coding work, so the best tool-caller in the user's
+# stack is the right default. Previous default (deepseek-v4-pro) was
+# retired alongside the voice-side cleanup: Artificial Analysis 2026
+# pegs V4 Pro at 94% hallucination rate; voice-side had already
+# retired it 2026-05-16 after the live capture turn-160 Bosnian
+# hallucination. The CLI picker now matches the voice picker
+# discipline ("good or best only").
+DEFAULT_CLI_MODEL: str   = "claude-sonnet-4-6"
 
-# Whitelist mirroring CLI_MODELS in jarvis_agent.py — duplicated as
-# a literal tuple so the voice-client doesn't have to import heavy
-# livekit plugin machinery just to validate a string.
+# Curated 2026-05-18 to mirror the speech-side picker discipline.
+# Show only the "good or best" tier. Dropped IDs stay in
+# jarvis_agent.py's CLI_MODELS dict so the env-var passthrough still
+# resolves them if a CLI sub-process re-reads them; they just don't
+# appear in the tray.
 CLI_MODELS_AVAILABLE: tuple[str, ...] = (
-    "deepseek-chat",
-    "deepseek-reasoner",
-    "deepseek-v4-flash",
-    "deepseek-v4-pro",
-    "qwen/qwen3-32b",
-    "llama-3.3-70b-versatile",
-    "meta-llama/llama-4-scout-17b-16e-instruct",
-    "openai/gpt-oss-120b",
-    # Anthropic Claude — added 2026-05-11. Three tiers mirroring the
-    # Claude Code /model picker: Opus 4.7 (most capable), Sonnet 4.6
-    # (everyday), Haiku 4.5 (fastest). Matched in the CLI's
-    # jarvisModelRegistry under provider='anthropic'.
-    "claude-opus-4-7",
+    # Anthropic — tool-calling tier-leader. Sonnet is the default
+    # (best τ-bench). Opus for the hardest multi-step work. Haiku
+    # for fast single-shot tool calls.
     "claude-sonnet-4-6",
+    "claude-opus-4-7",
     "claude-haiku-4-5",
-    # OpenAI proper — full GPT-5 family + GPT-4o, added 2026-05-15.
-    # Need the matching provider entry in the CLI-side
-    # jarvisModelRegistry for `jarvis` to actually consume these; until
-    # that's confirmed, the tray exposes them but the CLI may reject.
-    "gpt-5-nano",
-    "gpt-5-mini",
-    "gpt-5",
+    # OpenAI — alternatives for tool-calling work. gpt-5.1 has the
+    # best OpenAI-tier tool-call accuracy; mini is the speed-balance.
     "gpt-5.1",
-    "gpt-5.1-chat-latest",
-    "gpt-4o",
+    "gpt-5-mini",
+    # Groq — strongest open-weights tool-caller in the stack.
+    "qwen/qwen3-32b",
+    #
+    # Dropped 2026-05-18 (still in jarvis_agent.py CLI_MODELS for
+    # env-var passthrough resolution if needed, but hidden here):
+    #   - deepseek-chat (V3)       (non-thinking baseline)
+    #   - deepseek-reasoner        (deprecated, replaced by V4)
+    #   - deepseek-v4-flash        (96% hallucination, Artificial Analysis)
+    #   - deepseek-v4-pro          (94% hallucination; was the prior default)
+    #   - llama-3.3-70b-versatile  (generalist, no tool-call edge)
+    #   - llama-4-scout            (weaker tool calling)
+    #   - openai/gpt-oss-120b      (qwen3-32b covers the Groq slot)
+    #   - gpt-5-nano               (in-code: weakest tool calling)
+    #   - gpt-5, gpt-4o            (no edge over mini/5.1)
+    #   - gpt-5.1-chat-latest      (redundant with gpt-5.1)
 )
 
 
