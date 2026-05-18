@@ -110,47 +110,51 @@ CLI_MODELS_AVAILABLE: tuple[str, ...] = (
 # client itself stays up — the SFU preserves the room while the
 # agent rejoins.
 SPEECH_MODEL_FILE: Path     = Path.home() / ".jarvis" / "voice-model"
-# OpenAI gpt-5-mini default since 2026-05-15: Anthropic credit pool ran
-# out, Groq llama remains as a backup tray pick. gpt-5-mini gives the
-# best fast-tool-calling balance on api.openai.com for the voice loop.
-DEFAULT_SPEECH_MODEL: str   = "gpt-5-mini"
+# Default: claude-haiku-4-5 (2026-05-18). Best TTFT/tool-quality
+# balance per public 2026 voice-loop benchmarks (~0.7s TTFT vs
+# gpt-5-mini ~1.34s). Picked after the researcher's cross-provider
+# ranking and the user's switch decision. Requires ANTHROPIC_API_KEY.
+# Previous default (gpt-5-mini) remains in the picker as the OpenAI
+# alternative.
+DEFAULT_SPEECH_MODEL: str   = "claude-haiku-4-5"
 
+# 2026-05-18 picker curation: dropped the weak / redundant / retired
+# entries per user request — show only the "good or best" tier the
+# user would realistically want to switch between. Dropped IDs stay
+# REGISTERED in providers/llm.py SPEECH_MODELS so the dispatcher's
+# fallback chains still work; they just don't appear in the tray.
 SPEECH_MODELS_AVAILABLE: tuple[str, ...] = (
-    # OpenAI proper — Chat Completions-compatible GPT-5 family + gpt-4o
-    # legacy. Added 2026-05-15. Order matches latency tier (fastest →
-    # slowest). gpt-5-pro and gpt-5-codex appear in /v1/models but only
-    # accept /v1/responses requests — lk_openai uses Chat Completions
-    # and would error every supervisor turn, so they're excluded here.
-    "gpt-5-nano",
-    "gpt-5-mini",
-    "gpt-5",
-    "gpt-5.1",
-    "gpt-5.1-chat-latest",
-    "gpt-4o",
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
-    "qwen/qwen3-32b",
-    "openai/gpt-oss-120b",
-    "meta-llama/llama-4-scout-17b-16e-instruct",
-    # DeepSeek family — re-enabled after deepseek_roundtrip.install()
-    # patches livekit-plugins-openai to echo reasoning_content on
-    # assistant tool-call messages.
-    "deepseek-chat",
-    "deepseek-v4-flash",
-    "deepseek-v4-pro",
-    # Anthropic — added 2026-05-11 alongside the Anthropic rung in
-    # build_dispatching_llm. Requires ANTHROPIC_API_KEY in env. Kept
-    # in the picker even with credits exhausted so the entries return
-    # automatically when the account is topped up.
-    "claude-opus-4-7",
-    "claude-sonnet-4-6",
+    # Anthropic — voice-loop sweet spot. Haiku is the default;
+    # Sonnet for tool-heavy multi-step work; Opus for extended
+    # reasoning sessions through voice.
     "claude-haiku-4-5",
-    # Kimi K2.6 voice entries are DISABLED 2026-05-05. K2.6 emits
-    # built-in tool calls (web_search, etc.) that aren't in
-    # request.tools, and Moonshot's API rejects every such request
-    # with `tool call validation failed`. See the corresponding gate
-    # in jarvis_agent.py SPEECH_MODELS — the entries return when
-    # JARVIS_KIMI_VOICE_EXPERIMENTAL=1.
+    "claude-sonnet-4-6",
+    "claude-opus-4-7",
+    # OpenAI — alternatives if Anthropic credit dries up. gpt-5-mini
+    # was the previous default; gpt-5.1 is the best tool-calling
+    # accuracy in OpenAI's tier (~500ms slower TTFT than mini).
+    "gpt-5-mini",
+    "gpt-5.1",
+    # Groq — only the strongest tool-caller in the Groq tier
+    # (qwen3-32b: BFCL v3 #2 open-weights, <400ms TTFT). For no-
+    # OpenAI-quota / no-Anthropic-credit days.
+    "qwen/qwen3-32b",
+    #
+    # Dropped 2026-05-18 (registered in providers/llm.py, hidden here):
+    #   - gpt-5-nano               (in-code: weakest tool calling)
+    #   - gpt-5, gpt-4o            (no edge over mini/5.1)
+    #   - gpt-5.1-chat-latest      (redundant with gpt-5.1)
+    #   - llama-3.3-70b-versatile  (kept as dispatcher TASK fallback)
+    #   - llama-3.1-8b-instant     (kept as BANTER specialist)
+    #   - llama-4-scout            (was EMOTIONAL — upgraded to Haiku)
+    #   - openai/gpt-oss-120b      (qwen3-32b covers the Groq slot)
+    #   - deepseek-chat (V3)       (non-thinking baseline)
+    #   - deepseek-v4-flash        (96% hallucination, Artificial Analysis)
+    #   - deepseek-v4-pro          (retired 2026-05-16; 94% hallucination)
+    # Kimi K2.6 entries remain gated behind
+    # JARVIS_KIMI_VOICE_EXPERIMENTAL=1 — broken on third-party hosts
+    # (spontaneous web_search tool-call emission per vLLM + Hermes-agent
+    # confirms).
 )
 
 
