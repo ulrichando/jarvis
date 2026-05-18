@@ -8,6 +8,14 @@
 
 livekit-agents[silero,openai,groq,anthropic]~=1.5
 
+# Deepgram Nova-3 streaming STT — primary STT path as of 2026-05-18
+# for fast barge-in. Without this, Groq Whisper Turbo (final-only)
+# made STT-confirmed barge-in unusable (no partials = no real-time
+# turn detection). Requires DEEPGRAM_API_KEY in .env. Falls through
+# to Whisper-only when the key is unset (`providers/stt.py` handles
+# the absence gracefully).
+livekit-plugins-deepgram~=1.5
+
 # Microsoft Edge-TTS — neural voices reachable without auth/quota.
 # Wrapped in providers/edge_tts.py as a livekit-agents TTS adapter.
 # Imported at the top of jarvis_agent.py, so a missing dep crashes the
