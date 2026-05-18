@@ -24,8 +24,13 @@ Public surface:
     poller on the current asyncio loop. Idempotent.
 
 Env:
-  - `JARVIS_AUDIO_SILENCE_TIMEOUT_S` — silence budget before exit
-    (default 90). Set to 0 to disable the watchdog.
+  - `JARVIS_AUDIO_SILENCE_TIMEOUT_S` — silence budget before exit.
+    **Default 0 (DISABLED)** as of 2026-05-18 after live kill-loop:
+    the initial 90 s default fired on legitimate idle (user not
+    talking → no STT events → trip → restart → repeat). Re-enable
+    with care; the trigger needs refinement to distinguish "broken
+    pipeline" (voice-client publishing audio frames but agent's STT
+    silent) from "legitimate idle" (user away from mic).
   - `JARVIS_AUDIO_SILENCE_CHECK_INTERVAL_S` — poll cadence (default 10).
 
 Spec: docs/superpowers/specs/2026-05-04-jarvis-voice-resilience-design.md
@@ -52,7 +57,7 @@ __all__ = [
 logger = logging.getLogger("jarvis.audio_silence_watchdog")
 
 
-_SILENCE_TIMEOUT_S = float(os.environ.get("JARVIS_AUDIO_SILENCE_TIMEOUT_S", "90"))
+_SILENCE_TIMEOUT_S = float(os.environ.get("JARVIS_AUDIO_SILENCE_TIMEOUT_S", "0"))
 _CHECK_INTERVAL_S = float(os.environ.get("JARVIS_AUDIO_SILENCE_CHECK_INTERVAL_S", "10"))
 
 
