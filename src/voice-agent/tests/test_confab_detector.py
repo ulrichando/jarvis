@@ -277,7 +277,7 @@ def test_pydantic_style_with_tool_use_block():
 # ── 2026-05-06 subagent-handoff false-positive fix ────────────────
 
 
-def test_transfer_to_browser_handoff_counts_as_evidence():
+def test_transfer_to_browser_handoff_counts_as_evidence(monkeypatch):
     """2026-05-06 turn 1110 (live-captured): browser subagent
     truthfully said 'I have opened a new tab' after firing
     ext_new_tab via the bridge. Bridge confirmed the tab was
@@ -287,10 +287,18 @@ def test_transfer_to_browser_handoff_counts_as_evidence():
     flagged the truthful statement as confab and dropped it from
     chat_ctx, leaving a hole that confused future turns.
 
-    Fix: treat `transfer_to_*` / `delegate` handoff calls as tool
-    evidence. The handoff itself proves the subagent had a chance
-    to do real work; we don't have visibility into the subagent's
-    own ChatContext from this code path."""
+    Original 2026-05-06 fix: treat `transfer_to_*` / `delegate`
+    handoff calls as tool evidence. The handoff itself proves the
+    subagent had a chance to do real work.
+
+    2026-05-19 L2 update: the strict default no longer grants
+    bare-handoff evidence — but the kill-switch
+    `JARVIS_CONFAB_STRICT_DISABLED=1` preserves the legacy semantics
+    this test was originally written to lock in. Locking in the
+    legacy behavior under the kill-switch ensures the kill-switch
+    actually works when the user needs it. The strict-default
+    counterpart lives in `test_confab_detector_handoff_rule.py`."""
+    monkeypatch.setenv("JARVIS_CONFAB_STRICT_DISABLED", "1")
     prior = [
         _user_msg("open a new tab"),
         SimpleNamespace(
@@ -304,13 +312,18 @@ def test_transfer_to_browser_handoff_counts_as_evidence():
         prior_messages=prior,
     )
     assert not is_confab, (
-        f"transfer_to_browser handoff should count as tool evidence; "
-        f"detector flagged: {reason!r}"
+        f"transfer_to_browser handoff should count as tool evidence "
+        f"under permissive kill-switch; detector flagged: {reason!r}"
     )
 
 
-def test_delegate_handoff_counts_as_evidence():
-    """`delegate(role, task)` is the new-style handoff. Same principle."""
+def test_delegate_handoff_counts_as_evidence(monkeypatch):
+    """`delegate(role, task)` is the new-style handoff. Same principle.
+
+    2026-05-19 L2: also gated behind `JARVIS_CONFAB_STRICT_DISABLED=1`
+    so it locks in the kill-switch semantics rather than the (now
+    obsolete) default."""
+    monkeypatch.setenv("JARVIS_CONFAB_STRICT_DISABLED", "1")
     prior = [
         _user_msg("post on twitter"),
         SimpleNamespace(
