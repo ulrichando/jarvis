@@ -619,6 +619,56 @@ def compute_confab_check_state(
     return "unchecked"
 
 
+def inject_handoff_refused_marker(session, chat_ctx) -> None:
+    """When the subagent gate refused task_done on the prior handoff
+    (``session._jarvis_last_handoff_refused == True``), inject a single
+    system message into ``chat_ctx.items`` so the supervisor LLM can
+    see it and apply the POST-HANDOFF HONESTY rule from supervisor.md.
+
+    Clears the flag after injecting so the marker only fires once
+    per gate-refusal event. Idempotent: re-calling after the flag
+    is cleared is a no-op.
+
+    Per spec 2026-05-19 §5.2 + T9 prompt rule. Closes the wiring gap
+    that left the prompt rule unactionable — the LLM cannot read a
+    Python attribute directly.
+    """
+    if not getattr(session, "_jarvis_last_handoff_refused", False):
+        return
+    marker_text = (
+        "[POST-HANDOFF SIGNAL — Prior subagent handoff was REFUSED by "
+        "the gate (no real tool fired this handoff). DO NOT claim the "
+        "action succeeded. Apply the POST-HANDOFF HONESTY rule from "
+        "your instructions: hedge with 'I tried but couldn't confirm — "
+        "want me to check?' or similar. Never voice 'I've opened…' / "
+        "'Done.' / 'X is now Y' for this turn.]"
+    )
+    try:
+        chat_ctx.items.append(
+            ChatMessage(role="system", content=[marker_text])
+        )
+    except Exception:
+        # Test environments may use a minimal stub for ChatMessage
+        # (e.g. SimpleNamespace chat_ctx). Fall back to a tiny shim
+        # with the same .role / .content attrs the production message
+        # exposes.
+        class _StubMsg:
+            def __init__(self, role: str, content: list[str]) -> None:
+                self.role = role
+                self.content = content
+
+        chat_ctx.items.append(_StubMsg("system", [marker_text]))
+    # Clear the flag — single-shot marker per refusal event.
+    try:
+        from subagents.agent import _clear_handoff_refused
+        _clear_handoff_refused(session)
+    except Exception:
+        try:
+            session._jarvis_last_handoff_refused = False
+        except Exception:
+            pass
+
+
 def _session_close_needs_restart(ev) -> bool:
     """True if the CloseEvent represents a crash (non-None error), False for clean shutdown."""
     return getattr(ev, "error", None) is not None
@@ -3958,6 +4008,28 @@ class JarvisAgent(Agent):
         except Exception as _tc_err:
             # Never block the LLM call for a tool_choice wiring failure.
             logger.debug(f"[recall-route] update_options failed: {_tc_err}")
+
+        # T12 (2026-05-19) — surface the gate's handoff-refused signal
+        # to the LLM so the POST-HANDOFF HONESTY rule is actionable.
+        # T8 set `session._jarvis_last_handoff_refused` when the
+        # subagent gate refused task_done; T9 added the prompt rule
+        # that says "hedge when the flag is true"; this call injects a
+        # synthetic system message describing the situation so the
+        # supervisor LLM can read it on its next chat() invocation.
+        # Single-shot: the injector clears the flag after appending.
+        #
+        # IMPORTANT: pass `turn_ctx` (the mutable copy the framework
+        # hands to this hook for exactly this purpose — see
+        # livekit/agents/voice/agent_activity.py:2014-2022) NOT
+        # `self.chat_ctx` (a _ReadOnlyChatContext whose .items
+        # is an _ImmutableList that raises on .append()).
+        try:
+            inject_handoff_refused_marker(self.session, turn_ctx)
+        except Exception as _t12_err:
+            logger.warning(
+                f"[t12] inject_handoff_refused_marker raised: "
+                f"{type(_t12_err).__name__}: {_t12_err}"
+            )
 
         # Not silent, not a mute trigger, passed quiet-hours gate → LLM.
         return
