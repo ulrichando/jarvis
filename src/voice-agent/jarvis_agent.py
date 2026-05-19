@@ -1818,7 +1818,6 @@ from pipeline.chat_ctx import (
     TOOL_LEAK_RE              as _TOOL_LEAK_RE,
     META_SILENCE_RE           as _META_SILENCE_RE,
     ARCHAIC_OPENER_RE         as _ARCHAIC_OPENER_RE,
-    load_recent_turns         as _load_recent_turns,
     scrub_recalled_assistant_text as _scrub_recalled_assistant_text,
     seed_chat_ctx             as _seed_chat_ctx,
 )
