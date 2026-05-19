@@ -20,7 +20,7 @@ These constraints are load-bearing. Don't remove or weaken without the user's si
 
 **`handoff_text_suppressor` walks the FULL chat_ctx**, not the last 15. The 15-item window dropped `task_done` past it in busy sessions, then suppressed all supervisor text indefinitely. Cost is O(n), bounded by `CTX_MAX_TURNS=80`.
 
-**Confab-detector tool-evidence lookback is 10 messages**, and `transfer_to_*` / `delegate` count as evidence. Don't tighten — the supervisor's chat_ctx doesn't see the subagent's internal `ext_*` calls, so the handoff alone proves the subagent had a chance.
+**Confab-detector tool-evidence lookback is 10 messages.** **Strict-default since 2026-05-19 (L2 confab fix):** bare `transfer_to_*` / `delegate` does NOT count as evidence — required: a structured `tool_result` (role:'tool' OR `FunctionCallOutput` shape) OR a non-handoff tool_call. Legacy permissive rule survives as kill-switch `JARVIS_CONFAB_STRICT_DISABLED=1`. The "supervisor's chat_ctx doesn't see subagent internals" concern is addressed by L1's pycall synthesis (commit `bc7e0087`) which lands a synthesized `FunctionCallOutput` pair in chat_ctx when the subagent's tool came through as text-content.
 
 **Don't restart `jarvis-voice-agent.service` while a session is active.** Check `~/.local/share/jarvis/turn_telemetry.db` for the latest `ts_utc`; if within 60s, ask the user first.
 
