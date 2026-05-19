@@ -455,17 +455,14 @@ def test_migration_adds_confab_check_state_column(tmp_path):
     defense-in-depth fix. Spec: 2026-05-19-confab-defense-in-depth-design.md §5.4"""
     db = tmp_path / "tele.db"
     init_db(db)
-    cols = {
-        r[1]
-        for r in sqlite3.connect(db).execute("PRAGMA table_info(turns)")
-    }
+    with sqlite3.connect(db) as conn:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(turns)")}
     assert "confab_check_state" in cols
 
 
 def test_log_turn_persists_confab_check_state(tmp_path):
     db = tmp_path / "tele.db"
     init_db(db)
-    from pipeline.turn_telemetry import log_turn
     log_turn(
         db_path=db,
         ts_utc="2026-05-19T03:00:00Z",
@@ -474,7 +471,8 @@ def test_log_turn_persists_confab_check_state(tmp_path):
         route="TASK",
         confab_check_state="evidence_ok",
     )
-    row = sqlite3.connect(db).execute(
-        "SELECT confab_check_state FROM turns WHERE user_text='open chrome'"
-    ).fetchone()
+    with sqlite3.connect(db) as conn:
+        row = conn.execute(
+            "SELECT confab_check_state FROM turns WHERE user_text='open chrome'"
+        ).fetchone()
     assert row == ("evidence_ok",)
