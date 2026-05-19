@@ -231,6 +231,20 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
                 )
             except sqlite3.OperationalError:
                 pass
+        # 2026-05-19 — confab_check_state per-turn audit. Tracks the
+        # defense-in-depth verdict (evidence_ok / hedged_no_evidence /
+        # refused_handoff / stale_ctx_dropped / unchecked). Spec:
+        # docs/superpowers/specs/2026-05-19-confab-defense-in-depth-design.md §5.4
+        turn_cols = {
+            r[1] for r in conn.execute("PRAGMA table_info(turns)")
+        }
+        if "confab_check_state" not in turn_cols:
+            try:
+                conn.execute(
+                    "ALTER TABLE turns ADD COLUMN confab_check_state TEXT"
+                )
+            except sqlite3.OperationalError:
+                pass
         conn.execute("CREATE INDEX IF NOT EXISTS idx_turns_subagent ON turns(subagent)")
 
 
@@ -239,14 +253,14 @@ def log_turn(
     db_path: Path = DEFAULT_DB_PATH,
     user_text: str,
     jarvis_text: str,
-    emotion: Optional[str],
-    route: Optional[str],
-    llm_used: Optional[str],
-    voice_used: Optional[str],
-    ttfw_ms: Optional[int],
-    total_audio_ms: Optional[int],
-    user_followup_30s: bool,
-    route_fallback: bool,
+    emotion: Optional[str] = None,
+    route: Optional[str] = None,
+    llm_used: Optional[str] = None,
+    voice_used: Optional[str] = None,
+    ttfw_ms: Optional[int] = None,
+    total_audio_ms: Optional[int] = None,
+    user_followup_30s: bool = False,
+    route_fallback: bool = False,
     notes: str = "",
     subagent: Optional[str] = None,
     interrupted: bool = False,
@@ -259,6 +273,8 @@ def log_turn(
     browser_backend: Optional[str] = None,
     computer_use_steps: Optional[int] = None,
     computer_use_cost_usd: Optional[float] = None,
+    ts_utc: Optional[str] = None,
+    confab_check_state: Optional[str] = None,
 ) -> None:
     """Write one row. Any exception is swallowed so telemetry never blocks voice.
 
@@ -292,10 +308,11 @@ def log_turn(
                     input_tokens, output_tokens, cost_usd, context_pressure,
                     memory_auto_extracted, prompt_cached_tokens,
                     browser_backend,
-                    computer_use_steps, computer_use_cost_usd)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    computer_use_steps, computer_use_cost_usd,
+                    confab_check_state)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    ts_utc or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     user_text, jarvis_text, emotion, route, llm_used,
                     voice_used, ttfw_ms, total_audio_ms,
                     int(user_followup_30s), int(route_fallback), notes,
@@ -304,6 +321,7 @@ def log_turn(
                     int(memory_auto_extracted), int(prompt_cached_tokens),
                     browser_backend,
                     computer_use_steps, computer_use_cost_usd,
+                    confab_check_state,
                 ),
             )
     except Exception:
