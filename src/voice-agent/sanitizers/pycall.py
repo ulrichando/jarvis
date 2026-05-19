@@ -269,32 +269,33 @@ def install() -> None:
                     )
                     _try_set_content(delta, "")
 
-                    # 2026-05-19 L1 — synthesis path. Recover the
-                    # lost FunctionCall + FunctionCallOutput pair so
-                    # the subagent gate sees evidence. Spec §5.1.
+                    # 2026-05-19 L1 — stash the parsed call info on
+                    # the session. The subagent gate (subagents/agent.py
+                    # ::task_done) drains this stash and synthesizes
+                    # the FunctionCall + FunctionCallOutput pair into
+                    # its PERSISTED chat_ctx (NOT the LLMStream's
+                    # transient _chat_ctx copy, which never reaches
+                    # the gate's view). T13 fix. Spec §5.1.
                     try:
-                        ctx = getattr(self, "_chat_ctx", None)
-                        if ctx is not None:
-                            from sanitizers._function_call_recovery import synthesize_and_insert
-                            # Strip the leading `name(` and trailing `)` from the buffered
-                            # content to get the raw args string (best-effort; the helper
-                            # also accepts malformed args gracefully).
+                        session = getattr(self, "_session", None)
+                        if session is not None:
                             buf = content.strip()
                             raw_args = ""
                             if buf.startswith(f"{name}(") and buf.endswith(")"):
                                 raw_args = buf[len(name) + 1:-1].strip()
-                            synthesize_and_insert(
-                                chat_ctx=ctx,
-                                tool_name=name,
-                                raw_args=raw_args,
-                                synthetic_output=(
-                                    f"OK: synthesis_path (call captured from text-shape leak; "
-                                    f"actual tool execution status unknown — use programmatic verify)"
-                                ),
+                            stash = getattr(session, "_jarvis_text_shape_pending", None)
+                            if stash is None:
+                                stash = []
+                                session._jarvis_text_shape_pending = stash
+                            stash.append({"tool_name": name, "raw_args": raw_args})
+                            logger.warning(
+                                f"[pycall] stashed text-shape leak for "
+                                f"gate-time synthesis: tool={name!r}, "
+                                f"args_len={len(raw_args)}, pending_count={len(stash)}"
                             )
                     except Exception as e:
                         logger.warning(
-                            f"[pycall] synthesis path failed silently: {type(e).__name__}: {e}"
+                            f"[pycall] stash path failed silently: {type(e).__name__}: {e}"
                         )
                 elif xm:
                     name = xm.group(1)
