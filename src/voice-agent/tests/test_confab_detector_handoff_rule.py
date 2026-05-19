@@ -56,3 +56,19 @@ def test_strict_disabled_env_falls_back_to_permissive(monkeypatch):
         ]),
     ]
     assert has_recent_tool_evidence(items, lookback=10)
+
+
+def test_non_handoff_tool_call_alone_counts_as_evidence():
+    """Strict rule: a non-handoff tool_call (e.g., screenshot()) in
+    the lookback window counts as evidence even WITHOUT a trailing
+    tool_result. The supervisor often invokes its direct tools and
+    the result lands on the next turn — we shouldn't refuse the
+    immediate reply on the call turn itself."""
+    from confab_detector import has_recent_tool_evidence
+    items = [
+        _msg(role="user", content="what's on screen"),
+        _msg(role="assistant", tool_calls=[
+            SimpleNamespace(function=SimpleNamespace(name="screenshot"))
+        ]),
+    ]
+    assert has_recent_tool_evidence(items, lookback=10)
