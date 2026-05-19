@@ -121,6 +121,65 @@ def _clear_handoff_refused(session) -> None:
         pass
 
 
+def _drain_text_shape_stash(session, chat_ctx) -> int:
+    """Drain session._jarvis_text_shape_pending — for each stashed
+    text-shape tool call (set by pycall when it detected a leak the
+    LLM emitted as content text), synthesize a paired FunctionCall +
+    FunctionCallOutput into chat_ctx via _function_call_recovery.
+
+    Returns the count of pairs synthesized (0 if stash was empty).
+
+    Called from the subagent gate's task_done check site BEFORE the
+    items_since walk — closes the gap where pycall's T5 synthesis
+    landed in the LLMStream's temp copy instead of the persisted
+    chat_ctx. Spec §5.1, T13 fix.
+    """
+    pending = getattr(session, "_jarvis_text_shape_pending", None)
+    if not pending:
+        return 0
+
+    try:
+        from sanitizers._function_call_recovery import synthesize_and_insert
+    except Exception as e:
+        logger.warning(
+            f"[gate.drain] cannot import synthesize_and_insert: {e}; "
+            f"clearing stash without synthesis"
+        )
+        session._jarvis_text_shape_pending = []
+        return 0
+
+    synthesized = 0
+    for entry in pending:
+        try:
+            result = synthesize_and_insert(
+                chat_ctx=chat_ctx,
+                tool_name=entry["tool_name"],
+                raw_args=entry.get("raw_args", ""),
+                synthetic_output=(
+                    f"OK: gate_synthesis (text-shape call '{entry['tool_name']}' "
+                    f"captured from supervisor LLM output; actual tool execution "
+                    f"status unknown — use programmatic verify if needed)"
+                ),
+            )
+            if result is not None:
+                synthesized += 1
+        except Exception as e:
+            logger.warning(
+                f"[gate.drain] synthesize_and_insert failed for "
+                f"{entry.get('tool_name', '?')!r}: {type(e).__name__}: {e}"
+            )
+
+    # Clear the stash regardless of synthesis success (single-shot per refusal).
+    session._jarvis_text_shape_pending = []
+
+    if synthesized > 0:
+        logger.warning(
+            f"[gate.drain] synthesized {synthesized} text-shape tool call(s) "
+            f"into chat_ctx before items_since walk"
+        )
+    return synthesized
+
+
 class RegistrySubagent(Agent):
     """Subagent Agent built from a HandoffSubagent.
 
@@ -265,6 +324,22 @@ class RegistrySubagent(Agent):
         spec_requires_tools = getattr(self._spec, "tools_required", True)
         gate_enabled = os.environ.get("JARVIS_SUBAGENT_TOOL_GATE", "1") == "1"
         if gate_enabled and spec_requires_tools:
+            # 2026-05-19 T13 — drain any pycall-stashed text-shape calls
+            # into the persisted chat_ctx BEFORE the items_since walk.
+            # Closes the wiring gap where T5's synthesis landed in the
+            # LLMStream's transient _chat_ctx copy (never reaching the
+            # gate's view). self._chat_ctx is the underlying MUTABLE
+            # ChatContext on the Agent; self.chat_ctx returns a
+            # _ReadOnlyChatContext wrapper whose items list raises on
+            # append. The items_since walk a few lines below uses the
+            # same _chat_ctx (sliced through the read-only view) so the
+            # synthesized pair will be visible. Spec §5.1.
+            try:
+                persisted_ctx = getattr(self, "_chat_ctx", None)
+                if persisted_ctx is not None:
+                    _drain_text_shape_stash(context.session, persisted_ctx)
+            except Exception as e:
+                logger.warning(f"[gate.drain] raised: {e}")
             try:
                 ceiling = _no_tool_retry_ceiling()
                 since_handoff = self.chat_ctx.items[self._handoff_start_idx:]
