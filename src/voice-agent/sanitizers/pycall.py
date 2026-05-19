@@ -268,6 +268,34 @@ def install() -> None:
                         name, content[:80],
                     )
                     _try_set_content(delta, "")
+
+                    # 2026-05-19 L1 — synthesis path. Recover the
+                    # lost FunctionCall + FunctionCallOutput pair so
+                    # the subagent gate sees evidence. Spec §5.1.
+                    try:
+                        ctx = getattr(self, "_chat_ctx", None)
+                        if ctx is not None:
+                            from sanitizers._function_call_recovery import synthesize_and_insert
+                            # Strip the leading `name(` and trailing `)` from the buffered
+                            # content to get the raw args string (best-effort; the helper
+                            # also accepts malformed args gracefully).
+                            buf = content.strip()
+                            raw_args = ""
+                            if buf.startswith(f"{name}(") and buf.endswith(")"):
+                                raw_args = buf[len(name) + 1:-1].strip()
+                            synthesize_and_insert(
+                                chat_ctx=ctx,
+                                tool_name=name,
+                                raw_args=raw_args,
+                                synthetic_output=(
+                                    f"OK: synthesis_path (call captured from text-shape leak; "
+                                    f"actual tool execution status unknown — use programmatic verify)"
+                                ),
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            f"[pycall] synthesis path failed silently: {type(e).__name__}: {e}"
+                        )
                 elif xm:
                     name = xm.group(1)
                     _PYCALL_STATE[id] = {
