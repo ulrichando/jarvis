@@ -44,6 +44,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import subprocess
 from typing import Any
 
 logger = logging.getLogger("jarvis.confab_detector")
@@ -345,3 +346,34 @@ def looks_like_confabulation(
 
     # Strong claim AND no tool evidence → confabulation.
     return True, f"strong success claim {matched_pattern!r} without tool evidence"
+
+
+def verify_launched(binary_name: str, timeout_s: float = 5.0) -> "bool | None":
+    """Return True if at least one process matching `binary_name` is
+    currently running (via `pgrep -fa <binary_name>`), False if no
+    match within `timeout_s`, None if pgrep itself is unavailable.
+
+    Matches Anthropic Computer Use's post-action verification
+    pattern: don't trust the model's narration of an action ('I've
+    opened Chrome'); verify state programmatically. Used by the
+    supervisor's reply path when a launch_app-class handoff returned
+    without a corresponding tool_result in chat_ctx.
+
+    Returns:
+      True  — at least one match
+      False — no match within timeout_s
+      None  — pgrep unavailable; caller falls back to chat_ctx-only
+
+    Spec: docs/superpowers/specs/2026-05-19-confab-defense-in-depth-design.md §5.2"""
+    try:
+        r = subprocess.run(
+            ["pgrep", "-fa", binary_name],
+            capture_output=True, timeout=timeout_s, text=True,
+        )
+        return r.returncode == 0 and bool(r.stdout.strip())
+    except FileNotFoundError:
+        return None
+    except subprocess.TimeoutExpired:
+        return False
+    except Exception:
+        return None
