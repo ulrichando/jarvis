@@ -95,6 +95,32 @@ def _no_tool_retry_ceiling() -> int:
     return int(os.environ.get("JARVIS_SUBAGENT_NO_TOOL_RETRY_CEILING", "3"))
 
 
+# L2 — POST-HANDOFF HONESTY signal. Set when the gate refuses
+# task_done (subagent had no real tool fire this handoff); cleared
+# when subsequent supervisor evidence arrives. The supervisor
+# reads this on the next turn and hedges instead of claiming
+# success. Spec: 2026-05-19 §5.2.
+def _record_handoff_refused(session) -> None:
+    """Called from the gate when task_done is refused for
+    no-real-tool. The supervisor's next reply path reads
+    `session._jarvis_last_handoff_refused` and applies the
+    POST-HANDOFF HONESTY rule from supervisor.md."""
+    try:
+        session._jarvis_last_handoff_refused = True
+    except Exception:
+        pass
+
+
+def _clear_handoff_refused(session) -> None:
+    """Clear the flag after a successful supervisor turn (real
+    tool_result landed) or a new session start. Idempotent."""
+    try:
+        if hasattr(session, "_jarvis_last_handoff_refused"):
+            session._jarvis_last_handoff_refused = False
+    except Exception:
+        pass
+
+
 class RegistrySubagent(Agent):
     """Subagent Agent built from a HandoffSubagent.
 
@@ -284,6 +310,13 @@ class RegistrySubagent(Agent):
                             f"{ceiling}). "
                             f"Summary attempted: {summary[:120]!r}"
                         )
+                        # 2026-05-19 L2 — set the flag the supervisor reads
+                        # next turn. POST-HANDOFF HONESTY: when control
+                        # returns to the supervisor (even via the corrective
+                        # tool_result below), the next reply path checks
+                        # `session._jarvis_last_handoff_refused` and hedges
+                        # instead of claiming success.
+                        _record_handoff_refused(context.session)
                         # Stay on the subagent; the corrective string is
                         # returned as the tool result the LLM will read
                         # next. Phrased to be unambiguous: which tool to
