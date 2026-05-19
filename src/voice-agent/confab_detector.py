@@ -129,6 +129,8 @@ _NEGATION_PATTERNS = [
 # LiveKit messages can be plain dicts, ChatMessage objects, or
 # Pydantic models depending on the path.
 #
+# History — why this rule was rewritten 2026-05-19:
+#
 # 2026-05-06 turn 1110 (live-captured): subagent truthfully said
 # "I have opened a new tab" after firing ext_new_tab; bridge tab list
 # confirmed a new tab was created. But this detector flagged it as
@@ -139,9 +141,20 @@ _NEGATION_PATTERNS = [
 #   2. The supervisor's session.history may not include the
 #      subagent's internal ext_* tool calls — they live on the
 #      subagent's own ChatContext.
-# Fix: widen to 10 messages AND treat the supervisor's own
+# Fix at the time: widen to 10 messages AND treat the supervisor's own
 # `transfer_to_*` as tool evidence (the handoff itself proves the
 # subagent had a chance to do work).
+#
+# 2026-05-19 L2 tightening (this commit): the "handoff alone counts"
+# half of that fix proved too permissive. Chrome confab at 02:24:18:
+# bare `transfer_to_desktop` → subagent gate REFUSED `task_done` (no
+# real tool fired) → supervisor STILL voiced "I've opened Chrome"
+# because the bare handoff in chat_ctx still granted evidence credit.
+# New rule: bare `transfer_to_*` / `delegate` no longer counts. Need a
+# structured tool_result (role:'tool' or FunctionCallOutput) OR a real
+# non-handoff tool call. Kill-switch JARVIS_CONFAB_STRICT_DISABLED=1
+# reverts to the permissive 2026-05-06 rule. See
+# `has_recent_tool_evidence` and spec §5.2.
 _TOOL_EVIDENCE_LOOKBACK = 10
 
 
@@ -170,70 +183,112 @@ def _has_recent_extraction_evidence() -> bool:
         return False
 
 
-def _has_tool_evidence(prior_messages: list[Any]) -> bool:
-    """True if any of the last _TOOL_EVIDENCE_LOOKBACK messages contains
-    a tool_call / tool_result / handoff. Widened from 3 → 10 to handle
-    subagent handoffs (user → supervisor handoff → subagent ext_*
-    calls → subagent text reply easily exceeds 3 messages).
+def has_recent_tool_evidence(items: list[Any], lookback: int = _TOOL_EVIDENCE_LOOKBACK) -> bool:
+    """Return True iff a real tool fired in the recent message window.
 
-        user: "open chrome"
-        assistant (tool_calls=[launch_app(...)])         ← evidence
-        tool_result: "OK: launched 'google-chrome'"      ← evidence
-        assistant: "Done, sir."                          ← THIS is the
-                                                            turn we're
-                                                            checking
+    2026-05-19 (L2): a bare ``transfer_to_*`` / ``delegate`` call no longer
+    counts on its own. Required:
 
-    Or in the subagent-handoff case:
+      - A structured tool_result message (``role='tool'`` or
+        ``FunctionCallOutput`` shape — ``.output`` + ``.call_id``), OR
+      - A real (non-handoff) tool call — i.e. a tool that's NOT
+        ``transfer_to_*`` / ``delegate``.
 
-        user: "open a new tab"
-        assistant (tool_calls=[transfer_to_browser])     ← evidence
-                                                            (handoff alone
-                                                            counts; the
-                                                            subagent's
-                                                            internal ext_*
-                                                            calls aren't
-                                                            visible here)
-        … subagent runs ext_new_tab on its own context …
-        assistant: "I have opened a new tab"             ← THIS is the
-                                                            turn we're
-                                                            checking
+    The previous rationale ("handoff alone proves the subagent had a
+    chance to do work") proved too permissive after the
+    2026-05-19T02:24:18 Chrome confab: the subagent gate refused
+    ``task_done`` (no real tool fired), but the supervisor still voiced
+    "I've opened Chrome" because the bare ``transfer_to_desktop`` in
+    chat_ctx granted evidence credit.
+
+    Kill-switch: ``JARVIS_CONFAB_STRICT_DISABLED=1`` reverts to the
+    permissive "transfer_to_* alone counts" rule. Default: strict. Read
+    at call time so monkeypatch.setenv works in tests.
+
+    Handles all known message shapes:
+      - dict / ChatMessage / Pydantic model / SimpleNamespace
+      - ``tool_calls`` with either ``tc.name`` (OpenAI-legacy shape) or
+        ``tc.function.name`` (Anthropic/new shape)
+      - LiveKit ChatContext top-level ``FunctionCall`` items
+        (``name``+``arguments``+``call_id``) and ``FunctionCallOutput``
+        items (``output``+``call_id``)
+      - content blocks of types ``tool_use`` / ``tool_call`` /
+        ``tool_result`` / ``function_call``
+
+    Spec: docs/superpowers/specs/2026-05-19-confab-defense-in-depth-design.md §5.2
     """
-    for msg in prior_messages[-_TOOL_EVIDENCE_LOOKBACK:]:
-        # Direct attribute checks first.
+    permissive = os.environ.get("JARVIS_CONFAB_STRICT_DISABLED", "0") == "1"
+    window = items[-lookback:] if lookback and lookback > 0 else items
+
+    def _is_handoff(name: str) -> bool:
+        return bool(name) and (name.startswith("transfer_to_") or name == "delegate")
+
+    for msg in window:
+        # 1) role='tool' message — actual tool result.
         role = _msg_attr(msg, "role")
         if role == "tool":
             return True
-        # Some frameworks expose tool_calls on the assistant message.
-        tcs = _msg_attr(msg, "tool_calls")
-        if tcs:
+
+        # 2) FunctionCallOutput shape — actual tool returned.
+        if _msg_attr(msg, "output") is not None and _msg_attr(msg, "call_id") is not None:
             return True
-        # Content list might contain tool-call/result blocks.
+
+        # 3) Assistant turn with structured tool_calls. Each tc may be
+        # OpenAI-legacy (tc.name) or Anthropic-new (tc.function.name).
+        tcs = _msg_attr(msg, "tool_calls") or []
+        for tc in tcs:
+            # Unwrap .function if present (Anthropic-new shape); else bare.
+            inner = getattr(tc, "function", None)
+            if inner is None and isinstance(tc, dict):
+                inner = tc.get("function")
+            name = _msg_attr(inner, "name") if inner is not None else _msg_attr(tc, "name")
+            name = name or ""
+            if not _is_handoff(name):
+                # Real tool — counts under both strict + permissive.
+                if name:
+                    return True
+            elif permissive:
+                # Bare handoff — only counts in legacy mode.
+                return True
+
+        # 4) Content blocks (Anthropic style multi-block messages).
         content = _msg_attr(msg, "content")
         if isinstance(content, list):
             for block in content:
                 btype = _msg_attr(block, "type")
                 if btype in ("tool_use", "tool_call", "tool_result", "function_call"):
                     return True
-                # Pydantic ChatMessage: function_call attr
                 if _msg_attr(block, "function_call"):
                     return True
                 if _msg_attr(block, "tool_calls"):
                     return True
-        # LiveKit ChatContext FunctionCall items have `name` and `arguments`
-        # at the top level (no role, no content list). Treat any function
-        # call in the window as evidence — including transfer_to_* which
-        # implies a subagent did work we can't see.
+
+        # 5) LiveKit ChatContext top-level FunctionCall items. These have
+        # `name` at the top level (no role, no content list). Treat as
+        # real tool evidence — but only if the name isn't a bare handoff
+        # under the strict rule.
         name = _msg_attr(msg, "name")
-        if name and (
-            _name_implies_handoff(name)
-            or _msg_attr(msg, "arguments") is not None
+        has_call_shape = (
+            _msg_attr(msg, "arguments") is not None
             or _msg_attr(msg, "call_id") is not None
-        ):
-            return True
-        # FunctionCallOutput items expose `output` + `call_id`.
-        if _msg_attr(msg, "output") is not None and _msg_attr(msg, "call_id") is not None:
-            return True
+        )
+        if name and has_call_shape:
+            if not _is_handoff(name):
+                return True
+            if permissive:
+                return True
+
     return False
+
+
+def _has_tool_evidence(prior_messages: list[Any]) -> bool:
+    """Backwards-compatible alias for ``has_recent_tool_evidence`` with the
+    legacy 10-message lookback. Kept for the in-tree call from
+    ``looks_like_confabulation`` and for callers grepping the old name.
+
+    See ``has_recent_tool_evidence`` for the actual rule (which is now
+    strict-by-default per the 2026-05-19 L2 tightening)."""
+    return has_recent_tool_evidence(prior_messages, lookback=_TOOL_EVIDENCE_LOOKBACK)
 
 
 def _msg_attr(obj: Any, name: str) -> Any:
