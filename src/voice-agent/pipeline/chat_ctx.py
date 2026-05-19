@@ -119,11 +119,10 @@ def format_recall_as_stale_block(turns: list[dict], session_id: str = "?") -> st
 # means 12 prior turns + 6k instructions + tools burns the per-request
 # budget. Read at CALL time (not import time) so the realtime override
 # takes effect even when this module was imported earlier.
-import os as _os
 RECENT_TURNS_LIMIT: int = 12
 
 def _current_recent_turns_limit() -> int:
-    return int(_os.environ.get("JARVIS_RECENT_TURNS", str(RECENT_TURNS_LIMIT)))
+    return int(os.environ.get("JARVIS_RECENT_TURNS", str(RECENT_TURNS_LIMIT)))
 
 # Cap recalled assistant turns at this many characters. Long historical
 # replies (a 574-char essay, a 1099-char monologue on entropy) get
@@ -273,49 +272,10 @@ _DISABLED_SUBAGENT_RE = re.compile(
 )
 
 
-# ── Loader: recent prior turns from state.db ─────────────────────────
-def load_recent_turns(limit: int | None = None) -> list[tuple[str, str]]:
-    """Return the most recent (role, text) pairs from state.db, OLDEST
-    first. Empty list on any error or if the DB doesn't exist yet."""
-    if limit is None:
-        limit = _current_recent_turns_limit()
-    state_db = Path.home() / ".jarvis" / "hub" / "state.db"
-    if not state_db.exists():
-        return []
-    try:
-        with sqlite3.connect(str(state_db), timeout=2.0) as conn:
-            raw_ms = conn.execute(
-                "SELECT ts, role, text FROM messages "
-                "WHERE role IN ('user','assistant') "
-                "ORDER BY ts DESC, id DESC LIMIT ?",
-                (limit * 4,),
-            ).fetchall()
-    except Exception as e:
-        logger.warning(f"recall load failed: {e}")
-        return []
-    raw = [(int(ts // 1000), role, text) for ts, role, text in raw_ms]
-    raw.reverse()  # OLDEST first
-    REPLY_GAP_S = 60
-    kept: list[tuple[str, str]] = []
-    for i, (ts, role, text) in enumerate(raw):
-        if role == "assistant":
-            kept.append((role, text))
-            continue
-        for j in range(i + 1, len(raw)):
-            nts, nrole, _ = raw[j]
-            if nts - ts > REPLY_GAP_S:
-                break
-            if nrole == "assistant":
-                kept.append((role, text))
-                break
-    return kept[-limit:]
-
-
 # ── Loader: recent prior turns WITH TIMESTAMPS ───────────────────────
 # Returns dicts shaped {ts_utc, user_text, jarvis_text, session_id} so
 # the L3 age filter + STALE-wrap helpers can operate on them. Pairs
-# user → first-following-assistant within REPLY_GAP_S, same as the
-# pair-keeping logic in load_recent_turns() but emitting dicts.
+# user → first-following-assistant within REPLY_GAP_S.
 def _load_recent_turns_with_ts(limit: int | None = None) -> list[dict]:
     """Return the most recent prior turns as dicts with ts_utc,
     user_text, jarvis_text, session_id. OLDEST first. Empty list on
