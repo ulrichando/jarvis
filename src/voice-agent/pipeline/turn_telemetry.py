@@ -278,6 +278,16 @@ def log_turn(
 ) -> None:
     """Write one row. Any exception is swallowed so telemetry never blocks voice.
 
+    `ts_utc=None` auto-generates current UTC via `time.strftime(...)` —
+    pass an explicit ISO-8601 string only for tests/backfill. Empty
+    string is a legitimate value, not a NULL sentinel; never pass
+    `ts_utc=""`.
+
+    `user_followup_30s` and `route_fallback` default to False meaning
+    "not observed" — they're absence-tolerant absence flags, not
+    asserted negatives. Future callers wanting to record observed
+    events must pass True explicitly.
+
     `subagent` is the registry name (`desktop`, `planner`, `browser`, …)
     of the sub-agent that owned this turn — set when a `transfer_to_X`
     handoff fired during the turn, None otherwise.
