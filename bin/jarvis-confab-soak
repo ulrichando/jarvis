@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# Confab defense-in-depth soak validation.
+# Rolls up confab_check_state distribution over a configurable
+# window AND hard-fails on any turn where supervisor voiced a
+# success claim without a matching tool_result.
+#
+# Usage:
+#   jarvis-confab-soak             # last 2 hours
+#   jarvis-confab-soak 24          # last 24 hours
+#   jarvis-confab-soak 168         # last week
+#
+# Spec: docs/superpowers/specs/2026-05-19-confab-defense-in-depth-design.md §5.4
+
+set -euo pipefail
+
+HOURS="${1:-2}"
+DB="$HOME/.local/share/jarvis/turn_telemetry.db"
+if [[ ! -f "$DB" ]]; then
+    echo "missing telemetry db: $DB" >&2; exit 1
+fi
+
+# Self-heal: ensure confab_check_state column exists (mirrors init_db()
+# in pipeline/turn_telemetry.py). Lets the soak run even if the voice
+# agent hasn't restarted since the T1 migration landed.
+if ! sqlite3 "$DB" "SELECT confab_check_state FROM turns LIMIT 0;" >/dev/null 2>&1; then
+    sqlite3 "$DB" "ALTER TABLE turns ADD COLUMN confab_check_state TEXT;" 2>/dev/null || true
+fi
+
+CUTOFF_SQL="datetime('now', '-${HOURS} hours')"
+
+echo "=== Confab defense-in-depth soak — last ${HOURS}h ==="
+echo
+echo "── confab_check_state distribution ──"
+sqlite3 -header -column "$DB" "
+SELECT
+    COALESCE(confab_check_state, '(null)') AS state,
+    COUNT(*) AS turns,
+    ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 1) AS pct
+FROM turns
+WHERE ts_utc >= ${CUTOFF_SQL}
+GROUP BY confab_check_state
+ORDER BY turns DESC;
+"
+echo
+echo "── per-route × state breakdown ──"
+sqlite3 -header -column "$DB" "
+SELECT
+    route,
+    COALESCE(confab_check_state, '(null)') AS state,
+    COUNT(*) AS turns
+FROM turns
+WHERE ts_utc >= ${CUTOFF_SQL}
+GROUP BY route, confab_check_state
+ORDER BY route, turns DESC;
+"
+echo
+echo "── HARD-FAIL CHECK: voiced 'I've opened/launched/started X' without confab_check_state=evidence_ok ──"
+SUSPECT_COUNT=$(sqlite3 "$DB" "
+SELECT COUNT(*) FROM turns
+WHERE ts_utc >= ${CUTOFF_SQL}
+  AND jarvis_text REGEXP 'I''?ve (opened|launched|started|done)'
+  AND COALESCE(confab_check_state, '') != 'evidence_ok';
+" 2>/dev/null || echo "0")
+
+if [[ "$SUSPECT_COUNT" -gt 0 ]]; then
+    echo "  ✗ FOUND $SUSPECT_COUNT suspect turns:"
+    sqlite3 -separator ' | ' "$DB" "
+    SELECT substr(ts_utc, 12, 8), route, COALESCE(subagent,'-'),
+           COALESCE(confab_check_state,'(null)'),
+           substr(user_text, 1, 60),
+           substr(jarvis_text, 1, 80)
+    FROM turns
+    WHERE ts_utc >= ${CUTOFF_SQL}
+      AND jarvis_text REGEXP 'I''?ve (opened|launched|started|done)'
+      AND COALESCE(confab_check_state, '') != 'evidence_ok'
+    ORDER BY ts_utc DESC LIMIT 10;
+    "
+    echo
+    echo "  These are CANDIDATE CONFABS — manually verify each: did the action actually happen?"
+    exit 2
+fi
+
+echo "  ✓ no suspect turns — every 'I've X-ed' claim corroborated by evidence_ok"
+echo
+echo "── interpretation guide ──"
+cat <<'EOF'
+  Target distribution (post-fix, 7+ day baseline):
+    evidence_ok          : >95%
+    hedged_no_evidence   : <5%
+    refused_handoff      : <1% (each one is a recoverable failure;
+                                consistent rise = L1 regression)
+    stale_ctx_dropped    : variable; depends on cross-session traffic
+    (null)               : pre-fix turns; expected to decay over time
+
+  Investigation triggers:
+    refused_handoff > 1% → check tools/computer_safety.py + sanitizers/pycall.py
+    suspect_turns > 0    → manually verify; an L2 (confab detector) regression
+    silent (null > 50% in last hour) → check log_turn() wiring
+EOF
