@@ -184,7 +184,11 @@ def _has_recent_extraction_evidence() -> bool:
         return False
 
 
-def has_recent_tool_evidence(items: list[Any], lookback: int = _TOOL_EVIDENCE_LOOKBACK) -> bool:
+def has_recent_tool_evidence(
+    items: list[Any],
+    lookback: int = _TOOL_EVIDENCE_LOOKBACK,
+    verify_launch_for: "str | None" = None,
+) -> bool:
     """Return True iff a real tool fired in the recent message window.
 
     2026-05-19 (L2): a bare ``transfer_to_*`` / ``delegate`` call no longer
@@ -201,6 +205,16 @@ def has_recent_tool_evidence(items: list[Any], lookback: int = _TOOL_EVIDENCE_LO
     ``task_done`` (no real tool fired), but the supervisor still voiced
     "I've opened Chrome" because the bare ``transfer_to_desktop`` in
     chat_ctx granted evidence credit.
+
+    2026-05-19 (T14): when ``verify_launch_for`` is set, also calls
+    ``verify_launched(binary_name)`` as BACKUP evidence — ONLY when the
+    chat_ctx-only rule returned False. Closes the gap where a handoff
+    succeeded externally (the process IS running) but chat_ctx never
+    received a tool_result. Matches Anthropic Computer Use's post-action
+    state-verification pattern. Scoped to launch_app-class claims where
+    pgrep is cheap and reliable. Default ``None`` preserves the existing
+    behavior at every current call site — only callers that opt in by
+    passing the binary name pay the pgrep cost.
 
     Kill-switch: ``JARVIS_CONFAB_STRICT_DISABLED=1`` reverts to the
     permissive "transfer_to_* alone counts" rule. Default: strict. Read
@@ -278,6 +292,19 @@ def has_recent_tool_evidence(items: list[Any], lookback: int = _TOOL_EVIDENCE_LO
                 return True
             if permissive:
                 return True
+
+    # T14 — backup evidence: pgrep-verify a launch_app-class claim when
+    # the chat_ctx-only rule said no. Only runs on opt-in (caller passed
+    # verify_launch_for=<binary>); avoids hammering pgrep on every turn.
+    if verify_launch_for:
+        try:
+            result = verify_launched(verify_launch_for, timeout_s=5.0)
+            if result is True:
+                return True
+            # False (no match) / None (pgrep unavailable) → fall through
+            # and return False below; preserves existing behavior.
+        except Exception:
+            pass  # any verify failure → don't grant evidence
 
     return False
 
