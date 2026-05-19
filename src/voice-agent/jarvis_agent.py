@@ -555,6 +555,70 @@ def _recent_interaction() -> bool:
     return (time.monotonic() - _last_real_interaction) < QUIET_HOURS_WINDOW_SEC
 
 
+# Hedge phrases that the POST-HANDOFF HONESTY rule trains the
+# supervisor to emit when it couldn't confirm tool success. Keep
+# lowercase + substring-matched against ``jarvis_text.lower()``.
+# Order doesn't matter — any match wins.
+_CONFAB_HEDGE_PHRASES = (
+    "couldn't confirm",
+    "not sure that completed",
+    "didn't go through",
+    "couldn't verify",
+    "tried but couldn't",
+    "should i try again",
+    "want me to check",
+)
+
+
+def compute_confab_check_state(
+    *,
+    session,
+    chat_items: list,
+    jarvis_text: str,
+) -> str:
+    """Compute the per-turn confab_check_state value for telemetry.
+
+    Returns one of:
+      "refused_handoff"     — session flag set by subagent gate refusal
+      "stale_ctx_dropped"   — session flag set by seed_chat_ctx when
+                              recall produced 0 turns (all stale)
+      "evidence_ok"         — chat_ctx has a real tool_result / non-handoff
+                              tool_call within the lookback window
+      "hedged_no_evidence"  — jarvis_text matches a hedge phrase AND no
+                              evidence
+      "unchecked"           — fallback (BANTER/EMOTIONAL with no signals)
+
+    Priority order: refused_handoff > stale_ctx_dropped > evidence_ok >
+    hedged_no_evidence > unchecked. Per spec 2026-05-19 §5.4."""
+    # 1) Session-level refused-handoff flag (set by subagents/agent.py)
+    if getattr(session, "_jarvis_last_handoff_refused", False):
+        return "refused_handoff"
+
+    # 2) Session-level stale-ctx-dropped flag (set in the entrypoint
+    # right after _seed_chat_ctx() returns ChatContext(items=[]) — i.e.
+    # recall age filter zeroed the chat_ctx for this session).
+    if getattr(session, "_jarvis_recall_dropped_all", False):
+        return "stale_ctx_dropped"
+
+    # 3) Real tool evidence in chat_ctx.
+    try:
+        from confab_detector import has_recent_tool_evidence
+        if has_recent_tool_evidence(chat_items, lookback=10):
+            return "evidence_ok"
+    except Exception:
+        pass
+
+    # 4) Hedge phrasing in jarvis_text → hedged_no_evidence.
+    if jarvis_text:
+        lowered = jarvis_text.lower()
+        for p in _CONFAB_HEDGE_PHRASES:
+            if p in lowered:
+                return "hedged_no_evidence"
+
+    # 5) Fallback — no signals to evaluate.
+    return "unchecked"
+
+
 def _session_close_needs_restart(ev) -> bool:
     """True if the CloseEvent represents a crash (non-None error), False for clean shutdown."""
     return getattr(ev, "error", None) is not None
@@ -5394,6 +5458,22 @@ async def entrypoint(ctx: JobContext) -> None:
                             _browser_mod._LAST_CHOSEN_BACKEND = None
                         except Exception:
                             browser_backend_used = None
+                    # T11 (2026-05-19) — confab_check_state per-turn audit.
+                    # Computed BEFORE log_turn so spec acceptance A5
+                    # ("confab_check_state queryable on every turn written
+                    # post-fix") is satisfied. 5-way enum per spec §5.4.
+                    # Failures swallowed silently — telemetry is best-
+                    # effort and must never block the user-facing path.
+                    try:
+                        _confab_state = compute_confab_check_state(
+                            session=session,
+                            chat_items=getattr(
+                                getattr(session, "chat_ctx", None), "items", []
+                            ) or [],
+                            jarvis_text=text or "",
+                        )
+                    except Exception:
+                        _confab_state = None
                     log_turn(
                         user_text=getattr(session, "_jarvis_turn_user_text", "") or "",
                         jarvis_text=text or "",
@@ -5416,6 +5496,7 @@ async def entrypoint(ctx: JobContext) -> None:
                         browser_backend=browser_backend_used,
                         computer_use_steps=cua_steps,
                         computer_use_cost_usd=cua_cost,
+                        confab_check_state=_confab_state,
                     )
                     # Reset usage stash for next turn.
                     session._jarvis_last_input_tokens = None
@@ -5513,12 +5594,28 @@ async def entrypoint(ctx: JobContext) -> None:
 
     _initial_instructions = _ps["initial_instructions"]
 
+    # Build the seeded chat_ctx and stamp a session-level flag when
+    # the recall age filter produced zero turns. T11 (2026-05-19): the
+    # flag is read by ``compute_confab_check_state`` so the per-turn
+    # telemetry can distinguish "stale ctx dropped" from generic
+    # "unchecked" — operators can grep for it after a confab to verify
+    # the L3 filter actually fired. Done at the call site because
+    # ``seed_chat_ctx`` itself is session-agnostic.
+    _seeded_chat_ctx = _seed_chat_ctx()
+    try:
+        _seeded_items = getattr(_seeded_chat_ctx, "items", None) or []
+        if len(_seeded_items) == 0:
+            session._jarvis_recall_dropped_all = True
+    except Exception:
+        # Telemetry-only flag; never block agent construction.
+        pass
+
     _jarvis_agent = JarvisAgent(
         instructions=_initial_instructions,
         # Pre-load recent prior turns from conversations.db so the
         # LLM sees what was discussed before this job started.
         # Without this, every voice-client reconnect = amnesia.
-        chat_ctx=_seed_chat_ctx(),
+        chat_ctx=_seeded_chat_ctx,
         # Tool surface — see run_jarvis_cli vs bash vs specialized
         # primitives doc upthread for routing.
         # Supervisor tool list — DELIBERATELY MINIMAL. JarvisAgent is
