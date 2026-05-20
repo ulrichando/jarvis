@@ -149,6 +149,7 @@ def new_job(*, name: str, type: str, schedule: dict, command: str | None = None,
             created_by: str = "config") -> dict:
     """Build a job dict (not yet persisted). Voice-created jobs are gated
     behind pending_confirm/enabled=False until confirm_schedule fires."""
+    scan_job_content(f"{name}\n{command or ''}\n{prompt or ''}")
     if type not in ("script", "prompt"):
         raise ValueError(f"type must be 'script' or 'prompt' (got {type!r})")
     if type == "script" and not command:
@@ -301,3 +302,22 @@ def mark_job_run(job_id: str, *, ok: bool, _now: datetime | None = None) -> None
             logger.warning("[cron] job %s auto-disabled after %d failures", job_id, j["consecutive_failures"])
         save_jobs(jobs)
         return
+
+
+# Ported from hermes/tools/memory_tool.py::_scan_memory_content — patterns
+# that should never appear in an autonomously-stored, re-injected job.
+_INJECTION_RES = [
+    re.compile(r"ignore\s+(all\s+)?previous\s+instructions", re.I),
+    re.compile(r"\b(you\s+are\s+now|jailbreak|DAN[\s_-]?mode)\b", re.I),
+    re.compile(r"disregard\s+(the\s+)?(system|above)", re.I),
+    re.compile(r"curl\s+[^\n]*\$\(", re.I),                       # exfil via command-substitution
+    re.compile(r"\b(wget|curl)\b[^\n]*(\.env\b|id_rsa|\.ssh/|\.aws/|\bcredentials\b)", re.I),
+    re.compile(r"[​‌‍⁠﻿]"),              # invisible unicode
+]
+
+
+def scan_job_content(text: str) -> None:
+    """Raise ValueError if `text` matches a prompt-injection / exfil pattern."""
+    for rx in _INJECTION_RES:
+        if rx.search(text or ""):
+            raise ValueError(f"Job content rejected by safety scan (matched {rx.pattern!r}).")
