@@ -101,3 +101,7 @@ CLAUDE.local.md
 .env.production
 !.env.example
 !**/.env.example
+
+# Vendored third-party agent checkout (NousResearch/hermes-agent), cloned 2026-05-20.
+# Source-only reference; not part of any JARVIS subtree.
+hermes/
