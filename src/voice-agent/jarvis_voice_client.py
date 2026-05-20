@@ -414,24 +414,21 @@ async def play_subscribed_track(track: rtc.RemoteAudioTrack) -> None:
     log.info(f"[playback] OPEN track={track.sid} sr={SAMPLE_RATE}Hz ch={NUM_CHANNELS} device={AUDIO_OUTPUT_DEVICE!r}")
     # `state.speaking` drives the tray's "talking" (blue) colour. The
     # remote track stays open the whole session (silence frames flow
-    # continuously between TTS utterances), so we RMS-gate it the same
-    # way as listening: only flip true on real audio energy, with a
-    # short hold so the indicator doesn't flicker between words.
-    last_speaking_audio = 0.0
+    # continuously between TTS utterances). 2026-05-20: drive it from
+    # the OUTGOING TTS PCM (clean, known signal) instead of mic-side
+    # RMS, so the mic-drop fallback never false-mutes the user on
+    # ambient noise. Uses audio.speaking_signal.is_rendering_speech which
+    # threshold-gates on the outgoing int16 RMS at 300 (well below Orpheus
+    # speech; well above the always-open silent track). Hold is still
+    # _SPEAKING_HOLD_S (1.2 s default) so the indicator doesn't flap
+    # between inter-phrase silences. Spec 2026-05-20 §5.5.
+    _speaking_until = [0.0]  # mutable closure cell; one-element list
     try:
         async for event in stream:
             frame = event.frame
             # frame.data is a bytes-like buffer of int16 LE samples.
             # Reshape (samples, channels) for sounddevice.
             pcm = np.frombuffer(frame.data, dtype=np.int16).reshape(-1, NUM_CHANNELS)
-            if len(pcm):
-                rms = float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2)))
-                now = time.monotonic()
-                if rms > _SPEAKING_RMS_THRESHOLD:
-                    state.speaking = True
-                    last_speaking_audio = now
-                elif state.speaking and (now - last_speaking_audio) > _SPEAKING_HOLD_S:
-                    state.speaking = False
             # 2026-05-19 — feed APM the playback reference + stash for
             # DTLN. Without this, APM AEC has no reference. Spec §5.2/§6.2.
             #
@@ -464,6 +461,15 @@ async def play_subscribed_track(track: rtc.RemoteAudioTrack) -> None:
                 )
             except Exception as e:
                 log.debug(f"[playback] reverse-stream feed failed: {e}")
+            # Drive state.speaking from the outgoing TTS PCM (clean,
+            # known signal) — not mic-side RMS which can false-positive
+            # on ambient noise. Spec 2026-05-20 §5.5.
+            from audio.speaking_signal import is_rendering_speech
+            if is_rendering_speech(np.frombuffer(frame.data, dtype=np.int16)):
+                state.speaking = True
+                _speaking_until[0] = time.monotonic() + _SPEAKING_HOLD_S
+            elif time.monotonic() > _speaking_until[0]:
+                state.speaking = False
             # write() is non-blocking-ish — it copies into PortAudio's
             # internal ring, the audio thread drains. If we ever fall
             # behind, it returns a buffer-underflow warning; harmless
