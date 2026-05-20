@@ -105,6 +105,101 @@ class TestPassThrough:
         )
 
 
+# ── Parenthetical stage-directions ─────────────────────────────────
+
+
+class TestStageDirectionBlanking:
+    """Live failure 2026-05-18→20: the weak 8b BANTER fast-path model
+    VOICED meta-narration stage-directions instead of staying silent
+    for not-directed input. The user heard TTS say "open paren ambient
+    conversation not directed at me close paren". The supervisor prompt
+    says output ZERO characters for ambient/not-directed input — voicing
+    a parenthetical explaining the silence is the meta-silence anti-
+    pattern. Blank the whole turn."""
+
+    @pytest.mark.parametrize("stage", [
+        "(Ambient conversation — not directed at me.)",
+        "(The user was greeting someone named Jonas — not directed at me.)",
+        "(The user is talking to someone else.)",
+        "(Not directed at me.)",
+        "(Background conversation — no response needed.)",
+        "(Observing silently.)",
+        "(Just listening — not for me.)",
+        "(Remaining silent.)",
+        # trailing/leading whitespace
+        "  (Ambient conversation — not directed at me.)  ",
+    ])
+    def test_blanks_parenthetical_stage_direction(self, stage):
+        assert sanitize(stage) == "", (
+            f"expected blank, got: {sanitize(stage)!r}"
+        )
+
+    def test_streamed_open_paren_no_close_blanked(self):
+        # Streaming: the "(" + keyword arrive, the ")" comes in a later
+        # chunk. The opening chunk must already be blanked.
+        assert sanitize("(Ambient conversation —") == ""
+        # A lone open-paren chunk (keyword still streaming) is never
+        # legitimate voiced output.
+        assert sanitize("(") == ""
+
+    def test_streamed_meta_remainder_blanked(self):
+        # The trailing chunk of a split stage-direction: bare meta
+        # phrase + close paren. Must also blank.
+        assert sanitize("not directed at me.)") == ""
+        assert sanitize("ambient conversation") == ""
+
+
+class TestStageDirectionPassThrough:
+    """Parenthetical-adjacent vocab in legitimate speech must survive."""
+
+    @pytest.mark.parametrize("legit", [
+        # demonstrative followed by a NOUN — not recovery theater
+        "I'm tracking this bug in Linear.",
+        "I'm parsing the config file now.",
+        "I'm following the build output.",
+        # "the user" in normal speech (no parens)
+        "The user manual is on your desk.",
+        "The user table has three rows.",
+        # "not directed" outside the stage-direction shape
+        "The email was addressed to the whole team.",
+    ])
+    def test_legit_speech_passes(self, legit):
+        assert sanitize(legit) == legit, (
+            f"false positive — expected unchanged, got: {sanitize(legit)!r}"
+        )
+
+
+# ── Recovery theater (prompt-banned confusion narration) ───────────
+
+
+class TestRecoveryTheater:
+    """The supervisor prompt's WHEN-INPUT-UNCLEAR rule explicitly bans
+    'I'm catching pieces…' / 'Got fragments…' (recovery theater) and
+    narrating confusion. Weak models leak it anyway. Blank the
+    standalone forms; trim the lead-in on longer replies."""
+
+    @pytest.mark.parametrize("theater", [
+        "I'm catching fragments here.",
+        "I'm catching pieces.",
+        "I'm not quite tracking this.",
+        "I'm not parsing that clearly.",
+        "I'm having trouble parsing that.",
+        "I'm not tracking this — ",
+    ])
+    def test_blanks_standalone_recovery_theater(self, theater):
+        assert sanitize(theater) == "", (
+            f"expected blank, got: {sanitize(theater)!r}"
+        )
+
+    def test_trims_recovery_lead_in(self):
+        # When the model prepends recovery theater to a real question,
+        # the theater is scrubbed and the question survives.
+        text = "I'm not parsing that clearly. What did you want to look up?"
+        out = sanitize(text)
+        assert "not parsing that clearly" not in out
+        assert "What did you want to look up?" in out
+
+
 # ── Edge cases ─────────────────────────────────────────────────────
 
 
