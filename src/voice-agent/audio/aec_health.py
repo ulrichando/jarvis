@@ -10,6 +10,7 @@ docs/superpowers/specs/2026-05-20-aec-cascade-completion-design.md
 """
 from __future__ import annotations
 
+import dataclasses
 import functools
 import json
 import logging
@@ -62,3 +63,40 @@ def l1_echo_cancel_active() -> bool:
     if os.environ.get("JARVIS_PIPEWIRE_AEC", "1") != "1":
         return False
     return _l1_active_cached(int(time.time() // _TTL_S))
+
+
+@dataclasses.dataclass(frozen=True)
+class EchoDefense:
+    l1: bool
+    l2_aec: bool
+    l3: bool
+
+
+def current_echo_defense(*, apm_aec: bool, dtln_healthy: bool) -> EchoDefense:
+    """Snapshot the MEASURED echo-defense layers. Fail-closed: any probe
+    error -> that layer reads False (never raises into the audio callback)."""
+    try:
+        l1 = l1_echo_cancel_active()
+    except Exception as e:
+        logger.warning(f"[aec_health] l1 probe failed ({e}); treating as off")
+        l1 = False
+    return EchoDefense(l1=l1, l2_aec=bool(apm_aec), l3=bool(dtln_healthy))
+
+
+# The echo-defense set proven (by `bin/jarvis-aec-soak`) sufficient to keep
+# the mic hot during TTS without garbling STT. "none" until a soak promotes
+# it. PROMOTE by editing this after a passing soak (spec §5.4). NEVER widen
+# it on a hunch — the 2026-05-20 regression was exactly an unvalidated hot mic.
+_HOT_MIC_SET = "none"   # one of: "none", "l1", "l1_l3"
+
+
+def sufficient_for_hot_mic(d: EchoDefense, profile: str) -> bool:
+    """True iff the validated-sufficient echo-defense set is measured active.
+    Deny-by-default on speakers; headphones never have an echo path."""
+    if profile == "headphones":
+        return True
+    if _HOT_MIC_SET == "l1":
+        return d.l1
+    if _HOT_MIC_SET == "l1_l3":
+        return d.l1 and d.l3
+    return False  # "none" -> deny -> mic-drop during speak
