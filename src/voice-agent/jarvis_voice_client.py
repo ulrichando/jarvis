@@ -142,6 +142,16 @@ from audio.apm_reverse_stream import APMDelayEstimator, ReverseRefRingBuffer
 _reverse_estimator = APMDelayEstimator()
 _reverse_ringbuf = ReverseRefRingBuffer(capacity_frames=64)
 
+# Current output-device profile ("headphones"/"speakers"/"unknown"),
+# updated event-driven by the watch_for_changes callback in main()
+# (NOT polled per mic frame). _mic_cb reads this on the realtime
+# callback path instead of calling classify_output_device() every
+# speaking-frame — that removes the only non-trivial work from the
+# 10 ms-deadline hot path AND fixes the 30 s lru-cache hot-plug
+# staleness (a headphones↔speakers flip is reflected immediately via
+# pw-mon instead of after the next TTL expiry). Spec §5.5 (T7 review #4).
+_current_profile: str = "unknown"
+
 
 def _should_publish_during_speak(*, profile: str, apm_aec: bool, neural_aec: bool) -> bool:
     """2026-05-19 — replaces the blanket 'drop mic while speaking'.
@@ -432,13 +442,33 @@ async def play_subscribed_track(track: rtc.RemoteAudioTrack) -> None:
                     state.speaking = False
             # 2026-05-19 — feed APM the playback reference + stash for
             # DTLN. Without this, APM AEC has no reference. Spec §5.2/§6.2.
+            #
+            # DAC timestamp on the PortAudio stream clock (Pa_GetStreamTime),
+            # NOT time.monotonic() — the mic side reads inputBufferAdcTime
+            # off the SAME clock, so differencing them yields the acoustic
+            # round-trip. time.monotonic() is a different clock dominated by
+            # asyncio jitter + the 200 ms playback buffer (T7 review #1).
+            # This is blocking-write mode (no per-frame time_info), so we
+            # use the stream's running clock + output latency as the
+            # approximate playout time of this frame; JARVIS_APM_DELAY_BIAS_MS
+            # tunes any residual offset that approximation leaves.
             try:
-                if _apm is not None:
+                dac_t = out.time + out.latency   # approx playout time of frame
+            except Exception:
+                dac_t = time.monotonic()         # fallback if stream clock unavailable
+            try:
+                # process_reverse_stream is an AEC-only APM method — only
+                # valid when echo processing is enabled (T7 review #2).
+                if _apm is not None and _APM_AEC:
                     _apm.process_reverse_stream(frame)
-                _reverse_estimator.note_output(time.monotonic())
+                # The estimator + ring buffer stay UNGATED: the ring feeds
+                # L3/DTLN which runs regardless of APM AEC, and the same
+                # dac_t keeps the L3 reference alignment consistent with
+                # the estimator.
+                _reverse_estimator.note_output(dac_t)
                 _reverse_ringbuf.write(
                     np.frombuffer(frame.data, dtype=np.int16).astype(np.float32) / 32768.0,
-                    dac_ts=time.monotonic(),
+                    dac_ts=dac_t,
                 )
             except Exception as e:
                 log.debug(f"[playback] reverse-stream feed failed: {e}")
@@ -727,15 +757,28 @@ async def run_once(shutdown: asyncio.Event) -> None:
             num_channels=NUM_CHANNELS,
             samples_per_channel=frames,
         )
-        if _apm is not None:
+        if _apm is not None and _APM_AEC:
             # 2026-05-19 — set the round-trip stream delay (from the
             # reverse-stream estimator) BEFORE process_stream so the APM
             # AEC aligns the reference to the mic. Spec §5.2.
+            #
+            # set_stream_delay_ms is an AEC-only APM method, so the whole
+            # block is gated on _APM_AEC, not just `_apm is not None`
+            # (T7 review #2) — no point estimating the delay when its only
+            # consumer is off. The ADC timestamp comes from PortAudio's
+            # time_info (inputBufferAdcTime = when this mic buffer was
+            # captured on Pa_GetStreamTime), the SAME clock the playback
+            # DAC time uses — NOT time.monotonic() (T7 review #1).
             try:
-                _reverse_estimator.note_input(time.monotonic())
-                _apm.set_stream_delay_ms(_reverse_estimator.current_delay_ms())
+                adc_t = _time.inputBufferAdcTime
             except Exception:
-                pass
+                adc_t = time.monotonic()
+            try:
+                _reverse_estimator.note_input(adc_t)
+                _apm.set_stream_delay_ms(_reverse_estimator.current_delay_ms())
+            except Exception as e:
+                log.debug(f"[mic] delay-estimate failed: {e}")
+        if _apm is not None:
             try:
                 _apm.process_stream(frame)
             except Exception as e:
@@ -768,10 +811,11 @@ async def run_once(shutdown: asyncio.Event) -> None:
         # for headphone users — superseded by the profile detection below,
         # but honored so callers that set it don't regress). Spec §4.2/§6.2.
         if state.speaking and os.environ.get("JARVIS_MIC_DURING_SPEAK", "0") != "1":
-            from audio.output_profile import classify_output_device
-            _profile = classify_output_device()
+            # Read the module-level profile updated event-driven by the
+            # pw-mon watcher (T7 review #4) — NOT a per-frame
+            # classify_output_device() call on this 10 ms realtime path.
             if not _should_publish_during_speak(
-                profile=_profile, apm_aec=_APM_AEC,
+                profile=_current_profile, apm_aec=_APM_AEC,
                 neural_aec=(os.environ.get("JARVIS_NEURAL_AEC", "1") == "1"),
             ):
                 return
@@ -904,8 +948,20 @@ async def main() -> None:
             dtln_latency_ms_p95=None,   # filled in Phase 2 (Task 11)
         )
 
+    # Seed + maintain the module-level `_current_profile` that _mic_cb
+    # reads on the realtime path (T7 review #4). The watcher fires on
+    # every headphones↔speakers transition (pw-mon, event-driven), so
+    # the mic gate sees hot-plugs immediately instead of after the 30 s
+    # lru-cache TTL — and the snapshot stays in sync with it.
+    def _on_profile_change(prof: str) -> None:
+        global _current_profile
+        _current_profile = prof
+        _write_aec_state_snapshot()
+
+    global _current_profile
+    _current_profile = classify_output_device()
     _write_aec_state_snapshot()
-    watch_for_changes(lambda _profile: _write_aec_state_snapshot())
+    watch_for_changes(_on_profile_change)
 
     # Periodic refresh so apm_delay_ms_p50 stays current between profile
     # transitions (the watcher only fires on device changes). 5 s cadence
