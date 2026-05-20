@@ -62,3 +62,38 @@ def test_parse_iso_timestamp_oneshot():
     s = cj.parse_schedule("2026-05-21T09:00")
     assert s["kind"] == "once"
     assert datetime.fromisoformat(s["run_at"]).hour == 9
+
+
+def test_add_load_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setattr(cj, "CRON_DIR", tmp_path / "cron")
+    monkeypatch.setattr(cj, "JOBS_FILE", tmp_path / "cron" / "jobs.json")
+    monkeypatch.setattr(cj, "OUTPUT_DIR", tmp_path / "cron" / "output")
+    job = cj.add_job(cj.new_job(name="t", type="script", command="echo hi",
+                                schedule={"kind": "interval", "every_s": 3600}))
+    assert job["id"]
+    loaded = cj.load_jobs()
+    assert len(loaded) == 1 and loaded[0]["command"] == "echo hi"
+    assert oct(cj.JOBS_FILE.stat().st_mode)[-3:] == "600"
+
+
+def test_max_jobs_enforced(tmp_path, monkeypatch):
+    monkeypatch.setattr(cj, "CRON_DIR", tmp_path / "cron")
+    monkeypatch.setattr(cj, "JOBS_FILE", tmp_path / "cron" / "jobs.json")
+    monkeypatch.setattr(cj, "OUTPUT_DIR", tmp_path / "cron" / "output")
+    monkeypatch.setattr(cj, "MAX_JOBS", 2)
+    cj.add_job(cj.new_job(name="a", type="script", command="x", schedule={"kind": "interval", "every_s": 60}))
+    cj.add_job(cj.new_job(name="b", type="script", command="x", schedule={"kind": "interval", "every_s": 60}))
+    with pytest.raises(ValueError):
+        cj.add_job(cj.new_job(name="c", type="script", command="x", schedule={"kind": "interval", "every_s": 60}))
+
+
+def test_remove_and_set_flags(tmp_path, monkeypatch):
+    monkeypatch.setattr(cj, "CRON_DIR", tmp_path / "cron")
+    monkeypatch.setattr(cj, "JOBS_FILE", tmp_path / "cron" / "jobs.json")
+    monkeypatch.setattr(cj, "OUTPUT_DIR", tmp_path / "cron" / "output")
+    j = cj.add_job(cj.new_job(name="t", type="prompt", prompt="hi", schedule={"kind": "interval", "every_s": 3600}, created_by="voice"))
+    assert j["pending_confirm"] is True and j["enabled"] is False
+    cj.set_confirmed(j["id"])
+    assert cj.get_job(j["id"])["enabled"] is True
+    assert cj.remove_job(j["id"]) is True
+    assert cj.get_job(j["id"]) is None
