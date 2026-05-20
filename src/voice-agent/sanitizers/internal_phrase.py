@@ -85,11 +85,52 @@ _INTERNAL_PHRASES = [
     # tabs, sir." Blanking here is the last-line defense.
     r"sir",
     r"ma'?am",
+    # ── Meta-narration fragments (bare, parens stripped by streaming) ──
+    # Live failure 2026-05-18→20: the weak 8b BANTER fast-path voiced
+    # "(Ambient conversation — not directed at me.)" instead of staying
+    # silent. _STAGE_DIRECTION_RE below removes the whole parenthetical
+    # when it arrives in one chunk; these bare forms catch the streamed
+    # remainder ("not directed at me.)" / "ambient conversation") whose
+    # opening "(" landed in a prior chunk. "the user was/is …" is NOT
+    # listed bare (too easy to false-positive on "the user manual is …")
+    # — it only blanks inside the parenthetical regex.
+    r"not\s+directed\s+at\s+(?:me|you)",
+    r"ambient\s+conversation",
+    # ── Recovery theater (prompt-banned confusion narration) ──
+    # supervisor.md WHEN-INPUT-UNCLEAR rule bans "I'm catching pieces…"
+    # / "Got fragments…" + narrating confusion. The trailing lookahead
+    # requires the demonstrative to be clause-final (punctuation/dash/
+    # end), so "tracking this bug" / "parsing the file" pass through.
+    r"i'?m\s+catching\s+(?:fragments|pieces|bits|parts)(?:\s+here)?",
+    r"i'?m\s+not\s+(?:quite\s+)?(?:tracking|parsing|following)\s+(?:this|that)(?:\s+clearly)?(?=\s*(?:[—–\-.,!?]|$))",
+    r"i'?m\s+having\s+trouble\s+(?:tracking|parsing|following)\s+(?:this|that)(?=\s*(?:[—–\-.,!?]|$))",
 ]
 
 # Pre-compile a single OR regex over all phrases.
 _INTERNAL_RE = re.compile(
     r"\b(?:" + r"|".join(f"(?:{p})" for p in _INTERNAL_PHRASES) + r")\b",
+    re.IGNORECASE,
+)
+
+# Parenthetical stage-directions: "(Ambient conversation — not directed
+# at me.)". A voiced turn is never legitimately a parenthetical aside —
+# the supervisor prompt says output ZERO characters for ambient/not-
+# directed input, and class-(C) bans voicing the silence. The closing
+# ")" is optional so a chunk that ends mid-stream ("(Ambient
+# conversation —") still matches. Kept separate from _INTERNAL_RE
+# because the leading "(" defeats that regex's \b word-boundary anchor.
+_STAGE_DIRECTION_RE = re.compile(
+    r"\(\s*[^)]*\b(?:"
+    r"not\s+directed\s+at\s+(?:me|you|jarvis)"
+    r"|not\s+(?:for|addressed\s+to|aimed\s+at)\s+me"
+    r"|ambient\s+conversation"
+    r"|background\s+(?:conversation|chatter|noise|speech)"
+    r"|the\s+user\s+(?:was|is|seems|appears)"
+    r"|(?:remaining|staying|being|keeping)\s+silent"
+    r"|no\s+response\s+(?:needed|required|necessary)"
+    r"|observing"
+    r"|just\s+listening"
+    r")\b[^)]*\)?",
     re.IGNORECASE,
 )
 
@@ -107,7 +148,25 @@ def sanitize(text: str) -> str:
     """
     if not text:
         return text
-    stripped = text.strip(" \t\n.,!?'\"")
+
+    # Parenthetical stage-directions: remove the whole "(...)" aside.
+    # If nothing meaningful survives, the entire turn was meta-narration
+    # the user must never hear → silent turn.
+    if _STAGE_DIRECTION_RE.search(text):
+        text = _STAGE_DIRECTION_RE.sub(" ", text)
+        if not text.strip(" \t\n.,!?'\"()—–-"):
+            return ""
+
+    # Streaming guard: a voiced turn that opens with "(" before its
+    # closing ")" has arrived is the start of a stage-direction aside
+    # (the meta keyword may be in a later chunk). Never legitimate.
+    lead = text.lstrip(" \t\n'\"")
+    if lead.startswith("(") and ")" not in lead:
+        return ""
+
+    stripped = text.strip(" \t\n.,!?'\"()")
+    if not stripped:
+        return ""
     if _INTERNAL_RE.fullmatch(stripped):
         return ""
     # Fast path: no internal phrase in this chunk → return as-is so we
@@ -128,6 +187,10 @@ def sanitize(text: str) -> str:
     # — for per-chunk streaming, that strip is what eats inter-word
     # spaces of BPE-tokenized streams.
     cleaned = re.sub(r"\s+", " ", cleaned)
+    # If scrubbing stranded only punctuation / dashes (e.g. "I'm not
+    # tracking this — " → " — "), there's nothing voiceable left.
+    if not cleaned.strip(" \t\n.,!?'\"()—–-"):
+        return ""
     return cleaned
 
 
