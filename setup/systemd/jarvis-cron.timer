@@ -1,0 +1,17 @@
+[Unit]
+Description=JARVIS — minutely between-turn scheduler trigger
+Documentation=file:%h/Documents/Projects/jarvis/docs/superpowers/specs/2026-05-20-jarvis-between-turn-scheduler-design.md
+
+[Timer]
+# Fire every minute. AccuracySec=1s keeps ticks prompt (default 1min
+# would let systemd coalesce/jitter the fire across the whole minute).
+# Persistent=false on purpose: a minutely timer must NOT replay every
+# missed minute as a burst after the laptop was asleep — a missed tick
+# just means a due job fires on the next minute, which is fine.
+OnCalendar=minutely
+AccuracySec=1s
+Persistent=false
+Unit=jarvis-cron.service
+
+[Install]
+WantedBy=timers.target
