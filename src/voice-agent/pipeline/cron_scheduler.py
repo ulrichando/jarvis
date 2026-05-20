@@ -129,3 +129,40 @@ async def run_job(job: dict) -> tuple[bool, str]:
         _record_run(job.get("id", "?"), job.get("type", "?"), False,
                     int((time.time() - start) * 1000), False)
         return False, f"Job failed: {e}"
+
+
+import fcntl
+
+TICK_INTERVAL_S = int(os.environ.get("JARVIS_CRON_TICK_S", "60"))
+_LOCK_PATH = cj.CRON_DIR / ".tick.lock"
+
+
+async def tick(*, _now=None) -> None:
+    """Select due jobs, advance recurring ones first (at-most-once), run them
+    off-band, then mark each run's outcome."""
+    now_ = _now or cj.now()
+    for job in cj.get_due_jobs(_now=now_):
+        cj.advance_next_run(job["id"], _now=now_)
+        ok, _out = await run_job(job)
+        cj.mark_job_run(job["id"], ok=ok, _now=now_)
+
+
+async def run_forever() -> None:
+    """60s tick loop for the daemon. Gated by JARVIS_CRON_DISABLED; an fcntl
+    lock prevents overlap if a tick overruns. Never raises out of the loop."""
+    if os.environ.get("JARVIS_CRON_DISABLED") == "1":
+        logger.info("[cron] scheduler disabled via JARVIS_CRON_DISABLED=1")
+        return
+    cj.ensure_dirs()
+    logger.info("[cron] scheduler started (tick=%ss)", TICK_INTERVAL_S)
+    while True:
+        try:
+            with open(_LOCK_PATH, "w") as lock:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    await tick()
+                except BlockingIOError:
+                    logger.warning("[cron] previous tick still running; skipping")
+        except Exception as e:
+            logger.warning("[cron] tick error: %s", e)
+        await asyncio.sleep(TICK_INTERVAL_S)
