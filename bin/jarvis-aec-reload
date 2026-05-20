@@ -1,109 +1,30 @@
 #!/usr/bin/env bash
-# Apply JARVIS's tuned WebRTC AEC3 args to the PipeWire echo-cancel
-# config drop-in, then restart PipeWire to activate. Safe: backs up
-# the existing config, verifies echo-cancel-source returns, restores
-# the backup on failure.
-#
-# Tuning (spec 2026-05-19 §5.1, corrected for the webrtc backend):
-#   webrtc.extended_filter=true   — long-tail echo
-#   NS/HPF/AGC OFF at L1          — owned by the APM layer (no double-DSP)
-#   (NO filter_size_ms — that's a Speex-backend key, invalid for webrtc)
-#   (NO delay_agnostic — the APM delay estimator handles delay)
-#
-# Disable with JARVIS_PIPEWIRE_AEC=0 (skips the whole apply).
+# Reload PipeWire module-echo-cancel with JARVIS's tuned args (L1 of the AEC
+# cascade). Idempotent: unloads any existing instance first. Verifies the
+# echo-cancel-source comes back. Spec 2026-05-20 §5.1.
 set -euo pipefail
 
-if [[ "${JARVIS_PIPEWIRE_AEC:-1}" != "1" ]]; then
-    echo "[aec-reload] JARVIS_PIPEWIRE_AEC=0 — skipping"
+ARGS='aec.args = { webrtc.extended_filter=true webrtc.high_pass_filter=false webrtc.noise_suppression=false webrtc.gain_control=false filter_size_ms=200 } monitor.mode=true'
+
+# Unload existing echo-cancel modules (best-effort).
+if command -v pw-cli >/dev/null 2>&1; then
+  for id in $(pw-cli ls Module 2>/dev/null | awk '/module-echo-cancel/{print $2}' | tr -d ',' || true); do
+    pw-cli destroy "$id" 2>/dev/null || true
+  done
+fi
+
+# Load tuned instance.
+pw-cli -m load-module libpipewire-module-echo-cancel "$ARGS" >/dev/null 2>&1 \
+  || pactl load-module module-echo-cancel "aec_args=\"webrtc.extended_filter=true filter_size_ms=200\"" >/dev/null 2>&1 \
+  || { echo "jarvis-aec-reload: failed to load module-echo-cancel" >&2; exit 1; }
+
+# Verify the echo-cancel-source exists within 3s.
+for _ in $(seq 1 15); do
+  if pw-dump 2>/dev/null | grep -q '"echo-cancel-source"'; then
+    echo "jarvis-aec-reload: echo-cancel-source active"
     exit 0
-fi
-
-CONF_DIR="$HOME/.config/pipewire/pipewire.conf.d"
-CONF="$CONF_DIR/99-echo-cancel.conf"
-BACKUP="$CONF.bak.$(date +%s)"
-mkdir -p "$CONF_DIR"
-
-# Write the tuned config (idempotent — full file each time).
-write_conf() {
-cat > "$CONF" <<'EOF'
-# PipeWire AEC — echo-cancelled virtual mic + speaker (WebRTC AEC3).
-# Tuned by JARVIS 2026-05-19 (echo-cancellation cascade §5.1):
-# L1 primary linear AEC; NS/HPF/AGC OFF here (owned by the APM layer).
-# Activation: systemctl --user restart pipewire pipewire-pulse wireplumber
-context.modules = [
-    {   name = libpipewire-module-echo-cancel
-        args = {
-            library.name = aec/libspa-aec-webrtc
-            aec.args = {
-                webrtc.extended_filter   = true
-                webrtc.high_pass_filter  = false
-                webrtc.noise_suppression = false
-                webrtc.gain_control      = false
-            }
-            source.props = {
-                node.name        = "echo-cancel-source"
-                priority.session = 2000
-                node.description = "Microphone (Echo-cancelled)"
-                media.class      = "Audio/Source"
-            }
-            sink.props = {
-                node.name        = "echo-cancel-sink"
-                priority.session = 2000
-                node.description = "Speaker (Echo-cancelled)"
-                media.class      = "Audio/Sink"
-            }
-        }
-    }
-]
-EOF
-}
-
-# Back up existing config if present.
-if [[ -f "$CONF" ]]; then
-    cp "$CONF" "$BACKUP"
-    echo "[aec-reload] backed up existing config → $BACKUP"
-fi
-
-write_conf
-echo "[aec-reload] wrote tuned config"
-
-# Restart PipeWire user services to apply.
-echo "[aec-reload] restarting pipewire / pipewire-pulse / wireplumber…"
-systemctl --user restart pipewire pipewire-pulse wireplumber 2>/dev/null || true
-sleep 3
-
-# Verify echo-cancel-source returned.
-if pw-cli ls Node 2>/dev/null | grep -q "echo-cancel-source"; then
-    echo "[aec-reload] ✓ echo-cancel-source present — tuned AEC active"
-
-    # Ensure echo-cancel-source is the DEFAULT audio source — the
-    # voice-client opens device="pulse" (the default), so L1 AEC is
-    # only in the published-mic path if the default IS echo-cancel-source.
-    # A stray wpctl set-default or a PipeWire restart can silently
-    # repoint this at the raw hardware mic, re-introducing the echo loop.
-    CUR_SRC=$(pw-metadata 0 2>/dev/null | grep "default.audio.source" | grep -oE '"name":"[^"]*"' | head -1 | cut -d'"' -f4)
-    if [[ "$CUR_SRC" != "echo-cancel-source" ]]; then
-        echo "[aec-reload] default source is '${CUR_SRC:-<unset>}', not echo-cancel-source — fixing"
-        # Match the node row (node.name OR node.description), keyed on the
-        # [Audio/Source] media-class bracket so we never grab the Settings
-        # "Default Configured Devices" slot index. The id is the "NN." token.
-        EC_ID=$(wpctl status 2>/dev/null | grep -iE 'echo-cancel-source|Microphone \(Echo-cancelled\)' | grep -E '\[Audio/Source\]' | grep -oE '[0-9]+\.[[:space:]]' | grep -oE '[0-9]+' | head -1)
-        if [[ -n "$EC_ID" ]]; then
-            wpctl set-default "$EC_ID" 2>/dev/null && echo "[aec-reload] set default source → echo-cancel-source (id $EC_ID)" || echo "[aec-reload] WARN: wpctl set-default failed; set JARVIS_AUDIO_INPUT_DEVICE=echo-cancel-source manually" >&2
-        else
-            echo "[aec-reload] WARN: could not find echo-cancel-source node id; set JARVIS_AUDIO_INPUT_DEVICE=echo-cancel-source manually" >&2
-        fi
-    else
-        echo "[aec-reload] ✓ default source is echo-cancel-source (L1 AEC in mic path)"
-    fi
-    exit 0
-else
-    echo "[aec-reload] ✗ echo-cancel-source MISSING after reload — restoring backup" >&2
-    if [[ -f "$BACKUP" ]]; then
-        cp "$BACKUP" "$CONF"
-        systemctl --user restart pipewire pipewire-pulse wireplumber 2>/dev/null || true
-        sleep 3
-        echo "[aec-reload] restored previous config" >&2
-    fi
-    exit 1
-fi
+  fi
+  sleep 0.2
+done
+echo "jarvis-aec-reload: echo-cancel-source did NOT appear after reload" >&2
+exit 1
