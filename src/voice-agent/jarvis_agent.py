@@ -5960,12 +5960,27 @@ async def entrypoint(ctx: JobContext) -> None:
     # ── Between-turn scheduler (phase 1) ──────────────────────────
     # The tick runs in a separate, always-on jarvis-cron.timer process
     # (truly unattended — this LiveKit entrypoint is per-session, so it
-    # cannot host the always-on tick). Here we only voice whatever the
-    # timer queued while the user was away.
+    # cannot host the always-on tick). This watcher voices results the
+    # timer queues: its first pass drains anything from while you were
+    # away, then it polls every PENDING_POLL_S so a job firing mid-session
+    # is spoken promptly too. Fire-and-forget, bound to the session
+    # (cancelled on disconnect).
     from pipeline import cron_delivery as _crondelivery
-    _digest = _crondelivery.drain_pending()
-    if _digest:
-        await session.say(_digest)
+
+    async def _cron_pending_watcher() -> None:
+        first = True
+        while True:
+            prefix = "While you were away: " if first else "Scheduled update — "
+            digest = _crondelivery.drain_pending(prefix=prefix)
+            if digest:
+                try:
+                    await session.say(digest)
+                except Exception:
+                    pass  # session busy/ending — leave the rest queued
+            first = False
+            await asyncio.sleep(_crondelivery.PENDING_POLL_S)
+
+    asyncio.create_task(_cron_pending_watcher())
 
     # Spawn the background watchers — each is a fire-and-forget task
     # whose lifetime is bound to the job. Extracted 2026-05-10 (Step
