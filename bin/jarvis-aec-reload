@@ -75,6 +75,27 @@ sleep 3
 # Verify echo-cancel-source returned.
 if pw-cli ls Node 2>/dev/null | grep -q "echo-cancel-source"; then
     echo "[aec-reload] ✓ echo-cancel-source present — tuned AEC active"
+
+    # Ensure echo-cancel-source is the DEFAULT audio source — the
+    # voice-client opens device="pulse" (the default), so L1 AEC is
+    # only in the published-mic path if the default IS echo-cancel-source.
+    # A stray wpctl set-default or a PipeWire restart can silently
+    # repoint this at the raw hardware mic, re-introducing the echo loop.
+    CUR_SRC=$(pw-metadata 0 2>/dev/null | grep "default.audio.source" | grep -oE '"name":"[^"]*"' | head -1 | cut -d'"' -f4)
+    if [[ "$CUR_SRC" != "echo-cancel-source" ]]; then
+        echo "[aec-reload] default source is '${CUR_SRC:-<unset>}', not echo-cancel-source — fixing"
+        # Match the node row (node.name OR node.description), keyed on the
+        # [Audio/Source] media-class bracket so we never grab the Settings
+        # "Default Configured Devices" slot index. The id is the "NN." token.
+        EC_ID=$(wpctl status 2>/dev/null | grep -iE 'echo-cancel-source|Microphone \(Echo-cancelled\)' | grep -E '\[Audio/Source\]' | grep -oE '[0-9]+\.[[:space:]]' | grep -oE '[0-9]+' | head -1)
+        if [[ -n "$EC_ID" ]]; then
+            wpctl set-default "$EC_ID" 2>/dev/null && echo "[aec-reload] set default source → echo-cancel-source (id $EC_ID)" || echo "[aec-reload] WARN: wpctl set-default failed; set JARVIS_AUDIO_INPUT_DEVICE=echo-cancel-source manually" >&2
+        else
+            echo "[aec-reload] WARN: could not find echo-cancel-source node id; set JARVIS_AUDIO_INPUT_DEVICE=echo-cancel-source manually" >&2
+        fi
+    else
+        echo "[aec-reload] ✓ default source is echo-cancel-source (L1 AEC in mic path)"
+    fi
     exit 0
 else
     echo "[aec-reload] ✗ echo-cancel-source MISSING after reload — restoring backup" >&2
