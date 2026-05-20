@@ -5546,6 +5546,13 @@ async def entrypoint(ctx: JobContext) -> None:
                         )
                     except Exception:
                         _confab_state = None
+                    # 2026-05-19 — read the voice-client's AEC state (cross-process)
+                    # and thread it into the turn row. Stale/missing → NULLs.
+                    try:
+                        from audio.aec_state import read_aec_state
+                        _aec = read_aec_state(max_age_s=60)
+                    except Exception:
+                        _aec = {}
                     log_turn(
                         user_text=getattr(session, "_jarvis_turn_user_text", "") or "",
                         jarvis_text=text or "",
@@ -5569,6 +5576,12 @@ async def entrypoint(ctx: JobContext) -> None:
                         computer_use_steps=cua_steps,
                         computer_use_cost_usd=cua_cost,
                         confab_check_state=_confab_state,
+                        aec_layer1_active=_aec.get("aec_layer1_active"),
+                        aec_layer2_aec_active=_aec.get("aec_layer2_aec_active"),
+                        aec_layer3_active=_aec.get("aec_layer3_active"),
+                        output_profile=_aec.get("output_profile"),
+                        apm_delay_ms_p50=_aec.get("apm_delay_ms_p50"),
+                        dtln_latency_ms_p95=_aec.get("dtln_latency_ms_p95"),
                     )
                     # Reset usage stash for next turn.
                     session._jarvis_last_input_tokens = None
