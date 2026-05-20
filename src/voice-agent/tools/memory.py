@@ -195,11 +195,11 @@ async def remember(content: str, category: str = "reference") -> str:
             **Why:** {motivation — constraint, deadline, ask}
             **How to apply:** {how this should shape suggestions}
         examples:
-          "JARVIS-REPAIR session 1 closes 2026-05-05 with W-021 +
-           memdir port. Why: heavy-prompt regression caused empty-
-           output rate spike; needed to upgrade memory + reset
-           ContextVar bug. How to apply: don't re-open W-021;
-           continue with #4/#5 only after voice memory grows."
+          "Barge-in fix ships behind JARVIS_APM_AEC 2026-05-20.
+           Why: 'drop mic while speaking' killed interruption; the
+           reverse-stream AEC restores it. How to apply: when the
+           user reports echo or barge-in issues, check the AEC
+           cascade layers before touching the supervisor."
 
     - **reference** — pointers to external systems where info lives.
         when_to_save: when you learn an external resource and its
