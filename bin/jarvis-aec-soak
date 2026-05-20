@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Echo-cancellation cascade soak validation.
+# Rolls up AEC layer activation + the echo-loop detector (STT
+# transcripts produced WHILE the agent was speaking → should be 0).
+#
+# Usage: jarvis-aec-soak [hours]   (default 2)
+# Spec: docs/superpowers/specs/2026-05-19-echo-cancellation-cascade-design.md §5.5
+set -euo pipefail
+
+HOURS="${1:-2}"
+DB="$HOME/.local/share/jarvis/turn_telemetry.db"
+[[ -f "$DB" ]] || { echo "missing telemetry db: $DB" >&2; exit 1; }
+
+# Self-heal: add columns if the live DB predates the migration.
+for col in aec_layer1_active aec_layer2_aec_active aec_layer3_active \
+           output_profile apm_delay_ms_p50 dtln_latency_ms_p95; do
+    if ! sqlite3 "$DB" "SELECT $col FROM turns LIMIT 0;" >/dev/null 2>&1; then
+        decl="INTEGER"; [[ "$col" == "output_profile" ]] && decl="TEXT"
+        [[ "$col" == "dtln_latency_ms_p95" ]] && decl="REAL"
+        sqlite3 "$DB" "ALTER TABLE turns ADD COLUMN $col $decl;" 2>/dev/null || true
+    fi
+done
+
+CUT="datetime('now', '-${HOURS} hours')"
+
+echo "=== AEC cascade soak — last ${HOURS}h ==="
+echo
+echo "── output_profile distribution ──"
+sqlite3 -header -column "$DB" "
+SELECT COALESCE(output_profile,'(null)') AS profile, COUNT(*) AS turns
+FROM turns WHERE ts_utc >= ${CUT} GROUP BY output_profile ORDER BY turns DESC;"
+echo
+echo "── layer activation rates ──"
+sqlite3 -header -column "$DB" "
+SELECT
+  SUM(COALESCE(aec_layer1_active,0)) AS l1_on,
+  SUM(COALESCE(aec_layer2_aec_active,0)) AS l2_aec_on,
+  SUM(COALESCE(aec_layer3_active,0)) AS l3_on,
+  COUNT(*) AS total
+FROM turns WHERE ts_utc >= ${CUT};"
+echo
+echo "── APM delay + DTLN latency ──"
+sqlite3 -header -column "$DB" "
+SELECT
+  ROUND(AVG(apm_delay_ms_p50),1) AS avg_apm_delay_ms,
+  MAX(apm_delay_ms_p50) AS max_apm_delay_ms,
+  ROUND(AVG(dtln_latency_ms_p95),2) AS avg_dtln_ms,
+  MAX(dtln_latency_ms_p95) AS max_dtln_ms
+FROM turns WHERE ts_utc >= ${CUT};"
+echo
+echo "── ECHO-LOOP DETECTOR (transcripts during agent speech → should be 0) ──"
+# A turn whose user_text closely echoes the PRIOR turn's jarvis_text is a
+# likely self-transcription. Heuristic: user_text is a substring of the
+# previous jarvis_text (>=12 chars overlap).
+ECHO=$(sqlite3 "$DB" "
+WITH seq AS (
+  SELECT ts_utc, user_text,
+         LAG(jarvis_text) OVER (ORDER BY ts_utc) AS prev_jarvis
+  FROM turns WHERE ts_utc >= ${CUT}
+)
+SELECT COUNT(*) FROM seq
+WHERE prev_jarvis IS NOT NULL AND length(user_text) >= 12
+  AND instr(lower(prev_jarvis), lower(user_text)) > 0;" 2>/dev/null || echo 0)
+
+if [[ "$ECHO" -gt 0 ]]; then
+    echo "  ✗ $ECHO turns look like self-transcription (echo leaked):"
+    sqlite3 -separator ' | ' "$DB" "
+    WITH seq AS (
+      SELECT ts_utc, user_text, COALESCE(output_profile,'?') AS prof,
+             LAG(jarvis_text) OVER (ORDER BY ts_utc) AS prev_jarvis
+      FROM turns WHERE ts_utc >= ${CUT}
+    )
+    SELECT substr(ts_utc,12,8), prof, substr(user_text,1,50)
+    FROM seq WHERE prev_jarvis IS NOT NULL AND length(user_text)>=12
+      AND instr(lower(prev_jarvis), lower(user_text))>0
+    ORDER BY ts_utc DESC LIMIT 10;"
+    echo "  Investigate: was AEC active (check layer columns above)?"
+    exit 2
+fi
+echo "  ✓ no self-transcription detected"
+echo
+echo "── interpretation guide ──"
+cat <<'EOF'
+  Target (post-fix, speaker hardware):
+    output_profile=speakers turns: l3_on should ≈ total (DTLN running)
+    echo-loop detector: 0 (the headline metric)
+    max_dtln_ms < JARVIS_NEURAL_AEC_LATENCY_BUDGET_MS (default 8)
+  HARD-FAIL (exit 2): any self-transcription detected.
+EOF
