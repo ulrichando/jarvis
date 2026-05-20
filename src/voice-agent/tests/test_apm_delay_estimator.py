@@ -38,3 +38,23 @@ def test_delay_zero_before_any_data():
     from audio.apm_reverse_stream import APMDelayEstimator
     est = APMDelayEstimator()
     assert est.current_delay_ms() == 0
+
+
+def test_concurrent_note_output_input_no_crash():
+    import threading as _t
+    from audio.apm_reverse_stream import APMDelayEstimator
+    est = APMDelayEstimator()
+    stop = _t.Event()
+    def out_thread():
+        x = 0.0
+        while not stop.is_set():
+            est.note_output(x); x += 0.01
+    def in_thread():
+        x = 0.04
+        while not stop.is_set():
+            est.note_input(x); est.current_delay_ms(); x += 0.01
+    ts = [_t.Thread(target=out_thread), _t.Thread(target=in_thread)]
+    for t in ts: t.start()
+    _t.Event().wait(0.3); stop.set()
+    for t in ts:
+        t.join(timeout=2); assert not t.is_alive()
