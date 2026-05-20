@@ -927,12 +927,13 @@ async def main() -> None:
     # periodically so apm_delay_ms_p50 tracks the live estimate. Spec §5.5.
     from audio.output_profile import classify_output_device, watch_for_changes
     from audio.aec_state import write_aec_state
+    from audio import aec_health as _aec_health
 
     def _write_aec_state_snapshot() -> None:
         prof = classify_output_device()
         write_aec_state(
             output_profile=prof,
-            l1_active=(os.environ.get("JARVIS_PIPEWIRE_AEC", "1") == "1"),
+            l1_active=_aec_health.l1_echo_cancel_active(),
             l2_aec_active=_APM_AEC,
             # L3 (DTLN neural residual) is DEFERRED — Phase 2 (Tasks 9-11)
             # not wired. Report False so telemetry reflects reality, not
