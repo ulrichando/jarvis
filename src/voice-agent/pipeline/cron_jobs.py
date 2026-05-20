@@ -235,3 +235,69 @@ def set_enabled(job_id: str, enabled: bool) -> dict | None:
 
 def set_confirmed(job_id: str) -> dict | None:
     return _mutate(job_id, pending_confirm=False, enabled=True)
+
+
+def get_due_jobs(*, _now: datetime | None = None) -> list[dict]:
+    """Jobs eligible to run: enabled, confirmed, with next_run_at <= now.
+    Recurring jobs whose time is stale by > 2x their period are fast-forwarded
+    (skipped this tick) so a downed daemon doesn't fire a burst on restart."""
+    now_ = _now or now()
+    due: list[dict] = []
+    dirty = False
+    jobs = load_jobs()
+    for j in jobs:
+        if not j.get("enabled") or j.get("pending_confirm"):
+            continue
+        nra = j.get("next_run_at")
+        if not nra:
+            continue
+        nrt = _aware(datetime.fromisoformat(nra))
+        if nrt > now_:
+            continue
+        kind = j["schedule"].get("kind")
+        if kind in ("interval", "daily-at"):
+            period = j["schedule"].get("every_s", 86400)
+            if (now_ - nrt).total_seconds() > 2 * period:
+                j["next_run_at"] = compute_next_run(j["schedule"], _now=now_)
+                dirty = True
+                continue
+        due.append(j)
+    if dirty:
+        save_jobs(jobs)
+    return due
+
+
+def advance_next_run(job_id: str, *, _now: datetime | None = None) -> bool:
+    """Advance a recurring job's next_run_at BEFORE running it (at-most-once).
+    One-shot jobs are left unchanged so they can retry after a crash."""
+    now_ = _now or now()
+    jobs = load_jobs()
+    for j in jobs:
+        if j["id"] == job_id and j["schedule"].get("kind") in ("interval", "daily-at"):
+            j["next_run_at"] = compute_next_run(j["schedule"], _now=now_, last_run_at=now_.isoformat())
+            save_jobs(jobs)
+            return True
+    return False
+
+
+def mark_job_run(job_id: str, *, ok: bool, _now: datetime | None = None) -> None:
+    """Record a run. Bumps counters; recomputes next_run_at; auto-disables a
+    one-shot after it fires and any job after N consecutive failures."""
+    now_ = _now or now()
+    max_fail = int(os.environ.get("JARVIS_CRON_MAX_FAILURES", "3"))
+    jobs = load_jobs()
+    for j in jobs:
+        if j["id"] != job_id:
+            continue
+        j["last_run_at"] = now_.isoformat()
+        j["run_count"] = j.get("run_count", 0) + 1
+        j["consecutive_failures"] = 0 if ok else j.get("consecutive_failures", 0) + 1
+        if j["schedule"].get("kind") == "once":
+            j["enabled"] = False
+        else:
+            j["next_run_at"] = compute_next_run(j["schedule"], _now=now_, last_run_at=now_.isoformat())
+        if not ok and j["consecutive_failures"] >= max_fail:
+            j["enabled"] = False
+            logger.warning("[cron] job %s auto-disabled after %d failures", job_id, j["consecutive_failures"])
+        save_jobs(jobs)
+        return
