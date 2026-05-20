@@ -127,3 +127,111 @@ def compute_next_run(schedule: dict, *, _now: datetime | None = None,
         return cand.isoformat()
 
     return None
+
+
+import time as _time
+
+_VALID_DELIVERY = {"notify", "voice", "notify+voice", "local"}
+
+
+def ensure_dirs() -> None:
+    CRON_DIR.mkdir(parents=True, exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    for p in (CRON_DIR, OUTPUT_DIR):
+        try:
+            os.chmod(p, 0o700)
+        except OSError:
+            pass
+
+
+def new_job(*, name: str, type: str, schedule: dict, command: str | None = None,
+            prompt: str | None = None, delivery: str = "notify+voice",
+            created_by: str = "config") -> dict:
+    """Build a job dict (not yet persisted). Voice-created jobs are gated
+    behind pending_confirm/enabled=False until confirm_schedule fires."""
+    if type not in ("script", "prompt"):
+        raise ValueError(f"type must be 'script' or 'prompt' (got {type!r})")
+    if type == "script" and not command:
+        raise ValueError("script jobs require a command")
+    if type == "prompt" and not prompt:
+        raise ValueError("prompt jobs require a prompt")
+    if delivery not in _VALID_DELIVERY:
+        raise ValueError(f"delivery must be one of {_VALID_DELIVERY}")
+    voice = created_by == "voice"
+    return {
+        "id": uuid.uuid4().hex[:12], "name": name, "type": type,
+        "command": command, "prompt": prompt, "schedule": schedule,
+        "delivery": delivery, "enabled": not voice, "pending_confirm": voice,
+        "created_by": created_by, "created_ts": _time.time(),
+        "next_run_at": compute_next_run(schedule), "last_run_at": None,
+        "run_count": 0, "consecutive_failures": 0,
+    }
+
+
+def load_jobs() -> list[dict]:
+    ensure_dirs()
+    if not JOBS_FILE.exists():
+        return []
+    try:
+        return json.loads(JOBS_FILE.read_text("utf-8")).get("jobs", [])
+    except (json.JSONDecodeError, OSError) as e:
+        logger.error("[cron] jobs.json unreadable (%s); treating as empty", e)
+        return []
+
+
+def save_jobs(jobs: list[dict]) -> None:
+    ensure_dirs()
+    fd, tmp = tempfile.mkstemp(dir=str(JOBS_FILE.parent), prefix=".jobs_", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"jobs": jobs}, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, JOBS_FILE)
+        os.chmod(JOBS_FILE, 0o600)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def add_job(job: dict) -> dict:
+    jobs = load_jobs()
+    if len(jobs) >= MAX_JOBS:
+        raise ValueError(f"Job limit reached ({MAX_JOBS}). Remove a job first.")
+    jobs.append(job)
+    save_jobs(jobs)
+    return job
+
+
+def get_job(job_id: str) -> dict | None:
+    return next((j for j in load_jobs() if j["id"] == job_id), None)
+
+
+def remove_job(job_id: str) -> bool:
+    jobs = load_jobs()
+    kept = [j for j in jobs if j["id"] != job_id]
+    if len(kept) == len(jobs):
+        return False
+    save_jobs(kept)
+    return True
+
+
+def _mutate(job_id: str, **changes) -> dict | None:
+    jobs = load_jobs()
+    for j in jobs:
+        if j["id"] == job_id:
+            j.update(changes)
+            save_jobs(jobs)
+            return j
+    return None
+
+
+def set_enabled(job_id: str, enabled: bool) -> dict | None:
+    return _mutate(job_id, enabled=enabled)
+
+
+def set_confirmed(job_id: str) -> dict | None:
+    return _mutate(job_id, pending_confirm=False, enabled=True)
