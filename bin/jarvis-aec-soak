@@ -81,9 +81,9 @@ echo "  ✓ no self-transcription detected"
 echo
 echo "── interpretation guide ──"
 cat <<'EOF'
-  Target (post-fix, speaker hardware):
-    output_profile=speakers turns: l3_on should ≈ total (DTLN running)
-    echo-loop detector: 0 (the headline metric)
-    max_dtln_ms < JARVIS_NEURAL_AEC_LATENCY_BUDGET_MS (default 8)
+  Target (Phase 1 shipped — L3/DTLN deferred):
+    output_profile=speakers turns: l1_on ≈ total (PipeWire AEC3 in mic path)
+    l3_on = 0 (DTLN neural residual is Phase 2, not yet wired — expected)
+    echo-loop detector: 0 (the headline metric — L1 alone should hold it)
   HARD-FAIL (exit 2): any self-transcription detected.
 EOF
