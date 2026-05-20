@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Apply JARVIS's tuned WebRTC AEC3 args to the PipeWire echo-cancel
+# config drop-in, then restart PipeWire to activate. Safe: backs up
+# the existing config, verifies echo-cancel-source returns, restores
+# the backup on failure.
+#
+# Tuning (spec 2026-05-19 §5.1, corrected for the webrtc backend):
+#   webrtc.extended_filter=true   — long-tail echo
+#   NS/HPF/AGC OFF at L1          — owned by the APM layer (no double-DSP)
+#   (NO filter_size_ms — that's a Speex-backend key, invalid for webrtc)
+#   (NO delay_agnostic — the APM delay estimator handles delay)
+#
+# Disable with JARVIS_PIPEWIRE_AEC=0 (skips the whole apply).
+set -euo pipefail
+
+if [[ "${JARVIS_PIPEWIRE_AEC:-1}" != "1" ]]; then
+    echo "[aec-reload] JARVIS_PIPEWIRE_AEC=0 — skipping"
+    exit 0
+fi
+
+CONF_DIR="$HOME/.config/pipewire/pipewire.conf.d"
+CONF="$CONF_DIR/99-echo-cancel.conf"
+BACKUP="$CONF.bak.$(date +%s)"
+mkdir -p "$CONF_DIR"
+
+# Write the tuned config (idempotent — full file each time).
+write_conf() {
+cat > "$CONF" <<'EOF'
+# PipeWire AEC — echo-cancelled virtual mic + speaker (WebRTC AEC3).
+# Tuned by JARVIS 2026-05-19 (echo-cancellation cascade §5.1):
+# L1 primary linear AEC; NS/HPF/AGC OFF here (owned by the APM layer).
+# Activation: systemctl --user restart pipewire pipewire-pulse wireplumber
+context.modules = [
+    {   name = libpipewire-module-echo-cancel
+        args = {
+            library.name = aec/libspa-aec-webrtc
+            aec.args = {
+                webrtc.extended_filter   = true
+                webrtc.high_pass_filter  = false
+                webrtc.noise_suppression = false
+                webrtc.gain_control      = false
+            }
+            source.props = {
+                node.name        = "echo-cancel-source"
+                priority.session = 2000
+                node.description = "Microphone (Echo-cancelled)"
+                media.class      = "Audio/Source"
+            }
+            sink.props = {
+                node.name        = "echo-cancel-sink"
+                priority.session = 2000
+                node.description = "Speaker (Echo-cancelled)"
+                media.class      = "Audio/Sink"
+            }
+        }
+    }
+]
+EOF
+}
+
+# Back up existing config if present.
+if [[ -f "$CONF" ]]; then
+    cp "$CONF" "$BACKUP"
+    echo "[aec-reload] backed up existing config → $BACKUP"
+fi
+
+write_conf
+echo "[aec-reload] wrote tuned config"
+
+# Restart PipeWire user services to apply.
+echo "[aec-reload] restarting pipewire / pipewire-pulse / wireplumber…"
+systemctl --user restart pipewire pipewire-pulse wireplumber 2>/dev/null || true
+sleep 3
+
+# Verify echo-cancel-source returned.
+if pw-cli ls Node 2>/dev/null | grep -q "echo-cancel-source"; then
+    echo "[aec-reload] ✓ echo-cancel-source present — tuned AEC active"
+    exit 0
+else
+    echo "[aec-reload] ✗ echo-cancel-source MISSING after reload — restoring backup" >&2
+    if [[ -f "$BACKUP" ]]; then
+        cp "$BACKUP" "$CONF"
+        systemctl --user restart pipewire pipewire-pulse wireplumber 2>/dev/null || true
+        sleep 3
+        echo "[aec-reload] restored previous config" >&2
+    fi
+    exit 1
+fi
