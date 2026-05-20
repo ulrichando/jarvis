@@ -27,14 +27,23 @@ class APMDelayEstimator:
     def __init__(self, window: int = 50) -> None:
         self._out_t: Optional[float] = None
         self._samples: deque[float] = deque(maxlen=window)
+        # `_out_t` is written by the playback thread (note_output) and read
+        # by the mic thread (note_input); guard the read-then-use under a
+        # lock so the read can't race a concurrent write to None/float.
+        # `_samples` is a CPython deque — append is atomic — so the lock
+        # only needs to cover `_out_t`. Spec 2026-05-19 §5.2 (T7 review #3).
+        self._lock = threading.Lock()
 
     def note_output(self, dac_time: float) -> None:
-        self._out_t = dac_time
+        with self._lock:
+            self._out_t = dac_time
 
     def note_input(self, adc_time: float) -> None:
-        if self._out_t is None:
+        with self._lock:
+            out_t = self._out_t
+        if out_t is None:
             return
-        delay_ms = (adc_time - self._out_t) * 1000.0
+        delay_ms = (adc_time - out_t) * 1000.0
         self._samples.append(delay_ms)
 
     def current_delay_ms(self) -> int:
