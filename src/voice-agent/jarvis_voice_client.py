@@ -131,6 +131,34 @@ if _APM_NS or _APM_AGC or _APM_HPF or _APM_AEC:
         auto_gain_control=_APM_AGC,
     )
 
+# ── L2 reverse-stream + barge-in (echo-cancellation cascade, 2026-05-19) ─
+# The APM AEC (and the later DTLN residual) need the playback reference
+# fed through `process_reverse_stream` plus an accurate stream-delay
+# estimate. The estimator tracks output(DAC)/input(ADC) timestamps; the
+# ring buffer holds the 16 kHz reference DTLN consumes. Both module-level
+# so they survive LiveKit reconnects (run_once is re-entered per drop).
+# Spec: docs/superpowers/specs/2026-05-19-echo-cancellation-cascade-design.md §5.2
+from audio.apm_reverse_stream import APMDelayEstimator, ReverseRefRingBuffer
+_reverse_estimator = APMDelayEstimator()
+_reverse_ringbuf = ReverseRefRingBuffer(capacity_frames=64)
+
+
+def _should_publish_during_speak(*, profile: str, apm_aec: bool, neural_aec: bool) -> bool:
+    """2026-05-19 — replaces the blanket 'drop mic while speaking'.
+    Publish mic frames during TTS playback when SOME echo defense is
+    active (so barge-in works); fall back to mic-drop only when all
+    AEC is off on a speaker (the legacy safety net).
+
+      - headphones: always publish (no echo path)
+      - speakers + (APM AEC OR neural AEC active): publish (AEC handles echo)
+      - speakers + no AEC at all: don't publish (legacy mic-drop)
+    Spec 2026-05-19 §4.2 degradation ladder."""
+    if profile == "headphones":
+        return True
+    if apm_aec or neural_aec:
+        return True
+    return False
+
 # ── Local listening-indicator detection ───────────────────────────────
 # We compute mic frame RMS in `_mic_cb` and flip `state.listening`
 # directly instead of relying on the SFU's `active_speakers_changed`
@@ -402,6 +430,18 @@ async def play_subscribed_track(track: rtc.RemoteAudioTrack) -> None:
                     last_speaking_audio = now
                 elif state.speaking and (now - last_speaking_audio) > _SPEAKING_HOLD_S:
                     state.speaking = False
+            # 2026-05-19 — feed APM the playback reference + stash for
+            # DTLN. Without this, APM AEC has no reference. Spec §5.2/§6.2.
+            try:
+                if _apm is not None:
+                    _apm.process_reverse_stream(frame)
+                _reverse_estimator.note_output(time.monotonic())
+                _reverse_ringbuf.write(
+                    np.frombuffer(frame.data, dtype=np.int16).astype(np.float32) / 32768.0,
+                    dac_ts=time.monotonic(),
+                )
+            except Exception as e:
+                log.debug(f"[playback] reverse-stream feed failed: {e}")
             # write() is non-blocking-ish — it copies into PortAudio's
             # internal ring, the audio thread drains. If we ever fall
             # behind, it returns a buffer-underflow warning; harmless
@@ -688,6 +728,14 @@ async def run_once(shutdown: asyncio.Event) -> None:
             samples_per_channel=frames,
         )
         if _apm is not None:
+            # 2026-05-19 — set the round-trip stream delay (from the
+            # reverse-stream estimator) BEFORE process_stream so the APM
+            # AEC aligns the reference to the mic. Spec §5.2.
+            try:
+                _reverse_estimator.note_input(time.monotonic())
+                _apm.set_stream_delay_ms(_reverse_estimator.current_delay_ms())
+            except Exception:
+                pass
             try:
                 _apm.process_stream(frame)
             except Exception as e:
@@ -708,16 +756,25 @@ async def run_once(shutdown: asyncio.Event) -> None:
                     _watchdog.mark_voice_active()
             elif now > _listening_until[0]:
                 state.listening = False
-        # Speak-time mic suppression (added 2026-05-16 after echo-loop
-        # diagnosis confirmed JARVIS hearing its own replies through
-        # the speaker → Whisper transcribing them → supervisor
-        # responding to its own previous reply). Without AEC, the only
-        # reliable defense is to NOT publish mic frames while the agent
-        # is actively speaking. Trade-off: user can't barge in mid-reply.
-        # Acceptable until working AEC lands (Q2 roadmap item).
-        # Opt-out for users with headphones (no echo): JARVIS_MIC_DURING_SPEAK=1.
+        # Speak-time mic gating (rewired 2026-05-19, echo-cancellation
+        # cascade L2). The 2026-05-16 fix DROPPED every mic frame while
+        # the agent spoke — it killed the speaker→mic echo loop but also
+        # killed barge-in (user couldn't interrupt mid-reply). Now that
+        # the APM AEC + the reverse-stream reference (above) + the neural
+        # residual (L3) cancel JARVIS's own voice, we publish during TTS
+        # whenever SOME echo defense is active; the blanket mic-drop
+        # survives only as the legacy safety net (speakers, all AEC off).
+        # `JARVIS_MIC_DURING_SPEAK=1` still forces publish (legacy opt-out
+        # for headphone users — superseded by the profile detection below,
+        # but honored so callers that set it don't regress). Spec §4.2/§6.2.
         if state.speaking and os.environ.get("JARVIS_MIC_DURING_SPEAK", "0") != "1":
-            return
+            from audio.output_profile import classify_output_device
+            _profile = classify_output_device()
+            if not _should_publish_during_speak(
+                profile=_profile, apm_aec=_APM_AEC,
+                neural_aec=(os.environ.get("JARVIS_NEURAL_AEC", "1") == "1"),
+            ):
+                return
         asyncio.run_coroutine_threadsafe(source.capture_frame(frame), loop)
 
     mic_stream = sd.InputStream(
@@ -825,6 +882,45 @@ async def main() -> None:
     # Ensure the TTS provider file exists so the Tauri desktop can read
     # the current voice at startup without waiting for a user interaction.
     _ensure_tts_provider_file()
+
+    # ── AEC state bridge + output-profile hot-plug watcher (2026-05-19) ─
+    # The voice-client owns the AEC layers; the agent process reads this
+    # JSON at turn-write time to stamp which echo defenses were active
+    # (and the measured APM delay). Write once at startup, re-write on
+    # every output-device transition (headphones↔speakers flips L3 on/off
+    # and changes whether barge-in suppresses mic), and refresh
+    # periodically so apm_delay_ms_p50 tracks the live estimate. Spec §5.5.
+    from audio.output_profile import classify_output_device, watch_for_changes
+    from audio.aec_state import write_aec_state
+
+    def _write_aec_state_snapshot() -> None:
+        prof = classify_output_device()
+        write_aec_state(
+            output_profile=prof,
+            l1_active=(os.environ.get("JARVIS_PIPEWIRE_AEC", "1") == "1"),
+            l2_aec_active=_APM_AEC,
+            l3_active=(os.environ.get("JARVIS_NEURAL_AEC", "1") == "1" and prof == "speakers"),
+            apm_delay_ms_p50=_reverse_estimator.current_delay_ms(),
+            dtln_latency_ms_p95=None,   # filled in Phase 2 (Task 11)
+        )
+
+    _write_aec_state_snapshot()
+    watch_for_changes(lambda _profile: _write_aec_state_snapshot())
+
+    # Periodic refresh so apm_delay_ms_p50 stays current between profile
+    # transitions (the watcher only fires on device changes). 5 s cadence
+    # matches the agent's 60 s staleness guard with wide margin. Consistent
+    # with the create_task loops above — no new OS thread.
+    async def _aec_state_refresh_loop() -> None:
+        while not shutdown.is_set():
+            try:
+                await asyncio.sleep(5)
+                _write_aec_state_snapshot()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                log.debug(f"[aec_state] periodic refresh failed: {e}")
+    asyncio.create_task(_aec_state_refresh_loop(), name="aec-state-refresh")
 
     # HTTP control plane runs for the whole process lifetime — survives
     # LiveKit reconnects so the Tauri UI gets a quick "connected=false"
