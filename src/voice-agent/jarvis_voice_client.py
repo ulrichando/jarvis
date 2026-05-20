@@ -943,7 +943,11 @@ async def main() -> None:
             output_profile=prof,
             l1_active=(os.environ.get("JARVIS_PIPEWIRE_AEC", "1") == "1"),
             l2_aec_active=_APM_AEC,
-            l3_active=(os.environ.get("JARVIS_NEURAL_AEC", "1") == "1" and prof == "speakers"),
+            # L3 (DTLN neural residual) is DEFERRED — Phase 2 (Tasks 9-11)
+            # not wired. Report False so telemetry reflects reality, not
+            # the config flag. Phase 2's T11 flips this to the real
+            # dtln-loaded-and-running check once the model ships.
+            l3_active=False,
             apm_delay_ms_p50=_reverse_estimator.current_delay_ms(),
             dtln_latency_ms_p95=None,   # filled in Phase 2 (Task 11)
         )
