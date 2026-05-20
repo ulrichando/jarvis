@@ -153,21 +153,13 @@ _reverse_ringbuf = ReverseRefRingBuffer(capacity_frames=64)
 _current_profile: str = "unknown"
 
 
-def _should_publish_during_speak(*, profile: str, apm_aec: bool, neural_aec: bool) -> bool:
-    """2026-05-19 — replaces the blanket 'drop mic while speaking'.
-    Publish mic frames during TTS playback when SOME echo defense is
-    active (so barge-in works); fall back to mic-drop only when all
-    AEC is off on a speaker (the legacy safety net).
-
-      - headphones: always publish (no echo path)
-      - speakers + (APM AEC OR neural AEC active): publish (AEC handles echo)
-      - speakers + no AEC at all: don't publish (legacy mic-drop)
-    Spec 2026-05-19 §4.2 degradation ladder."""
-    if profile == "headphones":
-        return True
-    if apm_aec or neural_aec:
-        return True
-    return False
+def _should_publish_during_speak(*, profile: str, defense) -> bool:
+    """2026-05-20 — keep the mic hot during TTS ONLY when the soak-validated
+    -SUFFICIENT echo-defense set is MEASURED active (not env flags, not 'any
+    layer'). L1-alone is present yet insufficient — that's the regression.
+    See audio.aec_health.sufficient_for_hot_mic + the 2026-05-20 spec."""
+    from audio.aec_health import sufficient_for_hot_mic
+    return sufficient_for_hot_mic(defense, profile)
 
 # ── Local listening-indicator detection ───────────────────────────────
 # We compute mic frame RMS in `_mic_cb` and flip `state.listening`
@@ -811,13 +803,12 @@ async def run_once(shutdown: asyncio.Event) -> None:
         # for headphone users — superseded by the profile detection below,
         # but honored so callers that set it don't regress). Spec §4.2/§6.2.
         if state.speaking and os.environ.get("JARVIS_MIC_DURING_SPEAK", "0") != "1":
-            # Read the module-level profile updated event-driven by the
-            # pw-mon watcher (T7 review #4) — NOT a per-frame
-            # classify_output_device() call on this 10 ms realtime path.
-            if not _should_publish_during_speak(
-                profile=_current_profile, apm_aec=_APM_AEC,
-                neural_aec=(os.environ.get("JARVIS_NEURAL_AEC", "1") == "1"),
-            ):
+            from audio.aec_health import current_echo_defense
+            _defense = current_echo_defense(
+                apm_aec=(_apm is not None and _APM_AEC),
+                dtln_healthy=False,   # Phase B (DTLN) sets this; no DTLN yet
+            )
+            if not _should_publish_during_speak(profile=_current_profile, defense=_defense):
                 return
         asyncio.run_coroutine_threadsafe(source.capture_frame(frame), loop)
 
