@@ -129,6 +129,9 @@ def compute_next_run(schedule: dict, *, _now: datetime | None = None,
     return None
 
 
+import contextlib
+import fcntl
+import functools
 import time as _time
 
 _VALID_DELIVERY = {"notify", "voice", "notify+voice", "local"}
@@ -142,6 +145,31 @@ def ensure_dirs() -> None:
             os.chmod(p, 0o700)
         except OSError:
             pass
+
+
+@contextlib.contextmanager
+def _store_lock():
+    """Cross-process exclusive lock around read-modify-write of jobs.json.
+    The systemd jarvis-cron.timer process (ticking) and the voice daemon's
+    schedule tools both mutate the store; this serializes them so a
+    concurrent write can't lose the other's update. CRON_DIR is read at call
+    time so test monkeypatching of the path is honored."""
+    ensure_dirs()
+    f = open(CRON_DIR / ".store.lock", "w")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        yield
+    finally:
+        f.close()  # releasing the fd releases the flock
+
+
+def _locked(fn):
+    """Wrap a store mutator so its load-modify-save runs under _store_lock."""
+    @functools.wraps(fn)
+    def wrap(*args, **kwargs):
+        with _store_lock():
+            return fn(*args, **kwargs)
+    return wrap
 
 
 def new_job(*, name: str, type: str, schedule: dict, command: str | None = None,
@@ -198,6 +226,7 @@ def save_jobs(jobs: list[dict]) -> None:
         raise
 
 
+@_locked
 def add_job(job: dict) -> dict:
     jobs = load_jobs()
     if len(jobs) >= MAX_JOBS:
@@ -211,6 +240,7 @@ def get_job(job_id: str) -> dict | None:
     return next((j for j in load_jobs() if j["id"] == job_id), None)
 
 
+@_locked
 def remove_job(job_id: str) -> bool:
     jobs = load_jobs()
     kept = [j for j in jobs if j["id"] != job_id]
@@ -220,6 +250,7 @@ def remove_job(job_id: str) -> bool:
     return True
 
 
+@_locked
 def _mutate(job_id: str, **changes) -> dict | None:
     jobs = load_jobs()
     for j in jobs:
@@ -238,6 +269,7 @@ def set_confirmed(job_id: str) -> dict | None:
     return _mutate(job_id, pending_confirm=False, enabled=True)
 
 
+@_locked
 def get_due_jobs(*, _now: datetime | None = None) -> list[dict]:
     """Jobs eligible to run: enabled, confirmed, with next_run_at <= now.
     Recurring jobs whose time is stale by > 2x their period are fast-forwarded
@@ -268,6 +300,7 @@ def get_due_jobs(*, _now: datetime | None = None) -> list[dict]:
     return due
 
 
+@_locked
 def advance_next_run(job_id: str, *, _now: datetime | None = None) -> bool:
     """Advance a recurring job's next_run_at BEFORE running it (at-most-once).
     One-shot jobs are left unchanged so they can retry after a crash."""
@@ -281,6 +314,7 @@ def advance_next_run(job_id: str, *, _now: datetime | None = None) -> bool:
     return False
 
 
+@_locked
 def mark_job_run(job_id: str, *, ok: bool, _now: datetime | None = None) -> None:
     """Record a run. Bumps counters; recomputes next_run_at; auto-disables a
     one-shot after it fires and any job after N consecutive failures."""
