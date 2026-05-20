@@ -1,89 +1,49 @@
-#!/usr/bin/env bash
-# Echo-cancellation cascade soak validation.
-# Rolls up AEC layer activation + the echo-loop detector (STT
-# transcripts produced WHILE the agent was speaking → should be 0).
-#
-# Usage: jarvis-aec-soak [hours]   (default 2)
-# Spec: docs/superpowers/specs/2026-05-19-echo-cancellation-cascade-design.md §5.5
-set -euo pipefail
+#!/usr/bin/env python3
+"""AEC soak rollup + echo-loop detector. Reads turn_telemetry.db over a
+window and reports the during-speak STT-transcript count (must be ~0), layer
+on-rates, and DTLN p95. Exit 2 on HARD-FAIL. Spec 2026-05-20 §5.4.
 
-HOURS="${1:-2}"
-DB="$HOME/.local/share/jarvis/turn_telemetry.db"
-[[ -f "$DB" ]] || { echo "missing telemetry db: $DB" >&2; exit 1; }
+Usage: bin/jarvis-aec-soak [--since-min 30]
+"""
+import argparse, os, sqlite3, sys
 
-# Self-heal: add columns if the live DB predates the migration.
-for col in aec_layer1_active aec_layer2_aec_active aec_layer3_active \
-           output_profile apm_delay_ms_p50 dtln_latency_ms_p95; do
-    if ! sqlite3 "$DB" "SELECT $col FROM turns LIMIT 0;" >/dev/null 2>&1; then
-        decl="INTEGER"; [[ "$col" == "output_profile" ]] && decl="TEXT"
-        [[ "$col" == "dtln_latency_ms_p95" ]] && decl="REAL"
-        sqlite3 "$DB" "ALTER TABLE turns ADD COLUMN $col $decl;" 2>/dev/null || true
-    fi
-done
+DB = os.path.expanduser("~/.local/share/jarvis/turn_telemetry.db")
 
-CUT="datetime('now', '-${HOURS} hours')"
 
-echo "=== AEC cascade soak — last ${HOURS}h ==="
-echo
-echo "── output_profile distribution ──"
-sqlite3 -header -column "$DB" "
-SELECT COALESCE(output_profile,'(null)') AS profile, COUNT(*) AS turns
-FROM turns WHERE ts_utc >= ${CUT} GROUP BY output_profile ORDER BY turns DESC;"
-echo
-echo "── layer activation rates ──"
-sqlite3 -header -column "$DB" "
-SELECT
-  SUM(COALESCE(aec_layer1_active,0)) AS l1_on,
-  SUM(COALESCE(aec_layer2_aec_active,0)) AS l2_aec_on,
-  SUM(COALESCE(aec_layer3_active,0)) AS l3_on,
-  COUNT(*) AS total
-FROM turns WHERE ts_utc >= ${CUT};"
-echo
-echo "── APM delay + DTLN latency ──"
-sqlite3 -header -column "$DB" "
-SELECT
-  ROUND(AVG(apm_delay_ms_p50),1) AS avg_apm_delay_ms,
-  MAX(apm_delay_ms_p50) AS max_apm_delay_ms,
-  ROUND(AVG(dtln_latency_ms_p95),2) AS avg_dtln_ms,
-  MAX(dtln_latency_ms_p95) AS max_dtln_ms
-FROM turns WHERE ts_utc >= ${CUT};"
-echo
-echo "── ECHO-LOOP DETECTOR (transcripts during agent speech → should be 0) ──"
-# A turn whose user_text closely echoes the PRIOR turn's jarvis_text is a
-# likely self-transcription. Heuristic: user_text is a substring of the
-# previous jarvis_text (>=12 chars overlap).
-ECHO=$(sqlite3 "$DB" "
-WITH seq AS (
-  SELECT ts_utc, user_text,
-         LAG(jarvis_text) OVER (ORDER BY ts_utc) AS prev_jarvis
-  FROM turns WHERE ts_utc >= ${CUT}
-)
-SELECT COUNT(*) FROM seq
-WHERE prev_jarvis IS NOT NULL AND length(user_text) >= 12
-  AND instr(lower(prev_jarvis), lower(user_text)) > 0;" 2>/dev/null || echo 0)
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--since-min", type=int, default=30)
+    args = ap.parse_args()
+    if not os.path.exists(DB):
+        print(f"no telemetry db at {DB}", file=sys.stderr); return 1
+    con = sqlite3.connect(DB)
+    cur = con.cursor()
+    since = f"-{args.since_min} minutes"
+    rows = cur.execute(
+        "SELECT count(*), "
+        " sum(case when aec_layer1_active then 1 else 0 end), "
+        " sum(case when aec_layer3_active then 1 else 0 end), "
+        " max(dtln_latency_ms_p95) "
+        "FROM turns WHERE ts_utc >= datetime('now', ?)", (since,),
+    ).fetchone()
+    n, l1n, l3n, dtln_p95 = (rows[0] or 0, rows[1] or 0, rows[2] or 0, rows[3])
+    during_speak = cur.execute(
+        "SELECT count(*) FROM turns WHERE ts_utc >= datetime('now', ?) "
+        "AND output_profile='speakers' AND interrupted=1 AND length(user_text) > 0",
+        (since,),
+    ).fetchone()[0]
+    print(f"window: last {args.since_min} min   turns: {n}")
+    print(f"L1 on-rate: {(l1n/n*100 if n else 0):.0f}%   L3 on-rate: {(l3n/n*100 if n else 0):.0f}%")
+    print(f"DTLN p95 (max): {dtln_p95}")
+    print(f"during-speak/interrupted speaker turns (echo-loop proxy): {during_speak}")
+    budget = float(os.environ.get("JARVIS_NEURAL_AEC_LATENCY_BUDGET_MS", "8"))
+    fail = False
+    if during_speak > 0:
+        print("HARD-FAIL: during-speak transcripts on speakers (echo leaking)", file=sys.stderr); fail = True
+    if dtln_p95 is not None and dtln_p95 > budget:
+        print(f"HARD-FAIL: DTLN p95 {dtln_p95} > budget {budget}ms", file=sys.stderr); fail = True
+    return 2 if fail else 0
 
-if [[ "$ECHO" -gt 0 ]]; then
-    echo "  ✗ $ECHO turns look like self-transcription (echo leaked):"
-    sqlite3 -separator ' | ' "$DB" "
-    WITH seq AS (
-      SELECT ts_utc, user_text, COALESCE(output_profile,'?') AS prof,
-             LAG(jarvis_text) OVER (ORDER BY ts_utc) AS prev_jarvis
-      FROM turns WHERE ts_utc >= ${CUT}
-    )
-    SELECT substr(ts_utc,12,8), prof, substr(user_text,1,50)
-    FROM seq WHERE prev_jarvis IS NOT NULL AND length(user_text)>=12
-      AND instr(lower(prev_jarvis), lower(user_text))>0
-    ORDER BY ts_utc DESC LIMIT 10;"
-    echo "  Investigate: was AEC active (check layer columns above)?"
-    exit 2
-fi
-echo "  ✓ no self-transcription detected"
-echo
-echo "── interpretation guide ──"
-cat <<'EOF'
-  Target (Phase 1 shipped — L3/DTLN deferred):
-    output_profile=speakers turns: l1_on ≈ total (PipeWire AEC3 in mic path)
-    l3_on = 0 (DTLN neural residual is Phase 2, not yet wired — expected)
-    echo-loop detector: 0 (the headline metric — L1 alone should hold it)
-  HARD-FAIL (exit 2): any self-transcription detected.
-EOF
+
+if __name__ == "__main__":
+    sys.exit(main())
