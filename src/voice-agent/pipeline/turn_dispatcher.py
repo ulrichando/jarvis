@@ -290,6 +290,13 @@ def make_dispatch_handler(
         try:
             session._llm = dispatch_llm.pick("TASK")
             session._tts = dispatch_tts.pick("TASK")
+            # Stamp the per-turn model label on the SESSION (turn-local),
+            # set synchronously here on EVERY dispatch. The shared
+            # dispatch_llm.last_llm_label races across async turns and
+            # survives dispatcher rebuilds on reconnect, so per-turn
+            # telemetry read stale BANTER (8b) labels on TASK turns
+            # (2026-05-20 mis-diagnosis). The session attr is turn-local.
+            session._jarvis_llm_label = getattr(session._llm, "_jarvis_label", None)
         except Exception as _reset_err:
             logger.debug(f"[dispatch] LLM reset to TASK default skipped: {_reset_err}")
 
@@ -305,6 +312,7 @@ def make_dispatch_handler(
                 session._tts = fast_tts
                 session._jarvis_emotion = emotion
                 session._jarvis_route   = "BANTER"
+                session._jarvis_llm_label = getattr(fast_llm, "_jarvis_label", None)
 
                 try:
                     mw, md = compute_interrupt_tuning("BANTER", emotion)
@@ -359,6 +367,7 @@ def make_dispatch_handler(
                 session._tts = fast_tts
                 session._jarvis_emotion = emotion
                 session._jarvis_route   = "REASONING"
+                session._jarvis_llm_label = getattr(fast_llm, "_jarvis_label", None)
 
                 try:
                     mw, md = compute_interrupt_tuning("REASONING", emotion)
@@ -570,6 +579,7 @@ def make_dispatch_handler(
             try:
                 session._llm = new_llm
                 session._tts = new_tts
+                session._jarvis_llm_label = getattr(new_llm, "_jarvis_label", None)
                 logger.debug(
                     f"[dispatch] route={route} emotion={emotion} "
                     f"llm={getattr(new_llm, '_jarvis_label', repr(new_llm))} "

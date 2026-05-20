@@ -5463,7 +5463,15 @@ async def entrypoint(ctx: JobContext) -> None:
                     # directly (no handoff).
                     subagent = getattr(session, "_jarvis_last_subagent", None)
                     if _dispatch_llm is not None:
-                        llm_used = _dispatch_llm.last_llm_label
+                        # Prefer the turn-local label stamped on the
+                        # session at swap time. _dispatch_llm.last_llm_label
+                        # is a shared mutable attr that races across async
+                        # turns + survives reconnect rebuilds, so it logged
+                        # stale BANTER (8b) labels on TASK turns (2026-05-20).
+                        llm_used = (
+                            getattr(session, "_jarvis_llm_label", None)
+                            or _dispatch_llm.last_llm_label
+                        )
                         voice_used = _dispatch_tts.last_voice_id
                     else:
                         llm_used = active_speech_id
