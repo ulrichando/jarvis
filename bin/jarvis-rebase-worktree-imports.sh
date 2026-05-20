@@ -23,8 +23,7 @@
 # rewritten paths. Skips __pycache__ and node_modules and .venv. Does
 # not write to .git internals.
 #
-# Authority: RFC-001 Stage A + B (voice package reorganization), from the
-# now-removed JARVIS-REPAIR kit (deleted 2026-05-20).
+# Authority: voice package reorganization (Stage A + B).
 
 set -euo pipefail
 
