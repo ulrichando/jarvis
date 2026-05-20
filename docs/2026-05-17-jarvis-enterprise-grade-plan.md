@@ -373,7 +373,6 @@ Ulrich said "don't be scared to break things as long as it works perfectly later
 | `_pick_supervisor_llm` | Dead since 2026-05-10 | Delete + inline |
 | `~/.jarvis/conversations.db` | 0-byte zombie | Delete + remove first-boot touch logic |
 | `~/.jarvis/livekit-keys.yaml.bogus-format` | Documented mistake from 2026-05-15 | Delete |
-| `JARVIS-REPAIR/` top-level | 5 charter docs, purpose unclear vs `docs/` | **Deleted 2026-05-20** (resolved: removed, not folded). |
 
 ### 3.2 REBUILD THESE — the current shape is fundamentally wrong
 
