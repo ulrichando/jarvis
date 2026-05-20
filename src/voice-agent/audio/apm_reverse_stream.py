@@ -16,6 +16,7 @@ from collections import deque
 from typing import Optional
 
 import numpy as np
+from scipy.signal import resample_poly
 
 
 class APMDelayEstimator:
@@ -51,3 +52,39 @@ class APMDelayEstimator:
         if val > 500:
             return 500
         return int(round(val))
+
+
+class ReverseRefRingBuffer:
+    """Thread-safe ring of 16 kHz reference frames. Writer (OutputStream
+    callback, 48 kHz) downsamples to 16 kHz on write; reader (InputStream
+    callback) returns the most-recent aligned 160-sample frame.
+
+    Single lock; hold time is one slice copy (microseconds). The 48k→16k
+    downsample happens off the mic-latency path (in the playback thread)."""
+
+    def __init__(self, capacity_frames: int = 64) -> None:
+        self._cap = capacity_frames
+        self._buf: list[tuple[float, np.ndarray]] = []  # (dac_ts, 16k frame)
+        self._lock = threading.Lock()
+
+    def write(self, frame_48k: np.ndarray, dac_ts: float) -> None:
+        # 48k → 16k (decimate by 3). 480 → 160 samples.
+        f16 = resample_poly(frame_48k.astype(np.float32), up=1, down=3).astype(np.float32)
+        with self._lock:
+            self._buf.append((dac_ts, f16))
+            if len(self._buf) > self._cap:
+                self._buf.pop(0)
+
+    def read_16k_aligned(self, input_ts: float) -> np.ndarray:
+        """Return the most-recent reference frame at or before input_ts.
+        Zeros if the buffer is empty (no playback → no echo to subtract)."""
+        with self._lock:
+            if not self._buf:
+                return np.zeros(160, dtype=np.float32)
+            # Most recent frame whose dac_ts <= input_ts; fall back to newest.
+            chosen = self._buf[-1][1]
+            for ts, f in reversed(self._buf):
+                if ts <= input_ts:
+                    chosen = f
+                    break
+            return chosen.copy()
