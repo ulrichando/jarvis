@@ -1,8 +1,22 @@
 # JARVIS Between-Turn Scheduler — Design Spec
 
 **Date:** 2026-05-20
-**Status:** Draft for review
+**Status:** Implemented (phase 1), shipped to `master` 2026-05-20. **Amended 2026-05-20 to match as-built** — see the Amendment section below. Where the original body (especially §2.1, §2.3, §2.4) or the "Locked decisions" disagree with it, **the Amendment is authoritative.**
 **Origin:** Comparative review of NousResearch `hermes-agent` (cloned at `./hermes`) vs JARVIS. The review identified that JARVIS has solid persistent memory but **no between-turn / autonomous execution** — it only thinks when spoken to. This spec closes that gap by porting and adapting Hermes's cron subsystem (`hermes/cron/jobs.py`, `hermes/cron/scheduler.py`).
+
+---
+
+## Amendment — as-built (2026-05-20)
+
+Implementation diverged from the original design in five places. The as-built behavior is authoritative:
+
+1. **Hosting is a standalone systemd timer, NOT an in-daemon entrypoint tick (supersedes §2.1 + decision 4).** LiveKit's `entrypoint()` is *per-session*, not always-on — only the worker *process* is always-on, and it exposes no clean singleton hook (`prewarm` runs in each of N job subprocesses). So the tick runs in **`jarvis-cron.timer`** (every minute) → `jarvis-cron.service` → `src/voice-agent/cron_worker.py` → `cron_scheduler.tick()`, fully independent of voice sessions. This is what makes jobs fire *between sessions* (truly unattended) — the per-session entrypoint design could not. `JARVIS_CRON_DISABLED=1` is honored by `cron_worker`.
+2. **`prompt` jobs are text-only in phase 1 (supersedes §2.3 + decision 5).** No tool loop, no `allow_shell` — a prompt job is a single LLM completion that speaks/queues its text. The read-only **tool loop** + `allow_shell` move to **phase 2** (a safe off-band tool-execution loop is its own build). The "morning briefing" use case is served by a `script` job in phase 1.
+3. **No live mid-session speak (supersedes §2.4 "Live speak" + decision 2).** The ticker is a separate process with no `AgentSession`, so it cannot `session.say()`. Delivery is `notify-send` (always) + the `pending.jsonl` queue, drained + voiced by the voice agent on the user's next connect. Live mid-session voice → phase 2.
+4. **The store lock is a real cross-process `fcntl` lock (clarifies §2.2).** Because the timer process and the voice daemon's schedule tools both write `jobs.json`, the read-modify-write mutators (`add_job`/`remove_job`/`_mutate`/`get_due_jobs`/`advance_next_run`/`mark_job_run`) hold an exclusive `fcntl` lock on `~/.jarvis/cron/.store.lock`.
+5. **Files vs §3:** added `src/voice-agent/cron_worker.py` + `setup/systemd/jarvis-cron.{service,timer}`. `jarvis_agent.py`'s change is "drain `pending.jsonl` on connect + register the 4 schedule tools" — the per-session `run_forever` start was **removed**. `jarvis-cron.service` mirrors the voice-agent's *light* sandbox (deliberately NOT `ProtectHome`/`ProtectSystem`/`RestrictAddressFamilies`: script jobs write `$HOME`, prompt jobs need network).
+
+Everything else shipped as written: job schema, schedule kinds, `[SILENT]`, `cron_runs` audit, failure policy + auto-disable, caps, the `pending_confirm` confirm-gate, the content security scan, and the voice creation tools. Commits: `e6e0da81`…`e93f4820` (build) + `c439d8df` (unattended timer).
 
 ---
 
@@ -32,7 +46,7 @@ JARVIS is reactive-only: the supervisor LLM engages exclusively during a live vo
 
 ## 2. Architecture
 
-### 2.1 Hosting — in-daemon asyncio tick
+### 2.1 Hosting — in-daemon asyncio tick  ⚠️ SUPERSEDED — see Amendment §1 (as-built: a standalone `jarvis-cron.timer`, because LiveKit's `entrypoint()` is per-session)
 A periodic asyncio task runs inside `jarvis-voice-agent.service` (already always-on), ticking every **60 s**. It is started from `jarvis_agent.py::entrypoint()` as `asyncio.create_task(scheduler.run_forever())`, guarded by `JARVIS_CRON_DISABLED`.
 
 - **Why in-daemon:** reuses the wired LLM providers + tool implementations, and can `session.say()` results directly when a room is live. Mirrors Hermes (its scheduler is a background thread inside the always-on gateway).
