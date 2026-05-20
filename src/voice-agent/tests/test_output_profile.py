@@ -29,6 +29,7 @@ _SPEAKER_SINK = '''Sink #0
 
 def test_classify_headset(monkeypatch):
     from audio import output_profile
+    monkeypatch.setattr(output_profile, "_pwdump_active_sink_desc", lambda: "")
     monkeypatch.setattr(output_profile, "_active_sink_block", lambda: _HEADSET_SINK)
     output_profile.classify_output_device.cache_clear()
     assert output_profile.classify_output_device() == "headphones"
@@ -36,6 +37,7 @@ def test_classify_headset(monkeypatch):
 
 def test_classify_speaker(monkeypatch):
     from audio import output_profile
+    monkeypatch.setattr(output_profile, "_pwdump_active_sink_desc", lambda: "")
     monkeypatch.setattr(output_profile, "_active_sink_block", lambda: _SPEAKER_SINK)
     output_profile.classify_output_device.cache_clear()
     assert output_profile.classify_output_device() == "speakers"
@@ -43,6 +45,7 @@ def test_classify_speaker(monkeypatch):
 
 def test_classify_unknown_on_empty(monkeypatch):
     from audio import output_profile
+    monkeypatch.setattr(output_profile, "_pwdump_active_sink_desc", lambda: "")
     monkeypatch.setattr(output_profile, "_active_sink_block", lambda: "")
     output_profile.classify_output_device.cache_clear()
     assert output_profile.classify_output_device() == "unknown"
@@ -51,6 +54,38 @@ def test_classify_unknown_on_empty(monkeypatch):
 def test_force_profile_override(monkeypatch):
     from audio import output_profile
     monkeypatch.setenv("JARVIS_AEC_FORCE_PROFILE", "headphones")
+    monkeypatch.setattr(output_profile, "_pwdump_active_sink_desc", lambda: "")
     monkeypatch.setattr(output_profile, "_active_sink_block", lambda: _SPEAKER_SINK)
     output_profile.classify_output_device.cache_clear()
     assert output_profile.classify_output_device() == "headphones"
+
+
+# --- pw-dump backend (PipeWire-native primary; this box has no pactl) ---
+
+def test_pwdump_speaker(monkeypatch):
+    from audio import output_profile
+    monkeypatch.setattr(output_profile, "_pwdump_active_sink_desc",
+                        lambda: "Built-in Audio Analog Stereo")
+    monkeypatch.setattr(output_profile, "_active_sink_block", lambda: "")  # pactl empty
+    output_profile.classify_output_device.cache_clear()
+    assert output_profile.classify_output_device() == "speakers"
+
+
+def test_pwdump_headset(monkeypatch):
+    from audio import output_profile
+    monkeypatch.setattr(output_profile, "_pwdump_active_sink_desc",
+                        lambda: "Jabra Elite headset")
+    monkeypatch.setattr(output_profile, "_active_sink_block", lambda: "")
+    output_profile.classify_output_device.cache_clear()
+    assert output_profile.classify_output_device() == "headphones"
+
+
+def test_pwdump_takes_priority_over_pactl(monkeypatch):
+    """pw-dump (PipeWire-native) is tried first; pactl is the fallback."""
+    from audio import output_profile
+    monkeypatch.setattr(output_profile, "_pwdump_active_sink_desc",
+                        lambda: "Built-in Audio Analog Stereo")
+    # pactl would say unknown (empty); pw-dump wins.
+    monkeypatch.setattr(output_profile, "_active_sink_block", lambda: "")
+    output_profile.classify_output_device.cache_clear()
+    assert output_profile.classify_output_device() == "speakers"
