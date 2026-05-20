@@ -1,5 +1,6 @@
 import asyncio
 import sqlite3
+from datetime import datetime, timedelta
 from pipeline import cron_scheduler as cs
 from pipeline import cron_jobs as cj
 
@@ -64,3 +65,23 @@ def test_failed_script_marks_not_ok(tmp_path, monkeypatch):
                      schedule={"kind": "interval", "every_s": 60}, created_by="config")
     ok, out = asyncio.run(cs.run_job(job))
     assert not ok
+
+
+def test_tick_runs_due_and_advances_first(tmp_path, monkeypatch):
+    _store(tmp_path, monkeypatch)
+    ran = []
+
+    async def fake_run_job(job):
+        ran.append(job["id"])
+        return True, "ok"
+    monkeypatch.setattr(cs, "run_job", fake_run_job)
+
+    now = datetime(2026, 5, 20, 8, 0, 0).astimezone()
+    j = cj.add_job(cj.new_job(name="r", type="script", command="x",
+                              schedule={"kind": "interval", "every_s": 60}, created_by="config"))
+    cj._mutate(j["id"], next_run_at=(now - timedelta(seconds=5)).isoformat())
+
+    asyncio.run(cs.tick(_now=now))
+    # advanced before run -> next_run_at is in the future
+    assert datetime.fromisoformat(cj.get_job(j["id"])["next_run_at"]) > now
+    assert ran == [j["id"]]
