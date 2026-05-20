@@ -87,7 +87,7 @@ ProtectHostname=yes
 RestrictSUIDSGID=yes
 
 # Block namespace creation — voice-agent doesn't unshare/chroot.
-RestrictNamespaces=yes
+# RestrictNamespaces intentionally NOT set: it blocks bubblewrap (the per-command bash-tool sandbox) and broke all bash calls 2026-05-20 (JARVIS: "the sandbox is blocking all bash calls"). bwrap IS the per-command sandbox now; this systemd block was redundant AND breaking.
 
 # Block exotic personality flags (e.g. READ_IMPLIES_EXEC) that
 # legitimate code never sets.
