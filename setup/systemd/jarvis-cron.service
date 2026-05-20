@@ -32,7 +32,7 @@ ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
 RestrictSUIDSGID=yes
-RestrictNamespaces=yes
+# RestrictNamespaces intentionally NOT set: it blocks bubblewrap (the per-command bash-tool sandbox) and broke all bash calls 2026-05-20 (JARVIS: "the sandbox is blocking all bash calls"). bwrap IS the per-command sandbox now; this systemd block was redundant AND breaking.
 LockPersonality=yes
 
 # No [Install] section: this unit is triggered by jarvis-cron.timer
