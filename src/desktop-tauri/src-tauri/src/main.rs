@@ -133,6 +133,14 @@ fn tint_source(r: u8, g: u8, b: u8) -> (u32, u32, Vec<u8>) {
 /// to indicate the screen-share track is live (added 2026-05-11).
 /// Two-axis indicator: center colour = voice state, ring = sharing
 /// on/off. Both signals visible simultaneously.
+// ═══════════════════════════════════════════════════════════════════════
+// FROZEN INDICATOR — do NOT modify without explicit user sign-off (2026-05-20).
+// The state→colour map below, the magenta share-ring (apply_sharing_ring), the
+// 7 states, the React→Rust poll rate, and icons/tray.png are FINAL. The user
+// was repeatedly frustrated by churn here (ring px, colours, poll rate:
+// 030378c0 / 21ec58b6 / e8cbdc31 / 702a1eb6). Don't "improve" it.
+// See .claude/rules/desktop-tauri.md → "The system-tray indicator is FROZEN".
+// ═══════════════════════════════════════════════════════════════════════
 fn tray_image_for(state: &str, sharing: bool) -> (u32, u32, Vec<u8>) {
     // Colours chosen to match the VoiceClientPill (top-right of the
     // overlay) 1:1 so the tray and the pill never tell you different
