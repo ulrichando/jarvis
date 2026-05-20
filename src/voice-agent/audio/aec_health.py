@@ -83,11 +83,15 @@ def current_echo_defense(*, apm_aec: bool, dtln_healthy: bool) -> EchoDefense:
     return EchoDefense(l1=l1, l2_aec=bool(apm_aec), l3=bool(dtln_healthy))
 
 
-# The echo-defense set proven (by `bin/jarvis-aec-soak`) sufficient to keep
-# the mic hot during TTS without garbling STT. "none" until a soak promotes
-# it. PROMOTE by editing this after a passing soak (spec §5.4). NEVER widen
-# it on a hunch — the 2026-05-20 regression was exactly an unvalidated hot mic.
-_HOT_MIC_SET = "none"   # one of: "none", "l1", "l1_l3"
+# The echo-defense set sufficient to keep the mic hot during TTS without
+# garbling STT. "none" = deny (mic-drop). Normally promoted only after a
+# passing `bin/jarvis-aec-soak` (spec §5.4).
+# 2026-05-20: set to "l1" as a USER-AUTHORIZED try-it-live (not soak-validated).
+# L1 is WebRTC-tuned via ~/.config/pipewire/.../99-echo-cancel.conf, so
+# hot-mic-on-L1 is plausibly clean. REVERT to "none" (+ restart voice-client)
+# if echo re-garbles STT (false barge-ins / JARVIS mishearing the user), then
+# build L3 (DTLN) per the plan's Phase B.
+_HOT_MIC_SET = "l1"   # one of: "none", "l1", "l1_l3"
 
 
 def sufficient_for_hot_mic(d: EchoDefense, profile: str) -> bool:
