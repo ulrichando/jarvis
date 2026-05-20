@@ -1,0 +1,40 @@
+[Unit]
+Description=JARVIS — between-turn scheduler tick (runs due cron jobs)
+Documentation=file:%h/Documents/Projects/jarvis/docs/superpowers/specs/2026-05-20-jarvis-between-turn-scheduler-design.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/ulrich/Documents/Projects/jarvis/src/voice-agent
+# Same env as the voice agent so prompt jobs get GROQ_API_KEY etc.
+# (centralized LLM keys live in the repo-root .env as of 2026-05-15).
+EnvironmentFile=/home/ulrich/Documents/Projects/jarvis/src/voice-agent/.env
+EnvironmentFile=-/home/ulrich/Documents/Projects/jarvis/.env
+EnvironmentFile=/home/ulrich/Documents/Projects/jarvis/src/cli/.env.local
+ExecStartPre=/bin/mkdir -p %h/.local/share/jarvis/logs %h/.jarvis/cron
+ExecStart=/home/ulrich/Documents/Projects/jarvis/src/voice-agent/.venv/bin/python /home/ulrich/Documents/Projects/jarvis/src/voice-agent/cron_worker.py
+# One tick should never run for minutes; a single job's own timeouts
+# (script 120s, prompt-LLM 30s) bound it. 300s leaves room for a few
+# due jobs in one tick without wedging the timer slot.
+TimeoutStartSec=300
+StandardOutput=append:%h/.local/share/jarvis/logs/cron.log
+StandardError=append:%h/.local/share/jarvis/logs/cron.log
+
+# Light sandbox — mirrors jarvis-voice-agent.service. Deliberately NOT
+# ProtectHome / ProtectSystem / RestrictAddressFamilies: `script` jobs
+# may write under $HOME and `prompt` jobs need outbound network (Groq).
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+
+# No [Install] section: this unit is triggered by jarvis-cron.timer
+# (Unit=jarvis-cron.service), not wanted by default.target — so it does
+# NOT run a stray tick at every boot.

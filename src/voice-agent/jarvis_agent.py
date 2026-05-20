@@ -5958,18 +5958,11 @@ async def entrypoint(ctx: JobContext) -> None:
     )
 
     # ── Between-turn scheduler (phase 1) ──────────────────────────
-    from pipeline import cron_scheduler as _cron
+    # The tick runs in a separate, always-on jarvis-cron.timer process
+    # (truly unattended — this LiveKit entrypoint is per-session, so it
+    # cannot host the always-on tick). Here we only voice whatever the
+    # timer queued while the user was away.
     from pipeline import cron_delivery as _crondelivery
-
-    async def _cron_say(text: str) -> None:
-        try:
-            await session.say(text)
-        except Exception:
-            _crondelivery.queue_pending("scheduler", text)
-
-    _cron.set_live_say(_cron_say)
-    asyncio.create_task(_cron.run_forever())
-
     _digest = _crondelivery.drain_pending()
     if _digest:
         await session.say(_digest)
