@@ -9,7 +9,7 @@ Completeness sweep of `/home/ulrich/Documents/Projects/jarvis`. Companion to [`2
 8 subtrees under `src/`, ~95k Python+TS+TSX+JSX LoC. Tracked source roughly: voice-agent ~50k Py, cli ~524k TS (huge), web ~41k TSX, desktop-tauri ~3k JSX + 2,090 Rust, hub ~1.2k. Build artifacts on disk total ~3.8 GB (Rust `target` 1.2 GB, `.venv` 1.2 GB, web `node_modules` 1.1 GB, vendored `llama.cpp` 150 MB *in git*, `livekit-server.bin` 49 MB *in git*). `.worktrees/` absent; `git worktree list` shows only master. Two stale remote branches: `feat/ext-browser-control-v3` (already merged) and `chore/regression-prevention` (not merged, but equivalent work shipped via separate commits).
 
 **Findings prior reviews missed:**
-1. **`JARVIS-REPAIR/` (top-level, 8 files + 3 empty `.gitkeep`) is unread by both reviews.** Self-contained "virtual engineering organization" charter kit. [2026-05-17 §3.1] flags it for kill/fold but neither review opened the contents.
+1. **`JARVIS-REPAIR/` (top-level, 8 files + 3 empty `.gitkeep`) is unread by both reviews.** Self-contained "virtual engineering organization" charter kit. [2026-05-17 §3.1] flags it for kill/fold but neither review opened the contents. **Resolved: deleted 2026-05-20.**
 2. **`src/voice-agent/livekit-server.bin` is a 49 MB stripped ELF tracked in git** (last touched 2026-04-24, commit `48eeebe8 "update"`). [2026-05-17 §P1-SEC-4] addresses checksum verification but not the clone-time tax of keeping it in-tree.
 3. **`src/cli/src/` (39 subdirs, 524k LoC) is entirely unreviewed beyond the bridge security pass.** The "off-limits" rule in CLAUDE.md shields it from review but doesn't shield production: `main.tsx` is 6,755 LoC, the voice subsystem lives in `src/cli/src/voice/`, and the bridge desktop+voice+ext rely on lives at `src/cli/src/bridge/server.ts`. This is the largest blind spot in the repo.
 4. **CLAUDE.md / docs discrepancies confirmed by walk:**
@@ -37,7 +37,7 @@ Completeness sweep of `/home/ulrich/Documents/Projects/jarvis`. Companion to [`2
 | `.claude/` | Claude Code agents/commands/hooks/rules | [2026-05-16 §tests-P0] / active |
 | `.jarvis/agents/voice-log-analyzer.md` | Project-scoped agent def | **NOT COVERED** / active |
 | `.github/workflows/` (3) | `desktop-tauri-smoke`, `security-audit`, `voice-agent-tests` | covered tests / active |
-| `JARVIS-REPAIR/` (8 files + 3 `.gitkeep`) | Virtual engineering-org charter kit | **kill-flagged [2026-05-17 §3.1], contents unread** / drifting |
+| `JARVIS-REPAIR/` (8 files + 3 `.gitkeep`) | Virtual engineering-org charter kit | **deleted 2026-05-20** (was kill-flagged [2026-05-17 §3.1]) / removed |
 | `node_modules/` (9.3 MB) | From minimal top-level `package.json` | runtime |
 
 ---
@@ -190,7 +190,7 @@ Completeness sweep of `/home/ulrich/Documents/Projects/jarvis`. Companion to [`2
 
 | Path | Notes |
 |---|---|
-| `JARVIS-REPAIR/` (top-level) | Contents unread. [2026-05-17 §3.1] flags fold/delete; decide. |
+| `JARVIS-REPAIR/` (top-level) | Contents unread. **Deleted 2026-05-20** (fold/delete decision resolved → deleted). |
 | `src/cli/src/` (39 subdirs, 524k LoC) | High-leverage blind spot. Off-limits rule justified-by-policy but [2026-05-16 §P0] necessarily reaches `bridge/`. |
 | `src/cli/scripts/{bunw.{sh,mjs,cmd,ps1}, run-{cli,proxy}.mjs, start.{mjs,sh,cmd,ps1}}` | Cross-platform launcher boilerplate; bypasses systemd visibility. |
 | `src/web/scaffolds/{express-sqlite-api, next-14-tailwind, vite-react-tailwind}` | Confirm intentional, not stale starter templates. |
@@ -213,7 +213,7 @@ Completeness sweep of `/home/ulrich/Documents/Projects/jarvis`. Companion to [`2
 | `src/voice-agent/prompts/supervisor.md.backup-2026-05-16` | 134 KB working-tree backup; not tracked; supervisor edits already on master | High |
 | `~/.jarvis/conversations.db` (0 bytes) | Confirmed zombie [2026-05-17 §3.1] | High |
 | `~/.jarvis/livekit-keys.yaml.bogus-format` | Confirmed [2026-05-17 §3.1] | High |
-| `JARVIS-REPAIR/{decisions,rfcs,handoffs}/.gitkeep` (3 empty) | Standard placeholder pattern; only useful if `JARVIS-REPAIR/` itself is kept | Medium |
+| `JARVIS-REPAIR/{decisions,rfcs,handoffs}/.gitkeep` (3 empty) | Standard placeholder pattern; `JARVIS-REPAIR/` **deleted 2026-05-20**, so these are gone too | Medium |
 | `src/hub/__init__.py` (0 bytes) | Convention; keep — Python package marker | Low (do not delete) |
 | `src/cli/vendor/bun/` (16 KB) | Unclear purpose; likely placeholder for vendored Bun runtime never populated | Medium — verify before delete |
 | `src/web/tests/{kimi/*, _msw/, bridge/, sanity.test.ts}` | Per `git diff origin/feat/ext-browser-control-v3 master` these were *deleted* on master (148998 line removal in that diff) — clean | Verified clean |
