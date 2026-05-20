@@ -97,3 +97,39 @@ def test_remove_and_set_flags(tmp_path, monkeypatch):
     assert cj.get_job(j["id"])["enabled"] is True
     assert cj.remove_job(j["id"]) is True
     assert cj.get_job(j["id"]) is None
+
+
+def _store(tmp_path, monkeypatch):
+    monkeypatch.setattr(cj, "CRON_DIR", tmp_path / "cron")
+    monkeypatch.setattr(cj, "JOBS_FILE", tmp_path / "cron" / "jobs.json")
+    monkeypatch.setattr(cj, "OUTPUT_DIR", tmp_path / "cron" / "output")
+
+
+def test_due_excludes_pending_and_disabled(tmp_path, monkeypatch):
+    _store(tmp_path, monkeypatch)
+    past = (_now() - timedelta(minutes=1)).isoformat()
+    a = cj.add_job(cj.new_job(name="ready", type="script", command="x", schedule={"kind": "interval", "every_s": 60}, created_by="config"))
+    cj._mutate(a["id"], next_run_at=past)
+    b = cj.add_job(cj.new_job(name="voice", type="script", command="x", schedule={"kind": "interval", "every_s": 60}, created_by="voice"))
+    cj._mutate(b["id"], next_run_at=past)
+    due = cj.get_due_jobs(_now=_now())
+    assert [j["name"] for j in due] == ["ready"]
+
+
+def test_advance_before_run_is_at_most_once(tmp_path, monkeypatch):
+    _store(tmp_path, monkeypatch)
+    past = (_now() - timedelta(seconds=30)).isoformat()
+    j = cj.add_job(cj.new_job(name="r", type="script", command="x", schedule={"kind": "interval", "every_s": 60}, created_by="config"))
+    cj._mutate(j["id"], next_run_at=past)
+    cj.advance_next_run(j["id"], _now=_now())
+    assert datetime.fromisoformat(cj.get_job(j["id"])["next_run_at"]) > _now()
+
+
+def test_mark_run_auto_disables_after_failures(tmp_path, monkeypatch):
+    _store(tmp_path, monkeypatch)
+    monkeypatch.setenv("JARVIS_CRON_MAX_FAILURES", "2")
+    j = cj.add_job(cj.new_job(name="r", type="script", command="x", schedule={"kind": "interval", "every_s": 60}, created_by="config"))
+    cj.mark_job_run(j["id"], ok=False, _now=_now())
+    assert cj.get_job(j["id"])["enabled"] is True
+    cj.mark_job_run(j["id"], ok=False, _now=_now())
+    assert cj.get_job(j["id"])["enabled"] is False
