@@ -298,6 +298,7 @@ from tools.computer_use import (
 from tools.browser import browser_task
 from tools.screen_share_control import set_screen_share
 from tools.skill_runner import list_skills, run_skill
+from tools.schedule import schedule, confirm_schedule, list_schedules, cancel_schedule
 
 # ── Direct in-process tools ported from claude-code (M1 — 2026-05-05) ─
 # These four replace the run_jarvis_cli + jarvis-cli round-trip for
@@ -5799,6 +5800,14 @@ async def entrypoint(ctx: JobContext) -> None:
             # instruction the supervisor follows using existing tools.
             list_skills,
             run_skill,
+            # Between-turn scheduler (2026-05-20) — lets the supervisor
+            # set reminders and recurring jobs that fire between turns.
+            # schedule/confirm_schedule/list_schedules/cancel_schedule.
+            # Backend: pipeline.cron_scheduler + pipeline.cron_delivery.
+            schedule,
+            confirm_schedule,
+            list_schedules,
+            cancel_schedule,
             # Task family — port of claude-code's TaskCreate / TaskGet /
             # TaskList / TaskUpdate + TodoWrite (2026-05-12). Use for
             # multi-step user requests: maintain ONE in_progress task
@@ -5947,6 +5956,23 @@ async def entrypoint(ctx: JobContext) -> None:
             video_input=True,
         ),
     )
+
+    # ── Between-turn scheduler (phase 1) ──────────────────────────
+    from pipeline import cron_scheduler as _cron
+    from pipeline import cron_delivery as _crondelivery
+
+    async def _cron_say(text: str) -> None:
+        try:
+            await session.say(text)
+        except Exception:
+            _crondelivery.queue_pending("scheduler", text)
+
+    _cron.set_live_say(_cron_say)
+    asyncio.create_task(_cron.run_forever())
+
+    _digest = _crondelivery.drain_pending()
+    if _digest:
+        await session.say(_digest)
 
     # Spawn the background watchers — each is a fire-and-forget task
     # whose lifetime is bound to the job. Extracted 2026-05-10 (Step
