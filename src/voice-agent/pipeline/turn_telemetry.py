@@ -245,6 +245,25 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
                 )
             except sqlite3.OperationalError:
                 pass
+        # 2026-05-19 — echo-cancellation cascade per-turn audit. Six
+        # columns: which AEC layers were active, the detected output
+        # profile, and the L2 delay / L3 latency observed. Written from
+        # the agent by reading ~/.jarvis/aec-state.json (the AEC runs in
+        # the voice-client process). Spec: 2026-05-19-echo-cancellation-cascade-design.md §5.5
+        aec_cols = {r[1] for r in conn.execute("PRAGMA table_info(turns)")}
+        for col, decl in (
+            ("aec_layer1_active",     "INTEGER"),
+            ("aec_layer2_aec_active", "INTEGER"),
+            ("aec_layer3_active",     "INTEGER"),
+            ("output_profile",        "TEXT"),
+            ("apm_delay_ms_p50",      "INTEGER"),
+            ("dtln_latency_ms_p95",   "REAL"),
+        ):
+            if col not in aec_cols:
+                try:
+                    conn.execute(f"ALTER TABLE turns ADD COLUMN {col} {decl}")
+                except sqlite3.OperationalError:
+                    pass
         conn.execute("CREATE INDEX IF NOT EXISTS idx_turns_subagent ON turns(subagent)")
 
 
@@ -275,6 +294,12 @@ def log_turn(
     computer_use_cost_usd: Optional[float] = None,
     ts_utc: Optional[str] = None,
     confab_check_state: Optional[str] = None,
+    aec_layer1_active: Optional[int] = None,
+    aec_layer2_aec_active: Optional[int] = None,
+    aec_layer3_active: Optional[int] = None,
+    output_profile: Optional[str] = None,
+    apm_delay_ms_p50: Optional[int] = None,
+    dtln_latency_ms_p95: Optional[float] = None,
 ) -> None:
     """Write one row. Any exception is swallowed so telemetry never blocks voice.
 
@@ -319,8 +344,10 @@ def log_turn(
                     memory_auto_extracted, prompt_cached_tokens,
                     browser_backend,
                     computer_use_steps, computer_use_cost_usd,
-                    confab_check_state)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    confab_check_state,
+                    aec_layer1_active, aec_layer2_aec_active, aec_layer3_active,
+                    output_profile, apm_delay_ms_p50, dtln_latency_ms_p95)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     ts_utc or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     user_text, jarvis_text, emotion, route, llm_used,
@@ -332,6 +359,8 @@ def log_turn(
                     browser_backend,
                     computer_use_steps, computer_use_cost_usd,
                     confab_check_state,
+                    aec_layer1_active, aec_layer2_aec_active, aec_layer3_active,
+                    output_profile, apm_delay_ms_p50, dtln_latency_ms_p95,
                 ),
             )
     except Exception:
