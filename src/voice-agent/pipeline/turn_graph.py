@@ -151,6 +151,10 @@ def _node_apply_banter_swap(state: TurnState, config: Optional[RunnableConfig] =
         new_tts = tts_dispatcher.pick("BANTER")
         session._llm = new_llm
         session._tts = new_tts
+        # Stamp the per-turn model label on the SESSION (turn-local),
+        # not the shared dispatcher.last_llm_label field — see
+        # _node_swap_route for why.
+        session._jarvis_llm_label = getattr(new_llm, "_jarvis_label", None)
         # BANTER interrupt tuning with per-emotion overlay (Phase 7)
         mw, md = compute_interrupt_tuning("BANTER", state.get("emotion", "neutral"))
         opts = getattr(session, "options", None)
@@ -214,6 +218,15 @@ def _node_swap_route(state: TurnState, config: Optional[RunnableConfig] = None) 
         new_tts = tts_dispatcher.pick(route)
         session._llm = new_llm
         session._tts = new_tts
+        # Stamp the per-turn model label on the SESSION (turn-local).
+        # dispatcher.last_llm_label is a single mutable attr on the
+        # DispatchingLLM instance — it races across async turns and
+        # survives dispatcher rebuilds on reconnect, so per-turn
+        # telemetry read stale BANTER (8b) labels on TASK turns
+        # (2026-05-20 mis-diagnosis). The session attr is turn-local.
+        _label = getattr(new_llm, "_jarvis_label", None)
+        session._jarvis_llm_label = _label
+        logger.info(f"[turn-graph:swap] route={route} llm={_label or '?'}")
         return {
             "llm_label": getattr(new_llm, "_jarvis_label", repr(new_llm)),
             "voice_id": getattr(new_tts, "voice_id", "?"),
