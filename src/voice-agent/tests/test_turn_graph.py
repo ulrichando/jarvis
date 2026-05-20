@@ -109,6 +109,9 @@ def test_fast_path_skips_classifier_and_swaps_banter():
     assert result["classifier_skipped"] is True
     classifier.ainvoke.assert_not_called()
     assert session._llm is dispatcher._inners["BANTER"]
+    # Per-turn model label is stamped on the SESSION (turn-local) so
+    # telemetry doesn't read the racy shared dispatcher field.
+    assert session._jarvis_llm_label == "groq:llama-X-banter"
     # BANTER neutral: route base (0, 0.3) + neutral overlay (0, 0) = (0, 0.3).
     # All routes moved to min_words=0 on 2026-05-18 for VAD-only barge-in.
     assert session.options.interruption == {"min_words": 0, "min_duration": 0.3}
@@ -151,8 +154,42 @@ def test_non_fast_path_runs_classifier_and_picks_its_route():
     assert result.get("classifier_skipped") is False
     classifier.ainvoke.assert_called_once()
     assert session._llm is dispatcher._inners["REASONING"]
+    assert session._jarvis_llm_label == "groq:llama-X-reasoning"
     # REASONING base (0, 0.5) + neutral (0, 0) — see _ROUTE_BASE.
     assert session.options.interruption == {"min_words": 0, "min_duration": 0.5}
+
+
+def test_session_label_is_turn_local_no_stale_banter_leak():
+    """Regression for the 2026-05-20 mis-diagnosis: a TASK turn that
+    followed a BANTER turn showed `llm_used=groq:llama-3.1-8b-instant`
+    in telemetry even though TASK routes to a different model. Root
+    cause: telemetry read `dispatcher.last_llm_label`, a single mutable
+    field that carried the prior BANTER turn's label. The fix stamps a
+    turn-local `session._jarvis_llm_label` at swap time. Verify a BANTER
+    turn then a non-fast-path TASK turn on the SAME session leaves the
+    TASK label, not the stale BANTER one."""
+    g = build_turn_graph()
+    session = _mk_session("hey jarvis")
+    session._jarvis_baseline_wpm = 0.0
+    dispatcher, tts_dispatcher = _mk_dispatcher(), _mk_tts_dispatcher()
+
+    # Turn 1: BANTER fast-path → banter label stamped.
+    _invoke(
+        g, {"transcript": "hey jarvis", "fast_path": True, "duration_s": 0.5},
+        session=session, dispatcher=dispatcher,
+        tts_dispatcher=tts_dispatcher, classifier=_mk_classifier("TASK"),
+    )
+    assert session._jarvis_llm_label == "groq:llama-X-banter"
+
+    # Turn 2 (same session): non-fast-path, classifier says TASK.
+    session.chat_ctx.messages = [SimpleNamespace(role="user", content="open the build log")]
+    _invoke(
+        g, {"transcript": "open the build log", "fast_path": False, "duration_s": 1.5},
+        session=session, dispatcher=dispatcher,
+        tts_dispatcher=tts_dispatcher, classifier=_mk_classifier("TASK"),
+    )
+    # The stamp must reflect THIS turn's model, not the stale banter one.
+    assert session._jarvis_llm_label == "groq:llama-X-task"
 
 
 def test_classifier_garbage_falls_back_to_task():
