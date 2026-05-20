@@ -12,6 +12,26 @@
 
 ---
 
+## STATUS (corrected 2026-05-20 PM — READ FIRST)
+
+After as-built verification, most of this plan was already done or already existed:
+
+| Task | Status |
+|---|---|
+| 1 — `aec_health` L1 probe | ✅ DONE (`bdc15325`) |
+| 2 — EchoDefense + gate predicate | ✅ DONE (`46231574`) |
+| 3 — mic-gate rewrite | ✅ DONE (`3cf2a7b5`) |
+| 4 — truthful `l1_active` | ✅ DONE (`798423f3`) |
+| 5 — `state.speaking` from render signal | ✅ DONE (`b93cd898`) |
+| 6 — `bin/jarvis-aec-reload` | ⛔ ALREADY EXISTS (`90797a78`/`0f90f96e`) — superior + WebRTC-correct; **do NOT recreate** |
+| 7 — `bin/jarvis-aec-soak` | ⛔ ALREADY EXISTS (`26d83ab5`/`0f90f96e`) — **do NOT recreate** |
+| Phase A checkpoint | ⏭ NEXT — user-run live soak |
+| 8–11 — L3 (DTLN) + promotion | ⏳ REMAINING — only if the soak shows tuned-L1 leaves residual |
+
+**L1 is already loaded + WebRTC-tuned** via `~/.config/pipewire/pipewire.conf.d/99-echo-cancel.conf`. The immediate next action is the **Phase A checkpoint** (live soak), which is the user's to run. Tasks 6 & 7 below are kept for reference but are **superseded by the existing scripts** — do not overwrite them.
+
+---
+
 ## File Structure
 
 | File | Responsibility | Phase |
@@ -493,12 +513,9 @@ git commit -m "feat(aec): drive state.speaking from outgoing TTS PCM, not mic RM
 
 ---
 
-## Task 6: `bin/jarvis-aec-reload` — retune L1
+## Task 6: `bin/jarvis-aec-reload` — ⛔ ALREADY EXISTS, DO NOT RECREATE
 
-**Files:**
-- Create: `bin/jarvis-aec-reload`
-
-Context: `module-echo-cancel` is loaded with default args. Reload it with the spec §5.1 tuned args. `install.sh::install_echo_cancel_aec` already calls this script (guarded on `[ -x ... ]`).
+> **Superseded.** This script already exists (committed `90797a78`/`0f90f96e`) and is **better** than this task's draft: it writes a persistent PipeWire config drop-in (`~/.config/pipewire/pipewire.conf.d/99-echo-cancel.conf`) with backup/restore + pipewire restart, and is **WebRTC-correct** (NO Speex-only `filter_size_ms` — the draft below wrongly included it). L1 is already loaded + tuned via it. **Do not overwrite it**; re-run it only if the drop-in is lost. The draft below is reference only.
 
 - [ ] **Step 1: Write the script**
 
@@ -556,12 +573,9 @@ git commit -m "feat(aec): bin/jarvis-aec-reload — tuned module-echo-cancel (L1
 
 ---
 
-## Task 7: `bin/jarvis-aec-soak` — echo-loop detector
+## Task 7: `bin/jarvis-aec-soak` — ⛔ ALREADY EXISTS, DO NOT RECREATE
 
-**Files:**
-- Create: `bin/jarvis-aec-soak`
-
-Context: reads `~/.local/share/jarvis/turn_telemetry.db` and reports the during-speak transcript count (the echo-loop signal) plus layer on-rates. HARD-FAILs (exit 2) if any during-speak transcript appeared on speakers while the mic was hot.
+> **Superseded.** This script already exists (committed `26d83ab5`/`0f90f96e`) with self-healing column migration, output-profile distribution, layer-activation rollups, and the echo-loop detector; it takes a `[hours]` arg (default 2). **Do not overwrite it** — use it as-is for the Phase A checkpoint, e.g. `bin/jarvis-aec-soak 1`. The draft below is reference only.
 
 - [ ] **Step 1: Write the script**
 
