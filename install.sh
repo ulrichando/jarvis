@@ -438,6 +438,21 @@ install_audio_profile() {
   fi
 }
 
+# ── PipeWire echo-cancel: tuned WebRTC AEC3 (L1) ─────────────────────────
+# 2026-05-19 — apply the tuned WebRTC AEC3 echo-cancel config (L1 of the
+# 3-layer AEC cascade). The helper writes the tuned aec.args
+# (webrtc.extended_filter=true; NS/HPF/AGC OFF — owned by the APM layer,
+# no double-DSP), restarts PipeWire, verifies echo-cancel-source returns,
+# and restores the backup on failure. Idempotent; honors
+# JARVIS_PIPEWIRE_AEC=0. Spec 2026-05-19 §5.1 (webrtc-backend-corrected).
+install_echo_cancel_aec() {
+  if [ -x "$INSTALL_DIR/bin/jarvis-aec-reload" ]; then
+    "$INSTALL_DIR/bin/jarvis-aec-reload" \
+      && ok "applied tuned WebRTC echo-cancel config (L1)" \
+      || warn "echo-cancel tuning failed (non-fatal; defaults remain)"
+  fi
+}
+
 setup_redis() {
   # jarvis-hub talks to redis at 127.0.0.1:6379. We use the system
   # redis-server.service (not a user unit) because it's the conventional
@@ -698,6 +713,7 @@ main() {
   setup_redis
   check_computer_use_deps  # optional probes for computer_use subagent
   install_audio_profile
+  install_echo_cancel_aec
   setup_env_template
   chrome_extension_step
   print_summary
