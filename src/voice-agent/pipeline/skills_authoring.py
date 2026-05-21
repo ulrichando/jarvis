@@ -151,6 +151,10 @@ def create_user_skill(
     if verr:
         return {"ok": False, "error": verr}
 
+    # Reload to pick up the current JARVIS_SKILLS_PATHS (may have changed in
+    # tests via monkeypatch.setenv, or new files added by other callers).
+    reload_skills()
+
     # Shadow detection BEFORE the write: an existing same-name skill whose
     # file lives outside the user root is a shipped skill we'd override.
     existing = SKILLS.get(name)
