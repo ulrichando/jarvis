@@ -386,8 +386,11 @@ def format_memories_for_prompt(top_n: int | None = None) -> str:
     before relying on. A trailing system-reminder warns explicitly
     when ANY memory in the block is ≥30 days old.
 
-    Side effect: bumps use_count + last_used_ts for each memory
-    included so heavily-referenced memories rise.
+    No side effect on use_count: as of the 2026-05-20 fix this no longer
+    bumps it. Injecting a memory is not evidence it was useful — that bump
+    created a self-reinforcing inject→bump loop that pinned the
+    earliest-injected (garbage) memories at the top forever. Injection now
+    ranks purely by recency (hub client `read_memories_sync`).
     """
     if top_n is None:
         # Unified default to 8 (matches pipeline/config.py:MEMORY_TOP_N)
