@@ -191,11 +191,24 @@ def load_all_livekit_tools(tools_dir=None) -> List[RawFunctionTool]:
     """Discover all self-registering tools and adapt them to RawFunctionTools.
 
     Runs AST discovery (importing each tool module so its ``registry.register``
-    side effect fires), then adapts every registered ``ToolEntry``. Skips, with
-    a logged warning, any entry whose ``check_fn`` currently returns False, and
-    any entry that fails to adapt (so one malformed schema can't break the rest).
+    side effect fires) and plugin discovery (importing each plugin's
+    ``register(ctx)`` so plugin-contributed tools land in the registry too),
+    then adapts every registered ``ToolEntry``. Skips, with a logged warning,
+    any entry whose ``check_fn`` currently returns False, and any entry that
+    fails to adapt (so one malformed schema can't break the rest).
     """
     discover_builtin_tools(tools_dir)
+
+    # Plugins contribute tools through PluginContext.register_tool ->
+    # registry.register, so they must run before we snapshot all_entries().
+    # Idempotent (cached after first run) and isolated: a broken plugin must
+    # not take down the built-in tool surface.
+    try:
+        from .plugin_system import discover_plugins
+
+        discover_plugins()
+    except Exception as exc:  # noqa: BLE001 — plugin failure must not break tools
+        logger.warning("Plugin discovery failed (built-in tools unaffected): %s", exc)
 
     tools: List[RawFunctionTool] = []
     for entry in registry.all_entries():
