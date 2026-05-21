@@ -107,19 +107,23 @@ class TestLivekitAdaptation:
         assert tool is not None, "'web_fetch' not found in adapted tools"
         assert is_raw_function_tool(tool)
 
-    def test_session_search_skipped_when_check_fn_false(self):
-        """session_search has check_fn=_check_session_search which returns False."""
-        tool = self._get_adapted("session_search")
-        assert tool is None, (
-            "session_search should be SKIPPED by load_all_livekit_tools() "
-            "because its check_fn returns False (no JARVIS session DB wired)"
-        )
-
-    def test_session_search_entry_is_registered_but_unavailable(self):
-        """It IS in the registry (can inspect schema) but is_available() is False."""
+    def test_session_search_entry_is_registered(self):
+        """session_search IS in the registry (can inspect schema)."""
         entry = registry.get_entry("session_search")
         assert entry is not None
-        assert not registry.is_available("session_search")
+
+    def test_session_search_check_fn_gated_by_db(self, monkeypatch, tmp_path):
+        """check_fn returns True only when state.db exists; False otherwise."""
+        from tools.session_search import _check_session_search
+        from tools.registry import invalidate_check_fn_cache
+        # Point at a nonexistent path → False
+        monkeypatch.setenv("JARVIS_HUB_DB", str(tmp_path / "nope.db"))
+        invalidate_check_fn_cache()
+        assert _check_session_search() is False
+        # Create the file → True
+        (tmp_path / "nope.db").touch()
+        invalidate_check_fn_cache()
+        assert _check_session_search() is True
 
 
 # ---------------------------------------------------------------------------
@@ -190,153 +194,194 @@ class TestClarifyBehavior:
 
 
 # ---------------------------------------------------------------------------
-# (c) behavior smoke tests — session_search (no DB wired)
+# (c) behavior smoke tests — session_search (hub-based, tmp SQLite)
 # ---------------------------------------------------------------------------
 
+import sqlite3 as _sqlite3
+
+
+def _seed_db(path, rows):
+    """rows: list of (session_id, role, text, ts_ms)."""
+    conn = _sqlite3.connect(str(path))
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS sessions (
+            id TEXT PRIMARY KEY, source TEXT NOT NULL,
+            created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL, source TEXT NOT NULL,
+            source_event_id TEXT NOT NULL UNIQUE,
+            role TEXT NOT NULL, text TEXT NOT NULL,
+            tool_calls_json TEXT, ts INTEGER NOT NULL
+        );
+    """)
+    seen = set()
+    for i, (sid, role, text, ts) in enumerate(rows):
+        if sid not in seen:
+            conn.execute(
+                "INSERT OR IGNORE INTO sessions (id,source,created_at,updated_at) VALUES(?,?,?,?)",
+                (sid, "voice", ts, ts),
+            )
+            seen.add(sid)
+        conn.execute(
+            "INSERT INTO messages (session_id,source,source_event_id,role,text,ts) VALUES(?,?,?,?,?,?)",
+            (sid, "voice", f"e{i}", role, text, ts),
+        )
+    conn.commit()
+    conn.close()
+
+
 class TestSessionSearchBehavior:
-    """Smoke tests for session_search with no DB — exercises gating + logic."""
+    """Smoke tests for session_search with the hub SQLite backend."""
+
+    @pytest.fixture
+    def db(self, tmp_path, monkeypatch):
+        path = tmp_path / "state.db"
+        _seed_db(path, [
+            ("s1", "user", "auth refactor discussion", 1000),
+            ("s1", "assistant", "sure let me help with auth", 2000),
+            ("s2", "user", "hello world test", 3000),
+        ])
+        monkeypatch.setenv("JARVIS_HUB_DB", str(path))
+        from tools.registry import invalidate_check_fn_cache
+        invalidate_check_fn_cache()
+        return path
 
     def _call(self, args: dict) -> dict:
-        from tools.session_search import session_search
-        raw = session_search(**{
-            "query": args.get("query", ""),
-            "role_filter": args.get("role_filter"),
-            "limit": args.get("limit", 3),
-            "session_id": args.get("session_id"),
-            "around_message_id": args.get("around_message_id"),
-            "window": args.get("window", 5),
-            "sort": args.get("sort"),
-            "db": None,
-        })
-        return json.loads(raw)
+        from tools.session_search import _handle_session_search
+        return json.loads(_handle_session_search(args))
 
-    def test_no_db_returns_error(self):
-        result = self._call({})
+    def test_no_db_returns_error(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("JARVIS_HUB_DB", str(tmp_path / "nope.db"))
+        from tools.registry import invalidate_check_fn_cache
+        invalidate_check_fn_cache()
+        result = self._call({"query": "anything"})
         assert "error" in result
 
-    def test_no_db_error_not_empty(self):
+    def test_no_db_error_not_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("JARVIS_HUB_DB", str(tmp_path / "nope.db"))
+        from tools.registry import invalidate_check_fn_cache
+        invalidate_check_fn_cache()
         result = self._call({"query": "auth refactor"})
         assert result.get("error")  # non-empty error message
 
-    def test_check_fn_returns_false(self):
+    def test_check_fn_false_when_no_db(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("JARVIS_HUB_DB", str(tmp_path / "nope.db"))
         from tools.session_search import _check_session_search
+        from tools.registry import invalidate_check_fn_cache
+        invalidate_check_fn_cache()
         assert _check_session_search() is False
 
     def test_format_timestamp_unix(self):
-        from tools.session_search import _format_timestamp
-        # Should produce a readable string without raising
-        ts = 1_700_000_000
-        result = _format_timestamp(ts)
+        from tools.session_search import _format_ts
+        ts_ms = 1_700_000_000 * 1000
+        result = _format_ts(ts_ms)
         assert isinstance(result, str)
         assert len(result) > 0
 
     def test_format_timestamp_none(self):
-        from tools.session_search import _format_timestamp
-        assert _format_timestamp(None) == "unknown"
+        from tools.session_search import _format_ts
+        assert _format_ts(None) == "unknown"
 
-    def test_shape_message_minimal(self):
-        from tools.session_search import _shape_message
-        m = {"id": 1, "role": "user", "content": "Hello"}
-        out = _shape_message(m)
-        assert out["role"] == "user"
-        assert out["content"] == "Hello"
+    def test_snippet_trims_long_text(self):
+        from tools.session_search import _snippet
+        long = "A" * 300
+        out = _snippet(long)
+        assert len(out) <= 210  # 200 chars + ellipsis
 
-    def test_shape_message_anchor_flagged(self):
-        from tools.session_search import _shape_message
-        m = {"id": 42, "role": "assistant", "content": "reply"}
-        out = _shape_message(m, anchor_id=42)
-        assert out.get("anchor") is True
+    def test_snippet_short_text_unchanged(self):
+        from tools.session_search import _snippet
+        short = "hello world"
+        assert _snippet(short) == short
 
-    def test_shape_message_non_anchor_not_flagged(self):
-        from tools.session_search import _shape_message
-        m = {"id": 1, "role": "user", "content": "text"}
-        out = _shape_message(m, anchor_id=99)
-        assert "anchor" not in out
+    def test_discover_matches_keyword(self, db):
+        result = self._call({"query": "auth"})
+        assert result["success"] is True
+        assert result["mode"] == "discover"
+        assert result["count"] >= 1
+
+    def test_discover_no_match_returns_empty(self, db):
+        result = self._call({"query": "xyzzy_not_here"})
+        assert result["success"] is True
+        assert result["count"] == 0
 
 
 class TestSessionSearchWithMockDB:
-    """Test session_search logic against a minimal mock DB object."""
+    """Test session_search shapes using temp SQLite DBs (hub schema)."""
 
-    class _MockDB:
-        """Minimal DB stub that satisfies the session_search interface."""
+    @pytest.fixture
+    def empty_db(self, tmp_path, monkeypatch):
+        path = tmp_path / "state.db"
+        _seed_db(path, [])
+        monkeypatch.setenv("JARVIS_HUB_DB", str(path))
+        from tools.registry import invalidate_check_fn_cache
+        invalidate_check_fn_cache()
+        return path
 
-        def __init__(self, sessions=None, messages=None):
-            self._sessions = sessions or {}
-            self._messages = messages or []
+    @pytest.fixture
+    def seeded_db(self, tmp_path, monkeypatch):
+        path = tmp_path / "state.db"
+        _seed_db(path, [
+            ("s1", "user", "hello from session one", 1000),
+            ("s1", "assistant", "hi back", 2000),
+            ("s2", "user", "second session content", 3000),
+        ])
+        monkeypatch.setenv("JARVIS_HUB_DB", str(path))
+        from tools.registry import invalidate_check_fn_cache
+        invalidate_check_fn_cache()
+        return path
 
-        def get_session(self, sid):
-            return self._sessions.get(sid)
+    def _call(self, args: dict) -> dict:
+        from tools.session_search import _handle_session_search
+        return json.loads(_handle_session_search(args))
 
-        def list_sessions_rich(self, limit, exclude_sources, order_by_last_active):
-            return list(self._sessions.values())[:limit]
-
-        def search_messages(self, query, role_filter, exclude_sources, limit, offset, sort):
-            return [m for m in self._messages if query.lower() in (m.get("content") or "").lower()]
-
-        def get_anchored_view(self, session_id, msg_id, window, bookend):
-            return {"window": [], "bookend_start": [], "bookend_end": [], "messages_before": 0, "messages_after": 0}
-
-        def get_messages_around(self, session_id, msg_id, window):
-            return {"window": [], "messages_before": 0, "messages_after": 0}
-
-    def _call_with_db(self, db, **kwargs) -> dict:
-        from tools.session_search import session_search
-        raw = session_search(db=db, **kwargs)
-        return json.loads(raw)
-
-    def test_browse_empty_db(self):
-        db = self._MockDB()
-        result = self._call_with_db(db)
+    def test_browse_empty_db(self, empty_db):
+        result = self._call({})
         assert result["success"] is True
         assert result["mode"] == "browse"
         assert result["results"] == []
 
-    def test_browse_with_sessions(self):
-        db = self._MockDB(sessions={
-            "s1": {"id": "s1", "title": "Test session", "source": "voice",
-                   "started_at": 0, "last_active": 0, "message_count": 5,
-                   "preview": "hello", "parent_session_id": None},
-        })
-        result = self._call_with_db(db)
+    def test_browse_with_sessions(self, seeded_db):
+        result = self._call({})
         assert result["success"] is True
-        assert len(result["results"]) == 1
-        assert result["results"][0]["session_id"] == "s1"
+        ids = {r["session_id"] for r in result["results"]}
+        assert "s1" in ids
+        assert "s2" in ids
 
-    def test_discover_no_results(self):
-        db = self._MockDB()
-        result = self._call_with_db(db, query="nonexistent query")
+    def test_discover_no_results(self, empty_db):
+        result = self._call({"query": "nonexistent query"})
         assert result["success"] is True
         assert result["mode"] == "discover"
         assert result["results"] == []
 
-    def test_discover_finds_matching_message(self):
-        db = self._MockDB(
-            sessions={"s1": {"id": "s1", "title": None, "source": "voice",
-                              "started_at": 0, "last_active": 0, "message_count": 1,
-                              "preview": "", "parent_session_id": None}},
-            messages=[{"id": 1, "session_id": "s1", "role": "user",
-                        "content": "auth refactor discussion", "snippet": "auth refactor"}],
-        )
-        result = self._call_with_db(db, query="auth refactor")
+    def test_discover_finds_matching_message(self, seeded_db):
+        result = self._call({"query": "hello"})
         assert result["success"] is True
         assert result["mode"] == "discover"
-        # Either found or the anchored view returned empty (mock returns [])
-        assert "results" in result
+        assert result["count"] >= 1
+        texts = [r["snippet"] for r in result["results"]]
+        assert any("hello" in t.lower() for t in texts)
 
-    def test_scroll_no_session_returns_error(self):
-        db = self._MockDB()
-        result = self._call_with_db(db, session_id="nonexistent", around_message_id=1)
-        assert "error" in result
-
-    def test_limit_clamp_max(self):
-        db = self._MockDB()
-        result = self._call_with_db(db, limit=999)
-        # Should not raise; limit is clamped to 10
+    def test_session_shape_returns_messages(self, seeded_db):
+        result = self._call({"session_id": "s1"})
         assert result["success"] is True
+        assert result["mode"] == "session"
+        assert result["count"] == 2
 
-    def test_limit_clamp_min(self):
-        db = self._MockDB()
-        result = self._call_with_db(db, limit=0)
+    def test_session_not_found_returns_empty(self, seeded_db):
+        result = self._call({"session_id": "no-such"})
+        assert result["success"] is True
+        assert result["count"] == 0
+
+    def test_limit_clamp_max(self, seeded_db):
+        result = self._call({"query": "session", "limit": 999})
+        assert result["success"] is True
+        # limit capped at _MAX_LIMIT (20)
+        assert result["count"] <= 20
+
+    def test_limit_clamp_min(self, seeded_db):
+        result = self._call({"query": "session", "limit": 0})
         assert result["success"] is True
 
 
