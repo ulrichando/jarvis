@@ -22,14 +22,12 @@ from pathlib import Path
 import pytest
 
 
-@pytest.fixture(autouse=True)
-def _reset_plan_mode():
-    """write gate on plan mode — reset so state can't leak from other tests."""
-    from tools import plan_mode
-
-    plan_mode._set_plan_mode(False)
-    yield
-    plan_mode._set_plan_mode(False)
+# (A defensive `_reset_plan_mode` autouse fixture used to live here, left
+# over from when these tests shared a module with the plan-mode tests.
+# tools.file_safety has no plan-mode coupling — is_write_denied /
+# is_read_denied never consult plan-mode state — and the plan_mode tool
+# module was removed in the registry-only supervisor refactor, so the
+# fixture is gone.)
 
 
 # ── Pure predicate: exact-path denials (against the real home) ─────────
