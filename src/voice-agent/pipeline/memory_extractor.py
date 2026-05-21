@@ -241,10 +241,6 @@ narration, not facts; output SKIP instead):
   ✗ "The conversation has shifted to X" — narration
   ✗ "It seems to be X" — narration
   ✗ "User wants to know about X" — narration
-  ✗ "The Wimah is a fictional currency in this world" — fiction/world-building
-  ✗ "X causes damage once per day" — game/anime mechanics
-  ✗ "<Name> says, the first episode of <Show> was good" — TV/media narration
-  ✗ "Transcription by/provided by <service>" — caption-credit boilerplate
 
 ALSO FORBIDDEN — copying example subjects when speech doesn't \
 mention them (this is how the memory store ended up polluted with \
