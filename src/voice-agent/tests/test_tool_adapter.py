@@ -8,8 +8,8 @@ that the JARVIS supervisor can register, with:
       catches exceptions (a tool error must never crash the turn),
   (c) the schema sanitizer sets additionalProperties:false on every
       nested object node (Anthropic supervisor hard requirement),
-  (d) AST discovery finds the temporary _demo_tool and
-      load_all_livekit_tools() returns it adapted.
+  (d) AST discovery finds self-registering tool modules and
+      load_all_livekit_tools() adapts them correctly.
 
 Mirrors the sys.path / asyncio patterns used by the rest of tests/.
 """
@@ -240,23 +240,32 @@ def test_adapter_applies_sanitizer_to_emitted_raw_schema():
     assert params["properties"]["cfg"]["additionalProperties"] is False
 
 
-# ── (d) discovery finds _demo_tool; load_all_livekit_tools adapts it ──
+# ── (d) discovery finds self-registering tools; load_all_livekit_tools adapts them ──
 
 
-def test_discover_builtin_tools_finds_demo_tool():
+def test_discover_builtin_tools_finds_clarify():
     imported = registry_discover()
-    assert any(m.endswith("_demo_tool") for m in imported), imported
-    assert registry.get_entry("echo_demo") is not None
+    # clarify is a self-registering tool that always passes check_fn
+    assert any(m.endswith("clarify") for m in imported), imported
+    assert registry.get_entry("clarify") is not None
 
 
-def test_load_all_livekit_tools_returns_demo_adapted():
+def test_load_all_livekit_tools_includes_clarify():
     tools = adapter.load_all_livekit_tools()
     assert all(is_raw_function_tool(t) for t in tools)
     names = {t.info.name for t in tools}
-    assert "echo_demo" in names
-    # The adapted demo tool must actually run end-to-end.
-    demo = next(t for t in tools if t.info.name == "echo_demo")
-    assert _invoke(demo, {"text": "ping"}) == "ping"
+    assert "clarify" in names
+    # The adapted clarify tool must actually run end-to-end (open-ended question).
+    clarify_tool = next(t for t in tools if t.info.name == "clarify")
+    raw = _invoke(clarify_tool, {"question": "Which approach do you prefer?"})
+    import json
+    data = json.loads(raw)
+    assert data["question"] == "Which approach do you prefer?"
+
+
+def test_echo_demo_not_in_registry():
+    """_demo_tool.py has been deleted; echo_demo must not appear."""
+    assert registry.get_entry("echo_demo") is None
 
 
 def test_load_skips_entries_whose_check_fn_is_false():
