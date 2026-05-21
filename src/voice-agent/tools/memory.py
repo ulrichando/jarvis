@@ -428,10 +428,11 @@ def format_memories_for_prompt(top_n: int | None = None) -> str:
         )
     block = "\n".join(block_parts)
 
-    try:
-        _bump_uses_via_sdk([r["memory_id"] for r in rows])
-    except Exception as e:
-        logger.warning("[memory] bump failed: %s", e)
+    # NOTE: do NOT bump use_count here. Injecting a memory into the prompt
+    # is not evidence it was useful; the old bump created a self-reinforcing
+    # loop that pinned the earliest-injected garbage forever (2026-05-20 fix).
+    # bump_memory_use_sync is retained in the hub client for a future
+    # genuine-usefulness signal (explicit query recall), not blanket injection.
     return block
 
 
