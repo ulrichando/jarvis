@@ -204,3 +204,37 @@ class TestPatchEdit:
         text = (tmp_path / "notes" / "SKILL.md").read_text()
         assert "fully new body." in text
         assert "take notes" in text  # description preserved
+
+
+class TestDelete:
+    def test_moves_to_trash(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("JARVIS_SKILLS_PATHS", str(tmp_path))
+        sa.create_user_skill("temp", "d", "w", "# B\ntext")
+        res = sa.delete_user_skill("temp")
+        assert res["ok"] is True
+        # Original gone, trash copy present, registry no longer has it.
+        assert not (tmp_path / "temp" / "SKILL.md").exists()
+        trash_root = tmp_path.parent / ".skills-trash"
+        assert any(trash_root.glob("temp-*")), "expected a trashed copy"
+        from pipeline.skills_loader import SKILLS
+        assert SKILLS.get("temp") is None
+
+    def test_unknown_skill(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("JARVIS_SKILLS_PATHS", str(tmp_path))
+        res = sa.delete_user_skill("ghost")
+        assert res["ok"] is False
+
+    def test_refuses_shipped(self, tmp_path, monkeypatch):
+        shipped = tmp_path / "shipped"
+        user = tmp_path / "user"
+        (shipped / "ship").mkdir(parents=True)
+        (shipped / "ship" / "SKILL.md").write_text(
+            "---\nname: ship\ndescription: shipped\n---\nbody text"
+        )
+        user.mkdir()
+        monkeypatch.setenv("JARVIS_SKILLS_PATHS", f"{shipped}:{user}")
+        from pipeline.skills_loader import reload_skills
+        reload_skills()
+        res = sa.delete_user_skill("ship")
+        assert res["ok"] is False
+        assert "shipped" in res["error"].lower()
