@@ -1,0 +1,18 @@
+# Spotify integration — bundled, credential-gated.
+# Registers 7 music tools (playback, devices, queue, search, playlists,
+# albums, library) via the Spotify Web API. Tools gate on a connected
+# credential source (SPOTIFY_ACCESS_TOKEN env or ~/.jarvis/spotify/auth.json);
+# they stay inert (off the LLM surface) until Spotify is connected.
+name: spotify
+version: 1.0.0
+description: Native Spotify integration — 7 tools (playback, devices, queue, search, playlists, albums, library) over the Spotify Web API. Gated on a connected credential source; inert until then.
+kind: standalone
+provides_tools:
+  - spotify_playback
+  - spotify_devices
+  - spotify_queue
+  - spotify_search
+  - spotify_playlists
+  - spotify_albums
+  - spotify_library
+requires_env: []
