@@ -38,3 +38,10 @@ def test_window_from_env(monkeypatch):
     memory_gate.note_vocative(now=1000.0)
     assert memory_gate.is_write_engaged(now=1059.0) is True
     assert memory_gate.is_write_engaged(now=1061.0) is False
+
+
+def test_revocative_reopens_expired_window():
+    memory_gate.note_vocative(now=1000.0)
+    assert memory_gate.is_write_engaged(now=1300.0, window_s=180.0) is False  # expired
+    memory_gate.note_vocative(now=1300.0)  # re-armed by a fresh vocative
+    assert memory_gate.is_write_engaged(now=1400.0, window_s=180.0) is True

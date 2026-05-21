@@ -62,6 +62,8 @@ def _read_all() -> list[dict]:
 
 
 def _dry_run() -> None:
+    if not _STATE_DB.exists():
+        sys.exit(f"state.db not found at {_STATE_DB} — has the hub run yet?")
     mems = _read_all()
     flagged = flag_garbage(mems)
     _CANDIDATES.write_text(
@@ -69,7 +71,9 @@ def _dry_run() -> None:
         encoding="utf-8",
     )
     print(f"{len(flagged)}/{len(mems)} memories flagged as likely garbage.")
-    print("Review/edit the kill-list, then re-run with --apply:")
+    print("Heuristic is conservative-but-noisy — it also flags some real")
+    print("third-party/project facts. REVIEW each line and delete any keeper")
+    print("from the kill-list before --apply:")
     print(f"  {_CANDIDATES}")
 
 
@@ -91,6 +95,23 @@ def _apply() -> None:
     for mid in ids:
         _publish_event("memory.value.removed", {"memory_id": mid})
     print(f"Published {len(ids)} memory.value.removed events.")
+    # Verify the hub actually applied them — publish() silently buffers to an
+    # offline queue if jarvis-hub.service is down, so confirm by read-back.
+    time.sleep(2.0)
+    conn = sqlite3.connect(f"file:{_STATE_DB}?mode=ro", uri=True)
+    try:
+        ph = ",".join("?" * len(ids))
+        remaining = conn.execute(
+            f"SELECT COUNT(*) FROM memories WHERE memory_id IN ({ph})", ids
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    if remaining:
+        print(f"WARNING: {remaining}/{len(ids)} still present after 2s — is "
+              f"jarvis-hub.service running? Events may have buffered offline; "
+              f"re-run --apply once the hub is up. (backup: {backup})")
+    else:
+        print(f"Verified: all {len(ids)} removed from state.db.")
 
 
 def main() -> None:
