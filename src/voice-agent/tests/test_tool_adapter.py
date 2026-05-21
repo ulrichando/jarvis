@@ -1,4 +1,4 @@
-"""Tests for the Hermes→LiveKit tool-framework port (foundation wave).
+"""Tests for the JARVIS tool-framework layer (foundation wave).
 
 Proves the keystone path:
   ToolEntry (schema + handler) -> to_livekit_tool -> RawFunctionTool
@@ -30,7 +30,7 @@ if str(_VOICE_AGENT_ROOT) not in sys.path:
 
 from livekit.agents.llm import is_raw_function_tool  # noqa: E402
 
-from tools import _hermes_adapter as adapter  # noqa: E402
+from tools import _adapter as adapter  # noqa: E402
 from tools.registry import ToolEntry, registry  # noqa: E402
 
 
