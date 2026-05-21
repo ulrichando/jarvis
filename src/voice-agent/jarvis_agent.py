@@ -245,15 +245,22 @@ except Exception as _hub_err:
     )
 
 # ── Memory layer (durable user-facts that survive chat deletion) ──────
-# Spec: docs/superpowers/specs/2026-05-03-jarvis-memory-layer-design.md.
-# `is_available()` returns False if the hub state.db is unreachable, in
-# which case we skip both the per-turn injection and the tool registration
-# below.
-import tools.memory  # noqa: E402
+# File-backed, deliberate-writes model (swapped from the hub-backed
+# auto-extractor on 2026-05-21). Two stores — MEMORY.md + USER.md under
+# get_jarvis_home()/"memories" — are injected into the system prompt as a
+# FROZEN snapshot at session start (see pipeline.file_memory). The
+# supervisor writes via the single `memory` tool (tools.memory, registered
+# into the registry surface). Spec:
+# docs/superpowers/specs/2026-05-03-jarvis-memory-layer-design.md.
+import tools.memory  # noqa: E402 — registers the `memory` tool at import
+from pipeline import file_memory  # noqa: E402
 
+# File-backed memory has no external dependency, so it's always available.
+# Kept as a flag so the per-turn / session-start injection path reads the
+# same gate the prior hub-backed layer used.
 _MEMORY_AVAILABLE = tools.memory.is_available()
 logging.getLogger("jarvis.memory_layer").info(
-    f"memory layer {'enabled' if _MEMORY_AVAILABLE else 'disabled'}"
+    f"memory layer {'enabled' if _MEMORY_AVAILABLE else 'disabled'} (file-backed)"
 )
 
 # ── Maya-class speech intelligence ────────────────────────────────────
@@ -3732,73 +3739,16 @@ class JarvisAgent(Agent):
         # with the world state already mutated (e.g. for SCREEN_SHARE_QUERY
         # the share is on by the time the LLM picks the transfer tool).
 
-        # Layer 1 (Phase 2 of memory-layer fix) — auto-extract memorable
-        # facts from the user transcript in parallel with the supervisor
-        # LLM call. Bypasses the LLM's tool-choice surface entirely; writes
-        # directly to state.db.memories via the existing _publish_event_async
-        # publish path. See docs/superpowers/specs/2026-05-08-anti-gaslighting-memory-design.md.
-        try:
-            import asyncio as _asyncio
-            from pipeline.memory_extractor import extract_memory_from_turn
-            from pipeline.turn_router import detect_capture_trigger
-            from tools.memory import _publish_event_async, _memory_id
-            import os as _os
-
-            # Layer 1.5 (audit-rec E, 2026-05-09) — sync regex matcher for
-            # the high-confidence trigger phrases ("we charge X", "I run Y",
-            # "we have N students", etc.). Fires DETERMINISTICALLY whenever
-            # the pattern hits — no LLM judgment in the loop. The auto-
-            # extractor LLM still runs below as defense-in-depth (idempotent
-            # via _memory_id dedup). Fire-and-forget publish; zero latency
-            # added to the supervisor reply path.
-            try:
-                trigger = detect_capture_trigger(text)
-                if trigger is not None:
-                    cap_category, cap_content = trigger
-                    logger.info(
-                        f"[capture-trigger] {cap_category}: {cap_content[:80]!r}"
-                    )
-                    _asyncio.create_task(_publish_event_async(
-                        "memory.value.upserted", {
-                            "memory_id": _memory_id(cap_content),
-                            "content": cap_content,
-                            "category": cap_category,
-                            "source_session_id": _os.environ.get(
-                                "JARVIS_VOICE_SESSION_ID"
-                            ),
-                        }
-                    ))
-            except Exception as e:
-                logger.warning(
-                    f"[capture-trigger] failed: {type(e).__name__}: {e}"
-                )
-
-            async def _run_extractor_and_publish(transcript: str) -> None:
-                try:
-                    extracted = await extract_memory_from_turn(transcript)
-                    if extracted is None:
-                        return
-                    await _publish_event_async("memory.value.upserted", {
-                        "memory_id": _memory_id(extracted.content),
-                        "content": extracted.content,
-                        "category": extracted.category,
-                        "source_session_id": _os.environ.get(
-                            "JARVIS_VOICE_SESSION_ID"
-                        ),
-                    })
-                except Exception as e:
-                    logger.warning(
-                        f"[extractor] task failed: {type(e).__name__}: {e}"
-                    )
-
-            # Don't await — the extractor must NOT block the supervisor reply.
-            _asyncio.create_task(_run_extractor_and_publish(text))
-        except Exception as e:
-            # Defense-in-depth: any failure in the extractor wiring itself
-            # (import error, etc.) must not block the user turn.
-            logger.warning(
-                f"[extractor] wiring failed: {type(e).__name__}: {e}"
-            )
+        # Memory writes are now DELIBERATE, not auto-extracted. The
+        # turn-boundary auto-extractor + capture-trigger (which wrote to the
+        # hub `events:memory` stream on every user turn) were retired
+        # 2026-05-21 when JARVIS swapped to the file-backed memory model:
+        # the supervisor decides what's worth keeping via the `memory` tool
+        # (tools.memory → pipeline.file_memory), and the frozen MEMORY.md +
+        # USER.md snapshot is injected into the prompt at session start. This
+        # also fixes the documented auto-extract garbage problem (LLM-meta
+        # narration like "The user is asking about X" polluting the store).
+        # No per-turn memory side effect fires here.
 
         # Bare-vocative fast path. When the user just calls JARVIS by name
         # (with optional preamble like "hey", "yo", "okay", "i said"),
@@ -4710,19 +4660,25 @@ def _build_runtime_id_block(active_speech_id: str) -> str:
 
 
 def _build_memory_block() -> str:
-    """Build the memory section of the system prompt — top-N curated
-    facts from the memory layer. Step 8d. Returns empty string when
-    the memory layer is unavailable or has no facts to inject.
+    """Build the memory section of the system prompt — the FROZEN
+    MEMORY.md + USER.md snapshot captured at session start
+    (pipeline.file_memory). Returns "" when both stores are empty.
 
-    Called once at session start and again on every turn (so web-side
-    edits to the memory store propagate without a restart). The
-    per-turn caller compares against the last-pushed block and skips
-    no-op updates.
+    Frozen-snapshot semantics (matches the file-backed memory model):
+    the snapshot is captured once when the store first loads and does
+    NOT change mid-session, so the system-prompt prefix stays stable and
+    the provider-side prefix cache is never invalidated by a memory edit.
+    A `memory` tool write updates the files on disk immediately (durable)
+    but the prompt only reflects it on the NEXT session start.
+
+    Still called both at session start and per-turn by the dispatch
+    handler; because the value is constant for the session, the per-turn
+    caller's no-op comparison means zero prompt churn.
     """
     if not _MEMORY_AVAILABLE:
         return ""
     try:
-        block = tools.memory.format_memories_for_prompt()
+        block = file_memory.snapshot_for_prompt()
         if not block:
             return ""
         return "\n\n" + block
@@ -4747,10 +4703,21 @@ def _build_initial_prompt_state(active_speech_id: str) -> dict:
     JarvisAgent + later refresh the prompt mid-session:
 
       - instructions_prefix : SOUL (identity) + JARVIS_INSTRUCTIONS (ops) + runtime-id
-      - memory_block        : top-N curated facts (or "")
+      - memory_block        : frozen MEMORY.md + USER.md snapshot (or "")
       - breaker_block       : upstream-provider health (or "")
       - initial_instructions: the assembled full system prompt
     """
+    # Freeze the file-backed memory snapshot for THIS session. Loading here
+    # (rather than relying on lazy first-access) makes the freeze point
+    # explicit + deterministic: every later _build_memory_block() call —
+    # session start and per-turn — returns this same snapshot, so the
+    # system-prompt prefix never changes mid-session.
+    if _MEMORY_AVAILABLE:
+        try:
+            file_memory.reload_store()
+        except Exception as e:
+            logger.warning(f"[memory] snapshot load failed: {e}")
+
     runtime_id_block = _build_runtime_id_block(active_speech_id)
 
     # Stash static parts so the per-turn refresh can reconstruct the
@@ -5286,16 +5253,15 @@ async def entrypoint(ctx: JobContext) -> None:
                     spk_start = getattr(session, "_jarvis_agent_speaking_started_at", None)
                     if spk_start is not None:
                         audio_ms_acc += int((time.monotonic() - spk_start) * 1000)
-                    # memory_auto_extracted: True iff the per-turn extractor
-                    # successfully published a memory in the last 30s. Uses
-                    # the same has_recent_extraction_evidence() check the
-                    # confab-detector uses, so the flag in telemetry tracks
-                    # the same signal we credit for "save" confab evidence.
-                    try:
-                        from pipeline.memory_extractor import has_recent_extraction_evidence
-                        mem_extracted = has_recent_extraction_evidence()
-                    except Exception:
-                        mem_extracted = False
+                    # memory_auto_extracted: always False since 2026-05-21 —
+                    # the per-turn memory auto-extractor was retired when
+                    # JARVIS swapped to the file-backed, deliberate-writes
+                    # memory model. Memory is now written via the `memory`
+                    # tool, which lands a structured tool_result in chat_ctx
+                    # (that's what backs a "saved" claim for the confab
+                    # detector now — no separate extractor-evidence signal).
+                    # The column is retained for schema stability.
+                    mem_extracted = False
                     cache_read = getattr(session, "_jarvis_last_cache_read_tokens", 0) or 0
                     cua_steps = getattr(session, "_jarvis_last_cua_steps", None)
                     cua_cost = getattr(session, "_jarvis_last_cua_cost", None)

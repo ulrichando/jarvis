@@ -154,20 +154,28 @@ def make_dispatch_handler(
         except Exception:
             pass
 
-        # Layer 2 (Phase 3 of memory-layer fix) — when the user
-        # transcript is recall-shaped, force tool_choice on
-        # recall_conversation so the supervisor LLM can't reject the
-        # call via metacognition-conservatism. CRITICAL: explicitly
-        # reset tool_choice to None on every non-recall turn (LiveKit
-        # issue #4671: tool_choice persists across turns).
+        # Conversation-transcript recall force-route — when the user
+        # transcript is recall-shaped ("what did we talk about last
+        # time"), force tool_choice on `recall_conversation` so the
+        # supervisor LLM can't reject the call via metacognition-
+        # conservatism. CRITICAL: explicitly reset tool_choice to None on
+        # every non-recall turn (LiveKit issue #4671: tool_choice persists
+        # across turns).
         #
-        # Safe no-op when the tool is absent: the supervisor's surface
-        # is registry-only and currently has no `recall_conversation`
-        # tool, so forcing tool_choice on it would make the provider
-        # reject the request ("tool not in request.tools"). We only
-        # force the choice when the agent actually exposes the tool —
-        # so this lights up again automatically once a recall tool is
-        # re-ported into the registry, and stays inert until then.
+        # This forces ONLY transcript search, NOT durable-memory recall:
+        # durable memory (MEMORY.md + USER.md) is always in the system
+        # prompt as a frozen snapshot now (file-backed model, 2026-05-21),
+        # so there is no memory-recall tool to force. The hub-backed
+        # memory-recall router that used to live here was retired with the
+        # auto-extractor.
+        #
+        # Safe no-op when the tool is absent: the supervisor's surface is
+        # registry-only and currently has no `recall_conversation` tool, so
+        # forcing tool_choice on it would make the provider reject the
+        # request ("tool not in request.tools"). We only force the choice
+        # when the agent actually exposes the tool — so this lights up again
+        # automatically once a recall tool is re-ported into the registry,
+        # and stays inert until then.
         try:
             if is_recall_query(transcript) and _agent_has_tool(
                 jarvis_agent, "recall_conversation"
@@ -184,9 +192,19 @@ def make_dispatch_handler(
         except Exception as e:
             logger.debug(f"[recall-route] check skipped: {e}")
 
-        # Hot-reload the memory + breaker blocks if they changed since
-        # last check, so mid-session memory edits / breaker transitions
-        # take effect without an agent restart.
+        # Hot-reload the breaker block if it changed since last check, so
+        # provider-degradation transitions take effect without a restart.
+        #
+        # Memory is FROZEN per session (file-backed model, 2026-05-21):
+        # build_memory_block() returns the snapshot captured at session
+        # start and is constant for the whole session, so `memory_changed`
+        # is always False and a memory edit NEVER triggers a mid-session
+        # update_instructions — that's deliberate, it keeps the prompt
+        # prefix stable so the provider-side prefix cache survives. (A
+        # `memory` tool write lands on disk now and shows in the prompt on
+        # the NEXT session start.) The block is still recomputed + compared
+        # here so the breaker hot-reload keeps working; don't "fix" the
+        # no-op by making memory refresh per-turn.
         try:
             new_memory_block = build_memory_block()
             new_breaker_block = build_breaker_status_block()
