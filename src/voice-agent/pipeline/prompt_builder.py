@@ -2,11 +2,8 @@
 JARVIS_INSTRUCTIONS.
 
 The static prompt lives at `prompts/supervisor.md` (loaded once at
-import). Three blocks are appended fresh on every turn or rule change:
+import). Two blocks are appended fresh on every turn:
 
-  - learned-rules block — bullets from `~/.jarvis/learned_rules.md`,
-    capped at MAX_LEARNED_RULES, hot-reloaded if the file changed
-    since the last turn.
   - memory block — handled by `_build_memory_block()` in jarvis_agent
     (still inline because of its sanitization-regex dependencies).
   - breaker-status block — naming open/half-open Groq breakers so the
@@ -27,9 +24,6 @@ logger = logging.getLogger("jarvis.prompt_builder")
 
 
 __all__ = [
-    "MAX_LEARNED_RULES",
-    "LEARNED_RULES_PATH",
-    "load_learned_rules",
     "build_breaker_status_block",
     "SOUL_PATH_DEFAULT",
     "SOUL_PATH_OVERRIDE",
@@ -37,52 +31,6 @@ __all__ = [
     "DEFAULT_SOUL",
     "load_soul",
 ]
-
-
-# ── Learned-rules block ──────────────────────────────────────────────
-# Cap on how many rules to inject; oldest beyond this are silently
-# dropped from the injection (the file itself is untouched).
-MAX_LEARNED_RULES: int = 100
-
-# Source of the learned-rules store. PROPOSALS_PATH was retired
-# 2026-05-12 alongside tools/log_analyzer.py — autonomous evolution
-# via pipeline.evolution.* is the only producer now.
-LEARNED_RULES_PATH: Path = Path.home() / ".jarvis" / "learned_rules.md"
-
-
-def load_learned_rules() -> str:
-    """Read `LEARNED_RULES_PATH` and return a system-prompt block.
-
-    When `JARVIS_LEARNED_RULES_V2=1`, dispatches to the v2 loader
-    which understands tiered sections + anchor sha-check. Otherwise
-    keeps the legacy bullet-prefix reader unchanged.
-    """
-    import os
-    if os.environ.get("JARVIS_LEARNED_RULES_V2") == "1":
-        from pipeline.learned_rules_v2 import load_learned_rules_v2
-        v2_block = load_learned_rules_v2()
-        if v2_block:
-            return v2_block
-    try:
-        content = LEARNED_RULES_PATH.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return ""
-    except Exception as e:
-        logger.warning(f"[learned-rules] read failed: {e}")
-        return ""
-    lines = [l for l in content.splitlines() if l.strip().startswith("-")]
-    if not lines:
-        return ""
-    if len(lines) > MAX_LEARNED_RULES:
-        lines = lines[-MAX_LEARNED_RULES:]
-    rules_text = "\n".join(lines)
-    return (
-        "\n\n═══ LEARNED BEHAVIORAL RULES ═══\n\n"
-        "These rules were added by Ulrich via voice corrections or confirmed\n"
-        "from log analysis. They are BINDING — treat them as higher priority\n"
-        "than any default behavior described elsewhere in this prompt:\n\n"
-        + rules_text
-    )
 
 
 # ── Soul (primary identity) ──────────────────────────────────────────
