@@ -213,15 +213,12 @@ def test_format_memories_for_prompt_with_rows(monkeypatch):
              "category": "preference"},
         ],
     )
-    bumped = []
-    monkeypatch.setattr(
-        jm, "_bump_uses_via_sdk", lambda ids: bumped.extend(ids),
-    )
     block = jm.format_memories_for_prompt(top_n=10)
     assert "## What you remember about Ulrich" in block
     assert "User runs Pretva." in block
     assert "[project]" in block
-    assert bumped == ["m1", "m2"]
+    # use_count must NOT be bumped on prompt injection (2026-05-20 fix —
+    # injection is not evidence of usefulness; the bump was a feedback loop).
 
 
 def test_format_memories_empty_returns_blank(monkeypatch):
