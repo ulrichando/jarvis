@@ -1,12 +1,12 @@
-"""TEMPORARY validation tool — DELETE once real tools are ported.
+"""TEMPORARY validation tool — DELETE once real tools are registered.
 
 Exists ONLY to exercise end-to-end discovery + adaptation:
 ``discover_builtin_tools()`` must AST-find this module's module-level
 ``registry.register(...)`` call, import it, and ``load_all_livekit_tools()``
 must return ``echo_demo`` as a working ``RawFunctionTool``.
 
-It is NOT a real JARVIS tool and carries no production behavior. The first
-real Hermes tool port should replace this file's purpose; remove it then.
+It is NOT a real JARVIS tool and carries no production behavior. Remove it
+once real tools are wired up.
 """
 from __future__ import annotations
 

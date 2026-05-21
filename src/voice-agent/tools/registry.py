@@ -1,8 +1,6 @@
 """Central registry for JARVIS voice-agent tools.
 
-Ported from ``hermes/tools/registry.py`` — STRIPPED of Hermes-only coupling
-(``model_tools``, ACP, gateway, MCP refresh, OpenAI-format ``get_definitions``).
-What's kept and load-bearing:
+What's load-bearing:
 
   * ``ToolEntry`` — schema + handler + availability metadata for one tool.
   * module-level ``registry`` singleton with ``register(...)``.
@@ -12,19 +10,19 @@ What's kept and load-bearing:
   * the ``check_fn`` TTL cache (external-state probes are expensive; results
     are cached ~30 s so env-var flips still propagate within a turn or two).
   * ``all_entries()`` — accessor returning every registered ``ToolEntry``,
-    consumed by ``_hermes_adapter.load_all_livekit_tools()``.
+    consumed by ``_adapter.load_all_livekit_tools()``.
 
 The LiveKit voice agent does NOT use this registry's OpenAI-format schema
-emission; ``_hermes_adapter.to_livekit_tool`` converts each ``ToolEntry`` into
+emission; ``_adapter.to_livekit_tool`` converts each ``ToolEntry`` into
 a LiveKit ``RawFunctionTool`` instead. Keep this module stdlib-only and free
 of any ``import jarvis_agent`` / livekit dependency so the import chain stays
 circular-import safe:
 
-    tools/registry.py        (no imports from tool files or the adapter)
+    tools/registry.py   (no imports from tool files or the adapter)
            ^
-    tools/*.py               (call registry.register at module level)
+    tools/*.py          (call registry.register at module level)
            ^
-    tools/_hermes_adapter.py (imports registry + adapts every entry)
+    tools/_adapter.py   (imports registry + adapts every entry)
 """
 from __future__ import annotations
 
@@ -75,7 +73,7 @@ def _module_registers_tools(module_path: Path) -> bool:
 _NON_TOOL_MODULES = {
     "__init__.py",
     "registry.py",
-    "_hermes_adapter.py",
+    "_adapter.py",
     "runtime.py",
 }
 
@@ -230,11 +228,11 @@ class ToolRegistry:
     ) -> None:
         """Register a tool. Called at module-import time by each tool file.
 
-        ``toolset`` defaults to ``"builtin"`` (the Hermes positional ``toolset``
-        arg is keyword-only here since the voice-agent doesn't use toolset
-        gating yet — a single flat surface). ``override=True`` is an explicit
-        opt-in to replace an existing tool of the same name from a *different*
-        toolset; without it, a shadowing registration is rejected and logged.
+        ``toolset`` defaults to ``"builtin"`` (keyword-only here since the
+        voice-agent doesn't use toolset gating yet — a single flat surface).
+        ``override=True`` is an explicit opt-in to replace an existing tool of
+        the same name from a *different* toolset; without it, a shadowing
+        registration is rejected and logged.
         """
         toolset = toolset or "builtin"
         with self._lock:
@@ -312,7 +310,7 @@ registry = ToolRegistry()
 
 
 # ---------------------------------------------------------------------------
-# Module-level convenience accessors (mirror Hermes' top-level helpers)
+# Module-level convenience accessors
 # ---------------------------------------------------------------------------
 
 
@@ -322,7 +320,7 @@ def all_entries() -> List[ToolEntry]:
 
 
 # ---------------------------------------------------------------------------
-# Tool-response serialization helpers (ported verbatim — handlers may use them)
+# Tool-response serialization helpers (handlers may use them)
 # ---------------------------------------------------------------------------
 
 
