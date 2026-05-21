@@ -83,6 +83,37 @@ __all__ = ["make_dispatch_handler"]
 logger = logging.getLogger("jarvis.turn_dispatcher")
 
 
+def _agent_has_tool(agent: Any, tool_name: str) -> bool:
+    """True if `agent` exposes a tool literally named `tool_name`.
+
+    Walks the agent's tool list and reads each tool's name. Handles both
+    LiveKit RawFunctionTools (name lives on `.info.name`) and ordinary
+    @function_tool callables (name via `get_function_info`). Defensive:
+    any failure means "not present" — the caller treats absence as a
+    no-op, never an error. Used to gate forced tool_choice so we never
+    force a tool that isn't in the supervisor's (registry-only) surface.
+    """
+    try:
+        tools = getattr(agent, "tools", None) or []
+    except Exception:
+        return False
+    for tool in tools:
+        name = None
+        info = getattr(tool, "info", None)
+        if info is not None:
+            name = getattr(info, "name", None)
+        if name is None:
+            try:
+                from livekit.agents.llm.tool_context import get_function_info
+
+                name = get_function_info(tool).name
+            except Exception:
+                name = None
+        if name == tool_name:
+            return True
+    return False
+
+
 def make_dispatch_handler(
     *,
     session: Any,
@@ -129,8 +160,18 @@ def make_dispatch_handler(
         # call via metacognition-conservatism. CRITICAL: explicitly
         # reset tool_choice to None on every non-recall turn (LiveKit
         # issue #4671: tool_choice persists across turns).
+        #
+        # Safe no-op when the tool is absent: the supervisor's surface
+        # is registry-only and currently has no `recall_conversation`
+        # tool, so forcing tool_choice on it would make the provider
+        # reject the request ("tool not in request.tools"). We only
+        # force the choice when the agent actually exposes the tool —
+        # so this lights up again automatically once a recall tool is
+        # re-ported into the registry, and stays inert until then.
         try:
-            if is_recall_query(transcript):
+            if is_recall_query(transcript) and _agent_has_tool(
+                jarvis_agent, "recall_conversation"
+            ):
                 session._jarvis_force_tool_choice = {
                     "type": "function",
                     "function": {"name": "recall_conversation"},
