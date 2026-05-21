@@ -343,9 +343,13 @@ def test_supervisor_top_level_tools_use_legacy_shape(reinstall_relax):
         "media_control",
         "browser_task",
         "web_search",
-        "get_location",
+        # Location split 2026-05-17: get_location/set_location retired
+        # in favor of the three-tool surface below. See
+        # prompts/supervisor.md "LOCATION QUESTIONS" for routing.
+        "saved_address",
+        "current_location",
+        "set_saved_address",
         "recall_conversation",
-        "remember_this",
     )
 
     failures: list[str] = []

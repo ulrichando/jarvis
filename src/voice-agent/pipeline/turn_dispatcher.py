@@ -13,9 +13,8 @@ Pipeline (each FINAL transcript runs through):
   2. Recall-query check — force `tool_choice` to
      `recall_conversation` if the transcript is recall-shaped;
      otherwise reset.
-  3. Hot-reload prompt state — re-read learned_rules.md if mtime
-     changed, rebuild memory block + breaker block. If anything
-     changed, call `agent.update_instructions()` off-band.
+  3. Hot-reload prompt state — rebuild memory block + breaker block;
+     if either changed, call `agent.update_instructions()` off-band.
   4. Compute speech-rate (from VAD stamps) + RMS dB (from acoustic
      tap) + detect_emotion → stamp `_jarvis_emotion`.
   5. Early route guess (regex-only) → stamp `_jarvis_route` so
@@ -35,9 +34,8 @@ Pipeline (each FINAL transcript runs through):
 
 State management:
   * `prompt_state: dict` — shared with `_build_initial_prompt_state`.
-    The handler reads `instructions_prefix`, `learned_rules_block`
-    and mutates `rules_mtime`, `last_memory_block`,
-    `last_breaker_block` in place.
+    The handler reads `instructions_prefix` and mutates
+    `memory_block` / `breaker_block` in place.
   * Everything else is either a session attribute mutation or a
     `bg_tasks` set spawn.
 
@@ -68,7 +66,6 @@ from pipeline.fast_path_classifier import (
     BANTER_FAST_PATH_RE,
     REASONING_FAST_PATH_RE,
 )
-from pipeline.prompt_builder import LEARNED_RULES_PATH, load_learned_rules
 from pipeline.turn_router import (
     AudioMeta,
     classify_turn,
@@ -146,26 +143,19 @@ def make_dispatch_handler(
         except Exception as e:
             logger.debug(f"[recall-route] check skipped: {e}")
 
-        # Hot-reload learned rules if learned_rules.md changed since
-        # last check. Without this, mid-session edits to the rules
-        # file only take effect on the next agent restart.
+        # Hot-reload the memory + breaker blocks if they changed since
+        # last check, so mid-session memory edits / breaker transitions
+        # take effect without an agent restart.
         try:
-            cur_mtime = LEARNED_RULES_PATH.stat().st_mtime
-            rules_block = (
-                load_learned_rules()
-                if cur_mtime != prompt_state["rules_mtime"]
-                else prompt_state["learned_rules_block"]
-            )
             new_memory_block = build_memory_block()
             new_breaker_block = build_breaker_status_block()
 
-            rules_changed   = cur_mtime != prompt_state["rules_mtime"]
             memory_changed  = new_memory_block != prompt_state["memory_block"]
             breaker_changed = new_breaker_block != prompt_state["breaker_block"]
 
-            if rules_changed or memory_changed or breaker_changed:
+            if memory_changed or breaker_changed:
                 new_instructions = (
-                    prompt_state["instructions_prefix"] + rules_block
+                    prompt_state["instructions_prefix"]
                     + new_memory_block
                     + new_breaker_block
                 )
@@ -173,12 +163,6 @@ def make_dispatch_handler(
                 async def _push_instructions():
                     try:
                         await jarvis_agent.update_instructions(new_instructions)
-                        if rules_changed:
-                            logger.info(
-                                f"[learned-rules] hot-reloaded "
-                                f"({len(rules_block)} chars) — was stale "
-                                f"{cur_mtime - prompt_state['rules_mtime']:.0f}s"
-                            )
                         if memory_changed:
                             logger.info(
                                 f"[memory] block refreshed "
@@ -198,17 +182,12 @@ def make_dispatch_handler(
                 _task = asyncio.create_task(_push_instructions())
                 bg_tasks.add(_task)
                 _task.add_done_callback(bg_tasks.discard)
-                if rules_changed:
-                    prompt_state["rules_mtime"] = cur_mtime
-                    prompt_state["learned_rules_block"] = rules_block
                 if memory_changed:
                     prompt_state["memory_block"] = new_memory_block
                 if breaker_changed:
                     prompt_state["breaker_block"] = new_breaker_block
-        except FileNotFoundError:
-            pass
         except Exception as e:
-            logger.debug(f"[learned-rules] mtime check skipped: {e}")
+            logger.debug(f"[prompt-refresh] block check skipped: {e}")
 
         # Derive speech_rate_wpm from VAD start/end timestamps the
         # state-tracking handler stamps. Falls back to 0 if VAD

@@ -18,24 +18,6 @@ from pathlib import Path
 import pytest
 
 
-@pytest.fixture(autouse=True)
-def _isolate_evolution_changelog(monkeypatch, tmp_path):
-    """Every test gets a tmp_path-scoped evolution changelog dir.
-
-    The evolution lifecycle (auto_stage/rollback/promote_eligible_staged)
-    calls `changelog.append(...)` which writes to
-    `~/Documents/jarvis-evolution/<date>.md` in production. Without this
-    fixture, any test that exercises a tier transition pollutes the
-    user's real changelog. autouse keeps it global — no per-test opt-in
-    needed.
-    """
-    try:
-        from pipeline.evolution import changelog
-    except ImportError:
-        return
-    monkeypatch.setattr(changelog, "CHANGELOG_DIR", tmp_path / "changelog")
-
-
 def pytest_configure(config) -> None:
     for name in (
         "SUMMARIZE",

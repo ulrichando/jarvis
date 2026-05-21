@@ -47,7 +47,6 @@ Canonical events JARVIS emits (v1 wiring):
   - task_completed                (tools.tasks.task_update, status→completed)
   - worktree_created              (tools.worktree.enter_worktree)
   - worktree_removed              (tools.worktree.exit_worktree)
-  - evolution_tier_transition     (pipeline.evolution.lifecycle, all paths)
 
 Add new events by calling `fire_hook(event, payload)` from wherever
 in the codebase the event happens. The dispatcher silently no-ops
