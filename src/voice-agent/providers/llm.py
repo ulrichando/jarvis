@@ -311,6 +311,65 @@ if _ANTHROPIC_AVAILABLE and os.environ.get("ANTHROPIC_API_KEY", ""):
         "label": "Anthropic · Claude Opus 4.7",
         "build": lambda: _make_anthropic_speech_llm("claude-opus-4-7"),
     }
+# OpenRouter — one OpenAI-compatible endpoint (https://openrouter.ai/api/v1)
+# that proxies hundreds of models. Only voice-suitable models are listed here:
+# they must support streaming AND tool/function calls — models that are
+# reasoning-only (no tool schema), chat-only (no streaming), or have >1 s
+# first-byte latency under typical load should NOT be added. All entries
+# gated on OPENROUTER_API_KEY so a key-less install doesn't break construction
+# or the tray picker. The lk_openai plugin is used with a custom base_url,
+# identical to the existing DeepSeek/Kimi entries in this file.
+if os.environ.get("OPENROUTER_API_KEY", ""):
+    _OR_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+    _OR_BASE = "https://openrouter.ai/api/v1"
+
+    SPEECH_MODELS["openrouter/google/gemini-2.0-flash-001"] = {
+        # Gemini 2.0 Flash via OpenRouter. Fast first byte (~300 ms),
+        # streaming, solid tool calling. Good all-around voice model.
+        "label": "OpenRouter · Gemini 2.0 Flash",
+        "build": lambda: lk_openai.LLM(
+            model="google/gemini-2.0-flash-001",
+            api_key=_OR_KEY,
+            base_url=_OR_BASE,
+            temperature=0.6,
+        ),
+    }
+    SPEECH_MODELS["openrouter/meta-llama/llama-3.3-70b-instruct"] = {
+        # Llama 3.3 70B Instruct routed through OpenRouter. Mirrors the
+        # Groq native entry but uses OpenRouter's edge for diversity.
+        # Streaming + function calling confirmed on this model.
+        "label": "OpenRouter · Llama 3.3 70B",
+        "build": lambda: lk_openai.LLM(
+            model="meta-llama/llama-3.3-70b-instruct",
+            api_key=_OR_KEY,
+            base_url=_OR_BASE,
+            temperature=0.6,
+        ),
+    }
+    SPEECH_MODELS["openrouter/anthropic/claude-haiku-4-5"] = {
+        # Claude Haiku 4.5 via OpenRouter. Useful when the direct
+        # Anthropic credit pool is exhausted but OpenRouter credits remain.
+        # Streaming + tool calling, comparable latency to native Anthropic.
+        "label": "OpenRouter · Claude Haiku 4.5",
+        "build": lambda: lk_openai.LLM(
+            model="anthropic/claude-haiku-4-5",
+            api_key=_OR_KEY,
+            base_url=_OR_BASE,
+            temperature=0.6,
+        ),
+    }
+    SPEECH_MODELS["openrouter/mistralai/mistral-small-3.2-24b-instruct"] = {
+        # Mistral Small 3.2 24B — fast, cheap, and confirmed streaming +
+        # tool-call capable. Good latency (~350 ms first token) for voice.
+        "label": "OpenRouter · Mistral Small 3.2 24B",
+        "build": lambda: lk_openai.LLM(
+            model="mistralai/mistral-small-3.2-24b-instruct",
+            api_key=_OR_KEY,
+            base_url=_OR_BASE,
+            temperature=0.6,
+        ),
+    }
+
 if os.environ.get("JARVIS_KIMI_VOICE_EXPERIMENTAL", "0") == "1":
     SPEECH_MODELS["kimi-k2.6-instant"] = {
         "label": "Kimi · K2.6 Instant (experimental)",
