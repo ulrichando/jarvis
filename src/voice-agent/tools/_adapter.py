@@ -1,9 +1,9 @@
-"""Adapter: Hermes ``ToolEntry`` → LiveKit 1.5.x ``RawFunctionTool``.
+"""Adapter: ``ToolEntry`` → LiveKit 1.5.x ``RawFunctionTool``.
 
-The keystone of the port. Hermes declares a tool as a JSON schema + a handler.
-LiveKit's ``function_tool(handler, raw_schema=<dict>)`` turns a raw schema +
-handler into a ``RawFunctionTool`` the voice supervisor can register and call.
-This module bridges the two:
+The keystone of the tool layer. JARVIS declares a tool as a JSON schema + a
+handler. LiveKit's ``function_tool(handler, raw_schema=<dict>)`` turns a raw
+schema + handler into a ``RawFunctionTool`` the voice supervisor can register
+and call. This module bridges the two:
 
   * ``to_livekit_tool(entry)`` — wrap one ``ToolEntry`` into a ``RawFunctionTool``.
   * ``sanitize_schema(params)`` — force ``additionalProperties: false`` on every
@@ -20,7 +20,7 @@ the framework invokes a raw tool's handler with the JSON arguments bound to a
 parameter literally named ``raw_arguments``. Our wrapped handler is therefore
 ``async def _run(raw_arguments: dict)`` — the name is load-bearing; do not
 rename it. The framework also injects a ``RunContext``-typed param if present;
-we don't declare one (the ported Hermes handlers don't take it).
+we don't declare one (tool handlers don't take it).
 """
 from __future__ import annotations
 
@@ -47,9 +47,9 @@ __all__ = [
 # Mirrors sanitizers/anthropic_strict_schema.py::fix_schema. Anthropic's
 # /v1/messages rejects tool definitions whose object-typed nodes don't set
 # `additionalProperties: false`. We apply it at adapt time (rather than relying
-# solely on the import-time monkey-patch) so the RawFunctionTool a ported tool
-# produces is correct at the source — belt-and-suspenders with the patch, and
-# correct even for non-Anthropic providers (they tolerate the extra key).
+# solely on the import-time monkey-patch) so the RawFunctionTool is correct at
+# the source — belt-and-suspenders with the patch, and correct even for
+# non-Anthropic providers (they tolerate the extra key).
 # ---------------------------------------------------------------------------
 
 
@@ -108,7 +108,7 @@ def sanitize_schema(node: Any) -> Any:
 def _extract_parameters(entry: ToolEntry) -> dict:
     """Pull the JSON-schema parameters object out of a ToolEntry's schema.
 
-    Hermes schemas store the parameters under ``schema["parameters"]``. Some
+    JARVIS tool schemas store parameters under ``schema["parameters"]``. Some
     tools may instead carry the parameters at the schema root (an object schema
     with ``properties`` directly). Be permissive: prefer ``parameters``, else
     fall back to an object schema if the root looks like one, else an empty
@@ -166,7 +166,7 @@ def _build_wrapped_handler(entry: ToolEntry):
 
 
 def to_livekit_tool(entry: ToolEntry) -> RawFunctionTool:
-    """Convert a Hermes ``ToolEntry`` into a LiveKit ``RawFunctionTool``.
+    """Convert a ``ToolEntry`` into a LiveKit ``RawFunctionTool``.
 
     Builds ``raw_schema = {name, description, parameters}`` (parameters
     sanitized so every object node sets ``additionalProperties: false``) and
