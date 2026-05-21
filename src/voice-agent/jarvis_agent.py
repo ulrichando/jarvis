@@ -1241,7 +1241,15 @@ from pipeline.prompt_builder import (
     MAX_LEARNED_RULES,
     LEARNED_RULES_PATH as _LEARNED_RULES_PATH,
     load_learned_rules    as _load_learned_rules,
+    load_soul             as _load_soul,
 )
+
+# JARVIS's primary identity (slot #1 of the supervisor system prompt).
+# Lives in prompts/soul.md — the editable identity/voice layer, decoupled
+# from the operational rules in supervisor.md (JARVIS_INSTRUCTIONS).
+# Resolved once at import: ~/.jarvis/SOUL.md override → prompts/soul.md →
+# DEFAULT_SOUL. Prepended to JARVIS_INSTRUCTIONS in _build_initial_prompt_state.
+SOUL: str = _load_soul()
 
 
 # System-prompt appendix fed to the CLI for every voice invocation.
@@ -4976,7 +4984,7 @@ def _build_initial_prompt_state(active_speech_id: str) -> dict:
     Returns a dict with everything entrypoint needs to construct the
     JarvisAgent + later refresh the prompt mid-session:
 
-      - instructions_prefix : JARVIS_INSTRUCTIONS + WHO-YOU-ARE
+      - instructions_prefix : SOUL (identity) + JARVIS_INSTRUCTIONS (ops) + runtime-id
       - learned_rules_block : current contents of learned_rules.md
       - rules_mtime         : mtime of learned_rules.md for hot-reload
       - memory_block        : top-N curated facts (or "")
@@ -4989,7 +4997,10 @@ def _build_initial_prompt_state(active_speech_id: str) -> dict:
     # Stash static parts so the per-turn rule-reload can reconstruct
     # the full instructions when learned_rules.md changes mid-session,
     # without re-deriving the session-bound pieces.
-    instructions_prefix = JARVIS_INSTRUCTIONS + runtime_id_block
+    # SOUL (prompts/soul.md) leads as slot #1 — identity/voice first,
+    # then the operational rules (JARVIS_INSTRUCTIONS = supervisor.md),
+    # then the volatile runtime-id block.
+    instructions_prefix = SOUL + "\n\n" + JARVIS_INSTRUCTIONS + runtime_id_block
 
     try:
         rules_mtime = _LEARNED_RULES_PATH.stat().st_mtime
