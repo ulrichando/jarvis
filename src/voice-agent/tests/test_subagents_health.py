@@ -361,32 +361,47 @@ def test_supervisor_has_persona_register_block():
     'Register — use these' / 'Register — BANNED'); pinning specific
     copy was brittle. The actionable invariants are: header present,
     header near the top, both positive+negative register lists present.
-    """
-    from jarvis_agent import JARVIS_INSTRUCTIONS
 
-    header_idx = JARVIS_INSTRUCTIONS.find("WHO YOU ARE")
+    2026-05-20 soul extraction: the persona moved out of supervisor.md
+    (JARVIS_INSTRUCTIONS) into prompts/soul.md (SOUL), which is loaded
+    as slot #1 and prepended ahead of JARVIS_INSTRUCTIONS. The "near the
+    top of the system prompt" invariant is therefore now expressed
+    against SOUL — and is in fact strengthened, since SOUL leads the
+    whole assembled prompt.
+    """
+    from jarvis_agent import SOUL, JARVIS_INSTRUCTIONS
+
+    header_idx = SOUL.find("WHO YOU ARE")
     assert header_idx != -1, (
-        "WHO YOU ARE persona block missing entirely (W-021 renamed "
-        "this from 'PERSONA & REGISTER')"
+        "WHO YOU ARE persona block missing entirely from SOUL "
+        "(prompts/soul.md — the identity layer)"
     )
 
-    # Must appear at the very top — it's the first section in the
-    # prompt as of W-021. 200 chars covers leading whitespace + the
-    # header itself.
+    # Must appear at the very top of SOUL — it's the first section, and
+    # SOUL is slot #1 of the assembled prompt. 200 chars covers leading
+    # whitespace + the header itself.
     assert header_idx < 200, (
-        f"WHO YOU ARE header buried at offset {header_idx}; "
+        f"WHO YOU ARE header buried at offset {header_idx} in SOUL; "
         "must appear in the first 200 chars (top-of-prompt)"
     )
 
     # The block must declare the actual policy. Without these two lists
     # the block is decorative and the LLM has no constraint to follow.
-    assert "Register — use these" in JARVIS_INSTRUCTIONS, (
+    assert "Register — use these" in SOUL, (
         "WHO YOU ARE block missing the 'Register — use these' "
         "positive policy list"
     )
-    assert "Register — BANNED" in JARVIS_INSTRUCTIONS, (
+    assert "Register — BANNED" in SOUL, (
         "WHO YOU ARE block missing the 'Register — BANNED' "
         "negative policy list"
+    )
+
+    # The extraction must be clean: the persona moved OUT of the ops
+    # prompt. If WHO YOU ARE reappears in JARVIS_INSTRUCTIONS the move
+    # regressed (duplicated identity in two files).
+    assert "WHO YOU ARE" not in JARVIS_INSTRUCTIONS, (
+        "WHO YOU ARE still present in JARVIS_INSTRUCTIONS (supervisor.md) — "
+        "the 2026-05-20 soul extraction must move it to soul.md, not copy it"
     )
 
 
