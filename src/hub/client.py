@@ -108,7 +108,10 @@ class _ReadMixin:
         if category:
             sql += "WHERE category = ? "
             params.append(category)
-        sql += "ORDER BY use_count DESC, updated_ts DESC LIMIT ?"
+        # Recency, not use_count: use_count was a self-reinforcing inject→bump
+        # loop that pinned the earliest-injected (garbage) memories forever.
+        # See docs/superpowers/plans/2026-05-20-jarvis-memory-quality-fix.md.
+        sql += "ORDER BY updated_ts DESC LIMIT ?"
         params.append(int(limit))
         conn = sqlite3.connect(str(path))
         try:
