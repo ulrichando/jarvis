@@ -41,10 +41,12 @@ def seeded_db(tmp_path, monkeypatch):
     return db
 
 
-def test_read_memories_orders_by_use_then_recency(seeded_db):
+def test_read_memories_orders_by_recency(seeded_db):
     out = hub_client.HubClient.read_memories_sync(limit=10)
-    # m1 use_count=5 (highest); m3 has use_count=2; m2 has 0
-    assert [m["memory_id"] for m in out] == ["m1", "m3", "m2"]
+    # Ranked by updated_ts DESC now (use_count is no longer the sort key —
+    # it was a self-reinforcing inject→bump loop, see 2026-05-20 memory fix).
+    # m1 newest (now-1000), then m2 (now-2000), then m3 (now-3000).
+    assert [m["memory_id"] for m in out] == ["m1", "m2", "m3"]
 
 
 def test_read_memories_filters_by_category(seeded_db):
