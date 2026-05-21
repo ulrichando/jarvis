@@ -20,8 +20,11 @@ def test_memory_anchor_present_in_supervisor_prompt():
         "Anchor header missing — Phase 1 of memory-layer fix not in place"
     )
     # The two key tools must be named in the anchor so the LLM
-    # cross-references them when temped to deny memory.
-    assert "remember(content, category)" in instr
+    # cross-references them when temped to deny memory. Since the
+    # file-backed swap (2026-05-21) the durable-write tool is
+    # `memory(action, target, …)`; transcript search is still
+    # `recall_conversation(query)`.
+    assert "memory(action, target" in instr
     assert "recall_conversation(query)" in instr
     # ASSUME-INTERRUPTION framing (mirrors Anthropic memory tool default)
     assert "ASSUME INTERRUPTION" in instr
