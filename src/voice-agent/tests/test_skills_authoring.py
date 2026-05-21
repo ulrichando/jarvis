@@ -144,3 +144,63 @@ class TestCreate:
         res = sa.create_user_skill("dup", "user version", "w", "# b\ntext")
         assert res["ok"] is True
         assert res["shadow"] is True
+
+
+class TestPatchEdit:
+    def _seed_user(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("JARVIS_SKILLS_PATHS", str(tmp_path))
+        sa.create_user_skill("notes", "take notes", "when noting", "# Notes\nv1 body.\n")
+
+    def test_patch_replaces(self, tmp_path, monkeypatch):
+        self._seed_user(tmp_path, monkeypatch)
+        res = sa.patch_user_skill("notes", "v1 body.", "v2 body.")
+        assert res["ok"] is True
+        assert "v2 body." in (tmp_path / "notes" / "SKILL.md").read_text()
+
+    def test_patch_missing_string(self, tmp_path, monkeypatch):
+        self._seed_user(tmp_path, monkeypatch)
+        res = sa.patch_user_skill("notes", "NOT THERE", "x")
+        assert res["ok"] is False
+        assert "not found" in res["error"].lower()
+
+    def test_patch_ambiguous_requires_replace_all(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("JARVIS_SKILLS_PATHS", str(tmp_path))
+        sa.create_user_skill("dup", "d", "w", "# B\nfoo foo foo\n")
+        res = sa.patch_user_skill("dup", "foo", "bar")
+        assert res["ok"] is False
+        res2 = sa.patch_user_skill("dup", "foo", "bar", replace_all=True)
+        assert res2["ok"] is True
+
+    def test_patch_unknown_skill(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("JARVIS_SKILLS_PATHS", str(tmp_path))
+        res = sa.patch_user_skill("ghost", "a", "b")
+        assert res["ok"] is False
+
+    def test_patch_refuses_shipped(self, tmp_path, monkeypatch):
+        shipped = tmp_path / "shipped"
+        user = tmp_path / "user"
+        (shipped / "ship").mkdir(parents=True)
+        (shipped / "ship" / "SKILL.md").write_text(
+            "---\nname: ship\ndescription: shipped\n---\nbody text"
+        )
+        user.mkdir()
+        monkeypatch.setenv("JARVIS_SKILLS_PATHS", f"{shipped}:{user}")
+        from pipeline.skills_loader import reload_skills
+        reload_skills()
+        res = sa.patch_user_skill("ship", "body", "hacked")
+        assert res["ok"] is False
+        assert "shipped" in res["error"].lower()
+
+    def test_patch_invalid_result_rejected(self, tmp_path, monkeypatch):
+        self._seed_user(tmp_path, monkeypatch)
+        # Deleting the frontmatter name line makes the file invalid.
+        res = sa.patch_user_skill("notes", "name: notes\n", "")
+        assert res["ok"] is False
+
+    def test_edit_rewrites_body_keeps_meta(self, tmp_path, monkeypatch):
+        self._seed_user(tmp_path, monkeypatch)
+        res = sa.edit_user_skill("notes", "# Notes\nfully new body.\n")
+        assert res["ok"] is True
+        text = (tmp_path / "notes" / "SKILL.md").read_text()
+        assert "fully new body." in text
+        assert "take notes" in text  # description preserved
