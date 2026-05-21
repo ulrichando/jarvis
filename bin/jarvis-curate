@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# Run the JARVIS skill curator manually.
+#
+# Reviews user skills (~/.jarvis/skills/): deterministic active->stale->archived
+# transitions by usage/age, a pre-run tar.gz snapshot, pinning (pinned skills
+# are never auto-archived), and a per-run report under ~/.jarvis/logs/curator/.
+# The LLM consolidation review is suggestion-only and gated behind
+# JARVIS_CURATOR_CONSOLIDATION=1 (no mutation, no network without GROQ_API_KEY).
+#
+# Usage:
+#   bin/jarvis-curate              # live pass (snapshots + applies transitions)
+#   bin/jarvis-curate --dry-run    # preview only — no snapshot, no transitions
+#   bin/jarvis-curate --status     # show curator state + skill rows
+#   bin/jarvis-curate --backups    # list tar.gz snapshots
+#
+# Env knobs (all read at call time):
+#   JARVIS_CURATOR_DISABLED=1                kill the engine
+#   JARVIS_CURATOR_STALE_AFTER_DAYS=30       active -> stale threshold
+#   JARVIS_CURATOR_ARCHIVE_AFTER_DAYS=90     stale -> archived threshold
+#   JARVIS_CURATOR_BACKUP_KEEP=5             snapshots to retain
+#   JARVIS_CURATOR_CONSOLIDATION=1           enable suggestion-only LLM review
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VOICE_AGENT_DIR="$REPO_ROOT/src/voice-agent"
+PYTHON="$VOICE_AGENT_DIR/.venv/bin/python"
+
+if [[ ! -x "$PYTHON" ]]; then
+    echo "voice-agent venv python not found at $PYTHON" >&2
+    exit 1
+fi
+
+MODE="run"
+DRY_RUN="False"
+case "${1:-}" in
+    --dry-run) DRY_RUN="True" ;;
+    --status) MODE="status" ;;
+    --backups) MODE="backups" ;;
+    "" ) ;;
+    -h|--help)
+        sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        exit 0
+        ;;
+    *)
+        echo "unknown argument: $1 (try --help)" >&2
+        exit 1
+        ;;
+esac
+
+cd "$VOICE_AGENT_DIR"
+exec "$PYTHON" - "$MODE" "$DRY_RUN" <<'PY'
+import json
+import sys
+
+from pipeline import curator, skill_usage
+
+mode = sys.argv[1]
+dry_run = sys.argv[2] == "True"
+
+if mode == "status":
+    state = curator.load_state()
+    print("Curator state:")
+    print(json.dumps(state, indent=2, sort_keys=True))
+    rows = skill_usage.curatable_report()
+    print(f"\nUser (curatable) skills ({len(rows)}):")
+    for r in rows:
+        print(
+            f"  - {r['name']}  state={r['state']}  "
+            f"pinned={'yes' if r.get('pinned') else 'no'}  "
+            f"use={r.get('use_count', 0)} view={r.get('view_count', 0)} "
+            f"patches={r.get('patch_count', 0)}  "
+            f"last_activity={r.get('last_activity_at') or 'never'}"
+        )
+    sys.exit(0)
+
+if mode == "backups":
+    print(curator.summarize_backups())
+    sys.exit(0)
+
+result = curator.run_curation(dry_run=dry_run, on_summary=lambda s: print(s))
+print("\nResult:")
+print(json.dumps(result, indent=2, ensure_ascii=False))
+PY
