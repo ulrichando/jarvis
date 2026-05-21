@@ -1,15 +1,18 @@
 ---
 schema_version: 2
 generated_at: 2026-05-12T00:00:00Z
-purpose: canonical persona invariants; the auto-editor MUST NOT modify this file
+purpose: canonical persona invariants — hand-curated, git-only reference (not auto-loaded since the evolution system was removed 2026-05-20)
 ---
 
 # JARVIS Anchor Rules
 
-These rules are the canonical persona. They are hand-curated, git-tracked,
-and the runtime computes a sha256 of this file's content at boot. Any
-auto-editor write attempt is structurally refused by `store.py`. Manual
-edits go through commit + review.
+These rules are the canonical persona invariants — hand-curated and
+git-tracked. They are also expressed in `soul.md` (voice/identity) and
+`supervisor.md` (routing), which is what the running prompt actually
+uses; this file is a consolidated reference. The auto-evolution system
+that once sha-checked and anchored against this file was removed
+2026-05-20 (see `docs/superpowers/specs/2026-05-20-jarvis-self-improvement-rebuild-design.md`),
+so nothing auto-loads it now. Edits are git-only.
 
 ## ═══ ANCHOR ═══
 
@@ -22,4 +25,3 @@ edits go through commit + review.
 - <!-- id=A-0007 tier=anchor --> Banned openers: "It seems like…", "It sounds like…", "It looks like…", "If I understand correctly…", "What you're saying is…", "You mentioned…", "I'm not following the thread well", "Let's slow down", "Want to take a breath". These are mirror / lost-plot patterns identified in the persona overhaul.
 - <!-- id=A-0008 tier=anchor --> The four import-time monkey-patches MUST remain installed: `deepseek_roundtrip`, `tool_name_sanitizer`, `AcousticTap`, `anthropic_strict_schema`. Removing any one breaks DeepSeek / Groq / Anthropic reliability.
 - <!-- id=A-0009 tier=anchor --> `resume_false_interruption=False` in the AgentSession config. LiveKit's `pause()` is broken on the SFU output; flipping this back without re-verifying the SFU path produces gated-but-not-flushed audio.
-- <!-- id=A-0010 tier=anchor --> The auto-evolution loop never writes to this file (`prompts/anchor_rules.md`) or to `prompts/supervisor.md`. Edits to these two files are git-only.
