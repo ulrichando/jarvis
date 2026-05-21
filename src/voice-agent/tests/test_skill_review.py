@@ -384,20 +384,16 @@ class TestRunReviewApply:
         assert payload["apply_enabled"] is True
         assert payload["counts"]["applied_ok"] >= 1
 
-    def test_apply_memory_uses_publish_path(self, telemetry_db, skills_env, monkeypatch):
-        """memory proposals apply via tools.memory publish path (mocked)."""
-        from pipeline import skill_review
+    def test_apply_memory_writes_to_file_store(self, telemetry_db, skills_env, monkeypatch):
+        """memory proposals apply by writing to the file-backed store
+        (pipeline.file_memory) — the hub publish path was retired
+        2026-05-21. A 'project' category lands in MEMORY.md ('memory'
+        target); only 'user' goes to USER.md."""
+        from pipeline import skill_review, file_memory
         monkeypatch.setenv("JARVIS_SKILL_REVIEW_APPLY", "1")
         monkeypatch.setenv("JARVIS_SKILL_REVIEW_LONG_REPLY_CHARS", "100000")
-
-        published = []
-
-        async def _fake_publish(event_type, payload):
-            published.append((event_type, payload))
-
-        monkeypatch.setattr(
-            "tools.memory._publish_event_async", _fake_publish
-        )
+        # skills_env set JARVIS_HOME to an isolated tmp dir; start clean.
+        file_memory.reload_store()
 
         llm = _fake_llm_factory(json.dumps({"proposals": [{
             "kind": "memory",
@@ -407,9 +403,29 @@ class TestRunReviewApply:
         res = asyncio.run(skill_review.run_review(limit=1, apply=True, llm_fn=llm))
         assert res.apply_enabled is True
         assert any(a.ok for a in res.applied)
-        assert len(published) >= 1
-        assert published[0][0] == "memory.value.upserted"
-        assert published[0][1]["category"] == "project"
+        # The fact landed in the 'memory' store (non-'user' category).
+        entries = file_memory.read("memory")["entries"]
+        assert "Search flows open Chrome first." in entries
+
+
+    def test_apply_memory_user_category_writes_to_user_store(
+        self, telemetry_db, skills_env, monkeypatch
+    ):
+        """A 'user' category proposal lands in USER.md, not MEMORY.md."""
+        from pipeline import skill_review, file_memory
+        monkeypatch.setenv("JARVIS_SKILL_REVIEW_APPLY", "1")
+        monkeypatch.setenv("JARVIS_SKILL_REVIEW_LONG_REPLY_CHARS", "100000")
+        file_memory.reload_store()
+
+        llm = _fake_llm_factory(json.dumps({"proposals": [{
+            "kind": "memory",
+            "payload": {"category": "user",
+                        "content": "Ulrich prefers terse replies."},
+        }]}))
+        res = asyncio.run(skill_review.run_review(limit=1, apply=True, llm_fn=llm))
+        assert any(a.ok for a in res.applied)
+        assert "Ulrich prefers terse replies." in file_memory.read("user")["entries"]
+        assert "Ulrich prefers terse replies." not in file_memory.read("memory")["entries"]
 
     def test_apply_proposal_unknown_kind(self):
         from pipeline.skill_review import Proposal, apply_proposal
