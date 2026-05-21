@@ -274,67 +274,14 @@ logger = logging.getLogger("jarvis")
 # result is spread into JarvisAgent's tools=[…] at construction.
 from tools._adapter import load_all_livekit_tools
 
-# Screen-share toggle and skills system stay as direct LiveKit
-# @function_tool modules (not registry-loaded).
-from tools.screen_share_control import set_screen_share
-from tools.skill_runner import list_skills, run_skill
-
-# Plan mode (replaces the legacy planner subagent) — ported from
-# claude-code's commands/plan/plan.tsx + tools/EnterPlanModeTool +
-# utils/plans.ts. The supervisor itself enters plan mode for non-trivial
-# implementation tasks; write tools refuse until exit_plan_mode runs.
-from tools.plan_mode import (
-    enter_plan_mode as _enter_plan_mode_tool,
-    exit_plan_mode as _exit_plan_mode_tool,
-    read_plan as _read_plan_tool,
-)
-# Task family — port of claude-code's TaskCreate / TaskGet / TaskList /
-# TaskUpdate + TodoWrite (bulk). Storage: ~/.jarvis/voice-tasks/<list-id>/.
-# Default list is durable across voice sessions; set JARVIS_TASK_LIST_ID
-# to scope a list to a feature or workstream. Added 2026-05-12.
-from tools.tasks import (
-    task_create as _task_create_tool,
-    task_list as _task_list_tool,
-    task_update as _task_update_tool,
-    task_delete as _task_delete_tool,
-    todo_write as _todo_write_tool,
-)
-# Structured multiple-choice asks — voice-adapted port of
-# claude-code's AskUserQuestion. Tool returns a voice-friendly
-# phrasing; supervisor must voice verbatim, then STOP and match the
-# user's next utterance against the option labels (see TASK TRACKING
-# section's neighbour in prompts/supervisor.md). Added 2026-05-12.
-from tools.ask_user_question import ask_user_question as _ask_user_question_tool
-# Background-command monitoring — voice-adapted port of claude-code's
-# Monitor (poll-based for voice's user-initiated cadence rather than
-# push-based). Spawn long-running commands in the background, poll
-# their status by id later. State is worker-scoped in-memory; child
-# processes die with the worker so no orphans accumulate. Added
-# 2026-05-12.
-from tools.monitor import (
-    monitor_start as _monitor_start_tool,
-    monitor_status as _monitor_status_tool,
-    monitor_stop as _monitor_stop_tool,
-    monitor_list as _monitor_list_tool,
-)
-# Git worktrees — port of claude-code's EnterWorktree / ExitWorktree
-# with list_worktrees. Spawns isolated checkouts at
-# <repo>/.worktrees/<name>/ on fresh branches so the supervisor can
-# try a fix on a side branch without polluting main. Added 2026-05-12.
-from tools.worktree import (
-    enter_worktree as _enter_worktree_tool,
-    exit_worktree as _exit_worktree_tool,
-    list_worktrees as _list_worktrees_tool,
-)
-# Symbol search — LSP-lite via git grep. Voice-adapted subset of
-# claude-code's LSP tool: "where is symbol X defined" and "where is
-# X used" via regex over the repo's tracked files. Full LSP semantics
-# (cross-module rename, type info at position) need a real language
-# server — defer. Added 2026-05-12.
-from tools.code_search import (
-    find_definitions as _find_definitions_tool,
-    find_references as _find_references_tool,
-)
+# NOTE: the supervisor's tool surface is now REGISTRY-ONLY (see the
+# tools=load_all_livekit_tools() call at construction). The previously-
+# restored JARVIS tool modules — screen_share_control.set_screen_share,
+# skill_runner, plan_mode, tasks, ask_user_question, monitor, worktree,
+# code_search — are no longer imported here: the pure-tool ones were
+# deleted, and screen_share_control is used only by pipeline/intent_router
+# (lazy-imported there, not a supervisor tool). They will be re-ported
+# into the registry framework one wave at a time.
 
 
 # ── Groq TTS error-body logging shim ──────────────────────────────────
@@ -5510,128 +5457,24 @@ async def entrypoint(ctx: JobContext) -> None:
         # LLM sees what was discussed before this job started.
         # Without this, every voice-client reconnect = amnesia.
         chat_ctx=_seeded_chat_ctx,
-        # Tool surface. Shell + file primitives come from the registry
-        # framework via load_all_livekit_tools() (terminal / read_file /
-        # write_file / patch / search_files); everything else is wired
-        # explicitly below. This build has NO handoff subagents — the
-        # supervisor does all work directly (subagent teardown). The
-        # browser / computer-use / desktop-handoff capabilities were
-        # dropped and will be re-added via a later registry-based port.
-        #
-        # What stays here:
-        #   - Registry tools: terminal, read_file, write_file, patch,
-        #     search_files (load_all_livekit_tools())
-        #   - Plan mode: enter/exit/read_plan
-        #   - Information (read-only): web_search, web_fetch, current_time,
-        #     date_math, calc, glob_files, grep_files, location trio
-        #   - set_screen_share (track toggle), skills, tasks, monitors,
-        #     worktrees, code-search, memory
-        tools=load_all_livekit_tools() + [
-            # Plan mode (replaces the legacy planner subagent).
-            # enter_plan_mode → bash/edit/write refuse, supervisor
-            # explores via read/grep/glob and drafts a plan;
-            # exit_plan_mode(plan=...) records and re-enables writes.
-            _enter_plan_mode_tool,
-            _exit_plan_mode_tool,
-            _read_plan_tool,
-            # Information / read-only (safe for supervisor)
-            web_search,
-            web_fetch,
-            current_time,
-            date_math,
-            calc,
-            glob_files,
-            grep_files,
-            # Location — split into TWO tools 2026-05-17:
-            #   saved_address     — user's declared address (file-backed)
-            #   current_location  — IP/Wi-Fi/Google live lookup (with
-            #                       precision marker; LLM cannot voice
-            #                       detail finer than the band)
-            #   set_saved_address — writer for saved_address
-            # See prompts/supervisor.md "LOCATION QUESTIONS" for routing.
-            saved_address,
-            current_location,
-            set_saved_address,
-            # set_screen_share — voice-command toggle for the screen-
-            # share track. "share my screen" / "stop sharing" etc.
-            # Lets the user start sharing without reaching for the
-            # tray. POSTs to voice-client :8767/screen-share with
-            # ack=false so the supervisor handles the voiced reply
-            # itself (no double-ack).
-            set_screen_share,
-            # Skills system — Claude-Code-parity. Skills are markdown
-            # recipes in ~/.jarvis/skills/<name>/SKILL.md and the
-            # bundled src/voice-agent/skills/. list_skills enumerates
-            # them; run_skill loads the body as a turn-scoped
-            # instruction the supervisor follows using existing tools.
-            list_skills,
-            run_skill,
-            # Task family — port of claude-code's TaskCreate / TaskGet /
-            # TaskList / TaskUpdate + TodoWrite (2026-05-12). Use for
-            # multi-step user requests: maintain ONE in_progress task
-            # at a time, mark completed as soon as done. Storage at
-            # ~/.jarvis/voice-tasks/<list-id>/, durable across sessions
-            # by default; JARVIS_TASK_LIST_ID env scopes per-feature.
-            _task_create_tool,
-            _task_list_tool,
-            _task_update_tool,
-            _task_delete_tool,
-            _todo_write_tool,
-            # Structured multiple-choice asks (2026-05-12) — voice-
-            # adapted port of claude-code's AskUserQuestion. Tool
-            # returns voice-friendly phrasing; supervisor voices it
-            # verbatim then STOPS, matches next user utterance against
-            # option labels (see CLARIFYING WITH OPTIONS section of
-            # supervisor.md).
-            _ask_user_question_tool,
-            # Background-command monitoring (2026-05-12) — port of
-            # claude-code's Monitor, voice-adapted to poll-on-demand
-            # instead of push-into-conversation. Spawn long runners
-            # like `tail -f`, `npm run dev`, polling loops; check
-            # their progress later by id without blocking the turn.
-            # See BACKGROUND MONITORS section of supervisor.md.
-            _monitor_start_tool,
-            _monitor_status_tool,
-            _monitor_stop_tool,
-            _monitor_list_tool,
-            # Git worktrees (2026-05-12) — port of claude-code's
-            # EnterWorktree / ExitWorktree. Spawns isolated checkouts
-            # under <repo>/.worktrees/<name>/ on a fresh branch so
-            # the supervisor can run experiments / destructive ops
-            # without touching the user's main checkout. See GIT
-            # WORKTREES section of supervisor.md.
-            _enter_worktree_tool,
-            _exit_worktree_tool,
-            _list_worktrees_tool,
-            # Symbol search (2026-05-12) — LSP-lite via git grep.
-            # find_definitions: where IS symbol X defined?
-            # find_references: where is X used? See CODE SEARCH section
-            # of supervisor.md.
-            _find_definitions_tool,
-            _find_references_tool,
-            # Memory — recall_conversation searches transcript history;
-            # remember/forget/list_memories operate on the durable
-            # facts store (state.db.memories) that survives chat delete.
-            # See docs/superpowers/specs/2026-05-03-jarvis-memory-layer-design.md.
-            recall_conversation,
-            # list_pending_proposals / accept_proposal / reject_proposal
-            # intentionally unwired 2026-05-12 — autonomous self-evolution
-            # via pipeline.evolution.lifecycle writes changes to
-            # ~/Documents/jarvis-evolution/<date>.md instead of pinging
-            # the user via voice. Tool functions stay defined so the diff
-            # stays small, but they no longer surface to the supervisor.
-            *([
-                tools.memory.remember,
-                tools.memory.forget,
-                tools.memory.list_memories,
-                tools.memory.audit_memories,
-            ] if _MEMORY_AVAILABLE else []),
-            # NOTE: Face ID (face_register/identify/list/delete) was part
-            # of tools.computer_use, dropped in the teardown. No handoff
-            # subagents either — build_all_transfer_tools() is gone, so
-            # this build's supervisor has no transfer_to_* tools. Both
-            # will return via a later registry-based port.
-        ],
+        # Tool surface — REGISTRY-ONLY. Every tool the supervisor can
+        # call comes from load_all_livekit_tools(), which discovers each
+        # self-registering tool module under tools/ (terminal / read_file /
+        # write_file / patch / search_files today) and adapts it to a
+        # RawFunctionTool. There is NO inline `+ [...]` list anymore:
+        # the previously-restored JARVIS tools (memory ×4, skills,
+        # plan-mode, tasks, monitors, worktrees, code-search,
+        # set_screen_share, ask_user_question) and the inline @function_tool
+        # defs (web_search/web_fetch/current_time/date_math/calc/glob_files/
+        # grep_files/recall_conversation/location trio) were deliberately
+        # dropped from the surface — the supervisor is pure-registry while
+        # those capabilities are re-ported into the registry framework one
+        # wave at a time. (The location/web/recall inline defs still exist
+        # at module scope — they back the strict_schema_relax regression
+        # tests — but they are intentionally NOT registered here, so the
+        # LLM never sees them.) This build also has NO handoff subagents
+        # and NO transfer_to_* tools; both return via a later registry port.
+        tools=load_all_livekit_tools(),
     )
 
     # NOTE: An in-asyncio-loop watchdog here does NOT reach systemd.
