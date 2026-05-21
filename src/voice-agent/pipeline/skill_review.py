@@ -33,15 +33,28 @@ mode the memory-quality findings flagged (see the meta-paraphrase reject
 filter in ``pipeline.memory_extractor``). Proposals are cheap to review;
 junk writes are expensive to clean up.
 
-NOT IN THE LIVE LOOP
---------------------
-This module is MANUAL-ENTRY ONLY. It is never imported by
-``jarvis_agent.py`` / ``agent_session`` and never fires on a turn
-boundary. It runs from the ``bin/jarvis-skill-review`` CLI (or a future
-scheduled job). Reason: it reads turns AFTER they land in telemetry, runs
-a non-trivial aux-LLM per turn, and (when applied) writes to the skill
-store — none of which belongs on the latency-critical voice path, and all
-of which would re-introduce the auto-spam risk if it fired per turn.
+TWO ENTRY POINTS
+----------------
+1. MANUAL/CLI (propose-first, double-gated):
+   ``run_review(limit, apply)`` runs from the ``bin/jarvis-skill-review``
+   CLI. By DEFAULT it only proposes; auto-apply needs BOTH the
+   ``apply=True`` arg AND ``JARVIS_SKILL_REVIEW_APPLY=1``. This is the
+   batch/over-recent-turns surface.
+
+2. LIVE/AUTONOMOUS (auto-apply by default, off the latency path):
+   ``autonomous_review_turn(snapshot)`` / ``fire_self_improvement(snapshot)``
+   review the JUST-COMPLETED turn and AUTONOMOUSLY APPLY validated
+   proposals — the self-improvement loop writes skills/memory on its own.
+   This is the substrate adaptation of the upstream "background review
+   thread" that auto-writes after a turn. It is fired fire-and-forget from
+   ``jarvis_agent.py`` on the turn boundary (alongside the memory
+   extractor), NEVER awaited inline, and is fully no-op'd by the kill
+   switch ``JARVIS_SELF_IMPROVE_DISABLED=1``. The SAME guard chain runs on
+   this path: ``parse_review_output`` (which calls ``validate_name`` +
+   the ``_META_PARAPHRASE_RE`` junk filter + memory-category checks) and
+   ``apply_proposal`` (which runs ``validate_skill_markdown`` inside
+   ``skills_authoring``). Auto-spam is held back by the conservative
+   hard-turn gate (only complex turns are reviewed) plus those validators.
 
 Three-step design so unit tests can cover selection + parsing without a
 live LLM or network:
@@ -793,3 +806,168 @@ async def run_review(limit: int = 10, apply: bool = False, llm_fn: LLMFn | None 
 def run_review_sync(limit: int = 10, apply: bool = False) -> ReviewRun:
     """Sync wrapper for the CLI (which runs outside an event loop)."""
     return asyncio.run(run_review(limit=limit, apply=apply))
+
+
+# ── Autonomous live trigger (fired off the turn boundary) ─────────────
+# The self-improvement loop's live path. Mirrors the upstream "background
+# review thread that auto-writes after a turn" on JARVIS's async voice
+# substrate: instead of a daemon thread forking an agent, the voice worker
+# fires a fire-and-forget asyncio task on the turn boundary (see
+# jarvis_agent.py, alongside the memory extractor's create_task). On the
+# autonomous path, validated proposals APPLY BY DEFAULT — no
+# JARVIS_SKILL_REVIEW_APPLY needed. Held back only by (a) the conservative
+# hard-turn gate below and (b) the full validator/junk-filter chain that
+# parse_review_output + apply_proposal already enforce.
+
+
+def self_improve_disabled() -> bool:
+    """Single master kill-switch for the autonomous loop. When
+    ``JARVIS_SELF_IMPROVE_DISABLED=1`` BOTH the review and the curator
+    fire sites are no-ops. Read at call time so a runtime env edit takes
+    effect without a process restart."""
+    return os.environ.get("JARVIS_SELF_IMPROVE_DISABLED", "0") == "1"
+
+
+def is_hard_turn(snapshot: TurnSnapshot) -> bool:
+    """Live-turn equivalent of ``select_review_candidates``' WHERE clause:
+    a turn is "hard" (worth a review) iff a subagent fired, OR the
+    computer-use loop ran >=1 step, OR a TASK/REASONING turn produced a
+    long reply (>= ``JARVIS_SKILL_REVIEW_LONG_REPLY_CHARS``). Pure; no I/O.
+
+    Keeping this in lock-step with the SQL criterion means the live
+    autonomous path reviews exactly the same class of turns the batch/CLI
+    path would have picked — banter, short replies, and emotional turns are
+    excluded by construction (the auto-spam guard)."""
+    if snapshot.subagent:
+        return True
+    if snapshot.computer_use_steps and snapshot.computer_use_steps >= 1:
+        return True
+    if snapshot.route in ("TASK", "REASONING") and len(
+        snapshot.jarvis_text or ""
+    ) >= _long_reply_chars():
+        return True
+    return False
+
+
+async def autonomous_review_turn(
+    snapshot: TurnSnapshot, llm_fn: LLMFn | None = None
+) -> list[ApplyResult]:
+    """Review ONE just-completed turn and AUTONOMOUSLY APPLY validated
+    proposals (the self-improvement loop's auto-write).
+
+    Differs from ``run_review`` in two ways: (1) it reviews a single live
+    snapshot rather than re-querying telemetry, and (2) it APPLIES BY
+    DEFAULT — there is no ``JARVIS_SKILL_REVIEW_APPLY`` gate on this path;
+    apply is suppressed ONLY by the master kill switch.
+
+    Guard chain (unchanged, all preserved):
+      - ``self_improve_disabled()`` → immediate no-op (no LLM, no apply).
+      - ``review_turn`` → ``parse_review_output`` runs ``validate_name`` +
+        the ``_META_PARAPHRASE_RE`` junk filter + memory-category/length
+        checks; invalid/narration proposals never become Proposal objects.
+      - ``apply_proposal`` → ``create_user_skill`` / ``patch_user_skill``
+        run ``validate_skill_markdown`` inside ``skills_authoring``.
+
+    NEVER raises — any failure returns ``[]`` so the turn handler that
+    fired this can't break. Returns the list of ``ApplyResult``."""
+    if self_improve_disabled():
+        logger.debug(
+            "[skill_review] autonomous review skipped — "
+            "JARVIS_SELF_IMPROVE_DISABLED=1"
+        )
+        return []
+    try:
+        proposals = await review_turn(snapshot, llm_fn=llm_fn)
+    except Exception as e:  # defense-in-depth — review_turn already guards
+        logger.warning(
+            "[skill_review] autonomous review_turn error on turn %s: %s: %s",
+            snapshot.turn_id,
+            type(e).__name__,
+            e,
+        )
+        return []
+    if not proposals:
+        return []
+
+    results: list[ApplyResult] = []
+    for p in proposals:
+        try:
+            res = apply_proposal(p)
+        except Exception as e:  # apply_proposal already guards, belt+braces
+            res = ApplyResult(proposal=p, ok=False, detail=f"{type(e).__name__}: {e}")
+        results.append(res)
+        logger.info(
+            "[skill_review] autonomous applied %s ok=%s detail=%s (turn %s)",
+            p.kind,
+            res.ok,
+            res.detail,
+            snapshot.turn_id,
+        )
+    return results
+
+
+async def _run_curator_off_loop() -> None:
+    """Run the interval-gated curator without ever blocking the event loop.
+    ``maybe_run_curation`` is sync + does file I/O, so it runs in a thread
+    executor. Self-gates by interval (``should_run_now``) — calling it every
+    turn boundary is fine; it only acts when due. Never raises."""
+    try:
+        from pipeline.curator import maybe_run_curation
+
+        await asyncio.to_thread(maybe_run_curation)
+    except Exception as e:
+        logger.debug(
+            "[skill_review] curator fire failed: %s: %s",
+            type(e).__name__,
+            e,
+        )
+
+
+def fire_self_improvement(snapshot: TurnSnapshot) -> list["asyncio.Task"]:
+    """Turn-boundary fire-and-forget for the autonomous loop. Schedules the
+    background tasks — the per-turn skill review (hard turns only) and the
+    interval-gated curator — and returns IMMEDIATELY. NEVER awaited by the
+    caller; NEVER blocks the voice latency path; NEVER raises.
+
+    Wired into ``jarvis_agent.py`` right alongside the memory extractor's
+    ``create_task`` on the turn boundary. The whole body is guarded so a
+    scheduling failure (e.g. no running loop) is swallowed.
+
+    - Review: only fired when ``is_hard_turn(snapshot)`` — banter/short/
+      emotional turns add no review load.
+    - Curator: ``maybe_run_curation()`` self-gates by interval, so it's safe
+      to invoke every turn boundary; it only acts when due. It is
+      turn-content-agnostic, so it fires regardless of whether THIS turn was
+      hard.
+    - Kill switch: ``JARVIS_SELF_IMPROVE_DISABLED=1`` suppresses BOTH.
+
+    Returns the scheduled tasks (the live caller ignores them; tests await
+    them deterministically). Returns ``[]`` when nothing was scheduled."""
+    tasks: list["asyncio.Task"] = []
+    try:
+        if self_improve_disabled():
+            return tasks
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # Defensive: the live caller is always inside the agent's event
+            # loop, but never crash a (hypothetical) sync caller.
+            logger.debug("[skill_review] fire_self_improvement: no running loop")
+            return tasks
+
+        # 1. Per-turn autonomous review — hard turns only, off the latency
+        #    path. autonomous_review_turn() is itself fully try/except'd.
+        if is_hard_turn(snapshot):
+            tasks.append(loop.create_task(autonomous_review_turn(snapshot)))
+
+        # 2. Interval-gated curator — content-agnostic; self-gates so calling
+        #    it every turn boundary is fine. Runs its sync I/O in a thread.
+        tasks.append(loop.create_task(_run_curator_off_loop()))
+    except Exception as e:  # absolute backstop — must never break a turn
+        logger.warning(
+            "[skill_review] fire_self_improvement failed: %s: %s",
+            type(e).__name__,
+            e,
+        )
+    return tasks

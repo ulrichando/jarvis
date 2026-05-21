@@ -5358,6 +5358,46 @@ async def entrypoint(ctx: JobContext) -> None:
                         apm_delay_ms_p50=_aec.get("apm_delay_ms_p50"),
                         dtln_latency_ms_p95=_aec.get("dtln_latency_ms_p95"),
                     )
+                    # ── Autonomous self-improvement loop (fire-and-forget) ──
+                    # Mirrors the upstream "background review thread that
+                    # auto-writes after a turn" on JARVIS's async substrate.
+                    # The memory extractor fires the same way in
+                    # on_user_turn_completed (create_task, never awaited);
+                    # this fires the SKILL review + the interval-gated curator
+                    # here — the turn row was just written above, so we have
+                    # the full just-completed turn (user text + reply + route
+                    # + subagent + computer_use steps) to review.
+                    #
+                    # MUST be off the latency path: TTS has already streamed
+                    # by the time this assistant-turn-landed handler runs, and
+                    # fire_self_improvement schedules background tasks and
+                    # returns immediately (never awaited). The whole call is
+                    # try/except'd here AND internally so a review failure can
+                    # never break the turn. Hard-turn gate + validators +
+                    # junk-filter live inside the engine. Master kill switch:
+                    # JARVIS_SELF_IMPROVE_DISABLED=1.
+                    try:
+                        from pipeline.skill_review import (
+                            TurnSnapshot as _TurnSnapshot,
+                            fire_self_improvement as _fire_self_improvement,
+                        )
+
+                        _fire_self_improvement(_TurnSnapshot(
+                            turn_id=0,  # live turn — content carried directly
+                            ts_utc="",
+                            user_text=(
+                                getattr(session, "_jarvis_turn_user_text", "")
+                                or ""
+                            ),
+                            jarvis_text=text or "",
+                            route=(getattr(session, "_jarvis_route", None) or ""),
+                            subagent=(subagent or ""),
+                            computer_use_steps=int(cua_steps or 0),
+                        ))
+                    except Exception as _sie:
+                        logger.debug(
+                            f"[skill_review] fire wiring skipped: {_sie}"
+                        )
                     # Reset usage stash for next turn.
                     session._jarvis_last_input_tokens = None
                     session._jarvis_last_output_tokens = None
