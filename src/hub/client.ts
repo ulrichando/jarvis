@@ -137,7 +137,8 @@ export class HubClient extends HubClientBase {
         sql += 'WHERE category = ? '
         params.push(opts.category)
       }
-      sql += 'ORDER BY use_count DESC, updated_ts DESC LIMIT ?'
+      // Recency, not use_count — see voice-agent fix 2026-05-20.
+      sql += 'ORDER BY updated_ts DESC LIMIT ?'
       params.push(limit)
       return db.query(sql).all(...params) as Memory[]
     } finally {
