@@ -265,50 +265,20 @@ from pipeline.dispatching_llm import DispatchingLLM
 from pipeline.dispatching_tts import DispatchingTTS
 from pipeline.turn_telemetry import init_db, log_turn, log_launch_attempt, DEFAULT_DB_PATH
 
-# Subagent registry — auto-registers built-in specs on import
-# (see subagents/__init__.py). build_all_transfer_tools() returns
-# the @function_tool list for every enabled spec; gets attached to
-# JarvisAgent's tools=[…] at construction. No circular import: the
-# subagents' tool_factories are lazy callables that import from
-# jarvis_agent only when a subagent is actually instantiated.
-from subagents.agent import build_all_transfer_tools
-
 logger = logging.getLogger("jarvis")
 
-# Desktop computer-use tools — Kimi vision describes the screen,
-# xdotool drives mouse/keyboard. Tools are registered in the
-# tools=[] list of session.start() below.
-from tools.computer_use import (
-    computer_use,
-    computer_stop,
-    click,
-    type_text,
-    scroll,
-    drag,
-    key_press,
-    wait,
-    screenshot,
-    live_screen,
-    webcam_capture,
-    face_register,
-    face_identify,
-    face_list,
-    face_delete,
-)
-from tools.browser import browser_task
+# Shell + file tools now come from the registry tool-loading framework
+# (tools/registry.py + tools/_adapter.py). load_all_livekit_tools()
+# discovers every self-registered tool (terminal/read_file/write_file/
+# patch/search_files) and adapts each into a RawFunctionTool. The
+# result is spread into JarvisAgent's tools=[…] at construction.
+from tools._adapter import load_all_livekit_tools
+
+# Screen-share toggle and skills system stay as direct LiveKit
+# @function_tool modules (not registry-loaded).
 from tools.screen_share_control import set_screen_share
 from tools.skill_runner import list_skills, run_skill
-from tools.schedule import schedule, confirm_schedule, list_schedules, cancel_schedule
 
-# ── Direct in-process tools ported from claude-code (M1 — 2026-05-05) ─
-# These four replace the run_jarvis_cli + jarvis-cli round-trip for
-# atomic file ops + shell. Voice LLM calls them directly: ~50 ms vs
-# 5-15 s for run_jarvis_cli. Full descriptions + safety lifted from
-# claude-code's BashTool / FileReadTool / FileEditTool / FileWriteTool.
-from tools.bash import bash as _bash_tool
-from tools.file_read import read as _read_tool
-from tools.file_edit import edit as _edit_tool
-from tools.file_write import write as _write_tool
 # Plan mode (replaces the legacy planner subagent) — ported from
 # claude-code's commands/plan/plan.tsx + tools/EnterPlanModeTool +
 # utils/plans.ts. The supervisor itself enters plan mode for non-trivial
@@ -659,15 +629,15 @@ def inject_handoff_refused_marker(session, chat_ctx) -> None:
                 self.content = content
 
         chat_ctx.items.append(_StubMsg("system", [marker_text]))
-    # Clear the flag — single-shot marker per refusal event.
+    # Clear the flag — single-shot marker per refusal event. (The
+    # subagents.agent._clear_handoff_refused helper was removed in the
+    # subagent teardown; clear the session attr directly. This whole
+    # path is dormant without subagents — the flag is never set — but
+    # kept so a later subagent re-port can reuse the marker injection.)
     try:
-        from subagents.agent import _clear_handoff_refused
-        _clear_handoff_refused(session)
+        session._jarvis_last_handoff_refused = False
     except Exception:
-        try:
-            session._jarvis_last_handoff_refused = False
-        except Exception:
-            pass
+        pass
 
 
 def _session_close_needs_restart(ev) -> bool:
@@ -2013,15 +1983,10 @@ def _truncate(text: str, cap: int = _DIRECT_TOOL_OUTPUT_CAP) -> str:
     return text[:cap] + f"\n…[truncated {len(text) - cap} bytes]"
 
 
-# Legacy bash() body removed 2026-05-16 per global review §P0-19.
-# The canonical implementation is `tools/bash.py::bash` (imported as
-# `_bash_tool` above and registered in JarvisAgent's tools=[…] below).
-# We re-export it as the module-level `bash` so:
-#   - subagents/desktop.py's `from jarvis_agent import bash` still works
-#   - tests/test_strict_schema_relax.py's `bash` attribute probe still finds it
-#   - there's only ONE implementation, eliminating the registration-order
-#     footgun the legacy 47-line version created.
-bash = _bash_tool
+# The shell tool now ships from the registry framework as `terminal`
+# (tools/terminal_tool.py), loaded via load_all_livekit_tools(). The
+# legacy module-level `bash` re-export (for the retired subagents/
+# desktop.py) was dropped with the subagent teardown.
 
 
 @function_tool
@@ -3703,6 +3668,22 @@ class JarvisAgent(Agent):
             logger.info(f"[stt-gate] dropped: {text[:80]!r} reason={gr}")
             raise StopResponse()
 
+        # Echo-aware barge-in (2026-05-20): with a hot mic during TTS, a
+        # finalized "user turn" may be JARVIS's own speech echoing back. Drop
+        # it so echo never becomes a phantom request. Only matches within
+        # RECENT_SPEECH_TTL of speech end (else recent_speaking_text() is "").
+        drop_echo = False
+        try:
+            from pipeline import echo_gate, speaking_tracker
+            drop_echo = echo_gate.enabled() and echo_gate.is_echo(
+                text, speaking_tracker.recent_speaking_text(2.0)
+            )
+        except Exception as e:
+            logger.debug(f"[echo-gate] turn check skipped: {e}")
+        if drop_echo:
+            logger.info(f"[echo-gate] dropped phantom echo-turn: {text[:80]!r}")
+            raise StopResponse()
+
         if _is_silent():
             # Silent mode: only the wake-up family unblocks JARVIS.
             # Use _is_command (length-bounded) instead of bare substring
@@ -4269,63 +4250,16 @@ def _build_llm_stack() -> dict:
 
 
 def _spawn_screen_share_watcher(session) -> None:
-    """Spawn the tray-screen-share file watcher. Step 8b of the 10/10
-    refactor. Polls `~/.jarvis/start-screen-share` once a second;
-    when the file appears (written by the tray's "Start Screen
-    Sharing" menu), reads the duration, deletes the sentinel, and
-    runs `live_screen(N)`. The per-frame description is voiced via
-    `session.say()` so the user hears it without an LLM round-trip."""
-    SCREEN_SHARE_FILE = Path.home() / ".jarvis" / "start-screen-share"
+    """No-op since the subagent/computer-use teardown.
 
-    async def _watch_screen_share() -> None:
-        # Use the polling helper directly so we can stream each frame's
-        # description via session.say() as it arrives, instead of waiting
-        # for the full session to end.
-        from tools.computer_use import _live_screen_polling
-        while True:
-            try:
-                await asyncio.sleep(1.0)
-                if not SCREEN_SHARE_FILE.exists():
-                    continue
-                try:
-                    raw = SCREEN_SHARE_FILE.read_text(encoding="utf-8").strip()
-                    duration = int(raw) if raw.isdigit() else 30
-                except Exception:
-                    duration = 30
-                try:
-                    SCREEN_SHARE_FILE.unlink(missing_ok=True)
-                except Exception:
-                    pass
-                logger.info(f"[screen-share] tray-triggered, {duration}s polling")
-                try:
-                    await session.say(f"Watching your screen for {duration} seconds.")
-                except Exception:
-                    pass
-
-                async def _voice_frame(desc: str) -> None:
-                    try:
-                        await session.say(desc)
-                    except Exception as e:
-                        logger.warning(f"[screen-share] frame say() failed: {e}")
-
-                try:
-                    await _live_screen_polling(
-                        duration_s=duration,
-                        interval_s=2.5,
-                        on_frame=_voice_frame,
-                    )
-                except Exception as e:
-                    logger.warning(f"[screen-share] polling error: {e}")
-                    try:
-                        await session.say(f"Screen-share failed: {e}")
-                    except Exception:
-                        pass
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.warning(f"[screen-share] watcher error: {e}")
-
-    asyncio.create_task(_watch_screen_share())
+    The tray-screen-share file watcher streamed per-frame vision
+    descriptions via ``tools.computer_use._live_screen_polling`` (the
+    vision backend), which was removed. The ``set_screen_share`` tool
+    (which toggles the WebRTC track) is unaffected; only the live
+    per-frame narration loop is gone. A later wave can re-add frame
+    narration once a vision backend is re-ported. Kept as a stub so the
+    entrypoint call site is unchanged."""
+    return
 
 
 def _spawn_worker_heartbeat() -> None:
@@ -4693,6 +4627,31 @@ def _register_state_tracking_handlers(session) -> None:
         except Exception as e:
             logger.debug(f"[kill-phrase] check skipped: {e}")
 
+    @session.on("user_input_transcribed")
+    def _on_user_input_echo_aware_interrupt(ev) -> None:
+        """Echo-aware barge-in (2026-05-20). With a hot mic during TTS, the
+        raw VAD-direct handler can't tell the user from JARVIS's own echo.
+        This fires interrupt only when the (streaming Nova-3) transcript
+        carries NOVEL words — not JARVIS echoing back. Echo → ignored.
+        Spec: docs/superpowers/specs/2026-05-20-echo-aware-bargein-gate-design.md
+        """
+        try:
+            from pipeline import echo_gate, speaking_tracker
+            if not echo_gate.enabled():
+                return
+            if getattr(session, "agent_state", "") != "speaking":
+                return
+            text = (getattr(ev, "transcript", "") or "").strip()
+            if not text:
+                return
+            if echo_gate.is_echo(text, speaking_tracker.current_speaking_text()):
+                return  # JARVIS hearing itself — not a real interruption
+            logger.info(f"[echo-bargein] novel speech during TTS → interrupt: {text[:60]!r}")
+            session.interrupt()
+            session._jarvis_was_interrupted = True
+        except Exception as e:
+            logger.debug(f"[echo-bargein] check skipped: {e}")
+
     @session.on("user_state_changed")
     def _on_user_state_for_interrupt(ev) -> None:
         """VAD-direct barge-in (Path A step 1, 2026-05-18).
@@ -4721,6 +4680,16 @@ def _register_state_tracking_handlers(session) -> None:
             agent_state = getattr(session, "agent_state", "")
             if agent_state != "speaking":
                 return
+            # Echo-aware barge-in: the raw VAD onset is echo-blind (a hot mic
+            # hears JARVIS's own voice). In echo-aware mode, defer the interrupt
+            # decision to the STT-partial handler above, which compares the
+            # transcript against what JARVIS is saying. (pipeline/echo_gate)
+            try:
+                from pipeline import echo_gate
+                if echo_gate.enabled():
+                    return
+            except Exception:
+                pass
             # Mark for telemetry first (preserves the old behaviour
             # other code may rely on).
             session._jarvis_was_interrupted = True
@@ -4932,8 +4901,11 @@ async def entrypoint(ctx: JobContext) -> None:
     llm_arg            = _stack["llm_arg"]
     tts_arg            = _stack["tts_arg"]
 
+    # No handoff subagents in this build (subagent teardown). The
+    # picker ignores `subagent_tools` anyway (returns legacy_llm); pass
+    # an empty list to keep the call-site signature stable.
     llm_arg = _pick_supervisor_llm(
-        subagent_tools=build_all_transfer_tools(),
+        subagent_tools=[],
         legacy_llm=llm_arg,
     )
 
@@ -4982,7 +4954,14 @@ async def entrypoint(ctx: JobContext) -> None:
         # Shape: TurnHandlingOptions TypedDict with three sections.
         turn_handling={
             "interruption": {
-                "enabled": True,
+                # 2026-05-20 echo-aware barge-in: when the echo gate is ON
+                # (default), DISABLE the framework's built-in VAD interruption —
+                # with a hot mic during TTS it would self-interrupt on JARVIS's
+                # OWN echo, independent of our handlers. JARVIS's echo-aware
+                # STT-partial handler + kill-phrase handler own interruption
+                # instead. Mirrors pipeline.echo_gate.enabled() (env
+                # JARVIS_ECHO_AWARE_BARGEIN; '0' restores framework interruption).
+                "enabled": os.environ.get("JARVIS_ECHO_AWARE_BARGEIN", "1") == "0",
                 # Mode 2026-05-18: explicit "vad" rather than absent
                 # (auto-detect). Absent would try AdaptiveInterruption
                 # via livekit.cloud/agent-gateway first — JARVIS runs
@@ -5373,18 +5352,12 @@ async def entrypoint(ctx: JobContext) -> None:
                     cache_read = getattr(session, "_jarvis_last_cache_read_tokens", 0) or 0
                     cua_steps = getattr(session, "_jarvis_last_cua_steps", None)
                     cua_cost = getattr(session, "_jarvis_last_cua_cost", None)
-                    # Browser-backend stash from subagents/browser.py::_browser_tools
-                    # — populated only when the browser subagent ran this turn.
-                    # We read the module global and clear it after use so the
-                    # next turn starts None (no stale 'ext'/'cdp' value).
+                    # Browser-backend telemetry — always None in this build.
+                    # The browser subagent (which stashed 'ext'/'cdp' here)
+                    # was removed in the subagent teardown; the log_turn
+                    # column is retained for schema stability and will be
+                    # repopulated when a browser tool is re-ported.
                     browser_backend_used: Optional[str] = None
-                    if subagent == "browser":
-                        try:
-                            from subagents import browser as _browser_mod
-                            browser_backend_used = _browser_mod._LAST_CHOSEN_BACKEND
-                            _browser_mod._LAST_CHOSEN_BACKEND = None
-                        except Exception:
-                            browser_backend_used = None
                     # T11 (2026-05-19) — confab_check_state per-turn audit.
                     # Computed BEFORE log_turn so spec acceptance A5
                     # ("confab_check_state queryable on every turn written
@@ -5537,45 +5510,23 @@ async def entrypoint(ctx: JobContext) -> None:
         # LLM sees what was discussed before this job started.
         # Without this, every voice-client reconnect = amnesia.
         chat_ctx=_seeded_chat_ctx,
-        # Tool surface — see run_jarvis_cli vs bash vs specialized
-        # primitives doc upthread for routing.
-        # Supervisor tool list — DELIBERATELY MINIMAL. JarvisAgent is
-        # the orchestrator/router only. ALL action work (open apps,
-        # click, type, drag, screenshot, browser automation, multi-step
-        # plans, media playback) goes through transfer_to_desktop
-        # → DesktopActionsAgent subagent. The narration trap (LLM
-        # claims "I've opened Chrome" without firing any tool) was the
-        # downstream symptom of giving the supervisor too many tools.
-        # With nothing it can do directly, it MUST handoff for action.
+        # Tool surface. Shell + file primitives come from the registry
+        # framework via load_all_livekit_tools() (terminal / read_file /
+        # write_file / patch / search_files); everything else is wired
+        # explicitly below. This build has NO handoff subagents — the
+        # supervisor does all work directly (subagent teardown). The
+        # browser / computer-use / desktop-handoff capabilities were
+        # dropped and will be re-added via a later registry-based port.
         #
         # What stays here:
-        #   - Memory: recall_conversation, remember_this, learned-rule mgmt
-        #   - Information: web_search, web_fetch, current_time, date_math,
-        #     calc, read_file, glob_files, grep_files
-        #     (these are read-only; no narration-trap risk)
-        #   - Face ID (read-only CV; no action effect)
-        #   - The ONE handoff: transfer_to_desktop
-        #
-        # What was removed:
-        #   - bash → desktop subagent
-        #   - run_jarvis_cli → desktop subagent (multi-step plans)
-        #   - media_control → desktop subagent (playback)
-        #   - type_in_terminal → desktop subagent
-        #   - computer_use family + screenshot family → desktop subagent
-        #   - browser_task → desktop subagent (subagent's tools list)
-        # All preserved on DesktopActionsAgent; nothing was lost.
-        tools=[
-            # Direct in-process tools (claude-code-grade, ported M1)
-            #   - bash:    shell command execution (replaces run_jarvis_cli
-            #              for atomic shell ops; ~50 ms vs 5-15 s)
-            #   - read:    full file read with cat -n + offset/limit
-            #              (replaces 8 KB-cap legacy `read_file`)
-            #   - edit:    exact-string replacement w/ read-first invariant
-            #   - write:   full-file write w/ read-first for existing files
-            _bash_tool,
-            _read_tool,
-            _edit_tool,
-            _write_tool,
+        #   - Registry tools: terminal, read_file, write_file, patch,
+        #     search_files (load_all_livekit_tools())
+        #   - Plan mode: enter/exit/read_plan
+        #   - Information (read-only): web_search, web_fetch, current_time,
+        #     date_math, calc, glob_files, grep_files, location trio
+        #   - set_screen_share (track toggle), skills, tasks, monitors,
+        #     worktrees, code-search, memory
+        tools=load_all_livekit_tools() + [
             # Plan mode (replaces the legacy planner subagent).
             # enter_plan_mode → bash/edit/write refuse, supervisor
             # explores via read/grep/glob and drafts a plan;
@@ -5601,18 +5552,6 @@ async def entrypoint(ctx: JobContext) -> None:
             saved_address,
             current_location,
             set_saved_address,
-            # screenshot — read-only "what's on my screen?" tool.
-            # Added to the supervisor 2026-05-11 evening after the
-            # desktop-subagent routing produced a capability-denial
-            # bug (Claude said "I don't have a screenshot tool active"
-            # instead of either calling the tool or transferring).
-            # screenshot() is read-only and stateless — no narration-
-            # trap risk (the tool result IS the description; the LLM
-            # weaves it into the reply rather than fabricating one).
-            # With the screen_share_observer caching, the call returns
-            # in ~0s when screen-share is active, so direct-on-supervisor
-            # is also a speed win.
-            screenshot,
             # set_screen_share — voice-command toggle for the screen-
             # share track. "share my screen" / "stop sharing" etc.
             # Lets the user start sharing without reaching for the
@@ -5627,14 +5566,6 @@ async def entrypoint(ctx: JobContext) -> None:
             # instruction the supervisor follows using existing tools.
             list_skills,
             run_skill,
-            # Between-turn scheduler (2026-05-20) — lets the supervisor
-            # set reminders and recurring jobs that fire between turns.
-            # schedule/confirm_schedule/list_schedules/cancel_schedule.
-            # Backend: pipeline.cron_scheduler + pipeline.cron_delivery.
-            schedule,
-            confirm_schedule,
-            list_schedules,
-            cancel_schedule,
             # Task family — port of claude-code's TaskCreate / TaskGet /
             # TaskList / TaskUpdate + TodoWrite (2026-05-12). Use for
             # multi-step user requests: maintain ONE in_progress task
@@ -5695,19 +5626,11 @@ async def entrypoint(ctx: JobContext) -> None:
                 tools.memory.list_memories,
                 tools.memory.audit_memories,
             ] if _MEMORY_AVAILABLE else []),
-            # Face ID — read-only CV
-            face_register,
-            face_identify,
-            face_list,
-            face_delete,
-            # Registry-supplied subagent handoffs. The legacy
-            # `transfer_to_desktop` on this class still owns the
-            # desktop spec (registered with enabled=False to avoid the
-            # name collision); the registry contributes additional
-            # transfer tools (planner, browser when shipped, etc.).
-            # Adding a new subagent = one file under subagents/,
-            # one register() call, no edits here.
-            *build_all_transfer_tools(),
+            # NOTE: Face ID (face_register/identify/list/delete) was part
+            # of tools.computer_use, dropped in the teardown. No handoff
+            # subagents either — build_all_transfer_tools() is gone, so
+            # this build's supervisor has no transfer_to_* tools. Both
+            # will return via a later registry-based port.
         ],
     )
 
