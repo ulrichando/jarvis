@@ -491,6 +491,13 @@ from pipeline.wake_word import (
     BARE_VOCATIVE_RE as _BARE_VOCATIVE_RE,
     INLINE_STRIP_RE  as _INLINE_VOCATIVE_STRIP_RE,
 )
+# Memory-write engagement gate (2026-05-20 ambient-pollution fix) —
+# module-level import so a load failure is loud at startup rather than
+# silently disabling all memory writes at runtime. See pipeline/memory_gate.py.
+from pipeline.memory_gate import (
+    note_vocative as _note_vocative,
+    is_write_engaged as _is_write_engaged,
+)
 
 
 # STT-confidence gate (transcript-shape filter) — extracted to
@@ -3780,6 +3787,14 @@ class JarvisAgent(Agent):
             logger.info(f"[stt-gate] dropped: {text[:80]!r} reason={gr}")
             raise StopResponse()
 
+        # Arm the memory-write engagement window on any 'Jarvis' vocative.
+        # Cold ambient audio (TV/media the hot mic transcribes) lacks the
+        # vocative, so it's never written to long-term memory. Placed before
+        # the silent/mute early-returns so a wake turn arms the window for the
+        # following content turn. See pipeline/memory_gate.py (2026-05-20).
+        if _JARVIS_NAME_RE.search(text):
+            _note_vocative()
+
         if _is_silent():
             # Silent mode: only the wake-up family unblocks JARVIS.
             # Use _is_command (length-bounded) instead of bare substring
@@ -3901,7 +3916,8 @@ class JarvisAgent(Agent):
             # via _memory_id dedup). Fire-and-forget publish; zero latency
             # added to the supervisor reply path.
             try:
-                trigger = detect_capture_trigger(text)
+                # Engagement gate: skip memory writes on cold ambient turns.
+                trigger = detect_capture_trigger(text) if _is_write_engaged() else None
                 if trigger is not None:
                     cap_category, cap_content = trigger
                     logger.info(
@@ -3941,7 +3957,14 @@ class JarvisAgent(Agent):
                     )
 
             # Don't await — the extractor must NOT block the supervisor reply.
-            _asyncio.create_task(_run_extractor_and_publish(text))
+            # Gate on engagement: only write memory for vocative-armed turns,
+            # never cold ambient audio (2026-05-20 ambient-pollution fix).
+            if _is_write_engaged():
+                _asyncio.create_task(_run_extractor_and_publish(text))
+            else:
+                logger.info(
+                    f"[memory-gate] write skipped (no recent vocative): {text[:60]!r}"
+                )
         except Exception as e:
             # Defense-in-depth: any failure in the extractor wiring itself
             # (import error, etc.) must not block the user turn.
