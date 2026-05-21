@@ -77,12 +77,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
-# Reuse the extractor's meta-paraphrase reject filter so a proposed
+# Reuse the file-memory meta-paraphrase reject filter so a proposed
 # skill/memory that drifts into LLM-narration shape ("The user is
 # X-ing", "It seems to be Y") is dropped by the SAME regex that gates
-# per-turn memory extractions. Single source of truth for "this is
-# narration, not a durable artifact".
-from pipeline.memory_extractor import _META_PARAPHRASE_RE
+# memory-store writes. Single source of truth for "this is narration,
+# not a durable artifact". (Relocated from the retired memory_extractor
+# to pipeline.file_memory on 2026-05-21.)
+from pipeline.file_memory import _META_PARAPHRASE_RE
 
 logger = logging.getLogger("jarvis.skill_review")
 
@@ -557,25 +558,24 @@ def apply_proposal(p: Proposal) -> ApplyResult:
             )
 
         if p.kind == "memory":
-            from tools.memory import _memory_id, _publish_event_async
+            # File-backed memory (2026-05-21): write directly to the store
+            # instead of publishing to the hub `events:memory` stream. Map
+            # the proposal category onto a file-memory target — facts ABOUT
+            # the user (category 'user') land in USER.md; everything else
+            # (feedback / project / reference — JARVIS's own working notes)
+            # lands in MEMORY.md.
+            from pipeline import file_memory
 
             content = p.payload["content"]
-
-            async def _pub() -> None:
-                await _publish_event_async(
-                    "memory.value.upserted",
-                    {
-                        "memory_id": _memory_id(content),
-                        "content": content,
-                        "category": p.payload["category"],
-                        "source_session_id": os.environ.get(
-                            "JARVIS_VOICE_SESSION_ID"
-                        ),
-                    },
-                )
-
-            _run_coro(_pub())
-            return ApplyResult(proposal=p, ok=True, detail="memory.value.upserted")
+            target = "user" if p.payload.get("category") == "user" else "memory"
+            res = file_memory.add(target, content)
+            ok = bool(isinstance(res, dict) and res.get("success"))
+            detail = (
+                f"memory.add target={target}"
+                if ok
+                else str((res or {}).get("error", "memory.add failed"))
+            )
+            return ApplyResult(proposal=p, ok=ok, detail=detail)
 
         return ApplyResult(proposal=p, ok=False, detail=f"unknown kind {p.kind!r}")
     except Exception as e:
