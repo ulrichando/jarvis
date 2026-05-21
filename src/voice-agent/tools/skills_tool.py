@@ -81,6 +81,17 @@ def _handle_skill_view(args: dict) -> str:
         hint = f" Available: {available}" if available else " No skills loaded."
         return f"(unknown skill: {name!r}.{hint})"
 
+    # Track usage telemetry for the curator. Viewing a skill loads its recipe
+    # into the prompt path — that's both a "view" and an active "use". Both
+    # bumps are best-effort and no-op for shipped (non-curatable) skills; a
+    # telemetry failure must never break the tool call.
+    try:
+        from pipeline import skill_usage
+        skill_usage.bump_view(name)
+        skill_usage.record_use(name)
+    except Exception:  # pragma: no cover — defensive; telemetry is best-effort
+        pass
+
     header = f"# {sk.name}\n{sk.description}"
     if sk.when_to_use and sk.when_to_use != sk.description:
         header += f"\n\nWhen to use: {sk.when_to_use}"
