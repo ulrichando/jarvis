@@ -169,7 +169,6 @@ def test_soul_leads_assembled_prompt(monkeypatch):
     monkeypatch.setattr(ja, "_build_runtime_id_block", lambda sid: "\n\n[runtime-id]")
     monkeypatch.setattr(ja, "_build_memory_block", lambda: "")
     monkeypatch.setattr(ja, "_build_breaker_status_block", lambda: "")
-    monkeypatch.setattr(ja, "_load_learned_rules", lambda: "")
 
     state = ja._build_initial_prompt_state("test-speech")
 

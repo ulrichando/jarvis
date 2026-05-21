@@ -1202,45 +1202,11 @@ from pipeline.short_input_gate import (
 )
 
 
-# ── Behavioral learning: rule store ──────────────────────────────────
-#
-# Learned rules live in ~/.jarvis/learned_rules.md as plain bullet
-# lines. They are injected into the system prompt at each session
-# start so JARVIS's LLM treats them as binding constraints —
-# effectively a user-editable extension of JARVIS_INSTRUCTIONS that
-# grows over time without touching the source code.
-#
-# Two sources used to populate the file:
-#   1. Voice corrections — the `remember_this` tool, called when the
-#      user says "remember that" / "that was wrong" / "note for future".
-#      Written immediately; JARVIS treats them as in-effect for the
-#      rest of the current session via its conversation context.
-#   2. Autonomous self-evolution — pipeline.evolution.* mines telemetry,
-#      runs proposals through the 5-stage evaluator, and auto-stages /
-#      archives / promotes rules without HITL voice prompts. Every
-#      mutation lands in ~/Documents/jarvis-evolution/<date>.md via
-#      pipeline.evolution.changelog. The legacy tools/log_analyzer.py
-#      that wrote to learned_rules.proposals.md was retired 2026-05-12.
-#
-# Design constraints:
-#   - Rules are append-only; old entries are never auto-deleted.
-#   - Cap at MAX_LEARNED_RULES (100) to prevent context-window bloat;
-#     the oldest entries beyond the cap are silently dropped from the
-#     injected block (the file itself is untouched).
-#   - _load_learned_rules() is called in entrypoint() — once per job,
-#     not at module load — so a rule added mid-session is picked up on
-#     the next voice-client reconnect / agent restart.
-# Learned-rules + breaker-status block builders moved to
-# pipeline/instructions_assembly.py (Step 7 of the 10/10 refactor).
-# Re-exporting under the legacy underscored names so existing call
-# sites and tests are untouched. Callers below append to
-# LEARNED_RULES_PATH (the only constant that survived the 2026-05-12
-# log_analyzer retirement — PROPOSALS_PATH and count_pending_proposals
-# went with it).
+# Soul loader — prompts/soul.md becomes slot #1 of the supervisor
+# system prompt. See pipeline/prompt_builder.py::load_soul. (The
+# rule-evolution / learned_rules subsystem that previously lived here
+# was removed 2026-05-20 — see the self-improvement-rebuild spec.)
 from pipeline.prompt_builder import (
-    MAX_LEARNED_RULES,
-    LEARNED_RULES_PATH as _LEARNED_RULES_PATH,
-    load_learned_rules    as _load_learned_rules,
     load_soul             as _load_soul,
 )
 
@@ -2012,49 +1978,6 @@ async def recall_conversation(query: str) -> str:
     return "\n".join(lines)
 
 
-# ── Behavioral learning tools ─────────────────────────────────────────
-
-@function_tool
-async def remember_this(rule: str) -> str:
-    """Store a behavioral rule that persists across all future sessions.
-
-    Call this when the user says any of:
-      - "remember that" / "remember this" / "make a note of that"
-      - "note for future" / "add a rule" / "write that down"
-      - "that was wrong, don't do X" / "stop doing X"
-      - "never do X" / "always do X instead"
-
-    The rule is appended to ~/.jarvis/learned_rules.md immediately and
-    injected into your system prompt on the next session start.
-    For the remainder of this conversation, honor the rule from context.
-
-    Args:
-        rule: The behavioral rule in plain English. Be specific and
-              actionable. Bad: "be more careful". Good: "Do not open
-              Spotify between midnight and 6am unless the user says
-              'Jarvis' explicitly in the same turn."
-    """
-    rule = (rule or "").strip()
-    if not rule:
-        return "No rule text supplied. Ask the user to state the rule clearly."
-    if len(rule) > 500:
-        rule = rule[:500]
-
-    today = time.strftime("%Y-%m-%d")
-    entry = f"- [{today}] {rule}\n"
-    try:
-        _LEARNED_RULES_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _LEARNED_RULES_PATH.open("a", encoding="utf-8") as f:
-            f.write(entry)
-        logger.info(f"[learned-rules] saved: {rule[:100]}")
-        return (
-            f"Saved. Rule: '{rule}'. "
-            "I'll follow this for the rest of our conversation and in all "
-            "future sessions."
-        )
-    except Exception as e:
-        logger.warning(f"[learned-rules] save failed: {e}")
-        return f"(failed to save rule: {e})"
 
 
 # list_pending_proposals / accept_proposal / reject_proposal — retired
@@ -4343,98 +4266,6 @@ def _build_llm_stack() -> dict:
     }
 
 
-# _spawn_background_log_analyzer — retired 2026-05-12 alongside
-# tools/log_analyzer.py. Autonomous self-evolution via
-# pipeline.evolution.* is the only producer of behavioral-rule
-# proposals now (background loops live in
-# pipeline/evolution/wireup.py, spawned by
-# _spawn_evolution_background_tasks below).
-
-
-def _evolution_voice_tools() -> list:
-    """Return the evolution voice-tool list when the flag is on.
-
-    Gated behind `JARVIS_EVOLUTION_ENABLED=1` so the supervisor's
-    tool surface is unchanged in production. Import failure is
-    swallowed so a broken evolution module can never block agent
-    construction.
-    """
-    if os.environ.get("JARVIS_EVOLUTION_ENABLED") != "1":
-        return []
-    try:
-        from tools.evolution_voice import (
-            evolution_status, evolution_report,
-            revert_rule, review_staged_rules, promote_rule,
-        )
-        return [
-            evolution_status, evolution_report,
-            revert_rule, review_staged_rules, promote_rule,
-        ]
-    except Exception as e:
-        logger.warning(f"[evolution] voice-tool registration skipped: {e}")
-        return []
-
-
-def _spawn_evolution_background_tasks() -> None:
-    """Spawn the three self-evolution background loops (Task 7.4).
-
-    Gated behind `JARVIS_EVOLUTION_ENABLED=1` — production behavior
-    is unchanged when the flag is absent. Each loop swallows
-    exceptions and continues; a producer crash can't take down the
-    session.
-
-      * mining loop:        12 h period, batch_miner.mine()
-      * contradiction loop: 24 h period, contradiction_detector.run()
-      * report loop:        24 h period, evolution.report.write_daily()
-    """
-    if os.environ.get("JARVIS_EVOLUTION_ENABLED") != "1":
-        return
-
-    from pipeline.evolution.wireup import (
-        run_mining_cycle, run_contradiction_cycle,
-    )
-    from pipeline.evolution import report
-
-    async def _evolution_mining_loop():
-        # 10 s warm-up so we don't fire LLM calls during the boot
-        # storm.
-        await asyncio.sleep(10)
-        while True:
-            try:
-                await run_mining_cycle()
-            except Exception as e:
-                logger.warning(f"[evolution] mining loop: {e}")
-            await asyncio.sleep(12 * 3600)
-
-    async def _evolution_contradiction_loop():
-        await asyncio.sleep(15)
-        while True:
-            try:
-                await run_contradiction_cycle()
-            except Exception as e:
-                logger.warning(f"[evolution] contradiction loop: {e}")
-            await asyncio.sleep(24 * 3600)
-
-    async def _evolution_report_loop():
-        await asyncio.sleep(20)
-        while True:
-            try:
-                await asyncio.to_thread(report.write_daily)
-            except Exception as e:
-                logger.warning(f"[evolution] report loop: {e}")
-            await asyncio.sleep(24 * 3600)
-
-    # Hold strong refs in the module-level bg-task set so the GC
-    # doesn't reap them mid-loop.
-    for coro in (
-        _evolution_mining_loop(),
-        _evolution_contradiction_loop(),
-        _evolution_report_loop(),
-    ):
-        t = asyncio.create_task(coro)
-        _bg_tasks.add(t)
-        t.add_done_callback(_bg_tasks.discard)
-    logger.info("[evolution] background loops scheduled (mining/contradiction/report)")
 
 
 def _spawn_screen_share_watcher(session) -> None:
@@ -4757,6 +4588,13 @@ def _register_state_tracking_handlers(session) -> None:
         _jarvis_was_interrupted=True when the user starts speaking
         while the agent is still mid-utterance.
     """
+    # Echo-aware barge-in: clear any speaking-text carried over from a prior
+    # job on this worker process (process-local tracker; one job per session).
+    try:
+        from pipeline import speaking_tracker
+        speaking_tracker.reset()
+    except Exception:
+        pass
 
     @session.on("user_state_changed")
     def _on_user_state(ev) -> None:
@@ -4806,6 +4644,14 @@ def _register_state_tracking_handlers(session) -> None:
             if new_state == "speaking" and old_state != "speaking":
                 session._jarvis_agent_speaking_started_at = _now_mono
             elif old_state == "speaking" and new_state != "speaking":
+                # Echo-aware barge-in: snapshot what JARVIS just said so a
+                # phantom echo-turn finalizing post-endpointing can be matched
+                # against it (pipeline/echo_gate consumer B, via speaking_tracker).
+                try:
+                    from pipeline import speaking_tracker
+                    speaking_tracker.mark_speech_ended()
+                except Exception:
+                    pass
                 started = getattr(session, "_jarvis_agent_speaking_started_at", None)
                 if started is not None:
                     seg_ms = int((_now_mono - started) * 1000)
@@ -4985,27 +4831,19 @@ def _build_initial_prompt_state(active_speech_id: str) -> dict:
     JarvisAgent + later refresh the prompt mid-session:
 
       - instructions_prefix : SOUL (identity) + JARVIS_INSTRUCTIONS (ops) + runtime-id
-      - learned_rules_block : current contents of learned_rules.md
-      - rules_mtime         : mtime of learned_rules.md for hot-reload
       - memory_block        : top-N curated facts (or "")
       - breaker_block       : upstream-provider health (or "")
       - initial_instructions: the assembled full system prompt
     """
     runtime_id_block = _build_runtime_id_block(active_speech_id)
-    learned_rules_block = _load_learned_rules()
 
-    # Stash static parts so the per-turn rule-reload can reconstruct
-    # the full instructions when learned_rules.md changes mid-session,
-    # without re-deriving the session-bound pieces.
+    # Stash static parts so the per-turn refresh can reconstruct the
+    # full instructions when the memory/breaker blocks change mid-
+    # session, without re-deriving the session-bound pieces.
     # SOUL (prompts/soul.md) leads as slot #1 — identity/voice first,
     # then the operational rules (JARVIS_INSTRUCTIONS = supervisor.md),
     # then the volatile runtime-id block.
     instructions_prefix = SOUL + "\n\n" + JARVIS_INSTRUCTIONS + runtime_id_block
-
-    try:
-        rules_mtime = _LEARNED_RULES_PATH.stat().st_mtime
-    except FileNotFoundError:
-        rules_mtime = 0.0
 
     memory_block = _build_memory_block()
 
@@ -5018,13 +4856,10 @@ def _build_initial_prompt_state(active_speech_id: str) -> dict:
 
     return {
         "instructions_prefix":  instructions_prefix,
-        "learned_rules_block":  learned_rules_block,
-        "rules_mtime":          rules_mtime,
         "memory_block":         memory_block,
         "breaker_block":        breaker_block,
         "initial_instructions": (
             instructions_prefix
-            + learned_rules_block
             + memory_block
             + breaker_block
         ),
@@ -5633,23 +5468,6 @@ async def entrypoint(ctx: JobContext) -> None:
                     session._jarvis_turn_start_monotonic = None
                 except Exception as te:
                     logger.debug(f"[telemetry] write skipped: {te}")
-                # Self-evolution observer (Task 7.4) — gated, additive,
-                # strictly off the user-facing path. Any exception is
-                # logged at debug and never bubbles. Reads user_text +
-                # jarvis_text out of the same locals the log_turn block
-                # just used; turn_id is synthesized from the session's
-                # turn counter.
-                if os.environ.get("JARVIS_EVOLUTION_ENABLED") == "1":
-                    try:
-                        from pipeline.evolution.wireup import observe_turn
-                        _turn_n = getattr(session, "_jarvis_turn_count", 0) or 0
-                        observe_turn(
-                            turn_id=f"t-{_turn_n}" if _turn_n else "t-unknown",
-                            user_text=getattr(session, "_jarvis_turn_user_text", "") or "",
-                            jarvis_text=text or "",
-                        )
-                    except Exception as ee:
-                        logger.debug(f"[evolution] observe_turn failed: {ee}")
                 # Trim chat_ctx if it has grown too long. Access via
                 # session.chat_ctx.messages — the live list the agent's
                 # LLM receives on every turn. Keep the most recent
@@ -5690,8 +5508,6 @@ async def entrypoint(ctx: JobContext) -> None:
     # facts + upstream-provider health).
     _ps = _build_initial_prompt_state(active_speech_id)
     _instructions_prefix = _ps["instructions_prefix"]
-    learned_rules_block  = _ps["learned_rules_block"]
-    _rules_mtime         = _ps["rules_mtime"]
     _memory_block        = _ps["memory_block"]
     _last_memory_block   = _memory_block
     _breaker_block       = _ps["breaker_block"]
@@ -5867,7 +5683,6 @@ async def entrypoint(ctx: JobContext) -> None:
             # facts store (state.db.memories) that survives chat delete.
             # See docs/superpowers/specs/2026-05-03-jarvis-memory-layer-design.md.
             recall_conversation,
-            remember_this,
             # list_pending_proposals / accept_proposal / reject_proposal
             # intentionally unwired 2026-05-12 — autonomous self-evolution
             # via pipeline.evolution.lifecycle writes changes to
@@ -5880,14 +5695,6 @@ async def entrypoint(ctx: JobContext) -> None:
                 tools.memory.list_memories,
                 tools.memory.audit_memories,
             ] if _MEMORY_AVAILABLE else []),
-            # Self-evolution voice tools (Task 7.4) — gated behind
-            # `JARVIS_EVOLUTION_ENABLED=1` so production behavior is
-            # unchanged until the soak phase. Read-only / explicit-
-            # action surface for the user to inspect + steer the
-            # learned-rules lifecycle. Anchor-tier rules are not
-            # writable from this surface (anchor edits go through
-            # commit + review).
-            *(_evolution_voice_tools()),
             # Face ID — read-only CV
             face_register,
             face_identify,
@@ -5998,7 +5805,6 @@ async def entrypoint(ctx: JobContext) -> None:
     # 8b of the 10/10 refactor). The log-analyzer watcher was retired
     # 2026-05-12 alongside tools/log_analyzer.py — evolution's wireup
     # now owns proposal mining.
-    _spawn_evolution_background_tasks()
     _spawn_screen_share_watcher(session)
 
     # Fire the session_start hook — let user-installed shell scripts
