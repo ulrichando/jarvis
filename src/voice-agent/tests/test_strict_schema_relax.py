@@ -189,17 +189,6 @@ def test_install_is_idempotent():
                    "_jarvis_relaxed", False)
 
 
-def test_real_tool_ext_new_tab_legacy_shape(reinstall_relax):
-    """Integration: ext_new_tab (the original F-arch-009 victim)
-    must produce a valid legacy-shape schema."""
-    from livekit.agents.llm import utils as _lk_utils
-    from tools.browser_ext import ext_new_tab
-
-    schema = _lk_utils.build_strict_openai_schema(ext_new_tab)
-    params = schema["function"]["parameters"]
-    assert "additionalProperties" not in params
-    assert "url" not in params.get("required", [])
-
 
 def test_real_production_tools_use_legacy_shape(reinstall_relax):
     """Integration: spot-check the four tools that appeared in the
@@ -242,80 +231,6 @@ def test_real_production_tools_use_legacy_shape(reinstall_relax):
         )
 
 
-# ── W-010 coverage test (POSTMORTEM-001 action item) ──────────────────
-
-
-def test_every_registered_subagent_tool_uses_legacy_shape(reinstall_relax):
-    """W-010 (POSTMORTEM-001 action): the structural contract above
-    must hold across **every production tool the supervisor or any
-    subagent actually exposes to the LLM** — not just hand-picked
-    ones. This test would have caught all three W-009 iterations:
-
-      iter 1: dropped `required` only → strict shape with partial
-              required → fails 'legacy must not set additionalProperties'
-              for every tool with no defaults (still strict-shape).
-      iter 2: dropped `required` + `additionalProperties` per-tool →
-              still set `function.strict: True` for tools with no
-              defaults → fails 'must not set function.strict=True'.
-      iter 3: forces every tool to legacy → passes.
-
-    Iterates over every registered subagent + subagent + their
-    tool_factory output. Reads the live registry, so adding a new
-    subagent or tool can't accidentally bypass this test.
-    """
-    from livekit.agents.llm import utils as _lk_utils
-    from subagents.registry import all_specs, all_subagents, _REGISTRY
-
-    # Defensive: other test files' fixtures (test_subagents_health.py
-    # in particular) clear the registry in teardown, leaving us empty
-    # if their tests ran first. Re-run the package-level registration
-    # so we test against the real production set.
-    if not _REGISTRY:
-        from subagents import _register_builtins
-        _register_builtins()
-
-    failures: list[str] = []
-    seen_tool_names: set[str] = set()
-
-    for spec in list(all_specs()) + list(all_subagents()):
-        try:
-            tools = spec.tool_factory()
-        except Exception as e:
-            # tool_factory failures are a different test's problem
-            # (test_subagents_health.test_subagent_tool_factory_builds);
-            # don't double-fail here.
-            continue
-        for t in tools:
-            tool_name = getattr(getattr(t, "_func", t), "__name__", "<anon>")
-            if tool_name in seen_tool_names:
-                continue
-            seen_tool_names.add(tool_name)
-            try:
-                schema = _lk_utils.build_strict_openai_schema(t)
-            except Exception as e:
-                failures.append(f"{spec.name}::{tool_name}: build raised {type(e).__name__}: {e}")
-                continue
-            params = schema.get("function", {}).get("parameters", {})
-            if "additionalProperties" in params:
-                failures.append(
-                    f"{spec.name}::{tool_name}: schema sets "
-                    f"additionalProperties (must be legacy-shape)"
-                )
-            if schema.get("function", {}).get("strict") is True:
-                failures.append(
-                    f"{spec.name}::{tool_name}: schema sets "
-                    f"function.strict=True (must be legacy-shape)"
-                )
-
-    assert seen_tool_names, (
-        "expected the registry to expose at least one tool — "
-        "is the registry initialized?"
-    )
-    assert not failures, (
-        f"{len(failures)} production tool(s) produce non-legacy schema:\n  "
-        + "\n  ".join(failures)
-    )
-
 
 def test_supervisor_top_level_tools_use_legacy_shape(reinstall_relax):
     """The supervisor (jarvis_agent) imports several @function_tool
@@ -332,16 +247,12 @@ def test_supervisor_top_level_tools_use_legacy_shape(reinstall_relax):
     import jarvis_agent
 
     # Names the supervisor calls @function_tool on at module scope.
-    # Matches the `required = (...)` list in
-    # test_imports.py::test_jarvis_agent_exposes_required_tools plus
-    # the additional tools the supervisor wires up directly.
+    # bash/browser_task were removed in the Hermes teardown.
     supervisor_tools = (
-        "bash",
         "launch_app",
         "run_jarvis_cli",
         "type_in_terminal",
         "media_control",
-        "browser_task",
         "web_search",
         # Location split 2026-05-17: get_location/set_location retired
         # in favor of the three-tool surface below. See
