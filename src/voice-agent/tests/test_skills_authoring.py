@@ -99,3 +99,48 @@ class TestRender:
         f.write_text(content)
         sk = _parse_skill_file(f)
         assert sk.when_to_use == "Line one.\nLine two."
+
+
+class TestCreate:
+    def test_creates_and_reloads(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("JARVIS_SKILLS_PATHS", str(tmp_path))
+        res = sa.create_user_skill(
+            "spotify-control", "control playback", "when user wants music",
+            "# Spotify\nUse dbus.\n",
+        )
+        assert res["ok"] is True
+        written = tmp_path / "spotify-control" / "SKILL.md"
+        assert written.exists()
+        assert "control playback" in written.read_text()
+        # reload_skills() ran → registry sees it immediately
+        from pipeline.skills_loader import SKILLS
+        assert SKILLS.get("spotify-control") is not None
+
+    def test_bad_name_rejected_no_write(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("JARVIS_SKILLS_PATHS", str(tmp_path))
+        res = sa.create_user_skill("Bad Name", "d", "w", "# body\ntext")
+        assert res["ok"] is False
+        assert not (tmp_path / "Bad Name").exists()
+
+    def test_empty_description_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("JARVIS_SKILLS_PATHS", str(tmp_path))
+        res = sa.create_user_skill("ok-name", "", "w", "# body\ntext")
+        assert res["ok"] is False
+
+    def test_atomic_no_tmp_left_behind(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("JARVIS_SKILLS_PATHS", str(tmp_path))
+        sa.create_user_skill("clean", "d", "w", "# b\ntext")
+        leftovers = list((tmp_path / "clean").glob(".tmp-*"))
+        assert leftovers == []
+
+    def test_shadow_flag_when_shipped_exists(self, tmp_path, monkeypatch):
+        shipped = tmp_path / "shipped"
+        user = tmp_path / "user"
+        (shipped / "dup").mkdir(parents=True)
+        (shipped / "dup" / "SKILL.md").write_text(
+            "---\nname: dup\ndescription: shipped\n---\nbody"
+        )
+        monkeypatch.setenv("JARVIS_SKILLS_PATHS", f"{shipped}:{user}")
+        res = sa.create_user_skill("dup", "user version", "w", "# b\ntext")
+        assert res["ok"] is True
+        assert res["shadow"] is True
