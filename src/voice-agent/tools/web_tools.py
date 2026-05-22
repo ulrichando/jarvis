@@ -106,6 +106,25 @@ def _ddg_instant_answer(query: str) -> str | None:
 # web_search handler
 # ---------------------------------------------------------------------------
 
+def _format_provider_results(items: list, n: int) -> str:
+    """Format a credentialed provider's search items into the web_search shape.
+
+    Items are ``{"title","url","description",...}`` dicts (the provider contract
+    in :mod:`tools.web_providers`). Returns the same numbered-list shape the DDG
+    path produces, so callers can't tell which backend served the query.
+    """
+    out: list = []
+    for it in items[:n]:
+        if not isinstance(it, dict):
+            continue
+        title = (it.get("title") or "").strip()
+        url_real = (it.get("url") or "").strip()
+        snippet = (it.get("description") or "").strip()
+        snippet = (snippet[:160] + "…") if len(snippet) > 160 else snippet
+        out.append(f"{len(out) + 1}. {title}\n   {url_real}\n   {snippet}")
+    return "\n".join(out)
+
+
 async def _handle_web_search(args: dict) -> str:
     """Async handler for web_search.
 
@@ -123,6 +142,34 @@ async def _handle_web_search(args: dict) -> str:
     n = max(1, min(limit, 10))
 
     logger.info("web_search → %r (n=%d)", query, n)
+
+    # Prefer a credentialed search backend when one is configured — better
+    # ranking and immune to DDG's IP-based CAPTCHA. Falls back to keyless DDG
+    # when no provider is available or the provider errors / returns nothing.
+    try:
+        from tools.web_providers import first_search_provider, run_provider_search
+
+        _prov = first_search_provider()
+    except Exception:  # noqa: BLE001 — the provider layer must never break web_search
+        _prov = None
+    if _prov is not None:
+        try:
+            _pres = await run_provider_search(_prov, query, n)
+            if isinstance(_pres, dict) and _pres.get("success"):
+                _items = (_pres.get("data") or {}).get("web") or []
+                _formatted = _format_provider_results(_items, n)
+                if _formatted:
+                    logger.info(
+                        "[web_search] served by credentialed backend %r",
+                        getattr(_prov, "name", "?"),
+                    )
+                    return _formatted
+        except Exception as e:  # noqa: BLE001 — fall through to DDG on any error
+            logger.warning(
+                "[web_search] credentialed backend %r failed (%s); using DDG",
+                getattr(_prov, "name", "?"),
+                e,
+            )
 
     url = "https://html.duckduckgo.com/html/"
     params = _up.urlencode({"q": query})

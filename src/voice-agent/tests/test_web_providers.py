@@ -79,3 +79,67 @@ def test_web_extract_and_crawl_tools_registered():
     names = set(registry.all_names())
     assert "web_extract" in names
     assert "web_crawl" in names
+
+
+def test_web_extract_handles_async_provider():
+    """An async-native provider's extract() must be awaited, not returned raw.
+
+    Guards the parallel backend (async def extract) against the to_thread path
+    that would otherwise hand back an un-awaited coroutine.
+    """
+    import asyncio
+
+    from tools import _provider_registry as pr
+    from tools.web_providers import WebSearchProvider, _handle_web_extract
+
+    class AsyncExtractor(WebSearchProvider):
+        name = "async-x"
+
+        def is_available(self):
+            return True
+
+        def supports_extract(self):
+            return True
+
+        async def extract(self, urls):
+            return {"success": True, "data": [{"url": urls[0], "title": "T", "content": "async body"}]}
+
+    pr.reset_providers("web")
+    pr.register_provider("web", "async-x", AsyncExtractor())
+    try:
+        out = asyncio.run(_handle_web_extract({"urls": ["http://x"]}))
+        assert "async body" in out
+    finally:
+        pr.reset_providers("web")
+
+
+def test_web_search_prefers_credentialed_provider():
+    """With a search-capable web provider registered, web_search uses it (no DDG)."""
+    import asyncio
+
+    from tools import _provider_registry as pr
+    from tools.web_providers import WebSearchProvider
+    from tools.web_tools import _handle_web_search
+
+    class SearchProv(WebSearchProvider):
+        name = "fake-search"
+
+        def is_available(self):
+            return True
+
+        def supports_search(self):
+            return True
+
+        def search(self, query, limit=5):
+            return {
+                "success": True,
+                "data": {"web": [{"title": "Hit", "url": "http://hit", "description": "d", "position": 1}]},
+            }
+
+    pr.reset_providers("web")
+    pr.register_provider("web", "fake-search", SearchProv())
+    try:
+        out = asyncio.run(_handle_web_search({"query": "anything", "limit": 3}))
+        assert "Hit" in out and "http://hit" in out
+    finally:
+        pr.reset_providers("web")
