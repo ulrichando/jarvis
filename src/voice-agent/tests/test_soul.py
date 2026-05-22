@@ -40,8 +40,8 @@ MOVED_SECTIONS = [
 # Representative ops sections that must stay in supervisor.md.
 STAYED_SECTIONS = [
     "NEVER WRITE THESE AS REPLY TEXT",
-    "HANDOFF DISCIPLINE",
     "TOOL ROUTING",
+    "PLAN MODE",
     "MEMORY",
     "INTERRUPTION HANDLING",
 ]
