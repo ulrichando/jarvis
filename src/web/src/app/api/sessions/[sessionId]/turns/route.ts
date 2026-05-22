@@ -1,8 +1,7 @@
 // GET /api/sessions/[sessionId]/turns
 //
-// Initial-load endpoint for the voice transcript view. Replaces
-// `useQuery(api.turns.bySession, ...)`. Returns turns in ascending
-// (oldest-first) chronological order, same shape Convex returned:
+// Initial-load endpoint for the voice transcript view. Returns turns in
+// ascending (oldest-first) chronological order:
 //   [{ sessionId, ts, role, text, source? }, ...]
 //
 // Live deltas come via SSE (/api/events/stream/[sessionId]); this

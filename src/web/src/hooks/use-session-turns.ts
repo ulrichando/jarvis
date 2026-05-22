@@ -1,8 +1,6 @@
 // Live session turns via SSE + initial backfill via HTTP.
 //
-// Drop-in replacement for the previous Convex hook:
-//   const turns = useQuery(api.turns.bySession, { sessionId });
-// becomes:
+// Usage:
 //   const turns = useSessionTurns(sessionId);
 //
 // Returns `undefined` while the initial fetch is in flight, then an

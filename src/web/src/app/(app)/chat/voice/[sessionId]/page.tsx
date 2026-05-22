@@ -40,7 +40,7 @@ function turnsToUIMessages(turns: Turn[]): UIMessage[] {
     (t, i) =>
       ({
         // Stable id per row — ts+role uniquely identifies a turn per session
-        // for our render purposes. (Convex used _id; SSE has no _id.)
+        // for our render purposes (SSE rows have no _id).
         id: `${t.ts}-${t.role}-${i}`,
         role: t.role,
         parts: [{ type: "text", text: t.text }],
