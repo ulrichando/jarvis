@@ -210,6 +210,19 @@ def load_all_livekit_tools(tools_dir=None) -> List[RawFunctionTool]:
     except Exception as exc:  # noqa: BLE001 — plugin failure must not break tools
         logger.warning("Plugin discovery failed (built-in tools unaffected): %s", exc)
 
+    # MCP servers (configured in ~/.jarvis/mcp.json) register their discovered
+    # tools dynamically — there is no static ``registry.register(...)`` for the
+    # AST walk to find, so trigger discovery explicitly here, before the
+    # all_entries() snapshot. Inert (returns immediately) when the config file
+    # is absent/empty or the optional ``mcp`` SDK is not installed. Isolated:
+    # a server connection failure must not take down the built-in surface.
+    try:
+        from .mcp_client import discover_mcp_tools
+
+        discover_mcp_tools()
+    except Exception as exc:  # noqa: BLE001 — MCP failure must not break tools
+        logger.warning("MCP discovery failed (built-in tools unaffected): %s", exc)
+
     tools: List[RawFunctionTool] = []
     for entry in registry.all_entries():
         if entry.check_fn is not None and not registry.is_available(entry.name):
