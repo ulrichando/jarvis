@@ -91,3 +91,11 @@ langgraph-checkpoint-sqlite~=3.0
 langchain~=1.0
 langchain-groq~=1.0
 langchain-openai~=1.2
+
+# MCP (Model Context Protocol) client SDK. Powers tools/mcp_client.py, which
+# connects to MCP servers configured in ~/.jarvis/mcp.json, discovers their
+# tools, and registers each into the JARVIS tool registry (namespaced
+# mcp__<server>__<tool>). The import in mcp_client.py is GUARDED — a missing
+# package degrades the MCP tool surface to a clean no-op rather than crashing
+# the agent, so this dep is functionally optional. Inert with no mcp.json.
+mcp~=1.27
