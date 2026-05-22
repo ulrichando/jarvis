@@ -1,0 +1,5 @@
+name: web-xai
+version: "1.0.0"
+description: "xAI Grok agentic web search backend (search only) via XAI_API_KEY"
+kind: backend
+requires_env: [XAI_API_KEY]
