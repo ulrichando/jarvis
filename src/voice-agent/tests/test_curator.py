@@ -382,3 +382,110 @@ class TestConsolidationReview:
         from pipeline import curator
         assert curator.parse_consolidation_output("not json", {"a"}) == []
         assert curator.parse_consolidation_output(None, {"a"}) == []
+
+
+# ---------------------------------------------------------------------------
+# 9. _CONSOLIDATION_PROMPT content — umbrella-building doctrine
+# ---------------------------------------------------------------------------
+
+
+class TestConsolidationPromptDoctrine:
+    """Verify the consolidation prompt encodes the umbrella-building doctrine
+    and that the gating/suggestion-only contract remains intact."""
+
+    def test_prompt_mentions_umbrella_building(self):
+        """The prompt must frame the pass as umbrella-building, not just
+        pairwise dedup. Both 'umbrella' and 'class-level' must appear."""
+        from pipeline.curator import _CONSOLIDATION_PROMPT
+        prompt_lower = _CONSOLIDATION_PROMPT.lower()
+        assert "umbrella" in prompt_lower, (
+            "_CONSOLIDATION_PROMPT must mention umbrella skills"
+        )
+        assert "class-level" in prompt_lower, (
+            "_CONSOLIDATION_PROMPT must mention class-level skills"
+        )
+
+    def test_prompt_warns_against_using_use_count_to_skip(self):
+        """The prompt must tell the reviewer NOT to use usage counters as a
+        reason to skip consolidation ('use=0' is not evidence of value)."""
+        from pipeline.curator import _CONSOLIDATION_PROMPT
+        prompt_lower = _CONSOLIDATION_PROMPT.lower()
+        # Accept either the literal counter form or a paraphrase.
+        has_use_counter_guidance = (
+            "use=0" in _CONSOLIDATION_PROMPT
+            or "use_count" in prompt_lower
+            or "usage counter" in prompt_lower
+            or "usage count" in prompt_lower
+        )
+        assert has_use_counter_guidance, (
+            "_CONSOLIDATION_PROMPT must warn against skipping consolidation "
+            "based on usage counters"
+        )
+
+    def test_prompt_describes_three_consolidation_modes(self):
+        """The prompt must describe the three consolidation modes:
+        merge-into-umbrella, create-new-umbrella, demote-to-reference."""
+        from pipeline.curator import _CONSOLIDATION_PROMPT
+        prompt_lower = _CONSOLIDATION_PROMPT.lower()
+        assert "merge" in prompt_lower or "merge into" in prompt_lower, (
+            "_CONSOLIDATION_PROMPT must describe a merge mode"
+        )
+        assert "create" in prompt_lower or "new umbrella" in prompt_lower, (
+            "_CONSOLIDATION_PROMPT must describe a create-umbrella mode"
+        )
+        assert "demote" in prompt_lower or "reference" in prompt_lower, (
+            "_CONSOLIDATION_PROMPT must describe a demote-to-reference mode"
+        )
+
+    def test_consolidation_stays_gated_off_by_default(self, env):
+        """run_consolidation_review must return [] and never call the LLM
+        when JARVIS_CURATOR_CONSOLIDATION is absent (the default)."""
+        from pipeline import curator
+        _make_skill(env, "alpha-do-thing", "does alpha thing")
+        _make_skill(env, "beta-do-thing", "does beta thing")
+        called = {"n": 0}
+
+        def _tracking_fake(_cands):
+            called["n"] += 1
+            return '{"clusters": []}'
+
+        out = curator.run_consolidation_review(llm_fn=_tracking_fake)
+        assert out == [], (
+            "run_consolidation_review must return [] when gate is off"
+        )
+        assert called["n"] == 0, (
+            "LLM must not be called when JARVIS_CURATOR_CONSOLIDATION is unset"
+        )
+
+    def test_consolidation_enabled_still_suggestion_only(self, env, monkeypatch):
+        """When the gate IS on, the review returns suggestions but never
+        mutates the skills directory (no archiving, no renaming, no deletion)."""
+        from pipeline import curator
+        monkeypatch.setenv("JARVIS_CURATOR_CONSOLIDATION", "1")
+        _make_skill(env, "git-clone", "clone a git repo")
+        _make_skill(env, "git-push", "push commits to remote")
+
+        def _fake(_cands):
+            return json.dumps({
+                "clusters": [{
+                    "members": ["git-clone", "git-push"],
+                    "umbrella": "git-operations",
+                    "reason": "both operate on git repos",
+                }]
+            })
+
+        out = curator.run_consolidation_review(llm_fn=_fake)
+        # Suggestions returned.
+        assert len(out) == 1
+        assert out[0]["umbrella"] == "git-operations"
+        # Skills untouched — suggestion-only, no mutation.
+        assert (env / "git-clone").exists(), (
+            "suggestion-only: git-clone must remain on disk after review"
+        )
+        assert (env / "git-push").exists(), (
+            "suggestion-only: git-push must remain on disk after review"
+        )
+        # No .archived directory created by consolidation.
+        assert not (env / ".archived" / "git-clone").exists(), (
+            "suggestion-only: no archiving must occur during consolidation review"
+        )
