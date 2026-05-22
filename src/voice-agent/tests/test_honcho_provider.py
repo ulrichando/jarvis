@@ -177,3 +177,76 @@ def test_no_hermes_token_in_plugin():
     assert "hermes" not in source.lower(), (
         "plugins/memory/honcho/__init__.py must not contain 'hermes' (JARVIS-native naming rule)"
     )
+
+
+# ---------------------------------------------------------------------------
+# Lazy init — must be safe from a running event loop (regression: the old
+# initialize() used asyncio.run, which raises inside on_enter's loop and would
+# silently leave the backend permanently inert).
+# ---------------------------------------------------------------------------
+
+def test_initialize_deferred_and_loop_safe(monkeypatch):
+    """initialize() does NO network/asyncio.run — safe inside a running loop,
+    leaves handles unbuilt (deferred), and the async methods no-op without a key."""
+    import asyncio
+    monkeypatch.delenv("HONCHO_API_KEY", raising=False)
+    p = _load().HonchoMemoryProvider()
+
+    async def run():
+        p.initialize("sess-x")          # called under a running loop — must not raise
+        assert p._session_id == "sess-x"
+        assert p._session is None        # deferred, not eagerly built
+        assert p._init_attempted is False
+        assert await p.recall("q") == ""
+        assert await p.recall_context("h") == ""
+        await p.sync_message("user", "x")
+
+    asyncio.run(run())  # no RuntimeError escapes
+
+
+def test_lazy_init_builds_handles_in_async_context(monkeypatch):
+    """With a key + a (faked) SDK, the client/peer/session handles build lazily
+    on the first async call FROM a running loop — the case the old asyncio.run
+    code silently failed. Proves _ensure_init works under the event loop."""
+    import asyncio
+    import sys
+    import types
+
+    mod = _load()
+
+    class _Peer:
+        def __init__(self, pid): self.id = pid
+
+    class _SessAio:
+        async def add_messages(self, *a, **k): return None
+        async def context(self, **k):
+            return types.SimpleNamespace(summary=None, messages=[])
+
+    class _Session:
+        def __init__(self, sid): self.id = sid; self.aio = _SessAio()
+
+    class _ClientAio:
+        async def peer(self, pid): return _Peer(pid)
+        async def session(self, sid): return _Session(sid)
+
+    class _Client:
+        def __init__(self, api_key=None): self.aio = _ClientAio()
+
+    fake = types.ModuleType("honcho")
+    fake.Honcho = _Client
+    fake.MessageCreateParams = lambda **k: types.SimpleNamespace(**k)
+    monkeypatch.setitem(sys.modules, "honcho", fake)
+    monkeypatch.setenv("HONCHO_API_KEY", "k")
+    monkeypatch.setattr(mod.HonchoMemoryProvider, "is_available", lambda self: True)
+
+    p = mod.HonchoMemoryProvider()
+
+    async def run():
+        p.initialize("s1")
+        assert p._session is None              # not yet built
+        await p.sync_message("user", "hi")     # triggers lazy _ensure_init under a loop
+        assert p._session is not None          # built — no asyncio.run failure
+        assert p._peer_user.id == "ulrich"
+        assert p._peer_agent.id == "jarvis"
+
+    asyncio.run(run())
