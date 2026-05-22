@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from .ansi_strip import strip_ansi
+from .command_safety import scan_command
 from .registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
@@ -323,6 +324,16 @@ def terminal_tool(
                 }, ensure_ascii=False)
             # Resolve ~ and relative paths.
             cwd = str(Path(workdir).expanduser().resolve())
+
+        # Safety scan — block catastrophic commands before any execution.
+        denial = scan_command(command)
+        if denial:
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": denial,
+                "status": "blocked",
+            }, ensure_ascii=False)
 
         if background:
             session_id = _next_session_id()

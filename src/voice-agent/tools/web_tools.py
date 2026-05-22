@@ -31,6 +31,7 @@ import urllib.parse as _up
 import urllib.request
 
 from .registry import registry
+from .url_safety import check_url
 
 logger = logging.getLogger(__name__)
 
@@ -291,8 +292,23 @@ async def _handle_web_fetch(args: dict) -> str:
     url: str = (args.get("url") or "").strip()
     if not url:
         return "(no url supplied)"
+
+    # SSRF guard — check the raw URL BEFORE scheme normalization so that
+    # non-http(s) schemes (file://, gopher://, etc.) are caught as-is,
+    # rather than being masked by the https:// prepend below.
+    ssrf_denial = check_url(url)
+    if ssrf_denial:
+        return ssrf_denial
+
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
+
+    # Re-check after normalization in case a bare hostname resolved to a
+    # private IP that wasn't obvious from the raw string (e.g. "localhost").
+    ssrf_denial = check_url(url)
+    if ssrf_denial:
+        return ssrf_denial
+
     timeout_raw = args.get("timeout", 15)
     try:
         timeout = max(1, min(int(timeout_raw), 60))
