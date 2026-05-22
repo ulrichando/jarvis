@@ -99,3 +99,12 @@ langchain-openai~=1.2
 # package degrades the MCP tool surface to a clean no-op rather than crashing
 # the agent, so this dep is functionally optional. Inert with no mcp.json.
 mcp~=1.27
+
+# Honcho cloud memory backend (plugins/memory/honcho/).
+# The memory-provider layer is INERT without all three of:
+#   1. this package installed
+#   2. HONCHO_API_KEY set in .env
+#   3. JARVIS_MEMORY_PROVIDER=honcho
+# Missing any one → provider inert, file-memory unchanged, zero voice-turn impact.
+# Pinned to the minor that was installed and tested (honcho-ai 2.1.1).
+honcho-ai~=2.1
