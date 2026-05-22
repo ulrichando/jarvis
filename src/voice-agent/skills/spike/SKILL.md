@@ -25,7 +25,10 @@ Load this when the user says things like "let me try this", "I want to see if X 
 
 ## If the user has the full GSD system installed
 
-If `gsd-spike` shows up as a sibling skill (installed via `npx get-shit-done-cc --hermes`), prefer **`gsd-spike`** when the user wants the full GSD workflow: persistent `.planning/spikes/` state, MANIFEST tracking across sessions, Given/When/Then verdict format, and commit patterns that integrate with the rest of GSD. This skill is the lightweight standalone version for users who don't have (or don't want) the full system.
+If `gsd-spike` shows up as a sibling skill, prefer it for the full GSD workflow:
+persistent `.planning/spikes/` state, MANIFEST tracking across sessions,
+Given/When/Then verdict format, and commit patterns that integrate with the rest of GSD.
+This skill is the lightweight standalone version for users who want quick one-off spikes.
 
 ## Core method
 
@@ -76,10 +79,10 @@ Spikes are not research-free — you research enough to pick the right approach,
 3. **Pick one.** State why. If 2+ are credible, build quick variants within the spike.
 4. **Skip research** for pure logic with no external dependencies.
 
-Use Hermes tools for the research step:
+Use JARVIS tools for the research step:
 
 - `web_search("python websocket streaming libraries 2025")` — find candidates
-- `web_extract(urls=["https://websockets.readthedocs.io/..."])` — read the actual docs (returns markdown)
+- `web_fetch("https://websockets.readthedocs.io/...")` — read the actual docs (returns markdown)
 - `terminal("pip show websockets | grep Version")` — check what's installed in the project's venv
 
 For libraries without docs pages, clone and read their `README.md` / `examples/` via `read_file`. Context7 MCP (if the user has it configured) is also a good source — `mcp_*_resolve-library-id` then `mcp_*_query-docs`.
@@ -122,16 +125,16 @@ terminal("cd spikes/001-websocket-streaming && python3 main.py")
 # Observe output, iterate.
 ```
 
-**Parallel comparison spikes (002a / 002b) — delegate.** When two approaches can run in parallel and both need real engineering (not 10-line prototypes), fan out with `delegate_task`:
+**Parallel comparison spikes (002a / 002b) — run sequentially or via run_jarvis_cli.**
+When two approaches both need real engineering (not 10-line prototypes), run them
+back-to-back or dispatch each to `run_jarvis_cli` with a self-contained prompt:
 
 ```
-delegate_task(tasks=[
-    {"goal": "Build 002a-pdf-parse-pdfjs: ...", "toolsets": ["terminal", "file", "web"]},
-    {"goal": "Build 002b-pdf-parse-camelot: ...", "toolsets": ["terminal", "file", "web"]},
-])
+run_jarvis_cli("Build spike 002a-pdf-parse-pdfjs: [full spec]. Write verdict in spikes/002a/README.md.")
+run_jarvis_cli("Build spike 002b-pdf-parse-camelot: [full spec]. Write verdict in spikes/002b/README.md.")
 ```
 
-Each subagent returns its own verdict; you write the head-to-head.
+Read both verdicts and write the head-to-head comparison yourself.
 
 ### 5. Verdict
 
@@ -194,4 +197,4 @@ Propose 2-4 candidates as Given/When/Then. Let the user pick.
 
 ## Attribution
 
-Adapted from the GSD (Get Shit Done) project's `/gsd-spike` workflow — MIT © 2025 Lex Christopherson ([gsd-build/get-shit-done](https://github.com/gsd-build/get-shit-done)). The full GSD system offers persistent spike state, MANIFEST tracking, and integration with a broader spec-driven development pipeline; install with `npx get-shit-done-cc --hermes --global`.
+Adapted from the GSD (Get Shit Done) project's `/gsd-spike` workflow — MIT © 2025 Lex Christopherson ([gsd-build/get-shit-done](https://github.com/gsd-build/get-shit-done)). The full GSD system offers persistent spike state, MANIFEST tracking, and integration with a broader spec-driven development pipeline.

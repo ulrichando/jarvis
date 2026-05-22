@@ -1,13 +1,13 @@
 ---
 name: subagent-driven-development
-description: "Execute plans via delegate_task subagents (2-stage review)."
-version: 1.1.0
+description: "Execute plans by dispatching tasks to run_jarvis_cli (2-stage review)."
+version: 2.0.0
 author: JARVIS
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   jarvis:
-    tags: [delegation, subagent, implementation, workflow, parallel]
+    tags: [delegation, implementation, workflow, parallel, run_jarvis_cli]
     related_skills: [writing-plans, requesting-code-review, test-driven-development]
 ---
 
@@ -15,163 +15,141 @@ metadata:
 
 ## Overview
 
-Execute implementation plans by dispatching fresh subagents per task with systematic two-stage review.
+Execute implementation plans by dispatching each task to `run_jarvis_cli` with a
+fresh, focused prompt and verifying the result with a two-stage review (spec then
+quality) before moving to the next task.
 
-**Core principle:** Fresh subagent per task + two-stage review (spec then quality) = high quality, fast iteration.
+**Core principle:** Fresh context per task + two-stage review = high quality, fast iteration.
 
 ## When to Use
 
 Use this skill when:
-- You have an implementation plan (from writing-plans skill or user requirements)
+- You have an implementation plan (from the `writing-plans` skill or user requirements)
 - Tasks are mostly independent
 - Quality and spec compliance are important
-- You want automated review between tasks
+- You want systematic review between tasks
 
 **vs. manual execution:**
-- Fresh context per task (no confusion from accumulated state)
-- Automated review process catches issues early
+- Fresh context per task — no confusion from accumulated state
+- Automated review catches issues early
 - Consistent quality checks across all tasks
-- Subagents can ask questions before starting work
 
 ## The Process
 
 ### 1. Read and Parse Plan
 
-Read the plan file. Extract ALL tasks with their full text and context upfront. Create a todo list:
+Read the plan file. Extract ALL tasks with their full text and context upfront:
 
 ```python
-# Read the plan
 read_file("docs/plans/feature-plan.md")
-
-# Create todo list with all tasks
-todo([
-    {"id": "task-1", "content": "Create User model with email field", "status": "pending"},
-    {"id": "task-2", "content": "Add password hashing utility", "status": "pending"},
-    {"id": "task-3", "content": "Create login endpoint", "status": "pending"},
-])
 ```
 
-**Key:** Read the plan ONCE. Extract everything. Don't make subagents read the plan file — provide the full task text directly in context.
+**Key:** Extract all task details upfront. Provide complete task text directly in each
+`run_jarvis_cli` call — don't make it re-read the plan file.
 
 ### 2. Per-Task Workflow
 
 For EACH task in the plan:
 
-#### Step 1: Dispatch Implementer Subagent
-
-Use `delegate_task` with complete context:
+#### Step 1: Dispatch Implementer via run_jarvis_cli
 
 ```python
-delegate_task(
-    goal="Implement Task 1: Create User model with email and password_hash fields",
-    context="""
-    TASK FROM PLAN:
-    - Create: src/models/user.py
-    - Add User class with email (str) and password_hash (str) fields
-    - Use bcrypt for password hashing
-    - Include __repr__ for debugging
+run_jarvis_cli("""
+Implement Task 1: Create User model with email and password_hash fields.
 
-    FOLLOW TDD:
-    1. Write failing test in tests/models/test_user.py
-    2. Run: pytest tests/models/test_user.py -v (verify FAIL)
-    3. Write minimal implementation
-    4. Run: pytest tests/models/test_user.py -v (verify PASS)
-    5. Run: pytest tests/ -q (verify no regressions)
-    6. Commit: git add -A && git commit -m "feat: add User model with password hashing"
+TASK:
+- Create: src/models/user.py
+- Add User class with email (str) and password_hash (str) fields
+- Use bcrypt for password hashing
+- Include __repr__ for debugging
 
-    PROJECT CONTEXT:
-    - Python 3.11, Flask app in src/app.py
-    - Existing models in src/models/
-    - Tests use pytest, run from project root
-    - bcrypt already in requirements.txt
-    """,
-    toolsets=['terminal', 'file']
-)
+FOLLOW TDD:
+1. Write failing test in tests/models/test_user.py
+2. Run: pytest tests/models/test_user.py -v  (verify FAIL)
+3. Write minimal implementation
+4. Run: pytest tests/models/test_user.py -v  (verify PASS)
+5. Run: pytest tests/ -q  (verify no regressions)
+6. Commit: git add tests/models/test_user.py src/models/user.py && git commit -m "feat: add User model"
+
+PROJECT CONTEXT:
+- Python 3.11, Flask app in src/app.py
+- Existing models in src/models/
+- Tests use pytest, run from project root
+- bcrypt already in requirements.txt
+""")
 ```
 
-#### Step 2: Dispatch Spec Compliance Reviewer
+#### Step 2: Spec Compliance Review
 
 After the implementer completes, verify against the original spec:
 
 ```python
-delegate_task(
-    goal="Review if implementation matches the spec from the plan",
-    context="""
-    ORIGINAL TASK SPEC:
-    - Create src/models/user.py with User class
-    - Fields: email (str), password_hash (str)
-    - Use bcrypt for password hashing
-    - Include __repr__
+run_jarvis_cli("""
+Review: does the implementation match the spec?
 
-    CHECK:
-    - [ ] All requirements from spec implemented?
-    - [ ] File paths match spec?
-    - [ ] Function signatures match spec?
-    - [ ] Behavior matches expected?
-    - [ ] Nothing extra added (no scope creep)?
+ORIGINAL SPEC:
+- Create src/models/user.py with User class
+- Fields: email (str), password_hash (str)
+- Use bcrypt for password hashing
+- Include __repr__
 
-    OUTPUT: PASS or list of specific spec gaps to fix.
-    """,
-    toolsets=['file']
-)
+CHECK (read the actual files):
+- All requirements implemented?
+- File paths match spec?
+- Function signatures match spec?
+- Behavior matches expected?
+- No scope creep?
+
+Output: PASS or a specific list of gaps to fix.
+""")
 ```
 
-**If spec issues found:** Fix gaps, then re-run spec review. Continue only when spec-compliant.
+**If spec issues found:** fix gaps, then re-run spec review. Continue only when spec-compliant.
 
-#### Step 3: Dispatch Code Quality Reviewer
+#### Step 3: Code Quality Review
 
 After spec compliance passes:
 
 ```python
-delegate_task(
-    goal="Review code quality for Task 1 implementation",
-    context="""
-    FILES TO REVIEW:
-    - src/models/user.py
-    - tests/models/test_user.py
+run_jarvis_cli("""
+Review code quality for Task 1.
 
-    CHECK:
-    - [ ] Follows project conventions and style?
-    - [ ] Proper error handling?
-    - [ ] Clear variable/function names?
-    - [ ] Adequate test coverage?
-    - [ ] No obvious bugs or missed edge cases?
-    - [ ] No security issues?
+FILES TO REVIEW:
+- src/models/user.py
+- tests/models/test_user.py
 
-    OUTPUT FORMAT:
-    - Critical Issues: [must fix before proceeding]
-    - Important Issues: [should fix]
-    - Minor Issues: [optional]
-    - Verdict: APPROVED or REQUEST_CHANGES
-    """,
-    toolsets=['file']
-)
+CHECK:
+- Follows project conventions and style?
+- Proper error handling?
+- Clear variable/function names?
+- Adequate test coverage?
+- No obvious bugs or missed edge cases?
+- No security issues?
+
+OUTPUT:
+- Critical Issues: [must fix before proceeding]
+- Important Issues: [should fix]
+- Minor Issues: [optional]
+- Verdict: APPROVED or REQUEST_CHANGES
+""")
 ```
 
-**If quality issues found:** Fix issues, re-review. Continue only when approved.
+**If quality issues found:** fix issues, re-review. Continue only when approved.
 
-#### Step 4: Mark Complete
+### 3. Final Integration Review
 
-```python
-todo([{"id": "task-1", "content": "Create User model with email field", "status": "completed"}], merge=True)
-```
-
-### 3. Final Review
-
-After ALL tasks are complete, dispatch a final integration reviewer:
+After ALL tasks are complete:
 
 ```python
-delegate_task(
-    goal="Review the entire implementation for consistency and integration issues",
-    context="""
-    All tasks from the plan are complete. Review the full implementation:
-    - Do all components work together?
-    - Any inconsistencies between tasks?
-    - All tests passing?
-    - Ready for merge?
-    """,
-    toolsets=['terminal', 'file']
-)
+run_jarvis_cli("""
+Review the entire implementation for consistency and integration issues.
+
+All tasks from the plan are complete. Check:
+- Do all components work together?
+- Any inconsistencies between tasks?
+- All tests passing? (run pytest tests/ -q)
+- Ready for merge?
+""")
 ```
 
 ### 4. Verify and Commit
@@ -184,12 +162,12 @@ pytest tests/ -q
 git diff --stat
 
 # Final commit if needed
-git add -A && git commit -m "feat: complete [feature name] implementation"
+git add src/ tests/ && git commit -m "feat: complete [feature name] implementation"
 ```
 
 ## Task Granularity
 
-**Each task = 2-5 minutes of focused work.**
+**Each task = 2–5 minutes of focused work.**
 
 **Too big:**
 - "Implement user authentication system"
@@ -198,155 +176,72 @@ git add -A && git commit -m "feat: complete [feature name] implementation"
 - "Create User model with email and password fields"
 - "Add password hashing function"
 - "Create login endpoint"
-- "Add JWT token generation"
-- "Create registration endpoint"
 
 ## Red Flags — Never Do These
 
 - Start implementation without a plan
 - Skip reviews (spec compliance OR code quality)
 - Proceed with unfixed critical/important issues
-- Dispatch multiple implementation subagents for tasks that touch the same files
-- Make subagent read the plan file (provide full text in context instead)
-- Skip scene-setting context (subagent needs to understand where the task fits)
-- Ignore subagent questions (answer before letting them proceed)
+- Provide incomplete context in the run_jarvis_cli call
 - Accept "close enough" on spec compliance
-- Skip review loops (reviewer found issues → implementer fixes → review again)
-- Let implementer self-review replace actual review (both are needed)
-- **Start code quality review before spec compliance is PASS** (wrong order)
 - Move to next task while either review has open issues
+- Start code quality review before spec compliance is PASS
 
 ## Handling Issues
 
-### If Subagent Asks Questions
+### If run_jarvis_cli Output Shows Questions
 
-- Answer clearly and completely
-- Provide additional context if needed
-- Don't rush them into implementation
+- Answer clearly in the next run_jarvis_cli call with the full context
+- Don't rush past open questions
 
 ### If Reviewer Finds Issues
 
-- Implementer subagent (or a new one) fixes them
-- Reviewer reviews again
+- Use run_jarvis_cli to fix them with specific instructions
+- Re-run the reviewer pass
 - Repeat until approved
-- Don't skip the re-review
 
-### If Subagent Fails a Task
+## Why run_jarvis_cli Per Task
 
-- Dispatch a new fix subagent with specific instructions about what went wrong
-- Don't try to fix manually in the controller session (context pollution)
-
-## Efficiency Notes
-
-**Why fresh subagent per task:**
-- Prevents context pollution from accumulated state
-- Each subagent gets clean, focused context
-- No confusion from prior tasks' code or reasoning
-
-**Why two-stage review:**
-- Spec review catches under/over-building early
-- Quality review ensures the implementation is well-built
-- Catches issues before they compound across tasks
-
-**Cost trade-off:**
-- More subagent invocations (implementer + 2 reviewers per task)
-- But catches issues early (cheaper than debugging compounded problems later)
+- Fresh context per invocation — no confusion from prior task code
+- Focused, clean prompt leads to better output
+- Errors are isolated — one failing task doesn't poison the next
 
 ## Integration with Other Skills
 
 ### With writing-plans
 
-This skill EXECUTES plans created by the writing-plans skill:
-1. User requirements → writing-plans → implementation plan
-2. Implementation plan → subagent-driven-development → working code
+This skill EXECUTES plans created by the `writing-plans` skill:
+1. User requirements → `writing-plans` → implementation plan
+2. Implementation plan → `subagent-driven-development` → working code
 
 ### With test-driven-development
 
-Implementer subagents should follow TDD:
+Each `run_jarvis_cli` implementer call should include TDD instructions:
 1. Write failing test first
 2. Implement minimal code
 3. Verify test passes
 4. Commit
 
-Include TDD instructions in every implementer context.
-
 ### With requesting-code-review
 
-The two-stage review process IS the code review. For final integration review, use the requesting-code-review skill's review dimensions.
+The two-stage review process IS the code review. For final integration review,
+use the `requesting-code-review` skill's review dimensions.
 
 ### With systematic-debugging
 
-If a subagent encounters bugs during implementation:
-1. Follow systematic-debugging process
+If run_jarvis_cli encounters bugs during implementation:
+1. Follow `systematic-debugging` process
 2. Find root cause before fixing
 3. Write regression test
 4. Resume implementation
 
-## Example Workflow
-
-```
-[Read plan: docs/plans/auth-feature.md]
-[Create todo list with 5 tasks]
-
---- Task 1: Create User model ---
-[Dispatch implementer subagent]
-  Implementer: "Should email be unique?"
-  You: "Yes, email must be unique"
-  Implementer: Implemented, 3/3 tests passing, committed.
-
-[Dispatch spec reviewer]
-  Spec reviewer: ✅ PASS — all requirements met
-
-[Dispatch quality reviewer]
-  Quality reviewer: ✅ APPROVED — clean code, good tests
-
-[Mark Task 1 complete]
-
---- Task 2: Password hashing ---
-[Dispatch implementer subagent]
-  Implementer: No questions, implemented, 5/5 tests passing.
-
-[Dispatch spec reviewer]
-  Spec reviewer: ❌ Missing: password strength validation (spec says "min 8 chars")
-
-[Implementer fixes]
-  Implementer: Added validation, 7/7 tests passing.
-
-[Dispatch spec reviewer again]
-  Spec reviewer: ✅ PASS
-
-[Dispatch quality reviewer]
-  Quality reviewer: Important: Magic number 8, extract to constant
-  Implementer: Extracted MIN_PASSWORD_LENGTH constant
-  Quality reviewer: ✅ APPROVED
-
-[Mark Task 2 complete]
-
-... (continue for all tasks)
-
-[After all tasks: dispatch final integration reviewer]
-[Run full test suite: all passing]
-[Done!]
-```
-
 ## Remember
 
 ```
-Fresh subagent per task
-Two-stage review every time
-Spec compliance FIRST
-Code quality SECOND
+run_jarvis_cli per task — fresh context
+Two-stage review every time — spec FIRST, quality SECOND
 Never skip reviews
 Catch issues early
 ```
 
 **Quality is not an accident. It's the result of systematic process.**
-
-## Further reading (load when relevant)
-
-When the orchestration involves significant context usage, long review loops, or complex validation checkpoints, load these references for the specific discipline:
-
-- **`references/context-budget-discipline.md`** — Four-tier context degradation model (PEAK / GOOD / DEGRADING / POOR), read-depth rules that scale with context window size, and early warning signs of silent degradation. Load when a run will clearly consume significant context (multi-phase plans, many subagents, large artifacts).
-- **`references/gates-taxonomy.md`** — The four canonical gate types (Pre-flight, Revision, Escalation, Abort) with behavior, recovery, and examples. Load when designing or reviewing any workflow that has validation checkpoints — use the vocabulary explicitly so each gate has defined entry, failure behavior, and resumption rules.
-
-Both references adapted from gsd-build/get-shit-done (MIT © 2025 Lex Christopherson).
