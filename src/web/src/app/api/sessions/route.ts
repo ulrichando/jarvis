@@ -1,10 +1,6 @@
 // GET    /api/sessions?limit=200    — list voice sessions
 // DELETE /api/sessions?id=<sessionId> — remove a session + its messages
 //
-// Replaces:
-//   useQuery(api.sessions.list, ...)        → GET shape mirrors Convex
-//   useMutation(api.sessions.remove)        → DELETE
-//
 // Returns:
 //   GET:  Array<{
 //           sessionId, source, label?, startedAt,
