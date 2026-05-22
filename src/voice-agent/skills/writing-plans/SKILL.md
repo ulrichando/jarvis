@@ -141,7 +141,7 @@ Read and understand:
 
 ### Step 2: Explore the Codebase
 
-Use Hermes tools to understand the project:
+Use JARVIS tools to understand the project:
 
 ```python
 # Understand project structure

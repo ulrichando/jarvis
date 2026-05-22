@@ -42,7 +42,7 @@ uv pip install mcp
 
 ## Quick Start
 
-Add MCP servers to `~/.hermes/config.yaml` under the `mcp_servers` key:
+Add MCP servers to `~/.jarvis/config.yaml` under the `mcp_servers` key:
 
 ```yaml
 mcp_servers:
@@ -108,10 +108,10 @@ Note: A server config must have either `command` (stdio) or `url` (HTTP), not bo
 
 When JARVIS starts, `discover_mcp_tools()` is called during tool initialization:
 
-1. Reads `mcp_servers` from `~/.hermes/config.yaml`
+1. Reads `mcp_servers` from `~/.jarvis/config.yaml`
 2. For each server, spawns a connection in a dedicated background event loop
 3. Initializes the MCP session and calls `list_tools()` to discover available tools
-4. Registers each tool in the Hermes tool registry
+4. Registers each tool in the JARVIS tool registry
 
 ### Tool Naming Convention
 
@@ -130,7 +130,7 @@ Examples:
 
 ### Auto-Injection
 
-After discovery, MCP tools are automatically injected into all `hermes-*` platform toolsets (CLI, Discord, Telegram, etc.). This means MCP tools are available in every conversation without any additional configuration.
+After discovery, MCP tools are automatically injected into all JARVIS platform toolsets. This means MCP tools are available in every conversation without any additional configuration.
 
 ### Connection Lifecycle
 
@@ -214,7 +214,7 @@ pip install mcp
 
 ### "No MCP servers configured"
 
-No `mcp_servers` key in `~/.hermes/config.yaml`, or it's empty. Add at least one server.
+No `mcp_servers` key in `~/.jarvis/config.yaml`, or it's empty. Add at least one server.
 
 ### "Failed to connect to MCP server 'X'"
 
