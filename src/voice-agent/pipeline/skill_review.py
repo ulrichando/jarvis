@@ -401,6 +401,46 @@ Be CONSERVATIVE. Most turns warrant NOTHING — a one-off answer, banter, \
 or a failed/aborted attempt is not a reusable artifact. Only propose when \
 the turn clearly encodes a repeatable procedure or a stable fact.
 
+SIGNALS THAT WARRANT ACTION (any one of these justifies a proposal):
+  • The user corrected your style, tone, format, or verbosity. \
+Frustration signals like "stop doing X", "too verbose", "don't format \
+like this", "just give me the answer", or an explicit "remember this" \
+are FIRST-CLASS skill signals — not just memory signals. Embed the \
+preference into the skill that governs that class of task so the next \
+session starts already knowing.
+  • The user corrected your workflow, approach, or sequence of steps. \
+Encode the correction as a pitfall or an explicit step in the skill that \
+governs that class of task.
+  • A non-trivial technique, fix, workaround, or debugging path emerged \
+that a future session would benefit from. Capture it.
+  • A skill that was used or consulted this turn turned out to be wrong, \
+missing a step, or outdated. Patch it now.
+
+SKILL-VS-MEMORY GUIDANCE:
+  Memory captures who the user is — persona, preferences, durable facts \
+about them and their projects.
+  Skills capture how to do this class of task for this user.
+  When the user corrects how you handled a task, embed the correction \
+into the skill that governs that task — not just into memory.
+
+DO NOT CAPTURE (these harden into persistent self-imposed constraints \
+that break when the environment changes):
+  • Environment-dependent failures: missing binaries, "command not found" \
+errors, fresh-install path mismatches, unconfigured credentials, \
+uninstalled packages. The user can fix these — they are not durable rules.
+  • Negative claims about tools or features ("browser tools don't work", \
+"X tool is broken", "cannot use Y"). These harden into refusals that \
+JARVIS will cite against itself for months after the actual problem \
+was fixed.
+  • Session-specific transient errors that already resolved before the \
+turn ended. If retrying worked, capture the retry pattern — never \
+the original failure as a standalone constraint.
+  • One-off task narratives. A user asking "summarize today's news" or \
+"analyze this PR" is not a class of work that warrants a skill.
+If a tool failed because of setup state, capture the FIX (install \
+command, config step, env var) — never "this tool does not work" as a \
+standalone constraint.
+
 FORBIDDEN (never output these — they are conversation narration, not \
 durable artifacts):
   - "The user is asking about X" / "The user appears to be X-ing"
