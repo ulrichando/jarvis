@@ -1710,8 +1710,6 @@ async def media_control(action: str, player: str = "spotify") -> str:
 # the hub SDK (HubClient at module scope). The hub daemon consumes
 # the event into ~/.jarvis/hub/state.db AND re-broadcasts on
 # `broadcasts:conversation` for SSE subscribers (e.g. the web UI).
-# Pre-2026-05-03 we also dual-wrote to a Convex mirror; that was
-# retired alongside Convex itself.
 
 
 def _save_turn(
