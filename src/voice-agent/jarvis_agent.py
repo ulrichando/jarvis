@@ -3545,6 +3545,32 @@ class JarvisAgent(Agent):
     # Phase 4 of the registry migration (2026-04-30); the registry's
     # RegistrySubagent + DESKTOP_INSTRUCTIONS reproduces it 1:1.
 
+    async def on_enter(self) -> None:
+        # Base Agent.on_enter is a no-op pass; preserve the contract.
+        await super().on_enter()
+        # Begin the cloud MemoryProvider session (no-op when the layer is
+        # off — JARVIS_MEMORY_PROVIDER unset → active_provider() is None).
+        # Session id = the room name (same id source as `ctx.room.name`
+        # used elsewhere in this file); stable per job. Guarded so a
+        # memory-layer hiccup never blocks agent entry.
+        try:
+            from pipeline import memory_provider
+            room = getattr(getattr(self.session, "room_io", None), "room", None)
+            session_id = getattr(room, "name", "") or ""
+            memory_provider.begin_session(session_id)
+        except Exception as e:  # noqa: BLE001 — memory must never break entry
+            logger.debug(f"[memory] begin_session skipped: {e}")
+
+    async def on_exit(self) -> None:
+        # End the cloud MemoryProvider session (no-op when the layer is off).
+        try:
+            from pipeline import memory_provider
+            memory_provider.end_session()
+        except Exception as e:  # noqa: BLE001 — memory must never break exit
+            logger.debug(f"[memory] end_session skipped: {e}")
+        # Base Agent.on_exit is a no-op pass; preserve the contract.
+        await super().on_exit()
+
     async def on_user_turn_completed(
         self, turn_ctx: ChatContext, new_message: ChatMessage,
     ) -> None:
@@ -3840,6 +3866,24 @@ class JarvisAgent(Agent):
                 f"[t12] inject_handoff_refused_marker raised: "
                 f"{type(_t12_err).__name__}: {_t12_err}"
             )
+
+        # Gated cross-session auto-recall (cheap path; never blocks — see
+        # pipeline.memory_provider). Placed here — AFTER every drop /
+        # StopResponse gate (CUA-confirm, garbage, echo, silent-mode,
+        # quiet-hours, short-input, intent-router short-circuit,
+        # bare-vocative) — so we only recall on turns that WILL reach the
+        # LLM, never on dropped turns. `text` is the confirmed clean
+        # transcript here. Injects into `turn_ctx` (the mutable copy the
+        # framework hands this hook), same context the T12 marker above
+        # writes to. No-op when the layer is off (active_provider() is None).
+        try:
+            from pipeline import turn_router, memory_provider
+            if memory_provider.active_provider() is not None and turn_router.is_recall_query(text):
+                ctx = await memory_provider.maybe_recall_for_turn(text)
+                if ctx:
+                    turn_ctx.add_message(role="assistant", content=f"[memory] {ctx}")
+        except Exception as e:  # noqa: BLE001 — memory must never break a turn
+            logger.debug(f"[memory] auto-recall skipped: {e}")
 
         # Not silent, not a mute trigger, passed quiet-hours gate → LLM.
         return
@@ -5120,6 +5164,18 @@ async def entrypoint(ctx: JobContext) -> None:
             except Exception:
                 prior = []
             _save_turn(convo_session_id, role, text, prior_messages=prior)
+            # Background sync to the cloud memory provider (no-op when the
+            # layer is off — JARVIS_MEMORY_PROVIDER unset → sync_item_async
+            # returns immediately). Reuses this handler's already-extracted
+            # `role` + `text` (truncated heard-portion for interrupted
+            # assistant turns), fire-and-forget so it never blocks the turn.
+            try:
+                from pipeline import memory_provider
+                _mem_role = role or ""
+                if _mem_role in ("user", "assistant") and (text or "").strip():
+                    memory_provider.sync_item_async(_mem_role, text)
+            except Exception:
+                pass
             # Assistant turn just landed → LLM phase is over (TTS has
             # been streaming). Clear the thinking flag. The desktop
             # tray drops gold the next /status poll.
