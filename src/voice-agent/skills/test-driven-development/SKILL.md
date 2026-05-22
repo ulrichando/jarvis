@@ -297,27 +297,24 @@ terminal("pytest tests/test_feature.py::test_name -v")
 terminal("pytest tests/ -q")
 ```
 
-### With delegate_task
+### With run_jarvis_cli
 
-When dispatching subagents for implementation, enforce TDD in the goal:
+When delegating implementation, enforce TDD in the prompt:
 
 ```python
-delegate_task(
-    goal="Implement [feature] using strict TDD",
-    context="""
-    Follow test-driven-development skill:
-    1. Write failing test FIRST
-    2. Run test to verify it fails
-    3. Write minimal code to pass
-    4. Run test to verify it passes
-    5. Refactor if needed
-    6. Commit
+run_jarvis_cli("""
+Implement [feature] using strict TDD.
+Follow test-driven-development skill:
+1. Write failing test FIRST
+2. Run test to verify it fails
+3. Write minimal code to pass
+4. Run test to verify it passes
+5. Refactor if needed
+6. Commit
 
-    Project test command: pytest tests/ -q
-    Project structure: [describe relevant files]
-    """,
-    toolsets=['terminal', 'file']
-)
+Project test command: pytest tests/ -q
+Project structure: [describe relevant files]
+""")
 ```
 
 ### With systematic-debugging

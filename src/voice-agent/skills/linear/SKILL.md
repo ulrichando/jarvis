@@ -20,7 +20,7 @@ Manage Linear issues, projects, and teams directly via the GraphQL API using `cu
 ## Setup
 
 1. Get a personal API key from **Linear Settings > Account > Security & access > Personal API keys** (URL: https://linear.app/settings/account/security). Note: the org-level *Settings > API* page only shows OAuth apps and workspace-member keys, not personal keys.
-2. Set `LINEAR_API_KEY` in your environment (via `hermes setup` or your env config)
+2. Set `LINEAR_API_KEY` in your environment (e.g. via `~/.jarvis/.env` or shell profile)
 
 ## API Basics
 
@@ -42,7 +42,7 @@ curl -s -X POST https://api.linear.app/graphql \
 For faster one-liners that don't need hand-written GraphQL, this skill ships a stdlib Python CLI at `scripts/linear_api.py`. Zero dependencies. Same auth (reads `LINEAR_API_KEY`).
 
 ```bash
-SCRIPT=$(dirname "$(find ~/.hermes -path '*skills/productivity/linear/scripts/linear_api.py' 2>/dev/null | head -1)")/linear_api.py
+SCRIPT=$(dirname "$(find ~/.jarvis -path '*skills/productivity/linear/scripts/linear_api.py' 2>/dev/null | head -1)")/linear_api.py
 
 python3 "$SCRIPT" whoami
 python3 "$SCRIPT" list-teams
@@ -275,7 +275,7 @@ Document URLs look like:
 https://linear.app/<workspace>/document/<slug>-<hexSlugId>
 ```
 
-The trailing hex segment is the `slugId`. Example: `https://linear.app/nousresearch/document/rfc-hermes-permission-gateway-discord-38359beef67c` → `slugId` is `38359beef67c`.
+The trailing hex segment is the `slugId`. Example: `https://linear.app/myteam/document/rfc-some-feature-38359beef67c` → `slugId` is `38359beef67c`.
 
 **Important schema detail:** the Markdown body is in the `content` field. The ProseMirror JSON is in `contentState` (not `contentData` — that field does not exist and the API returns 400).
 

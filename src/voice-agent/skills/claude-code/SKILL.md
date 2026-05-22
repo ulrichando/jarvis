@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   jarvis:
     tags: [Coding-Agent, Claude, Anthropic, Code-Review, Refactoring, PTY, Automation]
-    related_skills: [codex, hermes-agent, opencode]
+    related_skills: [codex, opencode]
 ---
 
 # Claude Code — JARVIS Orchestration Guide
