@@ -14,7 +14,6 @@ import { DataSection } from "@/components/settings/data";
 import { AboutSection } from "@/components/settings/about";
 import { JarvisInChromeSection } from "@/components/settings/jarvis-in-chrome";
 import { VoiceAndModelsSection } from "@/components/settings/voice-and-models";
-import { MemoriesSection } from "@/components/settings/memories";
 import { KnowledgeSection } from "@/components/settings/knowledge";
 import { SkillsSection } from "@/components/settings/skills";
 
@@ -30,7 +29,6 @@ type Section =
   | "connectors"
   | "providers"
   | "voice-and-models"
-  | "memories"
   | "data"
   | "about"
   | "jarvis-in-chrome";
@@ -44,7 +42,6 @@ const NAV: Array<{ id: Section; label: string }> = [
   { id: "connectors", label: "Connectors (MCP)" },
   { id: "providers", label: "Providers" },
   { id: "voice-and-models", label: "Voice & Models" },
-  { id: "memories", label: "Memories" },
   { id: "capabilities", label: "Capabilities" },
   { id: "usage", label: "Usage" },
   { id: "privacy", label: "Privacy" },
@@ -96,7 +93,6 @@ export default function SettingsPage() {
           {section === "connectors" && <ConnectorsSection />}
           {section === "providers" && <ProvidersSection />}
           {section === "voice-and-models" && <VoiceAndModelsSection />}
-          {section === "memories" && <MemoriesSection />}
           {section === "data" && <DataSection />}
           {section === "about" && <AboutSection />}
           {section === "jarvis-in-chrome" && <JarvisInChromeSection />}
