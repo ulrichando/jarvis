@@ -1,0 +1,5 @@
+name: web-searxng
+version: "1.0.0"
+description: "SearXNG self-hosted privacy-respecting metasearch backend — search only"
+kind: backend
+requires_env: [SEARXNG_URL]
