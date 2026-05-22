@@ -17,7 +17,6 @@ This will:
 3. Build the Tauri desktop binary (`npm run build` + `cargo build --release`).
 4. Install + enable systemd units (`jarvis-voice-agent.service`, `jarvis-hub.service`) — **not started**, so you can configure `.env` first.
 5. Create a `.env` template at the repo root with empty API-key entries.
-6. Print instructions for loading the Chrome extension and open `chrome://extensions` for you.
 
 Skip a channel: `JARVIS_SKIP_CLI=1` / `JARVIS_SKIP_VOICE=1` / `JARVIS_SKIP_DESKTOP=1` / `JARVIS_SKIP_WEB=1`. Re-running the script is idempotent.
 
@@ -84,11 +83,10 @@ journalctl --user -u jarvis-voice-agent.service -f
 | **CLI** | `jarvis` (or `jarvis groq` / `jarvis deepseek` for a specific provider) |
 | **Desktop (Tauri)** | `jarvis-desktop`, or run the binary directly: `~/Documents/Projects/jarvis/src/desktop-tauri/src-tauri/target/release/jarvis` |
 | **Web (Next.js)** | `cd ~/Documents/Projects/jarvis/src/web && bun dev` (defaults to `http://localhost:3000`) |
-| **Chrome extension** | Loaded once via `chrome://extensions` → Developer mode → Load unpacked → `src/extensions/jarvis-screen/` |
 
 ## Architecture (one paragraph)
 
-The brain is a Python LiveKit Agents worker (`src/voice-agent/jarvis_agent.py`). It runs the supervisor LLM (Anthropic Claude Sonnet 4.6 by default, tray-switchable across Groq / DeepSeek / OpenAI / Anthropic / Kimi) plus a pipeline of sanitizers, monkey-patches, and a turn router that picks an LLM and TTS based on intent class. Subagent handoffs handle desktop control, browser control, screen-share. The Tauri desktop UI gives you a tray icon, model picker, and barge-in mic. The Next.js app is a web dashboard / chat front-end. The Claude-Code-shaped CLI is a separate engineering agent that routes through the same Anthropic-shaped proxy. The Chrome extension is the JARVIS-to-browser bridge over a websocket on `127.0.0.1:8765` (served by `jarvis-bridge.service`).
+The brain is a Python LiveKit Agents worker (`src/voice-agent/jarvis_agent.py`). It runs the supervisor LLM (Anthropic Claude Sonnet 4.6 by default, tray-switchable across Groq / DeepSeek / OpenAI / Anthropic / Kimi) plus a pipeline of sanitizers, monkey-patches, and a turn router that picks an LLM and TTS based on intent class. Subagent handoffs handle desktop control, browser control, screen-share. The Tauri desktop UI gives you a tray icon, model picker, and barge-in mic. The Next.js app is a web dashboard / chat front-end. The Claude-Code-shaped CLI is a separate engineering agent that routes through the same Anthropic-shaped proxy.
 
 For load-bearing operational rules and architecture details, see [CLAUDE.md](CLAUDE.md).
 
