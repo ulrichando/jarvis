@@ -466,3 +466,99 @@ class TestReviewTurn:
             raise RuntimeError("LLM down")
 
         assert asyncio.run(review_turn(snap, llm_fn=_boom)) == []
+
+
+# ---------------------------------------------------------------------------
+# 8. _REVIEW_PROMPT content — enrichment assertions
+#    Verify the prompt carries the anti-garbage guard, signal list,
+#    skill-vs-memory guidance, and still honours the conservative contract.
+# ---------------------------------------------------------------------------
+
+
+class TestReviewPromptContent:
+    """Structural checks on _REVIEW_PROMPT without invoking the LLM."""
+
+    def test_conservative_bias_present(self):
+        from pipeline.skill_review import _REVIEW_PROMPT
+        assert "conservative" in _REVIEW_PROMPT.lower(), (
+            "_REVIEW_PROMPT must retain 'Be CONSERVATIVE' framing"
+        )
+
+    def test_json_contract_present(self):
+        from pipeline.skill_review import _REVIEW_PROMPT
+        assert '"proposals"' in _REVIEW_PROMPT, (
+            "_REVIEW_PROMPT must still demand a JSON 'proposals' key"
+        )
+
+    def test_three_proposal_kinds_present(self):
+        from pipeline.skill_review import _REVIEW_PROMPT
+        for kind in ("skill_create", "skill_patch", "memory"):
+            assert kind in _REVIEW_PROMPT, (
+                f"_REVIEW_PROMPT must still list proposal kind '{kind}'"
+            )
+
+    def test_anti_garbage_command_not_found(self):
+        from pipeline.skill_review import _REVIEW_PROMPT
+        prompt_lower = _REVIEW_PROMPT.lower()
+        assert "command not found" in prompt_lower, (
+            "_REVIEW_PROMPT must warn against capturing 'command not found' "
+            "environment failures (anti-garbage block)"
+        )
+
+    def test_anti_garbage_negative_tool_claim(self):
+        from pipeline.skill_review import _REVIEW_PROMPT
+        prompt_lower = _REVIEW_PROMPT.lower()
+        # Any form of "negative claim" about a tool (broken/doesn't work/etc.)
+        has_negative_tool = (
+            "negative claim" in prompt_lower
+            or "broken" in prompt_lower
+            or "does not work" in prompt_lower
+            or "don't work" in prompt_lower
+        )
+        assert has_negative_tool, (
+            "_REVIEW_PROMPT must warn against capturing negative tool claims "
+            "that harden into self-cited refusals (anti-garbage block)"
+        )
+
+    def test_signal_list_style_correction(self):
+        from pipeline.skill_review import _REVIEW_PROMPT
+        prompt_lower = _REVIEW_PROMPT.lower()
+        # Signal: style/tone/format/verbosity correction from user
+        has_style_signal = (
+            "verbose" in prompt_lower
+            or "tone" in prompt_lower
+            or "style" in prompt_lower
+        )
+        assert has_style_signal, (
+            "_REVIEW_PROMPT must name style/tone/verbosity corrections as "
+            "first-class skill signals"
+        )
+
+    def test_signal_list_workflow_correction(self):
+        from pipeline.skill_review import _REVIEW_PROMPT
+        prompt_lower = _REVIEW_PROMPT.lower()
+        has_workflow = (
+            "workflow" in prompt_lower
+            or "approach" in prompt_lower
+            or "pitfall" in prompt_lower
+        )
+        assert has_workflow, (
+            "_REVIEW_PROMPT must name workflow/approach corrections as signals"
+        )
+
+    def test_skill_vs_memory_guidance(self):
+        from pipeline.skill_review import _REVIEW_PROMPT
+        prompt_lower = _REVIEW_PROMPT.lower()
+        # Skill-vs-memory: memory=who, skills=how
+        has_who = "who the user is" in prompt_lower
+        has_how = "how to do" in prompt_lower or "how to handle" in prompt_lower
+        assert has_who and has_how, (
+            "_REVIEW_PROMPT must contain skill-vs-memory guidance: "
+            "memory captures who the user is; skills capture how to do a task"
+        )
+
+    def test_no_hermes_tokens(self):
+        from pipeline.skill_review import _REVIEW_PROMPT
+        assert "hermes" not in _REVIEW_PROMPT.lower(), (
+            "_REVIEW_PROMPT must not contain any 'hermes' token"
+        )
