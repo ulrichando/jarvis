@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import inspect
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -110,6 +111,36 @@ def _first_capable(capability: str) -> Optional[Any]:
     return None
 
 
+async def _invoke(method: Any, *args: Any) -> Any:
+    """Call a provider capability method whether it is sync or async.
+
+    Async-native SDKs (e.g. Parallel) expose ``async def`` methods — await them
+    directly. Sync SDKs (Tavily/Exa/Firecrawl/...) run in a worker thread so the
+    event loop stays responsive. A sync method that nonetheless returns an
+    awaitable is awaited defensively.
+    """
+    if inspect.iscoroutinefunction(method):
+        return await method(*args)
+    result = await asyncio.to_thread(method, *args)
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
+def first_search_provider() -> Optional[Any]:
+    """First available web backend advertising ``supports_search`` (or None).
+
+    Public entry point for ``tools.web_tools.web_search`` to prefer a credentialed
+    backend (better ranking, immune to DDG's IP CAPTCHA) over keyless DuckDuckGo.
+    """
+    return _first_capable("search")
+
+
+async def run_provider_search(provider: Any, query: str, limit: int = 5) -> Dict[str, Any]:
+    """Run ``provider.search`` sync/async-aware; return the raw result dict."""
+    return await _invoke(provider.search, query, limit)
+
+
 def check_web_extract_available() -> bool:
     """``check_fn`` for ``web_extract`` — gated on an extract-capable backend."""
     return _first_capable("extract") is not None
@@ -165,7 +196,7 @@ async def _handle_web_extract(args: dict) -> str:
 
     logger.info("web_extract → %d url(s) via %s", len(urls), getattr(provider, "name", "?"))
     try:
-        result = await asyncio.to_thread(provider.extract, urls)
+        result = await _invoke(provider.extract, urls)
     except Exception as exc:  # noqa: BLE001 — a provider error must not crash the turn
         logger.warning("web_extract provider %r raised: %s", getattr(provider, "name", "?"), exc)
         return tool_error(f"web_extract failed: {exc}")
@@ -193,7 +224,7 @@ async def _handle_web_crawl(args: dict) -> str:
 
     logger.info("web_crawl → %s via %s", url, getattr(provider, "name", "?"))
     try:
-        result = await asyncio.to_thread(provider.crawl, url)
+        result = await _invoke(provider.crawl, url)
     except Exception as exc:  # noqa: BLE001
         logger.warning("web_crawl provider %r raised: %s", getattr(provider, "name", "?"), exc)
         return tool_error(f"web_crawl failed: {exc}")
