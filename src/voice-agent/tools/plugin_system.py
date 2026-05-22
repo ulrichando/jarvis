@@ -352,17 +352,50 @@ class PluginContext:
         """No-op stub: gateway platform adapters aren't consumed by the voice agent."""
         self._stub("platform", name)
 
+    # -- provider registration (wired into tools._provider_registry) --------
+    #
+    # Hermes-shaped backend plugins register a provider object (duck-typed
+    # name + is_available() + capability methods) under a capability *kind*.
+    # The consuming registry tool (image_generate / video_generate /
+    # web_extract / browser_*) resolves it via _provider_registry.get_provider.
+
+    def _register_provider(self, kind: str, provider: Any) -> None:
+        """Land a plugin-provided backend in the generic provider registry.
+
+        Name is taken from ``provider.name``. A provider with no usable name is
+        skipped with a warning rather than raising — one malformed backend must
+        not break discovery of the rest.
+        """
+        name = str(getattr(provider, "name", "") or "").strip()
+        if not name:
+            logger.warning(
+                "Plugin %s registered a %s provider with no usable .name — skipped",
+                self.manifest.name,
+                kind,
+            )
+            return
+        from tools import _provider_registry
+
+        _provider_registry.register_provider(kind, name, provider)
+        logger.debug(
+            "Plugin %s registered %s provider %r", self.manifest.name, kind, name
+        )
+
     def register_image_gen_provider(self, provider: Any) -> None:
-        """No-op stub: image-gen providers aren't consumed by the voice agent."""
-        self._stub("image_gen_provider")
+        """Register an image-generation backend under the ``image`` kind."""
+        self._register_provider("image", provider)
 
     def register_web_search_provider(self, provider: Any) -> None:
-        """No-op stub: web-search providers aren't consumed by the voice agent."""
-        self._stub("web_search_provider")
+        """Register a web search/extract/crawl backend under the ``web`` kind."""
+        self._register_provider("web", provider)
+
+    def register_video_gen_provider(self, provider: Any) -> None:
+        """Register a video-generation backend under the ``video`` kind."""
+        self._register_provider("video", provider)
 
     def register_browser_provider(self, provider: Any) -> None:
-        """No-op stub: cloud-browser providers aren't consumed by the voice agent."""
-        self._stub("browser_provider")
+        """Register a cloud-browser backend under the ``browser`` kind."""
+        self._register_provider("browser", provider)
 
 
 # ---------------------------------------------------------------------------
