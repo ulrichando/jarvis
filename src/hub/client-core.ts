@@ -20,7 +20,6 @@ import { homedir } from 'os'
 import { join } from 'path'
 
 export const EVENTS_STREAM = 'events:conversation'
-export const MEMORY_EVENTS_STREAM = 'events:memory'
 export const OFFLINE_MAX = 100
 
 export type Source = 'voice' | 'web' | 'cli' | 'phone' | 'extension'
@@ -29,19 +28,12 @@ export type EventType =
   | 'conversation.message.created'
   | 'conversation.session.started'
   | 'conversation.session.ended'
-  | 'memory.value.upserted'
-  | 'memory.value.removed'
 
 export interface EventPayload {
   role?: 'user' | 'assistant'
   text?: string
   title?: string | null
   tool_calls?: unknown
-  // memory.value.upserted / .removed
-  memory_id?: string
-  content?: string
-  category?: string
-  source_session_id?: string | null
 }
 
 export interface HubEvent {

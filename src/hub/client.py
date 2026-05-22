@@ -1,9 +1,8 @@
 """Python SDK for the JARVIS event hub.
 
 Single class HubClient with publish/subscribe/read methods. Designed
-for use by voice-agent, the hub daemon itself, the log analyzer, and
-the memory recall subagent. Web (server-side) uses the parallel
-client.ts.
+for use by voice-agent, the hub daemon itself, and the log analyzer.
+Web (server-side) uses the parallel client.ts.
 
 Connection: pass an existing aioredis client OR call
 `HubClient.from_url(...)`. Reads against state.db are static methods
@@ -21,7 +20,6 @@ from pathlib import Path
 from typing import Any
 
 EVENTS_STREAM = "events:conversation"
-MEMORY_EVENTS_STREAM = "events:memory"
 
 
 def _new_event_id() -> str:
@@ -83,64 +81,6 @@ class _ReadMixin:
                 (key,),
             ).fetchone()
             return row[0] if row else None
-        finally:
-            conn.close()
-
-    @staticmethod
-    def read_memories_sync(
-        category: str | None = None,
-        limit: int = 30,
-        db_path: Path | str | None = None,
-    ) -> list[dict]:
-        """Top memories ranked by use_count DESC, updated_ts DESC.
-        Filters by category if provided. Returns [] if state.db doesn't
-        exist yet."""
-        path = Path(db_path) if db_path else _state_db_path()
-        if not path.exists():
-            return []
-        sql = (
-            "SELECT memory_id, content, category, source, "
-            "       source_session_id, created_ts, updated_ts, "
-            "       last_used_ts, use_count "
-            "FROM memories "
-        )
-        params: list[Any] = []
-        if category:
-            sql += "WHERE category = ? "
-            params.append(category)
-        sql += "ORDER BY use_count DESC, updated_ts DESC LIMIT ?"
-        params.append(int(limit))
-        conn = sqlite3.connect(str(path))
-        try:
-            conn.row_factory = sqlite3.Row
-            return [dict(r) for r in conn.execute(sql, params).fetchall()]
-        finally:
-            conn.close()
-
-    @staticmethod
-    def bump_memory_use_sync(
-        memory_ids: list[str],
-        db_path: Path | str | None = None,
-    ) -> None:
-        """Increment use_count + update last_used_ts for the given
-        memories. Used by the voice agent after injecting memories
-        into the system prompt — heavily-referenced memories rise."""
-        if not memory_ids:
-            return
-        path = Path(db_path) if db_path else _state_db_path()
-        if not path.exists():
-            return
-        now = int(time.time() * 1000)
-        placeholders = ",".join("?" for _ in memory_ids)
-        conn = sqlite3.connect(str(path))
-        try:
-            conn.execute(
-                f"UPDATE memories "
-                f"SET use_count = use_count + 1, last_used_ts = ? "
-                f"WHERE memory_id IN ({placeholders})",
-                [now, *memory_ids],
-            )
-            conn.commit()
         finally:
             conn.close()
 
@@ -208,8 +148,8 @@ class HubClient(_ReadMixin):
         unreachable; flush via `flush_offline_queue()`.
 
         Pass `stream` to target a non-default stream (e.g.
-        `MEMORY_EVENTS_STREAM` for memory events). Offline buffer is
-        per-stream so the right destination is preserved.
+        `events:settings`). Offline buffer is per-stream so the right
+        destination is preserved.
         """
         eid = _new_event_id()
         evt = {
