@@ -50,3 +50,60 @@ def active_provider_name() -> Optional[str]:
     """The backend named by JARVIS_MEMORY_PROVIDER, or None (layer off)."""
     name = os.environ.get("JARVIS_MEMORY_PROVIDER", "").strip()
     return name or None
+
+
+# ---------------------------------------------------------------------------
+# recall() registry tool
+# ---------------------------------------------------------------------------
+
+
+def check_recall_available() -> bool:
+    """check_fn: a memory provider is configured + available."""
+    from pipeline import memory_provider  # lazy — avoids import cycle at module load
+    return memory_provider.active_provider() is not None
+
+
+async def _handle_recall(args: dict) -> str:
+    query = (args.get("query") or "").strip() if isinstance(args, dict) else ""
+    if not query:
+        from tools.registry import tool_error
+        return tool_error("recall requires a 'query' (what to look up about the user/past).")
+    from pipeline import memory_provider
+    import asyncio
+    res = await asyncio.to_thread(memory_provider.recall_for_query, query)
+    return res or "No relevant memory found."
+
+
+_RECALL_SCHEMA = {
+    "name": "recall",
+    "description": (
+        "Look up what you know about the user from past conversations (cross-session "
+        "memory). Use for 'what did I tell you about X', 'remember when…', or when you "
+        "need durable context the current chat doesn't contain. Returns a synthesized "
+        "answer; may take a moment. For facts in the current chat, just answer directly."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Natural-language question about the user or past context.",
+            }
+        },
+        "required": ["query"],
+    },
+}
+
+from tools.registry import registry as _registry  # noqa: E402 — module-level registration
+
+_registry.register(
+    name="recall",
+    schema=_RECALL_SCHEMA,
+    handler=_handle_recall,
+    toolset="memory",
+    check_fn=check_recall_available,
+    requires_env=["JARVIS_MEMORY_PROVIDER"],
+    is_async=True,
+    emoji="🧠",
+    max_result_size_chars=8_000,
+)
