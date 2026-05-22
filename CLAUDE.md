@@ -12,7 +12,6 @@ JARVIS is Ulrich's voice-first AI assistant. Real-time speech in, real-time spee
 | Desktop UI | Tauri (Rust + React/TS) | [src/desktop-tauri/](src/desktop-tauri/) |
 | Web app | Next.js / React | [src/web/](src/web/) |
 | CLI agent (`jarvis`) | TypeScript / Bun, Claude Code shape | [src/cli/](src/cli/) |
-| Browser extension | TS, talks to bridge over WS | [src/extensions/](src/extensions/) |
 | Bridge | Bun/TypeScript HTTP+WS on `127.0.0.1:8765`, started by `src/cli/scripts/start-desktop.sh` when the desktop launches (no systemd unit; dies when desktop closes). Brokers HTTP→Chrome ext over WS. Auth required via `JARVIS_REQUIRE_LOCAL_AUTH=1` + `~/.jarvis/local-api-token.env` (added 2026-05-16 per global review §P0-1) | [src/cli/src/bridge/](src/cli/src/bridge/) |
 | Hub (jarvis-hub.service) | Python Redis Streams consumer that materializes `~/.jarvis/hub/state.db` from `events:conversation`/`events:settings`/`events:memory` — NOT the bridge despite the previous CLAUDE.md misnaming | [src/hub/](src/hub/) |
 | AI-native OS rice (Misty Scone) | Arch + custom desktop, copies cli/desktop-tauri (aspirational — `src/os/desktop/` not present in current checkout) | [src/os/desktop/](src/os/desktop/) |

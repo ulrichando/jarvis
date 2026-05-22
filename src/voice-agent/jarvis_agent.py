@@ -2392,14 +2392,10 @@ async def current_location() -> str:
 
     Lookup order (most accurate first):
       1. ~10-min in-memory cache from a prior call (same precision).
-      2. Browser extension's navigator.geolocation (Chrome's built-in
-         production key — no GCP project enablement needed). Only
-         fires when the extension is connected to the bridge; fast
-         fall-through otherwise (auto_launch=False).
-      3. Google Geolocation API (Wi-Fi BSSID → coords → reverse geocode,
+      2. Google Geolocation API (Wi-Fi BSSID → coords → reverse geocode,
          clipped to precision band) when GOOGLE_API_KEY is set AND
          the API is enabled on the project.
-      4. ipinfo.io / ip-api.com IP-based geo (city-level, VPN-fragile).
+      3. ipinfo.io / ip-api.com IP-based geo (city-level, VPN-fragile).
     """
     now = time.monotonic()
 
@@ -2408,65 +2404,7 @@ async def current_location() -> str:
     if cached and (now - float(_CURRENT_LOCATION_CACHE["ts"])) < _CURRENT_LOCATION_TTL_S:
         return str(cached)
 
-    # 2. Browser extension's navigator.geolocation — preferred when the
-    # extension is connected. Chrome's Network Location Provider uses
-    # Google's built-in production key, sidestepping the "enable the
-    # API on your GCP project" friction. Same Wi-Fi BSSID accuracy
-    # ceiling as the direct Google path.
-    try:
-        from tools.browser_ext_geolocate import fetch_browser_geolocation
-        geo = await fetch_browser_geolocation(timeout_ms=8000)
-    except Exception as e:
-        geo = {"ok": False, "error": f"helper raised: {e}"}
-    if geo.get("ok"):
-        try:
-            lat = float(geo["lat"])
-            lng = float(geo["lng"])
-            accuracy_raw = geo.get("accuracy_m")
-            accuracy_m = float(accuracy_raw) if accuracy_raw is not None else None
-            precision = _precision_from_accuracy_m(accuracy_m)
-            location = await _reverse_geocode(lat, lng, precision)
-            if location:
-                acc_str = (
-                    f"~{int(accuracy_m)}m" if accuracy_m is not None
-                    else "unknown"
-                )
-                formatted = (
-                    f"{location} (precision={precision}; "
-                    f"accuracy={acc_str}; source=browser-wifi). "
-                    f"For the user's home/work address use saved_address."
-                )
-                logger.info(
-                    f"[current_location] browser-ext → {location} "
-                    f"(precision={precision}, accuracy_m={accuracy_m})"
-                )
-                _CURRENT_LOCATION_CACHE["value"] = formatted
-                _CURRENT_LOCATION_CACHE["ts"] = now
-                return formatted
-        except Exception as e:
-            logger.debug(f"[current_location] browser-ext parse failed: {e}")
-    else:
-        err = str(geo.get("error", "")).lower()
-        # Quiet on the expected "Chrome's closed" case; hint at the
-        # Linux-specific geoclue-down case.
-        if "extension not connected" in err:
-            pass  # fast fall-through
-        elif "position_unavailable" in err or geo.get("code") == 2:
-            logger.warning(
-                "[current_location] browser geolocation POSITION_UNAVAILABLE "
-                "— Linux geoclue likely not running (D-Bus activatable on "
-                "most distros; verify with `systemctl status geoclue`)"
-            )
-        elif "permission_denied" in err or geo.get("code") == 1:
-            logger.warning(
-                "[current_location] browser geolocation PERMISSION_DENIED "
-                "— first call needs the user to grant location to the "
-                "extension's offscreen origin in Chrome"
-            )
-        else:
-            logger.debug(f"[current_location] browser-ext skipped: {geo.get('error')}")
-
-    # 3. Wi-Fi BSSID + Google Geolocation API (direct curl; needs the
+    # 2. Wi-Fi BSSID + Google Geolocation API (direct curl; needs the
     #    Geolocation API enabled on the user's GCP project).
     google_key = os.environ.get("GOOGLE_API_KEY", "")
     if google_key:
