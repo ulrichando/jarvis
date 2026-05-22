@@ -1,0 +1,6 @@
+name: video-fal
+version: "1.0.0"
+description: "FAL.ai video backend — LTX 2.3, Pixverse v6, Veo 3.1, Seedance 2.0, Kling v3 4K, Happy Horse (text-to-video + image-to-video)"
+kind: backend
+requires_env:
+  - FAL_KEY
