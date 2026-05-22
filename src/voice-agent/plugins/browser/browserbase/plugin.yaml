@@ -1,0 +1,6 @@
+name: browser-browserbase
+version: "1.0.0"
+description: "Browserbase (https://browserbase.com) cloud browser backend. Requires BROWSERBASE_API_KEY + BROWSERBASE_PROJECT_ID. Supports stealth, proxies, and keep-alive sessions; auto-falls-back when paid features are unavailable. Opt-in via JARVIS_BROWSER_PROVIDER=browserbase."
+kind: backend
+requires_env:
+  - BROWSERBASE_API_KEY
