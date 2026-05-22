@@ -172,8 +172,7 @@ install_voice_agent() {
 # Fetches the bundled Chromium binary Playwright needs for the browser
 # subagent's CDP fallback path (tools/browser_cdp.py). Skip with
 # JARVIS_SKIP_CDP=1 — the voice-agent still imports and runs without
-# the binary; only the CDP fallback path bails with a clear error. The
-# extension path is always available.
+# the binary; only the CDP fallback path bails with a clear error.
 install_playwright_chromium() {
   local va="$1"
   if [ "${JARVIS_SKIP_CDP:-0}" = "1" ]; then
@@ -186,7 +185,7 @@ install_playwright_chromium() {
     return
   fi
   sub "About to download ~200MB of Chromium for browser CDP fallback"
-  sub "(skip with JARVIS_SKIP_CDP=1; extension path always available)"
+  sub "(skip with JARVIS_SKIP_CDP=1 — CDP fallback won't work without it)"
   # Non-interactive installs (e.g. curl|bash) → auto-yes.
   if [ ! -t 0 ]; then
     sub "non-interactive shell — proceeding with download"
@@ -540,10 +539,10 @@ install_desktop_entry() {
   local exec_path="$INSTALL_DIR/src/desktop-tauri/src-tauri/target/release/jarvis-desktop"
   # The Tauri default icons (src-tauri/icons/{32x32,128x128,tray}.png)
   # are placeholder Tauri logos from `tauri init` (cyan circle, ~500 B).
-  # The actual JARVIS branding is the concentric-rings logo committed
-  # with the Chrome extension. Reuse it so the app-menu entry matches
-  # what JARVIS looks like everywhere else.
-  local icon_path="$INSTALL_DIR/src/extensions/jarvis-screen/icon128.png"
+  # The actual JARVIS branding is the concentric-rings logo at
+  # src-tauri/icons/jarvis-rings-128.png. Reuse it so the app-menu entry
+  # matches what JARVIS looks like everywhere else.
+  local icon_path="$INSTALL_DIR/src/desktop-tauri/src-tauri/icons/jarvis-rings-128.png"
 
   mkdir -p "$apps_dir"
   cat > "$entry" <<EOF
@@ -621,39 +620,6 @@ EOF
   ok "created $INSTALL_DIR/.env (chmod 600 — fill in your real keys before starting the voice agent)"
 }
 
-# ── Chrome extension instructions ────────────────────────────────────────
-chrome_extension_step() {
-  section "Chrome extension (manual final step)"
-  cat <<EOF
-  The JARVIS browser extension cannot be installed programmatically —
-  Chrome blocks third-party extensions from being side-loaded by curl.
-
-  To load it:
-    1. Open chrome://extensions in Chrome/Chromium
-    2. Toggle 'Developer mode' (top-right)
-    3. Click 'Load unpacked'
-    4. Select: $INSTALL_DIR/src/extensions/jarvis-screen/
-
-EOF
-  # chrome:// URLs only work in a Chromium-based browser. xdg-open will
-  # route to the default browser, which is usually Firefox — and
-  # Firefox can't render chrome:// URLs. Try each known Chromium-family
-  # browser by name; if none is found, just print the path so the
-  # user can copy/paste.
-  local chrome_bin=""
-  for cand in google-chrome google-chrome-stable chromium chromium-browser brave-browser microsoft-edge; do
-    if have "$cand"; then chrome_bin="$cand"; break; fi
-  done
-  if [ -n "$chrome_bin" ]; then
-    "$chrome_bin" "chrome://extensions/" >/dev/null 2>&1 &
-    disown 2>/dev/null || true
-    ok "opened chrome://extensions/ in $chrome_bin"
-  else
-    warn "no Chromium-based browser found on PATH — open the URL manually"
-    sub "Path to copy: $INSTALL_DIR/src/extensions/jarvis-screen/"
-  fi
-}
-
 # ── Final summary ────────────────────────────────────────────────────────
 print_summary() {
   section "Done"
@@ -715,7 +681,6 @@ main() {
   install_audio_profile
   install_echo_cancel_aec
   setup_env_template
-  chrome_extension_step
   print_summary
 }
 
