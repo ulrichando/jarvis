@@ -324,8 +324,14 @@ class PluginContext:
         self._stub("context_engine")
 
     def register_memory_provider(self, provider: Any) -> None:
-        """No-op stub: memory providers aren't consumed by the voice agent."""
-        self._stub("memory_provider")
+        """Register a memory backend under the ``memory`` kind.
+
+        The family is present + key-gated via ``is_available()``, but the turn
+        loop (file-backed ``pipeline/file_memory.py``) has no consumer for these
+        providers' recall/sync operations yet — that's a deferred memory-
+        architecture restructuring. See ``tools.memory_providers``.
+        """
+        self._register_provider("memory", provider)
 
     def register_cli_command(
         self,
