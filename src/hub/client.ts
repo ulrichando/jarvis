@@ -17,7 +17,6 @@ import {
 
 export {
   EVENTS_STREAM,
-  MEMORY_EVENTS_STREAM,
   OFFLINE_MAX,
   stateDbPathDefault,
   type Source,
@@ -25,18 +24,6 @@ export {
   type EventPayload,
   type HubEvent,
 } from './client-core'
-
-export interface Memory {
-  memory_id: string
-  content: string
-  category: string
-  source: string
-  source_session_id: string | null
-  created_ts: number
-  updated_ts: number
-  last_used_ts: number | null
-  use_count: number
-}
 
 export class HubClient extends HubClientBase {
   static fromEnv(source: Source): HubClient {
@@ -107,65 +94,6 @@ export class HubClient extends HubClientBase {
         'SELECT value FROM settings WHERE key = ?',
       ).get(key) as { value: string } | null
       return row ? row.value : null
-    } finally {
-      db.close()
-    }
-  }
-
-  /**
-   * Top memories ranked by use_count DESC, updated_ts DESC. Filters
-   * by category if provided. Returns [] if state.db doesn't exist.
-   */
-  static readMemories(
-    opts: { category?: string; limit?: number } = {},
-  ): Memory[] {
-    const limit = Math.min(opts.limit ?? 30, 200)
-    const path = this.stateDbPath()
-    let db: Database
-    try {
-      db = new Database(path, { readonly: true, create: false })
-    } catch {
-      return []
-    }
-    try {
-      let sql =
-        'SELECT memory_id, content, category, source, '
-        + 'source_session_id, created_ts, updated_ts, '
-        + 'last_used_ts, use_count FROM memories '
-      const params: (string | number)[] = []
-      if (opts.category) {
-        sql += 'WHERE category = ? '
-        params.push(opts.category)
-      }
-      sql += 'ORDER BY use_count DESC, updated_ts DESC LIMIT ?'
-      params.push(limit)
-      return db.query(sql).all(...params) as Memory[]
-    } finally {
-      db.close()
-    }
-  }
-
-  /**
-   * Increment use_count + bump last_used_ts for the given memory_ids.
-   * Voice/web call this after exposing memories to the LLM so heavily-
-   * used memories rise in the ranking.
-   */
-  static bumpMemoryUse(memoryIds: string[]): void {
-    if (memoryIds.length === 0) return
-    const path = this.stateDbPath()
-    let db: Database
-    try {
-      db = new Database(path, { create: false })
-    } catch {
-      return
-    }
-    try {
-      const now = Date.now()
-      const placeholders = memoryIds.map(() => '?').join(',')
-      db.prepare(
-        `UPDATE memories SET use_count = use_count + 1, last_used_ts = ? `
-        + `WHERE memory_id IN (${placeholders})`,
-      ).run(now, ...memoryIds)
     } finally {
       db.close()
     }

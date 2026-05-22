@@ -25,12 +25,9 @@ EVENTS_STREAM = "events:conversation"
 BROADCASTS_STREAM = "broadcasts:conversation"
 SETTINGS_EVENTS_STREAM = "events:settings"
 SETTINGS_BROADCASTS_STREAM = "broadcasts:settings"
-MEMORY_EVENTS_STREAM = "events:memory"
-MEMORY_BROADCASTS_STREAM = "broadcasts:memory"
 GROUP = "hub"
 CONSUMER = "hub-1"
 SETTINGS_CONSUMER = "hub-settings-1"
-MEMORY_CONSUMER = "hub-memory-1"
 
 
 def bootstrap_schema(db_path: Path | str) -> None:
@@ -119,44 +116,16 @@ def _apply_event(conn: sqlite3.Connection, evt: dict) -> None:
             "  source = excluded.source",
             (key, value, ts, src),
         )
-    elif t == "memory.value.upserted":
-        # ON CONFLICT preserves created_ts and use_count (durable across
-        # replays); content/category/updated_ts advance.
-        conn.execute(
-            "INSERT INTO memories "
-            "(memory_id, content, category, source, source_session_id, "
-            " created_ts, updated_ts, use_count) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 0) "
-            "ON CONFLICT(memory_id) DO UPDATE SET "
-            "  content = excluded.content, "
-            "  category = excluded.category, "
-            "  updated_ts = excluded.updated_ts",
-            (
-                payload["memory_id"],
-                payload["content"],
-                payload.get("category", "fact"),
-                src,
-                payload.get("source_session_id"),
-                ts,
-                ts,
-            ),
-        )
-    elif t == "memory.value.removed":
-        conn.execute(
-            "DELETE FROM memories WHERE memory_id = ?",
-            (payload["memory_id"],),
-        )
     else:
         logger.warning("[hub] unknown event type: %s", t)
 
 
 async def main() -> None:
-    """Long-running daemon entry point. Runs four coroutines in
+    """Long-running daemon entry point. Runs three coroutines in
     parallel via asyncio.gather:
       1. events:conversation consumer
       2. events:settings consumer
-      3. events:memory consumer
-      4. settings file watcher (publishes to events:settings)
+      3. settings file watcher (publishes to events:settings)
     Graceful shutdown on SIGINT/SIGTERM via shared stop Event."""
     import asyncio
     import os
@@ -242,10 +211,6 @@ async def main() -> None:
         _consumer_loop(
             SETTINGS_EVENTS_STREAM, SETTINGS_BROADCASTS_STREAM,
             SETTINGS_CONSUMER, 1000,
-        ),
-        _consumer_loop(
-            MEMORY_EVENTS_STREAM, MEMORY_BROADCASTS_STREAM,
-            MEMORY_CONSUMER, 10000,
         ),
         _watcher_loop(),
     )
