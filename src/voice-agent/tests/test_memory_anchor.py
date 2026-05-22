@@ -22,10 +22,11 @@ def test_memory_anchor_present_in_supervisor_prompt():
     # The two key tools must be named in the anchor so the LLM
     # cross-references them when temped to deny memory. Since the
     # file-backed swap (2026-05-21) the durable-write tool is
-    # `memory(action, target, …)`; transcript search is still
-    # `recall_conversation(query)`.
+    # `memory(action, target, …)`; transcript search is
+    # `session_search(query)` (renamed from the retired
+    # `recall_conversation` when the supervisor went registry-only).
     assert "memory(action, target" in instr
-    assert "recall_conversation(query)" in instr
+    assert "session_search(query)" in instr
     # ASSUME-INTERRUPTION framing (mirrors Anthropic memory tool default)
     assert "ASSUME INTERRUPTION" in instr
 
