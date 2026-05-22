@@ -1,0 +1,5 @@
+name: web-parallel
+version: "1.0.0"
+description: "Parallel.ai objective-tuned search + async content extraction backend"
+kind: backend
+requires_env: [PARALLEL_API_KEY]
