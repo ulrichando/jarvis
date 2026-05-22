@@ -630,23 +630,61 @@ def summarize_backups() -> str:
 # LLM consolidation review (gated, suggestion-only)
 # ===========================================================================
 
-_CONSOLIDATION_PROMPT = """You review a library of agent skills for near-duplicates.
+_CONSOLIDATION_PROMPT = """You are running an UMBRELLA-BUILDING consolidation pass over a library of
+agent skills. This is NOT a passive audit or a pairwise duplicate-finder.
 
-You will be given {n} skills (each: name + description). Group skills that
-cover the SAME class of task into clusters of 2+ members; for each cluster
-suggest an umbrella name (reuse an existing member's name when one is broad
-enough, else propose a new short hyphenated name).
+GOAL — A library of many narrow, one-session skills is a FAILURE of the
+library, not a feature. The right target shape is CLASS-LEVEL skills: one
+broad skill with labeled subsections beats five narrow siblings for
+discoverability. Group prefix and topic clusters into class-level umbrella
+skills.
 
-Rules:
+HARD RULES — do not violate:
+1. DO NOT touch pinned skills. Skip them entirely.
+2. DO NOT use usage counters (use_count, use=0) as a reason to skip
+   consolidation. Counters are often zero simply because a skill is new or
+   rarely triggered — that is absence of evidence, not evidence of low value.
+   Judge overlap on CONTENT, not on use_count.
+3. DO NOT reject consolidation because "each skill has a distinct trigger".
+   Pairwise distinctness is the wrong bar. The right bar is: "would a human
+   maintainer write these as one skill with N labeled subsections, or as N
+   separate skills?" When the answer is the former, merge.
+4. Output JSON ONLY (no prose outside the JSON).
+
+HOW TO IDENTIFY CLUSTERS:
+- Scan for PREFIX CLUSTERS (skills sharing a first word or domain keyword,
+  e.g. git-clone + git-push → git cluster).
+- Scan for TOPIC CLUSTERS (skills addressing the same domain regardless of
+  name prefix, e.g. "summarize text" + "condense article" → summarization).
+
+THREE CONSOLIDATION MODES — use the right one per cluster:
+  a. MERGE INTO EXISTING UMBRELLA — one existing skill is already broad
+     enough to serve as the umbrella. Nominate it as the umbrella name and
+     absorb the narrower siblings into it.
+  b. CREATE NEW UMBRELLA — no existing member is broad enough. Propose a
+     new short hyphenated class-level name that covers the shared workflow.
+  c. DEMOTE TO REFERENCE — a sibling has narrow-but-valuable session-specific
+     content better kept as a subsection or support reference inside the
+     umbrella rather than as a top-level skill.
+
+CLUSTERING RULES:
 - Cluster on what the skill DOES (its description), not on exact name matches.
-- A pair being "distinct in trigger" is NOT a reason to keep them separate —
-  ask "would a maintainer write these as one skill with labeled subsections?".
-- Output JSON ONLY: {{"clusters": [{{"members": [...skill names...],
-  "umbrella": "<name>", "reason": "<one short sentence>"}}]}}.
-- Every member name MUST be one of the candidate names below. If nothing
-  overlaps, output {{"clusters": []}}.
+- Reuse an existing member's name as the umbrella when one is already broad
+  enough; else propose a new short hyphenated name.
+- A cluster needs 2+ members to be included in the output.
 
-CANDIDATES:
+OUTPUT FORMAT — JSON ONLY:
+{{"clusters": [{{"members": [...skill names...], "umbrella": "<name>",
+  "reason": "<one short sentence — what class these serve>"}}]}}
+
+Every member name MUST be one of the candidate names below. If nothing
+overlaps, output {{"clusters": []}}.
+
+NOTE: This output is SUGGESTION-ONLY. No skill is mutated, archived, or
+renamed by this review. The operator reviews and decides which suggestions
+to apply.
+
+CANDIDATES ({n} skills):
 {candidates_block}
 
 OUTPUT:"""
