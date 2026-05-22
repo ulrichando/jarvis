@@ -96,6 +96,26 @@ def test_begin_session_and_recall(monkeypatch):
     assert mp.recall_for_query("deep q") == "DEEP"
 
 
+def test_recall_for_query_handles_async_provider(monkeypatch):
+    """recall_for_query must await an ASYNC provider.recall (Honcho's peer.chat is
+    a coroutine). Regression: the sync wrapper used to isinstance-check the
+    coroutine object → always returned "" and left it un-awaited. recall_for_query
+    runs in the recall() tool's to_thread worker (no running loop), so asyncio.run
+    on the coroutine is valid."""
+    from pipeline import memory_provider as mp
+
+    class _AsyncRecall(_Fake):
+        async def recall(self, q):
+            self.calls.append(("recall", q))
+            return "DEEP_ASYNC"
+
+    a = _AsyncRecall()
+    _install(monkeypatch, a)
+    mp.begin_session("room1")
+    assert mp.recall_for_query("deep q") == "DEEP_ASYNC"
+    assert ("recall", "deep q") in a.calls
+
+
 def test_sync_async_is_fire_and_forget(monkeypatch):
     from pipeline import memory_provider as mp
     f = _Fake()
