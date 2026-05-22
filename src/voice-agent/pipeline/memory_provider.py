@@ -142,14 +142,23 @@ def sync_item_async(role: str, text: str) -> None:
 def recall_for_query(query: str) -> str:
     """Deep recall via the active provider (used by the recall() tool).
 
-    Sync wrapper — runs synchronously and returns the provider's recall string.
-    Returns "" when no provider is active or the call fails.
+    Sync wrapper, async-aware: the provider's ``recall`` may be a coroutine
+    function (e.g. the Honcho dialectic ``peer.chat``) or a plain sync function.
+    Returns the recall string, or "" when no provider is active or the call fails.
+
+    Must be called from a NON-running-loop context — the recall() tool invokes
+    this via ``asyncio.to_thread``, so it runs in a worker thread with no event
+    loop and ``asyncio.run`` on a coroutine is safe.
     """
     prov = active_provider()
     if prov is None:
         return ""
     try:
-        result = prov.recall(query)
+        recall_fn = prov.recall
+        if inspect.iscoroutinefunction(recall_fn):
+            result = asyncio.run(recall_fn(query))
+        else:
+            result = recall_fn(query)
         return result if isinstance(result, str) else ""
     except Exception as exc:  # noqa: BLE001
         logger.warning("memory recall failed: %s", exc)
