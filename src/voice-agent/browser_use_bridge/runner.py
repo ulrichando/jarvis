@@ -8,9 +8,14 @@ voice ``.venv`` (which has no ``browser_use``) is never required to import it.
 
 Protocol (line-oriented JSON over stdin/stdout):
 
-  stdin  : one JSON object  {"task": "...", "max_steps": 25, "headless": true}
+  stdin  : one JSON object  {"task": "...", "max_steps": 25, "headless": true,
+                             "cdp_url": "..."}   # cdp_url optional
   stdout : one JSON object  {"ok": true, "result": "...", "steps": N}
                        or   {"ok": false, "error": "..."}
+
+When ``cdp_url`` is present the agent attaches to that already-running REMOTE
+browser over CDP (e.g. a cloud session) instead of launching a local browser.
+When it is absent/empty the local-launch path runs unchanged.
 
 stdout carries the result line and NOTHING ELSE — browser_use's own logging is
 forced to stderr below so it can't corrupt the JSON the parent parses. All
@@ -121,15 +126,38 @@ def _build_llm():
 # ---------------------------------------------------------------------------
 
 
-async def _run_task(task: str, max_steps: int, headless: bool) -> dict:
-    """Drive a browser_use Agent through *task*; return a result payload dict."""
+async def _run_task(
+    task: str, max_steps: int, headless: bool, cdp_url: Optional[str] = None
+) -> dict:
+    """Drive a browser_use Agent through *task*; return a result payload dict.
+
+    When *cdp_url* is set, attach to an already-running REMOTE browser over CDP
+    (e.g. a cloud Browserbase/Firecrawl session) instead of launching a local
+    one. When it is None the local-launch path runs unchanged. The CDP wiring is
+    guarded: if the installed browser_use's BrowserProfile signature doesn't
+    accept ``cdp_url`` it raises a clear error (caught by ``main`` and emitted as
+    a JSON error object) rather than crashing.
+    """
     from browser_use import Agent, BrowserProfile
 
     llm = _build_llm()
-    # Headless config lives on BrowserProfile in browser_use 0.12 (Agent has no
-    # direct headless kwarg). chromium_sandbox=False avoids namespace-sandbox
-    # friction on locked-down hosts; a fresh profile keeps runs hermetic.
-    profile = BrowserProfile(headless=headless, chromium_sandbox=False)
+    if cdp_url:
+        # Remote CDP attach. headless/chromium_sandbox are irrelevant — the
+        # browser is already running cloud-side; we only connect to it. The
+        # BrowserProfile(cdp_url=...) kwarg is browser_use 0.12; if the installed
+        # version differs this raises TypeError, which main() reports as JSON.
+        try:
+            profile = BrowserProfile(cdp_url=cdp_url)
+        except TypeError as exc:
+            raise RuntimeError(
+                f"installed browser_use does not accept BrowserProfile(cdp_url=...): {exc}"
+            ) from exc
+    else:
+        # Local launch. Headless config lives on BrowserProfile in browser_use
+        # 0.12 (Agent has no direct headless kwarg). chromium_sandbox=False
+        # avoids namespace-sandbox friction on locked-down hosts; a fresh
+        # profile keeps runs hermetic.
+        profile = BrowserProfile(headless=headless, chromium_sandbox=False)
     agent = Agent(task=task, llm=llm, browser_profile=profile)
 
     history = await agent.run(max_steps=max_steps)
@@ -174,7 +202,11 @@ def main() -> None:
         headless = req.get("headless", True)
         headless = True if headless is None else bool(headless)
 
-        result = asyncio.run(_run_task(task.strip(), max_steps, headless))
+        # Optional remote-CDP attach. Unset/empty → local launch (unchanged).
+        raw_cdp = req.get("cdp_url")
+        cdp_url = raw_cdp.strip() if isinstance(raw_cdp, str) and raw_cdp.strip() else None
+
+        result = asyncio.run(_run_task(task.strip(), max_steps, headless, cdp_url))
         _emit(result)
     except Exception as exc:  # noqa: BLE001 — always report as JSON, never crash out
         detail = f"{type(exc).__name__}: {exc}".strip()

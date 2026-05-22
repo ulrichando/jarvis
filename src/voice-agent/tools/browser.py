@@ -22,7 +22,9 @@ import asyncio
 import json
 import logging
 import os
+import uuid
 from pathlib import Path
+from typing import Any, Optional
 
 from .registry import registry, tool_error
 
@@ -50,6 +52,12 @@ _TASK_TIMEOUT_S = 180.0
 # Default step budget if the supervisor doesn't specify one.
 _DEFAULT_MAX_STEPS = 25
 
+# Opt-in: names a registered, available cloud-browser provider (kind "browser")
+# whose remote CDP browser browser_task should drive instead of launching a
+# LOCAL browser. UNSET/EMPTY (the default) → the local subprocess path runs
+# exactly as before, no provider, no session. This is the regression guard.
+_BROWSER_PROVIDER_ENV = "JARVIS_BROWSER_PROVIDER"
+
 
 def _isolated_python() -> Path:
     """Absolute path to the isolated venv's Python (HOME resolved at call time)."""
@@ -69,6 +77,68 @@ def _check_browser_available() -> bool:
     no-key / headless-CI environments fully inert (no browser launch attempt).
     """
     return _isolated_python().exists() and _has_llm_key()
+
+
+# ---------------------------------------------------------------------------
+# Optional cloud-browser provider resolution (opt-in, regression-safe)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_browser_provider() -> Optional[Any]:
+    """Return the configured cloud-browser provider, or None for local default.
+
+    The local subprocess path is the default and is preserved byte-for-byte
+    whenever ``JARVIS_BROWSER_PROVIDER`` is unset or empty — this function
+    returns None and ``browser_task`` never opens a remote session.
+
+    A provider is returned ONLY when ALL hold:
+      * ``JARVIS_BROWSER_PROVIDER`` names a provider, and
+      * a provider of that name is registered under kind ``"browser"``, and
+      * its ``is_available()`` reports True (credentials present).
+
+    Any lookup failure (registry import error, unknown name, unavailable
+    provider) degrades to None so a misconfiguration silently falls back to the
+    working local path rather than crashing the turn.
+    """
+    configured = os.environ.get(_BROWSER_PROVIDER_ENV, "").strip()
+    if not configured:
+        return None  # default: local subprocess path, unchanged
+
+    try:
+        from . import _provider_registry
+
+        provider = _provider_registry.get_provider("browser", configured)
+    except Exception as exc:  # noqa: BLE001 — never let resolution crash the turn
+        logger.warning("browser_task: provider resolution failed for %r: %s", configured, exc)
+        return None
+
+    if provider is None:
+        logger.warning(
+            "browser_task: %s=%r but no such provider is registered — using local browser",
+            _BROWSER_PROVIDER_ENV,
+            configured,
+        )
+        return None
+
+    try:
+        available = bool(provider.is_available())
+    except Exception as exc:  # noqa: BLE001 — a provider probe must not raise out
+        logger.warning(
+            "browser_task: provider %r is_available() raised (%s) — using local browser",
+            configured,
+            exc,
+        )
+        return None
+
+    if not available:
+        logger.warning(
+            "browser_task: provider %r is configured but unavailable (missing key?) "
+            "— using local browser",
+            configured,
+        )
+        return None
+
+    return provider
 
 
 # ---------------------------------------------------------------------------
@@ -137,32 +207,15 @@ def _format_result(payload: dict) -> str:
     return f"Browser task failed: {err}"
 
 
-async def _handle_browser_task(args: dict) -> str:
-    """Spawn the isolated browser_use runner, send the task, return a summary.
+async def _run_runner(python_path: Path, request: bytes) -> str:
+    """Spawn the isolated browser_use runner with *request*, return a summary.
 
+    Shared by the local-default and the opt-in remote-CDP paths — the only
+    difference between them is whether *request* carries a ``cdp_url`` key.
     Never raises: timeout, a crashed subprocess, or garbled output all map to a
     clear human-readable error string so a failed browser task can't crash the
     voice turn.
     """
-    task = (args.get("task") or "").strip()
-    if not task:
-        return tool_error("browser_task requires a non-empty 'task'")
-
-    max_steps = _coerce_max_steps(args.get("max_steps", _DEFAULT_MAX_STEPS))
-
-    python_path = _isolated_python()
-    if not python_path.exists():
-        return tool_error(
-            f"browser tool unavailable: isolated venv python not found at {python_path}"
-        )
-    if not _RUNNER_PATH.exists():
-        return tool_error(f"browser tool unavailable: runner not found at {_RUNNER_PATH}")
-
-    request = json.dumps(
-        {"task": task, "max_steps": max_steps, "headless": True},
-        ensure_ascii=False,
-    ).encode("utf-8")
-
     try:
         proc = await asyncio.create_subprocess_exec(
             str(python_path),
@@ -221,6 +274,84 @@ async def _handle_browser_task(args: dict) -> str:
         return tool_error("browser task returned an unexpected result shape")
 
     return _format_result(payload)
+
+
+async def _handle_browser_task(args: dict) -> str:
+    """Spawn the isolated browser_use runner, send the task, return a summary.
+
+    Default (``JARVIS_BROWSER_PROVIDER`` unset): spawns a LOCAL browser via the
+    runner — behaviour unchanged. Opt-in (env names an available cloud-browser
+    provider): opens a remote session, drives it over CDP, and always closes the
+    session afterward. A provider/session failure degrades to a clean error.
+
+    Never raises: timeout, a crashed subprocess, or garbled output all map to a
+    clear human-readable error string so a failed browser task can't crash the
+    voice turn.
+    """
+    task = (args.get("task") or "").strip()
+    if not task:
+        return tool_error("browser_task requires a non-empty 'task'")
+
+    max_steps = _coerce_max_steps(args.get("max_steps", _DEFAULT_MAX_STEPS))
+
+    python_path = _isolated_python()
+    if not python_path.exists():
+        return tool_error(
+            f"browser tool unavailable: isolated venv python not found at {python_path}"
+        )
+    if not _RUNNER_PATH.exists():
+        return tool_error(f"browser tool unavailable: runner not found at {_RUNNER_PATH}")
+
+    request_obj = {"task": task, "max_steps": max_steps, "headless": True}
+
+    # Default path: no configured provider → local subprocess, unchanged.
+    provider = _resolve_browser_provider()
+    if provider is None:
+        request = json.dumps(request_obj, ensure_ascii=False).encode("utf-8")
+        return await _run_runner(python_path, request)
+
+    # Opt-in remote path: open a CDP session, drive it, always close it.
+    task_id = uuid.uuid4().hex[:12]
+    try:
+        session = await asyncio.to_thread(provider.create_session, task_id)
+    except Exception as exc:  # noqa: BLE001 — session failure -> clean error, no crash
+        logger.warning(
+            "browser_task: provider %r create_session failed: %s",
+            getattr(provider, "name", "?"),
+            exc,
+        )
+        return tool_error(f"cloud browser session failed to start: {exc}")
+
+    if not isinstance(session, dict) or not str(session.get("cdp_url") or "").strip():
+        # Defensively close anything that did get created, then error out.
+        sid = session.get("session_id") if isinstance(session, dict) else None
+        if sid:
+            try:
+                await asyncio.to_thread(provider.close_session, str(sid))
+            except Exception:  # noqa: BLE001 — best-effort
+                pass
+        return tool_error(
+            f"cloud browser provider {getattr(provider, 'name', '?')!r} returned no cdp_url"
+        )
+
+    cdp_url = str(session["cdp_url"]).strip()
+    session_id = session.get("session_id")
+    request_obj["cdp_url"] = cdp_url
+    request = json.dumps(request_obj, ensure_ascii=False).encode("utf-8")
+
+    try:
+        return await _run_runner(python_path, request)
+    finally:
+        if session_id:
+            try:
+                await asyncio.to_thread(provider.close_session, str(session_id))
+            except Exception as exc:  # noqa: BLE001 — cleanup must not crash the turn
+                logger.warning(
+                    "browser_task: failed to close session %s on provider %r: %s",
+                    session_id,
+                    getattr(provider, "name", "?"),
+                    exc,
+                )
 
 
 # ---------------------------------------------------------------------------
