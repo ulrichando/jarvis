@@ -1,17 +1,26 @@
-"""Honcho cloud memory backend — real AsyncHoncho implementation.
+"""Honcho cloud memory backend — real implementation via the honcho-ai SDK.
 
-Uses the high-level ``honcho-ai`` SDK (``honcho.Honcho`` with ``honcho.aio`` async
-view). All network calls are async; the runtime in ``pipeline/memory_provider.py``
-detects this via ``inspect.iscoroutinefunction`` and awaits accordingly.
+Uses the high-level ``honcho.Honcho`` client with its ``.aio`` async view. All
+network calls are async; the runtime in ``pipeline/memory_provider.py`` detects
+this via ``inspect.iscoroutinefunction`` and awaits accordingly.
 
 Layer is inert when:
-  - ``HONCHO_API_KEY`` is unset  →  ``is_available()`` returns False
-  - ``honcho-ai`` is not installed  →  ``is_available()`` returns False
-  - ``initialize()`` has not been called  →  recall/sync no-op safely
+  - ``HONCHO_API_KEY`` is unset            → ``is_available()`` returns False
+  - ``honcho-ai`` is not installed         → ``is_available()`` returns False
+  - init has not yet succeeded             → recall/sync no-op safely
 
 Never raises into the voice turn — every method guards its own errors and
-returns ``""`` / no-ops on any failure. JARVIS-native naming throughout
-(no foreign naming conventions).
+returns ``""`` / no-ops on any failure. JARVIS-native naming throughout.
+
+Lazy init (important): ``initialize(session_id)`` only STORES the session id — it
+does NO network and never calls ``asyncio.run``. The client + peer/session handles
+are built lazily by ``_ensure_init()`` on the first async call (``recall`` /
+``recall_context`` / ``sync_message``). This is required because ``initialize`` is
+invoked from the synchronous ``begin_session`` runtime entrypoint, which itself is
+called from the async ``on_enter`` hook — calling ``asyncio.run`` there would raise
+``RuntimeError: asyncio.run() cannot be called from a running event loop`` and
+silently leave the backend permanently inert. Deferring the awaitable work to the
+already-async call sites avoids that entirely.
 """
 from __future__ import annotations
 
@@ -26,28 +35,17 @@ logger = logging.getLogger("jarvis.memory.honcho")
 
 
 class HonchoMemoryProvider(MemoryProvider):
-    """AsyncHoncho-backed cross-session memory.
-
-    Session lifecycle
-    -----------------
-    ``initialize(session_id)`` builds the Honcho client and resolves/creates
-    the peer + session handles via the async API.  Because ``initialize`` is
-    called from the synchronous ``begin_session`` entrypoint in the runtime,
-    we run the async init in a dedicated event-loop call (asyncio.run) so the
-    caller doesn't need to be async.
-
-    All subsequent methods (``recall``, ``recall_context``, ``sync_message``)
-    are ``async def`` so the runtime awaits them directly.  If ``initialize``
-    failed (handles are None), every method returns ``""`` / no-ops.
-    """
+    """Honcho-backed cross-session memory (async, lazy-initialized)."""
 
     name = "honcho"
 
     def __init__(self) -> None:
-        self._client: Optional[object] = None      # honcho.Honcho instance
-        self._peer_user: Optional[object] = None   # Peer for "ulrich"
-        self._peer_agent: Optional[object] = None  # Peer for "jarvis"
-        self._session: Optional[object] = None     # Session handle
+        self._client: Optional[object] = None       # honcho.Honcho instance
+        self._peer_user: Optional[object] = None    # Peer for "ulrich"
+        self._peer_agent: Optional[object] = None   # Peer for "jarvis"
+        self._session: Optional[object] = None       # Session handle
+        self._session_id: Optional[str] = None       # set by initialize()
+        self._init_attempted: bool = False           # don't hammer a failing init
 
     # ------------------------------------------------------------------
     # Availability gate
@@ -64,42 +62,47 @@ class HonchoMemoryProvider(MemoryProvider):
     # ------------------------------------------------------------------
 
     def initialize(self, session_id: str) -> None:
-        """Build the Honcho client and resolve/create the peer + session handles.
+        """Store the session id for lazy init. NO network, NO asyncio.run.
 
-        Runs the async setup synchronously via asyncio.run so the runtime's
-        synchronous ``begin_session`` can call us without an event loop.  If
-        anything fails (bad key, network error, etc.) handles stay None and
-        subsequent recall/sync calls silently no-op.
+        Safe to call from inside a running event loop (begin_session is sync but
+        runs under the async on_enter hook). The actual client/peer/session
+        handles are built by ``_ensure_init`` on the first async operation.
         """
-        import asyncio
+        self._session_id = session_id
+        self._init_attempted = False
+        self._client = self._peer_user = self._peer_agent = self._session = None
+
+    async def _ensure_init(self) -> None:
+        """Lazily build the client + resolve handles on first async use.
+
+        Idempotent (returns immediately once a session handle exists), runs at
+        most once per session even on failure (``_init_attempted`` guard), and
+        swallows every error — on failure the handles stay None and callers
+        no-op. Runs inside the caller's event loop, so no asyncio.run.
+        """
+        if self._session is not None or self._init_attempted:
+            return
+        self._init_attempted = True
+        if not self.is_available() or not self._session_id:
+            return
         try:
-            asyncio.run(self._async_init(session_id))
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[honcho] initialize failed — recall/sync will no-op: %s", exc)
+            from honcho import Honcho  # checked importable by is_available()
+
+            client = Honcho(api_key=os.environ["HONCHO_API_KEY"].strip())
+            self._client = client
+            self._peer_user = await client.aio.peer("ulrich")
+            self._peer_agent = await client.aio.peer("jarvis")
+            self._session = await client.aio.session(self._session_id)
+            logger.info("[honcho] session initialized: %s", self._session_id)
+        except Exception as exc:  # noqa: BLE001 — never surface into a turn
+            logger.warning("[honcho] init failed — recall/sync will no-op: %s", exc)
             self._client = self._peer_user = self._peer_agent = self._session = None
-
-    async def _async_init(self, session_id: str) -> None:
-        """Async portion of initialize — builds client + resolves handles."""
-        from honcho import Honcho, MessageCreateParams  # noqa: F401 — checked by is_available
-        api_key = os.environ.get("HONCHO_API_KEY", "").strip()
-        if not api_key:
-            raise ValueError("HONCHO_API_KEY not set")
-
-        client = Honcho(api_key=api_key)
-        self._client = client
-
-        # Resolve/create peer and session handles via the async API.
-        self._peer_user = await client.aio.peer("ulrich")
-        self._peer_agent = await client.aio.peer("jarvis")
-        self._session = await client.aio.session(session_id)
-        logger.info("[honcho] session initialized: %s", session_id)
 
     def end_session(self) -> None:
         """Best-effort cleanup — clear handles so stale refs don't linger."""
-        self._peer_user = None
-        self._peer_agent = None
-        self._session = None
-        self._client = None
+        self._client = self._peer_user = self._peer_agent = self._session = None
+        self._session_id = None
+        self._init_attempted = False
         logger.debug("[honcho] session handles cleared")
 
     # ------------------------------------------------------------------
@@ -109,10 +112,11 @@ class HonchoMemoryProvider(MemoryProvider):
     async def recall(self, query: str) -> str:
         """Deep dialectic recall via peer.chat (NL-in, prose-out).
 
-        This is the expensive path (multi-second server-side reasoning) — the
-        runtime only calls it from the explicit ``recall()`` tool, never on
-        the synchronous voice turn.  Returns ``""`` on any failure.
+        Expensive path (multi-second server-side reasoning) — only invoked from
+        the explicit ``recall()`` tool, never on the synchronous voice turn.
+        Returns ``""`` on any failure.
         """
+        await self._ensure_init()
         if self._peer_user is None:
             return ""
         try:
@@ -125,21 +129,19 @@ class HonchoMemoryProvider(MemoryProvider):
     async def recall_context(self, hint: str = "") -> str:
         """Cheap session-context recall (summary + recent messages).
 
-        Used by the gated auto-recall path (``maybe_recall_for_turn``).
-        Always returns a compact text string or ``""`` on any failure.
+        Used by the gated auto-recall path (``maybe_recall_for_turn``), which
+        wraps it in a hard timeout. Returns a compact text string or ``""``.
         """
+        await self._ensure_init()
         if self._session is None:
             return ""
         try:
             ctx = await self._session.aio.context(summary=True, tokens=512)
-            # SessionContext has __repr__ with message + summary counts.
-            # Render as plain text: use the summary content if present,
-            # then fall back to a str representation.
             parts: list[str] = []
-            if getattr(ctx, "summary", None) and ctx.summary.content:
-                parts.append(ctx.summary.content)
-            messages = getattr(ctx, "messages", None) or []
-            for msg in messages[-6:]:  # last 6 messages for compactness
+            summary = getattr(ctx, "summary", None)
+            if summary is not None and getattr(summary, "content", None):
+                parts.append(summary.content)
+            for msg in (getattr(ctx, "messages", None) or [])[-6:]:
                 peer_id = getattr(msg, "peer_id", "")
                 content = getattr(msg, "content", "")
                 if peer_id and content:
@@ -156,13 +158,15 @@ class HonchoMemoryProvider(MemoryProvider):
     async def sync_message(self, role: str, text: str) -> None:
         """Add one message to the Honcho session (fire-and-forget by the runtime).
 
-        ``role`` is ``"user"`` or ``"assistant"``.  Maps to the appropriate
-        peer so Honcho can attribute the message correctly for its user model.
+        ``role`` is ``"user"`` or ``"assistant"``; mapped to the matching peer so
+        Honcho attributes the message correctly for its user model.
         """
+        await self._ensure_init()
         if self._session is None or self._peer_user is None or self._peer_agent is None:
             return
         try:
             from honcho import MessageCreateParams
+
             peer = self._peer_user if role == "user" else self._peer_agent
             msg = MessageCreateParams(content=text, peer_id=peer.id)
             await self._session.aio.add_messages(msg)
