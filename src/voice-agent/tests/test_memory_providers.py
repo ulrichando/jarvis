@@ -1,11 +1,11 @@
 """Memory provider wiring — the `memory` family is present + key-gated.
 
-Hermes-style memory backends register under the provider-registry kind
-"memory" via the now-wired ``PluginContext.register_memory_provider``. The
-voice agent's turn loop uses file-backed memory (pipeline/file_memory.py), so
-these providers' recall/sync ops have no consumer yet — registration +
-``is_available()`` gating is the deliverable. Regression guard for the
-2026-05-22 Hermes-memory port (Task 6).
+Memory backends register under the provider-registry kind "memory" via the
+now-wired ``PluginContext.register_memory_provider``. The voice agent's turn
+loop uses file-backed memory (pipeline/file_memory.py); the cloud provider
+layer (pipeline/memory_provider.py) is wired in by later tasks. Off by
+default (JARVIS_MEMORY_PROVIDER unset → zero behavior change).
+Regression guard for the 2026-05-22 memory-provider port.
 """
 from __future__ import annotations
 
@@ -60,18 +60,18 @@ def test_register_memory_provider_lands_in_registry():
     pr.reset_providers("memory")
 
 
-def test_memory_bridge_off_by_default(monkeypatch):
+def test_memory_provider_off_by_default(monkeypatch):
     monkeypatch.delenv("JARVIS_MEMORY_PROVIDER", raising=False)
-    from tools.memory_providers import memory_bridge_enabled
+    from tools.memory_providers import active_provider_name
 
-    assert memory_bridge_enabled() is False
+    assert active_provider_name() is None
 
 
-def test_memory_bridge_on_when_opted_in(monkeypatch):
-    monkeypatch.setenv("JARVIS_MEMORY_PROVIDER", "1")
-    from tools.memory_providers import memory_bridge_enabled
+def test_memory_provider_name_when_opted_in(monkeypatch):
+    monkeypatch.setenv("JARVIS_MEMORY_PROVIDER", "honcho")
+    from tools.memory_providers import active_provider_name
 
-    assert memory_bridge_enabled() is True
+    assert active_provider_name() == "honcho"
 
 
 def test_honcho_inert_without_key(monkeypatch):
@@ -115,3 +115,24 @@ def test_discovery_loads_all_eight_memory_backends():
     assert keys == sorted(f"memory/{leaf}" for leaf in _BACKENDS), keys
     broken = [(p["key"], p["error"]) for p in rows if not p["enabled"]]
     assert not broken, f"memory backends failed to load: {broken}"
+
+
+def test_base_interface_safe_defaults():
+    from tools.memory_providers import MemoryProvider
+
+    class P(MemoryProvider):
+        name = "p"
+        def is_available(self): return True
+
+    p = P()
+    assert p.recall("anything") == ""
+    assert p.recall_context("x") == ""
+    p.initialize("sess")          # no raise
+    p.sync_message("user", "hi")  # no raise
+    p.end_session()               # no raise
+
+
+def test_active_provider_none_when_flag_unset(monkeypatch):
+    monkeypatch.delenv("JARVIS_MEMORY_PROVIDER", raising=False)
+    from tools.memory_providers import active_provider_name
+    assert active_provider_name() is None
