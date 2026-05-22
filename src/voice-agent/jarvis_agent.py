@@ -348,6 +348,23 @@ def _build_breaker_status_block(breakers: list | None = None) -> str:
     return build_breaker_status_block(breakers)
 
 
+def _build_skill_catalog_block() -> str:
+    """Return a compact skill-catalog block for injection into the
+    supervisor system prompt.
+
+    Built ONCE per session in _build_initial_prompt_state (alongside the
+    memory and breaker blocks) — session-stable so the prefix cache stays
+    warm. Returns "" when no skills are loaded (zero prompt cost).
+
+    Reads from the module-level SKILLS registry populated at import by
+    pipeline.skills_loader. The caller (test or _build_initial_prompt_state)
+    can monkeypatch this function to inject a sentinel block.
+    """
+    from pipeline.prompt_builder import build_skill_catalog_block
+    from pipeline.skills_loader import SKILLS
+    return build_skill_catalog_block(SKILLS)
+
+
 # Re-export from providers/tts.py (Step 6 of the 10/10 refactor).
 from providers.tts import LoggingGroqTTS as _LoggingGroqTTS
 
@@ -4563,7 +4580,7 @@ def _register_state_tracking_handlers(session) -> None:
             if agent_state != "speaking":
                 return
             logger.info(f"[kill-phrase] '{text[:60]!r}' detected mid-speech → forcing interrupt")
-            session.interrupt()
+            session.interrupt(force=True)  # force: speeches are non-interruptible when echo-aware mode disables framework interruption
             session._jarvis_was_interrupted = True
         except Exception as e:
             logger.debug(f"[kill-phrase] check skipped: {e}")
@@ -4588,7 +4605,7 @@ def _register_state_tracking_handlers(session) -> None:
             if echo_gate.is_echo(text, speaking_tracker.current_speaking_text()):
                 return  # JARVIS hearing itself — not a real interruption
             logger.info(f"[echo-bargein] novel speech during TTS → interrupt: {text[:60]!r}")
-            session.interrupt()
+            session.interrupt(force=True)  # force: framework interruption is disabled in echo-aware mode, so a plain interrupt() would raise + no-op
             session._jarvis_was_interrupted = True
         except Exception as e:
             logger.debug(f"[echo-bargein] check skipped: {e}")
@@ -4781,6 +4798,13 @@ def _build_initial_prompt_state(active_speech_id: str) -> dict:
     # steady state).
     breaker_block = _build_breaker_status_block()
 
+    # Task 3a (2026-05-22): inject the skill catalog so the supervisor is
+    # aware of what skills exist and can consult/patch them. Built once
+    # here (session-stable) alongside the memory + breaker blocks —
+    # never rebuilt per-turn, so the prefix cache stays warm. Empty string
+    # when SKILLS is empty (zero prompt cost in the default no-skills state).
+    skill_catalog_block = _build_skill_catalog_block()
+
     return {
         "instructions_prefix":  instructions_prefix,
         "memory_block":         memory_block,
@@ -4789,6 +4813,7 @@ def _build_initial_prompt_state(active_speech_id: str) -> dict:
             instructions_prefix
             + memory_block
             + breaker_block
+            + skill_catalog_block
         ),
     }
 
@@ -4920,6 +4945,12 @@ async def entrypoint(ctx: JobContext) -> None:
                 # instead. Mirrors pipeline.echo_gate.enabled() (env
                 # JARVIS_ECHO_AWARE_BARGEIN; '0' restores framework interruption).
                 "enabled": os.environ.get("JARVIS_ECHO_AWARE_BARGEIN", "1") == "0",
+                # ...but KEEP transcribing user audio while JARVIS speaks. The
+                # framework's default DISCARDS STT when the current speech is
+                # uninterruptible (agent_activity.push_audio → skip_stt), which
+                # would starve the echo-aware STT-partial handler of the very
+                # transcripts it needs to detect a real barge-in. Default True.
+                "discard_audio_if_uninterruptible": False,
                 # Mode 2026-05-18: explicit "vad" rather than absent
                 # (auto-detect). Absent would try AdaptiveInterruption
                 # via livekit.cloud/agent-gateway first — JARVIS runs
