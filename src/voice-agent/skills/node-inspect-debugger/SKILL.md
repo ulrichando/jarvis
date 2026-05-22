@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   jarvis:
     tags: [debugging, nodejs, node-inspect, cdp, breakpoints, ui-tui]
-    related_skills: [systematic-debugging, python-debugpy, debugging-hermes-tui-commands]
+    related_skills: [systematic-debugging, python-debugpy]
 ---
 
 # Node.js Inspect Debugger
@@ -167,7 +167,7 @@ Run it:
 node /tmp/cdp-debug.js
 ```
 
-Hermes-specific note: `chrome-remote-interface` is NOT in `ui-tui/package.json`. Install it to a throwaway location if you don't want to dirty the project:
+Note: `chrome-remote-interface` is typically not in a project's `package.json`. Install it to a throwaway location if you don't want to dirty the project:
 
 ```bash
 mkdir -p /tmp/cdp-tools && cd /tmp/cdp-tools && npm i chrome-remote-interface
@@ -183,7 +183,7 @@ The TUI is built Ink + tsx. Two common scenarios:
 `ui-tui/package.json` has `npm run dev` (tsx --watch). Add `--inspect-brk` by running tsx directly:
 
 ```bash
-cd /home/bb/hermes-agent/ui-tui
+cd ~/project/ui-tui
 npm run build    # produce dist/ once so transpile isn't needed on first load
 node --inspect-brk dist/entry.js
 # In another terminal:
@@ -199,13 +199,12 @@ cont
 
 When it pauses, `repl` → inspect `props`, state refs, `useInput` handler values, etc.
 
-### Debugging a running `hermes --tui`
+### Debugging a running TUI process
 
-The TUI spawns Node from the Python CLI. Easiest path:
+The TUI spawns Node from the CLI. Easiest path:
 
 ```bash
-# 1. Launch TUI
-hermes --tui &
+# 1. Launch the TUI process in background
 TUI_PID=$(pgrep -f 'ui-tui/dist/entry' | head -1)
 
 # 2. Enable inspector on that Node PID
@@ -227,7 +226,7 @@ Those are Python, not Node — use the `python-debugpy` skill for them. Only Nod
 ## Running Vitest Tests Under the Debugger
 
 ```bash
-cd /home/bb/hermes-agent/ui-tui
+cd ~/project/ui-tui
 # Run a single test file paused on entry
 node --inspect-brk ./node_modules/vitest/vitest.mjs run --no-file-parallelism src/app/foo.test.tsx
 ```

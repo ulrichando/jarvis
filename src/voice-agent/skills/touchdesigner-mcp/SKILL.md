@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   jarvis:
     tags: [TouchDesigner, MCP, twozero, creative-coding, real-time-visuals, generative-art, audio-reactive, VJ, installation, GLSL]
-    related_skills: [native-mcp, ascii-video, manim-video, hermes-video]
+    related_skills: [native-mcp, ascii-video, manim-video]
 ---
 
 # TouchDesigner Integration (twozero MCP)
@@ -36,7 +36,7 @@ Hub health check: `GET http://localhost:40404/mcp` returns JSON with instance PI
 Run the setup script to handle everything:
 
 ```bash
-bash "${HERMES_HOME:-$HOME/.JARVIS}/skills/creative/touchdesigner-mcp/scripts/setup.sh"
+bash "${JARVIS_HOME:-$HOME/.jarvis}/skills/creative/touchdesigner-mcp/scripts/setup.sh"
 ```
 
 The script will:
