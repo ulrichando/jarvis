@@ -152,10 +152,15 @@ def make_dispatch_handler(
             breaker_changed = new_breaker_block != prompt_state["breaker_block"]
 
             if memory_changed or breaker_changed:
+                # Preserve the session-stable skill catalog across hot-reloads.
+                # _build_initial_prompt_state stashes it under
+                # "skill_catalog_block"; default to "" so an older prompt_state
+                # shape (missing the key) still rebuilds cleanly.
                 new_instructions = (
                     prompt_state["instructions_prefix"]
                     + new_memory_block
                     + new_breaker_block
+                    + prompt_state.get("skill_catalog_block", "")
                 )
 
                 async def _push_instructions():

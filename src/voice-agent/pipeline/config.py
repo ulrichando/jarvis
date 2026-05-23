@@ -57,7 +57,7 @@ __all__ = [
     # Subagent enable flags
     "SUBAGENT_SUMMARIZE", "SUBAGENT_WEATHER", "SUBAGENT_RESEARCHER",
     "SUBAGENT_VALIDATOR", "SUBAGENT_CODE_REVIEWER",
-    "SUBAGENT_MEMORY_RECALL", "SUBAGENT_GITHUB",
+    "SUBAGENT_MEMORY_RECALL",
     # Subagent tool gate
     "SUBAGENT_TOOL_GATE", "SUBAGENT_NO_TOOL_RETRY_CEILING",
     # Memory
@@ -215,7 +215,6 @@ SUBAGENT_RESEARCHER: bool    = _bool("JARVIS_SUBAGENT_RESEARCHER", False)
 SUBAGENT_VALIDATOR: bool     = _bool("JARVIS_SUBAGENT_VALIDATOR", False)
 SUBAGENT_CODE_REVIEWER: bool = _bool("JARVIS_SUBAGENT_CODE_REVIEWER", False)
 SUBAGENT_MEMORY_RECALL: bool = _bool("JARVIS_SUBAGENT_MEMORY_RECALL", False)
-SUBAGENT_GITHUB: bool        = _bool("JARVIS_SUBAGENT_GITHUB", False)
 
 
 # ── Subagent tool gate ────────────────────────────────────────────────
@@ -338,7 +337,6 @@ class _Config:
     subagent_validator: bool
     subagent_code_reviewer: bool
     subagent_memory_recall: bool
-    subagent_github: bool
     subagent_tool_gate: bool
     subagent_no_tool_retry_ceiling: int
     memory_consolidator: bool
@@ -405,7 +403,6 @@ config = _Config(
     subagent_validator=SUBAGENT_VALIDATOR,
     subagent_code_reviewer=SUBAGENT_CODE_REVIEWER,
     subagent_memory_recall=SUBAGENT_MEMORY_RECALL,
-    subagent_github=SUBAGENT_GITHUB,
     subagent_tool_gate=SUBAGENT_TOOL_GATE,
     subagent_no_tool_retry_ceiling=SUBAGENT_NO_TOOL_RETRY_CEILING,
     memory_consolidator=MEMORY_CONSOLIDATOR,

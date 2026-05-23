@@ -1,15 +1,21 @@
 """Write-time confabulation detector.
 
-The recurring failure: assistant turn says "A new tab is open, sir."
-when no tool actually fired. The hallucination gets persisted to
-~/.jarvis/conversations.db, then next session's recall mechanism
-seeds chat_ctx with it, and the LLM pattern-matches against the
-past lie to produce fresh ones. Self-reinforcing pollution.
+The recurring failure: assistant turn says "A new tab is open."
+when no tool actually fired. The hallucination would otherwise be
+appended to the in-memory `chat_ctx` (and logged as a successful
+turn to `~/.local/share/jarvis/turn_telemetry.db`), so subsequent
+LLM calls within the same session see the lie in their history and
+pattern-match against it to produce fresh confabulations.
+Self-reinforcing pollution inside the session — and the telemetry
+row falsely marks the turn as a clean success during soak analysis.
 
-Truncating the recall window or scrubbing the DB are tactical
-patches — they reset the contamination but don't stop new pollution
-from entering. This module is the structural fix: refuse to save
-assistant turns that look like confabulations in the first place.
+(The legacy persistent store `~/.jarvis/conversations.db` was
+retired in Phase 12 — see voice_client_watchdog.py:204 — so there
+is no longer a cross-session recall feed from a confab to scrub.)
+
+This module is the structural fix: refuse to save assistant turns
+that look like confabulations in the first place, before they
+contaminate either chat_ctx or the telemetry log.
 
 ═══ Design constraints (in order of importance) ═══
 
