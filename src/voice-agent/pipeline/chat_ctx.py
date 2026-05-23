@@ -3,9 +3,13 @@
 Two concerns wrapped together because they're tightly coupled at
 runtime:
 
-  1. Loading recent prior turns from `~/.jarvis/hub/state.db` and
-     filtering ambient/household chatter (kids, TV, family talking
-     past JARVIS) so seeding doesn't pollute context.
+  1. Loading recent prior turns from `~/.jarvis/hub/state.db` (read-
+     only). NOTE 2026-05-22: the hub daemon that USED to populate
+     that DB was removed entirely. Auto-seed still reads the file
+     opportunistically, but on any install after that date the file
+     never appears and seed_chat_ctx() returns an empty ChatContext.
+     Ambient/household chatter filtering still matters whenever
+     residual pre-removal state.db is present.
 
   2. Scrubbing those assistant turns through the same register /
      silence / tool-leak filters used in the live TTS chain — so
