@@ -4,7 +4,7 @@ Tool handlers import process-level constants and path helpers from this module
 (``get_jarvis_home``, ``get_jarvis_dir``, ``get_subprocess_home``,
 ``display_jarvis_home``, ``is_container`` …). Tools ported into this tree
 import these names so their state lands under ``~/.jarvis`` alongside the
-bridge and hub state.
+rest of the per-user voice-agent state.
 
 Deliberately TINY — this is the foundation wave. Grow it (add only the names a
 tool actually needs) as real tools land. Keep it stdlib-only and import-safe at
@@ -38,7 +38,7 @@ def get_jarvis_home() -> Path:
 
     Reads ``JARVIS_HOME`` env var; falls back to ``~/.jarvis``. This is the
     single source of truth for tool handlers that need to land state under
-    ``~/.jarvis`` alongside the bridge/hub state.
+    the per-user voice-agent root.
     """
     val = os.environ.get(_HOME_ENV, "").strip()
     home = Path(val) if val else _DEFAULT_HOME

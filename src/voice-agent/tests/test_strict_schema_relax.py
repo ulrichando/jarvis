@@ -260,7 +260,6 @@ def test_supervisor_top_level_tools_use_legacy_shape(reinstall_relax):
         "saved_address",
         "current_location",
         "set_saved_address",
-        "recall_conversation",
     )
 
     failures: list[str] = []
