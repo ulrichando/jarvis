@@ -43,10 +43,14 @@ MOVED_SECTIONS = [
 ]
 
 # Representative ops sections that must stay in supervisor.md.
+# (The old "PLAN MODE" section was removed when the unregistered
+# enter_plan_mode/exit_plan_mode/read_plan ghost-tools were dropped
+# — the multi-step coding guidance now lives in the renamed
+# "NON-TRIVIAL CODE WORK" section, which is asserted below.)
 STAYED_SECTIONS = [
     "NEVER WRITE THESE AS REPLY TEXT",
     "TOOL ROUTING",
-    "PLAN MODE",
+    "NON-TRIVIAL CODE WORK",
     "MEMORY",
     "INTERRUPTION HANDLING",
 ]

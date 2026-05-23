@@ -412,8 +412,9 @@ if os.environ.get("JARVIS_KIMI_VOICE_EXPERIMENTAL", "0") == "1":
 def read_speech_model() -> str:
     """Return the active speech model ID, or the default if unset/invalid.
 
-    Reads via the unified-settings SDK (state.db) first, falling back
-    to the flat file written by the tray UI."""
+    Reads the flat file written by the tray UI under `~/.jarvis/`
+    (the unified-settings SDK is a thin wrapper over that file —
+    there is no SQLite settings store)."""
     name = read_unified_setting("voice-model", SPEECH_MODEL_FILE)
     if name in SPEECH_MODELS:
         return name
