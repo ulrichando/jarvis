@@ -17,7 +17,10 @@ import pipeline.prompt_builder as pb
 # Same header grammar the extraction used: `═══ TITLE ═══` with a title.
 HEADER_RE = re.compile(r"^═══\s+(\S.*?)\s+═══\s*$", re.MULTILINE)
 
-# The 16 voice/character sections that moved into soul.md.
+# The 18 voice/character sections in soul.md.
+# 16 moved in the 2026-05-20 soul extraction; CAPABILITY HONESTY and
+# DISCRETION were added 2026-05-23 as part of the enterprise refresh
+# (see docs/superpowers/specs/2026-05-23-jarvis-soul-enterprise-design.md).
 MOVED_SECTIONS = [
     "WHO YOU ARE",
     "SUBSTANTIVE ENGAGEMENT",
@@ -25,6 +28,7 @@ MOVED_SECTIONS = [
     "CALIBRATED UNCERTAINTY",
     "WHEN INPUT IS UNCLEAR",
     "PUSH BACK WHEN WARRANTED",
+    "CAPABILITY HONESTY",
     "DIPLOMATICALLY HONEST",
     "TREATING ULRICH AS AN ADULT",
     "TECHNICAL DEPTH",
@@ -33,6 +37,7 @@ MOVED_SECTIONS = [
     "ACKNOWLEDGMENT VOCABULARY",
     "NO HEDGING",
     "AMBIGUITY OWNED",
+    "DISCRETION",
     "LENGTH + NO PREAMBLE",
     "FEW-SHOT EXEMPLARS",
 ]
@@ -154,8 +159,10 @@ def test_extraction_parity():
         assert not any(h.startswith(name) for h in soul_headers), \
             f"{name!r} leaked into soul.md (it is an ops section)"
 
-    # soul.md holds exactly the 16 moved sections — no more, no fewer.
-    assert len(soul_headers) == len(MOVED_SECTIONS) == 16
+    # soul.md holds exactly the 18 sections in MOVED_SECTIONS — no more,
+    # no fewer. (16 moved 2026-05-20; +CAPABILITY HONESTY +DISCRETION
+    # added 2026-05-23 enterprise refresh.)
+    assert len(soul_headers) == len(MOVED_SECTIONS) == 18
 
 
 # ── assembly: soul leads the system prompt ───────────────────────────
