@@ -36,7 +36,6 @@ import asyncio
 import logging
 import os
 import re
-import sqlite3
 import subprocess as _subprocess
 import time
 import urllib.error
@@ -224,26 +223,24 @@ import resilience.track_guard as _track_guard
 _track_guard.install()
 
 # ── Conversation persistence ──────────────────────────────────────────
-# REMOVED 2026-05-22: the hub subsystem (Redis → ~/.jarvis/hub/state.db
-# daemon) was deleted entirely. Voice turns are no longer published
-# anywhere durable — conversation state is in-memory per session
-# (AgentSession.chat_ctx, trimmed to CTX_MAX_TURNS). turn_telemetry.db
-# (~/.local/share/jarvis/) is a SEPARATE path and is unaffected.
+# Voice turns are not persisted. Conversation state is in-memory per
+# session (AgentSession.chat_ctx, trimmed to CTX_MAX_TURNS).
+# turn_telemetry.db (~/.local/share/jarvis/) is a SEPARATE path covering
+# per-turn metrics only.
 
 # ── Memory layer (durable user-facts that survive chat deletion) ──────
-# File-backed, deliberate-writes model (swapped from the hub-backed
-# auto-extractor on 2026-05-21). Two stores — MEMORY.md + USER.md under
-# get_jarvis_home()/"memories" — are injected into the system prompt as a
-# FROZEN snapshot at session start (see pipeline.file_memory). The
-# supervisor writes via the single `memory` tool (tools.memory, registered
-# into the registry surface). Spec:
+# File-backed, deliberate-writes model. Two stores — MEMORY.md + USER.md
+# under get_jarvis_home()/"memories" — are injected into the system
+# prompt as a FROZEN snapshot at session start (see pipeline.file_memory).
+# The supervisor writes via the single `memory` tool (tools.memory,
+# registered into the registry surface). Spec:
 # docs/superpowers/specs/2026-05-03-jarvis-memory-layer-design.md.
 import tools.memory  # noqa: E402 — registers the `memory` tool at import
 from pipeline import file_memory  # noqa: E402
 
 # File-backed memory has no external dependency, so it's always available.
-# Kept as a flag so the per-turn / session-start injection path reads the
-# same gate the prior hub-backed layer used.
+# Kept as a flag so the per-turn / session-start injection path can gate
+# on it cheaply.
 _MEMORY_AVAILABLE = tools.memory.is_available()
 logging.getLogger("jarvis.memory_layer").info(
     f"memory layer {'enabled' if _MEMORY_AVAILABLE else 'disabled'} (file-backed)"
@@ -456,10 +453,9 @@ from pipeline.fast_path_classifier import (
 # downstream readers reading state.db directly.
 # Tool-leak / recall sanitization moved to pipeline/chat_ctx.py
 # (Step 4 of the 10/10 refactor). Back-compat alias for the pre-write
-# scrubber on assistant turns (lines below). The chat_ctx-seeding
-# cluster (RECENT_TURNS_LIMIT, _load_recent_turns, _scrub_recalled_*,
-# _seed_chat_ctx, plus META/ARCHAIC regexes) imports further down so
-# it's near the call site of `_seed_chat_ctx` in the entrypoint.
+# scrubber on assistant turns (lines below). The META/ARCHAIC regexes
+# import further down so they live near their TTS post-scrubber call
+# sites.
 from pipeline.chat_ctx import sanitize_leaked_tool_text as _sanitize_leaked_tool_text
 _last_real_interaction = 0.0     # monotonic timestamp of last accepted turn
 _bg_tasks: set = set()  # keeps create_task refs alive until done
@@ -508,27 +504,19 @@ def compute_confab_check_state(
 
     Returns one of:
       "refused_handoff"     — session flag set by subagent gate refusal
-      "stale_ctx_dropped"   — session flag set by seed_chat_ctx when
-                              recall produced 0 turns (all stale)
       "evidence_ok"         — chat_ctx has a real tool_result / non-handoff
                               tool_call within the lookback window
       "hedged_no_evidence"  — jarvis_text matches a hedge phrase AND no
                               evidence
       "unchecked"           — fallback (BANTER/EMOTIONAL with no signals)
 
-    Priority order: refused_handoff > stale_ctx_dropped > evidence_ok >
-    hedged_no_evidence > unchecked. Per spec 2026-05-19 §5.4."""
+    Priority order: refused_handoff > evidence_ok > hedged_no_evidence >
+    unchecked. Per spec 2026-05-19 §5.4."""
     # 1) Session-level refused-handoff flag (set by subagents/agent.py)
     if getattr(session, "_jarvis_last_handoff_refused", False):
         return "refused_handoff"
 
-    # 2) Session-level stale-ctx-dropped flag (set in the entrypoint
-    # right after _seed_chat_ctx() returns ChatContext(items=[]) — i.e.
-    # recall age filter zeroed the chat_ctx for this session).
-    if getattr(session, "_jarvis_recall_dropped_all", False):
-        return "stale_ctx_dropped"
-
-    # 3) Real tool evidence in chat_ctx.
+    # 2) Real tool evidence in chat_ctx.
     try:
         from confab_detector import has_recent_tool_evidence
         if has_recent_tool_evidence(chat_items, lookback=10):
@@ -536,14 +524,14 @@ def compute_confab_check_state(
     except Exception:
         pass
 
-    # 4) Hedge phrasing in jarvis_text → hedged_no_evidence.
+    # 3) Hedge phrasing in jarvis_text → hedged_no_evidence.
     if jarvis_text:
         lowered = jarvis_text.lower()
         for p in _CONFAB_HEDGE_PHRASES:
             if p in lowered:
                 return "hedged_no_evidence"
 
-    # 5) Fallback — no signals to evaluate.
+    # 4) Fallback — no signals to evaluate.
     return "unchecked"
 
 
@@ -1684,152 +1672,17 @@ async def media_control(action: str, player: str = "spotify") -> str:
         # Output format: "Playing | Artist - Title" or "Paused | ..."
         return out or f"({player} has no metadata)"
     return f"{action} sent to {player}"
-#
-# ── Voice persistence path (DISABLED 2026-05-22) ─────────────────────
-# The hub subsystem that owned durable conversation state (Redis
-# stream `events:conversation` → hub daemon → ~/.jarvis/hub/state.db)
-# was removed entirely. _save_turn() is now a no-op: voice turns live
-# only in the in-session chat_ctx (trimmed to CTX_MAX_TURNS) and are
-# not persisted anywhere. The call site in entrypoint() is unchanged.
-# turn_telemetry.db (~/.local/share/jarvis/) is a SEPARATE path and is
-# still written by pipeline.turn_telemetry.log_turn.
 
 
-def _save_turn(
-    session_id: str, role: str, text: str,
-    prior_messages: list | None = None,
-) -> None:
-    """No-op since the hub removal (2026-05-22). Conversation no longer
-    persists to ~/.jarvis/hub/state.db — turns are in-memory per session.
-
-    Signature retained so the conversation_item_added hook call site
-    keeps working without change. `prior_messages` is ignored."""
-    logger.debug("[convo-db] persistence disabled (hub removed)")
-
-
-# ── Recall: prior turns from ~/.jarvis/hub/state.db (read-only) ───────
-#
-# NOTE 2026-05-22: the hub subsystem that USED to populate state.db
-# was removed entirely. The auto-seed loader + recall_conversation
-# tool still read state.db read-only, so any existing DB file lingers
-# usefully; in fresh installs the file never appears and the readers
-# degrade to "no prior conversations recorded yet." Voice turns no
-# longer persist anywhere.
-#
-# Two access paths:
-#   1) Auto-seed: at session start, pull the most recent N turns and
-#      pre-load them into chat_ctx (if state.db exists from before
-#      the hub removal). Returns an empty ctx otherwise.
-#   2) `recall_conversation` @function_tool: lets the LLM substring-
-#      search older turns when the auto-seeded window doesn't cover
-#      what the user's asking about.
-#
-# Recent-window size — voice replies want low first-token latency.
-# History on this knob:
-#   - 2026-05-02: cut 30 → 8. 30-turn recall was seeding the supervisor
-#     with multiple past confabulations of "A new tab is open."
-#     (real bug: tool never fired). The LLM pattern-matched against
-#     those past lies and produced fresh ones — same hallucinated
-#     success three times in a row.
-#   - 2026-05-08: bumped 8 → 20. The original cut was the right call
-#     at the time, but THREE pollution-blockers have since shipped
-#     (confab_detector refuses confab writes; _scrub_recalled_assistant_text
-#     cleans tool-leaks at read; handoff_text_suppressor walks full
-#     chat_ctx) — past lies should no longer reach the seed window.
-#     Live observation 2026-05-08 01:33–01:36: a single 8-turn window
-#     left JARVIS amnesiac for the first 5 minutes of a pricing-research
-#     conversation; user had to repeat the $600/6mo, Python/JS/Lua,
-#     etc. context multiple times. 20 covers ~10 exchanges (~5–10 min
-#     of dialogue). Cap stays at CTX_MAX_TURNS=80 inside the session.
-#     Held at 20 until 2026-05-08.
-#   - 2026-05-08: trimmed 20 → 12 after live evidence of topic-drift
-#     confabulation. With 20 turns of chat_ctx loaded, short user
-#     inputs ("Hush!" / "One second") triggered LLM monologues on
-#     topics from earlier in the session (live: "Hush!" → 19s of
-#     Cameroon history). state.db.memories now provides cross-session
-#     durability via Phase 2 auto-extraction, so chat_ctx doesn't need
-#     the full 20-turn window — 12 is enough for short-term continuity
-#     with less topic surface for the LLM to drift onto.
-# ── Chat-context seeding + recall-time sanitizers ─────────────────────
-# Extracted to pipeline/chat_ctx.py 2026-05-10 (Step 4 of the 10/10
-# refactor). Re-exporting under legacy underscored names so existing
-# call sites are untouched. RECALL_SEARCH_LIMIT stays here because it's
-# only used by recall_conversation @function_tool below.
+# ── Reply post-scrubber regexes (used in the TTS chain below) ─────────
+# TOOL_LEAK_RE catches the broader set of leaked tool-call shapes; the
+# META and ARCHAIC openers gate the per-chunk regex applied to LLM
+# output before it reaches the TTS synthesizer.
 from pipeline.chat_ctx import (
-    RECENT_TURNS_LIMIT,
-    TOOL_LEAK_RE              as _TOOL_LEAK_RE,
-    META_SILENCE_RE           as _META_SILENCE_RE,
-    ARCHAIC_OPENER_RE         as _ARCHAIC_OPENER_RE,
-    scrub_recalled_assistant_text as _scrub_recalled_assistant_text,
-    seed_chat_ctx             as _seed_chat_ctx,
+    TOOL_LEAK_RE          as _TOOL_LEAK_RE,
+    META_SILENCE_RE       as _META_SILENCE_RE,
+    ARCHAIC_OPENER_RE     as _ARCHAIC_OPENER_RE,
 )
-RECALL_SEARCH_LIMIT = 8
-
-
-@function_tool
-async def recall_conversation(query: str) -> str:
-    """Search prior conversation turns for what the user said or what you said before.
-
-    Use this when the user asks about something from earlier that
-    isn't in your immediate chat history — phrases like:
-      - "what did we talk about yesterday/last time/this morning"
-      - "remember when I said / asked you about X"
-      - "did I mention Y before"
-      - "what was that thing about Z"
-
-    NEVER use this for stable facts about the user (their name,
-    location, job, preferences) — those live in `remember_this()` /
-    durable memory, queried via the system prompt. This tool is for
-    transcript search only.
-
-    Returns the top matching turns (role and text), oldest first.
-    Errors return paraphrasable text — surface briefly and offer to
-    try a different keyword.
-
-    Args:
-        query: A keyword or phrase to search for, lowercase. Simple
-               substring match — pick distinctive words, not stop-words.
-    """
-    query = (query or "").strip().lower()
-    if not query:
-        return "No search keyword supplied. Ask the user what to look for."
-    # Read-only against ~/.jarvis/hub/state.db. The hub daemon that
-    # used to populate this file was removed 2026-05-22; readers
-    # degrade to "no prior conversations recorded yet" when the file
-    # is absent (which it will be on any install after that date).
-    state_db = Path.home() / ".jarvis" / "hub" / "state.db"
-    if not state_db.exists():
-        return "No prior conversations recorded yet. Tell the user this is a fresh session."
-    try:
-        with sqlite3.connect(str(state_db), timeout=2.0) as conn:
-            rows = conn.execute(
-                "SELECT ts, role, text FROM messages "
-                "WHERE role IN ('user','assistant') "
-                "AND lower(text) LIKE ? "
-                "ORDER BY ts DESC LIMIT ?",
-                (f"%{query}%", RECALL_SEARCH_LIMIT),
-            ).fetchall()
-    except Exception as e:
-        logger.warning(f"recall search failed: {e}")
-        return f"Conversation recall failed [{type(e).__name__}]. Tell the user briefly and offer to try again."
-    if not rows:
-        return f"No prior turns mention {query!r}. Tell the user there's no record of it and offer to search a different keyword."
-    # Oldest first reads more naturally when voiced back.
-    rows.reverse()
-    lines = []
-    for ts, role, text in rows:
-        try:
-            when = time.strftime("%b %d %H:%M", time.localtime(ts))
-        except Exception:
-            when = "(unknown time)"
-        text = (text or "").strip().replace("\n", " ")
-        if len(text) > 200:
-            text = text[:200] + "…"
-        lines.append(f"{when} [{role}]: {text}")
-    logger.info(f"[recall] query={query!r} hits={len(rows)}")
-    return "\n".join(lines)
-
-
 
 
 # list_pending_proposals / accept_proposal / reject_proposal — retired
@@ -3007,7 +2860,7 @@ _LEAK_PATTERNS = [
     re.compile(r"<\s*parameter[^>]*>.*?</\s*parameter\s*>", re.DOTALL | re.IGNORECASE),
     re.compile(r"<\|tool_call_(?:start|end|begin|finish)\|>", re.IGNORECASE),
     re.compile(r"\{\s*\"request\"\s*:\s*\"[^\"]*\"\s*\}"),
-    re.compile(r"\{\s*\"name\"\s*:\s*\"(?:run_jarvis_cli|type_in_terminal|recall_conversation)\"[^}]*\}", re.DOTALL),
+    re.compile(r"\{\s*\"name\"\s*:\s*\"(?:run_jarvis_cli|type_in_terminal)\"[^}]*\}", re.DOTALL),
 ]
 
 
@@ -3631,16 +3484,13 @@ class JarvisAgent(Agent):
         # with the world state already mutated (e.g. for SCREEN_SHARE_QUERY
         # the share is on by the time the LLM picks the transfer tool).
 
-        # Memory writes are now DELIBERATE, not auto-extracted. The
-        # turn-boundary auto-extractor + capture-trigger (which wrote to the
-        # hub `events:memory` stream on every user turn) were retired
-        # 2026-05-21 when JARVIS swapped to the file-backed memory model:
-        # the supervisor decides what's worth keeping via the `memory` tool
-        # (tools.memory → pipeline.file_memory), and the frozen MEMORY.md +
-        # USER.md snapshot is injected into the prompt at session start. This
-        # also fixes the documented auto-extract garbage problem (LLM-meta
-        # narration like "The user is asking about X" polluting the store).
-        # No per-turn memory side effect fires here.
+        # Memory writes are DELIBERATE, not auto-extracted. The supervisor
+        # decides what's worth keeping via the `memory` tool (tools.memory →
+        # pipeline.file_memory); the frozen MEMORY.md + USER.md snapshot is
+        # injected into the prompt at session start. Avoids the auto-extract
+        # garbage failure mode (LLM-meta narration like "The user is asking
+        # about X" polluting the store). No per-turn memory side effect
+        # fires here.
 
         # Bare-vocative fast path. When the user just calls JARVIS by name
         # (with optional preamble like "hey", "yo", "okay", "i said"),
@@ -4934,12 +4784,11 @@ async def entrypoint(ctx: JobContext) -> None:
         ],
     )
 
-    # Conversation persistence is DISABLED since 2026-05-22 (hub removal).
-    # _save_turn() is a no-op; voice turns live only in the in-session
-    # chat_ctx (trimmed to CTX_MAX_TURNS) and are not persisted. The
-    # session_id is still generated for log correlation / telemetry only.
+    # Conversation does not persist between sessions. Voice turns live
+    # only in the in-session chat_ctx (trimmed to CTX_MAX_TURNS). The
+    # session_id is generated for log correlation / telemetry only.
     convo_session_id = str(uuid.uuid4())
-    logger.info(f"[convo-db] session {convo_session_id} — persistence disabled (hub removed)")
+    logger.info(f"[session] {convo_session_id} — conversation in-memory only")
 
     # Session-state for the dispatcher prefix. Turn count drives the
     # [Turn N · session Mm] hint that tells the LLM where it is in the
@@ -5030,14 +4879,6 @@ async def entrypoint(ctx: JobContext) -> None:
                         "[barge-in] truncated assistant turn %d→%d chars at audio_end_ms=%d",
                         original_len, len(text), audio_end_ms,
                     )
-            # Snapshot prior chat_ctx items so the confab detector can
-            # look back for tool evidence. Only the last few are read;
-            # we pass the whole list and let the detector window itself.
-            try:
-                prior = list(getattr(session.history, "items", None) or [])
-            except Exception:
-                prior = []
-            _save_turn(convo_session_id, role, text, prior_messages=prior)
             # Background sync to the cloud memory provider (no-op when the
             # layer is off — JARVIS_MEMORY_PROVIDER unset → sync_item_async
             # returns immediately). Reuses this handler's already-extracted
@@ -5340,7 +5181,7 @@ async def entrypoint(ctx: JobContext) -> None:
                 except Exception as ce:
                     logger.debug(f"[ctx-compact] could not trim: {ce}")
         except Exception as e:
-            logger.warning(f"[convo-db] save failed: {e}")
+            logger.warning(f"[turn-write] post-turn bookkeeping failed: {e}")
 
     # Wire the 5 small state-tracking event handlers (Step 8d). The
     # big `_on_user_input_for_dispatch` Maya-class router that follows
@@ -5371,28 +5212,8 @@ async def entrypoint(ctx: JobContext) -> None:
 
     _initial_instructions = _ps["initial_instructions"]
 
-    # Build the seeded chat_ctx and stamp a session-level flag when
-    # the recall age filter produced zero turns. T11 (2026-05-19): the
-    # flag is read by ``compute_confab_check_state`` so the per-turn
-    # telemetry can distinguish "stale ctx dropped" from generic
-    # "unchecked" — operators can grep for it after a confab to verify
-    # the L3 filter actually fired. Done at the call site because
-    # ``seed_chat_ctx`` itself is session-agnostic.
-    _seeded_chat_ctx = _seed_chat_ctx()
-    try:
-        _seeded_items = getattr(_seeded_chat_ctx, "items", None) or []
-        if len(_seeded_items) == 0:
-            session._jarvis_recall_dropped_all = True
-    except Exception:
-        # Telemetry-only flag; never block agent construction.
-        pass
-
     _jarvis_agent = JarvisAgent(
         instructions=_initial_instructions,
-        # Pre-load recent prior turns from conversations.db so the
-        # LLM sees what was discussed before this job started.
-        # Without this, every voice-client reconnect = amnesia.
-        chat_ctx=_seeded_chat_ctx,
         # Tool surface — REGISTRY-ONLY. Every tool the supervisor can
         # call comes from load_all_livekit_tools(), which discovers each
         # self-registering tool module under tools/ (terminal / read_file /
@@ -5402,14 +5223,14 @@ async def entrypoint(ctx: JobContext) -> None:
         # plan-mode, tasks, monitors, worktrees, code-search,
         # set_screen_share, ask_user_question) and the inline @function_tool
         # defs (web_search/web_fetch/current_time/date_math/calc/glob_files/
-        # grep_files/recall_conversation/location trio) were deliberately
-        # dropped from the surface — the supervisor is pure-registry while
-        # those capabilities are re-ported into the registry framework one
-        # wave at a time. (The location/web/recall inline defs still exist
-        # at module scope — they back the strict_schema_relax regression
-        # tests — but they are intentionally NOT registered here, so the
-        # LLM never sees them.) This build also has NO handoff subagents
-        # and NO transfer_to_* tools; both return via a later registry port.
+        # grep_files/location trio) were deliberately dropped from the
+        # surface — the supervisor is pure-registry while those capabilities
+        # are re-ported into the registry framework one wave at a time.
+        # (The location/web inline defs still exist at module scope — they
+        # back the strict_schema_relax regression tests — but they are
+        # intentionally NOT registered here, so the LLM never sees them.)
+        # This build also has NO handoff subagents and NO transfer_to_*
+        # tools; both return via a later registry port.
         tools=load_all_livekit_tools(),
     )
 
@@ -5563,9 +5384,8 @@ async def entrypoint(ctx: JobContext) -> None:
         active AgentSession activity. Polls up to 3 s for readiness
         before giving up. The agent's existing `conversation_item_added`
         handler picks up both the synthetic user turn AND the assistant
-        reply for in-session chat_ctx accounting; durable persistence
-        was removed with the hub subsystem on 2026-05-22, so neither
-        turn is published anywhere off-process.
+        reply for in-session chat_ctx accounting; conversation does not
+        persist off-process.
         """
         for _ in range(30):
             if session._activity is not None:

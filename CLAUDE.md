@@ -15,8 +15,6 @@ JARVIS is Ulrich's voice-first AI assistant. Real-time speech in, real-time spee
 | Bridge | Bun/TypeScript HTTP+WS on `127.0.0.1:8765`, started by `src/cli/scripts/start-desktop.sh` when the desktop launches (no systemd unit; dies when desktop closes). Brokers HTTP→Chrome ext over WS. Auth required via `JARVIS_REQUIRE_LOCAL_AUTH=1` + `~/.jarvis/local-api-token.env` (added 2026-05-16 per global review §P0-1) | [src/cli/src/bridge/](src/cli/src/bridge/) |
 | AI-native OS rice (Misty Scone) | Arch + custom desktop, copies cli/desktop-tauri (aspirational — `src/os/desktop/` not present in current checkout) | [src/os/desktop/](src/os/desktop/) |
 
-> **Hub removed 2026-05-22.** The previous Redis→`~/.jarvis/hub/state.db` Python daemon (`jarvis-hub.service` / `src/hub/`) was retired entirely. Voice conversation no longer persists — turns live only in the in-session chat_ctx (trimmed to `CTX_MAX_TURNS`). `turn_telemetry.db` (`~/.local/share/jarvis/`) is a separate path and unaffected. The CLI bridge in `src/cli/` still imports `src/hub/client.ts` — that import is orphaned by design while `src/cli/` remains off-limits.
-
 JARVIS's `bash` tool runs as the local user (`ulrich`). **As of 2026-05-16 there is NO `/etc/sudoers.d/jarvis` NOPASSWD entry** — earlier docs claimed there was; live `sudo -n true` test confirmed it requires a password. Threat model: a misbehaving LLM / prompt injection through user mic can execute anything under the user's $HOME + run any tool without sudo. If you ever add the sudoers entry, document its scoped `Cmnd_Alias` here so future readers can audit the blast radius — do NOT restore a blanket NOPASSWD.
 
 ## Voice-agent architecture

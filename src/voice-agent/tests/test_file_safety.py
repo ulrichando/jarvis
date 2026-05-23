@@ -124,12 +124,14 @@ def test_allows_ordinary_paths():
     assert file_safety.is_write_denied("~/Documents/notes.txt") is False
 
 
-def test_allows_jarvis_state_db():
-    # ~/.jarvis has legitimate writable state (hub/state.db). Only the
-    # token file inside it is denied — not the whole tree.
+def test_allows_jarvis_user_dir():
+    # ~/.jarvis has legitimate writable state (memories, voice-model
+    # pref, etc.). Only the token file inside it is denied — not the
+    # whole tree.
     from tools import file_safety
 
-    assert file_safety.is_write_denied("~/.jarvis/hub/state.db") is False
+    assert file_safety.is_write_denied("~/.jarvis/memories/MEMORY.md") is False
+    assert file_safety.is_write_denied("~/.jarvis/voice-model") is False
 
 
 def test_allows_other_config_subdirs():

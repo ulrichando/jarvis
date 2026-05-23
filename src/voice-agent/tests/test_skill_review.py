@@ -386,9 +386,8 @@ class TestRunReviewApply:
 
     def test_apply_memory_writes_to_file_store(self, telemetry_db, skills_env, monkeypatch):
         """memory proposals apply by writing to the file-backed store
-        (pipeline.file_memory) — the hub publish path was retired
-        2026-05-21. A 'project' category lands in MEMORY.md ('memory'
-        target); only 'user' goes to USER.md."""
+        (pipeline.file_memory). A 'project' category lands in MEMORY.md
+        ('memory' target); only 'user' goes to USER.md."""
         from pipeline import skill_review, file_memory
         monkeypatch.setenv("JARVIS_SKILL_REVIEW_APPLY", "1")
         monkeypatch.setenv("JARVIS_SKILL_REVIEW_LONG_REPLY_CHARS", "100000")

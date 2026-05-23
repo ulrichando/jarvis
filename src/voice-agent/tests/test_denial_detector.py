@@ -2,9 +2,9 @@
 """Tests for the output-rail denial detector.
 
 Watches the supervisor LLM's outgoing assistant text. If the text
-matches the denial pattern AND no remember()/recall_conversation()
-tool fired this turn, the detector suppresses the reply and signals
-a re-roll with forced tool_choice.
+matches the denial pattern AND no memory write/read fired this turn,
+the detector suppresses the reply and signals a re-roll with forced
+tool_choice.
 
 JARVIS-original — no published precedent for capability-denial
 specifically. Closest analog is LLM-Guard's NoRefusal scanner.

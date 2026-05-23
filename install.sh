@@ -116,12 +116,8 @@ install_cli() {
   if [ "${JARVIS_SKIP_CLI:-0}" = "1" ]; then warn "skipping CLI (JARVIS_SKIP_CLI=1)"; return; fi
   section "Installing CLI"
   (cd "$INSTALL_DIR/src/cli" && bun install --silent)
-  # NOTE 2026-05-22: the src/hub TypeScript event-hub SDK was removed
-  # with the rest of the hub subsystem. The CLI bridge (src/cli/src/
-  # bridge/) still imports from src/hub/client.ts and will fail to
-  # start on this codepath — accepted by design while src/cli/ remains
-  # off-limits. Restore by either porting the bridge off the hub or
-  # removing the bridge child from start-desktop.sh.
+  # The CLI bridge (src/cli/src/bridge/) has an orphaned import that
+  # won't resolve at runtime — accepted while src/cli/ remains off-limits.
   mkdir -p "$LOCAL_BIN"
   ln -sf "$INSTALL_DIR/bin/jarvis"         "$LOCAL_BIN/jarvis"
   ln -sf "$INSTALL_DIR/bin/jarvis-desktop" "$LOCAL_BIN/jarvis-desktop"
@@ -204,10 +200,9 @@ install_systemd_units() {
   # status=226/NAMESPACE (systemd refuses to bind-mount a non-existent
   # path even if the ExecStart script would create it). The units
   # have ExecStartPre fallbacks too — this is belt-and-suspenders.
-  mkdir -p "$HOME/.local/share/jarvis/logs"   # voice-agent + hub + livekit-server log dest
-  mkdir -p "$HOME/.jarvis/hub"                # hub state.db lives here
+  mkdir -p "$HOME/.local/share/jarvis/logs"   # voice-agent + livekit-server log dest
   mkdir -p "$HOME/.jarvis/snapshots"           # hourly backup snapshots
-  chmod 700 "$HOME/.jarvis/snapshots"          # contains conversation + memory content
+  chmod 700 "$HOME/.jarvis/snapshots"          # contains telemetry detail
 
   local sed_path_subs=(
     -e "s|%h/Documents/Projects/jarvis|$INSTALL_DIR|g"
@@ -216,8 +211,6 @@ install_systemd_units() {
   )
 
   # Always-on services (voice-agent, voice-client, livekit-server).
-  # jarvis-hub.service was retired 2026-05-22 with the rest of the hub
-  # subsystem.
   for src in jarvis-voice-agent.service jarvis-voice-client.service livekit-server.service; do
     sed "${sed_path_subs[@]}" "$INSTALL_DIR/setup/systemd/$src" > "$USER_SYSTEMD/$src"
     ok "installed unit: $USER_SYSTEMD/$src"
@@ -241,7 +234,7 @@ install_systemd_units() {
 
   # Enable always-on services (NOT started — user runs them after
   # configuring .env). Enable order matters: SFU first, then agent +
-  # client. jarvis-hub.service was retired 2026-05-22.
+  # client.
   for unit in livekit-server.service jarvis-voice-agent.service jarvis-voice-client.service; do
     systemctl --user enable "$unit" >/dev/null 2>&1 \
       && ok "enabled $unit (NOT started — configure .env first)" \
@@ -448,13 +441,6 @@ install_echo_cancel_aec() {
       || warn "echo-cancel tuning failed (non-fatal; defaults remain)"
   fi
 }
-
-# setup_redis() — removed 2026-05-22. Redis was used only by the hub
-# subsystem (Redis Streams broker); the hub was retired and nothing
-# else in the voice-agent or web tree talks to Redis. The CLI bridge
-# in src/cli/ still imports ioredis transitively via the orphaned
-# src/hub TS SDK reference — accepted by design (src/cli/ is off-
-# limits).
 
 # ── Computer-use subagent dependencies (optional) ────────────────────────
 check_computer_use_deps() {

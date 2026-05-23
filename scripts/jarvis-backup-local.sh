@@ -1,16 +1,10 @@
 #!/usr/bin/env bash
 # Local hourly snapshots of:
-#   - ~/.jarvis/hub/state.db          (canonical hub store — memories live here)
 #   - ~/.local/share/jarvis/turn_telemetry.db (per-turn TTFW / route / emotion / interrupted)
 #
 # Atomic via SQLite's online-backup API — safe to run while writers are active.
 #
-# Restore:
-#   systemctl --user stop jarvis-hub
-#   cp ~/.jarvis/snapshots/state-latest.db ~/.jarvis/hub/state.db
-#   systemctl --user start jarvis-hub
-#
-# Telemetry restore (no service to stop — the writer reopens on next turn):
+# Restore (no service to stop — the writer reopens on next turn):
 #   cp ~/.jarvis/snapshots/turn_telemetry-latest.db ~/.local/share/jarvis/turn_telemetry.db
 set -euo pipefail
 
@@ -38,8 +32,7 @@ backup_one() {
     find "${DST_DIR}" -maxdepth 1 -name "${label}-*.db" -type f -mtime "+${RETENTION_DAYS}" -delete
 }
 
-backup_one "state" "${HOME}/.jarvis/hub/state.db" || true
 backup_one "turn_telemetry" "${HOME}/.local/share/jarvis/turn_telemetry.db" || true
 
-# Pre-retirement conversations-*.db snapshots — prune.
-find "${DST_DIR}" -maxdepth 1 -name 'conversations-*.db' -type f -mtime "+${RETENTION_DAYS}" -delete 2>/dev/null || true
+# Prune any pre-existing snapshot families that are no longer produced.
+find "${DST_DIR}" -maxdepth 1 \( -name 'state-*.db' -o -name 'conversations-*.db' \) -type f -mtime "+${RETENTION_DAYS}" -delete 2>/dev/null || true

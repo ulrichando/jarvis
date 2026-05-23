@@ -17,12 +17,7 @@ The tool is registered into the registry framework (``tools.registry``) and
 adapted to a LiveKit ``RawFunctionTool`` by ``tools._adapter`` at session
 start, so it appears on the supervisor's tool surface like any other tool.
 
-History: this module previously held hub-backed ``remember`` / ``forget`` /
-``list_memories`` / ``audit_memories`` ``@function_tool`` defs plus an
-auto-extractor that wrote to the hub ``events:memory`` stream. That whole
-path was swapped for the file-backed model on 2026-05-21 — see
-``pipeline.file_memory`` and
-docs/superpowers/specs/2026-05-03-jarvis-memory-layer-design.md.
+Design spec: docs/superpowers/specs/2026-05-03-jarvis-memory-layer-design.md.
 """
 from __future__ import annotations
 
