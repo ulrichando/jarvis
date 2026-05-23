@@ -143,10 +143,10 @@ class TestCodeSearch:
         assert "import json" in result.get("output", "")
 
     def test_finds_env_var_reference(self, tmp_path):
-        _make_py_file(tmp_path, 'key = os.environ.get("JARVIS_HUB_DB", "")\n')
-        result = _call_search({"pattern": "JARVIS_HUB_DB", "path": str(tmp_path)})
+        _make_py_file(tmp_path, 'key = os.environ.get("JARVIS_TEST_TOKEN", "")\n')
+        result = _call_search({"pattern": "JARVIS_TEST_TOKEN", "path": str(tmp_path)})
         assert result["success"] is True
-        assert "JARVIS_HUB_DB" in result.get("output", "")
+        assert "JARVIS_TEST_TOKEN" in result.get("output", "")
 
     def test_no_match_returns_success_empty(self, tmp_path):
         _make_py_file(tmp_path, "x = 1\n")

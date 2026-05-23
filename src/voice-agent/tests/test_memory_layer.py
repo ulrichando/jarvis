@@ -148,7 +148,7 @@ def test_unknown_action_rejected():
 
 def test_build_memory_block_returns_file_snapshot(tmp_path, monkeypatch):
     """_build_memory_block must surface the frozen MEMORY.md + USER.md
-    snapshot from pipeline.file_memory (not hub reads)."""
+    snapshot from pipeline.file_memory."""
     monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
     # Seed the store, then freeze the snapshot as a session start would.
     file_memory.reload_store()

@@ -10,9 +10,8 @@ Pipeline (each FINAL transcript runs through):
 
   1. Stamp `turn_start_monotonic` + `turn_user_text` on session for
      downstream TTFW telemetry.
-  2. Recall-query check — force `tool_choice` to
-     `recall_conversation` if the transcript is recall-shaped;
-     otherwise reset.
+  2. Reset any per-turn forced `tool_choice` so a prior turn's
+     override doesn't leak (LiveKit issue #4671).
   3. Hot-reload prompt state — rebuild memory block + breaker block;
      if either changed, call `agent.update_instructions()` off-band.
   4. Compute speech-rate (from VAD stamps) + RMS dB (from acoustic
@@ -72,7 +71,6 @@ from pipeline.turn_router import (
     compute_interrupt_tuning,
     compute_speech_rate,
     detect_emotion,
-    is_recall_query,
     update_baseline,
 )
 
@@ -81,37 +79,6 @@ __all__ = ["make_dispatch_handler"]
 
 
 logger = logging.getLogger("jarvis.turn_dispatcher")
-
-
-def _agent_has_tool(agent: Any, tool_name: str) -> bool:
-    """True if `agent` exposes a tool literally named `tool_name`.
-
-    Walks the agent's tool list and reads each tool's name. Handles both
-    LiveKit RawFunctionTools (name lives on `.info.name`) and ordinary
-    @function_tool callables (name via `get_function_info`). Defensive:
-    any failure means "not present" — the caller treats absence as a
-    no-op, never an error. Used to gate forced tool_choice so we never
-    force a tool that isn't in the supervisor's (registry-only) surface.
-    """
-    try:
-        tools = getattr(agent, "tools", None) or []
-    except Exception:
-        return False
-    for tool in tools:
-        name = None
-        info = getattr(tool, "info", None)
-        if info is not None:
-            name = getattr(info, "name", None)
-        if name is None:
-            try:
-                from livekit.agents.llm.tool_context import get_function_info
-
-                name = get_function_info(tool).name
-            except Exception:
-                name = None
-        if name == tool_name:
-            return True
-    return False
 
 
 def make_dispatch_handler(
@@ -154,43 +121,15 @@ def make_dispatch_handler(
         except Exception:
             pass
 
-        # Conversation-transcript recall force-route — when the user
-        # transcript is recall-shaped ("what did we talk about last
-        # time"), force tool_choice on `recall_conversation` so the
-        # supervisor LLM can't reject the call via metacognition-
-        # conservatism. CRITICAL: explicitly reset tool_choice to None on
-        # every non-recall turn (LiveKit issue #4671: tool_choice persists
-        # across turns).
-        #
-        # This forces ONLY transcript search, NOT durable-memory recall:
-        # durable memory (MEMORY.md + USER.md) is always in the system
-        # prompt as a frozen snapshot now (file-backed model, 2026-05-21),
-        # so there is no memory-recall tool to force. The hub-backed
-        # memory-recall router that used to live here was retired with the
-        # auto-extractor.
-        #
-        # Safe no-op when the tool is absent: the supervisor's surface is
-        # registry-only and currently has no `recall_conversation` tool, so
-        # forcing tool_choice on it would make the provider reject the
-        # request ("tool not in request.tools"). We only force the choice
-        # when the agent actually exposes the tool — so this lights up again
-        # automatically once a recall tool is re-ported into the registry,
-        # and stays inert until then.
+        # Reset any prior turn's forced tool_choice. LiveKit issue #4671:
+        # tool_choice persists across turns on the AgentSession activity
+        # unless explicitly cleared. Nothing currently sets a forced
+        # choice here, but the consumer in jarvis_agent.py still forwards
+        # whatever this attribute holds, so we keep it clean.
         try:
-            if is_recall_query(transcript) and _agent_has_tool(
-                jarvis_agent, "recall_conversation"
-            ):
-                session._jarvis_force_tool_choice = {
-                    "type": "function",
-                    "function": {"name": "recall_conversation"},
-                }
-                logger.info(
-                    f"[recall-route] forcing recall_conversation for {transcript[:60]!r}"
-                )
-            else:
-                session._jarvis_force_tool_choice = None
-        except Exception as e:
-            logger.debug(f"[recall-route] check skipped: {e}")
+            session._jarvis_force_tool_choice = None
+        except Exception:
+            pass
 
         # Hot-reload the breaker block if it changed since last check, so
         # provider-degradation transitions take effect without a restart.

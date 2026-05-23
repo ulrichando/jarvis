@@ -285,7 +285,7 @@ _FIND_DEFINITIONS_SCHEMA = {
         "Uses ripgrep with a language-aware pattern covering Python def/class, "
         "JS const/let/function, Rust fn/struct/trait, Go func/type, etc.\n\n"
         "Examples:\n"
-        "  find_definitions(symbol=\"recall_conversation\")  — find the Python function\n"
+        "  find_definitions(symbol=\"compute_confab_check_state\")  — find the Python function\n"
         "  find_definitions(symbol=\"JarvisAgent\", path=\"src/voice-agent\")  — scoped to a dir\n"
         "  find_definitions(symbol=\"AudioProcessor\", file_glob=\"*.ts\")  — TS only\n\n"
         "Returns matching lines with context. For broad symbol search, use code_search instead."

@@ -1,5 +1,5 @@
 """Tests for the second batch of ported registry tools:
-clarify, session_search, web_search, web_fetch.
+clarify, web_search, web_fetch.
 
 Proves each ported tool:
   (a) self-registers in registry.all_entries() after import,
@@ -51,10 +51,6 @@ class TestSelfRegistration:
         import tools.clarify  # noqa: F401 — side effect: registers 'clarify'
         assert registry.get_entry("clarify") is not None
 
-    def test_session_search_registers(self):
-        import tools.session_search  # noqa: F401
-        assert registry.get_entry("session_search") is not None
-
     def test_web_search_registers(self):
         import tools.web_tools  # noqa: F401
         assert registry.get_entry("web_search") is not None
@@ -63,11 +59,10 @@ class TestSelfRegistration:
         import tools.web_tools  # noqa: F401
         assert registry.get_entry("web_fetch") is not None
 
-    def test_all_four_in_all_entries(self):
-        import tools.clarify, tools.session_search, tools.web_tools  # noqa: F401
+    def test_all_three_in_all_entries(self):
+        import tools.clarify, tools.web_tools  # noqa: F401
         names = {e.name for e in registry.all_entries()}
         assert "clarify" in names
-        assert "session_search" in names
         assert "web_search" in names
         assert "web_fetch" in names
 
@@ -81,7 +76,7 @@ class TestLivekitAdaptation:
 
     @pytest.fixture(scope="class", autouse=True)
     def _ensure_imports(self):
-        import tools.clarify, tools.session_search, tools.web_tools  # noqa: F401
+        import tools.clarify, tools.web_tools  # noqa: F401
 
     def test_all_adapted_tools_are_raw_function_tools(self):
         tools = adapter.load_all_livekit_tools()
@@ -106,24 +101,6 @@ class TestLivekitAdaptation:
         tool = self._get_adapted("web_fetch")
         assert tool is not None, "'web_fetch' not found in adapted tools"
         assert is_raw_function_tool(tool)
-
-    def test_session_search_entry_is_registered(self):
-        """session_search IS in the registry (can inspect schema)."""
-        entry = registry.get_entry("session_search")
-        assert entry is not None
-
-    def test_session_search_check_fn_gated_by_db(self, monkeypatch, tmp_path):
-        """check_fn returns True only when state.db exists; False otherwise."""
-        from tools.session_search import _check_session_search
-        from tools.registry import invalidate_check_fn_cache
-        # Point at a nonexistent path → False
-        monkeypatch.setenv("JARVIS_HUB_DB", str(tmp_path / "nope.db"))
-        invalidate_check_fn_cache()
-        assert _check_session_search() is False
-        # Create the file → True
-        (tmp_path / "nope.db").touch()
-        invalidate_check_fn_cache()
-        assert _check_session_search() is True
 
 
 # ---------------------------------------------------------------------------
@@ -191,198 +168,6 @@ class TestClarifyBehavior:
         raw = _handle_clarify({"question": "Any question?"})
         # Must not raise
         json.loads(raw)
-
-
-# ---------------------------------------------------------------------------
-# (c) behavior smoke tests — session_search (hub-based, tmp SQLite)
-# ---------------------------------------------------------------------------
-
-import sqlite3 as _sqlite3
-
-
-def _seed_db(path, rows):
-    """rows: list of (session_id, role, text, ts_ms)."""
-    conn = _sqlite3.connect(str(path))
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS sessions (
-            id TEXT PRIMARY KEY, source TEXT NOT NULL,
-            created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT NOT NULL, source TEXT NOT NULL,
-            source_event_id TEXT NOT NULL UNIQUE,
-            role TEXT NOT NULL, text TEXT NOT NULL,
-            tool_calls_json TEXT, ts INTEGER NOT NULL
-        );
-    """)
-    seen = set()
-    for i, (sid, role, text, ts) in enumerate(rows):
-        if sid not in seen:
-            conn.execute(
-                "INSERT OR IGNORE INTO sessions (id,source,created_at,updated_at) VALUES(?,?,?,?)",
-                (sid, "voice", ts, ts),
-            )
-            seen.add(sid)
-        conn.execute(
-            "INSERT INTO messages (session_id,source,source_event_id,role,text,ts) VALUES(?,?,?,?,?,?)",
-            (sid, "voice", f"e{i}", role, text, ts),
-        )
-    conn.commit()
-    conn.close()
-
-
-class TestSessionSearchBehavior:
-    """Smoke tests for session_search with the hub SQLite backend."""
-
-    @pytest.fixture
-    def db(self, tmp_path, monkeypatch):
-        path = tmp_path / "state.db"
-        _seed_db(path, [
-            ("s1", "user", "auth refactor discussion", 1000),
-            ("s1", "assistant", "sure let me help with auth", 2000),
-            ("s2", "user", "hello world test", 3000),
-        ])
-        monkeypatch.setenv("JARVIS_HUB_DB", str(path))
-        from tools.registry import invalidate_check_fn_cache
-        invalidate_check_fn_cache()
-        return path
-
-    def _call(self, args: dict) -> dict:
-        from tools.session_search import _handle_session_search
-        return json.loads(_handle_session_search(args))
-
-    def test_no_db_returns_error(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("JARVIS_HUB_DB", str(tmp_path / "nope.db"))
-        from tools.registry import invalidate_check_fn_cache
-        invalidate_check_fn_cache()
-        result = self._call({"query": "anything"})
-        assert "error" in result
-
-    def test_no_db_error_not_empty(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("JARVIS_HUB_DB", str(tmp_path / "nope.db"))
-        from tools.registry import invalidate_check_fn_cache
-        invalidate_check_fn_cache()
-        result = self._call({"query": "auth refactor"})
-        assert result.get("error")  # non-empty error message
-
-    def test_check_fn_false_when_no_db(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("JARVIS_HUB_DB", str(tmp_path / "nope.db"))
-        from tools.session_search import _check_session_search
-        from tools.registry import invalidate_check_fn_cache
-        invalidate_check_fn_cache()
-        assert _check_session_search() is False
-
-    def test_format_timestamp_unix(self):
-        from tools.session_search import _format_ts
-        ts_ms = 1_700_000_000 * 1000
-        result = _format_ts(ts_ms)
-        assert isinstance(result, str)
-        assert len(result) > 0
-
-    def test_format_timestamp_none(self):
-        from tools.session_search import _format_ts
-        assert _format_ts(None) == "unknown"
-
-    def test_snippet_trims_long_text(self):
-        from tools.session_search import _snippet
-        long = "A" * 300
-        out = _snippet(long)
-        assert len(out) <= 210  # 200 chars + ellipsis
-
-    def test_snippet_short_text_unchanged(self):
-        from tools.session_search import _snippet
-        short = "hello world"
-        assert _snippet(short) == short
-
-    def test_discover_matches_keyword(self, db):
-        result = self._call({"query": "auth"})
-        assert result["success"] is True
-        assert result["mode"] == "discover"
-        assert result["count"] >= 1
-
-    def test_discover_no_match_returns_empty(self, db):
-        result = self._call({"query": "xyzzy_not_here"})
-        assert result["success"] is True
-        assert result["count"] == 0
-
-
-class TestSessionSearchWithMockDB:
-    """Test session_search shapes using temp SQLite DBs (hub schema)."""
-
-    @pytest.fixture
-    def empty_db(self, tmp_path, monkeypatch):
-        path = tmp_path / "state.db"
-        _seed_db(path, [])
-        monkeypatch.setenv("JARVIS_HUB_DB", str(path))
-        from tools.registry import invalidate_check_fn_cache
-        invalidate_check_fn_cache()
-        return path
-
-    @pytest.fixture
-    def seeded_db(self, tmp_path, monkeypatch):
-        path = tmp_path / "state.db"
-        _seed_db(path, [
-            ("s1", "user", "hello from session one", 1000),
-            ("s1", "assistant", "hi back", 2000),
-            ("s2", "user", "second session content", 3000),
-        ])
-        monkeypatch.setenv("JARVIS_HUB_DB", str(path))
-        from tools.registry import invalidate_check_fn_cache
-        invalidate_check_fn_cache()
-        return path
-
-    def _call(self, args: dict) -> dict:
-        from tools.session_search import _handle_session_search
-        return json.loads(_handle_session_search(args))
-
-    def test_browse_empty_db(self, empty_db):
-        result = self._call({})
-        assert result["success"] is True
-        assert result["mode"] == "browse"
-        assert result["results"] == []
-
-    def test_browse_with_sessions(self, seeded_db):
-        result = self._call({})
-        assert result["success"] is True
-        ids = {r["session_id"] for r in result["results"]}
-        assert "s1" in ids
-        assert "s2" in ids
-
-    def test_discover_no_results(self, empty_db):
-        result = self._call({"query": "nonexistent query"})
-        assert result["success"] is True
-        assert result["mode"] == "discover"
-        assert result["results"] == []
-
-    def test_discover_finds_matching_message(self, seeded_db):
-        result = self._call({"query": "hello"})
-        assert result["success"] is True
-        assert result["mode"] == "discover"
-        assert result["count"] >= 1
-        texts = [r["snippet"] for r in result["results"]]
-        assert any("hello" in t.lower() for t in texts)
-
-    def test_session_shape_returns_messages(self, seeded_db):
-        result = self._call({"session_id": "s1"})
-        assert result["success"] is True
-        assert result["mode"] == "session"
-        assert result["count"] == 2
-
-    def test_session_not_found_returns_empty(self, seeded_db):
-        result = self._call({"session_id": "no-such"})
-        assert result["success"] is True
-        assert result["count"] == 0
-
-    def test_limit_clamp_max(self, seeded_db):
-        result = self._call({"query": "session", "limit": 999})
-        assert result["success"] is True
-        # limit capped at _MAX_LIMIT (20)
-        assert result["count"] <= 20
-
-    def test_limit_clamp_min(self, seeded_db):
-        result = self._call({"query": "session", "limit": 0})
-        assert result["success"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -586,7 +371,6 @@ class TestNoHermesTokens:
 
     @pytest.mark.parametrize("fname", [
         "clarify.py",
-        "session_search.py",
         "web_tools.py",
     ])
     def test_no_hermes_in_file(self, fname):

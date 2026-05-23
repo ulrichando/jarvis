@@ -79,16 +79,3 @@ def test_unchecked_when_no_signals():
         session=session, chat_items=chat_items, jarvis_text="Hello."
     )
     assert state == "unchecked"
-
-
-def test_stale_ctx_dropped_marker():
-    """When session._jarvis_recall_dropped_all==True (set by
-    seed_chat_ctx when recall produced 0 turns), state is
-    'stale_ctx_dropped'."""
-    from jarvis_agent import compute_confab_check_state
-    session = SimpleNamespace(_jarvis_recall_dropped_all=True)
-    chat_items = []
-    state = compute_confab_check_state(
-        session=session, chat_items=chat_items, jarvis_text="Yes?"
-    )
-    assert state == "stale_ctx_dropped"
