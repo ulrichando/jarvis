@@ -13,9 +13,11 @@
 #
 # Pre-flight: hourly snapshot at ~/.jarvis/snapshots/state-latest.db
 # is your rollback point. Restore with:
-#   systemctl --user stop jarvis-hub
 #   cp ~/.jarvis/snapshots/state-latest.db ~/.jarvis/hub/state.db
-#   systemctl --user start jarvis-hub
+# (Pre-2026-05-22 a `systemctl --user stop jarvis-hub` was needed
+# around the copy; the hub daemon was removed entirely on that date,
+# so the residual state.db file has no writer now and can be safely
+# overwritten in place.)
 set -euo pipefail
 
 DB="${HOME}/.jarvis/hub/state.db"
