@@ -77,10 +77,10 @@ __all__ = [
 
 
 # ── User-selected speech LLM (tray pick) ─────────────────────────────
-# The tray UI writes the active id to ~/.jarvis/voice-model (or to the
-# hub's state.db). entrypoint() calls `make_speech_llm()` once per job
-# so a /voice-model POST + systemctl restart picks up the new file on
-# the very next dispatch.
+# The tray UI writes the active id to ~/.jarvis/voice-model.
+# entrypoint() calls `make_speech_llm()` once per job so a
+# /voice-model POST + systemctl restart picks up the new file on the
+# very next dispatch.
 SPEECH_MODEL_FILE: Path = Path.home() / ".jarvis" / "voice-model"
 # DEFAULT_SPEECH_MODEL is the model used when ~/.jarvis/voice-model
 # is missing/unreadable. It ALSO defines the "no-pin baseline" for the

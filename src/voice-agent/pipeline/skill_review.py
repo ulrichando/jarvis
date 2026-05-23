@@ -598,12 +598,10 @@ def apply_proposal(p: Proposal) -> ApplyResult:
             )
 
         if p.kind == "memory":
-            # File-backed memory (2026-05-21): write directly to the store
-            # instead of publishing to the hub `events:memory` stream. Map
-            # the proposal category onto a file-memory target — facts ABOUT
-            # the user (category 'user') land in USER.md; everything else
-            # (feedback / project / reference — JARVIS's own working notes)
-            # lands in MEMORY.md.
+            # File-backed memory store. Map the proposal category onto a
+            # file-memory target — facts ABOUT the user (category 'user')
+            # land in USER.md; everything else (feedback / project /
+            # reference — JARVIS's own working notes) lands in MEMORY.md.
             from pipeline import file_memory
 
             content = p.payload["content"]

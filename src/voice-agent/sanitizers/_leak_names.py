@@ -57,7 +57,6 @@ KNOWN_LEAK_NAMES: frozenset[str] = frozenset({
     "launch_app",
     "web_search",
     "read_url",
-    "recall_conversation",
     "remember_this",
     "get_location",
 })
