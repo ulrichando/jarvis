@@ -142,6 +142,97 @@ from audio.apm_reverse_stream import APMDelayEstimator, ReverseRefRingBuffer
 _reverse_estimator = APMDelayEstimator()
 _reverse_ringbuf = ReverseRefRingBuffer(capacity_frames=64)
 
+# ── L3 DTLN neural residual filter (2026-05-22, Phase B Task 10 wiring) ──
+# Module-level lazy singleton. The first call to `_get_dtln()` from the
+# mic callback triggers the load (TFLite interpreters + SHA verification,
+# ~50-100 ms). Subsequent calls return the cached instance. A failed load
+# latches a sentinel so we don't retry-thrash on every mic frame.
+#
+# Operator ceiling: `JARVIS_NEURAL_AEC=0` disables the layer entirely
+# (returns None permanently). Default: enabled.
+#
+# Phase B (THIS COMMIT) does NOT promote the mic-gate — `_HOT_MIC_SET`
+# stays "none" in `aec_health.py`; mic still drops during TTS until the
+# soak validates a set. This commit only makes `dtln.healthy` become
+# True at runtime so telemetry reflects it and the gate is ready to flip.
+# Spec: docs/superpowers/specs/2026-05-20-aec-cascade-completion-design.md §5.2
+_dtln: Optional["DTLNResidualFilter"] = None
+_dtln_load_attempted: bool = False  # sentinel — load only once per process
+
+
+def _get_dtln() -> Optional["DTLNResidualFilter"]:
+    """Lazy module-level accessor for the DTLN residual filter.
+
+    Returns the loaded `DTLNResidualFilter` singleton, or None if disabled
+    via `JARVIS_NEURAL_AEC=0` (operator ceiling) or if the load failed at
+    any point in this process (failure is sticky — we don't retry).
+
+    Safe to call from the realtime mic callback: after the first successful
+    call, this is a single module-level attribute read.
+    """
+    global _dtln, _dtln_load_attempted
+    if os.environ.get("JARVIS_NEURAL_AEC", "1") == "0":
+        return None
+    if _dtln is not None:
+        return _dtln
+    if _dtln_load_attempted:
+        return None  # previous load failed; don't retry
+    _dtln_load_attempted = True
+    try:
+        from audio.dtln_aec import DTLNResidualFilter, LATENCY_BUDGET_MS_DEFAULT
+        _dtln = DTLNResidualFilter()
+        # Cheap log of the live budget so operators see the resolved value.
+        budget = float(os.environ.get(
+            "JARVIS_NEURAL_AEC_LATENCY_BUDGET_MS",
+            str(LATENCY_BUDGET_MS_DEFAULT),
+        ))
+        log.info(f"[dtln] loaded, model=128, budget={budget:.1f}ms")
+        return _dtln
+    except Exception as e:
+        log.warning(f"[dtln] disabled — load failed: {type(e).__name__}: {e}")
+        _dtln = None
+        return None
+
+
+def _apply_dtln_to_mic(
+    frame_48k_int16_bytes: bytes,
+    adc_t: float,
+    ring,
+    profile: str,
+    dtln,
+) -> bytes:
+    """Apply DTLN L3 residual cancellation to a single 48 kHz int16 mic
+    frame; return cleaned bytes (or the input bytes unchanged on any
+    condition that means "skip cleaning").
+
+    Pure helper — no module-level state mutation, no logging side-effects
+    beyond an exception case. Factored out of `_mic_cb` so the integration
+    test can drive it directly without standing up sounddevice/APM/asyncio.
+
+    Skip conditions (return input unchanged):
+      - dtln is None or not healthy
+      - profile != "speakers" (headphones have no echo path)
+      - mic/ref shape mismatch after downsample (no ref playback)
+      - any exception in the inference path (fail-safe — realtime path
+        must never raise)
+    """
+    if dtln is None or not dtln.healthy or profile != "speakers":
+        return frame_48k_int16_bytes
+    try:
+        from scipy.signal import resample_poly as _rp
+        mic48 = np.frombuffer(frame_48k_int16_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+        mic16 = _rp(mic48, up=1, down=3).astype(np.float32)
+        ref16 = ring.read_16k_aligned(adc_t)
+        if mic16.shape != ref16.shape:
+            return frame_48k_int16_bytes
+        cleaned16 = dtln.process(mic16, ref16)
+        cleaned48 = _rp(cleaned16, up=3, down=1).astype(np.float32)
+        pcm48 = np.clip(cleaned48 * 32768.0, -32768, 32767).astype(np.int16)
+        return pcm48.tobytes()
+    except Exception:
+        return frame_48k_int16_bytes
+
+
 # Current output-device profile ("headphones"/"speakers"/"unknown"),
 # updated event-driven by the watch_for_changes callback in main()
 # (NOT polled per mic frame). _mic_cb reads this on the realtime
@@ -781,6 +872,35 @@ async def run_once(shutdown: asyncio.Event) -> None:
                 _apm.process_stream(frame)
             except Exception as e:
                 log.warning(f"[mic] APM process_stream failed: {e}")
+        # ── L3 (DTLN neural residual) ────────────────────────────────────
+        # Run AFTER L2 APM (NS/HPF/AGC + optional AEC), so DTLN sees the
+        # cleanest residual the linear layers leave. Speakers-only —
+        # headphones have no echo path, L3 would just burn CPU.
+        # Fail-safe: any exception drops to passthrough (mic frame unchanged).
+        # Spec §5.2/§6.2.
+        #
+        # Publish format: we keep the existing 48 kHz publish path (option
+        # 2a per the spec) — DTLN runs at 16 kHz, so the helper downsamples
+        # in / upsamples out and re-wraps into an AudioFrame. Switching to
+        # 16 kHz publish (option 2b) is deferred — the gate still flips to
+        # "true" with DTLN active via this path. Spec §5.2 / Task 10 Step 4.
+        _dtln_ref = _get_dtln()
+        if _dtln_ref is not None and _dtln_ref.healthy and _current_profile == "speakers":
+            try:
+                _adc_t = _time.inputBufferAdcTime
+            except Exception:
+                _adc_t = time.monotonic()
+            _orig_bytes = frame.data
+            _cleaned_bytes = _apply_dtln_to_mic(
+                _orig_bytes, _adc_t, _reverse_ringbuf, _current_profile, _dtln_ref,
+            )
+            if _cleaned_bytes is not _orig_bytes:
+                frame = rtc.AudioFrame(
+                    data=_cleaned_bytes,
+                    sample_rate=SAMPLE_RATE,
+                    num_channels=NUM_CHANNELS,
+                    samples_per_channel=len(_cleaned_bytes) // 2,  # int16 → 2 bytes/sample
+                )
         if state.speaking:
             # Agent is rendering audio — force the indicator off so it
             # can transition cleanly into "talking" (blue). Without this
@@ -810,9 +930,10 @@ async def run_once(shutdown: asyncio.Event) -> None:
         # but honored so callers that set it don't regress). Spec §4.2/§6.2.
         if state.speaking and os.environ.get("JARVIS_MIC_DURING_SPEAK", "0") != "1":
             from audio.aec_health import current_echo_defense
+            _gate_dtln = _get_dtln()
             _defense = current_echo_defense(
                 apm_aec=(_apm is not None and _APM_AEC),
-                dtln_healthy=False,   # Phase B (DTLN) sets this; no DTLN yet
+                dtln_healthy=(_gate_dtln is not None and _gate_dtln.healthy),
             )
             if not _should_publish_during_speak(profile=_current_profile, defense=_defense):
                 return
@@ -937,17 +1058,21 @@ async def main() -> None:
 
     def _write_aec_state_snapshot() -> None:
         prof = classify_output_device()
+        # L3 (DTLN neural residual) — telemetry reflects runtime reality:
+        # only `True` when the singleton is loaded AND healthy (latency under
+        # budget + no inference exceptions). When None/unhealthy, both
+        # `l3_active` and `dtln_latency_ms_p95` are off/None so the soak
+        # rollup (bin/jarvis-aec-soak) sees the truthful activation rate.
+        _snap_dtln = _get_dtln()
+        _l3_active = bool(_snap_dtln is not None and _snap_dtln.healthy)
+        _dtln_p95 = _snap_dtln.p95_ms if _l3_active else None
         write_aec_state(
             output_profile=prof,
             l1_active=_aec_health.l1_echo_cancel_active(),
             l2_aec_active=_APM_AEC,
-            # L3 (DTLN neural residual) is DEFERRED — Phase 2 (Tasks 9-11)
-            # not wired. Report False so telemetry reflects reality, not
-            # the config flag. Phase 2's T11 flips this to the real
-            # dtln-loaded-and-running check once the model ships.
-            l3_active=False,
+            l3_active=_l3_active,
             apm_delay_ms_p50=_reverse_estimator.current_delay_ms(),
-            dtln_latency_ms_p95=None,   # filled in Phase 2 (Task 11)
+            dtln_latency_ms_p95=_dtln_p95,
         )
 
     # Seed + maintain the module-level `_current_profile` that _mic_cb
