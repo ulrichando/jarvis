@@ -1,13 +1,19 @@
-"""Honcho cloud memory backend — real implementation via the honcho-ai SDK.
+"""Honcho memory backend — real implementation via the honcho-ai SDK.
 
 Uses the high-level ``honcho.Honcho`` client with its ``.aio`` async view. All
 network calls are async; the runtime in ``pipeline/memory_provider.py`` detects
 this via ``inspect.iscoroutinefunction`` and awaits accordingly.
 
+Cloud vs. self-hosted: defaults to the managed service (api.honcho.dev) when
+only ``HONCHO_API_KEY`` is set. Set ``HONCHO_BASE_URL`` (e.g.
+``http://127.0.0.1:8000``) to point at a self-hosted Honcho server — the
+plugin activates with either credential alone, so a local server with auth
+disabled needs only the base URL.
+
 Layer is inert when:
-  - ``HONCHO_API_KEY`` is unset            → ``is_available()`` returns False
-  - ``honcho-ai`` is not installed         → ``is_available()`` returns False
-  - init has not yet succeeded             → recall/sync no-op safely
+  - BOTH ``HONCHO_API_KEY`` and ``HONCHO_BASE_URL`` are unset → ``is_available()`` returns False
+  - ``honcho-ai`` is not installed                            → ``is_available()`` returns False
+  - init has not yet succeeded                                → recall/sync no-op safely
 
 Never raises into the voice turn — every method guards its own errors and
 returns ``""`` / no-ops on any failure. JARVIS-native naming throughout.
@@ -52,8 +58,15 @@ class HonchoMemoryProvider(MemoryProvider):
     # ------------------------------------------------------------------
 
     def is_available(self) -> bool:
-        """True when HONCHO_API_KEY is set AND the honcho package is importable."""
-        if not os.environ.get("HONCHO_API_KEY", "").strip():
+        """True when at least one credential is set AND the honcho package is importable.
+
+        Either ``HONCHO_API_KEY`` (cloud, api.honcho.dev) or ``HONCHO_BASE_URL``
+        (self-hosted server) is enough — both may be set together for an
+        authenticated self-hosted instance.
+        """
+        api_key = os.environ.get("HONCHO_API_KEY", "").strip()
+        base_url = os.environ.get("HONCHO_BASE_URL", "").strip()
+        if not (api_key or base_url):
             return False
         return importlib.util.find_spec("honcho") is not None
 
@@ -88,12 +101,27 @@ class HonchoMemoryProvider(MemoryProvider):
         try:
             from honcho import Honcho  # checked importable by is_available()
 
-            client = Honcho(api_key=os.environ["HONCHO_API_KEY"].strip())
+            # Build kwargs so api_key / base_url are each optional:
+            # cloud-default when only api_key is set; local self-host when
+            # only base_url is set; both for an authed self-hosted instance.
+            api_key = os.environ.get("HONCHO_API_KEY", "").strip()
+            base_url = os.environ.get("HONCHO_BASE_URL", "").strip()
+            kwargs: dict[str, str] = {}
+            if api_key:
+                kwargs["api_key"] = api_key
+            if base_url:
+                kwargs["base_url"] = base_url
+
+            client = Honcho(**kwargs)
             self._client = client
             self._peer_user = await client.aio.peer("ulrich")
             self._peer_agent = await client.aio.peer("jarvis")
             self._session = await client.aio.session(self._session_id)
-            logger.info("[honcho] session initialized: %s", self._session_id)
+            logger.info(
+                "[honcho] session initialized: %s (target=%s)",
+                self._session_id,
+                base_url or "api.honcho.dev",
+            )
         except Exception as exc:  # noqa: BLE001 — never surface into a turn
             logger.warning("[honcho] init failed — recall/sync will no-op: %s", exc)
             self._client = self._peer_user = self._peer_agent = self._session = None
