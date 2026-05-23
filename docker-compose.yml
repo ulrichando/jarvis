@@ -1,0 +1,77 @@
+# JARVIS — docker compose (voice-agent + livekit-server)
+# ======================================================
+#
+# Brings up the JARVIS brain (voice-agent worker) + the LiveKit SFU
+# they both need. Voice-client (mic/speaker) and the Tauri desktop UI
+# stay on the host — they need /dev/snd + X display, which are clumsy
+# to passthrough.
+#
+# Usage:
+#   # First-time: set UID/GID so bind-mounted ~/.jarvis stays editable on host
+#   echo "JARVIS_UID=$(id -u)"  > .env
+#   echo "JARVIS_GID=$(id -g)" >> .env
+#   docker compose up -d
+#
+#   # Logs
+#   docker compose logs -f voice-agent
+#
+#   # Stop
+#   docker compose down
+#
+# Security notes:
+#   - voice-agent runs as a non-root user (uid 10000 by default; override
+#     via JARVIS_UID). With `user:` set, files in mounted ~/.jarvis are
+#     owned by your host user.
+#   - livekit-server in --dev mode uses devkey/devsecret — DON'T expose
+#     it on a public interface like that. For real deployments, generate
+#     real keys and put them in setup/livekit/livekit-server.yaml.
+#   - voice-agent has NO access to /dev/snd or the host's X display by
+#     default. browser_task runs headlessly; computer_use is unusable in
+#     this container (needs X). See setup/docker/README.md to enable.
+
+services:
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: jarvis-livekit
+    restart: unless-stopped
+    # network_mode: host so the voice-client on the host can reach
+    # ws://127.0.0.1:7880 with no NAT tricks. Tradeoff: doesn't isolate
+    # the port from other host services.
+    network_mode: host
+    command:
+      - --dev
+      - --bind=127.0.0.1
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:7880 || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  voice-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: jarvis-voice-agent
+    container_name: jarvis-voice-agent
+    restart: unless-stopped
+    depends_on:
+      livekit:
+        condition: service_healthy
+    network_mode: host  # talks to livekit at 127.0.0.1:7880
+    user: "${JARVIS_UID:-10000}:${JARVIS_GID:-10000}"
+    volumes:
+      # Persistent state (keys.env, plugins, skills overrides, telemetry).
+      - ~/.jarvis:/opt/jarvis-data
+      # Logs — symlinked to a host path you can `tail -f`.
+      - ~/.local/share/jarvis:/opt/jarvis-state
+    environment:
+      # LiveKit dev defaults (override with real keys for production).
+      - LIVEKIT_URL=ws://127.0.0.1:7880
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-devkey}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-secret}
+      # Voice-agent feature flags (see src/voice-agent/.env.example).
+      - JARVIS_ECHO_AWARE_BARGEIN=1
+      - JARVIS_HOME=/opt/jarvis-data
+    # API keys load from ~/.jarvis/keys.env (bind-mounted at
+    # /opt/jarvis-data/keys.env) — _load_user_keys_env() in jarvis_agent.py
+    # reads it at boot. No need to put secrets in this compose file.
