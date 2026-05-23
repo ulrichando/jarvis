@@ -250,15 +250,12 @@ class VoiceClientHttpApi:
         Distinct from /speak: /speak makes JARVIS read text aloud (TTS
         only, no LLM). /user-input feeds the text into the AgentSession
         as if it had come from STT — JARVIS's LLM processes it,
-        generates a reply, and the reply gets voiced via TTS. Both the
-        user turn and the agent's reply publish to the hub event bus
-        (events:conversation), which the hub daemon consumes into
-        ~/.jarvis/hub/state.db AND fans out via
-        broadcasts:conversation, so a web client subscribed via SSE
-        sees the round trip live.
+        generates a reply, and the reply gets voiced via TTS.
 
-        Used by the web voice-transcript page to let the user follow
-        up via typing without breaking out a mic."""
+        NOTE 2026-05-22: the hub event bus that fanned both turns out
+        to the web transcript over SSE was removed entirely. The reply
+        still gets voiced via TTS, but there is no longer a live web
+        transcript to observe the round trip."""
         room = self.get_room()
         if room is None or not self.state.connected:
             return web.json_response({"error": "not connected"}, status=503)

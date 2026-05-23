@@ -15,7 +15,7 @@ This will:
 1. Clone the repo to `~/Documents/Projects/jarvis` (override with `JARVIS_INSTALL_DIR=…`).
 2. Install dependencies for all four channels.
 3. Build the Tauri desktop binary (`npm run build` + `cargo build --release`).
-4. Install + enable systemd units (`jarvis-voice-agent.service`, `jarvis-hub.service`) — **not started**, so you can configure `.env` first.
+4. Install + enable the `jarvis-voice-agent.service` systemd unit — **not started**, so you can configure `.env` first.
 5. Create a `.env` template at the repo root with empty API-key entries.
 
 Skip a channel: `JARVIS_SKIP_CLI=1` / `JARVIS_SKIP_VOICE=1` / `JARVIS_SKIP_DESKTOP=1` / `JARVIS_SKIP_WEB=1`. Re-running the script is idempotent.
@@ -38,9 +38,9 @@ cd ~/Documents/Projects/jarvis
 | `bun` | CLI + Web dep install | `curl -fsSL https://bun.sh/install \| bash` |
 | `node`, `npm` | Desktop frontend, web | system package manager / nvm |
 | `cargo` (Rust) | Desktop backend | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
-| `systemd --user` | Voice agent + hub services | already present on most Linux distros |
+| `systemd --user` | Voice agent service | already present on most Linux distros |
 
-External services: a LiveKit SFU (the binary is bundled in the repo and `install.sh` registers a user systemd unit `livekit-server.service` + auto-generates `~/.jarvis/livekit-keys.yaml`) and Redis. Redis is system-level — `install.sh` tries `sudo systemctl enable --now redis-server.service`; if your sudo prompts for a password, you'll have to run that one line manually.
+External services: a LiveKit SFU (the binary is bundled in the repo and `install.sh` registers a user systemd unit `livekit-server.service` + auto-generates `~/.jarvis/livekit-keys.yaml`).
 
 ## After install
 
@@ -59,17 +59,11 @@ KIMI_API_KEY=...
 
 All four subprojects read this file (consolidated 2026-05-15 — no more duplicate keys across subproject `.env.local` files). Subproject-specific vars (`LIVEKIT_*`, `NEXT_PUBLIC_*`, `DATABASE_URL`) stay in their respective `src/<sub>/.env.local`. The Tauri tray UI writes user overrides to `~/.jarvis/keys.env`, which always wins.
 
-### 2. Start the SFU, hub, and voice agent
+### 2. Start the SFU and voice agent
 
 ```bash
-# Redis (system-level; one-time, if install.sh couldn't auto-enable it)
-sudo systemctl enable --now redis-server.service
-
 # LiveKit SFU (user-level, bundled binary)
 systemctl --user start livekit-server.service
-
-# JARVIS hub (talks to Redis)
-systemctl --user start jarvis-hub.service
 
 # Voice agent — the brain. Tail logs to confirm it connected.
 systemctl --user start jarvis-voice-agent.service

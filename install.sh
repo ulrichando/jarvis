@@ -116,17 +116,12 @@ install_cli() {
   if [ "${JARVIS_SKIP_CLI:-0}" = "1" ]; then warn "skipping CLI (JARVIS_SKIP_CLI=1)"; return; fi
   section "Installing CLI"
   (cd "$INSTALL_DIR/src/cli" && bun install --silent)
-  # src/hub/ is the TypeScript event-hub SDK used by src/cli/src/bridge/
-  # (which the Tauri tray polls on 127.0.0.1:8765 for status). The
-  # bridge imports from src/hub/client-core.ts, and bun resolves
-  # 'ioredis' walking up from THAT file — so it has to be installed
-  # in src/hub/node_modules, not src/cli/. (Live failure 2026-05-15:
-  # without this, start-desktop.sh's bridge child crashed at boot with
-  # "Cannot find package 'ioredis'", tray stayed red.)
-  if [ -f "$INSTALL_DIR/src/hub/package.json" ]; then
-    (cd "$INSTALL_DIR/src/hub" && bun install --silent)
-    ok "hub TS deps installed (resolves ioredis for src/cli/src/bridge)"
-  fi
+  # NOTE 2026-05-22: the src/hub TypeScript event-hub SDK was removed
+  # with the rest of the hub subsystem. The CLI bridge (src/cli/src/
+  # bridge/) still imports from src/hub/client.ts and will fail to
+  # start on this codepath — accepted by design while src/cli/ remains
+  # off-limits. Restore by either porting the bridge off the hub or
+  # removing the bridge child from start-desktop.sh.
   mkdir -p "$LOCAL_BIN"
   ln -sf "$INSTALL_DIR/bin/jarvis"         "$LOCAL_BIN/jarvis"
   ln -sf "$INSTALL_DIR/bin/jarvis-desktop" "$LOCAL_BIN/jarvis-desktop"
@@ -220,8 +215,10 @@ install_systemd_units() {
     -e "s|/home/[^/]*/jarvis|$INSTALL_DIR|g"
   )
 
-  # Always-on services (voice-agent, voice-client, hub, livekit-server).
-  for src in jarvis-voice-agent.service jarvis-voice-client.service jarvis-hub.service livekit-server.service; do
+  # Always-on services (voice-agent, voice-client, livekit-server).
+  # jarvis-hub.service was retired 2026-05-22 with the rest of the hub
+  # subsystem.
+  for src in jarvis-voice-agent.service jarvis-voice-client.service livekit-server.service; do
     sed "${sed_path_subs[@]}" "$INSTALL_DIR/setup/systemd/$src" > "$USER_SYSTEMD/$src"
     ok "installed unit: $USER_SYSTEMD/$src"
   done
@@ -243,9 +240,9 @@ install_systemd_units() {
   systemctl --user daemon-reload
 
   # Enable always-on services (NOT started — user runs them after
-  # configuring .env). Enable order matters: SFU + Redis first, then
-  # agent + client.
-  for unit in livekit-server.service jarvis-hub.service jarvis-voice-agent.service jarvis-voice-client.service; do
+  # configuring .env). Enable order matters: SFU first, then agent +
+  # client. jarvis-hub.service was retired 2026-05-22.
+  for unit in livekit-server.service jarvis-voice-agent.service jarvis-voice-client.service; do
     systemctl --user enable "$unit" >/dev/null 2>&1 \
       && ok "enabled $unit (NOT started — configure .env first)" \
       || warn "could not enable $unit"
@@ -452,30 +449,12 @@ install_echo_cancel_aec() {
   fi
 }
 
-setup_redis() {
-  # jarvis-hub talks to redis at 127.0.0.1:6379. We use the system
-  # redis-server.service (not a user unit) because it's the conventional
-  # path and your distro almost certainly installs it that way.
-  if ! have redis-server; then
-    warn "redis-server not installed — needed by jarvis-hub.service"
-    sub "Install: sudo apt install redis-server   (Debian/Ubuntu/Kali)"
-    sub "         sudo pacman -S redis            (Arch)"
-    return
-  fi
-  if systemctl is-active --quiet redis-server.service 2>/dev/null; then
-    ok "redis-server.service is already active"
-    return
-  fi
-  # Try to enable + start; if sudo prompts for password and we're in
-  # a non-interactive curl-pipe, this will fail. Falls through to
-  # printed instructions.
-  if sudo -n systemctl enable --now redis-server.service >/dev/null 2>&1; then
-    ok "enabled + started redis-server.service"
-  else
-    warn "could not auto-start redis-server (sudo not NOPASSWD); run manually:"
-    sub "sudo systemctl enable --now redis-server.service"
-  fi
-}
+# setup_redis() — removed 2026-05-22. Redis was used only by the hub
+# subsystem (Redis Streams broker); the hub was retired and nothing
+# else in the voice-agent or web tree talks to Redis. The CLI bridge
+# in src/cli/ still imports ioredis transitively via the orphaned
+# src/hub TS SDK reference — accepted by design (src/cli/ is off-
+# limits).
 
 # ── Computer-use subagent dependencies (optional) ────────────────────────
 check_computer_use_deps() {
@@ -629,12 +608,10 @@ print_summary() {
 
   Next steps:
     1. Edit $INSTALL_DIR/.env and fill in real API keys.
-    2. Start the SFU + hub + voice agent + voice client (in this order —
-       voice-agent requires livekit-server, jarvis-hub requires Redis,
-       voice-client is the desktop's native PortAudio bridge):
-         sudo systemctl enable --now redis-server.service   # if not done
+    2. Start the SFU + voice agent + voice client (in this order —
+       voice-agent requires livekit-server, voice-client is the
+       desktop's native PortAudio bridge):
          systemctl --user start livekit-server.service
-         systemctl --user start jarvis-hub.service
          systemctl --user start jarvis-voice-agent.service
          systemctl --user start jarvis-voice-client.service
        Logs:
@@ -676,7 +653,6 @@ main() {
   install_bubblewrap     # bash-tool sandbox runtime (§P0-SEC-7)
   generate_bridge_token  # ~/.jarvis/local-api-token.env + web .env.local
   setup_livekit_keys
-  setup_redis
   check_computer_use_deps  # optional probes for computer_use subagent
   install_audio_profile
   install_echo_cancel_aec
