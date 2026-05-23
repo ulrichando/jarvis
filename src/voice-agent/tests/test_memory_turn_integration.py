@@ -142,17 +142,19 @@ def test_auto_recall_only_on_recall_queries(monkeypatch):
 
     async def _drive(text):
         # mirror the jarvis_agent.on_user_turn_completed auto-recall snippet
+        # — injected as USER-side context (NOT assistant) so the LLM doesn't
+        # attribute the recalled fact to its own prior reply.
         ctxobj = _FakeChatCtx()
         if mp.active_provider() is not None and turn_router.is_recall_query(text):
             ctx = await mp.maybe_recall_for_turn(text)
             if ctx:
-                ctxobj.add_message(role="assistant", content=f"[memory] {ctx}")
+                ctxobj.add_message(role="user", content=f"[context from memory] {ctx}")
         return ctxobj
 
     # recall-ish query → recall_context invoked + injected
     recall_ctx = asyncio.run(_drive("what did I tell you about my dog"))
     assert any(c[0] == "ctx" for c in f.calls)
-    assert recall_ctx.added == [("assistant", "[memory] RECALLED-CONTEXT")]
+    assert recall_ctx.added == [("user", "[context from memory] RECALLED-CONTEXT")]
 
     # non-recall command → no recall, no injection
     f.calls.clear()

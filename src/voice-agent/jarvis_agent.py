@@ -445,12 +445,14 @@ from pipeline.fast_path_classifier import (
 # self-reinforcing loop where every tool call is leaked as text and
 # nothing actually runs.
 #
-# Two-layer defense (per LiveKit PR #4999 + NousResearch hermes-agent#741
-# patterns): (1) strip on WRITE so the convo db never accepts a leaked
-# pattern going forward, (2) strip on RECALL so any historical leakage
-# never re-enters chat_ctx. Each layer alone is insufficient: the write
-# filter doesn't help old turns; the recall filter doesn't help any
-# downstream readers reading state.db directly.
+# Two-layer defense (per LiveKit PR #4999 + an upstream agent-framework
+# pattern): (1) strip on WRITE so the in-memory chat_ctx and turn
+# telemetry log never accept a leaked pattern going forward, (2) strip
+# on RECALL so any historical leakage already present in chat_ctx is
+# scrubbed before the next LLM call sees it. Each layer alone is
+# insufficient: the write filter doesn't help items already in the
+# context window; the recall filter doesn't stop fresh leaks from
+# being persisted to turn_telemetry.db as if they were clean turns.
 # Tool-leak / recall sanitization moved to pipeline/chat_ctx.py
 # (Step 4 of the 10/10 refactor). Back-compat alias for the pre-write
 # scrubber on assistant turns (lines below). The META/ARCHAIC regexes
@@ -817,8 +819,10 @@ CLI_MODELS: dict[str, dict] = {
 def read_cli_model() -> str:
     """Return the active CLI model ID, or the default if unset/invalid.
 
-    Reads via the unified-settings SDK (state.db) first, falling back
-    to the flat file written by the tray UI."""
+    Reads the flat file written by the tray UI under `~/.jarvis/`
+    (the unified-settings SDK is a thin wrapper over that file —
+    there is no SQLite settings store). Runtime turn telemetry lives
+    separately in `~/.local/share/jarvis/turn_telemetry.db`."""
     name = _read_unified_setting("cli-model", CLI_MODEL_FILE)
     if name in CLI_MODELS:
         return name
@@ -3597,7 +3601,13 @@ class JarvisAgent(Agent):
             if memory_provider.active_provider() is not None and turn_router.is_recall_query(text):
                 ctx = await memory_provider.maybe_recall_for_turn(text)
                 if ctx:
-                    turn_ctx.add_message(role="assistant", content=f"[memory] {ctx}")
+                    # Inject as a USER-side context message — never as
+                    # "assistant", which would make the LLM attribute the
+                    # recalled fact to its own prior reply (false memory of
+                    # having said it). The `[context from memory]` prefix
+                    # signals the source so the model treats it as retrieved
+                    # background, not a fresh user utterance.
+                    turn_ctx.add_message(role="user", content=f"[context from memory] {ctx}")
         except Exception as e:  # noqa: BLE001 — memory must never break a turn
             logger.debug(f"[memory] auto-recall skipped: {e}")
 
@@ -4508,6 +4518,10 @@ def _build_initial_prompt_state(active_speech_id: str) -> dict:
         "instructions_prefix":  instructions_prefix,
         "memory_block":         memory_block,
         "breaker_block":        breaker_block,
+        # Stored separately so mid-session hot-reload (turn_dispatcher
+        # rebuilds when a circuit breaker flips) can re-append the
+        # catalog instead of dropping it on the floor.
+        "skill_catalog_block":  skill_catalog_block,
         "initial_instructions": (
             instructions_prefix
             + memory_block
