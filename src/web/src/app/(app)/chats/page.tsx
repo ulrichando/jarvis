@@ -3,15 +3,10 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import {
-  useVoiceSessions,
-  removeVoiceSession,
-} from "@/hooks/use-voice-sessions";
-import {
   CheckSquare,
   Loader2,
   MessagesSquare,
   MessageSquare,
-  Mic,
   Plus,
   Search,
   Square,
@@ -24,20 +19,16 @@ import { formatRelativeTime, cn } from "@/lib/utils";
 import { MODELS_META } from "@/lib/ai/models-meta";
 import { ProviderDot } from "@/components/layout/provider-dot";
 
+// Voice-session listing removed 2026-05-22 along with the rest of the
+// hub subsystem — voice transcripts no longer persist anywhere, so
+// there is nothing to list. The page is now a typed-chat-only view
+// (Drizzle-backed conversations).
+
 type TypedItem = {
   kind: "typed";
   id: string;
   title: string;
   model: string;
-  updatedAtMs: number;
-  href: string;
-};
-
-type VoiceItem = {
-  kind: "voice";
-  sessionId: string;
-  title: string;
-  turnCount: number;
   updatedAtMs: number;
   href: string;
 };
@@ -48,17 +39,16 @@ function toMs(v: string | number): number {
 
 export default function ChatsPage() {
   const { data: typed = [], isLoading: typedLoading } = useConversations();
-  const voiceSessions = useVoiceSessions(200);
 
   const [filter, setFilter] = useState("");
   const [selectMode, setSelectMode] = useState(false);
-  // Selected ids — typed chats keyed as `t:<id>`, voice as `v:<sessionId>`.
+  // Selected ids — typed chats keyed as `t:<id>`.
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkPending, setBulkPending] = useState(false);
 
   const del = useDeleteConversation();
 
-  // Build the unfiltered base lists once. Filtering applies after so we
+  // Build the unfiltered base list once. Filtering applies after so we
   // keep "0 of 12 match 'foo'" semantics correct.
   const allTyped = useMemo<TypedItem[]>(
     () =>
@@ -75,23 +65,6 @@ export default function ChatsPage() {
     [typed],
   );
 
-  const allVoice = useMemo<VoiceItem[]>(() => {
-    const out: VoiceItem[] = [];
-    for (const s of voiceSessions ?? []) {
-      if (s.turnCount === 0) continue;
-      out.push({
-        kind: "voice",
-        sessionId: s.sessionId,
-        title: s.preview || "(voice conversation)",
-        turnCount: s.turnCount,
-        updatedAtMs: s.lastTs,
-        href: `/chat/voice/${s.sessionId}`,
-      });
-    }
-    out.sort((a, b) => b.updatedAtMs - a.updatedAtMs);
-    return out;
-  }, [voiceSessions]);
-
   const q = filter.trim().toLowerCase();
   const typedItems = useMemo(
     () =>
@@ -104,21 +77,15 @@ export default function ChatsPage() {
         : allTyped,
     [allTyped, q],
   );
-  const voiceItems = useMemo(
-    () => (q ? allVoice.filter((i) => i.title.toLowerCase().includes(q)) : allVoice),
-    [allVoice, q],
+
+  const total = typedItems.length;
+  const allTotal = allTyped.length;
+  const isLoading = typedLoading;
+
+  const visibleKeys = useMemo(
+    () => typedItems.map((i) => `t:${i.id}`),
+    [typedItems],
   );
-
-  const total = typedItems.length + voiceItems.length;
-  const allTotal = allTyped.length + allVoice.length;
-  const isLoading = typedLoading || voiceSessions === undefined;
-
-  const visibleKeys = useMemo(() => {
-    const keys: string[] = [];
-    for (const i of typedItems) keys.push(`t:${i.id}`);
-    for (const i of voiceItems) keys.push(`v:${i.sessionId}`);
-    return keys;
-  }, [typedItems, voiceItems]);
 
   const allVisibleSelected =
     visibleKeys.length > 0 && visibleKeys.every((k) => selected.has(k));
@@ -160,8 +127,6 @@ export default function ChatsPage() {
       for (const key of selected) {
         if (key.startsWith("t:")) {
           await del.mutateAsync(key.slice(2));
-        } else if (key.startsWith("v:")) {
-          await removeVoiceSession(key.slice(2));
         }
       }
       exitSelectMode();
@@ -298,53 +263,28 @@ export default function ChatsPage() {
               No chats match &quot;{filter}&quot;.
             </p>
           ) : (
-            <>
-              <Section
-                icon={<MessageSquare className="size-3.5 text-muted-foreground" />}
-                label="Chat"
-                count={typedItems.length}
-              >
-                {typedItems.length === 0 ? (
-                  <EmptyHint label={q ? "No matches." : "No typed chats yet."} />
-                ) : (
-                  <ul className="space-y-1">
-                    {typedItems.map((item) => (
-                      <li key={item.id}>
-                        <TypedRow
-                          item={item}
-                          selectMode={selectMode}
-                          selected={selected.has(`t:${item.id}`)}
-                          onToggle={() => toggle(`t:${item.id}`)}
-                        />
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </Section>
-
-              <Section
-                icon={<Mic className="size-3.5 text-muted-foreground" />}
-                label="Voice chat"
-                count={voiceItems.length}
-              >
-                {voiceItems.length === 0 ? (
-                  <EmptyHint label={q ? "No matches." : "No voice sessions yet."} />
-                ) : (
-                  <ul className="space-y-1">
-                    {voiceItems.map((item) => (
-                      <li key={item.sessionId}>
-                        <VoiceRow
-                          item={item}
-                          selectMode={selectMode}
-                          selected={selected.has(`v:${item.sessionId}`)}
-                          onToggle={() => toggle(`v:${item.sessionId}`)}
-                        />
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </Section>
-            </>
+            <Section
+              icon={<MessageSquare className="size-3.5 text-muted-foreground" />}
+              label="Chat"
+              count={typedItems.length}
+            >
+              {typedItems.length === 0 ? (
+                <EmptyHint label={q ? "No matches." : "No typed chats yet."} />
+              ) : (
+                <ul className="space-y-1">
+                  {typedItems.map((item) => (
+                    <li key={item.id}>
+                      <TypedRow
+                        item={item}
+                        selectMode={selectMode}
+                        selected={selected.has(`t:${item.id}`)}
+                        onToggle={() => toggle(`t:${item.id}`)}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Section>
           )}
         </div>
       </div>
@@ -478,84 +418,6 @@ function TypedRow({
         pending={del.isPending}
         onClick={handleDelete}
         label={`Delete chat "${item.title}"`}
-      />
-    </div>
-  );
-}
-
-function VoiceRow({
-  item,
-  selectMode,
-  selected,
-  onToggle,
-}: {
-  item: VoiceItem;
-  selectMode: boolean;
-  selected: boolean;
-  onToggle: () => void;
-}) {
-  const [confirming, setConfirming] = useState(false);
-  const [pending, setPending] = useState(false);
-
-  const handleDelete = async (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (!confirming) {
-      setConfirming(true);
-      setTimeout(() => setConfirming(false), 3000);
-      return;
-    }
-    setPending(true);
-    try {
-      await removeVoiceSession(item.sessionId);
-    } finally {
-      setPending(false);
-    }
-  };
-
-  const Inner = (
-    <>
-      <Mic className="size-3.5 shrink-0 text-muted-foreground group-hover:text-primary" />
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-sm">{item.title}</div>
-        <div className="mt-0.5 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-muted-foreground/70">
-          voice · {item.turnCount} turn{item.turnCount === 1 ? "" : "s"}
-        </div>
-      </div>
-      <span className="shrink-0 font-mono text-[11px] uppercase tracking-wider text-muted-foreground/60">
-        {formatRelativeTime(item.updatedAtMs)}
-      </span>
-    </>
-  );
-
-  if (selectMode) {
-    return (
-      <button
-        type="button"
-        onClick={onToggle}
-        className={cn(
-          "group flex w-full items-center gap-3 rounded-md border px-3 py-2.5 text-left transition-colors",
-          selected
-            ? "border-primary/50 bg-primary/5"
-            : "border-transparent hover:border-border/80 hover:bg-card/60",
-        )}
-      >
-        <Checkbox checked={selected} />
-        {Inner}
-      </button>
-    );
-  }
-
-  return (
-    <div className="group flex items-center gap-3 rounded-md border border-transparent px-3 py-2.5 transition-colors hover:border-border/80 hover:bg-card/60">
-      <Link href={item.href} className="flex flex-1 min-w-0 items-center gap-3">
-        {Inner}
-      </Link>
-      <DeleteButton
-        confirming={confirming}
-        pending={pending}
-        onClick={handleDelete}
-        label="Delete voice session"
       />
     </div>
   );

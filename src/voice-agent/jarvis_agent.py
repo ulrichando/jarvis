@@ -223,26 +223,12 @@ resilience.llm_idle_timeout.install()
 import resilience.track_guard as _track_guard
 _track_guard.install()
 
-# ── Hub client (Phase 1: voice publishes conversation events) ─────────
-# Make src/hub importable without polluting sys.path globally. The
-# `logger` global below isn't defined yet at this point in module
-# init, so we use the root logger directly for the bring-up message.
-import sys as _sys
-_HUB_DIR = str(Path(__file__).parent.parent / "hub")
-if _HUB_DIR not in _sys.path:
-    _sys.path.insert(0, _HUB_DIR)
-
-try:
-    from client import HubClient as _HubClient  # noqa: E402
-    _HUB = _HubClient.from_url(source="voice")
-    logging.getLogger("jarvis.hub").info(
-        "voice publisher ready (source='voice')"
-    )
-except Exception as _hub_err:
-    _HUB = None
-    logging.getLogger("jarvis.hub").warning(
-        f"disabled — could not initialize: {_hub_err}"
-    )
+# ── Conversation persistence ──────────────────────────────────────────
+# REMOVED 2026-05-22: the hub subsystem (Redis → ~/.jarvis/hub/state.db
+# daemon) was deleted entirely. Voice turns are no longer published
+# anywhere durable — conversation state is in-memory per session
+# (AgentSession.chat_ctx, trimmed to CTX_MAX_TURNS). turn_telemetry.db
+# (~/.local/share/jarvis/) is a SEPARATE path and is unaffected.
 
 # ── Memory layer (durable user-facts that survive chat deletion) ──────
 # File-backed, deliberate-writes model (swapped from the hub-backed
@@ -1699,116 +1685,44 @@ async def media_control(action: str, player: str = "spotify") -> str:
         return out or f"({player} has no metadata)"
     return f"{action} sent to {player}"
 #
-# Voice persistence path (single source of truth as of Phase 12,
-# 2026-05-03): writes go through HubClient.publish() → Redis stream
-# `events:conversation` → hub daemon → ~/.jarvis/hub/state.db. The
-# old ~/.jarvis/conversations.db direct-write path is removed.
-# CONVO_DB_PATH constant deleted 2026-05-17 per enterprise plan §P0-DATA-9.
-
-# ── Voice persistence path ───────────────────────────────────────────
-# _save_turn() publishes a `conversation.message.created` event via
-# the hub SDK (HubClient at module scope). The hub daemon consumes
-# the event into ~/.jarvis/hub/state.db AND re-broadcasts on
-# `broadcasts:conversation` for SSE subscribers (e.g. the web UI).
+# ── Voice persistence path (DISABLED 2026-05-22) ─────────────────────
+# The hub subsystem that owned durable conversation state (Redis
+# stream `events:conversation` → hub daemon → ~/.jarvis/hub/state.db)
+# was removed entirely. _save_turn() is now a no-op: voice turns live
+# only in the in-session chat_ctx (trimmed to CTX_MAX_TURNS) and are
+# not persisted anywhere. The call site in entrypoint() is unchanged.
+# turn_telemetry.db (~/.local/share/jarvis/) is a SEPARATE path and is
+# still written by pipeline.turn_telemetry.log_turn.
 
 
 def _save_turn(
     session_id: str, role: str, text: str,
     prior_messages: list | None = None,
 ) -> None:
-    """Single-row insert into turns. Swallow errors — losing a log
-    line is better than tearing down a live session.
+    """No-op since the hub removal (2026-05-22). Conversation no longer
+    persists to ~/.jarvis/hub/state.db — turns are in-memory per session.
 
-    `prior_messages` (optional) is the chat-history snapshot from
-    the active session, passed by the conversation_item_added hook
-    so the confab detector can look back for tool evidence."""
-    text = (text or "").strip()
-    if not text:
-        return
-    # Strip leaked structured tool-call text from assistant turns BEFORE
-    # persisting. If the entire turn was just leak, drop it — empty rows
-    # are noise. See _sanitize_leaked_tool_text for rationale.
-    if role == "assistant":
-        cleaned = _sanitize_leaked_tool_text(text)
-        if cleaned != text:
-            logger.info(
-                f"[tool-leak] sanitized assistant turn on save "
-                f"(was {len(text)} chars, now {len(cleaned)})"
-            )
-        if not cleaned:
-            return
-        text = cleaned
-
-        # Confab detector: refuse to save assistant turns that
-        # strongly claim a tool-using success when no tool fired.
-        # Without this, every false-success ("A new tab is open,
-        # sir." with no ext_new_tab call) gets persisted, then the
-        # next session's chat_ctx replay teaches the LLM to
-        # produce more of the same. Pollution loop closed at the
-        # write boundary. Detector is conservative — false negatives
-        # are tolerated; false positives only cost a missing log line.
-        try:
-            from confab_detector import looks_like_confabulation
-            is_confab, reason = looks_like_confabulation(text, prior_messages or [])
-            if is_confab:
-                logger.warning(
-                    f"[confab-detector] dropping assistant turn — {reason}; "
-                    f"text={text[:120]!r}"
-                )
-                return
-        except Exception as e:
-            # NEVER let detection errors break the save path.
-            logger.debug(f"[confab-detector] skipped due to error: {e}")
-    # Schema constrains role to ('user', 'assistant'). Tool calls +
-    # system messages pass through conversation_item_added too, so we
-    # need to map anything unexpected to one of the two legal values
-    # or skip. For now: user/assistant land; tool/system are skipped
-    # — the user-visible transcript doesn't need them.
-    if role not in ("user", "assistant"):
-        return
-    # Take ONE timestamp for the hub event envelope's source_ts.
-    now = time.time()
-
-    # Publish to the event hub. State persistence is owned by the
-    # hub daemon (state.db at ~/.jarvis/hub/state.db). Old direct
-    # write to conversations.db retired 2026-05-03.
-    if _HUB is not None:
-        try:
-            import asyncio
-            coro = _HUB.publish(
-                type="conversation.message.created",
-                session_id=session_id,
-                payload={"role": role, "text": text},
-            )
-            try:
-                asyncio.get_running_loop().create_task(coro)
-            except RuntimeError:
-                # Called outside an async loop (unusual — _save_turn
-                # is normally invoked from the conversation_item_added
-                # hook, which runs on the agent loop).
-                asyncio.run(coro)
-        except Exception as e:
-            logger.warning(f"[hub] publish failed (turn dropped): {e}")
-    else:
-        logger.debug("[hub] skip publish — client unavailable")
+    Signature retained so the conversation_item_added hook call site
+    keeps working without change. `prior_messages` is ignored."""
+    logger.debug("[convo-db] persistence disabled (hub removed)")
 
 
-# ── Recall: read prior turns out of the same conversations.db ─────────
+# ── Recall: prior turns from ~/.jarvis/hub/state.db (read-only) ───────
 #
-# Without this, every job is amnesic — AgentSession's chat_ctx starts
-# empty, so "what did we just talk about?" / "remember that thing
-# yesterday?" hit the LLM with no prior context and it correctly
-# replies "this conversation just started." The DB has every turn
-# already; we just need to surface them.
+# NOTE 2026-05-22: the hub subsystem that USED to populate state.db
+# was removed entirely. The auto-seed loader + recall_conversation
+# tool still read state.db read-only, so any existing DB file lingers
+# usefully; in fresh installs the file never appears and the readers
+# degrade to "no prior conversations recorded yet." Voice turns no
+# longer persist anywhere.
 #
 # Two access paths:
 #   1) Auto-seed: at session start, pull the most recent N turns and
-#      pre-load them into chat_ctx. Covers "what did we discuss" /
-#      "continue from where we left off" without any tool call.
+#      pre-load them into chat_ctx (if state.db exists from before
+#      the hub removal). Returns an empty ctx otherwise.
 #   2) `recall_conversation` @function_tool: lets the LLM substring-
 #      search older turns when the auto-seeded window doesn't cover
-#      what the user's asking about ("remember that Roblox script
-#      from yesterday?").
+#      what the user's asking about.
 #
 # Recent-window size — voice replies want low first-token latency.
 # History on this knob:
@@ -1879,11 +1793,10 @@ async def recall_conversation(query: str) -> str:
     query = (query or "").strip().lower()
     if not query:
         return "No search keyword supplied. Ask the user what to look for."
-    # 2026-05-03: shared conversations.db retired in favor of the hub
-    # state.db (`messages` table, ts in milliseconds). recall_conversation
-    # was missed in that migration and kept reading the empty
-    # ~/.jarvis/conversations.db, returning "no such table: turns" on
-    # every call. Now matches _load_recent_turns above.
+    # Read-only against ~/.jarvis/hub/state.db. The hub daemon that
+    # used to populate this file was removed 2026-05-22; readers
+    # degrade to "no prior conversations recorded yet" when the file
+    # is absent (which it will be on any install after that date).
     state_db = Path.home() / ".jarvis" / "hub" / "state.db"
     if not state_db.exists():
         return "No prior conversations recorded yet. Tell the user this is a fresh session."
@@ -5021,18 +4934,12 @@ async def entrypoint(ctx: JobContext) -> None:
         ],
     )
 
-    # Persist every user/agent turn to ~/.jarvis/conversations.db —
-    # same SQLite file the bridge writes typed-chat turns to, so the
-    # web UI's history sidebar surfaces voice moments too. A new
-    # session_id per job keeps voice conversations grouped correctly
-    # in the UI. Handler is cheap (one INSERT per turn, write → close)
-    # so no need to offload to a thread.
+    # Conversation persistence is DISABLED since 2026-05-22 (hub removal).
+    # _save_turn() is a no-op; voice turns live only in the in-session
+    # chat_ctx (trimmed to CTX_MAX_TURNS) and are not persisted. The
+    # session_id is still generated for log correlation / telemetry only.
     convo_session_id = str(uuid.uuid4())
-    # Persistence path: voice turns flow through HubClient → Redis stream
-    # `events:conversation` → hub daemon → ~/.jarvis/hub/state.db
-    # (since Phase 12, 2026-05-03). The old direct CONVO_DB_PATH write
-    # was retired 2026-05-17 (commit 3363cd3d).
-    logger.info(f"[convo-db] session {convo_session_id} → ~/.jarvis/hub/state.db (via hub)")
+    logger.info(f"[convo-db] session {convo_session_id} — persistence disabled (hub removed)")
 
     # Session-state for the dispatcher prefix. Turn count drives the
     # [Turn N · session Mm] hint that tells the LLM where it is in the
@@ -5656,10 +5563,9 @@ async def entrypoint(ctx: JobContext) -> None:
         active AgentSession activity. Polls up to 3 s for readiness
         before giving up. The agent's existing `conversation_item_added`
         handler picks up both the synthetic user turn AND the assistant
-        reply, publishing both to the hub event bus (events:conversation)
-        — the hub daemon writes them to state.db and re-broadcasts to
-        SSE subscribers, so the web transcript shows the round trip
-        without any extra wiring on this side.
+        reply for in-session chat_ctx accounting; durable persistence
+        was removed with the hub subsystem on 2026-05-22, so neither
+        turn is published anywhere off-process.
         """
         for _ in range(30):
             if session._activity is not None:

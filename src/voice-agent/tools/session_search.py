@@ -1,8 +1,13 @@
 """Session search tool — recall past conversations by keyword.
 
-Queries the JARVIS hub conversation store at ``~/.jarvis/hub/state.db``
-(SQLite WAL).  The hub daemon materialises every voice/web/cli turn there
-via the ``events:conversation`` Redis stream.
+Queries the local conversation store at ``~/.jarvis/hub/state.db``
+(SQLite WAL).
+
+NOTE 2026-05-22: the hub daemon that USED to materialise every
+voice/web/cli turn into this DB was removed entirely. The tool is
+gated by a ``check_fn`` that only registers it when state.db exists,
+so on any install after that date this tool simply doesn't surface
+on the supervisor — residual pre-removal DBs remain queryable.
 
 Data source: ``messages`` table, schema v1+:
     id INTEGER PK, session_id TEXT, source TEXT, role TEXT,

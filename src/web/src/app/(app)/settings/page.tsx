@@ -13,7 +13,10 @@ import { ProvidersSection } from "@/components/settings/providers";
 import { DataSection } from "@/components/settings/data";
 import { AboutSection } from "@/components/settings/about";
 import { JarvisInChromeSection } from "@/components/settings/jarvis-in-chrome";
-import { VoiceAndModelsSection } from "@/components/settings/voice-and-models";
+// VoiceAndModelsSection removed 2026-05-22 along with the rest of the
+// hub subsystem — voice/cli model + TTS provider are now configured
+// via the desktop tray's settings panel, which writes the flat files
+// that pipeline.settings.read_unified_setting reads.
 import { KnowledgeSection } from "@/components/settings/knowledge";
 import { SkillsSection } from "@/components/settings/skills";
 
@@ -28,7 +31,6 @@ type Section =
   | "capabilities"
   | "connectors"
   | "providers"
-  | "voice-and-models"
   | "data"
   | "about"
   | "jarvis-in-chrome";
@@ -41,7 +43,6 @@ const NAV: Array<{ id: Section; label: string }> = [
   { id: "skills", label: "Skills" },
   { id: "connectors", label: "Connectors (MCP)" },
   { id: "providers", label: "Providers" },
-  { id: "voice-and-models", label: "Voice & Models" },
   { id: "capabilities", label: "Capabilities" },
   { id: "usage", label: "Usage" },
   { id: "privacy", label: "Privacy" },
@@ -92,7 +93,6 @@ export default function SettingsPage() {
           {section === "capabilities" && <CapabilitiesSection />}
           {section === "connectors" && <ConnectorsSection />}
           {section === "providers" && <ProvidersSection />}
-          {section === "voice-and-models" && <VoiceAndModelsSection />}
           {section === "data" && <DataSection />}
           {section === "about" && <AboutSection />}
           {section === "jarvis-in-chrome" && <JarvisInChromeSection />}
