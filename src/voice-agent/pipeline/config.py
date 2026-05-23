@@ -54,12 +54,6 @@ __all__ = [
     # Voice / TTS
     "TTS_VOICE", "EDGE_VOICE",
     "VOICE_BANTER", "VOICE_TASK", "VOICE_REASONING", "VOICE_EMOTIONAL",
-    # Subagent enable flags
-    "SUBAGENT_SUMMARIZE", "SUBAGENT_WEATHER", "SUBAGENT_RESEARCHER",
-    "SUBAGENT_VALIDATOR", "SUBAGENT_CODE_REVIEWER",
-    "SUBAGENT_MEMORY_RECALL",
-    # Subagent tool gate
-    "SUBAGENT_TOOL_GATE", "SUBAGENT_NO_TOOL_RETRY_CEILING",
     # Memory
     "MEMORY_CONSOLIDATOR", "MEMORY_CONSOLIDATE_EVERY_N", "MEMORY_TOP_N",
     # Quiet hours
@@ -204,34 +198,6 @@ VOICE_REASONING: str = _str("JARVIS_VOICE_REASONING", "troy")
 VOICE_EMOTIONAL: str = _str("JARVIS_VOICE_EMOTIONAL", "daniel")
 
 
-# ── Subagent enable flags ────────────────────────────────────────────
-# All seven gated off-by-default 2026-05-08 after live capture showed
-# `summarize` hijacking trivial conversation. Re-enable individually
-# as supervisor `delegate` routing is hardened.
-
-SUBAGENT_SUMMARIZE: bool     = _bool("JARVIS_SUBAGENT_SUMMARIZE", False)
-SUBAGENT_WEATHER: bool       = _bool("JARVIS_SUBAGENT_WEATHER", False)
-SUBAGENT_RESEARCHER: bool    = _bool("JARVIS_SUBAGENT_RESEARCHER", False)
-SUBAGENT_VALIDATOR: bool     = _bool("JARVIS_SUBAGENT_VALIDATOR", False)
-SUBAGENT_CODE_REVIEWER: bool = _bool("JARVIS_SUBAGENT_CODE_REVIEWER", False)
-SUBAGENT_MEMORY_RECALL: bool = _bool("JARVIS_SUBAGENT_MEMORY_RECALL", False)
-
-
-# ── Subagent tool gate ────────────────────────────────────────────────
-# RegistrySubagent.task_done refuses to fire without a real tool.
-# Env names use the canonical `JARVIS_SUBAGENT_` prefix (matching the
-# subagents/ package). Pre-2026-05-11 these were `JARVIS_SPECIALIST_*`;
-# the terminology was renamed across the repo so any old systemd unit
-# referencing the old names needs an update.
-
-SUBAGENT_TOOL_GATE: bool            = _bool("JARVIS_SUBAGENT_TOOL_GATE", True)
-SUBAGENT_NO_TOOL_RETRY_CEILING: int = _int("JARVIS_SUBAGENT_NO_TOOL_RETRY_CEILING", 3)
-
-# (Pre-2026-05-11 these had legacy SPECIALIST_* aliases for back-compat
-# with old `from pipeline.config import SPECIALIST_TOOL_GATE` consumers.
-# The terminology rename swept the codebase clean of "specialist", so
-# the aliases are no longer needed — any remaining caller would now use
-# the canonical SUBAGENT_* names below.)
 
 
 # ── Memory ───────────────────────────────────────────────────────────
@@ -331,14 +297,6 @@ class _Config:
     voice_task: str
     voice_reasoning: str
     voice_emotional: str
-    subagent_summarize: bool
-    subagent_weather: bool
-    subagent_researcher: bool
-    subagent_validator: bool
-    subagent_code_reviewer: bool
-    subagent_memory_recall: bool
-    subagent_tool_gate: bool
-    subagent_no_tool_retry_ceiling: int
     memory_consolidator: bool
     memory_consolidate_every_n: int
     memory_top_n: int
@@ -397,14 +355,6 @@ config = _Config(
     voice_task=VOICE_TASK,
     voice_reasoning=VOICE_REASONING,
     voice_emotional=VOICE_EMOTIONAL,
-    subagent_summarize=SUBAGENT_SUMMARIZE,
-    subagent_weather=SUBAGENT_WEATHER,
-    subagent_researcher=SUBAGENT_RESEARCHER,
-    subagent_validator=SUBAGENT_VALIDATOR,
-    subagent_code_reviewer=SUBAGENT_CODE_REVIEWER,
-    subagent_memory_recall=SUBAGENT_MEMORY_RECALL,
-    subagent_tool_gate=SUBAGENT_TOOL_GATE,
-    subagent_no_tool_retry_ceiling=SUBAGENT_NO_TOOL_RETRY_CEILING,
     memory_consolidator=MEMORY_CONSOLIDATOR,
     memory_consolidate_every_n=MEMORY_CONSOLIDATE_EVERY_N,
     memory_top_n=MEMORY_TOP_N,
