@@ -55,6 +55,17 @@ Environment=JARVIS_BROWSER_AUTOLAUNCH_DISABLE=1
 # Spec: docs/superpowers/specs/2026-05-24-jarvis-memory-and-procedure-loop-design.md
 Environment=JARVIS_SAVE_TRIGGER_LIVE=1
 Environment=JARVIS_RECALL_TRIGGER_LIVE=1
+# Spec 2026-05-24 memory + procedure loop, Track 6 (T14 — LAST flip).
+# Enable the autonomous reviewer's apply path. After every turn, the
+# off-latency llama-3.1-8b-instant reviewer reads the turn and may
+# propose kind=skill_create / skill_patch / memory / procedure.
+# Without this flag the proposals are logged + discarded (propose-only);
+# with =1 the apply path actually writes via skills_authoring (skills)
+# or file_memory.add (memory + procedure targets).
+# Spec R2 acceptable-junk-rate is <3/day. If junk exceeds that,
+# revert to =0 (or unset) and restart.
+# Spec: docs/superpowers/specs/2026-05-24-jarvis-memory-and-procedure-loop-design.md
+Environment=JARVIS_SKILL_REVIEW_APPLY=1
 # `start` (not `dev`) — production mode, no file-watch, JSON logs.
 # Uses the venv's interpreter directly so we don't need `source
 # .venv/bin/activate` in the ExecStart.
