@@ -23,9 +23,12 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from pipeline import file_memory
 from tools.registry import registry, tool_error
+
+_PROCEDURE_NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 logger = logging.getLogger("jarvis.memory")
 
@@ -60,8 +63,7 @@ def _handle_memory(args: dict) -> str:
             name = str(args.get("name", "")).strip()
             if not name:
                 return tool_error("name is required for action='add' with target='procedure'. Use kebab-case (e.g. 'deploy-app').", success=False)
-            import re as _re
-            if not _re.match(r"^[a-z0-9]+(-[a-z0-9]+)*$", name):
+            if not _PROCEDURE_NAME_RE.match(name):
                 return tool_error(f"name {name!r} is not kebab-case. Use lowercase letters/digits/dashes only.", success=False)
             # Prepend the name as a heading so the entry is self-describing
             # in the snapshot. The supervisor's prompt sees "## deploy-app\n1. ...".
