@@ -25,27 +25,28 @@ What this manager owns
   falls back to sending the system prompt inline. The audio loop is
   never blocked by a caches-API hiccup.
 
-Stable-prefix limitation (documented for the reader)
-----------------------------------------------------
-This manager caches the system prompt string passed to `__init__` AS IS.
-JARVIS's per-turn system prompt is assembled in jarvis_agent.py as:
+Stable-prefix contract (2026-05-23 refactor)
+--------------------------------------------
+This manager caches the system prompt string passed to `__init__` AS IS
+and expects the CALLER to pass ONLY the stable prefix —
+SOUL + JARVIS_INSTRUCTIONS + skill_catalog_block — never the per-turn
+volatile suffix (runtime_id + memory + breaker). With that contract:
 
-    instructions_prefix + memory_block + breaker_block + skill_catalog_block
+  - Cache provisioning is a one-shot per session (no churn).
+  - Every turn's request references the cached resource via
+    ``cached_content="<name>"`` and passes the volatile suffix as the
+    inline ``system_instruction``.
 
-Only `instructions_prefix` + `skill_catalog_block` are session-stable —
-`memory_block` and `breaker_block` change between turns (memory adds,
-breaker flips). The CALLER is responsible for passing ONLY the stable
-prefix into `system_prompt=` so the cache resource doesn't churn every
-turn. If the full per-turn assembly is passed instead, the manager will
-still work, but every memory/breaker change will require a fresh cache
-create — defeating the latency win.
-
-When the wrapper LLM (`providers.gemini_llm.GeminiCachedLLM`) sees a
-system instruction that DIFFERS from what it cached on first use, it
-falls back to sending that turn's system prompt inline (no cache hit
-for that turn) rather than thrashing the resource. That's the safe
-default until prompt-builder hands us the stable/dynamic split
-explicitly.
+The wrapper LLM (`providers.gemini_llm.GeminiCachedLLM`) honors the
+split contract via `providers.prompt_cache.split_system_text`: when the
+chat_ctx's joined system text starts with the expected stable prefix,
+it splits on that boundary. The wrapper used to compute a hash of the
+full system message and bypass caching whenever the hash drifted from
+the cached version ("drift-aware bypass"); that approach made every
+memory write a cache miss for the rest of the session. The new
+architecture eliminates the drift problem entirely by keeping the
+cached resource bound to the immutable stable prefix and shipping
+volatile changes inline each turn.
 
 Minimum prompt size to be cacheable: 1024 tokens (Flash) or 4096 tokens
 (Pro 2.5) per https://ai.google.dev/gemini-api/docs/caching. JARVIS's

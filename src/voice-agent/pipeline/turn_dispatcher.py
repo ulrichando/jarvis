@@ -152,16 +152,49 @@ def make_dispatch_handler(
             breaker_changed = new_breaker_block != prompt_state["breaker_block"]
 
             if memory_changed or breaker_changed:
-                # Preserve the session-stable skill catalog across hot-reloads.
-                # _build_initial_prompt_state stashes it under
-                # "skill_catalog_block"; default to "" so an older prompt_state
-                # shape (missing the key) still rebuilds cleanly.
-                new_instructions = (
-                    prompt_state["instructions_prefix"]
-                    + new_memory_block
-                    + new_breaker_block
-                    + prompt_state.get("skill_catalog_block", "")
-                )
+                # Stable/volatile cache split (2026-05-23): the supervisor
+                # prompt is assembled as STABLE PREFIX (SOUL +
+                # JARVIS_INSTRUCTIONS + skill_catalog) + marker + VOLATILE
+                # SUFFIX (runtime_id + memory + breaker). The breaker
+                # block lives in the volatile suffix, so we rebuild the
+                # whole volatile half and re-join with the unchanged
+                # stable prefix — this leaves the provider-side cache on
+                # the stable prefix VALID after the hot-reload. Same goes
+                # for memory_changed, though that path is currently
+                # disabled (memory is frozen per session — see the long
+                # comment a few lines up).
+                #
+                # The legacy assembly (instructions_prefix +
+                # memory_block + breaker_block + skill_catalog_block) is
+                # preserved as a fallback for prompt_state shapes that
+                # lack the new stable/volatile keys — older callers /
+                # tests still produce the legacy shape only.
+                stable_prefix = prompt_state.get("stable_prefix")
+                if stable_prefix:
+                    # runtime_id_block is session-stable (set once at
+                    # session start) so we don't recompute it here —
+                    # _build_initial_prompt_state stashed it alongside
+                    # the other keys for exactly this rebuild path.
+                    runtime_id_block = prompt_state.get("runtime_id_block", "")
+                    new_volatile_suffix = (
+                        runtime_id_block + new_memory_block + new_breaker_block
+                    )
+                    from providers.prompt_cache import assemble_with_marker
+                    new_instructions = assemble_with_marker(
+                        stable_prefix, new_volatile_suffix
+                    )
+                else:
+                    # Legacy fallback — preserve the original assembly so
+                    # callers that pre-date the 2026-05-23 refactor (and
+                    # therefore don't populate stable_prefix) still get a
+                    # correctly-rebuilt prompt.
+                    new_volatile_suffix = ""  # unused in legacy path
+                    new_instructions = (
+                        prompt_state["instructions_prefix"]
+                        + new_memory_block
+                        + new_breaker_block
+                        + prompt_state.get("skill_catalog_block", "")
+                    )
 
                 async def _push_instructions():
                     try:
@@ -189,6 +222,12 @@ def make_dispatch_handler(
                     prompt_state["memory_block"] = new_memory_block
                 if breaker_changed:
                     prompt_state["breaker_block"] = new_breaker_block
+                # Keep the consolidated volatile_suffix in sync so the
+                # next hot-reload tick reads the up-to-date head. The
+                # stable_prefix never changes mid-session, so it doesn't
+                # need any upkeep here.
+                if "stable_prefix" in prompt_state and new_volatile_suffix:
+                    prompt_state["volatile_suffix"] = new_volatile_suffix
         except Exception as e:
             logger.debug(f"[prompt-refresh] block check skipped: {e}")
 

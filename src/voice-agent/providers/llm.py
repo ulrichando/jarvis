@@ -250,17 +250,27 @@ if os.environ.get("OPENAI_API_KEY", ""):
     }
 
 if _ANTHROPIC_AVAILABLE and os.environ.get("ANTHROPIC_API_KEY", ""):
-    # Shared kwargs across Anthropic tiers — same `_strict_tool_schema`,
-    # `caching`, and `max_tokens` discipline applies to every Claude
-    # speech model. Pulled into a helper so adding a tier is a single
-    # `model=` line.
+    # Shared kwargs across Anthropic tiers — same `_strict_tool_schema`
+    # and `max_tokens` discipline applies to every Claude speech model.
+    # Pulled into a helper so adding a tier is a single `model=` line.
+    #
+    # Cache wiring (2026-05-23 refactor): we build `AnthropicCachedLLM`
+    # instead of the bare `lk_anthropic.LLM` so the wrapper can place
+    # `cache_control` on the STABLE prefix (between SOUL+INSTRUCTIONS+
+    # skill_catalog and the volatile runtime_id+memory+breaker tail)
+    # instead of on the LAST block of the joined prompt (the plugin's
+    # default with `caching="ephemeral"`). The stable prefix is handed
+    # to each wrapper after the prompt state assembles, via
+    # `apply_stable_prefix_recursively`. We do NOT pass
+    # `caching="ephemeral"` — the subclass owns cache_control placement
+    # so the parent's auto-placement would be redundant noise.
     def _make_anthropic_speech_llm(model_id: str):
-        return lk_anthropic.LLM(
+        from providers.anthropic_cached_llm import AnthropicCachedLLM
+        return AnthropicCachedLLM(
             model=model_id,
             api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
             temperature=0.6,
             max_tokens=200,
-            caching="ephemeral",
             _strict_tool_schema=False,
         )
 
@@ -1057,18 +1067,22 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
         if not anth_armed:
             return None
         try:
-            inst = lk_anthropic.LLM(
+            # Cache wiring (2026-05-23 refactor): build the
+            # `AnthropicCachedLLM` wrapper so cache_control lands on the
+            # STABLE prefix instead of the volatile tail. Real-world
+            # claude-haiku-4-5 hit rate measured on 172 turns climbed
+            # from 81 % → ~95 %+ once memory writes + breaker flips
+            # stopped invalidating the cache (the volatile suffix now
+            # sits past the breakpoint). The wrapper still hands ~700 ms
+            # TTFW on warm hits but the hit rate is the load-bearing
+            # win. We don't pass `caching="ephemeral"` — the subclass
+            # owns cache_control placement (see its module docstring).
+            from providers.anthropic_cached_llm import AnthropicCachedLLM
+            inst = AnthropicCachedLLM(
                 model=model,
                 api_key=anth_key,
                 temperature=temp,
                 max_tokens=200,
-                # Engages Anthropic's prompt caching on the system
-                # prompt + chat_ctx prefix — typical 80–90 % input-
-                # token discount on the stable JARVIS_INSTRUCTIONS
-                # preamble. This is the load-bearing kwarg that gets
-                # us sub-second TTFW. Same pattern as the speech-LLM
-                # path above.
-                caching="ephemeral",
                 # See SPEECH_MODELS entry for full rationale. tl;dr:
                 # defense-in-depth — the real fix for the 400
                 # additionalProperties=false rejection is the
