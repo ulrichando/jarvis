@@ -1,13 +1,16 @@
 """File-backed curated memory — durable user-facts that survive chat deletion.
 
-Two stores live under ``get_jarvis_home()/"memories"``:
+Three stores live under ``get_jarvis_home()/"memories"``:
 
-  - ``MEMORY.md`` — JARVIS's own notes: environment facts, project
+  - ``MEMORY.md``     — JARVIS's own notes: environment facts, project
     conventions, tool quirks, lessons learned.
-  - ``USER.md``   — who Ulrich is: role, preferences, communication
+  - ``USER.md``       — who Ulrich is: role, preferences, communication
     style, workflow habits, pet peeves.
+  - ``PROCEDURES.md`` — named multi-step processes Ulrich asked to save
+    (e.g. ``deploy-app``, ``morning-routine``) — invoked by name and
+    replayed step-by-step (8000 char cap, larger than MEMORY/USER).
 
-Both are injected into the supervisor's system prompt as a FROZEN snapshot
+All are injected into the supervisor's system prompt as a FROZEN snapshot
 captured once at session start (``snapshot_for_prompt``). Mid-session writes
 update the files on disk immediately (durable) but do NOT change the system
 prompt — this keeps the prompt prefix stable for the whole session so the
