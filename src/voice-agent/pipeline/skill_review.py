@@ -4,7 +4,7 @@
 A headless aux-LLM reviews a complex/"hard" turn snapshot pulled from
 ``~/.local/share/jarvis/turn_telemetry.db`` and may PROPOSE saving or
 patching a SKILL, or saving a durable MEMORY. Output is restricted to
-exactly those three move types; the engine has no other side effects.
+exactly those four move types; the engine has no other side effects.
 
 WHY THIS IS A REBUILD (not a port)
 ----------------------------------
@@ -71,6 +71,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -215,9 +216,10 @@ def select_review_candidates(limit: int = 10) -> list[TurnSnapshot]:
     return out
 
 
-# ── Proposal types (output-restricted to these three) ────────────────
-PROPOSAL_KINDS = ("skill_create", "skill_patch", "memory")
+# ── Proposal types (output-restricted to these four) ─────────────────
+PROPOSAL_KINDS = ("skill_create", "skill_patch", "memory", "procedure")
 _VALID_MEMORY_CATEGORIES = ("user", "feedback", "project", "reference")
+_PROCEDURE_NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 _MAX_CONTENT_CHARS = 500
 
 
@@ -376,6 +378,18 @@ def _validate_payload(kind: str, payload: dict) -> dict | None:
         if payload.get("replace_all"):
             cleaned["replace_all"] = True
         return cleaned
+
+    if kind == "procedure":
+        name = str(payload.get("name", "")).strip()
+        if not name or not _PROCEDURE_NAME_RE.match(name):
+            return None
+        steps = payload.get("steps")
+        if not isinstance(steps, list) or not steps:
+            return None
+        cleaned_steps = [str(s).strip() for s in steps if str(s).strip()]
+        if not cleaned_steps:
+            return None
+        return {"name": name, "steps": cleaned_steps}
 
     return None
 
@@ -620,6 +634,27 @@ def apply_proposal(p: Proposal) -> ApplyResult:
                 f"memory.add target={target}"
                 if ok
                 else str((res or {}).get("error", "memory.add failed"))
+            )
+            return ApplyResult(proposal=p, ok=ok, detail=detail)
+
+        if p.kind == "procedure":
+            # File-backed procedure store. Body is a markdown-shaped
+            # numbered list with the name as a heading — readable when
+            # injected into the supervisor's system prompt.
+            from pipeline import file_memory
+
+            name = p.payload["name"]
+            steps = p.payload["steps"]
+            body = (
+                f"## {name}\n"
+                + "\n".join(f"{i+1}. {s}" for i, s in enumerate(steps))
+            )
+            res = file_memory.add("procedure", body)
+            ok = bool(isinstance(res, dict) and res.get("success"))
+            detail = (
+                f"procedure.add name={name}"
+                if ok
+                else str((res or {}).get("error", "procedure.add failed"))
             )
             return ApplyResult(proposal=p, ok=ok, detail=detail)
 
