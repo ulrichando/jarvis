@@ -333,13 +333,17 @@ def test_apply_stable_prefix_recursively_walks_dispatcher(monkeypatch):
     stable = "STABLE PREFIX " * 100
 
     n = apply_stable_prefix_recursively(d, stable)
-    # 4 routes × 1 Anthropic primary each = 4 wrappers updated.
-    # (The Groq + DeepSeek rungs don't expose set_stable_prefix, so they
+    # 2026-05-24: 4→8 route expansion (Task 4 of pre-TTS confab gate).
+    # Anthropic primaries: BANTER + TASK (legacy) + REASONING + EMOTIONAL
+    # + TASK_DESKTOP + TASK_BROWSER + TASK_FILES + TASK_OTHER = 8.
+    # TASK_CODE's primary is DeepSeek (no AnthropicCachedLLM wrapper).
+    # (Groq + DeepSeek rungs don't expose set_stable_prefix, so they
     # silently skip — they auto-cache on prefix-match anyway.)
-    assert n == 4, f"expected 4 wrappers updated, got {n}"
+    assert n == 8, f"expected 8 wrappers updated, got {n}"
 
     # And every Anthropic primary now holds the prefix.
-    for route in ("BANTER", "TASK", "REASONING", "EMOTIONAL"):
+    for route in ("BANTER", "TASK", "REASONING", "EMOTIONAL",
+                  "TASK_DESKTOP", "TASK_BROWSER", "TASK_FILES", "TASK_OTHER"):
         inner = d.pick(route)
         rungs = (
             getattr(inner, "_llm_instances", None)
