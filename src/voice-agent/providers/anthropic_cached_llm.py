@@ -58,6 +58,7 @@ plumbing, stream construction). Subclassing keeps us small and clear.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Optional, cast
 
 import anthropic
@@ -82,6 +83,22 @@ logger = logging.getLogger("jarvis.anthropic_cached_llm")
 
 
 __all__ = ["AnthropicCachedLLM"]
+
+
+# Anthropic's default ephemeral TTL is 5 minutes. JARVIS conversation
+# gaps regularly exceed 5min (user steps away, picks back up), so the
+# stable system prefix re-misses on the first turn after every pause.
+# 1h extends the window past those natural pauses for the cost of a 2×
+# cache-write multiplier (vs 1.25× for 5m). Far fewer write events per
+# day net-out cheaper for active use; revert via env if needed.
+# Read at runtime so the override doesn't need a code change.
+def _stable_cache_control() -> dict[str, Any]:
+    ttl = os.environ.get(
+        "JARVIS_ANTHROPIC_STABLE_CACHE_TTL", "1h"
+    ).strip().lower()
+    if ttl == "5m":
+        return CACHE_CONTROL_EPHEMERAL
+    return {"type": "ephemeral", "ttl": "1h"}
 
 
 class AnthropicCachedLLM(lk_anthropic.LLM):
@@ -232,7 +249,7 @@ class AnthropicCachedLLM(lk_anthropic.LLM):
         # for the user) — wrappers that drop caching for tools can be
         # added later if profile data shows it matters.
         if extra.get("tools"):
-            extra["tools"][-1]["cache_control"] = CACHE_CONTROL_EPHEMERAL
+            extra["tools"][-1]["cache_control"] = _stable_cache_control()
 
         # Chat-history caching mirrors the plugin's last-assistant +
         # last-user-before-last-assistant placement so multi-turn
@@ -298,7 +315,7 @@ class AnthropicCachedLLM(lk_anthropic.LLM):
         stable, volatile = split_system_text(joined, self._stable_prefix or None)
         if stable and volatile:
             stable_block = anthropic.types.TextBlockParam(
-                text=stable, type="text", cache_control=CACHE_CONTROL_EPHEMERAL
+                text=stable, type="text", cache_control=_stable_cache_control()
             )
             volatile_block = anthropic.types.TextBlockParam(
                 text=volatile, type="text"
@@ -313,5 +330,5 @@ class AnthropicCachedLLM(lk_anthropic.LLM):
             for text in system_messages
         ]
         if blocks:
-            blocks[-1]["cache_control"] = CACHE_CONTROL_EPHEMERAL  # type: ignore
+            blocks[-1]["cache_control"] = _stable_cache_control()  # type: ignore
         return blocks
