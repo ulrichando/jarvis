@@ -112,6 +112,10 @@ class VoiceClientHttpApi:
         self.get_screen_share = get_screen_share
         self.restart_agent_unit = restart_agent_unit
         self.log = log
+        # SSE subscribers — see /events route + enqueue_event below.
+        # Each entry is an asyncio.Queue owned by one live HTTP response
+        # writer. Modified only from the asyncio loop (no locking needed).
+        self._sse_subscribers: set[asyncio.Queue] = set()
 
     # ── Server bring-up ────────────────────────────────────────────
 
@@ -130,6 +134,7 @@ class VoiceClientHttpApi:
         app.router.add_post("/voice-model",  self.speech_model)
         app.router.add_get("/tts-provider",  self.tts_provider)
         app.router.add_post("/tts-provider", self.tts_provider)
+        app.router.add_get("/events",      self.events)
         app.router.add_route("OPTIONS", "/{tail:.*}", self.cors)
         return app
 
@@ -478,6 +483,67 @@ class VoiceClientHttpApi:
             )
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500, headers=cors)
+
+    async def events(self, req: web.Request) -> web.StreamResponse:
+        """GET /events → Server-Sent Events stream of voice-agent events.
+
+        Today the only published event type is `assistant_says` (each
+        assistant turn emits one). Subscribers register an
+        asyncio.Queue; on disconnect, the queue is removed.
+
+        Frames are `data: {json}\\n\\n` per SSE spec. Per-subscriber
+        queue is bounded to 64 events; on overflow `enqueue_event`
+        drops oldest.
+        """
+        resp = web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "Access-Control-Allow-Origin": "*",
+            },
+        )
+        await resp.prepare(req)
+        queue: asyncio.Queue = asyncio.Queue(maxsize=64)
+        self._sse_subscribers.add(queue)
+        self.log.info(f"[events] subscriber connected ({len(self._sse_subscribers)} total)")
+        try:
+            while True:
+                event = await queue.get()
+                line = f"data: {json.dumps(event)}\n\n".encode("utf-8")
+                await resp.write(line)
+        except (asyncio.CancelledError, ConnectionResetError):
+            pass
+        except Exception as e:
+            self.log.warning(f"[events] subscriber write failed: {type(e).__name__}: {e}")
+        finally:
+            self._sse_subscribers.discard(queue)
+            self.log.info(f"[events] subscriber disconnected ({len(self._sse_subscribers)} remaining)")
+        return resp
+
+    def enqueue_event(self, event: dict) -> None:
+        """Broadcast a JSON event to every live SSE subscriber.
+
+        Safe to call from any callback running on the asyncio event
+        loop (sync, non-blocking). On QueueFull, drops the oldest item
+        and enqueues the new one so a stuck panel doesn't pin memory.
+
+        Called from jarvis_voice_client.py's data_received hook when an
+        `assistant_says` packet arrives from the agent participant.
+        """
+        # Snapshot the subscriber set — enqueue can race with /events'
+        # finally block, and iterating a mutating set raises.
+        for q in list(self._sse_subscribers):
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                try:
+                    q.get_nowait()
+                    q.put_nowait(event)
+                except asyncio.QueueEmpty:
+                    # Concurrently drained — give up; next event will retry.
+                    pass
 
     async def cors(self, _: web.Request) -> web.Response:
         """OPTIONS preflight for any /... route."""
