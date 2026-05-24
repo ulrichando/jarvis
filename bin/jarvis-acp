@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Launch the JARVIS ACP server — stdio JSON-RPC for IDE clients (Zed, ...).
+#
+# Spawned by the IDE per the user's agent_servers settings; talks ACP
+# over stdin/stdout. Logging goes to stderr so the protocol channel stays
+# clean.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VENV_PY="$ROOT/src/voice-agent/.venv/bin/python"
+
+if [[ ! -x "$VENV_PY" ]]; then
+  echo "[jarvis-acp] voice-agent venv missing at $VENV_PY" >&2
+  echo "[jarvis-acp] create it with: python3 -m venv $ROOT/src/voice-agent/.venv && \\" >&2
+  echo "             $ROOT/src/voice-agent/.venv/bin/pip install -r $ROOT/src/voice-agent/requirements.txt" >&2
+  exit 1
+fi
+
+cd "$ROOT/src/voice-agent"
+exec "$VENV_PY" -m acp_adapter "$@"
