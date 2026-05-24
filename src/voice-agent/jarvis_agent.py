@@ -5887,6 +5887,38 @@ async def entrypoint(ctx: JobContext) -> None:
 
     asyncio.create_task(_cron_pending_watcher())
 
+    # Spec B (Plane 3) — pattern detector + spawner background loop.
+    # Reads turn_telemetry.db every N seconds (default 30 min), emits
+    # intents to ~/.jarvis/auto-mods/queue.jsonl on threshold crossings,
+    # then optionally spawns the wrapper subprocess if JARVIS_AUTOMOD_SPAWN_LIVE=1.
+    # Both no-op when their respective env gates aren't set.
+    if os.environ.get("JARVIS_AUTOMOD_ENABLED", "0") == "1":
+        try:
+            from pipeline.automod import patterns as _automod_patterns
+            from pipeline.automod import spawner as _automod_spawner
+
+            async def _automod_loop():
+                interval = int(os.environ.get(
+                    "JARVIS_AUTOMOD_PATTERN_INTERVAL_S", "1800"
+                ))
+                while True:
+                    try:
+                        _automod_patterns.scan_and_emit()
+                        await _automod_spawner.drain_queue()
+                    except Exception as _e:  # noqa: BLE001
+                        logger.warning("[automod] loop iteration failed: %s", _e)
+                    await asyncio.sleep(interval)
+
+            asyncio.create_task(_automod_loop(), name="automod-pattern-loop")
+            logger.info(
+                "[automod] pattern detector + spawner scheduled "
+                "(interval=%ss; spawn_live=%s)",
+                os.environ.get("JARVIS_AUTOMOD_PATTERN_INTERVAL_S", "1800"),
+                os.environ.get("JARVIS_AUTOMOD_SPAWN_LIVE", "0"),
+            )
+        except Exception as _e:  # noqa: BLE001
+            logger.warning("[automod] scheduler wiring failed: %s", _e)
+
     # Spawn the background watchers — each is a fire-and-forget task
     # whose lifetime is bound to the job. Extracted 2026-05-10 (Step
     # 8b of the 10/10 refactor). The log-analyzer watcher was retired
