@@ -264,6 +264,29 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
                     conn.execute(f"ALTER TABLE turns ADD COLUMN {col} {decl}")
                 except sqlite3.OperationalError:
                     pass
+        # 2026-05-24 — memory + procedure loop observability columns (Spec A).
+        # save_trigger_fired / recall_trigger_fired: was the regex trigger in
+        # jarvis_agent.on_user_turn_completed hit on this turn (1) or not (0)?
+        # procedure_match_offered: did Track 2.5 append a "Want me to keep
+        # these steps as 'X'?" offer to this reply?
+        # procedure_match_executed: did the user confirm and procedure apply?
+        # tool_call_count / had_tool_error: feed the Track 2.5 success-gate
+        # check on the next autonomous review pass.
+        # Spec: docs/superpowers/specs/2026-05-24-jarvis-memory-and-procedure-loop-design.md
+        memory_loop_cols = {r[1] for r in conn.execute("PRAGMA table_info(turns)")}
+        for col, decl in (
+            ("save_trigger_fired",       "INTEGER DEFAULT 0"),
+            ("recall_trigger_fired",     "INTEGER DEFAULT 0"),
+            ("procedure_match_offered",  "INTEGER DEFAULT 0"),
+            ("procedure_match_executed", "INTEGER DEFAULT 0"),
+            ("tool_call_count",          "INTEGER DEFAULT 0"),
+            ("had_tool_error",           "INTEGER DEFAULT 0"),
+        ):
+            if col not in memory_loop_cols:
+                try:
+                    conn.execute(f"ALTER TABLE turns ADD COLUMN {col} {decl}")
+                except sqlite3.OperationalError:
+                    pass
         conn.execute("CREATE INDEX IF NOT EXISTS idx_turns_subagent ON turns(subagent)")
 
 
