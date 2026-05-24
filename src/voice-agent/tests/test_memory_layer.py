@@ -62,7 +62,7 @@ def test_schema_shape():
     assert schema["name"] == "memory"
     props = schema["parameters"]["properties"]
     assert set(props["action"]["enum"]) == {"add", "replace", "remove", "read"}
-    assert set(props["target"]["enum"]) == {"memory", "user"}
+    assert set(props["target"]["enum"]) == {"memory", "user", "procedure"}
     assert schema["parameters"]["required"] == ["action", "target"]
 
 
