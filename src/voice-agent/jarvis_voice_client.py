@@ -361,20 +361,25 @@ async def _restart_agent_unit() -> None:
     get cut short when self dies; that's expected and harmless,
     the tray's optimistic label update already covered the UX gap.
     """
+    # Routed through pipeline.service_control so Linux behavior is
+    # preserved (systemctl --user restart) and Windows can swap in a
+    # real nssm/sc.exe backend in Phase 3 without touching this call
+    # site. The agent-then-client ordering + 4 s gap is the same as
+    # before; we just no longer get the agent restart's stderr (the
+    # helper silences both streams). systemd's journal still has it.
+    from pipeline.service_control import (
+        restart_service_async,
+        ServiceControlError,
+    )
     try:
-        agent_proc = await asyncio.create_subprocess_exec(
-            "systemctl", "--user", "restart", "jarvis-voice-agent",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, err = await agent_proc.communicate()
-        if agent_proc.returncode != 0:
-            log.warning(
-                f"agent restart returned {agent_proc.returncode}: "
-                f"{err.decode('utf-8', 'ignore').strip()}"
-            )
+        rc = await restart_service_async("jarvis-voice-agent")
+        if rc not in (None, 0):
+            log.warning(f"agent restart returned {rc}")
             return
         log.info("agent unit restart kicked, waiting before bouncing self")
+    except ServiceControlError as e:
+        log.warning(f"could not restart agent — service control unavailable: {e}")
+        return
     except Exception as e:
         log.warning(f"could not restart agent: {e}")
         return
@@ -385,9 +390,9 @@ async def _restart_agent_unit() -> None:
     await asyncio.sleep(4)
 
     try:
-        await asyncio.create_subprocess_exec(
-            "systemctl", "--user", "restart", "jarvis-voice-client",
-        )
+        await restart_service_async("jarvis-voice-client")
+    except ServiceControlError as e:
+        log.warning(f"could not restart self — service control unavailable: {e}")
     except Exception as e:
         log.warning(f"could not restart self: {e}")
 @dataclass
@@ -990,8 +995,23 @@ async def run_once(shutdown: asyncio.Event) -> None:
 async def main() -> None:
     shutdown = asyncio.Event()
     loop = asyncio.get_running_loop()
+    # asyncio.add_signal_handler raises NotImplementedError on Windows
+    # — both SIGTERM and SIGINT are POSIX concepts that the Windows
+    # IOCP event loop can't route to a coroutine. On Linux this is the
+    # canonical clean-shutdown path; on Windows we fall back to letting
+    # the default KeyboardInterrupt/process termination propagate
+    # naturally (Phase 3 will wire a proper Windows shutdown path via
+    # SetConsoleCtrlHandler or sys.exit-on-CTRL_C_EVENT).
     for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, shutdown.set)
+        try:
+            loop.add_signal_handler(sig, shutdown.set)  # windows-footgun: ok (wrapped in try/except NotImplementedError just below)
+        except NotImplementedError:
+            log.debug(
+                "add_signal_handler(%s) unsupported on this platform "
+                "(Windows asyncio doesn't route POSIX signals); "
+                "falling back to default termination",
+                sig,
+            )
 
     # Stall instrumentation (2026-05-04 / 2026-05-05).
     #

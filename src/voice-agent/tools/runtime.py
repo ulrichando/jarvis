@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import platform
+import subprocess
 from pathlib import Path
 
 __all__ = [
@@ -28,6 +29,7 @@ __all__ = [
     "get_subprocess_home",
     "display_jarvis_home",
     "is_container",
+    "detached_popen_kwargs",
 ]
 
 
@@ -158,6 +160,38 @@ def display_jarvis_home() -> str:
         return str(Path("~") / rel)
     except ValueError:
         return str(home)
+
+
+def detached_popen_kwargs() -> dict:
+    """Return subprocess.Popen kwargs that detach the child into its own session/group.
+
+    The voice-agent's ``launch_app`` GUI launcher needs the child process to
+    SURVIVE a worker bounce — without detachment, restarting the agent
+    immediately kills any browsers / editors the user just asked JARVIS to
+    open. On Linux the canonical way is ``setsid`` (or the equivalent
+    ``start_new_session=True`` Popen kwarg, which calls ``setsid`` under the
+    hood). On Windows the equivalent is the ``CREATE_NEW_PROCESS_GROUP``
+    plus ``DETACHED_PROCESS`` creationflags.
+
+    Returns a kwargs dict suitable for ``**`` splatting into
+    ``subprocess.Popen`` / ``asyncio.create_subprocess_exec``:
+
+      Linux/macOS:  ``{"start_new_session": True}``
+      Windows:      ``{"creationflags": CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS}``
+
+    Both branches achieve "child outlives parent" semantics; the platform-
+    specific flag names are the only difference.
+    """
+    if _is_windows():
+        # Both constants are stdlib on Windows; gate on _is_windows() so the
+        # attribute access is only evaluated on the platform where it exists.
+        return {
+            "creationflags": (
+                getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                | getattr(subprocess, "DETACHED_PROCESS", 0)
+            )
+        }
+    return {"start_new_session": True}
 
 
 def is_container() -> bool:
