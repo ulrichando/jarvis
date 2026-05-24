@@ -1,215 +1,383 @@
-"""Symbol search across the repo via `git grep` — voice-adapted
-LSP-lite.
+"""Code search tool — find symbol definitions and references in source code.
 
-The full LSP surface (jump-to-def cross-module, type info at
-position, find-implementations, call hierarchies) requires a
-running language server. For voice JARVIS, the subset that actually
-shows up in user asks is just two things:
+Provides two registered tools:
 
-  1. "Where is symbol X defined?"  → `find_definitions(symbol)`
-  2. "Where is X used / called?"   → `find_references(symbol)`
+  ``find_definitions`` — locate where a function, class, or variable is
+      defined in the codebase.  Uses ripgrep (rg) with language-aware
+      patterns; falls back to grep when rg is absent.
 
-Both use `git grep` rather than ripgrep (not installed system-wide
-on this Kali host) or a real language server (heavy, slow, and
-language-specific). Tradeoffs:
+  ``code_search`` — general-purpose pattern search over source files with
+      context lines.  Equivalent to ``search_files`` but scoped to code
+      files by default and optimised for symbol / API discovery.
 
-  + git grep is always available where git is. No system install.
-  + Respects .gitignore — no node_modules / .venv noise.
-  + Sub-50ms on the JARVIS repo (~10K files).
-  + Single regex covers Python + TS + JS + Rust idioms.
-  - Definition heuristic is REGEX, not semantic. Doesn't catch
-    metaclass tricks, factory-returned classes, runtime-attached
-    methods. For a voice "where is X" ask, that's acceptable.
-  - Cross-module rename / type-info-at-position are NOT supported.
+Both tools are gated behind a check_fn that returns False when neither
+``rg`` nor ``grep`` is available (practically always True on Linux).
 
-Output is capped at 50 hits per call. If a symbol is super common,
-the supervisor should narrow via `path_filter` (a git pathspec like
-`'*.py'` or `'src/voice-agent/**'`).
+No LSP, no index, no network.  Subprocess-only; results are capped so the
+voice supervisor's context window stays manageable.
 """
 from __future__ import annotations
 
-import asyncio
+import json
 import logging
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Optional
 
-from livekit.agents.llm import function_tool
+from .registry import registry, tool_error
+
+logger = logging.getLogger(__name__)
+
+# Hard cap on returned lines to keep voice responses compact.
+_MAX_RESULT_LINES = 60
+_MAX_RESULT_CHARS = 8_000
+_DEFAULT_CONTEXT = 2   # lines of context around each match
+
+# Source-file glob used by code_search when no file_glob is given.
+_CODE_GLOB = "*.{py,js,ts,jsx,tsx,rs,go,java,c,cpp,h,hpp,sh,rb,lua}"
+
+# Patterns for common definition forms, keyed by language/paradigm.
+# These are used when rg supports --type (which it always does).
+_DEF_PATTERNS: dict[str, str] = {
+    "python": r"^(def |class |async def )",
+    "js":     r"^(function |class |const |let |var |export )",
+    "rust":   r"^(fn |pub fn |pub struct |struct |impl |trait )",
+    "go":     r"^(func |type )",
+    "java":   r"^(public |private |protected |class |interface |enum )",
+}
 
 
-__all__ = ["find_definitions", "find_references"]
+def _rg_available() -> bool:
+    return shutil.which("rg") is not None
 
 
-_logger = logging.getLogger("jarvis.tools.code_search")
+def _grep_available() -> bool:
+    return shutil.which("grep") is not None
 
 
-_MAX_HITS = 50
-
-# Symbol must be a plain identifier — letters, digits, underscores.
-# Rejects `Foo.bar`, `Foo::bar`, hyphens, regex metacharacters, and
-# anything that could let an injection through `git grep -P <pattern>`.
-_VALID_SYMBOL = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+def _check_code_search() -> bool:
+    """Tool is available when rg or grep can be found."""
+    return _rg_available() or _grep_available()
 
 
-# Definition pattern: line begins with one of the language idioms
-# that introduces a name. Both Python and TS/JS are covered in one
-# regex. SYMBOL is the literal identifier (already validated).
-#
-# Python: `def NAME`, `async def NAME`, `class NAME`, top-level
-#   `NAME =` (module-level constants like _MAX_OUTPUT_LINES = 500).
-# TS/JS: `function NAME`, `class NAME`, `interface NAME`, `type
-#   NAME =`, `const NAME =`, `let NAME =`, `var NAME =`, `enum NAME`.
-#   Each may be prefixed by `export` (and `export default`).
-_DEFINITION_PATTERN_TPL = (
-    # Python idioms
-    r"^\s*("
-    r"(?:async\s+)?def\s+SYMBOL\b"
-    r"|class\s+SYMBOL\b"
-    r"|SYMBOL\s*[:=]"
-    r")"
-    r"|"
-    # JS/TS idioms
-    r"^\s*(?:export\s+(?:default\s+)?)?(?:async\s+)?"
-    r"(?:function|class|interface|type|const|let|var|enum)\s+SYMBOL\b"
+def _cap_output(text: str) -> str:
+    """Trim output to _MAX_RESULT_CHARS, adding a hint if truncated."""
+    if len(text) <= _MAX_RESULT_CHARS:
+        return text
+    return text[:_MAX_RESULT_CHARS] + "\n… [output truncated — narrow the search pattern or path]"
+
+
+def _run_rg(
+    pattern: str,
+    path: str,
+    *,
+    context: int = 0,
+    file_glob: Optional[str] = None,
+    fixed_strings: bool = False,
+    max_count: int = _MAX_RESULT_LINES,
+    extra_args: list[str] | None = None,
+) -> tuple[str, int]:
+    """Run ripgrep and return (stdout, returncode).  Never raises."""
+    cmd = ["rg", "--no-heading", "--line-number", "--color=never"]
+    if fixed_strings:
+        cmd.append("--fixed-strings")
+    if context > 0:
+        cmd += ["-C", str(context)]
+    if file_glob:
+        cmd += ["--glob", file_glob]
+    cmd += ["--max-count", str(max_count)]
+    if extra_args:
+        cmd.extend(extra_args)
+    cmd += [pattern, path]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            cwd=None,
+        )
+        return result.stdout, result.returncode
+    except subprocess.TimeoutExpired:
+        return "[rg timed out after 15s — narrow the path or pattern]", 1
+    except FileNotFoundError:
+        return "", 127
+
+
+def _run_grep(
+    pattern: str,
+    path: str,
+    *,
+    context: int = 0,
+    file_glob: Optional[str] = None,
+    fixed_strings: bool = False,
+    max_count: int = _MAX_RESULT_LINES,
+    recursive: bool = True,
+) -> tuple[str, int]:
+    """Fallback grep when rg is not available."""
+    cmd = ["grep", "--line-number", "--color=never"]
+    if recursive:
+        cmd.append("-r")
+    if fixed_strings:
+        cmd.append("-F")
+    else:
+        cmd.append("-E")
+    if context > 0:
+        cmd += ["-C", str(context)]
+    cmd += ["-m", str(max_count)]
+    cmd += [pattern, path]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        return result.stdout, result.returncode
+    except subprocess.TimeoutExpired:
+        return "[grep timed out after 15s — narrow the path or pattern]", 1
+    except FileNotFoundError:
+        return "", 127
+
+
+def _search(
+    pattern: str,
+    path: str,
+    context: int,
+    file_glob: Optional[str],
+    fixed_strings: bool,
+    max_lines: int,
+) -> str:
+    """Run rg (or grep fallback) and return raw text output."""
+    if _rg_available():
+        out, rc = _run_rg(
+            pattern, path,
+            context=context,
+            file_glob=file_glob,
+            fixed_strings=fixed_strings,
+            max_count=max_lines,
+        )
+    else:
+        out, rc = _run_grep(
+            pattern, path,
+            context=context,
+            file_glob=file_glob,
+            fixed_strings=fixed_strings,
+            max_count=max_lines,
+        )
+    # rc 0 = matches found, 1 = no matches, 2+ = error
+    if rc == 127:
+        return "[neither rg nor grep is available]"
+    if rc >= 2:
+        return f"[search error (exit {rc})]"
+    return out
+
+
+# ---------------------------------------------------------------------------
+# find_definitions handler
+# ---------------------------------------------------------------------------
+
+# Language-aware definition pattern built by prepending the symbol name.
+# Matches: `def symbol(`, `class Symbol:`, `const symbol =`, `fn symbol(`, etc.
+_DEF_PATTERN_TEMPLATE = (
+    r"(\bdef {sym}\b|\bclass {sym}\b|\basync def {sym}\b"
+    r"|\bfn {sym}\b|\bfunc {sym}\b"
+    r"|\bconst {sym}\b|\blet {sym}\b|\bvar {sym}\b"
+    r"|\binterface {sym}\b|\btrait {sym}\b|\bstruct {sym}\b"
+    r"|\btype {sym}\b|\benum {sym}\b"
+    r"|\bpub fn {sym}\b|\bpub struct {sym}\b|\bpub trait {sym}\b)"
 )
 
 
-async def _git(*args: str, cwd: Optional[str] = None) -> tuple[int, str, str]:
-    """Run `git <args>` and return (rc, stdout, stderr) as text."""
-    proc = await asyncio.create_subprocess_exec(
-        "git", *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=cwd,
-    )
-    out_b, err_b = await proc.communicate()
-    return (
-        proc.returncode or 0,
-        out_b.decode("utf-8", "replace"),
-        err_b.decode("utf-8", "replace"),
-    )
+def _handle_find_definitions(args: dict) -> str:
+    symbol: str = (args.get("symbol") or "").strip()
+    if not symbol:
+        return tool_error("symbol is required")
+
+    path: str = (args.get("path") or ".").strip() or "."
+    file_glob: Optional[str] = (args.get("file_glob") or "").strip() or None
+    context: int = max(0, min(int(args.get("context", _DEFAULT_CONTEXT) or _DEFAULT_CONTEXT), 10))
+
+    # Escape the symbol for use in the regex.
+    escaped = re.escape(symbol)
+    pattern = _DEF_PATTERN_TEMPLATE.format(sym=escaped)
+
+    raw = _search(pattern, path, context, file_glob, fixed_strings=False, max_lines=_MAX_RESULT_LINES)
+    raw = _cap_output(raw)
+
+    if not raw.strip():
+        return json.dumps({
+            "success": True,
+            "symbol": symbol,
+            "path": path,
+            "matches": [],
+            "hint": (
+                f"No definition found for {symbol!r} in {path!r}. "
+                "Try a broader path or check the symbol name."
+            ),
+        }, ensure_ascii=False)
+
+    lines = raw.strip().splitlines()
+    return json.dumps({
+        "success": True,
+        "symbol": symbol,
+        "path": path,
+        "match_count": len([l for l in lines if l and not l.startswith("--")]),
+        "output": raw.strip(),
+    }, ensure_ascii=False)
 
 
-async def _repo_root(start: Optional[str] = None) -> Optional[Path]:
-    rc, out, _ = await _git("rev-parse", "--show-toplevel", cwd=start)
-    if rc != 0:
-        return None
-    text = out.strip()
-    return Path(text) if text else None
+# ---------------------------------------------------------------------------
+# code_search handler
+# ---------------------------------------------------------------------------
+
+def _handle_code_search(args: dict) -> str:
+    pattern: str = (args.get("pattern") or "").strip()
+    if not pattern:
+        return tool_error("pattern is required")
+
+    path: str = (args.get("path") or ".").strip() or "."
+    file_glob: Optional[str] = (args.get("file_glob") or "").strip() or None
+    context: int = max(0, min(int(args.get("context", _DEFAULT_CONTEXT) or _DEFAULT_CONTEXT), 10))
+    fixed: bool = bool(args.get("fixed_strings", False))
+
+    # Default glob: code files only, when no explicit glob given.
+    if not file_glob:
+        file_glob = _CODE_GLOB
+
+    raw = _search(pattern, path, context, file_glob, fixed_strings=fixed, max_lines=_MAX_RESULT_LINES)
+    raw = _cap_output(raw)
+
+    if not raw.strip():
+        return json.dumps({
+            "success": True,
+            "pattern": pattern,
+            "path": path,
+            "matches": [],
+            "hint": (
+                f"No matches for {pattern!r} in code files under {path!r}. "
+                "Try a different pattern or set file_glob to broaden the search."
+            ),
+        }, ensure_ascii=False)
+
+    lines = [l for l in raw.strip().splitlines() if l and not l.startswith("--")]
+    return json.dumps({
+        "success": True,
+        "pattern": pattern,
+        "path": path,
+        "file_glob": file_glob,
+        "match_count": len(lines),
+        "output": raw.strip(),
+    }, ensure_ascii=False)
 
 
-def _validate_symbol(symbol: str) -> Optional[str]:
-    if not symbol or not symbol.strip():
-        return "Symbol is empty. Pass an identifier name."
-    if not _VALID_SYMBOL.match(symbol.strip()):
-        return (
-            f"Invalid symbol {symbol!r}. Must be a plain identifier "
-            f"(letters/digits/underscores, no dots / colons / hyphens)."
-        )
-    return None
+# ---------------------------------------------------------------------------
+# Schemas + registration
+# ---------------------------------------------------------------------------
 
+_FIND_DEFINITIONS_SCHEMA = {
+    "name": "find_definitions",
+    "description": (
+        "Find where a function, class, variable, or type is DEFINED in the codebase. "
+        "Uses ripgrep with a language-aware pattern covering Python def/class, "
+        "JS const/let/function, Rust fn/struct/trait, Go func/type, etc.\n\n"
+        "Examples:\n"
+        "  find_definitions(symbol=\"compute_confab_check_state\")  — find the Python function\n"
+        "  find_definitions(symbol=\"JarvisAgent\", path=\"src/voice-agent\")  — scoped to a dir\n"
+        "  find_definitions(symbol=\"AudioProcessor\", file_glob=\"*.ts\")  — TS only\n\n"
+        "Returns matching lines with context. For broad symbol search, use code_search instead."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "symbol": {
+                "type": "string",
+                "description": "Name of the symbol to find the definition of (exact name, case-sensitive).",
+            },
+            "path": {
+                "type": "string",
+                "description": "Directory or file to search in (default: current working directory).",
+                "default": ".",
+            },
+            "file_glob": {
+                "type": "string",
+                "description": "Optional glob to restrict search (e.g. '*.py', '*.ts'). Default: all code files.",
+            },
+            "context": {
+                "type": "integer",
+                "description": "Lines of context to include around each match (default 2, max 10).",
+                "default": _DEFAULT_CONTEXT,
+            },
+        },
+        "required": ["symbol"],
+    },
+}
 
-def _summarize(hits: list[str], cap: int = _MAX_HITS) -> str:
-    """Format hits for voice + supervisor reading. Strips noise lines."""
-    cleaned = [ln for ln in hits if ln.strip()]
-    if not cleaned:
-        return "(no matches)"
-    if len(cleaned) > cap:
-        head = "\n".join(cleaned[:cap])
-        return (
-            f"{len(cleaned)} matches (showing first {cap}, narrow with path_filter):\n"
-            f"{head}"
-        )
-    return f"{len(cleaned)} match(es):\n" + "\n".join(cleaned)
+_CODE_SEARCH_SCHEMA = {
+    "name": "code_search",
+    "description": (
+        "Search source code files for a pattern (regex or literal string). "
+        "Defaults to code file types; use file_glob to restrict or broaden.\n\n"
+        "Examples:\n"
+        "  code_search(pattern=\"import asyncio\")  — find imports\n"
+        "  code_search(pattern=\"JARVIS_HOME\", path=\"src/voice-agent\")  — env var usage\n"
+        "  code_search(pattern=\"def.*session\", file_glob=\"*.py\")  — regex\n"
+        "  code_search(pattern=\"TODO\", fixed_strings=true)  — literal string\n\n"
+        "For finding where a symbol is DEFINED, prefer find_definitions."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "pattern": {
+                "type": "string",
+                "description": "Search pattern (regex by default, or literal string with fixed_strings=true).",
+            },
+            "path": {
+                "type": "string",
+                "description": "Directory or file to search in (default: current working directory).",
+                "default": ".",
+            },
+            "file_glob": {
+                "type": "string",
+                "description": (
+                    "Glob to filter files (e.g. '*.py', '*.ts'). "
+                    f"Defaults to code extensions: {_CODE_GLOB}"
+                ),
+            },
+            "context": {
+                "type": "integer",
+                "description": "Lines of context around each match (default 2, max 10).",
+                "default": _DEFAULT_CONTEXT,
+            },
+            "fixed_strings": {
+                "type": "boolean",
+                "description": "Treat pattern as a literal string instead of regex (default false).",
+                "default": False,
+            },
+        },
+        "required": ["pattern"],
+    },
+}
 
+registry.register(
+    name="find_definitions",
+    schema=_FIND_DEFINITIONS_SCHEMA,
+    handler=_handle_find_definitions,
+    toolset="code_search",
+    check_fn=_check_code_search,
+    is_async=False,
+    emoji="🔎",
+)
 
-# ── @function_tool surface ──────────────────────────────────────
-
-
-@function_tool
-async def find_definitions(symbol: str, path_filter: str = "") -> str:
-    """Find where a Python/TS/JS symbol is defined.
-
-    Searches the whole git-tracked repo (ignoring .gitignore'd dirs)
-    for lines that introduce the symbol: `def NAME`, `async def NAME`,
-    `class NAME`, top-level `NAME =`, `function NAME`, `interface
-    NAME`, `type NAME =`, `const NAME =`, etc.
-
-    Use for voice asks like "where is RuleStore defined?" /
-    "where's the bash tool?". Faster than asking the user to grep,
-    works without a real LSP.
-
-    Args:
-        symbol:      A plain identifier (letters / digits /
-                     underscores). Dots, colons, and hyphens are
-                     rejected — split into halves and search both.
-        path_filter: Optional git pathspec to narrow the search,
-                     e.g. `'*.py'`, `'src/voice-agent/**'`,
-                     `':!tests/'`. Empty → whole repo.
-
-    Returns:
-        Match count + up to 50 hits with `file:line: content`,
-        same format as `git grep -n`.
-    """
-    err = _validate_symbol(symbol)
-    if err is not None:
-        return err
-    name = symbol.strip()
-
-    root = await _repo_root()
-    if root is None:
-        return "Not inside a git repository."
-
-    pattern = _DEFINITION_PATTERN_TPL.replace("SYMBOL", re.escape(name))
-    args = ["grep", "-n", "-P", pattern]
-    if path_filter:
-        args.append("--")
-        args.append(path_filter)
-
-    rc, out, err_text = await _git(*args, cwd=str(root))
-    # git grep exits 1 when there are no matches — that's expected.
-    if rc not in (0, 1):
-        return f"git grep failed: {err_text.strip() or 'unknown error'}"
-
-    return _summarize(out.splitlines())
-
-
-@function_tool
-async def find_references(symbol: str, path_filter: str = "") -> str:
-    """Find every word-boundary occurrence of a symbol across the
-    repo.
-
-    `find_definitions` catches where a name is INTRODUCED;
-    `find_references` catches every USE. Same git pathspec filter.
-    Word-boundary so `cat` doesn't match inside `concatenate`.
-
-    Use for "what calls _check_destructive?" / "where is RuleStore
-    used?".
-
-    Args:
-        symbol:      A plain identifier. Same constraints as
-                     find_definitions.
-        path_filter: Optional git pathspec.
-
-    Returns:
-        Match count + up to 50 hits.
-    """
-    err = _validate_symbol(symbol)
-    if err is not None:
-        return err
-    name = symbol.strip()
-
-    root = await _repo_root()
-    if root is None:
-        return "Not inside a git repository."
-
-    args = ["grep", "-n", "-w", name]
-    if path_filter:
-        args.append("--")
-        args.append(path_filter)
-
-    rc, out, err_text = await _git(*args, cwd=str(root))
-    if rc not in (0, 1):
-        return f"git grep failed: {err_text.strip() or 'unknown error'}"
-
-    return _summarize(out.splitlines())
+registry.register(
+    name="code_search",
+    schema=_CODE_SEARCH_SCHEMA,
+    handler=_handle_code_search,
+    toolset="code_search",
+    check_fn=_check_code_search,
+    is_async=False,
+    emoji="🔎",
+)

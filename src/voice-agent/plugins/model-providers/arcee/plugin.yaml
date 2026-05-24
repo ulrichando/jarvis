@@ -1,0 +1,4 @@
+name: arcee-provider
+version: "1.0.0"
+description: "Arcee AI"
+kind: model-provider

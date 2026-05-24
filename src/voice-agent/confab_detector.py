@@ -1,15 +1,21 @@
 """Write-time confabulation detector.
 
-The recurring failure: assistant turn says "A new tab is open, sir."
-when no tool actually fired. The hallucination gets persisted to
-~/.jarvis/conversations.db, then next session's recall mechanism
-seeds chat_ctx with it, and the LLM pattern-matches against the
-past lie to produce fresh ones. Self-reinforcing pollution.
+The recurring failure: assistant turn says "A new tab is open."
+when no tool actually fired. The hallucination would otherwise be
+appended to the in-memory `chat_ctx` (and logged as a successful
+turn to `~/.local/share/jarvis/turn_telemetry.db`), so subsequent
+LLM calls within the same session see the lie in their history and
+pattern-match against it to produce fresh confabulations.
+Self-reinforcing pollution inside the session — and the telemetry
+row falsely marks the turn as a clean success during soak analysis.
 
-Truncating the recall window or scrubbing the DB are tactical
-patches — they reset the contamination but don't stop new pollution
-from entering. This module is the structural fix: refuse to save
-assistant turns that look like confabulations in the first place.
+(The legacy persistent store `~/.jarvis/conversations.db` was
+retired in Phase 12 — see voice_client_watchdog.py:204 — so there
+is no longer a cross-session recall feed from a confab to scrub.)
+
+This module is the structural fix: refuse to save assistant turns
+that look like confabulations in the first place, before they
+contaminate either chat_ctx or the telemetry log.
 
 ═══ Design constraints (in order of importance) ═══
 
@@ -90,28 +96,11 @@ _STRONG_CLAIMS = [
 ]
 
 
-# Save-claim shape detector. Used ONLY to gate the extraction-evidence
-# path: a successful auto-extractor write within the last 30 s grants
-# evidence credit to "saved/remembered/noted" replies, but NOT to
-# unrelated success claims that happen to land in the same window.
-# Without this gate, a confab like "Done, sir, opened a tab" 25 s after
-# a successful extraction would slip through the detector. See
-# `looks_like_confabulation` for where this is consulted.
-_SAVE_CLAIM_RE = re.compile(
-    r"\b(?:"
-    r"saved"                                         # "saved", "It's saved as..."
-    r"|noted"                                        # "Noted, sir."
-    r"|remember(?:ed|ing|s)?"                        # "Remembered.", "I'll remember..."
-    r"|i'?ll\s+remember"
-    r"|got\s+(?:it|that)"                            # "Got it." / "Got that down."
-    r"|added\s+(?:that\s+|it\s+|this\s+)?to\s+memory"
-    r"|stored\s+(?:that|it|this)"                    # "Stored that."
-    r"|(?:made|jotted|wrote|took)\s+(?:a\s+)?note"   # "Made a note."
-    r"|(?:keep|kept|keeping)\s+(?:that\s+|it\s+)?in\s+mind"
-    r"|filed\s+(?:that|it|this)\s+away"
-    r")\b",
-    re.I,
-)
+# (The save-claim shape detector `_SAVE_CLAIM_RE` was removed 2026-05-21
+# alongside the auto-extractor evidence path. With file-backed memory, a
+# "saved/remembered" claim is backed by the `memory` tool_result that
+# `_has_tool_evidence` already detects — there's no off-band extractor
+# write to bridge, so no save-specific evidence gate is needed.)
 
 
 # Phrases that NEGATE a success claim. If any of these appear in the
@@ -167,21 +156,6 @@ def _name_implies_handoff(name: str) -> bool:
     if not name:
         return False
     return name.startswith("transfer_to_") or name == "delegate"
-
-
-def _has_recent_extraction_evidence() -> bool:
-    """True if the auto-memory extractor wrote a fact within the last
-    ~30s. Treated as tool-equivalent evidence so a "saved, sir" reply
-    from the supervisor isn't dropped while the extractor handled the
-    actual write off-band. Live capture 2026-05-08 13:18: two
-    consecutive "Lizzie saved" replies were dropped because the
-    supervisor never called remember() — extractor did it for us.
-    """
-    try:
-        from pipeline.memory_extractor import has_recent_extraction_evidence
-        return has_recent_extraction_evidence()
-    except Exception:
-        return False
 
 
 def has_recent_tool_evidence(
@@ -358,17 +332,16 @@ def looks_like_confabulation(
         return False, ""
 
     # Strong claim found. Now check for tool evidence.
+    #
+    # NOTE on "saved/remembered" claims (file-backed memory model,
+    # 2026-05-21): the supervisor now writes memory via the `memory` tool,
+    # which lands a structured tool_result in chat_ctx. That tool_result IS
+    # the evidence — `_has_tool_evidence` detects it (role:'tool' /
+    # FunctionCallOutput / non-handoff tool_call), so no separate
+    # extraction-evidence path is needed. The retired auto-extractor (which
+    # wrote off-band with no tool call in chat_ctx) had its own evidence
+    # bridge; that bridge was removed alongside the extractor.
     if prior_messages and _has_tool_evidence(prior_messages):
-        return False, ""
-
-    # Auto-extractor evidence path: treat a recent successful memory
-    # write as tool-equivalent evidence for "saved/remembered" claims.
-    # Without this, every memory turn voiced "saved, sir" gets dropped
-    # because the supervisor never calls remember() in the v2 design
-    # (extractor owns the write). Gated by _SAVE_CLAIM_RE so unrelated
-    # confabs ("Browser opened, sir.") landing in the 30 s window
-    # don't get free evidence credit just because the extractor fired.
-    if _SAVE_CLAIM_RE.search(text) and _has_recent_extraction_evidence():
         return False, ""
 
     # Strong claim AND no tool evidence → confabulation.

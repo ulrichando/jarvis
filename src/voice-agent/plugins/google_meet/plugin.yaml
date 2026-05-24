@@ -1,0 +1,20 @@
+# Google Meet — join a call, transcribe live captions, follow up.
+# Ported as a gated-inert tool surface: the 5-tool shape is present, but the
+# heavy meeting backend (headless-Chromium caption bot, remote-node registry,
+# realtime audio bridge, realtime LLM client) is NOT bundled in this build.
+# Tools gate on JARVIS_MEET_ENABLED=1 + importable Playwright (Linux/macOS);
+# default OFF, so they stay off the LLM surface on a normal voice session.
+name: google_meet
+version: 0.2.0
+description: Join a Google Meet call, transcribe live captions, and follow up. Explicit-by-design — only joins meet.google.com URLs passed in. Tool surface ported gated-inert; meeting backend not bundled in this build.
+kind: standalone
+platforms:
+  - linux
+  - macos
+provides_tools:
+  - meet_join
+  - meet_leave
+  - meet_status
+  - meet_transcript
+  - meet_say
+requires_env: []

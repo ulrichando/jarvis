@@ -1,5 +1,5 @@
 [Unit]
-Description=JARVIS — rotate voice-agent.log + hub.log when over 50 MB or 1 day
+Description=JARVIS — rotate voice-agent.log when over 50 MB or 1 day
 Documentation=file:%h/Documents/Projects/jarvis/scripts/rotate-jarvis-logs.sh
 After=network.target
 

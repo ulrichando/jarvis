@@ -10,12 +10,10 @@ Pipeline (each FINAL transcript runs through):
 
   1. Stamp `turn_start_monotonic` + `turn_user_text` on session for
      downstream TTFW telemetry.
-  2. Recall-query check — force `tool_choice` to
-     `recall_conversation` if the transcript is recall-shaped;
-     otherwise reset.
-  3. Hot-reload prompt state — re-read learned_rules.md if mtime
-     changed, rebuild memory block + breaker block. If anything
-     changed, call `agent.update_instructions()` off-band.
+  2. Reset any per-turn forced `tool_choice` so a prior turn's
+     override doesn't leak (LiveKit issue #4671).
+  3. Hot-reload prompt state — rebuild memory block + breaker block;
+     if either changed, call `agent.update_instructions()` off-band.
   4. Compute speech-rate (from VAD stamps) + RMS dB (from acoustic
      tap) + detect_emotion → stamp `_jarvis_emotion`.
   5. Early route guess (regex-only) → stamp `_jarvis_route` so
@@ -35,9 +33,8 @@ Pipeline (each FINAL transcript runs through):
 
 State management:
   * `prompt_state: dict` — shared with `_build_initial_prompt_state`.
-    The handler reads `instructions_prefix`, `learned_rules_block`
-    and mutates `rules_mtime`, `last_memory_block`,
-    `last_breaker_block` in place.
+    The handler reads `instructions_prefix` and mutates
+    `memory_block` / `breaker_block` in place.
   * Everything else is either a session attribute mutation or a
     `bg_tasks` set spawn.
 
@@ -68,14 +65,12 @@ from pipeline.fast_path_classifier import (
     BANTER_FAST_PATH_RE,
     REASONING_FAST_PATH_RE,
 )
-from pipeline.prompt_builder import LEARNED_RULES_PATH, load_learned_rules
 from pipeline.turn_router import (
     AudioMeta,
     classify_turn,
     compute_interrupt_tuning,
     compute_speech_rate,
     detect_emotion,
-    is_recall_query,
     update_baseline,
 )
 
@@ -126,59 +121,84 @@ def make_dispatch_handler(
         except Exception:
             pass
 
-        # Layer 2 (Phase 3 of memory-layer fix) — when the user
-        # transcript is recall-shaped, force tool_choice on
-        # recall_conversation so the supervisor LLM can't reject the
-        # call via metacognition-conservatism. CRITICAL: explicitly
-        # reset tool_choice to None on every non-recall turn (LiveKit
-        # issue #4671: tool_choice persists across turns).
+        # Reset any prior turn's forced tool_choice. LiveKit issue #4671:
+        # tool_choice persists across turns on the AgentSession activity
+        # unless explicitly cleared. Nothing currently sets a forced
+        # choice here, but the consumer in jarvis_agent.py still forwards
+        # whatever this attribute holds, so we keep it clean.
         try:
-            if is_recall_query(transcript):
-                session._jarvis_force_tool_choice = {
-                    "type": "function",
-                    "function": {"name": "recall_conversation"},
-                }
-                logger.info(
-                    f"[recall-route] forcing recall_conversation for {transcript[:60]!r}"
-                )
-            else:
-                session._jarvis_force_tool_choice = None
-        except Exception as e:
-            logger.debug(f"[recall-route] check skipped: {e}")
+            session._jarvis_force_tool_choice = None
+        except Exception:
+            pass
 
-        # Hot-reload learned rules if learned_rules.md changed since
-        # last check. Without this, mid-session edits to the rules
-        # file only take effect on the next agent restart.
+        # Hot-reload the breaker block if it changed since last check, so
+        # provider-degradation transitions take effect without a restart.
+        #
+        # Memory is FROZEN per session (file-backed model, 2026-05-21):
+        # build_memory_block() returns the snapshot captured at session
+        # start and is constant for the whole session, so `memory_changed`
+        # is always False and a memory edit NEVER triggers a mid-session
+        # update_instructions — that's deliberate, it keeps the prompt
+        # prefix stable so the provider-side prefix cache survives. (A
+        # `memory` tool write lands on disk now and shows in the prompt on
+        # the NEXT session start.) The block is still recomputed + compared
+        # here so the breaker hot-reload keeps working; don't "fix" the
+        # no-op by making memory refresh per-turn.
         try:
-            cur_mtime = LEARNED_RULES_PATH.stat().st_mtime
-            rules_block = (
-                load_learned_rules()
-                if cur_mtime != prompt_state["rules_mtime"]
-                else prompt_state["learned_rules_block"]
-            )
             new_memory_block = build_memory_block()
             new_breaker_block = build_breaker_status_block()
 
-            rules_changed   = cur_mtime != prompt_state["rules_mtime"]
             memory_changed  = new_memory_block != prompt_state["memory_block"]
             breaker_changed = new_breaker_block != prompt_state["breaker_block"]
 
-            if rules_changed or memory_changed or breaker_changed:
-                new_instructions = (
-                    prompt_state["instructions_prefix"] + rules_block
-                    + new_memory_block
-                    + new_breaker_block
-                )
+            if memory_changed or breaker_changed:
+                # Stable/volatile cache split (2026-05-23): the supervisor
+                # prompt is assembled as STABLE PREFIX (SOUL +
+                # JARVIS_INSTRUCTIONS + skill_catalog) + marker + VOLATILE
+                # SUFFIX (runtime_id + memory + breaker). The breaker
+                # block lives in the volatile suffix, so we rebuild the
+                # whole volatile half and re-join with the unchanged
+                # stable prefix — this leaves the provider-side cache on
+                # the stable prefix VALID after the hot-reload. Same goes
+                # for memory_changed, though that path is currently
+                # disabled (memory is frozen per session — see the long
+                # comment a few lines up).
+                #
+                # The legacy assembly (instructions_prefix +
+                # memory_block + breaker_block + skill_catalog_block) is
+                # preserved as a fallback for prompt_state shapes that
+                # lack the new stable/volatile keys — older callers /
+                # tests still produce the legacy shape only.
+                stable_prefix = prompt_state.get("stable_prefix")
+                if stable_prefix:
+                    # runtime_id_block is session-stable (set once at
+                    # session start) so we don't recompute it here —
+                    # _build_initial_prompt_state stashed it alongside
+                    # the other keys for exactly this rebuild path.
+                    runtime_id_block = prompt_state.get("runtime_id_block", "")
+                    new_volatile_suffix = (
+                        runtime_id_block + new_memory_block + new_breaker_block
+                    )
+                    from providers.prompt_cache import assemble_with_marker
+                    new_instructions = assemble_with_marker(
+                        stable_prefix, new_volatile_suffix
+                    )
+                else:
+                    # Legacy fallback — preserve the original assembly so
+                    # callers that pre-date the 2026-05-23 refactor (and
+                    # therefore don't populate stable_prefix) still get a
+                    # correctly-rebuilt prompt.
+                    new_volatile_suffix = ""  # unused in legacy path
+                    new_instructions = (
+                        prompt_state["instructions_prefix"]
+                        + new_memory_block
+                        + new_breaker_block
+                        + prompt_state.get("skill_catalog_block", "")
+                    )
 
                 async def _push_instructions():
                     try:
                         await jarvis_agent.update_instructions(new_instructions)
-                        if rules_changed:
-                            logger.info(
-                                f"[learned-rules] hot-reloaded "
-                                f"({len(rules_block)} chars) — was stale "
-                                f"{cur_mtime - prompt_state['rules_mtime']:.0f}s"
-                            )
                         if memory_changed:
                             logger.info(
                                 f"[memory] block refreshed "
@@ -198,17 +218,18 @@ def make_dispatch_handler(
                 _task = asyncio.create_task(_push_instructions())
                 bg_tasks.add(_task)
                 _task.add_done_callback(bg_tasks.discard)
-                if rules_changed:
-                    prompt_state["rules_mtime"] = cur_mtime
-                    prompt_state["learned_rules_block"] = rules_block
                 if memory_changed:
                     prompt_state["memory_block"] = new_memory_block
                 if breaker_changed:
                     prompt_state["breaker_block"] = new_breaker_block
-        except FileNotFoundError:
-            pass
+                # Keep the consolidated volatile_suffix in sync so the
+                # next hot-reload tick reads the up-to-date head. The
+                # stable_prefix never changes mid-session, so it doesn't
+                # need any upkeep here.
+                if "stable_prefix" in prompt_state and new_volatile_suffix:
+                    prompt_state["volatile_suffix"] = new_volatile_suffix
         except Exception as e:
-            logger.debug(f"[learned-rules] mtime check skipped: {e}")
+            logger.debug(f"[prompt-refresh] block check skipped: {e}")
 
         # Derive speech_rate_wpm from VAD start/end timestamps the
         # state-tracking handler stamps. Falls back to 0 if VAD

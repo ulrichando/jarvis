@@ -1,0 +1,14 @@
+[Unit]
+Description=JARVIS — daily skill-curation trigger
+
+[Timer]
+# Daily at 03:30 local (offset from the 02:00 log-rotation). Persistent catches
+# up if the laptop was off through the trigger. The curator self-gates and is a
+# no-op when nothing is due / no user skills exist, so a daily cadence is cheap.
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=900s
+Unit=jarvis-curator.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,5 @@
+name: web-tavily
+version: "1.0.0"
+description: "Tavily web search + extract + crawl backend"
+kind: backend
+requires_env: [TAVILY_API_KEY]

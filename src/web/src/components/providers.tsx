@@ -6,10 +6,9 @@ import { useState } from "react";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 
-// 2026-05-03: ConvexProvider removed. Voice transcripts now flow via
-// SSE from /api/events/stream/[sessionId] (see use-session-turns hook),
-// session lists via polled /api/sessions (see use-voice-sessions).
-// React Query stays as the cache layer for typed-chat fetches.
+// Voice-session listing + SSE transcript flow were removed 2026-05-22
+// along with the rest of the hub subsystem. React Query is the cache
+// layer for typed-chat fetches.
 
 // One-time dev-only console filter for the noisy React 19 + react-markdown
 // "A props object containing a key prop is being spread into JSX" warning.

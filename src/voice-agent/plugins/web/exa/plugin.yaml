@@ -1,0 +1,5 @@
+name: web-exa
+version: "1.0.0"
+description: "Exa semantic/neural web search + content extraction backend"
+kind: backend
+requires_env: [EXA_API_KEY]

@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Background-review engine CLI — the self-improvement reviewer.
+#
+# A headless aux-LLM (Groq llama-3.1-8b-instant) reviews recent complex/
+# "hard" turns from turn_telemetry.db and PROPOSES saving/patching a skill
+# or saving a memory. SUGGESTION-FIRST + SAFE: by default it only proposes
+# (logs to ~/.jarvis/logs/skill_review/, writes nothing). Auto-apply is
+# double-gated behind --apply AND env JARVIS_SKILL_REVIEW_APPLY=1.
+#
+# Usage:
+#   bin/jarvis-skill-review               # dry-run (propose-only), 10 turns
+#   bin/jarvis-skill-review --limit 25    # review 25 recent hard turns
+#   bin/jarvis-skill-review --apply       # apply (still needs the env flag)
+#
+# Manual entry only — NOT wired into the live turn loop / agent_session.
+#
+# Spec: docs/superpowers/specs/2026-05-20-jarvis-skill-loop-design.md
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VOICE_AGENT_DIR="$REPO_ROOT/src/voice-agent"
+PYTHON="$VOICE_AGENT_DIR/.venv/bin/python"
+
+if [[ ! -x "$PYTHON" ]]; then
+    echo "voice-agent venv python not found: $PYTHON" >&2
+    exit 1
+fi
+
+LIMIT=10
+APPLY=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --apply)        APPLY=1 ;;
+        --dry-run)      APPLY=0 ;;
+        --limit)
+            shift
+            [[ $# -gt 0 ]] || { echo "--limit needs a value: --limit N" >&2; exit 2; }
+            LIMIT="$1" ;;
+        --limit=*)      LIMIT="${1#*=}" ;;
+        -h|--help)
+            sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            exit 0 ;;
+        *)
+            echo "unknown arg: $1 (try --help)" >&2; exit 2 ;;
+    esac
+    shift
+done
+
+if ! [[ "$LIMIT" =~ ^[0-9]+$ ]]; then
+    echo "--limit must be a non-negative integer, got: $LIMIT" >&2
+    exit 2
+fi
+
+cd "$VOICE_AGENT_DIR"
+exec "$PYTHON" -c "
+import sys
+from pipeline.skill_review import run_review_sync
+res = run_review_sync(limit=${LIMIT}, apply=bool(${APPLY}))
+print(f'candidates={res.candidates} proposals={len(res.proposals)} '
+      f'applied={len(res.applied)} apply_enabled={res.apply_enabled}')
+print(f'report: {res.run_dir}')
+if not res.apply_enabled and res.proposals:
+    print('(propose-only — nothing written; pass --apply AND set '
+          'JARVIS_SKILL_REVIEW_APPLY=1 to apply)')
+"
