@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke }  from '@tauri-apps/api/core'
 import { listen }  from '@tauri-apps/api/event'
 import ChatPanel   from './components/ChatPanel.jsx'
+import VoiceChatPanel from './components/VoiceChatPanel.jsx'
 import KeysSettings from './KeysSettings.jsx'
 // Voice lives OUT of the webview — jarvis-voice-client.service is
 // the LiveKit peer that owns the mic + speaker, reached over HTTP
@@ -78,6 +79,7 @@ export default function App() {
   }
 
   const [chatOpen, setChatOpen]     = useState(false)
+  const [voiceChatOpen, setVoiceChatOpen] = useState(false)
   const [voiceMuted, setVoiceMuted] = useState(false)
   // Reply-output mute (item #10): when on, typed-reply TTS is suppressed.
   // Useful in coding contexts where you want to dictate but read the reply.
@@ -176,10 +178,15 @@ export default function App() {
     reportPanelBounds({ x: 0, y: 0, w: 0, h: 0 })
   }, [setClickThrough, setLayer, syncChatState, reportPanelBounds])
 
+  const openVoiceChat  = useCallback(() => setVoiceChatOpen(true),  [])
+  const closeVoiceChat = useCallback(() => setVoiceChatOpen(false), [])
+
   // Ref so the tray-toggle handler always reads the current state
   // without re-subscribing the listener on every chatOpen change.
   const chatOpenRef = useRef(chatOpen)
   useEffect(() => { chatOpenRef.current = chatOpen }, [chatOpen])
+  const voiceChatOpenRef = useRef(voiceChatOpen)
+  useEffect(() => { voiceChatOpenRef.current = voiceChatOpen }, [voiceChatOpen])
 
   // ── Tray events from Rust ────────────────────────────────────────────
   useEffect(() => {
@@ -192,13 +199,22 @@ export default function App() {
       if (chatOpenRef.current) closeChat()
       else                     openChat()
     })
+    const unlistenV1 = listen('tray-open-voice-chat',   () => openVoiceChat())
+    const unlistenV2 = listen('tray-close-voice-chat',  () => closeVoiceChat())
+    const unlistenV3 = listen('tray-toggle-voice-chat', () => {
+      if (voiceChatOpenRef.current) closeVoiceChat()
+      else                          openVoiceChat()
+    })
     return () => {
       unlisten1.then(f => f())
       unlisten2.then(f => f())
       unlisten3.then(f => f())
       unlisten4.then(f => f())
+      unlistenV1.then(f => f())
+      unlistenV2.then(f => f())
+      unlistenV3.then(f => f())
     }
-  }, [openChat, closeChat])
+  }, [openChat, closeChat, openVoiceChat, closeVoiceChat])
 
   // ── Initial click-through on mount ───────────────────────────────────
   useEffect(() => {
@@ -304,6 +320,14 @@ export default function App() {
           wsMessages={wsMessages}
           wsSendMessage={wsSendMessage}
           wsConnected={wsStatus === 'connected'}
+        />
+      )}
+      {voiceChatOpen && (
+        <VoiceChatPanel
+          isOpen={voiceChatOpen}
+          onClose={closeVoiceChat}
+          voiceMuted={voiceMuted}
+          setVoiceMuted={setVoiceMuted}
         />
       )}
     </div>
