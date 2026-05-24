@@ -74,6 +74,7 @@ google-genai>=2.0,<3.0
 # implemented in jarvis_computer_use.py:face_register/face_identify.
 insightface~=0.7
 onnxruntime~=1.20
+ai-edge-litert>=2.1.5  # DTLN-aec L3 neural echo cancellation (audio/dtln_aec.py)
 # pkg_resources (transitively required by older deps); pin to a setuptools
 # version that still ships it (82+ removed pkg_resources).
 setuptools<70
@@ -91,3 +92,20 @@ langgraph-checkpoint-sqlite~=3.0
 langchain~=1.0
 langchain-groq~=1.0
 langchain-openai~=1.2
+
+# MCP (Model Context Protocol) client SDK. Powers tools/mcp_client.py, which
+# connects to MCP servers configured in ~/.jarvis/mcp.json, discovers their
+# tools, and registers each into the JARVIS tool registry (namespaced
+# mcp__<server>__<tool>). The import in mcp_client.py is GUARDED — a missing
+# package degrades the MCP tool surface to a clean no-op rather than crashing
+# the agent, so this dep is functionally optional. Inert with no mcp.json.
+mcp~=1.27
+
+# Honcho cloud memory backend (plugins/memory/honcho/).
+# The memory-provider layer is INERT without all three of:
+#   1. this package installed
+#   2. HONCHO_API_KEY set in .env
+#   3. JARVIS_MEMORY_PROVIDER=honcho
+# Missing any one → provider inert, file-memory unchanged, zero voice-turn impact.
+# Pinned to the minor that was installed and tested (honcho-ai 2.1.1).
+honcho-ai~=2.1

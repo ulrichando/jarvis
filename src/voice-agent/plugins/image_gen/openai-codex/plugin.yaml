@@ -1,0 +1,6 @@
+name: image-openai-codex
+version: "1.0.0"
+description: "OpenAI gpt-image-2 via ChatGPT/Codex OAuth (no OPENAI_API_KEY needed). Uses CODEX_ACCESS_TOKEN or the Codex CLI auth file (~/.codex/auth.json)."
+kind: backend
+requires_env:
+  - CODEX_ACCESS_TOKEN

@@ -12,10 +12,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from sanitizers.tool_name import _try_recover
 
 
-# Real error message captured live (Groq qwen3-32b, 2026-04-29):
+# Captured live (Groq qwen3-32b, 2026-04-29) — name + JSON body
+# concatenated into the `name` field instead of being properly split:
 _REAL_ERROR = (
     "tool call validation failed: attempted to call tool "
-    "'recall_conversation {\"query\": \"total\"}' which was not in request.tools"
+    "'web_search {\"query\": \"total\"}' which was not in request.tools"
 )
 
 # Wrapped form — APIError nested inside APIConnectionError (matches the
@@ -28,9 +29,9 @@ _WRAPPED_ERROR = (
 
 
 def test_recovers_real_world_error():
-    known = {"recall_conversation", "web_search", "bash"}
+    known = {"web_search", "bash"}
     res = _try_recover(_REAL_ERROR, known)
-    assert res == ("recall_conversation", '{"query": "total"}')
+    assert res == ("web_search", '{"query": "total"}')
 
 
 def test_recovers_through_wrapped_chain():
@@ -41,7 +42,7 @@ def test_recovers_through_wrapped_chain():
 
 def test_returns_none_when_recovered_name_not_in_tools():
     """Don't recover an unknown name — better to surface the real error."""
-    known = {"bash", "screenshot"}  # no recall_conversation
+    known = {"bash", "screenshot"}  # no web_search
     res = _try_recover(_REAL_ERROR, known)
     assert res is None
 

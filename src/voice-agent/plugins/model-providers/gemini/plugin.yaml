@@ -1,0 +1,4 @@
+name: gemini-provider
+version: "1.0.0"
+description: "Google Gemini (API key + Cloud Code OAuth)"
+kind: model-provider

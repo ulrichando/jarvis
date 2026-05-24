@@ -19,10 +19,9 @@ def test_memory_anchor_present_in_supervisor_prompt():
     assert "═══ YOU HAVE MEMORY ═══" in instr, (
         "Anchor header missing — Phase 1 of memory-layer fix not in place"
     )
-    # The two key tools must be named in the anchor so the LLM
-    # cross-references them when temped to deny memory.
-    assert "remember(content, category)" in instr
-    assert "recall_conversation(query)" in instr
+    # The durable-write tool must be named in the anchor so the LLM
+    # cross-references it when tempted to deny memory.
+    assert "memory(action, target" in instr
     # ASSUME-INTERRUPTION framing (mirrors Anthropic memory tool default)
     assert "ASSUME INTERRUPTION" in instr
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # jarvis-logs — live-tail every JARVIS log stream into one prefixed,
-# colour-coded view. The tray, web, bridge, proxy, hub, voice agent /
+# colour-coded view. The tray, web, bridge, proxy, voice agent /
 # voice client, and launcher each write to their own file under /tmp.
-# Without an aggregator you have to open 7+ terminals. This is what
+# Without an aggregator you have to open several terminals. This is what
 # Datadog / Vector / lnav give you for free in production stacks; the
 # tiny bash version is plenty for a single-user dev rig.
 #
@@ -24,7 +24,6 @@ SOURCES=(
   "web:32:/tmp/jarvis-web.log"
   "bridge:33:/tmp/jarvis-bridge.log"
   "proxy:34:/tmp/jarvis-proxy.log"
-  "hub:35:/tmp/jarvis-hub.log"
   "voice-agent:31:/tmp/jarvis-voice-agent.log"
   "voice-client:31:/tmp/jarvis-voice-client.log"
   "launch:37:/tmp/jarvis-launch.log"

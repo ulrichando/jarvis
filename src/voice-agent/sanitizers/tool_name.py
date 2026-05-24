@@ -1,54 +1,38 @@
 """Recover from `tool call validation failed` by parsing the malformed
-name out of the provider's error AND executing the tool inline.
+name out of the provider's error AND re-emitting the tool call as a
+proper FunctionToolCall so the framework dispatches it normally.
 
 The recurring bug: certain LLMs (Groq's qwen3-32b, llama 3.3 70B at
 times) produce tool_calls where the name field contains both the real
 name AND the JSON arguments concatenated:
 
-    name='recall_conversation {"query": "total"}'
+    name='web_fetch {"url": "https://example.com"}'
     arguments=''
 
 Groq's server validates tool names against `request.tools` and
 rejects with HTTP/SSE error:
 
     openai.APIError: tool call validation failed: attempted to call
-    tool 'recall_conversation {"query": "total"}' which was not in
-    request.tools
+    tool 'web_fetch {"url": "..."}' which was not in request.tools
 
 Without intervention the entire turn is lost — the agent goes silent.
 
-═══ Why inline execution (not chunk-injection) ═══
+═══ Why re-emit as a FunctionToolCall (not execute inline) ═══
 
-The previous implementation synthesized a `ChatChunk` containing the
-recovered `FunctionToolCall` and pushed it through `_event_ch`. Live
-2026-05-01: a real recovery for `get_location` fired (logged
-"[sanitizer] recovered ..."), but `get_location` itself never
-executed — `[get_location] Google/Wi-Fi → ...` log was absent for
-every recovery. The framework's tool-dispatch loop in
-`voice/generation.py` consumes the tee'd `_event_ch`, queues
-FunctionCalls into `function_ch`, and `_execute_tools_task` runs them
-with a real RunContext. Something in that chain (tee timing, channel
-close ordering, RunContext expectations) drops chunks emitted from
-inside an exception handler. After ~30 min of digging the cleanest
-fix is to bypass the chain entirely.
+The first iteration (2026-05-01) executed the tool inline and emitted
+the result as `delta.content`. Two failure modes surfaced:
 
-This module patches `inference.llm.LLMStream._run` to:
-  1. Catch the validation APIError.
-  2. Parse the malformed name with a tight regex.
-  3. Confirm the tool exists in `self._tool_ctx`.
-  4. **Execute the tool's underlying coroutine inline** with the
-     parsed JSON arguments.
-  5. Format the result as plain text.
-  6. Emit ONE ChatChunk with `delta.content = result_text` (no
-     tool_calls). The framework treats it as plain LLM output and
-     voices it directly.
+  * For tools returning structured data (e.g. ext_navigate's page
+    headings dict), TTS read the dict repr aloud.
+  * The LLM saw the result as `role: "assistant"`, never as
+    `role: "tool"`, so the next inference didn't know a tool had
+    returned and re-attempted the same call (loop).
 
-Trade-off: the LLM never sees the tool result so it can't reason
-about it for a follow-up reply. For simple lookup tools (get_location
-returns "Parsons Avenue, Columbus", recall_conversation returns a
-quote) the result IS the user-facing answer, so this is fine. For
-tools where the LLM should narrate around the result, the recovery
-voice is degraded — but degraded-but-working beats silent.
+The W-014 rewrite (2026-05-05): re-emit the recovered call as a
+proper FunctionToolCall chunk and let the framework's normal
+tool-dispatch loop run it. Restores correct role typing + dispatch
+semantics; the framework executes the tool with a real RunContext
+and the LLM sees the result as `role: "tool"`.
 """
 from __future__ import annotations
 
@@ -69,8 +53,8 @@ _VALIDATION_RE = re.compile(
 
 # Tight pattern: identifier + (whitespace OR `=` OR `:`) + JSON object body.
 # Captured forms seen live:
-#   `recall_conversation {"query": "total"}`        — Groq qwen3 (space)
-#   `web_fetch={"url":"...","timeout":"15"}`       — Groq llama (= sign)
+#   `web_search {"query": "weather"}`                — Groq qwen3 (space)
+#   `web_fetch={"url":"...","timeout":"15"}`         — Groq llama (= sign)
 #   `bash:{"cmd":"ls"}`                              — defensive (colon)
 _NAME_JSON_RE = re.compile(
     r"^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*[=:]?\s*(\{.*\})\s*$",
