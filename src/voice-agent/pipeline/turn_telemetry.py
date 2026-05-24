@@ -287,6 +287,39 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
                     conn.execute(f"ALTER TABLE turns ADD COLUMN {col} {decl}")
                 except sqlite3.OperationalError:
                     pass
+        # 2026-05-24 — Spec B (Plane 3) — auto-mod pattern tracking.
+        # correction_signal: lowercase form of any user correction in the
+        # turn ("stop saying sir", "too verbose"). NULL when no correction
+        # detected. Populated by the autonomous review path (B-T12 wires
+        # the extractor in skill_review.autonomous_review_turn).
+        automod_cols = {r[1] for r in conn.execute("PRAGMA table_info(turns)")}
+        if "correction_signal" not in automod_cols:
+            try:
+                conn.execute("ALTER TABLE turns ADD COLUMN correction_signal TEXT")
+            except sqlite3.OperationalError:
+                pass
+        # Two pattern tables — populated by pipeline.automod.patterns, drained
+        # by the spawner. proposed_at IS NULL means "not yet emitted to queue".
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS recurring_corrections (
+                signal TEXT PRIMARY KEY,
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                count INTEGER NOT NULL DEFAULT 1,
+                proposed_at TEXT,
+                resolved_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS tool_gap_patterns (
+                intent_hash TEXT PRIMARY KEY,
+                canonical_intent TEXT NOT NULL,
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                count INTEGER NOT NULL DEFAULT 1,
+                sample_tools_json TEXT,
+                proposed_at TEXT,
+                resolved_at TEXT
+            );
+        """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_turns_subagent ON turns(subagent)")
 
 
