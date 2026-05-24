@@ -1,5 +1,5 @@
 # Test-only deps for the voice-agent pytest suite. Kept separate from
-# requirements.txt so production installs don't pull in fakeredis et al.
+# requirements.txt so production installs don't pull in test fixtures.
 #
 # Install:
 #   pip install -r requirements-test.txt
@@ -8,10 +8,9 @@
 
 -r requirements.txt
 
-# Hub tests use fakeredis to stand in for the real Redis broker.
-# Without this, 6 tests under tests/test_hub_*.py error at collection.
-# (Test infra review 2026-05-16.)
-fakeredis~=2.35
-
 # pytest-timeout — kill hung tests so CI never wedges.
 pytest-timeout~=2.3
+
+# Note 2026-05-22: fakeredis was removed alongside the hub subsystem
+# (the only consumer was tests/test_hub_*.py, all of which were
+# deleted with src/hub).

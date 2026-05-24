@@ -1,752 +1,574 @@
-"""
-JARVIS desktop computer-use: Kimi vision + xdotool control.
+"""``computer_use`` tool — JARVIS-native Linux/X11 desktop control.
 
-Tools (all @function_tool, registered in jarvis_agent.py):
-    computer_use  — start session; first screenshot → vision describe
-    computer_stop — end session
-    click         — xdotool click at (x, y)
-    type_text     — xdotool type + optional Enter
-    scroll        — xdotool scroll at (x, y)
-    drag          — xdotool drag from→to
-    key_press     — xdotool key combination (e.g. "ctrl+t")
-    wait          — sleep N ms, then re-describe screen
-    screenshot    — one-shot screenshot + vision describe (no session needed)
+Ported from the upstream computer-use toolset (which was macOS-only, driving
+``cua-driver`` over MCP). This is the *primitive action surface* — screenshot,
+mouse, keyboard, scroll, drag, window introspection — exposed as a single
+consolidated tool with an ``action`` discriminator. It is NOT a self-contained
+vision-plan-act loop: the upstream tool had no in-tool LLM call either. It
+returns a screenshot + a textual summary, and the supervisor LLM (which is
+vision-capable) does the planning across turns. See "Vision/plan loop" below.
 
-Vision backend is Kimi (Moonshot) by default with Ollama as the local
-fallback — see tools/_vision_backend.py for the backend dispatch.
-Gemini was removed 2026-05-11 after live "API is disabled" failures.
+Backend
+-------
+Input is driven by ``xdotool`` via subprocess; screenshots by ``mss`` (or
+ImageMagick ``import`` as a fallback). See :mod:`tools.computer_use_backend`.
+``pyautogui`` / ``python-xlib`` / ``pynput`` are deliberately NOT used — they
+are not installed on this host.
 
-Safety guards:
-    _FAILURE_LIMIT consecutive failures → stop and explain
-    _STALL_TIMEOUT_S with no visible UI change → stop and explain
+Gating
+------
+The registry ``check_fn`` (:func:`check_computer_use_requirements`) returns
+True only when an X11 display is reachable AND ``xdotool`` is installed. In a
+headless / CI environment it returns False, so the tool registers inert and
+the adapter skips it — tests never drive X11. The dispatch path also re-checks
+availability defensively before touching the backend.
+
+Vision/plan loop
+----------------
+The upstream package returned a multimodal tool-message (text + base64 image)
+that its agent runtime spliced into the model context. JARVIS's tool adapter
+str-coerces handler results to a single string, and the voice supervisor's
+multimodal tool-result plumbing is a separate, larger piece of work. So this
+port returns a JSON summary (mode/size/window-list, plus an image-bytes count)
+rather than feeding the raw screenshot pixels back into the LLM. The screenshot
+IS captured and its size reported; wiring the pixels into the supervisor's
+context is DEFERRED — tracked in the module docstring rather than half-built.
+Today the tool is most useful for the deterministic actions (click at known
+coordinates / type / key / scroll / focus a window / list windows). A fuller
+vision loop can layer the image plumbing on later without changing this surface.
+
+Safety
+------
+Read-only actions (``capture`` / ``wait`` / ``list_apps``) run freely.
+Mutating actions go through an optional approval callback (default-allow when
+none is wired, matching the upstream contract — the voice agent's own gating
+sits one layer out). Destructive shell text in ``type`` and destructive key
+combos in ``key`` are hard-blocked regardless of approval.
 """
 from __future__ import annotations
 
-import asyncio
+import json
 import logging
 import os
-import subprocess
-import tempfile
-import time
-from dataclasses import dataclass, field
-from pathlib import Path
+import re
+import threading
+from typing import Any, Dict, List, Optional
 
-from livekit.agents import function_tool
-
-logger = logging.getLogger("jarvis.computer_use")
-
-# Vision-backend primitives extracted to tools/_vision_backend.py 2026-05-10
-# (Step 7 of the audit). Re-exported under underscored aliases so the
-# in-file callers (`_resolved_vision_backend`, `_vision_describe`, etc.) +
-# the `VISION_BACKEND` / `OLLAMA_*` / `GEMINI_VISION_MODEL` /
-# `KIMI_VISION_MODEL` constants stay reachable via
-# `from tools.computer_use import X` (no caller change).
-# Gemini ripped out → re-added 2026-05-11 (evening) as the cloud
-# primary, with Kimi retained as an auto-fallback when Gemini's GCP
-# API-disabled / quota / 5xx markers fire. See _vision_backend.py.
-from tools._vision_backend import (
-    VISION_BACKEND,
-    OLLAMA_VISION_MODEL,
-    OLLAMA_URL,
-    GEMINI_VISION_MODEL,
-    KIMI_VISION_MODEL,
-    ollama_reachable        as _ollama_reachable,
-    resolved_vision_backend as _resolved_vision_backend,
-    get_gemini_client       as _get_gemini_client,
-    get_kimi_client         as _get_kimi_client,
-    ollama_describe         as _ollama_describe,
-    gemini_describe_raw     as _gemini_describe_raw,
-    kimi_describe_raw       as _kimi_describe_raw,
-    vision_describe         as _vision_describe,
+from tools.computer_use_backend import (
+    ActionResult,
+    CaptureResult,
+    ComputerUseBackend,
+    NoopBackend,
+    UIElement,
+    X11ComputerUseBackend,
+    x11_backend_available,
 )
+from tools.registry import registry
 
-# Default video device for webcam_capture. Resolution order (first wins):
-#   1. ~/.jarvis/webcam-device  (written by tray Camera-source submenu)
-#   2. JARVIS_WEBCAM_DEVICE env var
-#   3. /dev/video0
-WEBCAM_DEVICE_FILE = Path.home() / ".jarvis" / "webcam-device"
-_WEBCAM_DEVICE_DEFAULT = os.environ.get("JARVIS_WEBCAM_DEVICE", "/dev/video0")
-WEBCAM_RESOLUTION = os.environ.get("JARVIS_WEBCAM_RES", "1280x720")
+logger = logging.getLogger(__name__)
 
 
-def _current_webcam_device() -> str:
-    """Read ~/.jarvis/webcam-device if present; fall back to env/default."""
-    try:
-        if WEBCAM_DEVICE_FILE.exists():
-            v = WEBCAM_DEVICE_FILE.read_text(encoding="utf-8").strip()
-            if v.startswith("/dev/video"):
-                return v
-    except Exception:
-        pass
-    return _WEBCAM_DEVICE_DEFAULT
+# ---------------------------------------------------------------------------
+# Schema — one consolidated tool with an ``action`` discriminator.
+# ---------------------------------------------------------------------------
+
+COMPUTER_USE_SCHEMA: Dict[str, Any] = {
+    "name": "computer_use",
+    "description": (
+        "Control the local Linux desktop (X11): take a screenshot, move/click "
+        "the mouse, type text, press key combos, scroll, drag, or focus a "
+        "window. Coordinates are screen pixels [x, y] read from the latest "
+        "screenshot. Preferred workflow: call action='capture' to see the "
+        "screen and the window list, then act by pixel coordinate. (No "
+        "accessibility tree on X11, so element-index targeting is "
+        "unavailable — use coordinates.) Linux/X11 only; requires xdotool."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": [
+                    "capture",
+                    "click",
+                    "double_click",
+                    "right_click",
+                    "middle_click",
+                    "drag",
+                    "scroll",
+                    "type",
+                    "key",
+                    "wait",
+                    "list_apps",
+                    "focus_app",
+                ],
+                "description": (
+                    "Which action to perform. 'capture', 'wait', and "
+                    "'list_apps' are read-only and always allowed. The rest "
+                    "move/click/type on the real desktop."
+                ),
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["som", "vision", "ax"],
+                "description": (
+                    "Capture mode. 'vision' (recommended on Linux) is a plain "
+                    "screenshot. 'som'/'ax' additionally return the window list; "
+                    "X11 has no accessibility tree so there are no numbered "
+                    "element overlays."
+                ),
+            },
+            "app": {
+                "type": "string",
+                "description": (
+                    "Optional. Limit capture/focus to windows whose title "
+                    "matches this substring."
+                ),
+            },
+            "coordinate": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "Pixel coordinates [x, y] for click/scroll.",
+            },
+            "button": {
+                "type": "string",
+                "enum": ["left", "right", "middle"],
+                "description": "Mouse button. Defaults to left.",
+            },
+            "modifiers": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": ["ctrl", "shift", "alt", "super", "cmd", "option"],
+                },
+                "description": (
+                    "Modifier keys held during the action ('cmd'/'option' map "
+                    "to Super/Alt on Linux)."
+                ),
+            },
+            "from_coordinate": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "Drag source [x, y].",
+            },
+            "to_coordinate": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "Drag target [x, y].",
+            },
+            "direction": {
+                "type": "string",
+                "enum": ["up", "down", "left", "right"],
+                "description": "Scroll direction.",
+            },
+            "amount": {
+                "type": "integer",
+                "description": "Scroll wheel ticks. Default 3.",
+            },
+            "text": {
+                "type": "string",
+                "description": "Text to type (action='type').",
+            },
+            "keys": {
+                "type": "string",
+                "description": (
+                    "Key combo for action='key', e.g. 'ctrl+s', 'alt+Tab', "
+                    "'Return', 'Escape'. Use '+' to combine."
+                ),
+            },
+            "seconds": {
+                "type": "number",
+                "description": "Seconds to wait (action='wait'). Max 30.",
+            },
+            "raise_window": {
+                "type": "boolean",
+                "description": "action='focus_app' only. Accepted for parity.",
+            },
+        },
+        "required": ["action"],
+    },
+}
 
 
-# Backwards-compat: callers that imported WEBCAM_DEVICE statically still work,
-# but new captures should call _current_webcam_device().
-WEBCAM_DEVICE = _WEBCAM_DEVICE_DEFAULT
-WEBCAM_PROMPT = (
-    "You are JARVIS's eyes via the webcam. Describe what you see: "
-    "people present (count, posture, facing direction, expression), "
-    "the room/environment, anything notable. Be specific and concise."
-)
-VISION_SCREEN_PROMPT = (
-    "You are helping a voice assistant control a desktop computer. "
-    "Describe the current screen state: what application is open, all "
-    "visible UI elements (buttons, text fields, menus, links), and their "
-    "approximate pixel coordinates (x, y from top-left corner). "
-    "Be specific and concise — the assistant will decide what to click or type."
-)
-# Casual "what's on my screen" prompt — used by the one-shot screenshot()
-# tool. No coordinates, no element list — just 1-2 sentences. The detailed
-# prompt above can add 10-15s of latency because it produces a long
-# structured response; this one returns in 1-3s.
-VISION_QUICK_SCREEN_PROMPT = (
-    "In one or two sentences, describe what's on this screen — what app "
-    "is open, what the user appears to be doing. No coordinates, no "
-    "element list. Speak naturally as if telling someone over the phone."
-)
+# ---------------------------------------------------------------------------
+# Approval & safety (ported from the upstream tool; macOS combos rewritten to
+# their Linux equivalents).
+# ---------------------------------------------------------------------------
 
-_FAILURE_LIMIT = 3
-_STALL_TIMEOUT_S = 30.0
-# Tray writes this file when the user clicks "Stop Computer Use".
-# _check_guards reads + unlinks it on the next action.
-_STOP_SIGNAL_FILE = os.path.expanduser("~/.jarvis/computer-use-stop")
+_approval_callback = None
 
 
-class ComputerUseError(RuntimeError):
-    pass
+def set_approval_callback(cb) -> None:
+    """Register a callback for computer_use approval prompts.
 
-
-@dataclass
-class _Session:
-    task: str
-    started_at: float = field(default_factory=time.monotonic)
-    consecutive_failures: int = 0
-    last_description: str = ""
-    last_change_at: float = field(default_factory=time.monotonic)
-
-
-_active_session: _Session | None = None
-
-
-# Max edge length for screenshots sent to the vision backend. 2560x1600
-# PNGs are ~400 KB and the upload dominates round-trip latency (~15s
-# observed). Downscaling to 1280 max + JPEG at quality 75 cuts payload
-# to ~60 KB without losing readable UI text. Both Kimi and Ollama's
-# vision models tile images internally — extra resolution past ~1024
-# is mostly wasted.
-_SCREENSHOT_MAX_EDGE = int(os.environ.get("JARVIS_SCREENSHOT_MAX_EDGE", "1280"))
-_SCREENSHOT_JPEG_QUALITY = int(os.environ.get("JARVIS_SCREENSHOT_JPEG_Q", "75"))
-
-
-def _take_screenshot() -> tuple[bytes, str]:
-    """Take a screenshot, downscale + JPEG-encode, return (bytes, mime_type).
-
-    Preference order:
-      1. Live LiveKit screen-share frame, if the voice-client is actively
-         publishing AND the latest frame is <2 s old. Saves ~150 ms vs.
-         scrot+PNG and avoids touching the display server entirely.
-      2. scrot fallback. Always available, but slower.
+    The callback receives (action, args, summary) and returns one of:
+    ``"approve_once"`` | ``"approve_session"`` | ``"always_approve"`` | ``"deny"``.
     """
-    # Live-frame fast path. Returns None when no screen-share is active
-    # or the cached frame is stale.
-    try:
-        from pipeline.screen_share_sink import latest_jpeg_global
-        cached = latest_jpeg_global(max_age_s=2.0)
-        if cached is not None:
-            return cached, "image/jpeg"
-    except Exception:
-        # Don't let an import/runtime error in the sink break screenshots.
-        pass
+    global _approval_callback
+    _approval_callback = cb
 
-    # NamedTemporaryFile pre-creates the file; without `-o` scrot
-    # refuses to overwrite and silently writes to <name>_000.png
-    # instead, leaving the path we read empty (0 bytes).
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-        path = f.name
+
+_SAFE_ACTIONS = frozenset({"capture", "wait", "list_apps"})
+
+_DESTRUCTIVE_ACTIONS = frozenset({
+    "click", "double_click", "right_click", "middle_click",
+    "drag", "scroll", "type", "key", "focus_app",
+})
+
+# Hard-blocked key combos — destructive regardless of approval level. Linux/X11
+# equivalents of the upstream macOS list (logout / lock / kill-session).
+_BLOCKED_KEY_COMBOS = {
+    frozenset({"ctrl", "alt", "backspace"}),   # zap X server
+    frozenset({"ctrl", "alt", "delete"}),       # logout / interrupt on many DEs
+    frozenset({"super", "l"}),                  # lock screen (GNOME)
+    frozenset({"ctrl", "alt", "l"}),            # lock screen (other DEs)
+}
+
+# Normalize toward the Linux-canonical vocabulary the _BLOCKED_KEY_COMBOS sets
+# use (alt, super, ctrl) so the subset check below matches regardless of which
+# alias the LLM emitted (option->alt, cmd/win/meta->super, control->ctrl).
+_KEY_ALIASES = {
+    "command": "super", "cmd": "super", "win": "super", "meta": "super",
+    "control": "ctrl",
+    "option": "alt",
+}
+
+
+def _canon_key_combo(keys: str) -> frozenset:
+    parts = [p.strip().lower() for p in re.split(r"\s*\+\s*", keys) if p.strip()]
+    return frozenset(_KEY_ALIASES.get(p, p) for p in parts)
+
+
+_BLOCKED_TYPE_PATTERNS = [
+    re.compile(r"curl\s+[^|]*\|\s*bash", re.IGNORECASE),
+    re.compile(r"curl\s+[^|]*\|\s*sh", re.IGNORECASE),
+    re.compile(r"wget\s+[^|]*\|\s*bash", re.IGNORECASE),
+    re.compile(r"\bsudo\s+rm\s+-[rf]", re.IGNORECASE),
+    re.compile(r"\brm\s+-rf\s+/\s*$", re.IGNORECASE),
+    re.compile(r":\s*\(\)\s*\{\s*:\|:\s*&\s*\}", re.IGNORECASE),  # fork bomb
+]
+
+
+def _is_blocked_type(text: str) -> Optional[str]:
+    for pat in _BLOCKED_TYPE_PATTERNS:
+        if pat.search(text):
+            return pat.pattern
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Backend selection — env-swappable for tests
+# ---------------------------------------------------------------------------
+
+_backend_lock = threading.Lock()
+_backend: Optional[ComputerUseBackend] = None
+_session_auto_approve = False
+_always_allow: set = set()
+
+
+def _get_backend() -> ComputerUseBackend:
+    global _backend
+    with _backend_lock:
+        if _backend is None:
+            name = os.environ.get("JARVIS_COMPUTER_USE_BACKEND", "x11").lower()
+            if name in {"x11", "", "xdotool"}:
+                _backend = X11ComputerUseBackend()
+            elif name == "noop":
+                _backend = NoopBackend()
+            else:
+                raise RuntimeError(f"Unknown JARVIS_COMPUTER_USE_BACKEND={name!r}")
+            _backend.start()
+        return _backend
+
+
+def reset_backend_for_tests() -> None:
+    """Test helper — tear down the cached backend and approval state."""
+    global _backend, _session_auto_approve, _always_allow
+    with _backend_lock:
+        if _backend is not None:
+            try:
+                _backend.stop()
+            except Exception:
+                pass
+        _backend = None
+    _session_auto_approve = False
+    _always_allow = set()
+
+
+# ---------------------------------------------------------------------------
+# Dispatch
+# ---------------------------------------------------------------------------
+
+
+def handle_computer_use(args: Dict[str, Any], **kwargs) -> str:
+    """Main entry point — dispatched by tools.registry.
+
+    Always returns a JSON string (see the module docstring for why the
+    multimodal screenshot path is deferred).
+    """
+    if not isinstance(args, dict):
+        args = {}
+    action = (args.get("action") or "").strip().lower()
+    if not action:
+        return json.dumps({"error": "missing `action`"})
+
+    # Defensive availability re-check (check_fn gates registration, but the
+    # display can vanish between turns).
+    if not x11_backend_available():
+        return json.dumps({
+            "error": "computer_use unavailable",
+            "hint": "Requires an X11 DISPLAY and xdotool. Not usable headless.",
+        })
+
+    # Safety: validate text/key actions before any approval prompt.
+    if action == "type":
+        pat = _is_blocked_type(args.get("text", "") or "")
+        if pat:
+            return json.dumps({
+                "error": f"blocked pattern in type text: {pat!r}",
+                "hint": "Dangerous shell patterns cannot be typed via computer_use.",
+            })
+
+    if action == "key":
+        combo = _canon_key_combo(args.get("keys", "") or "")
+        for blocked in _BLOCKED_KEY_COMBOS:
+            if blocked and blocked.issubset(combo):
+                return json.dumps({
+                    "error": f"blocked key combo: {sorted(blocked)}",
+                    "hint": "Destructive system shortcuts are hard-blocked.",
+                })
+
+    if action in _DESTRUCTIVE_ACTIONS:
+        err = _request_approval(action, args)
+        if err is not None:
+            return err
+
     try:
-        subprocess.run(
-            ["scrot", "-o", path],
-            check=True,
-            timeout=5,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+        backend = _get_backend()
+    except Exception as e:
+        return json.dumps({"error": f"computer_use backend unavailable: {e}"})
+
+    try:
+        return _dispatch(backend, action, args)
+    except Exception as e:  # noqa: BLE001 — a tool error must not crash the turn
+        logger.exception("computer_use %s failed", action)
+        return json.dumps({"error": f"{action} failed: {e}"})
+
+
+def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
+    """Return None if approved, or a JSON error string if denied."""
+    global _session_auto_approve, _always_allow
+    if _session_auto_approve:
+        return None
+    if action in _always_allow:
+        return None
+    cb = _approval_callback
+    if cb is None:
+        # No approval wired — default allow. The voice agent's gating sits one
+        # layer out (matches the upstream contract).
+        return None
+    summary = _summarize_action(action, args)
+    try:
+        verdict = cb(action, args, summary)
+    except Exception as e:
+        logger.warning("approval callback failed: %s", e)
+        verdict = "deny"
+    if verdict == "approve_once":
+        return None
+    if verdict in {"approve_session", "always_approve"}:
+        _always_allow.add(action)
+        if verdict == "always_approve":
+            _session_auto_approve = True
+        return None
+    return json.dumps({"error": "denied by user", "action": action})
+
+
+def _summarize_action(action: str, args: Dict[str, Any]) -> str:
+    if action in {"click", "double_click", "right_click", "middle_click"}:
+        coord = args.get("coordinate")
+        return f"{action} at {tuple(coord)}" if coord else action
+    if action == "drag":
+        return f"drag {args.get('from_coordinate')} -> {args.get('to_coordinate')}"
+    if action == "scroll":
+        return f"scroll {args.get('direction', '?')} x{args.get('amount', 3)}"
+    if action == "type":
+        text = args.get("text", "")
+        return f"type {text[:60]!r}" + ("..." if len(text) > 60 else "")
+    if action == "key":
+        return f"key {args.get('keys', '')!r}"
+    if action == "focus_app":
+        return f"focus {args.get('app', '')!r}"
+    return action
+
+
+def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) -> str:
+    if action == "capture":
+        mode = str(args.get("mode", "vision"))
+        if mode not in {"som", "vision", "ax"}:
+            return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
+        cap = backend.capture(mode=mode, app=args.get("app"))
+        return _capture_response(cap)
+
+    if action == "wait":
+        res = backend.wait(float(args.get("seconds", 1.0)))
+        return _text_response(res)
+
+    if action == "list_apps":
+        apps = backend.list_apps()
+        return json.dumps({"apps": apps, "count": len(apps)})
+
+    if action == "focus_app":
+        app = args.get("app")
+        if not app:
+            return json.dumps({"error": "focus_app requires `app`"})
+        res = backend.focus_app(app, raise_window=bool(args.get("raise_window")))
+        return _text_response(res)
+
+    if action in {"click", "double_click", "right_click", "middle_click"}:
+        button = args.get("button")
+        click_count = 1
+        if action == "double_click":
+            click_count = 2
+        elif action == "right_click":
+            button = "right"
+        elif action == "middle_click":
+            button = "middle"
+        else:
+            button = button or "left"
+        coord = args.get("coordinate") or (None, None)
+        x = coord[0] if coord and len(coord) >= 1 else None
+        y = coord[1] if coord and len(coord) >= 2 else None
+        res = backend.click(
+            x=x, y=y, button=button or "left", click_count=click_count,
+            modifiers=args.get("modifiers"),
         )
-        # Downscale + re-encode as JPEG to shrink the upload.
-        from PIL import Image
-        import io
-        with Image.open(path) as im:
-            im = im.convert("RGB")
-            w, h = im.size
-            scale = min(1.0, _SCREENSHOT_MAX_EDGE / max(w, h))
-            if scale < 1.0:
-                im = im.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
-            buf = io.BytesIO()
-            im.save(buf, format="JPEG", quality=_SCREENSHOT_JPEG_QUALITY, optimize=True)
-            return buf.getvalue(), "image/jpeg"
-    finally:
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
+        return _text_response(res)
 
-
-async def _screenshot_and_describe() -> str:
-    """Take screenshot, describe via the vision backend, return text.
-
-    Logs per-stage timing so latency regressions are visible.
-    """
-    t0 = time.monotonic()
-    img_bytes, mime = _take_screenshot()
-    t_capture = time.monotonic() - t0
-    t1 = time.monotonic()
-    desc = await _vision_describe(img_bytes, mime_type=mime)
-    t_vision = time.monotonic() - t1
-    logger.info(
-        f"[computer-use] screenshot+describe: capture={t_capture*1000:.0f}ms "
-        f"vision={t_vision*1000:.0f}ms img={len(img_bytes)/1024:.0f}KB ({mime})"
-    )
-    return desc
-
-
-def _take_webcam_frame() -> bytes:
-    """Capture a single JPEG frame from the webcam, return the bytes."""
-    # Use a unique path so concurrent captures don't collide; also lets
-    # us avoid scrot's overwrite footgun.
-    path = f"/tmp/jarvis-cam-{os.getpid()}-{time.time_ns()}.jpg"
-    device = _current_webcam_device()
-    try:
-        subprocess.run(
-            [
-                "fswebcam",
-                "-d", device,
-                "-r", WEBCAM_RESOLUTION,
-                "--no-banner",
-                "-q",
-                "--jpeg", "85",
-                path,
-            ],
-            check=True,
-            timeout=10,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+    if action == "drag":
+        res = backend.drag(
+            from_xy=tuple(args["from_coordinate"]) if args.get("from_coordinate") else None,
+            to_xy=tuple(args["to_coordinate"]) if args.get("to_coordinate") else None,
+            button=args.get("button", "left"),
+            modifiers=args.get("modifiers"),
         )
-        with open(path, "rb") as f:
-            return f.read()
-    finally:
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
+        return _text_response(res)
 
-
-# ── Session safety guards ─────────────────────────────────────────────
-
-
-def _check_guards() -> None:
-    """Raise ComputerUseError if a safety limit is exceeded."""
-    if _active_session is None:
-        return
-    # Tray kill switch — wins over everything else.
-    if os.path.exists(_STOP_SIGNAL_FILE):
-        try:
-            os.unlink(_STOP_SIGNAL_FILE)
-        except OSError:
-            pass
-        raise ComputerUseError(
-            "Stopping: user clicked 'Stop Computer Use' in the tray. "
-            "Tell the user the session was halted at their request."
+    if action == "scroll":
+        coord = args.get("coordinate") or (None, None)
+        res = backend.scroll(
+            direction=args.get("direction", "down"),
+            amount=int(args.get("amount", 3)),
+            x=coord[0] if coord and len(coord) >= 1 else None,
+            y=coord[1] if coord and len(coord) >= 2 else None,
+            modifiers=args.get("modifiers"),
         )
-    if _active_session.consecutive_failures >= _FAILURE_LIMIT:
-        raise ComputerUseError(
-            f"Stopping after {_FAILURE_LIMIT} consecutive failures. "
-            "The computer is not responding. Tell the user what you tried."
-        )
-    elapsed = time.monotonic() - _active_session.last_change_at
-    if elapsed >= _STALL_TIMEOUT_S:
-        raise ComputerUseError(
-            f"Stopping: no visible UI change in {int(elapsed)}s. "
-            "The screen appears stuck. Tell the user what you last saw."
-        )
+        return _text_response(res)
+
+    if action == "type":
+        res = backend.type_text(args.get("text", "") or "")
+        return _text_response(res)
+
+    if action == "key":
+        res = backend.key(args.get("keys", "") or "")
+        return _text_response(res)
+
+    return json.dumps({"error": f"unknown action {action!r}"})
 
 
-def _record_success(description: str) -> None:
-    """Reset failure counter; update last_change_at if screen changed."""
-    if _active_session is None:
-        return
-    _active_session.consecutive_failures = 0
-    if description != _active_session.last_description:
-        _active_session.last_change_at = time.monotonic()
-    _active_session.last_description = description
+# ---------------------------------------------------------------------------
+# Response shaping (text-only; multimodal image path deferred — see module doc)
+# ---------------------------------------------------------------------------
 
 
-def _record_failure() -> None:
-    if _active_session is not None:
-        _active_session.consecutive_failures += 1
+def _text_response(res: ActionResult) -> str:
+    payload: Dict[str, Any] = {"ok": res.ok, "action": res.action}
+    if res.message:
+        payload["message"] = res.message
+    if res.meta:
+        payload["meta"] = res.meta
+    return json.dumps(payload)
 
 
-# ── xdotool execution ─────────────────────────────────────────────────
+def _capture_response(cap: CaptureResult) -> str:
+    payload: Dict[str, Any] = {
+        "ok": True,
+        "action": "capture",
+        "mode": cap.mode,
+        "width": cap.width,
+        "height": cap.height,
+        "screenshot_bytes": cap.png_bytes_len,
+        "screenshot_captured": cap.png_b64 is not None,
+        "elements": [_element_to_dict(e) for e in cap.elements],
+        "note": (
+            "Screenshot pixels are not yet fed back into the model context "
+            "(deferred). Use action='capture' window list + known coordinates, "
+            "or screenshot() for vision."
+        ),
+    }
+    if cap.app:
+        payload["app"] = cap.app
+    if cap.window_title:
+        payload["window_title"] = cap.window_title
+    return json.dumps(payload)
 
 
-async def _xdotool(*args: str) -> str:
-    """Run `xdotool <args>`, return stdout+stderr as stripped string."""
-    proc = await asyncio.create_subprocess_exec(
-        "xdotool", *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
-    try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        return "(xdotool timeout)"
-    return out.decode("utf-8", errors="replace").strip()
+def _element_to_dict(e: UIElement) -> Dict[str, Any]:
+    return {
+        "index": e.index,
+        "role": e.role,
+        "label": e.label,
+        "bounds": list(e.bounds),
+        "app": e.app,
+        "window_id": e.window_id,
+        "pid": e.pid,
+    }
 
 
-def _fmt_result(success: bool, **kv) -> str:
-    """Format tool return value as a readable string for the LLM."""
-    parts = [f"success={success}"]
-    for k, v in kv.items():
-        parts.append(f"{k}={v!r}")
-    return ", ".join(parts)
+# ---------------------------------------------------------------------------
+# Availability check (used by the registry check_fn)
+# ---------------------------------------------------------------------------
 
 
-# ── @function_tool implementations ───────────────────────────────────
+def check_computer_use_requirements() -> bool:
+    """Return True iff computer_use can run on this host right now.
 
-
-@function_tool
-async def computer_use(task: str) -> str:
-    """Start a computer-use session to control the desktop visually.
-
-    Call this when the user wants JARVIS to operate the computer — click
-    buttons, type into fields, navigate apps. The vision backend (Kimi
-    by default, Ollama if reachable) describes the screen after each
-    action; you (the LLM) decide the next click/type. Call computer_stop
-    when the task is done.
-
-    Only one session can run at a time.
-
-    Args:
-        task: Natural-language description of what to accomplish.
+    Conditions: a reachable X11 ``$DISPLAY`` AND ``xdotool`` installed. False
+    in headless / CI environments, so the tool registers inert there.
     """
-    global _active_session
-    if _active_session is not None:
-        return "(a computer-use session is already active; call computer_stop first)"
-    _active_session = _Session(task=task)
-    try:
-        desc = await _screenshot_and_describe()
-    except Exception as e:
-        _active_session = None
-        return f"(failed to start session: {e})"
-    _active_session.last_description = desc
-    logger.info(f"[computer-use] session started: {task[:60]!r}")
-    return f"Computer-use session started.\nTask: {task}\n\nCurrent screen:\n{desc}"
+    return x11_backend_available()
 
 
-@function_tool
-async def computer_stop() -> str:
-    """End the active computer-use session.
-
-    Call this when the task is complete or when giving up. Returns a
-    summary of the task that was attempted.
-    """
-    global _active_session
-    if _active_session is None:
-        return "(no active computer-use session)"
-    task = _active_session.task
-    _active_session = None
-    logger.info(f"[computer-use] session stopped. task={task[:60]!r}")
-    return f"Computer-use session ended. Task was: {task}"
+def get_computer_use_schema() -> Dict[str, Any]:
+    return COMPUTER_USE_SCHEMA
 
 
-@function_tool
-async def click(x: int, y: int, button: str = "left", count: int = 1) -> str:
-    """Move the mouse to (x, y) and click.
+# ---------------------------------------------------------------------------
+# Registration (self-registering at import — discovered via AST scan)
+# ---------------------------------------------------------------------------
 
-    Requires an active computer_use session. Returns the updated screen
-    description after the click so you can see if it worked.
-
-    Args:
-        x:      Pixel x-coordinate from left edge of screen.
-        y:      Pixel y-coordinate from top edge of screen.
-        button: "left" (default), "right", or "middle".
-        count:  Number of clicks — 1 for single (default), 2 for double-click.
-    """
-    if _active_session is None:
-        return "(no active computer-use session; call computer_use first)"
-    try:
-        _check_guards()
-    except ComputerUseError as e:
-        return _fmt_result(False, error=str(e))
-
-    btn_map = {"left": "1", "middle": "2", "right": "3"}
-    btn = btn_map.get(button, "1")
-    await _xdotool("mousemove", "--sync", str(x), str(y))
-    for _ in range(max(1, int(count))):
-        await _xdotool("click", btn)
-
-    await asyncio.sleep(0.5)
-    try:
-        desc = await _screenshot_and_describe()
-        _record_success(desc)
-        logger.info(f"[computer-use] click({x},{y},{button}×{count})")
-        return _fmt_result(True, cursor_at=[x, y], screen=desc)
-    except Exception as e:
-        _record_failure()
-        return _fmt_result(False, error=str(e))
-
-
-@function_tool
-async def type_text(text: str, enter: bool = False) -> str:
-    """Type a string at the current cursor position.
-
-    Requires an active computer_use session. Sends keystrokes via xdotool.
-    Set enter=True to press Return after typing (e.g. submitting a search).
-
-    Args:
-        text:  The text to type.
-        enter: If True, press Return after typing (default False).
-    """
-    if _active_session is None:
-        return "(no active computer-use session; call computer_use first)"
-    try:
-        _check_guards()
-    except ComputerUseError as e:
-        return _fmt_result(False, error=str(e))
-
-    await _xdotool("type", "--clearmodifiers", "--", text)
-    if enter:
-        await _xdotool("key", "Return")
-
-    await asyncio.sleep(0.5)
-    try:
-        desc = await _screenshot_and_describe()
-        _record_success(desc)
-        logger.info(f"[computer-use] type_text({text[:40]!r}, enter={enter})")
-        return _fmt_result(True, typed=text, enter_pressed=enter, screen=desc)
-    except Exception as e:
-        _record_failure()
-        return _fmt_result(False, error=str(e))
-
-
-@function_tool
-async def scroll(x: int, y: int, amount: int) -> str:
-    """Scroll at screen position (x, y).
-
-    Requires an active computer_use session.
-
-    Args:
-        x:      Pixel x-coordinate to scroll at.
-        y:      Pixel y-coordinate to scroll at.
-        amount: Positive = scroll down, negative = scroll up. Each unit is
-                one wheel click (≈ 3 lines of text).
-    """
-    if _active_session is None:
-        return "(no active computer-use session; call computer_use first)"
-    try:
-        _check_guards()
-    except ComputerUseError as e:
-        return _fmt_result(False, error=str(e))
-
-    await _xdotool("mousemove", "--sync", str(x), str(y))
-    btn = "5" if amount > 0 else "4"
-    for _ in range(abs(int(amount))):
-        await _xdotool("click", btn)
-
-    await asyncio.sleep(0.3)
-    try:
-        desc = await _screenshot_and_describe()
-        _record_success(desc)
-        logger.info(f"[computer-use] scroll({x},{y},{amount})")
-        return _fmt_result(True, scrolled=amount, screen=desc)
-    except Exception as e:
-        _record_failure()
-        return _fmt_result(False, error=str(e))
-
-
-@function_tool
-async def drag(start_x: int, start_y: int, end_x: int, end_y: int) -> str:
-    """Click-drag from (start_x, start_y) to (end_x, end_y).
-
-    Requires an active computer_use session. Useful for sliders, drag-and-drop,
-    text selection.
-
-    Args:
-        start_x: Start pixel x.
-        start_y: Start pixel y.
-        end_x:   End pixel x.
-        end_y:   End pixel y.
-    """
-    if _active_session is None:
-        return "(no active computer-use session; call computer_use first)"
-    try:
-        _check_guards()
-    except ComputerUseError as e:
-        return _fmt_result(False, error=str(e))
-
-    await _xdotool("mousemove", "--sync", str(start_x), str(start_y))
-    await _xdotool("mousedown", "1")
-    await _xdotool("mousemove", "--sync", str(end_x), str(end_y))
-    await _xdotool("mouseup", "1")
-
-    await asyncio.sleep(0.5)
-    try:
-        desc = await _screenshot_and_describe()
-        _record_success(desc)
-        logger.info(f"[computer-use] drag ({start_x},{start_y})→({end_x},{end_y})")
-        return _fmt_result(True, dragged_to=[end_x, end_y], screen=desc)
-    except Exception as e:
-        _record_failure()
-        return _fmt_result(False, error=str(e))
-
-
-@function_tool
-async def key_press(keys: str) -> str:
-    """Press a keyboard shortcut or key combination.
-
-    Requires an active computer_use session. Uses xdotool key syntax.
-
-    Args:
-        keys: Key combination string, e.g. "ctrl+t", "alt+F4", "super",
-              "Return", "Escape", "ctrl+shift+n". Multiple keys joined with "+".
-    """
-    if _active_session is None:
-        return "(no active computer-use session; call computer_use first)"
-    try:
-        _check_guards()
-    except ComputerUseError as e:
-        return _fmt_result(False, error=str(e))
-
-    await _xdotool("key", "--clearmodifiers", keys)
-
-    await asyncio.sleep(0.5)
-    try:
-        desc = await _screenshot_and_describe()
-        _record_success(desc)
-        logger.info(f"[computer-use] key_press({keys!r})")
-        return _fmt_result(True, keys_pressed=keys, screen=desc)
-    except Exception as e:
-        _record_failure()
-        return _fmt_result(False, error=str(e))
-
-
-@function_tool
-async def wait(ms: int = 500) -> str:
-    """Wait N milliseconds for the UI to settle, then describe the screen.
-
-    Requires an active computer_use session. Use after triggering actions
-    that take time to render (page loads, animations, dialogs opening).
-
-    Args:
-        ms: Milliseconds to wait (default 500, clamped to 100..10000).
-    """
-    if _active_session is None:
-        return "(no active computer-use session; call computer_use first)"
-
-    ms = max(100, min(int(ms), 10_000))
-    await asyncio.sleep(ms / 1000.0)
-
-    try:
-        desc = await _screenshot_and_describe()
-        _record_success(desc)
-        logger.info(f"[computer-use] wait({ms}ms)")
-        return _fmt_result(True, waited_ms=ms, screen=desc)
-    except Exception as e:
-        _record_failure()
-        return _fmt_result(False, error=str(e))
-
-
-async def _live_screen_polling(
-    duration_s: int,
-    interval_s: float = 2.0,
-    on_frame=None,
-):
-    """Stream screen observations: poll screenshot+describe every interval_s.
-
-    Each frame's description is yielded via on_frame callback (if given)
-    AND collected into the final return string. Uses the dispatching
-    vision backend — Kimi cloud or Ollama local — so it works without
-    any GCP setup.
-
-    The `focus` is baked into a per-frame prompt that emphasizes brevity
-    and only-what-changed.
-    """
-    POLL_PROMPT = (
-        "In ONE short sentence, what is happening on this screen right "
-        "now? No preamble, no closer, no 'the screen shows'. Just the "
-        "key state or change."
-    )
-    descriptions = []
-    last_desc = ""
-    stop_at = time.monotonic() + duration_s
-    while time.monotonic() < stop_at:
-        try:
-            img_bytes, mime = _take_screenshot()
-            desc = await _vision_describe(
-                img_bytes, mime_type=mime, prompt=POLL_PROMPT,
-            )
-            desc = desc.strip()
-            # Skip frames where the description is a duplicate — saves
-            # voicing redundant lines when the screen hasn't changed.
-            if desc and desc != last_desc:
-                descriptions.append(desc)
-                last_desc = desc
-                if on_frame is not None:
-                    try:
-                        result = on_frame(desc)
-                        if asyncio.iscoroutine(result):
-                            await result
-                    except Exception as e:
-                        logger.warning(f"[live_screen] on_frame error: {e}")
-        except Exception as e:
-            logger.warning(f"[live_screen] frame failed: {e}")
-        # Wait until next poll, but don't overshoot the stop time.
-        remaining = stop_at - time.monotonic()
-        if remaining > 0:
-            await asyncio.sleep(min(interval_s, remaining))
-    return "\n".join(descriptions)
-
-
-@function_tool
-async def live_screen(duration_s: int = 10, focus: str = "") -> str:
-    """Stream screen observations for N seconds via polling the vision backend.
-
-    Captures a screenshot every ~2 seconds, asks the configured vision
-    model for a one-sentence description, returns the joined descriptions.
-    Works on whatever JARVIS_VISION_BACKEND points at (default: auto →
-    Ollama if local, else Kimi).
-
-    For one-shot "what's on my screen right now", use screenshot()
-    instead — single frame, one vision call.
-
-    Args:
-        duration_s: How long to stream (1..60, default 10).
-        focus:      Currently unused; the polling prompt is fixed for
-                    brevity. Kept for API compat with prior signature.
-    """
-    duration_s = max(1, min(int(duration_s), 60))
-    try:
-        t0 = time.monotonic()
-        desc = await _live_screen_polling(duration_s)
-        elapsed = time.monotonic() - t0
-        logger.info(
-            f"[computer-use] live_screen({duration_s}s polling) → "
-            f"{len(desc)} chars in {elapsed:.1f}s"
-        )
-        return desc or "(nothing visible changed during the session)"
-    except Exception as e:
-        return f"(live_screen failed: {e})"
-
-
-@function_tool
-async def screenshot() -> str:
-    """FALLBACK screen-vision tool. Takes a one-shot screenshot via
-    scrot and runs it through Gemini Flash Lite for description.
-
-    PREFER `transfer_to_screen_share(question)` for any user question
-    about screen content — that subagent uses Gemini Live with
-    continuous vision and reads text content (filenames, error
-    messages, headings) much better. `transfer_to_screen_share`
-    will self-bail back to the supervisor if the user isn't
-    actually sharing their screen, at which point falling back to
-    this `screenshot()` is correct.
-
-    When to use this tool DIRECTLY (without transferring first):
-      - The user explicitly said something like "just take a quick
-        screenshot" / "snapshot the screen", treating it as a
-        utility command rather than a question
-      - You just got "screen-share not active" / "no video frames
-        received" back from transfer_to_screen_share — this is the
-        fallback path
-
-    For computer-use action loops where coordinates are needed, the
-    computer_use → click/type tools use a different detailed prompt
-    automatically.
-    """
-    # Fast path: continuous-observer cache. Only fires when a
-    # screen-share track is currently subscribed AND the observer's
-    # last poll succeeded within OBSERVER_MAX_AGE_S.
-    try:
-        from pipeline.screen_share_observer import latest_description_global
-        cached = latest_description_global()
-        if cached is not None:
-            logger.info(
-                f"[computer-use] screenshot served from observer cache "
-                f"({len(cached)} chars, ~0ms)"
-            )
-            return cached
-    except Exception:
-        # Observer module not available or session not yet set up —
-        # silently fall through to the on-demand path.
-        pass
-
-    try:
-        t0 = time.monotonic()
-        img_bytes, mime = _take_screenshot()
-        t_capture = time.monotonic() - t0
-        t1 = time.monotonic()
-        desc = await _vision_describe(
-            img_bytes,
-            mime_type=mime,
-            prompt=VISION_QUICK_SCREEN_PROMPT,
-        )
-        t_vision = time.monotonic() - t1
-        logger.info(
-            f"[computer-use] one-shot screenshot: capture={t_capture*1000:.0f}ms "
-            f"vision={t_vision*1000:.0f}ms img={len(img_bytes)/1024:.0f}KB"
-        )
-        return desc
-    except Exception as e:
-        return f"(screenshot failed: {e})"
-
-
-# Face ID — extracted to tools/face_id.py 2026-05-10 (Step 7 of the
-# audit). Re-exported below so the existing jarvis_agent imports
-# (`from tools.computer_use import face_register, ...`) stay working.
-from tools.face_id import (
-    FACES_DIR,
-    FACE_THRESHOLD,
-    FACE_ENROLL_FRAMES,
-    FACE_LIVENESS_FRAMES,
-    IR_DEVICE,
-    face_register,
-    face_identify,
-    face_list,
-    face_delete,
+registry.register(
+    name="computer_use",
+    schema=COMPUTER_USE_SCHEMA,
+    handler=lambda args, **kw: handle_computer_use(args, **kw),
+    toolset="computer_use",
+    check_fn=check_computer_use_requirements,
+    is_async=False,
+    emoji="🖱️",
+    description=COMPUTER_USE_SCHEMA["description"],
 )
 
 
-@function_tool
-async def webcam_capture(prompt: str | None = None) -> str:
-    """Capture a frame from the webcam and return a description.
-
-    Use when the user asks what JARVIS sees, who's in the room, what
-    they look like, what they're wearing, what's on their face, etc.
-    Does NOT require an active computer_use session.
-
-    Args:
-        prompt: Optional override for the description focus
-                (e.g. "is the user smiling?"). Omit / null for default
-                "describe people + room" prompt.
-    """
-    # Signature note: `str | None = None` rather than `str = ""` so the
-    # JSON-Schema generated for tool-call validation marks `prompt` as
-    # nullable rather than as a required string. Groq's tool-call
-    # validator treated the prior `str = ""` schema as required, which
-    # caused 4xx APIErrors when the LLM omitted the field — those errors
-    # cascaded into 4× retry storms (~10s of silence per turn) and were
-    # the actual reason the user had to ask questions twice.
-    p = (prompt or "").strip() or WEBCAM_PROMPT
-    try:
-        loop = asyncio.get_running_loop()
-        frame = await loop.run_in_executor(None, _take_webcam_frame)
-        desc = await _vision_describe(
-            frame,
-            mime_type="image/jpeg",
-            prompt=p,
-        )
-        logger.info(f"[computer-use] webcam_capture ({len(frame)} bytes)")
-        return desc
-    except Exception as e:
-        return f"(webcam_capture failed: {e})"
+__all__ = [
+    "COMPUTER_USE_SCHEMA",
+    "handle_computer_use",
+    "set_approval_callback",
+    "check_computer_use_requirements",
+    "get_computer_use_schema",
+    "reset_backend_for_tests",
+]

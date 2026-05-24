@@ -116,17 +116,8 @@ install_cli() {
   if [ "${JARVIS_SKIP_CLI:-0}" = "1" ]; then warn "skipping CLI (JARVIS_SKIP_CLI=1)"; return; fi
   section "Installing CLI"
   (cd "$INSTALL_DIR/src/cli" && bun install --silent)
-  # src/hub/ is the TypeScript event-hub SDK used by src/cli/src/bridge/
-  # (which the Tauri tray polls on 127.0.0.1:8765 for status). The
-  # bridge imports from src/hub/client-core.ts, and bun resolves
-  # 'ioredis' walking up from THAT file — so it has to be installed
-  # in src/hub/node_modules, not src/cli/. (Live failure 2026-05-15:
-  # without this, start-desktop.sh's bridge child crashed at boot with
-  # "Cannot find package 'ioredis'", tray stayed red.)
-  if [ -f "$INSTALL_DIR/src/hub/package.json" ]; then
-    (cd "$INSTALL_DIR/src/hub" && bun install --silent)
-    ok "hub TS deps installed (resolves ioredis for src/cli/src/bridge)"
-  fi
+  # The CLI bridge (src/cli/src/bridge/) has an orphaned import that
+  # won't resolve at runtime — accepted while src/cli/ remains off-limits.
   mkdir -p "$LOCAL_BIN"
   ln -sf "$INSTALL_DIR/bin/jarvis"         "$LOCAL_BIN/jarvis"
   ln -sf "$INSTALL_DIR/bin/jarvis-desktop" "$LOCAL_BIN/jarvis-desktop"
@@ -149,20 +140,65 @@ install_web() {
 }
 
 # ── Channel: Voice agent ─────────────────────────────────────────────────
+# Uses uv (Astral) for Python install + venv + dependency sync. uv is
+# 10-100x faster than pip for cold resolves, handles the Python install
+# itself if absent, and matches the Windows installer (install.ps1) so
+# both platforms run the same package manager. Falls back to system
+# python3 + pip when uv is unavailable or the user opts out via
+# JARVIS_NO_UV=1.
 install_voice_agent() {
   if [ "${JARVIS_SKIP_VOICE:-0}" = "1" ]; then warn "skipping Voice Agent (JARVIS_SKIP_VOICE=1)"; return; fi
   section "Installing Voice Agent (~2–3 min; livekit-agents is heavy)"
 
   local va="$INSTALL_DIR/src/voice-agent"
-  if [ ! -d "$va/.venv" ]; then
-    python3 -m venv "$va/.venv"
-    ok "created venv at $va/.venv"
-  else
-    ok "venv exists; reusing"
+  local use_uv=0
+  if [ "${JARVIS_NO_UV:-0}" != "1" ]; then
+    if have uv; then
+      use_uv=1
+      sub "using uv ($(uv --version 2>/dev/null | head -1))"
+    else
+      sub "uv not installed; installing via astral.sh/uv installer (no sudo needed)"
+      # Astral's official installer drops uv into ~/.local/bin (or
+      # ~/.cargo/bin on systems where that's the convention). Idempotent;
+      # safe to re-run.
+      if curl -fsSL https://astral.sh/uv/install.sh | sh >/dev/null 2>&1; then
+        # Refresh PATH for this run so we see the newly-installed binary.
+        export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+        if have uv; then
+          use_uv=1
+          ok "installed uv ($(uv --version 2>/dev/null | head -1))"
+        fi
+      fi
+      if [ "$use_uv" != "1" ]; then
+        warn "uv install failed -- falling back to python3 -m venv + pip (slower)"
+      fi
+    fi
   fi
-  "$va/.venv/bin/pip" install --quiet --upgrade pip
-  "$va/.venv/bin/pip" install --quiet -r "$va/requirements.txt"
-  ok "deps installed"
+
+  if [ "$use_uv" = "1" ]; then
+    if [ ! -d "$va/.venv" ]; then
+      # `uv venv` creates the venv and pins the Python version in one
+      # step; no ensurepip / pip-upgrade dance needed afterwards.
+      uv venv "$va/.venv" --python 3.13 || uv venv "$va/.venv" --python 3.12 || uv venv "$va/.venv"
+      ok "created venv at $va/.venv via uv"
+    else
+      ok "venv exists; reusing"
+    fi
+    # Tell uv where to install (no activation needed).
+    VIRTUAL_ENV="$va/.venv" UV_PROJECT_ENVIRONMENT="$va/.venv" \
+      uv pip install --requirement "$va/requirements.txt"
+    ok "deps installed via uv"
+  else
+    if [ ! -d "$va/.venv" ]; then
+      python3 -m venv "$va/.venv"
+      ok "created venv at $va/.venv"
+    else
+      ok "venv exists; reusing"
+    fi
+    "$va/.venv/bin/pip" install --quiet --upgrade pip
+    "$va/.venv/bin/pip" install --quiet -r "$va/requirements.txt"
+    ok "deps installed via pip"
+  fi
 
   install_playwright_chromium "$va"
   install_systemd_units
@@ -172,8 +208,7 @@ install_voice_agent() {
 # Fetches the bundled Chromium binary Playwright needs for the browser
 # subagent's CDP fallback path (tools/browser_cdp.py). Skip with
 # JARVIS_SKIP_CDP=1 — the voice-agent still imports and runs without
-# the binary; only the CDP fallback path bails with a clear error. The
-# extension path is always available.
+# the binary; only the CDP fallback path bails with a clear error.
 install_playwright_chromium() {
   local va="$1"
   if [ "${JARVIS_SKIP_CDP:-0}" = "1" ]; then
@@ -186,7 +221,7 @@ install_playwright_chromium() {
     return
   fi
   sub "About to download ~200MB of Chromium for browser CDP fallback"
-  sub "(skip with JARVIS_SKIP_CDP=1; extension path always available)"
+  sub "(skip with JARVIS_SKIP_CDP=1 — CDP fallback won't work without it)"
   # Non-interactive installs (e.g. curl|bash) → auto-yes.
   if [ ! -t 0 ]; then
     sub "non-interactive shell — proceeding with download"
@@ -210,10 +245,9 @@ install_systemd_units() {
   # status=226/NAMESPACE (systemd refuses to bind-mount a non-existent
   # path even if the ExecStart script would create it). The units
   # have ExecStartPre fallbacks too — this is belt-and-suspenders.
-  mkdir -p "$HOME/.local/share/jarvis/logs"   # voice-agent + hub + livekit-server log dest
-  mkdir -p "$HOME/.jarvis/hub"                # hub state.db lives here
+  mkdir -p "$HOME/.local/share/jarvis/logs"   # voice-agent + livekit-server log dest
   mkdir -p "$HOME/.jarvis/snapshots"           # hourly backup snapshots
-  chmod 700 "$HOME/.jarvis/snapshots"          # contains conversation + memory content
+  chmod 700 "$HOME/.jarvis/snapshots"          # contains telemetry detail
 
   local sed_path_subs=(
     -e "s|%h/Documents/Projects/jarvis|$INSTALL_DIR|g"
@@ -221,8 +255,8 @@ install_systemd_units() {
     -e "s|/home/[^/]*/jarvis|$INSTALL_DIR|g"
   )
 
-  # Always-on services (voice-agent, voice-client, hub, livekit-server).
-  for src in jarvis-voice-agent.service jarvis-voice-client.service jarvis-hub.service livekit-server.service; do
+  # Always-on services (voice-agent, voice-client, livekit-server).
+  for src in jarvis-voice-agent.service jarvis-voice-client.service livekit-server.service; do
     sed "${sed_path_subs[@]}" "$INSTALL_DIR/setup/systemd/$src" > "$USER_SYSTEMD/$src"
     ok "installed unit: $USER_SYSTEMD/$src"
   done
@@ -244,9 +278,9 @@ install_systemd_units() {
   systemctl --user daemon-reload
 
   # Enable always-on services (NOT started — user runs them after
-  # configuring .env). Enable order matters: SFU + Redis first, then
-  # agent + client.
-  for unit in livekit-server.service jarvis-hub.service jarvis-voice-agent.service jarvis-voice-client.service; do
+  # configuring .env). Enable order matters: SFU first, then agent +
+  # client.
+  for unit in livekit-server.service jarvis-voice-agent.service jarvis-voice-client.service; do
     systemctl --user enable "$unit" >/dev/null 2>&1 \
       && ok "enabled $unit (NOT started — configure .env first)" \
       || warn "could not enable $unit"
@@ -453,31 +487,6 @@ install_echo_cancel_aec() {
   fi
 }
 
-setup_redis() {
-  # jarvis-hub talks to redis at 127.0.0.1:6379. We use the system
-  # redis-server.service (not a user unit) because it's the conventional
-  # path and your distro almost certainly installs it that way.
-  if ! have redis-server; then
-    warn "redis-server not installed — needed by jarvis-hub.service"
-    sub "Install: sudo apt install redis-server   (Debian/Ubuntu/Kali)"
-    sub "         sudo pacman -S redis            (Arch)"
-    return
-  fi
-  if systemctl is-active --quiet redis-server.service 2>/dev/null; then
-    ok "redis-server.service is already active"
-    return
-  fi
-  # Try to enable + start; if sudo prompts for password and we're in
-  # a non-interactive curl-pipe, this will fail. Falls through to
-  # printed instructions.
-  if sudo -n systemctl enable --now redis-server.service >/dev/null 2>&1; then
-    ok "enabled + started redis-server.service"
-  else
-    warn "could not auto-start redis-server (sudo not NOPASSWD); run manually:"
-    sub "sudo systemctl enable --now redis-server.service"
-  fi
-}
-
 # ── Computer-use subagent dependencies (optional) ────────────────────────
 check_computer_use_deps() {
   # Computer-use subagent dependencies (optional — only needed if
@@ -540,10 +549,10 @@ install_desktop_entry() {
   local exec_path="$INSTALL_DIR/src/desktop-tauri/src-tauri/target/release/jarvis-desktop"
   # The Tauri default icons (src-tauri/icons/{32x32,128x128,tray}.png)
   # are placeholder Tauri logos from `tauri init` (cyan circle, ~500 B).
-  # The actual JARVIS branding is the concentric-rings logo committed
-  # with the Chrome extension. Reuse it so the app-menu entry matches
-  # what JARVIS looks like everywhere else.
-  local icon_path="$INSTALL_DIR/src/extensions/jarvis-screen/icon128.png"
+  # The actual JARVIS branding is the concentric-rings logo at
+  # src-tauri/icons/jarvis-rings-128.png. Reuse it so the app-menu entry
+  # matches what JARVIS looks like everywhere else.
+  local icon_path="$INSTALL_DIR/src/desktop-tauri/src-tauri/icons/jarvis-rings-128.png"
 
   mkdir -p "$apps_dir"
   cat > "$entry" <<EOF
@@ -621,39 +630,6 @@ EOF
   ok "created $INSTALL_DIR/.env (chmod 600 — fill in your real keys before starting the voice agent)"
 }
 
-# ── Chrome extension instructions ────────────────────────────────────────
-chrome_extension_step() {
-  section "Chrome extension (manual final step)"
-  cat <<EOF
-  The JARVIS browser extension cannot be installed programmatically —
-  Chrome blocks third-party extensions from being side-loaded by curl.
-
-  To load it:
-    1. Open chrome://extensions in Chrome/Chromium
-    2. Toggle 'Developer mode' (top-right)
-    3. Click 'Load unpacked'
-    4. Select: $INSTALL_DIR/src/extensions/jarvis-screen/
-
-EOF
-  # chrome:// URLs only work in a Chromium-based browser. xdg-open will
-  # route to the default browser, which is usually Firefox — and
-  # Firefox can't render chrome:// URLs. Try each known Chromium-family
-  # browser by name; if none is found, just print the path so the
-  # user can copy/paste.
-  local chrome_bin=""
-  for cand in google-chrome google-chrome-stable chromium chromium-browser brave-browser microsoft-edge; do
-    if have "$cand"; then chrome_bin="$cand"; break; fi
-  done
-  if [ -n "$chrome_bin" ]; then
-    "$chrome_bin" "chrome://extensions/" >/dev/null 2>&1 &
-    disown 2>/dev/null || true
-    ok "opened chrome://extensions/ in $chrome_bin"
-  else
-    warn "no Chromium-based browser found on PATH — open the URL manually"
-    sub "Path to copy: $INSTALL_DIR/src/extensions/jarvis-screen/"
-  fi
-}
-
 # ── Final summary ────────────────────────────────────────────────────────
 print_summary() {
   section "Done"
@@ -663,12 +639,10 @@ print_summary() {
 
   Next steps:
     1. Edit $INSTALL_DIR/.env and fill in real API keys.
-    2. Start the SFU + hub + voice agent + voice client (in this order —
-       voice-agent requires livekit-server, jarvis-hub requires Redis,
-       voice-client is the desktop's native PortAudio bridge):
-         sudo systemctl enable --now redis-server.service   # if not done
+    2. Start the SFU + voice agent + voice client (in this order —
+       voice-agent requires livekit-server, voice-client is the
+       desktop's native PortAudio bridge):
          systemctl --user start livekit-server.service
-         systemctl --user start jarvis-hub.service
          systemctl --user start jarvis-voice-agent.service
          systemctl --user start jarvis-voice-client.service
        Logs:
@@ -710,12 +684,10 @@ main() {
   install_bubblewrap     # bash-tool sandbox runtime (§P0-SEC-7)
   generate_bridge_token  # ~/.jarvis/local-api-token.env + web .env.local
   setup_livekit_keys
-  setup_redis
   check_computer_use_deps  # optional probes for computer_use subagent
   install_audio_profile
   install_echo_cancel_aec
   setup_env_template
-  chrome_extension_step
   print_summary
 }
 

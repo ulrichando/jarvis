@@ -2,11 +2,8 @@
 JARVIS_INSTRUCTIONS.
 
 The static prompt lives at `prompts/supervisor.md` (loaded once at
-import). Three blocks are appended fresh on every turn or rule change:
+import). Two blocks are appended fresh on every turn:
 
-  - learned-rules block — bullets from `~/.jarvis/learned_rules.md`,
-    capped at MAX_LEARNED_RULES, hot-reloaded if the file changed
-    since the last turn.
   - memory block — handled by `_build_memory_block()` in jarvis_agent
     (still inline because of its sanitization-regex dependencies).
   - breaker-status block — naming open/half-open Groq breakers so the
@@ -27,10 +24,9 @@ logger = logging.getLogger("jarvis.prompt_builder")
 
 
 __all__ = [
-    "MAX_LEARNED_RULES",
-    "LEARNED_RULES_PATH",
-    "load_learned_rules",
     "build_breaker_status_block",
+    "build_skill_catalog_block",
+    "SKILL_CATALOG_CHAR_BUDGET",
     "SOUL_PATH_DEFAULT",
     "SOUL_PATH_OVERRIDE",
     "MAX_SOUL_CHARS",
@@ -39,56 +35,10 @@ __all__ = [
 ]
 
 
-# ── Learned-rules block ──────────────────────────────────────────────
-# Cap on how many rules to inject; oldest beyond this are silently
-# dropped from the injection (the file itself is untouched).
-MAX_LEARNED_RULES: int = 100
-
-# Source of the learned-rules store. PROPOSALS_PATH was retired
-# 2026-05-12 alongside tools/log_analyzer.py — autonomous evolution
-# via pipeline.evolution.* is the only producer now.
-LEARNED_RULES_PATH: Path = Path.home() / ".jarvis" / "learned_rules.md"
-
-
-def load_learned_rules() -> str:
-    """Read `LEARNED_RULES_PATH` and return a system-prompt block.
-
-    When `JARVIS_LEARNED_RULES_V2=1`, dispatches to the v2 loader
-    which understands tiered sections + anchor sha-check. Otherwise
-    keeps the legacy bullet-prefix reader unchanged.
-    """
-    import os
-    if os.environ.get("JARVIS_LEARNED_RULES_V2") == "1":
-        from pipeline.learned_rules_v2 import load_learned_rules_v2
-        v2_block = load_learned_rules_v2()
-        if v2_block:
-            return v2_block
-    try:
-        content = LEARNED_RULES_PATH.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return ""
-    except Exception as e:
-        logger.warning(f"[learned-rules] read failed: {e}")
-        return ""
-    lines = [l for l in content.splitlines() if l.strip().startswith("-")]
-    if not lines:
-        return ""
-    if len(lines) > MAX_LEARNED_RULES:
-        lines = lines[-MAX_LEARNED_RULES:]
-    rules_text = "\n".join(lines)
-    return (
-        "\n\n═══ LEARNED BEHAVIORAL RULES ═══\n\n"
-        "These rules were added by Ulrich via voice corrections or confirmed\n"
-        "from log analysis. They are BINDING — treat them as higher priority\n"
-        "than any default behavior described elsewhere in this prompt:\n\n"
-        + rules_text
-    )
-
-
 # ── Soul (primary identity) ──────────────────────────────────────────
 # JARVIS's identity/voice/character lives in `prompts/soul.md` and is
 # loaded as slot #1 of the supervisor system prompt (ahead of the ops
-# rules in supervisor.md). This mirrors Hermes' SOUL.md model: a clean,
+# rules in supervisor.md). This follows the same model: a clean,
 # editable identity layer decoupled from operational instructions.
 #
 # Resolution order (hybrid, per 2026-05-20 soul design):
@@ -126,7 +76,7 @@ DEFAULT_SOUL: str = (
 )
 
 # Prompt-injection threat patterns for the UNTRUSTED override only.
-# Ported from Hermes' prompt_builder._scan_context_content.
+# Same threat patterns used in the soul-override injection scan.
 _SOUL_THREAT_PATTERNS: list[tuple[str, str]] = [
     (r'ignore\s+(previous|all|above|prior)\s+instructions', "prompt_injection"),
     (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
@@ -236,3 +186,78 @@ def build_breaker_status_block(breakers) -> str:
         f"unless asked. Don't preface every reply with the status; "
         f"only mention it when latency is noticed or asked about."
     )
+
+
+# ── Skill-catalog block ──────────────────────────────────────────────
+# Hard character budget for the catalog — generous enough for a meaningful
+# list of skills with their when_to_use text, but bounded so it can't
+# balloon the prompt and churn the prefix cache.  ~1500 chars fits roughly
+# 15-25 skills with one-line descriptions before truncation kicks in.
+SKILL_CATALOG_CHAR_BUDGET: int = 1500
+
+_CATALOG_HEADER = "\n\n═══ SKILL CATALOG ═══\n\n"
+_CATALOG_FOOTER_TEMPLATE = "(+{n} more — call skills_list to see all)"
+
+
+def build_skill_catalog_block(skills) -> str:
+    """Return a compact skill-catalog block listing each skill's name and
+    one-line `when_to_use` (or `description`) for injection into the
+    supervisor system prompt.
+
+    Design goals:
+      - Session-stable: built ONCE at session start alongside the memory and
+        breaker blocks; never rebuilt per-turn so the prefix cache stays warm.
+      - Bounded: total block length is capped at SKILL_CATALOG_CHAR_BUDGET.
+        If the full list would exceed the budget, a truncation note tells the
+        LLM to call `skills_list` for the full inventory.
+      - Zero cost when empty: returns "" when there are no skills (same pattern
+        as build_breaker_status_block).
+
+    `skills` may be any iterable of objects with `.name` and `.when_to_use`
+    (or `.description`) attributes — accepts a list[Skill] or SkillsRegistry.
+    """
+    items = list(skills)
+    if not items:
+        return ""
+
+    # Build rows: "- <name>: <one-line when_to_use>"
+    # Prefer when_to_use; fall back to description; then the name alone.
+    rows: list[str] = []
+    for sk in items:
+        label = (
+            getattr(sk, "when_to_use", None)
+            or getattr(sk, "description", None)
+            or sk.name
+        )
+        # Collapse multi-line when_to_use to a single line.
+        label_oneline = " ".join(label.split())
+        rows.append(f"- {sk.name}: {label_oneline}")
+
+    # Assemble greedily within budget, leaving room for the header and
+    # a possible truncation footer.
+    footer_placeholder = _CATALOG_FOOTER_TEMPLATE.format(n=len(rows))
+    # Budget available for the skill rows themselves.
+    budget_for_rows = (
+        SKILL_CATALOG_CHAR_BUDGET
+        - len(_CATALOG_HEADER)
+        - len(footer_placeholder)
+        - 2  # newline before footer
+    )
+
+    included: list[str] = []
+    accumulated = 0
+    for row in rows:
+        line_cost = len(row) + 1  # +1 for the newline
+        if accumulated + line_cost > budget_for_rows:
+            break
+        included.append(row)
+        accumulated += line_cost
+
+    body = "\n".join(included)
+    omitted = len(rows) - len(included)
+    if omitted > 0:
+        footer = "\n" + _CATALOG_FOOTER_TEMPLATE.format(n=omitted)
+    else:
+        footer = ""
+
+    return _CATALOG_HEADER + body + footer
