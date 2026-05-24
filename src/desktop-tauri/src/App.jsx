@@ -178,8 +178,24 @@ export default function App() {
     reportPanelBounds({ x: 0, y: 0, w: 0, h: 0 })
   }, [setClickThrough, setLayer, syncChatState, reportPanelBounds])
 
-  const openVoiceChat  = useCallback(() => setVoiceChatOpen(true),  [])
-  const closeVoiceChat = useCallback(() => setVoiceChatOpen(false), [])
+  // Voice-chat open/close — mirrors openChat's window-state flips so
+  // the panel is actually visible + clickable. Without setClickThrough
+  // /setLayer the panel renders inside a click-through window and the
+  // user sees nothing happen on tray click.
+  const openVoiceChat = useCallback(() => {
+    setClickThrough(false)
+    setLayer(true)
+    setVoiceChatOpen(true)
+  }, [setClickThrough, setLayer])
+  const closeVoiceChat = useCallback(() => {
+    setVoiceChatOpen(false)
+    // Only revert click-through if the other panel isn't holding it open.
+    if (!chatOpenRef.current) {
+      setClickThrough(true)
+      setLayer(false)
+      reportPanelBounds({ x: 0, y: 0, w: 0, h: 0 })
+    }
+  }, [setClickThrough, setLayer, reportPanelBounds])
 
   // Ref so the tray-toggle handler always reads the current state
   // without re-subscribing the listener on every chatOpen change.
@@ -326,6 +342,7 @@ export default function App() {
         <VoiceChatPanel
           isOpen={voiceChatOpen}
           onClose={closeVoiceChat}
+          onBoundsChange={reportPanelBounds}
           voiceMuted={voiceMuted}
           setVoiceMuted={setVoiceMuted}
         />
