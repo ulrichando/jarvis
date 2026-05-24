@@ -3640,6 +3640,19 @@ class JarvisAgent(Agent):
                 f"{type(_t12_err).__name__}: {_t12_err}"
             )
 
+        # Spec 2026-05-24, Track 1 — explicit save/recall trigger inject.
+        # Runs after all drop/StopResponse gates and after T12 inject,
+        # before the supervisor sees the turn. `raw` is the unprocessed
+        # transcript (not lowercased `text`) so the regex sees natural
+        # capitalisation (e.g. "Don't forget").
+        try:
+            trigger_fired = _maybe_inject_trigger_message(turn_ctx, raw)
+            if trigger_fired:
+                # Store for the post-turn telemetry write (Task 8/T8 wires the column)
+                self._jarvis_turn_trigger_fired = trigger_fired
+        except Exception as e:  # noqa: BLE001 — never let trigger break the turn
+            logger.warning("[trigger] inject path failed: %s", e)
+
         # Gated cross-session auto-recall (cheap path; never blocks — see
         # pipeline.memory_provider). Placed here — AFTER every drop /
         # StopResponse gate (CUA-confirm, garbage, echo, silent-mode,
@@ -4222,6 +4235,107 @@ _KILL_PHRASES = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+
+# ─── Save / recall triggers (Spec 2026-05-24, Track 1) ──────────────────────
+#
+# Liberal-by-design regex. Matches are necessary-but-not-sufficient: the
+# supervisor LLM is the second gate and decides whether to actually save.
+# A "false positive" here just costs ~50 tokens of inject prompt; it does
+# NOT cause a bad memory write.
+#
+# Gated by JARVIS_SAVE_TRIGGER_LIVE / JARVIS_RECALL_TRIGGER_LIVE env vars
+# (default shadow — log match, don't inject).
+
+_SAVE_TRIGGER_RE = re.compile(
+    r"""(?ix)
+    (?:^|[.?!,\s])\s*
+    (?:
+        remember\s+(?:this|that|me|to)\b
+      | save\s+(?:this|that|it)\b
+      | don'?t\s+forget\b
+      | write\s+this\s+down\b
+      | memori[sz]e\s+(?:this|that|it|for)\b
+    )
+    """
+)
+
+_RECALL_TRIGGER_RE = re.compile(
+    r"""(?ix)
+    (?:^|[.?!,\s])\s*
+    (?:
+        do\s+you\s+remember\b
+      | what\s+did\s+i\s+tell\s+you\b
+      | have\s+i\s+told\s+you\b
+      | remind\s+me\s+(?:about|of|what)\b
+    )
+    """
+)
+
+_SAVE_TRIGGER_SYSTEM_MESSAGE = (
+    "USER REQUESTED A SAVE. Identify the durable fact / preference / "
+    "procedure in their message and call `memory()` (target='user' for "
+    "facts about Ulrich, 'memory' for environment notes, 'procedure' for "
+    "named multi-step processes — supply 'name' as a kebab-case identifier) "
+    "BEFORE replying. Then reply with a short acknowledgment ('got it' / 'saved')."
+)
+
+_RECALL_TRIGGER_SYSTEM_MESSAGE = (
+    "USER REQUESTED A RECALL. Call `recall(query=<their question>)` FIRST "
+    "to fetch what you know about them from past conversations. Use the "
+    "returned context to answer. Do NOT reply 'this conversation just "
+    "started' or 'I don't have prior context'."
+)
+
+
+def _maybe_inject_trigger_message(chat_ctx, user_text: str) -> "str | None":
+    """Run save/recall trigger regex on user_text. If a trigger fires AND
+    the corresponding LIVE env var is set, inject a system message into
+    chat_ctx and return 'save' / 'recall'. In shadow mode (LIVE unset),
+    log the match and return 'save_shadow' / 'recall_shadow' but do NOT
+    inject. Returns None if no trigger matched.
+
+    Spec 2026-05-24, Track 1. The regex is liberal; the supervisor LLM
+    is the second gate."""
+    text = (user_text or "").strip()
+    if not text:
+        return None
+
+    save_match = bool(_SAVE_TRIGGER_RE.search(text))
+    recall_match = bool(_RECALL_TRIGGER_RE.search(text))
+
+    if save_match:
+        live = os.environ.get("JARVIS_SAVE_TRIGGER_LIVE", "0") == "1"
+        mode = "live" if live else "shadow"
+        logger.info(
+            "[trigger] save_trigger matched: user_text=%r (mode=%s)",
+            text[:120], mode,
+        )
+        if live:
+            try:
+                chat_ctx.add_message(role="system", content=_SAVE_TRIGGER_SYSTEM_MESSAGE)
+                return "save"
+            except Exception as e:
+                logger.warning("[trigger] save_trigger inject failed: %s", e)
+                return "save_shadow"
+        return "save_shadow"
+
+    if recall_match:
+        live = os.environ.get("JARVIS_RECALL_TRIGGER_LIVE", "0") == "1"
+        mode = "live" if live else "shadow"
+        logger.info(
+            "[trigger] recall_trigger matched: user_text=%r (mode=%s)",
+            text[:120], mode,
+        )
+        if live:
+            try:
+                chat_ctx.add_message(role="system", content=_RECALL_TRIGGER_SYSTEM_MESSAGE)
+                return "recall"
+            except Exception as e:
+                logger.warning("[trigger] recall_trigger inject failed: %s", e)
+                return "recall_shadow"
+        return "recall_shadow"
+
+    return None
 
 
 def _register_state_tracking_handlers(session) -> None:
