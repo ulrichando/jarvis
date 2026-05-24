@@ -503,7 +503,7 @@ def make_dispatch_handler(
                 # at startup, not per-turn.
                 api_key = os.environ.get("GROQ_API_KEY", "")
                 if not api_key:
-                    return "TASK"
+                    return "TASK_OTHER"
                 async with _aiohttp.ClientSession() as s:
                     async with s.post(
                         "https://api.groq.com/openai/v1/chat/completions",
@@ -517,7 +517,7 @@ def make_dispatch_handler(
                         timeout=_aiohttp.ClientTimeout(total=2.0),
                     ) as r:
                         if r.status != 200:
-                            return "TASK"
+                            return "TASK_OTHER"
                         data = await r.json()
                         return data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
 
