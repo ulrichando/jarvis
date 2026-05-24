@@ -966,14 +966,22 @@ def self_improve_disabled() -> bool:
 
 def is_hard_turn(snapshot: TurnSnapshot) -> bool:
     """Live-turn equivalent of ``select_review_candidates``' WHERE clause:
-    a turn is "hard" (worth a review) iff a subagent fired, OR the
-    computer-use loop ran >=1 step, OR a TASK/REASONING turn produced a
-    long reply (>= ``JARVIS_SKILL_REVIEW_LONG_REPLY_CHARS``). Pure; no I/O.
+    a turn is "hard" (worth a review) iff one of:
+      - a subagent fired (legacy; always False since 2026-05-20 rebuild)
+      - the computer-use loop ran >=1 step
+      - TASK/REASONING with a long reply (>= ``JARVIS_SKILL_REVIEW_LONG_REPLY_CHARS``)
+      - **2026-05-24: TASK/REASONING with zero tool calls AND a strong
+        completion claim in the reply text** — the confab signature.
+        Catches short replies like "Chrome is open." / "Done — typed
+        anime." that the length gate misses but that clearly need a
+        reviewer pass (live failure session ``AJ_fArDaLyGWFsV`` made
+        this gap visible).
 
     Keeping this in lock-step with the SQL criterion means the live
     autonomous path reviews exactly the same class of turns the batch/CLI
-    path would have picked — banter, short replies, and emotional turns are
-    excluded by construction (the auto-spam guard)."""
+    path would have picked — banter, short replies, and emotional turns
+    are excluded by construction (the auto-spam guard), EXCEPT for the
+    new confab-shape branch which is itself a strong signal."""
     if snapshot.subagent:
         return True
     if snapshot.computer_use_steps and snapshot.computer_use_steps >= 1:
@@ -982,6 +990,23 @@ def is_hard_turn(snapshot: TurnSnapshot) -> bool:
         snapshot.jarvis_text or ""
     ) >= _long_reply_chars():
         return True
+    # Confab-shape branch: short TASK/REASONING reply that claims a
+    # completed action but fired no tools. Route it to the reviewer so
+    # the autonomous loop can propose a fix (procedure, prompt patch,
+    # or memory) rather than letting the confab slip through silently.
+    if (
+        snapshot.route in ("TASK", "REASONING")
+        and (snapshot.tool_call_count or 0) == 0
+        and snapshot.jarvis_text
+    ):
+        try:
+            from confab_detector import looks_like_completion_claim
+            looks, _pat = looks_like_completion_claim(snapshot.jarvis_text)
+            if looks:
+                return True
+        except Exception:
+            # Defensive — never block a turn-boundary helper on import error.
+            pass
     return False
 
 
