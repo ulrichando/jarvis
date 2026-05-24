@@ -4639,6 +4639,48 @@ def _build_initial_prompt_state(active_speech_id: str) -> dict:
     }
 
 
+async def maybe_publish_assistant_says(
+    *,
+    room: "rtc.Room",
+    item: object,
+    role: str | None,
+    text: str | None,
+) -> None:
+    """Mirror an assistant chat item to the LiveKit data channel as
+    `{"type": "assistant_says", "text", "ts_ms"}`. Idempotent — tags
+    the item with `_jarvis_published_says=True` on first publish and
+    no-ops on subsequent calls for the same item.
+
+    Used by the conversation_item_added handler to feed the desktop
+    tray chat panel (and any other future SSE subscriber). Errors are
+    logged at debug and swallowed — a publish failure must not break
+    voice-mode chat-ctx accounting.
+    """
+    if role != "assistant":
+        return
+    if not (text or "").strip():
+        return
+    if getattr(item, "_jarvis_published_says", False):
+        return
+    try:
+        import json as _json_pub
+        payload = _json_pub.dumps({
+            "type": "assistant_says",
+            "text": text,
+            "ts_ms": int(time.monotonic() * 1000),
+        }).encode("utf-8")
+        try:
+            item._jarvis_published_says = True
+        except Exception:
+            # Read-only item (e.g. __slots__) — best effort. May
+            # double-publish on re-fire; LiveKit + the SSE subscriber
+            # set both tolerate that.
+            pass
+        await room.local_participant.publish_data(payload, reliable=True)
+    except Exception as _e:
+        logger.debug(f"[chat-panel] assistant_says publish failed: {_e!r}")
+
+
 async def entrypoint(ctx: JobContext) -> None:
     """
     Runs once per client that joins a room. This is the actual
@@ -5001,6 +5043,15 @@ async def entrypoint(ctx: JobContext) -> None:
                         "[barge-in] truncated assistant turn %d→%d chars at audio_end_ms=%d",
                         original_len, len(text), audio_end_ms,
                     )
+            # Mirror assistant turns to the LiveKit data channel for
+            # subscribers like the tray chat panel. Idempotent; no-ops
+            # for user turns + empty text. Fire-and-forget — the helper
+            # swallows publish errors.
+            asyncio.create_task(
+                maybe_publish_assistant_says(
+                    room=ctx.room, item=item, role=role, text=text,
+                )
+            )
             # Background sync to the cloud memory provider (no-op when the
             # layer is off — JARVIS_MEMORY_PROVIDER unset → sync_item_async
             # returns immediately). Reuses this handler's already-extracted
