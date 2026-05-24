@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Wrapper invoked by pipeline/automod/spawner.py for each admitted intent.
+# Branches from master, spawns `bin/jarvis -p` with a rules prompt that
+# constrains the CLI to src/voice-agent/ only, runs pytest, commits on
+# green, and calls finalize.py to write the artifact JSON.
+#
+# Spec: docs/superpowers/specs/2026-05-24-jarvis-source-code-self-mod-design.md
+
+set -euo pipefail
+
+INTENT_FILE="$1"
+ID="$(basename "$INTENT_FILE" .intent.txt)"
+LOG="$HOME/.jarvis/auto-mods/$ID.log"
+mkdir -p "$(dirname "$LOG")"
+
+REPO_ROOT="/home/ulrich/Documents/Projects/jarvis"
+cd "$REPO_ROOT"
+
+BRANCH="automod/$ID"
+{
+  echo "[$(date -u +%FT%TZ)] [automod-impl] starting id=$ID"
+  echo "[$(date -u +%FT%TZ)] [automod-impl] cwd=$REPO_ROOT branch=$BRANCH"
+
+  git checkout master
+  git checkout -b "$BRANCH"
+
+  INTENT_BODY="$(cat "$INTENT_FILE")"
+
+  PROMPT="You are JARVIS auto-mod. A targeted code change has been
+requested:
+
+${INTENT_BODY}
+
+HARD RULES (violating ANY means the spawner will reject your commit and delete this branch):
+
+1. Edit ONLY files under src/voice-agent/.
+2. Do NOT touch ANY of these paths:
+   - src/voice-agent/sanitizers/
+   - src/voice-agent/confab_detector.py
+   - src/voice-agent/pipeline/automod/
+   - src/voice-agent/pipeline/skill_review.py
+   - src/voice-agent/prompts/soul.md
+   - CLAUDE.md
+   - .claude/rules/regression-prevention.md
+   - MEMORY.md
+   - USER.md
+3. Do NOT delete tests or weaken assertions. You MAY add tests.
+4. Do NOT add @pytest.mark.skip / @pytest.mark.skipif / @pytest.mark.xfail.
+5. Before committing, run:
+     cd src/voice-agent && .venv/bin/python -m pytest tests/ -q
+6. If tests fail: DO NOT commit. Print the failure summary and stop.
+7. If tests pass: git add only the files you edited (NEVER git add -A).
+   Commit with a one-line Conventional Commit message describing the change.
+8. DO NOT push.
+9. Stop after ONE commit. Do NOT iterate.
+
+The change must be focused and minimal. If you can't reduce the intent
+to <=5 files and <=2000 diff lines, ABORT -- print why and exit without
+committing."
+
+  export JARVIS_AUTOMOD_NO_NETWORK=1
+  timeout 600 "$REPO_ROOT/bin/jarvis" -p "$PROMPT" || true
+
+  "$REPO_ROOT/src/voice-agent/.venv/bin/python" \
+    "$REPO_ROOT/src/voice-agent/pipeline/automod/finalize.py" \
+    "$ID" "$BRANCH"
+} >>"$LOG" 2>&1
