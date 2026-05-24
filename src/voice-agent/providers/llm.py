@@ -44,6 +44,7 @@ except Exception:  # pragma: no cover — install-only guard
     lk_anthropic = None
     _ANTHROPIC_AVAILABLE = False
 
+from pipeline import specialty_routes as _specialty
 from pipeline.dispatching_llm import DispatchingLLM
 from pipeline.settings import read_unified_setting
 from resilience import LLM_BREAKER
@@ -900,6 +901,17 @@ _GROQ_LEGACY_PER_ROUTE: dict[str, tuple[str, float]] = {
     "TASK":      ("llama-3.3-70b-versatile",                 0.6),
     "REASONING": ("qwen/qwen3-32b",                          0.6),
     "EMOTIONAL": ("meta-llama/llama-4-scout-17b-16e-instruct", 0.7),
+    # 2026-05-24: TASK_* sub-routes inherit the TASK Groq-legacy
+    # rung (llama-3.3-70b-versatile). The per-sub-route primary in
+    # _ANTH_DEFAULT_PER_ROUTE differs, but rung 2 is uniform for
+    # task-shaped work — Groq's 70B model is the established
+    # tool-using fallback. Pre-TTS gate (Task 6) consumes the
+    # retry-tier slots of the spec ladder when it trips.
+    "TASK_DESKTOP": ("llama-3.3-70b-versatile",              0.6),
+    "TASK_BROWSER": ("llama-3.3-70b-versatile",              0.6),
+    "TASK_CODE":    ("llama-3.3-70b-versatile",              0.6),
+    "TASK_FILES":   ("llama-3.3-70b-versatile",              0.6),
+    "TASK_OTHER":   ("llama-3.3-70b-versatile",              0.6),
 }
 
 # Anthropic primary defaults — overridable per route via env. Chosen
@@ -909,12 +921,22 @@ _GROQ_LEGACY_PER_ROUTE: dict[str, tuple[str, float]] = {
 # Haiku 4.5 for the three high-frequency routes; Sonnet 4.6 only for
 # REASONING (rare, multi-step). Temperature mirrors the Groq legacy
 # per-route value (EMOTIONAL keeps 0.7 for warmth).
+#
+# 2026-05-24: TASK_* sub-route defaults source from
+# pipeline.specialty_routes (per the pre-TTS confab gate design).
+# Temps fixed to 0.6 (task-shaped work). The legacy TASK row stays
+# for backwards-compat with code paths that still resolve "TASK".
 _ANTH_DEFAULT_PER_ROUTE: dict[str, tuple[str, str, float]] = {
-    # route       → (env-var,              default-model,         temp)
-    "BANTER":    ("JARVIS_BANTER_MODEL",    "claude-haiku-4-5",  0.6),
-    "TASK":      ("JARVIS_TASK_MODEL",      "claude-haiku-4-5",  0.6),
-    "REASONING": ("JARVIS_REASONING_MODEL", "claude-sonnet-4-6", 0.6),
-    "EMOTIONAL": ("JARVIS_EMOTIONAL_MODEL", "claude-haiku-4-5",  0.7),
+    # route          → (env-var,                       default-model,        temp)
+    "BANTER":         ("JARVIS_BANTER_MODEL",          "claude-haiku-4-5",  0.6),
+    "TASK":           ("JARVIS_TASK_MODEL",            "claude-haiku-4-5",  0.6),
+    "REASONING":      ("JARVIS_REASONING_MODEL",       "claude-sonnet-4-6", 0.6),
+    "EMOTIONAL":      ("JARVIS_EMOTIONAL_MODEL",       "claude-haiku-4-5",  0.7),
+    "TASK_DESKTOP":   ("JARVIS_TASK_DESKTOP_MODEL",    "claude-sonnet-4-6", 0.6),
+    "TASK_BROWSER":   ("JARVIS_TASK_BROWSER_MODEL",    "claude-sonnet-4-6", 0.6),
+    "TASK_CODE":      ("JARVIS_TASK_CODE_MODEL",       "deepseek-v4-flash", 0.6),
+    "TASK_FILES":     ("JARVIS_TASK_FILES_MODEL",      "claude-haiku-4-5",  0.6),
+    "TASK_OTHER":     ("JARVIS_TASK_OTHER_MODEL",      "claude-haiku-4-5",  0.6),
 }
 
 
@@ -939,15 +961,29 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
     is the primary.
 
     Per-route env overrides (operator tuning without code edits):
-      JARVIS_BANTER_MODEL       (default claude-haiku-4-5)
-      JARVIS_TASK_MODEL         (default claude-haiku-4-5)
-      JARVIS_REASONING_MODEL    (default claude-sonnet-4-6)
-      JARVIS_EMOTIONAL_MODEL    (default claude-haiku-4-5)
+      JARVIS_BANTER_MODEL          (default claude-haiku-4-5)
+      JARVIS_TASK_MODEL            (legacy; applies to all TASK_* sub-routes)
+      JARVIS_TASK_DESKTOP_MODEL    (default claude-sonnet-4-6)
+      JARVIS_TASK_BROWSER_MODEL    (default claude-sonnet-4-6)
+      JARVIS_TASK_CODE_MODEL       (default deepseek-v4-flash)
+      JARVIS_TASK_FILES_MODEL      (default claude-haiku-4-5)
+      JARVIS_TASK_OTHER_MODEL      (default claude-haiku-4-5)
+      JARVIS_REASONING_MODEL       (default claude-sonnet-4-6)
+      JARVIS_EMOTIONAL_MODEL       (default claude-haiku-4-5)
 
-    `task_override`: when not None, replaces ONLY the TASK route's
-    inner LLM (BANTER/REASONING/EMOTIONAL stay on their per-route
-    defaults). Tray-pinned model wins over JARVIS_TASK_MODEL. Used by
-    jarvis_agent's pin-redesigned flow per global review §P0-12.
+    Per-sub-route env wins over the legacy JARVIS_TASK_MODEL when both
+    are set. Spec defaults from pipeline.specialty_routes (the source of
+    truth for the pre-TTS confab gate's per-route ladder).
+
+    `task_override`: when not None, replaces the TASK route's inner LLM
+    AND propagates across all TASK_* sub-routes (BANTER/REASONING/
+    EMOTIONAL stay on their per-route defaults). Tray-pinned model wins
+    over JARVIS_TASK_MODEL. Per global review §P0-12.
+
+    Route map exposes 8 keys: BANTER, TASK_DESKTOP, TASK_BROWSER,
+    TASK_CODE, TASK_FILES, TASK_OTHER, REASONING, EMOTIONAL. The legacy
+    "TASK" key is still present (aliased to the same chain as task_inner)
+    for code paths that haven't migrated to the 5-way TASK_* split.
 
     Graceful degrade: if `ANTHROPIC_API_KEY` is missing/empty (or the
     plugin isn't installed), the Anthropic primary construction is
@@ -1048,22 +1084,77 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
             )
             return None
 
-    def _build_anthropic_primary(route: str):
-        """Build the route's Anthropic primary (rung 1). Honors the
-        per-route env override. Returns None when the Anthropic plugin
-        isn't available, the API key is unset, or construction raises
-        (in which case the route falls back to its Groq legacy).
+    # Legacy JARVIS_TASK_MODEL still works — when set, it applies to ALL
+    # TASK_* sub-routes (tray-pinned model wins over per-sub-route
+    # default). Per-sub-route env var (JARVIS_TASK_DESKTOP_MODEL etc.)
+    # still wins over the legacy when both are set. Added 2026-05-24
+    # alongside the pre-TTS confab gate's 4→8 route expansion.
+    _legacy_task = os.environ.get("JARVIS_TASK_MODEL", "").strip() or None
 
-        When the env override resolves to ``gemini-*``, returns the
-        Gemini primary instead — Anthropic and Gemini share rung 1 as
-        peer providers, picked by model-id prefix."""
+    def _resolve_route_model(route: str) -> tuple[str, float]:
+        """Resolve a single route's primary model id + temperature.
+
+        Lookup order:
+          1. Per-sub-route env var (JARVIS_TASK_DESKTOP_MODEL etc.) wins.
+          2. For TASK_* routes, legacy JARVIS_TASK_MODEL applies.
+          3. Spec default from specialty_routes (or _ANTH_DEFAULT_PER_ROUTE).
+        Temperature comes from _ANTH_DEFAULT_PER_ROUTE (per-route tuned)."""
         env_var, default_model, temp = _ANTH_DEFAULT_PER_ROUTE[route]
-        model = os.environ.get(env_var, "").strip() or default_model
+        override = os.environ.get(env_var, "").strip()
+        if override:
+            return override, temp
+        if _legacy_task and route.startswith("TASK_"):
+            return _legacy_task, temp
+        # Cross-check against specialty_routes for the 8-route table.
+        # get_primary_model honors the per-sub-route env (which we
+        # already checked above) and otherwise returns the spec default.
+        spec_default = _specialty.get_primary_model(route)
+        return (spec_default or default_model), temp
+
+    def _build_anthropic_primary(route: str):
+        """Build the route's primary LLM (rung 1). Honors the per-route
+        env override AND the legacy JARVIS_TASK_MODEL propagation for
+        TASK_* sub-routes. Returns None when the resolved provider isn't
+        armed (no API key / plugin missing) or construction raises
+        (route falls back to its Groq legacy).
+
+        Picks a builder by model-id prefix:
+          - ``gemini-*``    → Gemini builder
+          - ``deepseek-*``  → DeepSeek inline OpenAI-compat builder
+          - otherwise      → Anthropic cached LLM
+        """
+        model, temp = _resolve_route_model(route)
         # Operator opted into Gemini via JARVIS_{route}_MODEL=gemini-*.
         # Route through the Gemini builder regardless of whether
         # ANTHROPIC_API_KEY is also present.
         if model.startswith("gemini-"):
             return _build_gemini_primary(route, model, temp)
+        # 2026-05-24: TASK_CODE's spec primary is deepseek-v4-flash, so
+        # route deepseek-* ids through the OpenAI-compat DeepSeek builder
+        # — Anthropic would 400 on a non-Anthropic model id at request
+        # time, which the FallbackAdapter would mask but at cost of TTFW.
+        if model.startswith("deepseek-"):
+            if not ds_key:
+                logger.info(
+                    f"[dispatch] {route} requested DeepSeek {model!r} but "
+                    "DEEPSEEK_API_KEY is unset; falling through to Groq legacy"
+                )
+                return None
+            try:
+                inst = lk_openai.LLM(
+                    model=model,
+                    api_key=ds_key,
+                    base_url="https://api.deepseek.com/v1",
+                    temperature=temp,
+                )
+                inst._jarvis_label = f"deepseek:{model}"
+                return inst
+            except Exception as e:
+                logger.warning(
+                    f"[dispatch] {route} DeepSeek primary {model!r} construction failed: {e} "
+                    "(falling through to Groq legacy)"
+                )
+                return None
         if not anth_armed:
             return None
         try:
@@ -1151,10 +1242,15 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
         logger.info(f"[dispatch] {route} primary: {primary_label}{cached_suffix}")
         return _wrap_chain(route, primary)
 
-    banter    = _build_route("BANTER")
-    task_main = _build_route("TASK")
-    reasoning = _build_route("REASONING")
-    emotional = _build_route("EMOTIONAL")
+    banter       = _build_route("BANTER")
+    task_main    = _build_route("TASK")
+    reasoning    = _build_route("REASONING")
+    emotional    = _build_route("EMOTIONAL")
+    task_desktop = _build_route("TASK_DESKTOP")
+    task_browser = _build_route("TASK_BROWSER")
+    task_code    = _build_route("TASK_CODE")
+    task_files   = _build_route("TASK_FILES")
+    task_other   = _build_route("TASK_OTHER")
 
     # Any route that failed primary construction entirely inherits the
     # TASK chain. If TASK itself failed (rare — both Anthropic AND
@@ -1174,17 +1270,63 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
         reasoning = main
     if emotional is None:
         emotional = main
+    # TASK_* sub-routes inherit the TASK chain if their own primary
+    # failed to build (e.g., DEEPSEEK_API_KEY unset for TASK_CODE).
+    if task_desktop is None:
+        task_desktop = main
+    if task_browser is None:
+        task_browser = main
+    if task_code is None:
+        task_code = main
+    if task_files is None:
+        task_files = main
+    if task_other is None:
+        task_other = main
 
-    # task_override takes precedence over the env-driven TASK default
-    # (current behavior — tray-pinned model still wins). Per global
-    # review §P0-12.
-    task_inner = task_override if task_override is not None else main
+    # task_override takes precedence over the env-driven TASK defaults
+    # AND propagates across all TASK_* sub-routes — tray-pinned model
+    # wins everywhere it could land. Per global review §P0-12 plus the
+    # 2026-05-24 8-route expansion.
+    if task_override is not None:
+        task_inner   = task_override
+        task_desktop = task_override
+        task_browser = task_override
+        task_code    = task_override
+        task_files   = task_override
+        task_other   = task_override
+    else:
+        task_inner = main
+
+    # Log the resolved per-route model ids for operator visibility.
+    # Each `_resolve_route_model(route)[0]` returns the id that was
+    # actually selected (after env + legacy + spec-default lookup).
+    banter_id       = _resolve_route_model("BANTER")[0]
+    task_desktop_id = _resolve_route_model("TASK_DESKTOP")[0]
+    task_browser_id = _resolve_route_model("TASK_BROWSER")[0]
+    task_code_id    = _resolve_route_model("TASK_CODE")[0]
+    task_files_id   = _resolve_route_model("TASK_FILES")[0]
+    task_other_id   = _resolve_route_model("TASK_OTHER")[0]
+    reasoning_id    = _resolve_route_model("REASONING")[0]
+    emotional_id    = _resolve_route_model("EMOTIONAL")[0]
+    logger.info(
+        f"[dispatch] LLM dispatcher resolved: "
+        f"BANTER={banter_id}, "
+        f"TASK_DESKTOP={task_desktop_id}, TASK_BROWSER={task_browser_id}, "
+        f"TASK_CODE={task_code_id}, TASK_FILES={task_files_id}, TASK_OTHER={task_other_id}, "
+        f"REASONING={reasoning_id}, EMOTIONAL={emotional_id}"
+    )
+
     return DispatchingLLM(
         inners={
-            "BANTER":    banter,
-            "TASK":      task_inner,
-            "REASONING": reasoning,
-            "EMOTIONAL": emotional,
+            "BANTER":       banter,
+            "TASK":         task_inner,
+            "TASK_DESKTOP": task_desktop,
+            "TASK_BROWSER": task_browser,
+            "TASK_CODE":    task_code,
+            "TASK_FILES":   task_files,
+            "TASK_OTHER":   task_other,
+            "REASONING":    reasoning,
+            "EMOTIONAL":    emotional,
         },
         fallback=task_inner,
     )
