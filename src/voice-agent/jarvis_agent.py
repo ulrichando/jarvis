@@ -3375,6 +3375,57 @@ class JarvisAgent(Agent):
             cua_fut.set_result(False)
             return
 
+        # Spec 2026-05-24, Track 2.5 — handle confirmation of pending procedure offer.
+        # Runs BEFORE transcript extraction so we can short-circuit on yes/no.
+        try:
+            room = getattr(getattr(self.session, "room_io", None), "room", None)
+            room_id = getattr(room, "name", "default")
+            pending = _PENDING_PROCEDURE_OFFERS.get(room_id)
+            if pending and (time.time() - pending["ts"]) > 60.0:
+                # 60s expiry — discard stale offer
+                _PENDING_PROCEDURE_OFFERS.pop(room_id, None)
+                pending = None
+            if pending:
+                # Get user text quickly via new_message.text_content() — same
+                # extraction the rest of the method does, just early.
+                try:
+                    user_text_for_confirm = (new_message.text_content() or "").strip()
+                except Exception:
+                    user_text_for_confirm = ""
+                if _is_procedure_confirmation(user_text_for_confirm):
+                    name = pending["name"]
+                    user_text_orig = pending.get("user_text", "")
+                    jarvis_text_orig = pending.get("jarvis_text", "")
+                    _PENDING_PROCEDURE_OFFERS.pop(room_id, None)
+                    # Build a steps body from the trajectory. We don't have
+                    # the actual tool-call list at this stage, so derive a
+                    # narrative-shape body from the jarvis_text reply. The
+                    # supervisor can later refine via memory(replace, ...).
+                    steps_body = (
+                        f"Trajectory captured from successful task:\n"
+                        f"User request: {user_text_orig[:200]}\n"
+                        f"JARVIS completion: {jarvis_text_orig[:300]}"
+                    )
+                    try:
+                        from tools.memory import _handle_memory
+                        _handle_memory({
+                            "action": "add", "target": "procedure",
+                            "name": name,
+                            "content": steps_body,
+                        })
+                        logger.info(
+                            "[procedure] applied: name=%s source=user_confirm", name
+                        )
+                        try:
+                            await self.session.say(f"Saved as {name}.")
+                        except Exception:
+                            pass
+                    except Exception as _ae:
+                        logger.warning("[procedure] apply failed: %s", _ae)
+                    return  # consume this turn, don't run supervisor
+        except Exception as e:
+            logger.warning("[procedure] confirmation handler failed: %s", e)
+
         # Pull the transcript however we can — different livekit-agents
         # versions stash it in slightly different places. Try the
         # canonical text_content() first; fall back to digging through
@@ -4288,6 +4339,67 @@ _RECALL_TRIGGER_SYSTEM_MESSAGE = (
     "returned context to answer. Do NOT reply 'this conversation just "
     "started' or 'I don't have prior context'."
 )
+
+# ─── Procedure offer helpers (Spec 2026-05-24, Track 2.5) ───────────────────
+#
+# After a successful multi-step task (_is_successful_trajectory gate), JARVIS
+# appends a one-line offer so the user can save the trajectory as a named
+# procedure. On the next turn, a yes-shape confirmation applies the procedure
+# via _handle_memory(target='procedure'). State is in-memory per room_id with
+# a 60-second TTL. Kill switch: JARVIS_PROCEDURE_CAPTURE_DISABLED=1.
+
+_INTENT_OBJECT_RE = re.compile(
+    r"""(?ix)
+    (?:^|,|\.|\bcan\s+you\s+|\bjarvis,?\s+)\s*
+    (?P<verb>deploy|find|set\s+up|build|debug|configure|install|
+            create|update|push|publish|launch|run|fix|search|check|
+            open|close|send|post|book|order)\s+
+    (?:me\s+|the\s+|a\s+|an\s+)?
+    (?P<obj>[a-z0-9]+(?:\s+[a-z0-9]+){0,2})
+    """
+)
+
+
+def _derive_procedure_name(user_text: str) -> "str | None":
+    """Auto-derive a kebab-case name from the user's request.
+    Returns None if we can't find an intent verb + object."""
+    if not user_text:
+        return None
+    m = _INTENT_OBJECT_RE.search(user_text)
+    if not m:
+        return None
+    verb = m.group("verb").strip().lower().replace(" ", "-")
+    obj_words = m.group("obj").strip().lower().split()
+    # Skip articles/connectors in the object phrase
+    skip = {"the", "a", "an", "me", "to", "for", "from", "in", "on"}
+    obj_filtered = [w for w in obj_words if w not in skip]
+    if not obj_filtered:
+        return verb
+    return f"{verb}-{obj_filtered[0]}"
+
+
+def _build_offer_phrase(name: str) -> str:
+    """The one-line offer appended to JARVIS's reply when a successful
+    multi-step task completes and a name can be derived from the intent."""
+    return f"Want me to keep these steps as '{name}' for next time?"
+
+
+_CONFIRMATION_RE = re.compile(
+    r"(?i)^\s*(?:yeah|yes|yep|sure|ok|okay|save\s+it|please\s+do|"
+    r"do\s+it|absolutely|definitely)\b"
+)
+
+
+def _is_procedure_confirmation(user_text: str) -> bool:
+    """True if the user's next turn confirms the pending procedure offer."""
+    if not user_text:
+        return False
+    return bool(_CONFIRMATION_RE.search(user_text.strip()))
+
+
+# Spec 2026-05-24, Track 2.5 — pending procedure offers keyed by room id.
+# In-memory only; lost on service restart (acceptable UX cost).
+_PENDING_PROCEDURE_OFFERS: "dict[str, dict]" = {}
 
 
 def _maybe_inject_trigger_message(chat_ctx, user_text: str) -> "str | None":
@@ -5429,6 +5541,67 @@ async def entrypoint(ctx: JobContext) -> None:
                         logger.debug(
                             f"[skill_review] fire wiring skipped: {_sie}"
                         )
+                    # Spec 2026-05-24, Track 2.5 — end-of-turn procedure
+                    # capture offer. If the just-completed turn looks like
+                    # a successful multi-step task, append a one-line offer
+                    # so the user can save the trajectory as a named procedure.
+                    if os.environ.get("JARVIS_PROCEDURE_CAPTURE_DISABLED", "0") != "1":
+                        try:
+                            from pipeline.skill_review import (
+                                _is_successful_trajectory,
+                                TurnSnapshot as _PCTS,
+                            )
+                            _turn_start_mono = getattr(
+                                session, "_jarvis_turn_start_monotonic", None
+                            )
+                            wall_clock_s = float(
+                                (time.monotonic() - _turn_start_mono)
+                                if _turn_start_mono is not None
+                                else 0.0
+                            )
+                            user_text_for_gate = (
+                                getattr(session, "_jarvis_turn_user_text", "") or ""
+                            )
+                            _snap_for_gate = _PCTS(
+                                turn_id=0, ts_utc="",
+                                user_text=user_text_for_gate,
+                                jarvis_text=text or "",
+                                route=(getattr(session, "_jarvis_route", None) or ""),
+                                subagent=(subagent or ""),
+                                computer_use_steps=int(cua_steps or 0),
+                                tool_call_count=int(_tool_calls_this_turn or 0),
+                                had_tool_error=bool(
+                                    getattr(session, "_jarvis_had_tool_error_this_turn", False)
+                                ),
+                            )
+                            if _is_successful_trajectory(_snap_for_gate, wall_clock_s, 0):
+                                name = _derive_procedure_name(user_text_for_gate)
+                                if name:
+                                    room_id = getattr(
+                                        getattr(ctx, "room", None), "name", "default"
+                                    )
+                                    _PENDING_PROCEDURE_OFFERS[room_id] = {
+                                        "name": name,
+                                        "user_text": user_text_for_gate,
+                                        "jarvis_text": text or "",
+                                        "ts": time.time(),
+                                    }
+                                    offer = _build_offer_phrase(name)
+                                    # _on_item is a sync event handler — can't
+                                    # await directly. Fire-and-forget via
+                                    # create_task so TTS failure never blocks
+                                    # the turn. The task catches its own errors.
+                                    async def _say_offer(_offer=offer, _sess=session):
+                                        try:
+                                            await _sess.say(_offer, allow_interruptions=True)
+                                        except Exception as _say_e:
+                                            logger.debug("[procedure] offer say failed: %s", _say_e)
+                                    asyncio.create_task(_say_offer())
+                                    logger.info(
+                                        "[procedure] offer appended: name=%s", name
+                                    )
+                        except Exception as _pe:
+                            logger.warning("[procedure] offer step failed: %s", _pe)
                     # Reset usage stash for next turn.
                     session._jarvis_last_input_tokens = None
                     session._jarvis_last_output_tokens = None
