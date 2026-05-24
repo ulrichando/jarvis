@@ -4753,7 +4753,16 @@ def _register_state_tracking_handlers(session) -> None:
                             await asyncio.sleep(0.8)
                             if not getattr(_sess, "_jarvis_front_ack_fired", False):
                                 try:
-                                    _sess.say("One moment.", allow_interruptions=True)
+                                    # add_to_chat_ctx=False so the ack does NOT
+                                    # become an assistant turn in chat_ctx. If it
+                                    # did, the next user turn would see two
+                                    # consecutive assistant turns (ack + real
+                                    # reply) and the supervisor would get confused.
+                                    _sess.say(
+                                        "One moment.",
+                                        allow_interruptions=True,
+                                        add_to_chat_ctx=False,
+                                    )
                                     _sess._jarvis_front_ack_fired = True
                                     logger.info("[front-ack] voiced 'One moment.' (LLM still pending)")
                                 except Exception as _say_e:
@@ -5779,19 +5788,30 @@ async def entrypoint(ctx: JobContext) -> None:
                     _pattern_matched = getattr(
                         session, "_jarvis_confab_pattern_matched", None
                     )
-                    _retry_models_list = getattr(
+                    # Discriminate "gate fired" vs "gate didn't fire" via
+                    # `_pattern_matched` rather than via truthiness on the
+                    # retry list. The session boots + user-turn-start resets
+                    # both leave the list at `[]`, so a truthiness check
+                    # would conflate "gate fired and exhausted the retry
+                    # chain (empty trace)" with "gate didn't fire". Pattern
+                    # is None on both "gate didn't fire" AND clean-pass
+                    # paths (line 3379), so NULL here matches "no actionable
+                    # retry data to record" — gate-fired turns get either
+                    # `[<model_ids>]` or `[]`, both meaningful and JSON-
+                    # encoded.
+                    _retry_models_raw = getattr(
                         session, "_jarvis_confab_retry_models", None
                     )
-                    if _retry_models_list:
-                        import json as _json_pre_tts
+                    if _pattern_matched is None or _retry_models_raw is None:
+                        _retry_models_json = None
+                    else:
+                        import json as _json_telemetry
                         try:
-                            _retry_models_json = _json_pre_tts.dumps(
-                                list(_retry_models_list)
+                            _retry_models_json = _json_telemetry.dumps(
+                                list(_retry_models_raw)
                             )
                         except Exception:
                             _retry_models_json = None
-                    else:
-                        _retry_models_json = None
                     # 2026-05-19 — read the voice-client's AEC state (cross-process)
                     # and thread it into the turn row. Stale/missing → NULLs.
                     try:
@@ -6121,15 +6141,11 @@ async def entrypoint(ctx: JobContext) -> None:
             inner_llm = entry["build"]()
             # livekit-agents LLMStream.collect() returns a CollectedResponse
             # with .text and .tool_calls (list[FunctionToolCall]). That
-            # matches the gate's LLMRunner contract verbatim.
+            # matches the gate's LLMRunner contract verbatim. collect()
+            # uses `async with self:` internally → calls aclose() on
+            # exit, so no explicit finally aclose is needed here.
             stream = inner_llm.chat(chat_ctx=retry_ctx, tools=tool_specs)
-            try:
-                collected = await stream.collect()
-            finally:
-                try:
-                    await stream.aclose()
-                except Exception:
-                    pass
+            collected = await stream.collect()
             return (collected.text or "", list(collected.tool_calls or []))
 
         return _runner
