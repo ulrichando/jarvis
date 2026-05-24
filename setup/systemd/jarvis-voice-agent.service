@@ -28,6 +28,33 @@ EnvironmentFile=%h/Documents/Projects/jarvis/src/cli/.env.local
 # every voice-agent → bridge HTTP call. Optional file (`-` prefix)
 # so the unit doesn't fail to start before P0c is run.
 EnvironmentFile=-%h/.jarvis/local-api-token.env
+# ── Browser auto-launch DISABLED (2026-05-20) ──────────────────────
+# JARVIS was opening browser windows unprompted. The browser subagent
+# has THREE paths that launch a browser when the Chrome extension isn't
+# connected: the pre_transfer hook (real Chrome), the per-tool-call
+# auto-launch in _browser_ext_base.post (real Chrome on a 503), and the
+# CDP fallback (bundled Chromium). Extension not connected → all three
+# fired, and the CDP backend then threw tool errors in a loop. Live
+# failure 2026-05-20 21:37 (handoff "open the driver's project" → real
+# Chrome + bundled Chromium + error loop). Disabling all three makes the
+# browser subagent bail cleanly with "extension not connected" instead
+# of opening anything. REMOVE these once the JARVIS Chrome extension is
+# connected and the CDP backend is fixed. (subagents/browser.py + tools/_browser_ext_base.py)
+Environment=JARVIS_BROWSER_PRELAUNCH_DISABLE=1
+Environment=JARVIS_BROWSER_DISABLE_CDP_FALLBACK=1
+Environment=JARVIS_BROWSER_AUTOLAUNCH_DISABLE=1
+# Spec 2026-05-24 memory + procedure loop, Track 1 LIVE flip.
+# Force-inject a system message into chat_ctx when the user utterance
+# matches the save-trigger regex ("remember this" / "save that" /
+# "don't forget" / "write this down" / "memorize this") or the recall-
+# trigger regex ("do you remember" / "what did I tell you" / "have I
+# told you" / "remind me about/of/what"). The supervisor (Sonnet/Haiku)
+# is the second gate — it reads the user's full text + the inject and
+# decides whether to actually save/recall. Set to "0" to revert to
+# shadow mode (matches still log but no inject).
+# Spec: docs/superpowers/specs/2026-05-24-jarvis-memory-and-procedure-loop-design.md
+Environment=JARVIS_SAVE_TRIGGER_LIVE=1
+Environment=JARVIS_RECALL_TRIGGER_LIVE=1
 # `start` (not `dev`) — production mode, no file-watch, JSON logs.
 # Uses the venv's interpreter directly so we don't need `source
 # .venv/bin/activate` in the ExecStart.
