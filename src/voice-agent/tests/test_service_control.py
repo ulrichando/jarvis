@@ -1,20 +1,21 @@
-"""Tests for pipeline/service_control.py — Linux + Windows dispatch parity.
+"""Tests for pipeline/service_control.py — Linux dispatch + cross-platform shape.
 
-Phase 2.3 of the cross-platform footgun cleanup. The helper replaces
-the previous inline ``subprocess.Popen(["systemctl", "--user", "restart",
-...])`` + async create_subprocess patterns with a single platform-aware
-function so:
+The helper replaces the previous inline
+``subprocess.Popen(["systemctl", "--user", "restart", ...])`` + async
+create_subprocess patterns with a single platform-aware function so:
 
   * On Linux the systemctl argv is preserved EXACTLY (back-compat with
     every restart call site that previously used the inline form).
-  * On Windows + macOS callers get a ``ServiceControlError`` with the
-    Phase 3 hint rather than an opaque ``FileNotFoundError`` from a
-    missing ``systemctl`` binary or — worse — a silent no-op against
-    some unrelated PATH binary.
+  * On Windows the helper shells out to ``nssm`` (Phase 3.1 backend),
+    locating ``nssm.exe`` under ``%LOCALAPPDATA%\\jarvis\\bin\\`` first
+    (where install.ps1 will install it) or via PATH. macOS gets a
+    ``ServiceControlError`` since we don't ship macOS units yet.
+  * Callers that ran fine on Linux pre-Phase-2.3 see no behavior change.
 
-We assert both branches by monkeypatching ``platform.system`` on the
-helper module itself, plus the ``subprocess.Popen`` /
-``asyncio.create_subprocess_exec`` call shape.
+Linux dispatch is asserted here. The Windows / nssm backend has its
+own dedicated suite in ``test_service_control_windows.py`` so this
+file stays focused on the Linux contract + the cross-platform helper
+plumbing (sequential restart, macOS unsupported).
 """
 from __future__ import annotations
 
@@ -94,38 +95,24 @@ def test_restart_service_async_returns_nonzero_when_systemctl_fails(monkeypatch)
     assert rc == 5
 
 
-# Windows dispatch ----------------------------------------------------
+# Windows dispatch — see test_service_control_windows.py for the full
+# nssm-backend coverage. This file only asserts the dispatch isn't
+# silently falling through to systemctl on Windows.
 
 
-def test_restart_service_windows_raises_phase3_error(monkeypatch):
-    """On Windows the sync helper must raise ServiceControlError with a
-    message that points to Phase 3 — callers can either catch + log
-    (the watchdog pattern) or let it propagate."""
+def test_restart_service_windows_does_not_call_systemctl(monkeypatch):
+    """Confirm we DON'T silently fall through to systemctl on Windows —
+    that's the failure mode the helper exists to prevent. (The Windows
+    branch may still raise ServiceControlError on this host because
+    nssm.exe isn't installed; that's fine — what matters is that
+    subprocess.Popen WITH systemctl argv wasn't called.)"""
     from pipeline import service_control
 
     monkeypatch.setattr(service_control.platform, "system", lambda: "Windows")
-    with pytest.raises(service_control.ServiceControlError) as exc:
-        service_control.restart_service("jarvis-voice-client")
-    assert "Windows" in str(exc.value) or "Phase 3" in str(exc.value)
-    assert "jarvis-voice-client" in str(exc.value)
-
-
-def test_restart_service_async_windows_raises_phase3_error(monkeypatch):
-    """The async variant must raise the same ServiceControlError shape."""
-    from pipeline import service_control
-
-    monkeypatch.setattr(service_control.platform, "system", lambda: "Windows")
-    with pytest.raises(service_control.ServiceControlError) as exc:
-        asyncio.run(service_control.restart_service_async("jarvis-voice-agent"))
-    assert "jarvis-voice-agent" in str(exc.value)
-
-
-def test_restart_service_windows_does_not_call_subprocess(monkeypatch):
-    """Confirm we DON'T silently fall through to subprocess on Windows —
-    that's the failure mode the helper exists to prevent."""
-    from pipeline import service_control
-
-    monkeypatch.setattr(service_control.platform, "system", lambda: "Windows")
+    # Force nssm-not-found so the Windows branch raises before reaching
+    # any subprocess call — keeps this test hermetic on Linux hosts.
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.setattr(service_control.shutil, "which", lambda _: None)
     with patch("pipeline.service_control.subprocess.Popen") as mock_popen:
         with pytest.raises(service_control.ServiceControlError):
             service_control.restart_service("any-unit")

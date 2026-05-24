@@ -1757,10 +1757,11 @@ async def launch_app(binary: str, args: str = "") -> str:
          like 'notepad' on Linux, where bash 'setsid -f notepad' would
          silently exit 0 because setsid forks before notepad fails to
          exec — leaving the LLM to falsely claim success).
-      2. Post-launch: capture stderr to a log file, then `pgrep` to
-         confirm a matching process is alive 600ms after spawn. If
-         not, surface the captured stderr so the LLM can report a
-         specific failure instead of "X opened, sir".
+      2. Post-launch: capture stderr to a log file, then poll a
+         cross-platform process probe (tools.runtime.is_process_running,
+         backed by psutil) to confirm a matching process is alive
+         within 4s of spawn. If not, surface the captured stderr so
+         the LLM can report a specific failure instead of "X opened, sir".
 
     Args:
         binary:  Executable name, e.g. 'google-chrome', 'code',
@@ -1812,12 +1813,11 @@ async def launch_app(binary: str, args: str = "") -> str:
         except Exception as e:
             return f"CRASHED: spawn error — {e}"
     else:
-        # Windows / macOS path — Phase 3 will harden this (today only
-        # exists so module-level imports don't fail under cross-platform
-        # CI). pgrep / setsid are Linux-only; the post-launch verifier
-        # below uses pgrep too, so this branch will fall through to the
-        # "not running" check on non-Linux. Phase 3 follow-up: replace
-        # the verifier with a cross-platform process check (psutil).
+        # Windows / macOS path — uses detached_popen_kwargs() to detach
+        # the child (CREATE_NEW_PROCESS_GROUP + DETACHED_PROCESS on
+        # Windows) so it survives a worker bounce. The post-launch
+        # verifier below uses psutil (cross-platform) since pgrep is
+        # Linux-only.
         from tools.runtime import detached_popen_kwargs as _detach_kwargs
         import shlex as _shlex
         argv = [bin_path, *(_shlex.split(args_clean) if args_clean else [])]
@@ -1833,23 +1833,23 @@ async def launch_app(binary: str, args: str = "") -> str:
         except Exception as e:
             return f"CRASHED: spawn error — {e}"
 
-    # Poll pgrep up to 4s, returning as soon as the app appears. The old
+    # Poll up to 4s, returning as soon as the app appears. The old
     # fixed 600ms sleep raced cold-starting GUI apps (e.g. chrome takes
     # >1s on first launch — extensions + profile load). On the user-
     # visible "first attempt fails / second succeeds" pattern, the second
     # attempt only succeeded because chrome was now running from the
     # first attempt that we'd given up on too early. Bug fixed 2026-05-08.
+    #
+    # Cross-platform process probe (Phase 3.1): tools.runtime.is_process_running
+    # uses psutil under the hood — works on Linux + Windows + macOS, no
+    # shellout to pgrep (which is Linux-only and would silently report
+    # "not running" on Windows).
+    from tools.runtime import is_process_running
     running = False
     for _ in range(20):  # 20 × 0.2s = 4s budget
         await asyncio.sleep(0.2)
         try:
-            check = await asyncio.create_subprocess_exec(
-                "pgrep", "-f", bin_only,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            out_b, _ = await asyncio.wait_for(check.communicate(), timeout=1.0)
-            if out_b.decode("utf-8", errors="replace").strip():
+            if is_process_running(bin_only):
                 running = True
                 break
         except Exception:
