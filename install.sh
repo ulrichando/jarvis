@@ -140,20 +140,65 @@ install_web() {
 }
 
 # ── Channel: Voice agent ─────────────────────────────────────────────────
+# Uses uv (Astral) for Python install + venv + dependency sync. uv is
+# 10-100x faster than pip for cold resolves, handles the Python install
+# itself if absent, and matches the Windows installer (install.ps1) so
+# both platforms run the same package manager. Falls back to system
+# python3 + pip when uv is unavailable or the user opts out via
+# JARVIS_NO_UV=1.
 install_voice_agent() {
   if [ "${JARVIS_SKIP_VOICE:-0}" = "1" ]; then warn "skipping Voice Agent (JARVIS_SKIP_VOICE=1)"; return; fi
   section "Installing Voice Agent (~2–3 min; livekit-agents is heavy)"
 
   local va="$INSTALL_DIR/src/voice-agent"
-  if [ ! -d "$va/.venv" ]; then
-    python3 -m venv "$va/.venv"
-    ok "created venv at $va/.venv"
-  else
-    ok "venv exists; reusing"
+  local use_uv=0
+  if [ "${JARVIS_NO_UV:-0}" != "1" ]; then
+    if have uv; then
+      use_uv=1
+      sub "using uv ($(uv --version 2>/dev/null | head -1))"
+    else
+      sub "uv not installed; installing via astral.sh/uv installer (no sudo needed)"
+      # Astral's official installer drops uv into ~/.local/bin (or
+      # ~/.cargo/bin on systems where that's the convention). Idempotent;
+      # safe to re-run.
+      if curl -fsSL https://astral.sh/uv/install.sh | sh >/dev/null 2>&1; then
+        # Refresh PATH for this run so we see the newly-installed binary.
+        export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+        if have uv; then
+          use_uv=1
+          ok "installed uv ($(uv --version 2>/dev/null | head -1))"
+        fi
+      fi
+      if [ "$use_uv" != "1" ]; then
+        warn "uv install failed -- falling back to python3 -m venv + pip (slower)"
+      fi
+    fi
   fi
-  "$va/.venv/bin/pip" install --quiet --upgrade pip
-  "$va/.venv/bin/pip" install --quiet -r "$va/requirements.txt"
-  ok "deps installed"
+
+  if [ "$use_uv" = "1" ]; then
+    if [ ! -d "$va/.venv" ]; then
+      # `uv venv` creates the venv and pins the Python version in one
+      # step; no ensurepip / pip-upgrade dance needed afterwards.
+      uv venv "$va/.venv" --python 3.13 || uv venv "$va/.venv" --python 3.12 || uv venv "$va/.venv"
+      ok "created venv at $va/.venv via uv"
+    else
+      ok "venv exists; reusing"
+    fi
+    # Tell uv where to install (no activation needed).
+    VIRTUAL_ENV="$va/.venv" UV_PROJECT_ENVIRONMENT="$va/.venv" \
+      uv pip install --requirement "$va/requirements.txt"
+    ok "deps installed via uv"
+  else
+    if [ ! -d "$va/.venv" ]; then
+      python3 -m venv "$va/.venv"
+      ok "created venv at $va/.venv"
+    else
+      ok "venv exists; reusing"
+    fi
+    "$va/.venv/bin/pip" install --quiet --upgrade pip
+    "$va/.venv/bin/pip" install --quiet -r "$va/requirements.txt"
+    ok "deps installed via pip"
+  fi
 
   install_playwright_chromium "$va"
   install_systemd_units
