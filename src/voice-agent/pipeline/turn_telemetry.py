@@ -28,6 +28,16 @@ ROUTE_HEALTH_FLOOR = 0.05
 # the window — those won't show up in a GROUP BY otherwise.
 ALL_ROUTES = ("BANTER", "TASK", "REASONING", "EMOTIONAL")
 
+# Pre-TTS confab gate state values (2026-05-24).
+# Stored in turns.confab_check_state as TEXT (no schema enforcement).
+# Convention only; documented for type-checkers + tests.
+CONFAB_STATE_CLEAN              = "clean"
+CONFAB_STATE_CAUGHT_T1_PASSED   = "caught_t1_passed"
+CONFAB_STATE_CAUGHT_T2_PASSED   = "caught_t2_passed"
+CONFAB_STATE_CAUGHT_T3_PASSED   = "caught_t3_passed"
+CONFAB_STATE_CAUGHT_FILLER      = "caught_filler"
+CONFAB_STATE_BYPASSED_KILLED    = "bypassed_killed"
+
 DEFAULT_DB_PATH = Path(
     os.environ.get(
         "JARVIS_TELEMETRY_PATH",
@@ -245,6 +255,27 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
                 )
             except sqlite3.OperationalError:
                 pass
+        # 2026-05-24 — pre-TTS confab gate observability columns.
+        # confab_pattern_matched: which _STRONG_CLAIMS regex source string
+        # fired the gate (e.g. r"\b(?:chrome|firefox|...|open|launched|running)\b").
+        # confab_retry_models: JSON list of model ids tried in order, ending
+        # with the model whose reply was voiced (or empty when gate didn't
+        # trip). Both NULL when JARVIS_PRE_TTS_CONFAB_GATE=0 / gate bypass.
+        # Spec: docs/superpowers/specs/2026-05-24-pre-tts-confab-gate-design.md
+        gate_cols = {
+            r[1] for r in conn.execute("PRAGMA table_info(turns)")
+        }
+        for col, decl in (
+            ("confab_pattern_matched", "TEXT"),
+            ("confab_retry_models",    "TEXT"),
+        ):
+            if col not in gate_cols:
+                try:
+                    conn.execute(
+                        f"ALTER TABLE turns ADD COLUMN {col} {decl}"
+                    )
+                except sqlite3.OperationalError:
+                    pass
         # 2026-05-19 — echo-cancellation cascade per-turn audit. Six
         # columns: which AEC layers were active, the detected output
         # profile, and the L2 delay / L3 latency observed. Written from
