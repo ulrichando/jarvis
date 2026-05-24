@@ -5420,6 +5420,10 @@ async def entrypoint(ctx: JobContext) -> None:
                             route=(getattr(session, "_jarvis_route", None) or ""),
                             subagent=(subagent or ""),
                             computer_use_steps=int(cua_steps or 0),
+                            tool_call_count=int(_tool_calls_this_turn or 0),
+                            had_tool_error=bool(
+                                getattr(session, "_jarvis_had_tool_error_this_turn", False)
+                            ),
                         ))
                     except Exception as _sie:
                         logger.debug(

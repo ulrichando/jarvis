@@ -230,6 +230,53 @@ _VALID_MEMORY_CATEGORIES = ("user", "feedback", "project", "reference")
 _PROCEDURE_NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 _MAX_CONTENT_CHARS = 500
 
+# ─── Track 2.5 — success-capture gate (Spec 2026-05-24) ───────────────
+_CLAIM_COMPLETION_RE = re.compile(
+    r"(?i)\b(done|deployed|finished|completed|set\s+up|installed|ran|"
+    r"pushed|posted|sent|saved|created|opened|closed|updated)\b"
+)
+
+_INTENT_VERB_RE = re.compile(
+    r"(?i)\b(deploy|find|set\s+up|build|debug|configure|install|"
+    r"create|update|push|publish|launch|run|fix|search|check|"
+    r"open|close|send|post|book|order)\b"
+)
+
+
+def _is_successful_trajectory(
+    snap: "TurnSnapshot",
+    wall_clock_s: float,
+    user_followup_30s: int,
+) -> bool:
+    """Gate for procedure capture: was this a successful multi-step task?
+
+    All conditions must hold:
+      - route is TASK or REASONING (not BANTER / EMOTIONAL)
+      - >=3 tool calls in the trajectory
+      - no tool errors
+      - user did NOT follow up with a correction (user_followup_30s in (0, None))
+      - JARVIS's reply contains a completion claim
+      - user's request contained an intent verb
+      - wall-clock >=10s (filters one-shot lookups)
+
+    Spec 2026-05-24, Track 2.5.
+    """
+    if snap.route not in ("TASK", "REASONING"):
+        return False
+    if snap.tool_call_count < 3:
+        return False
+    if snap.had_tool_error:
+        return False
+    if user_followup_30s and user_followup_30s != 0:
+        return False
+    if wall_clock_s < 10.0:
+        return False
+    if not _CLAIM_COMPLETION_RE.search(snap.jarvis_text or ""):
+        return False
+    if not _INTENT_VERB_RE.search(snap.user_text or ""):
+        return False
+    return True
+
 
 @dataclass
 class Proposal:
@@ -939,7 +986,10 @@ def is_hard_turn(snapshot: TurnSnapshot) -> bool:
 
 
 async def autonomous_review_turn(
-    snapshot: TurnSnapshot, llm_fn: LLMFn | None = None
+    snapshot: TurnSnapshot,
+    llm_fn: LLMFn | None = None,
+    wall_clock_s: float = 0.0,
+    user_followup_30s: int = 0,
 ) -> list[ApplyResult]:
     """Review ONE just-completed turn and AUTONOMOUSLY APPLY validated
     proposals (the self-improvement loop's auto-write).
@@ -957,6 +1007,12 @@ async def autonomous_review_turn(
       - ``apply_proposal`` → ``create_user_skill`` / ``patch_user_skill``
         run ``validate_skill_markdown`` inside ``skills_authoring``.
 
+    Spec 2026-05-24, Track 2.5 — if _is_successful_trajectory passes, the
+    snapshot's user_text is enriched with an internal trajectory hint that
+    biases the reviewer toward emitting kind=procedure. The hint is
+    bracketed as [INTERNAL HINT] and is not part of the original user
+    message. New params have defaults so existing callers are unaffected.
+
     NEVER raises — any failure returns ``[]`` so the turn handler that
     fired this can't break. Returns the list of ``ApplyResult``."""
     if self_improve_disabled():
@@ -965,6 +1021,23 @@ async def autonomous_review_turn(
             "JARVIS_SELF_IMPROVE_DISABLED=1"
         )
         return []
+
+    # Spec 2026-05-24, Track 2.5 — if the gate passes, build an enriched
+    # snapshot whose user_text carries the trajectory hint. The reviewer
+    # prompt is unchanged; only the user_text is augmented with a hint
+    # biasing the reviewer toward emitting kind=procedure.
+    if _is_successful_trajectory(snapshot, wall_clock_s, user_followup_30s):
+        from dataclasses import replace as _dc_replace
+        trajectory_hint = (
+            f"\n\n[INTERNAL HINT — not part of the user's message] "
+            f"This turn was a successful multi-step task "
+            f"({snapshot.tool_call_count} tool calls, ~{int(wall_clock_s)}s). "
+            f"If the steps form a reusable procedure, propose "
+            f"kind=procedure with a kebab-case name derived from the "
+            f"intent verb + object."
+        )
+        snapshot = _dc_replace(snapshot, user_text=snapshot.user_text + trajectory_hint)
+
     try:
         proposals = await review_turn(snapshot, llm_fn=llm_fn)
     except Exception as e:  # defense-in-depth — review_turn already guards
