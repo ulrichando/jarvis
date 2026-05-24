@@ -41,7 +41,10 @@ export default function VoiceChatPanel({
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [sseConnected, setSseConnected] = useState(false)
-  const [autoMute, setAutoMute] = useState(true)
+  // Auto-mute defaults OFF — opening the panel should not silently
+  // mute JARVIS. The user can opt in via the lock icon in the header
+  // when they want keyboard-tap noise blocked from the mic.
+  const [autoMute, setAutoMute] = useState(false)
   const [status, setStatus] = useState(null)
   const messagesContainerRef = useRef(null)
   const inputRef = useRef(null)
