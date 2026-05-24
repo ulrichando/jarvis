@@ -51,11 +51,21 @@ def _handle_memory(args: dict) -> str:
     old_text = args.get("old_text")
 
     if target not in file_memory.VALID_TARGETS:
-        return tool_error(f"Invalid target {target!r}. Use 'memory' or 'user'.", success=False)
+        return tool_error(f"Invalid target {target!r}. Use 'memory', 'user', or 'procedure'.", success=False)
 
     if action == "add":
         if not content:
             return tool_error("content is required for 'add'.", success=False)
+        if target == "procedure":
+            name = str(args.get("name", "")).strip()
+            if not name:
+                return tool_error("name is required for action='add' with target='procedure'. Use kebab-case (e.g. 'deploy-app').", success=False)
+            import re as _re
+            if not _re.match(r"^[a-z0-9]+(-[a-z0-9]+)*$", name):
+                return tool_error(f"name {name!r} is not kebab-case. Use lowercase letters/digits/dashes only.", success=False)
+            # Prepend the name as a heading so the entry is self-describing
+            # in the snapshot. The supervisor's prompt sees "## deploy-app\n1. ...".
+            content = f"## {name}\n{content}"
         result = file_memory.add(target, content)
     elif action == "replace":
         if not old_text:
@@ -96,14 +106,19 @@ MEMORY_SCHEMA = {
         "- He shares a preference, habit, or personal detail (name, role, "
         "timezone, how he likes replies)\n"
         "- You learn a stable fact about his work or environment that will be "
-        "useful again\n\n"
-        "TWO STORES (the 'target'):\n"
+        "useful again\n"
+        "- He asks you to 'save this process' or 'remember how to X' — "
+        "store as target='procedure' with a kebab-case name and numbered steps\n\n"
+        "THREE STORES (the 'target'):\n"
         "- 'user' (USER.md): who Ulrich is — role, background, preferences, "
         "communication style, pet peeves.\n"
         "- 'memory' (MEMORY.md): your own notes — environment facts, project "
-        "conventions, tool quirks, lessons learned.\n\n"
+        "conventions, tool quirks, lessons learned.\n"
+        "- 'procedure' (PROCEDURES.md): named multi-step processes Ulrich "
+        "wants to invoke later. Requires 'name' (kebab-case, e.g. "
+        "'deploy-app') and 'content' as a numbered step list.\n\n"
         "ACTIONS:\n"
-        "- add     — store a new entry (needs 'content').\n"
+        "- add     — store a new entry (needs 'content'; procedure also needs 'name').\n"
         "- replace — update an existing entry; 'old_text' is a short unique "
         "substring identifying it, 'content' is the new text.\n"
         "- remove  — delete an entry; 'old_text' identifies it.\n"
@@ -126,16 +141,20 @@ MEMORY_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "enum": ["memory", "user"],
-                "description": "Which store: 'user' for Ulrich's profile, 'memory' for your own notes.",
+                "enum": ["memory", "user", "procedure"],
+                "description": "Which store: 'user' for Ulrich's profile, 'memory' for your own notes, 'procedure' for named multi-step processes.",
             },
             "content": {
                 "type": "string",
-                "description": "The entry text. Required for 'add' and 'replace'.",
+                "description": "The entry text. Required for 'add' and 'replace'. For target='procedure', supply a numbered step list (e.g. '1. step one\\n2. step two').",
             },
             "old_text": {
                 "type": "string",
                 "description": "Short unique substring identifying the entry to replace or remove.",
+            },
+            "name": {
+                "type": "string",
+                "description": "Kebab-case identifier (e.g. 'deploy-app'). Required when target='procedure' and action='add'.",
             },
         },
         "required": ["action", "target"],
