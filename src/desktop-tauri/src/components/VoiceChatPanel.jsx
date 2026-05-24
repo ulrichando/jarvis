@@ -1,0 +1,311 @@
+import { useState, useRef, useEffect, useCallback } from 'react'
+
+// ── Theme tokens (match ChatPanel.jsx for visual consistency) ──
+const SURFACE   = '#0d1117'
+const SURFACE_2 = '#151b23'
+const BORDER    = 'rgba(255,255,255,0.08)'
+const BORDER_STRONG = 'rgba(255,255,255,0.14)'
+const TEXT      = '#e6edf3'
+const TEXT_DIM  = '#8b949e'
+const TEXT_MUTE = '#6e7681'
+const ACCENT    = '#4493f8'
+const ACCENT_BG = 'rgba(68,147,248,0.14)'
+
+const VC_BASE = 'http://127.0.0.1:8767'
+
+// ── Inline SVG icons ─────────────────────────────────────────────────
+const Icon = {
+  Close: (p) => (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+  ),
+  Send: (p) => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M22 2 11 13"/><path d="m22 2-7 20-4-9-9-4 20-7Z"/></svg>
+  ),
+  Lock: (p) => (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+  ),
+  LockOpen: (p) => (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>
+  ),
+}
+
+export default function VoiceChatPanel({
+  isOpen,
+  onClose,
+  voiceMuted,
+  setVoiceMuted,
+}) {
+  const [messages, setMessages] = useState([
+    { role: 'jarvis', text: 'Type to me. I will reply with my voice.' },
+  ])
+  const [input, setInput] = useState('')
+  const [sending, setSending] = useState(false)
+  const [sseConnected, setSseConnected] = useState(false)
+  const [autoMute, setAutoMute] = useState(true)
+  const [status, setStatus] = useState(null)
+  const messagesContainerRef = useRef(null)
+  const inputRef = useRef(null)
+  const priorMutedRef = useRef(false)
+
+  // ── Mount fade (200 ms) ──────────────────────────────────────────
+  const [mounted, setMounted] = useState(isOpen)
+  useEffect(() => {
+    if (isOpen) setMounted(true)
+    else {
+      const t = setTimeout(() => setMounted(false), 200)
+      return () => clearTimeout(t)
+    }
+  }, [isOpen])
+
+  // ── SSE subscription to /events ──────────────────────────────────
+  useEffect(() => {
+    if (!isOpen) return
+    const es = new EventSource(`${VC_BASE}/events`)
+    es.onopen = () => setSseConnected(true)
+    es.onerror = () => setSseConnected(false)
+    es.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data)
+        if (data.type === 'assistant_says' && data.text) {
+          setMessages((prev) => [...prev, { role: 'jarvis', text: data.text }])
+        }
+      } catch {
+        // ignore malformed frames
+      }
+    }
+    return () => es.close()
+  }, [isOpen])
+
+  // ── Auto-scroll on new message ───────────────────────────────────
+  useEffect(() => {
+    const c = messagesContainerRef.current
+    if (c) c.scrollTop = c.scrollHeight
+  }, [messages])
+
+  // ── Focus input on open ──────────────────────────────────────────
+  useEffect(() => {
+    if (isOpen) setTimeout(() => inputRef.current?.focus(), 100)
+  }, [isOpen])
+
+  // ── Send via /user-input ─────────────────────────────────────────
+  const sendMessage = useCallback(async () => {
+    const text = input.trim()
+    if (!text || sending) return
+    setInput('')
+    setMessages((prev) => [...prev, { role: 'user', text }])
+    setSending(true)
+    setStatus(null)
+    try {
+      const res = await fetch(`${VC_BASE}/user-input`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      })
+      if (res.status === 503) {
+        setStatus('Voice agent not connected to a session yet.')
+      } else if (!res.ok) {
+        setStatus(`Send failed: HTTP ${res.status}`)
+      }
+    } catch (e) {
+      setStatus('Voice agent offline.')
+    } finally {
+      setSending(false)
+    }
+  }, [input, sending])
+
+  const onKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage() }
+    if (e.key === 'Escape') onClose()
+  }
+
+  // ── Mic auto-mute on focus / restore on blur ─────────────────────
+  const onInputFocus = useCallback(() => {
+    if (!autoMute) return
+    priorMutedRef.current = !!voiceMuted
+    if (!voiceMuted) setVoiceMuted(true)
+  }, [autoMute, voiceMuted, setVoiceMuted])
+
+  const onInputBlur = useCallback(() => {
+    if (!autoMute) return
+    if (voiceMuted !== priorMutedRef.current) setVoiceMuted(priorMutedRef.current)
+  }, [autoMute, voiceMuted, setVoiceMuted])
+
+  // Restore mute state on close.
+  useEffect(() => {
+    if (!isOpen && autoMute && voiceMuted !== priorMutedRef.current) {
+      setVoiceMuted(priorMutedRef.current)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen])
+
+  if (!mounted) return null
+
+  const statusColor = sseConnected ? '#3fb950' : '#d29922'
+
+  return (
+    <div
+      className={`fixed flex z-999 overflow-hidden transition-opacity duration-150 ${
+        isOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
+      }`}
+      style={{
+        left: 'calc(50% - 240px)',
+        top:  'calc(50% - 280px)',
+        width: 480,
+        height: 560,
+        background: SURFACE,
+        border: `1px solid ${BORDER}`,
+        borderRadius: '12px',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.02)',
+        fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+        color: TEXT,
+        isolation: 'isolate',
+        willChange: 'transform, opacity',
+        transform: 'translateZ(0)',
+        flexDirection: 'column',
+      }}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      <style>{`
+        @keyframes msg-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+      `}</style>
+
+      {/* Header */}
+      <div style={{
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        padding: '12px 16px', borderBottom: `1px solid ${BORDER}`, userSelect: 'none',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <span style={{
+            width: '8px', height: '8px', borderRadius: '50%',
+            background: statusColor, boxShadow: `0 0 6px ${statusColor}80`,
+          }} title={sseConnected ? 'SSE connected' : 'Reconnecting…'} />
+          <span style={{ fontSize: '14px', fontWeight: 600, color: TEXT, letterSpacing: '-0.01em' }}>
+            Jarvis (voice)
+          </span>
+        </div>
+        <div style={{ display: 'flex', gap: '2px', alignItems: 'center' }}>
+          <HeaderButton
+            title={autoMute ? 'Mic auto-mute ON (click to disable)' : 'Mic auto-mute OFF (click to enable)'}
+            onClick={() => setAutoMute(v => !v)}
+            active={autoMute}
+          >
+            {autoMute ? <Icon.Lock /> : <Icon.LockOpen />}
+          </HeaderButton>
+          <HeaderButton title="Close (Esc)" onClick={onClose}>
+            <Icon.Close />
+          </HeaderButton>
+        </div>
+      </div>
+
+      {/* Messages */}
+      <div
+        ref={messagesContainerRef}
+        style={{
+          flex: 1, overflowY: 'auto', padding: '18px 20px',
+          display: 'flex', flexDirection: 'column', gap: '14px',
+          scrollbarWidth: 'thin',
+        }}
+      >
+        {messages.map((msg, i) => (
+          <div key={i} style={{
+            display: 'flex', flexDirection: 'column',
+            alignItems: msg.role === 'user' ? 'flex-end' : 'flex-start',
+            animation: 'msg-in 200ms ease',
+          }}>
+            {msg.role === 'user' ? (
+              <div style={{
+                maxWidth: '78%',
+                padding: '10px 14px', borderRadius: '14px 14px 4px 14px',
+                background: ACCENT_BG, border: `1px solid ${BORDER}`,
+                fontSize: '14px', lineHeight: 1.55, color: TEXT,
+                whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+              }}>
+                {msg.text}
+              </div>
+            ) : (
+              <div style={{
+                maxWidth: '92%',
+                fontSize: '14px', lineHeight: 1.6, color: TEXT,
+                whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+              }}>
+                {msg.text}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Status line */}
+      {status && (
+        <div style={{
+          padding: '6px 16px', fontSize: '12px', color: '#d29922',
+          borderTop: `1px solid ${BORDER}`,
+        }}>{status}</div>
+      )}
+
+      {/* Input */}
+      <div style={{ padding: '12px 16px', borderTop: `1px solid ${BORDER}` }}>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: '8px',
+          background: SURFACE_2, border: `1px solid ${BORDER_STRONG}`,
+          borderRadius: '10px', padding: '6px 6px 6px 14px',
+        }}>
+          <input
+            ref={inputRef}
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={onKeyDown}
+            onFocus={onInputFocus}
+            onBlur={onInputBlur}
+            placeholder="Type to Jarvis…"
+            autoComplete="off"
+            style={{
+              flex: 1, background: 'transparent', border: 'none', outline: 'none',
+              color: TEXT, fontSize: '14px', fontFamily: 'inherit', padding: '8px 0',
+            }}
+          />
+          <button
+            onClick={sendMessage}
+            disabled={sending || !input.trim()}
+            style={{
+              background: input.trim() && !sending ? ACCENT : 'transparent',
+              border: 'none',
+              color: input.trim() && !sending ? '#fff' : TEXT_MUTE,
+              cursor: input.trim() && !sending ? 'pointer' : 'default',
+              padding: '8px 10px', borderRadius: '8px',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              opacity: sending ? 0.5 : 1,
+            }}
+            title="Send message"
+          >
+            <Icon.Send />
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function HeaderButton({ children, onClick, title, active }) {
+  const [hover, setHover] = useState(false)
+  const bg = active
+    ? 'rgba(68,147,248,0.14)'
+    : hover ? 'rgba(255,255,255,0.06)' : 'transparent'
+  const color = active ? '#4493f8' : hover ? TEXT : TEXT_DIM
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title={title}
+      style={{
+        background: bg, border: 'none', color, cursor: 'pointer',
+        padding: '6px 8px', borderRadius: '6px',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}
+    >
+      {children}
+    </button>
+  )
+}
