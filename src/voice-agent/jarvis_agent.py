@@ -1452,58 +1452,60 @@ async def type_in_terminal(command: str) -> str:
         return "(no command supplied)"
     logger.info(f"type_in_terminal → {command[:80]}")
 
-    # Find a visible terminal window. xdotool returns one ID per line,
-    # in stacking order (oldest first), so the LAST one is most-recent
-    # — which is the one the user most plausibly meant.
-    try:
-        search = await asyncio.create_subprocess_exec(
-            "xdotool", "search", "--onlyvisible", "--class", _TERMINAL_CLASS_RE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        sout, _ = await search.communicate()
-    except FileNotFoundError:
-        return "(xdotool not installed)"
-    ids = [s for s in sout.decode("utf-8", errors="replace").split() if s.strip()]
-    if not ids:
-        return "(no terminal found — open one and ask again)"
-    target = ids[-1]
+    # All desktop-control I/O goes through tools.desktop_control so the same
+    # call works on Linux (xdotool backend) and Windows (pywinauto backend).
+    # The helpers swallow failures into sentinels (False / None / empty list);
+    # we surface them here as user-readable strings.
+    from tools import desktop_control
 
-    # Activate the chosen window so it captures the keystrokes.
-    # `windowactivate --sync` blocks until the WM has actually given
-    # focus, which avoids a race where `type` fires before the focus
-    # change lands and the keys leak to the previous window.
-    try:
-        act = await asyncio.create_subprocess_exec(
-            "xdotool", "windowactivate", "--sync", target,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+    # Find a visible terminal window. On Linux the helper uses
+    # ``xdotool search --name <class-regex>`` — we keep the class regex by
+    # falling through to the lower-level escape hatch (the high-level
+    # ``find_window_by_name`` matches on title, not WM_CLASS, so it would
+    # miss most terminal emulators whose titles are user shell prompts).
+    # On Windows the title-substring path is the right one — terminals there
+    # surface their app name in the title bar.
+    target: Optional[int] = None
+    if platform.system() == "Linux":
+        ok, out = desktop_control.xdotool_call(
+            ["search", "--onlyvisible", "--class", _TERMINAL_CLASS_RE],
         )
-        _, aerr = await act.communicate()
-        if act.returncode != 0:
-            return f"(could not focus terminal: {aerr.decode().strip()[:120]})"
+        if not ok:
+            # Most common cause: xdotool missing — but the helper also
+            # returns False on timeout / non-zero exit. Surface the message.
+            if "not installed" in out or "not available" in out.lower():
+                return "(xdotool not installed)"
+            return "(no terminal found — open one and ask again)"
+        ids = [s for s in out.split() if s.strip()]
+        if not ids:
+            return "(no terminal found — open one and ask again)"
+        # Last ID = most-recent in xdotool's stacking order.
+        try:
+            target = int(ids[-1])
+        except ValueError:
+            return "(no terminal found — open one and ask again)"
+    else:
+        # Windows / others — try common terminal app names by title substring.
+        for app in ("Windows Terminal", "PowerShell", "Command Prompt", "cmd.exe", "wt.exe"):
+            target = desktop_control.find_window_by_name(app)
+            if target is not None:
+                break
+        if target is None:
+            return "(no terminal found — open one and ask again)"
 
-        # Type literally — no shell expansion, no special-key parsing
-        # (xdotool's `type` treats everything as raw text). Then Enter.
-        # --delay 12 ms keeps the typing fast but reliable on slow
-        # terminals (kitty's compositor occasionally drops faster keys).
-        type_proc = await asyncio.create_subprocess_exec(
-            "xdotool", "type", "--delay", "12", "--", command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, terr = await type_proc.communicate()
-        if type_proc.returncode != 0:
-            return f"(type failed: {terr.decode().strip()[:120]})"
+    # Activate the chosen window so it captures the keystrokes. The Linux
+    # backend uses ``windowactivate --sync`` so the focus race (typing
+    # before the WM grants focus) can't fire.
+    if not desktop_control.activate_window(target):
+        return "(could not focus terminal)"
 
-        enter = await asyncio.create_subprocess_exec(
-            "xdotool", "key", "Return",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await enter.communicate()
-    except Exception as e:
-        return f"(xdotool failed: {e})"
+    # Type literally — no shell expansion, no special-key parsing.
+    if not desktop_control.type_text(command):
+        return "(type failed)"
+
+    # Press Enter to run the command. Best-effort — if Enter fails the text
+    # is already in the terminal, so the user can press Enter themselves.
+    desktop_control.send_keys("Return")
 
     return f"(typed into terminal: {command[:80]})"
 
@@ -1757,10 +1759,11 @@ async def launch_app(binary: str, args: str = "") -> str:
          like 'notepad' on Linux, where bash 'setsid -f notepad' would
          silently exit 0 because setsid forks before notepad fails to
          exec — leaving the LLM to falsely claim success).
-      2. Post-launch: capture stderr to a log file, then `pgrep` to
-         confirm a matching process is alive 600ms after spawn. If
-         not, surface the captured stderr so the LLM can report a
-         specific failure instead of "X opened, sir".
+      2. Post-launch: capture stderr to a log file, then poll a
+         cross-platform process probe (tools.runtime.is_process_running,
+         backed by psutil) to confirm a matching process is alive
+         within 4s of spawn. If not, surface the captured stderr so
+         the LLM can report a specific failure instead of "X opened, sir".
 
     Args:
         binary:  Executable name, e.g. 'google-chrome', 'code',
@@ -1812,12 +1815,11 @@ async def launch_app(binary: str, args: str = "") -> str:
         except Exception as e:
             return f"CRASHED: spawn error — {e}"
     else:
-        # Windows / macOS path — Phase 3 will harden this (today only
-        # exists so module-level imports don't fail under cross-platform
-        # CI). pgrep / setsid are Linux-only; the post-launch verifier
-        # below uses pgrep too, so this branch will fall through to the
-        # "not running" check on non-Linux. Phase 3 follow-up: replace
-        # the verifier with a cross-platform process check (psutil).
+        # Windows / macOS path — uses detached_popen_kwargs() to detach
+        # the child (CREATE_NEW_PROCESS_GROUP + DETACHED_PROCESS on
+        # Windows) so it survives a worker bounce. The post-launch
+        # verifier below uses psutil (cross-platform) since pgrep is
+        # Linux-only.
         from tools.runtime import detached_popen_kwargs as _detach_kwargs
         import shlex as _shlex
         argv = [bin_path, *(_shlex.split(args_clean) if args_clean else [])]
@@ -1833,23 +1835,23 @@ async def launch_app(binary: str, args: str = "") -> str:
         except Exception as e:
             return f"CRASHED: spawn error — {e}"
 
-    # Poll pgrep up to 4s, returning as soon as the app appears. The old
+    # Poll up to 4s, returning as soon as the app appears. The old
     # fixed 600ms sleep raced cold-starting GUI apps (e.g. chrome takes
     # >1s on first launch — extensions + profile load). On the user-
     # visible "first attempt fails / second succeeds" pattern, the second
     # attempt only succeeded because chrome was now running from the
     # first attempt that we'd given up on too early. Bug fixed 2026-05-08.
+    #
+    # Cross-platform process probe (Phase 3.1): tools.runtime.is_process_running
+    # uses psutil under the hood — works on Linux + Windows + macOS, no
+    # shellout to pgrep (which is Linux-only and would silently report
+    # "not running" on Windows).
+    from tools.runtime import is_process_running
     running = False
     for _ in range(20):  # 20 × 0.2s = 4s budget
         await asyncio.sleep(0.2)
         try:
-            check = await asyncio.create_subprocess_exec(
-                "pgrep", "-f", bin_only,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            out_b, _ = await asyncio.wait_for(check.communicate(), timeout=1.0)
-            if out_b.decode("utf-8", errors="replace").strip():
+            if is_process_running(bin_only):
                 running = True
                 break
         except Exception:
