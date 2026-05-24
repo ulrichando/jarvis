@@ -116,3 +116,12 @@ honcho-ai~=2.1
 # on Windows (where there's no SIGKILL either). Added 2026-05-24 as part
 # of the Phase 2.1 cross-platform footgun cleanup.
 psutil~=7.0
+
+# pywinauto — Win32 GUI automation library used by tools/desktop_control.py's
+# Windows backend (send_keys / find_windows / Application.connect for window
+# activation + minimize / restore). Platform-conditional: installs ONLY on
+# Windows hosts, so the Linux dev box's venv resolves cleanly without it.
+# Lazy-imported inside each desktop_control helper so the module is import-
+# safe even when the dep is absent. Added 2026-05-24 as part of the Phase
+# 3.2 cross-platform desktop-control refactor.
+pywinauto>=0.6.8; platform_system == "Windows"

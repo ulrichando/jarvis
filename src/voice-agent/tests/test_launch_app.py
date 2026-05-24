@@ -7,8 +7,9 @@ the wrapper depends on:
 
   - shutil.which(bin) → None means MISSING (pre-flight catch)
   - asyncio.create_subprocess_shell → spawns the setsid -f command
-  - asyncio.create_subprocess_exec  → runs pgrep to verify the spawn
-                                       stuck (post-launch catch)
+  - tools.runtime.is_process_running → cross-platform process probe
+                                       (post-launch verifier, replaces
+                                       the pre-Phase-3.1 pgrep shellout)
   - log_launch_attempt              → telemetry side effect we verify
 
 We also confirm the path / args / outcome strings match what the
@@ -45,11 +46,12 @@ class _FakeProcShell:
 
 
 class _FakeProcPgrep:
-    """Stand-in for the verification `pgrep -f <bin>` proc.
+    """Legacy stand-in for the pre-Phase-3.1 `pgrep -f <bin>` proc.
 
-    Configurable: passing `output=b""` simulates "pgrep found nothing"
-    (process didn't stick → CRASHED). Non-empty bytes simulate
-    "pgrep found a pid" (process is alive → OK).
+    Kept around for any test that may still reference it; the
+    post-launch verifier now uses tools.runtime.is_process_running
+    (psutil-backed) rather than shelling out to pgrep, so the
+    OK/CRASHED tests monkeypatch the helper directly.
     """
     def __init__(self, output: bytes):
         self._output = output
@@ -118,23 +120,21 @@ def test_empty_binary_returns_missing(monkeypatch):
 # ── OK path ───────────────────────────────────────────────────────────
 
 
-def test_ok_path_when_pgrep_finds_pid(monkeypatch):
+def test_ok_path_when_verifier_finds_pid(monkeypatch):
     """Happy path: shutil.which returns a real path, setsid spawns,
-    sleep elapses, pgrep returns a pid → OK."""
+    sleep elapses, is_process_running returns a pid → OK."""
     import jarvis_agent
     import shutil, asyncio as aio
+    from tools import runtime as _runtime
 
     monkeypatch.setattr(shutil, "which", lambda b: f"/usr/bin/{b}")
 
     async def fake_subprocess_shell(*args, **kwargs):
         return _FakeProcShell()
 
-    async def fake_subprocess_exec(*args, **kwargs):
-        # pgrep finds a PID → process is alive
-        return _FakeProcPgrep(b"123456\n")
-
     monkeypatch.setattr(aio, "create_subprocess_shell", fake_subprocess_shell)
-    monkeypatch.setattr(aio, "create_subprocess_exec", fake_subprocess_exec)
+    # Verifier returns a non-empty PID list → "process is alive"
+    monkeypatch.setattr(_runtime, "is_process_running", lambda pat: [123456])
 
     # No-op the sleep so the test runs fast.
     async def fake_sleep(_):
@@ -154,23 +154,22 @@ def test_ok_path_when_pgrep_finds_pid(monkeypatch):
 # ── CRASHED path ──────────────────────────────────────────────────────
 
 
-def test_crashed_when_pgrep_finds_nothing(monkeypatch):
+def test_crashed_when_verifier_finds_nothing(monkeypatch):
     """Binary exists on PATH (shutil.which) and setsid spawns OK,
-    but pgrep returns empty output 600ms later → process exec'd then
-    crashed. Surface stderr from the captured /tmp log."""
+    but is_process_running returns [] for the full 4s budget → process
+    exec'd then crashed. Surface stderr from the captured log."""
     import jarvis_agent
     import shutil, asyncio as aio
+    from tools import runtime as _runtime
 
     monkeypatch.setattr(shutil, "which", lambda b: f"/usr/bin/{b}")
 
     async def fake_subprocess_shell(*args, **kwargs):
         return _FakeProcShell()
 
-    async def fake_subprocess_exec(*args, **kwargs):
-        return _FakeProcPgrep(b"")  # nothing alive
-
     monkeypatch.setattr(aio, "create_subprocess_shell", fake_subprocess_shell)
-    monkeypatch.setattr(aio, "create_subprocess_exec", fake_subprocess_exec)
+    # Empty PID list every poll → CRASHED
+    monkeypatch.setattr(_runtime, "is_process_running", lambda pat: [])
 
     async def fake_sleep(_):
         pass
