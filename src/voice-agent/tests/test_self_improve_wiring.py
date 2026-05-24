@@ -85,10 +85,18 @@ class TestIsHardTurn:
         )
         assert is_hard_turn(snap) is False
 
-    def test_short_task_not_hard(self):
+    def test_short_task_non_claim_not_hard(self):
+        """Short TASK reply with no completion claim → not hard.
+
+        Updated 2026-05-24: previously this used jarvis_text="Done." but
+        is_hard_turn now flags short TASK/REASONING replies that match a
+        strong completion claim (e.g. "Done.") with zero tool calls — that
+        is the confab signature the new branch catches. Test now uses a
+        neutral short reply that doesn't trip the claim regex."""
         from pipeline.skill_review import TurnSnapshot, is_hard_turn
         snap = TurnSnapshot(
-            turn_id=6, ts_utc="t", user_text="ok", jarvis_text="Done.",
+            turn_id=6, ts_utc="t", user_text="ok",
+            jarvis_text="Sure, let me know.",
             route="TASK", subagent="", computer_use_steps=0,
         )
         assert is_hard_turn(snap) is False
