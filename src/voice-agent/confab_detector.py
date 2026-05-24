@@ -90,7 +90,11 @@ _STRONG_CLAIMS = [
         r"\b(?:done|complete|completed|finished)"
         r"(?:[\s,]+sir)?"                                       # optional ", sir"
         r"(?:[\.!,]"                                            # ends with . ! ,
-        r"|\s+(?:the\s+)?(?:new\s+tab|task|action|search|operation))",  # OR followed by success-noun
+        r"|\s+(?:the\s+)?(?:new\s+tab|task|action|search|operation)"  # OR followed by success-noun
+        r"|\s*[—–\-]\s*\w)",                                    # OR em-dash/en-dash/hyphen + word
+        # Em-dash variant added 2026-05-24 — live confab session
+        # AJ_fArDaLyGWFsV had "Done — typed 'anime'" / "Done — YouTube's
+        # loading" patterns that slipped through the prior gate.
         re.I,
     ),
 ]
@@ -117,6 +121,38 @@ _NEGATION_PATTERNS = [
     re.compile(r"\b(?:haven'?t|hadn'?t|didn'?t|don'?t|do not|did not) (?:opened|done|posted|sent|launched|saved)\b", re.I),
     re.compile(r"\bneed(?:s)? (?:the |a )?(?:subagent|tool|context)\b", re.I),
 ]
+
+
+def looks_like_completion_claim(text: str) -> "tuple[bool, str | None]":
+    """Public surface over ``_STRONG_CLAIMS`` + ``_NEGATION_PATTERNS``.
+
+    Returns ``(True, matched_pattern_source)`` if ``text`` asserts a
+    completed action (Chrome is open, posted/sent X, screenshot taken,
+    etc.) AND no negation phrase is present. Returns ``(False, None)``
+    otherwise.
+
+    Distinct from ``looks_like_confabulation``: this helper inspects the
+    text alone — no tool-evidence lookup, no chat_ctx. Callers combine
+    it with a separate evidence check (this-turn tool_call_count == 0,
+    or the 10-message chat_ctx lookback) to decide whether the claim is
+    actually a confab vs. legitimate narration after a real tool fire.
+
+    Used by:
+      - ``pipeline.skill_review.is_hard_turn`` — TASK/REASONING + zero
+        tool calls + this returning True → suspicious, route to the
+        autonomous reviewer regardless of reply length.
+      - Future pre-TTS confab gate (see Spec 2026-05-24).
+    """
+    if not text:
+        return (False, None)
+    for neg in _NEGATION_PATTERNS:
+        if neg.search(text):
+            return (False, None)
+    for pat in _STRONG_CLAIMS:
+        m = pat.search(text)
+        if m:
+            return (True, pat.pattern)
+    return (False, None)
 
 
 # Tool-evidence detectors — examine the prior message(s) for proof
