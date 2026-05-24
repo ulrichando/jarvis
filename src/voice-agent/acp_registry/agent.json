@@ -1,0 +1,14 @@
+{
+  "id": "jarvis-agent",
+  "name": "JARVIS",
+  "version": "0.1.0",
+  "description": "JARVIS is Ulrich's voice-first AI assistant — also available in your IDE via the Agent Client Protocol. Shares its tool registry, memory, and skills with the voice + CLI surfaces.",
+  "repository": "https://github.com/ulrich-ando/jarvis",
+  "website": "https://github.com/ulrich-ando/jarvis#use-jarvis-in-your-ide-acp",
+  "authors": ["Ulrich Ando"],
+  "license": "MIT",
+  "distribution": {
+    "command": "jarvis-acp",
+    "args": []
+  }
+}
