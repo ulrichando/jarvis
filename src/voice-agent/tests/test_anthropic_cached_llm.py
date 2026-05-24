@@ -1,0 +1,350 @@
+"""Tests for the Anthropic cached LLM subclass — stable/volatile split.
+
+Verifies that the new ``providers.anthropic_cached_llm.AnthropicCachedLLM``
+wrapper places ``cache_control`` on the STABLE prefix (block 0) rather
+than the LAST system block (the parent plugin's default behaviour with
+``caching="ephemeral"``). The cache breakpoint sitting at the
+stable/volatile boundary is the load-bearing change behind the
+≥95 % cache-hit target.
+
+These tests don't hit the live Anthropic API — they exercise the
+``chat()`` body up to the ``self._client.messages.create(...)`` call
+with a mocked client, then inspect the call's ``system=`` kwarg to
+confirm the structural contract.
+"""
+from __future__ import annotations
+
+import asyncio
+import os
+import sys
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+# Tests run from the voice-agent root.
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# anthropic plugin reads ANTHROPIC_API_KEY at __init__ time.
+os.environ.setdefault("ANTHROPIC_API_KEY", "test-anthropic-key")
+os.environ.setdefault("GROQ_API_KEY", "test-key-for-init")
+os.environ.setdefault("DEEPSEEK_API_KEY", "test-deepseek-key")
+
+
+def _drive_chat(wrapper, ctx):
+    """Drive `wrapper.chat(chat_ctx=ctx)` inside an event loop.
+
+    The LiveKit ``LLMStream.__init__`` schedules a metrics-monitor task
+    via ``asyncio.create_task``, which requires a running event loop.
+    These tests don't actually consume the stream — they only need the
+    ``messages.create(...)`` call to fire so the kwargs are captured."""
+
+    async def _run():
+        # The chat() call is synchronous (it returns the stream), but
+        # it must execute INSIDE a running event loop for the stream's
+        # __init__ to succeed.
+        wrapper.chat(chat_ctx=ctx)
+
+    asyncio.run(_run())
+
+
+def _build_wrapper(stable_prefix: str | None = None):
+    """Construct an AnthropicCachedLLM with mocked transport.
+
+    Returns ``(wrapper, mock_messages_create)`` so the test can drive
+    ``wrapper.chat()`` and inspect the recorded ``system=`` payload."""
+    from providers.anthropic_cached_llm import AnthropicCachedLLM
+
+    wrapper = AnthropicCachedLLM(
+        model="claude-haiku-4-5",
+        api_key="test-anthropic-key",
+        temperature=0.6,
+        max_tokens=200,
+        stable_prefix=stable_prefix,
+    )
+    # Replace the AsyncClient's messages.create with a mock so the
+    # chat() call returns without going to the network.
+    mock_create = MagicMock(return_value=MagicMock())
+    wrapper._client.messages.create = mock_create
+    wrapper._client.beta.messages.create = mock_create
+    return wrapper, mock_create
+
+
+def _build_chat_ctx(system_text: str, user_text: str = "Hello"):
+    """Build a minimal ChatContext with one system message + one user message."""
+    from livekit.agents.llm import ChatContext, ChatMessage
+
+    items = [
+        ChatMessage(id="sys", role="system", content=[system_text]),
+        ChatMessage(id="usr", role="user", content=[user_text]),
+    ]
+    return ChatContext(items=items)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Core contract: when stable_prefix matches, system is 2-element list
+# with cache_control on block 0.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_exact_prefix_split_places_cache_on_block_0():
+    """When the system text starts with the configured stable_prefix,
+    the wrapper must emit a 2-element ``system=[...]`` list with
+    ``cache_control`` on block 0 (the stable prefix) and NO
+    cache_control on block 1 (the volatile suffix). This is the core
+    contract — volatile changes leave the cache valid."""
+    stable = "STABLE: SOUL + INSTRUCTIONS\n" * 50  # ~1.5KB representative
+    volatile = "VOLATILE: runtime-id + memory + breaker"
+    full = stable + volatile
+
+    wrapper, mock_create = _build_wrapper(stable_prefix=stable)
+    ctx = _build_chat_ctx(full)
+    _drive_chat(wrapper, ctx)
+
+    # The mocked create captured the call kwargs.
+    assert mock_create.called, "messages.create was not invoked"
+    kwargs = mock_create.call_args.kwargs
+    system_blocks = kwargs.get("system")
+    assert isinstance(system_blocks, list), (
+        f"system must be a list, got {type(system_blocks).__name__}"
+    )
+    assert len(system_blocks) == 2, (
+        f"system must have exactly 2 blocks (stable + volatile), "
+        f"got {len(system_blocks)}: {[b.get('text', '')[:30] for b in system_blocks]}"
+    )
+
+    # Block 0 = stable prefix, marked cached.
+    assert system_blocks[0]["text"] == stable
+    assert system_blocks[0]["type"] == "text"
+    assert system_blocks[0].get("cache_control") == {"type": "ephemeral"}
+
+    # Block 1 = volatile suffix, NOT cached.
+    assert system_blocks[1]["text"] == volatile
+    assert system_blocks[1]["type"] == "text"
+    assert "cache_control" not in system_blocks[1]
+
+
+def test_marker_split_when_stable_prefix_unset():
+    """When no stable_prefix is configured but the system text contains
+    ``CACHE_BREAK_MARKER``, the wrapper splits on the marker. This is
+    the fallback path for wrappers constructed before the prompt state
+    assembled (e.g. early-built speech LLMs)."""
+    from providers.prompt_cache import CACHE_BREAK_MARKER
+
+    stable = "MARKED STABLE BLOCK"
+    volatile = "MARKED VOLATILE BLOCK"
+    full = f"{stable}\n{CACHE_BREAK_MARKER}\n{volatile}"
+
+    wrapper, mock_create = _build_wrapper(stable_prefix=None)
+    ctx = _build_chat_ctx(full)
+    _drive_chat(wrapper, ctx)
+
+    kwargs = mock_create.call_args.kwargs
+    system_blocks = kwargs.get("system")
+    assert len(system_blocks) == 2
+    assert system_blocks[0]["text"] == stable
+    assert system_blocks[0].get("cache_control") == {"type": "ephemeral"}
+    assert system_blocks[1]["text"] == volatile
+    assert "cache_control" not in system_blocks[1]
+
+
+def test_no_split_falls_back_to_last_block_cache():
+    """When the system text has neither a stable_prefix match nor a
+    marker, the wrapper must NOT crash — it falls back to the parent
+    plugin's default behaviour (one block per original system message,
+    ``cache_control`` on the LAST block). Caching still works for the
+    single-message case; this is the behaviour an un-wrapped
+    ``lk_anthropic.LLM`` with ``caching="ephemeral"`` produces."""
+    full = "JUST A FLAT SYSTEM PROMPT NO MARKER NO PREFIX"
+
+    wrapper, mock_create = _build_wrapper(stable_prefix=None)
+    ctx = _build_chat_ctx(full)
+    _drive_chat(wrapper, ctx)
+
+    kwargs = mock_create.call_args.kwargs
+    system_blocks = kwargs.get("system")
+    assert len(system_blocks) == 1
+    assert system_blocks[0]["text"] == full
+    # The last block (= the only block) is cached — parent plugin default.
+    assert system_blocks[0].get("cache_control") == {"type": "ephemeral"}
+
+
+def test_set_stable_prefix_late_binding():
+    """``set_stable_prefix()`` must update the wrapper so subsequent
+    chat() calls use exact-prefix split. This is the path used by
+    ``apply_stable_prefix_recursively`` after the prompt state
+    assembles."""
+    stable = "LATE-BOUND STABLE PREFIX " * 20
+    volatile = " ... VOLATILE TAIL"
+    full = stable + volatile
+
+    wrapper, mock_create = _build_wrapper(stable_prefix=None)
+
+    # First call without binding — no split (falls back to single-block).
+    ctx_1 = _build_chat_ctx(full)
+    _drive_chat(wrapper, ctx_1)
+    blocks_first = mock_create.call_args.kwargs.get("system")
+    assert len(blocks_first) == 1  # full prompt in one block
+
+    # Bind the prefix, then call again — now 2-block split.
+    wrapper.set_stable_prefix(stable)
+    ctx_2 = _build_chat_ctx(full)
+    _drive_chat(wrapper, ctx_2)
+    blocks_second = mock_create.call_args.kwargs.get("system")
+    assert len(blocks_second) == 2
+    assert blocks_second[0]["text"] == stable
+    assert blocks_second[0].get("cache_control") == {"type": "ephemeral"}
+    assert blocks_second[1]["text"] == volatile
+    assert "cache_control" not in blocks_second[1]
+
+
+def test_volatile_change_preserves_stable_block_text():
+    """Two consecutive chat() calls with the same stable_prefix but
+    DIFFERENT volatile suffixes — block 0 (stable) must be byte-identical
+    across both, so Anthropic's prompt cache hashes it as a hit on the
+    second call. This is the load-bearing assertion behind the
+    ≥95 % cache-hit target."""
+    stable = "IDENTICAL STABLE PREFIX " * 30
+    volatile_a = "RUNTIME-V1 MEMORY-V1 BREAKER-OK"
+    volatile_b = "RUNTIME-V1 MEMORY-V2 BREAKER-OK"  # one new memory write
+
+    wrapper, mock_create = _build_wrapper(stable_prefix=stable)
+
+    _drive_chat(wrapper, _build_chat_ctx(stable + volatile_a))
+    blocks_a = mock_create.call_args.kwargs.get("system")
+
+    _drive_chat(wrapper, _build_chat_ctx(stable + volatile_b))
+    blocks_b = mock_create.call_args.kwargs.get("system")
+
+    # The stable block (block 0) is byte-identical across turns.
+    assert blocks_a[0]["text"] == blocks_b[0]["text"]
+    assert blocks_a[0].get("cache_control") == {"type": "ephemeral"}
+    assert blocks_b[0].get("cache_control") == {"type": "ephemeral"}
+
+    # Only the volatile block (block 1) differs.
+    assert blocks_a[1]["text"] != blocks_b[1]["text"]
+    assert blocks_a[1]["text"] == volatile_a
+    assert blocks_b[1]["text"] == volatile_b
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Cache_control discipline
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_only_one_system_breakpoint():
+    """Anthropic accepts ≤ 4 cache breakpoints per request. The
+    wrapper must place exactly ONE on the system blocks (on block 0
+    when split, on the last block when not). Multiple system-side
+    breakpoints would waste the breakpoint budget for tools / history."""
+    stable = "STABLE " * 100
+    volatile = "VOLATILE"
+    full = stable + volatile
+
+    wrapper, mock_create = _build_wrapper(stable_prefix=stable)
+    ctx = _build_chat_ctx(full)
+    _drive_chat(wrapper, ctx)
+
+    blocks = mock_create.call_args.kwargs.get("system")
+    cached_count = sum(1 for b in blocks if b.get("cache_control"))
+    assert cached_count == 1, (
+        f"expected exactly 1 cache_control on system blocks, got {cached_count}"
+    )
+
+
+def test_no_caching_kwarg_passed_to_parent():
+    """The subclass forces ``caching=NOT_GIVEN`` so the parent's
+    auto-placement of cache_control on the LAST system block doesn't
+    double-mark our stable block. ``self._opts.caching`` should not be
+    "ephemeral"."""
+    from providers.anthropic_cached_llm import AnthropicCachedLLM
+    from livekit.agents.utils import is_given
+
+    wrapper = AnthropicCachedLLM(
+        model="claude-haiku-4-5",
+        api_key="test-anthropic-key",
+        caching="ephemeral",  # passed but should be ignored
+    )
+    # The opts dataclass holds caching; for our subclass it must NOT
+    # resolve to "ephemeral" or the parent's chat() path would interfere.
+    # We explicitly popped it in __init__ so the parent stores NOT_GIVEN.
+    assert not (is_given(wrapper._opts.caching) and wrapper._opts.caching == "ephemeral")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Integration with the dispatcher
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _wipe_route_env(monkeypatch) -> None:
+    """Strip per-route override env vars (mirror of the helper in
+    test_llm_dispatcher_build)."""
+    for var in (
+        "JARVIS_BANTER_MODEL",
+        "JARVIS_TASK_MODEL",
+        "JARVIS_REASONING_MODEL",
+        "JARVIS_EMOTIONAL_MODEL",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_dispatcher_uses_cached_wrapper_class(monkeypatch):
+    """``build_dispatching_llm`` must construct the new
+    ``AnthropicCachedLLM`` subclass for Anthropic primaries, not the
+    bare ``lk_anthropic.LLM``. Catches a regression where the wrapper
+    gets bypassed (e.g. an accidental refactor that drops the import)."""
+    _wipe_route_env(monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+
+    from providers.anthropic_cached_llm import AnthropicCachedLLM
+    from providers.llm import build_dispatching_llm
+    from livekit.agents.llm import FallbackAdapter
+
+    d = build_dispatching_llm()
+    for route in ("BANTER", "TASK", "REASONING", "EMOTIONAL"):
+        inner = d.pick(route)
+        # Each route is wrapped in a FallbackAdapter; rung 1 is the
+        # Anthropic primary.
+        assert isinstance(inner, FallbackAdapter)
+        rungs = (
+            getattr(inner, "_llm_instances", None)
+            or getattr(inner, "_llms", None)
+            or []
+        )
+        assert rungs, f"route {route} has no rungs"
+        # Rung 1 is our wrapper subclass.
+        assert isinstance(rungs[0], AnthropicCachedLLM), (
+            f"route {route} rung 1 expected AnthropicCachedLLM, "
+            f"got {type(rungs[0]).__name__}"
+        )
+
+
+def test_apply_stable_prefix_recursively_walks_dispatcher(monkeypatch):
+    """``apply_stable_prefix_recursively`` must walk the full
+    DispatchingLLM → FallbackAdapter → LLM tree and call
+    ``set_stable_prefix`` on every wrapper that has it."""
+    _wipe_route_env(monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+
+    from providers.llm import build_dispatching_llm
+    from providers.prompt_cache import apply_stable_prefix_recursively
+
+    d = build_dispatching_llm()
+    stable = "STABLE PREFIX " * 100
+
+    n = apply_stable_prefix_recursively(d, stable)
+    # 4 routes × 1 Anthropic primary each = 4 wrappers updated.
+    # (The Groq + DeepSeek rungs don't expose set_stable_prefix, so they
+    # silently skip — they auto-cache on prefix-match anyway.)
+    assert n == 4, f"expected 4 wrappers updated, got {n}"
+
+    # And every Anthropic primary now holds the prefix.
+    for route in ("BANTER", "TASK", "REASONING", "EMOTIONAL"):
+        inner = d.pick(route)
+        rungs = (
+            getattr(inner, "_llm_instances", None)
+            or getattr(inner, "_llms", None)
+            or []
+        )
+        primary = rungs[0]
+        assert primary._stable_prefix == stable
