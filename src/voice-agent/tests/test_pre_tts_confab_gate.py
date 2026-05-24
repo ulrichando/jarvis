@@ -206,6 +206,10 @@ async def test_retry_chain_all_tiers_fail_filler_voiced():
 @pytest.mark.asyncio
 async def test_retry_chain_handles_runner_exception():
     """If a tier's runner raises, gate logs + continues to next tier."""
+    from pipeline.specialty_routes import get_route_ladder
+    ladder = get_route_ladder("TASK_DESKTOP")
+    tier1_model = ladder[1]  # retry slot — read dynamically, not hardcoded
+
     async def boom(ctx, specs):
         raise RuntimeError("anthropic 500")
     runner_ok = _FakeRunner(reply_per_call=[
@@ -214,12 +218,8 @@ async def test_retry_chain_handles_runner_exception():
     ])
 
     def factory(model_id: str):
-        # First call (tier 1) raises; subsequent calls succeed.
-        if model_id == "claude-sonnet-4-6":  # primary AND retry id
-            # We want tier 1 to raise, tier 2 to succeed; but with the
-            # default ladder for TASK_DESKTOP, tier 1 and tier 2 use
-            # different ids (Sonnet then Opus). The factory differentiates.
-            # tier 1: claude-sonnet-4-6 with the FIRST factory call
+        # tier 1 raises; subsequent tiers (different model ids) succeed.
+        if model_id == tier1_model:
             return boom
         return runner_ok
 
@@ -258,3 +258,32 @@ async def test_retry_chain_appends_tool_force_prompt():
     first_ctx, _ = runner.calls[0]
     joined = str(first_ctx)
     assert "Your previous response claimed to have completed an action" in joined
+
+
+# ── _append_system_message unknown-shape guard ──────────────────────
+
+def test_append_system_message_raises_on_unknown_shape():
+    from pipeline.pre_tts_confab_gate import _append_system_message
+    with pytest.raises(TypeError, match="unsupported chat_ctx type"):
+        _append_system_message(object(), "ignored")
+
+
+# ── telemetry_state_for_clean ───────────────────────────────────────
+
+def test_telemetry_state_for_clean_kill_switch():
+    from pipeline.pre_tts_confab_gate import (
+        GateVerdict, telemetry_state_for_clean,
+    )
+    from pipeline.turn_telemetry import CONFAB_STATE_BYPASSED_KILLED
+    v = GateVerdict(should_retry=False, reason="kill_switch")
+    assert telemetry_state_for_clean(v) == CONFAB_STATE_BYPASSED_KILLED
+
+
+def test_telemetry_state_for_clean_normal_paths():
+    from pipeline.pre_tts_confab_gate import (
+        GateVerdict, telemetry_state_for_clean,
+    )
+    from pipeline.turn_telemetry import CONFAB_STATE_CLEAN
+    for reason in ("bypass_route", "no_claim", "tool_called", "unknown_route"):
+        v = GateVerdict(should_retry=False, reason=reason)
+        assert telemetry_state_for_clean(v) == CONFAB_STATE_CLEAN
