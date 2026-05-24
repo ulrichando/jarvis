@@ -82,6 +82,21 @@ JARVIS's `bash` tool runs as the local user (`ulrich`). **As of 2026-05-16 there
 
 - **Memory consolidator** (added 2026-05-08, default ON, kill: `JARVIS_MEMORY_CONSOLIDATOR=0`). [pipeline/memory_consolidator.py](src/voice-agent/pipeline/memory_consolidator.py) runs after every `JARVIS_MEMORY_CONSOLIDATE_EVERY_N` (default 10) successful per-turn extractions. Per-category LLM call (llama-3.1-8b-instant) returns clusters of near-duplicate memories; canonical content replaces them via the existing `_publish_event_async("memory.value.{upserted,removed}")` path. Memories younger than `JARVIS_MEMORY_CONSOLIDATE_YOUNG_EXCLUSION_S` (default 300 s) are excluded so active-conversation extractions don't get merged mid-flow. Single-event-loop concurrency guard. All env vars read at runtime.
 
+- **Auto-mod loop is gated, audited, and reversible** (Spec B, 2026-05-24).
+  `JARVIS_AUTOMOD_ENABLED=1` activates the pattern detector + `propose_code_mod`
+  voice tool. `JARVIS_AUTOMOD_SPAWN_LIVE=1` enables the subprocess spawner
+  (default OFF — shadow mode). Daily cap: 3 PRs (env: `JARVIS_AUTOMOD_DAILY_CAP`).
+  HARD BLOCKLIST (never touched by auto-mod, defended in 3 layers — spawner
+  prompt, `finalize.py` diff-check, `bin/jarvis-automod merge` re-validation):
+  `src/voice-agent/sanitizers/`, `src/voice-agent/confab_detector.py`,
+  `src/voice-agent/pipeline/automod/`, `src/voice-agent/pipeline/skill_review.py`,
+  `src/voice-agent/prompts/soul.md`, `CLAUDE.md`,
+  `.claude/rules/regression-prevention.md`, `MEMORY.md`, `USER.md`. Edits
+  restricted to `src/voice-agent/` prefix. Manual merge via
+  `bin/jarvis-automod merge <id>`; one-keystroke revert via
+  `bin/jarvis-automod revert <sha>`. Spec:
+  [docs/superpowers/specs/2026-05-24-jarvis-source-code-self-mod-design.md](docs/superpowers/specs/2026-05-24-jarvis-source-code-self-mod-design.md).
+
 ## Common workflows
 
 | Task | Command |
