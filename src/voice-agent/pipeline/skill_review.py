@@ -396,32 +396,36 @@ skill (a repeatable procedure JARVIS could follow again next time).
 you can name an exact existing skill and an exact old→new string).
   - "memory": a DURABLE fact about the user, their preferences, their \
 projects, or feedback on how JARVIS should behave.
+  - "procedure": a NAMED multi-step process the user asked to save \
+("save this process", "remember how to deploy") — payload includes a \
+kebab-case name and an ordered list of steps.
 
 Be CONSERVATIVE. Most turns warrant NOTHING — a one-off answer, banter, \
 or a failed/aborted attempt is not a reusable artifact. Only propose when \
 the turn clearly encodes a repeatable procedure or a stable fact.
 
-SIGNALS THAT WARRANT ACTION (any one of these justifies a proposal):
-  • The user corrected your style, tone, format, or verbosity. \
-Frustration signals like "stop doing X", "too verbose", "don't format \
-like this", "just give me the answer", or an explicit "remember this" \
-are FIRST-CLASS skill signals — not just memory signals. Embed the \
-preference into the skill that governs that class of task so the next \
-session starts already knowing.
-  • The user corrected your workflow, approach, or sequence of steps. \
-Encode the correction as a pitfall or an explicit step in the skill that \
-governs that class of task.
-  • A non-trivial technique, fix, workaround, or debugging path emerged \
-that a future session would benefit from. Capture it.
-  • A skill that was used or consulted this turn turned out to be wrong, \
-missing a step, or outdated. Patch it now.
+SIGNALS — what to route where:
+  • STYLE / TONE / FORMAT / VERBOSITY corrections ("stop doing X", \
+"too verbose", "don't format like this", "just give me the answer") → \
+kind=skill_create or kind=skill_patch. Embed the preference into the \
+skill that governs that class of task so the next session starts \
+already knowing.
+  • EXPLICIT SAVE PHRASES ("remember this", "save that", "don't \
+forget", "write this down", "memorize this") → kind=memory if the \
+content is a durable fact or preference; kind=procedure if it's a \
+named multi-step process the user wants to invoke later.
+  • WORKFLOW corrections (the user corrected the sequence of steps \
+you took) → kind=skill_patch to the skill that governs that class of task.
+  • NON-TRIVIAL TECHNIQUE / WORKAROUND that emerged this turn → \
+kind=skill_create.
+  • SKILL CONSULTED THIS TURN TURNED OUT WRONG → kind=skill_patch.
 
-SKILL-VS-MEMORY GUIDANCE:
-  Memory captures who the user is — persona, preferences, durable facts \
-about them and their projects.
+SKILL-VS-MEMORY-VS-PROCEDURE GUIDANCE:
+  Memory captures who the user is — persona, preferences, durable facts.
   Skills capture how to do this class of task for this user.
-  When the user corrects how you handled a task, embed the correction \
-into the skill that governs that task — not just into memory.
+  Procedures capture a named replayable sequence of steps (e.g. \
+"deploy-app", "morning-routine") — distinct from skills because they \
+are invoked by name and replayed step-by-step.
 
 DO NOT CAPTURE (these harden into persistent self-imposed constraints \
 that break when the environment changes):
@@ -458,6 +462,10 @@ Output JSON ONLY, no prose:
      {{"kind": "memory",
        "payload": {{"category": "user|feedback|project|reference", \
 "content": "one declarative sentence"}},
+       "rationale": "one sentence"}},
+     {{"kind": "procedure",
+       "payload": {{"name": "kebab-case-name", \
+"steps": ["step one", "step two", "..."]}},
        "rationale": "one sentence"}}
   ]}}
 If nothing is worth saving, output exactly: {{"proposals": []}}
