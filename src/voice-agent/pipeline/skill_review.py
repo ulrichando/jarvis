@@ -136,7 +136,7 @@ def _long_reply_chars() -> int:
 class TurnSnapshot:
     """A reviewable turn pulled from telemetry. Only the fields the
     reviewer needs — user text, assistant reply, and the multi-step
-    signal (route / subagent / step count)."""
+    signal (route / subagent / step count / tool-call shape)."""
 
     turn_id: int
     ts_utc: str
@@ -145,6 +145,10 @@ class TurnSnapshot:
     route: str
     subagent: str
     computer_use_steps: int
+    # Spec 2026-05-24, Track 2.5 — success-capture gate inputs.
+    # Defaults preserve backward-compat for existing callers.
+    tool_call_count: int = 0
+    had_tool_error: bool = False
 
     @property
     def reason(self) -> str:
@@ -176,7 +180,9 @@ def select_review_candidates(limit: int = 10) -> list[TurnSnapshot]:
         SELECT id, ts_utc, user_text, jarvis_text,
                COALESCE(route, '')   AS route,
                COALESCE(subagent,'') AS subagent,
-               COALESCE(computer_use_steps, 0) AS cu_steps
+               COALESCE(computer_use_steps, 0) AS cu_steps,
+               COALESCE(tool_call_count, 0)    AS tc_count,
+               COALESCE(had_tool_error, 0)     AS tc_error
         FROM turns
         WHERE (subagent IS NOT NULL AND subagent != '')
            OR (computer_use_steps IS NOT NULL AND computer_use_steps >= 1)
@@ -201,6 +207,8 @@ def select_review_candidates(limit: int = 10) -> list[TurnSnapshot]:
                         route=str(r["route"] or ""),
                         subagent=str(r["subagent"] or ""),
                         computer_use_steps=int(r["cu_steps"] or 0),
+                        tool_call_count=int(r["tc_count"] or 0),
+                        had_tool_error=bool(r["tc_error"]),
                     )
                 )
         finally:
