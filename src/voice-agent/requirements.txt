@@ -16,6 +16,13 @@ livekit-agents[silero,openai,groq,anthropic]~=1.5
 # the absence gracefully).
 livekit-plugins-deepgram~=1.5
 
+# Agent Client Protocol — JSON-RPC over stdio so IDEs (Zed, Cursor,
+# VS Code via plugin) can drive JARVIS as a coding agent. Loaded by
+# the `acp_adapter/` package and `bin/jarvis-acp`. Pinned to 0.9.0
+# because newer versions reshape the schema in breaking ways the
+# adapter hasn't been re-validated against.
+agent-client-protocol==0.9.0
+
 # Microsoft Edge-TTS — neural voices reachable without auth/quota.
 # Wrapped in providers/edge_tts.py as a livekit-agents TTS adapter.
 # Imported at the top of jarvis_agent.py, so a missing dep crashes the
