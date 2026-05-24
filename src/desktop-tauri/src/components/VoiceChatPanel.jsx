@@ -46,6 +46,7 @@ export default function VoiceChatPanel({
   const messagesContainerRef = useRef(null)
   const inputRef = useRef(null)
   const priorMutedRef = useRef(false)
+  const hasAutoMutedRef = useRef(false)
 
   // ── Mount fade (200 ms) ──────────────────────────────────────────
   const [mounted, setMounted] = useState(isOpen)
@@ -121,22 +122,25 @@ export default function VoiceChatPanel({
   // ── Mic auto-mute on focus / restore on blur ─────────────────────
   const onInputFocus = useCallback(() => {
     if (!autoMute) return
-    priorMutedRef.current = !!voiceMuted
-    if (!voiceMuted) setVoiceMuted(true)
+    if (voiceMuted) return // already muted by user — nothing to restore
+    priorMutedRef.current = false
+    hasAutoMutedRef.current = true
+    setVoiceMuted(true)
   }, [autoMute, voiceMuted, setVoiceMuted])
 
   const onInputBlur = useCallback(() => {
-    if (!autoMute) return
-    if (voiceMuted !== priorMutedRef.current) setVoiceMuted(priorMutedRef.current)
-  }, [autoMute, voiceMuted, setVoiceMuted])
+    if (!hasAutoMutedRef.current) return
+    hasAutoMutedRef.current = false
+    setVoiceMuted(priorMutedRef.current)
+  }, [setVoiceMuted])
 
   // Restore mute state on close.
   useEffect(() => {
-    if (!isOpen && autoMute && voiceMuted !== priorMutedRef.current) {
-      setVoiceMuted(priorMutedRef.current)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen])
+    if (isOpen) return
+    if (!hasAutoMutedRef.current) return
+    hasAutoMutedRef.current = false
+    setVoiceMuted(priorMutedRef.current)
+  }, [isOpen, setVoiceMuted])
 
   if (!mounted) return null
 
