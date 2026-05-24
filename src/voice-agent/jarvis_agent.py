@@ -3645,11 +3645,14 @@ class JarvisAgent(Agent):
         # before the supervisor sees the turn. `raw` is the unprocessed
         # transcript (not lowercased `text`) so the regex sees natural
         # capitalisation (e.g. "Don't forget").
+        # Reset unconditionally so stale value from a prior turn never
+        # leaks into this turn's telemetry. Stored on `self.session` (per-turn
+        # state convention) so the telemetry closure can read it.
+        self.session._jarvis_turn_trigger_fired = None
         try:
             trigger_fired = _maybe_inject_trigger_message(turn_ctx, raw)
             if trigger_fired:
-                # Store for the post-turn telemetry write (Task 8/T8 wires the column)
-                self._jarvis_turn_trigger_fired = trigger_fired
+                self.session._jarvis_turn_trigger_fired = trigger_fired
         except Exception as e:  # noqa: BLE001 — never let trigger break the turn
             logger.warning("[trigger] inject path failed: %s", e)
 
