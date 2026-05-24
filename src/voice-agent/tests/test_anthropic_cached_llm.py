@@ -116,7 +116,7 @@ def test_exact_prefix_split_places_cache_on_block_0():
     # Block 0 = stable prefix, marked cached.
     assert system_blocks[0]["text"] == stable
     assert system_blocks[0]["type"] == "text"
-    assert system_blocks[0].get("cache_control") == {"type": "ephemeral"}
+    assert system_blocks[0].get("cache_control") == {"type": "ephemeral", "ttl": "1h"}
 
     # Block 1 = volatile suffix, NOT cached.
     assert system_blocks[1]["text"] == volatile
@@ -143,7 +143,7 @@ def test_marker_split_when_stable_prefix_unset():
     system_blocks = kwargs.get("system")
     assert len(system_blocks) == 2
     assert system_blocks[0]["text"] == stable
-    assert system_blocks[0].get("cache_control") == {"type": "ephemeral"}
+    assert system_blocks[0].get("cache_control") == {"type": "ephemeral", "ttl": "1h"}
     assert system_blocks[1]["text"] == volatile
     assert "cache_control" not in system_blocks[1]
 
@@ -166,7 +166,7 @@ def test_no_split_falls_back_to_last_block_cache():
     assert len(system_blocks) == 1
     assert system_blocks[0]["text"] == full
     # The last block (= the only block) is cached — parent plugin default.
-    assert system_blocks[0].get("cache_control") == {"type": "ephemeral"}
+    assert system_blocks[0].get("cache_control") == {"type": "ephemeral", "ttl": "1h"}
 
 
 def test_set_stable_prefix_late_binding():
@@ -193,7 +193,7 @@ def test_set_stable_prefix_late_binding():
     blocks_second = mock_create.call_args.kwargs.get("system")
     assert len(blocks_second) == 2
     assert blocks_second[0]["text"] == stable
-    assert blocks_second[0].get("cache_control") == {"type": "ephemeral"}
+    assert blocks_second[0].get("cache_control") == {"type": "ephemeral", "ttl": "1h"}
     assert blocks_second[1]["text"] == volatile
     assert "cache_control" not in blocks_second[1]
 
@@ -218,8 +218,8 @@ def test_volatile_change_preserves_stable_block_text():
 
     # The stable block (block 0) is byte-identical across turns.
     assert blocks_a[0]["text"] == blocks_b[0]["text"]
-    assert blocks_a[0].get("cache_control") == {"type": "ephemeral"}
-    assert blocks_b[0].get("cache_control") == {"type": "ephemeral"}
+    assert blocks_a[0].get("cache_control") == {"type": "ephemeral", "ttl": "1h"}
+    assert blocks_b[0].get("cache_control") == {"type": "ephemeral", "ttl": "1h"}
 
     # Only the volatile block (block 1) differs.
     assert blocks_a[1]["text"] != blocks_b[1]["text"]
