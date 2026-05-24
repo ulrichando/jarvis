@@ -3691,6 +3691,55 @@ class JarvisAgent(Agent):
                 f"{type(_t12_err).__name__}: {_t12_err}"
             )
 
+        # Spec 2026-05-24, Track 2.5 — procedure replay match.
+        # If the user's utterance matches a saved procedure (exact name
+        # substring or fuzzy ≤3 Levenshtein on any kebab chunk), inject
+        # a system message with the procedure steps + a "confirm before
+        # destructive" guidance line. Runs BEFORE the trigger-regex
+        # inject so explicit "deploy" routes to the saved procedure
+        # instead of a save trigger.
+        try:
+            from pipeline import file_memory
+            from pipeline.prompt_builder import find_matching_procedure
+            procedures = []
+            for raw_entry in file_memory.read("procedure").get("entries", []) or []:
+                # Parse "## name\n<body>" back into dict (best-effort)
+                lines = raw_entry.split("\n")
+                if not lines or not lines[0].startswith("## "):
+                    continue
+                p_name = lines[0][3:].strip()
+                # Extract numbered steps "1. step" or treat as narrative
+                steps = []
+                for ln in lines[1:]:
+                    m = re.match(r"^\s*\d+\.\s+(.+)$", ln)
+                    if m:
+                        steps.append(m.group(1).strip())
+                if not steps and len(lines) > 1:
+                    # Narrative body — use the joined body as a single "step"
+                    body = "\n".join(lines[1:]).strip()
+                    if body:
+                        steps = [body]
+                procedures.append({"name": p_name, "steps": steps})
+            match = find_matching_procedure(raw, procedures)
+            if match:
+                steps_text = (
+                    " → ".join(match["steps"]) if match["steps"] else "(no steps recorded)"
+                )
+                inject = (
+                    f"Saved procedure '{match['name']}' matches the user's "
+                    f"request. Steps: {steps_text}. Acknowledge the match, "
+                    f"then ask the user to confirm before any destructive "
+                    f"step (git push / rm / external API call). Do NOT "
+                    f"execute blindly."
+                )
+                try:
+                    turn_ctx.add_message(role="system", content=inject)
+                    logger.info("[procedure] match injected: name=%s", match["name"])
+                except Exception as _ie:
+                    logger.debug("[procedure] match inject failed: %s", _ie)
+        except Exception as e:
+            logger.warning("[procedure] match step failed: %s", e)
+
         # Spec 2026-05-24, Track 1 — explicit save/recall trigger inject.
         # Runs after all drop/StopResponse gates and after T12 inject,
         # before the supervisor sees the turn. `raw` is the unprocessed
