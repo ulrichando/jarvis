@@ -13,6 +13,15 @@ Modules:
                          rejects tools without it, and strict_schema_relax
                          (load-bearing for Groq) emits legacy shapes
                          that don't set it (live failure 2026-05-11)
+  - deepseek_cache_tokens : backfills DeepSeek's `prompt_cache_hit_tokens`
+                         into the OpenAI-spec
+                         `prompt_tokens_details.cached_tokens` slot when
+                         the latter is empty, so LLMMetrics.prompt_cached_tokens
+                         (and our turn-telemetry column) lands the value.
+                         Defensive — DeepSeek currently mirrors both
+                         fields, so this only kicks in on future API
+                         shifts or DeepSeek-compatible third-party
+                         endpoints. Gates on base_url=deepseek.com.
   - deepseek_roundtrip : echoes `reasoning_content` on assistant tool-call
                          messages so DeepSeek-style providers don't
                          reject the tool result as malformed
