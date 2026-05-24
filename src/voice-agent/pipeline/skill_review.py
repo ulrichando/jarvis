@@ -261,7 +261,7 @@ def _is_successful_trajectory(
 
     Spec 2026-05-24, Track 2.5.
     """
-    if snap.route not in ("TASK", "REASONING"):
+    if not (snap.route == "REASONING" or snap.route.startswith("TASK_")):
         return False
     if snap.tool_call_count < 3:
         return False
@@ -986,16 +986,17 @@ def is_hard_turn(snapshot: TurnSnapshot) -> bool:
         return True
     if snapshot.computer_use_steps and snapshot.computer_use_steps >= 1:
         return True
-    if snapshot.route in ("TASK", "REASONING") and len(
-        snapshot.jarvis_text or ""
-    ) >= _long_reply_chars():
+    if (
+        (snapshot.route == "REASONING" or snapshot.route.startswith("TASK_"))
+        and len(snapshot.jarvis_text or "") >= _long_reply_chars()
+    ):
         return True
     # Confab-shape branch: short TASK/REASONING reply that claims a
     # completed action but fired no tools. Route it to the reviewer so
     # the autonomous loop can propose a fix (procedure, prompt patch,
     # or memory) rather than letting the confab slip through silently.
     if (
-        snapshot.route in ("TASK", "REASONING")
+        (snapshot.route == "REASONING" or snapshot.route.startswith("TASK_"))
         and (snapshot.tool_call_count or 0) == 0
         and snapshot.jarvis_text
     ):

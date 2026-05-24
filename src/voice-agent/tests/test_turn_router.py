@@ -94,10 +94,11 @@ def test_route_base_neutral_emotion():
     All routes dropped to min_words=0 on 2026-05-18 — see
     pipeline/turn_router.py::_ROUTE_BASE for the Whisper-no-interims
     reasoning."""
-    assert compute_interrupt_tuning("BANTER",    "neutral") == (0, 0.3)
-    assert compute_interrupt_tuning("TASK",      "neutral") == (0, 0.4)
-    assert compute_interrupt_tuning("REASONING", "neutral") == (0, 0.5)
-    assert compute_interrupt_tuning("EMOTIONAL", "neutral") == (0, 0.6)
+    assert compute_interrupt_tuning("BANTER",       "neutral") == (0, 0.3)
+    assert compute_interrupt_tuning("TASK_OTHER",   "neutral") == (0, 0.4)
+    assert compute_interrupt_tuning("TASK_DESKTOP", "neutral") == (0, 0.4)
+    assert compute_interrupt_tuning("REASONING",    "neutral") == (0, 0.5)
+    assert compute_interrupt_tuning("EMOTIONAL",    "neutral") == (0, 0.6)
 
 
 def test_unknown_route_defaults_to_task_base():
@@ -107,16 +108,16 @@ def test_unknown_route_defaults_to_task_base():
 def test_frustrated_overlay_adds_padding():
     """A frustrated user shouldn't get cut off mid-vent. Both
     min_words and min_duration go UP."""
-    base = compute_interrupt_tuning("TASK", "neutral")
-    frust = compute_interrupt_tuning("TASK", "frustrated")
+    base = compute_interrupt_tuning("TASK_OTHER", "neutral")
+    frust = compute_interrupt_tuning("TASK_OTHER", "frustrated")
     assert frust[0] > base[0]
     assert frust[1] > base[1]
 
 
 def test_urgent_overlay_makes_interrupts_snappier():
     """Urgent → user wants quick replies; min_words/min_duration go DOWN."""
-    base = compute_interrupt_tuning("TASK", "neutral")
-    urg = compute_interrupt_tuning("TASK", "urgent")
+    base = compute_interrupt_tuning("TASK_OTHER", "neutral")
+    urg = compute_interrupt_tuning("TASK_OTHER", "urgent")
     assert urg[0] <= base[0]
     assert urg[1] <= base[1]
 
@@ -331,11 +332,16 @@ from pipeline.turn_router import (
 
 @pytest.mark.parametrize("raw,expected", [
     ("BANTER", "BANTER"),
-    ("  task  ", "TASK"),
+    # Bare "task" (legacy 4-route label) normalizes to TASK_OTHER as of
+    # 2026-05-24's sub-route split.
+    ("  task  ", "TASK_OTHER"),
     ("REASONING\nplus extra", "REASONING"),
     ("EMOTIONAL.", "EMOTIONAL"),
-    ("garbage", "TASK"),
-    ("", "TASK"),
+    ("garbage", "TASK_OTHER"),
+    ("", "TASK_OTHER"),
+    # Sub-route labels round-trip cleanly.
+    ("TASK_DESKTOP", "TASK_DESKTOP"),
+    ("task_browser", "TASK_BROWSER"),
 ])
 def test_route_from_classifier_output(raw, expected):
     assert route_from_classifier_output(raw) == expected
@@ -368,4 +374,4 @@ def test_classify_turn_falls_back_on_timeout():
             timeout_ms=100,
         )
     )
-    assert out == "TASK"  # fallback
+    assert out == "TASK_OTHER"  # fallback (was bare "TASK" pre-2026-05-24)

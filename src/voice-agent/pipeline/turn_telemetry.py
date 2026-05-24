@@ -23,10 +23,17 @@ TTFW_TARGET_MS = int(os.environ.get("JARVIS_TTFW_TARGET_MS", "1000"))
 # signal: "no route receives <5% of total traffic".
 ROUTE_HEALTH_FLOOR = 0.05
 
-# All four routes the classifier is supposed to produce. Used by the
-# health check to tell us about routes that produced ZERO traffic in
-# the window — those won't show up in a GROUP BY otherwise.
-ALL_ROUTES = ("BANTER", "TASK", "REASONING", "EMOTIONAL")
+# All routes the classifier is supposed to produce. Used by the health
+# check to tell us about routes that produced ZERO traffic in the
+# window — those won't show up in a GROUP BY otherwise. As of
+# 2026-05-24, TASK was split into 5 sub-routes (DESKTOP/BROWSER/CODE/
+# FILES/OTHER); the health check's 5% floor will naturally flag any
+# sub-route that doesn't get traffic, which is the intended signal.
+ALL_ROUTES = (
+    "BANTER",
+    "TASK_DESKTOP", "TASK_BROWSER", "TASK_CODE", "TASK_FILES", "TASK_OTHER",
+    "REASONING", "EMOTIONAL",
+)
 
 # Pre-TTS confab gate state values (2026-05-24).
 # Stored in turns.confab_check_state as TEXT (no schema enforcement).
