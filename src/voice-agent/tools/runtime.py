@@ -30,6 +30,7 @@ __all__ = [
     "display_jarvis_home",
     "is_container",
     "detached_popen_kwargs",
+    "is_process_running",
 ]
 
 
@@ -192,6 +193,64 @@ def detached_popen_kwargs() -> dict:
             )
         }
     return {"start_new_session": True}
+
+
+def is_process_running(name_pattern: str) -> list[int]:
+    """Return PIDs whose process name or cmdline contains ``name_pattern``.
+
+    Cross-platform substring match (case-insensitive) against both the
+    process's ``name`` and its full ``cmdline`` (joined). Used by the
+    launch_app post-launch verifier in place of the Linux-only
+    ``pgrep -f <name>`` shellout — pgrep doesn't exist on Windows and
+    a ``shutil.which("pgrep")`` gate would just silently fall through
+    to "not running" on every Windows host.
+
+    Args:
+        name_pattern: Substring to look for. Matched case-insensitively
+                      against process name and joined cmdline.
+
+    Returns:
+        List of PIDs matching the pattern. Empty list on no match
+        OR on any error (psutil import failure, iteration failure, etc.)
+        — the function never raises, so callers can use it as a simple
+        "is this thing alive?" probe without try/except.
+    """
+    # Local import so the module stays import-safe even on hosts where
+    # psutil isn't yet installed (e.g. a fresh checkout before
+    # ``pip install -r requirements.txt``). psutil IS a runtime
+    # dependency per requirements.txt; this guard is belt-and-suspenders.
+    try:
+        import psutil
+    except ImportError:
+        return []
+    if not name_pattern:
+        return []
+    pattern_lower = name_pattern.lower()
+    pids: list[int] = []
+    try:
+        for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+            try:
+                info = proc.info
+                name = (info.get("name") or "").lower()
+                cmdline_parts = info.get("cmdline") or []
+                cmdline = " ".join(cmdline_parts).lower()
+                if pattern_lower in name or pattern_lower in cmdline:
+                    pid = info.get("pid")
+                    if pid is not None:
+                        pids.append(pid)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                # Process disappeared mid-iteration, or we don't have
+                # permission to read it. Skip silently — the goal is
+                # a best-effort probe, not an audit.
+                continue
+            except Exception:
+                # Don't let one weird proc abort the whole scan.
+                continue
+    except Exception:
+        # process_iter() itself blew up — return what we have so far
+        # (empty if it failed before yielding anything).
+        return pids
+    return pids
 
 
 def is_container() -> bool:
