@@ -13,13 +13,15 @@
 # Or after cloning the repo:
 #   .\install.ps1 [-SkipCli] [-SkipVoice] [-SkipDesktop] [-SkipWeb] [-NoVenv] [-SkipSetup]
 #
-# Phase 1 status (2026-05-24): CLI + Desktop UI fully supported on Windows.
-# The voice-agent's Python deps install cleanly, but the agent itself is
-# Linux-only today (PipeWire / systemd / xdotool / X11). Phase 2 of the
-# Windows port will refactor those behind platform-abstraction layers so
-# the voice agent can launch as a Windows scheduled task or user service.
-# Until then, the voice-agent section installs deps + writes config, then
-# DEFERS service registration with clear log lines.
+# Phase 3 status (2026-05-24): CLI + Desktop UI + voice-agent fully
+# supported on Windows. The voice-agent's Python platform-abstraction
+# shims landed in Phase 2 (audio/service-control/desktop-control), and
+# install.ps1 now downloads nssm 2.24 (SHA256-verified) and registers
+# both voice services -- mirroring install.sh's systemd-unit install.
+# Service registration requires elevation; without it, the dep install
+# still completes and the script prints a clear "re-run elevated" hint.
+# Use -StartServices to launch the services immediately after install
+# (default off -- the user is expected to edit .env first).
 #
 # Idempotent: re-running skips channels that are already in good shape.
 # ============================================================================
@@ -47,6 +49,12 @@ param(
     # Auto-install missing prereqs via winget. Off by default — the
     # default invocation surfaces missing prereqs as actionable hints.
     [switch]$AutoInstall,
+
+    # Auto-start the registered voice services after Install-WindowsVoiceServices.
+    # Off by default so users can edit .env (fill in API keys) before the
+    # voice-agent first launches. Mirrors install.sh's "units installed but
+    # NOT enabled / NOT started" stance.
+    [switch]$StartServices,
 
     # Custom install root override. Default = %LOCALAPPDATA%\jarvis.
     # On non-Windows hosts (PSCore on Linux, for syntax-check/CI runs)
@@ -1188,6 +1196,15 @@ function Install-VoiceAgent {
     }
 
     Install-PlaywrightChromium -VenvDir $venv
+    # nssm + service registration are independent stages in the install
+    # protocol (Stage-Nssm + Stage-VoiceServices). The legacy direct call
+    # path also invokes them here so `Install-VoiceAgent` remains a
+    # complete, self-contained one-shot (e.g. for recovery via
+    # `. install.ps1; Install-VoiceAgent`). Both `Install-Nssm` and
+    # `Install-WindowsVoiceServices` are idempotent -- running them twice
+    # via the stage protocol re-applies parameters but doesn't break
+    # anything.
+    Install-Nssm | Out-Null
     Install-WindowsVoiceServices
 }
 
@@ -1231,22 +1248,250 @@ function Install-PlaywrightChromium {
     }
 }
 
-# Windows voice-service install — DEFERRED to Phase 2 (see spec
-# docs/superpowers/specs/2026-05-23-windows-install-phase1-design.md).
-# The Linux installer registers user systemd units here. On Windows the
-# equivalents would be Task Scheduler entries or a user-scoped service —
-# but the voice-agent imports Linux-only deps (sdnotify for systemd notify
-# protocol, plus AEC paths that hit PipeWire / xdotool / X11). Those imports
-# succeed under WSL2 but fail on native Windows. Until Phase 2 of the
-# Windows port refactors those behind platform-abstraction layers,
-# registering a Windows service would just crash-loop on startup.
+# ────────────────────────────────────────────────────────────────────────────
+# Windows voice-service install (Phase 3.3, 2026-05-24).
+# ────────────────────────────────────────────────────────────────────────────
+# Mirror of install.sh's install_systemd_units: register the voice-agent +
+# voice-client to start on login (here, as Windows services via nssm). Phase
+# 3.1 added pipeline/service_control.py's Windows backend that calls into nssm
+# at runtime — this stage downloads + pins nssm.exe at the path that backend
+# expects ($env:LOCALAPPDATA\jarvis\bin\nssm.exe) and registers the two
+# services with the same env flags the Linux systemd drop-in carries.
+#
+# Admin elevation is required to register a Windows service. We check up
+# front and surface a clear "re-run elevated" hint if not — CLI + Desktop UI
+# install continues either way (the dep install above already succeeded).
+
+# Pinned nssm 2.24 (canonical Aug-2014 release from nssm.cc, 351,793 bytes).
+# SHA256 is verified after download — supply-chain tamper-evident. Hash
+# cross-checked against the archived copy at web.archive.org (snapshot
+# 2024-01-17). Mirror URL uses the `if_` (identity) flag to bypass the
+# wayback rewriting layer, otherwise Invoke-WebRequest gets HTML.
+$script:NssmZipUrl       = "https://nssm.cc/release/nssm-2.24.zip"
+$script:NssmZipUrlMirror = "https://web.archive.org/web/2024if_/https://nssm.cc/release/nssm-2.24.zip"
+$script:NssmZipSha256    = "727d1e42275c605e0f04aba98095c38a8e1e46def453cdffce42869428aa6743"
+
+function Install-Nssm {
+    # Idempotent: returns the existing nssm.exe path if it's already on disk
+    # at $env:LOCALAPPDATA\jarvis\bin\nssm.exe — the same path Phase 3.1's
+    # pipeline/service_control.py::_locate_nssm probes first.
+    $nssmDir  = Join-Path $JarvisHome 'bin'
+    $nssmPath = Join-Path $nssmDir 'nssm.exe'
+
+    if (Test-Path $nssmPath) {
+        Write-Ok "nssm.exe already present at $nssmPath -- skipping download"
+        return $nssmPath
+    }
+
+    if (-not (Test-Path $nssmDir)) {
+        New-Item -ItemType Directory -Force -Path $nssmDir | Out-Null
+    }
+
+    # $env:TEMP is always set on Windows; fall back to .NET's temp path on
+    # non-Windows pwsh (Linux/CI syntax-check) so the function stays callable
+    # for static probes even though real install only happens on Windows.
+    $tempRoot = if ($env:TEMP) { $env:TEMP } else { [System.IO.Path]::GetTempPath() }
+    $tempZip = Join-Path $tempRoot 'jarvis-nssm-2.24.zip'
+    Write-Info "Downloading nssm 2.24 from nssm.cc..."
+
+    # Try the canonical URL first; fall back to the web.archive.org mirror.
+    # nssm.cc occasionally 503s (under-provisioned origin); the archive copy
+    # is byte-identical (SHA verified below either way).
+    $downloaded = $false
+    foreach ($url in @($NssmZipUrl, $NssmZipUrlMirror)) {
+        try {
+            Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $tempZip -ErrorAction Stop
+            $downloaded = $true
+            if ($url -ne $NssmZipUrl) {
+                Write-Warn2 "nssm.cc unreachable; fetched from archive mirror"
+            }
+            break
+        } catch {
+            Write-Warn2 "Download from $url failed: $($_.Exception.Message)"
+        }
+    }
+    if (-not $downloaded) {
+        throw "nssm.exe download failed from all mirrors. Install manually from https://nssm.cc/download into $nssmPath, then re-run."
+    }
+
+    $actualSha = (Get-FileHash -Path $tempZip -Algorithm SHA256).Hash.ToLower()
+    if ($actualSha -ne $NssmZipSha256) {
+        Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
+        throw "nssm.exe SHA256 mismatch -- expected $NssmZipSha256, got $actualSha. Refusing to install."
+    }
+    Write-Ok "nssm-2.24.zip SHA256 verified"
+
+    $tempExtract = Join-Path $tempRoot 'jarvis-nssm-2.24-extracted'
+    if (Test-Path $tempExtract) { Remove-Item $tempExtract -Recurse -Force }
+    Expand-Archive -Path $tempZip -DestinationPath $tempExtract -Force
+
+    # nssm-2.24.zip layout: nssm-2.24\win64\nssm.exe + nssm-2.24\win32\nssm.exe
+    $arch = if ([Environment]::Is64BitOperatingSystem) { 'win64' } else { 'win32' }
+    $extractedExe = Join-Path $tempExtract "nssm-2.24\$arch\nssm.exe"
+    if (-not (Test-Path $extractedExe)) {
+        throw "nssm.exe not found in archive at expected path $extractedExe"
+    }
+
+    Copy-Item -Path $extractedExe -Destination $nssmPath -Force
+
+    Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
+    Remove-Item $tempExtract -Recurse -Force -ErrorAction SilentlyContinue
+
+    Write-Ok "nssm.exe installed at $nssmPath"
+    return $nssmPath
+}
+
+function Test-IsAdministrator {
+    # PS 5.1-compatible elevation check. Returns $true when running in an
+    # elevated PowerShell, $false otherwise. Non-Windows hosts (Linux pwsh
+    # for syntax-check / CI) return $false safely.
+    try {
+        $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($id)
+        return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch {
+        return $false
+    }
+}
+
+function Register-NssmService {
+    # Idempotent nssm-based service registration. If the service exists,
+    # parameters are re-applied (no install command). Mirrors the
+    # WorkingDirectory / Environment / Restart / StandardOutput directives
+    # from setup/systemd/jarvis-voice-*.service.
+    param(
+        [Parameter(Mandatory=$true)][string]$Nssm,
+        [Parameter(Mandatory=$true)][string]$Name,
+        [Parameter(Mandatory=$true)][string]$Exe,
+        [Parameter(Mandatory=$true)][string]$Arguments,
+        [Parameter(Mandatory=$true)][string]$WorkingDir,
+        [Parameter(Mandatory=$true)][string]$StdoutLog,
+        [Parameter(Mandatory=$true)][string]$StderrLog,
+        [hashtable]$EnvVars = @{}
+    )
+
+    # `nssm status` exit code is non-zero when the service doesn't exist.
+    # Probe + capture both pipelines so the user-facing log stays clean.
+    & $Nssm status $Name 2>&1 | Out-Null
+    $alreadyInstalled = ($LASTEXITCODE -eq 0)
+
+    if ($alreadyInstalled) {
+        Write-Info "Service '$Name' already exists -- re-applying parameters"
+        & $Nssm set $Name Application $Exe       | Out-Null
+        & $Nssm set $Name AppParameters $Arguments | Out-Null
+    } else {
+        Write-Info "Installing service '$Name'"
+        & $Nssm install $Name $Exe $Arguments | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "nssm install $Name failed (exit $LASTEXITCODE)"
+        }
+    }
+
+    & $Nssm set $Name AppDirectory $WorkingDir | Out-Null
+    & $Nssm set $Name AppStdout $StdoutLog | Out-Null
+    & $Nssm set $Name AppStderr $StderrLog | Out-Null
+    # 4 = OPEN_ALWAYS: create-if-missing, append otherwise.
+    & $Nssm set $Name AppStdoutCreationDisposition 4 | Out-Null
+    & $Nssm set $Name AppStderrCreationDisposition 4 | Out-Null
+    & $Nssm set $Name AppRotateFiles 1 | Out-Null
+    & $Nssm set $Name AppRotateBytes 10485760 | Out-Null   # 10 MB
+    & $Nssm set $Name Start SERVICE_AUTO_START | Out-Null
+    & $Nssm set $Name AppExit Default Restart | Out-Null
+    & $Nssm set $Name AppRestartDelay 5000 | Out-Null      # 5 s, matches RestartSec=5
+
+    if ($EnvVars.Count -gt 0) {
+        # nssm accepts AppEnvironmentExtra as a single multi-line string of
+        # KEY=VALUE entries. Build it once and apply atomically -- repeated
+        # `set AppEnvironmentExtra` overwrites rather than appends.
+        $envLines = foreach ($key in $EnvVars.Keys) { "$key=$($EnvVars[$key])" }
+        & $Nssm set $Name AppEnvironmentExtra ($envLines -join "`n") | Out-Null
+    }
+
+    Write-Ok "Service '$Name' configured"
+}
+
 function Install-WindowsVoiceServices {
-    Write-Sub "Voice-agent service registration: DEFERRED to Phase 2"
-    Write-Sub "  Why: the voice-agent currently imports Linux-only modules"
-    Write-Sub "  (PipeWire echo-cancel, systemd sdnotify, xdotool / X11)."
-    Write-Sub "  Python deps installed; the agent will NOT start on native Windows yet."
-    Write-Sub "  Phase 2 will land platform-abstraction shims for audio + service-control."
-    Write-Sub "  Workaround today: run the voice-agent under WSL2 with the Linux installer."
+    # Mirrors install.sh's install_systemd_units. Idempotent: re-running
+    # updates parameters in place (Register-NssmService probes nssm status
+    # before deciding install vs set).
+
+    if (-not (Test-IsAdministrator)) {
+        Write-Warn2 "Voice-service registration requires administrator privileges."
+        Write-Warn2 "  CLI + Desktop UI install continues; voice services are NOT registered."
+        Write-Warn2 "  To register: open an elevated PowerShell (Run as Administrator) and re-run:"
+        Write-Warn2 "    iex (irm https://raw.githubusercontent.com/ulrichando/jarvis/master/install.ps1)"
+        Write-Warn2 "  Or, from a local checkout:"
+        Write-Warn2 "    Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile','-File','$PSCommandPath'"
+        # Soft-skip signal: surfaces as {ok:true, skipped:true, reason:"..."} in
+        # the stage-protocol JSON frame so programmatic drivers can decide to
+        # re-launch elevated, surface a prompt, or continue without voice.
+        $script:_StageSkippedReason = "elevation required (not running as administrator)"
+        return
+    }
+
+    $nssm = Install-Nssm
+
+    $venvPython       = Join-Path $InstallDir 'src\voice-agent\.venv\Scripts\python.exe'
+    $voiceAgentScript = Join-Path $InstallDir 'src\voice-agent\jarvis_agent.py'
+    $voiceClientScript= Join-Path $InstallDir 'src\voice-agent\jarvis_voice_client.py'
+    $voiceAgentDir    = Join-Path $InstallDir 'src\voice-agent'
+
+    foreach ($p in @($venvPython, $voiceAgentScript, $voiceClientScript)) {
+        if (-not (Test-Path $p)) {
+            Write-Warn2 "Required path missing: $p -- skipping service registration"
+            return
+        }
+    }
+
+    # Log destination matches the Linux unit's StandardOutput= location
+    # (under the user data dir, separate per-service file).
+    $voiceLogDir = Join-Path $ConfigDir 'logs'
+    if (-not (Test-Path $voiceLogDir)) {
+        # Mirrors Linux: $HOME/.local/share/jarvis/logs. On Windows we keep
+        # logs under $ConfigDir (= $env:USERPROFILE\.jarvis\logs) so they
+        # live alongside memory + conversation DBs, not under %LOCALAPPDATA%.
+        New-Item -ItemType Directory -Force -Path $voiceLogDir | Out-Null
+    }
+
+    Register-NssmService -Nssm $nssm -Name 'jarvis-voice-agent' `
+        -Exe $venvPython -Arguments "`"$voiceAgentScript`" start" `
+        -WorkingDir $voiceAgentDir `
+        -StdoutLog (Join-Path $voiceLogDir 'voice-agent.log') `
+        -StderrLog (Join-Path $voiceLogDir 'voice-agent.log') `
+        -EnvVars @{
+            'JARVIS_HOME'      = $ConfigDir
+            'PYTHONUNBUFFERED' = '1'
+        }
+
+    # voice-client carries the AEC env flags from
+    # ~/.config/systemd/user/jarvis-voice-client.service.d/override.conf
+    # (NEURAL_AEC=1, MIC_DURING_SPEAK=1, latency budget 15 ms).
+    Register-NssmService -Nssm $nssm -Name 'jarvis-voice-client' `
+        -Exe $venvPython -Arguments "`"$voiceClientScript`"" `
+        -WorkingDir $voiceAgentDir `
+        -StdoutLog (Join-Path $voiceLogDir 'voice-client.log') `
+        -StderrLog (Join-Path $voiceLogDir 'voice-client.log') `
+        -EnvVars @{
+            'JARVIS_HOME'                        = $ConfigDir
+            'JARVIS_NEURAL_AEC'                  = '1'
+            'JARVIS_MIC_DURING_SPEAK'            = '1'
+            'JARVIS_NEURAL_AEC_LATENCY_BUDGET_MS'= '15'
+            'PYTHONUNBUFFERED'                   = '1'
+        }
+
+    Write-Ok "Voice services registered (jarvis-voice-agent + jarvis-voice-client)."
+    Write-Sub "Both services are configured Auto-Start; they will launch on next boot."
+    if ($StartServices) {
+        Write-Info "Starting voice services now (-StartServices)..."
+        Start-Service jarvis-voice-agent -ErrorAction SilentlyContinue
+        Start-Service jarvis-voice-client -ErrorAction SilentlyContinue
+        Write-Sub "  Check status: Get-Service jarvis-voice-*"
+    } else {
+        Write-Sub "Configure $InstallDir\.env first, then start with:"
+        Write-Sub "  Start-Service jarvis-voice-agent"
+        Write-Sub "  Start-Service jarvis-voice-client"
+        Write-Sub "(or pass -StartServices on the next install run to auto-start)"
+    }
 }
 
 # Bubblewrap — Linux-only user-namespace sandbox; SKIPPED on Windows.
@@ -1518,15 +1763,15 @@ function Install-AudioProfile {
 # L1 is a PipeWire module. On Windows the cascade is:
 #   L2 = WebRTC APM in-process (cross-platform -- works today)
 #   L3 = DTLN neural cancellation (cross-platform -- works today)
-# Both will activate automatically once Phase 2 wires the voice-agent
-# service. No installer-time action needed.
+# Both L2 + L3 are exercised by the voice services registered above
+# (Stage-VoiceServices). No installer-time action needed.
 function Install-EchoCancel {
     Write-Sub "L1 PipeWire WebRTC AEC3 echo-cancel: SKIPPED on Windows"
     Write-Sub "  L1 is a PipeWire module. On Windows the AEC story is:"
     Write-Sub "    L2 = WebRTC APM in-process (cross-platform -- works today)"
     Write-Sub "    L3 = DTLN neural cancellation (cross-platform -- works today)"
-    Write-Sub "  Both L2 + L3 will activate automatically once Phase 2 wires the"
-    Write-Sub "  voice-agent service. No installer-time action needed."
+    Write-Sub "  Both layers run inside the registered voice services."
+    Write-Sub "  No installer-time action needed."
 }
 
 function Test-ComputerUseDeps {
@@ -1550,7 +1795,8 @@ function Test-ComputerUseDeps {
     if ($LASTEXITCODE -ne 0) {
         Write-Warn2 "pyautogui not installed -- Windows equivalent of xdotool for click/type/key."
         Write-Sub  "  $vaPy -m pip install pyautogui"
-        Write-Sub  "  (Note: computer_use itself is Linux-only today; this is a Phase 2 hook.)"
+        Write-Sub  "  (computer_use's Windows desktop-control backend landed in Phase 3.2;"
+        Write-Sub  "  pyautogui + mss complete the picture for screen+click+type on Windows.)"
     }
 
     Write-Sub "xdotool / xdpyinfo / python3-pyatspi: N/A on Windows (X11-only tools)."
@@ -1641,13 +1887,23 @@ function Write-Summary {
     Write-Host "  Logs dir:          $LogsDir"
     Write-Host "  Start Menu:        $StartMenuDir\JARVIS.lnk"
     Write-Host ""
-    Write-Host "  Phase 1 status (Windows port):"
+    Write-Host "  Phase 3 status (Windows port):"
     Write-Host "    - CLI:      INSTALLED and runnable today"
     Write-Host "    - Web:      INSTALLED ('cd $InstallDir\src\web; bun dev')"
     Write-Host "    - Desktop:  BUILT -- launch from Start Menu, or run jarvis-desktop.cmd"
-    Write-Host "    - Voice:    DEPS INSTALLED, service registration DEFERRED to Phase 2"
-    Write-Host "                (voice-agent imports Linux-only modules -- PipeWire / sdnotify"
-    Write-Host "                / xdotool. Run under WSL2 with install.sh until Phase 2 lands.)"
+    if (Test-IsAdministrator) {
+        Write-Host "    - Voice:    REGISTERED (jarvis-voice-agent + jarvis-voice-client via nssm)"
+        if ($StartServices) {
+            Write-Host "                Services started; check 'Get-Service jarvis-voice-*'."
+        } else {
+            Write-Host "                Configure .env, then 'Start-Service jarvis-voice-agent'"
+            Write-Host "                + 'Start-Service jarvis-voice-client' (or pass -StartServices)."
+        }
+    } else {
+        Write-Host "    - Voice:    DEPS INSTALLED; SERVICES NOT REGISTERED (admin required)"
+        Write-Host "                Re-run this installer from an elevated PowerShell to register"
+        Write-Host "                jarvis-voice-agent + jarvis-voice-client via nssm."
+    }
     Write-Host ""
     Write-Host "  Next steps:"
     Write-Host "    1. Edit $InstallDir\.env and fill in real API keys."
@@ -1741,6 +1997,8 @@ $InstallStages = @(
     @{ Name = "data-dirs";        Title = "Creating JARVIS data directories";     Category = "install";      NeedsUserInput = $false; Worker = "Stage-DataDirectories" }
     @{ Name = "repository";       Title = "Cloning JARVIS repository";            Category = "install";      NeedsUserInput = $false; Worker = "Stage-Repository" }
     @{ Name = "voice-agent";      Title = "Installing voice-agent Python deps";   Category = "install";      NeedsUserInput = $false; Worker = "Stage-VoiceAgent" }
+    @{ Name = "nssm";             Title = "Downloading nssm.exe (service manager)"; Category = "install";    NeedsUserInput = $false; Worker = "Stage-Nssm" }
+    @{ Name = "voice-services";   Title = "Registering voice services via nssm";  Category = "install";      NeedsUserInput = $false; Worker = "Stage-VoiceServices" }
     @{ Name = "cli";              Title = "Installing CLI (Bun)";                 Category = "install";      NeedsUserInput = $false; Worker = "Stage-Cli" }
     @{ Name = "web";              Title = "Installing Web (Next.js)";             Category = "install";      NeedsUserInput = $false; Worker = "Stage-Web" }
     @{ Name = "desktop";          Title = "Building Desktop (Tauri)";             Category = "install";      NeedsUserInput = $false; Worker = "Stage-Desktop" }
@@ -1787,6 +2045,15 @@ function Stage-SystemPackages   { Install-SystemPackages }
 function Stage-DataDirectories  { Set-DataDirectories }
 function Stage-Repository       { Install-Repository }
 function Stage-VoiceAgent       { Resolve-UvCmd; Install-VoiceAgent }
+# Stage-Nssm runs as its own stage so programmatic drivers can re-fetch
+# nssm without re-running the (~2 min) voice-agent dep install. Idempotent
+# -- noop if nssm.exe is already present at the canonical path.
+function Stage-Nssm             { Install-Nssm | Out-Null }
+# Stage-VoiceServices runs the nssm `install` + `set` calls for both
+# voice-agent and voice-client. Re-runnable for parameter updates after
+# editing .env / changing the venv path; admin elevation is required at
+# call time (clear error printed otherwise -- the stage still succeeds).
+function Stage-VoiceServices    { Install-WindowsVoiceServices }
 function Stage-Cli              { Install-Cli }
 function Stage-Web              { Install-Web }
 function Stage-Desktop          { Install-Desktop }
