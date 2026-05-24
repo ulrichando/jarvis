@@ -1,62 +1,185 @@
-# JARVIS one-shot installer — Windows / PowerShell.
+# ============================================================================
+# JARVIS one-shot installer for Windows (PowerShell).
+# ============================================================================
+# Voice-first AI assistant by Ulrich Ando. Real-time speech in / out, with
+# direct tools for desktop, browser, and multi-step coding work.
 #
-# Usage (curl-pipe):
-#   iwr -useb https://raw.githubusercontent.com/ulrichando/jarvis/master/install.ps1 | iex
+# Usage (PowerShell, curl-pipe):
+#   iex (irm https://raw.githubusercontent.com/ulrichando/jarvis/master/install.ps1)
 #
-# Usage (after cloning):
-#   .\install.ps1 [-InstallDir <path>] [-DryRun] [-SkipCli] [-SkipVoice] [-SkipDesktop] [-SkipWeb] [-AutoInstall]
+# Usage (CMD, two-line bootstrap):
+#   curl -fsSL https://raw.githubusercontent.com/ulrichando/jarvis/master/install.cmd -o install.cmd && install.cmd && del install.cmd
 #
-# Idempotent: re-running skips channels that are already installed.
+# Or after cloning the repo:
+#   .\install.ps1 [-SkipCli] [-SkipVoice] [-SkipDesktop] [-SkipWeb] [-NoVenv] [-SkipSetup]
 #
-# Phase 1 status (2026-05-23): CLI + Desktop UI fully supported on Windows.
+# Phase 1 status (2026-05-24): CLI + Desktop UI fully supported on Windows.
 # The voice-agent's Python deps install cleanly, but the agent itself is
 # Linux-only today (PipeWire / systemd / xdotool / X11). Phase 2 of the
 # Windows port will refactor those behind platform-abstraction layers so
-# the voice agent can launch as a Windows user-scoped scheduled task or
-# Service. Until then, the voice-agent section here installs deps + writes
-# config, then DEFERS service registration with a clear log line.
+# the voice agent can launch as a Windows scheduled task or user service.
+# Until then, the voice-agent section installs deps + writes config, then
+# DEFERS service registration with clear log lines.
+#
+# Idempotent: re-running skips channels that are already in good shape.
+# ============================================================================
 
 #Requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$InstallDir = (Join-Path $env:USERPROFILE 'Documents\Projects\jarvis'),
-    [switch]$DryRun,
+    [switch]$NoVenv,
+    [switch]$SkipSetup,
+    [string]$Branch = "master",
+
+    # Higher-precedence variants of -Branch for reproducible installs
+    # (release-tag pin from the Desktop wizard, CI bundles, etc.).
+    # Precedence: Commit > Tag > Branch.
+    [string]$Commit = "",
+    [string]$Tag = "",
+
+    # Channel skip switches — match Linux's JARVIS_SKIP_* env vars.
     [switch]$SkipCli,
     [switch]$SkipVoice,
     [switch]$SkipDesktop,
     [switch]$SkipWeb,
     [switch]$SkipCdp,
-    [switch]$AutoInstall
+
+    # Auto-install missing prereqs via winget. Off by default — the
+    # default invocation surfaces missing prereqs as actionable hints.
+    [switch]$AutoInstall,
+
+    # Custom install root override. Default = %LOCALAPPDATA%\jarvis.
+    # On non-Windows hosts (PSCore on Linux, for syntax-check/CI runs)
+    # $env:LOCALAPPDATA is null; fall back to .NET's temp path so param
+    # binding still works -- the script's actual install flow is Windows-only.
+    [string]$JarvisHome = $(if ($env:LOCALAPPDATA) { "$env:LOCALAPPDATA\jarvis" } else { Join-Path ([System.IO.Path]::GetTempPath()) 'jarvis' }),
+    [string]$InstallDir = $(if ($env:LOCALAPPDATA) { "$env:LOCALAPPDATA\jarvis\jarvis" } else { Join-Path ([System.IO.Path]::GetTempPath()) 'jarvis\jarvis' }),
+
+    # --- Stage protocol (additive; default invocation behaves as before) ---
+    # Programmatic drivers (future Tauri onboarding wizard, CI, install.sh
+    # parity) can drive the installer one stage at a time and parse JSON
+    # progress frames. CLI users on the canonical iex/irm one-liner never
+    # touch these flags.
+    [switch]$Manifest,
+    [string]$Stage,
+    [switch]$ProtocolVersion,
+    [switch]$NonInteractive,
+    [switch]$Json,
+
+    # --- Dry run ---
+    [switch]$DryRun
 )
 
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = "Stop"
 
-# ── Constants ────────────────────────────────────────────────────────────
-$script:RepoUrl       = 'https://github.com/ulrichando/jarvis.git'
-$script:LocalBin      = Join-Path $env:LOCALAPPDATA 'jarvis\bin'
-$script:ConfigDir     = Join-Path $env:USERPROFILE  '.jarvis'
-$script:DataDir       = Join-Path $env:LOCALAPPDATA 'jarvis'
-$script:StartMenuDir  = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
+# Suppress Invoke-WebRequest's per-chunk progress bar. Windows PowerShell
+# 5.1's progress UI repaints synchronously on every received byte, pegging
+# a CPU core and slowing downloads 10-100x (a 57MB PortableGit grab takes
+# 5 minutes with progress on vs 20 seconds with progress off, same network).
+# Every IWR call below is fire-and-forget — we never need the bar. The
+# preference is process-scoped and restored automatically on script exit.
+$ProgressPreference = "SilentlyContinue"
 
-# ── Output helpers (mirror install.sh's c_red / c_green / section / etc) ──
+# Force the console to UTF-8 so non-ASCII output from native tools (npm
+# check marks, git bullets, playwright box-drawing progress bars) renders
+# correctly instead of as IBM437/cp1252 mojibake. This is a DISPLAY-only
+# fix; underlying bytes are already correct. The file itself stays pure
+# ASCII (PS 5.1 parser-safe — see the curly-quote / em-dash avoidance
+# throughout). Console encoding reverts on script exit.
+try {
+    [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+} catch {
+    # Some constrained PowerShell hosts disallow encoding mutation.
+    # Mojibake on output is cosmetic-only; install still works.
+}
+
+# ============================================================================
+# Constants
+# ============================================================================
+
+$RepoUrlHttps = "https://github.com/ulrichando/jarvis.git"
+$RepoUrlSsh   = "git@github.com:ulrichando/jarvis.git"
+
+# Python pin. 3.13 matches voice-agent CLAUDE.md baseline. uv will install
+# this if absent — no admin needed.
+$PythonVersion = "3.13"
+
+# Stage-protocol version. Bumped only for breaking changes to the manifest
+# schema or stdout JSON shape. Adding a new stage does NOT bump this —
+# drivers iterate the manifest dynamically.
+$InstallStageProtocolVersion = 1
+
+# Paths derived from $JarvisHome.
+$script:LocalBin     = Join-Path $JarvisHome 'bin'
+$script:GitPortable  = Join-Path $JarvisHome 'git'
+$script:NodePortable = Join-Path $JarvisHome 'node'
+$script:DataDir      = Join-Path $JarvisHome 'data'
+$script:LogsDir      = Join-Path $JarvisHome 'data\logs'
+
+# User-data dir. Matches Linux's ~/.jarvis layout so memory/conversation
+# DBs, livekit-keys, and the bridge token live in the same logical home
+# on both platforms. Voice-agent reads it via tools.runtime.get_jarvis_home,
+# which honours the JARVIS_HOME env var.
+$script:ConfigDir    = if ($env:USERPROFILE) {
+    Join-Path $env:USERPROFILE '.jarvis'
+} elseif ($env:HOME) {
+    Join-Path $env:HOME '.jarvis'
+} else {
+    Join-Path ([System.IO.Path]::GetTempPath()) '.jarvis'
+}
+
+$script:StartMenuDir = if ($env:APPDATA) {
+    Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
+} else {
+    # Same Linux/CI fallback as the $JarvisHome default -- the Start Menu
+    # path is only consumed inside Install-StartMenuShortcut, which is
+    # Windows-only in practice.
+    Join-Path ([System.IO.Path]::GetTempPath()) 'StartMenu'
+}
+
+# Pinned Git for Windows release. Static github.com archive URLs are NOT
+# rate-limited (unlike api.github.com/repos/.../releases/latest, which
+# caps at 60 req/hr/IP and breaks installers behind CGNAT / corporate NAT).
+# Bump deliberately; PortableGit ships bash.exe + sh + sed + awk + grep
+# in bin\ + usr\bin\ which the JARVIS terminal/bash tool needs on Windows.
+$script:GitVersion       = "2.54.0"
+$script:GitReleaseTag    = "v2.54.0.windows.1"
+
+# ============================================================================
+# Output helpers
+# ============================================================================
+
+function Write-Banner {
+    Write-Host ""
+    Write-Host "+---------------------------------------------------------+" -ForegroundColor Cyan
+    Write-Host "|             JARVIS Voice Assistant Installer            |" -ForegroundColor Cyan
+    Write-Host "+---------------------------------------------------------+" -ForegroundColor Cyan
+    Write-Host "|  Voice-first AI assistant by Ulrich Ando.               |" -ForegroundColor Cyan
+    Write-Host "+---------------------------------------------------------+" -ForegroundColor Cyan
+    Write-Host ""
+}
+
 function Write-Section { param([string]$Msg) Write-Host ''; Write-Host "=== $Msg ===" -ForegroundColor Cyan }
-function Write-Sub     { param([string]$Msg) Write-Host "  $Msg" }
-function Write-Ok      { param([string]$Msg) Write-Host "  [ok] $Msg" -ForegroundColor Green }
-function Write-Warn2   { param([string]$Msg) Write-Host "  [warn] $Msg" -ForegroundColor Yellow }
-function Write-Err     { param([string]$Msg) Write-Host "  [err] $Msg" -ForegroundColor Red }
+function Write-Info    { param([string]$Msg) Write-Host "-> $Msg" -ForegroundColor Cyan }
+function Write-Sub     { param([string]$Msg) Write-Host "   $Msg" }
+function Write-Ok      { param([string]$Msg) Write-Host "[OK] $Msg" -ForegroundColor Green }
+function Write-Warn2   { param([string]$Msg) Write-Host "[!]  $Msg" -ForegroundColor Yellow }
+function Write-Err     { param([string]$Msg) Write-Host "[X]  $Msg" -ForegroundColor Red }
 function Stop-WithError { param([string]$Msg) Write-Err $Msg; exit 1 }
 
-# ── Tool presence (mirror `have`) ────────────────────────────────────────
+# ============================================================================
+# Helpers
+# ============================================================================
+
 function Test-Command {
     param([Parameter(Mandatory)][string]$Name)
     return [bool](Get-Command -Name $Name -ErrorAction SilentlyContinue)
 }
 
-# ── Dry-run wrapper ───────────────────────────────────────────────────────
 function Invoke-Step {
     # Runs a scriptblock unless -DryRun is set, in which case it logs
-    # what would have run and returns. Mirrors the install.sh checkpoints
-    # that bail when JARVIS_DRY_RUN=1.
+    # what would have run and returns. Matches install.sh's
+    # JARVIS_DRY_RUN=1 bail-out semantics.
     param(
         [Parameter(Mandatory)][string]$Description,
         [Parameter(Mandatory)][scriptblock]$Action
@@ -68,12 +191,75 @@ function Invoke-Step {
     & $Action
 }
 
-# ── Detect: curl-pipe vs local checkout ───────────────────────────────────
+# Refresh $env:Path from User + Machine registry hives. Stage drivers
+# invoke each stage in a fresh PowerShell child process; those children
+# inherit env from the parent driver shell, NOT from the registry. When
+# an earlier stage (Stage-Git, Stage-Node, Stage-Uv) installs a binary
+# and pushes its dir into User PATH, the next child's $env:Path is stale
+# and the binary appears missing. This helper re-reads PATH so every
+# Invoke-Stage starts with a fresh view. Cheap and idempotent.
+function Sync-EnvPath {
+    $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
+}
+
+function Add-ToUserPath {
+    param([Parameter(Mandatory)][string]$NewEntry)
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $items = if ($userPath) { $userPath -split ";" } else { @() }
+    if ($items -notcontains $NewEntry) {
+        $items += $NewEntry
+        [Environment]::SetEnvironmentVariable("Path", ($items -join ";"), "User")
+        $env:Path = "$NewEntry;$env:Path"
+        return $true
+    }
+    # Make sure the current session sees it even when User already has it.
+    if (($env:Path -split ";") -notcontains $NewEntry) {
+        $env:Path = "$NewEntry;$env:Path"
+    }
+    return $false
+}
+
+function Resolve-NpmCmd {
+    # Node on Windows ships BOTH npm.cmd and npm.ps1. Get-Command's default
+    # ordering picks whichever lands first in PATHEXT — often .ps1 — but
+    # .ps1 requires PowerShell's execution policy to allow unsigned scripts,
+    # which the default Restricted / RemoteSigned profile blocks. .cmd has
+    # no such restriction. Prefer .cmd when the sibling exists.
+    $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
+    if (-not $npmCmd) { return $null }
+    $npmExe = $npmCmd.Source
+    if ($npmExe -like "*.ps1") {
+        $npmCmdSibling = Join-Path (Split-Path $npmExe -Parent) "npm.cmd"
+        if (Test-Path $npmCmdSibling) { return $npmCmdSibling }
+    }
+    return $npmExe
+}
+
+function Set-WindowsAclUserOnly {
+    # NTFS chmod-600 equivalent: strip inheritance, drop all access
+    # rules, grant the current user FullControl. Use for secrets only
+    # (.env, bridge token, LiveKit keys YAML).
+    param([Parameter(Mandatory)][string]$Path)
+    try {
+        $acl = Get-Acl $Path
+        $acl.SetAccessRuleProtection($true, $false)
+        $acl.Access | ForEach-Object { [void]$acl.RemoveAccessRule($_) }
+        $user = "$env:USERDOMAIN\$env:USERNAME"
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            $user, 'FullControl', 'Allow'
+        )
+        $acl.AddAccessRule($rule)
+        Set-Acl -Path $Path -AclObject $acl
+    } catch {
+        Write-Warn2 "couldn't tighten ACL on $Path : $($_.Exception.Message)"
+    }
+}
+
+# Detect: curl-pipe vs local checkout. When invoked via iex/irm,
+# $PSCommandPath / $MyInvocation.MyCommand.Path are empty — fall through
+# to $InstallDir. When run locally (.\install.ps1), if its sibling
+# CLAUDE.md mentions JARVIS, treat that dir as the checkout root.
 function Get-Invocation {
-    # When invoked via `iwr ... | iex`, $PSCommandPath / $MyInvocation.MyCommand.Path
-    # are empty. In that case treat $script:InstallDir as the destination.
-    # When run locally (`.\install.ps1`), the script lives somewhere — if
-    # its sibling CLAUDE.md mentions JARVIS, take that dir as the checkout.
     $localPath = $PSCommandPath
     if (-not $localPath) { $localPath = $MyInvocation.MyCommand.Path }
 
@@ -89,172 +275,1009 @@ function Get-Invocation {
     Write-Host "Will install JARVIS to: $InstallDir" -ForegroundColor Cyan
 }
 
-# ── Winget helper (best-effort auto-install of prereqs) ───────────────────
-function Install-ViaWinget {
-    param(
-        [Parameter(Mandatory)][string]$Id,
-        [Parameter(Mandatory)][string]$DisplayName
-    )
-    if (-not (Test-Command 'winget')) {
-        Write-Warn2 "winget not available — install $DisplayName manually."
-        return $false
+# ============================================================================
+# Prereq install helpers — uv, Python, Git, Node, system tools
+# ============================================================================
+
+function Install-Uv {
+    # uv (Astral) handles both Python install + venv + dependency sync.
+    # It is one binary, user-scoped (no admin), and 10-100x faster than
+    # pip for cold cache resolves. Used for the voice-agent's venv.
+    Write-Info "Checking for uv package manager..."
+
+    if (Get-Command uv -ErrorAction SilentlyContinue) {
+        $script:UvCmd = "uv"
+        Write-Ok "uv found ($(uv --version))"
+        return $true
     }
-    if (-not $AutoInstall) {
-        Write-Warn2 "$DisplayName missing. Re-run with -AutoInstall to install via: winget install --id $Id --silent"
-        return $false
+
+    # Check the well-known install locations the astral.sh installer
+    # drops uv into.
+    foreach ($uvPath in @(
+        "$env:USERPROFILE\.local\bin\uv.exe",
+        "$env:USERPROFILE\.cargo\bin\uv.exe"
+    )) {
+        if (Test-Path $uvPath) {
+            $script:UvCmd = $uvPath
+            Write-Ok "uv found at $uvPath ($(& $uvPath --version))"
+            return $true
+        }
     }
-    Write-Sub "Installing $DisplayName via winget (id=$Id) ..."
+
+    Write-Info "Installing uv (fast Python package manager)..."
+    # Capture EAP outside the try block so the catch's restore call always
+    # has a meaningful value to use if the body throws before the assignment.
+    $prevEAP = $ErrorActionPreference
     try {
-        & winget install --id $Id --silent --accept-source-agreements --accept-package-agreements | Out-Host
-        Write-Ok "$DisplayName installed via winget"
+        # Relax EAP=Stop around the astral installer. It writes download
+        # progress to stderr; under EAP=Stop, PowerShell wraps stderr lines
+        # captured via 2>&1 as ErrorRecord objects and throws on the first
+        # one even though uv installs successfully. Same workaround we use
+        # for `uv python install`, npm install, playwright, etc. — check
+        # success via Test-Path on the expected binary afterwards.
+        $ErrorActionPreference = "Continue"
+        powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Out-Null
+        $ErrorActionPreference = $prevEAP
+
+        $uvExe = "$env:USERPROFILE\.local\bin\uv.exe"
+        if (-not (Test-Path $uvExe)) {
+            $uvExe = "$env:USERPROFILE\.cargo\bin\uv.exe"
+        }
+        if (-not (Test-Path $uvExe)) {
+            Sync-EnvPath
+            if (Get-Command uv -ErrorAction SilentlyContinue) {
+                $uvExe = (Get-Command uv).Source
+            }
+        }
+
+        if (Test-Path $uvExe) {
+            $script:UvCmd = $uvExe
+            Write-Ok "uv installed ($(& $uvExe --version))"
+            return $true
+        }
+
+        Write-Err "uv installed but not found on PATH"
+        Write-Info "Try restarting your terminal and re-running"
+        return $false
+    } catch {
+        if ($prevEAP) { $ErrorActionPreference = $prevEAP }
+        Write-Err "Failed to install uv: $_"
+        Write-Info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
+        return $false
+    }
+}
+
+# Re-discover uv without re-installing it. Stage drivers invoke each stage
+# in a fresh PowerShell process, so $script:UvCmd set by Install-Uv in a
+# prior process is invisible here. Stages that depend on uv call this at
+# entry to populate $script:UvCmd from PATH / known install paths. Fast
+# no-op when $script:UvCmd is already set in this process.
+function Resolve-UvCmd {
+    if ($script:UvCmd) {
+        if ($script:UvCmd -eq "uv") {
+            if (Get-Command uv -ErrorAction SilentlyContinue) { return }
+        } elseif (Test-Path $script:UvCmd) {
+            return
+        }
+    }
+    if (Get-Command uv -ErrorAction SilentlyContinue) {
+        $script:UvCmd = "uv"
+        return
+    }
+    Sync-EnvPath
+    if (Get-Command uv -ErrorAction SilentlyContinue) {
+        $script:UvCmd = "uv"
+        return
+    }
+    foreach ($uvPath in @("$env:USERPROFILE\.local\bin\uv.exe", "$env:USERPROFILE\.cargo\bin\uv.exe")) {
+        if (Test-Path $uvPath) {
+            $script:UvCmd = $uvPath
+            return
+        }
+    }
+    throw "uv is not installed or not on PATH. Run install.ps1 -Stage uv first."
+}
+
+function Test-Python {
+    # Resolve a Python interpreter via uv. uv will download + install the
+    # pinned interpreter to %LOCALAPPDATA%\uv\python\ if absent — no admin,
+    # no Microsoft Store, no system Python conflict.
+    Write-Info "Checking Python $PythonVersion..."
+
+    try {
+        $pythonPath = & $UvCmd python find $PythonVersion 2>$null
+        if ($pythonPath) {
+            $ver = & $pythonPath --version 2>$null
+            Write-Ok "Python found: $ver"
+            $script:PythonExe = $pythonPath
+            return $true
+        }
+    } catch {}
+
+    Write-Info "Python $PythonVersion not found, installing via uv..."
+    $prevEAP = $ErrorActionPreference
+    try {
+        # uv writes download progress to stderr; under EAP=Stop those wrap
+        # as ErrorRecords and throw even when the install succeeds. Relax
+        # then verify by re-finding the interpreter.
+        $ErrorActionPreference = "Continue"
+        $uvOutput = & $UvCmd python install $PythonVersion 2>&1
+        $uvExitCode = $LASTEXITCODE
+        $ErrorActionPreference = $prevEAP
+
+        $pythonPath = & $UvCmd python find $PythonVersion 2>$null
+        if ($pythonPath) {
+            $ver = & $pythonPath --version 2>$null
+            Write-Ok "Python installed: $ver"
+            $script:PythonExe = $pythonPath
+            return $true
+        }
+        if ($uvExitCode -ne 0) {
+            Write-Warn2 "uv python install output:"
+            Write-Host $uvOutput -ForegroundColor DarkGray
+        }
+    } catch {
+        if ($prevEAP) { $ErrorActionPreference = $prevEAP }
+        Write-Warn2 "uv python install error: $_"
+    }
+
+    # Try any Python 3.11+ as a fallback (voice-agent CLAUDE.md baseline).
+    Write-Info "Trying to find any existing Python 3.11+..."
+    foreach ($fallbackVer in @("3.13", "3.12", "3.11")) {
+        try {
+            $pythonPath = & $UvCmd python find $fallbackVer 2>$null
+            if ($pythonPath) {
+                $ver = & $pythonPath --version 2>$null
+                Write-Ok "Found fallback: $ver"
+                $script:PythonVersion = $fallbackVer
+                $script:PythonExe = $pythonPath
+                return $true
+            }
+        } catch {}
+    }
+
+    # Final fallback: system python — but skip the Microsoft Store stub.
+    # %LOCALAPPDATA%\Microsoft\WindowsApps\python.exe is a 0-byte reparse
+    # point that prints "Python was not found; run without arguments to
+    # install from the Microsoft Store..." and exits non-zero. Get-Command
+    # finds it; invoking it looks like our installer crashing.
+    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($pythonCmd) {
+        $isStoreStub = $false
+        try {
+            $pythonSource = $pythonCmd.Source
+            if ($pythonSource -and $pythonSource -like "*\WindowsApps\*") {
+                $isStoreStub = $true
+            } else {
+                $item = Get-Item $pythonSource -ErrorAction SilentlyContinue
+                if ($item -and $item.Length -eq 0) { $isStoreStub = $true }
+            }
+        } catch {}
+
+        if (-not $isStoreStub) {
+            try {
+                $prevEAP2 = $ErrorActionPreference
+                $ErrorActionPreference = "Continue"
+                $sysVer = & python --version 2>&1
+                $ErrorActionPreference = $prevEAP2
+                if ($sysVer -match "Python 3\.(1[1-9]|[2-9][0-9])") {
+                    Write-Ok "Using system Python: $sysVer"
+                    $script:PythonExe = "python"
+                    return $true
+                }
+            } catch {
+                if ($prevEAP2) { $ErrorActionPreference = $prevEAP2 }
+            }
+        }
+    }
+
+    Write-Err "Failed to install Python $PythonVersion"
+    Write-Info "Install Python 3.13 manually, then re-run this script:"
+    Write-Info "  https://www.python.org/downloads/"
+    Write-Info "  Or: winget install Python.Python.3.13"
+    return $false
+}
+
+function Install-Git {
+    <#
+    .SYNOPSIS
+    Ensure Git (and Git Bash) are installed. Git for Windows bundles bash.exe
+    which the JARVIS terminal/bash tool needs to run shell commands.
+
+    Priority order (deliberately simple — no winget, no registry, no system
+    package manager):
+      1. Existing `git` on PATH — use it.
+      2. Download PortableGit from the official git-for-windows GitHub
+         release (self-extracting 7z.exe) and unpack to
+         $JarvisHome\git — no admin, works on locked-down enterprise
+         machines and machines with a broken system Git install.
+
+    Why PortableGit, not MinGit: MinGit is the minimal-automation distribution
+    and ships ONLY git.exe. JARVIS needs bash.exe to run shell commands.
+    PortableGit is the full Git for Windows distribution without the installer
+    UI; it ships git.exe + bash.exe + sh + awk + sed + grep + curl + ssh
+    in bin\ + usr\bin\.
+
+    We deliberately skip winget because it fails badly when the system Git
+    install is half-installed (partially registered or uninstall-blocked).
+    Owning the JARVIS copy of Git is predictable and recoverable: if it
+    breaks, Remove-Item $JarvisHome\git and re-running fully recovers.
+
+    After install we locate bash.exe and persist the path in
+    JARVIS_GIT_BASH_PATH (User scope) so JARVIS can find it in a fresh
+    shell without waiting for PATH propagation.
+    #>
+    Write-Info "Checking Git..."
+
+    if (Get-Command git -ErrorAction SilentlyContinue) {
+        Write-Ok "Git found ($(git --version))"
+        Set-GitBashEnvVar
+        return $true
+    }
+
+    Write-Info "Git not found -- downloading PortableGit to $GitPortable\ ..."
+    Write-Info "(no admin rights required; isolated from any system Git install)"
+
+    try {
+        $arch = if ([Environment]::Is64BitOperatingSystem) {
+            if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64" -or $env:PROCESSOR_ARCHITEW6432 -eq "ARM64") {
+                "arm64"
+            } else {
+                "64-bit"
+            }
+        } else {
+            # PortableGit does not ship 32-bit; fall back to MinGit 32-bit
+            # with a loud warning — bash-based features will be unavailable.
+            "32-bit-mingit"
+        }
+
+        $gitVer    = $script:GitVersion
+        $gitTag    = $script:GitReleaseTag
+
+        if ($arch -eq "32-bit-mingit") {
+            Write-Warn2 "32-bit Windows detected -- PortableGit is 64-bit only. Installing MinGit 32-bit as a last resort; bash-dependent JARVIS features (terminal tool, browser sandbox) will not work on this machine."
+            $assetName     = "MinGit-$gitVer-32-bit.zip"
+            $downloadIsZip = $true
+        } elseif ($arch -eq "arm64") {
+            $assetName     = "PortableGit-$gitVer-arm64.7z.exe"
+            $downloadIsZip = $false
+        } else {
+            $assetName     = "PortableGit-$gitVer-64-bit.7z.exe"
+            $downloadIsZip = $false
+        }
+
+        $downloadUrl = "https://github.com/git-for-windows/git/releases/download/$gitTag/$assetName"
+        $tmpFile = "$env:TEMP\$assetName"
+        $gitDir = $script:GitPortable
+
+        Write-Info "Downloading $assetName (Git for Windows $gitVer)..."
+        New-Item -ItemType Directory -Force -Path (Split-Path $tmpFile -Parent) | Out-Null
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $tmpFile -UseBasicParsing
+
+        if (Test-Path $gitDir) {
+            Write-Info "Removing previous Git install at $gitDir ..."
+            Remove-Item -Recurse -Force $gitDir
+        }
+        New-Item -ItemType Directory -Path $gitDir -Force | Out-Null
+
+        if ($downloadIsZip) {
+            Expand-Archive -Path $tmpFile -DestinationPath $gitDir -Force
+        } else {
+            # PortableGit is a self-extracting 7z archive. Invoke it with
+            # -o<target> -y (silent) to extract. No 7z install required;
+            # it is fully self-contained.
+            Write-Info "Extracting PortableGit to $gitDir ..."
+            $extractProc = Start-Process -FilePath $tmpFile `
+                -ArgumentList "-o`"$gitDir`"", "-y" `
+                -NoNewWindow -Wait -PassThru
+            if ($extractProc.ExitCode -ne 0) {
+                throw "PortableGit extraction failed (exit code $($extractProc.ExitCode))"
+            }
+        }
+        Remove-Item -Force $tmpFile -ErrorAction SilentlyContinue
+
+        # PortableGit layout: cmd\git.exe + bin\bash.exe + usr\bin\ (coreutils)
+        # MinGit layout:      cmd\git.exe + usr\bin\bash.exe (if present)
+        $gitExe = "$gitDir\cmd\git.exe"
+        if (-not (Test-Path $gitExe)) {
+            throw "Git extraction did not produce git.exe at $gitExe"
+        }
+
+        # Session PATH so the rest of this install run can use git.
+        $env:Path = "$gitDir\cmd;$env:Path"
+
+        # Persist to User PATH so fresh shells see it. PortableGit needs:
+        # cmd\     for git.exe
+        # bin\     for bash.exe + core tools
+        # usr\bin\ for perl, ssh, curl, and other POSIX coreutils.
+        foreach ($entry in @("$gitDir\cmd", "$gitDir\bin", "$gitDir\usr\bin")) {
+            [void](Add-ToUserPath -NewEntry $entry)
+        }
+
+        Write-Ok "Git $(& $gitExe --version) installed to $gitDir (portable, user-scoped)"
+        Set-GitBashEnvVar
         return $true
     } catch {
-        Write-Warn2 "winget install $Id failed: $($_.Exception.Message)"
+        Write-Err "Could not install portable Git: $_"
+        Write-Info ""
+        Write-Info "Fallback: install Git manually from https://git-scm.com/download/win"
+        Write-Info "then re-run this installer. JARVIS needs Git Bash on Windows to run"
+        Write-Info "shell commands (same as Claude Code and other coding agents)."
         return $false
     }
 }
 
-# ── Prerequisites ────────────────────────────────────────────────────────
-function Test-Prereqs {
-    Write-Section 'Checking prerequisites'
+function Set-GitBashEnvVar {
+    <#
+    .SYNOPSIS
+    Locate bash.exe from an already-installed Git and persist the path in
+    JARVIS_GIT_BASH_PATH (User env scope) so JARVIS can find it before
+    PATH propagation completes in a newly-spawned shell.
+    #>
+    $candidates = @()
 
-    $missing = New-Object System.Collections.Generic.List[string]
+    # Our own portable Git install is always checked first so a broken
+    # system Git doesn't hijack us. If the user had working system Git
+    # we'd have returned early from Install-Git's fast path; we only
+    # reach here when bash needs to be located.
+    #
+    # Layouts:
+    #   PortableGit (our default): $GitPortable\bin\bash.exe
+    #   MinGit (32-bit fallback):  $GitPortable\usr\bin\bash.exe
+    $candidates += "$script:GitPortable\bin\bash.exe"
+    $candidates += "$script:GitPortable\usr\bin\bash.exe"
 
-    # git
-    if (Test-Command 'git') {
-        Write-Ok ("git ({0})" -f (git --version))
-    } else {
-        Write-Err 'git not found'
-        if (-not (Install-ViaWinget -Id 'Git.Git' -DisplayName 'Git')) { $missing.Add('git') }
+    # git.exe on PATH can tell us where the install root is.
+    $gitCmd = Get-Command git -ErrorAction SilentlyContinue
+    if ($gitCmd) {
+        $gitExe = $gitCmd.Source
+        # Full Git for Windows: <root>\cmd\git.exe + <root>\bin\bash.exe
+        # MinGit:               <root>\cmd\git.exe + <root>\usr\bin\bash.exe
+        $gitRoot = Split-Path (Split-Path $gitExe -Parent) -Parent
+        $candidates += "$gitRoot\bin\bash.exe"
+        $candidates += "$gitRoot\usr\bin\bash.exe"
     }
 
-    # Python 3.11+ — Windows ships `python` and the `py` launcher
-    $pythonOk = $false
-    foreach ($cmd in @('python', 'python3', 'py')) {
-        if (Test-Command $cmd) {
-            $verRaw = & $cmd --version 2>&1
-            if ($verRaw -match 'Python\s+(\d+)\.(\d+)') {
-                $major = [int]$Matches[1]; $minor = [int]$Matches[2]
-                if ($major -gt 3 -or ($major -eq 3 -and $minor -ge 11)) {
-                    Write-Ok "$cmd (${major}.${minor})"
-                    $script:PythonExe = $cmd
-                    $pythonOk = $true
-                    break
-                }
+    # Standard system install locations as a final fallback.
+    $candidates += "${env:ProgramFiles}\Git\bin\bash.exe"
+    $pf86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
+    if ($pf86) { $candidates += "$pf86\Git\bin\bash.exe" }
+    $candidates += "${env:LocalAppData}\Programs\Git\bin\bash.exe"
+
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path $candidate)) {
+            [Environment]::SetEnvironmentVariable("JARVIS_GIT_BASH_PATH", $candidate, "User")
+            $env:JARVIS_GIT_BASH_PATH = $candidate
+            Write-Info "Set JARVIS_GIT_BASH_PATH=$candidate"
+            return
+        }
+    }
+
+    Write-Warn2 "Could not locate bash.exe -- JARVIS may not find Git Bash."
+    Write-Info "If needed, set JARVIS_GIT_BASH_PATH manually to your bash.exe path."
+}
+
+function Test-Node {
+    # Node.js is required for the Desktop (Tauri frontend), Web (Next.js),
+    # and CLI (Bun -- although Bun is its own runtime, npm is still used
+    # by the Tauri build). Test for existing install; download the portable
+    # zip if absent (no admin, no UAC, no winget MSI dance).
+    Write-Info "Checking Node.js..."
+
+    if (Get-Command node -ErrorAction SilentlyContinue) {
+        Write-Ok "Node.js $(node --version) found"
+        $script:HasNode = $true
+        return $true
+    }
+
+    # Check our own managed install from a previous run.
+    $managedNode = "$script:NodePortable\node.exe"
+    if (Test-Path $managedNode) {
+        $env:Path = "$script:NodePortable;$env:Path"
+        Write-Ok "Node.js $(& $managedNode --version) found (JARVIS-managed)"
+        $script:HasNode = $true
+        return $true
+    }
+
+    Write-Info "Node.js not found -- installing portable Node.js LTS..."
+
+    # Portable-zip path: no UAC, no admin, no winget MSI. winget install
+    # OpenJS.NodeJS.LTS triggers a system-wide MSI that prompts UAC; that
+    # dialog often appears MINIMIZED in the taskbar and the install silently
+    # waits for consent — looks like a hang. The portable zip drops node.exe
+    # + npm into $JarvisHome\node\ which is user-scoped and identical in
+    # spirit to PortableGit.
+    Write-Info "Downloading portable Node.js to $script:NodePortable\ ..."
+    Write-Info "(no admin rights required; isolated from any system Node install)"
+    try {
+        $arch = if ([Environment]::Is64BitOperatingSystem) { "x64" } else { "x86" }
+        $nodeMajor = "22"  # Current LTS as of 2026-05; matches Tauri 2's tested matrix.
+        $indexUrl = "https://nodejs.org/dist/latest-v${nodeMajor}.x/"
+        $indexPage = Invoke-WebRequest -Uri $indexUrl -UseBasicParsing
+        $zipName = ($indexPage.Content | Select-String -Pattern "node-v${nodeMajor}\.\d+\.\d+-win-${arch}\.zip" -AllMatches).Matches[0].Value
+
+        if ($zipName) {
+            $downloadUrl = "${indexUrl}${zipName}"
+            $tmpZip = "$env:TEMP\$zipName"
+            $tmpDir = "$env:TEMP\jarvis-node-extract"
+
+            Invoke-WebRequest -Uri $downloadUrl -OutFile $tmpZip -UseBasicParsing
+            if (Test-Path $tmpDir) { Remove-Item -Recurse -Force $tmpDir }
+            Expand-Archive -Path $tmpZip -DestinationPath $tmpDir -Force
+
+            $extractedDir = Get-ChildItem $tmpDir -Directory | Select-Object -First 1
+            if ($extractedDir) {
+                if (Test-Path $script:NodePortable) { Remove-Item -Recurse -Force $script:NodePortable }
+                Move-Item $extractedDir.FullName $script:NodePortable
+
+                $env:Path = "$script:NodePortable;$env:Path"
+                [void](Add-ToUserPath -NewEntry $script:NodePortable)
+
+                Write-Ok "Node.js $(& "$script:NodePortable\node.exe" --version) installed to $script:NodePortable\ (portable, user-scoped)"
+                $script:HasNode = $true
+
+                Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
+                Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+                return $true
             }
         }
-    }
-    if (-not $pythonOk) {
-        Write-Err 'python (>=3.11) not found'
-        # 3.13 matches the voice-agent CLAUDE.md baseline.
-        if (-not (Install-ViaWinget -Id 'Python.Python.3.13' -DisplayName 'Python 3.13')) {
-            $missing.Add('python>=3.11')
-        } else {
-            $script:PythonExe = 'python'
-        }
+    } catch {
+        Write-Warn2 "Portable Node.js download failed: $_"
     }
 
-    # Bun — CLI + Web installer
-    if (-not $SkipCli -or -not $SkipWeb) {
-        if (Test-Command 'bun') {
-            Write-Ok ("bun ({0})" -f (bun --version))
-        } else {
-            Write-Warn2 'bun not found'
-            $bunInstalled = Install-ViaWinget -Id 'Oven-sh.Bun' -DisplayName 'Bun'
-            if (-not $bunInstalled) {
-                Write-Sub "Or install Bun manually: irm bun.sh/install.ps1 | iex"
-                $missing.Add('bun')
+    # Fallback: winget (demoted because the MSI install triggers UAC that
+    # frequently appears minimized — looks like a hang to users).
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        Write-Info "Falling back to winget (may prompt UAC -- check your taskbar for a flashing icon)..."
+        $prevEAP = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            winget install OpenJS.NodeJS.LTS --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+            $ErrorActionPreference = $prevEAP
+            Sync-EnvPath
+            if (Get-Command node -ErrorAction SilentlyContinue) {
+                Write-Ok "Node.js $(node --version) installed via winget"
+                $script:HasNode = $true
+                return $true
             }
+        } catch {
+            if ($prevEAP) { $ErrorActionPreference = $prevEAP }
         }
     }
 
-    # Node + npm — Tauri frontend toolchain
-    if (-not $SkipDesktop -or -not $SkipWeb) {
-        if (Test-Command 'node') {
-            Write-Ok ("node ({0})" -f (node --version))
-        } else {
-            Write-Err 'node not found'
-            if (-not (Install-ViaWinget -Id 'OpenJS.NodeJS.LTS' -DisplayName 'Node.js LTS')) { $missing.Add('node') }
-        }
-        if (Test-Command 'npm') {
-            Write-Ok ("npm ({0})" -f (npm --version))
-        } else {
-            Write-Err 'npm not found (usually shipped with node)'
-            $missing.Add('npm')
-        }
-    }
+    Write-Info "Install manually: https://nodejs.org/en/download/"
+    $script:HasNode = $false
+    return $true
+}
 
-    # Rust / cargo — only required for desktop channel
-    if (-not $SkipDesktop) {
-        if (Test-Command 'cargo') {
-            $cargoVer = (cargo --version) -replace '^cargo\s+(\S+).*', '$1'
-            Write-Ok "cargo ($cargoVer)"
-        } else {
-            Write-Warn2 'cargo not found — install rustup (then run `rustup default stable`)'
-            $rustInstalled = Install-ViaWinget -Id 'Rustlang.Rustup' -DisplayName 'Rustup'
-            if (-not $rustInstalled) {
-                Write-Sub 'Or: download https://win.rustup.rs and run rustup-init.exe'
-                Write-Sub '(re-run with -SkipDesktop to skip the desktop build)'
-                $missing.Add('cargo')
-            } else {
-                Write-Sub 'Note: a NEW shell is required for cargo to be on PATH after rustup install.'
+function Test-Bun {
+    # Bun is used by the CLI (src/cli/) and Web (src/web/) for dep install +
+    # the CLI runtime. Install via the official Windows installer if absent.
+    Write-Info "Checking Bun..."
+    if (Get-Command bun -ErrorAction SilentlyContinue) {
+        Write-Ok "Bun $(bun --version) found"
+        $script:HasBun = $true
+        return $true
+    }
+    Write-Info "Bun not found -- installing via the official PowerShell script..."
+    $prevEAP = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        powershell -ExecutionPolicy ByPass -c "irm bun.sh/install.ps1 | iex" 2>&1 | Out-Null
+        $ErrorActionPreference = $prevEAP
+        Sync-EnvPath
+        # Default install location for Bun on Windows.
+        $bunExe = "$env:USERPROFILE\.bun\bin\bun.exe"
+        if (Test-Path $bunExe) {
+            [void](Add-ToUserPath -NewEntry (Split-Path $bunExe -Parent))
+            Write-Ok "Bun $(& $bunExe --version) installed"
+            $script:HasBun = $true
+            return $true
+        }
+        if (Get-Command bun -ErrorAction SilentlyContinue) {
+            Write-Ok "Bun $(bun --version) installed"
+            $script:HasBun = $true
+            return $true
+        }
+    } catch {
+        if ($prevEAP) { $ErrorActionPreference = $prevEAP }
+    }
+    Write-Warn2 "Bun install failed -- CLI and Web channels will not work"
+    Write-Info "Install manually: https://bun.sh/docs/installation"
+    $script:HasBun = $false
+    return $true
+}
+
+function Test-Cargo {
+    # Cargo is required only for the Desktop channel (Tauri 2 backend on
+    # Windows is MSVC-only). If absent and -AutoInstall is set, install
+    # rustup; otherwise warn.
+    Write-Info "Checking cargo (Rust toolchain)..."
+    if (Get-Command cargo -ErrorAction SilentlyContinue) {
+        Write-Ok "cargo $((cargo --version) -replace '^cargo\s+', '')"
+        $script:HasCargo = $true
+        return $true
+    }
+    if ($AutoInstall -and (Get-Command winget -ErrorAction SilentlyContinue)) {
+        Write-Info "Installing rustup via winget..."
+        try {
+            winget install --id Rustlang.Rustup --silent --accept-source-agreements --accept-package-agreements 2>&1 | Out-Null
+            Sync-EnvPath
+            if (Get-Command cargo -ErrorAction SilentlyContinue) {
+                Write-Ok "cargo $((cargo --version) -replace '^cargo\s+', '')"
+                $script:HasCargo = $true
+                return $true
             }
-        }
-
-        # Tauri 2 on Windows additionally needs the MSVC build tools + WebView2.
-        # WebView2 is preinstalled on Win11 and recent Win10 builds via Edge;
-        # MSVC is the user's responsibility. Just hint, don't fail.
-        if (-not (Test-Path 'C:\Program Files (x86)\Microsoft Visual Studio')) {
-            Write-Warn2 'MSVC Build Tools may be missing — Tauri''s cargo build needs the MSVC toolchain.'
-            Write-Sub  'Install: winget install --id Microsoft.VisualStudio.2022.BuildTools --silent --override "--quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"'
-            Write-Sub  '(Or run with -SkipDesktop to skip the desktop build.)'
-        }
+        } catch {}
     }
+    Write-Warn2 "cargo not found -- Desktop build will be skipped."
+    Write-Info "Install rustup: winget install Rustlang.Rustup"
+    Write-Info "Or download from https://win.rustup.rs"
+    Write-Info "(re-run with -SkipDesktop to silence this warning)"
+    $script:HasCargo = $false
+    return $true
+}
 
-    if ($missing.Count -gt 0) {
-        Write-Err ("Missing: {0} — install them and rerun this script." -f ($missing -join ', '))
-        if (-not $AutoInstall) {
-            Write-Sub 'Tip: re-run with -AutoInstall to let the script `winget install` the missing prereqs.'
-        }
-        exit 1
+function Test-MsvcBuildTools {
+    # Tauri 2 on Windows is MSVC-only -- the bundled webview2-com crate
+    # depends on the MSVC ABI for COM interop. Heuristic check: look for
+    # the Visual Studio install root. A clean fail-fast would probe link.exe
+    # or cl.exe on PATH, but those are only on PATH inside a Developer
+    # Command Prompt, not the user's regular shell.
+    $vsDir = "C:\Program Files (x86)\Microsoft Visual Studio"
+    if (-not (Test-Path $vsDir)) {
+        Write-Warn2 "MSVC Build Tools may be missing -- Tauri's cargo build needs the MSVC toolchain."
+        Write-Sub  'Install: winget install --id Microsoft.VisualStudio.2022.BuildTools --silent --override "--quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"'
+        Write-Sub  "(Or run with -SkipDesktop to skip the desktop build.)"
     }
 }
 
-# ── Clone (or update) ────────────────────────────────────────────────────
-function Sync-Repo {
-    $gitDir = Join-Path $InstallDir '.git'
-    if (Test-Path $gitDir) {
-        Write-Section 'Updating existing checkout'
-        Invoke-Step -Description "git fetch + pull in $InstallDir" -Action {
-            & git -C $InstallDir fetch --quiet origin master
+function Install-SystemPackages {
+    # Optional speed-ups: ripgrep (fast file search via the code_search tool)
+    # and ffmpeg (TTS audio decoding fallback). Probe + best-effort install
+    # via winget / choco / scoop. Never block install on these.
+    $script:HasRipgrep = $false
+    $script:HasFfmpeg = $false
+    $needRipgrep = $false
+    $needFfmpeg = $false
+
+    Write-Info "Checking ripgrep (fast file search)..."
+    if (Get-Command rg -ErrorAction SilentlyContinue) {
+        $version = rg --version | Select-Object -First 1
+        Write-Ok "$version found"
+        $script:HasRipgrep = $true
+    } else {
+        $needRipgrep = $true
+    }
+
+    Write-Info "Checking ffmpeg (audio decode helper)..."
+    if (Get-Command ffmpeg -ErrorAction SilentlyContinue) {
+        Write-Ok "ffmpeg found"
+        $script:HasFfmpeg = $true
+    } else {
+        $needFfmpeg = $true
+    }
+
+    if (-not $needRipgrep -and -not $needFfmpeg) { return }
+
+    $wingetPkgs = @()
+    $chocoPkgs = @()
+    $scoopPkgs = @()
+
+    if ($needRipgrep) {
+        $wingetPkgs += "BurntSushi.ripgrep.MSVC"
+        $chocoPkgs += "ripgrep"
+        $scoopPkgs += "ripgrep"
+    }
+    if ($needFfmpeg) {
+        $wingetPkgs += "Gyan.FFmpeg"
+        $chocoPkgs += "ffmpeg"
+        $scoopPkgs += "ffmpeg"
+    }
+
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        Write-Info "Installing optional packages via winget..."
+        foreach ($pkg in $wingetPkgs) {
             try {
-                & git -C $InstallDir pull --ff-only origin master | Out-Null
-            } catch {
-                Write-Warn2 'pull --ff-only failed (local changes?); leaving checkout as-is'
-            }
-            $sha = (& git -C $InstallDir rev-parse --short HEAD).Trim()
-            Write-Ok "checkout at $sha"
+                winget install $pkg --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+            } catch {}
         }
-    } else {
-        Write-Section 'Cloning JARVIS'
-        Invoke-Step -Description "git clone $RepoUrl into $InstallDir" -Action {
-            $parent = Split-Path -Parent $InstallDir
-            if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
-            & git clone --quiet $RepoUrl $InstallDir
-            Write-Ok "cloned to $InstallDir"
+        Sync-EnvPath
+        if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
+            Write-Ok "ripgrep installed"
+            $script:HasRipgrep = $true
+            $needRipgrep = $false
         }
+        if ($needFfmpeg -and (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
+            Write-Ok "ffmpeg installed"
+            $script:HasFfmpeg = $true
+            $needFfmpeg = $false
+        }
+        if (-not $needRipgrep -and -not $needFfmpeg) { return }
+    }
+
+    if ((Get-Command choco -ErrorAction SilentlyContinue) -and ($needRipgrep -or $needFfmpeg)) {
+        Write-Info "Trying Chocolatey..."
+        foreach ($pkg in $chocoPkgs) {
+            try { choco install $pkg -y 2>&1 | Out-Null } catch {}
+        }
+        if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
+            Write-Ok "ripgrep installed via chocolatey"
+            $script:HasRipgrep = $true
+            $needRipgrep = $false
+        }
+        if ($needFfmpeg -and (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
+            Write-Ok "ffmpeg installed via chocolatey"
+            $script:HasFfmpeg = $true
+            $needFfmpeg = $false
+        }
+    }
+
+    if ((Get-Command scoop -ErrorAction SilentlyContinue) -and ($needRipgrep -or $needFfmpeg)) {
+        Write-Info "Trying Scoop..."
+        foreach ($pkg in $scoopPkgs) {
+            try { scoop install $pkg 2>&1 | Out-Null } catch {}
+        }
+        if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
+            Write-Ok "ripgrep installed via scoop"
+            $script:HasRipgrep = $true
+            $needRipgrep = $false
+        }
+        if ($needFfmpeg -and (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
+            Write-Ok "ffmpeg installed via scoop"
+            $script:HasFfmpeg = $true
+            $needFfmpeg = $false
+        }
+    }
+
+    if ($needRipgrep) {
+        Write-Warn2 "ripgrep not installed (code_search will use a slower fallback)"
+        Write-Info "  winget install BurntSushi.ripgrep.MSVC"
+    }
+    if ($needFfmpeg) {
+        Write-Warn2 "ffmpeg not installed (some audio decode paths will be limited)"
+        Write-Info "  winget install Gyan.FFmpeg"
     }
 }
 
-# ── Channel: CLI ─────────────────────────────────────────────────────────
+# ============================================================================
+# Repository — clone or update with branch/tag/commit pinning
+# ============================================================================
+
+function Install-Repository {
+    Write-Info "Installing JARVIS to $InstallDir..."
+
+    $didUpdate = $false
+
+    if (Test-Path $InstallDir) {
+        # Existing dir: validate it's a usable git repo (cheap belt + braces
+        # — partial Remove-Item from a previous failed install can leave a
+        # half-baked .git that wedges every later operation). If valid,
+        # update in place; otherwise wipe and clone fresh.
+        $repoValid = $false
+        if (Test-Path "$InstallDir\.git") {
+            Push-Location $InstallDir
+            try {
+                $global:LASTEXITCODE = 0
+                $revParseOut = & git -c windows.appendAtomically=false rev-parse --is-inside-work-tree 2>&1
+                $revParseOk = ($LASTEXITCODE -eq 0) -and ($revParseOut -match "true")
+
+                $global:LASTEXITCODE = 0
+                $null = & git -c windows.appendAtomically=false status --short 2>&1
+                $statusOk = ($LASTEXITCODE -eq 0)
+
+                if ($revParseOk -and $statusOk) {
+                    $repoValid = $true
+                }
+            } catch {}
+            Pop-Location
+        }
+
+        if ($repoValid) {
+            Write-Info "Existing installation found, updating..."
+            Push-Location $InstallDir
+            # Wrap fetch+checkout in EAP=Continue so git's stderr info
+            # lines (e.g. 'From <url>' from git fetch) don't terminate the
+            # script under EAP=Stop. We check $LASTEXITCODE for real errors.
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            try {
+                git -c windows.appendAtomically=false fetch origin
+                if ($LASTEXITCODE -ne 0) { throw "git fetch failed (exit $LASTEXITCODE)" }
+                # Precedence: Commit > Tag > Branch.
+                if ($Commit) {
+                    git -c windows.appendAtomically=false fetch origin $Commit
+                    git -c windows.appendAtomically=false checkout --detach $Commit
+                    if ($LASTEXITCODE -ne 0) { throw "git checkout $Commit failed (exit $LASTEXITCODE)" }
+                } elseif ($Tag) {
+                    git -c windows.appendAtomically=false fetch origin "refs/tags/${Tag}:refs/tags/${Tag}"
+                    git -c windows.appendAtomically=false checkout --detach "refs/tags/$Tag"
+                    if ($LASTEXITCODE -ne 0) { throw "git checkout tag $Tag failed (exit $LASTEXITCODE)" }
+                } else {
+                    git -c windows.appendAtomically=false checkout $Branch
+                    if ($LASTEXITCODE -ne 0) { throw "git checkout $Branch failed (exit $LASTEXITCODE)" }
+                    git -c windows.appendAtomically=false pull origin $Branch
+                    if ($LASTEXITCODE -ne 0) { throw "git pull failed (exit $LASTEXITCODE)" }
+                }
+            } finally {
+                $ErrorActionPreference = $prevEAP
+                Pop-Location
+            }
+            $didUpdate = $true
+        } else {
+            Write-Warn2 "Existing directory at $InstallDir is not a valid git repo -- replacing it."
+            try {
+                Remove-Item -Recurse -Force $InstallDir -ErrorAction Stop
+            } catch {
+                Write-Err "Could not remove $InstallDir : $_"
+                Write-Info "Close any programs that might be using files in $InstallDir (editors,"
+                Write-Info "terminals, running JARVIS processes) and try again."
+                throw
+            }
+        }
+    }
+
+    if (-not $didUpdate) {
+        $cloneSuccess = $false
+
+        # Fix Windows git "copy-fd: write returned: Invalid argument" errors.
+        # Git for Windows can fail on atomic file ops (hook templates, config
+        # lock files) due to antivirus, OneDrive, or NTFS filter drivers.
+        # The -c flag injects config before any file I/O occurs.
+        Write-Info "Configuring git for Windows compatibility..."
+        $env:GIT_CONFIG_COUNT = "1"
+        $env:GIT_CONFIG_KEY_0 = "windows.appendAtomically"
+        $env:GIT_CONFIG_VALUE_0 = "false"
+        git config --global windows.appendAtomically false 2>$null
+
+        Write-Info "Trying SSH clone..."
+        $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=5"
+        try {
+            git -c windows.appendAtomically=false clone --branch $Branch $RepoUrlSsh $InstallDir
+            if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
+        } catch {}
+        $env:GIT_SSH_COMMAND = $null
+
+        if (-not $cloneSuccess) {
+            if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
+            Write-Info "SSH failed, trying HTTPS..."
+            try {
+                git -c windows.appendAtomically=false clone --branch $Branch $RepoUrlHttps $InstallDir
+                if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
+            } catch {}
+        }
+
+        # Fallback: download ZIP archive (bypasses git file I/O issues entirely).
+        if (-not $cloneSuccess) {
+            if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
+            Write-Warn2 "Git clone failed -- downloading ZIP archive instead..."
+            try {
+                if ($Commit) {
+                    $zipUrl = "https://github.com/ulrichando/jarvis/archive/$Commit.zip"
+                    $zipLabel = $Commit
+                } elseif ($Tag) {
+                    $zipUrl = "https://github.com/ulrichando/jarvis/archive/refs/tags/$Tag.zip"
+                    $zipLabel = $Tag
+                } else {
+                    $zipUrl = "https://github.com/ulrichando/jarvis/archive/refs/heads/$Branch.zip"
+                    $zipLabel = $Branch
+                }
+                $zipPath = "$env:TEMP\jarvis-$zipLabel.zip"
+                $extractPath = "$env:TEMP\jarvis-extract"
+
+                Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing
+                if (Test-Path $extractPath) { Remove-Item -Recurse -Force $extractPath }
+                Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+
+                # GitHub ZIPs extract to repo-branch/ subdirectory.
+                $extractedDir = Get-ChildItem $extractPath -Directory | Select-Object -First 1
+                if ($extractedDir) {
+                    New-Item -ItemType Directory -Force -Path (Split-Path $InstallDir) -ErrorAction SilentlyContinue | Out-Null
+                    Move-Item $extractedDir.FullName $InstallDir -Force
+                    Write-Ok "Downloaded and extracted"
+
+                    Push-Location $InstallDir
+                    git -c windows.appendAtomically=false init 2>$null
+                    git -c windows.appendAtomically=false config windows.appendAtomically false 2>$null
+                    git remote add origin $RepoUrlHttps 2>$null
+                    Pop-Location
+                    Write-Ok "Git repo initialized for future updates"
+
+                    $cloneSuccess = $true
+                }
+
+                Remove-Item -Force $zipPath -ErrorAction SilentlyContinue
+                Remove-Item -Recurse -Force $extractPath -ErrorAction SilentlyContinue
+            } catch {
+                Write-Err "ZIP download also failed: $_"
+            }
+        }
+
+        if (-not $cloneSuccess) {
+            throw "Failed to download repository (tried git clone SSH, HTTPS, and ZIP)"
+        }
+    }
+
+    Push-Location $InstallDir
+    git -c windows.appendAtomically=false config windows.appendAtomically false 2>$null
+
+    # Post-clone pin: when a fresh clone landed us on $Branch's tip, honour
+    # the higher-precedence -Commit / -Tag as a detached HEAD.
+    if (-not $didUpdate) {
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            if ($Commit) {
+                Write-Info "Pinning to commit $Commit..."
+                git -c windows.appendAtomically=false fetch origin $Commit
+                git -c windows.appendAtomically=false checkout --detach $Commit
+                if ($LASTEXITCODE -ne 0) { throw "git checkout $Commit failed (exit $LASTEXITCODE)" }
+            } elseif ($Tag) {
+                Write-Info "Pinning to tag $Tag..."
+                git -c windows.appendAtomically=false fetch origin "refs/tags/${Tag}:refs/tags/${Tag}"
+                git -c windows.appendAtomically=false checkout --detach "refs/tags/$Tag"
+                if ($LASTEXITCODE -ne 0) { throw "git checkout tag $Tag failed (exit $LASTEXITCODE)" }
+            }
+        } finally {
+            $ErrorActionPreference = $prevEAP
+        }
+    }
+    Pop-Location
+
+    Write-Ok "Repository ready at $InstallDir"
+}
+
+# ============================================================================
+# Voice agent — Python venv + deps via uv
+# ============================================================================
+
+function Install-VoiceAgent {
+    if ($SkipVoice) { Write-Warn2 "skipping Voice Agent (-SkipVoice)"; return }
+    Write-Section "Installing Voice Agent (~2-3 min; livekit-agents is heavy)"
+
+    $va     = Join-Path $InstallDir 'src\voice-agent'
+    $venv   = Join-Path $va '.venv'
+    $reqTxt = Join-Path $va 'requirements.txt'
+
+    if (-not (Test-Path $reqTxt)) {
+        Write-Warn2 "$reqTxt not found -- skipping voice-agent deps"
+        return
+    }
+
+    if (-not $NoVenv) {
+        Resolve-UvCmd
+        Invoke-Step -Description "create venv at $venv via uv" -Action {
+            if (Test-Path $venv) {
+                Write-Info "Virtual environment already exists -- reusing"
+            } else {
+                # uv creates the venv and pins the Python version in one step.
+                # No ensurepip dance, no separate `pip install --upgrade pip`.
+                & $UvCmd venv $venv --python $PythonVersion
+                Write-Ok "created venv at $venv (Python $PythonVersion)"
+            }
+        }
+    } else {
+        Write-Info "Skipping venv creation (-NoVenv)"
+    }
+
+    if (-not $DryRun) {
+        $prevEAP = $ErrorActionPreference
+        try {
+            # Relax EAP=Stop while running uv pip install. uv writes
+            # download + resolve progress to stderr; under EAP=Stop the
+            # 2>&1 merge wraps those as ErrorRecord objects and throws
+            # even when the install exits 0. Check $LASTEXITCODE instead.
+            $ErrorActionPreference = "Continue"
+            if (-not $NoVenv) {
+                # Tell uv to install into our venv (no activation needed).
+                $env:VIRTUAL_ENV = $venv
+                $env:UV_PROJECT_ENVIRONMENT = $venv
+            }
+            Write-Info "Installing voice-agent dependencies via uv..."
+            & $UvCmd pip install --requirement $reqTxt
+            $exitCode = $LASTEXITCODE
+            $ErrorActionPreference = $prevEAP
+            if ($exitCode -ne 0) {
+                throw "uv pip install -r requirements.txt failed (exit $exitCode)"
+            }
+            Write-Ok "voice-agent deps installed"
+        } catch {
+            if ($prevEAP) { $ErrorActionPreference = $prevEAP }
+            throw
+        }
+    }
+
+    Install-PlaywrightChromium -VenvDir $venv
+    Install-WindowsVoiceServices
+}
+
+function Install-PlaywrightChromium {
+    # Playwright Chromium is needed for the browser_task tool's CDP
+    # fallback. ~200MB. Skip with -SkipCdp.
+    param([Parameter(Mandatory)][string]$VenvDir)
+    if ($SkipCdp) {
+        Write-Warn2 "skipping Playwright Chromium (-SkipCdp) -- browser CDP fallback won't work"
+        return
+    }
+    # Playwright's Windows cache lives under %LOCALAPPDATA%\ms-playwright.
+    $cacheDir = Join-Path $env:LOCALAPPDATA 'ms-playwright'
+    if ((Test-Path $cacheDir) -and ((Get-ChildItem -Path $cacheDir -Filter 'chromium-*' -ErrorAction SilentlyContinue).Count -gt 0)) {
+        Write-Ok "Playwright Chromium already cached"
+        return
+    }
+
+    Write-Sub "About to download ~200MB of Chromium for browser CDP fallback"
+    Write-Sub "(re-run with -SkipCdp to skip the download)"
+
+    $interactive = [Environment]::UserInteractive -and -not $NonInteractive
+    if ($interactive) {
+        $reply = Read-Host "  Download Playwright Chromium now? [Y/n]"
+        if ($reply -and $reply -notmatch '^[Yy]') {
+            Write-Warn2 "skipped -- run 'playwright install chromium' inside the venv later"
+            return
+        }
+    } else {
+        Write-Sub "non-interactive shell -- proceeding with download"
+    }
+
+    $venvPython = Join-Path $VenvDir 'Scripts\python.exe'
+    if (-not (Test-Path $venvPython)) {
+        Write-Warn2 "$venvPython not found -- skipping Playwright install"
+        return
+    }
+    Invoke-Step -Description "$venvPython -m playwright install chromium" -Action {
+        & $venvPython -m playwright install chromium
+        Write-Ok "Playwright Chromium installed"
+    }
+}
+
+# Windows voice-service install — DEFERRED to Phase 2 (see spec
+# docs/superpowers/specs/2026-05-23-windows-install-phase1-design.md).
+# The Linux installer registers user systemd units here. On Windows the
+# equivalents would be Task Scheduler entries or a user-scoped service —
+# but the voice-agent imports Linux-only deps (sdnotify for systemd notify
+# protocol, plus AEC paths that hit PipeWire / xdotool / X11). Those imports
+# succeed under WSL2 but fail on native Windows. Until Phase 2 of the
+# Windows port refactors those behind platform-abstraction layers,
+# registering a Windows service would just crash-loop on startup.
+function Install-WindowsVoiceServices {
+    Write-Sub "Voice-agent service registration: DEFERRED to Phase 2"
+    Write-Sub "  Why: the voice-agent currently imports Linux-only modules"
+    Write-Sub "  (PipeWire echo-cancel, systemd sdnotify, xdotool / X11)."
+    Write-Sub "  Python deps installed; the agent will NOT start on native Windows yet."
+    Write-Sub "  Phase 2 will land platform-abstraction shims for audio + service-control."
+    Write-Sub "  Workaround today: run the voice-agent under WSL2 with the Linux installer."
+}
+
+# Bubblewrap — Linux-only user-namespace sandbox; SKIPPED on Windows.
+# The Windows equivalent (AppContainer / Sandbox / Win32 Job Objects)
+# is a Phase 2 design item. Until then, when JARVIS's bash tool is
+# invoked from a Windows process it should fall back to unsandboxed
+# cmd.exe / pwsh.exe — also Phase 2 (cross-platform bash shim).
+function Install-BashSandbox {
+    Write-Sub "bubblewrap (bash-tool user-namespace sandbox): SKIPPED on Windows"
+    Write-Sub "  The bash tool relies on Linux user namespaces. On Windows the equivalent"
+    Write-Sub "  story (AppContainer / Sandbox / Win32 Job Objects) is a Phase 2 design item."
+    Write-Sub "  Until then, when the bash tool is invoked from a Windows JARVIS process"
+    Write-Sub "  it should fall back to an unsandboxed cmd.exe / pwsh.exe (Phase 2)."
+}
+
+# ============================================================================
+# CLI + Web (Bun) + Desktop (Tauri)
+# ============================================================================
+
 function Install-Cli {
-    if ($SkipCli) { Write-Warn2 'skipping CLI (-SkipCli)'; return }
-    Write-Section 'Installing CLI'
+    if ($SkipCli) { Write-Warn2 "skipping CLI (-SkipCli)"; return }
+    if (-not $script:HasBun) { Write-Warn2 "skipping CLI (Bun not available)"; return }
+    Write-Section "Installing CLI"
+
     $cliDir = Join-Path $InstallDir 'src\cli'
+    if (-not (Test-Path $cliDir)) { Write-Warn2 "$cliDir not found -- skipping CLI"; return }
+
     Invoke-Step -Description "bun install in $cliDir" -Action {
         Push-Location $cliDir
         try { & bun install --silent } finally { Pop-Location }
-        Write-Ok 'deps installed'
+        Write-Ok "CLI dependencies installed"
     }
 
     # Wire a Windows-friendly launcher. The repo's bin/jarvis is a bash
@@ -291,14 +1314,8 @@ start "" "$desktopBin" %*
         Write-Ok "wrote $desktopCmd"
     }
 
-    # PATH plumbing — user-scope only (no admin needed).
     Invoke-Step -Description "adding $LocalBin to the user PATH if missing" -Action {
-        $userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
-        if (-not $userPath) { $userPath = '' }
-        $segments = $userPath -split ';' | Where-Object { $_ -ne '' }
-        if ($segments -notcontains $LocalBin) {
-            $newPath = if ($userPath) { "$userPath;$LocalBin" } else { $LocalBin }
-            [Environment]::SetEnvironmentVariable('PATH', $newPath, 'User')
+        if (Add-ToUserPath -NewEntry $LocalBin) {
             Write-Ok "added $LocalBin to user PATH (open a NEW shell to pick it up)"
         } else {
             Write-Ok "$LocalBin already on user PATH"
@@ -306,113 +1323,101 @@ start "" "$desktopBin" %*
     }
 }
 
-# ── Channel: Web (Next.js) ───────────────────────────────────────────────
 function Install-Web {
-    if ($SkipWeb) { Write-Warn2 'skipping Web (-SkipWeb)'; return }
-    Write-Section 'Installing Web (Next.js)'
+    if ($SkipWeb) { Write-Warn2 "skipping Web (-SkipWeb)"; return }
+    if (-not $script:HasBun) { Write-Warn2 "skipping Web (Bun not available)"; return }
+    Write-Section "Installing Web (Next.js)"
     $webDir = Join-Path $InstallDir 'src\web'
+    if (-not (Test-Path $webDir)) { Write-Warn2 "$webDir not found -- skipping Web"; return }
     Invoke-Step -Description "bun install in $webDir" -Action {
         Push-Location $webDir
         try { & bun install --silent } finally { Pop-Location }
-        Write-Ok "deps installed - run 'cd $webDir; bun dev' to start dev server"
+        Write-Ok "Web dependencies installed -- run 'cd $webDir; bun dev' to start dev server"
     }
 }
 
-# ── Channel: Voice agent ─────────────────────────────────────────────────
-function Install-VoiceAgent {
-    if ($SkipVoice) { Write-Warn2 'skipping Voice Agent (-SkipVoice)'; return }
-    Write-Section 'Installing Voice Agent (~2-3 min; livekit-agents is heavy)'
+function Install-Desktop {
+    if ($SkipDesktop) { Write-Warn2 "skipping Desktop (-SkipDesktop)"; return }
+    if (-not $script:HasNode)  { Write-Warn2 "skipping Desktop (Node.js not available)";  return }
+    if (-not $script:HasCargo) { Write-Warn2 "skipping Desktop (cargo not available)";    return }
+    Write-Section "Installing Desktop (Tauri) -- first build takes 5-10 min"
 
-    $va     = Join-Path $InstallDir 'src\voice-agent'
-    $venv   = Join-Path $va '.venv'
-    $vPy    = Join-Path $venv 'Scripts\python.exe'
-    $vPip   = Join-Path $venv 'Scripts\pip.exe'
-    $reqTxt = Join-Path $va 'requirements.txt'
+    $dt = Join-Path $InstallDir 'src\desktop-tauri'
+    if (-not (Test-Path $dt)) { Write-Warn2 "$dt not found -- skipping Desktop"; return }
 
-    Invoke-Step -Description "create venv at $venv (if absent)" -Action {
-        if (-not (Test-Path $venv)) {
-            & $script:PythonExe -m venv $venv
-            Write-Ok "created venv at $venv"
-        } else {
-            Write-Ok 'venv exists; reusing'
-        }
+    Invoke-Step -Description "npm install in $dt" -Action {
+        Push-Location $dt
+        try { & npm install --silent } finally { Pop-Location }
+        Write-Ok "frontend deps installed"
     }
 
-    if (-not $DryRun) {
-        & $vPip install --quiet --upgrade pip
-        & $vPip install --quiet -r $reqTxt
-        Write-Ok 'deps installed'
+    # CLAUDE.md rule: BOTH `npm run build` and `cargo build --release` are
+    # required -- npm run build alone doesn't ship JS changes because
+    # Tauri embeds dist/ into the Rust binary at compile time.
+    Invoke-Step -Description "npm run build in $dt" -Action {
+        Push-Location $dt
+        try { & npm run build --silent } finally { Pop-Location }
+        Write-Ok "frontend built (dist/)"
     }
 
-    Install-PlaywrightChromium -VenvPython $vPy
-    Install-WindowsVoiceServices
-}
-
-# ── Playwright Chromium (gated; ~200MB) ──────────────────────────────────
-function Install-PlaywrightChromium {
-    param([Parameter(Mandatory)][string]$VenvPython)
-    if ($SkipCdp) {
-        Write-Warn2 'skipping Playwright Chromium (-SkipCdp) - CDP fallback wont work'
-        return
-    }
-    # Playwright's Windows cache lives under %USERPROFILE%\AppData\Local\ms-playwright.
-    $cacheDir = Join-Path $env:LOCALAPPDATA 'ms-playwright'
-    if ((Test-Path $cacheDir) -and ((Get-ChildItem -Path $cacheDir -Filter 'chromium-*' -ErrorAction SilentlyContinue).Count -gt 0)) {
-        Write-Ok 'Playwright Chromium already cached'
-        return
+    Invoke-Step -Description "cargo build --release in $dt\src-tauri" -Action {
+        Push-Location (Join-Path $dt 'src-tauri')
+        try { & cargo build --release } finally { Pop-Location }
     }
 
-    Write-Sub 'About to download ~200MB of Chromium for browser CDP fallback'
-    Write-Sub '(re-run with -SkipCdp to skip the download)'
-
-    # Curl-pipe install (no TTY) auto-yes; interactive install asks.
-    $interactive = [Environment]::UserInteractive
-    if ($interactive) {
-        $reply = Read-Host '  Download Playwright Chromium now? [Y/n]'
-        if ($reply -and $reply -notmatch '^[Yy]') {
-            Write-Warn2 "skipped - run '$VenvPython -m playwright install chromium' later"
-            return
-        }
+    # The Cargo package name is jarvis-desktop ([package].name in Cargo.toml).
+    # On Windows the binary is jarvis-desktop.exe.
+    $bin = Join-Path $dt 'src-tauri\target\release\jarvis-desktop.exe'
+    if (Test-Path $bin) {
+        $sizeMb = [math]::Round((Get-Item $bin).Length / 1MB, 1)
+        Write-Ok "desktop binary at $bin (${sizeMb}MB)"
     } else {
-        Write-Sub 'non-interactive shell - proceeding with download'
+        Write-Warn2 "expected $bin not found -- check $dt\src-tauri\target\release\ for the binary name"
     }
 
-    Invoke-Step -Description "$VenvPython -m playwright install chromium" -Action {
-        & $VenvPython -m playwright install chromium
-        Write-Ok 'Playwright Chromium installed'
+    Install-StartMenuShortcut
+}
+
+function Install-StartMenuShortcut {
+    $exec    = Join-Path $InstallDir 'src\desktop-tauri\src-tauri\target\release\jarvis-desktop.exe'
+    $iconIco = Join-Path $InstallDir 'src\desktop-tauri\src-tauri\icons\icon.ico'
+    $iconPng = Join-Path $InstallDir 'src\desktop-tauri\src-tauri\icons\jarvis-rings-128.png'
+    $shortcut = Join-Path $StartMenuDir 'JARVIS.lnk'
+
+    Invoke-Step -Description "create Start Menu shortcut at $shortcut" -Action {
+        if (-not (Test-Path $StartMenuDir)) { New-Item -ItemType Directory -Force -Path $StartMenuDir | Out-Null }
+        $wsh = New-Object -ComObject WScript.Shell
+        $lnk = $wsh.CreateShortcut($shortcut)
+        $lnk.TargetPath = $exec
+        $lnk.WorkingDirectory = $InstallDir
+        # Prefer .ico if Tauri produced one (it usually does for Windows builds);
+        # fall back to the rings PNG. Start Menu accepts PNG via .lnk but
+        # renders cleaner with .ico.
+        if (Test-Path $iconIco) {
+            $lnk.IconLocation = $iconIco
+        } elseif (Test-Path $iconPng) {
+            $lnk.IconLocation = $iconPng
+        }
+        $lnk.Description = "Voice-first AI assistant (Tauri desktop UI)"
+        $lnk.Save()
+        Write-Ok "installed Start Menu shortcut: $shortcut"
+
+        if (-not (Test-Path $exec)) {
+            Write-Warn2 "Tauri binary not yet built -- launcher will fail until cargo build --release completes"
+            Write-Sub  "  Build now: Push-Location '$InstallDir\src\desktop-tauri\src-tauri'; cargo build --release; Pop-Location"
+        }
     }
 }
 
-# ── Windows voice-service install — DEFERRED to Phase 2 ──────────────────
-function Install-WindowsVoiceServices {
-    # The Linux installer registers user systemd units here (voice-agent,
-    # voice-client, livekit-server, plus three maintenance timers). On
-    # Windows the equivalents would be Task Scheduler entries or a user-
-    # scoped service — but the voice-agent itself imports Linux-only deps
-    # (sdnotify for systemd notify-protocol, plus AEC paths that hit
-    # PipeWire / xdotool / X11). Those imports succeed under WSL2 but not
-    # native Windows. Until Phase 2 of the Windows port refactors those
-    # behind platform-abstraction layers, registering a Windows service
-    # would just produce a service that crash-loops on startup.
-    Write-Sub 'Voice-agent service registration: DEFERRED to Phase 2'
-    Write-Sub '  Why: the voice-agent currently imports Linux-only modules'
-    Write-Sub '  (PipeWire echo-cancel, systemd sdnotify, xdotool / X11).'
-    Write-Sub '  Python deps installed; the agent will NOT start on native Windows yet.'
-    Write-Sub '  Phase 2 will land platform-abstraction shims for audio + service-control.'
-    Write-Sub '  Workaround today: run the voice-agent under WSL2 with the Linux installer.'
-}
+# ============================================================================
+# Config + secrets — bridge token, .env templates, LiveKit keys
+# ============================================================================
 
-# ── Bubblewrap — Linux-only sandbox; SKIPPED on Windows ──────────────────
-function Install-BashSandbox {
-    Write-Sub 'bubblewrap (bash-tool user-namespace sandbox): SKIPPED on Windows'
-    Write-Sub '  The bash tool relies on Linux user namespaces. On Windows the equivalent'
-    Write-Sub '  story (AppContainer / Sandbox / Win32 Job Objects) is a Phase 2 design item.'
-    Write-Sub '  Until then, when the bash tool is invoked from a Windows JARVIS process'
-    Write-Sub '  it should fall back to an unsandboxed cmd.exe / pwsh.exe (Phase 2).'
-}
-
-# ── Bridge auth token (pre-generated for first-run UX) ───────────────────
 function New-BridgeToken {
+    # Pre-generate the bridge auth token for first-run UX. The bridge
+    # (src/cli/src/bridge/) requires JARVIS_LOCAL_API_TOKEN when
+    # JARVIS_REQUIRE_LOCAL_AUTH=1 -- which the desktop launcher sets
+    # by default per the 2026-05-16 security review (P0-1).
     $tokenFile = Join-Path $ConfigDir 'local-api-token.env'
     if (Test-Path $tokenFile) {
         Write-Ok "bridge token already exists at $tokenFile"
@@ -421,7 +1426,7 @@ function New-BridgeToken {
     Invoke-Step -Description "generate bridge auth token at $tokenFile" -Action {
         if (-not (Test-Path $ConfigDir)) { New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null }
 
-        # 32 bytes of crypto-random → base64 → 43 url-safe chars (no padding).
+        # 32 bytes of crypto-random -> base64 -> 43 url-safe chars (no padding).
         # Matches the Linux installer's `head -c 32 /dev/urandom | base64 | tr -d '+/=' | head -c 43`.
         $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
         $bytes = New-Object byte[] 32
@@ -431,12 +1436,12 @@ function New-BridgeToken {
         $token = ($b64 -replace '[+/=]', '').Substring(0, 43)
 
         Set-Content -Path $tokenFile -Value "JARVIS_LOCAL_API_TOKEN=$token" -Encoding ASCII
-        # NTFS-equivalent of chmod 600: restrict to current user.
         Set-WindowsAclUserOnly -Path $tokenFile
         Write-Ok "generated bridge auth token at $tokenFile (user-only ACL)"
 
-        # Plumb into src/web/.env.local so the Next.js middleware has it
-        # without depending on the desktop launcher having run.
+        # Plumb the token into src/web/.env.local so the Next.js
+        # middleware (src/web/src/middleware.ts) bearer check has it
+        # at `next start` time even when the desktop launcher hasn't run.
         $webEnv = Join-Path $InstallDir 'src\web\.env.local'
         if (Test-Path $webEnv) {
             $existing = Get-Content $webEnv -ErrorAction SilentlyContinue
@@ -452,25 +1457,6 @@ function New-BridgeToken {
     }
 }
 
-# ── User-only ACL helper (chmod 600 equivalent for secrets) ──────────────
-function Set-WindowsAclUserOnly {
-    param([Parameter(Mandatory)][string]$Path)
-    try {
-        $acl = Get-Acl $Path
-        $acl.SetAccessRuleProtection($true, $false)  # disable inheritance, drop inherited entries
-        $acl.Access | ForEach-Object { [void]$acl.RemoveAccessRule($_) }
-        $user = "$env:USERDOMAIN\$env:USERNAME"
-        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-            $user, 'FullControl', 'Allow'
-        )
-        $acl.AddAccessRule($rule)
-        Set-Acl -Path $Path -AclObject $acl
-    } catch {
-        Write-Warn2 "couldnt tighten ACL on $Path : $($_.Exception.Message)"
-    }
-}
-
-# ── LiveKit keys ─────────────────────────────────────────────────────────
 function Set-LiveKitKeys {
     $keys  = Join-Path $ConfigDir 'livekit-keys.yaml'
     $vaEnv = Join-Path $InstallDir 'src\voice-agent\.env'
@@ -486,7 +1472,8 @@ function Set-LiveKitKeys {
     if (-not (Test-Path $ConfigDir)) { New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null }
 
     # Prefer the LIVEKIT_API_KEY / LIVEKIT_API_SECRET already in
-    # voice-agent/.env (matches the Linux installer's behaviour).
+    # voice-agent/.env. The agent reads them via systemd EnvironmentFile=
+    # on Linux; on Windows they'll be loaded by tools.runtime's env loader.
     $lkKey = $null; $lkSecret = $null
     if (Test-Path $vaEnv) {
         $envLines = Get-Content $vaEnv
@@ -507,137 +1494,73 @@ function Set-LiveKitKeys {
         return
     }
 
-    # No keys yet — on Linux the installer would shell out to the bundled
+    # No keys yet -- on Linux the installer would shell out to the bundled
     # livekit-server.bin to generate a fresh pair. On Windows the repo's
     # bundled binary is the Linux ELF, so we can't run it. Emit instructions.
     Write-Warn2 "no LIVEKIT_API_KEY/SECRET found in $vaEnv"
-    Write-Sub  'Generate a pair manually and add them to voice-agent/.env, then re-run this step.'
-    Write-Sub  '  - Easiest: under WSL2, run "src/voice-agent/livekit-server.bin generate-keys"'
-    Write-Sub  '  - Or grab the Windows livekit-server.exe from https://github.com/livekit/livekit/releases'
+    Write-Sub  "Generate a pair manually and add them to voice-agent/.env, then re-run this step."
+    Write-Sub  "  - Easiest: under WSL2, run 'src/voice-agent/livekit-server.bin generate-keys'"
+    Write-Sub  "  - Or grab livekit-server.exe from https://github.com/livekit/livekit/releases"
     Write-Sub  "  - Then write '<key>: <secret>' to $keys (one line) and re-run install.ps1"
 }
 
-# ── Audio profile (PipeWire) — Linux-only ────────────────────────────────
+# PipeWire / WirePlumber audio profile -- N/A on Windows.
+# Windows handles mic/speaker coexistence at the OS level via WASAPI
+# shared mode. No userland config needed.
 function Install-AudioProfile {
-    Write-Sub 'PipeWire / WirePlumber auto-profile config: SKIPPED on Windows'
-    Write-Sub '  Windows handles mic/speaker coexistence at the OS level (WASAPI shared mode)'
-    Write-Sub '  - no userland config needed. If you hit mic-exclusivity issues, check the'
-    Write-Sub '  Sound Control Panel > Recording > Properties > Advanced "Exclusive Mode" toggle.'
+    Write-Sub "PipeWire / WirePlumber auto-profile config: SKIPPED on Windows"
+    Write-Sub "  Windows handles mic/speaker coexistence at the OS level (WASAPI shared mode)"
+    Write-Sub "  -- no userland config needed. If you hit mic-exclusivity issues, check"
+    Write-Sub "  Sound Control Panel > Recording > Properties > Advanced 'Exclusive Mode' toggle."
 }
 
-# ── Echo cancel (L1 PipeWire WebRTC AEC3) — Linux-only ───────────────────
+# Echo cancel L1 (PipeWire WebRTC AEC3) -- N/A on Windows.
+# L1 is a PipeWire module. On Windows the cascade is:
+#   L2 = WebRTC APM in-process (cross-platform -- works today)
+#   L3 = DTLN neural cancellation (cross-platform -- works today)
+# Both will activate automatically once Phase 2 wires the voice-agent
+# service. No installer-time action needed.
 function Install-EchoCancel {
-    Write-Sub 'L1 PipeWire WebRTC AEC3 echo-cancel: SKIPPED on Windows'
-    Write-Sub '  L1 is a PipeWire module. On Windows the AEC story is:'
-    Write-Sub '    L2 = WebRTC APM in-process (cross-platform - works today)'
-    Write-Sub '    L3 = DTLN neural cancellation (cross-platform - works today)'
-    Write-Sub '  Both L2 + L3 will activate automatically once Phase 2 wires the voice-agent'
-    Write-Sub '  service. No installer-time action needed.'
+    Write-Sub "L1 PipeWire WebRTC AEC3 echo-cancel: SKIPPED on Windows"
+    Write-Sub "  L1 is a PipeWire module. On Windows the AEC story is:"
+    Write-Sub "    L2 = WebRTC APM in-process (cross-platform -- works today)"
+    Write-Sub "    L3 = DTLN neural cancellation (cross-platform -- works today)"
+    Write-Sub "  Both L2 + L3 will activate automatically once Phase 2 wires the"
+    Write-Sub "  voice-agent service. No installer-time action needed."
 }
 
-# ── Computer-use deps probe ──────────────────────────────────────────────
 function Test-ComputerUseDeps {
+    # The computer_use tool currently shells out to xdotool / xdpyinfo /
+    # python3-pyatspi on Linux. On Windows the cross-platform stand-ins
+    # are mss (screen capture) + pyautogui (click/type/key). Probe + hint;
+    # don't fail the install.
     $vaPy = Join-Path $InstallDir 'src\voice-agent\.venv\Scripts\python.exe'
     if (-not (Test-Path $vaPy)) { return }
 
     Write-Host ''
-    Write-Sub 'Checking computer_use deps (optional, Windows-style) ...'
+    Write-Sub "Checking computer_use deps (optional, Windows-style) ..."
 
-    # mss is cross-platform; useful for screen capture.
     & $vaPy -c 'import mss' 2>$null
     if ($LASTEXITCODE -ne 0) {
-        Write-Warn2 'mss not installed in voice-agent venv. To enable screen capture:'
+        Write-Warn2 "mss not installed in voice-agent venv. To enable screen capture:"
         Write-Sub  "  $vaPy -m pip install mss"
     }
 
-    # pyautogui is the Windows-friendly stand-in for xdotool.
     & $vaPy -c 'import pyautogui' 2>$null
     if ($LASTEXITCODE -ne 0) {
-        Write-Warn2 'pyautogui not installed - Windows equivalent of xdotool for click/type/key.'
+        Write-Warn2 "pyautogui not installed -- Windows equivalent of xdotool for click/type/key."
         Write-Sub  "  $vaPy -m pip install pyautogui"
-        Write-Sub  '  (Note: computer_use itself is Linux-only today; this is a Phase 2 hook.)'
+        Write-Sub  "  (Note: computer_use itself is Linux-only today; this is a Phase 2 hook.)"
     }
 
-    Write-Sub 'xdotool / xdpyinfo / python3-pyatspi: N/A on Windows (X11-only tools).'
+    Write-Sub "xdotool / xdpyinfo / python3-pyatspi: N/A on Windows (X11-only tools)."
 }
 
-# ── Channel: Desktop (Tauri) ─────────────────────────────────────────────
-function Install-Desktop {
-    if ($SkipDesktop) { Write-Warn2 'skipping Desktop (-SkipDesktop)'; return }
-    Write-Section 'Installing Desktop (Tauri) - first build takes 5-10 min'
-
-    $dt = Join-Path $InstallDir 'src\desktop-tauri'
-    Invoke-Step -Description "npm install in $dt" -Action {
-        Push-Location $dt
-        try { & npm install --silent } finally { Pop-Location }
-        Write-Ok 'frontend deps installed'
-    }
-
-    # CLAUDE.md rule: BOTH `npm run build` and `cargo build --release` are
-    # required - npm run build alone doesnt ship JS changes because Tauri
-    # embeds dist/ into the Rust binary at compile time.
-    Invoke-Step -Description "npm run build in $dt" -Action {
-        Push-Location $dt
-        try { & npm run build --silent } finally { Pop-Location }
-        Write-Ok 'frontend built (dist/)'
-    }
-
-    Invoke-Step -Description "cargo build --release in $dt\src-tauri" -Action {
-        Push-Location (Join-Path $dt 'src-tauri')
-        try { & cargo build --release } finally { Pop-Location }
-    }
-
-    # The Cargo package name is jarvis-desktop (Cargo.toml [package] name).
-    # On Windows the binary is jarvis-desktop.exe.
-    $bin = Join-Path $dt 'src-tauri\target\release\jarvis-desktop.exe'
-    if (Test-Path $bin) {
-        $sizeMb = [math]::Round((Get-Item $bin).Length / 1MB, 1)
-        Write-Ok "desktop binary at $bin (${sizeMb}MB)"
-    } else {
-        Write-Warn2 "expected $bin not found - check $dt\src-tauri\target\release\ for the binary name"
-    }
-
-    Install-StartMenuShortcut
-}
-
-# ── Start Menu shortcut (Windows equivalent of .desktop entry) ───────────
-function Install-StartMenuShortcut {
-    $exec = Join-Path $InstallDir 'src\desktop-tauri\src-tauri\target\release\jarvis-desktop.exe'
-    $iconIco = Join-Path $InstallDir 'src\desktop-tauri\src-tauri\icons\icon.ico'
-    $iconPng = Join-Path $InstallDir 'src\desktop-tauri\src-tauri\icons\jarvis-rings-128.png'
-    $shortcut = Join-Path $StartMenuDir 'JARVIS.lnk'
-
-    Invoke-Step -Description "create Start Menu shortcut at $shortcut" -Action {
-        if (-not (Test-Path $StartMenuDir)) { New-Item -ItemType Directory -Force -Path $StartMenuDir | Out-Null }
-        $wsh = New-Object -ComObject WScript.Shell
-        $lnk = $wsh.CreateShortcut($shortcut)
-        $lnk.TargetPath = $exec
-        $lnk.WorkingDirectory = $InstallDir
-        # Prefer .ico if Tauri produced one (it usually does for Windows builds);
-        # fall back to the rings PNG. Windows Start Menu accepts PNG via .lnk
-        # but renders cleaner with .ico.
-        if (Test-Path $iconIco) {
-            $lnk.IconLocation = $iconIco
-        } elseif (Test-Path $iconPng) {
-            $lnk.IconLocation = $iconPng
-        }
-        $lnk.Description = 'Voice-first AI assistant (Tauri desktop UI)'
-        $lnk.Save()
-        Write-Ok "installed Start Menu shortcut: $shortcut"
-
-        if (-not (Test-Path $exec)) {
-            Write-Warn2 'Tauri binary not yet built - launcher will fail until cargo build --release completes'
-            Write-Sub  "  Build now: Push-Location '$InstallDir\src\desktop-tauri\src-tauri'; cargo build --release; Pop-Location"
-        }
-    }
-}
-
-# ── .env template ────────────────────────────────────────────────────────
 function Set-EnvTemplate {
-    Write-Section 'API key template'
+    Write-Section "API key template"
     $envFile = Join-Path $InstallDir '.env'
     if (Test-Path $envFile) {
-        Write-Ok '.env already exists; not overwriting'
+        Write-Ok ".env already exists; not overwriting"
         return
     }
     Invoke-Step -Description "create $envFile" -Action {
@@ -667,72 +1590,390 @@ KIMI_API_KEY=
 # JARVIS_REQUIRE_LOCAL_AUTH=1   # require Bearer token on bridge + web /api/*
 # JARVIS_DAILY_COST_CEILING_USD=5
 '@
-        Set-Content -Path $envFile -Value $template -Encoding UTF8
+        # Write UTF-8 without BOM. PS5's default Set-Content -Encoding UTF8
+        # writes WITH a BOM, which can confuse dotenv parsers on the first
+        # line. Use .NET directly with an explicit UTF8Encoding($false) --
+        # BOM-free on every PowerShell version.
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($envFile, $template, $utf8NoBom)
         Set-WindowsAclUserOnly -Path $envFile
-        Write-Ok "created $envFile (user-only ACL - fill in your real keys before starting the voice agent)"
+        Write-Ok "created $envFile (user-only ACL -- fill in your real keys before starting the voice agent)"
     }
 }
 
-# ── Final summary ────────────────────────────────────────────────────────
-function Write-Summary {
-    Write-Section 'Done'
-    Write-Host @"
-  Install location:  $InstallDir
-  CLI launcher:      $LocalBin\jarvis.cmd  (also jarvis-desktop.cmd)
-  Config dir:        $ConfigDir
-  Data dir:          $DataDir   (Phase 2 will wire logs / telemetry here)
-  Start Menu:        $StartMenuDir\JARVIS.lnk
-
-  Phase 1 status (Windows port):
-    - CLI:      INSTALLED and runnable today
-    - Web:      INSTALLED ('cd $InstallDir\src\web; bun dev')
-    - Desktop:  BUILT - launch from Start Menu, or run jarvis-desktop.cmd
-    - Voice:    DEPS INSTALLED, service registration DEFERRED to Phase 2
-                (voice-agent imports Linux-only modules - PipeWire / sdnotify
-                / xdotool. Run under WSL2 with install.sh until Phase 2 lands.)
-
-  Next steps:
-    1. Edit $InstallDir\.env and fill in real API keys.
-    2. Open a NEW PowerShell window so PATH picks up $LocalBin.
-    3. Try the CLI:
-         jarvis
-    4. Start the web app (optional):
-         cd $InstallDir\src\web ; bun dev
-    5. Run the desktop app (Tauri):
-         Click 'JARVIS' in the Start Menu, or:
-         $InstallDir\src\desktop-tauri\src-tauri\target\release\jarvis-desktop.exe
-
-  Re-run this script anytime to update a channel.
-  Skip channels with -SkipCli / -SkipVoice / -SkipDesktop / -SkipWeb.
-"@
+function Set-JarvisHomeEnv {
+    # Persist JARVIS_HOME so tools.runtime's path resolver finds the same
+    # config + data dirs that the installer wrote to. The voice-agent
+    # already honours this env var on every platform (see
+    # src/voice-agent/tools/runtime.py).
+    $currentHome = [Environment]::GetEnvironmentVariable("JARVIS_HOME", "User")
+    if (-not $currentHome -or $currentHome -ne $ConfigDir) {
+        [Environment]::SetEnvironmentVariable("JARVIS_HOME", $ConfigDir, "User")
+        $env:JARVIS_HOME = $ConfigDir
+        Write-Info "Set JARVIS_HOME=$ConfigDir"
+    }
 }
 
-# ── Main ─────────────────────────────────────────────────────────────────
-function Invoke-Main {
-    Write-Host 'JARVIS installer (Windows / PowerShell)' -ForegroundColor Cyan
-    Get-Invocation
-    Test-Prereqs
+function Set-DataDirectories {
+    # Pre-create data + logs dirs so the voice-agent and CLI don't have to
+    # do a `mkdir -p` dance on first run. Matches the Linux installer's
+    # `mkdir -p $HOME/.local/share/jarvis/logs` pattern.
+    foreach ($d in @($DataDir, $LogsDir, $ConfigDir, $LocalBin)) {
+        if (-not (Test-Path $d)) {
+            New-Item -ItemType Directory -Force -Path $d | Out-Null
+        }
+    }
+    Set-JarvisHomeEnv
+}
 
+# ============================================================================
+# Summary
+# ============================================================================
+
+function Write-Summary {
+    Write-Section "Done"
+
+    Write-Host ""
+    Write-Host "  Install location:  $InstallDir"
+    Write-Host "  CLI launcher:      $LocalBin\jarvis.cmd  (also jarvis-desktop.cmd)"
+    Write-Host "  Config dir:        $ConfigDir"
+    Write-Host "  Data dir:          $DataDir"
+    Write-Host "  Logs dir:          $LogsDir"
+    Write-Host "  Start Menu:        $StartMenuDir\JARVIS.lnk"
+    Write-Host ""
+    Write-Host "  Phase 1 status (Windows port):"
+    Write-Host "    - CLI:      INSTALLED and runnable today"
+    Write-Host "    - Web:      INSTALLED ('cd $InstallDir\src\web; bun dev')"
+    Write-Host "    - Desktop:  BUILT -- launch from Start Menu, or run jarvis-desktop.cmd"
+    Write-Host "    - Voice:    DEPS INSTALLED, service registration DEFERRED to Phase 2"
+    Write-Host "                (voice-agent imports Linux-only modules -- PipeWire / sdnotify"
+    Write-Host "                / xdotool. Run under WSL2 with install.sh until Phase 2 lands.)"
+    Write-Host ""
+    Write-Host "  Next steps:"
+    Write-Host "    1. Edit $InstallDir\.env and fill in real API keys."
+    Write-Host "    2. Open a NEW PowerShell window so PATH picks up $LocalBin."
+    Write-Host "    3. Try the CLI:"
+    Write-Host "         jarvis"
+    Write-Host "    4. Start the web app (optional):"
+    Write-Host "         cd $InstallDir\src\web ; bun dev"
+    Write-Host "    5. Run the desktop app (Tauri):"
+    Write-Host "         Click 'JARVIS' in the Start Menu, or:"
+    Write-Host "         $InstallDir\src\desktop-tauri\src-tauri\target\release\jarvis-desktop.exe"
+    Write-Host ""
+    Write-Host "  Re-run this script anytime to update a channel."
+    Write-Host "  Skip channels with -SkipCli / -SkipVoice / -SkipDesktop / -SkipWeb."
+    Write-Host ""
+
+    if (-not $script:HasNode) {
+        Write-Host "Note: Node.js could not be installed automatically." -ForegroundColor Yellow
+        Write-Host "Desktop + Web channels need Node.js. Install manually:" -ForegroundColor Yellow
+        Write-Host "  https://nodejs.org/en/download/" -ForegroundColor Yellow
+        Write-Host ""
+    }
+    if (-not $script:HasBun) {
+        Write-Host "Note: Bun could not be installed automatically." -ForegroundColor Yellow
+        Write-Host "CLI + Web channels need Bun. Install manually:" -ForegroundColor Yellow
+        Write-Host "  irm bun.sh/install.ps1 | iex" -ForegroundColor Yellow
+        Write-Host ""
+    }
+    if (-not $script:HasRipgrep) {
+        Write-Host "Note: ripgrep (rg) was not installed. For faster file search:" -ForegroundColor Yellow
+        Write-Host "  winget install BurntSushi.ripgrep.MSVC" -ForegroundColor Yellow
+        Write-Host ""
+    }
+}
+
+# ============================================================================
+# Stage protocol
+# ============================================================================
+#
+# install.ps1 supports a small, stable stage protocol that lets programmatic
+# callers (the future Tauri onboarding wizard, CI, install.sh parity) drive
+# the install one step at a time and surface progress/errors with their own
+# UI. CLI users running the canonical iex/irm one-liner never encounter this
+# -- default invocation behaves as before.
+#
+# Entry points:
+#
+#   install.ps1                       Interactive install (today's behaviour).
+#   install.ps1 -ProtocolVersion      Emit the protocol version integer.
+#   install.ps1 -Manifest             Emit the stage manifest as JSON.
+#   install.ps1 -Stage <name>         Run one stage and emit its result.
+#   install.ps1 -NonInteractive       Disable all Read-Host prompts.
+#   install.ps1 -Json                 Emit machine-readable JSON instead of
+#                                     the human banner at end of full install.
+#
+# Manifest schema (-Manifest output):
+#
+#   {
+#     "protocol_version": 1,
+#     "stages": [
+#       {"name": "uv", "title": "...", "category": "prereqs", "needs_user_input": false},
+#       ...
+#     ]
+#   }
+#
+# Stage result (-Stage <name> output):
+#
+#   {"stage": "uv", "ok": true, "skipped": false, "reason": null, "duration_ms": 1234}
+#
+# Exit codes:
+#   0 -- success (stage ran, or stage was deliberately skipped).
+#   1 -- generic failure; the stage threw.
+#   2 -- unknown stage name passed to -Stage.
+#
+# Adding a stage:
+#   1. Append an entry to $InstallStages below.
+#   2. Make sure the worker function is idempotent and respects
+#      $NonInteractive when it has prompts.
+#   3. Do NOT bump $InstallStageProtocolVersion -- adding stages is additive.
+# ============================================================================
+
+$InstallStages = @(
+    @{ Name = "uv";               Title = "Installing uv package manager";        Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Uv" }
+    @{ Name = "python";           Title = "Verifying Python $PythonVersion";      Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Python" }
+    @{ Name = "git";              Title = "Installing Git";                       Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Git" }
+    @{ Name = "node";             Title = "Detecting Node.js";                    Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Node" }
+    @{ Name = "bun";              Title = "Detecting Bun";                        Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Bun" }
+    @{ Name = "cargo";            Title = "Detecting cargo (Rust)";               Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Cargo" }
+    @{ Name = "msvc-check";       Title = "Probing MSVC Build Tools";             Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-MsvcCheck" }
+    @{ Name = "system-packages";  Title = "Installing ripgrep and ffmpeg";        Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-SystemPackages" }
+    @{ Name = "data-dirs";        Title = "Creating JARVIS data directories";     Category = "install";      NeedsUserInput = $false; Worker = "Stage-DataDirectories" }
+    @{ Name = "repository";       Title = "Cloning JARVIS repository";            Category = "install";      NeedsUserInput = $false; Worker = "Stage-Repository" }
+    @{ Name = "voice-agent";      Title = "Installing voice-agent Python deps";   Category = "install";      NeedsUserInput = $false; Worker = "Stage-VoiceAgent" }
+    @{ Name = "cli";              Title = "Installing CLI (Bun)";                 Category = "install";      NeedsUserInput = $false; Worker = "Stage-Cli" }
+    @{ Name = "web";              Title = "Installing Web (Next.js)";             Category = "install";      NeedsUserInput = $false; Worker = "Stage-Web" }
+    @{ Name = "desktop";          Title = "Building Desktop (Tauri)";             Category = "install";      NeedsUserInput = $false; Worker = "Stage-Desktop" }
+    @{ Name = "bash-sandbox";     Title = "bash sandbox (deferred on Windows)";   Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-BashSandbox" }
+    @{ Name = "bridge-token";     Title = "Generating bridge auth token";         Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-BridgeToken" }
+    @{ Name = "livekit-keys";     Title = "Setting up LiveKit keys";              Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-LiveKitKeys" }
+    @{ Name = "computer-use";     Title = "Probing computer_use deps";            Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-ComputerUse" }
+    @{ Name = "audio-profile";    Title = "Audio profile (N/A on Windows)";       Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-AudioProfile" }
+    @{ Name = "echo-cancel";      Title = "L1 echo-cancel (N/A on Windows)";      Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-EchoCancel" }
+    @{ Name = "env-template";     Title = "Writing .env template";                Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-EnvTemplate" }
+)
+
+# Stage workers -- thin wrappers around the Install-* / Test-* functions.
+# Kept as a separate layer so the existing functions remain callable
+# directly (helpful for one-off recovery: ``. install.ps1; Install-VoiceAgent``).
+#
+# Stages that depend on uv (anything after Stage-Uv) call Resolve-UvCmd
+# first so they work in cross-process driver mode where $script:UvCmd
+# set by Stage-Uv in a sibling powershell process isn't visible here.
+function Stage-Uv               { if (-not (Install-Uv))    { throw "uv installation failed" } }
+function Stage-Python           { Resolve-UvCmd; if (-not (Test-Python)) { throw "Python $PythonVersion not available" } }
+function Stage-Git              { if (-not (Install-Git))   { throw "Git not available and auto-install failed" } }
+function Stage-Node {
+    if (-not (Test-Node)) {
+        $script:_StageSkippedReason = "Node.js not available; Desktop + Web channels will be unavailable"
+    } elseif (-not $script:HasNode) {
+        $script:_StageSkippedReason = "Node.js not detected after install attempt"
+    }
+}
+function Stage-Bun {
+    [void](Test-Bun)
+    if (-not $script:HasBun) {
+        $script:_StageSkippedReason = "Bun not available; CLI + Web channels will be unavailable"
+    }
+}
+function Stage-Cargo {
+    [void](Test-Cargo)
+    if (-not $script:HasCargo) {
+        $script:_StageSkippedReason = "cargo not available; Desktop build will be skipped"
+    }
+}
+function Stage-MsvcCheck        { Test-MsvcBuildTools }
+function Stage-SystemPackages   { Install-SystemPackages }
+function Stage-DataDirectories  { Set-DataDirectories }
+function Stage-Repository       { Install-Repository }
+function Stage-VoiceAgent       { Resolve-UvCmd; Install-VoiceAgent }
+function Stage-Cli              { Install-Cli }
+function Stage-Web              { Install-Web }
+function Stage-Desktop          { Install-Desktop }
+function Stage-BashSandbox      { Install-BashSandbox }
+function Stage-BridgeToken      { New-BridgeToken }
+function Stage-LiveKitKeys      { Set-LiveKitKeys }
+function Stage-ComputerUse      { Test-ComputerUseDeps }
+function Stage-AudioProfile     { Install-AudioProfile }
+function Stage-EchoCancel       { Install-EchoCancel }
+function Stage-EnvTemplate      { Set-EnvTemplate }
+
+function Get-InstallStage {
+    param([string]$Name)
+    foreach ($s in $InstallStages) {
+        if ($s.Name -eq $Name) { return $s }
+    }
+    return $null
+}
+
+function Step-OutOfInstallDir {
+    # Windows refuses to delete a directory any shell is currently cd'd
+    # inside -- and silently leaves orphan files behind, which then wedge
+    # "is this a valid git repo" probes on re-install. Harmless when the
+    # caller ran the installer from somewhere else.
+    try {
+        $currentResolved = (Get-Location).ProviderPath
+        $installResolved = $null
+        if (Test-Path $InstallDir) {
+            $installResolved = (Resolve-Path $InstallDir -ErrorAction SilentlyContinue).ProviderPath
+        }
+        if ($installResolved -and $currentResolved.ToLower().StartsWith($installResolved.ToLower())) {
+            Write-Info "Stepping out of $InstallDir so Windows can replace files there if needed..."
+            Set-Location $env:USERPROFILE
+        }
+    } catch {}
+}
+
+function Invoke-Stage {
+    param(
+        [Parameter(Mandatory=$true)] [hashtable]$StageDef
+    )
+
+    # Refresh PATH so this stage sees binaries installed by prior stages,
+    # even when each stage runs in its own powershell process.
+    Sync-EnvPath
+
+    # Per-stage soft-skip channel. A worker can populate
+    # $script:_StageSkippedReason to surface "ran, but the thing it was
+    # supposed to set up is not available" as skipped=true in the JSON
+    # frame, without throwing. Used by Stage-Node / Stage-Bun / Stage-Cargo
+    # so the install flow doesn't abort when an optional capability is
+    # missing while still being honest in the protocol contract.
+    $script:_StageSkippedReason = $null
+
+    $start = [DateTime]::UtcNow
+    $result = @{
+        stage        = $StageDef.Name
+        ok           = $false
+        skipped      = $false
+        reason       = $null
+        duration_ms  = 0
+    }
+
+    try {
+        & $StageDef.Worker
+        $result.ok = $true
+        if ($script:_StageSkippedReason) {
+            $result.skipped = $true
+            $result.reason  = $script:_StageSkippedReason
+        }
+    } catch {
+        $result.ok = $false
+        $result.reason = "$_"
+        throw
+    } finally {
+        $result.duration_ms = [int]([DateTime]::UtcNow - $start).TotalMilliseconds
+        if ($Json -or $Stage) {
+            $result | ConvertTo-Json -Compress | Write-Output
+            if (-not $result.ok) {
+                $script:_StageEmittedErrorFrame = $true
+            }
+        }
+    }
+}
+
+# ============================================================================
+# Main
+# ============================================================================
+
+function Invoke-AllStages {
+    Step-OutOfInstallDir
+    foreach ($s in $InstallStages) {
+        Invoke-Stage -StageDef $s
+    }
+}
+
+function Main {
+    Write-Banner
+    Get-Invocation
+    Invoke-AllStages
     if ($DryRun) {
-        Write-Section 'Dry-run complete'
+        Write-Section "Dry-run complete"
         Write-Sub "Detected/chosen install dir: $InstallDir"
-        Write-Sub 'All prereqs present. Re-run without -DryRun to actually install.'
+        Write-Sub "Re-run without -DryRun to actually install."
+        exit 0
+    }
+    if (-not $Json) {
+        Write-Summary
+    } else {
+        @{ ok = $true; protocol_version = $InstallStageProtocolVersion } | ConvertTo-Json -Compress | Write-Output
+    }
+}
+
+# ----------------------------------------------------------------------------
+# Entry-point dispatch
+# ----------------------------------------------------------------------------
+# All branches funnel through one try/catch so errors don't kill an iex/irm
+# PowerShell session, and failures in stage-driver mode produce a structured
+# JSON error frame instead of a bare exception.
+
+try {
+    if ($ProtocolVersion) {
+        Write-Output $InstallStageProtocolVersion
         exit 0
     }
 
-    Sync-Repo
-    Install-Cli
-    Install-Web
-    Install-VoiceAgent
-    Install-Desktop
-    Install-BashSandbox       # bash-tool sandbox - deferred on Windows
-    New-BridgeToken           # ~/.jarvis/local-api-token.env + web .env.local
-    Set-LiveKitKeys
-    Test-ComputerUseDeps      # optional probes (Windows-style)
-    Install-AudioProfile      # deferred on Windows
-    Install-EchoCancel        # deferred on Windows
-    Set-EnvTemplate
-    Write-Summary
-}
+    if ($Manifest) {
+        $payload = @{
+            protocol_version = $InstallStageProtocolVersion
+            stages = @($InstallStages | ForEach-Object {
+                @{
+                    name             = $_.Name
+                    title            = $_.Title
+                    category         = $_.Category
+                    needs_user_input = $_.NeedsUserInput
+                }
+            })
+        }
+        $payload | ConvertTo-Json -Depth 5 -Compress | Write-Output
+        exit 0
+    }
 
-Invoke-Main
+    # Use PSBoundParameters rather than $Stage truthiness so an explicit
+    # `-Stage ""` from a misbehaving driver doesn't fall through to the
+    # full-install Main path and silently kick off a destructive op.
+    # Empty string is a contract violation; surface it as unknown-stage
+    # exit 2 with a structured JSON frame.
+    if ($PSBoundParameters.ContainsKey("Stage")) {
+        $def = Get-InstallStage -Name $Stage
+        if (-not $def) {
+            $err = @{
+                ok     = $false
+                stage  = $Stage
+                reason = "unknown stage: $Stage. Run install.ps1 -Manifest to list valid stages."
+            }
+            $err | ConvertTo-Json -Compress | Write-Output
+            exit 2
+        }
+        Get-Invocation
+        Step-OutOfInstallDir
+        Invoke-Stage -StageDef $def
+        exit 0
+    }
+
+    Main
+} catch {
+    if ($Json -or $Stage) {
+        # Stage-driver mode: emit a structured error frame (unless
+        # Invoke-Stage already emitted one for this same failure).
+        if (-not $script:_StageEmittedErrorFrame) {
+            $err = @{
+                ok     = $false
+                stage  = if ($Stage) { $Stage } else { $null }
+                reason = "$_"
+            }
+            $err | ConvertTo-Json -Compress | Write-Output
+        }
+        exit 1
+    }
+
+    # Interactive mode: keep today's friendly recovery hint.
+    Write-Host ""
+    Write-Err "Installation failed: $_"
+    Write-Host ""
+    Write-Info "If the error is unclear, try downloading and running the script directly:"
+    Write-Host "  Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/ulrichando/jarvis/master/install.ps1' -OutFile install.ps1" -ForegroundColor Yellow
+    Write-Host "  .\install.ps1" -ForegroundColor Yellow
+    Write-Host ""
+    exit 1
+}
