@@ -314,4 +314,70 @@ def test_module_level_surface(tmp_path, monkeypatch):
 def test_invalid_target_handled_at_tool_layer():
     """The store assumes a valid target ('memory'/'user'); the tool layer
     validates. Confirm the constant the tool guards on is correct."""
-    assert file_memory.VALID_TARGETS == ("memory", "user")
+    assert file_memory.VALID_TARGETS == ("memory", "user", "procedure")
+
+
+def test_procedure_target_is_valid(tmp_path, monkeypatch):
+    """Track 2a: VALID_TARGETS includes 'procedure'."""
+    from pipeline import file_memory
+    assert "procedure" in file_memory.VALID_TARGETS
+    assert file_memory.PROCEDURE_CHAR_LIMIT == 8000
+
+
+def test_procedure_round_trip(tmp_path, monkeypatch):
+    """Track 2a: add → read → remove cycle on procedure target."""
+    monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
+    from pipeline import file_memory
+    file_memory.reload_store()  # pick up tmp HOME
+
+    body = "## deploy-app\n1. run pytest\n2. git push\n3. check CI"
+    res = file_memory.add("procedure", body)
+    assert res["success"], res
+
+    # File exists on disk
+    procedures_md = tmp_path / "memories" / "PROCEDURES.md"
+    assert procedures_md.exists()
+    assert "deploy-app" in procedures_md.read_text(encoding="utf-8")
+
+    # Read returns the entry
+    read_res = file_memory.read("procedure")
+    assert read_res["success"]
+    assert any("deploy-app" in e for e in read_res["entries"])
+
+    # Remove
+    rm_res = file_memory.remove("procedure", "deploy-app")
+    assert rm_res["success"]
+
+
+def test_procedure_char_limit_enforced(tmp_path, monkeypatch):
+    """Track 2a: adding past the cap returns a clear error."""
+    monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
+    from pipeline import file_memory
+    file_memory.reload_store()
+
+    # Fill close to the cap
+    big = "x" * 7900
+    res1 = file_memory.add("procedure", big)
+    assert res1["success"], res1
+
+    # Adding another big entry should fail with a clear message
+    res2 = file_memory.add("procedure", "x" * 500)
+    assert not res2["success"]
+    assert "chars" in res2["error"].lower()
+
+
+def test_procedure_snapshot_block(tmp_path, monkeypatch):
+    """Track 2a: snapshot_for_prompt includes PROCEDURES block when entries exist."""
+    monkeypatch.setenv("JARVIS_HOME", str(tmp_path))
+    from pipeline import file_memory
+    file_memory.reload_store()
+
+    # Empty: no block
+    snapshot = file_memory.snapshot_for_prompt()
+    assert "PROCEDURES" not in snapshot
+
+    # After add + reload: block present (reload re-freezes snapshot)
+    file_memory.add("procedure", "## test\n1. step")
+    file_memory.reload_store()
+    snapshot = file_memory.snapshot_for_prompt()
+    assert "PROCEDURES" in snapshot
