@@ -34,3 +34,37 @@ One-shot install of all four channels (CLI + Voice Agent + Desktop + Web). Pick 
 
 Want to verify your prereqs + detected install dir before committing to the 5–10 min Tauri build? Linux: `JARVIS_DRY_RUN=1`. Windows: `-DryRun`.
 
+## Use JARVIS in your IDE (ACP)
+
+JARVIS implements the [Agent Client Protocol](https://github.com/zed-industries/agent-client-protocol), so any ACP-compatible IDE (Zed today; Cursor / VS Code / JetBrains as their ACP clients ship) can drive JARVIS as a coding agent — in addition to voice + CLI + Desktop. The ACP adapter shares its tool registry, memory, and skills with the rest of the system.
+
+### Zed setup
+
+Edit `~/.config/zed/settings.json` (Linux / macOS) or `%APPDATA%\Zed\settings.json` (Windows):
+
+```json
+{
+  "agent_servers": {
+    "JARVIS": {
+      "command": "<INSTALL_DIR>/bin/jarvis-acp",
+      "args": []
+    }
+  }
+}
+```
+
+Replace `<INSTALL_DIR>` with the absolute path to your JARVIS checkout (Linux default: `~/Documents/Projects/jarvis`). Then open Zed's chat pane and pick "JARVIS" from the agent picker.
+
+### What you get
+
+- Streaming assistant replies in the IDE chat pane.
+- File edits (`write_file`, `patch`) round-trip through Zed's edit-approval UI — you see the diff and click approve/deny before any write lands.
+- Terminal commands gate through the IDE's permission dialog so nothing runs without your OK.
+- The same supervisor LLM + tools the voice agent uses (Anthropic-primary with Groq + DeepSeek fallback), so memory you add via voice is visible in the IDE and vice-versa.
+
+Skip approvals entirely (headless soak tests, power-user sessions) with `JARVIS_ACP_PERMISSIONS=permissive` in the environment Zed spawns the adapter under.
+
+### Discovery manifest
+
+JARVIS ships [`src/voice-agent/acp_registry/agent.json`](src/voice-agent/acp_registry/agent.json) — IDEs that auto-discover ACP agents (Zed's registry feature, etc.) read this file.
+
