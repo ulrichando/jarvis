@@ -388,6 +388,8 @@ def log_turn(
     computer_use_cost_usd: Optional[float] = None,
     ts_utc: Optional[str] = None,
     confab_check_state: Optional[str] = None,
+    confab_pattern_matched: Optional[str] = None,
+    confab_retry_models: Optional[str] = None,
     aec_layer1_active: Optional[int] = None,
     aec_layer2_aec_active: Optional[int] = None,
     aec_layer3_active: Optional[int] = None,
@@ -426,6 +428,12 @@ def log_turn(
     `computer_use_steps` is the total action count if a computer_use
     subagent handled this turn, None otherwise. `computer_use_cost_usd`
     is the sum of per-action costs (2026-05-18).
+
+    `confab_pattern_matched` is the `_STRONG_CLAIMS` regex source string
+    that tripped the pre-TTS confab gate (2026-05-24). `confab_retry_models`
+    is a JSON-encoded list of model ids tried in order during the retry
+    chain (e.g. `'["claude-sonnet-4-6", "claude-opus-4-7"]'`). Both NULL
+    on clean turns or when the kill switch was set.
     """
     try:
         with sqlite3.connect(db_path) as conn:
@@ -439,9 +447,10 @@ def log_turn(
                     browser_backend,
                     computer_use_steps, computer_use_cost_usd,
                     confab_check_state,
+                    confab_pattern_matched, confab_retry_models,
                     aec_layer1_active, aec_layer2_aec_active, aec_layer3_active,
                     output_profile, apm_delay_ms_p50, dtln_latency_ms_p95)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     ts_utc or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     user_text, jarvis_text, emotion, route, llm_used,
@@ -453,6 +462,7 @@ def log_turn(
                     browser_backend,
                     computer_use_steps, computer_use_cost_usd,
                     confab_check_state,
+                    confab_pattern_matched, confab_retry_models,
                     aec_layer1_active, aec_layer2_aec_active, aec_layer3_active,
                     output_profile, apm_delay_ms_p50, dtln_latency_ms_p95,
                 ),
