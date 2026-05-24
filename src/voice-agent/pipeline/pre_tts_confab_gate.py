@@ -108,6 +108,19 @@ def should_gate(
     return GateVerdict(True, "confab_detected", pattern_matched=pattern)
 
 
+def telemetry_state_for_clean(verdict: GateVerdict) -> str:
+    """Map a clean verdict (should_retry=False) to its telemetry state.
+
+    The agent calls this when the gate decided not to retry, so it
+    can write the right confab_check_state value to telemetry.
+    Returns CONFAB_STATE_BYPASSED_KILLED for kill-switch verdicts,
+    CONFAB_STATE_CLEAN for everything else (including bypass routes,
+    no-claim, tool-called, etc.)."""
+    if verdict.reason == "kill_switch":
+        return CONFAB_STATE_BYPASSED_KILLED
+    return CONFAB_STATE_CLEAN
+
+
 @dataclass
 class RetryResult:
     """Outcome of run_retry_chain — the gate's full verdict + retry trace."""
@@ -226,8 +239,9 @@ def _append_system_message(chat_ctx: Any, system_text: str) -> Any:
         pass
     if isinstance(chat_ctx, list):
         return chat_ctx + [{"role": "system", "content": system_text}]
-    logger.warning(
-        f"[pre_tts_gate] unknown chat_ctx shape {type(chat_ctx).__name__}; "
-        f"tool-force prompt may not have been appended"
+    raise TypeError(
+        f"_append_system_message: unsupported chat_ctx type "
+        f"{type(chat_ctx).__name__!r}. Expected livekit-agents ChatContext "
+        f"(with .copy + .add_message) or list[dict]. Add a branch above to "
+        f"support new shapes."
     )
-    return chat_ctx
