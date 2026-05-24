@@ -1500,6 +1500,13 @@ fn main() {
             // that path. To restore the menu entry, add a
             // MenuItemBuilder::with_id("open_chat", "Open Chat Panel")
             // and re-insert it in the MenuBuilder chain.
+            // Re-introduced 2026-05-24 (see docs/superpowers/specs/
+            // 2026-05-24-tray-chat-panel-design.md). Opens the new
+            // VoiceChatPanel that talks directly to the voice agent
+            // via :8767 — NOT the bridge-flavored ChatPanel.
+            let voice_chat_item = MenuItemBuilder::with_id(
+                "open_voice_chat", "Open Chat Panel",
+            ).build(app)?;
             let mute_item    = MenuItemBuilder::with_id("mute",         "Mute / Unmute Voice").build(app)?;
             // Toggle the LiveKit screen-share publisher in the voice-
             // client. Click = POST /screen-share with no body, which
@@ -1664,6 +1671,7 @@ fn main() {
             let quit_item    = MenuItemBuilder::with_id("quit",         "Quit JARVIS").build(app)?;
 
             let menu = MenuBuilder::new(app)
+                .item(&voice_chat_item)
                 .item(&mute_item)
                 .item(&share_item)
                 .item(&sep1)
@@ -1716,6 +1724,12 @@ fn main() {
                                 let _ = w.emit("tray-open-chat", ());
                                 xdotool_raise("J.A.R.V.I.S.");
                                 println!("[JARVIS] Chat opened via tray");
+                            }
+                        }
+                        "open_voice_chat" => {
+                            if let Some(w) = app.get_webview_window("main") {
+                                let _ = w.emit("tray-toggle-voice-chat", ());
+                                println!("[JARVIS] voice-chat toggle requested via tray");
                             }
                         }
                         "mute" => {
