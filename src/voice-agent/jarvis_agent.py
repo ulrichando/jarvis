@@ -4482,12 +4482,38 @@ def _build_initial_prompt_state(active_speech_id: str) -> dict:
     breaker status) into one named phase.
 
     Returns a dict with everything entrypoint needs to construct the
-    JarvisAgent + later refresh the prompt mid-session:
+    JarvisAgent + later refresh the prompt mid-session.
 
-      - instructions_prefix : SOUL (identity) + JARVIS_INSTRUCTIONS (ops) + runtime-id
+    Stable / volatile split (2026-05-23 cache refactor)
+    ---------------------------------------------------
+    The assembled prompt is structured for provider-side prefix
+    caching: the STABLE PREFIX (SOUL + JARVIS_INSTRUCTIONS +
+    skill_catalog_block) goes FIRST and never changes mid-session;
+    the VOLATILE SUFFIX (runtime_id + memory_block + breaker_block)
+    goes LAST and changes on per-session boot, memory writes, and
+    breaker flips. The two are joined with the
+    ``CACHE_BREAK_MARKER`` sentinel from ``providers.prompt_cache`` so
+    the Anthropic + Gemini wrappers (or the supervisor handing in the
+    expected stable prefix via setter) can place their cache
+    breakpoint at the boundary. OpenAI / DeepSeek / Groq auto-cache on
+    prefix-match and don't need a wrapper — the stable-first ordering
+    is what activates their caches.
+
+    Returned keys:
+
+      - stable_prefix       : SOUL + JARVIS_INSTRUCTIONS + skill_catalog
+                              (cache-eligible, session-stable)
+      - volatile_suffix     : runtime_id + memory_block + breaker_block
+                              (changes mid-session)
+      - instructions_prefix : SOUL + JARVIS_INSTRUCTIONS + runtime-id
+                              (legacy key — preserved for turn_dispatcher
+                              hot-reload backward compat; do NOT use for
+                              cache decisions)
       - memory_block        : frozen MEMORY.md + USER.md snapshot (or "")
       - breaker_block       : upstream-provider health (or "")
+      - skill_catalog_block : skill catalog text (session-stable)
       - initial_instructions: the assembled full system prompt
+                              (= stable_prefix + marker + volatile_suffix)
     """
     # Freeze the file-backed memory snapshot for THIS session. Loading here
     # (rather than relying on lazy first-access) makes the freeze point
@@ -4502,12 +4528,12 @@ def _build_initial_prompt_state(active_speech_id: str) -> dict:
 
     runtime_id_block = _build_runtime_id_block(active_speech_id)
 
-    # Stash static parts so the per-turn refresh can reconstruct the
-    # full instructions when the memory/breaker blocks change mid-
-    # session, without re-deriving the session-bound pieces.
     # SOUL (prompts/soul.md) leads as slot #1 — identity/voice first,
-    # then the operational rules (JARVIS_INSTRUCTIONS = supervisor.md),
-    # then the volatile runtime-id block.
+    # then the operational rules (JARVIS_INSTRUCTIONS = supervisor.md).
+    # The legacy `instructions_prefix` ALSO carries the runtime-id (kept
+    # for backward compat with any readers still expecting that shape),
+    # but for cache purposes runtime-id moves to the volatile suffix
+    # because it's session-bound.
     instructions_prefix = SOUL + "\n\n" + JARVIS_INSTRUCTIONS + runtime_id_block
 
     memory_block = _build_memory_block()
@@ -4526,20 +4552,45 @@ def _build_initial_prompt_state(active_speech_id: str) -> dict:
     # when SKILLS is empty (zero prompt cost in the default no-skills state).
     skill_catalog_block = _build_skill_catalog_block()
 
+    # Stable / volatile split — see docstring. ``skill_catalog_block``
+    # is treated as stable for cache purposes per spec (the inventory
+    # changes rarely, and only via explicit skill mgmt). ``runtime_id``
+    # moves into the volatile suffix because it carries the per-session
+    # speech-LLM label and the tool-model id (both potentially churn
+    # across sessions or after a tray swap).
+    stable_prefix = (
+        SOUL
+        + "\n\n"
+        + JARVIS_INSTRUCTIONS
+        + skill_catalog_block
+    )
+    volatile_suffix = runtime_id_block + memory_block + breaker_block
+
+    # Late import keeps the module's top-level import graph clean — this
+    # symbol is only consumed by `_build_initial_prompt_state` and the
+    # turn_dispatcher hot-reload path, both of which run after process
+    # boot.
+    from providers.prompt_cache import assemble_with_marker
+
+    initial_instructions = assemble_with_marker(stable_prefix, volatile_suffix)
+
     return {
+        # Cache-aware keys (new in 2026-05-23 refactor).
+        "stable_prefix":        stable_prefix,
+        "volatile_suffix":      volatile_suffix,
+        # `runtime_id_block` exposed separately so the turn_dispatcher
+        # hot-reload can rebuild the volatile suffix as
+        # `runtime_id_block + new_memory_block + new_breaker_block`
+        # without parsing it back out of the joined volatile_suffix.
+        "runtime_id_block":     runtime_id_block,
+        # Legacy keys — preserved for turn_dispatcher.make_dispatch_handler
+        # which still reads `instructions_prefix` / `memory_block` /
+        # `breaker_block` / `skill_catalog_block` to rebuild on hot-reload.
         "instructions_prefix":  instructions_prefix,
         "memory_block":         memory_block,
         "breaker_block":        breaker_block,
-        # Stored separately so mid-session hot-reload (turn_dispatcher
-        # rebuilds when a circuit breaker flips) can re-append the
-        # catalog instead of dropping it on the floor.
         "skill_catalog_block":  skill_catalog_block,
-        "initial_instructions": (
-            instructions_prefix
-            + memory_block
-            + breaker_block
-            + skill_catalog_block
-        ),
+        "initial_instructions": initial_instructions,
     }
 
 
@@ -5237,6 +5288,45 @@ async def entrypoint(ctx: JobContext) -> None:
     _last_breaker_block  = _breaker_block
 
     _initial_instructions = _ps["initial_instructions"]
+
+    # Stable/volatile cache split (2026-05-23): hand the stable prefix
+    # to every LLM wrapper in the dispatcher tree + the active speech
+    # LLM so the per-provider cache breakpoint lands BETWEEN stable and
+    # volatile instead of at the end of the joined prompt. Wrappers
+    # that don't know about caching silently skip (their `set_stable_
+    # prefix` doesn't exist). Logged at INFO so operators can confirm
+    # the wiring landed during boot.
+    try:
+        from providers.prompt_cache import apply_stable_prefix_recursively
+        _stable_prefix = _ps.get("stable_prefix", "")
+        if _stable_prefix:
+            _dispatch_llm_for_cache = _stack.get("dispatch_llm")
+            _speech_llm_for_cache = _stack.get("speech_llm")
+            applied = 0
+            if _dispatch_llm_for_cache is not None:
+                applied += apply_stable_prefix_recursively(
+                    _dispatch_llm_for_cache, _stable_prefix
+                )
+            if _speech_llm_for_cache is not None:
+                applied += apply_stable_prefix_recursively(
+                    _speech_llm_for_cache, _stable_prefix
+                )
+            if applied == 0:
+                # Not an error — the dispatcher may be using non-Anthropic
+                # / non-Gemini primaries (Groq legacy when ANTHROPIC_API_KEY
+                # is unset, OpenAI/DeepSeek as task_override). Those rely
+                # on auto-prefix-cache from stable-first ordering, no
+                # wrapper hookup needed.
+                logger.debug(
+                    "[prompt-cache] no cache-aware wrappers found to bind "
+                    "stable prefix; relying on auto-prefix-cache (OpenAI/"
+                    "DeepSeek/Groq) for cache hits"
+                )
+    except Exception as e:  # noqa: BLE001 — never block session boot on cache wiring
+        logger.warning(
+            f"[prompt-cache] stable-prefix wiring skipped: "
+            f"{type(e).__name__}: {e}"
+        )
 
     _jarvis_agent = JarvisAgent(
         instructions=_initial_instructions,
