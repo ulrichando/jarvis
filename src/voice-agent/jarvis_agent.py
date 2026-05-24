@@ -120,6 +120,18 @@ from livekit.plugins import groq, openai as lk_openai, silero
 import sanitizers.deepseek_roundtrip as deepseek_roundtrip
 deepseek_roundtrip.install()
 
+# Backfill DeepSeek's `prompt_cache_hit_tokens` into the OpenAI-spec
+# `prompt_tokens_details.cached_tokens` slot when the latter is empty.
+# DeepSeek currently mirrors both fields, so the framework's stock
+# extraction (livekit.agents.inference.llm.LLMStream._run line ~412)
+# already captures cache hits — this patch is the defensive fallback
+# for future DeepSeek API versions or DeepSeek-compatible third-party
+# endpoints that drop the OpenAI mirror. Never overwrites a positive
+# value; gates on base_url=deepseek.com so other providers' paths
+# remain identical.
+import sanitizers.deepseek_cache_tokens as deepseek_cache_tokens
+deepseek_cache_tokens.install()
+
 # Relax livekit-agents' strict-mode tool schema so defaulted Python
 # params don't get added to `required`. Captures live 2026-05-05
 # 17:13–17:14 UTC of `tool call validation failed: parameters for
