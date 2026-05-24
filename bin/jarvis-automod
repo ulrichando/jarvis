@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Review/merge/reject/revert auto-mod proposals (Spec B, Plane 3).
+# Usage: jarvis-automod <list|show|merge|reject|revert> [args...]
+set -euo pipefail
+
+REPO_ROOT="/home/ulrich/Documents/Projects/jarvis"
+exec "$REPO_ROOT/src/voice-agent/.venv/bin/python" \
+  "$REPO_ROOT/src/voice-agent/pipeline/automod/cli.py" "$@"
