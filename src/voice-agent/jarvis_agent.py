@@ -5728,6 +5728,18 @@ async def entrypoint(ctx: JobContext) -> None:
         logger.warning(
             f"session.generate_reply unavailable after 3s — dropping: {text[:60]}"
         )
+        # Tell the panel side what happened — otherwise the chat sits
+        # with the user's typed bubble and no reply, looking broken.
+        try:
+            import json as _json_fb
+            payload = _json_fb.dumps({
+                "type": "assistant_says",
+                "text": "(Couldn't process that — agent wasn't ready. Try again.)",
+                "ts_ms": int(time.monotonic() * 1000),
+            }).encode("utf-8")
+            await ctx.room.local_participant.publish_data(payload, reliable=True)
+        except Exception as _e:
+            logger.debug(f"[chat-panel] timeout fallback publish failed: {_e!r}")
 
     @ctx.room.on("data_received")
     def _on_data(packet) -> None:
