@@ -32,9 +32,16 @@ const Icon = {
 export default function VoiceChatPanel({
   isOpen,
   onClose,
+  onBoundsChange,
   voiceMuted,
   setVoiceMuted,
 }) {
+  // Outer-window has click-through ON by default; the desktop overlay
+  // is fully transparent. Without reporting the panel's rect to Rust
+  // (mirroring ChatPanel.jsx), clicks pass through the panel and the
+  // user can't see/interact with it. This ref is attached to the root
+  // <div/> so we can read its rect after mount.
+  const panelRef = useRef(null)
   const [messages, setMessages] = useState([
     { role: 'jarvis', text: 'Type to me. I will reply with my voice.' },
   ])
@@ -79,6 +86,23 @@ export default function VoiceChatPanel({
     }
     return () => es.close()
   }, [isOpen])
+
+  // ── Report panel rect to Rust so it carves out a non-click-through
+  //    region for the panel (mirrors ChatPanel.jsx pattern). Without
+  //    this, the panel renders inside a fully-click-through window
+  //    and the user can't see/interact with it.
+  useEffect(() => {
+    if (!isOpen) return
+    if (!onBoundsChange) return
+    // Use requestAnimationFrame so layout has settled before measuring.
+    const id = requestAnimationFrame(() => {
+      const el = panelRef.current
+      if (!el) return
+      const r = el.getBoundingClientRect()
+      onBoundsChange({ x: r.left, y: r.top, w: r.width, h: r.height })
+    })
+    return () => cancelAnimationFrame(id)
+  }, [isOpen, onBoundsChange])
 
   // ── Auto-scroll on new message ───────────────────────────────────
   useEffect(() => {
@@ -151,6 +175,7 @@ export default function VoiceChatPanel({
 
   return (
     <div
+      ref={panelRef}
       className={`fixed flex z-999 overflow-hidden transition-opacity duration-150 ${
         isOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
       }`}
