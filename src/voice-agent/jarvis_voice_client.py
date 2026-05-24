@@ -459,6 +459,11 @@ _mic_pub_ref: Optional[rtc.LocalTrackPublication] = None
 # Set inside run_once(); lets /speak publish data packets without
 # every handler having to carry the Room reference around.
 _room_ref: Optional[rtc.Room] = None
+# Set inside main() right after construction; lets the data_received
+# handler (registered in run_once, a different function scope) forward
+# assistant_says packets to SSE subscribers without threading the
+# reference through every helper. None until main() runs.
+_http_api_ref: Optional["VoiceClientHttpApi"] = None
 
 # Forward-declare; bound after `_restart_agent_unit` is defined (it's
 # the callback the stale-STT watchdog needs).
@@ -665,6 +670,45 @@ async def run_once(shutdown: asyncio.Event) -> None:
         state.listening     = False
         state.speaking      = False
         room_disconnected.set()
+
+    @room.on("data_received")
+    def _on_data_received(packet) -> None:
+        """Forward assistant_says packets from the agent participant to
+        the SSE subscribers (the tray chat panel).
+
+        LiveKit's data_received fires only for packets from REMOTE
+        participants — self-published data (the /user-input + /speak
+        + /stop emits this voice-client makes) does not loop back here,
+        so the filter is defense-in-depth only.
+        """
+        try:
+            msg = json.loads(packet.data.decode("utf-8"))
+        except Exception:
+            return
+        if not isinstance(msg, dict):
+            return
+        if msg.get("type") != "assistant_says":
+            return
+        text = (msg.get("text") or "").strip()
+        if not text:
+            return
+        # _http_api_ref is the module-level singleton set in main() right
+        # after VoiceClientHttpApi construction. It's None until main()
+        # has constructed the api; in practice the room can't fire
+        # data_received before run_once is invoked from main()'s ladder,
+        # but we guard defensively anyway so a corner-case race can't
+        # crash the room loop.
+        api = _http_api_ref
+        if api is None:
+            return
+        try:
+            api.enqueue_event({
+                "type": "assistant_says",
+                "text": text,
+                "ts_ms": msg.get("ts_ms"),
+            })
+        except Exception as e:
+            log.debug(f"[chat-panel] enqueue_event failed: {e!r}")
 
     # ── Stream drain handlers ───────────────────────────────────────
     # The agent publishes two streams the voice-client doesn't
@@ -1140,6 +1184,12 @@ async def main() -> None:
         restart_agent_unit=_restart_agent_unit,
         log=log,
     )
+    # Expose http_api at module scope so the room.on("data_received")
+    # handler in run_once() — a different function — can forward
+    # assistant_says packets into SSE without having the api threaded
+    # through its parameters. Same shape as _room_ref / _mic_pub_ref.
+    global _http_api_ref
+    _http_api_ref = http_api
     http_runner = await http_api.start_server()
 
     # Supervisor loop — two-tier ReconnectLadder on transient errors so
