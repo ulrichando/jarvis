@@ -489,9 +489,10 @@ class TestReviewPromptContent:
             "_REVIEW_PROMPT must still demand a JSON 'proposals' key"
         )
 
-    def test_three_proposal_kinds_present(self):
+    def test_four_proposal_kinds_present(self):
+        """All four proposal kinds appear in the prompt enumeration."""
         from pipeline.skill_review import _REVIEW_PROMPT
-        for kind in ("skill_create", "skill_patch", "memory"):
+        for kind in ("skill_create", "skill_patch", "memory", "procedure"):
             assert kind in _REVIEW_PROMPT, (
                 f"_REVIEW_PROMPT must still list proposal kind '{kind}'"
             )
