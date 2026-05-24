@@ -1,0 +1,41 @@
+[Unit]
+Description=JARVIS — skill curator (age→stale→archived, tar.gz backups, pinning)
+Documentation=file:%h/Documents/Projects/jarvis/bin/jarvis-curate
+After=network.target
+
+[Service]
+Type=oneshot
+# Pre-create the dirs the curator writes (defense-in-depth — ProtectSystem=strict
+# refuses to bind-mount non-existent ReadWritePaths → status=226/NAMESPACE).
+ExecStartPre=/bin/mkdir -p %h/.jarvis/skills %h/.jarvis/logs/curator
+ExecStart=%h/Documents/Projects/jarvis/bin/jarvis-curate
+
+# Curator touches ~/.jarvis/skills/ (archive moves, .usage.json, .curator_backups,
+# .curator_state) + writes its report under ~/.jarvis/logs/curator/. Everything
+# else (the repo + venv it reads) stays read-only via ProtectHome=read-only.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.jarvis/skills %h/.jarvis/logs
+# AF_INET(6) allowed ONLY for the optional LLM consolidation review
+# (JARVIS_CURATOR_CONSOLIDATION=1 → Groq httpx); the default deterministic
+# pass needs no network.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged ~@resources ~@reboot ~@module ~@swap ~@debug ~@raw-io
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=default.target

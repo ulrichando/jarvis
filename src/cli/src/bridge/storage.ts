@@ -5,33 +5,19 @@
 // only needs: list sessions, delete by time range. Individual turn lookup
 // is cheap to add later if the UI ever loads past-session transcripts.
 //
-// Dual-write since 2026-05-03:
-//   - LOCAL: ~/.jarvis/cli/sessions.db — CLI keeps a private store for
-//     its listSessions/recallRelevant/delete queries. Schema unchanged
-//     from when this lived at the (now retired) shared conversations.db.
-//   - HUB: every saveTurn ALSO publishes a conversation.message.created
-//     event to the hub bus (Redis Streams events:conversation), so
-//     voice/web/phone can see CLI turns via state.db. Fire-and-forget;
-//     a hub outage doesn't block CLI typing.
+// Storage: ~/.jarvis/cli/sessions.db — local SQLite, CLI-private. Used by
+// listSessions / recallRelevant / deleteSessionsBetween from the chat-panel
+// sidebar. (Pre-2026-05-23 saveTurn ALSO published every turn to a shared
+// hub bus so voice/web/phone could see CLI turns; that cross-channel path
+// was retired alongside the hub subsystem — CLI turns now stay CLI-local.)
 
 import { Database } from 'bun:sqlite'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { HubClient } from '../../../hub/client'
 
 const DB_PATH =
   process.env.JARVIS_BRIDGE_DB ??
   `${process.env.HOME ?? ''}/.jarvis/cli/sessions.db`
-
-// Hub publisher — lazy singleton. If init fails (Redis down, missing
-// deps, etc.) we leave it null and saveTurn skips the publish step.
-let _hub: HubClient | null = null
-try {
-  _hub = HubClient.fromEnv('cli')
-} catch (err) {
-  console.warn('[hub] CLI publisher unavailable —', err)
-  _hub = null
-}
 
 mkdirSync(dirname(DB_PATH), { recursive: true })
 
@@ -86,12 +72,6 @@ export function saveTurn(
   text: string,
 ): void {
   insertTurn.run(sessionId, Math.floor(Date.now() / 1000), role, text)
-  // ALSO publish to the hub so voice/web/phone see the turn in state.db.
-  // Fire-and-forget — we don't await; a hub outage shouldn't block typing.
-  if (_hub) {
-    _hub.publish('conversation.message.created', sessionId, { role, text })
-        .catch(err => console.warn('[hub] cli publish failed:', err))
-  }
 }
 
 export function listSessions(): StoredSession[] {

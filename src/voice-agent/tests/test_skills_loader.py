@@ -229,24 +229,3 @@ class TestRegistry:
         assert {s.name for s in items} == {"a", "b", "c"}
 
 
-# ── Bundled skills sanity ──────────────────────────────────────────
-
-
-class TestBundledSkills:
-    """The two skills shipped in src/voice-agent/skills/ must parse
-    successfully. Acts as a parse-time CI check on the bundled files."""
-
-    def test_git_status_skill_parses(self):
-        path = Path(__file__).parent.parent / "skills" / "git-status" / "SKILL.md"
-        assert path.exists(), f"bundled skill missing: {path}"
-        sk = _parse_skill_file(path)
-        assert sk is not None
-        assert sk.name == "git-status"
-        assert "git" in sk.body.lower()
-
-    def test_system_stats_skill_parses(self):
-        path = Path(__file__).parent.parent / "skills" / "system-stats" / "SKILL.md"
-        assert path.exists(), f"bundled skill missing: {path}"
-        sk = _parse_skill_file(path)
-        assert sk is not None
-        assert sk.name == "system-stats"

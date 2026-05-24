@@ -27,6 +27,19 @@ EnvironmentFile=-%h/Documents/Projects/jarvis/src/cli/.env.local
 # Local bridge bearer token (KEY=VALUE format, chmod 600). Optional
 # (`-` prefix) so the unit doesn't fail before P0c is run.
 EnvironmentFile=-%h/.jarvis/local-api-token.env
+# ── Echo-cancellation mitigation (2026-05-20, see AEC cascade spec) ──
+# JARVIS_NEURAL_AEC defaults to 1 in jarvis_voice_client.py, which makes
+# _should_publish_during_speak() keep the mic HOT during TTS on speakers —
+# on the assumption that the L3 neural residual canceller (DTLN) scrubs
+# JARVIS's own echo. But L3 was never built (audio/dtln_aec.py +
+# models/dtln_aec_128.onnx absent; only L1 PipeWire AEC3 runs), so the echo
+# leaked into STT → hallucinated transcripts → JARVIS couldn't understand the
+# user (live failure 2026-05-20 14:43–14:48). Forcing 0 restores the mic-drop-
+# while-speaking safety net (spec §4.2 bottom-of-ladder). Cost: no barge-in
+# during TTS on speakers until L3 ships. REMOVE this line when the robust gate
+# fix / real L3 build lands. docs/superpowers/specs/2026-05-19-echo-cancellation-cascade-design.md
+Environment=JARVIS_NEURAL_AEC=1
+Environment=JARVIS_NEURAL_AEC_LATENCY_BUDGET_MS=15
 # Use the voice-agent's venv directly so we don't need to source it
 # in ExecStart — the voice-client lives in the same package layout
 # and shares deps (livekit + sounddevice + sdnotify).

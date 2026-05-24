@@ -168,7 +168,7 @@ def test_legit_long_explanatory_response():
         "Earlier you asked me to take a screenshot, and the screenshot you saw "
         "showed a design tool. I noticed you opened the layout tab a moment ago.",
         prior_messages=[_user_msg("recap"),
-                        _assistant_tool_call("recall_conversation"),
+                        _assistant_tool_call("memory"),
                         _tool_result("...")],
     )
     assert not is_confab

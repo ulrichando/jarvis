@@ -1,5 +1,5 @@
 [Unit]
-Description=JARVIS — atomic SQLite snapshot of state.db + turn_telemetry.db
+Description=JARVIS — atomic SQLite snapshot of turn_telemetry.db
 Documentation=file:%h/Documents/Projects/jarvis/scripts/jarvis-backup-local.sh
 # Don't run during a backup-target's own startup ordering chaos.
 After=network.target
@@ -12,13 +12,13 @@ Type=oneshot
 # because systemd refuses to bind-mount a non-existent path. Defense-
 # in-depth: install.sh creates the dir too, but a future `rm -rf
 # ~/.jarvis/snapshots` shouldn't kill the next backup cycle.
-# Mode 700 — snapshots contain conversation + memory content.
+# Mode 700 — snapshots may contain telemetry detail.
 ExecStartPre=/bin/mkdir -p %h/.jarvis/snapshots
 ExecStartPre=/bin/chmod 700 %h/.jarvis/snapshots
 ExecStart=%h/Documents/Projects/jarvis/scripts/jarvis-backup-local.sh
 
 # Snapshot script writes to ~/.jarvis/snapshots/ and reads
-# ~/.jarvis/hub/state.db + ~/.local/share/jarvis/turn_telemetry.db.
+# ~/.local/share/jarvis/turn_telemetry.db.
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectKernelTunables=yes
@@ -30,7 +30,7 @@ ProtectHostname=yes
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=%h/.jarvis/snapshots
-ReadOnlyPaths=%h/.jarvis/hub %h/.local/share/jarvis
+ReadOnlyPaths=%h/.local/share/jarvis
 RestrictAddressFamilies=AF_UNIX
 LockPersonality=yes
 RestrictSUIDSGID=yes

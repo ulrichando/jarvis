@@ -1,0 +1,5 @@
+name: web-firecrawl
+version: "1.0.0"
+description: "Firecrawl web search + extract + crawl backend (direct API or self-hosted)"
+kind: backend
+requires_env: [FIRECRAWL_API_KEY]

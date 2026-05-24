@@ -1,0 +1,11 @@
+# TEMPORARY EXAMPLE PLUGIN — validates the plugin system end-to-end.
+# Safe to delete once a real plugin exists. It contributes a single trivial
+# `plugin_ping` tool so tests + manual inspection can confirm that a bundled
+# plugin's register(ctx) runs and its tool reaches the LiveKit tool surface.
+name: example
+version: 0.1.0
+description: Temporary example plugin — contributes a trivial plugin_ping tool.
+kind: standalone
+provides_tools:
+  - plugin_ping
+requires_env: []

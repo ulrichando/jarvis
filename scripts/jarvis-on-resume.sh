@@ -31,8 +31,8 @@ case "$1" in
         # this, voice-client may try to bind PipeWire devices that
         # are mid-re-enumeration and pick the wrong default sink.
         sleep 3
-        # Restart only the WebRTC-stateful services. Hub/bridge use
-        # Redis + SQLite + WebSockets that survive suspend cleanly.
+        # Restart only the WebRTC-stateful services after suspend; the
+        # other helpers reconnect on demand.
         for svc in jarvis-voice-agent.service jarvis-voice-client.service; do
             sudo -u "$USER_NAME" \
                 XDG_RUNTIME_DIR="$RUNTIME_DIR" \

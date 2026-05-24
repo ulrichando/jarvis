@@ -1,0 +1,5 @@
+name: web-brave-free
+version: "1.0.0"
+description: "Brave Search free-tier backend — search only, 2k queries/month"
+kind: backend
+requires_env: [BRAVE_SEARCH_API_KEY]

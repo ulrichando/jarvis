@@ -391,16 +391,10 @@ async def classify_turn(
 
 
 # ─────────────────────────────────────────────────────────────────
-# Layer 2 recall-pattern matcher (Phase 3 of memory-layer fix).
-# When a user transcript matches one of these regexes, the caller
-# should force tool_choice={"type": "function", "function":
-# {"name": "recall_conversation"}} for that single turn — bypassing
-# the supervisor's metacognition-conservatism that otherwise produces
-# 'I don't have memory' denials.
-#
-# CRITICAL caveat — github.com/livekit/agents/issues/4671: tool_choice
-# persists across turns when set on generate_reply() in LiveKit Agents.
-# Caller MUST reset to "auto" after the forced call.
+# Recall-pattern matcher. Conservative regex set that returns True
+# when the user's transcript looks like a question about prior
+# conversation or stored facts. Used by the auto-recall hook in
+# jarvis_agent.py to gate memory-provider lookups, and by tests.
 #
 # Patterns calibrated against:
 #   - "do you remember [X]"

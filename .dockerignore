@@ -1,0 +1,58 @@
+# Keep the build context lean and free of secrets / state.
+
+# Git
+.git
+.gitignore
+.gitmodules
+
+# Python virtual environments (recreated inside the container)
+.venv
+**/.venv
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+
+# Node (host-side desktop/web/cli — not in the voice-agent image)
+node_modules
+**/node_modules
+bun.lock
+
+# Build outputs
+src/desktop-tauri/src-tauri/target
+src/desktop-tauri/dist
+src/web/.next
+src/web/out
+src/cli/dist
+
+# Hermes upstream tree (kept for reference; not part of the image)
+hermes/
+
+# Environment + secrets — NEVER bake these into the image
+.env
+**/.env
+**/.env.local
+**/.env.tmp
+**/local-api-token.env
+keys.env
+**/keys.env
+
+# Runtime + user data (bind-mounted; must not leak into context)
+**/.jarvis
+.local/
+
+# OS / editor noise
+.DS_Store
+.idea
+.vscode
+*.swp
+*.swo
+
+# Logs
+**/*.log
+
+# CI metadata
+.github
+
+# Generated docs
+docs/_build
