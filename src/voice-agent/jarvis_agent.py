@@ -3338,6 +3338,20 @@ async def pre_tts_confab_gate_filter(text):
             yield chunk
         return
 
+    # BANTER/EMOTIONAL bypass the gate logic — `should_gate()` returns
+    # `bypass_route` for them anyway. Short-circuit at the head so
+    # chitchat turns stream unbuffered and TTFW stays at pre-gate
+    # latency. Only TASK_*/REASONING pay the buffer cost. Telemetry
+    # stash stays at the per-turn defaults (None / []) set on the
+    # session at turn start, so log_turn writes NULLs for these turns.
+    sess_early = _active_session_for_telemetry[0]
+    route_early = getattr(sess_early, "_jarvis_route", None) if sess_early is not None else None
+    route_early = route_early or ""
+    if route_early in ("BANTER", "EMOTIONAL"):
+        async for chunk in text:
+            yield chunk
+        return
+
     # Buffer the entire LLM stream.
     buffer = ""
     async for chunk in text:
@@ -5730,16 +5744,54 @@ async def entrypoint(ctx: JobContext) -> None:
                     # post-fix") is satisfied. 5-way enum per spec §5.4.
                     # Failures swallowed silently — telemetry is best-
                     # effort and must never block the user-facing path.
-                    try:
-                        _confab_state = compute_confab_check_state(
-                            session=session,
-                            chat_items=getattr(
-                                getattr(session, "chat_ctx", None), "items", []
-                            ) or [],
-                            jarvis_text=text or "",
-                        )
-                    except Exception:
-                        _confab_state = None
+                    #
+                    # Source-of-truth precedence (2026-05-24): when the
+                    # pre-TTS confab gate fired this turn it has already
+                    # stamped session._jarvis_confab_check_state with a
+                    # CONFAB_STATE_* value ("clean" / "caught_t1_passed" /
+                    # …). Prefer that verdict — it reflects the actual
+                    # decision the gate made BEFORE TTS streamed. Fall
+                    # back to the post-hoc evidence check when the gate
+                    # didn't fire (kill switch active, bypass route, or
+                    # the filter wasn't reached).
+                    _pre_tts_state = getattr(
+                        session, "_jarvis_confab_check_state", None
+                    )
+                    if _pre_tts_state:
+                        _confab_state = _pre_tts_state
+                    else:
+                        try:
+                            _confab_state = compute_confab_check_state(
+                                session=session,
+                                chat_items=getattr(
+                                    getattr(session, "chat_ctx", None), "items", []
+                                ) or [],
+                                jarvis_text=text or "",
+                            )
+                        except Exception:
+                            _confab_state = None
+                    # Pre-TTS gate observability columns. The gate stashes
+                    # pattern_matched (regex source string) + retry_models
+                    # (list[str]) on the session inside the filter; flush
+                    # them here on turn boundary. JSON-encode the list so
+                    # the column type stays TEXT. NULL on turns where the
+                    # gate didn't fire or was bypassed.
+                    _pattern_matched = getattr(
+                        session, "_jarvis_confab_pattern_matched", None
+                    )
+                    _retry_models_list = getattr(
+                        session, "_jarvis_confab_retry_models", None
+                    )
+                    if _retry_models_list:
+                        import json as _json_pre_tts
+                        try:
+                            _retry_models_json = _json_pre_tts.dumps(
+                                list(_retry_models_list)
+                            )
+                        except Exception:
+                            _retry_models_json = None
+                    else:
+                        _retry_models_json = None
                     # 2026-05-19 — read the voice-client's AEC state (cross-process)
                     # and thread it into the turn row. Stale/missing → NULLs.
                     try:
@@ -5770,6 +5822,8 @@ async def entrypoint(ctx: JobContext) -> None:
                         computer_use_steps=cua_steps,
                         computer_use_cost_usd=cua_cost,
                         confab_check_state=_confab_state,
+                        confab_pattern_matched=_pattern_matched,
+                        confab_retry_models=_retry_models_json,
                         aec_layer1_active=_aec.get("aec_layer1_active"),
                         aec_layer2_aec_active=_aec.get("aec_layer2_aec_active"),
                         aec_layer3_active=_aec.get("aec_layer3_active"),
@@ -5892,6 +5946,23 @@ async def entrypoint(ctx: JobContext) -> None:
                     session._jarvis_was_interrupted = False
                     session._jarvis_last_cua_steps = None
                     session._jarvis_last_cua_cost = None
+                    # Clear the pre-TTS gate verdict stash so the next
+                    # turn starts from a clean slate. user_input_transcribed
+                    # also resets these on STT-final, but that fires only
+                    # for valid user turns — clearing here protects the
+                    # next log_turn from inheriting stale verdicts on
+                    # paths that skip the STT-final hook (rare, but the
+                    # cleanup is cheap).
+                    for _attr in (
+                        "_jarvis_confab_check_state",
+                        "_jarvis_confab_pattern_matched",
+                        "_jarvis_confab_retry_models",
+                    ):
+                        if hasattr(session, _attr):
+                            try:
+                                delattr(session, _attr)
+                            except Exception:
+                                pass
                     # Reset total_audio_ms accumulator (and any open
                     # speaking-segment start) so the next turn starts
                     # clean. Without this, multi-turn sessions would
