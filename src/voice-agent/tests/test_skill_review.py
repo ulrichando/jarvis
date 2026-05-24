@@ -92,26 +92,27 @@ def telemetry_db(tmp_path, monkeypatch):
     conn.executescript(_SCHEMA)
     long_reply = "step one. " * 60  # ~600 chars > 400 default threshold
 
-    # Selected: subagent fired
+    # Selected: subagent fired (post-2026-05-24 turns are written as
+    # TASK_DESKTOP / TASK_BROWSER / TASK_OTHER — match by subagent column)
     _insert_turn(conn, tid=1, ts="2026-05-21T10:00:00Z",
                  user="open chrome and search", jarvis="Chrome opened.",
-                 route="TASK", subagent="desktop")
+                 route="TASK_DESKTOP", subagent="desktop")
     # Selected: computer_use steps
     _insert_turn(conn, tid=2, ts="2026-05-21T10:01:00Z",
                  user="click the button", jarvis="Clicked.",
-                 route="TASK", subagent="computer_use", cu_steps=4)
-    # Selected: long TASK reply, no subagent
+                 route="TASK_DESKTOP", subagent="computer_use", cu_steps=4)
+    # Selected: long TASK_* reply, no subagent (matches LIKE 'TASK_%')
     _insert_turn(conn, tid=3, ts="2026-05-21T10:02:00Z",
-                 user="how do I deploy", jarvis=long_reply, route="TASK")
+                 user="how do I deploy", jarvis=long_reply, route="TASK_OTHER")
     # Selected: long REASONING reply
     _insert_turn(conn, tid=4, ts="2026-05-21T10:03:00Z",
                  user="think about it", jarvis=long_reply, route="REASONING")
     # NOT selected: banter
     _insert_turn(conn, tid=5, ts="2026-05-21T10:04:00Z",
                  user="haha nice", jarvis="Glad you liked it.", route="BANTER")
-    # NOT selected: short TASK reply (< threshold, no subagent/steps)
+    # NOT selected: short TASK_* reply (< threshold, no subagent/steps)
     _insert_turn(conn, tid=6, ts="2026-05-21T10:05:00Z",
-                 user="ok", jarvis="Done.", route="TASK")
+                 user="ok", jarvis="Done.", route="TASK_OTHER")
     # NOT selected: emotional
     _insert_turn(conn, tid=7, ts="2026-05-21T10:06:00Z",
                  user="I love you", jarvis="That's kind.", route="EMOTIONAL")
