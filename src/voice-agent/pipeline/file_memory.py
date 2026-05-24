@@ -56,9 +56,10 @@ ENTRY_DELIMITER = "\n§\n"
 # facts, tight enough that the frozen snapshot can't balloon the prompt.
 MEMORY_CHAR_LIMIT = 2200
 USER_CHAR_LIMIT = 1375
+PROCEDURE_CHAR_LIMIT = 8000
 
 # Canonical store targets the tool accepts.
-VALID_TARGETS = ("memory", "user")
+VALID_TARGETS = ("memory", "user", "procedure")
 
 
 # ---------------------------------------------------------------------------
@@ -187,41 +188,52 @@ class MemoryStore:
         self,
         memory_char_limit: int = MEMORY_CHAR_LIMIT,
         user_char_limit: int = USER_CHAR_LIMIT,
+        procedure_char_limit: int = PROCEDURE_CHAR_LIMIT,
     ):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
+        self.procedure_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        self.procedure_char_limit = procedure_char_limit
         # Frozen snapshot for the system prompt — set once at load_from_disk().
-        self._snapshot: Dict[str, str] = {"memory": "", "user": ""}
+        self._snapshot: Dict[str, str] = {"memory": "", "user": "", "procedure": ""}
 
     # -- Load + snapshot ----------------------------------------------------
 
     def load_from_disk(self) -> None:
-        """Load entries from MEMORY.md + USER.md and capture the frozen
-        system-prompt snapshot. Call once at session start."""
+        """Load entries from MEMORY.md + USER.md + PROCEDURES.md and capture
+        the frozen system-prompt snapshot. Call once at session start."""
         mem_dir = _memory_dir()
         mem_dir.mkdir(parents=True, exist_ok=True)
 
         self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
         self.user_entries = self._read_file(mem_dir / "USER.md")
+        self.procedure_entries = self._read_file(mem_dir / "PROCEDURES.md")
 
         # Deduplicate (preserve order, keep first occurrence).
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
         self.user_entries = list(dict.fromkeys(self.user_entries))
+        self.procedure_entries = list(dict.fromkeys(self.procedure_entries))
 
         self._snapshot = {
             "memory": self._render_block("memory", self.memory_entries),
             "user": self._render_block("user", self.user_entries),
+            "procedure": self._render_block("procedure", self.procedure_entries),
         }
 
     def snapshot_for_prompt(self) -> str:
-        """Return the FROZEN MEMORY + USER blocks for system-prompt injection.
+        """Return the FROZEN MEMORY + USER + PROCEDURES blocks for
+        system-prompt injection.
 
         Reflects state captured at ``load_from_disk()`` time, NOT live state —
-        mid-session writes don't affect it. Returns "" when both stores were
+        mid-session writes don't affect it. Returns "" when all stores were
         empty at load time (keeps the prompt clean for new users)."""
-        parts = [self._snapshot.get("user", ""), self._snapshot.get("memory", "")]
+        parts = [
+            self._snapshot.get("user", ""),
+            self._snapshot.get("memory", ""),
+            self._snapshot.get("procedure", ""),
+        ]
         body = "\n\n".join(p for p in parts if p)
         return body
 
@@ -391,7 +403,11 @@ class MemoryStore:
     @staticmethod
     def _path_for(target: str) -> Path:
         mem_dir = _memory_dir()
-        return mem_dir / ("USER.md" if target == "user" else "MEMORY.md")
+        if target == "user":
+            return mem_dir / "USER.md"
+        if target == "procedure":
+            return mem_dir / "PROCEDURES.md"
+        return mem_dir / "MEMORY.md"
 
     def _reload_target(self, target: str) -> None:
         fresh = list(dict.fromkeys(self._read_file(self._path_for(target))))
@@ -402,11 +418,17 @@ class MemoryStore:
         self._write_file(self._path_for(target), self._entries_for(target))
 
     def _entries_for(self, target: str) -> List[str]:
-        return self.user_entries if target == "user" else self.memory_entries
+        if target == "user":
+            return self.user_entries
+        if target == "procedure":
+            return self.procedure_entries
+        return self.memory_entries
 
     def _set_entries(self, target: str, entries: List[str]) -> None:
         if target == "user":
             self.user_entries = entries
+        elif target == "procedure":
+            self.procedure_entries = entries
         else:
             self.memory_entries = entries
 
@@ -415,7 +437,11 @@ class MemoryStore:
         return len(ENTRY_DELIMITER.join(entries)) if entries else 0
 
     def _char_limit(self, target: str) -> int:
-        return self.user_char_limit if target == "user" else self.memory_char_limit
+        if target == "user":
+            return self.user_char_limit
+        if target == "procedure":
+            return self.procedure_char_limit
+        return self.memory_char_limit
 
     def _success(self, target: str, message: Optional[str] = None) -> Dict[str, Any]:
         entries = self._entries_for(target)
@@ -442,6 +468,8 @@ class MemoryStore:
         pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
         if target == "user":
             header = f"USER PROFILE (who Ulrich is) [{pct}% — {current:,}/{limit:,} chars]"
+        elif target == "procedure":
+            header = f"PROCEDURES (named multi-step processes) [{pct}% — {current:,}/{limit:,} chars]"
         else:
             header = f"MEMORY (your durable notes) [{pct}% — {current:,}/{limit:,} chars]"
         sep = "═" * 46
