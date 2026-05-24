@@ -66,33 +66,39 @@ class TestQuietHoursConstants:
 
 
 class TestSessionWatchdog:
-    """_restart_voice_client_after_crash calls Popen with the right systemctl command."""
+    """_restart_voice_client_after_crash calls service_control.restart_service.
 
-    def test_restart_calls_popen(self):
+    Phase 2.3 (2026-05-24): the call shape changed from a direct
+    `_subprocess.Popen(["systemctl", "--user", "restart", ...])` to
+    `pipeline.service_control.restart_service("jarvis-voice-client")`.
+    The systemctl argv is now an implementation detail of
+    service_control (with its own platform.system() dispatch + tests in
+    test_service_control.py); this test asserts only the contract that
+    jarvis_agent calls the helper for the right unit name.
+    """
+
+    def test_restart_calls_service_control(self):
         import importlib
         import jarvis_agent
         importlib.reload(jarvis_agent)
 
-        with patch("jarvis_agent._subprocess.Popen") as mock_popen, \
+        with patch("pipeline.service_control.restart_service") as mock_restart, \
              patch("asyncio.sleep", new=AsyncMock()):
             asyncio.run(jarvis_agent._restart_voice_client_after_crash())
-            mock_popen.assert_called_once_with(
-                ["systemctl", "--user", "restart", "jarvis-voice-client"],
-                stdout=jarvis_agent._subprocess.DEVNULL,
-                stderr=jarvis_agent._subprocess.DEVNULL,
-            )
+            mock_restart.assert_called_once_with("jarvis-voice-client")
 
-    def test_restart_is_nonblocking_popen(self):
-        """Must use Popen (fire-and-forget), NOT check_call/run which would block."""
+    def test_restart_is_nonblocking(self):
+        """Must dispatch via service_control.restart_service (which uses
+        fire-and-forget Popen on Linux), NOT check_call/run which would block."""
         import importlib
         import jarvis_agent
         importlib.reload(jarvis_agent)
 
-        with patch("jarvis_agent._subprocess.Popen") as mock_popen, \
+        with patch("pipeline.service_control.restart_service") as mock_restart, \
              patch("asyncio.sleep", new=AsyncMock()):
             asyncio.run(jarvis_agent._restart_voice_client_after_crash())
-            # Popen called once — not check_call, not run
-            assert mock_popen.call_count == 1
+            # restart_service called exactly once — not check_call, not run
+            assert mock_restart.call_count == 1
 
     def test_no_restart_on_clean_shutdown(self):
         """CloseEvent with error=None must NOT schedule a restart."""
