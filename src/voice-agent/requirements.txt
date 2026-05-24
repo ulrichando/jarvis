@@ -109,3 +109,10 @@ mcp~=1.27
 # Missing any one → provider inert, file-memory unchanged, zero voice-turn impact.
 # Pinned to the minor that was installed and tested (honcho-ai 2.1.1).
 honcho-ai~=2.1
+
+# psutil — cross-platform process inspection + termination. Used by
+# tools/execute_code.py::_kill_process_group to walk the child process
+# tree on POSIX (replaces os.killpg, which doesn't exist on Windows) and
+# on Windows (where there's no SIGKILL either). Added 2026-05-24 as part
+# of the Phase 2.1 cross-platform footgun cleanup.
+psutil~=7.0

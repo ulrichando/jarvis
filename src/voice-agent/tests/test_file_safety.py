@@ -77,8 +77,9 @@ def test_denies_voice_agent_env():
 
 def test_denies_jarvis_api_token():
     from tools import file_safety
+    from tools.runtime import get_jarvis_home
 
-    assert file_safety.is_write_denied("~/.jarvis/local-api-token.env") is True
+    assert file_safety.is_write_denied(str(get_jarvis_home() / "local-api-token.env")) is True
 
 
 # ── Pure predicate: prefix (directory-tree) denials ────────────────────
@@ -125,13 +126,15 @@ def test_allows_ordinary_paths():
 
 
 def test_allows_jarvis_user_dir():
-    # ~/.jarvis has legitimate writable state (memories, voice-model
+    # JARVIS home has legitimate writable state (memories, voice-model
     # pref, etc.). Only the token file inside it is denied — not the
     # whole tree.
     from tools import file_safety
+    from tools.runtime import get_jarvis_home
 
-    assert file_safety.is_write_denied("~/.jarvis/memories/MEMORY.md") is False
-    assert file_safety.is_write_denied("~/.jarvis/voice-model") is False
+    jhome = get_jarvis_home()
+    assert file_safety.is_write_denied(str(jhome / "memories" / "MEMORY.md")) is False
+    assert file_safety.is_write_denied(str(jhome / "voice-model")) is False
 
 
 def test_allows_other_config_subdirs():
@@ -224,8 +227,9 @@ def test_denies_read_dotfile_secrets():
 
 def test_denies_read_jarvis_and_voice_env():
     from tools import file_safety
+    from tools.runtime import get_jarvis_home
 
-    assert file_safety.is_read_denied("~/.jarvis/local-api-token.env") is True
+    assert file_safety.is_read_denied(str(get_jarvis_home() / "local-api-token.env")) is True
     assert file_safety.is_read_denied(file_safety._VOICE_AGENT_ENV) is True
 
 

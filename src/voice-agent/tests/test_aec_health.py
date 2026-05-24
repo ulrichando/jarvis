@@ -68,7 +68,7 @@ def test_sufficient_l1_l3_set(monkeypatch):
 def test_current_echo_defense_failclosed(monkeypatch):
     from audio import aec_health
     def _boom():
-        raise RuntimeError("pw-dump exploded")
+        raise RuntimeError("pw-dump exploded")  # windows-footgun: ok (test mock for Linux-only failure path)
     monkeypatch.setattr(aec_health, "l1_echo_cancel_active", _boom)
     d = aec_health.current_echo_defense(apm_aec=False, dtln_healthy=False)
     assert d.l1 is False

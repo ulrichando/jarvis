@@ -1,22 +1,35 @@
 """Output-device profile detection for AEC strategy gating.
 
-Classifies the active PipeWire/PulseAudio sink as headphones,
-speakers, or unknown. The DTLN neural residual (L3) only runs on
-speakers (headphones have no echo path). Re-detects on hot-plug via
-a pw-mon subprocess watcher.
+Classifies the active PipeWire/PulseAudio sink (or sounddevice device on
+Windows/macOS) as headphones, speakers, or unknown. The DTLN neural
+residual (L3) only runs on speakers (headphones have no echo path).
+Re-detects on hot-plug via a pw-mon subprocess watcher (Linux only;
+a no-op on Windows/macOS).
+
+The raw audio-system queries live in `audio.platform_audio` so this
+module stays platform-agnostic — Linux uses pw-dump primary + pactl
+fallback, Windows/macOS use sounddevice.query_devices.
 
 Spec: docs/superpowers/specs/2026-05-19-echo-cancellation-cascade-design.md §5.4
 """
 from __future__ import annotations
 
 import functools
-import json
 import logging
 import os
+import platform
 import subprocess
 import threading
 import time
 from typing import Callable, Literal
+
+from audio.platform_audio import (
+    _linux_pactl_active_sink_block,
+    _linux_pwdump_active_sink_desc,
+)
+from audio.platform_audio import (
+    default_output_sink_name as _platform_default_output_sink_name,
+)
 
 logger = logging.getLogger("jarvis.audio.output_profile")
 
@@ -41,101 +54,17 @@ _TTL_S = 30
 
 
 def _pwdump_active_sink_desc() -> str:
-    """Return a free-text descriptor of the active output sink via pw-dump
-    (PipeWire-native). Empty string if pw-dump is absent or anything fails.
-
-    Resolves the default sink from the Metadata node's `default.audio.sink`
-    entry, then returns that sink's `node.description` plus (when available)
-    the linked device's form-factor token so the classifier can see it.
-    If the default sink is the echo-cancel virtual sink (or no default is
-    set), prefer the first real (non-echo-cancel) Audio/Sink node.
-    """
-    try:
-        raw = subprocess.run(
-            ["pw-dump"], capture_output=True, text=True, timeout=2
-        ).stdout
-        nodes = json.loads(raw)
-    except Exception:
-        return ""
-    if not isinstance(nodes, list):
-        return ""
-
-    # 1. Default sink name from the Metadata node.
-    default_name = ""
-    for n in nodes:
-        if n.get("type") == "PipeWire:Interface:Metadata":
-            for entry in n.get("metadata") or []:
-                if entry.get("key") == "default.audio.sink":
-                    val = entry.get("value")
-                    if isinstance(val, dict):
-                        default_name = (val.get("name") or "").strip()
-                    elif isinstance(val, str):
-                        default_name = val.strip()
-
-    # 2. Collect Audio/Sink nodes keyed by node.name.
-    sinks = {}
-    for n in nodes:
-        props = (n.get("info") or {}).get("props") or {}
-        if props.get("media.class") == "Audio/Sink":
-            name = props.get("node.name") or ""
-            sinks[name] = props
-
-    if not sinks:
-        return ""
-
-    def _is_echo_cancel(name: str) -> bool:
-        return "echo-cancel" in (name or "").lower()
-
-    # 3. Pick the target sink: the metadata default unless it's the
-    #    echo-cancel virtual sink; otherwise the first real device; else
-    #    the first sink of any kind.
-    target = ""
-    if default_name and default_name in sinks and not _is_echo_cancel(default_name):
-        target = default_name
-    else:
-        real = [nm for nm in sinks if not _is_echo_cancel(nm)]
-        target = real[0] if real else next(iter(sinks))
-
-    props = sinks.get(target, {})
-    parts = [props.get("node.description") or "", props.get("node.name") or ""]
-
-    # 4. Append the linked device's form-factor so the classifier sees it.
-    #    pw-dump uses the hyphenated `device.form-factor`; pactl uses the
-    #    underscored `device.form_factor` — accept either.
-    dev_id = props.get("device.id")
-    if dev_id is not None:
-        for n in nodes:
-            if n.get("id") == dev_id:
-                dprops = (n.get("info") or {}).get("props") or {}
-                ff = dprops.get("device.form-factor") or dprops.get("device.form_factor")
-                if ff:
-                    parts.append(str(ff))
-                desc = dprops.get("device.description")
-                if desc:
-                    parts.append(str(desc))
-                break
-
-    return " ".join(p for p in parts if p).strip()
+    """Back-compat shim — delegates to `audio.platform_audio`. Preserved
+    as a top-level symbol so tests can monkeypatch it without knowing
+    about the platform-dispatch layer."""
+    return _linux_pwdump_active_sink_desc()
 
 
 def _active_sink_block() -> str:
-    """Return the full `pactl list sinks` block for the default sink.
-    Empty string if pactl is unavailable. Split out for test mocking."""
-    try:
-        default = subprocess.run(
-            ["pactl", "get-default-sink"], capture_output=True, text=True, timeout=2
-        ).stdout.strip()
-        full = subprocess.run(
-            ["pactl", "list", "sinks"], capture_output=True, text=True, timeout=2
-        ).stdout
-    except Exception:
-        return ""
-    # Slice out the block for the default-named sink.
-    blocks = full.split("Sink #")
-    for b in blocks:
-        if default and default in b:
-            return b
-    return blocks[1] if len(blocks) > 1 else ""
+    """Back-compat shim — delegates to `audio.platform_audio`. Preserved
+    as a top-level symbol so tests can monkeypatch it without knowing
+    about the platform-dispatch layer."""
+    return _linux_pactl_active_sink_block()
 
 
 def _classify_text(s: str) -> Profile:
@@ -177,13 +106,22 @@ def _classify_cached(_ttl_bucket: int) -> Profile:
     if forced in ("headphones", "speakers", "unknown"):
         return forced  # type: ignore[return-value]
     # Primary: pw-dump (PipeWire-native — this box has no pactl).
+    # Read via the module-level shim so tests' monkeypatch is honored.
     desc = _pwdump_active_sink_desc()
     if desc.strip():
         return _classify_text(desc)
-    # Fallback: pactl (PulseAudio-native systems).
+    # Fallback: pactl (PulseAudio-native Linux hosts).
     block = _active_sink_block()
     if block.strip():
         return _classify_block(block)
+    # Last resort on non-Linux: sounddevice default-output name.
+    # On Linux this returns the pw-dump descriptor (already tried above)
+    # or the pactl block — both have been seen empty here, so no extra
+    # work. On Windows/macOS this is the only path that produces text.
+    if platform.system() != "Linux":
+        name = _platform_default_output_sink_name()
+        if name.strip():
+            return _classify_text(name)
     return "unknown"
 
 
@@ -200,8 +138,14 @@ classify_output_device.cache_clear = _classify_cached.cache_clear  # type: ignor
 def watch_for_changes(callback: Callable[[Profile], None]) -> threading.Thread:
     """Spawn a daemon thread running `pw-mon` and invoke callback with
     the new profile on each node/port change. No-op thread if pw-mon
-    is unavailable."""
+    is unavailable (e.g. Windows/macOS or a PulseAudio-only Linux host)."""
     def _run() -> None:
+        if platform.system() != "Linux":
+            logger.info(
+                "[output_profile] pw-mon hot-plug watch disabled on %s",
+                platform.system(),
+            )
+            return
         try:
             proc = subprocess.Popen(
                 ["pw-mon"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
