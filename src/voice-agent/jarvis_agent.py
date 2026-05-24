@@ -4353,7 +4353,13 @@ _SAVE_TRIGGER_RE = re.compile(
     r"""(?ix)
     (?:^|[.?!,\s])\s*
     (?:
-        remember\s+(?:this|that|me|to)\b
+        # 'remember <anything>' EXCEPT 'remember when/if' (those are recall
+        # phrasings handled by _RECALL_TRIGGER_RE). Liberal by design — the
+        # supervisor LLM is the 2nd gate per the spec's two-gate design.
+        # The narrower (?:this|that|me|to) form rejected the most natural
+        # phrasing 'remember I'm allergic to fish' (no object-deictic word),
+        # so widened to a negative lookahead. Live audit, 2026-05-24.
+        remember\b\s+(?!when\b|if\b)
       | save\s+(?:this|that|it)\b
       | don'?t\s+forget\b
       | write\s+this\s+down\b
@@ -4464,25 +4470,11 @@ def _maybe_inject_trigger_message(chat_ctx, user_text: str) -> "str | None":
     if not text:
         return None
 
-    save_match = bool(_SAVE_TRIGGER_RE.search(text))
+    # Check RECALL first — the recall regex is specific (4 patterns); the
+    # save regex is liberal (catches "remember <anything>" except when/if).
+    # On overlap ("do you remember Shelby?" matches BOTH), recall should
+    # win because it's the more specific intent classification.
     recall_match = bool(_RECALL_TRIGGER_RE.search(text))
-
-    if save_match:
-        live = os.environ.get("JARVIS_SAVE_TRIGGER_LIVE", "0") == "1"
-        mode = "live" if live else "shadow"
-        logger.info(
-            "[trigger] save_trigger matched: user_text=%r (mode=%s)",
-            text[:120], mode,
-        )
-        if live:
-            try:
-                chat_ctx.add_message(role="system", content=_SAVE_TRIGGER_SYSTEM_MESSAGE)
-                return "save"
-            except Exception as e:
-                logger.warning("[trigger] save_trigger inject failed: %s", e)
-                return "save_shadow"
-        return "save_shadow"
-
     if recall_match:
         live = os.environ.get("JARVIS_RECALL_TRIGGER_LIVE", "0") == "1"
         mode = "live" if live else "shadow"
@@ -4498,6 +4490,23 @@ def _maybe_inject_trigger_message(chat_ctx, user_text: str) -> "str | None":
                 logger.warning("[trigger] recall_trigger inject failed: %s", e)
                 return "recall_shadow"
         return "recall_shadow"
+
+    save_match = bool(_SAVE_TRIGGER_RE.search(text))
+    if save_match:
+        live = os.environ.get("JARVIS_SAVE_TRIGGER_LIVE", "0") == "1"
+        mode = "live" if live else "shadow"
+        logger.info(
+            "[trigger] save_trigger matched: user_text=%r (mode=%s)",
+            text[:120], mode,
+        )
+        if live:
+            try:
+                chat_ctx.add_message(role="system", content=_SAVE_TRIGGER_SYSTEM_MESSAGE)
+                return "save"
+            except Exception as e:
+                logger.warning("[trigger] save_trigger inject failed: %s", e)
+                return "save_shadow"
+        return "save_shadow"
 
     return None
 
