@@ -820,26 +820,73 @@ class BreakeredGroqLLM(groq.LLM):
 
 # ── Per-route DispatchingLLM build ───────────────────────────────────
 
+# Per-route Groq legacy primaries — now demoted to the SECOND
+# FallbackAdapter rung (cheap fast-fallback when Anthropic 5xx's or
+# times out). When ANTHROPIC_API_KEY is missing entirely, these come
+# back UP as the rung-1 primaries so the dispatcher still boots
+# without an Anthropic key (graceful degrade, per the 2026-05-23
+# Anthropic-primary refactor).
+_GROQ_LEGACY_PER_ROUTE: dict[str, tuple[str, float]] = {
+    "BANTER":    ("llama-3.1-8b-instant",                    0.6),
+    "TASK":      ("llama-3.3-70b-versatile",                 0.6),
+    "REASONING": ("qwen/qwen3-32b",                          0.6),
+    "EMOTIONAL": ("meta-llama/llama-4-scout-17b-16e-instruct", 0.7),
+}
+
+# Anthropic primary defaults — overridable per route via env. Chosen
+# 2026-05-23 because Anthropic + caching="ephemeral" delivers ~700 ms
+# TTFW on warm cache vs ~2 s on Groq (no caching).
+#
+# Haiku 4.5 for the three high-frequency routes; Sonnet 4.6 only for
+# REASONING (rare, multi-step). Temperature mirrors the Groq legacy
+# per-route value (EMOTIONAL keeps 0.7 for warmth).
+_ANTH_DEFAULT_PER_ROUTE: dict[str, tuple[str, str, float]] = {
+    # route       → (env-var,              default-model,         temp)
+    "BANTER":    ("JARVIS_BANTER_MODEL",    "claude-haiku-4-5",  0.6),
+    "TASK":      ("JARVIS_TASK_MODEL",      "claude-haiku-4-5",  0.6),
+    "REASONING": ("JARVIS_REASONING_MODEL", "claude-sonnet-4-6", 0.6),
+    "EMOTIONAL": ("JARVIS_EMOTIONAL_MODEL", "claude-haiku-4-5",  0.7),
+}
+
+
 def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM:
-    """Construct route → inner-LLM mapping using Groq variants, each
-    wrapped in a FallbackAdapter([groq, deepseek-v4]) so a Groq-edge
-    connection blip falls through to DeepSeek instead of losing the
-    turn.
+    """Construct route → inner-LLM mapping with Anthropic primaries
+    (prompt-cached, ~700 ms TTFW warm) and Groq + DeepSeek as
+    fast-fallback rungs.
+
+    Per-route default chain (each entry is a FallbackAdapter):
+
+        BANTER     → claude-haiku-4-5  → groq:llama-3.1-8b-instant     → deepseek-v4-flash
+        TASK       → claude-haiku-4-5  → groq:llama-3.3-70b-versatile  → deepseek-v4-flash
+        REASONING  → claude-sonnet-4-6 → groq:qwen3-32b                → deepseek-v4-flash
+        EMOTIONAL  → claude-haiku-4-5  → groq:llama-4-scout            → deepseek-v4-flash
+
+    Anthropic is rung 1 because prompt caching gives ~700 ms TTFW on
+    a warm cache versus ~2 s on Groq (no caching). Groq stays rung 2
+    as a cheap, different-network fast-fallback: a single Anthropic
+    5xx / timeout cascades within 5 s (per-LLM `timeout=5.0`). DeepSeek
+    is rung 3 (cross-provider safety net). The 2026-05-18 Sonnet-4.6
+    third-rung fallback was dropped — redundant now that Anthropic
+    is the primary.
+
+    Per-route env overrides (operator tuning without code edits):
+      JARVIS_BANTER_MODEL       (default claude-haiku-4-5)
+      JARVIS_TASK_MODEL         (default claude-haiku-4-5)
+      JARVIS_REASONING_MODEL    (default claude-sonnet-4-6)
+      JARVIS_EMOTIONAL_MODEL    (default claude-haiku-4-5)
 
     `task_override`: when not None, replaces ONLY the TASK route's
-    inner LLM (BANTER/REASONING/EMOTIONAL stay on their fast/specialist
-    defaults). Used by jarvis_agent's pin-redesigned flow per global
-    review §P0-12 — pinning a model in the tray now overrides TASK
-    without losing BANTER's 8b fast-path on short utterances.
+    inner LLM (BANTER/REASONING/EMOTIONAL stay on their per-route
+    defaults). Tray-pinned model wins over JARVIS_TASK_MODEL. Used by
+    jarvis_agent's pin-redesigned flow per global review §P0-12.
 
-    BANTER     → llama-3.1-8b-instant (fastest)
-    TASK       → llama-3.3-70b-versatile (default) OR task_override
-    REASONING  → qwen/qwen3-32b (structured reasoning)
-    EMOTIONAL  → llama-4-scout (warmer temperament, temp 0.7)
-
-    DeepSeek-v4-flash is the per-route safety net since it has a
-    different network edge than Groq. Phase 10.2 sanitizer + Phase
-    10.3 deepseek_roundtrip patches still apply transparently.
+    Graceful degrade: if `ANTHROPIC_API_KEY` is missing/empty (or the
+    plugin isn't installed), the Anthropic primary construction is
+    skipped per route and the Groq legacy model comes back UP as the
+    rung-1 primary — dispatcher still boots, the user just loses the
+    sub-second TTFW until a key is set. Same fallback when a specific
+    Anthropic primary construction raises (e.g., upstream rejects the
+    model id).
     """
     # Tight retry profile across all dispatcher LLMs. Default is
     # max_retries=3 which means up to 4 attempts × ~2 s backoff = ~10 s
@@ -849,25 +896,30 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
     # Groq → retry → DeepSeek → retry → Groq with the prior 8 s/req
     # timeout. Tightened to 5 s/req and 0 retries — single fail-over
     # is enough; the FallbackAdapter handles the cross-provider hop.
-    # Worst case now: 5s Groq + 5s DeepSeek = 10s ceiling, vs the
-    # ~120s observed previously.
+    # Worst case now: 5 s Anthropic + 5 s Groq + 5 s DeepSeek = 15 s
+    # ceiling for a triple-blip, vs the ~120 s observed previously.
     LLM_KWARGS = {"max_retries": 0, "timeout": 5.0}
 
+    anth_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    anth_armed = bool(_ANTHROPIC_AVAILABLE and anth_key)
+    if not anth_armed:
+        logger.warning(
+            "[dispatch] ANTHROPIC_API_KEY missing or anthropic plugin unavailable — "
+            "falling back to Groq primaries per route (no prompt caching → ~2s TTFW)"
+        )
+
     # Build a single shared DeepSeek instance; the FallbackAdapter chain
-    # passes it as the second-tier provider on each route.
+    # passes it as the LAST-tier provider on each route. Cross-provider
+    # safety net (different network edge than Anthropic + Groq).
     ds_fallback = None
     ds_key = os.environ.get("DEEPSEEK_API_KEY", "")
     if ds_key:
         try:
-            # 2026-05-02: switched fallback from deepseek-chat (V3,
-            # non-thinking) to deepseek-v4-flash. Rationale: Groq has
-            # been throwing "Failed to call a function" frequently, so
-            # the fallback fires often. V4-flash is ~30% faster than
-            # V3 chat AND has better tool-call accuracy (V4 family
-            # was trained on more agentic data). reasoning_content
-            # round-trip is handled by deepseek_roundtrip.install()
-            # at the top of jarvis_agent. Override via env if you want
-            # a different fallback model.
+            # 2026-05-02: deepseek-v4-flash is ~30 % faster than v3 chat
+            # AND has better tool-call accuracy (v4 family trained on
+            # more agentic data). reasoning_content round-trip is
+            # handled by deepseek_roundtrip.install() at the top of
+            # jarvis_agent. Override via JARVIS_DS_FALLBACK_MODEL.
             ds_fallback = lk_openai.LLM(
                 model=os.environ.get("JARVIS_DS_FALLBACK_MODEL", "deepseek-v4-flash"),
                 api_key=ds_key,
@@ -875,167 +927,143 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
                 temperature=0.6,
             )
             ds_fallback._jarvis_label = "deepseek:chat"
-            logger.info("[dispatch] DeepSeek fallback armed for all routes")
+            logger.info("[dispatch] DeepSeek fallback armed (rung 3) for all routes")
         except Exception as e:
             logger.warning(f"[dispatch] DeepSeek fallback construction failed: {e}")
             ds_fallback = None
     else:
         logger.info("[dispatch] DEEPSEEK_API_KEY missing, no cross-provider fallback")
 
-    # Third fallback rung: Anthropic Claude Sonnet 4.6. Only ever fires
-    # if both Groq (primary) AND DeepSeek (rung 2) fail back-to-back —
-    # historically rare (4/142 sessions on this host). Paid per-token,
-    # so we keep it disabled when no ANTHROPIC_API_KEY is present.
-    # Sonnet (not Haiku) on the fallback rung: when both Groq and
-    # DeepSeek are blipping the turn is already degraded, so a smarter
-    # model is worth the extra ~300ms + ~3x cost — the alternative is
-    # the user hearing nothing. Override via JARVIS_ANTHROPIC_FALLBACK_MODEL
-    # if cost becomes a concern.
-    anth_fallback = None
-    anth_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if _ANTHROPIC_AVAILABLE and anth_key:
+    def _build_groq_legacy(route: str):
+        """Build the route's legacy Groq primary (now rung 2). Returns
+        None when GROQ_API_KEY is missing so callers can degrade. The
+        returned object carries `_jarvis_label='groq:<model>'`."""
+        model, temp = _GROQ_LEGACY_PER_ROUTE[route]
         try:
-            anth_model = os.environ.get(
-                "JARVIS_ANTHROPIC_FALLBACK_MODEL", "claude-sonnet-4-6"
-            )
-            anth_fallback = lk_anthropic.LLM(
-                model=anth_model,
+            inst = BreakeredGroqLLM(model=model, temperature=temp, **LLM_KWARGS)
+            inst._jarvis_label = f"groq:{model}"
+            return inst
+        except Exception as e:
+            logger.warning(f"[dispatch] {route} Groq legacy construction failed: {e}")
+            return None
+
+    def _build_anthropic_primary(route: str):
+        """Build the route's Anthropic primary (rung 1). Honors the
+        per-route env override. Returns None when the Anthropic plugin
+        isn't available, the API key is unset, or construction raises
+        (in which case the route falls back to its Groq legacy)."""
+        if not anth_armed:
+            return None
+        env_var, default_model, temp = _ANTH_DEFAULT_PER_ROUTE[route]
+        model = os.environ.get(env_var, "").strip() or default_model
+        try:
+            inst = lk_anthropic.LLM(
+                model=model,
                 api_key=anth_key,
-                temperature=0.6,
+                temperature=temp,
                 max_tokens=200,
+                # Engages Anthropic's prompt caching on the system
+                # prompt + chat_ctx prefix — typical 80–90 % input-
+                # token discount on the stable JARVIS_INSTRUCTIONS
+                # preamble. This is the load-bearing kwarg that gets
+                # us sub-second TTFW. Same pattern as the speech-LLM
+                # path above.
                 caching="ephemeral",
-                # See the SPEECH_MODELS entry above for the full
-                # rationale. tl;dr: defense-in-depth only — the real
-                # fix for the additionalProperties=false rejection
-                # is the anthropic_strict_schema sanitizer in
-                # jarvis_agent.py. max_tokens=200 caps response
-                # verbosity same as the speech-model path.
+                # See SPEECH_MODELS entry for full rationale. tl;dr:
+                # defense-in-depth — the real fix for the 400
+                # additionalProperties=false rejection is the
+                # anthropic_strict_schema sanitizer in jarvis_agent.py.
                 _strict_tool_schema=False,
             )
-            anth_fallback._jarvis_label = f"anthropic:{anth_model}"
-            logger.info(f"[dispatch] Anthropic {anth_model} fallback armed (rung 3)")
+            inst._jarvis_label = f"anthropic:{model}"
+            return inst
         except Exception as e:
-            logger.warning(f"[dispatch] Anthropic fallback construction failed: {e}")
-            anth_fallback = None
+            logger.warning(
+                f"[dispatch] {route} Anthropic primary {model!r} construction failed: {e}"
+            )
+            return None
 
-    def _model_id_from_label(label: str) -> str:
-        """Extract the bare model-id from any label shape:
-           'claude-haiku-4-5'              → 'claude-haiku-4-5'    (TASK pin)
-           'anthropic:claude-sonnet-4-6'   → 'claude-sonnet-4-6'   (specialist)
-           'groq:llama-3.1-8b-instant'     → 'llama-3.1-8b-instant'
-        Used to detect when primary == anth_fallback so the
-        FallbackAdapter doesn't get the same model twice."""
-        return label.split(":", 1)[-1] if ":" in label else label
-
-    def _wrap(primary):
-        """Wrap a primary LLM in FallbackAdapter([primary, deepseek, anthropic])
-        so successive provider blips transparently route through to the
-        next rung. Preserves _jarvis_label for telemetry.
-
-        2026-05-18: REASONING specialist is now Sonnet 4.6 — the same
-        model as the rung-3 anth_fallback — so we skip the duplicate
-        rung for it. EMOTIONAL is Haiku, which is a DIFFERENT Anthropic
-        model from Sonnet (different rate limits / quotas), so it
-        keeps the Sonnet rung as a smart-but-slow recovery."""
-        rungs = [primary]
+    def _wrap_chain(route: str, primary):
+        """Wrap a route's primary LLM in a FallbackAdapter chain with
+        the route's Groq legacy at rung 2 and DeepSeek at rung 3 (when
+        each is available). Preserves the primary's _jarvis_label for
+        telemetry. Returns the primary unwrapped when no fallback rungs
+        are available."""
+        rungs: list[Any] = [primary]
+        # Rung 2: this route's Groq legacy model. Skip if primary IS the
+        # Groq legacy (degraded boot — no Anthropic key) to avoid
+        # listing the same instance twice.
+        primary_label = getattr(primary, "_jarvis_label", "")
+        if not primary_label.startswith("groq:"):
+            groq_legacy = _build_groq_legacy(route)
+            if groq_legacy is not None:
+                rungs.append(groq_legacy)
+        # Rung 3: shared DeepSeek (cross-provider safety net).
         if ds_fallback is not None:
             rungs.append(ds_fallback)
-        if anth_fallback is not None:
-            anth_id = _model_id_from_label(getattr(anth_fallback, "_jarvis_label", ""))
-            primary_id = _model_id_from_label(getattr(primary, "_jarvis_label", ""))
-            if primary_id != anth_id:
-                rungs.append(anth_fallback)
         if len(rungs) == 1:
             return primary
         try:
             from livekit.agents.llm import FallbackAdapter as _LLMFallback
             wrapped = _LLMFallback(rungs)
-            wrapped._jarvis_label = getattr(primary, "_jarvis_label", "?")
+            wrapped._jarvis_label = primary_label or "?"
             return wrapped
         except Exception as e:
-            logger.warning(f"[dispatch] LLM FallbackAdapter wrap failed ({e}); using primary alone")
+            logger.warning(
+                f"[dispatch] {route} LLM FallbackAdapter wrap failed ({e}); "
+                "using primary alone"
+            )
             return primary
 
-    # NOTE 2026-05-02: prompt_cache_key was added on commit 892e5e7
-    # for latency, then REVERTED on commit-after-this — Groq's API
-    # returns HTTP 400 'property prompt_cache_key is unsupported' on
-    # every call that includes it. The parameter exists on the
-    # livekit-plugins-openai client (OpenAI proper supports it) but
-    # Groq's compatibility layer rejects it. Don't re-add until
-    # Groq announces support. Latency improvement still pending —
-    # next try should be Groq's `service_tier` field instead.
-    main_raw = BreakeredGroqLLM(
-        model="llama-3.3-70b-versatile", temperature=0.6, **LLM_KWARGS,
-    )
-    main_raw._jarvis_label = "groq:llama-3.3-70b-versatile"
-    main = _wrap(main_raw)
+    def _build_route(route: str):
+        """Build the full FallbackAdapter chain for `route`. Tries
+        Anthropic primary first; falls back to the route's Groq legacy
+        as the rung-1 primary if Anthropic is unavailable. Logs which
+        primary actually landed at rung 1 for operator visibility."""
+        primary = _build_anthropic_primary(route)
+        if primary is None:
+            primary = _build_groq_legacy(route)
+        if primary is None:
+            # Both providers failed at construction time. Caller will
+            # substitute the TASK route's chain (which is also the
+            # dispatcher fallback) — see the post-loop assembly below.
+            logger.error(
+                f"[dispatch] {route} primary construction failed entirely "
+                "(no Anthropic, no Groq); route will inherit TASK fallback"
+            )
+            return None
+        primary_label = getattr(primary, "_jarvis_label", "?")
+        cached_suffix = " (cached)" if primary_label.startswith("anthropic:") else ""
+        logger.info(f"[dispatch] {route} primary: {primary_label}{cached_suffix}")
+        return _wrap_chain(route, primary)
 
-    try:
-        banter_raw = BreakeredGroqLLM(
-            model="llama-3.1-8b-instant", temperature=0.6, **LLM_KWARGS,
+    banter    = _build_route("BANTER")
+    task_main = _build_route("TASK")
+    reasoning = _build_route("REASONING")
+    emotional = _build_route("EMOTIONAL")
+
+    # Any route that failed primary construction entirely inherits the
+    # TASK chain. If TASK itself failed (rare — both Anthropic AND
+    # Groq construction blew up), we still need *something*; pick the
+    # first non-None route or, as a last resort, the bare DeepSeek
+    # fallback. Refusing to boot is worse than booting with a single
+    # provider — the user can't even hear an error otherwise.
+    main = task_main
+    if main is None:
+        main = next(
+            (r for r in (banter, reasoning, emotional) if r is not None),
+            ds_fallback,
         )
-        banter_raw._jarvis_label = "groq:llama-3.1-8b-instant"
-        banter = _wrap(banter_raw)
-    except Exception as e:
-        logger.warning(f"[dispatch] BANTER LLM construction failed: {e}; using main")
+    if banter is None:
         banter = main
-
-    # REASONING — promoted to Anthropic Sonnet 4.6 (2026-05-18).
-    # Sonnet leads τ-bench (87.5% multi-turn tool use) and BFCL across
-    # the user's full provider stack. REASONING is slow-path-only
-    # (multi-step queries), so the ~300ms TTFT bump vs qwen3-32b is in
-    # budget. Same max_tokens=200 cap + prompt caching as the speech
-    # path. Falls back to qwen3-32b if Anthropic isn't reachable at
-    # build time — keeps no-credit / no-key boots working.
-    try:
-        if _ANTHROPIC_AVAILABLE and anth_key:
-            reasoning_raw = lk_anthropic.LLM(
-                model="claude-sonnet-4-6",
-                api_key=anth_key,
-                temperature=0.6,
-                max_tokens=200,
-                caching="ephemeral",
-                _strict_tool_schema=False,
-            )
-            reasoning_raw._jarvis_label = "anthropic:claude-sonnet-4-6"
-        else:
-            reasoning_raw = BreakeredGroqLLM(
-                model="qwen/qwen3-32b", temperature=0.6, **LLM_KWARGS,
-            )
-            reasoning_raw._jarvis_label = "groq:qwen3-32b"
-        reasoning = _wrap(reasoning_raw)
-    except Exception as e:
-        logger.warning(f"[dispatch] REASONING LLM construction failed: {e}; using main")
+    if reasoning is None:
         reasoning = main
-
-    # EMOTIONAL — promoted to Anthropic Haiku 4.5 (2026-05-18). Haiku
-    # has markedly better emotional read + warmth than llama-4-scout,
-    # and at ~0.7s TTFT it's well inside the budget for "I'm sad" /
-    # "I love you" turns (not latency-critical like BANTER). Keeps
-    # temperature 0.7 for warmth, same max_tokens cap. Falls back to
-    # llama-4-scout if Anthropic isn't reachable.
-    try:
-        if _ANTHROPIC_AVAILABLE and anth_key:
-            emotional_raw = lk_anthropic.LLM(
-                model="claude-haiku-4-5",
-                api_key=anth_key,
-                temperature=0.7,
-                max_tokens=200,
-                caching="ephemeral",
-                _strict_tool_schema=False,
-            )
-            emotional_raw._jarvis_label = "anthropic:claude-haiku-4-5"
-        else:
-            emotional_raw = BreakeredGroqLLM(
-                model="meta-llama/llama-4-scout-17b-16e-instruct",
-                temperature=0.7, **LLM_KWARGS,
-            )
-            emotional_raw._jarvis_label = "groq:llama-4-scout"
-        emotional = _wrap(emotional_raw)
-    except Exception as e:
-        logger.warning(f"[dispatch] EMOTIONAL LLM construction failed: {e}; using main")
+    if emotional is None:
         emotional = main
 
+    # task_override takes precedence over the env-driven TASK default
+    # (current behavior — tray-pinned model still wins). Per global
+    # review §P0-12.
     task_inner = task_override if task_override is not None else main
     return DispatchingLLM(
         inners={

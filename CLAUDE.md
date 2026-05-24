@@ -50,7 +50,7 @@ JARVIS's `bash` tool runs as the local user (`ulrich`). **As of 2026-05-16 there
 
 **`src/cli/src/utils/claudeInChrome/` is reserved** for future Firefox/Chrome extension work. Don't delete.
 
-**Groq is the primary LLM provider, DeepSeek secondary.** Don't hardcode either — JARVIS is multi-provider (Groq, DeepSeek, OpenAI, Google, Anthropic, Kimi).
+**Anthropic Claude is the primary LLM provider (Haiku 4.5 for BANTER/TASK/EMOTIONAL; Sonnet 4.6 for REASONING) — chosen for prompt caching (~700ms TTFW cached vs ~2s on Groq).** Groq is the cross-provider fallback rung (`llama-3.1-8b-instant` for BANTER, `llama-3.3-70b-versatile` for TASK, etc.) and DeepSeek-v4-flash is the third rung. Don't hardcode any single provider — JARVIS is multi-provider via `providers/llm.py::build_dispatching_llm` with per-route env overrides (`JARVIS_{BANTER,TASK,REASONING,EMOTIONAL}_MODEL`).
 
 **Bare "Jarvis" pings reply EXACTLY "Yes?"** — canonical, not "Yes, sir?" or "How can I help?". This is part of the voice persona; don't drift it.
 
