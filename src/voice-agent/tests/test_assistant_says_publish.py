@@ -104,3 +104,29 @@ async def test_swallows_publish_exceptions():
     await maybe_publish_assistant_says(
         room=room, item=item, role="assistant", text="boom"
     )
+
+
+@pytest.mark.asyncio
+async def test_fallback_publishes_when_ready_times_out():
+    """When _user_input_when_ready exhausts its 3 s wait, it should
+    publish a synthetic assistant_says explaining the timeout. We
+    can't unit-test the closure directly (lives inside entrypoint),
+    so this test asserts the helper's call surface accepts the
+    fallback payload shape and produces the right wire format."""
+    from jarvis_agent import maybe_publish_assistant_says
+
+    room = mock.MagicMock()
+    room.local_participant.publish_data = mock.AsyncMock()
+    item = mock.MagicMock(spec=["_jarvis_published_says"])
+    if hasattr(item, "_jarvis_published_says"):
+        del item._jarvis_published_says
+
+    await maybe_publish_assistant_says(
+        room=room, item=item, role="assistant",
+        text="(Couldn't process that — agent wasn't ready. Try again.)",
+    )
+    room.local_participant.publish_data.assert_awaited_once()
+    payload = json.loads(
+        room.local_participant.publish_data.await_args.args[0].decode("utf-8")
+    )
+    assert "agent wasn't ready" in payload["text"]
