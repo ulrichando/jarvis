@@ -162,6 +162,13 @@ class LoopWatchdog:
         # Give a grace window from startup — the SFU can take a few
         # seconds to route the job even under normal conditions.
         await asyncio.sleep(AGENT_DISPATCH_TIMEOUT_SEC)
+        # Routed through pipeline.service_control so the same path works
+        # on Linux today (systemctl --user) and surfaces a clear
+        # ServiceControlError on Windows until Phase 3 wires nssm.
+        from pipeline.service_control import (
+            restart_service_async,
+            ServiceControlError,
+        )
         while not shutdown.is_set():
             if self.state.connected and not self.state.agent_present:
                 self.log.warning(
@@ -169,10 +176,10 @@ class LoopWatchdog:
                     f"{AGENT_DISPATCH_TIMEOUT_SEC:.0f}s — restarting to force dispatch"
                 )
                 try:
-                    await asyncio.create_subprocess_exec(
-                        "systemctl", "--user", "restart", "jarvis-voice-client",
-                        stdout=asyncio.subprocess.DEVNULL,
-                        stderr=asyncio.subprocess.DEVNULL,
+                    await restart_service_async("jarvis-voice-client")
+                except ServiceControlError as e:
+                    self.log.warning(
+                        f"[presence-watchdog] service control unavailable: {e}"
                     )
                 except Exception as e:
                     self.log.warning(f"[presence-watchdog] restart failed: {e}")
