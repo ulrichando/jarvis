@@ -96,27 +96,40 @@ def test_report_empty_db_says_zero_turns(tmp_path):
 def test_report_includes_ttfw_hit_rate_per_route(tmp_path):
     db = tmp_path / "t.db"
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    # 2026-05-24: TASK was split into 5 sub-routes (DESKTOP/BROWSER/
+    # CODE/FILES/OTHER). Seed one row per sub-route so the route-health
+    # check's "no route receives <5% of total traffic" floor passes for
+    # all 8 routes. Per-route distribution is roughly even (1/8 = 12.5%
+    # each), comfortably above the 5% floor.
     rows = [
         # (ts, user, jarvis, emotion, route, llm, voice, ttfw, audio, followup, fb, notes)
-        (now, "u1", "j1", "neutral",  "TASK",      "g", "v", 500,  1000, 0, 0, ""),
-        (now, "u2", "j2", "neutral",  "TASK",      "g", "v", 1500, 1200, 0, 0, ""),
-        (now, "u3", "j3", "curious",  "REASONING", "g", "v", 800,  2000, 0, 0, ""),
-        (now, "u4", "j4", "frustrated","EMOTIONAL","g", "v", 950,  1800, 1, 0, ""),
-        (now, "u5", "j5", "excited",  "BANTER",    "g", "v", 200,  500,  0, 1, ""),
+        (now, "u1", "j1", "neutral",  "TASK_OTHER",   "g", "v", 500,  1000, 0, 0, ""),
+        (now, "u2", "j2", "neutral",  "TASK_OTHER",   "g", "v", 1500, 1200, 0, 0, ""),
+        (now, "u3", "j3", "curious",  "REASONING",   "g", "v", 800,  2000, 0, 0, ""),
+        (now, "u4", "j4", "frustrated","EMOTIONAL",  "g", "v", 950,  1800, 1, 0, ""),
+        (now, "u5", "j5", "excited",  "BANTER",      "g", "v", 200,  500,  0, 1, ""),
+        (now, "u6", "j6", "neutral",  "TASK_DESKTOP","g", "v", 400,  900,  0, 0, ""),
+        (now, "u7", "j7", "neutral",  "TASK_BROWSER","g", "v", 600,  900,  0, 0, ""),
+        (now, "u8", "j8", "neutral",  "TASK_CODE",   "g", "v", 700,  900,  0, 0, ""),
+        (now, "u9", "j9", "neutral",  "TASK_FILES",  "g", "v", 800,  900,  0, 0, ""),
     ]
     _seed(db, rows)
     out = report(db, ttfw_target_ms=1000)
-    # Overall hit rate: 4 of 5 turns ≤ 1000ms
-    assert "ttfw target hit-rate: 80%" in out
-    # All four routes present so the health line is OK, not WARN
+    # Overall hit rate: 8 of 9 turns ≤ 1000ms = 88.888...%, rounds to 89%.
+    assert "ttfw target hit-rate: 89%" in out
+    # All 8 routes present so the health line is OK, not WARN
     assert "route health: OK" in out
-    # Per-route lines exist for each
-    for label in ("BANTER", "TASK", "REASONING", "EMOTIONAL"):
+    # Per-route lines exist for each of the 8 routes
+    for label in (
+        "BANTER",
+        "TASK_DESKTOP", "TASK_BROWSER", "TASK_CODE", "TASK_FILES", "TASK_OTHER",
+        "REASONING", "EMOTIONAL",
+    ):
         assert label in out
-    # Median is computed (the TASK row has 500 and 1500 → median 1000)
+    # Median is computed (TASK_OTHER row has 500 and 1500 → median 1000)
     assert "median=1000ms" in out
-    # Fallback rate: 1 of 5 = 20%
-    assert "route-fallback rate: 20.0%" in out
+    # Fallback rate: 1 of 9 ≈ 11.1%
+    assert "route-fallback rate: 11.1%" in out
 
 
 def test_report_flags_under_served_route(tmp_path):

@@ -203,7 +203,9 @@ def test_classifier_garbage_falls_back_to_task():
         session=session, dispatcher=dispatcher,
         tts_dispatcher=tts_dispatcher, classifier=classifier,
     )
-    assert result["route"] == "TASK"
+    # As of 2026-05-24 the TASK label was split into 5 sub-routes;
+    # the unknown-classifier fallback is now TASK_OTHER.
+    assert result["route"] == "TASK_OTHER"
 
 
 def test_no_classifier_defaults_to_task():
@@ -216,7 +218,7 @@ def test_no_classifier_defaults_to_task():
         session=session, dispatcher=dispatcher,
         tts_dispatcher=tts_dispatcher, classifier=None,
     )
-    assert result["route"] == "TASK"
+    assert result["route"] == "TASK_OTHER"
 
 
 def test_prefix_injection_modifies_latest_user_message():
