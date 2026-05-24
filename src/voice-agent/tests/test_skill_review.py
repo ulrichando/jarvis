@@ -561,3 +561,33 @@ class TestReviewPromptContent:
         assert "hermes" not in _REVIEW_PROMPT.lower(), (
             "_REVIEW_PROMPT must not contain any 'hermes' token"
         )
+
+
+def test_review_prompt_routes_explicit_save_to_memory():
+    """Track 5: explicit save phrases must route to kind=memory, not kind=skill_create."""
+    from pipeline.skill_review import _REVIEW_PROMPT
+    prompt_lower = _REVIEW_PROMPT.lower()
+    # Explicit save phrases must steer to memory
+    assert "explicit save phrases" in prompt_lower
+    assert "remember this" in prompt_lower
+    assert "save that" in prompt_lower
+    assert "kind=memory" in prompt_lower or '"kind": "memory"' in _REVIEW_PROMPT
+    # And procedure routing for named multi-step processes
+    assert "kind=procedure" in prompt_lower or '"kind": "procedure"' in _REVIEW_PROMPT
+    # Style/tone corrections still route to skills (preserved Hermes guidance)
+    assert "style" in prompt_lower and "tone" in prompt_lower
+    assert "skill_create" in prompt_lower or "skill_patch" in prompt_lower
+    # Anti-garbage block preserved
+    assert "command not found" in prompt_lower
+    assert "negative claims" in prompt_lower
+    # FORBIDDEN narration block preserved
+    assert "the user is" in prompt_lower
+    assert "the conversation has shifted" in prompt_lower
+    # JSON-only contract intact
+    assert "Output JSON ONLY" in _REVIEW_PROMPT
+
+
+def test_review_prompt_no_hermes_tokens():
+    """JARVIS-native — no hermes references in the prompt."""
+    from pipeline.skill_review import _REVIEW_PROMPT
+    assert "hermes" not in _REVIEW_PROMPT.lower()
