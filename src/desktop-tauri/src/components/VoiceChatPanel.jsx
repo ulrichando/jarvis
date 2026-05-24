@@ -58,6 +58,73 @@ export default function VoiceChatPanel({
   const priorMutedRef = useRef(false)
   const hasAutoMutedRef = useRef(false)
 
+  // ── Drag state — null = centered, {x,y} = explicitly placed ──────
+  const [pos, setPos] = useState(null)
+  const dragRef = useRef(null)
+  const onHeaderPointerDown = useCallback((e) => {
+    if (e.button !== 0) return
+    // Don't start a drag if the pointer is on a button inside the header.
+    if (e.target.closest('button, [data-no-drag]')) return
+    e.preventDefault()
+    const el = panelRef.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    const target = e.currentTarget
+    const pointerId = e.pointerId
+    const state = {
+      pointerId,
+      startMouseX: e.clientX, startMouseY: e.clientY,
+      startX: rect.left, startY: rect.top,
+      currentX: rect.left, currentY: rect.top,
+      raf: 0,
+      w: el.offsetWidth || 0,
+      h: el.offsetHeight || 0,
+    }
+    dragRef.current = state
+    el.style.willChange = 'transform'
+    try { target.setPointerCapture(pointerId) } catch {}
+
+    const onMove = (ev) => {
+      if (ev.pointerId !== pointerId) return
+      const margin = 60
+      const minX = margin - state.w
+      const maxX = window.innerWidth  - margin
+      const minY = 0
+      const maxY = window.innerHeight - margin
+      const rawX = state.startX + (ev.clientX - state.startMouseX)
+      const rawY = state.startY + (ev.clientY - state.startMouseY)
+      state.currentX = rawX < minX ? minX : rawX > maxX ? maxX : rawX
+      state.currentY = rawY < minY ? minY : rawY > maxY ? maxY : rawY
+      if (!state.raf) {
+        state.raf = requestAnimationFrame(() => {
+          state.raf = 0
+          if (!panelRef.current) return
+          panelRef.current.style.transform =
+            `translate3d(${state.currentX - state.startX}px, ${state.currentY - state.startY}px, 0)`
+        })
+      }
+    }
+    const onUp = (ev) => {
+      if (ev.pointerId !== pointerId) return
+      if (state.raf) cancelAnimationFrame(state.raf)
+      target.removeEventListener('pointermove',   onMove)
+      target.removeEventListener('pointerup',     onUp)
+      target.removeEventListener('pointercancel', onUp)
+      try { target.releasePointerCapture(pointerId) } catch {}
+      if (panelRef.current) {
+        panelRef.current.style.transform = ''
+        panelRef.current.style.willChange = ''
+      }
+      dragRef.current = null
+      // Commit the new position to React state so subsequent renders
+      // use it as the inline left/top (no transform fight).
+      setPos({ x: state.currentX, y: state.currentY })
+    }
+    target.addEventListener('pointermove',   onMove)
+    target.addEventListener('pointerup',     onUp)
+    target.addEventListener('pointercancel', onUp)
+  }, [])
+
   // ── Mount fade (200 ms) ──────────────────────────────────────────
   const [mounted, setMounted] = useState(isOpen)
   useEffect(() => {
@@ -95,6 +162,8 @@ export default function VoiceChatPanel({
     if (!isOpen) return
     if (!onBoundsChange) return
     // Use requestAnimationFrame so layout has settled before measuring.
+    // Re-fires whenever `pos` commits (after a drag), so the
+    // click-through hotspot follows the panel.
     const id = requestAnimationFrame(() => {
       const el = panelRef.current
       if (!el) return
@@ -102,7 +171,7 @@ export default function VoiceChatPanel({
       onBoundsChange({ x: r.left, y: r.top, w: r.width, h: r.height })
     })
     return () => cancelAnimationFrame(id)
-  }, [isOpen, onBoundsChange])
+  }, [isOpen, onBoundsChange, pos])
 
   // ── Auto-scroll on new message ───────────────────────────────────
   useEffect(() => {
@@ -173,6 +242,10 @@ export default function VoiceChatPanel({
 
   const statusColor = sseConnected ? '#3fb950' : '#d29922'
 
+  // Inline left/top — `pos` overrides centered defaults after a drag.
+  const panelLeft = pos ? pos.x : 'calc(50% - 240px)'
+  const panelTop  = pos ? pos.y : 'calc(50% - 280px)'
+
   return (
     <div
       ref={panelRef}
@@ -180,8 +253,8 @@ export default function VoiceChatPanel({
         isOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
       }`}
       style={{
-        left: 'calc(50% - 240px)',
-        top:  'calc(50% - 280px)',
+        left: panelLeft,
+        top:  panelTop,
         width: 480,
         height: 560,
         background: SURFACE,
@@ -201,11 +274,16 @@ export default function VoiceChatPanel({
         @keyframes msg-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
       `}</style>
 
-      {/* Header */}
-      <div style={{
-        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        padding: '12px 16px', borderBottom: `1px solid ${BORDER}`, userSelect: 'none',
-      }}>
+      {/* Header — drag handle. Buttons inside still work because
+          onHeaderPointerDown short-circuits on `e.target.closest('button')`. */}
+      <div
+        onPointerDown={onHeaderPointerDown}
+        style={{
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          padding: '12px 16px', borderBottom: `1px solid ${BORDER}`, userSelect: 'none',
+          cursor: 'grab', touchAction: 'none',
+        }}
+      >
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <span style={{
             width: '8px', height: '8px', borderRadius: '50%',
