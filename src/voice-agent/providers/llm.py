@@ -370,6 +370,65 @@ if os.environ.get("OPENROUTER_API_KEY", ""):
         ),
     }
 
+# Google Gemini — explicit context caching via providers.gemini_llm.
+# Added 2026-05-23 to make Gemini "ready" for a future operator
+# JARVIS_{ROUTE}_MODEL=gemini-* flip without leaving caching unwired
+# (Gemini does NOT auto-cache the way Anthropic/OpenAI/DeepSeek do —
+# the system prompt would re-upload every turn without explicit
+# CachedContent provisioning). See `providers/gemini_cache.py` module
+# docstring for the full rationale.
+#
+# Gated on BOTH `GOOGLE_API_KEY` AND `livekit-plugins-google` being
+# importable. The `build` lambda's import-from clause raises ImportError
+# if the plugin is missing; `read_speech_model() / make_speech_llm` and
+# `build_dispatching_llm` already handle this by falling back to the
+# default speech model / route's Groq legacy primary.
+#
+# NOT pinned to any active route by this commit — operator opts in via
+# JARVIS_{BANTER,TASK,REASONING,EMOTIONAL}_MODEL=gemini-2.5-flash (etc.)
+# or via the tray-pick path.
+def _build_gemini_speech_llm(model_id: str, temperature: float = 0.6):
+    """Construct a GeminiCachedLLM speech-model entry.
+
+    Raises ImportError when livekit-plugins-google isn't installed
+    (caught by `make_speech_llm`'s try/except — falls back to
+    DEFAULT_SPEECH_MODEL). Raises RuntimeError when GOOGLE_API_KEY
+    is missing for the same fallback path."""
+    api_key = os.environ.get("GOOGLE_API_KEY", "").strip()
+    if not api_key:
+        # Shape-match ImportError so the speech-LLM fallback
+        # cascade in `make_speech_llm` treats it as 'this entry
+        # isn't viable' (same behavior as the Anthropic gate above).
+        raise ImportError(
+            "GOOGLE_API_KEY missing — Gemini speech LLM unavailable"
+        )
+    # Lazy module import inside the lambda so SPEECH_MODELS dict
+    # construction at import time doesn't pull in the plugin.
+    from providers.gemini_llm import GeminiCachedLLM  # may raise ImportError
+    return GeminiCachedLLM(
+        model=model_id,
+        api_key=api_key,
+        temperature=temperature,
+        # max_output_tokens caps the response length the same way
+        # max_tokens=200 does for Anthropic above — Gemini is happy
+        # to monologue without this cap, especially on Pro 2.5.
+        max_output_tokens=200,
+    )
+
+
+SPEECH_MODELS["gemini-2.5-flash"] = {
+    "label": "Google · Gemini 2.5 Flash (cached)",
+    "build": lambda: _build_gemini_speech_llm("gemini-2.5-flash"),
+}
+SPEECH_MODELS["gemini-2.5-pro"] = {
+    # Slower (+300-500 ms TTFW vs Flash) but materially stronger on
+    # multi-step reasoning. Probably overkill for BANTER/EMOTIONAL but
+    # appropriate for REASONING when an operator wants Gemini Pro
+    # instead of Claude Sonnet 4.6.
+    "label": "Google · Gemini 2.5 Pro (cached)",
+    "build": lambda: _build_gemini_speech_llm("gemini-2.5-pro"),
+}
+
 if os.environ.get("JARVIS_KIMI_VOICE_EXPERIMENTAL", "0") == "1":
     SPEECH_MODELS["kimi-k2.6-instant"] = {
         "label": "Kimi · K2.6 Instant (experimental)",
@@ -947,15 +1006,56 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
             logger.warning(f"[dispatch] {route} Groq legacy construction failed: {e}")
             return None
 
+    def _build_gemini_primary(route: str, model_id: str, temp: float):
+        """Build a Gemini primary at rung 1 for `route`. Used when the
+        per-route env var resolves to ``gemini-*`` instead of an
+        Anthropic model id. Returns None when the Google plugin isn't
+        importable, the API key is unset, or construction raises
+        (route then falls back to its Groq legacy)."""
+        if not os.environ.get("GOOGLE_API_KEY", "").strip():
+            logger.info(
+                f"[dispatch] {route} requested Gemini {model_id!r} but "
+                "GOOGLE_API_KEY is unset; falling through to Groq legacy"
+            )
+            return None
+        try:
+            # Late import so a missing livekit-plugins-google doesn't
+            # break the dispatcher build at all — only the Gemini-routed
+            # route degrades.
+            from providers.gemini_llm import GeminiCachedLLM
+            inst = GeminiCachedLLM(
+                model=model_id,
+                api_key=os.environ.get("GOOGLE_API_KEY", ""),
+                temperature=temp,
+                max_output_tokens=200,
+            )
+            inst._jarvis_label = f"gemini:{model_id}"
+            return inst
+        except Exception as e:
+            logger.warning(
+                f"[dispatch] {route} Gemini primary {model_id!r} construction failed: {e} "
+                "(falling through to Groq legacy)"
+            )
+            return None
+
     def _build_anthropic_primary(route: str):
         """Build the route's Anthropic primary (rung 1). Honors the
         per-route env override. Returns None when the Anthropic plugin
         isn't available, the API key is unset, or construction raises
-        (in which case the route falls back to its Groq legacy)."""
-        if not anth_armed:
-            return None
+        (in which case the route falls back to its Groq legacy).
+
+        When the env override resolves to ``gemini-*``, returns the
+        Gemini primary instead — Anthropic and Gemini share rung 1 as
+        peer providers, picked by model-id prefix."""
         env_var, default_model, temp = _ANTH_DEFAULT_PER_ROUTE[route]
         model = os.environ.get(env_var, "").strip() or default_model
+        # Operator opted into Gemini via JARVIS_{route}_MODEL=gemini-*.
+        # Route through the Gemini builder regardless of whether
+        # ANTHROPIC_API_KEY is also present.
+        if model.startswith("gemini-"):
+            return _build_gemini_primary(route, model, temp)
+        if not anth_armed:
+            return None
         try:
             inst = lk_anthropic.LLM(
                 model=model,
