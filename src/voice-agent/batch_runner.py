@@ -621,8 +621,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
+        from tools.runtime import display_jarvis_home
         print("❌ ANTHROPIC_API_KEY is unset — set it in env or "
-              "~/.jarvis/keys.env before running.", file=sys.stderr)
+              f"{display_jarvis_home()}/keys.env before running.", file=sys.stderr)
         return 2
 
     try:

@@ -155,7 +155,9 @@ def _store_lock():
     concurrent write can't lose the other's update. CRON_DIR is read at call
     time so test monkeypatching of the path is honored."""
     ensure_dirs()
-    f = open(CRON_DIR / ".store.lock", "w")
+    # Empty lock file; encoding is harmless but quiets the cross-platform
+    # checker (Windows defaults to cp1252 otherwise).
+    f = open(CRON_DIR / ".store.lock", "w", encoding="utf-8")
     try:
         fcntl.flock(f, fcntl.LOCK_EX)
         yield

@@ -157,7 +157,7 @@ async def run_forever() -> None:
     logger.info("[cron] scheduler started (tick=%ss)", TICK_INTERVAL_S)
     while True:
         try:
-            with open(_LOCK_PATH, "w") as lock:
+            with open(_LOCK_PATH, "w", encoding="utf-8") as lock:
                 try:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     await tick()
