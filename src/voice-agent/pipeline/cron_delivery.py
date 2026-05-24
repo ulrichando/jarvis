@@ -27,7 +27,9 @@ def _pending_lock():
     (drain_pending); without this, an append landing between drain's read and
     clear would be silently lost."""
     cj.ensure_dirs()
-    f = open(cj.CRON_DIR / ".pending.lock", "w")
+    # Empty lock file; encoding is harmless but quiets the cross-platform
+    # checker (Windows defaults to cp1252 otherwise).
+    f = open(cj.CRON_DIR / ".pending.lock", "w", encoding="utf-8")
     try:
         fcntl.flock(f, fcntl.LOCK_EX)
         yield
