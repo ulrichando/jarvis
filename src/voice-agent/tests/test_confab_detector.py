@@ -418,3 +418,65 @@ def test_text_only_assistant_doesnt_count_as_evidence():
         "I have opened a new tab on your browser.", prior_messages=prior,
     )
     assert is_confab, "text-only assistant turn must not satisfy evidence"
+
+
+# ── Track 3: Save-claim confab class ─────────────────────────────
+
+
+def test_save_claim_without_memory_tool_flagged():
+    """Track 3: 'I'll remember' without a memory tool call → confab."""
+    from confab_detector import looks_like_confabulation
+    prior_messages = [
+        # Just a normal user/assistant exchange — no memory tool call
+        type("M", (), {"role": "user", "content": "tell me about cats"})(),
+        type("M", (), {"role": "assistant", "content": "cats are felines."})(),
+    ]
+    flagged, reason = looks_like_confabulation(
+        "I'll remember that for next time.",
+        prior_messages=prior_messages,
+    )
+    assert flagged
+    assert "save" in reason.lower() or "memory" in reason.lower()
+
+
+def test_save_claim_with_memory_tool_accepted():
+    """Track 3: 'I'll remember' WITH a memory tool call → not confab."""
+    from confab_detector import looks_like_confabulation
+
+    class FCO:  # mimic FunctionCallOutput shape
+        name = "memory"
+        output = '{"success": true}'
+        call_id = "x"
+
+    prior_messages = [
+        type("M", (), {"role": "user", "content": "remember I love sushi"})(),
+        type("M", (), {"role": "assistant", "content": ""})(),
+        FCO(),  # memory tool result in prior history
+    ]
+    flagged, reason = looks_like_confabulation(
+        "I'll remember that for next time.",
+        prior_messages=prior_messages,
+    )
+    assert not flagged
+
+
+def test_save_claim_disabled_via_env(monkeypatch):
+    """Track 3: JARVIS_CONFAB_SAVE_DISABLED=1 turns off save-claim class only.
+    Tool-claim detection (existing) still fires."""
+    monkeypatch.setenv("JARVIS_CONFAB_SAVE_DISABLED", "1")
+    from confab_detector import looks_like_confabulation
+    flagged, _ = looks_like_confabulation(
+        "I'll remember that.",
+        prior_messages=[],
+    )
+    assert not flagged
+
+
+def test_no_save_claim_no_flag():
+    """Track 3: assistant says nothing memory-shaped → no confab class fires."""
+    from confab_detector import looks_like_confabulation
+    flagged, _ = looks_like_confabulation(
+        "The sky is blue.",
+        prior_messages=[],
+    )
+    assert not flagged

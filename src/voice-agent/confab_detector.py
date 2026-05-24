@@ -96,11 +96,16 @@ _STRONG_CLAIMS = [
 ]
 
 
-# (The save-claim shape detector `_SAVE_CLAIM_RE` was removed 2026-05-21
-# alongside the auto-extractor evidence path. With file-backed memory, a
-# "saved/remembered" claim is backed by the `memory` tool_result that
-# `_has_tool_evidence` already detects — there's no off-band extractor
-# write to bridge, so no save-specific evidence gate is needed.)
+# Save-claim patterns (Spec 2026-05-24, Track 3).
+# An assistant turn that claims to have saved something is a confab if
+# no memory tool call appears in the recent chat_ctx tail.
+_SAVE_CLAIM_PATTERNS = [
+    re.compile(r"(?i)\bi'?ll\s+remember\b"),
+    re.compile(r"(?i)\bi'?ve\s+(saved|noted|stored|added|remembered)\b"),
+    re.compile(r"(?i)\bgot\s+it[,.]?\s+(saved|noted|added|remembered)\b"),
+    re.compile(r"(?i)\badded\s+to\s+(memory|user|procedure)\b"),
+    re.compile(r"(?i)\bremembered\b.*\bfor\s+(next\s+time|future|later)\b"),
+]
 
 
 # Phrases that NEGATE a success claim. If any of these appear in the
@@ -303,6 +308,29 @@ def _msg_attr(obj: Any, name: str) -> Any:
     return getattr(obj, name, None)
 
 
+def _has_recent_memory_tool_call(prior_messages: list) -> bool:
+    """True if any of the last 8 prior messages is a memory tool call or
+    a FunctionCallOutput/tool_result with name='memory'. Pure function;
+    no I/O. Spec 2026-05-24, Track 3."""
+    if not prior_messages:
+        return False
+    tail = list(prior_messages)[-8:]
+    for msg in tail:
+        # FunctionCallOutput / tool-result shape
+        name = _msg_attr(msg, "name")
+        if name == "memory":
+            return True
+        # Anthropic content-block shape: list of {type, name, ...}
+        content = _msg_attr(msg, "content")
+        if isinstance(content, list):
+            for block in content:
+                btype = _msg_attr(block, "type")
+                bname = _msg_attr(block, "name")
+                if btype in ("tool_use", "tool_result") and bname == "memory":
+                    return True
+    return False
+
+
 def looks_like_confabulation(
     text: str, prior_messages: list[Any] | None = None
 ) -> tuple[bool, str]:
@@ -320,6 +348,19 @@ def looks_like_confabulation(
     for neg in _NEGATION_PATTERNS:
         if neg.search(text):
             return False, ""
+
+    # Save-claim class (Spec 2026-05-24, Track 3). Independent kill switch
+    # so save detection can be tuned without touching tool-claim detection.
+    if os.environ.get("JARVIS_CONFAB_SAVE_DISABLED", "0") != "1":
+        for pat in _SAVE_CLAIM_PATTERNS:
+            sm = pat.search(text)
+            if sm:
+                if not _has_recent_memory_tool_call(prior_messages or []):
+                    return True, f"save claim {sm.group(0)!r} without memory tool evidence"
+                # Save claim matched but evidence present → not a confab.
+                # Don't fall through to the strong-claim path; the save
+                # phrase itself is unlikely to also strong-claim a tool action.
+                return False, ""
 
     # Find a strong success claim.
     matched_pattern: str | None = None
