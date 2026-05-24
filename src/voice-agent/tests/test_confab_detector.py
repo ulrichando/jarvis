@@ -480,3 +480,44 @@ def test_no_save_claim_no_flag():
         prior_messages=[],
     )
     assert not flagged
+
+
+def test_save_claim_with_assistant_tool_call_accepted():
+    """Track 3: 'I'll remember' WITH an assistant tool_calls=[memory] entry
+    in prior messages → not flagged. This is the LiveKit/OpenAI-style shape
+    the framework produces when the supervisor fires the memory tool."""
+    from confab_detector import looks_like_confabulation
+    from types import SimpleNamespace
+
+    prior_messages = [
+        SimpleNamespace(role="user", content="remember I love sushi"),
+        SimpleNamespace(
+            role="assistant",
+            content=[],
+            tool_calls=[SimpleNamespace(name="memory", arguments={"action": "add"})],
+        ),
+    ]
+    flagged, _ = looks_like_confabulation(
+        "I'll remember that for next time.",
+        prior_messages=prior_messages,
+    )
+    assert not flagged, "supervisor's tool_calls=[memory] is evidence — should not be flagged"
+
+
+def test_save_claim_with_openai_style_dict_tool_calls_accepted():
+    """Track 3: dict-shaped tool_calls (function.name) — OpenAI raw shape."""
+    from confab_detector import looks_like_confabulation
+
+    prior_messages = [
+        {"role": "user", "content": "save my pref"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"function": {"name": "memory", "arguments": "{}"}}],
+        },
+    ]
+    flagged, _ = looks_like_confabulation(
+        "I've saved that for you.",
+        prior_messages=prior_messages,
+    )
+    assert not flagged
