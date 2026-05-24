@@ -287,7 +287,7 @@ def make_dispatch_handler(
         elif emotion in ("frustrated", "sad"):
             session._jarvis_route = "EMOTIONAL"
         else:
-            session._jarvis_route = "TASK"
+            session._jarvis_route = "TASK_OTHER"
 
         # Reset the per-utterance markers so the next turn starts
         # fresh — without this, a transcript that arrives after the

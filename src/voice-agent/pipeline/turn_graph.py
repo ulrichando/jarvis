@@ -170,7 +170,7 @@ def _node_apply_banter_swap(state: TurnState, config: Optional[RunnableConfig] =
     except Exception as e:
         logger.warning(f"[turn-graph:banter-swap] failed; falling back: {e}")
         # Fall back to classifier on any swap exception
-        return {"route": "TASK", "classifier_skipped": False, "fast_path": False}
+        return {"route": "TASK_OTHER", "classifier_skipped": False, "fast_path": False}
 
 
 async def _node_run_classifier(state: TurnState, config: Optional[RunnableConfig] = None) -> dict:
@@ -182,8 +182,8 @@ async def _node_run_classifier(state: TurnState, config: Optional[RunnableConfig
     timeout_ms = int(os.environ.get("JARVIS_ROUTER_TIMEOUT_MS", "500"))
 
     if classifier is None:
-        # No classifier configured (e.g. no GROQ_API_KEY); default to TASK
-        return {"route": "TASK", "classifier_skipped": False}
+        # No classifier configured (e.g. no GROQ_API_KEY); default to TASK_OTHER
+        return {"route": "TASK_OTHER", "classifier_skipped": False}
 
     history = list(history) + [("user", state["transcript"])]
 
@@ -210,7 +210,7 @@ def _node_swap_route(state: TurnState, config: Optional[RunnableConfig] = None) 
     session = cfg.get("session")
     dispatcher = cfg.get("dispatcher")
     tts_dispatcher = cfg.get("tts_dispatcher")
-    route = state.get("route", "TASK")
+    route = state.get("route", "TASK_OTHER")
     if not (session and dispatcher and tts_dispatcher):
         return {}
     try:
@@ -257,7 +257,7 @@ def _node_inject_prefix(state: TurnState, config: Optional[RunnableConfig] = Non
                 content = getattr(m, "content", None)
                 interrupt_tag = "[Interrupted] " if state.get("interrupted") else ""
                 prefix = (
-                    f"[Route: {state.get('route', 'TASK')}] "
+                    f"[Route: {state.get('route', 'TASK_OTHER')}] "
                     f"[Emotion: {state.get('emotion', 'neutral')}] "
                     f"[Turn {turn_n} · session {session_min}m] "
                     f"{interrupt_tag}"
@@ -271,7 +271,7 @@ def _node_inject_prefix(state: TurnState, config: Optional[RunnableConfig] = Non
                 break
         # Stash for telemetry
         session._jarvis_emotion = state.get("emotion", "neutral")
-        session._jarvis_route = state.get("route", "TASK")
+        session._jarvis_route = state.get("route", "TASK_OTHER")
         return {"turn_n": turn_n, "session_min": session_min}
     except Exception as e:
         logger.debug(f"[turn-graph:inject-prefix] skipped: {e}")
@@ -293,7 +293,7 @@ def _node_tune_interrupt(state: TurnState, config: Optional[RunnableConfig] = No
     if session is None:
         return {}
     mw, md = compute_interrupt_tuning(
-        state.get("route", "TASK"),
+        state.get("route", "TASK_OTHER"),
         state.get("emotion", "neutral"),
     )
     try:

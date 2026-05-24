@@ -12,7 +12,16 @@ from dataclasses import dataclass
 from typing import Literal
 
 Emotion = Literal["neutral", "frustrated", "excited", "sad", "urgent", "curious"]
-Route   = Literal["BANTER", "TASK", "REASONING", "EMOTIONAL"]
+Route = Literal[
+    "BANTER",
+    "TASK_DESKTOP",
+    "TASK_BROWSER",
+    "TASK_CODE",
+    "TASK_FILES",
+    "TASK_OTHER",
+    "REASONING",
+    "EMOTIONAL",
+]
 
 # Phase 10.1 — score-based lex with negation + intensifier handling.
 #
@@ -279,17 +288,33 @@ def detect_emotion(transcript: str, audio: AudioMeta) -> Emotion:
 import asyncio
 from typing import Awaitable, Callable
 
-_VALID_ROUTES = {"BANTER", "TASK", "REASONING", "EMOTIONAL"}
+_VALID_ROUTES = {
+    "BANTER",
+    "TASK_DESKTOP", "TASK_BROWSER", "TASK_CODE", "TASK_FILES", "TASK_OTHER",
+    "REASONING", "EMOTIONAL",
+}
 
 ROUTER_PROMPT_TEMPLATE = """\
 You are a turn-router for a voice assistant. Read the conversation
 history and the most recent user emotion tag. Output exactly ONE word
 naming the best route for the assistant's reply:
 
-  BANTER     — chitchat, jokes, idle conversation
-  TASK       — actionable command or fact lookup
-  REASONING  — multi-step thinking, planning, debugging
-  EMOTIONAL  — feelings, frustration, support, hard decisions
+  BANTER        — chitchat, jokes, idle conversation, single-word
+                  acknowledgements ("yeah", "ok", "thanks")
+  TASK_DESKTOP  — clicks, screenshots, "look at my screen",
+                  GUI work, app launches ("open Chrome"),
+                  minimized-window work, any visible-desktop request
+  TASK_BROWSER  — "navigate to X", "search the web for Y", "open
+                  the Wikipedia page for Z", visible browser actions
+  TASK_CODE     — write / fix / refactor code, run a script, debug
+                  a stack trace, work with a code file
+  TASK_FILES    — read / edit / grep / patch files (no execution),
+                  "show me line N of foo.py"
+  TASK_OTHER    — fact lookup, web_fetch, memory ops, schedule, todo,
+                  vuln_check, anything that doesn't fit a sub-route above
+  REASONING     — multi-step thinking, planning, long-form debugging,
+                  "what's the best way to X"
+  EMOTIONAL     — feelings, support, hard decisions, frustration
 
 Recent conversation:
 {history}
@@ -301,9 +326,12 @@ Output ONLY the word. No punctuation, no explanation."""
 
 def route_from_classifier_output(raw: str) -> Route:
     if not raw:
-        return "TASK"
-    cleaned = re.split(r"[^A-Za-z]", raw.strip())[0].upper()
-    return cleaned if cleaned in _VALID_ROUTES else "TASK"  # type: ignore
+        return "TASK_OTHER"
+    # The classifier may emit underscored labels like "TASK_DESKTOP".
+    # Split on whitespace/punctuation but keep underscores so sub-routes
+    # survive the cleanup; uppercase for case-insensitive matching.
+    cleaned = re.split(r"[^A-Za-z_]", raw.strip())[0].upper()
+    return cleaned if cleaned in _VALID_ROUTES else "TASK_OTHER"  # type: ignore
 
 
 # Per-route + per-emotion interrupt tuning. The route picks a base
@@ -342,10 +370,14 @@ _ROUTE_BASE = {
     #
     # History (pre-change):
     #   BANTER=1, TASK=3, REASONING=3, EMOTIONAL=3
-    "BANTER":    (0, 0.3),
-    "TASK":      (0, 0.4),
-    "REASONING": (0, 0.5),
-    "EMOTIONAL": (0, 0.6),
+    "BANTER":       (0, 0.3),
+    "TASK_DESKTOP": (0, 0.4),
+    "TASK_BROWSER": (0, 0.4),
+    "TASK_CODE":    (0, 0.4),
+    "TASK_FILES":   (0, 0.4),
+    "TASK_OTHER":   (0, 0.4),
+    "REASONING":    (0, 0.5),
+    "EMOTIONAL":    (0, 0.6),
 }
 _EMOTION_OVERLAY = {
     "frustrated": (+1, +0.2),  # don't kill them mid-vent
@@ -366,7 +398,7 @@ def compute_interrupt_tuning(route: str, emotion: str) -> tuple[int, float]:
     can't push the duration below the framework's responsive floor.
     LiveKit InterruptionOptions accepts min_words=0 (its own default).
     """
-    base_w, base_d = _ROUTE_BASE.get(route, _ROUTE_BASE["TASK"])
+    base_w, base_d = _ROUTE_BASE.get(route, _ROUTE_BASE["TASK_OTHER"])
     adj_w, adj_d = _EMOTION_OVERLAY.get(emotion, (0, 0.0))
     mw = max(0, base_w + adj_w)
     md = max(0.2, round(base_d + adj_d, 2))
@@ -386,7 +418,7 @@ async def classify_turn(
     try:
         raw = await asyncio.wait_for(groq_call(prompt), timeout=timeout_ms / 1000)
     except (asyncio.TimeoutError, Exception):
-        return "TASK"
+        return "TASK_OTHER"
     return route_from_classifier_output(raw)
 
 
