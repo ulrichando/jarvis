@@ -1,0 +1,185 @@
+"""Finalize step for the auto-mod wrapper (Spec B, Plane 3).
+
+Called after `bin/jarvis-automod-impl` has run `bin/jarvis -p` and
+either committed or failed. This module:
+  1. Verifies a commit landed (HEAD differs from master)
+  2. Computes the diff vs master
+  3. Validates the diff via pipeline.automod.test_gate.validate_diff
+  4. Optionally re-runs pytest (server-side belt+suspenders)
+  5. Writes the artifact JSON with status pending/failed
+  6. On failure: deletes the branch + writes rejection_reason
+  7. Restores master checkout
+
+Usage from shell:
+  python finalize.py <id> <branch-name>
+
+Spec: docs/superpowers/specs/2026-05-24-jarvis-source-code-self-mod-design.md
+"""
+from __future__ import annotations
+
+import json
+import logging
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+# When invoked as a script, ensure the voice-agent root is on sys.path.
+_VOICE_AGENT_ROOT = Path(__file__).resolve().parents[2]
+if str(_VOICE_AGENT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_VOICE_AGENT_ROOT))
+
+from pipeline.automod import artifact, test_gate
+from pipeline.automod._state import intent_file_path
+
+logger = logging.getLogger("jarvis.automod.finalize")
+
+
+def _git(*args, **kw) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], capture_output=True, text=True,
+                          check=False, **kw)
+
+
+def _now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _read_intent(automod_id: str) -> dict:
+    """Read the intent file written by the wrapper script. Returns a
+    dict with lower-cased keys (intent, rationale, kind)."""
+    p = intent_file_path(automod_id)
+    if not p.exists():
+        return {"intent": "(missing intent file)"}
+    out: dict = {}
+    for line in p.read_text(encoding="utf-8").splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            out[k.strip().lower()] = v.strip()
+    return out
+
+
+def _rerun_pytest() -> tuple[bool, str]:
+    """Re-run the full test suite in src/voice-agent/. Returns (ok, tail)."""
+    cwd = Path("/home/ulrich/Documents/Projects/jarvis/src/voice-agent")
+    if not cwd.exists():
+        return False, "voice-agent dir missing"
+    try:
+        proc = subprocess.run(
+            [str(cwd / ".venv" / "bin" / "python"), "-m", "pytest",
+             "tests/", "-q", "--tb=no"],
+            cwd=cwd, capture_output=True, text=True,
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "pytest re-run timed out after 300s"
+    tail = (proc.stdout + proc.stderr).strip().splitlines()[-20:]
+    return proc.returncode == 0, "\n".join(tail)
+
+
+def _delete_branch(branch: str) -> None:
+    _git("checkout", "master")
+    _git("branch", "-D", branch)
+
+
+def finalize_branch(automod_id: str, branch: str,
+                    *, skip_test_rerun: bool = False) -> dict:
+    """Validate the auto-mod branch + write artifact. Returns the artifact dict."""
+    intent_record = _read_intent(automod_id)
+    intent = intent_record.get("intent", "")
+
+    # 1. Did a commit land?
+    parent = _git("rev-parse", "master").stdout.strip()
+    head = _git("rev-parse", "HEAD").stdout.strip()
+    if not head or head == parent:
+        art = {
+            "id": automod_id,
+            "intent": intent,
+            "branch": branch,
+            "parent_sha": parent,
+            "head_sha": head or "(none)",
+            "files_changed": [],
+            "diff_summary": "",
+            "test_output_tail": "",
+            "status": "failed",
+            "rejection_reason": "no_commit_landed",
+            "created_at": _now_iso(),
+        }
+        artifact.write(art)
+        artifact.audit("automod_failed", id=automod_id,
+                       reason="no_commit_landed")
+        _delete_branch(branch)
+        return art
+
+    # 2. Compute diff.
+    diff_text = _git("diff", "master..HEAD").stdout
+
+    # 3. Validate diff.
+    ok, reason = test_gate.validate_diff(diff_text)
+    if not ok:
+        art = {
+            "id": automod_id,
+            "intent": intent,
+            "branch": branch,
+            "parent_sha": parent,
+            "head_sha": head,
+            "files_changed": test_gate.files_changed(diff_text),
+            "diff_summary": "rejected",
+            "test_output_tail": "",
+            "status": "failed",
+            "rejection_reason": reason,
+            "created_at": _now_iso(),
+        }
+        artifact.write(art)
+        artifact.audit("automod_failed", id=automod_id, reason=reason)
+        _delete_branch(branch)
+        return art
+
+    # 4. Optional pytest re-run.
+    test_tail = "(skipped)"
+    if not skip_test_rerun:
+        green, test_tail = _rerun_pytest()
+        if not green:
+            art = {
+                "id": automod_id,
+                "intent": intent,
+                "branch": branch,
+                "parent_sha": parent,
+                "head_sha": head,
+                "files_changed": test_gate.files_changed(diff_text),
+                "diff_summary": "tests-red",
+                "test_output_tail": test_tail,
+                "status": "failed",
+                "rejection_reason": "tests_failed_on_rerun",
+                "created_at": _now_iso(),
+            }
+            artifact.write(art)
+            artifact.audit("automod_failed", id=automod_id,
+                           reason="tests_failed_on_rerun")
+            _delete_branch(branch)
+            return art
+
+    # 5. Write pending artifact.
+    art = {
+        "id": automod_id,
+        "intent": intent,
+        "branch": branch,
+        "parent_sha": parent,
+        "head_sha": head,
+        "files_changed": test_gate.files_changed(diff_text),
+        "diff_summary": _git("diff", "--shortstat", "master..HEAD").stdout.strip(),
+        "test_output_tail": test_tail,
+        "status": "pending",
+        "created_at": _now_iso(),
+    }
+    artifact.write(art)
+    artifact.audit("automod_committed", id=automod_id, head_sha=head)
+    _git("checkout", "master")
+    return art
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 3:
+        print("usage: finalize.py <id> <branch>", file=sys.stderr)
+        sys.exit(2)
+    result = finalize_branch(sys.argv[1], sys.argv[2])
+    print(json.dumps(result, indent=2))
