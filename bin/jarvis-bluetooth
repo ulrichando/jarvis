@@ -1,0 +1,272 @@
+#!/usr/bin/env bash
+# jarvis-bluetooth — switch JARVIS audio routing between
+#   AEC mode  (built-in mic + speakers, echo-cancelled)
+#   BT mode   (Bluetooth headset mic + sink, AEC bypassed)
+#
+# The PipeWire echo-cancel sink/source are pinned at priority.session=2000
+# in ~/.config/pipewire/pipewire.conf.d/99-echo-cancel.conf, so plugging
+# in a BT headset doesn't auto-route — `wpctl set-default` against the
+# bluez device gets reverted by the session manager. This helper:
+#   1. Tears down (or restores) the echo-cancel module via jarvis-aec-reload
+#   2. Pins the right defaults via `wpctl set-default`
+#   3. Restarts jarvis-voice-client so the new defaults take effect
+#
+# Usage:
+#   jarvis-bluetooth on       # switch to BT headset (must be connected)
+#   jarvis-bluetooth off      # restore AEC mode (built-in)
+#   jarvis-bluetooth status   # show current routing + BT pairing state
+#
+# Idempotent. Won't restart services if they're already in the target
+# state. Exits 1 if BT requested but no BT headset is connected.
+
+set -euo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="$HOME/.jarvis/audio-mode.env"
+AEC_CONF="$HOME/.config/pipewire/pipewire.conf.d/99-echo-cancel.conf"
+AEC_CONF_DISABLED="$AEC_CONF.bt-disabled"
+
+mkdir -p "$(dirname "$ENV_FILE")"
+
+# ── Helpers ──────────────────────────────────────────────────────────
+
+# Resolve a node id by name (exact match) from `wpctl status`. Returns
+# empty if not found.
+node_id_by_name() {
+    local name="$1"
+    pw-dump 2>/dev/null \
+        | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for node in data:
+    if node.get('type') != 'PipeWire:Interface:Node':
+        continue
+    props = node.get('info', {}).get('props', {})
+    if props.get('node.name') == '$name':
+        print(node.get('id', ''))
+        break
+" 2>/dev/null
+}
+
+# First connected BT mic + sink (bluez_input.* / bluez_output.*). Returns
+# "input_name|sink_name" or empty if none connected.
+bt_devices() {
+    pw-dump 2>/dev/null \
+        | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+input_name = sink_name = ''
+for node in data:
+    if node.get('type') != 'PipeWire:Interface:Node':
+        continue
+    props = node.get('info', {}).get('props', {})
+    name = props.get('node.name', '')
+    if name.startswith('bluez_input.') and not input_name:
+        input_name = name
+    if name.startswith('bluez_output.') and not sink_name:
+        sink_name = name
+print(f'{input_name}|{sink_name}')
+" 2>/dev/null
+}
+
+current_default_sink() {
+    pw-metadata 0 2>/dev/null \
+        | awk -F'"' '/default.audio.sink/ && /name/ { for (i=1;i<=NF;i++) if ($i=="name") print $(i+2); }' \
+        | head -1
+}
+
+current_default_source() {
+    pw-metadata 0 2>/dev/null \
+        | awk -F'"' '/default.audio.source/ && /name/ { for (i=1;i<=NF;i++) if ($i=="name") print $(i+2); }' \
+        | head -1
+}
+
+aec_active() {
+    if [[ -f "$AEC_CONF" && ! -f "$AEC_CONF_DISABLED" ]]; then
+        return 0
+    fi
+    return 1
+}
+
+current_mode() {
+    local sink src
+    sink="$(current_default_sink)"
+    src="$(current_default_source)"
+    if [[ "$sink" == bluez_output.* || "$src" == bluez_input.* ]]; then
+        echo "bt"
+    elif [[ "$sink" == "echo-cancel-sink" && "$src" == "echo-cancel-source" ]]; then
+        echo "aec"
+    else
+        echo "mixed"
+    fi
+}
+
+restart_pipewire() {
+    systemctl --user restart pipewire pipewire-pulse wireplumber 2>/dev/null || true
+    sleep 2
+}
+
+restart_voice_client() {
+    if systemctl --user is-active jarvis-voice-client.service >/dev/null 2>&1; then
+        echo "[jarvis-bluetooth] restarting jarvis-voice-client.service"
+        systemctl --user restart jarvis-voice-client.service 2>/dev/null || true
+    fi
+}
+
+# ── Subcommands ──────────────────────────────────────────────────────
+
+cmd_status() {
+    echo "── JARVIS audio routing ──"
+    echo "Mode:           $(current_mode)"
+    echo "AEC config:     $(aec_active && echo 'enabled (file present)' || echo 'disabled (file moved aside)')"
+    echo "Default sink:   $(current_default_sink || echo 'unknown')"
+    echo "Default source: $(current_default_source || echo 'unknown')"
+    echo ""
+    echo "── Bluetooth ──"
+    local bt
+    bt="$(bt_devices)"
+    local bt_in="${bt%|*}"
+    local bt_sink="${bt#*|}"
+    if [[ -n "$bt_in" || -n "$bt_sink" ]]; then
+        echo "BT mic:         ${bt_in:-<none>}"
+        echo "BT sink:        ${bt_sink:-<none>}"
+    else
+        echo "No BT headset currently connected (bluez_input/output nodes not present)."
+        echo "Connect via Blueman / bluetoothctl first, then re-run."
+    fi
+}
+
+cmd_on() {
+    # Switch to BT mode: tear down AEC module, set BT as default,
+    # restart voice client.
+    if [[ "$(current_mode)" == "bt" ]] && ! aec_active; then
+        echo "[jarvis-bluetooth] already in BT mode; nothing to do"
+        return 0
+    fi
+
+    local bt bt_in bt_sink
+    bt="$(bt_devices)"
+    bt_in="${bt%|*}"
+    bt_sink="${bt#*|}"
+    if [[ -z "$bt_in" && -z "$bt_sink" ]]; then
+        echo "[jarvis-bluetooth] ERROR: no BT headset connected (no bluez_input or bluez_output nodes found)" >&2
+        echo "                  Connect via Blueman / bluetoothctl, then re-run 'jarvis-bluetooth on'." >&2
+        return 1
+    fi
+
+    # 1. Move the echo-cancel config out of the way and restart PipeWire
+    #    so the module unloads. echo-cancel-source/sink will disappear.
+    if [[ -f "$AEC_CONF" ]]; then
+        echo "[jarvis-bluetooth] disabling PipeWire echo-cancel module"
+        mv "$AEC_CONF" "$AEC_CONF_DISABLED"
+        restart_pipewire
+    fi
+
+    # 2. Pin BT as defaults.
+    if [[ -n "$bt_sink" ]]; then
+        local sink_id
+        sink_id="$(node_id_by_name "$bt_sink")"
+        if [[ -n "$sink_id" ]]; then
+            wpctl set-default "$sink_id" 2>/dev/null \
+                && echo "[jarvis-bluetooth] default sink → $bt_sink (id=$sink_id)" \
+                || echo "[jarvis-bluetooth] WARN: wpctl set-default sink failed" >&2
+        fi
+    fi
+    if [[ -n "$bt_in" ]]; then
+        local src_id
+        src_id="$(node_id_by_name "$bt_in")"
+        if [[ -n "$src_id" ]]; then
+            wpctl set-default "$src_id" 2>/dev/null \
+                && echo "[jarvis-bluetooth] default source → $bt_in (id=$src_id)" \
+                || echo "[jarvis-bluetooth] WARN: wpctl set-default source failed" >&2
+        fi
+    fi
+
+    # 3. Persist mode so a future `auto` can restore.
+    printf "JARVIS_AUDIO_MODE=bt\nJARVIS_AUDIO_BT_SINK=%s\nJARVIS_AUDIO_BT_INPUT=%s\n" \
+        "$bt_sink" "$bt_in" > "$ENV_FILE"
+
+    # 4. Restart voice client so it re-opens default devices.
+    restart_voice_client
+
+    echo "[jarvis-bluetooth] BT mode active. Run 'jarvis-bluetooth off' to restore AEC."
+}
+
+cmd_off() {
+    # Restore AEC mode: re-enable echo-cancel config, restart PipeWire,
+    # set echo-cancel-source/sink as defaults, restart voice client.
+    if [[ "$(current_mode)" == "aec" ]] && aec_active; then
+        echo "[jarvis-bluetooth] already in AEC mode; nothing to do"
+        return 0
+    fi
+
+    # 1. Restore the AEC config if it was moved aside.
+    if [[ -f "$AEC_CONF_DISABLED" && ! -f "$AEC_CONF" ]]; then
+        echo "[jarvis-bluetooth] restoring PipeWire echo-cancel config"
+        mv "$AEC_CONF_DISABLED" "$AEC_CONF"
+    fi
+
+    # 2. If the config was missing entirely (never set up), run the reloader
+    #    to write a fresh one.
+    if [[ ! -f "$AEC_CONF" ]]; then
+        echo "[jarvis-bluetooth] no AEC config present — running jarvis-aec-reload"
+        "$PROJECT_ROOT/bin/jarvis-aec-reload"
+    else
+        # Config in place — just restart PipeWire to load the module.
+        restart_pipewire
+    fi
+
+    # 3. Pin echo-cancel defaults (jarvis-aec-reload may have already done
+    #    this but be defensive — repeat is idempotent).
+    local ec_sink_id ec_src_id
+    ec_sink_id="$(node_id_by_name "echo-cancel-sink")"
+    ec_src_id="$(node_id_by_name "echo-cancel-source")"
+    if [[ -n "$ec_sink_id" ]]; then
+        wpctl set-default "$ec_sink_id" 2>/dev/null \
+            && echo "[jarvis-bluetooth] default sink → echo-cancel-sink (id=$ec_sink_id)" \
+            || echo "[jarvis-bluetooth] WARN: failed to set echo-cancel-sink default" >&2
+    fi
+    if [[ -n "$ec_src_id" ]]; then
+        wpctl set-default "$ec_src_id" 2>/dev/null \
+            && echo "[jarvis-bluetooth] default source → echo-cancel-source (id=$ec_src_id)" \
+            || echo "[jarvis-bluetooth] WARN: failed to set echo-cancel-source default" >&2
+    fi
+
+    # 4. Persist mode.
+    printf "JARVIS_AUDIO_MODE=aec\n" > "$ENV_FILE"
+
+    # 5. Restart voice client.
+    restart_voice_client
+
+    echo "[jarvis-bluetooth] AEC mode active."
+}
+
+# ── Dispatch ─────────────────────────────────────────────────────────
+
+case "${1:-status}" in
+    on|bt)    cmd_on ;;
+    off|aec)  cmd_off ;;
+    status)   cmd_status ;;
+    -h|--help|help)
+        cat <<EOF
+Usage: jarvis-bluetooth <on|off|status>
+
+  on      Switch JARVIS audio to the connected Bluetooth headset.
+          Disables the PipeWire echo-cancel module (headphones don't
+          need AEC — earcup isolation handles it). Restarts voice-client.
+
+  off     Restore JARVIS audio to built-in mic + speakers with AEC.
+          Re-enables the PipeWire echo-cancel module. Restarts voice-client.
+
+  status  Show current audio routing, AEC state, and BT pairing.
+
+Persisted mode lives in ~/.jarvis/audio-mode.env so future scripts
+(or a hot-plug watcher) can read what the user picked.
+EOF
+        ;;
+    *)
+        echo "Unknown subcommand: $1" >&2
+        echo "Run 'jarvis-bluetooth help' for usage." >&2
+        exit 2
+        ;;
+esac
