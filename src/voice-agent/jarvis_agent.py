@@ -267,6 +267,17 @@ from pipeline.turn_router    import (
 from pipeline.dispatching_llm import DispatchingLLM
 from pipeline.dispatching_tts import DispatchingTTS
 from pipeline.turn_telemetry import init_db, log_turn, log_launch_attempt, DEFAULT_DB_PATH
+# Pre-TTS confab gate — inspects supervisor reply text BEFORE TTS streams
+# and runs the per-route retry chain when a "no-tool but claimed action"
+# confab is detected. Spec: docs/superpowers/specs/2026-05-24-pre-tts-confab-gate-design.md
+from pipeline.pre_tts_confab_gate import (
+    should_gate as _pre_tts_should_gate,
+    run_retry_chain as _pre_tts_run_retry_chain,
+    gate_disabled as _pre_tts_gate_disabled,
+    telemetry_state_for_clean as _pre_tts_telemetry_clean,
+    FILLER_TEXT as _PRE_TTS_FILLER_TEXT,
+)
+from pipeline.turn_telemetry import CONFAB_STATE_BYPASSED_KILLED  # for gate-disabled telemetry
 
 logger = logging.getLogger("jarvis")
 
@@ -3287,6 +3298,138 @@ async def cap_sir_count(text):
     yield "".join(out)
 
 
+# Pre-TTS confab gate filter — sits at the HEAD of tts_text_transforms
+# (after stamp_first_token, which is at position 0 so TTFW telemetry
+# still reflects true LLM first-token time). The filter buffers the
+# ENTIRE LLM text stream, inspects it via `should_gate()` using the
+# current route + this turn's tool-call list (stashed on the session
+# by the function_tools_executed handler), and on trip runs the
+# specialty-routes retry ladder via `run_retry_chain()`. The final
+# text (retry success or filler) is yielded as a single chunk
+# downstream. Gate verdict + retry trace are stashed on the session
+# for the end-of-turn telemetry writer to pick up.
+#
+# Kill switch: JARVIS_PRE_TTS_CONFAB_GATE=0 → no buffering, pass-through.
+# Spec: docs/superpowers/specs/2026-05-24-pre-tts-confab-gate-design.md
+async def pre_tts_confab_gate_filter(text):
+    """Buffer the LLM text stream, run the pre-TTS confab gate, and
+    emit either the original text (clean) or a retry-result / filler
+    (tripped). Single-chunk emit at end-of-stream — downstream filters
+    in tts_text_transforms still run normally on the full buffer.
+
+    Important latency note: buffering shifts TTS start-of-speech from
+    LLM-first-token to LLM-last-token. The front-loaded ack
+    ("One moment.") fired by `_front_loaded_ack` after 800 ms is the
+    perception cushion. TTFW telemetry stays accurate because
+    `stamp_first_token` is at position 0 and stamps BEFORE this filter
+    consumes the stream.
+    """
+    # Kill-switch fast path: no buffering, full pass-through.
+    if _pre_tts_gate_disabled():
+        sess = _active_session_for_telemetry[0]
+        if sess is not None:
+            try:
+                sess._jarvis_confab_check_state = CONFAB_STATE_BYPASSED_KILLED
+                sess._jarvis_confab_pattern_matched = None
+                sess._jarvis_confab_retry_models = []
+            except Exception:
+                pass
+        async for chunk in text:
+            yield chunk
+        return
+
+    # Buffer the entire LLM stream.
+    buffer = ""
+    async for chunk in text:
+        buffer += chunk
+
+    sess = _active_session_for_telemetry[0]
+    if sess is None:
+        # No session reference — defensively pass-through.
+        if buffer:
+            yield buffer
+        return
+
+    route = getattr(sess, "_jarvis_route", None) or ""
+    tool_calls = list(getattr(sess, "_jarvis_tool_calls_this_turn", None) or [])
+
+    verdict = _pre_tts_should_gate(
+        route=route, text=buffer, tool_calls=tool_calls,
+    )
+
+    if not verdict.should_retry:
+        # Clean (or bypass / no-claim / tool-called). Stash telemetry
+        # state for the end-of-turn writer; emit the original text.
+        try:
+            sess._jarvis_confab_check_state = _pre_tts_telemetry_clean(verdict)
+            sess._jarvis_confab_pattern_matched = None
+            sess._jarvis_confab_retry_models = []
+        except Exception:
+            pass
+        if buffer:
+            yield buffer
+        return
+
+    # Gate tripped. Run the retry chain.
+    logger.warning(
+        f"[pre_tts_gate] route={route} TRIPPED pattern={verdict.pattern_matched!r}; "
+        f"running retry chain"
+    )
+    try:
+        llm_factory = getattr(sess, "_jarvis_pre_tts_llm_factory", None)
+        chat_ctx = getattr(sess, "chat_ctx", None)
+        tool_specs = list(getattr(sess, "_jarvis_pre_tts_tool_specs", None) or [])
+        if llm_factory is None or chat_ctx is None:
+            # Factory missing — degrade gracefully: emit the original
+            # text but tag the telemetry so we know the gate fired but
+            # the retry chain couldn't run.
+            logger.warning(
+                "[pre_tts_gate] retry chain unavailable (factory or chat_ctx missing) — "
+                "emitting original text"
+            )
+            try:
+                sess._jarvis_confab_check_state = _pre_tts_telemetry_clean(verdict)
+                sess._jarvis_confab_pattern_matched = verdict.pattern_matched
+                sess._jarvis_confab_retry_models = []
+            except Exception:
+                pass
+            if buffer:
+                yield buffer
+            return
+        retry_result = await _pre_tts_run_retry_chain(
+            route=route,
+            chat_ctx=chat_ctx,
+            tool_specs=tool_specs,
+            original_text=buffer,
+            original_pattern=verdict.pattern_matched,
+            llm_factory=llm_factory,
+        )
+        # Stash retry trace for the end-of-turn telemetry writer.
+        try:
+            sess._jarvis_confab_check_state = retry_result.telemetry_state
+            sess._jarvis_confab_pattern_matched = retry_result.pattern_matched
+            sess._jarvis_confab_retry_models = list(retry_result.models_tried)
+        except Exception:
+            pass
+        # Emit the retry result's text — either a clean retry tier or
+        # the safe filler.
+        if retry_result.text:
+            yield retry_result.text
+    except Exception as e:
+        # Never let the gate block the user-facing path. On unexpected
+        # failure, emit the original text and tag telemetry so the
+        # operator can debug from the row.
+        logger.exception(f"[pre_tts_gate] retry chain raised: {e}; emitting original text")
+        try:
+            sess._jarvis_confab_check_state = _pre_tts_telemetry_clean(verdict)
+            sess._jarvis_confab_pattern_matched = verdict.pattern_matched
+            sess._jarvis_confab_retry_models = []
+        except Exception:
+            pass
+        if buffer:
+            yield buffer
+
+
 # Barge-in truncation helpers — extracted to pipeline/barge_in.py
 # 2026-05-10 (Step 9 of the audit). Re-exported under legacy
 # underscored names so existing tests + the providers/tts.py lazy
@@ -4575,9 +4718,52 @@ def _register_state_tracking_handlers(session) -> None:
         old_state = getattr(ev, "old_state", None)
         if new_state == "thinking":
             _mark_thinking_start()
+            # Front-loaded ack (2026-05-24, pre-TTS confab gate). The
+            # gate buffers the FULL LLM text before TTS streams, which
+            # shifts TTS start from LLM-first-token to LLM-last-token.
+            # An 800 ms timer fires session.say("One moment.") so the
+            # user gets perception feedback that JARVIS is working.
+            # Only TASK_*/REASONING — BANTER/EMOTIONAL stay snappy
+            # (their primary calls return in <1s anyway, and an ack
+            # on those would feel robotic).
+            try:
+                route = getattr(session, "_jarvis_route", None) or ""
+                # Cancel any prior ack task from a previous turn (defensive).
+                prior_task = getattr(session, "_jarvis_front_ack_task", None)
+                if prior_task is not None and not prior_task.done():
+                    prior_task.cancel()
+                session._jarvis_front_ack_fired = False
+                if route.startswith("TASK_") or route == "REASONING":
+                    async def _front_loaded_ack(_sess=session):
+                        try:
+                            await asyncio.sleep(0.8)
+                            if not getattr(_sess, "_jarvis_front_ack_fired", False):
+                                try:
+                                    _sess.say("One moment.", allow_interruptions=True)
+                                    _sess._jarvis_front_ack_fired = True
+                                    logger.info("[front-ack] voiced 'One moment.' (LLM still pending)")
+                                except Exception as _say_e:
+                                    logger.debug(f"[front-ack] say failed: {_say_e}")
+                        except asyncio.CancelledError:
+                            pass
+                    session._jarvis_front_ack_task = asyncio.create_task(_front_loaded_ack())
+                else:
+                    session._jarvis_front_ack_task = None
+            except Exception as _ack_e:
+                logger.debug(f"[front-ack] schedule skipped: {_ack_e}")
         elif new_state in ("idle", "listening", "speaking"):
             _mark_thinking_end()
             _mark_tool_end()
+            # Cancel the front-loaded ack — the LLM has settled (either
+            # text is flowing to TTS, or the turn ended without a reply).
+            try:
+                session._jarvis_front_ack_fired = True  # block delayed firing
+                ack_task = getattr(session, "_jarvis_front_ack_task", None)
+                if ack_task is not None and not ack_task.done():
+                    ack_task.cancel()
+                session._jarvis_front_ack_task = None
+            except Exception:
+                pass
 
         # total_audio_ms tracking: accumulate every "speaking" segment
         # within a turn. Multi-segment turn (speaking → thinking →
@@ -4622,6 +4808,33 @@ def _register_state_tracking_handlers(session) -> None:
         if getattr(ev, "is_final", True):
             _mark_thinking_start()
             _reset_tool_call_count()
+            # Reset per-turn tool-calls list consumed by the pre-TTS
+            # confab gate. Populated by the function_tools_executed
+            # handler below as the supervisor's tools fire this turn.
+            try:
+                session._jarvis_tool_calls_this_turn = []
+                session._jarvis_confab_check_state = None
+                session._jarvis_confab_pattern_matched = None
+                session._jarvis_confab_retry_models = []
+            except Exception:
+                pass
+
+    # Pre-TTS confab gate (2026-05-24): track this turn's tool-call list
+    # so `should_gate()` can decide whether a "claimed action" reply is
+    # backed by a tool call. The list is reset on each final user input
+    # transcript (above) and appended here on every function-tool batch
+    # execution within the turn.
+    @session.on("function_tools_executed")
+    def _on_function_tools_executed(ev) -> None:
+        try:
+            calls = list(getattr(ev, "function_calls", None) or [])
+            if not calls:
+                return
+            current = list(getattr(session, "_jarvis_tool_calls_this_turn", None) or [])
+            current.extend(calls)
+            session._jarvis_tool_calls_this_turn = current
+        except Exception as e:
+            logger.debug(f"[pre_tts_gate] tool-calls tracking skipped: {e}")
 
     @session.on("user_input_transcribed")
     def _on_user_input_kill_phrase(ev) -> None:
@@ -5192,6 +5405,15 @@ async def entrypoint(ctx: JobContext) -> None:
             # the LLM stream. Must be first so hedge-drop / preamble-
             # strip don't mask the early tokens.
             stamp_first_token,
+            # Pre-TTS confab gate (2026-05-24) — buffer the FULL LLM text
+            # stream and inspect for "no-tool but claimed action" confabs;
+            # run the per-route retry ladder on trip and replace text
+            # before downstream filters / TTS see it. Must sit AFTER
+            # stamp_first_token (which only timestamps; doesn't buffer)
+            # so TTFW telemetry stays accurate. The 800ms front-loaded
+            # ack (in _on_agent_state) cushions the buffering latency.
+            # Kill switch: JARVIS_PRE_TTS_CONFAB_GATE=0.
+            pre_tts_confab_gate_filter,
             strip_function_call_leakage,
             # Strip "Done.", "Anything else?", "Happy to help", etc.
             # gpt-oss-120b habitually appends these despite the system
@@ -5797,6 +6019,74 @@ async def entrypoint(ctx: JobContext) -> None:
         # tools; both return via a later registry port.
         tools=load_all_livekit_tools(),
     )
+
+    # Pre-TTS confab gate (2026-05-24) — wire the LLM factory + tool_specs
+    # the gate's retry chain needs. The factory builds a runner for ANY
+    # model id from the SPEECH_MODELS registry; the runner uses livekit-
+    # agents' LLMStream.collect() shape, which returns (text, tool_calls).
+    # Stashed on the session so the tts filter (which only has access to
+    # late-bound session state via _active_session_for_telemetry) can
+    # invoke them without holding a reference to entrypoint locals.
+    # Spec: docs/superpowers/specs/2026-05-24-pre-tts-confab-gate-design.md
+    def _pre_tts_llm_factory(model_id: str):
+        """Return an async runner for a given speech-model id.
+
+        The runner takes (chat_ctx, tool_specs) and returns
+        (text, tool_calls). Models are built via SPEECH_MODELS — every
+        ladder id (claude-haiku-4-5 / claude-sonnet-4-6 / claude-opus-4-7
+        / deepseek-v4-flash / gpt-5-mini / gpt-5.1 / gemini-2.5-pro) is
+        a registry key; constructing on demand keeps the retry path
+        independent of the dispatcher's per-route assembly.
+        """
+        from providers.llm import SPEECH_MODELS
+
+        async def _runner(retry_ctx, tool_specs):
+            entry = SPEECH_MODELS.get(model_id)
+            if entry is None:
+                raise ValueError(
+                    f"_pre_tts_llm_factory: unknown model id {model_id!r} — "
+                    "not in SPEECH_MODELS registry"
+                )
+            inner_llm = entry["build"]()
+            # livekit-agents LLMStream.collect() returns a CollectedResponse
+            # with .text and .tool_calls (list[FunctionToolCall]). That
+            # matches the gate's LLMRunner contract verbatim.
+            stream = inner_llm.chat(chat_ctx=retry_ctx, tools=tool_specs)
+            try:
+                collected = await stream.collect()
+            finally:
+                try:
+                    await stream.aclose()
+                except Exception:
+                    pass
+            return (collected.text or "", list(collected.tool_calls or []))
+
+        return _runner
+
+    session._jarvis_pre_tts_llm_factory = _pre_tts_llm_factory
+    # Capture the supervisor's tool specs once at startup — the registry
+    # is stable across the session lifetime. Used as the `tool_specs`
+    # arg the gate hands to each retry-tier LLM call so the retry has
+    # access to the same tool surface as the primary.
+    try:
+        session._jarvis_pre_tts_tool_specs = list(getattr(_jarvis_agent, "tools", []) or [])
+    except Exception:
+        session._jarvis_pre_tts_tool_specs = []
+    # Per-turn tool-call accumulator (populated by the
+    # function_tools_executed handler, consumed by the gate filter).
+    session._jarvis_tool_calls_this_turn = []
+    # Per-turn gate verdict stash for end-of-turn telemetry. log_turn
+    # currently picks up confab_check_state (already wired); the
+    # pattern_matched + retry_models fields are stashed here and will
+    # be threaded into log_turn by a follow-up commit (turn_telemetry
+    # schema already has the columns; log_turn signature does not yet
+    # accept them).
+    session._jarvis_confab_check_state = None
+    session._jarvis_confab_pattern_matched = None
+    session._jarvis_confab_retry_models = []
+    # Front-loaded ack state — managed by _on_agent_state.
+    session._jarvis_front_ack_task = None
+    session._jarvis_front_ack_fired = False
 
     # NOTE: An in-asyncio-loop watchdog here does NOT reach systemd.
     # livekit-agents forks worker subprocesses for each job, and the
