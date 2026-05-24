@@ -164,9 +164,12 @@ def select_review_candidates(limit: int = 10) -> list[TurnSnapshot]:
     """Query ``turn_telemetry.db`` for complex/hard turns worth reviewing.
 
     Criterion (documented above): a subagent fired, OR the computer-use
-    loop ran >=1 step, OR a TASK/REASONING turn produced a long reply.
-    Newest-first; capped at `limit`. Returns [] if the DB is missing or
-    empty (safe to run on a fresh install).
+    loop ran >=1 step, OR a TASK_*/REASONING turn produced a long reply.
+    (Post-2026-05-24 the router writes sub-routes like TASK_DESKTOP /
+    TASK_BROWSER / TASK_OTHER, so the SQL matches `route LIKE 'TASK_%'`
+    OR the literal 'REASONING'.) Newest-first; capped at `limit`.
+    Returns [] if the DB is missing or empty (safe to run on a fresh
+    install).
     """
     if limit <= 0:
         return []
@@ -186,7 +189,7 @@ def select_review_candidates(limit: int = 10) -> list[TurnSnapshot]:
         FROM turns
         WHERE (subagent IS NOT NULL AND subagent != '')
            OR (computer_use_steps IS NOT NULL AND computer_use_steps >= 1)
-           OR (route IN ('TASK', 'REASONING')
+           OR ((route LIKE 'TASK_%' OR route = 'REASONING')
                AND length(jarvis_text) >= ?)
         ORDER BY ts_utc DESC, id DESC
         LIMIT ?
