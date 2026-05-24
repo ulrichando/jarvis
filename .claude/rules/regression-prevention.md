@@ -87,6 +87,30 @@ response), state in ≤3 lines:
 
 This is the audit trail the user reads to spot drift before merging.
 
+## 8. Auto-mod blocklist is load-bearing
+
+The auto-mod loop (`src/voice-agent/pipeline/automod/`) writes proposals
+that the user merges manually. The blocklist in
+`_state.HARD_BLOCKLIST_PATHS` + the `is_blocked_path()` helper are
+referenced from three enforcement layers (spawner prompt,
+`finalize.py` diff-check, `bin/jarvis-automod merge` re-validation).
+Each layer is independently load-bearing — removing one weakens the
+safety story.
+
+Rules:
+- Never remove an entry from `HARD_BLOCKLIST_PATHS` without explicit
+  user sign-off + a separate spec amendment. Adding entries is fine
+  (additive).
+- `pipeline/automod/` itself is on the blocklist (no self-referential
+  weakening). If `pipeline/automod/_state.py` needs a real refactor,
+  human-edit only — auto-mod can never touch it.
+- The CLI subprocess wrapper (`bin/jarvis-automod-impl`) is the only
+  place the project root is editable from an auto-mod path; its rules
+  prompt is part of the safety surface.
+
+If a future auto-mod proposes weakening this rule set, reject the
+artifact + audit the pattern detector that emitted the intent.
+
 ## Escape hatch
 
 If you need to skip the Stop hook's verification (mid-refactor, tests
