@@ -672,15 +672,28 @@ async def run_once(shutdown: asyncio.Event) -> None:
         room_disconnected.set()
 
     @room.on("data_received")
-    def _on_data_received(packet) -> None:
+    def _on_data_received(packet: rtc.DataPacket) -> None:
         """Forward assistant_says packets from the agent participant to
         the SSE subscribers (the tray chat panel).
 
         LiveKit's data_received fires only for packets from REMOTE
         participants — self-published data (the /user-input + /speak
         + /stop emits this voice-client makes) does not loop back here,
-        so the filter is defense-in-depth only.
+        so the remote-only side is already handled by the SDK.
+
+        On top of that we identity-filter by the `agent-` prefix (the
+        same convention `_on_participant_connected` above relies on —
+        LiveKit's worker assigns `agent-AJ_*` identities). Today only
+        the voice agent publishes `{type:assistant_says}`, so this is
+        defense against future multi-publisher rooms where another
+        remote client might emit the same shape.
         """
+        try:
+            identity = packet.participant.identity if packet.participant else ""
+        except Exception:
+            identity = ""
+        if not identity.startswith("agent-"):
+            return
         try:
             msg = json.loads(packet.data.decode("utf-8"))
         except Exception:
