@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import platform
 import re
 import subprocess as _subprocess
 import time
@@ -610,13 +611,19 @@ async def _restart_voice_client_after_crash() -> None:
     Called by _on_session_close when AgentSession dies with a non-None error.
     The voice client's _agent_presence_watchdog handles room deletion and
     fresh dispatch — we only need to trigger the restart.
+
+    Routed through pipeline.service_control.restart_service so the same
+    call site works on Linux today (systemctl --user) and lights up on
+    Windows once Phase 3 ships the nssm backend. ``ServiceControlError``
+    is caught + logged here — there's no useful recovery if service
+    control is unwired, and the crash-restart path mustn't itself crash.
     """
     await asyncio.sleep(3)
-    _subprocess.Popen(
-        ["systemctl", "--user", "restart", "jarvis-voice-client"],
-        stdout=_subprocess.DEVNULL,
-        stderr=_subprocess.DEVNULL,
-    )
+    from pipeline.service_control import restart_service, ServiceControlError
+    try:
+        restart_service("jarvis-voice-client")
+    except ServiceControlError as e:
+        logger.warning("[restart-after-crash] service control unavailable: %s", e)
 
 
 # ── CLI model selection ────────────────────────────────────────────────
@@ -1784,15 +1791,47 @@ async def launch_app(binary: str, args: str = "") -> str:
         return f"MISSING: '{bin_only}' is not installed on this system"
 
     args_clean = (args or "").strip()
-    log_path = f"/tmp/jarvis-launch-{bin_only.replace('/', '_')}-{int(time.time())}.log"
-    cmd = f"setsid -f {bin_path} {args_clean} > {log_path} 2>&1"
-    logger.info(f"launch_app → {cmd[:140]}")
-
-    try:
-        proc = await asyncio.create_subprocess_shell(cmd)
-        await asyncio.wait_for(proc.wait(), timeout=5.0)
-    except Exception as e:
-        return f"CRASHED: spawn error — {e}"
+    # Cross-platform tmp path: Linux still resolves to /tmp/, Windows to %TEMP%.
+    import tempfile as _tempfile
+    log_path = str(
+        Path(_tempfile.gettempdir())
+        / f"jarvis-launch-{bin_only.replace('/', '_')}-{int(time.time())}.log"
+    )
+    # On Linux we keep the `setsid -f` shell command so the child fully
+    # detaches from the worker's session (double-fork via setsid). On
+    # Windows there is no setsid in PATH — fall back to Popen with the
+    # detach kwargs from tools.runtime.detached_popen_kwargs() (which
+    # sets CREATE_NEW_PROCESS_GROUP + DETACHED_PROCESS). Both branches
+    # write child stdout/stderr to log_path.
+    if platform.system() == "Linux":
+        cmd = f"setsid -f {bin_path} {args_clean} > {log_path} 2>&1"  # windows-footgun: ok (Linux branch — Windows uses detached_popen_kwargs() in the else below)
+        logger.info(f"launch_app → {cmd[:140]}")
+        try:
+            proc = await asyncio.create_subprocess_shell(cmd)
+            await asyncio.wait_for(proc.wait(), timeout=5.0)
+        except Exception as e:
+            return f"CRASHED: spawn error — {e}"
+    else:
+        # Windows / macOS path — Phase 3 will harden this (today only
+        # exists so module-level imports don't fail under cross-platform
+        # CI). pgrep / setsid are Linux-only; the post-launch verifier
+        # below uses pgrep too, so this branch will fall through to the
+        # "not running" check on non-Linux. Phase 3 follow-up: replace
+        # the verifier with a cross-platform process check (psutil).
+        from tools.runtime import detached_popen_kwargs as _detach_kwargs
+        import shlex as _shlex
+        argv = [bin_path, *(_shlex.split(args_clean) if args_clean else [])]
+        logger.info(f"launch_app (non-Linux) → {argv}")
+        try:
+            log_fh = open(log_path, "wb")
+            _subprocess.Popen(
+                argv,
+                stdout=log_fh,
+                stderr=log_fh,
+                **_detach_kwargs(),
+            )
+        except Exception as e:
+            return f"CRASHED: spawn error — {e}"
 
     # Poll pgrep up to 4s, returning as soon as the app appears. The old
     # fixed 600ms sleep raced cold-starting GUI apps (e.g. chrome takes
@@ -3965,7 +4004,11 @@ def _spawn_worker_heartbeat() -> None:
     alive. Idempotent: multiple worker subprocesses writing the same
     file is fine — atomic rename, time.monotonic() is system-wide on
     Linux."""
-    HEARTBEAT_PATH = Path("/tmp/jarvis-worker-heartbeat")
+    # Cross-platform tmp path: Linux still resolves to /tmp/jarvis-worker-heartbeat,
+    # Windows to %TEMP%\jarvis-worker-heartbeat. Both branches of the watchdog
+    # (producer + consumer) go through tempfile.gettempdir() so they meet.
+    import tempfile as _tempfile_hb
+    HEARTBEAT_PATH = Path(_tempfile_hb.gettempdir()) / "jarvis-worker-heartbeat"
     import threading as _threading
 
     def _heartbeat_loop() -> None:
@@ -5593,8 +5636,11 @@ if __name__ == "__main__":
         service died in a kill-loop. Moved to prewarm so the worker
         proves liveness from startup, independent of jobs."""
         import os as _os
+        import tempfile as _tempfile_hb
         from pathlib import Path as _Path
-        HB = _Path("/tmp/jarvis-worker-heartbeat")
+        # Cross-platform tmp path — must match the producer side above so the
+        # watchdog reads the same file the worker writes.
+        HB = _Path(_tempfile_hb.gettempdir()) / "jarvis-worker-heartbeat"
         STALE_AFTER_S = 30.0
         GRACE_S = 60.0
         started_at = time.monotonic()

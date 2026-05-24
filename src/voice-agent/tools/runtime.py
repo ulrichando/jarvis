@@ -17,20 +17,30 @@ from __future__ import annotations
 
 import os
 import platform
+import subprocess
 from pathlib import Path
 
 __all__ = [
     "get_jarvis_home",
     "get_jarvis_dir",
+    "get_jarvis_data_dir",
+    "get_jarvis_log_dir",
+    "get_jarvis_models_dir",
     "get_subprocess_home",
     "display_jarvis_home",
     "is_container",
+    "detached_popen_kwargs",
 ]
 
 
 # Env var that overrides the home directory.
 _HOME_ENV = "JARVIS_HOME"
 _DEFAULT_HOME = Path.home() / ".jarvis"
+
+
+def _is_windows() -> bool:
+    """Late-binding platform check so tests can monkeypatch platform.system."""
+    return platform.system() == "Windows"
 
 
 def get_jarvis_home() -> Path:
@@ -66,6 +76,71 @@ def get_jarvis_dir(new_subpath: str, old_name: str = "") -> Path:
     return d
 
 
+def get_jarvis_data_dir() -> Path:
+    """Return the JARVIS per-user data directory, creating it if missing.
+
+    Linux/macOS: ``~/.local/share/jarvis`` (XDG_DATA_HOME-compatible).
+    Windows: ``%LOCALAPPDATA%\\jarvis\\data``.
+
+    Honours ``JARVIS_DATA_DIR`` for tests / alternate profiles. This is
+    where logs, the telemetry SQLite, screenshot dumps, and the batch
+    runner's per-run output land — the larger / longer-lived state, as
+    opposed to ``get_jarvis_home()`` which holds keys + auth tokens +
+    user-supplied config.
+    """
+    val = os.environ.get("JARVIS_DATA_DIR", "").strip()
+    if val:
+        d = Path(val)
+    elif _is_windows():
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        d = Path(base) / "jarvis" / "data"
+    else:
+        # XDG_DATA_HOME default per spec is ~/.local/share
+        xdg = os.environ.get("XDG_DATA_HOME", "").strip()
+        base = Path(xdg) if xdg else Path.home() / ".local" / "share"
+        d = base / "jarvis"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return d
+
+
+def get_jarvis_log_dir() -> Path:
+    """Return the JARVIS log directory, creating it if missing.
+
+    Linux/macOS: ``~/.local/share/jarvis/logs``.
+    Windows: ``%LOCALAPPDATA%\\jarvis\\data\\logs``.
+
+    Lives under :func:`get_jarvis_data_dir` so the same rotation /
+    archival policy applies; pulled out as its own helper so callers that
+    only want a log path don't have to remember the ``/"logs"`` suffix.
+    """
+    d = get_jarvis_data_dir() / "logs"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return d
+
+
+def get_jarvis_models_dir() -> Path:
+    """Return the voice-agent ``models/`` directory, creating it if missing.
+
+    Always resolved relative to the voice-agent install root (this file's
+    grand-parent) — the local model artifacts ship inside the source tree,
+    not under per-user state. Same path on every platform.
+    """
+    # runtime.py lives at src/voice-agent/tools/runtime.py
+    # → parent.parent = src/voice-agent/
+    d = Path(__file__).resolve().parent.parent / "models"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return d
+
+
 def get_subprocess_home() -> str | None:
     """Return the home dir to propagate to spawned subprocesses, as a string.
 
@@ -85,6 +160,38 @@ def display_jarvis_home() -> str:
         return str(Path("~") / rel)
     except ValueError:
         return str(home)
+
+
+def detached_popen_kwargs() -> dict:
+    """Return subprocess.Popen kwargs that detach the child into its own session/group.
+
+    The voice-agent's ``launch_app`` GUI launcher needs the child process to
+    SURVIVE a worker bounce — without detachment, restarting the agent
+    immediately kills any browsers / editors the user just asked JARVIS to
+    open. On Linux the canonical way is ``setsid`` (or the equivalent
+    ``start_new_session=True`` Popen kwarg, which calls ``setsid`` under the
+    hood). On Windows the equivalent is the ``CREATE_NEW_PROCESS_GROUP``
+    plus ``DETACHED_PROCESS`` creationflags.
+
+    Returns a kwargs dict suitable for ``**`` splatting into
+    ``subprocess.Popen`` / ``asyncio.create_subprocess_exec``:
+
+      Linux/macOS:  ``{"start_new_session": True}``
+      Windows:      ``{"creationflags": CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS}``
+
+    Both branches achieve "child outlives parent" semantics; the platform-
+    specific flag names are the only difference.
+    """
+    if _is_windows():
+        # Both constants are stdlib on Windows; gate on _is_windows() so the
+        # attribute access is only evaluated on the platform where it exists.
+        return {
+            "creationflags": (
+                getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                | getattr(subprocess, "DETACHED_PROCESS", 0)
+            )
+        }
+    return {"start_new_session": True}
 
 
 def is_container() -> bool:
