@@ -4,67 +4,15 @@ A voice-first AI assistant. Real-time speech in, real-time speech out, with dire
 
 ## Install
 
-> **JARVIS lives in a private repo.** You need GitHub access to clone it. The install patterns below assume you have it. Anonymous `curl … | bash` one-liners (the kind public repos can ship) are not possible because raw.githubusercontent.com returns 404 to unauthenticated requests on private repos.
-
-### Option A — recommended: GitHub CLI (`gh`)
-
-Cross-platform, secure, no token in your shell history. One-time setup:
-
-```bash
-# Install + authenticate gh (do this once per machine)
-brew install gh                 # macOS
-sudo apt install gh             # Debian / Ubuntu / Kali
-winget install GitHub.cli       # Windows
-gh auth login                   # log in via browser
-```
-
-Then install JARVIS:
+One-shot install of all four channels (CLI + Voice Agent + Desktop + Web). Pick the row that matches your shell.
 
 | Platform | Shell | Command |
 |---|---|---|
-| Linux / macOS | bash | `gh repo clone ulrichando/jarvis ~/Documents/Projects/jarvis && cd ~/Documents/Projects/jarvis && ./install.sh` |
-| Windows | PowerShell | `gh repo clone ulrichando/jarvis "$env:LOCALAPPDATA\jarvis\jarvis"; & "$env:LOCALAPPDATA\jarvis\jarvis\install.ps1"` |
-| Windows | CMD | `gh repo clone ulrichando/jarvis "%LOCALAPPDATA%\jarvis\jarvis" && "%LOCALAPPDATA%\jarvis\jarvis\install.cmd"` |
+| Linux / macOS | bash | `curl -fsSL https://raw.githubusercontent.com/ulrichando/jarvis/master/install.sh \| bash` |
+| Windows | PowerShell | `iex (irm https://raw.githubusercontent.com/ulrichando/jarvis/master/install.ps1)` |
+| Windows | CMD | `curl -fsSL https://raw.githubusercontent.com/ulrichando/jarvis/master/install.cmd -o install.cmd && install.cmd && del install.cmd` |
 
-### Option B — Personal Access Token (PAT)
-
-If you can't use `gh` CLI: create a fine-grained PAT at https://github.com/settings/tokens/?type=beta with **Contents: Read** scope on `ulrichando/jarvis`, then:
-
-```bash
-# Linux / macOS — token from env
-export GH_TOKEN=ghp_yourtokenhere
-curl -fsSL -H "Authorization: token $GH_TOKEN" \
-  https://raw.githubusercontent.com/ulrichando/jarvis/master/install.sh | \
-  GH_TOKEN=$GH_TOKEN bash
-```
-
-```powershell
-# Windows PowerShell — token from env
-$env:GH_TOKEN = "ghp_yourtokenhere"
-$Headers = @{ Authorization = "token $env:GH_TOKEN" }
-(Invoke-WebRequest -UseBasicParsing -Headers $Headers `
-  -Uri "https://raw.githubusercontent.com/ulrichando/jarvis/master/install.ps1").Content | Invoke-Expression
-```
-
-Both install scripts (`install.sh` / `install.ps1`) honor `GH_TOKEN` (also accepted as `GITHUB_TOKEN`) and pass it to the `git clone` step, so the private repo clones with one token export.
-
-### Option C — fully manual
-
-```bash
-# Linux / macOS
-git clone https://github.com/ulrichando/jarvis.git ~/Documents/Projects/jarvis
-cd ~/Documents/Projects/jarvis
-./install.sh
-```
-
-```powershell
-# Windows PowerShell
-git clone https://github.com/ulrichando/jarvis.git "$env:LOCALAPPDATA\jarvis\jarvis"
-Set-Location "$env:LOCALAPPDATA\jarvis\jarvis"
-.\install.ps1
-```
-
-Your existing `git` credentials (SSH key, OS keychain, Git Credential Manager) handle the auth. This is the most-explicit option — no token plumbing.
+> **Note (2026-05-24):** the repo is currently private during the cross-platform refactor — the anonymous one-liners above return 404 right now. They will Just Work the moment the repo flips public. While private, authorized users can clone via `gh repo clone ulrichando/jarvis` (after `gh auth login`) or plain `git clone` with their SSH key / Git Credential Manager, then run `./install.sh` (Linux/macOS) or `.\install.ps1` (Windows) from inside the checkout. No script changes are needed for the visibility flip.
 
 > **Windows status (Phase 1, 2026-05-24):** CLI + Desktop UI fully supported. The installer ships PortableGit so JARVIS's terminal/bash tool works out of the box, uses `uv` (Astral) for Python provisioning + venv, and installs to `%LOCALAPPDATA%\jarvis` (proper Windows app-data). The voice-agent's Python deps install cleanly, but **the voice-agent service install is deferred to Phase 2** — the agent currently imports Linux-only modules (PipeWire echo-cancel, systemd `sdnotify`, `xdotool` / X11). Phase 2 will refactor those behind platform-abstraction layers so `install.ps1` can also register + start the voice services. Until then, on Windows: use the CLI and Desktop natively, or run the voice agent under WSL2 with the Linux installer. See [docs/superpowers/specs/2026-05-23-windows-install-phase1-design.md](docs/superpowers/specs/2026-05-23-windows-install-phase1-design.md) for the Phase 1 / Phase 2 split and the pattern-adoption notes.
 
