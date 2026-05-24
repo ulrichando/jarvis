@@ -140,6 +140,10 @@ EXCLUDED_SUFFIXES = {
 EXCLUDED_FILES = {
     "scripts/check-windows-footguns.py",
     "src/voice-agent/tests/test_windows_footguns_checker.py",
+    # Asserts the Linux backend of tools.desktop_control invokes xdotool
+    # with the expected argv — every flagged ``["xdotool", ...]`` literal
+    # in this file is a fixture/assertion, not a real shellout.
+    "src/voice-agent/tests/test_desktop_control.py",
     "docs/superpowers/specs/2026-05-23-windows-install-phase1-design.md",
     "CONTRIBUTING.md",
     "CLAUDE.md",
