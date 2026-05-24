@@ -311,16 +311,36 @@ def _msg_attr(obj: Any, name: str) -> Any:
 def _has_recent_memory_tool_call(prior_messages: list) -> bool:
     """True if any of the last 8 prior messages is a memory tool call or
     a FunctionCallOutput/tool_result with name='memory'. Pure function;
-    no I/O. Spec 2026-05-24, Track 3."""
+    no I/O. Spec 2026-05-24, Track 3.
+
+    Handles three message shapes:
+      1. Top-level msg.name == "memory" (FunctionCallOutput / LiveKit FunctionCall)
+      2. msg.tool_calls=[{name|function.name=="memory"}] (OpenAI/LiveKit assistant
+         turn that INVOKED the tool — the typical production shape)
+      3. msg.content=[{type in (tool_use,tool_result), name=="memory"}] (Anthropic
+         multi-block content)
+    """
     if not prior_messages:
         return False
     tail = list(prior_messages)[-8:]
     for msg in tail:
-        # FunctionCallOutput / tool-result shape
+        # Shape 1: top-level FunctionCallOutput / result
         name = _msg_attr(msg, "name")
         if name == "memory":
             return True
-        # Anthropic content-block shape: list of {type, name, ...}
+
+        # Shape 2: OpenAI/LiveKit-style tool_calls list on the assistant turn
+        tcs = _msg_attr(msg, "tool_calls") or []
+        for tc in tcs:
+            # Direct name (LiveKit SimpleNamespace shape) or nested function.name (OpenAI raw)
+            tc_name = _msg_attr(tc, "name")
+            if tc_name == "memory":
+                return True
+            inner = _msg_attr(tc, "function")
+            if inner is not None and _msg_attr(inner, "name") == "memory":
+                return True
+
+        # Shape 3: Anthropic content-block list
         content = _msg_attr(msg, "content")
         if isinstance(content, list):
             for block in content:
