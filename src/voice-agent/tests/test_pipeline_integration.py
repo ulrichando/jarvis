@@ -16,16 +16,20 @@ from pipeline.dispatching_tts import DispatchingTTS
 
 FIXTURES = [
     # (transcript, audio, mocked_router_output, expected_route)
-    ("hey jarvis what's up",            AudioMeta(),       "BANTER",    "BANTER"),
-    ("yo what time is it",              AudioMeta(),       "TASK",      "TASK"),
-    ("open chrome please",              AudioMeta(),       "TASK",      "TASK"),
-    ("walk me through how grpc works",  AudioMeta(),       "REASONING", "REASONING"),
-    ("WHY ISN'T THIS WORKING",          AudioMeta(),       "EMOTIONAL", "EMOTIONAL"),
-    ("I'm so tired of this",            AudioMeta(),       "EMOTIONAL", "EMOTIONAL"),
-    ("just curious how it does that",   AudioMeta(),       "REASONING", "REASONING"),
-    ("ok thanks",                       AudioMeta(),       "BANTER",    "BANTER"),
-    ("what's my IP",                    AudioMeta(),       "TASK",      "TASK"),
-    ("explain the planner",             AudioMeta(),       "REASONING", "REASONING"),
+    # 2026-05-24: bare TASK was split into 5 sub-routes; this fixture
+    # exercises the sub-route classifier outputs as the router would
+    # emit them. The mocked output for an "open chrome" turn is now
+    # TASK_DESKTOP, "what's my IP" is TASK_OTHER, etc.
+    ("hey jarvis what's up",            AudioMeta(),       "BANTER",       "BANTER"),
+    ("yo what time is it",              AudioMeta(),       "TASK_OTHER",   "TASK_OTHER"),
+    ("open chrome please",              AudioMeta(),       "TASK_DESKTOP", "TASK_DESKTOP"),
+    ("walk me through how grpc works",  AudioMeta(),       "REASONING",    "REASONING"),
+    ("WHY ISN'T THIS WORKING",          AudioMeta(),       "EMOTIONAL",    "EMOTIONAL"),
+    ("I'm so tired of this",            AudioMeta(),       "EMOTIONAL",    "EMOTIONAL"),
+    ("just curious how it does that",   AudioMeta(),       "REASONING",    "REASONING"),
+    ("ok thanks",                       AudioMeta(),       "BANTER",       "BANTER"),
+    ("what's my IP",                    AudioMeta(),       "TASK_OTHER",   "TASK_OTHER"),
+    ("explain the planner",             AudioMeta(),       "REASONING",    "REASONING"),
 ] * 3  # 30 total
 
 
@@ -37,6 +41,10 @@ def _stub(label):
 
 
 def test_pipeline_routes_30_fixtures_correctly():
+    # The dispatcher still only knows the 4 legacy keys (BANTER/TASK/
+    # REASONING/EMOTIONAL) — sub-route lookups fall through to
+    # `fallback` which points at the TASK chain. That's the intended
+    # behaviour until Task 4 lands specialty-route dispatch.
     llm_inners = {r: _stub(f"llm-{r}") for r in ("BANTER", "TASK", "REASONING", "EMOTIONAL")}
     tts_inners = {r: _stub(f"voice-{r}") for r in ("BANTER", "TASK", "REASONING", "EMOTIONAL")}
     d_llm = DispatchingLLM(inners=llm_inners, fallback=llm_inners["TASK"])

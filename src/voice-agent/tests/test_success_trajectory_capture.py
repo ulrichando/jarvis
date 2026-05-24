@@ -17,7 +17,7 @@ def _make_snap(**overrides):
         turn_id=1, ts_utc="2026-05-24T00:00:00Z",
         user_text="Jarvis, deploy the app",
         jarvis_text="Tests passed, pushed, CI green — deployed.",
-        route="TASK", subagent="", computer_use_steps=0,
+        route="TASK_OTHER", subagent="", computer_use_steps=0,
         tool_call_count=3, had_tool_error=False,
     )
     base.update(overrides)

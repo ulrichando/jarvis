@@ -46,7 +46,7 @@ class TestIsHardTurn:
         from pipeline.skill_review import TurnSnapshot, is_hard_turn
         snap = TurnSnapshot(
             turn_id=1, ts_utc="t", user_text="open chrome",
-            jarvis_text="Done.", route="TASK", subagent="desktop",
+            jarvis_text="Done.", route="TASK_OTHER", subagent="desktop",
             computer_use_steps=0,
         )
         assert is_hard_turn(snap) is True
@@ -55,7 +55,7 @@ class TestIsHardTurn:
         from pipeline.skill_review import TurnSnapshot, is_hard_turn
         snap = TurnSnapshot(
             turn_id=2, ts_utc="t", user_text="click", jarvis_text="Clicked.",
-            route="TASK", subagent="", computer_use_steps=4,
+            route="TASK_OTHER", subagent="", computer_use_steps=4,
         )
         assert is_hard_turn(snap) is True
 
@@ -63,7 +63,7 @@ class TestIsHardTurn:
         from pipeline.skill_review import TurnSnapshot, is_hard_turn
         snap = TurnSnapshot(
             turn_id=3, ts_utc="t", user_text="how do I deploy",
-            jarvis_text="step. " * 100, route="TASK", subagent="",
+            jarvis_text="step. " * 100, route="TASK_OTHER", subagent="",
             computer_use_steps=0,
         )
         assert is_hard_turn(snap) is True
@@ -97,7 +97,7 @@ class TestIsHardTurn:
         snap = TurnSnapshot(
             turn_id=6, ts_utc="t", user_text="ok",
             jarvis_text="Sure, let me know.",
-            route="TASK", subagent="", computer_use_steps=0,
+            route="TASK_OTHER", subagent="", computer_use_steps=0,
         )
         assert is_hard_turn(snap) is False
 
@@ -122,7 +122,7 @@ def _hard_snapshot():
         turn_id=42, ts_utc="2026-05-21T10:00:00Z",
         user_text="run the deploy sequence",
         jarvis_text="Ran make build, make test, make deploy.",
-        route="TASK", subagent="desktop", computer_use_steps=0,
+        route="TASK_OTHER", subagent="desktop", computer_use_steps=0,
     )
 
 
