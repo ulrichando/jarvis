@@ -67,7 +67,9 @@ CREATE TABLE turns (
     browser_backend TEXT,
     computer_use_steps INTEGER,
     computer_use_cost_usd REAL,
-    confab_check_state TEXT
+    confab_check_state TEXT,
+    tool_call_count INTEGER DEFAULT 0,
+    had_tool_error INTEGER DEFAULT 0
 );
 """
 
@@ -592,3 +594,66 @@ def test_review_prompt_no_hermes_tokens():
     """JARVIS-native — no hermes references in the prompt."""
     from pipeline.skill_review import _REVIEW_PROMPT
     assert "hermes" not in _REVIEW_PROMPT.lower()
+
+
+# ---------------------------------------------------------------------------
+# Track 2.5 prereq — TurnSnapshot tool_call_count + had_tool_error fields
+# ---------------------------------------------------------------------------
+
+
+def test_turn_snapshot_has_tool_call_fields():
+    """Track 2.5 prereq: TurnSnapshot exposes tool_call_count + had_tool_error."""
+    from pipeline.skill_review import TurnSnapshot
+    snap = TurnSnapshot(
+        turn_id=1, ts_utc="2026-05-24T00:00:00Z",
+        user_text="deploy", jarvis_text="done",
+        route="TASK", subagent="", computer_use_steps=0,
+        tool_call_count=3, had_tool_error=False,
+    )
+    assert snap.tool_call_count == 3
+    assert snap.had_tool_error is False
+
+
+def test_turn_snapshot_defaults_back_compat():
+    """Existing constructors (without the new fields) keep working."""
+    from pipeline.skill_review import TurnSnapshot
+    snap = TurnSnapshot(
+        turn_id=1, ts_utc="2026-05-24T00:00:00Z",
+        user_text="hi", jarvis_text="hello",
+        route="BANTER", subagent="", computer_use_steps=0,
+    )
+    assert snap.tool_call_count == 0
+    assert snap.had_tool_error is False
+
+
+def test_select_review_candidates_populates_tool_call_fields(tmp_path, monkeypatch):
+    """Track 2.5: select_review_candidates pulls tool_call_count + had_tool_error
+    from the turn_telemetry.turns table."""
+    import sqlite3
+    db_path = tmp_path / "turn_telemetry.db"
+    monkeypatch.setenv("JARVIS_TURN_TELEMETRY_DB", str(db_path))
+
+    from pipeline import turn_telemetry
+    turn_telemetry.init_db(db_path)
+
+    # Insert a row that qualifies via the subagent criterion so the WHERE
+    # clause picks it up regardless of reply length or env overrides.
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """INSERT INTO turns (ts_utc, user_text, jarvis_text, route,
+                              subagent, computer_use_steps,
+                              tool_call_count, had_tool_error)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        ("2026-05-24T00:00:00Z", "deploy the app", "Done — deployed.",
+         "TASK", "terminal", 0, 3, 0),
+    )
+    conn.commit()
+    conn.close()
+
+    from pipeline.skill_review import select_review_candidates
+    candidates = select_review_candidates(limit=10)
+    assert len(candidates) >= 1
+    # Find our row (jarvis_text matches "Done — deployed.")
+    snap = next(c for c in candidates if c.jarvis_text.startswith("Done"))
+    assert snap.tool_call_count == 3
+    assert snap.had_tool_error is False
