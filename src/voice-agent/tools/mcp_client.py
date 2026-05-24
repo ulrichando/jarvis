@@ -467,7 +467,7 @@ class MCPServer:
         args = list(self.config.get("args") or [])
         env = _build_safe_env(self.config.get("env"))
         params = StdioServerParameters(command=str(command), args=args, env=env)
-        errlog = open(os.devnull, "w")  # keep server banners off the TTY
+        errlog = open(os.devnull, "w", encoding="utf-8")  # keep server banners off the TTY
         try:
             async with stdio_client(params, errlog=errlog) as (read, write):
                 async with ClientSession(read, write) as session:
