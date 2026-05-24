@@ -27,6 +27,8 @@ __all__ = [
     "build_breaker_status_block",
     "build_skill_catalog_block",
     "SKILL_CATALOG_CHAR_BUDGET",
+    "build_procedure_catalog_block",
+    "find_matching_procedure",
     "SOUL_PATH_DEFAULT",
     "SOUL_PATH_OVERRIDE",
     "MAX_SOUL_CHARS",
@@ -261,3 +263,101 @@ def build_skill_catalog_block(skills) -> str:
         footer = ""
 
     return _CATALOG_HEADER + body + footer
+
+
+# ─── Track 2.5 — procedure catalog + intent match (Spec 2026-05-24) ───
+
+_PROCEDURE_HEADER = "\n\n═══ SAVED PROCEDURES (invoke by name) ═══\n\n"
+
+
+def build_procedure_catalog_block(procedures: list[dict]) -> str:
+    """Compact catalog of saved procedures for the supervisor prompt.
+
+    Returns "" when empty. Each entry is a one-liner with the name +
+    step count + first-step preview. Designed to be small enough to
+    inject into the system prompt without prefix-cache churn.
+
+    Spec 2026-05-24, Track 2.5.
+    """
+    if not procedures:
+        return ""
+    lines = [_PROCEDURE_HEADER.strip()]
+    for p in procedures:
+        name = (p.get("name") or "").strip()
+        if not name:
+            continue
+        steps = p.get("steps") or []
+        if steps:
+            first = str(steps[0])
+            preview = (first[:40] + "…") if len(first) > 40 else first
+            lines.append(f"  • {name} — {len(steps)} steps starting with: {preview}")
+        else:
+            lines.append(f"  • {name} — (no steps)")
+    return "\n".join(lines)
+
+
+def _levenshtein(a: str, b: str) -> int:
+    """Standard Levenshtein distance, iterative."""
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        curr = [i] + [0] * len(b)
+        for j, cb in enumerate(b, 1):
+            curr[j] = min(
+                prev[j] + 1,
+                curr[j - 1] + 1,
+                prev[j - 1] + (0 if ca == cb else 1),
+            )
+        prev = curr
+    return prev[-1]
+
+
+def find_matching_procedure(
+    user_text: str, procedures: list[dict]
+) -> dict | None:
+    """Find the best matching procedure (if any) for the user's utterance.
+
+    Strategy:
+      1. Exact procedure name appears as a substring in user_text → match.
+      2. Any whitespace-separated word in user_text within Levenshtein 3
+         of any procedure name OR any kebab chunk of a name → match.
+
+    Returns the procedure dict (top-1 by distance) or None.
+
+    Spec 2026-05-24, Track 2.5.
+    """
+    if not user_text or not procedures:
+        return None
+    text_lower = user_text.lower()
+
+    # 1. Exact name substring
+    for p in procedures:
+        name = (p.get("name") or "").lower()
+        if name and name in text_lower:
+            return p
+
+    # 2. Fuzzy match against any user word
+    best = None
+    best_dist = 999
+    for word in re.findall(r"[a-z0-9]+", text_lower):
+        if len(word) < 3:
+            continue  # avoid noise on short tokens like "an", "to"
+        for p in procedures:
+            name = (p.get("name") or "").lower()
+            if not name:
+                continue
+            for chunk in name.split("-") + [name]:
+                if len(chunk) < 4:
+                    # 3-letter chunks like "app" match too aggressively
+                    # (e.g. "the" → distance 3 → false positive).
+                    continue
+                d = _levenshtein(word, chunk)
+                if d <= 3 and d < best_dist:
+                    best_dist = d
+                    best = p
+    return best
