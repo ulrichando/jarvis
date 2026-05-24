@@ -4,13 +4,67 @@ A voice-first AI assistant. Real-time speech in, real-time speech out, with dire
 
 ## Install
 
-One-shot install of all four channels (CLI + Voice Agent + Desktop + Web). Pick the row that matches your shell.
+> **JARVIS lives in a private repo.** You need GitHub access to clone it. The install patterns below assume you have it. Anonymous `curl … | bash` one-liners (the kind public repos can ship) are not possible because raw.githubusercontent.com returns 404 to unauthenticated requests on private repos.
+
+### Option A — recommended: GitHub CLI (`gh`)
+
+Cross-platform, secure, no token in your shell history. One-time setup:
+
+```bash
+# Install + authenticate gh (do this once per machine)
+brew install gh                 # macOS
+sudo apt install gh             # Debian / Ubuntu / Kali
+winget install GitHub.cli       # Windows
+gh auth login                   # log in via browser
+```
+
+Then install JARVIS:
 
 | Platform | Shell | Command |
 |---|---|---|
-| Linux / macOS | bash | `curl -fsSL https://raw.githubusercontent.com/ulrichando/jarvis/master/install.sh \| bash` |
-| Windows | PowerShell | `iex (irm https://raw.githubusercontent.com/ulrichando/jarvis/master/install.ps1)` |
-| Windows | CMD | `curl -fsSL https://raw.githubusercontent.com/ulrichando/jarvis/master/install.cmd -o install.cmd && install.cmd && del install.cmd` |
+| Linux / macOS | bash | `gh repo clone ulrichando/jarvis ~/Documents/Projects/jarvis && cd ~/Documents/Projects/jarvis && ./install.sh` |
+| Windows | PowerShell | `gh repo clone ulrichando/jarvis "$env:LOCALAPPDATA\jarvis\jarvis"; & "$env:LOCALAPPDATA\jarvis\jarvis\install.ps1"` |
+| Windows | CMD | `gh repo clone ulrichando/jarvis "%LOCALAPPDATA%\jarvis\jarvis" && "%LOCALAPPDATA%\jarvis\jarvis\install.cmd"` |
+
+### Option B — Personal Access Token (PAT)
+
+If you can't use `gh` CLI: create a fine-grained PAT at https://github.com/settings/tokens/?type=beta with **Contents: Read** scope on `ulrichando/jarvis`, then:
+
+```bash
+# Linux / macOS — token from env
+export GH_TOKEN=ghp_yourtokenhere
+curl -fsSL -H "Authorization: token $GH_TOKEN" \
+  https://raw.githubusercontent.com/ulrichando/jarvis/master/install.sh | \
+  GH_TOKEN=$GH_TOKEN bash
+```
+
+```powershell
+# Windows PowerShell — token from env
+$env:GH_TOKEN = "ghp_yourtokenhere"
+$Headers = @{ Authorization = "token $env:GH_TOKEN" }
+(Invoke-WebRequest -UseBasicParsing -Headers $Headers `
+  -Uri "https://raw.githubusercontent.com/ulrichando/jarvis/master/install.ps1").Content | Invoke-Expression
+```
+
+Both install scripts (`install.sh` / `install.ps1`) honor `GH_TOKEN` (also accepted as `GITHUB_TOKEN`) and pass it to the `git clone` step, so the private repo clones with one token export.
+
+### Option C — fully manual
+
+```bash
+# Linux / macOS
+git clone https://github.com/ulrichando/jarvis.git ~/Documents/Projects/jarvis
+cd ~/Documents/Projects/jarvis
+./install.sh
+```
+
+```powershell
+# Windows PowerShell
+git clone https://github.com/ulrichando/jarvis.git "$env:LOCALAPPDATA\jarvis\jarvis"
+Set-Location "$env:LOCALAPPDATA\jarvis\jarvis"
+.\install.ps1
+```
+
+Your existing `git` credentials (SSH key, OS keychain, Git Credential Manager) handle the auth. This is the most-explicit option — no token plumbing.
 
 > **Windows status (Phase 1, 2026-05-24):** CLI + Desktop UI fully supported. The installer ships PortableGit so JARVIS's terminal/bash tool works out of the box, uses `uv` (Astral) for Python provisioning + venv, and installs to `%LOCALAPPDATA%\jarvis` (proper Windows app-data). The voice-agent's Python deps install cleanly, but **the voice-agent service install is deferred to Phase 2** — the agent currently imports Linux-only modules (PipeWire echo-cancel, systemd `sdnotify`, `xdotool` / X11). Phase 2 will refactor those behind platform-abstraction layers so `install.ps1` can also register + start the voice services. Until then, on Windows: use the CLI and Desktop natively, or run the voice agent under WSL2 with the Linux installer. See [docs/superpowers/specs/2026-05-23-windows-install-phase1-design.md](docs/superpowers/specs/2026-05-23-windows-install-phase1-design.md) for the Phase 1 / Phase 2 split and the pattern-adoption notes.
 
@@ -32,83 +86,3 @@ One-shot install of all four channels (CLI + Voice Agent + Desktop + Web). Pick 
 
 Want to verify your prereqs + detected install dir before committing to the 5–10 min Tauri build? Linux: `JARVIS_DRY_RUN=1`. Windows: `-DryRun`.
 
-### Manual install (if you don't trust curl-pipes)
-
-**Linux / macOS:**
-
-```bash
-git clone https://github.com/ulrichando/jarvis.git ~/Documents/Projects/jarvis
-cd ~/Documents/Projects/jarvis
-./install.sh
-```
-
-**Windows (PowerShell):**
-
-```powershell
-git clone https://github.com/ulrichando/jarvis.git "$env:LOCALAPPDATA\jarvis\jarvis"
-Set-Location "$env:LOCALAPPDATA\jarvis\jarvis"
-.\install.ps1
-```
-
-### Prerequisites
-
-The Windows installer auto-installs all of these (or downloads portable equivalents) without admin. The Linux installer asks you to install the missing ones first.
-
-| Tool | Why | Install if missing (Linux/macOS) | Auto-handled on Windows |
-|---|---|---|---|
-| `git` | clone the repo, terminal tool needs `bash.exe` on Windows | system package manager | yes — downloads PortableGit to `%LOCALAPPDATA%\jarvis\git` |
-| Python ≥ 3.11 | voice-agent runtime | system package manager | yes — `uv` installs Python 3.13 |
-| `uv` | fast Python install + dep sync | auto-installed via `astral.sh/uv` if missing (or use `JARVIS_NO_UV=1` to fall back to `pip`) | yes — auto-installed |
-| `bun` | CLI + Web dep install + CLI runtime | `curl -fsSL https://bun.sh/install \| bash` | yes — `irm bun.sh/install.ps1 \| iex` |
-| `node`, `npm` | Desktop frontend, web | system package manager / nvm | yes — portable zip to `%LOCALAPPDATA%\jarvis\node` |
-| `cargo` (Rust) | Desktop backend | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` | with `-AutoInstall`: `winget install Rustlang.Rustup` |
-| MSVC Build Tools | Tauri 2 backend (Windows only) | — | install hint printed (license-gated, +5 GB; opt in) |
-| `systemd --user` (Linux) | Voice agent service | already present on most Linux distros | n/a (Phase 2: Task Scheduler) |
-
-External services: a LiveKit SFU (the Linux binary is bundled in the repo and `install.sh` registers a user systemd unit + auto-generates `~/.jarvis/livekit-keys.yaml`). On Windows, grab `livekit-server.exe` from the LiveKit GitHub releases page, or use the Linux binary under WSL2.
-
-## After install
-
-### 1. Configure API keys
-
-Edit `~/Documents/Projects/jarvis/.env` and fill in real values:
-
-```bash
-GROQ_API_KEY=...
-DEEPSEEK_API_KEY=...
-GOOGLE_API_KEY=...
-OPENAI_API_KEY=...
-ANTHROPIC_API_KEY=...
-KIMI_API_KEY=...
-```
-
-All four subprojects read this file (consolidated 2026-05-15 — no more duplicate keys across subproject `.env.local` files). Subproject-specific vars (`LIVEKIT_*`, `NEXT_PUBLIC_*`, `DATABASE_URL`) stay in their respective `src/<sub>/.env.local`. The Tauri tray UI writes user overrides to `~/.jarvis/keys.env`, which always wins.
-
-### 2. Start the SFU and voice agent
-
-```bash
-# LiveKit SFU (user-level, bundled binary)
-systemctl --user start livekit-server.service
-
-# Voice agent — the brain. Tail logs to confirm it connected.
-systemctl --user start jarvis-voice-agent.service
-journalctl --user -u jarvis-voice-agent.service -f
-```
-
-### 3. Use a channel
-
-| Channel | Command |
-|---|---|
-| **CLI** | `jarvis` (or `jarvis groq` / `jarvis deepseek` for a specific provider) |
-| **Desktop (Tauri)** | `jarvis-desktop`, or run the binary directly: `~/Documents/Projects/jarvis/src/desktop-tauri/src-tauri/target/release/jarvis` |
-| **Web (Next.js)** | `cd ~/Documents/Projects/jarvis/src/web && bun dev` (defaults to `http://localhost:3000`) |
-
-## Architecture (one paragraph)
-
-The brain is a Python LiveKit Agents worker (`src/voice-agent/jarvis_agent.py`). It runs the supervisor LLM (Anthropic Claude Sonnet 4.6 by default, tray-switchable across Groq / DeepSeek / OpenAI / Anthropic / Kimi) plus a pipeline of sanitizers, monkey-patches, and a turn router that picks an LLM and TTS based on intent class. Desktop control (`computer_use`), browsing (`browser_task`), and multi-step work run as direct tools the supervisor calls itself. The Tauri desktop UI gives you a tray icon, model picker, and barge-in mic. The Next.js app is a web dashboard / chat front-end. The Claude-Code-shaped CLI is a separate engineering agent that routes through the same Anthropic-shaped proxy.
-
-For load-bearing operational rules and architecture details, see [CLAUDE.md](CLAUDE.md).
-
-## License
-
-MIT — see [LICENSE](src/voice-agent/LICENSE) (the repo-wide license; the voice-agent dir hosts the canonical copy).
