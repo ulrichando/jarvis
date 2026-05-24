@@ -149,7 +149,7 @@ def get_route_ladder(route: str) -> list[Optional[str]]:
     if route == "TASK_BROWSER" and os.environ.get(
         "JARVIS_KIMI_VOICE_EXPERIMENTAL", "0"
     ) == "1":
-        escalate = "moonshotai/kimi-k2"  # K2.6 entry; matches SPEECH_MODELS id
+        escalate = "kimi-k2.6-agent"  # tool-using K2.6 variant; matches SPEECH_MODELS key
 
     cross = defaults[TIER_CROSS_PROVIDER]
 

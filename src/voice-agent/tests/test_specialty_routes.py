@@ -101,7 +101,7 @@ def test_kimi_suppressed_without_experimental_flag():
 def test_kimi_activates_with_experimental_flag():
     with mock.patch.dict(os.environ, {"JARVIS_KIMI_VOICE_EXPERIMENTAL": "1"}):
         ladder = get_route_ladder("TASK_BROWSER")
-        assert ladder[2] == "moonshotai/kimi-k2"
+        assert ladder[2] == "kimi-k2.6-agent"
 
 
 def test_env_override_propagates_to_retry_slot():

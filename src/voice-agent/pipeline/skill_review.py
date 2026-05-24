@@ -245,6 +245,29 @@ _INTENT_VERB_RE = re.compile(
     r"open|close|send|post|book|order)\b"
 )
 
+# Spec B (Plane 3) — light correction-signal extractor. The pattern
+# detector queries `turns.correction_signal`; we populate it here from
+# the autonomous review path. Liberal-by-design: false positives cost
+# nothing (just a queued candidate that the threshold gate + manual
+# review filter out); false negatives mean the recurring pattern isn't
+# detected. Conservative shapes only — high-confidence corrections.
+_CORRECTION_RE = re.compile(
+    r"(?i)\b(stop\s+\w+|don'?t\s+\w+|too\s+\w+|just\s+give\s+me|"
+    r"i\s+already\s+said\s+\w+|never\s+(?:say|do)\s+\w+)"
+)
+
+
+def _extract_correction_signal(user_text: str) -> str | None:
+    """Lightweight regex that flags obvious user corrections. Returns
+    the matched substring (lowercased + stripped) or None. False
+    positives accepted; the >=3-occurrence threshold filters noise.
+
+    Spec B (Plane 3)."""
+    if not user_text:
+        return None
+    m = _CORRECTION_RE.search(user_text)
+    return m.group(0).strip().lower() if m else None
+
 
 def _is_successful_trajectory(
     snap: "TurnSnapshot",
@@ -1044,6 +1067,22 @@ async def autonomous_review_turn(
 
     NEVER raises — any failure returns ``[]`` so the turn handler that
     fired this can't break. Returns the list of ``ApplyResult``."""
+    # Spec B (Plane 3) — extract correction signal for pattern detection.
+    # Writes to turns.correction_signal so the automod pattern detector
+    # can find cross-session recurrences. Best-effort; never blocks.
+    try:
+        _signal = _extract_correction_signal(snapshot.user_text)
+        if _signal:
+            import sqlite3 as _sqlite3_for_signal
+            from pipeline.turn_telemetry import DEFAULT_DB_PATH as _DEFAULT_DB
+            with _sqlite3_for_signal.connect(str(_DEFAULT_DB)) as _conn:
+                _conn.execute(
+                    "UPDATE turns SET correction_signal=? WHERE id=?",
+                    (_signal, snapshot.turn_id),
+                )
+    except Exception as _e:  # noqa: BLE001
+        logger.debug("[automod] correction-signal extract failed: %s", _e)
+
     if self_improve_disabled():
         logger.debug(
             "[skill_review] autonomous review skipped — "
