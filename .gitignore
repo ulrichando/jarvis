@@ -99,6 +99,7 @@ CLAUDE.local.md
 .env.local
 .env.providers
 .env.production
+.env.tmp
 !.env.example
 !**/.env.example
 
