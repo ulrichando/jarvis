@@ -27,13 +27,19 @@ The Hermes plugin port copied 8 `memory` backends and wired `register_memory_pro
 ## Architecture
 
 ```
-┌─ jarvis_agent.py :: JarvisAgent(Agent)  (hooks already exist) ──────────────┐
+┌─ jarvis_agent.py :: JarvisAgent(Agent) + session hooks ─────────────────────┐
 │  on_enter                  → memory_provider.begin_session(room_id)          │
-│  on_user_turn_completed    → (a) sync_turn_async(user, prev_assistant)       │  fire-and-forget
-│      (already overridden @  → (b) if is_recall_query(user):                   │
-│       jarvis_agent.py:3548)       inject recall_context(user) into turn_ctx   │  cheap path, tail-injected
+│  conversation_item_added   → memory_provider.sync_item_async(role, text)     │  fire-and-forget, per item
+│      (session hook @5091)       (captures BOTH user + assistant items — the   │  (right place for writes:
+│                                  natural fit for per-message peer modeling)   │   on_user_turn_completed has
+│  on_user_turn_completed    → if is_recall_query(user):                       │   no assistant reply yet)
+│      (overridden @3548)          inject recall_context(user) into turn_ctx    │  cheap path, tail-injected
 │  on_exit                   → memory_provider.end_session()                    │  best-effort
 └──────────────────────────────────────────────────────────────────────────────┘
+
+(Writes use `conversation_item_added`, not `on_user_turn_completed`, because the
+latter fires before the LLM reply exists. Honcho's `add_messages` is per-message
+with peer attribution, so syncing each item as it lands is the natural fit.)
         │ resolves active backend by name (JARVIS_MEMORY_PROVIDER)
         ▼
    pipeline/memory_provider.py   (NEW runtime: session lifecycle, async sync queue,
@@ -69,7 +75,7 @@ class MemoryProvider(abc.ABC):
     def initialize(self, session_id: str) -> None: ...          # default: no-op
     def recall(self, query: str) -> str: return ""              # deep/dialectic; NL-in, text-out
     def recall_context(self, hint: str = "") -> str: return ""  # cheap recent-context
-    def sync_turn(self, user_text: str, assistant_text: str) -> None: ...  # default: no-op
+    def sync_message(self, role: str, text: str) -> None: ...   # default: no-op (role: "user"|"assistant")
     def end_session(self) -> None: ...                          # default: no-op
 ```
 
