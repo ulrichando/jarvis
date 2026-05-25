@@ -82,3 +82,42 @@ def test_deepgram_construction_failure_falls_through(monkeypatch):
     with patch.object(_dg_mod, "STT", side_effect=RuntimeError("simulated init fail")):
         chain = build_stt_chain()
     assert isinstance(chain, BreakeredGroqSTT)
+
+
+# ── Keyterm boosting (recognition fix, 2026-05-20) ───────────────────
+# The echo-vs-accent telemetry diagnosis showed JARVIS's "misheard me"
+# turns were dominated by genuine recognition errors, NOT echo — e.g.
+# "Joris"/"Jervis" for "Jarvis", which no downstream garbage-gate can
+# catch because they're plausible English. Deepgram Nova-3 keyterm
+# prompting boosts these at the STT level. (Nova-3 only; `keyterm`,
+# never `keywords` — the plugin's _validate_keyterm rejects keywords
+# on Nova-3.)
+
+def test_deepgram_stt_boosts_jarvis_keyterm(monkeypatch):
+    """The Deepgram Nova-3 STT must ship a keyterm list containing
+    'Jarvis' so the wake-name resolves at the STT level instead of
+    landing as 'Joris' in the transcript."""
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "test-deepgram")
+    monkeypatch.delenv("JARVIS_STT_KEYTERMS", raising=False)
+    from providers.stt import _build_deepgram_stt
+    stt = _build_deepgram_stt()
+    assert stt is not None, "Deepgram STT should build with a key set"
+    keyterms = [t.lower() for t in stt._opts.keyterm]
+    assert "jarvis" in keyterms, (
+        f"expected 'jarvis' in keyterm boost list, got {stt._opts.keyterm!r}"
+    )
+
+
+def test_stt_keyterms_extensible_via_env(monkeypatch):
+    """Operators extend the boost list with their own names / domain
+    vocabulary via JARVIS_STT_KEYTERMS (comma-separated). The default
+    'Jarvis' is always present; the list is de-duplicated case-
+    insensitively and entries are trimmed."""
+    monkeypatch.setenv("JARVIS_STT_KEYTERMS", "Ulrich, LiveKit , jarvis")
+    from providers.stt import _stt_keyterms
+    terms = _stt_keyterms()
+    low = [t.lower() for t in terms]
+    assert "jarvis" in low          # default always present
+    assert "ulrich" in low          # env-added
+    assert "livekit" in low         # env-added, whitespace trimmed
+    assert low.count("jarvis") == 1, f"'jarvis' not de-duplicated: {terms!r}"
