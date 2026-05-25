@@ -58,7 +58,16 @@ KNOWN_LEAK_NAMES: frozenset[str] = frozenset({
     "web_search",
     "read_url",
     "remember_this",
+    # Location tools. `get_location` / `set_location` retired
+    # 2026-05-17, replaced by saved_address + current_location +
+    # set_saved_address. Old names kept in this list so recall-time
+    # scrubbing of legacy assistant turns (which may still mention
+    # them) catches the leak shape.
     "get_location",
+    "set_location",
+    "saved_address",
+    "current_location",
+    "set_saved_address",
 })
 
 
