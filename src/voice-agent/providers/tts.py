@@ -120,6 +120,15 @@ class LoggingGroqChunkedStream(_GroqChunkedStream):
                 nonlocal_audio_bytes[0],
             )
             return
+
+        # Echo-aware barge-in: record the text JARVIS is about to speak so the
+        # gate can tell the user's real speech from JARVIS's own echo on a hot
+        # mic (pipeline/echo_gate consumers read it via speaking_tracker).
+        try:
+            from pipeline import speaking_tracker
+            speaking_tracker.note_speaking(self._input_text or "")
+        except Exception:
+            pass
         # Breaker-gated upstream call. TTS_BREAKER fails fast when
         # Groq's TTS endpoint is in cooldown so FallbackAdapter
         # cascades to EdgeTTS within ms instead of waiting ~30s for
