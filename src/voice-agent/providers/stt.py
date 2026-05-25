@@ -96,6 +96,38 @@ def build_breakered_stt() -> BreakeredGroqSTT:
     return BreakeredGroqSTT(model="whisper-large-v3-turbo", language="en")
 
 
+# Deepgram Nova-3 keyterm prompting — boosts recognition of specific
+# terms at the STT level. Added 2026-05-20 after the echo-vs-accent
+# telemetry diagnosis found JARVIS's "misheard me" turns were dominated
+# by genuine recognition errors (e.g. "Joris"/"Jervis" for "Jarvis"),
+# NOT echo. A wrong-but-plausible English word can't be caught by any
+# downstream garbage-gate (stt_gate.py), so the only lever is upstream
+# recognition. Nova-3 only (the plugin's _validate_keyterm rejects
+# keyterm on other models, and rejects `keywords` on Nova-3). Extend
+# with your own names / domain vocab via JARVIS_STT_KEYTERMS
+# (comma-separated) — keep it focused; over-long lists dilute the boost.
+_DEFAULT_KEYTERMS: tuple[str, ...] = ("Jarvis",)
+
+
+def _stt_keyterms() -> list[str]:
+    """The Deepgram keyterm boost list: built-in defaults plus any
+    operator-supplied terms from JARVIS_STT_KEYTERMS (comma-separated).
+    De-duplicated case-insensitively, first-seen order preserved. Read
+    at call time so the value can change across worker restarts."""
+    terms = list(_DEFAULT_KEYTERMS)
+    terms += [t.strip() for t in os.environ.get("JARVIS_STT_KEYTERMS", "").split(",")]
+    out: list[str] = []
+    seen: set[str] = set()
+    for t in terms:
+        if not t:
+            continue
+        k = t.lower()
+        if k not in seen:
+            seen.add(k)
+            out.append(t)
+    return out
+
+
 def _build_deepgram_stt():
     """Build a Deepgram Nova-3 streaming STT. Returns None if no API
     key is set or if the import fails (so the caller can fall through
@@ -111,6 +143,8 @@ def _build_deepgram_stt():
       - smart_format=True — punctuation + capitalization in transcripts.
       - sample_rate=16000 — matches Silero VAD + the LiveKit audio
         track's downsampled rate.
+      - keyterm=_stt_keyterms() — Nova-3 keyterm prompting; boosts
+        "Jarvis" (+ operator vocab) so accent mishears resolve at STT.
     """
     api_key = os.environ.get("DEEPGRAM_API_KEY")
     if not api_key:
@@ -138,6 +172,7 @@ def _build_deepgram_stt():
             endpointing_ms=300,
             smart_format=True,
             sample_rate=16000,
+            keyterm=_stt_keyterms(),
             api_key=api_key,
         )
     except Exception as e:
