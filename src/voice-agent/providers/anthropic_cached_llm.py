@@ -268,27 +268,31 @@ class AnthropicCachedLLM(lk_anthropic.LLM):
                 content[-1]["cache_control"] = CACHE_CONTROL_EPHEMERAL  # type: ignore
                 break
 
-        if beta_flag:
-            stream = self._client.beta.messages.create(
-                betas=[beta_flag],
-                messages=messages,  # type: ignore[arg-type]
-                model=self._opts.model,
-                stream=True,
-                timeout=conn_options.timeout,
-                **extra,
-            )
-        else:
-            stream = self._client.messages.create(
-                messages=messages,
-                model=self._opts.model,
-                stream=True,
-                timeout=conn_options.timeout,
-                **extra,
-            )
+        async def create_anthropic_stream() -> anthropic.AsyncStream[
+            anthropic.types.RawMessageStreamEvent
+        ]:
+            if beta_flag:
+                stream = await self._client.beta.messages.create(
+                    betas=[beta_flag],
+                    messages=messages,  # type: ignore[arg-type]
+                    model=self._opts.model,
+                    stream=True,
+                    timeout=conn_options.timeout,
+                    **extra,
+                )
+            else:
+                stream = await self._client.messages.create(
+                    messages=messages,
+                    model=self._opts.model,
+                    stream=True,
+                    timeout=conn_options.timeout,
+                    **extra,
+                )
+            return stream  # type: ignore[return-value]
 
         return LLMStream(
             self,
-            anthropic_stream=stream,  # type: ignore[arg-type]
+            create_anthropic_stream=create_anthropic_stream,
             chat_ctx=chat_ctx,
             tools=tools or [],
             conn_options=conn_options,
