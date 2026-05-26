@@ -118,9 +118,42 @@ fi
 # Provider identities and picker entries now come from src/utils/model/jarvisModelRegistry.ts.
 
 # ── Start proxy ───────────────────────────────────────────────────────────
+# Pre-flight: kill any orphaned proxy from a prior session that didn't
+# clean up. Without this, the new proxy fails with EADDRINUSE, the new
+# CLI silently connects to the OLD proxy (which still has the pre-rotation
+# env vars), and you get phantom "invalid API key" errors after rotating
+# credentials. Match by command line so we don't shoot some unrelated
+# Bun process on the box.
+STALE_PROXY=$(pgrep -f "$ROOT/src/proxy/server.ts" 2>/dev/null | head -1)
+if [ -n "$STALE_PROXY" ] && kill -0 "$STALE_PROXY" 2>/dev/null; then
+  kill -TERM "$STALE_PROXY" 2>/dev/null || true
+  for _ in 1 2 3 4 5 6; do
+    kill -0 "$STALE_PROXY" 2>/dev/null || break
+    sleep 0.25
+  done
+  kill -KILL "$STALE_PROXY" 2>/dev/null || true
+fi
+
 "$BUN" "$ROOT/src/proxy/server.ts" &>/tmp/jarvis-proxy.log &
 PROXY_PID=$!
-trap "kill $PROXY_PID 2>/dev/null" EXIT
+
+# Robust cleanup. The OLD code used `trap "kill $PROXY_PID" EXIT` plus
+# `exec systemd-run ...` below — but `exec` replaces this bash process,
+# so the trap dies with it and the proxy gets orphaned. Ctrl+C in the
+# CLI then leaves a zombie listening on :4000 that the next `jarvis`
+# run silently inherits (with stale env vars). Keeping bash alive (no
+# exec) lets the trap actually fire.
+cleanup_proxy() {
+  if [ -n "${PROXY_PID:-}" ] && kill -0 "$PROXY_PID" 2>/dev/null; then
+    kill -TERM "$PROXY_PID" 2>/dev/null || true
+    for _ in 1 2 3 4 5 6; do
+      kill -0 "$PROXY_PID" 2>/dev/null || break
+      sleep 0.25
+    done
+    kill -KILL "$PROXY_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup_proxy EXIT
 
 for i in $(seq 1 15); do
   if curl -s http://localhost:4000/health >/dev/null 2>&1; then break; fi
@@ -150,8 +183,10 @@ CLI_CMD=( "$BUN"
   --permission-mode "$JARVIS_PERMISSION_MODE"
   "$@" )
 
+# NB: no `exec` here — see cleanup_proxy comment above. We must keep
+# this bash process alive so the EXIT trap fires when the CLI exits.
 if [ -z "${JARVIS_NO_SCOPE:-}" ] && command -v systemd-run >/dev/null 2>&1 && [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
-  exec systemd-run --user --scope --quiet \
+  systemd-run --user --scope --quiet \
     --property=IPAddressDeny=2607:6bc0::/32 \
     --property=IPAddressDeny=160.79.104.0/22 \
     --property=IPAddressAllow=127.0.0.0/8 \
@@ -161,5 +196,6 @@ if [ -z "${JARVIS_NO_SCOPE:-}" ] && command -v systemd-run >/dev/null 2>&1 && [ 
     --property=IPAddressAllow=192.168.0.0/16 \
     -- "${CLI_CMD[@]}"
 else
-  exec "${CLI_CMD[@]}"
+  "${CLI_CMD[@]}"
 fi
+# Bash exits here → cleanup_proxy fires via EXIT trap.
