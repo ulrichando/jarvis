@@ -3,7 +3,7 @@ import { env } from '../utils/env.js'
 // The former is better vertically aligned, but isn't usually supported on Windows/Linux
 export const BLACK_CIRCLE = env.platform === 'darwin' ? '⏺' : '●'
 export const BULLET_OPERATOR = '∙'
-export const TEARDROP_ASTERISK = '✻'
+export const TEARDROP_ASTERISK = '◉'
 export const UP_ARROW = '↑' // up - used for opus 1m merge notice
 export const DOWN_ARROW = '↓' // down - used for scroll hint
 export const LIGHTNING_BOLT = '↯' // lightning - used for fast mode indicator
