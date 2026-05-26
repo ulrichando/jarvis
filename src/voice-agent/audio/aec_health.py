@@ -94,7 +94,11 @@ def current_echo_defense(*, apm_aec: bool, dtln_healthy: bool) -> EchoDefense:
 # JARVIS stopped replying after enabling it (likely echo self-interrupt /
 # garbled STT → tuned-L1 insufficient). Barge-in needs L3 (DTLN) — plan Phase B.
 # Don't re-promote to "l1" without it.
-_HOT_MIC_SET = "none"   # one of: "none", "l1", "l1_l3"
+# 2026-05-25: promoted to "l1_l3" — DTLN L3 now shipped (models +
+# ai-edge-litert), smoke p95 1.6 ms / budget 15 ms. Tuned-L1 active too
+# (NS/AGC OFF, extended_filter on — no double-DSP). Watch for echo
+# self-interrupt regressions and demote to "none" if seen.
+_HOT_MIC_SET = "l1_l3"   # one of: "none", "l1", "l1_l3"
 
 
 def sufficient_for_hot_mic(d: EchoDefense, profile: str) -> bool:

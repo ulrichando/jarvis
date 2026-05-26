@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""jarvis-memory-purge — review-based cleanup of ambient-audio pollution
+in ~/.jarvis/hub/state.db.memories (2026-05-20 fix).
+
+Default: DRY-RUN. Flags likely-garbage memories and writes them to
+~/.jarvis/memory-purge-candidates.txt for human review (edit/trim it).
+--apply: backs up state.db, then publishes memory.value.removed events
+(via the hub bus) for the memory_ids in the reviewed kill-list file.
+Never deletes without --apply. Run with the voice-agent venv — --apply
+lazily imports tools.memory (which pulls in livekit).
+"""
+from __future__ import annotations
+
+import argparse
+import re
+import shutil
+import sqlite3
+import sys
+import time
+from pathlib import Path
+
+_STATE_DB = Path.home() / ".jarvis" / "hub" / "state.db"
+_CANDIDATES = Path.home() / ".jarvis" / "memory-purge-candidates.txt"
+
+_SELF = re.compile(r"\b(ulrich|user|jarvis|i|i'm|im|my|me|we|our|you|your)\b", re.I)
+_META = re.compile(r"""(?ix)^\s*(
+      the\s+(user|conversation|speaker|discussion|topic|exchange)\b
+    | it\s+(seems|appears|looks|sounds)\b
+    | this\s+(is|seems|appears)\b )""")
+_PROPER = re.compile(r"\b([A-Z][a-z]{2,})\b")
+_WHITELIST = {"The", "User", "Ulrich", "Jarvis", "Chrome", "It", "This",
+              "That", "A", "An", "I", "Dr", "Mr", "Mrs", "Africa",
+              "Senegal", "Japanese"}
+
+
+def _is_meta(c: str) -> bool:
+    return bool(_META.search(c))
+
+
+def _is_tv_narrative(c: str) -> bool:
+    if _SELF.search(c):
+        return False
+    props = [p for p in _PROPER.findall(c) if p not in _WHITELIST]
+    return len(props) >= 1
+
+
+def flag_garbage(memories: list[dict]) -> list[dict]:
+    """Return the subset that looks like ambient-audio hallucination or
+    LLM narration. Conservative; for human review, not auto-deletion."""
+    return [m for m in memories
+            if _is_meta(m["content"]) or _is_tv_narrative(m["content"])]
+
+
+def _read_all() -> list[dict]:
+    conn = sqlite3.connect(f"file:{_STATE_DB}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        return [dict(r) for r in conn.execute(
+            "SELECT memory_id, content, category FROM memories").fetchall()]
+    finally:
+        conn.close()
+
+
+def _dry_run() -> None:
+    if not _STATE_DB.exists():
+        sys.exit(f"state.db not found at {_STATE_DB} — has the hub run yet?")
+    mems = _read_all()
+    flagged = flag_garbage(mems)
+    _CANDIDATES.write_text(
+        "\n".join(f"{m['memory_id']}\t{m['content']}" for m in flagged),
+        encoding="utf-8",
+    )
+    print(f"{len(flagged)}/{len(mems)} memories flagged as likely garbage.")
+    print("Heuristic is conservative-but-noisy — it also flags some real")
+    print("third-party/project facts. REVIEW each line and delete any keeper")
+    print("from the kill-list before --apply:")
+    print(f"  {_CANDIDATES}")
+
+
+def _apply() -> None:
+    if not _CANDIDATES.exists():
+        sys.exit("No candidates file — run a dry-run first.")
+    ids = [ln.split("\t", 1)[0].strip()
+           for ln in _CANDIDATES.read_text(encoding="utf-8").splitlines()
+           if ln.strip()]
+    if not ids:
+        sys.exit("Kill-list empty — nothing to remove.")
+    backup = _STATE_DB.with_suffix(f".db.bak-{int(time.time())}")
+    shutil.copy2(_STATE_DB, backup)
+    print(f"Backed up state.db -> {backup}")
+    # Publish removal events through the hub bus so the daemon applies the
+    # DELETE consistently (src/hub/server.py: memory.value.removed).
+    sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "voice-agent"))
+    from tools.memory import _publish_event  # type: ignore
+    for mid in ids:
+        _publish_event("memory.value.removed", {"memory_id": mid})
+    print(f"Published {len(ids)} memory.value.removed events.")
+    # Verify the hub actually applied them — publish() silently buffers to an
+    # offline queue if jarvis-hub.service is down, so confirm by read-back.
+    time.sleep(2.0)
+    conn = sqlite3.connect(f"file:{_STATE_DB}?mode=ro", uri=True)
+    try:
+        ph = ",".join("?" * len(ids))
+        remaining = conn.execute(
+            f"SELECT COUNT(*) FROM memories WHERE memory_id IN ({ph})", ids
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    if remaining:
+        print(f"WARNING: {remaining}/{len(ids)} still present after 2s — is "
+              f"jarvis-hub.service running? Events may have buffered offline; "
+              f"re-run --apply once the hub is up. (backup: {backup})")
+    else:
+        print(f"Verified: all {len(ids)} removed from state.db.")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--apply", action="store_true",
+                    help="remove the reviewed kill-list (default: dry-run)")
+    args = ap.parse_args()
+    _apply() if args.apply else _dry_run()
+
+
+if __name__ == "__main__":
+    main()
