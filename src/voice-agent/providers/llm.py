@@ -940,6 +940,23 @@ _ANTH_DEFAULT_PER_ROUTE: dict[str, tuple[str, str, float]] = {
 }
 
 
+# Routes where the supervisor MUST call a tool — narration-only replies on
+# these are categorically confab. Set via tool_choice="required" on the
+# primary LLM construction; Anthropic maps "required" → {"type":"any"} per
+# anthropic_cached_llm.py:212-213. BANTER/EMOTIONAL/REASONING/TASK_OTHER
+# can legitimately be text-only (chitchat, thinking-out-loud, follow-up
+# questions), so the model decides on those.
+_TOOL_FORCED_ROUTES = frozenset({
+    "TASK_DESKTOP", "TASK_BROWSER", "TASK_CODE", "TASK_FILES",
+})
+
+
+def _tool_choice_for_route(route: str) -> Optional[str]:
+    """Return "required" for action routes (force a tool call), None
+    otherwise (model decides between tool call vs text reply)."""
+    return "required" if route in _TOOL_FORCED_ROUTES else None
+
+
 def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM:
     """Construct route → inner-LLM mapping with Anthropic primaries
     (prompt-cached, ~700 ms TTFW warm) and Groq + DeepSeek as
@@ -1141,12 +1158,16 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
                 )
                 return None
             try:
-                inst = lk_openai.LLM(
-                    model=model,
-                    api_key=ds_key,
-                    base_url="https://api.deepseek.com/v1",
-                    temperature=temp,
-                )
+                tc = _tool_choice_for_route(route)
+                inst_kwargs = {
+                    "model": model,
+                    "api_key": ds_key,
+                    "base_url": "https://api.deepseek.com/v1",
+                    "temperature": temp,
+                }
+                if tc is not None:
+                    inst_kwargs["tool_choice"] = tc
+                inst = lk_openai.LLM(**inst_kwargs)
                 inst._jarvis_label = f"deepseek:{model}"
                 return inst
             except Exception as e:
@@ -1169,17 +1190,21 @@ def build_dispatching_llm(task_override: Optional[Any] = None) -> DispatchingLLM
             # win. We don't pass `caching="ephemeral"` — the subclass
             # owns cache_control placement (see its module docstring).
             from providers.anthropic_cached_llm import AnthropicCachedLLM
-            inst = AnthropicCachedLLM(
-                model=model,
-                api_key=anth_key,
-                temperature=temp,
-                max_tokens=200,
+            tc = _tool_choice_for_route(route)
+            ack = {
+                "model": model,
+                "api_key": anth_key,
+                "temperature": temp,
+                "max_tokens": 200,
                 # See SPEECH_MODELS entry for full rationale. tl;dr:
                 # defense-in-depth — the real fix for the 400
                 # additionalProperties=false rejection is the
                 # anthropic_strict_schema sanitizer in jarvis_agent.py.
-                _strict_tool_schema=False,
-            )
+                "_strict_tool_schema": False,
+            }
+            if tc is not None:
+                ack["tool_choice"] = tc
+            inst = AnthropicCachedLLM(**ack)
             inst._jarvis_label = f"anthropic:{model}"
             return inst
         except Exception as e:
