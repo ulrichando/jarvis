@@ -277,7 +277,11 @@ from pipeline.pre_tts_confab_gate import (
     telemetry_state_for_clean as _pre_tts_telemetry_clean,
     FILLER_TEXT as _PRE_TTS_FILLER_TEXT,
 )
-from pipeline.turn_telemetry import CONFAB_STATE_BYPASSED_KILLED  # for gate-disabled telemetry
+from pipeline.turn_telemetry import (
+    CONFAB_STATE_BYPASSED_KILLED,                 # for gate-disabled telemetry
+    CONFAB_STATE_RETRY_FACTORY_MISSING,           # gate tripped but no _jarvis_pre_tts_llm_factory
+    CONFAB_STATE_RETRY_EXCEPTION,                 # retry chain raised — see logs
+)
 
 logger = logging.getLogger("jarvis")
 
@@ -3402,7 +3406,7 @@ async def pre_tts_confab_gate_filter(text):
                 "emitting original text"
             )
             try:
-                sess._jarvis_confab_check_state = _pre_tts_telemetry_clean(verdict)
+                sess._jarvis_confab_check_state = CONFAB_STATE_RETRY_FACTORY_MISSING
                 sess._jarvis_confab_pattern_matched = verdict.pattern_matched
                 sess._jarvis_confab_retry_models = []
             except Exception:
@@ -3435,7 +3439,7 @@ async def pre_tts_confab_gate_filter(text):
         # operator can debug from the row.
         logger.exception(f"[pre_tts_gate] retry chain raised: {e}; emitting original text")
         try:
-            sess._jarvis_confab_check_state = _pre_tts_telemetry_clean(verdict)
+            sess._jarvis_confab_check_state = CONFAB_STATE_RETRY_EXCEPTION
             sess._jarvis_confab_pattern_matched = verdict.pattern_matched
             sess._jarvis_confab_retry_models = []
         except Exception:
