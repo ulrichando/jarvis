@@ -29,6 +29,10 @@ describe('providers — supportsVision plumbing', () => {
     ['gemini-2.0-flash', true],
     ['gemini-pro', true],
     ['gemini-2.5-pro', true],
+    ['kimi-k2.6-instant', true],
+    ['kimi-k2.6-thinking', true],
+    ['kimi-k2.6-agent', true],
+    ['kimi-k2.6-swarm', true],
   ] as const)('provider for %s has supportsVision: %p', (modelId, expected) => {
     const p = getProviderForModel(modelId)
     expect(p).not.toBeNull()
