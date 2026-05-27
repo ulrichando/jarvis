@@ -15,9 +15,16 @@ import { getReasoning, setReasoning, REASONING_PLACEHOLDER } from './reasoning-c
 
 // ── OpenAI message types ───────────────────────────────────────────────────
 
+export type OpenAIPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } }
+
 type OpenAIMessage =
   | { role: 'system'; content: string }
-  | { role: 'user'; content: string }
+  // Vision-capable providers accept an array of typed parts as user
+  // content. Non-vision providers see flat strings (with images
+  // replaced by the literal "[image]" placeholder).
+  | { role: 'user'; content: string | OpenAIPart[] }
   | {
       role: 'assistant'
       content: string | null
@@ -169,11 +176,71 @@ function contentToText(content: unknown): string {
   return ''
 }
 
+// Vision-aware variant. Returns a plain string (current behaviour) when
+// there are no images OR the upstream provider can't see them. When
+// images ARE present and the provider supports vision, returns the
+// OpenAI-shape array of {type:'text'|'image_url'} parts so the upstream
+// LLM actually receives pixels instead of the literal "[image]".
+//
+// Edge cases the function defends:
+// - image-only message → prepends `{type:'text', text:''}` so providers
+//   that require ≥1 text part don't reject the message
+// - unknown image.source.type → falls back to `[image]` placeholder text
+//   part (and never throws)
+// - non-array content → delegates to contentToText (existing semantics)
+export function contentToOpenAIParts(
+  content: unknown,
+  supportsVision: boolean,
+): string | OpenAIPart[] {
+  if (!content) return ''
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return contentToText(content)
+
+  const hasImage = content.some((b: any) => b && b.type === 'image')
+  if (!hasImage || !supportsVision) return contentToText(content)
+
+  const parts: OpenAIPart[] = []
+  for (const b of content) {
+    if (!b) continue
+    if (b.type === 'text') {
+      if (b.text) parts.push({ type: 'text', text: b.text })
+      continue
+    }
+    if (b.type === 'image') {
+      const src = b.source
+      if (src && src.type === 'base64' && src.data && src.media_type) {
+        parts.push({
+          type: 'image_url',
+          image_url: { url: `data:${src.media_type};base64,${src.data}` },
+        })
+      } else if (src && src.type === 'url' && src.url) {
+        parts.push({ type: 'image_url', image_url: { url: src.url } })
+      } else {
+        // Unknown / missing source — drop pixels but keep a textual
+        // breadcrumb so the model knows something visual was there.
+        parts.push({ type: 'text', text: '[image]' })
+      }
+      continue
+    }
+    // Other Anthropic block types (thinking, tool_use, …) aren't valid
+    // in a user turn — silently ignore rather than emit garbage.
+  }
+
+  // Some providers reject content arrays with zero text parts. Prepend
+  // an empty text part so an image-only user message round-trips.
+  if (!parts.some((p) => p.type === 'text')) {
+    parts.unshift({ type: 'text', text: '' })
+  }
+
+  return parts.length > 0 ? parts : ''
+}
+
 // ── Convert Anthropic messages → OpenAI messages ──────────────────────────
 
 export function convertMessages(
   anthropicMessages: any[],
   requiresReasoning = false,
+  supportsVision = false,
 ): OpenAIMessage[] {
   const out: OpenAIMessage[] = []
 
@@ -245,13 +312,19 @@ export function convertMessages(
         out.push({ role: 'tool', tool_call_id: tr.tool_use_id, content: resultText })
       }
 
-      // Remaining text becomes a user message
+      // Remaining blocks (text + image) become a user message. Goes
+      // through contentToOpenAIParts so image blocks survive into a
+      // typed `image_url` part when the upstream supports vision, or
+      // flatten to a `[image]` placeholder string when it doesn't.
+      // Pre-Step-3 the code filtered to text-only and silently dropped
+      // image blocks — that's the bug this replaces.
       if (otherBlocks.length > 0) {
-        const text = otherBlocks
-          .filter((b: any) => b.type === 'text')
-          .map((b: any) => b.text ?? '')
-          .join('')
-        if (text) out.push({ role: 'user', content: text })
+        const userContent = contentToOpenAIParts(otherBlocks, supportsVision)
+        const hasContent =
+          typeof userContent === 'string'
+            ? userContent.length > 0
+            : userContent.length > 0
+        if (hasContent) out.push({ role: 'user', content: userContent })
       }
     }
   }
@@ -440,7 +513,11 @@ export function convertRequest(req: any, provider: Provider): any {
     messages.push({ role: 'system', content: systemText })
   }
 
-  const converted = convertMessages(req.messages ?? [], provider.requiresReasoning)
+  const converted = convertMessages(
+    req.messages ?? [],
+    provider.requiresReasoning,
+    provider.supportsVision,
+  )
   messages.push(...converted)
 
   const repairedMessages = repairMessageSequence(messages)
