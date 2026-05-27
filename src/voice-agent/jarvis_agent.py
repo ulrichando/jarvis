@@ -985,6 +985,32 @@ async def _thinking_heartbeat(interval_s: float = 3.0) -> None:
         raise
 
 
+def _start_thinking_heartbeat(session, interval_s: float = 3.0) -> None:
+    """Start (or restart) the heartbeat task on this session. Any prior
+    task is cancelled defensively — handles back-to-back user inputs
+    that arrive faster than the previous turn-end."""
+    prior = getattr(session, "_jarvis_thinking_heartbeat", None)
+    if prior is not None and not prior.done():
+        prior.cancel()
+    try:
+        session._jarvis_thinking_heartbeat = asyncio.create_task(
+            _thinking_heartbeat(interval_s=interval_s)
+        )
+    except Exception as _e:
+        logger.debug(f"[heartbeat] start failed: {_e}")
+        session._jarvis_thinking_heartbeat = None
+
+
+def _cancel_thinking_heartbeat(session) -> None:
+    """Cancel the heartbeat task on this session if running. Idempotent."""
+    task = getattr(session, "_jarvis_thinking_heartbeat", None)
+    if task is None:
+        return
+    if not task.done():
+        task.cancel()
+    session._jarvis_thinking_heartbeat = None
+
+
 # Per-turn tool-call governor. Without this, the LLM can chain
 # run_jarvis_cli calls indefinitely — observed: misinterpreted user
 # question → CLI #1 ran for 24 s → LLM chained CLI #2 ("fix the
