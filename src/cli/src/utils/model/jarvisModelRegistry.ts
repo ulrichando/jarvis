@@ -421,6 +421,13 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
   // model `kimi-k2.6`. The Instant/Thinking/Agent/Swarm split is a
   // CLIENT-side preset (different system prompt + tools), not a
   // separate API endpoint. Verified live via /v1/models 2026-05-04.
+  // Vision verified via curl 2026-05-27 — Moonshot's /v1/chat/completions
+  // accepts OpenAI-shape image_url parts and correctly identifies a
+  // solid-color test PNG (the model burns ~50 tokens in reasoning_content
+  // before answering, so request needs adequate max_tokens for the
+  // visible answer to land — provider default 16K is plenty in normal
+  // use). All four UI variants share the same upstream and therefore
+  // the same vision capability.
   {
     id: 'kimi-k2.6-instant',
     label: 'Kimi K2.6 Instant',
@@ -429,6 +436,7 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     upstreamModel: 'kimi-k2.6',
     tiers: ['fast', 'default'],
     capabilities: [],
+    supportsVision: true,
     visibleInPicker: true,
   },
   {
@@ -439,6 +447,7 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     upstreamModel: 'kimi-k2.6',
     tiers: ['reasoning'],
     capabilities: ['thinking'],
+    supportsVision: true,
     visibleInPicker: true,
     fallback: ['kimi-k2.6-instant'],
   },
@@ -450,6 +459,7 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     upstreamModel: 'kimi-k2.6',
     tiers: ['orchestration', 'balanced'],
     capabilities: [],
+    supportsVision: true,
     visibleInPicker: true,
   },
   {
@@ -460,6 +470,7 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     upstreamModel: 'kimi-k2.6',
     tiers: ['long_context'],
     capabilities: [],
+    supportsVision: true,
     visibleInPicker: true,
   },
   // Anthropic Claude — added 2026-05-11. Three tiers mirroring the

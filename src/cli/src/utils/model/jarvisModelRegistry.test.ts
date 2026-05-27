@@ -21,14 +21,27 @@ const VISION_CAPABLE_MODELS = [
   'gemini-2.0-flash',
   'gemini-pro',
   'gemini-2.5-pro',
+  // Kimi K2.6 — verified via curl 2026-05-27 (Moonshot's
+  // /v1/chat/completions accepts image_url base64 and correctly
+  // names the dominant color of a solid-color test PNG). All four
+  // jarvis ids share upstream `kimi-k2.6` so all four flip together.
+  'kimi-k2.6-instant',
+  'kimi-k2.6-thinking',
+  'kimi-k2.6-agent',
+  'kimi-k2.6-swarm',
 ] as const
 
-// Explicitly NOT vision (either upstream doesn't support it, or we
-// haven't verified yet — pending curl smoke test before flipping).
+// Explicitly NOT vision (either upstream doesn't support it, or
+// upstream claims to but real testing shows it doesn't actually
+// process pixels).
 // gpt-5-nano: OpenAI lists it as text-only.
-// llama-4-scout: pending verification (Groq's OpenAI-compat layer).
-// kimi-k2.6-instant: pending verification (Moonshot's docs claim
-//   multimodal but the request shape isn't documented for our path).
+// llama-4-scout: VERIFIED FAILING 2026-05-27. Groq's vision endpoint
+//   accepts the image_url shape (no error), but the model returns
+//   hallucinated content unrelated to the actual image (called a
+//   solid pink PNG "a black-and-white Copy to clipboard icon"; said
+//   "black" for both pink AND green test images). Either Groq's
+//   deployment doesn't have functional vision wired up, or Scout's
+//   vision is too weak to ship. Flipping would silently degrade UX.
 // All deepseek-*: text-only models; deepseek-VL not in registry.
 // All other groq models: text-only (qwen, llama-3.x, gpt-oss-120b).
 // ollama: depends on the local model — punt for now.
