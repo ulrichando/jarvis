@@ -45,6 +45,18 @@ CONFAB_STATE_CAUGHT_T3_PASSED   = "caught_t3_passed"
 CONFAB_STATE_CAUGHT_FILLER      = "caught_filler"
 CONFAB_STATE_BYPASSED_KILLED    = "bypassed_killed"
 
+# Precise sub-states for the gate's "clean" (no-retry) verdicts — added
+# 2026-05-27 to make the four bypass reasons distinguishable in the DB
+# instead of collapsing them into one indistinguishable CLEAN value.
+CONFAB_STATE_CLEAN_BYPASS_ROUTE   = "clean_bypass_route"     # BANTER / EMOTIONAL
+CONFAB_STATE_CLEAN_UNKNOWN_ROUTE  = "clean_unknown_route"    # route not TASK_* / REASONING
+CONFAB_STATE_CLEAN_NO_CLAIM       = "clean_no_claim"         # text didn't trip any pattern
+CONFAB_STATE_CLEAN_TOOL_CALLED    = "clean_tool_called"      # tool_calls non-empty (genuine action)
+
+# New failure-precision states when the gate trips but retry can't run cleanly.
+CONFAB_STATE_RETRY_FACTORY_MISSING = "retry_factory_missing"  # gate tripped, _jarvis_pre_tts_llm_factory was None
+CONFAB_STATE_RETRY_EXCEPTION       = "retry_exception"        # retry chain raised — see logs
+
 DEFAULT_DB_PATH = Path(
     os.environ.get(
         "JARVIS_TELEMETRY_PATH",
