@@ -49,3 +49,22 @@ export function logRequest(entry: RequestLog): void {
     console.error('[jarvis-proxy] log write failed:', (e as Error).message)
   })
 }
+
+// Goal-B observability: DeepSeek context-caching is automatic upstream
+// but their per-response usage block reports the hit/miss split. We
+// surface it as a single human-readable console line so we can grep
+// the proxy log to see when cache is actually warm. The structured
+// log already carries the same numbers under `cache_read_tokens`, but
+// a one-liner is easier to skim during a live session.
+export function logDeepseekCacheStats(
+  requestId: string,
+  hit: number,
+  miss: number,
+): void {
+  const total = hit + miss
+  const ratio = total > 0 ? Math.round((hit / total) * 100) : 0
+  const shortId = requestId.slice(0, 8)
+  console.log(
+    `[jarvis-proxy] [${shortId}] deepseek cache: hit=${hit} miss=${miss} ratio=${ratio}%`,
+  )
+}
