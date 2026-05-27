@@ -1000,7 +1000,9 @@ READ_FILE_SCHEMA = {
         "Output format: 'LINE_NUM\\tCONTENT'. "
         "Use offset and limit for large files. "
         "Reads exceeding ~100K characters are rejected; use offset and limit to read specific sections. "
-        "NOTE: Cannot read images or binary files — use vision tools for images."
+        "NOTE: Cannot read images or binary files — use vision tools for images. "
+        "DO NOT summarize or describe a file's contents before calling this tool — "
+        "claiming to know what's in a file without reading it is confab."
     ),
     "parameters": {
         "type": "object",
@@ -1032,7 +1034,9 @@ WRITE_FILE_SCHEMA = {
         "Write content to a file, completely replacing existing content. "
         "Use this instead of echo/cat heredoc in terminal. "
         "Creates parent directories automatically. "
-        "OVERWRITES the entire file — use 'patch' for targeted edits."
+        "OVERWRITES the entire file — use 'patch' for targeted edits. "
+        "DO NOT reply 'Saved', 'Created', 'Written' UNLESS this tool has "
+        "actually been called and returned success in the same turn."
     ),
     "parameters": {
         "type": "object",
@@ -1058,7 +1062,9 @@ PATCH_SCHEMA = {
         "REPLACE MODE (mode='replace', default): find a unique string and replace it. "
         "REQUIRED PARAMETERS: mode, path, old_string, new_string.\n"
         "PATCH MODE (mode='patch'): apply V4A multi-file patches for bulk changes. "
-        "REQUIRED PARAMETERS: mode, patch."
+        "REQUIRED PARAMETERS: mode, patch.\n\n"
+        "DO NOT reply 'Edited', 'Fixed', 'Updated' UNLESS this tool has actually "
+        "been called this turn and returned a diff. Tool first, words after."
     ),
     "parameters": {
         "type": "object",
