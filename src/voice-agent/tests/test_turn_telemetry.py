@@ -489,3 +489,32 @@ def test_log_turn_persists_confab_check_state(tmp_path):
             "SELECT confab_check_state FROM turns WHERE user_text='open chrome'"
         ).fetchone()
     assert row == ("evidence_ok",)
+
+
+def test_new_confab_states_exported():
+    """Six new precise sub-states must be importable and distinct from each other and from CLEAN."""
+    from pipeline.turn_telemetry import (
+        CONFAB_STATE_CLEAN,
+        CONFAB_STATE_CLEAN_BYPASS_ROUTE,
+        CONFAB_STATE_CLEAN_UNKNOWN_ROUTE,
+        CONFAB_STATE_CLEAN_NO_CLAIM,
+        CONFAB_STATE_CLEAN_TOOL_CALLED,
+        CONFAB_STATE_RETRY_FACTORY_MISSING,
+        CONFAB_STATE_RETRY_EXCEPTION,
+    )
+    new_states = {
+        CONFAB_STATE_CLEAN_BYPASS_ROUTE,
+        CONFAB_STATE_CLEAN_UNKNOWN_ROUTE,
+        CONFAB_STATE_CLEAN_NO_CLAIM,
+        CONFAB_STATE_CLEAN_TOOL_CALLED,
+        CONFAB_STATE_RETRY_FACTORY_MISSING,
+        CONFAB_STATE_RETRY_EXCEPTION,
+    }
+    assert len(new_states) == 6, "states must be distinct strings"
+    assert CONFAB_STATE_CLEAN not in new_states, "legacy CLEAN should remain a separate constant"
+
+
+def test_legacy_clean_state_unchanged():
+    """Existing DB rows use the string 'clean' — back-compat alias must keep that value."""
+    from pipeline.turn_telemetry import CONFAB_STATE_CLEAN
+    assert CONFAB_STATE_CLEAN == "clean"
