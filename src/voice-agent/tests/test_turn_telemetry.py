@@ -518,3 +518,46 @@ def test_legacy_clean_state_unchanged():
     """Existing DB rows use the string 'clean' — back-compat alias must keep that value."""
     from pipeline.turn_telemetry import CONFAB_STATE_CLEAN
     assert CONFAB_STATE_CLEAN == "clean"
+
+
+def test_subagent_columns_exist_after_init():
+    """init_db must add the 3 subagent columns idempotently."""
+    import sqlite3, tempfile, os
+    from pipeline.turn_telemetry import init_db
+    with tempfile.TemporaryDirectory() as td:
+        db = os.path.join(td, "t.db")
+        init_db(db)
+        # idempotent — second call must not raise
+        init_db(db)
+        conn = sqlite3.connect(db)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(turns)").fetchall()}
+        conn.close()
+    assert {"subagent_type", "subagent_ms", "subagent_status"}.issubset(cols), (
+        f"missing subagent_* columns in turns; have: {sorted(cols)}"
+    )
+
+
+def test_log_turn_writes_subagent_fields():
+    """log_turn must accept the 3 new kwargs and persist them."""
+    import sqlite3, tempfile, os
+    from pipeline.turn_telemetry import init_db, log_turn
+    with tempfile.TemporaryDirectory() as td:
+        db = os.path.join(td, "t.db")
+        init_db(db)
+        log_turn(
+            db_path=db,
+            user_text="find computer_use",
+            jarvis_text="It's at tools/computer_use.py:75",
+            route="TASK_OTHER",
+            llm_used="anthropic:claude-sonnet-4-6",
+            voice_used="troy",
+            subagent_type="explore",
+            subagent_ms=4321,
+            subagent_status="success",
+        )
+        conn = sqlite3.connect(db)
+        row = conn.execute(
+            "SELECT subagent_type, subagent_ms, subagent_status FROM turns ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+    assert row == ("explore", 4321, "success"), f"got {row!r}"
