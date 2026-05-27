@@ -18,6 +18,11 @@ export type Provider = {
   // non-empty reasoning_content field. Convert.ts injects a placeholder
   // when the cache misses so the upstream API doesn't 400.
   requiresReasoning: boolean
+  // True when the upstream model accepts OpenAI-shape image_url content
+  // parts. Plumbed from JarvisModelDefinition.supportsVision (defaults
+  // to false when unset). Convert.ts uses this to decide whether to
+  // emit image bytes vs flatten to the literal "[image]" placeholder.
+  supportsVision: boolean
   // Jarvis model id used to look up this provider — needed to resolve
   // the fallback chain when the primary fails.
   jarvisModelId: string | null
@@ -49,6 +54,7 @@ function buildProvider(
   name: JarvisProviderName,
   upstreamModel: string,
   requiresReasoning: boolean,
+  supportsVision: boolean,
   jarvisModelId: string | null,
   fallback: readonly string[],
   modelMaxOutputTokens: number | undefined,
@@ -70,6 +76,7 @@ function buildProvider(
     // = 8K under the Groq provider's 32K default).
     maxOutputTokens: modelMaxOutputTokens ?? config.maxOutputTokens,
     requiresReasoning,
+    supportsVision,
     jarvisModelId,
     fallback,
   }
@@ -80,10 +87,12 @@ export function getProviderForModel(modelName: string): Provider | null {
   const model = getJarvisModel(modelName)
   if (!model) return null
   const requiresReasoning = model.capabilities.includes('thinking')
+  const supportsVision = model.supportsVision ?? false
   return buildProvider(
     model.provider,
     model.upstreamModel,
     requiresReasoning,
+    supportsVision,
     model.id,
     model.fallback ?? [],
     model.maxOutputTokens,
@@ -96,10 +105,12 @@ export function getProvider(): Provider {
   const config = getJarvisProviderConfig(name)
   const defaultModel = getJarvisModel(config.defaultModel)
   const requiresReasoning = defaultModel?.capabilities.includes('thinking') ?? false
+  const supportsVision = defaultModel?.supportsVision ?? false
   return buildProvider(
     name,
     config.defaultModel,
     requiresReasoning,
+    supportsVision,
     defaultModel?.id ?? null,
     defaultModel?.fallback ?? [],
     defaultModel?.maxOutputTokens,
