@@ -3169,17 +3169,32 @@ _PREAMBLE_RE = re.compile(
 
 
 async def strip_preambles(text):
-    """Strip 'Let me check...', 'Okay I have...', 'Checking the internet...' filler."""
+    """Strip 'Let me check...', 'Okay I have...', 'Checking the internet...' filler.
+
+    Safety: if the strip would leave the buffer EMPTY (the entire reply was
+    classified as preamble), yield the original. The whole reply being a
+    preamble means the preamble IS the reply (e.g., a "Reviewing now."
+    acknowledgment chunk that arrived alone because the supervisor split
+    its response across multiple stream frames or got cancelled mid-flight).
+    Silencing it is worse than letting a short status announcement through —
+    voice users need to hear SOMETHING."""
     buffer = ""
     async for chunk in text:
         buffer += chunk
     if not buffer:
         return
     cleaned = _PREAMBLE_RE.sub("", buffer).lstrip()
+    if not cleaned.strip():
+        # Stripping would silence JARVIS entirely — keep the original.
+        logger.info(
+            f"[preamble-strip] would-have-cut {len(buffer)} chars but that "
+            f"would silence the reply; passing through original"
+        )
+        yield buffer
+        return
     if cleaned != buffer:
         logger.info(f"[preamble-strip] cut {len(buffer) - len(cleaned)} chars of filler")
-    if cleaned:
-        yield cleaned
+    yield cleaned
 
 
 # `_META_SILENCE_RE` and `_ARCHAIC_OPENER_RE` were duplicated here
