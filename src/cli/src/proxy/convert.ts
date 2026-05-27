@@ -56,6 +56,99 @@ function extractSystemText(system: unknown): string {
   return ''
 }
 
+// ── <think>-tag stripping (qwen3 + other open-source reasoning models) ──
+
+// Strip <think>...</think> blocks (and one trailing newline run) from a
+// finished text response. Some models — primarily Qwen3 on Groq — emit
+// chain-of-thought inside literal <think> tags in the visible content
+// instead of in a separate reasoning_content field. The CLI doesn't
+// render the tags specially, so the user sees "<think>maybe I should…"
+// in their chat. This regex removes the blocks. Safe to call on any
+// text — <think> isn't a real HTML tag.
+export function stripThinkTags(text: string): string {
+  return text.replace(/<think>[\s\S]*?<\/think>\n*/g, '')
+}
+
+// Streaming variant: an SSE-friendly state machine. Feed it chunks of
+// text; it emits the visible (non-think) portion and holds back any
+// bytes that might be the start of a <think> / </think> tag pair
+// crossing a chunk boundary. Call end() when the stream finishes —
+// returns any held-back bytes that turned out not to be tags (or
+// empty if the stream ended inside an unclosed think block).
+export class ThinkTagStripper {
+  private inThink = false
+  private buffer = ''
+
+  feed(chunk: string): string {
+    this.buffer += chunk
+    let out = ''
+    while (this.buffer.length > 0) {
+      if (this.inThink) {
+        const closeIdx = this.buffer.indexOf('</think>')
+        if (closeIdx !== -1) {
+          this.buffer = this.buffer.slice(closeIdx + '</think>'.length)
+          this.inThink = false
+          this.buffer = this.buffer.replace(/^\n+/, '')
+          continue
+        }
+        // Hold back any tail bytes that COULD be the start of </think>;
+        // discard everything else (it's still inside the think block).
+        const partial = endsWithPartialOf(this.buffer, '</think>')
+        this.buffer = this.buffer.slice(this.buffer.length - partial)
+        break
+      }
+      const openIdx = this.buffer.indexOf('<think>')
+      if (openIdx !== -1) {
+        out += this.buffer.slice(0, openIdx)
+        this.buffer = this.buffer.slice(openIdx + '<think>'.length)
+        this.inThink = true
+        continue
+      }
+      // No full open tag in buffer. Emit everything except a possible
+      // partial <think> at the tail (kept for the next feed()).
+      const partial = endsWithPartialOf(this.buffer, '<think>')
+      if (partial > 0) {
+        out += this.buffer.slice(0, this.buffer.length - partial)
+        this.buffer = this.buffer.slice(this.buffer.length - partial)
+      } else {
+        out += this.buffer
+        this.buffer = ''
+      }
+      break
+    }
+    return out
+  }
+
+  end(): string {
+    // Stream ended. Inside a think block: discard whatever's left.
+    // Outside: the held bytes were a false-alarm partial tag, emit them.
+    if (this.inThink) {
+      this.buffer = ''
+      return ''
+    }
+    const out = this.buffer
+    this.buffer = ''
+    return out
+  }
+}
+
+function endsWithPartialOf(text: string, target: string): number {
+  // Longest suffix of `text` that is a prefix of `target`. Used to
+  // decide how many trailing bytes to hold back across chunk seams.
+  const maxLen = Math.min(text.length, target.length - 1)
+  for (let len = maxLen; len > 0; len--) {
+    if (target.startsWith(text.slice(text.length - len))) return len
+  }
+  return 0
+}
+
+// Gate: which models need the <think> strip applied? Today only Qwen3
+// (Groq). Other open-source / reasoning models use a separate
+// reasoning_content field and don't leak tags into visible content.
+export function modelLeaksThinkTags(modelId: string): boolean {
+  return modelId.includes('qwen')
+}
+
 // ── Convert a single Anthropic content block to text ─────────────────────
 
 function contentToText(content: unknown): string {
@@ -264,6 +357,39 @@ function resolveDeepSeekThinking(
   return undefined
 }
 
+// Models whose upstream API generates reasoning_content (DeepSeek-R1 shape)
+// that counts against the response token budget — even when we suppress
+// it from the wire via include_reasoning=false. They need the full
+// provider.maxOutputTokens floor or visible content gets squeezed out.
+// Distinct from provider.requiresReasoning, which ALSO triggers
+// reasoning-content round-trip in chat_ctx (a DeepSeek-thinking-mode
+// quirk these models don't share).
+//
+// Membership verified live 2026-05-27 with max_tokens=30 against
+// /v1/messages → /v1/chat/completions. Models that burned the entire
+// budget on hidden reasoning (finish_reason=length, completion_tokens
+// equal to the cap, empty content) made the list. gpt-5.1 is notably
+// NOT on it — it defaulted to minimal reasoning and returned visible
+// text within 10 tokens. gemini-2.5-flash also stayed out.
+function usesHiddenReasoning(provider: Provider): boolean {
+  if (provider.model.includes('gpt-oss')) return true
+  if (provider.name === 'kimi') return true
+  // OpenAI GPT-5, GPT-5-mini, GPT-5-nano (exclude gpt-5.1 + later)
+  if (provider.name === 'openai' && /^gpt-5(-mini|-nano)?$/.test(provider.model)) return true
+  // Google Gemini 2.5 Pro (hidden thinking; the flash variants don't)
+  if (provider.name === 'gemini' && provider.model.startsWith('gemini-2.5-pro')) return true
+  return false
+}
+
+// OpenAI's GPT-5 family (gpt-5, gpt-5-mini, gpt-5-nano, gpt-5.1) ships a
+// stricter request shape than the legacy chat-completions models:
+//   - max_tokens → renamed to max_completion_tokens
+//   - temperature → must be exactly 1 (only default is accepted)
+// Detect by model-id prefix so future siblings (e.g. gpt-5.2) inherit.
+function isGpt5Family(provider: Provider): boolean {
+  return provider.name === 'openai' && provider.model.startsWith('gpt-5')
+}
+
 function applyProviderSpecificParams(out: any, req: any, provider: Provider): void {
   if (provider.name === 'deepseek') {
     const thinking = resolveDeepSeekThinking(req)
@@ -272,6 +398,14 @@ function applyProviderSpecificParams(out: any, req: any, provider: Provider): vo
       // We map explicit Jarvis effort choices onto that upstream switch.
       out.thinking = thinking
     }
+  }
+
+  if (provider.name === 'kimi') {
+    // Moonshot's K2.6 endpoint rejects any temperature !== 1 with a
+    // hard 400 "invalid temperature: only 1 is allowed for this model".
+    // Pin regardless of what the client sent — matches DeepSeek-R1's
+    // similar constraint pattern.
+    out.temperature = 1
   }
 
   if (provider.name === 'groq') {
@@ -320,16 +454,23 @@ export function convertRequest(req: any, provider: Provider): any {
   // visible-only. A long chain-of-thought then exhausts the cap and tool
   // arguments stream truncates mid-emission, landing with empty input.
   // Always grant the provider max for thinking models so reasoning has
-  // headroom and tool args fit.
-  const maxTokens = provider.requiresReasoning
+  // headroom and tool args fit. Same floor for hidden-reasoning models
+  // (gpt-oss-*, Kimi K2.6) — see usesHiddenReasoning above.
+  const usesReasoningBudget = provider.requiresReasoning || usesHiddenReasoning(provider)
+  const maxTokens = usesReasoningBudget
     ? provider.maxOutputTokens
     : Math.min(req.max_tokens ?? provider.maxOutputTokens, provider.maxOutputTokens)
 
+  const gpt5 = isGpt5Family(provider)
   const out: any = {
     model: provider.model,
     messages: repairedMessages,
-    max_tokens: maxTokens,
-    temperature: req.temperature ?? 0.3,
+    // GPT-5 family rejects max_tokens entirely (use max_completion_tokens)
+    // and only accepts temperature=1. Every other upstream still wants
+    // the legacy shape — keep them on max_tokens + the client's temp.
+    ...(gpt5
+      ? { max_completion_tokens: maxTokens, temperature: 1 }
+      : { max_tokens: maxTokens, temperature: req.temperature ?? 0.3 }),
     stream: req.stream ?? false,
   }
 
@@ -355,7 +496,14 @@ export function convertResponse(openaiResp: any, model: string): any {
   const content: any[] = []
 
   if (msg.content) {
-    content.push({ type: 'text', text: msg.content })
+    // Qwen3 (and possibly future open-source models) emit their chain-
+    // of-thought inside literal <think>...</think> blocks in the visible
+    // content. Strip them on the wire so the CLI doesn't render the
+    // reasoning as user-visible text.
+    const text = modelLeaksThinkTags(model)
+      ? stripThinkTags(msg.content)
+      : msg.content
+    if (text) content.push({ type: 'text', text })
   }
 
   if (msg.tool_calls) {
