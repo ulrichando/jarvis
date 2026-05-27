@@ -212,3 +212,66 @@ def test_task_override_propagates_across_task_subroutes(monkeypatch):
     for route in ("BANTER", "REASONING", "EMOTIONAL"):
         inner = disp.inners[route]
         assert inner is not pinned, f"route {route} unexpectedly received the TASK pin"
+
+
+def test_action_routes_force_tool_choice(monkeypatch):
+    """Action routes (TASK_DESKTOP/BROWSER/CODE/FILES) must construct their
+    primary LLM with tool_choice="required" so the model can't reply with
+    narration-only on a turn that needs an action. Non-action routes
+    (BANTER, EMOTIONAL, REASONING, TASK_OTHER) must NOT force tool_choice."""
+    for env_name in (
+        "JARVIS_TASK_MODEL",
+        "JARVIS_TASK_DESKTOP_MODEL", "JARVIS_TASK_BROWSER_MODEL",
+        "JARVIS_TASK_CODE_MODEL",    "JARVIS_TASK_FILES_MODEL",
+        "JARVIS_TASK_OTHER_MODEL",
+        "JARVIS_BANTER_MODEL", "JARVIS_REASONING_MODEL", "JARVIS_EMOTIONAL_MODEL",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
+
+    from providers.llm import build_dispatching_llm
+    disp = build_dispatching_llm()
+
+    def primary_opts(route: str):
+        """Walk through a FallbackAdapter to the primary inner LLM and
+        return its tool_choice setting (None if not set)."""
+        outer = disp.inners[route]
+        # FallbackAdapter exposes its rung list as ._llm_instances (verified
+        # against livekit/agents/llm/fallback_adapter.py:70 — the constructor
+        # sets `self._llm_instances = llm`). Primary is rung 0. The unwrapped
+        # primary (single-rung case) IS the inner already.
+        primary = outer
+        for attr in ("_llm_instances", "_llms", "llms"):
+            chain = getattr(outer, attr, None)
+            if chain:
+                primary = chain[0]
+                break
+        # tool_choice ends up on primary._opts.tool_choice for Anthropic /
+        # OpenAI / DeepSeek alike.
+        opts = getattr(primary, "_opts", None)
+        if opts is None:
+            return None
+        tc = getattr(opts, "tool_choice", None)
+        # NOT_GIVEN sentinel reads as not-required.
+        try:
+            from livekit.agents.types import NOT_GIVEN
+            if tc is NOT_GIVEN:
+                return None
+        except Exception:
+            pass
+        return tc
+
+    # Forced (action routes):
+    for route in ("TASK_DESKTOP", "TASK_BROWSER", "TASK_CODE", "TASK_FILES"):
+        tc = primary_opts(route)
+        assert tc == "required", (
+            f"{route} expected tool_choice='required' on primary LLM; got {tc!r}"
+        )
+
+    # Not forced (conversational / broad-task routes):
+    for route in ("BANTER", "EMOTIONAL", "REASONING", "TASK_OTHER"):
+        tc = primary_opts(route)
+        assert tc != "required", (
+            f"{route} must NOT force tool_choice; got {tc!r}"
+        )
