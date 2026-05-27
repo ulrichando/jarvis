@@ -279,6 +279,7 @@ from pipeline.pre_tts_confab_gate import (
 )
 from pipeline.turn_telemetry import (
     CONFAB_STATE_BYPASSED_KILLED,                 # for gate-disabled telemetry
+    CONFAB_STATE_CLEAN_BYPASS_ROUTE,              # set by fast-path for BANTER/EMOTIONAL
     CONFAB_STATE_RETRY_FACTORY_MISSING,           # gate tripped but no _jarvis_pre_tts_llm_factory
     CONFAB_STATE_RETRY_EXCEPTION,                 # retry chain raised — see logs
 )
@@ -3345,13 +3346,21 @@ async def pre_tts_confab_gate_filter(text):
     # BANTER/EMOTIONAL bypass the gate logic — `should_gate()` returns
     # `bypass_route` for them anyway. Short-circuit at the head so
     # chitchat turns stream unbuffered and TTFW stays at pre-gate
-    # latency. Only TASK_*/REASONING pay the buffer cost. Telemetry
-    # stash stays at the per-turn defaults (None / []) set on the
-    # session at turn start, so log_turn writes NULLs for these turns.
+    # latency. Only TASK_*/REASONING pay the buffer cost. Stash the
+    # precise telemetry state here so the DB row matches what the gate
+    # WOULD have written — `unchecked` would imply the filter never
+    # ran, which is misleading when we deliberately short-circuited.
     sess_early = _active_session_for_telemetry[0]
     route_early = getattr(sess_early, "_jarvis_route", None) if sess_early is not None else None
     route_early = route_early or ""
     if route_early in ("BANTER", "EMOTIONAL"):
+        if sess_early is not None:
+            try:
+                sess_early._jarvis_confab_check_state = CONFAB_STATE_CLEAN_BYPASS_ROUTE
+                sess_early._jarvis_confab_pattern_matched = None
+                sess_early._jarvis_confab_retry_models = []
+            except Exception:
+                pass
         async for chunk in text:
             yield chunk
         return

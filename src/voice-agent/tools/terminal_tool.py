@@ -432,11 +432,18 @@ def terminal_tool(
 _TOOL_DESCRIPTION = """\
 Execute shell commands on the local Linux environment. Filesystem persists between calls.
 
+WHEN TO USE: builds, installs, git, processes, scripts, network checks, package managers,
+launching apps (`setsid <app> &`), and any one-shot command the user asks for by name
+("run pytest", "git status", "kill chrome", "open Discord").
+
+DO NOT reply with phrases like "Done", "Running it now", "I've executed that" UNLESS you
+have already issued the corresponding terminal call this turn AND seen the result.
+Tool first, words after — narrating success without a tool call is confab.
+
 Do NOT use cat/head/tail to read files — use read_file instead.
 Do NOT use grep/rg/find to search — use search_files instead.
 Do NOT use sed/awk to edit files — use patch instead.
 Do NOT use echo/cat heredoc to create files — use write_file instead.
-Reserve terminal for: builds, installs, git, processes, scripts, network, package managers.
 
 Foreground (default): commands return when done. Set timeout=300 for long builds.
 Background: set background=true to return immediately with a session_id.
