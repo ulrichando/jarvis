@@ -324,3 +324,51 @@ def test_should_gate_logs_every_decision(caplog):
     reasons_found = {r.message for r in info_records}
     for needle in ("bypass_route", "unknown_route", "tool_called", "no_claim"):
         assert any(needle in m for m in reasons_found), f"missing log line for verdict reason {needle!r}"
+
+
+@pytest.mark.asyncio
+async def test_retry_chain_runs_through_ladder(monkeypatch):
+    """Sanity: when the gate trips and a factory is provided, the chain
+    walks the ladder and the agent filter would set a CAUGHT_* state."""
+
+    calls = []
+
+    def fake_runner(model_id):
+        async def run(chat_ctx, tool_specs):
+            calls.append(model_id)
+            return ("Opening Chrome.", [{"name": "computer_use", "args": {"action": "focus_app", "app": "Chrome"}}])
+        return run
+
+    from pipeline import specialty_routes
+    monkeypatch.setattr(
+        specialty_routes,
+        "get_route_ladder",
+        lambda route: ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-7", "gpt-5-mini"],
+    )
+
+    result = await gate.run_retry_chain(
+        route="TASK_BROWSER",
+        chat_ctx=[],
+        tool_specs=[],
+        original_text="Done — Chrome is open.",
+        original_pattern="<pattern>",
+        llm_factory=fake_runner,
+    )
+
+    assert result.tier_passed == "retry"
+    assert result.model_id == "claude-sonnet-4-6"
+    assert calls == ["claude-sonnet-4-6"]
+
+
+def test_new_retry_failure_states_referenced_by_agent():
+    """The agent's gate filter must reference the two retry-failure
+    states. Catches a refactor that drops the wiring."""
+    src = open("/home/ulrich/Documents/Projects/jarvis/src/voice-agent/jarvis_agent.py").read()
+    assert "CONFAB_STATE_RETRY_FACTORY_MISSING" in src, (
+        "jarvis_agent.py must reference CONFAB_STATE_RETRY_FACTORY_MISSING "
+        "on the factory-missing branch of the gate filter"
+    )
+    assert "CONFAB_STATE_RETRY_EXCEPTION" in src, (
+        "jarvis_agent.py must reference CONFAB_STATE_RETRY_EXCEPTION on "
+        "the retry-exception branch of the gate filter"
+    )
