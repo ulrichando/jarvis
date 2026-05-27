@@ -363,7 +363,9 @@ async def test_retry_chain_runs_through_ladder(monkeypatch):
 def test_new_retry_failure_states_referenced_by_agent():
     """The agent's gate filter must reference the two retry-failure
     states. Catches a refactor that drops the wiring."""
-    src = open("/home/ulrich/Documents/Projects/jarvis/src/voice-agent/jarvis_agent.py").read()
+    from pathlib import Path
+    agent_path = Path(__file__).resolve().parent.parent / "jarvis_agent.py"
+    src = agent_path.read_text()
     assert "CONFAB_STATE_RETRY_FACTORY_MISSING" in src, (
         "jarvis_agent.py must reference CONFAB_STATE_RETRY_FACTORY_MISSING "
         "on the factory-missing branch of the gate filter"
