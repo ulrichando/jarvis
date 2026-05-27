@@ -157,13 +157,19 @@ def test_dispatcher_labels_match_specialty_defaults(monkeypatch):
     assert label_code == "deepseek:deepseek-v4-flash", (
         f"TASK_CODE expected deepseek:deepseek-v4-flash; got {label_code!r}"
     )
-    # TASK_FILES / TASK_OTHER → claude-haiku-4-5
-    for route in ("TASK_FILES", "TASK_OTHER"):
-        inner = disp.inners[route]
-        label = getattr(inner, "_jarvis_label", "")
-        assert label == "anthropic:claude-haiku-4-5", (
-            f"{route} expected anthropic:claude-haiku-4-5; got {label!r}"
-        )
+    # TASK_FILES → claude-haiku-4-5 (file ops are explicit; Haiku is sufficient)
+    inner_files = disp.inners["TASK_FILES"]
+    label_files = getattr(inner_files, "_jarvis_label", "")
+    assert label_files == "anthropic:claude-haiku-4-5", (
+        f"TASK_FILES expected anthropic:claude-haiku-4-5; got {label_files!r}"
+    )
+    # TASK_OTHER → claude-sonnet-4-6 (Sonnet for orchestration reliability —
+    # see specialty_routes.py)
+    inner_other = disp.inners["TASK_OTHER"]
+    label_other = getattr(inner_other, "_jarvis_label", "")
+    assert label_other == "anthropic:claude-sonnet-4-6", (
+        f"TASK_OTHER expected anthropic:claude-sonnet-4-6; got {label_other!r}"
+    )
     # BANTER / EMOTIONAL → claude-haiku-4-5; REASONING → claude-sonnet-4-6
     assert getattr(disp.inners["BANTER"], "_jarvis_label", "") == "anthropic:claude-haiku-4-5"
     assert getattr(disp.inners["EMOTIONAL"], "_jarvis_label", "") == "anthropic:claude-haiku-4-5"
