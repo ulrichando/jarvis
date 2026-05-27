@@ -458,3 +458,112 @@ def test_no_text_filler_constant_distinct_from_filler_text():
     )
     assert NO_TEXT_FILLER_TEXT != FILLER_TEXT
     assert "summary" in NO_TEXT_FILLER_TEXT.lower()
+
+
+# ── run_retry_chain reason_for_retry parameterization (Task 3) ─────────
+
+@pytest.mark.asyncio
+async def test_retry_chain_no_text_reason_uses_text_force_prompt():
+    """When reason_for_retry='no_text_after_tool', the appended system
+    message must be TEXT_FORCE_PROMPT, not TOOL_FORCE_PROMPT."""
+    from pipeline.pre_tts_confab_gate import TEXT_FORCE_PROMPT
+    runner = _FakeRunner(reply_per_call=[
+        ("Here are the three files that changed: A, B, C.", []),
+    ])
+
+    def factory(_model_id):
+        return runner
+
+    await run_retry_chain(
+        route="TASK_OTHER",
+        chat_ctx=[{"role": "user", "content": "review my changes"}],
+        tool_specs=[],
+        original_text="",
+        original_pattern=None,
+        llm_factory=factory,
+        reason_for_retry="no_text_after_tool",
+    )
+    first_ctx, _ = runner.calls[0]
+    joined = str(first_ctx)
+    assert TEXT_FORCE_PROMPT[:60] in joined, (
+        "TEXT_FORCE_PROMPT prefix should be present in the retry chat_ctx"
+    )
+    # And the OLD tool-forcing prompt should NOT have been used.
+    assert "Your previous response claimed to have completed" not in joined
+
+
+@pytest.mark.asyncio
+async def test_retry_chain_no_text_tier1_passes_writes_no_text_state():
+    """no_text path tier-1 success writes CONFAB_STATE_NO_TEXT_T1_PASSED,
+    not CONFAB_STATE_CAUGHT_T1_PASSED."""
+    from pipeline.turn_telemetry import CONFAB_STATE_NO_TEXT_T1_PASSED
+    runner = _FakeRunner(reply_per_call=[
+        ("Here is what I found: the changes look fine.", []),
+    ])
+    def factory(_m):
+        return runner
+    result = await run_retry_chain(
+        route="TASK_OTHER",
+        chat_ctx=[{"role": "user", "content": "review my changes"}],
+        tool_specs=[],
+        original_text="",
+        original_pattern=None,
+        llm_factory=factory,
+        reason_for_retry="no_text_after_tool",
+    )
+    assert result.tier_passed == "retry"
+    assert result.telemetry_state == CONFAB_STATE_NO_TEXT_T1_PASSED
+
+
+@pytest.mark.asyncio
+async def test_retry_chain_no_text_all_tiers_empty_voices_no_text_filler():
+    """All tiers return empty → NO_TEXT_FILLER_TEXT voiced + state is
+    CONFAB_STATE_NO_TEXT_FILLER (not CONFAB_STATE_CAUGHT_FILLER)."""
+    from pipeline.pre_tts_confab_gate import NO_TEXT_FILLER_TEXT
+    from pipeline.turn_telemetry import CONFAB_STATE_NO_TEXT_FILLER
+    # Three empty replies in a row.
+    runner = _FakeRunner(reply_per_call=[
+        ("", []),  # tier 1
+        ("", []),  # tier 2
+        ("", []),  # tier 3
+    ])
+    def factory(_m):
+        return runner
+    result = await run_retry_chain(
+        route="TASK_OTHER",
+        chat_ctx=[{"role": "user", "content": "review my changes"}],
+        tool_specs=[],
+        original_text="",
+        original_pattern=None,
+        llm_factory=factory,
+        reason_for_retry="no_text_after_tool",
+    )
+    assert result.tier_passed is None
+    assert result.text == NO_TEXT_FILLER_TEXT
+    assert result.telemetry_state == CONFAB_STATE_NO_TEXT_FILLER
+    assert result.model_id == "filler"
+
+
+@pytest.mark.asyncio
+async def test_retry_chain_confab_reason_unchanged_uses_tool_force_prompt():
+    """Backward-compat: when reason_for_retry='confab_detected' (default),
+    behaviour is unchanged — TOOL_FORCE_PROMPT used, CAUGHT_T1_PASSED state."""
+    runner = _FakeRunner(reply_per_call=[
+        ("I've opened Chrome and you can see it.",
+         [{"name": "computer_use", "args": {}}]),
+    ])
+    def factory(_m):
+        return runner
+    result = await run_retry_chain(
+        route="TASK_DESKTOP",
+        chat_ctx=[{"role": "user", "content": "open chrome"}],
+        tool_specs=[],
+        original_text="Chrome is open.",
+        original_pattern=r"chrome",
+        llm_factory=factory,
+        reason_for_retry="confab_detected",
+    )
+    first_ctx, _ = runner.calls[0]
+    joined = str(first_ctx)
+    assert "Your previous response claimed to have completed" in joined
+    assert result.telemetry_state == CONFAB_STATE_CAUGHT_T1_PASSED
