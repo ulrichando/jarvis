@@ -348,6 +348,31 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
                 conn.execute("ALTER TABLE turns ADD COLUMN correction_signal TEXT")
             except sqlite3.OperationalError:
                 pass
+        # 2026-05-27 — subagent dispatch telemetry (Plan:
+        # docs/superpowers/plans/2026-05-27-voice-agent-subagent-dispatch.md).
+        # subagent_type: which subagent profile owned this turn
+        # ('explore' / 'plan' / 'edit' / 'verify' / 'review' / etc.) or
+        # NULL when no subagent dispatch fired. subagent_ms: total
+        # wall-clock the subagent loop ran (start of dispatch → final
+        # tool_result). subagent_status: 'success' / 'failure' /
+        # 'timeout' / 'cancelled'. All NULL on turns that didn't go
+        # through subagent dispatch — a GROUP BY counts only meaningful
+        # rows.
+        try:
+            cur = conn.cursor()
+            cur.execute("ALTER TABLE turns ADD COLUMN subagent_type TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+        try:
+            cur = conn.cursor()
+            cur.execute("ALTER TABLE turns ADD COLUMN subagent_ms INTEGER")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cur = conn.cursor()
+            cur.execute("ALTER TABLE turns ADD COLUMN subagent_status TEXT")
+        except sqlite3.OperationalError:
+            pass
         # Two pattern tables — populated by pipeline.automod.patterns, drained
         # by the spawner. proposed_at IS NULL means "not yet emitted to queue".
         conn.executescript("""
@@ -408,6 +433,9 @@ def log_turn(
     output_profile: Optional[str] = None,
     apm_delay_ms_p50: Optional[int] = None,
     dtln_latency_ms_p95: Optional[float] = None,
+    subagent_type: Optional[str] = None,
+    subagent_ms: Optional[int] = None,
+    subagent_status: Optional[str] = None,
 ) -> None:
     """Write one row. Any exception is swallowed so telemetry never blocks voice.
 
@@ -461,8 +489,9 @@ def log_turn(
                     confab_check_state,
                     confab_pattern_matched, confab_retry_models,
                     aec_layer1_active, aec_layer2_aec_active, aec_layer3_active,
-                    output_profile, apm_delay_ms_p50, dtln_latency_ms_p95)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    output_profile, apm_delay_ms_p50, dtln_latency_ms_p95,
+                    subagent_type, subagent_ms, subagent_status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     ts_utc or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     user_text, jarvis_text, emotion, route, llm_used,
@@ -477,6 +506,7 @@ def log_turn(
                     confab_pattern_matched, confab_retry_models,
                     aec_layer1_active, aec_layer2_aec_active, aec_layer3_active,
                     output_profile, apm_delay_ms_p50, dtln_latency_ms_p95,
+                    subagent_type, subagent_ms, subagent_status,
                 ),
             )
     except Exception:
