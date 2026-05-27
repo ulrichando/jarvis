@@ -44,6 +44,11 @@ export type JarvisModelDefinition = {
   upstreamModel: string
   tiers: readonly JarvisModelTier[]
   capabilities: readonly JarvisModelCapability[]
+  // Per-model override of provider.maxOutputTokens. Used when a model's
+  // API-level cap is stricter than the provider family default (e.g.
+  // gpt-4o tops at 16K while gpt-5 supports up to 128K under the same
+  // OpenAI provider). If unset, the provider default applies.
+  maxOutputTokens?: number
   visibleInPicker?: boolean
   // Models to try (in order) if this one's upstream is unreachable or
   // returns 5xx/429 after retries. Entries are jarvis model ids.
@@ -62,11 +67,12 @@ const JARVIS_PROVIDER_DEFINITIONS: Record<
     apiKeyEnvVar: 'DEEPSEEK_API_KEY',
     defaultModel: 'deepseek-v4-pro',
     supportsToolChoice: true,
-    // 32K to give thinking-mode models headroom for long reasoning_content
-    // plus visible output. v4-pro routinely burns 8-16K on chain-of-thought
-    // before emitting tool_call args; lower caps cause args to truncate
-    // mid-stream and tools land with empty input.
-    maxOutputTokens: 32768,
+    // 64K — DeepSeek's own pricing page lists 384K MAXIMUM for v4-* but
+    // that's a soft ceiling, not a per-request cap they recommend. 64K
+    // gives v4-pro plenty of headroom for thinking-mode reasoning_content
+    // + visible output + tool args. Bumped from 32K on 2026-05-27 after
+    // doc verification.
+    maxOutputTokens: 65536,
   },
   groq: {
     baseUrl: 'https://api.groq.com/openai/v1',
@@ -74,7 +80,12 @@ const JARVIS_PROVIDER_DEFINITIONS: Record<
     defaultModel: 'qwen/qwen3-32b',
     supportsToolChoice: true,
     maxTools: 20,
-    maxOutputTokens: 8000,
+    // 32K covers the majority of Groq-hosted models per console.groq.com/docs/models
+    // (qwen3-32b=40K, llama-3.3-70b=32K, llama-3.1-8b=131K, gpt-oss-120b=64K).
+    // llama-4-scout (8K model-side cap) uses a per-model override below
+    // so its requests don't carry a too-high max_tokens that Groq would
+    // 400 on. Bumped from 8K on 2026-05-27.
+    maxOutputTokens: 32768,
   },
   gemini: {
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
@@ -85,14 +96,23 @@ const JARVIS_PROVIDER_DEFINITIONS: Record<
     apiKeyEnvVar: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'] as const,
     defaultModel: 'gemini-2.0-flash',
     supportsToolChoice: true,
-    maxOutputTokens: 8192,
+    // 32K — verified live 2026-05-27 that Google's OpenAI-compat layer
+    // accepts up to 16K (responded normally to a max_tokens=16384 request).
+    // ai.google.dev docs list 65,536 as the native API cap; setting 32K
+    // as a conservative middle. Bumped from 8K (which was the legacy
+    // gemini-1.x cap and no longer applies on the 2.5 family).
+    maxOutputTokens: 32768,
   },
   openai: {
     baseUrl: 'https://api.openai.com/v1',
     apiKeyEnvVar: 'OPENAI_API_KEY',
     defaultModel: 'gpt-4o',
     supportsToolChoice: true,
-    maxOutputTokens: 16384,
+    // 32K — GPT-5 family supports up to 128K per OpenAI's per-model
+    // docs; 32K doubles the GPT-5 reasoning headroom without going to
+    // silly numbers. gpt-4o / gpt-4o-mini cap at 16K model-side, handled
+    // via per-model override below. Bumped from 16K on 2026-05-27.
+    maxOutputTokens: 32768,
   },
   ollama: {
     baseUrl: (process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434') + '/v1',
@@ -111,7 +131,11 @@ const JARVIS_PROVIDER_DEFINITIONS: Record<
     defaultModel: 'kimi-k2.6-instant',
     supportsToolChoice: true,
     maxTools: 16,
-    maxOutputTokens: 16384,
+    // 32K — Moonshot's own docs don't publish a per-call output ceiling
+    // for K2.6 (only the 256K context window). OpenRouter's mirror lists
+    // ~49K as the per-step cap. 32K is a safe middle that doubles
+    // reasoning headroom over the old 16K. Bumped 2026-05-27.
+    maxOutputTokens: 32768,
   },
   anthropic: {
     // Anthropic Claude — native Messages API. The CLI's openai-shaped
@@ -121,12 +145,22 @@ const JARVIS_PROVIDER_DEFINITIONS: Record<
     // 1M ctx, 128K output, strong agentic tool calls, $3/$15 per M.
     // Haiku 4.5 is also wired but it's voice-only (see voice-agent's
     // SPEECH_MODELS); CLI's tool chains are too deep for it.
+    //
+    // NOTE: this value is METADATA only for Anthropic. The proxy uses
+    // byte-for-byte passthrough (src/proxy/anthropicPassthrough.ts) so
+    // max_tokens comes from the CLI's @anthropic-ai/sdk, which caps at
+    // 64K via src/utils/context.ts::MAX_OUTPUT_TOKENS_UPPER_LIMIT.
+    // The registry value here aligns with that cap for accuracy +
+    // future-proofing if the architecture changes. Bumped from 32K on
+    // 2026-05-27 to match the CLI's own UPPER_LIMIT and Anthropic's
+    // documented 64K output cap for Sonnet 4.6 / Haiku 4.5 (Opus 4.7
+    // can do 128K natively but the CLI clamps to 64K anyway).
     baseUrl: 'https://api.anthropic.com/v1',
     apiKeyEnvVar: 'ANTHROPIC_API_KEY',
     defaultModel: 'claude-sonnet-4-6',
     supportsToolChoice: true,
     maxTools: 64,
-    maxOutputTokens: 32768,
+    maxOutputTokens: 65536,
   },
 }
 
@@ -202,6 +236,10 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     upstreamModel: 'meta-llama/llama-4-scout-17b-16e-instruct',
     tiers: ['fast'],
     capabilities: [],
+    // Scout's model-side cap is 8192 per Groq docs (lower than the rest
+    // of the Groq family). Pin here so requests don't carry max_tokens
+    // > 8K (which Groq would 400 on).
+    maxOutputTokens: 8192,
     visibleInPicker: true,
   },
   {
@@ -271,6 +309,10 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     capabilities: [],
     visibleInPicker: false,
   },
+  // gpt-4o family — model-side caps at 16K per OpenAI's developer docs
+  // (https://developers.openai.com/api/docs/models/gpt-4o). The OpenAI
+  // provider default (32K) is right for the GPT-5 family but too high
+  // for 4o, so we pin a per-model override on both.
   {
     id: 'gpt-4o',
     label: 'OpenAI GPT-4o',
@@ -279,6 +321,7 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     upstreamModel: 'gpt-4o',
     tiers: ['balanced'],
     capabilities: [],
+    maxOutputTokens: 16384,
     visibleInPicker: false,
   },
   {
@@ -289,6 +332,7 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     upstreamModel: 'gpt-4o-mini',
     tiers: ['fast'],
     capabilities: [],
+    maxOutputTokens: 16384,
     visibleInPicker: false,
   },
   // OpenAI GPT-5 family — supports `reasoning_effort` (minimal/low/medium/high)
@@ -420,6 +464,12 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     upstreamModel: 'claude-opus-4-7',
     tiers: ['reasoning', 'long_context', 'orchestration'],
     capabilities: ['adaptive_thinking', 'effort', 'max_effort'],
+    // Opus 4.7's published max_output is 128K per Anthropic's models
+    // overview (https://platform.claude.com/docs/en/about-claude/models/overview).
+    // Sonnet 4.6 + Haiku 4.5 cap at 64K (Anthropic provider default).
+    // METADATA only — the proxy uses passthrough for Anthropic, so the
+    // value here doesn't reach the wire.
+    maxOutputTokens: 131072,
     visibleInPicker: true,
     fallback: ['claude-sonnet-4-6', 'deepseek-v4-pro'],
   },
