@@ -50,6 +50,14 @@ export type JarvisModelDefinition = {
   // OpenAI provider). If unset, the provider default applies.
   maxOutputTokens?: number
   visibleInPicker?: boolean
+  // True for multimodal models that accept image inputs via the
+  // OpenAI `image_url` content shape (or, for anthropic-passthrough,
+  // the native Anthropic `image` block). When false, the proxy
+  // flattens any image content to the literal text "[image]" before
+  // sending upstream, so the model knows something visual was present
+  // but can't see it. Default (undefined) is treated as false.
+  // See: src/proxy/convert.ts::contentToOpenAIParts.
+  supportsVision?: boolean
   // Models to try (in order) if this one's upstream is unreachable or
   // returns 5xx/429 after retries. Entries are jarvis model ids.
   // Capabilities may differ across the chain (e.g. thinking → non-thinking)
@@ -277,6 +285,7 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     upstreamModel: 'gemini-2.5-flash',
     tiers: ['fast'],
     capabilities: [],
+    supportsVision: true,
     visibleInPicker: false,
   },
   {
@@ -287,6 +296,7 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     upstreamModel: 'gemini-2.5-flash',
     tiers: ['fast'],
     capabilities: [],
+    supportsVision: true,
     visibleInPicker: false,
   },
   {
@@ -297,6 +307,7 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     upstreamModel: 'gemini-2.5-pro',
     tiers: ['reasoning'],
     capabilities: [],
+    supportsVision: true,
     visibleInPicker: false,
   },
   {
@@ -307,6 +318,7 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     upstreamModel: 'gemini-2.5-pro',
     tiers: ['reasoning'],
     capabilities: [],
+    supportsVision: true,
     visibleInPicker: false,
   },
   // gpt-4o family — model-side caps at 16K per OpenAI's developer docs
@@ -322,6 +334,7 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     tiers: ['balanced'],
     capabilities: [],
     maxOutputTokens: 16384,
+    supportsVision: true,
     visibleInPicker: false,
   },
   {
@@ -333,6 +346,7 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     tiers: ['fast'],
     capabilities: [],
     maxOutputTokens: 16384,
+    supportsVision: true,
     visibleInPicker: false,
   },
   // OpenAI GPT-5 family — supports `reasoning_effort` (minimal/low/medium/high)
@@ -358,6 +372,7 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     upstreamModel: 'gpt-5-mini',
     tiers: ['balanced', 'fast'],
     capabilities: ['effort'],
+    supportsVision: true,
     visibleInPicker: true,
   },
   {
@@ -368,6 +383,7 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     upstreamModel: 'gpt-5',
     tiers: ['reasoning', 'balanced'],
     capabilities: ['effort'],
+    supportsVision: true,
     visibleInPicker: true,
   },
   {
@@ -378,6 +394,7 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     upstreamModel: 'gpt-5.1',
     tiers: ['reasoning', 'balanced', 'long_context'],
     capabilities: ['effort'],
+    supportsVision: true,
     visibleInPicker: true,
   },
   {
