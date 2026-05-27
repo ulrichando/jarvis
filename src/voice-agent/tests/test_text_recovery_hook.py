@@ -127,3 +127,95 @@ def test_none_content_treated_as_empty():
         had_prior_tool_calls=True,
     )
     assert cls == "silent_failure"
+
+
+import asyncio
+
+
+class _FakeSession:
+    """Minimal AgentSession stand-in for testing _post_turn_text_recovery.
+
+    Exposes the exact attributes the recovery path reads, plus a
+    `say()` capture so we can assert on what got voiced."""
+    def __init__(self, *, route, factory, chat_ctx, tool_specs=None):
+        self._jarvis_route = route
+        self._jarvis_pre_tts_llm_factory = factory
+        self._jarvis_pre_tts_tool_specs = tool_specs or []
+        self.chat_ctx = chat_ctx
+        self._jarvis_confab_check_state = None
+        self._jarvis_confab_pattern_matched = None
+        self._jarvis_confab_retry_models = []
+        self._said: list[str] = []
+
+    def say(self, text, **kwargs):
+        self._said.append(text)
+
+
+def _make_factory(replies):
+    """Return an llm_factory that produces a runner emitting the
+    provided list of (text, tool_calls) tuples in order."""
+    state = {"i": 0}
+    async def runner(ctx, specs):
+        i = state["i"]
+        state["i"] += 1
+        if i >= len(replies):
+            return ("", [])
+        return replies[i]
+    def factory(_model_id):
+        return runner
+    return factory
+
+
+@pytest.mark.asyncio
+async def test_post_turn_text_recovery_voices_tier1_text():
+    """Successful tier-1 retry → result voiced via session.say() and
+    telemetry state set to CONFAB_STATE_NO_TEXT_T1_PASSED."""
+    from jarvis_agent import _post_turn_text_recovery
+    from pipeline.turn_telemetry import CONFAB_STATE_NO_TEXT_T1_PASSED
+
+    sess = _FakeSession(
+        route="TASK_OTHER",
+        factory=_make_factory([
+            ("I reviewed the diff. Three files changed in src/cli.", []),
+        ]),
+        chat_ctx=[{"role": "user", "content": "review my changes"}],
+    )
+    await _post_turn_text_recovery(sess)
+    assert len(sess._said) == 1
+    assert "Three files changed" in sess._said[0]
+    assert sess._jarvis_confab_check_state == CONFAB_STATE_NO_TEXT_T1_PASSED
+
+
+@pytest.mark.asyncio
+async def test_post_turn_text_recovery_voices_filler_when_chain_empty():
+    """All tiers empty → NO_TEXT_FILLER_TEXT voiced; telemetry state is
+    CONFAB_STATE_NO_TEXT_FILLER."""
+    from jarvis_agent import _post_turn_text_recovery
+    from pipeline.pre_tts_confab_gate import NO_TEXT_FILLER_TEXT
+    from pipeline.turn_telemetry import CONFAB_STATE_NO_TEXT_FILLER
+
+    sess = _FakeSession(
+        route="TASK_OTHER",
+        factory=_make_factory([("", []), ("", []), ("", [])]),
+        chat_ctx=[{"role": "user", "content": "review my changes"}],
+    )
+    await _post_turn_text_recovery(sess)
+    assert sess._said == [NO_TEXT_FILLER_TEXT]
+    assert sess._jarvis_confab_check_state == CONFAB_STATE_NO_TEXT_FILLER
+
+
+@pytest.mark.asyncio
+async def test_post_turn_text_recovery_skips_when_factory_missing():
+    """If _jarvis_pre_tts_llm_factory is None, recovery must voice
+    NO_TEXT_FILLER_TEXT directly (no retry chain possible)."""
+    from jarvis_agent import _post_turn_text_recovery
+    from pipeline.pre_tts_confab_gate import NO_TEXT_FILLER_TEXT
+
+    sess = _FakeSession(
+        route="TASK_OTHER",
+        factory=None,
+        chat_ctx=[{"role": "user", "content": "review my changes"}],
+    )
+    sess._jarvis_pre_tts_llm_factory = None  # explicit override
+    await _post_turn_text_recovery(sess)
+    assert sess._said == [NO_TEXT_FILLER_TEXT]
