@@ -279,11 +279,48 @@ def test_telemetry_state_for_clean_kill_switch():
     assert telemetry_state_for_clean(v) == CONFAB_STATE_BYPASSED_KILLED
 
 
-def test_telemetry_state_for_clean_normal_paths():
-    from pipeline.pre_tts_confab_gate import (
-        GateVerdict, telemetry_state_for_clean,
-    )
-    from pipeline.turn_telemetry import CONFAB_STATE_CLEAN
-    for reason in ("bypass_route", "no_claim", "tool_called", "unknown_route"):
-        v = GateVerdict(should_retry=False, reason=reason)
-        assert telemetry_state_for_clean(v) == CONFAB_STATE_CLEAN
+from pipeline import pre_tts_confab_gate as gate
+from pipeline.turn_telemetry import (
+    CONFAB_STATE_CLEAN_BYPASS_ROUTE,
+    CONFAB_STATE_CLEAN_UNKNOWN_ROUTE,
+    CONFAB_STATE_CLEAN_NO_CLAIM,
+    CONFAB_STATE_CLEAN_TOOL_CALLED,
+    CONFAB_STATE_BYPASSED_KILLED,
+)
+
+
+@pytest.mark.parametrize("verdict_reason,expected_state", [
+    ("bypass_route",    CONFAB_STATE_CLEAN_BYPASS_ROUTE),
+    ("unknown_route",   CONFAB_STATE_CLEAN_UNKNOWN_ROUTE),
+    ("no_claim",        CONFAB_STATE_CLEAN_NO_CLAIM),
+    ("tool_called",     CONFAB_STATE_CLEAN_TOOL_CALLED),
+    ("kill_switch",     CONFAB_STATE_BYPASSED_KILLED),
+])
+def test_telemetry_state_for_clean_precision(verdict_reason, expected_state):
+    """telemetry_state_for_clean must map each verdict.reason to a distinct
+    state — no more collapsing them all into CONFAB_STATE_CLEAN."""
+    v = gate.GateVerdict(should_retry=False, reason=verdict_reason)
+    assert gate.telemetry_state_for_clean(v) == expected_state
+
+
+def test_should_gate_logs_every_decision(caplog):
+    """Each false-verdict path must emit one INFO line so we can audit
+    why the gate didn't retry. Previously only the trip path logged."""
+    caplog.set_level("INFO", logger="jarvis.pre_tts_gate")
+
+    # bypass_route
+    gate.should_gate(route="BANTER", text="hi", tool_calls=[])
+    # unknown_route
+    gate.should_gate(route="WHATEVER", text="hi", tool_calls=[])
+    # tool_called
+    gate.should_gate(route="TASK_OTHER", text="Done — X.", tool_calls=[{"x": 1}])
+    # no_claim
+    gate.should_gate(route="TASK_OTHER", text="The forecast is sunny.", tool_calls=[])
+
+    info_records = [r for r in caplog.records if r.levelname == "INFO" and "pre_tts_gate" in r.name]
+    # One INFO line per call.
+    assert len(info_records) >= 4
+    # And each carries its verdict reason in the message.
+    reasons_found = {r.message for r in info_records}
+    for needle in ("bypass_route", "unknown_route", "tool_called", "no_claim"):
+        assert any(needle in m for m in reasons_found), f"missing log line for verdict reason {needle!r}"
