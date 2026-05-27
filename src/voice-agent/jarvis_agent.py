@@ -4781,18 +4781,33 @@ def _register_state_tracking_handlers(session) -> None:
                             await asyncio.sleep(0.8)
                             if not getattr(_sess, "_jarvis_front_ack_fired", False):
                                 try:
+                                    # Vary the ack phrase so consecutive long
+                                    # turns don't all say the same thing —
+                                    # users notice "one moment" repetition fast.
                                     # add_to_chat_ctx=False so the ack does NOT
                                     # become an assistant turn in chat_ctx. If it
                                     # did, the next user turn would see two
                                     # consecutive assistant turns (ack + real
                                     # reply) and the supervisor would get confused.
-                                    _sess.say(
+                                    import random
+                                    _FRONT_ACK_PHRASES = (
                                         "One moment.",
+                                        "On it.",
+                                        "Working on it.",
+                                        "Let me check.",
+                                        "Hold on.",
+                                        "Give me a sec.",
+                                        "Looking into that.",
+                                        "Thinking…",
+                                    )
+                                    phrase = random.choice(_FRONT_ACK_PHRASES)
+                                    _sess.say(
+                                        phrase,
                                         allow_interruptions=True,
                                         add_to_chat_ctx=False,
                                     )
                                     _sess._jarvis_front_ack_fired = True
-                                    logger.info("[front-ack] voiced 'One moment.' (LLM still pending)")
+                                    logger.info(f"[front-ack] voiced {phrase!r} (LLM still pending)")
                                 except Exception as _say_e:
                                     logger.debug(f"[front-ack] say failed: {_say_e}")
                         except asyncio.CancelledError:
@@ -4892,6 +4907,14 @@ def _register_state_tracking_handlers(session) -> None:
             calls = list(getattr(ev, "function_calls", None) or [])
             if not calls:
                 return
+            # Refresh the thinking-flag file on every tool batch. The
+            # framework's agent_state→speaking transition unlinks the
+            # file when JARVIS voices the ack ("On it.") — but the LLM
+            # is still iterating through tool calls + a followup reply,
+            # which can take 10-60+ s. Without this refresh, the tray
+            # goes green during that work and the user sees "JARVIS is
+            # silent" when JARVIS is actively reviewing/researching.
+            _mark_thinking_start()
             # Stash dispatch_agent telemetry from the module-level side-channel.
             # The handler in tools/dispatch_agent.py writes _last_dispatch from a
             # try/finally so every exit path (success/timeout/error/cancelled/etc.)
