@@ -61,6 +61,24 @@ TOOL_FORCE_PROMPT = (
     "after the tool returns. Do not narrate; act."
 )
 
+# Text-forcing system message appended for the NO_TEXT_AFTER_TOOL
+# retry path. Inverse failure mode of TOOL_FORCE_PROMPT: the LLM
+# called tools but emitted no text reply for voice playback.
+TEXT_FORCE_PROMPT = (
+    "Your previous response called tools but did NOT voice a result. "
+    "The user is waiting — they only heard your acknowledgment. "
+    "Summarize what you found in 2-3 sentences for voice playback. "
+    "Do NOT call more tools. Just give the user the answer in plain text."
+)
+
+# Safe filler voiced when the no-text retry chain exhausts. Distinct
+# from FILLER_TEXT so operators can tell from telemetry which failure
+# mode the row reflects.
+NO_TEXT_FILLER_TEXT = (
+    "I checked but couldn't put together a clear summary. "
+    "Want me to try again?"
+)
+
 
 def gate_disabled() -> bool:
     """Master kill switch for the gate. When True, gate is a no-op."""
