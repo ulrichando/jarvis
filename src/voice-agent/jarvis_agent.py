@@ -4909,10 +4909,18 @@ def _register_state_tracking_handlers(session) -> None:
                 out_item = outputs[idx] if idx < len(outputs) else None
                 result = getattr(out_item, "output", None) if out_item is not None else None
                 if isinstance(result, str):
-                    if result.startswith("{") and '"error"' in result:
-                        session._jarvis_subagent_status = "error"
-                    elif result.startswith("{") and '"status": "aborted"' in result:
+                    if result.startswith("{") and '"status": "aborted"' in result:
+                        # Session-id drift on completion — the dispatcher
+                        # discarded the result because the user moved on.
                         session._jarvis_subagent_status = "aborted"
+                    elif result.startswith("{") and "ran too long" in result:
+                        # Per-type timeout fired; the handler's timeout JSON
+                        # includes the literal "ran too long" substring.
+                        session._jarvis_subagent_status = "timeout"
+                    elif result.startswith("{") and '"error"' in result:
+                        # All other error envelopes (spawn-failure / non-zero
+                        # exit / communicate crash).
+                        session._jarvis_subagent_status = "error"
                     else:
                         session._jarvis_subagent_status = "success"
             current = list(getattr(session, "_jarvis_tool_calls_this_turn", None) or [])
