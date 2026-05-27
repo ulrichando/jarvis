@@ -95,3 +95,79 @@ async def test_heartbeat_exits_cleanly_on_cancel_during_sleep(tmp_path, monkeypa
         pass
     assert task.cancelled() or task.done()
     assert not fake_file.exists()
+
+
+class _FakeSessionHB:
+    """Stand-in for AgentSession.run-time. Only holds the heartbeat
+    task slot the helpers manage."""
+    def __init__(self):
+        self._jarvis_thinking_heartbeat = None
+
+
+@pytest.mark.asyncio
+async def test_start_helper_creates_task_and_stores_on_session(tmp_path, monkeypatch):
+    from jarvis_agent import _start_thinking_heartbeat
+    monkeypatch.setattr("jarvis_agent._AGENT_THINKING_FILE", tmp_path / ".agent-thinking")
+    sess = _FakeSessionHB()
+    _start_thinking_heartbeat(sess, interval_s=0.1)
+    try:
+        assert sess._jarvis_thinking_heartbeat is not None
+        assert not sess._jarvis_thinking_heartbeat.done()
+        await asyncio.sleep(0.15)
+        assert (tmp_path / ".agent-thinking").exists()
+    finally:
+        sess._jarvis_thinking_heartbeat.cancel()
+        try:
+            await sess._jarvis_thinking_heartbeat
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_start_helper_cancels_prior_task_defensively(tmp_path, monkeypatch):
+    """Back-to-back calls — only the newest task runs."""
+    from jarvis_agent import _start_thinking_heartbeat
+    monkeypatch.setattr("jarvis_agent._AGENT_THINKING_FILE", tmp_path / ".agent-thinking")
+    sess = _FakeSessionHB()
+    _start_thinking_heartbeat(sess, interval_s=0.1)
+    first = sess._jarvis_thinking_heartbeat
+    _start_thinking_heartbeat(sess, interval_s=0.1)
+    second = sess._jarvis_thinking_heartbeat
+    # The second call must have cancelled the first and replaced it.
+    await asyncio.sleep(0.05)
+    assert first is not second
+    assert first.cancelled() or first.done()
+    assert not second.done()
+    # Cleanup.
+    second.cancel()
+    try:
+        await second
+    except asyncio.CancelledError:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_cancel_helper_handles_missing_task(tmp_path, monkeypatch):
+    """If no heartbeat is running, cancel is a no-op."""
+    from jarvis_agent import _cancel_thinking_heartbeat
+    monkeypatch.setattr("jarvis_agent._AGENT_THINKING_FILE", tmp_path / ".agent-thinking")
+    sess = _FakeSessionHB()
+    # Should not raise.
+    _cancel_thinking_heartbeat(sess)
+    assert sess._jarvis_thinking_heartbeat is None
+
+
+@pytest.mark.asyncio
+async def test_cancel_helper_unlinks_file(tmp_path, monkeypatch):
+    from jarvis_agent import _start_thinking_heartbeat, _cancel_thinking_heartbeat
+    fake_file = tmp_path / ".agent-thinking"
+    monkeypatch.setattr("jarvis_agent._AGENT_THINKING_FILE", fake_file)
+    sess = _FakeSessionHB()
+    _start_thinking_heartbeat(sess, interval_s=0.1)
+    await asyncio.sleep(0.15)
+    assert fake_file.exists()
+    _cancel_thinking_heartbeat(sess)
+    # Give the cancellation a moment to drain.
+    await asyncio.sleep(0.05)
+    assert not fake_file.exists()
+    assert sess._jarvis_thinking_heartbeat is None
