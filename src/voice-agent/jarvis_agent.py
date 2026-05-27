@@ -5834,11 +5834,37 @@ async def entrypoint(ctx: JobContext) -> None:
                     memory_provider.sync_item_async(_mem_role, text)
             except Exception:
                 pass
-            # Assistant turn just landed → LLM phase is over (TTS has
-            # been streaming). Clear the thinking flag. The desktop
-            # tray drops gold the next /status poll.
             if role == "assistant":
-                _mark_thinking_end()
+                # Use the pure classifier to decide what kind of
+                # assistant item this is and how to handle it:
+                #   final_reply / benign_empty → cancel heartbeat (turn done)
+                #   silent_failure → fire text recovery; recovery's voiced
+                #                    output later lands as ANOTHER item that
+                #                    classifies as final_reply, cancelling
+                #                    the heartbeat then
+                #   interstitial   → keep heartbeat running (more LLM iterations
+                #                    coming after the tool batch lands)
+                try:
+                    from pipeline.text_recovery_detect import classify_assistant_item
+                    had_tools = bool(
+                        getattr(session, "_jarvis_tool_calls_this_turn", None) or []
+                    )
+                    cls = classify_assistant_item(
+                        content=getattr(item, "content", None),
+                        had_prior_tool_calls=had_tools,
+                    )
+                except Exception as _e:
+                    logger.debug(f"[heartbeat] classify skipped: {_e}")
+                    cls = "final_reply"  # fail open — cancel heartbeat
+
+                if cls in ("final_reply", "benign_empty"):
+                    _cancel_thinking_heartbeat(session)
+                elif cls == "silent_failure":
+                    # DON'T cancel heartbeat yet — recovery produces a
+                    # follow-up assistant item; that one classifies as
+                    # final_reply and cancels the heartbeat.
+                    asyncio.create_task(_post_turn_text_recovery(session))
+                # else cls == "interstitial" → keep heartbeat running.
                 # Auto-flip silent mode when the model voiced a mute
                 # confirmation but the gate didn't trigger (e.g. user
                 # said "Go on mute" without a vocative — gate rejects,
