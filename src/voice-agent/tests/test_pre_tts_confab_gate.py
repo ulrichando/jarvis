@@ -372,3 +372,32 @@ def test_new_retry_failure_states_referenced_by_agent():
         "jarvis_agent.py must reference CONFAB_STATE_RETRY_EXCEPTION on "
         "the retry-exception branch of the gate filter"
     )
+
+
+# ── _jarvis_tool_calls_this_turn turn-start reset audit ──────────────
+
+class _FakeSession:
+    """Stand-in for a livekit AgentSession with just enough surface for the test."""
+    def __init__(self):
+        self._jarvis_route = "TASK_OTHER"
+        self._jarvis_tool_calls_this_turn = []
+        self._jarvis_confab_check_state = None
+        self._jarvis_confab_pattern_matched = None
+        self._jarvis_confab_retry_models = []
+
+
+def test_should_gate_does_not_see_prior_turn_tool_calls():
+    """Regression: if turn N+1 doesn't fire any tool but the session
+    attribute still holds turn N's tool_calls list, should_gate would
+    bypass with reason 'tool_called' — a state leak that masks confabs
+    in the next turn."""
+
+    sess = _FakeSession()
+    sess._jarvis_tool_calls_this_turn = []  # turn-start reset happened
+    verdict = gate.should_gate(
+        route=sess._jarvis_route,
+        text="Done — Instagram's loading.",
+        tool_calls=list(sess._jarvis_tool_calls_this_turn),
+    )
+    assert verdict.should_retry is True, "gate must trip when tool_calls is empty and text claims completion"
+    assert verdict.reason == "confab_detected"
