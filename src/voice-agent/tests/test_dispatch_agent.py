@@ -217,3 +217,73 @@ async def test_cancelled_error_reaps_subprocess(monkeypatch):
             {"subagent_type": "explore", "task": "x", "description": "x"}
         )
     fake_proc.kill.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_side_channel_records_success(monkeypatch):
+    from tools.dispatch_agent import handle_dispatch_agent, _last_dispatch
+    fake_proc = _make_fake_proc(stdout=b"ok\n", returncode=0)
+    monkeypatch.setattr(
+        "asyncio.create_subprocess_exec",
+        AsyncMock(return_value=fake_proc),
+    )
+    await handle_dispatch_agent(
+        {"subagent_type": "explore", "task": "x", "description": "x"}
+    )
+    assert _last_dispatch["type"] == "explore"
+    assert _last_dispatch["status"] == "success"
+    assert isinstance(_last_dispatch["ms"], int)
+    assert _last_dispatch["ms"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_side_channel_records_timeout(monkeypatch):
+    from tools.dispatch_agent import handle_dispatch_agent, _last_dispatch
+
+    fake_proc = MagicMock()
+    fake_proc.returncode = None
+    async def slow():
+        await asyncio.sleep(10)
+        return b"", b""
+    fake_proc.communicate = AsyncMock(side_effect=slow)
+    fake_proc.kill = MagicMock()
+    fake_proc.wait = AsyncMock(return_value=-9)
+
+    monkeypatch.setattr(
+        "asyncio.create_subprocess_exec",
+        AsyncMock(return_value=fake_proc),
+    )
+    monkeypatch.setenv("JARVIS_DISPATCH_AGENT_TIMEOUT_EXPLORE_S", "0.05")
+
+    await handle_dispatch_agent(
+        {"subagent_type": "explore", "task": "x", "description": "x"}
+    )
+    assert _last_dispatch["type"] == "explore"
+    assert _last_dispatch["status"] == "timeout"
+    assert _last_dispatch["ms"] >= 50  # at least the timeout duration
+
+
+@pytest.mark.asyncio
+async def test_side_channel_records_cancelled(monkeypatch):
+    from tools.dispatch_agent import handle_dispatch_agent, _last_dispatch
+
+    fake_proc = MagicMock()
+    fake_proc.returncode = None
+    async def cancelled_communicate():
+        raise asyncio.CancelledError()
+    fake_proc.communicate = AsyncMock(side_effect=cancelled_communicate)
+    fake_proc.kill = MagicMock()
+    fake_proc.wait = AsyncMock(return_value=-15)
+
+    monkeypatch.setattr(
+        "asyncio.create_subprocess_exec",
+        AsyncMock(return_value=fake_proc),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await handle_dispatch_agent(
+            {"subagent_type": "code_reviewer", "task": "x", "description": "x"}
+        )
+    assert _last_dispatch["type"] == "code_reviewer"
+    assert _last_dispatch["status"] == "cancelled"
+    assert isinstance(_last_dispatch["ms"], int)

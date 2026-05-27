@@ -4877,52 +4877,26 @@ def _register_state_tracking_handlers(session) -> None:
             calls = list(getattr(ev, "function_calls", None) or [])
             if not calls:
                 return
-            # If dispatch_agent fired this turn, stash its outcome on the
-            # session so log_turn can persist subagent_type / subagent_ms /
-            # subagent_status. livekit-agents pairs calls + outputs in
-            # parallel lists; FunctionCall itself has no .output, so we
-            # zip with function_call_outputs to read the result string.
-            outputs = list(getattr(ev, "function_call_outputs", None) or [])
-            for idx, call in enumerate(calls):
-                call_name = getattr(call, "name", "") or (
-                    call.get("name") if isinstance(call, dict) else ""
-                )
-                if call_name != "dispatch_agent":
-                    continue
-                args = getattr(call, "arguments", None)
-                if args is None and isinstance(call, dict):
-                    args = call.get("arguments")
-                # arguments may be a JSON string or a dict; handle both.
-                if isinstance(args, str):
-                    try:
-                        import json as _json
-                        args = _json.loads(args)
-                    except Exception:
-                        args = {}
-                if isinstance(args, dict):
-                    session._jarvis_subagent_type = args.get("subagent_type")
-                # Read the paired output (parallel list index). Phase-1
-                # telemetry captures type + status only; ms is best-effort
-                # via output JSON shape — the dispatch handler returns
-                # `{"status": "aborted", ...}` on session swap and
-                # `{"error": "..."}` on failure; anything else is success.
-                out_item = outputs[idx] if idx < len(outputs) else None
-                result = getattr(out_item, "output", None) if out_item is not None else None
-                if isinstance(result, str):
-                    if result.startswith("{") and '"status": "aborted"' in result:
-                        # Session-id drift on completion — the dispatcher
-                        # discarded the result because the user moved on.
-                        session._jarvis_subagent_status = "aborted"
-                    elif result.startswith("{") and "ran too long" in result:
-                        # Per-type timeout fired; the handler's timeout JSON
-                        # includes the literal "ran too long" substring.
-                        session._jarvis_subagent_status = "timeout"
-                    elif result.startswith("{") and '"error"' in result:
-                        # All other error envelopes (spawn-failure / non-zero
-                        # exit / communicate crash).
-                        session._jarvis_subagent_status = "error"
-                    else:
-                        session._jarvis_subagent_status = "success"
+            # Stash dispatch_agent telemetry from the module-level side-channel.
+            # The handler in tools/dispatch_agent.py writes _last_dispatch from a
+            # try/finally so every exit path (success/timeout/error/cancelled/etc.)
+            # is recorded — even if the framework abandoned the call mid-flight or
+            # the JSON output is missing/odd-shaped (which the prior output-parsing
+            # approach couldn't handle).
+            try:
+                from tools.dispatch_agent import _last_dispatch as _da_last
+                if _da_last.get("type") and _da_last.get("status"):
+                    session._jarvis_subagent_type = _da_last["type"]
+                    session._jarvis_subagent_ms = _da_last["ms"]
+                    session._jarvis_subagent_status = _da_last["status"]
+                    # Clear the slot so a stale value doesn't leak into the next
+                    # turn. Turn-start (_on_user_input is_final=True) ALSO resets
+                    # the session attrs; this clears the module slot for safety.
+                    _da_last["type"] = None
+                    _da_last["ms"] = None
+                    _da_last["status"] = None
+            except Exception:
+                pass
             current = list(getattr(session, "_jarvis_tool_calls_this_turn", None) or [])
             current.extend(calls)
             session._jarvis_tool_calls_this_turn = current
