@@ -3392,8 +3392,10 @@ async def pre_tts_confab_gate_filter(text):
 
     Important latency note: buffering shifts TTS start-of-speech from
     LLM-first-token to LLM-last-token. The front-loaded ack
-    ("One moment.") fired by `_front_loaded_ack` after 800 ms is the
-    perception cushion. TTFW telemetry stays accurate because
+    ("One moment.") fired by `_front_loaded_ack` after 1500 ms is the
+    perception cushion (bumped from 800 ms on 2026-05-27 — cached
+    Anthropic responses arrive in 700-1000 ms, so 800 ms fired right
+    before the real reply and felt robotic). TTFW telemetry stays accurate because
     `stamp_first_token` is at position 0 and stamps BEFORE this filter
     consumes the stream.
     """
@@ -4911,58 +4913,76 @@ def _register_state_tracking_handlers(session) -> None:
             # Front-loaded ack (2026-05-24, pre-TTS confab gate). The
             # gate buffers the FULL LLM text before TTS streams, which
             # shifts TTS start from LLM-first-token to LLM-last-token.
-            # An 800 ms timer fires session.say("One moment.") so the
+            # A 1500 ms timer fires session.say("One moment.") so the
             # user gets perception feedback that JARVIS is working.
-            # Only TASK_*/REASONING — BANTER/EMOTIONAL stay snappy
-            # (their primary calls return in <1s anyway, and an ack
-            # on those would feel robotic).
+            # Threshold bumped 800→1500 ms on 2026-05-27 — cached
+            # Anthropic responses arrive in ~700-1000 ms, so the old
+            # 800 ms threshold fired right before the real reply and
+            # sounded robotic on short turns. 1500 ms means the ack
+            # only fires when the LLM is genuinely taking a while.
+            #
+            # TASK_OTHER excluded — misrouted casual input (e.g.
+            # "thank you" → TASK_OTHER, captured 2026-05-27) gets an
+            # ack that sounds nonsensical for a one-word reply.
+            # BANTER/EMOTIONAL/TASK_OTHER stay snappy (their primary
+            # calls return fast and an ack on them feels robotic).
+            #
+            # AT MOST ONCE PER USER TURN. The `_jarvis_front_ack_fired`
+            # flag is turn-scoped — reset in `_on_user_input` on the
+            # final transcript, NOT here. The framework re-enters
+            # "thinking" multiple times per turn (one per LLM iteration
+            # between tool calls, plus the speaking→thinking cycle the
+            # ack TTS itself causes); resetting the gate on every entry
+            # produced runs of 4+ acks in 3 s — live failure 2026-05-27.
             try:
-                route = getattr(session, "_jarvis_route", None) or ""
-                # Cancel any prior ack task from a previous turn (defensive).
-                prior_task = getattr(session, "_jarvis_front_ack_task", None)
-                if prior_task is not None and not prior_task.done():
-                    prior_task.cancel()
-                session._jarvis_front_ack_fired = False
-                if route.startswith("TASK_") or route == "REASONING":
-                    async def _front_loaded_ack(_sess=session):
-                        try:
-                            await asyncio.sleep(0.8)
-                            if not getattr(_sess, "_jarvis_front_ack_fired", False):
-                                try:
-                                    # Vary the ack phrase so consecutive long
-                                    # turns don't all say the same thing —
-                                    # users notice "one moment" repetition fast.
-                                    # add_to_chat_ctx=False so the ack does NOT
-                                    # become an assistant turn in chat_ctx. If it
-                                    # did, the next user turn would see two
-                                    # consecutive assistant turns (ack + real
-                                    # reply) and the supervisor would get confused.
-                                    import random
-                                    _FRONT_ACK_PHRASES = (
-                                        "One moment.",
-                                        "On it.",
-                                        "Working on it.",
-                                        "Let me check.",
-                                        "Hold on.",
-                                        "Give me a sec.",
-                                        "Looking into that.",
-                                        "Thinking…",
-                                    )
-                                    phrase = random.choice(_FRONT_ACK_PHRASES)
-                                    _sess.say(
-                                        phrase,
-                                        allow_interruptions=True,
-                                        add_to_chat_ctx=False,
-                                    )
-                                    _sess._jarvis_front_ack_fired = True
-                                    logger.info(f"[front-ack] voiced {phrase!r} (LLM still pending)")
-                                except Exception as _say_e:
-                                    logger.debug(f"[front-ack] say failed: {_say_e}")
-                        except asyncio.CancelledError:
-                            pass
-                    session._jarvis_front_ack_task = asyncio.create_task(_front_loaded_ack())
+                if getattr(session, "_jarvis_front_ack_fired", False):
+                    pass  # already voiced this turn — skip
                 else:
-                    session._jarvis_front_ack_task = None
+                    route = getattr(session, "_jarvis_route", None) or ""
+                    _ACK_ROUTES = (
+                        "TASK_DESKTOP", "TASK_BROWSER",
+                        "TASK_CODE", "TASK_FILES", "REASONING",
+                    )
+                    if route in _ACK_ROUTES:
+                        async def _front_loaded_ack(_sess=session):
+                            try:
+                                await asyncio.sleep(1.5)
+                                if not getattr(_sess, "_jarvis_front_ack_fired", False):
+                                    try:
+                                        # Vary the ack phrase so consecutive long
+                                        # turns don't all say the same thing —
+                                        # users notice "one moment" repetition fast.
+                                        # add_to_chat_ctx=False so the ack does NOT
+                                        # become an assistant turn in chat_ctx. If it
+                                        # did, the next user turn would see two
+                                        # consecutive assistant turns (ack + real
+                                        # reply) and the supervisor would get confused.
+                                        import random
+                                        _FRONT_ACK_PHRASES = (
+                                            "One moment.",
+                                            "On it.",
+                                            "Working on it.",
+                                            "Let me check.",
+                                            "Hold on.",
+                                            "Give me a sec.",
+                                            "Looking into that.",
+                                            "Thinking…",
+                                        )
+                                        phrase = random.choice(_FRONT_ACK_PHRASES)
+                                        _sess.say(
+                                            phrase,
+                                            allow_interruptions=True,
+                                            add_to_chat_ctx=False,
+                                        )
+                                        _sess._jarvis_front_ack_fired = True
+                                        logger.info(f"[front-ack] voiced {phrase!r} (LLM still pending)")
+                                    except Exception as _say_e:
+                                        logger.debug(f"[front-ack] say failed: {_say_e}")
+                            except asyncio.CancelledError:
+                                pass
+                        session._jarvis_front_ack_task = asyncio.create_task(_front_loaded_ack())
+                    else:
+                        session._jarvis_front_ack_task = None
             except Exception as _ack_e:
                 logger.debug(f"[front-ack] schedule skipped: {_ack_e}")
         elif new_state in ("idle", "listening"):
@@ -5039,6 +5059,21 @@ def _register_state_tracking_handlers(session) -> None:
                 session._jarvis_confab_pattern_matched = None
                 session._jarvis_confab_retry_models = []
                 session._jarvis_text_recovery_fired = False
+            except Exception:
+                pass
+            # Reset front-ack gate for the new turn. Cancel any stale
+            # task left over from the previous turn (defensive — the
+            # idle/listening branch of _on_agent_state normally
+            # cancels it, but on tightly-packed back-to-back turns
+            # the new user input can arrive before that fires). The
+            # `fired` flag is the load-bearing turn-scope gate that
+            # prevents the multi-firing observed 2026-05-27.
+            try:
+                prior_ack = getattr(session, "_jarvis_front_ack_task", None)
+                if prior_ack is not None and not prior_ack.done():
+                    prior_ack.cancel()
+                session._jarvis_front_ack_task = None
+                session._jarvis_front_ack_fired = False
             except Exception:
                 pass
             # Bump the dispatch_agent session-id slot so any in-flight
