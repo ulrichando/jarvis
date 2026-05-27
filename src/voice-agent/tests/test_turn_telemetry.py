@@ -561,3 +561,39 @@ def test_log_turn_writes_subagent_fields():
         ).fetchone()
         conn.close()
     assert row == ("explore", 4321, "success"), f"got {row!r}"
+
+
+def test_no_text_states_distinct_and_exported():
+    """The 4 new no_text_* constants must exist and not collide with
+    existing CONFAB_STATE_* values."""
+    from pipeline.turn_telemetry import (
+        CONFAB_STATE_NO_TEXT_T1_PASSED,
+        CONFAB_STATE_NO_TEXT_T2_PASSED,
+        CONFAB_STATE_NO_TEXT_T3_PASSED,
+        CONFAB_STATE_NO_TEXT_FILLER,
+        CONFAB_STATE_CLEAN,
+        CONFAB_STATE_CAUGHT_T1_PASSED,
+        CONFAB_STATE_CAUGHT_FILLER,
+    )
+    new_states = {
+        CONFAB_STATE_NO_TEXT_T1_PASSED,
+        CONFAB_STATE_NO_TEXT_T2_PASSED,
+        CONFAB_STATE_NO_TEXT_T3_PASSED,
+        CONFAB_STATE_NO_TEXT_FILLER,
+    }
+    existing_states = {
+        CONFAB_STATE_CLEAN,
+        CONFAB_STATE_CAUGHT_T1_PASSED,
+        CONFAB_STATE_CAUGHT_FILLER,
+    }
+    # All four must be distinct from each other.
+    assert len(new_states) == 4, "no_text constants must be unique"
+    # And distinct from existing states.
+    assert new_states.isdisjoint(existing_states), (
+        "no_text constants must not collide with existing CONFAB_STATE_*"
+    )
+    # Sanity on the actual string values — they need to be DB-stable.
+    assert CONFAB_STATE_NO_TEXT_T1_PASSED == "no_text_t1_passed"
+    assert CONFAB_STATE_NO_TEXT_T2_PASSED == "no_text_t2_passed"
+    assert CONFAB_STATE_NO_TEXT_T3_PASSED == "no_text_t3_passed"
+    assert CONFAB_STATE_NO_TEXT_FILLER == "no_text_filler"
