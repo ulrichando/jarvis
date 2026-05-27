@@ -5064,14 +5064,11 @@ def _register_state_tracking_handlers(session) -> None:
             calls = list(getattr(ev, "function_calls", None) or [])
             if not calls:
                 return
-            # Refresh the thinking-flag file on every tool batch. The
-            # framework's agent_state→speaking transition unlinks the
-            # file when JARVIS voices the ack ("On it.") — but the LLM
-            # is still iterating through tool calls + a followup reply,
-            # which can take 10-60+ s. Without this refresh, the tray
-            # goes green during that work and the user sees "JARVIS is
-            # silent" when JARVIS is actively reviewing/researching.
-            _mark_thinking_start()
+            # Tool-batch completion is no longer a moment we need to
+            # re-touch the thinking-flag file — the heartbeat (started
+            # in _on_user_input) refreshes it every 3s for the whole
+            # turn. Kept this handler for the dispatch_agent telemetry
+            # stash + tool-calls accumulator that follow.
             # Stash dispatch_agent telemetry from the module-level side-channel.
             # The handler in tools/dispatch_agent.py writes _last_dispatch from a
             # try/finally so every exit path (success/timeout/error/cancelled/etc.)
