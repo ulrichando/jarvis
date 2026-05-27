@@ -97,6 +97,31 @@ _STRONG_CLAIMS = [
         # loading" patterns that slipped through the prior gate.
         re.I,
     ),
+    # === Added 2026-05-27 — cover confab shapes the original list missed ===
+
+    # Commitment without action ("On it.", "Will do.", "Let me get on it.")
+    re.compile(
+        r"\b(?:on (?:it|its way)|will do|let me get(?:ting)? on (?:it|that))\b",
+        re.IGNORECASE,
+    ),
+
+    # Planning narration ("Let me focus Chrome", "Let me click", "Let me see your screen")
+    re.compile(
+        r"\blet me (?:focus|click|type|open|navigate|go|switch|launch|press|hit|find|search|see)\b",
+        re.IGNORECASE,
+    ),
+
+    # Hallucinated perception ("I can see your desktop", "I see the screen")
+    re.compile(
+        r"\bI (?:can |now )?(?:see|am looking at|have on screen)\b.*\b(?:screen|desktop|window|tab|page)\b",
+        re.IGNORECASE,
+    ),
+
+    # False-state assertion ("It's already open", "The tab's loading")
+    re.compile(
+        r"\b(?:it'?s|that'?s|the (?:tab|page|window|app)) (?:already )?(?:open|loading|loaded|done|running|launched)\b",
+        re.IGNORECASE,
+    ),
 ]
 
 
