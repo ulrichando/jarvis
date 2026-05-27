@@ -437,3 +437,24 @@ def test_instagram_session_confabs_all_trip_gate(text):
     )
     assert verdict.reason == "confab_detected"
     assert verdict.pattern_matched is not None
+
+
+def test_text_force_prompt_constant_exists_and_targets_no_text_failure():
+    """TEXT_FORCE_PROMPT must instruct the LLM to voice a result and
+    NOT call more tools — the inverse of TOOL_FORCE_PROMPT."""
+    from pipeline.pre_tts_confab_gate import TEXT_FORCE_PROMPT
+    body = TEXT_FORCE_PROMPT.lower()
+    assert "did not voice" in body or "did not voice a result" in body
+    assert "do not call more tools" in body or "do not call" in body
+    # Length sanity — must be a real prompt, not a placeholder.
+    assert len(TEXT_FORCE_PROMPT) > 100
+
+
+def test_no_text_filler_constant_distinct_from_filler_text():
+    """The no-text recovery has its own filler distinct from FILLER_TEXT
+    so DB telemetry can tell the two failure modes apart."""
+    from pipeline.pre_tts_confab_gate import (
+        NO_TEXT_FILLER_TEXT, FILLER_TEXT,
+    )
+    assert NO_TEXT_FILLER_TEXT != FILLER_TEXT
+    assert "summary" in NO_TEXT_FILLER_TEXT.lower()
