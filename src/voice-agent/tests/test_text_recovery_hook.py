@@ -219,3 +219,22 @@ async def test_post_turn_text_recovery_skips_when_factory_missing():
     sess._jarvis_pre_tts_llm_factory = None  # explicit override
     await _post_turn_text_recovery(sess)
     assert sess._said == [NO_TEXT_FILLER_TEXT]
+
+
+@pytest.mark.asyncio
+async def test_post_turn_text_recovery_idempotent_within_one_turn():
+    """If _jarvis_text_recovery_fired=True already, calling
+    _post_turn_text_recovery a second time is a no-op (no extra say)."""
+    from jarvis_agent import _post_turn_text_recovery
+    sess = _FakeSession(
+        route="TASK_OTHER",
+        factory=_make_factory([("First recovery.", [])]),
+        chat_ctx=[{"role": "user", "content": "review my changes"}],
+    )
+    # First call lands and voices.
+    await _post_turn_text_recovery(sess)
+    assert len(sess._said) == 1
+    # Simulate the listener calling a second time after another silent
+    # item; the function must short-circuit on its own flag.
+    await _post_turn_text_recovery(sess)
+    assert len(sess._said) == 1  # still one, not two
