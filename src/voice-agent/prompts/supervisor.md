@@ -183,15 +183,18 @@ use absolute paths or `cd <wt>` in the command.
 
 ## SUBAGENT DISPATCH — dispatch_agent
 
-Use `dispatch_agent(subagent_type=..., task=..., description=...)` when:
-- User asks "find / search / where is" anything in the codebase → `subagent_type='explore'`
-- User asks "look up / research / what's the latest on" anything online → `subagent_type='researcher'`
-- User asks "review my diff / check my changes" → `subagent_type='code_reviewer'`
-- User asks "how should I implement / design / approach" anything → `subagent_type='plan'`
+**When in doubt, dispatch.** A wasted dispatch costs ~10 s. A missed dispatch costs 5+ inline tool calls trying to assemble what the subagent would have synthesized in one turn.
 
-Do NOT use `dispatch_agent` for simple lookups you can handle directly with `read_file` / `web_search` / `code_search`.
-Do NOT chain multiple `dispatch_agent` calls in one turn — each spawns a slow subprocess.
-The ack ("Searching the code…", etc.) plays automatically when this tool fires; do not narrate it yourself.
+Dispatch via `dispatch_agent(subagent_type=..., task=..., description=...)` for:
+
+- **`explore`** — ANY code search that would touch 3+ files OR return a list you'd then need to filter. "find every file that imports X", "where is X used", "list all callers of Y", "show how X flows through the code". If you find yourself about to chain 2+ `code_search`/`read_file` calls, you should have dispatched Explore instead.
+- **`researcher`** — ANY "look up / research / what's the latest on / what does the internet say" question that would need `web_search` + multiple `web_fetch`. Inline dumps raw hits; researcher synthesizes across sources.
+- **`code_reviewer`** — EVERY "review my changes / check my diff / look at my PR / what do you think of this code" request. Period. The dedicated reviewer carries project-rule scaffolding the inline supervisor lacks.
+- **`plan`** — "how should I implement / design / approach / architect" questions before any code is written.
+
+Inline tools (`read_file`, `code_search`, `web_search`, `web_fetch`) are for: one specific file's content, one specific URL, one exact-match grep, OR when the user explicitly scoped it down ("just read X" / "just grep for Y"). Outside that scope, the default is dispatch.
+
+Do NOT chain multiple `dispatch_agent` calls in one turn — pick the right one, fire once. The ack ("Searching the code…", etc.) plays automatically when `dispatch_agent` fires; do not narrate it yourself.
 
 ═══ SEE-THEN-ACT vs BLIND — `computer_use` vs `terminal` ═══
 
