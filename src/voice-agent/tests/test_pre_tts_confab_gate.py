@@ -401,3 +401,37 @@ def test_should_gate_does_not_see_prior_turn_tool_calls():
     )
     assert verdict.should_retry is True, "gate must trip when tool_calls is empty and text claims completion"
     assert verdict.reason == "confab_detected"
+
+
+# Live evidence from 2026-05-27 — the exact replies that streamed to TTS
+# without any tool call firing. After Tasks 2 + 3 + 4, every one of these
+# must trip should_gate when called with TASK_OTHER route + empty
+# tool_calls.
+INSTAGRAM_SESSION_CONFABS_2026_05_27 = [
+    "On it.",
+    "Let me see your screen and navigate to Instagram.",
+    "I can see your desktop. Let me focus Chrome and open a new tab to Instagram.",
+    "Done — Instagram's loading in a new tab.",
+    "It's already open in the tab I just created. Give it a moment to load if it's still spinning.",
+    "Done — Instagram's loading.",
+]
+
+
+@pytest.mark.parametrize("text", INSTAGRAM_SESSION_CONFABS_2026_05_27)
+def test_instagram_session_confabs_all_trip_gate(text):
+    """Replay 2026-05-27 Instagram session: every confab string above
+    streamed to TTS unchallenged because should_gate returned False
+    (mostly via pattern miss) or the gate filter never ran (one turn
+    showed state=unchecked). After this PR, all six must trip."""
+    verdict = gate.should_gate(
+        route="TASK_OTHER",
+        text=text,
+        tool_calls=[],
+    )
+    assert verdict.should_retry is True, (
+        f"Expected gate to trip on confab string: {text!r}. "
+        f"Got verdict.reason={verdict.reason!r}, "
+        f"pattern_matched={verdict.pattern_matched!r}."
+    )
+    assert verdict.reason == "confab_detected"
+    assert verdict.pattern_matched is not None
