@@ -57,6 +57,18 @@ CONFAB_STATE_CLEAN_TOOL_CALLED    = "clean_tool_called"      # tool_calls non-em
 CONFAB_STATE_RETRY_FACTORY_MISSING = "retry_factory_missing"  # gate tripped, _jarvis_pre_tts_llm_factory was None
 CONFAB_STATE_RETRY_EXCEPTION       = "retry_exception"        # retry chain raised — see logs
 
+# Post-tool reply-required gate states (2026-05-27). Stored in
+# turns.confab_check_state. These mirror the confab cascade but for
+# the inverse failure: tool fired but no text reply was voiced.
+#   _T1_PASSED: tier 1 (retry) produced text
+#   _T2_PASSED: tier 2 (escalate) produced text
+#   _T3_PASSED: tier 3 (cross_provider) produced text
+#   _FILLER:    all tiers exhausted — safe filler voiced
+CONFAB_STATE_NO_TEXT_T1_PASSED  = "no_text_t1_passed"
+CONFAB_STATE_NO_TEXT_T2_PASSED  = "no_text_t2_passed"
+CONFAB_STATE_NO_TEXT_T3_PASSED  = "no_text_t3_passed"
+CONFAB_STATE_NO_TEXT_FILLER     = "no_text_filler"
+
 DEFAULT_DB_PATH = Path(
     os.environ.get(
         "JARVIS_TELEMETRY_PATH",
