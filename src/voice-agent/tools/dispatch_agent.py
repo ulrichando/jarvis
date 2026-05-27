@@ -68,6 +68,17 @@ _POLICY: Dict[str, Dict[str, Any]] = {
 # and the in-flight subagent result should be discarded.
 _active_session_token: list = [None]
 
+# Side-channel for the agent's _on_function_tools_executed observer.
+# Reflects the LAST handle_dispatch_agent invocation. Mutated on every
+# code path via try/finally so the wiring sees the truth even if the
+# tool_result output is missing (e.g., the call was abandoned by the
+# framework or the JSON output is in an unexpected shape).
+_last_dispatch: dict = {
+    "type": None,    # e.g. "explore" / "researcher" / "code_reviewer" / "plan"
+    "ms": None,      # elapsed milliseconds (always populated on exit)
+    "status": None,  # "success" / "timeout" / "error" / "aborted" / "cancelled" / "crashed" / "spawn_failed"
+}
+
 
 def _timeout_for(subagent_type: str) -> float:
     pol = _POLICY[subagent_type]
@@ -95,13 +106,22 @@ async def handle_dispatch_agent(args: Dict[str, Any]) -> str:
     Front-loaded ack is fired separately by the voice-agent (jarvis_agent.py
     reads the ack phrase off this module via per-type policy lookup); the
     handler itself only owns subprocess lifecycle + timeout + telemetry.
+
+    EVERY exit path writes:
+      1. A `[dispatch_agent] exit type=X status=Y ms=Z` log line (try/finally)
+      2. The module-level `_last_dispatch` dict — read by jarvis_agent.py's
+         `_on_function_tools_executed` observer to capture subagent telemetry
+         even when the tool_result output is missing or odd-shaped.
     """
     subagent_type = (args.get("subagent_type") or "").strip()
     task = (args.get("task") or "").strip()
     description = (args.get("description") or "").strip()
 
+    # Quick-reject paths (don't write side-channel — these never spawned).
     if subagent_type not in _POLICY:
-        return tool_error(f"unknown subagent_type {subagent_type!r}; expected one of {list(_POLICY)}")
+        return tool_error(
+            f"unknown subagent_type {subagent_type!r}; expected one of {list(_POLICY)}"
+        )
     if not task:
         return tool_error("task is required and must be non-empty")
 
@@ -118,79 +138,94 @@ async def handle_dispatch_agent(args: Dict[str, Any]) -> str:
         f"description={description!r} task_chars={len(task)}"
     )
 
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-    except OSError as e:
-        return tool_error(f"could not start bin/jarvis: {type(e).__name__}: {e}")
+    # Sentinel — overwritten on each known exit path. If somehow the
+    # function returns without setting this, the finally block logs
+    # "unknown" so we never lose the trace.
+    final_status = "unknown"
 
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
-    except asyncio.TimeoutError:
         try:
-            proc.kill()
-            await proc.wait()
-        except Exception:
-            pass
-        elapsed_ms = int((time.monotonic() - started) * 1000)
-        logger.warning(
-            f"[dispatch_agent] timeout type={subagent_type} after {elapsed_ms}ms"
-        )
-        return tool_error(f"subagent {subagent_type} ran too long (>{int(timeout_s)}s); aborted")
-    except asyncio.CancelledError:
-        # Parent turn task was cancelled (typically a barge-in). Reap the
-        # subprocess before letting the cancellation propagate; otherwise
-        # the subagent runs orphaned for up to the per-type timeout.
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError as e:
+            final_status = "spawn_failed"
+            return tool_error(
+                f"could not start bin/jarvis: {type(e).__name__}: {e}"
+            )
+
         try:
-            proc.kill()
-            await proc.wait()
-        except Exception:
-            pass
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout_s,
+            )
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
+            final_status = "timeout"
+            return tool_error(
+                f"subagent {subagent_type} ran too long (>{int(timeout_s)}s); aborted"
+            )
+        except asyncio.CancelledError:
+            # Parent turn task was cancelled (typically a barge-in). Reap the
+            # subprocess before letting the cancellation propagate; otherwise
+            # the subagent runs orphaned for up to the per-type timeout.
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
+            final_status = "cancelled"
+            raise  # re-raise so livekit-agents knows the task was cancelled
+        except Exception as e:
+            # Catch BrokenPipeError, OSError, anything else from communicate().
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
+            final_status = "crashed"
+            logger.warning(
+                f"[dispatch_agent] communicate failed type={subagent_type}: "
+                f"{type(e).__name__}: {e}"
+            )
+            return tool_error(
+                f"subagent {subagent_type} crashed: {type(e).__name__}: {e}"
+            )
+
+        # Session-id drift check: if the active token changed during the run,
+        # the user's turn is abandoned. Don't return the stale result.
+        if (_active_session_token[0] is not dispatch_token
+                and dispatch_token is not None):
+            final_status = "aborted"
+            return json.dumps({
+                "status": "aborted",
+                "reason": "session swap during dispatch",
+            })
+
+        if proc.returncode != 0:
+            tail = (stderr.decode("utf-8", errors="replace") or "").strip()[-200:]
+            final_status = "error"
+            return tool_error(
+                f"subagent {subagent_type} failed (exit {proc.returncode}): {tail}"
+            )
+
+        text = stdout.decode("utf-8", errors="replace").strip()
+        final_status = "success"
+        return text
+    finally:
         elapsed_ms = int((time.monotonic() - started) * 1000)
+        _last_dispatch["type"] = subagent_type
+        _last_dispatch["ms"] = elapsed_ms
+        _last_dispatch["status"] = final_status
         logger.info(
-            f"[dispatch_agent] cancelled type={subagent_type} after {elapsed_ms}ms — reaped subprocess"
+            f"[dispatch_agent] exit type={subagent_type} status={final_status} ms={elapsed_ms}"
         )
-        raise  # re-raise so livekit-agents knows the task was cancelled
-    except Exception as e:
-        # Catch BrokenPipeError, OSError, anything else from communicate().
-        try:
-            proc.kill()
-            await proc.wait()
-        except Exception:
-            pass
-        elapsed_ms = int((time.monotonic() - started) * 1000)
-        logger.warning(
-            f"[dispatch_agent] communicate failed type={subagent_type} after {elapsed_ms}ms: "
-            f"{type(e).__name__}: {e}"
-        )
-        return tool_error(f"subagent {subagent_type} crashed: {type(e).__name__}: {e}")
-
-    elapsed_ms = int((time.monotonic() - started) * 1000)
-
-    # Session-id drift check: if the active token changed during the run,
-    # the user's turn is abandoned. Don't return the stale result.
-    if _active_session_token[0] is not dispatch_token and dispatch_token is not None:
-        logger.info(
-            f"[dispatch_agent] session swap during dispatch — discarding type={subagent_type} ms={elapsed_ms}"
-        )
-        return json.dumps({"status": "aborted", "reason": "session swap during dispatch"})
-
-    if proc.returncode != 0:
-        tail = (stderr.decode("utf-8", errors="replace") or "").strip()[-200:]
-        logger.warning(
-            f"[dispatch_agent] non-zero exit type={subagent_type} rc={proc.returncode} ms={elapsed_ms}"
-        )
-        return tool_error(f"subagent {subagent_type} failed (exit {proc.returncode}): {tail}")
-
-    text = stdout.decode("utf-8", errors="replace").strip()
-    logger.info(
-        f"[dispatch_agent] success type={subagent_type} ms={elapsed_ms} stdout_chars={len(text)}"
-    )
-    return text
 
 
 def get_ack_phrase(subagent_type: str) -> str | None:
