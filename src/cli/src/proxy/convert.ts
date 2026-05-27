@@ -56,6 +56,99 @@ function extractSystemText(system: unknown): string {
   return ''
 }
 
+// ── <think>-tag stripping (qwen3 + other open-source reasoning models) ──
+
+// Strip <think>...</think> blocks (and one trailing newline run) from a
+// finished text response. Some models — primarily Qwen3 on Groq — emit
+// chain-of-thought inside literal <think> tags in the visible content
+// instead of in a separate reasoning_content field. The CLI doesn't
+// render the tags specially, so the user sees "<think>maybe I should…"
+// in their chat. This regex removes the blocks. Safe to call on any
+// text — <think> isn't a real HTML tag.
+export function stripThinkTags(text: string): string {
+  return text.replace(/<think>[\s\S]*?<\/think>\n*/g, '')
+}
+
+// Streaming variant: an SSE-friendly state machine. Feed it chunks of
+// text; it emits the visible (non-think) portion and holds back any
+// bytes that might be the start of a <think> / </think> tag pair
+// crossing a chunk boundary. Call end() when the stream finishes —
+// returns any held-back bytes that turned out not to be tags (or
+// empty if the stream ended inside an unclosed think block).
+export class ThinkTagStripper {
+  private inThink = false
+  private buffer = ''
+
+  feed(chunk: string): string {
+    this.buffer += chunk
+    let out = ''
+    while (this.buffer.length > 0) {
+      if (this.inThink) {
+        const closeIdx = this.buffer.indexOf('</think>')
+        if (closeIdx !== -1) {
+          this.buffer = this.buffer.slice(closeIdx + '</think>'.length)
+          this.inThink = false
+          this.buffer = this.buffer.replace(/^\n+/, '')
+          continue
+        }
+        // Hold back any tail bytes that COULD be the start of </think>;
+        // discard everything else (it's still inside the think block).
+        const partial = endsWithPartialOf(this.buffer, '</think>')
+        this.buffer = this.buffer.slice(this.buffer.length - partial)
+        break
+      }
+      const openIdx = this.buffer.indexOf('<think>')
+      if (openIdx !== -1) {
+        out += this.buffer.slice(0, openIdx)
+        this.buffer = this.buffer.slice(openIdx + '<think>'.length)
+        this.inThink = true
+        continue
+      }
+      // No full open tag in buffer. Emit everything except a possible
+      // partial <think> at the tail (kept for the next feed()).
+      const partial = endsWithPartialOf(this.buffer, '<think>')
+      if (partial > 0) {
+        out += this.buffer.slice(0, this.buffer.length - partial)
+        this.buffer = this.buffer.slice(this.buffer.length - partial)
+      } else {
+        out += this.buffer
+        this.buffer = ''
+      }
+      break
+    }
+    return out
+  }
+
+  end(): string {
+    // Stream ended. Inside a think block: discard whatever's left.
+    // Outside: the held bytes were a false-alarm partial tag, emit them.
+    if (this.inThink) {
+      this.buffer = ''
+      return ''
+    }
+    const out = this.buffer
+    this.buffer = ''
+    return out
+  }
+}
+
+function endsWithPartialOf(text: string, target: string): number {
+  // Longest suffix of `text` that is a prefix of `target`. Used to
+  // decide how many trailing bytes to hold back across chunk seams.
+  const maxLen = Math.min(text.length, target.length - 1)
+  for (let len = maxLen; len > 0; len--) {
+    if (target.startsWith(text.slice(text.length - len))) return len
+  }
+  return 0
+}
+
+// Gate: which models need the <think> strip applied? Today only Qwen3
+// (Groq). Other open-source / reasoning models use a separate
+// reasoning_content field and don't leak tags into visible content.
+export function modelLeaksThinkTags(modelId: string): boolean {
+  return modelId.includes('qwen')
+}
+
 // ── Convert a single Anthropic content block to text ─────────────────────
 
 function contentToText(content: unknown): string {
@@ -403,7 +496,14 @@ export function convertResponse(openaiResp: any, model: string): any {
   const content: any[] = []
 
   if (msg.content) {
-    content.push({ type: 'text', text: msg.content })
+    // Qwen3 (and possibly future open-source models) emit their chain-
+    // of-thought inside literal <think>...</think> blocks in the visible
+    // content. Strip them on the wire so the CLI doesn't render the
+    // reasoning as user-visible text.
+    const text = modelLeaksThinkTags(model)
+      ? stripThinkTags(msg.content)
+      : msg.content
+    if (text) content.push({ type: 'text', text })
   }
 
   if (msg.tool_calls) {
