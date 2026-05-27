@@ -958,6 +958,33 @@ def _mark_thinking_end() -> None:
         pass
 
 
+# Heartbeat-driven thinking-indicator (2026-05-27). Replaces the
+# agent_state_changed-driven file management which broke during long
+# turns: the framework transitioned through "listening" or "speaking"
+# between tool calls, the file got unlinked, indicator went green
+# while JARVIS was actively reviewing/researching for the user.
+#
+# The heartbeat task starts on user_input_transcribed(is_final=True)
+# and runs until the assistant emits a FINAL reply (text content, no
+# tool_use) or until the turn is interrupted/cancelled. While running,
+# it re-touches _AGENT_THINKING_FILE every `interval_s` seconds — the
+# desktop's 60s TTL becomes a generous floor instead of the operative
+# expiry.
+async def _thinking_heartbeat(interval_s: float = 3.0) -> None:
+    """Touch _AGENT_THINKING_FILE every `interval_s` seconds.
+
+    On cancellation, unlinks the file so the desktop indicator goes
+    green immediately. Idempotent: external unlinks are repaired on
+    the next tick."""
+    try:
+        while True:
+            _mark_thinking_start()
+            await asyncio.sleep(interval_s)
+    except asyncio.CancelledError:
+        _mark_thinking_end()
+        raise
+
+
 # Per-turn tool-call governor. Without this, the LLM can chain
 # run_jarvis_cli calls indefinitely — observed: misinterpreted user
 # question → CLI #1 ran for 24 s → LLM chained CLI #2 ("fix the
