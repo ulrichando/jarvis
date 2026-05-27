@@ -190,3 +190,30 @@ async def test_session_id_mismatch_returns_aborted(monkeypatch):
     )
     parsed = json.loads(result)
     assert parsed.get("status") == "aborted"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_error_reaps_subprocess(monkeypatch):
+    """If the parent task is cancelled mid-dispatch (barge-in), the subprocess
+    must be killed before the cancellation propagates. Without the reap, the
+    subagent would run orphaned for the full timeout (up to 90s)."""
+    from tools.dispatch_agent import handle_dispatch_agent
+
+    fake_proc = MagicMock()
+    fake_proc.returncode = None
+    async def cancelled_communicate():
+        raise asyncio.CancelledError()
+    fake_proc.communicate = AsyncMock(side_effect=cancelled_communicate)
+    fake_proc.kill = MagicMock()
+    fake_proc.wait = AsyncMock(return_value=-15)
+
+    monkeypatch.setattr(
+        "asyncio.create_subprocess_exec",
+        AsyncMock(return_value=fake_proc),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await handle_dispatch_agent(
+            {"subagent_type": "explore", "task": "x", "description": "x"}
+        )
+    fake_proc.kill.assert_called_once()
