@@ -36,6 +36,8 @@ Zero `jarvis.pre_tts_gate` log lines for the entire window. The TASK_OTHER-→-H
 
 4. **Likely root cause — state leak.** Hypothesis: `_jarvis_tool_calls_this_turn` is not reset at every turn start. Turn 1 fires a tool, turn 2 doesn't but the session attribute still holds turn 1's tool_calls. Gate at turn 2 sees `tool_calls` non-empty → bypasses with reason `tool_called` → telemetry collapses to `CLEAN`. Plausible because turn 1 of any conversation usually does call a tool (e.g., `memory` for greeting context). Unverified — must read the turn-start handler to confirm.
 
+> **Postscript (2026-05-27, post-implementation audit — commit `e51fb219`):** The state-leak hypothesis above was **audited and disproved**. `_jarvis_tool_calls_this_turn` IS reset at every turn start: `jarvis_agent.py:4842`, inside the `_on_user_input` handler (`@session.on("user_input_transcribed")`), gated on `is_final=True`. The reset is load-bearing — the `_on_function_tools_executed` handler APPENDS to the list rather than replacing it — but it does fire reliably for every final transcript. So the actual root cause of the `state=clean` row on `"Done — Instagram's loading in a new tab"` is still unknown as of this PR's merge. The new state-precision + per-verdict INFO logging from Tasks 3-4 will surface it on the next live trigger.
+
 ## Design
 
 ### 1 — Pattern extensions
