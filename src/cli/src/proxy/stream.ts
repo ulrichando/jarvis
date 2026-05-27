@@ -2,6 +2,7 @@
 // and writes it to a ReadableStream controller.
 
 import { setReasoning } from './reasoning-cache.js'
+import { ThinkTagStripper, modelLeaksThinkTags } from './convert.js'
 
 const HEARTBEAT_INTERVAL_MS = 5000
 
@@ -75,6 +76,11 @@ export async function convertOpenAIStreamToAnthropic(
     nextContentIndex: 0,
     reasoningBuffer: '',
   }
+
+  // Qwen3 (and any future open-source model marked by modelLeaksThinkTags)
+  // emits <think>...</think> blocks inline in the visible content.
+  // Filter them on the fly so the CLI never sees the reasoning text.
+  const thinkStripper = modelLeaksThinkTags(model) ? new ThinkTagStripper() : null
 
   // Send message_start
   send('message_start', {
@@ -150,21 +156,28 @@ export async function convertOpenAIStreamToAnthropic(
           state.reasoningBuffer += delta.reasoning_content
         }
 
-        // Text content
+        // Text content. For qwen3 (and other think-tag-leaking models)
+        // the chunks are routed through the stripper first — chunks
+        // that are entirely inside a <think>...</think> block are
+        // dropped silently; chunks spanning the close tag emit only
+        // the post-think portion.
         if (delta.content) {
-          if (state.textBlockIndex === null) {
-            state.textBlockIndex = state.nextContentIndex++
-            send('content_block_start', {
-              type: 'content_block_start',
+          const visible = thinkStripper ? thinkStripper.feed(delta.content) : delta.content
+          if (visible) {
+            if (state.textBlockIndex === null) {
+              state.textBlockIndex = state.nextContentIndex++
+              send('content_block_start', {
+                type: 'content_block_start',
+                index: state.textBlockIndex,
+                content_block: { type: 'text', text: '' },
+              })
+            }
+            send('content_block_delta', {
+              type: 'content_block_delta',
               index: state.textBlockIndex,
-              content_block: { type: 'text', text: '' },
+              delta: { type: 'text_delta', text: visible },
             })
           }
-          send('content_block_delta', {
-            type: 'content_block_delta',
-            index: state.textBlockIndex,
-            delta: { type: 'text_delta', text: delta.content },
-          })
         }
 
         // Tool calls
@@ -233,6 +246,28 @@ export async function convertOpenAIStreamToAnthropic(
     // Always emit closing events so the Anthropic SDK sees message_stop
     // and the CLI doesn't hang in "assistant is streaming" state, even if
     // the upstream provider connection was interrupted mid-response.
+
+    // Flush any lookback bytes the think-stripper was holding (a tail
+    // that turned out NOT to be a partial tag). Emit them before the
+    // content_block_stop so the client sees a complete answer.
+    if (thinkStripper) {
+      const tail = thinkStripper.end()
+      if (tail) {
+        if (state.textBlockIndex === null) {
+          state.textBlockIndex = state.nextContentIndex++
+          send('content_block_start', {
+            type: 'content_block_start',
+            index: state.textBlockIndex,
+            content_block: { type: 'text', text: '' },
+          })
+        }
+        send('content_block_delta', {
+          type: 'content_block_delta',
+          index: state.textBlockIndex,
+          delta: { type: 'text_delta', text: tail },
+        })
+      }
+    }
 
     if (state.textBlockIndex !== null) {
       send('content_block_stop', {
