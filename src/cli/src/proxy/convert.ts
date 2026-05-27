@@ -264,6 +264,39 @@ function resolveDeepSeekThinking(
   return undefined
 }
 
+// Models whose upstream API generates reasoning_content (DeepSeek-R1 shape)
+// that counts against the response token budget — even when we suppress
+// it from the wire via include_reasoning=false. They need the full
+// provider.maxOutputTokens floor or visible content gets squeezed out.
+// Distinct from provider.requiresReasoning, which ALSO triggers
+// reasoning-content round-trip in chat_ctx (a DeepSeek-thinking-mode
+// quirk these models don't share).
+//
+// Membership verified live 2026-05-27 with max_tokens=30 against
+// /v1/messages → /v1/chat/completions. Models that burned the entire
+// budget on hidden reasoning (finish_reason=length, completion_tokens
+// equal to the cap, empty content) made the list. gpt-5.1 is notably
+// NOT on it — it defaulted to minimal reasoning and returned visible
+// text within 10 tokens. gemini-2.5-flash also stayed out.
+function usesHiddenReasoning(provider: Provider): boolean {
+  if (provider.model.includes('gpt-oss')) return true
+  if (provider.name === 'kimi') return true
+  // OpenAI GPT-5, GPT-5-mini, GPT-5-nano (exclude gpt-5.1 + later)
+  if (provider.name === 'openai' && /^gpt-5(-mini|-nano)?$/.test(provider.model)) return true
+  // Google Gemini 2.5 Pro (hidden thinking; the flash variants don't)
+  if (provider.name === 'gemini' && provider.model.startsWith('gemini-2.5-pro')) return true
+  return false
+}
+
+// OpenAI's GPT-5 family (gpt-5, gpt-5-mini, gpt-5-nano, gpt-5.1) ships a
+// stricter request shape than the legacy chat-completions models:
+//   - max_tokens → renamed to max_completion_tokens
+//   - temperature → must be exactly 1 (only default is accepted)
+// Detect by model-id prefix so future siblings (e.g. gpt-5.2) inherit.
+function isGpt5Family(provider: Provider): boolean {
+  return provider.name === 'openai' && provider.model.startsWith('gpt-5')
+}
+
 function applyProviderSpecificParams(out: any, req: any, provider: Provider): void {
   if (provider.name === 'deepseek') {
     const thinking = resolveDeepSeekThinking(req)
@@ -272,6 +305,14 @@ function applyProviderSpecificParams(out: any, req: any, provider: Provider): vo
       // We map explicit Jarvis effort choices onto that upstream switch.
       out.thinking = thinking
     }
+  }
+
+  if (provider.name === 'kimi') {
+    // Moonshot's K2.6 endpoint rejects any temperature !== 1 with a
+    // hard 400 "invalid temperature: only 1 is allowed for this model".
+    // Pin regardless of what the client sent — matches DeepSeek-R1's
+    // similar constraint pattern.
+    out.temperature = 1
   }
 
   if (provider.name === 'groq') {
@@ -320,16 +361,23 @@ export function convertRequest(req: any, provider: Provider): any {
   // visible-only. A long chain-of-thought then exhausts the cap and tool
   // arguments stream truncates mid-emission, landing with empty input.
   // Always grant the provider max for thinking models so reasoning has
-  // headroom and tool args fit.
-  const maxTokens = provider.requiresReasoning
+  // headroom and tool args fit. Same floor for hidden-reasoning models
+  // (gpt-oss-*, Kimi K2.6) — see usesHiddenReasoning above.
+  const usesReasoningBudget = provider.requiresReasoning || usesHiddenReasoning(provider)
+  const maxTokens = usesReasoningBudget
     ? provider.maxOutputTokens
     : Math.min(req.max_tokens ?? provider.maxOutputTokens, provider.maxOutputTokens)
 
+  const gpt5 = isGpt5Family(provider)
   const out: any = {
     model: provider.model,
     messages: repairedMessages,
-    max_tokens: maxTokens,
-    temperature: req.temperature ?? 0.3,
+    // GPT-5 family rejects max_tokens entirely (use max_completion_tokens)
+    // and only accepts temperature=1. Every other upstream still wants
+    // the legacy shape — keep them on max_tokens + the client's temp.
+    ...(gpt5
+      ? { max_completion_tokens: maxTokens, temperature: 1 }
+      : { max_tokens: maxTokens, temperature: req.temperature ?? 0.3 }),
     stream: req.stream ?? false,
   }
 

@@ -26,19 +26,23 @@ export type Provider = {
   fallback: readonly string[]
 }
 
-function resolveApiKey(name: JarvisProviderName, envVar: string | undefined): string {
+function resolveApiKey(
+  name: JarvisProviderName,
+  envVar: string | readonly string[] | undefined,
+): string {
   if (name === 'ollama') return 'ollama'
   if (!envVar) {
     throw new Error(`Provider "${name}" has no apiKeyEnvVar configured in the model registry`)
   }
-  const key = (process.env[envVar] ?? '').trim()
-  if (!key) {
-    throw new Error(
-      `Missing ${envVar} in proxy environment — cannot route to ${name}. ` +
-      `Start via src/cli/scripts/start.sh (or bin/jarvis-desktop) so .env.local is loaded.`,
-    )
+  const candidates = typeof envVar === 'string' ? [envVar] : envVar
+  for (const candidate of candidates) {
+    const key = (process.env[candidate] ?? '').trim()
+    if (key) return key
   }
-  return key
+  throw new Error(
+    `Missing ${candidates.join(' / ')} in proxy environment — cannot route to ${name}. ` +
+    `Start via src/cli/scripts/start.sh (or bin/jarvis-desktop) so .env.local is loaded.`,
+  )
 }
 
 function buildProvider(
