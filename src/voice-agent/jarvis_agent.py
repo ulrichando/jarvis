@@ -4904,7 +4904,10 @@ def _register_state_tracking_handlers(session) -> None:
         new_state = getattr(ev, "new_state", None)
         old_state = getattr(ev, "old_state", None)
         if new_state == "thinking":
-            _mark_thinking_start()
+            # Heartbeat owns _AGENT_THINKING_FILE now (started in
+            # _on_user_input). Don't touch the file here — the framework's
+            # transient "listening" state between tool calls would have
+            # otherwise unlinked it and made the tray go green.
             # Front-loaded ack (2026-05-24, pre-TTS confab gate). The
             # gate buffers the FULL LLM text before TTS streams, which
             # shifts TTS start from LLM-first-token to LLM-last-token.
@@ -4963,12 +4966,10 @@ def _register_state_tracking_handlers(session) -> None:
             except Exception as _ack_e:
                 logger.debug(f"[front-ack] schedule skipped: {_ack_e}")
         elif new_state in ("idle", "listening"):
-            # NOT "speaking" — speaking is INTERSTITIAL: it fires when JARVIS
-            # voices an ack mid-turn while tools + followup LLM are still
-            # pending. Unlinking the thinking-file on speaking made the tray
-            # go green during the rest of the turn. Only clear on idle /
-            # listening, which are true turn termini.
-            _mark_thinking_end()
+            # Heartbeat owns _AGENT_THINKING_FILE — cancel happens in
+            # _on_item (final_reply detection) or in barge-in paths,
+            # not here. Keep _mark_tool_end() since the tool-busy file
+            # is separate from the thinking flag.
             _mark_tool_end()
             # Cancel the front-loaded ack — the LLM has settled (either
             # text is flowing to TTS, or the turn ended without a reply).
