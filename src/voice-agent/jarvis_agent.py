@@ -4817,7 +4817,12 @@ def _register_state_tracking_handlers(session) -> None:
                     session._jarvis_front_ack_task = None
             except Exception as _ack_e:
                 logger.debug(f"[front-ack] schedule skipped: {_ack_e}")
-        elif new_state in ("idle", "listening", "speaking"):
+        elif new_state in ("idle", "listening"):
+            # NOT "speaking" — speaking is INTERSTITIAL: it fires when JARVIS
+            # voices an ack mid-turn while tools + followup LLM are still
+            # pending. Unlinking the thinking-file on speaking made the tray
+            # go green during the rest of the turn. Only clear on idle /
+            # listening, which are true turn termini.
             _mark_thinking_end()
             _mark_tool_end()
             # Cancel the front-loaded ack — the LLM has settled (either
