@@ -33,6 +33,10 @@ from confab_detector import looks_like_completion_claim
 from pipeline import specialty_routes
 from pipeline.turn_telemetry import (
     CONFAB_STATE_CLEAN,
+    CONFAB_STATE_CLEAN_BYPASS_ROUTE,
+    CONFAB_STATE_CLEAN_UNKNOWN_ROUTE,
+    CONFAB_STATE_CLEAN_NO_CLAIM,
+    CONFAB_STATE_CLEAN_TOOL_CALLED,
     CONFAB_STATE_CAUGHT_T1_PASSED,
     CONFAB_STATE_CAUGHT_T2_PASSED,
     CONFAB_STATE_CAUGHT_T3_PASSED,
@@ -89,35 +93,57 @@ def should_gate(
       - otherwise → clean
     """
     if gate_disabled():
+        logger.info(f"[pre_tts_gate] route={route} verdict=kill_switch")
         return GateVerdict(False, "kill_switch")
 
     if route in _BYPASS_ROUTES:
+        logger.info(f"[pre_tts_gate] route={route} verdict=bypass_route")
         return GateVerdict(False, "bypass_route")
 
     if not route.startswith("TASK_") and route != "REASONING":
         # Unknown route — be permissive (don't gate).
+        logger.info(f"[pre_tts_gate] route={route} verdict=unknown_route")
         return GateVerdict(False, "unknown_route")
 
     if tool_calls:
+        logger.info(
+            f"[pre_tts_gate] route={route} verdict=tool_called "
+            f"(n_calls={len(tool_calls)})"
+        )
         return GateVerdict(False, "tool_called")
 
     looks, pattern = looks_like_completion_claim(text)
     if not looks:
+        logger.info(f"[pre_tts_gate] route={route} verdict=no_claim")
         return GateVerdict(False, "no_claim")
 
+    # Trip path — agent filter will log a WARNING when it actually
+    # runs the retry chain, so we don't double-log here.
     return GateVerdict(True, "confab_detected", pattern_matched=pattern)
 
 
 def telemetry_state_for_clean(verdict: GateVerdict) -> str:
-    """Map a clean verdict (should_retry=False) to its telemetry state.
+    """Map a clean verdict (should_retry=False) to its precise telemetry
+    sub-state. Each of the four bypass reasons now writes a distinct DB
+    value so the operator can tell from the row WHY the gate didn't
+    retry — instead of every reason collapsing into CONFAB_STATE_CLEAN.
 
-    The agent calls this when the gate decided not to retry, so it
-    can write the right confab_check_state value to telemetry.
-    Returns CONFAB_STATE_BYPASSED_KILLED for kill-switch verdicts,
-    CONFAB_STATE_CLEAN for everything else (including bypass routes,
-    no-claim, tool-called, etc.)."""
+    The legacy CONFAB_STATE_CLEAN constant remains exported for back-
+    compat with older DB rows; new code should land on these sub-states.
+    """
     if verdict.reason == "kill_switch":
         return CONFAB_STATE_BYPASSED_KILLED
+    if verdict.reason == "bypass_route":
+        return CONFAB_STATE_CLEAN_BYPASS_ROUTE
+    if verdict.reason == "unknown_route":
+        return CONFAB_STATE_CLEAN_UNKNOWN_ROUTE
+    if verdict.reason == "tool_called":
+        return CONFAB_STATE_CLEAN_TOOL_CALLED
+    if verdict.reason == "no_claim":
+        return CONFAB_STATE_CLEAN_NO_CLAIM
+    # Unknown reason — defensive fallback. Should not happen in
+    # practice; if it does, the operator will see "clean" in the DB
+    # and know to investigate.
     return CONFAB_STATE_CLEAN
 
 
