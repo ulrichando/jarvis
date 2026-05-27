@@ -377,8 +377,10 @@ _WEB_SEARCH_SCHEMA = {
         "already know the URL.\n\n"
         "NEVER use web_fetch for search — guessing a URL fails too often. "
         "Use this tool first; THEN web_fetch one of the returned URLs if you "
-        "need deeper detail. For multi-source research, use transfer_to_browser "
-        "which drives the user's real Chrome.\n\n"
+        "need deeper detail. For multi-step / interactive web work, use "
+        "browser_task (drives a real browser via cdp-use).\n\n"
+        "DO NOT fabricate search results or claim 'I found X online' UNLESS "
+        "this tool has actually been called this turn and returned results.\n\n"
         "Returns up to `limit` (default 5, max 10) entries formatted as:\n"
         "  1. <title>\n"
         "     <url>\n"
@@ -413,7 +415,9 @@ _WEB_FETCH_SCHEMA = {
         "Caps response at ~3 KB after stripping. Times out at `timeout` seconds "
         "(default 15, max 60).\n\n"
         "For structured search-and-summarize across multiple sources, use "
-        "web_search + transfer_to_browser instead."
+        "web_search + browser_task instead.\n\n"
+        "DO NOT summarize what a page says before calling this tool — "
+        "claiming content without fetching is confab."
     ),
     "parameters": {
         "type": "object",
