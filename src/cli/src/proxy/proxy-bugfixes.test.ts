@@ -22,7 +22,7 @@ afterAll(() => {
 // the builder), so plain re-imports work — the variable just needs to
 // be set BEFORE the builder runs.
 import { getProviderForModel } from './providers.js'
-import { convertRequest } from './convert.js'
+import { convertRequest, stripThinkTags, ThinkTagStripper } from './convert.js'
 
 describe('Gemini env-var alias (Fix 1)', () => {
   test('GEMINI_API_KEY alone is enough to build a Gemini provider', () => {
@@ -211,6 +211,97 @@ describe('Gemini 2.5 Pro & GPT-5 hidden-reasoning floor (Fix 6)', () => {
       p,
     )
     expect(out.max_tokens).toBe(30)
+  })
+})
+
+describe('Qwen <think> tag strip — non-streaming (Fix 7a)', () => {
+  // Qwen3-32b (and some other open-source models) emit chain-of-thought
+  // inside <think>...</think> blocks INSIDE the visible content. Most
+  // models put it in a separate reasoning_content field. The proxy
+  // strips those blocks so the CLI doesn't render them as user-visible
+  // text. Safe to apply universally — <think> isn't a real HTML tag.
+
+  test('leading think block + answer → strip the think block', () => {
+    expect(
+      stripThinkTags('<think>let me think about it</think>\n\nactual answer'),
+    ).toBe('actual answer')
+  })
+
+  test('think block in the middle → strip it, keep surrounding text', () => {
+    expect(
+      stripThinkTags('before <think>thoughts</think> after'),
+    ).toBe('before  after')
+  })
+
+  test('multi-line think block (newlines inside)', () => {
+    const input =
+      '<think>\nstep 1\nstep 2\n</think>\n\nFinal: pong'
+    expect(stripThinkTags(input)).toBe('Final: pong')
+  })
+
+  test('multiple think blocks all stripped', () => {
+    expect(
+      stripThinkTags('<think>a</think>x<think>b</think>y'),
+    ).toBe('xy')
+  })
+
+  test('no think tags → unchanged', () => {
+    expect(stripThinkTags('plain text')).toBe('plain text')
+  })
+
+  test('only a think block → empty after strip', () => {
+    expect(stripThinkTags('<think>only thinking</think>')).toBe('')
+  })
+
+  test('empty string → empty string', () => {
+    expect(stripThinkTags('')).toBe('')
+  })
+})
+
+describe('Qwen <think> tag strip — streaming (Fix 7b)', () => {
+  // Streaming case is harder: <think> open + </think> close tags can
+  // span chunk boundaries. The ThinkTagStripper holds a small lookback
+  // buffer of bytes that might be a partial tag start and emits the
+  // rest. When inside a block, all bytes are discarded until the close.
+
+  test('full open + close in one chunk → strip, emit remainder', () => {
+    const s = new ThinkTagStripper()
+    expect(s.feed('<think>x</think>actual')).toBe('actual')
+  })
+
+  test('split open across chunks', () => {
+    const s = new ThinkTagStripper()
+    expect(s.feed('text <thi')).toBe('text ')
+    expect(s.feed('nk>thought</think>more')).toBe('more')
+  })
+
+  test('split close across chunks', () => {
+    const s = new ThinkTagStripper()
+    expect(s.feed('<think>think')).toBe('')
+    expect(s.feed('ing</thi')).toBe('')
+    expect(s.feed('nk>real answer')).toBe('real answer')
+  })
+
+  test('no think tags → pass through unchanged', () => {
+    const s = new ThinkTagStripper()
+    expect(s.feed('hello ')).toBe('hello ')
+    expect(s.feed('world')).toBe('world')
+  })
+
+  test('tail emit: leftover lookback flushed via end()', () => {
+    const s = new ThinkTagStripper()
+    // "<t" is a partial-tag candidate so it's held back…
+    expect(s.feed('foo <t')).toBe('foo ')
+    // …and emitted as final bytes when the stream ends without a complete tag.
+    expect(s.end()).toBe('<t')
+  })
+
+  test('end() while still inside a think block drops the held bytes', () => {
+    const s = new ThinkTagStripper()
+    expect(s.feed('<think>still going')).toBe('')
+    // Stream ended mid-think; remaining bytes are discarded so the
+    // user never sees the unfinished thought.
+    expect(s.end()).toBe('')
   })
 })
 
