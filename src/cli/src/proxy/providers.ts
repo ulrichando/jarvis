@@ -51,6 +51,7 @@ function buildProvider(
   requiresReasoning: boolean,
   jarvisModelId: string | null,
   fallback: readonly string[],
+  modelMaxOutputTokens: number | undefined,
 ): Provider {
   const config = getJarvisProviderConfig(name)
   return {
@@ -63,7 +64,11 @@ function buildProvider(
         : upstreamModel,
     supportsToolChoice: config.supportsToolChoice,
     maxTools: config.maxTools,
-    maxOutputTokens: config.maxOutputTokens,
+    // Per-model maxOutputTokens overrides the provider default. Used for
+    // models with a stricter API cap than their provider family (e.g.
+    // gpt-4o = 16K under the OpenAI provider's 32K default; llama-4-scout
+    // = 8K under the Groq provider's 32K default).
+    maxOutputTokens: modelMaxOutputTokens ?? config.maxOutputTokens,
     requiresReasoning,
     jarvisModelId,
     fallback,
@@ -81,6 +86,7 @@ export function getProviderForModel(modelName: string): Provider | null {
     requiresReasoning,
     model.id,
     model.fallback ?? [],
+    model.maxOutputTokens,
   )
 }
 
@@ -96,5 +102,6 @@ export function getProvider(): Provider {
     requiresReasoning,
     defaultModel?.id ?? null,
     defaultModel?.fallback ?? [],
+    defaultModel?.maxOutputTokens,
   )
 }
