@@ -506,7 +506,13 @@ async def test_retry_chain_runs_through_ladder(monkeypatch):
 
     calls = []
 
-    async def fake_runner(model_id):
+    # NOTE 2026-05-27: factory must be SYNC. `LLMFactory = Callable[[str], LLMRunner]`
+    # in pre_tts_confab_gate.py line 165 — the gate calls `runner = llm_factory(model_id)`
+    # without `await` (line 206), so an `async def fake_runner` would return an
+    # un-awaited coroutine and the test would fail at runtime. Earlier plan revision
+    # had `async def fake_runner` here; corrected to `def fake_runner` during Task 4
+    # implementation (commit `c0bdd057`).
+    def fake_runner(model_id):
         async def run(chat_ctx, tool_specs):
             calls.append(model_id)
             # Pretend tier 1 returned a clean reply with a real tool call.
