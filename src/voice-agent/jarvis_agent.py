@@ -5022,7 +5022,12 @@ def _register_state_tracking_handlers(session) -> None:
         except Exception:
             pass
         if getattr(ev, "is_final", True):
-            _mark_thinking_start()
+            # Start the indicator heartbeat. Heartbeat runs from now
+            # until the FINAL assistant reply lands (text-only, no
+            # tool_use) or until the turn is barge-in / interrupted.
+            # Replaces the prior agent_state-driven _mark_thinking_start
+            # call — see docs/superpowers/specs/2026-05-27-post-tool-reply-gate-and-indicator-heartbeat.md
+            _start_thinking_heartbeat(session)
             _reset_tool_call_count()
             # Reset per-turn tool-calls list consumed by the pre-TTS
             # confab gate. Populated by the function_tools_executed
