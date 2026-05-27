@@ -3481,6 +3481,13 @@ async def _post_turn_text_recovery(session) -> None:
     if the chain exhausts.
 
     Sets session._jarvis_confab_check_state for end-of-turn telemetry."""
+    if getattr(session, "_jarvis_text_recovery_fired", False):
+        logger.info("[text-recovery] skipped — flag already set this turn")
+        return
+    try:
+        session._jarvis_text_recovery_fired = True
+    except Exception:
+        pass
     route = getattr(session, "_jarvis_route", None) or ""
     llm_factory = getattr(session, "_jarvis_pre_tts_llm_factory", None)
     chat_ctx = getattr(session, "chat_ctx", None)
@@ -4972,6 +4979,7 @@ def _register_state_tracking_handlers(session) -> None:
                 session._jarvis_confab_check_state = None
                 session._jarvis_confab_pattern_matched = None
                 session._jarvis_confab_retry_models = []
+                session._jarvis_text_recovery_fired = False
             except Exception:
                 pass
             # Bump the dispatch_agent session-id slot so any in-flight
