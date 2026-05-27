@@ -179,11 +179,14 @@ describe('Gemini 2.5 Pro & GPT-5 hidden-reasoning floor (Fix 6)', () => {
   // Floor to provider.maxOutputTokens like gpt-oss / kimi / DeepSeek-thinking.
 
   test.each([
-    ['gemini-2.5-pro', 8192],
-    ['gemini-pro', 8192],
-    ['gpt-5', 16384],
-    ['gpt-5-mini', 16384],
-    ['gpt-5-nano', 16384],
+    // Provider defaults bumped in #33 (vendor-docs verification on
+    // 2026-05-27). Gemini: 8K → 32K; OpenAI: 16K → 32K. The floor
+    // mechanism still works — it just floors to the new larger cap.
+    ['gemini-2.5-pro', 32768],
+    ['gemini-pro', 32768],
+    ['gpt-5', 32768],
+    ['gpt-5-mini', 32768],
+    ['gpt-5-nano', 32768],
   ] as const)('%s: max_tokens budget is floored to %p', (modelId, expectedMax) => {
     const p = getProviderForModel(modelId)!
     const out = convertRequest(

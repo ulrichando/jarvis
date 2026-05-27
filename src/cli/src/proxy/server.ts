@@ -3,7 +3,7 @@ import { convertOpenAIStreamToAnthropic, type StreamStats } from './stream.js'
 import { getProvider, getProviderForModel, type Provider } from './providers.js'
 import { fetchWithRetry } from './retry.js'
 import { forwardAnthropicNative } from './anthropicPassthrough.js'
-import { logRequest, newRequestId, type RequestLog } from './logger.js'
+import { logDeepseekCacheStats, logRequest, newRequestId, type RequestLog } from './logger.js'
 import {
   buildSyntheticWebSearchResponse,
   extractWebSearchQuery,
@@ -336,6 +336,16 @@ async function handleMessagesRequest(req: Request, url: URL): Promise<Response> 
         } finally {
           controller.close()
           if (stats) {
+            // DeepSeek cache observability (Goal B). Miss is derived
+            // (stream's StreamStats only carries the hit count, but
+            // inputTokens is the raw prompt total → miss = total - hit).
+            if (provider.name === 'deepseek') {
+              const hit = stats.cacheReadTokens
+              const miss = Math.max(0, stats.inputTokens - hit)
+              if (hit + miss > 0) {
+                logDeepseekCacheStats(requestId, hit, miss)
+              }
+            }
             finish({
               input_tokens: stats.inputTokens,
               output_tokens: stats.outputTokens,
@@ -360,6 +370,15 @@ async function handleMessagesRequest(req: Request, url: URL): Promise<Response> 
 
   const openaiResp: any = await providerResp.json()
   const anthropicResp = convertResponse(openaiResp, provider.model)
+  // DeepSeek cache observability (Goal B). Hit/miss come straight from
+  // the upstream usage block — no derivation needed on the batch path.
+  if (provider.name === 'deepseek' && openaiResp?.usage) {
+    const hit = openaiResp.usage.prompt_cache_hit_tokens ?? 0
+    const miss = openaiResp.usage.prompt_cache_miss_tokens ?? 0
+    if (hit + miss > 0) {
+      logDeepseekCacheStats(requestId, hit, miss)
+    }
+  }
   finish({
     input_tokens: openaiResp?.usage?.prompt_tokens ?? null,
     output_tokens: openaiResp?.usage?.completion_tokens ?? null,
