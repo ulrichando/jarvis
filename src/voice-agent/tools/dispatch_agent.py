@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict
 
-from .registry import registry
+from .registry import registry, tool_error
 
 logger = logging.getLogger("jarvis.dispatch_agent")
 
@@ -101,11 +101,9 @@ async def handle_dispatch_agent(args: Dict[str, Any]) -> str:
     description = (args.get("description") or "").strip()
 
     if subagent_type not in _POLICY:
-        return json.dumps({
-            "error": f"unknown subagent_type {subagent_type!r}; expected one of {list(_POLICY)}"
-        })
+        return tool_error(f"unknown subagent_type {subagent_type!r}; expected one of {list(_POLICY)}")
     if not task:
-        return json.dumps({"error": "task is required and must be non-empty"})
+        return tool_error("task is required and must be non-empty")
 
     # Snapshot the active session token at dispatch time. If it changes by the
     # time the subprocess finishes, the turn was abandoned and we discard.
@@ -127,10 +125,8 @@ async def handle_dispatch_agent(args: Dict[str, Any]) -> str:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-    except (FileNotFoundError, PermissionError) as e:
-        return json.dumps({
-            "error": f"could not start bin/jarvis: {type(e).__name__}: {e}"
-        })
+    except OSError as e:
+        return tool_error(f"could not start bin/jarvis: {type(e).__name__}: {e}")
 
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
@@ -144,9 +140,34 @@ async def handle_dispatch_agent(args: Dict[str, Any]) -> str:
         logger.warning(
             f"[dispatch_agent] timeout type={subagent_type} after {elapsed_ms}ms"
         )
-        return json.dumps({
-            "error": f"subagent {subagent_type} ran too long (>{int(timeout_s)}s); aborted"
-        })
+        return tool_error(f"subagent {subagent_type} ran too long (>{int(timeout_s)}s); aborted")
+    except asyncio.CancelledError:
+        # Parent turn task was cancelled (typically a barge-in). Reap the
+        # subprocess before letting the cancellation propagate; otherwise
+        # the subagent runs orphaned for up to the per-type timeout.
+        try:
+            proc.kill()
+            await proc.wait()
+        except Exception:
+            pass
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        logger.info(
+            f"[dispatch_agent] cancelled type={subagent_type} after {elapsed_ms}ms — reaped subprocess"
+        )
+        raise  # re-raise so livekit-agents knows the task was cancelled
+    except Exception as e:
+        # Catch BrokenPipeError, OSError, anything else from communicate().
+        try:
+            proc.kill()
+            await proc.wait()
+        except Exception:
+            pass
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        logger.warning(
+            f"[dispatch_agent] communicate failed type={subagent_type} after {elapsed_ms}ms: "
+            f"{type(e).__name__}: {e}"
+        )
+        return tool_error(f"subagent {subagent_type} crashed: {type(e).__name__}: {e}")
 
     elapsed_ms = int((time.monotonic() - started) * 1000)
 
@@ -163,9 +184,7 @@ async def handle_dispatch_agent(args: Dict[str, Any]) -> str:
         logger.warning(
             f"[dispatch_agent] non-zero exit type={subagent_type} rc={proc.returncode} ms={elapsed_ms}"
         )
-        return json.dumps({
-            "error": f"subagent {subagent_type} failed (exit {proc.returncode}): {tail}"
-        })
+        return tool_error(f"subagent {subagent_type} failed (exit {proc.returncode}): {tail}")
 
     text = stdout.decode("utf-8", errors="replace").strip()
     logger.info(
