@@ -3472,6 +3472,91 @@ async def pre_tts_confab_gate_filter(text):
             yield buffer
 
 
+async def _post_turn_text_recovery(session) -> None:
+    """Belt-and-suspenders recovery: an assistant item landed in chat_ctx
+    with no text AND no tool_use, but the turn had fired tool calls
+    earlier. The LLM produced no voiced summary. Run the TEXT_FORCE_PROMPT
+    retry chain via run_retry_chain(reason_for_retry="no_text_after_tool")
+    and voice the result via session.say() — or voice NO_TEXT_FILLER_TEXT
+    if the chain exhausts.
+
+    Sets session._jarvis_confab_check_state for end-of-turn telemetry."""
+    route = getattr(session, "_jarvis_route", None) or ""
+    llm_factory = getattr(session, "_jarvis_pre_tts_llm_factory", None)
+    chat_ctx = getattr(session, "chat_ctx", None)
+    tool_specs = list(getattr(session, "_jarvis_pre_tts_tool_specs", None) or [])
+
+    if llm_factory is None or chat_ctx is None:
+        # Factory missing — voice the filler directly so the user isn't
+        # left with total silence.
+        from pipeline.pre_tts_confab_gate import NO_TEXT_FILLER_TEXT
+        from pipeline.turn_telemetry import CONFAB_STATE_NO_TEXT_FILLER
+        logger.warning(
+            "[text-recovery] factory or chat_ctx missing — voicing filler directly"
+        )
+        try:
+            session.say(NO_TEXT_FILLER_TEXT, allow_interruptions=True)
+        except Exception as _e:
+            logger.debug(f"[text-recovery] say failed: {_e}")
+        try:
+            session._jarvis_confab_check_state = CONFAB_STATE_NO_TEXT_FILLER
+            session._jarvis_confab_pattern_matched = None
+            session._jarvis_confab_retry_models = []
+        except Exception:
+            pass
+        return
+
+    logger.warning(
+        f"[text-recovery] route={route} silent end-of-turn detected; "
+        "running text-force retry chain"
+    )
+    try:
+        result = await _pre_tts_run_retry_chain(
+            route=route,
+            chat_ctx=chat_ctx,
+            tool_specs=tool_specs,
+            original_text="",
+            original_pattern=None,
+            llm_factory=llm_factory,
+            reason_for_retry="no_text_after_tool",
+        )
+    except Exception as e:
+        logger.exception(
+            f"[text-recovery] retry chain raised: {e}; voicing filler"
+        )
+        from pipeline.pre_tts_confab_gate import NO_TEXT_FILLER_TEXT
+        from pipeline.turn_telemetry import CONFAB_STATE_RETRY_EXCEPTION
+        try:
+            session.say(NO_TEXT_FILLER_TEXT, allow_interruptions=True)
+        except Exception:
+            pass
+        try:
+            session._jarvis_confab_check_state = CONFAB_STATE_RETRY_EXCEPTION
+        except Exception:
+            pass
+        return
+
+    # Voice the result (clean text or filler — both end up here).
+    if result.text:
+        try:
+            session.say(result.text, allow_interruptions=True)
+        except Exception as _e:
+            logger.debug(f"[text-recovery] say failed: {_e}")
+
+    # Stash telemetry. log_turn reads _jarvis_confab_check_state directly.
+    try:
+        session._jarvis_confab_check_state = result.telemetry_state
+        session._jarvis_confab_pattern_matched = result.pattern_matched
+        session._jarvis_confab_retry_models = list(result.models_tried)
+    except Exception:
+        pass
+
+    logger.info(
+        f"[text-recovery] route={route} tier={result.tier_passed!r} "
+        f"state={result.telemetry_state} model={result.model_id}"
+    )
+
+
 # Barge-in truncation helpers — extracted to pipeline/barge_in.py
 # 2026-05-10 (Step 9 of the audit). Re-exported under legacy
 # underscored names so existing tests + the providers/tts.py lazy
