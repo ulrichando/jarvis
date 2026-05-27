@@ -5108,6 +5108,7 @@ def _register_state_tracking_handlers(session) -> None:
                 return
             logger.info(f"[kill-phrase] '{text[:60]!r}' detected mid-speech → forcing interrupt")
             session.interrupt(force=True)  # force: speeches are non-interruptible when echo-aware mode disables framework interruption
+            _cancel_thinking_heartbeat(session)
             session._jarvis_was_interrupted = True
         except Exception as e:
             logger.debug(f"[kill-phrase] check skipped: {e}")
@@ -5133,6 +5134,7 @@ def _register_state_tracking_handlers(session) -> None:
                 return  # JARVIS hearing itself — not a real interruption
             logger.info(f"[echo-bargein] novel speech during TTS → interrupt: {text[:60]!r}")
             session.interrupt(force=True)  # force: framework interruption is disabled in echo-aware mode, so a plain interrupt() would raise + no-op
+            _cancel_thinking_heartbeat(session)
             session._jarvis_was_interrupted = True
         except Exception as e:
             logger.debug(f"[echo-bargein] check skipped: {e}")
@@ -5186,6 +5188,7 @@ def _register_state_tracking_handlers(session) -> None:
                 "[vad-barge-in] user started speaking during TTS → forcing interrupt"
             )
             session.interrupt()
+            _cancel_thinking_heartbeat(session)
         except Exception as e:
             logger.debug(f"[interrupt-detect] skipped: {e}")
 
