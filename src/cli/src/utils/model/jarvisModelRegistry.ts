@@ -24,7 +24,12 @@ export type JarvisModelCapability =
 
 export type JarvisProviderDefinition = {
   baseUrl: string
-  apiKeyEnvVar?: string
+  // Env var to read the upstream API key from. Single name for most
+  // providers; an ordered array when a provider's vendor publishes
+  // multiple names for the same secret (e.g. Google AI accepts both
+  // GEMINI_API_KEY and the legacy GOOGLE_API_KEY) — the array form
+  // tries each in order and uses the first non-empty value.
+  apiKeyEnvVar?: string | readonly string[]
   defaultModel: string
   supportsToolChoice: boolean
   maxTools?: number
@@ -73,7 +78,11 @@ const JARVIS_PROVIDER_DEFINITIONS: Record<
   },
   gemini: {
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    apiKeyEnvVar: 'GOOGLE_API_KEY',
+    // Google AI ships under two interchangeable env-var names — GEMINI_API_KEY
+    // is the one their current docs surface, GOOGLE_API_KEY is the legacy
+    // alias still recommended for `google-genai` / vertex tooling. Accept
+    // either, with GEMINI_API_KEY preferred since it's the more specific name.
+    apiKeyEnvVar: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'] as const,
     defaultModel: 'gemini-2.0-flash',
     supportsToolChoice: true,
     maxOutputTokens: 8192,
@@ -217,12 +226,17 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     capabilities: ['effort', 'max_effort'],
     visibleInPicker: true,
   },
+  // Gemini upstream ids verified live 2026-05-27 via
+  // `GET /v1beta/openai/models`. `gemini-2.0-flash` is retired for
+  // new API keys; both jarvis-side flash aliases now route to
+  // `gemini-2.5-flash`. `gemini-2.5-pro-preview-03-25` was never on
+  // the OpenAI-compat endpoint — the stable id is just `gemini-2.5-pro`.
   {
     id: 'gemini-flash',
     label: 'Gemini Flash',
-    description: 'Gemini 2.0 Flash',
+    description: 'Gemini 2.5 Flash',
     provider: 'gemini',
-    upstreamModel: 'gemini-2.0-flash',
+    upstreamModel: 'gemini-2.5-flash',
     tiers: ['fast'],
     capabilities: [],
     visibleInPicker: false,
@@ -230,9 +244,9 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
   {
     id: 'gemini-2.0-flash',
     label: 'Gemini Flash',
-    description: 'Gemini 2.0 Flash',
+    description: 'Gemini 2.5 Flash (jarvis id retained for back-compat)',
     provider: 'gemini',
-    upstreamModel: 'gemini-2.0-flash',
+    upstreamModel: 'gemini-2.5-flash',
     tiers: ['fast'],
     capabilities: [],
     visibleInPicker: false,
@@ -242,7 +256,7 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     label: 'Gemini Pro',
     description: 'Gemini 2.5 Pro',
     provider: 'gemini',
-    upstreamModel: 'gemini-2.5-pro-preview-03-25',
+    upstreamModel: 'gemini-2.5-pro',
     tiers: ['reasoning'],
     capabilities: [],
     visibleInPicker: false,
@@ -252,7 +266,7 @@ const JARVIS_MODEL_DEFINITIONS: readonly JarvisModelDefinition[] = [
     label: 'Gemini Pro',
     description: 'Gemini 2.5 Pro',
     provider: 'gemini',
-    upstreamModel: 'gemini-2.5-pro-preview-03-25',
+    upstreamModel: 'gemini-2.5-pro',
     tiers: ['reasoning'],
     capabilities: [],
     visibleInPicker: false,
