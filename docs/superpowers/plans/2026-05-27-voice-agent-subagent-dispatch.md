@@ -4,7 +4,7 @@
 
 **Goal:** Ship the `dispatch_agent` tool described in `docs/superpowers/specs/2026-05-27-voice-agent-subagent-dispatch.md` so voice JARVIS can spawn `bin/jarvis` as a subprocess to handle Explore / researcher / code_reviewer / Plan sub-tasks with isolated context.
 
-**Architecture:** One new tool module (`src/voice-agent/tools/dispatch_agent.py`) that spawns `bin/jarvis --print "<prompt>"` via `asyncio.create_subprocess_exec` (argv list, no shell). The subagent type is encoded INTO the prompt text ("Use the Explore agent to: …") rather than via a CLI flag, because `bin/jarvis` exposes `-p/--print` but no `--subagent` (verified at `src/cli/src/main.tsx:5781`). Front-loaded ack phrases set expectations during the sync wait. Per-type timeouts cap the dead-air worst case. Telemetry adds 3 columns to `turns`.
+**Architecture:** One new tool module (`src/voice-agent/tools/dispatch_agent.py`) that spawns `bin/jarvis --print --agent <type> "<task>"` via `asyncio.create_subprocess_exec` (argv list, no shell). The subagent type is selected via the CLI's `--agent` flag, verified at Task 0 against `bin/jarvis --help` (also visible at `src/cli/src/main.tsx:5781` for `-p/--print` and the `--agent <agent>` listing in the same help output). Canonical agent names per the project's agent registry: `Explore` / `researcher` / `code-reviewer` / `Plan`. Front-loaded ack phrases set expectations during the sync wait. Per-type timeouts cap the dead-air worst case. Telemetry adds 3 columns to `turns`.
 
 **Tech Stack:** Python 3.13, livekit-agents (vendored in `src/voice-agent/.venv`), pytest 9.0.3 (already installed from earlier session), SQLite (telemetry), `asyncio.create_subprocess_exec` (subprocess plumbing).
 
@@ -45,9 +45,9 @@ Expected: `pytest 9.0.3` or newer.
 
 Run:
 ```bash
-timeout 30 bash /home/ulrich/Documents/Projects/jarvis/bin/jarvis --help 2>&1 | head -50
+timeout 30 bash /home/ulrich/Documents/Projects/jarvis/bin/jarvis --help 2>&1 | head -60
 ```
-Expected: output mentions `-p, --print [prompt]` (the headless mode flag we'll use). Note whether it ALSO mentions any agent-type / subagent flag. If the CLI does turn out to have a `--subagent <type>` flag we missed, that simplifies dispatch — note it and proceed; Task 2's policy table can still drop the prompt-prefix and use the CLI flag instead.
+Expected: output mentions `-p, --print` (the headless mode flag) AND `--agent <agent>` (selects the named agent for this session). Both confirmed live 2026-05-27 against the current bin/jarvis. If `--agent` is missing in some future CLI revision, the dispatcher needs to fall back to encoding the agent name into the prompt prefix instead — flag and adjust `_build_argv` in Task 2.
 
 - [ ] **Step 0.3: No commit.** Proceed to Task 1.
 
@@ -401,28 +401,29 @@ logger = logging.getLogger("jarvis.dispatch_agent")
 # bin/jarvis path is resolved relative to this file: tools/ -> voice-agent/ -> src/ -> project root -> bin/jarvis
 _BIN_JARVIS = Path(__file__).resolve().parents[3] / "bin" / "jarvis"
 
-# Per-type policy. Each entry: (cli_prompt_prefix, default_timeout_seconds, env_override_var, ack_phrase)
+# Per-type policy. cli_agent is the exact string bin/jarvis --agent expects
+# (per the project's agent registry — verified via bin/jarvis --help at Task 0).
 _POLICY: Dict[str, Dict[str, Any]] = {
     "explore": {
-        "prompt_prefix": "Use the Explore agent to: ",
+        "cli_agent": "Explore",
         "default_timeout_s": 30.0,
         "timeout_env": "JARVIS_DISPATCH_AGENT_TIMEOUT_EXPLORE_S",
         "ack": "Searching the code…",
     },
     "researcher": {
-        "prompt_prefix": "Use the researcher agent to: ",
+        "cli_agent": "researcher",
         "default_timeout_s": 90.0,
         "timeout_env": "JARVIS_DISPATCH_AGENT_TIMEOUT_RESEARCHER_S",
         "ack": "Looking that up online…",
     },
     "code_reviewer": {
-        "prompt_prefix": "Use the code-reviewer agent to: ",
+        "cli_agent": "code-reviewer",
         "default_timeout_s": 60.0,
         "timeout_env": "JARVIS_DISPATCH_AGENT_TIMEOUT_CODE_REVIEWER_S",
         "ack": "Reviewing the diff…",
     },
     "plan": {
-        "prompt_prefix": "Use the Plan agent to: ",
+        "cli_agent": "Plan",
         "default_timeout_s": 60.0,
         "timeout_env": "JARVIS_DISPATCH_AGENT_TIMEOUT_PLAN_S",
         "ack": "Thinking through that design…",
@@ -451,8 +452,8 @@ def _timeout_for(subagent_type: str) -> float:
 
 
 def _build_argv(subagent_type: str, task: str) -> list[str]:
-    prompt = _POLICY[subagent_type]["prompt_prefix"] + task
-    return [str(_BIN_JARVIS), "--print", prompt]
+    cli_agent = _POLICY[subagent_type]["cli_agent"]
+    return [str(_BIN_JARVIS), "--print", "--agent", cli_agent, task]
 
 
 async def handle_dispatch_agent(args: Dict[str, Any]) -> str:
