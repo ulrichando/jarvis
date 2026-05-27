@@ -4854,6 +4854,17 @@ def _register_state_tracking_handlers(session) -> None:
                 session._jarvis_confab_retry_models = []
             except Exception:
                 pass
+            # Bump the dispatch_agent session-id slot so any in-flight
+            # subagent from a prior turn discards its stale result on
+            # completion. New per-turn defaults for telemetry too.
+            try:
+                from tools import dispatch_agent as _da
+                _da._active_session_token[0] = object()
+            except Exception:
+                pass
+            session._jarvis_subagent_type = None
+            session._jarvis_subagent_ms = None
+            session._jarvis_subagent_status = None
 
     # Pre-TTS confab gate (2026-05-24): track this turn's tool-call list
     # so `should_gate()` can decide whether a "claimed action" reply is
@@ -4866,6 +4877,44 @@ def _register_state_tracking_handlers(session) -> None:
             calls = list(getattr(ev, "function_calls", None) or [])
             if not calls:
                 return
+            # If dispatch_agent fired this turn, stash its outcome on the
+            # session so log_turn can persist subagent_type / subagent_ms /
+            # subagent_status. livekit-agents pairs calls + outputs in
+            # parallel lists; FunctionCall itself has no .output, so we
+            # zip with function_call_outputs to read the result string.
+            outputs = list(getattr(ev, "function_call_outputs", None) or [])
+            for idx, call in enumerate(calls):
+                call_name = getattr(call, "name", "") or (
+                    call.get("name") if isinstance(call, dict) else ""
+                )
+                if call_name != "dispatch_agent":
+                    continue
+                args = getattr(call, "arguments", None)
+                if args is None and isinstance(call, dict):
+                    args = call.get("arguments")
+                # arguments may be a JSON string or a dict; handle both.
+                if isinstance(args, str):
+                    try:
+                        import json as _json
+                        args = _json.loads(args)
+                    except Exception:
+                        args = {}
+                if isinstance(args, dict):
+                    session._jarvis_subagent_type = args.get("subagent_type")
+                # Read the paired output (parallel list index). Phase-1
+                # telemetry captures type + status only; ms is best-effort
+                # via output JSON shape — the dispatch handler returns
+                # `{"status": "aborted", ...}` on session swap and
+                # `{"error": "..."}` on failure; anything else is success.
+                out_item = outputs[idx] if idx < len(outputs) else None
+                result = getattr(out_item, "output", None) if out_item is not None else None
+                if isinstance(result, str):
+                    if result.startswith("{") and '"error"' in result:
+                        session._jarvis_subagent_status = "error"
+                    elif result.startswith("{") and '"status": "aborted"' in result:
+                        session._jarvis_subagent_status = "aborted"
+                    else:
+                        session._jarvis_subagent_status = "success"
             current = list(getattr(session, "_jarvis_tool_calls_this_turn", None) or [])
             current.extend(calls)
             session._jarvis_tool_calls_this_turn = current
@@ -5857,6 +5906,9 @@ async def entrypoint(ctx: JobContext) -> None:
                         confab_check_state=_confab_state,
                         confab_pattern_matched=_pattern_matched,
                         confab_retry_models=_retry_models_json,
+                        subagent_type=getattr(session, "_jarvis_subagent_type", None),
+                        subagent_ms=getattr(session, "_jarvis_subagent_ms", None),
+                        subagent_status=getattr(session, "_jarvis_subagent_status", None),
                         aec_layer1_active=_aec.get("aec_layer1_active"),
                         aec_layer2_aec_active=_aec.get("aec_layer2_aec_active"),
                         aec_layer3_active=_aec.get("aec_layer3_active"),
