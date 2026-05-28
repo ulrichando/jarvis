@@ -10,7 +10,7 @@
 use std::sync::{LazyLock, Mutex};
 
 use tauri::{
-    AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder,
+    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder,
 };
 
 // ─── WmctrlAdapter trait + types ───────────────────────────────────────────
@@ -111,9 +111,12 @@ pub static KIOSK_STATE: LazyLock<Mutex<Option<KioskSnapshot>>> =
     LazyLock::new(|| Mutex::new(None));
 
 fn is_jarvis_window(w: &WindowInfo) -> bool {
-    w.wm_class.contains("J.A.R.V.I.S.")
+    let class_match = w.wm_class.contains("J.A.R.V.I.S.")
         || w.wm_class.contains("jarvis")
-        || w.wm_class.contains("Jarvis")
+        || w.wm_class.contains("Jarvis");
+    let kiosk_title = w.title.contains("J.A.R.V.I.S. \u{2014} kiosk")
+        || w.title == "kiosk";
+    class_match || kiosk_title
 }
 
 // ─── Pure logic (testable; no Tauri window APIs) ───────────────────────────
@@ -225,6 +228,13 @@ pub fn enter_kiosk_on_monitor(app: AppHandle, monitor_idx: usize) -> Result<(), 
     }
 
     // 3. Spawn the kiosk window.
+    // Note: WebviewWindowBuilder::position / inner_size in this Tauri
+    // version accept raw (f64, f64) which Tauri interprets as LOGICAL
+    // pixels. On a HiDPI display that means our physical-pixel values
+    // would be multiplied by scale_factor → window oversized. Use the
+    // builder with a 0,0 placeholder and then set the TYPED PhysicalPosition
+    // / PhysicalSize via the post-build setters (which DO accept the
+    // typed enum and won't be misinterpreted).
     let result = WebviewWindowBuilder::new(&app, "kiosk", WebviewUrl::App("index.html?route=kiosk".into()))
         .decorations(false)
         .transparent(false)
@@ -232,8 +242,9 @@ pub fn enter_kiosk_on_monitor(app: AppHandle, monitor_idx: usize) -> Result<(), 
         .focused(true)
         .skip_taskbar(true)
         .resizable(false)
-        .position(pos_x as f64, pos_y as f64)
-        .inner_size(size_w as f64, size_h as f64)
+        .title("J.A.R.V.I.S. \u{2014} kiosk")
+        .position(0.0, 0.0)
+        .inner_size(100.0, 100.0)
         .build();
 
     let kiosk_window = match result {
@@ -246,10 +257,19 @@ pub fn enter_kiosk_on_monitor(app: AppHandle, monitor_idx: usize) -> Result<(), 
         }
     };
 
+    // Set position so the WM knows which monitor this window lives on.
+    // Then size, then flip the WM into actual fullscreen — _NET_WM_STATE_FULLSCREEN
+    // tells the compositor to cover the whole monitor including taskbar/tray.
+    // Without this the window respects its set_size but the WM still treats it
+    // as a regular window, leaving panels/decorations visible.
+    let _ = kiosk_window.set_position(PhysicalPosition::<i32>::new(pos_x, pos_y));
+    let _ = kiosk_window.set_size(PhysicalSize::<u32>::new(size_w, size_h));
+    let _ = kiosk_window.set_fullscreen(true);
+
     // Belt-and-suspenders: explicit always_on_top via wmctrl on the new window.
     // Some compositors (XFCE) lose track of the WindowBuilder hint.
     let _ = std::process::Command::new("wmctrl")
-        .args(["-r", "kiosk", "-b", "add,above"])
+        .args(["-r", "J.A.R.V.I.S. \u{2014} kiosk", "-b", "add,above"])
         .output();
 
     // 4. on_window_event handler — if the user kills the window directly
@@ -257,9 +277,14 @@ pub fn enter_kiosk_on_monitor(app: AppHandle, monitor_idx: usize) -> Result<(), 
     let app_for_close = app.clone();
     kiosk_window.on_window_event(move |event| {
         if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
-            // The window will close; ensure state is also cleared so a
-            // subsequent enter doesn't think we're already active.
-            let _ = exit_kiosk(app_for_close.clone());
+            // The window is already closing — only clean up state/snapshot
+            // and emit the off-event. Don't call exit_kiosk because it
+            // would call w.close() again (double-close risk on GTK).
+            let adapter = RealWmctrl;
+            if let Ok(mut state) = KIOSK_STATE.lock() {
+                let _ = exit_kiosk_impl(&adapter, &mut state);
+            }
+            let _ = app_for_close.emit("kiosk-changed", serde_json::json!({ "on": false }));
         }
     });
 
