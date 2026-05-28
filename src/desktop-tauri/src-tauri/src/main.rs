@@ -61,6 +61,16 @@ struct ShareLabel(Mutex<Option<MenuItem<Wry>>>);
 /// source params to the voice-client's /screen-share endpoint.
 struct ScreenSourcesState(Mutex<ScreenSources>);
 
+/// Handle to the "Active: …" header line inside the Conversation
+/// mode submenu. Refreshed every 3 s by a background task that
+/// checks systemd --user state of the gemini/gpt direct-mode units.
+struct ModeLabel(Mutex<Option<MenuItem<Wry>>>);
+
+/// The three mode-switch menu items (jarvis / gemini / gpt). Stored
+/// so the refresh task can add/remove the "✓ " prefix on whichever
+/// mode is currently active. Ordered: [jarvis, gemini, gpt].
+struct ModeItems(Mutex<Vec<MenuItem<Wry>>>);
+
 /// The source tray artwork (icons/tray.png — the concentric-ring /
 /// reactor design). Embedded into the binary at compile time so the
 /// icon can be tinted per-state at runtime without touching disk.
@@ -947,6 +957,78 @@ fn set_share_label(active: bool, label: State<ShareLabel>) -> Result<(), String>
     Ok(())
 }
 
+/// What jarvis-mode is currently driving. Determined by which systemd
+/// --user transient unit is active. Mirrors the bash logic in
+/// bin/jarvis-mode::current_mode.
+///
+/// As of 2026-05-28 there are exactly three modes, all carrying the
+/// same audio + screen vision + tool surface — the choice is which
+/// provider drives the LLM/voice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActiveMode { Jarvis, Gemini, Openai }
+
+fn detect_active_mode() -> ActiveMode {
+    let is_active = |unit: &str| -> bool {
+        std::process::Command::new("systemctl")
+            .args(["--user", "is-active", "--quiet", unit])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+    if is_active("jarvis-gemini-tools.service") {
+        ActiveMode::Gemini
+    } else if is_active("jarvis-gpt-tools.service") {
+        ActiveMode::Openai
+    } else {
+        ActiveMode::Jarvis
+    }
+}
+
+/// Repaint the Conversation-mode submenu to reflect the current
+/// active mode: rewrites the disabled header line ("Active: …") and
+/// adds/removes a "✓ " prefix on the three mode items.
+///
+/// Called from a background loop every few seconds and immediately
+/// after a tray click on any mode_* entry so the menu stays in sync
+/// with the actual systemd state instead of waiting for the poll.
+fn refresh_mode_menu(app: &tauri::AppHandle) {
+    let mode = detect_active_mode();
+    let (header_text, jarvis_label, gemini_label, openai_label) = match mode {
+        ActiveMode::Jarvis => (
+            "Active: JARVIS · Claude",
+            "✓  JARVIS · Claude (audio + vision + tools)",
+            "Gemini Live (audio + vision + tools)",
+            "OpenAI Realtime (audio + vision + tools)",
+        ),
+        ActiveMode::Gemini => (
+            "Active: Gemini Live",
+            "JARVIS · Claude (audio + vision + tools)",
+            "✓  Gemini Live (audio + vision + tools)",
+            "OpenAI Realtime (audio + vision + tools)",
+        ),
+        ActiveMode::Openai => (
+            "Active: OpenAI Realtime",
+            "JARVIS · Claude (audio + vision + tools)",
+            "Gemini Live (audio + vision + tools)",
+            "✓  OpenAI Realtime (audio + vision + tools)",
+        ),
+    };
+    if let Some(label_state) = app.try_state::<ModeLabel>() {
+        if let Ok(guard) = label_state.0.lock() {
+            if let Some(item) = guard.as_ref() {
+                let _ = item.set_text(header_text);
+            }
+        }
+    }
+    if let Some(items_state) = app.try_state::<ModeItems>() {
+        if let Ok(guard) = items_state.0.lock() {
+            if let Some(it) = guard.get(0) { let _ = it.set_text(jarvis_label); }
+            if let Some(it) = guard.get(1) { let _ = it.set_text(gemini_label); }
+            if let Some(it) = guard.get(2) { let _ = it.set_text(openai_label); }
+        }
+    }
+}
+
 #[tauri::command]
 fn get_primary_monitor_info(window: WebviewWindow) -> Result<serde_json::Value, String> {
     let monitor = window
@@ -1495,6 +1577,8 @@ fn main() {
         .manage(TtsVoiceItems(Mutex::new(Vec::new())))
         .manage(ShareLabel(Mutex::new(None)))
         .manage(ScreenSourcesState(Mutex::new(ScreenSources::default())))
+        .manage(ModeLabel(Mutex::new(None)))
+        .manage(ModeItems(Mutex::new(Vec::new())))
         .setup(move |app| {
             let window = app.get_webview_window("main").unwrap();
             let window_for_poll = window.clone();
@@ -1652,6 +1736,60 @@ fn main() {
                 "open_voice_chat", "Open Chat Panel",
             ).build(app)?;
             let mute_item    = MenuItemBuilder::with_id("mute",         "Mute / Unmute Voice").build(app)?;
+
+            // ── Conversation mode submenu (2026-05-28) ──
+            //
+            // Three voice-conversation backends:
+            //   - JARVIS-Claude (default STT/LLM/TTS, full tool access)
+            //   - Gemini Live (audio-to-audio + screen vision)
+            //   - GPT Realtime (audio-to-audio via OpenAI)
+            //
+            // Click shells out to `<project>/bin/jarvis-mode <name>`,
+            // which handles the mute/scope dance. The header line +
+            // ✓ prefix on the active item are refreshed every 3 s by
+            // a background task in app.setup() that checks systemctl
+            // is-active for the gemini/gpt scopes.
+            let mode_current_item = MenuItemBuilder::with_id(
+                "mode_current", "Active: (checking…)",
+            ).enabled(false).build(app)?;
+            let mode_header_sep = PredefinedMenuItem::separator(app)?;
+            let mode_jarvis_item = MenuItemBuilder::with_id(
+                "mode_jarvis", "JARVIS · Claude (audio + vision + tools)",
+            ).build(app)?;
+            let mode_gemini_item = MenuItemBuilder::with_id(
+                "mode_gemini", "Gemini Live (audio + vision + tools)",
+            ).build(app)?;
+            let mode_openai_item = MenuItemBuilder::with_id(
+                "mode_openai", "OpenAI Realtime (audio + vision + tools)",
+            ).build(app)?;
+            let mode_status_item = MenuItemBuilder::with_id(
+                "mode_status", "Notify current mode",
+            ).build(app)?;
+            let mode_sep = PredefinedMenuItem::separator(app)?;
+            let mode_submenu = SubmenuBuilder::new(app, "Conversation mode ▸")
+                .item(&mode_current_item)
+                .item(&mode_header_sep)
+                .item(&mode_jarvis_item)
+                .item(&mode_gemini_item)
+                .item(&mode_openai_item)
+                .item(&mode_sep)
+                .item(&mode_status_item)
+                .build()?;
+            // Stash the header + item handles so the background refresh
+            // task can update them. Cloning MenuItem is cheap — it's an
+            // Arc internally.
+            {
+                let ml: State<ModeLabel> = app.state();
+                *ml.0.lock().unwrap() = Some(mode_current_item.clone());
+            }
+            {
+                let mi: State<ModeItems> = app.state();
+                *mi.0.lock().unwrap() = vec![
+                    mode_jarvis_item.clone(),
+                    mode_gemini_item.clone(),
+                    mode_openai_item.clone(),
+                ];
+            }
 
             // ── Screen-share submenu (2026-05-28 tray-only picker) ──
             //
@@ -1894,6 +2032,7 @@ fn main() {
             let menu = MenuBuilder::new(app)
                 .item(&voice_chat_item)
                 .item(&mute_item)
+                .item(&mode_submenu)
                 .item(&share_submenu)
                 .item(&sep1)
                 .item(&browser_item)
@@ -2048,6 +2187,48 @@ fn main() {
                         // aren't installed) is enabled=false so it never
                         // fires this handler — but keep the match safe.
                         "share_empty" => {}
+
+                        // ── Conversation mode switches (2026-05-28) ──
+                        // Shell out to bin/jarvis-mode <arg>; the script
+                        // handles the systemd-scope + JARVIS-mic-mute
+                        // dance idempotently. find_project_root() walks
+                        // up from the binary's path; honor the
+                        // JARVIS_PROJECT_ROOT override for non-default
+                        // installs.
+                        id @ ("mode_jarvis" | "mode_gemini" | "mode_openai" | "mode_status") => {
+                            let arg = match id {
+                                "mode_jarvis" => "jarvis",
+                                "mode_gemini" => "gemini",
+                                "mode_openai" => "openai",
+                                _             => "status",
+                            };
+                            let Some(root) = find_project_root() else {
+                                eprintln!("[JARVIS] mode switch: project root not found");
+                                return;
+                            };
+                            let script = root.join("bin").join("jarvis-mode");
+                            if !script.is_file() {
+                                eprintln!("[JARVIS] mode switch: {} missing", script.display());
+                                return;
+                            }
+                            // Run detached — start_direct spawns systemd-run
+                            // and returns; this should complete in <1s.
+                            let _ = std::process::Command::new(&script)
+                                .arg(arg)
+                                .spawn();
+                            println!("[JARVIS] tray → jarvis-mode {arg}");
+                            // Repaint the submenu shortly after the
+                            // command settles. The script's start_direct
+                            // sleeps 0.6 s waiting for the unit to
+                            // register; we wait a bit longer than that
+                            // before re-polling so the new state is
+                            // visible.
+                            let app_handle = app.clone();
+                            std::thread::spawn(move || {
+                                std::thread::sleep(std::time::Duration::from_millis(1200));
+                                refresh_mode_menu(&app_handle);
+                            });
+                        }
                         // Handlers removed 2026-04-30: camera_rgb, camera_ir,
                         // stop_computer_use. The `share_screen` handler
                         // above replaces the previous file-trigger
@@ -2265,6 +2446,22 @@ fn main() {
                             last_inside = inside;
                         }
                     }
+                });
+            }
+
+            // ── Conversation-mode menu refresh thread ──
+            // Polls systemctl --user state every 3 s and rewrites the
+            // Conversation-mode submenu header + ✓ prefix so the user
+            // can see at a glance which mode is active. Cheap — two
+            // systemctl is-active calls per tick (~10 ms each).
+            // First refresh fires immediately so the menu shows the
+            // truth from the very first open.
+            {
+                let app_handle = app.handle().clone();
+                refresh_mode_menu(&app_handle);
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    refresh_mode_menu(&app_handle);
                 });
             }
 
