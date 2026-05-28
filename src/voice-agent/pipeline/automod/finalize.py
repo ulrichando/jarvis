@@ -223,7 +223,8 @@ if __name__ == "__main__":
     # Detect by checking whether the first argument looks like a subcommand
     # keyword rather than an automod ID.
     _SUBCOMMANDS = {"finalize", "mark-auto-merged"}
-    if len(sys.argv) >= 2 and sys.argv[1] not in _SUBCOMMANDS:
+    if len(sys.argv) >= 2 and not sys.argv[1].startswith("-") \
+            and sys.argv[1] not in _SUBCOMMANDS:
         # Legacy path — preserve exact existing behaviour.
         if len(sys.argv) < 3:
             print("usage: finalize.py <id> <branch>", file=sys.stderr)
