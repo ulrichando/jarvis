@@ -4,6 +4,7 @@ import { listen }  from '@tauri-apps/api/event'
 import ChatPanel   from './components/ChatPanel.jsx'
 import VoiceChatPanel from './components/VoiceChatPanel.jsx'
 import KeysSettings from './KeysSettings.jsx'
+import KioskHUD     from './components/KioskHUD.jsx'
 // Voice lives OUT of the webview — jarvis-voice-client.service is
 // the LiveKit peer that owns the mic + speaker, reached over HTTP
 // on :8767 through useVoiceClient. Imported under the `useSpeech`
@@ -78,6 +79,11 @@ export default function App() {
     return <KeysSettings />
   }
 
+  if (typeof window !== 'undefined' &&
+      window.location.search.includes('route=kiosk')) {
+    return <KioskHUD />
+  }
+
   const [chatOpen, setChatOpen]     = useState(false)
   const [voiceChatOpen, setVoiceChatOpen] = useState(false)
   const [voiceMuted, setVoiceMuted] = useState(false)
@@ -115,6 +121,15 @@ export default function App() {
         speechRef.current.speak(m.text)
       }
       if (m.type === 'voice_muted') setVoiceMuted(m.muted)
+      if (m.type === 'kiosk') {
+        if (m.state === 'on' && typeof m.monitor === 'number') {
+          invoke('enter_kiosk_on_monitor', { monitorIdx: m.monitor }).catch(console.error)
+        } else if (m.state === 'off') {
+          invoke('exit_kiosk').catch(console.error)
+        } else {
+          console.error('[kiosk] invalid WS msg', m)
+        }
+      }
     }
     const last = wsMessages[wsMessages.length - 1]
     if (last.type === 'show_chat') openChat()
@@ -296,14 +311,17 @@ export default function App() {
     lastTtsRef.current = speech.ttsProvider
     invoke('set_tts_label', { name: speech.ttsProvider || '' }).catch(console.error)
   }, [speech.ttsProvider])
-  // Tray-label sync. "Stop Screen Share ✓" when the voice-client
-  // is publishing a screen track (speech.sharingScreen comes from
-  // /status). Uses lastShareRef to skip redundant invokes.
+  // Tray-label sync. "Stop Screen Share ✓" appears when EITHER the
+  // legacy voice-client ffmpeg publisher (speech.sharingScreen) OR
+  // the new LiveKit-native webview publish (screenShare.active) is
+  // running. Once the ffmpeg path is removed this collapses to just
+  // screenShare.active.
   useEffect(() => {
-    if (lastShareRef.current === speech.sharingScreen) return
-    lastShareRef.current = speech.sharingScreen
-    invoke('set_share_label', { active: !!speech.sharingScreen }).catch(console.error)
-  }, [speech.sharingScreen])
+    const active = !!speech.sharingScreen || !!screenShare.active
+    if (lastShareRef.current === active) return
+    lastShareRef.current = active
+    invoke('set_share_label', { active }).catch(console.error)
+  }, [speech.sharingScreen, screenShare.active])
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────
   useEffect(() => {
