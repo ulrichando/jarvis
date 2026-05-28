@@ -3474,7 +3474,15 @@ async def pre_tts_confab_gate_filter(text):
     )
     try:
         llm_factory = getattr(sess, "_jarvis_pre_tts_llm_factory", None)
-        chat_ctx = getattr(sess, "chat_ctx", None)
+        # chat_ctx lives on `Agent`, NOT on `AgentSession`. Pre-2026-05-27
+        # we used `getattr(sess, "chat_ctx", None)` which silently returned
+        # None — the retry chain has been non-functional since landing.
+        # Reach it via `sess.current_agent.chat_ctx`; defend against the
+        # RuntimeError that property raises when no agent is bound.
+        try:
+            chat_ctx = sess.current_agent.chat_ctx
+        except (AttributeError, RuntimeError):
+            chat_ctx = None
         tool_specs = list(getattr(sess, "_jarvis_pre_tts_tool_specs", None) or [])
         if llm_factory is None or chat_ctx is None:
             # Factory missing — degrade gracefully: emit the original
@@ -3545,7 +3553,12 @@ async def _post_turn_text_recovery(session) -> None:
         pass
     route = getattr(session, "_jarvis_route", None) or ""
     llm_factory = getattr(session, "_jarvis_pre_tts_llm_factory", None)
-    chat_ctx = getattr(session, "chat_ctx", None)
+    # chat_ctx is on `Agent`, not `AgentSession` — see the matching note
+    # in pre_tts_confab_gate_filter above. Same fix here.
+    try:
+        chat_ctx = session.current_agent.chat_ctx
+    except (AttributeError, RuntimeError):
+        chat_ctx = None
     tool_specs = list(getattr(session, "_jarvis_pre_tts_tool_specs", None) or [])
 
     if llm_factory is None or chat_ctx is None:
@@ -6189,7 +6202,9 @@ async def entrypoint(ctx: JobContext) -> None:
                             route=(getattr(session, "_jarvis_route", None) or ""),
                             subagent=(subagent or ""),
                             computer_use_steps=int(cua_steps or 0),
-                            tool_call_count=int(_tool_calls_this_turn or 0),
+                            tool_call_count=len(
+                                getattr(session, "_jarvis_tool_calls_this_turn", None) or []
+                            ),
                             had_tool_error=bool(
                                 getattr(session, "_jarvis_had_tool_error_this_turn", False)
                             ),
