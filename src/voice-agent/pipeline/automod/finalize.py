@@ -217,8 +217,58 @@ def mark_auto_merged(
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("usage: finalize.py <id> <branch>", file=sys.stderr)
-        sys.exit(2)
-    result = finalize_branch(sys.argv[1], sys.argv[2])
-    print(json.dumps(result, indent=2))
+    import argparse
+
+    # Legacy invocation: `python finalize.py <id> <branch>` (no subcommand).
+    # Detect by checking whether the first argument looks like a subcommand
+    # keyword rather than an automod ID.
+    _SUBCOMMANDS = {"finalize", "mark-auto-merged"}
+    if len(sys.argv) >= 2 and sys.argv[1] not in _SUBCOMMANDS:
+        # Legacy path — preserve exact existing behaviour.
+        if len(sys.argv) < 3:
+            print("usage: finalize.py <id> <branch>", file=sys.stderr)
+            sys.exit(2)
+        result = finalize_branch(sys.argv[1], sys.argv[2])
+        print(json.dumps(result, indent=2))
+        sys.exit(0)
+
+    parser = argparse.ArgumentParser(
+        prog="finalize",
+        description="Auto-mod finalize utilities",
+    )
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    # ------------------------------------------------------------------
+    # finalize <id> <branch>  — same as the legacy positional invocation
+    # ------------------------------------------------------------------
+    fp = sub.add_parser(
+        "finalize",
+        help="Validate auto-mod branch and write artifact (default action)",
+    )
+    fp.add_argument("id", help="automod artifact ID")
+    fp.add_argument("branch", help="git branch name")
+    fp.set_defaults(handler=lambda a: (
+        print(json.dumps(finalize_branch(a.id, a.branch), indent=2))
+    ))
+
+    # ------------------------------------------------------------------
+    # mark-auto-merged <id> --rollback-ref ... --rollback-sha ... --merge-sha ...
+    # Auto-merge stamping subcommand (Spec 2026-05-28).
+    # ------------------------------------------------------------------
+    mp = sub.add_parser(
+        "mark-auto-merged",
+        help="Stamp artifact with auto-merge metadata (called by wrapper)",
+    )
+    mp.add_argument("id", help="automod artifact ID")
+    mp.add_argument("--rollback-ref", required=True,
+                    help="git ref created for one-step revert")
+    mp.add_argument("--rollback-sha", required=True,
+                    help="SHA the rollback ref points to")
+    mp.add_argument("--merge-sha", required=True,
+                    help="merge commit SHA on master")
+    mp.set_defaults(handler=lambda a: mark_auto_merged(
+        a.id, a.rollback_ref, a.rollback_sha, a.merge_sha
+    ))
+
+    args = parser.parse_args()
+    args.handler(args)
