@@ -106,12 +106,20 @@ def _parse_log_line(line: str) -> dict | None:
     }
     tb_text = out["traceback"]
     if tb_text:
-        # The exception class is the last "ExcClass: message" line.
-        m = re.search(r"^([A-Za-z_][A-Za-z0-9_.]*): (.*?)$",
-                      tb_text, re.MULTILINE)
-        if m:
-            out["exc_class"] = m.group(1).split(".")[-1]
-            out["exc_message"] = m.group(2)
+        # The exception class we want is the LAST "ExcClass: message" line
+        # in the traceback — for chained exceptions ("During handling of
+        # the above exception, another exception occurred:"), the LAST
+        # match is the WRAPPING exception, which is what bubbled through
+        # jarvis code. The earlier matches are root causes (often
+        # third-party) we can't fix directly.
+        all_matches = list(re.finditer(
+            r"^([A-Za-z_][A-Za-z0-9_.]*): (.*?)$",
+            tb_text, re.MULTILINE,
+        ))
+        if all_matches:
+            last = all_matches[-1]
+            out["exc_class"] = last.group(1).split(".")[-1]
+            out["exc_message"] = last.group(2)
     return out
 
 
