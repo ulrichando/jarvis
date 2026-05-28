@@ -33,6 +33,12 @@ logger = logging.getLogger("jarvis.automod.patterns")
 THRESHOLD = 3
 CONFAB_WINDOW_DAYS = 7
 
+ERROR_BURST_WINDOW_HOURS = 2
+ERROR_BURST_COUNT = 3
+ERROR_DRIP_WINDOW_DAYS = 7
+ERROR_DRIP_COUNT = 10
+ERROR_FIXABILITY_FLOOR = 0.5
+
 
 def _telemetry_db_path() -> Path:
     p = os.environ.get("JARVIS_TURN_TELEMETRY_DB")
@@ -165,6 +171,113 @@ def _scan_confabs(conn: sqlite3.Connection) -> int:
     return 1
 
 
+def _iso_offset(seconds_delta: int) -> str:
+    return time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ",
+        time.gmtime(time.time() + seconds_delta),
+    )
+
+
+def _scan_errors(conn: sqlite3.Connection) -> int:
+    """Emit intents for recurring errors that crossed either threshold.
+
+    Burst path: count >= ERROR_BURST_COUNT AND last_seen within
+                ERROR_BURST_WINDOW_HOURS hours.
+    Drip path:  count >= ERROR_DRIP_COUNT AND last_seen within
+                ERROR_DRIP_WINDOW_DAYS days.
+
+    Both gated on fixability_score >= ERROR_FIXABILITY_FLOOR and
+    proposed_at IS NULL.
+
+    Spec 2026-05-27 Part 3."""
+    # Fallback: if the handler hasn't wired yet, seed from log.
+    try:
+        from pipeline.automod.error_log_fallback import populate_from_log_if_empty
+        populate_from_log_if_empty(conn)
+    except Exception as _e:
+        logger.debug("[automod] fallback skipped: %s", _e)
+
+    burst_cutoff = _iso_offset(-ERROR_BURST_WINDOW_HOURS * 3600)
+    drip_cutoff = _iso_offset(-ERROR_DRIP_WINDOW_DAYS * 86400)
+
+    try:
+        rows = conn.execute("""
+            SELECT signature, exc_class, exc_message, count,
+                   first_seen, last_seen, frames_json, sample_traceback,
+                   fixability_score
+              FROM recurring_errors
+             WHERE proposed_at IS NULL
+               AND fixability_score >= ?
+               AND (
+                    (count >= ? AND last_seen >= ?)
+                 OR (count >= ? AND last_seen >= ?)
+               )
+             ORDER BY count DESC, last_seen DESC
+        """, (ERROR_FIXABILITY_FLOOR,
+              ERROR_BURST_COUNT, burst_cutoff,
+              ERROR_DRIP_COUNT, drip_cutoff)).fetchall()
+    except sqlite3.Error as e:
+        logger.warning("[automod] _scan_errors query failed: %s", e)
+        return 0
+
+    emitted = 0
+    for (sig, exc_class, exc_msg, count, first, last,
+         frames_json, sample_tb, fixability) in rows:
+        rec_id = _next_id("error")
+        try:
+            frames = json.loads(frames_json or "[]")
+        except json.JSONDecodeError:
+            frames = []
+        frames_text = "\n".join(
+            f"  - {f.get('file', '?')}:{f.get('method', '?')}"
+            for f in frames
+        )
+        intent_body = (
+            f"Investigate a recurring exception in JARVIS's own code.\n\n"
+            f"EXCEPTION: {exc_class}\n"
+            f"MESSAGE:   {exc_msg!r}\n"
+            f"OCCURRENCES: {count} "
+            f"(first seen {first}, last seen {last})\n"
+            f"FIXABILITY: {fixability:.2f}\n\n"
+            f"AFFECTED FILES (jarvis-owned frames in the traceback):\n"
+            f"{frames_text}\n\n"
+            f"SAMPLE TRACEBACK:\n"
+            f"{sample_tb}\n\n"
+            f"INVESTIGATE: read each affected file, identify the root "
+            f"cause (may be at any frame in the stack, not just the top), "
+            f"and propose a targeted fix. The fix should either prevent "
+            f"the exception from being raised OR handle it cleanly when "
+            f"it cannot be prevented. Do NOT add a broad except: that "
+            f"hides the underlying bug."
+        )
+        _emit({
+            "id": rec_id,
+            "kind": "error",
+            "intent": intent_body,
+            "rationale": (
+                f"raised {count} times ({first} → {last}); "
+                f"fixability={fixability:.2f}"
+            ),
+            "evidence": {
+                "signature": sig, "exc_class": exc_class,
+                "exc_message": exc_msg, "count": count,
+                "first_seen": first, "last_seen": last,
+                "frames": frames, "fixability_score": fixability,
+            },
+            "created_at": _now_iso(),
+        })
+        try:
+            conn.execute(
+                "UPDATE recurring_errors SET proposed_at=? WHERE signature=?",
+                (_now_iso(), sig),
+            )
+        except sqlite3.Error as e:
+            logger.warning("[automod] proposed_at update failed: %s", e)
+        emitted += 1
+    conn.commit()
+    return emitted
+
+
 def scan_and_emit() -> int:
     """Scan all pattern classes; emit intents that crossed threshold.
     Returns total intents emitted across all classes."""
@@ -177,6 +290,7 @@ def scan_and_emit() -> int:
         with sqlite3.connect(str(db)) as conn:
             emitted += _scan_corrections(conn)
             emitted += _scan_confabs(conn)
+            emitted += _scan_errors(conn)   # NEW (auto-mod error-driven, Spec 2026-05-27)
     except sqlite3.Error as e:
         logger.warning("[automod] scan failed: %s: %s",
                        type(e).__name__, e)
