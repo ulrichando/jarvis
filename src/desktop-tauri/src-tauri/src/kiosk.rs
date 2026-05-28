@@ -36,18 +36,65 @@ pub struct KioskSnapshot {
 
 pub static KIOSK_STATE: LazyLock<Mutex<Option<KioskSnapshot>>> = LazyLock::new(|| Mutex::new(None));
 
-// Real adapter — placeholder for now; real `wmctrl` shell-out lands in Task 4.
 pub struct RealWmctrl;
 
 impl WmctrlAdapter for RealWmctrl {
     fn list_visible_windows(&self) -> Result<Vec<WindowInfo>, WmctrlError> {
-        Err(WmctrlError::NotFound)
+        use std::process::Command;
+        let out = Command::new("wmctrl").args(["-lx"]).output();
+        let out = match out {
+            Ok(o) => o,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(WmctrlError::NotFound),
+            Err(e) => return Err(WmctrlError::CommandFailed(e.to_string())),
+        };
+        if !out.status.success() {
+            return Err(WmctrlError::CommandFailed(
+                String::from_utf8_lossy(&out.stderr).into_owned(),
+            ));
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        // wmctrl -lx output: "<id> <desktop> <wm_class> <host> <title>"
+        // Whitespace-delimited; title is the rest of the line.
+        let mut windows = Vec::new();
+        for line in text.lines() {
+            let mut parts = line.splitn(5, char::is_whitespace).filter(|s| !s.is_empty());
+            let id    = parts.next().unwrap_or("").to_string();
+            let _dt   = parts.next();
+            let wmc   = parts.next().unwrap_or("").to_string();
+            let _host = parts.next();
+            let title = parts.next().unwrap_or("").to_string();
+            if id.is_empty() { continue; }
+            // Filter pseudo-windows (panels, taskbar): they show up with
+            // desktop=-1 — but -lx doesn't expose desktop reliably across
+            // wmctrl versions, so the safer filter is "skip empty wmclass".
+            if wmc.is_empty() { continue; }
+            windows.push(WindowInfo { id, wm_class: wmc, title });
+        }
+        Ok(windows)
     }
-    fn minimize(&self, _: &str) -> Result<(), WmctrlError> {
-        Err(WmctrlError::NotFound)
+
+    fn minimize(&self, id: &str) -> Result<(), WmctrlError> {
+        use std::process::Command;
+        let out = Command::new("wmctrl").args(["-ir", id, "-b", "add,hidden"]).output()
+            .map_err(|e| WmctrlError::CommandFailed(e.to_string()))?;
+        if !out.status.success() {
+            return Err(WmctrlError::CommandFailed(
+                String::from_utf8_lossy(&out.stderr).into_owned(),
+            ));
+        }
+        Ok(())
     }
-    fn unminimize(&self, _: &str) -> Result<(), WmctrlError> {
-        Err(WmctrlError::NotFound)
+
+    fn unminimize(&self, id: &str) -> Result<(), WmctrlError> {
+        use std::process::Command;
+        let out = Command::new("wmctrl").args(["-ir", id, "-b", "remove,hidden"]).output()
+            .map_err(|e| WmctrlError::CommandFailed(e.to_string()))?;
+        if !out.status.success() {
+            return Err(WmctrlError::CommandFailed(
+                String::from_utf8_lossy(&out.stderr).into_owned(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -236,5 +283,19 @@ mod tests {
         let exited = exit_kiosk_impl(&mock, &mut state).unwrap();
         assert!(!exited);
         assert!(mock.unminimized.borrow().is_empty());
+    }
+
+    #[test]
+    fn enter_graceful_when_wmctrl_missing() {
+        let mock = MockWmctrl::new(vec![]);
+        *mock.list_fails_with.borrow_mut() = Some(WmctrlError::NotFound);
+        let mut state: Option<KioskSnapshot> = None;
+        let entered = enter_kiosk_impl(&mock, &mut state, false, true).unwrap();
+        assert!(entered, "enter should succeed even when wmctrl is unavailable");
+        let snap = state.as_ref().unwrap();
+        assert!(snap.minimized_ids.is_empty(),
+                "no windows enumerated → no minimized_ids");
+        assert_eq!(snap.prev_always_on_top, false);
+        assert_eq!(snap.prev_click_through, true);
     }
 }
