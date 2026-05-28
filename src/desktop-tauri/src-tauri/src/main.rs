@@ -1777,17 +1777,18 @@ fn main() {
                             }
                         }
                         "share_screen" => {
-                            // Toggle the voice-client's LiveKit screen-
-                            // share publisher. No body → handler defaults
-                            // to flip-current-state. Spawn detached so
-                            // the tray click doesn't block the menu
-                            // event loop on the HTTP round-trip.
-                            let _ = std::process::Command::new("curl")
-                                .args(["-s", "-X", "POST",
-                                       "http://127.0.0.1:8767/screen-share",
-                                       "-H", "Content-Type: application/json",
-                                       "-d", "{}"])
-                                .spawn();
+                            // Re-routed 2026-05-28: tray click no longer
+                            // hits the voice-client's POST /screen-share
+                            // (the legacy ffmpeg→LiveKit publisher with
+                            // no OS picker, full-desktop capture only).
+                            // Instead we emit `tray-toggle-screen-share`
+                            // and let the webview's useScreenShare hook
+                            // call setScreenShareEnabled(true), which
+                            // triggers xdg-desktop-portal for a proper
+                            // monitor/window picker — same UX as Google
+                            // Meet / Zoom Web. The webview reports the
+                            // resulting state back via set_share_label
+                            // so the tray menu text stays in sync.
                             if let Some(w) = app.get_webview_window("main") {
                                 let _ = w.emit("tray-toggle-screen-share", ());
                             }
