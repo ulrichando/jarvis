@@ -1724,7 +1724,7 @@ fn main() {
             if let Some(kiosk_win) = app.get_webview_window("main") {
                 let app_handle = app.handle().clone();
                 kiosk_win.listen("kiosk-changed", move |event| {
-                    let on: bool = event.payload().parse().unwrap_or(false);
+                    let on: bool = serde_json::from_str(event.payload()).unwrap_or(false);
                     if let Some(state) = app_handle.try_state::<FocusModeItem>() {
                         if let Ok(guard) = state.0.lock() {
                             if let Some(item) = guard.as_ref() {
@@ -1941,18 +1941,8 @@ fn main() {
                             app.exit(0);
                         }
                         "focus_mode" => {
-                            // Tray click is a toggle intent. Read current state from
-                            // KIOSK_STATE (single source of truth) and dispatch the
-                            // inverse command. The kiosk-changed event will sync the
-                            // check mark via the listener wired above.
                             let Some(w) = app.get_webview_window("main") else { return };
-                            let on = crate::kiosk::KIOSK_STATE.lock().map(|s| s.is_some()).unwrap_or(false);
-                            let result = if on {
-                                crate::kiosk::exit_kiosk(w)
-                            } else {
-                                crate::kiosk::enter_kiosk(w)
-                            };
-                            if let Err(e) = result {
+                            if let Err(e) = crate::kiosk::toggle_kiosk(w) {
                                 eprintln!("[JARVIS] focus_mode toggle failed: {}", e);
                             }
                         }
