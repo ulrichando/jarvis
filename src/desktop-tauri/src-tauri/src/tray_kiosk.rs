@@ -83,17 +83,33 @@ pub fn handle_kiosk_menu_event(app: &AppHandle, id: &str) -> bool {
             eprintln!("[JARVIS] kiosk_mon_<bad-idx>: {}", id);
             return true;
         };
-        // Toggle: if currently on, exit; else enter on idx.
-        let on = crate::kiosk::KIOSK_STATE
+        // Three-way dispatch:
+        //   - off          → enter on idx
+        //   - on @ idx     → exit (clicking the active monitor exits)
+        //   - on @ other   → switch (exit + immediate re-enter on idx)
+        let current = crate::kiosk::KIOSK_STATE
             .lock()
-            .map(|s| s.is_some())
-            .unwrap_or(false);
-        if on {
-            if let Err(e) = crate::kiosk::exit_kiosk(app.clone()) {
-                eprintln!("[JARVIS] kiosk_mon toggle-off failed: {}", e);
+            .ok()
+            .and_then(|s| s.as_ref().map(|x| x.monitor_idx));
+        match current {
+            None => {
+                if let Err(e) = crate::kiosk::enter_kiosk_on_monitor(app.clone(), idx) {
+                    eprintln!("[JARVIS] kiosk_mon_{} enter failed: {}", idx, e);
+                }
             }
-        } else if let Err(e) = crate::kiosk::enter_kiosk_on_monitor(app.clone(), idx) {
-            eprintln!("[JARVIS] kiosk_mon_{} enter failed: {}", idx, e);
+            Some(active) if active == idx => {
+                if let Err(e) = crate::kiosk::exit_kiosk(app.clone()) {
+                    eprintln!("[JARVIS] kiosk_mon_{} exit-toggle failed: {}", idx, e);
+                }
+            }
+            Some(_) => {
+                if let Err(e) = crate::kiosk::exit_kiosk(app.clone()) {
+                    eprintln!("[JARVIS] kiosk_mon switch-exit failed: {}", e);
+                }
+                if let Err(e) = crate::kiosk::enter_kiosk_on_monitor(app.clone(), idx) {
+                    eprintln!("[JARVIS] kiosk_mon_{} switch-enter failed: {}", idx, e);
+                }
+            }
         }
         return true;
     }
