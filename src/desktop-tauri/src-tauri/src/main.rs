@@ -4,9 +4,12 @@ use std::sync::{Arc, Mutex};
 use tauri::{
     AppHandle, Manager, State, WebviewWindow, PhysicalSize, PhysicalPosition,
     image::Image,
-    menu::{MenuBuilder, MenuItem, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder},
+    menu::{
+        CheckMenuItem, CheckMenuItemBuilder,
+        MenuBuilder, MenuItem, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder,
+    },
     tray::{TrayIcon, TrayIconBuilder},
-    Emitter, Wry,
+    Emitter, Listener, Wry,
 };
 use tauri_plugin_opener::OpenerExt;
 
@@ -53,6 +56,11 @@ struct TtsVoiceItems(Mutex<Vec<MenuItem<Wry>>>);
 /// status poll — label flips to "Stop Screen Share ✓" when the
 /// voice-client is publishing, "Start Screen Share" when not.
 struct ShareLabel(Mutex<Option<MenuItem<Wry>>>);
+
+/// Handle to the "Focus mode (kiosk)" check item in the tray menu.
+/// Stashed in state so the `kiosk-changed` window event can flip the
+/// check mark reactively when kiosk is toggled from voice or the CLI.
+struct FocusModeItem(Mutex<Option<CheckMenuItem<Wry>>>);
 
 /// The source tray artwork (icons/tray.png — the concentric-ring /
 /// reactor design). Embedded into the binary at compile time so the
@@ -1353,6 +1361,7 @@ fn main() {
         .manage(TtsLabel(Mutex::new(None)))
         .manage(TtsVoiceItems(Mutex::new(Vec::new())))
         .manage(ShareLabel(Mutex::new(None)))
+        .manage(FocusModeItem(Mutex::new(None)))
         .setup(move |app| {
             let window = app.get_webview_window("main").unwrap();
             let window_for_poll = window.clone();
@@ -1516,6 +1525,13 @@ fn main() {
             // green tray icon + the voice agent's screen-share sink
             // pick up the new video track automatically.
             let share_item   = MenuItemBuilder::with_id("share_screen", "Start / Stop Screen Share").build(app)?;
+            // Owner focus mode (kiosk). Toggleable check item; mirrors the
+            // KIOSK_STATE singleton on the Rust side, which is the source
+            // of truth for whether kiosk is on. Updated reactively when
+            // kiosk-changed fires (from voice or CLI triggers).
+            let focus_mode_item = CheckMenuItemBuilder::with_id(
+                "focus_mode", "Focus mode (kiosk)"
+            ).checked(false).build(app)?;
 
             // Removed 2026-04-30 (tray-trim Phase 1): Stop Computer Use,
             // 📷 Camera source submenu. The 🖥 Screen Share entry was
@@ -1676,6 +1692,7 @@ fn main() {
                 .item(&voice_chat_item)
                 .item(&mute_item)
                 .item(&share_item)
+                .item(&focus_mode_item)
                 .item(&sep1)
                 .item(&browser_item)
                 .item(&logs_item)
@@ -1692,6 +1709,30 @@ fn main() {
             {
                 let sh: State<ShareLabel> = app.state();
                 *sh.0.lock().unwrap() = Some(share_item);
+            }
+            // Stash the focus-mode check item in managed state so the
+            // kiosk-changed listener below can flip its check mark.
+            {
+                let fm: State<FocusModeItem> = app.state();
+                *fm.0.lock().unwrap() = Some(focus_mode_item);
+            }
+
+            // Listen for kiosk-changed events (emitted by enter_kiosk_impl /
+            // exit_kiosk_impl) and sync the tray check mark. Handles the case
+            // where kiosk mode is toggled from voice or the CLI — not just
+            // through the tray menu item below.
+            if let Some(kiosk_win) = app.get_webview_window("main") {
+                let app_handle = app.handle().clone();
+                kiosk_win.listen("kiosk-changed", move |event| {
+                    let on: bool = event.payload().parse().unwrap_or(false);
+                    if let Some(state) = app_handle.try_state::<FocusModeItem>() {
+                        if let Ok(guard) = state.0.lock() {
+                            if let Some(item) = guard.as_ref() {
+                                let _ = item.set_checked(on);
+                            }
+                        }
+                    }
+                });
             }
 
             let chat_open_tray = Arc::clone(&chat_open);
@@ -1899,6 +1940,22 @@ fn main() {
                             std::thread::sleep(std::time::Duration::from_millis(500));
                             app.exit(0);
                         }
+                        "focus_mode" => {
+                            // Tray click is a toggle intent. Read current state from
+                            // KIOSK_STATE (single source of truth) and dispatch the
+                            // inverse command. The kiosk-changed event will sync the
+                            // check mark via the listener wired above.
+                            let Some(w) = app.get_webview_window("main") else { return };
+                            let on = crate::kiosk::KIOSK_STATE.lock().map(|s| s.is_some()).unwrap_or(false);
+                            let result = if on {
+                                crate::kiosk::exit_kiosk(w)
+                            } else {
+                                crate::kiosk::enter_kiosk(w)
+                            };
+                            if let Err(e) = result {
+                                eprintln!("[JARVIS] focus_mode toggle failed: {}", e);
+                            }
+                        }
                         _ => {}
                     }
                 })
@@ -2022,6 +2079,10 @@ fn main() {
             keys_set,
             keys_clear,
             keys_restart_agent,
+            kiosk::enter_kiosk,
+            kiosk::exit_kiosk,
+            kiosk::toggle_kiosk,
+            kiosk::kiosk_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
