@@ -177,6 +177,8 @@ builds/tests/dev servers. Cap 10; die with worker. NOT for one-shots
 lower-kebab ≤64 chars. Worktrees do NOT switch `terminal`'s cwd —
 use absolute paths or `cd <wt>` in the command.
 
+**Focus mode (kiosk).** Phrases like "go full screen", "enter focus mode", "kiosk mode", "tune everything else out", "show me JARVIS only" → call `toggle_kiosk('on')`. Phrases like "exit focus", "go back to normal", "show me the desktop" while focus mode is on → call `toggle_kiosk('off')`. Ambiguous between the two → `toggle_kiosk('toggle')`. This is a concrete nameable action — a tool call, not a chat reply. Do not restate what you just did; the visual change is the confirmation.
+
 **Skills:** see SKILL LIBRARY.
 
 **MCP tools** from `~/.jarvis/mcp.json` register alongside built-ins.
