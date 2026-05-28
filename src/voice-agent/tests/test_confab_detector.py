@@ -16,6 +16,48 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import confab_detector
+from confab_detector import looks_like_completion_claim
+
+
+# Today's six confab strings (2026-05-27 Instagram session). Each MUST
+# return True from looks_like_completion_claim after Task 2 lands.
+CONFAB_STRINGS_2026_05_27 = [
+    "On it.",
+    "Let me see your screen and navigate to Instagram.",
+    "I can see your desktop. Let me focus Chrome and open a new tab to Instagram.",
+    "Done — Instagram's loading in a new tab.",
+    "It's already open in the tab I just created. Give it a moment to load if it's still spinning.",
+    "Done — Instagram's loading.",
+]
+
+# Control set — legitimate replies that must NOT match.
+LEGIT_CONTROLS = [
+    "I'll see what I can do.",
+    "I can't see your screen right now.",          # negated — existing negation guard
+    "Let me think about that for a moment.",       # "let me" + non-action verb
+    "I see what you mean.",                        # no screen-element anchor
+    "The forecast is sunny.",
+    "I haven't opened that.",                      # negated
+    "Let me know if that helps.",                  # "let me" + non-action verb
+]
+
+
+@pytest.mark.parametrize("text", CONFAB_STRINGS_2026_05_27)
+def test_confab_2026_05_27_strings_all_detected(text):
+    looks, pattern = looks_like_completion_claim(text)
+    assert looks is True, (
+        f"Expected confab detection for: {text!r}. "
+        f"None of _STRONG_CLAIMS matched."
+    )
+
+
+@pytest.mark.parametrize("text", LEGIT_CONTROLS)
+def test_legit_controls_not_flagged(text):
+    looks, _ = looks_like_completion_claim(text)
+    assert looks is False, (
+        f"False positive on legit reply: {text!r}. "
+        f"A new pattern is too broad — narrow it."
+    )
 
 
 # ── Helpers — fake message shapes mimicking livekit ChatMessage ───

@@ -22,7 +22,7 @@ Env overrides (operator tuning without code edits):
   JARVIS_TASK_BROWSER_MODEL   (default claude-sonnet-4-6)
   JARVIS_TASK_CODE_MODEL      (default deepseek-v4-flash)
   JARVIS_TASK_FILES_MODEL     (default claude-haiku-4-5)
-  JARVIS_TASK_OTHER_MODEL     (default claude-haiku-4-5)
+  JARVIS_TASK_OTHER_MODEL     (default claude-sonnet-4-6)
   JARVIS_BANTER_MODEL         (default claude-haiku-4-5; existing)
   JARVIS_REASONING_MODEL      (default claude-sonnet-4-6; existing)
   JARVIS_EMOTIONAL_MODEL      (default claude-haiku-4-5; existing)
@@ -76,9 +76,9 @@ _DEFAULTS: dict[str, dict[str, Optional[str]]] = {
         TIER_CROSS_PROVIDER: "deepseek-v4-flash",
     },
     "TASK_OTHER": {
-        TIER_PRIMARY:        "claude-haiku-4-5",
-        TIER_RETRY:          "claude-haiku-4-5",
-        TIER_ESCALATE:       "claude-sonnet-4-6",
+        TIER_PRIMARY:        "claude-sonnet-4-6",
+        TIER_RETRY:          "claude-sonnet-4-6",
+        TIER_ESCALATE:       "claude-opus-4-7",
         TIER_CROSS_PROVIDER: "gpt-5-mini",
     },
     "BANTER": {

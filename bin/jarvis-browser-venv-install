@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Create the isolated browser-use venv that arms the voice-agent's
+# `browser_task` tool. Idempotent — safe to re-run.
+#
+# Why isolated: the voice-agent's pinned .venv deliberately does NOT
+# carry browser_use (heavy deps that conflict with livekit-agents'
+# pin set). The tool spawns this venv's Python as a subprocess and
+# talks to it over stdin/stdout JSON via
+# src/voice-agent/browser_use_bridge/runner.py.
+#
+# Gate condition: src/voice-agent/tools/browser.py::_check_browser_available
+# returns True iff this venv's interpreter exists AND a supported LLM
+# API key (ANTHROPIC / OPENAI / GEMINI / GOOGLE) is in the agent's env.
+
+set -euo pipefail
+
+VENV="${HOME}/.jarvis/browser-use-venv"
+PY="${VENV}/bin/python"
+
+if [ -x "${PY}" ]; then
+  echo "browser-use venv already present at ${VENV}"
+else
+  echo "creating browser-use venv at ${VENV}"
+  python3 -m venv "${VENV}"
+fi
+
+"${PY}" -m pip install --quiet --upgrade pip
+"${PY}" -m pip install --quiet --upgrade browser_use
+
+echo
+echo "verifying:"
+"${PY}" -c "from browser_use import ChatAnthropic; print('  browser_use import OK')"
+echo "  interpreter: ${PY}"
+echo
+echo "voice-agent will arm browser_task on next restart:"
+echo "  systemctl --user restart jarvis-voice-agent.service"
