@@ -311,17 +311,17 @@ export default function App() {
     lastTtsRef.current = speech.ttsProvider
     invoke('set_tts_label', { name: speech.ttsProvider || '' }).catch(console.error)
   }, [speech.ttsProvider])
-  // Tray-label sync. "Stop Screen Share ✓" appears when EITHER the
-  // legacy voice-client ffmpeg publisher (speech.sharingScreen) OR
-  // the new LiveKit-native webview publish (screenShare.active) is
-  // running. Once the ffmpeg path is removed this collapses to just
-  // screenShare.active.
+  // Tray-label sync. "Stop Screen Share ✓" appears when the voice-
+  // client's ffmpeg publisher is active. (A LiveKit-native webview
+  // path was sketched here referencing `screenShare.active`, but the
+  // state hook for it was never wired up — kept crashing every
+  // render. Drop until that work actually lands.)
   useEffect(() => {
-    const active = !!speech.sharingScreen || !!screenShare.active
+    const active = !!speech.sharingScreen
     if (lastShareRef.current === active) return
     lastShareRef.current = active
     invoke('set_share_label', { active }).catch(console.error)
-  }, [speech.sharingScreen, screenShare.active])
+  }, [speech.sharingScreen])
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────
   useEffect(() => {
