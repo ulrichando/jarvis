@@ -396,6 +396,25 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
             );
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_turns_subagent ON turns(subagent)")
+        # Auto-mod error-driven branch (Spec 2026-05-27). Idempotent.
+        # Populated by pipeline/automod/error_logger.ErrorTelemetryHandler;
+        # read by pipeline/automod/patterns._scan_errors.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS recurring_errors (
+                signature TEXT PRIMARY KEY,
+                exc_class TEXT NOT NULL,
+                exc_message TEXT,
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                count INTEGER NOT NULL DEFAULT 1,
+                frames_json TEXT NOT NULL,
+                sample_traceback TEXT,
+                fixability_score REAL DEFAULT 0.5,
+                proposed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_recurring_errors_last_seen
+                ON recurring_errors(last_seen);
+        """)
 
 
 def log_turn(
