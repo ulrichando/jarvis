@@ -213,10 +213,21 @@ export default function App() {
   useEffect(() => { voiceChatOpenRef.current = voiceChatOpen }, [voiceChatOpen])
 
   // Rust is the source of truth for kiosk on/off. Mirror via event.
+  // On EXIT, explicitly re-assert idle-overlay state (click-through ON,
+  // layer normal, panel rect cleared) — Rust's exit_kiosk already does
+  // this, but the hotspot poller at main.rs:1998 force-sets
+  // ignore_cursor_events independently based on chat_open + panel_rect,
+  // and can race the kiosk exit. Repeating the calls from React makes
+  // the idle posture the unambiguous final state.
   useEffect(() => {
     const un = listen('kiosk-changed', (e) => {
       const next = e.payload === true || e.payload === 'true'
       setKioskMode(next)
+      if (!next) {
+        setClickThrough(true)
+        setLayer(false)
+        reportPanelBounds({ x: 0, y: 0, w: 0, h: 0 })
+      }
     })
     return () => { un.then(f => f()) }
   }, [])

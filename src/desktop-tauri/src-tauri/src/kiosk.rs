@@ -32,6 +32,13 @@ pub struct KioskSnapshot {
     pub minimized_ids: Vec<String>,
     pub prev_always_on_top: bool,
     pub prev_click_through: bool,
+    // Window bounds snapshot — kiosk resizes the overlay to fill the
+    // monitor under the cursor; on exit we restore the original position
+    // + size so the chat-panel HUD geometry comes back unchanged.
+    pub prev_pos_x: i32,
+    pub prev_pos_y: i32,
+    pub prev_size_w: u32,
+    pub prev_size_h: u32,
 }
 
 pub static KIOSK_STATE: LazyLock<Mutex<Option<KioskSnapshot>>> = LazyLock::new(|| Mutex::new(None));
@@ -106,6 +113,8 @@ pub fn enter_kiosk_impl<A: WmctrlAdapter>(
     state: &mut Option<KioskSnapshot>,
     prev_always_on_top: bool,
     prev_click_through: bool,
+    prev_pos: (i32, i32),
+    prev_size: (u32, u32),
 ) -> Result<bool, String> {
     if state.is_some() {
         return Ok(false);
@@ -132,6 +141,10 @@ pub fn enter_kiosk_impl<A: WmctrlAdapter>(
         minimized_ids,
         prev_always_on_top,
         prev_click_through,
+        prev_pos_x: prev_pos.0,
+        prev_pos_y: prev_pos.1,
+        prev_size_w: prev_size.0,
+        prev_size_h: prev_size.1,
     });
     Ok(true)
 }
@@ -173,7 +186,34 @@ pub fn exit_kiosk_impl<A: WmctrlAdapter>(
 // check-state can re-sync if it drifted.
 // ───────────────────────────────────────────────────────────────────────────
 
-use tauri::{WebviewWindow, Emitter};
+use tauri::{PhysicalPosition, PhysicalSize, WebviewWindow, Emitter};
+
+/// Snapshot the overlay's current outer position + size in PHYSICAL pixels.
+/// Returns (0,0,1920,1080) as a safe fallback if either Tauri call fails.
+fn snapshot_window_bounds(window: &WebviewWindow) -> ((i32, i32), (u32, u32)) {
+    let pos = window.outer_position().ok();
+    let size = window.outer_size().ok();
+    let (px, py) = pos.map(|p| (p.x, p.y)).unwrap_or((0, 0));
+    let (sw, sh) = size.map(|s| (s.width, s.height)).unwrap_or((1920, 1080));
+    ((px, py), (sw, sh))
+}
+
+/// Find the monitor the overlay is currently sitting on (or that the cursor
+/// is on, as a fallback). Returns (x, y, w, h) in PHYSICAL pixels — the same
+/// coordinate space `outer_position` / `outer_size` use.
+fn current_monitor_bounds(window: &WebviewWindow) -> Option<(i32, i32, u32, u32)> {
+    if let Ok(Some(m)) = window.current_monitor() {
+        let pos = m.position();
+        let size = m.size();
+        return Some((pos.x, pos.y, size.width, size.height));
+    }
+    if let Ok(Some(m)) = window.primary_monitor() {
+        let pos = m.position();
+        let size = m.size();
+        return Some((pos.x, pos.y, size.width, size.height));
+    }
+    None
+}
 
 #[tauri::command]
 pub fn enter_kiosk(window: WebviewWindow) -> Result<(), String> {
@@ -182,9 +222,21 @@ pub fn enter_kiosk(window: WebviewWindow) -> Result<(), String> {
     let prev_ct  = true;  // default to true to match overlay's normal posture;
                           // Tauri v2 has no getter for the current value, but
                           // the overlay defaults to click-through enabled.
+    let (prev_pos, prev_size) = snapshot_window_bounds(&window);
+
     let mut state = KIOSK_STATE.lock().map_err(|e| e.to_string())?;
-    let entered = enter_kiosk_impl(&adapter, &mut state, prev_aot, prev_ct)?;
+    let entered = enter_kiosk_impl(
+        &adapter, &mut state, prev_aot, prev_ct, prev_pos, prev_size,
+    )?;
     if entered {
+        // Resize + reposition to fill the monitor under the overlay so
+        // kiosk actually covers the screen the user is looking at. Without
+        // this the overlay stays at its prior bounds (typically 1920x1080
+        // at origin) which is the wrong monitor on multi-display setups.
+        if let Some((mx, my, mw, mh)) = current_monitor_bounds(&window) {
+            let _ = window.set_position(PhysicalPosition::new(mx, my));
+            let _ = window.set_size(PhysicalSize::new(mw, mh));
+        }
         let _ = window.set_always_on_top(true);
         let _ = window.set_ignore_cursor_events(false);
         let _ = window.set_focus();
@@ -197,12 +249,15 @@ pub fn enter_kiosk(window: WebviewWindow) -> Result<(), String> {
 pub fn exit_kiosk(window: WebviewWindow) -> Result<(), String> {
     let adapter = RealWmctrl;
     let mut state = KIOSK_STATE.lock().map_err(|e| e.to_string())?;
-    // Capture prev flags before take(); needed even though we don't restore
-    // focus, because we want to restore the overlay's pre-kiosk always_on_top.
+    // Capture prev fields before take(); we restore overlay flags + bounds.
     let prev_aot = state.as_ref().map(|s| s.prev_always_on_top).unwrap_or(false);
     let prev_ct  = state.as_ref().map(|s| s.prev_click_through).unwrap_or(true);
+    let prev_pos = state.as_ref().map(|s| (s.prev_pos_x, s.prev_pos_y)).unwrap_or((0, 0));
+    let prev_size = state.as_ref().map(|s| (s.prev_size_w, s.prev_size_h)).unwrap_or((1920, 1080));
     let exited = exit_kiosk_impl(&adapter, &mut state)?;
     if exited {
+        let _ = window.set_position(PhysicalPosition::new(prev_pos.0, prev_pos.1));
+        let _ = window.set_size(PhysicalSize::new(prev_size.0, prev_size.1));
         let _ = window.set_always_on_top(prev_aot);
         let _ = window.set_ignore_cursor_events(prev_ct);
     }
@@ -299,7 +354,7 @@ mod tests {
     fn enter_minimizes_non_jarvis_windows() {
         let mock = MockWmctrl::new(make_windows());
         let mut state: Option<KioskSnapshot> = None;
-        let entered = enter_kiosk_impl(&mock, &mut state, /*prev_aot=*/false, /*prev_ct=*/true).unwrap();
+        let entered = enter_kiosk_impl(&mock, &mut state, /*prev_aot=*/false, /*prev_ct=*/true, (0,0), (1920,1080)).unwrap();
         assert!(entered, "fresh entry should report entered=true");
         assert!(state.is_some());
         let snap = state.as_ref().unwrap();
@@ -321,8 +376,10 @@ mod tests {
             minimized_ids: vec!["0x999".into()],
             prev_always_on_top: true,
             prev_click_through: false,
+            prev_pos_x: 100, prev_pos_y: 200,
+            prev_size_w: 800, prev_size_h: 600,
         });
-        let entered = enter_kiosk_impl(&mock, &mut state, /*prev_aot=*/true, /*prev_ct=*/false).unwrap();
+        let entered = enter_kiosk_impl(&mock, &mut state, /*prev_aot=*/true, /*prev_ct=*/false, (0,0), (1920,1080)).unwrap();
         assert!(!entered, "re-entry should report entered=false");
         assert!(mock.minimized.borrow().is_empty(), "should not minimize anything new");
         assert_eq!(state.as_ref().unwrap().minimized_ids, vec!["0x999".to_string()],
@@ -336,6 +393,8 @@ mod tests {
             minimized_ids: vec!["0x200".into(), "0x300".into()],
             prev_always_on_top: false,
             prev_click_through: true,
+            prev_pos_x: 0, prev_pos_y: 0,
+            prev_size_w: 1920, prev_size_h: 1080,
         });
         let exited = exit_kiosk_impl(&mock, &mut state).unwrap();
         assert!(exited, "fresh exit should report exited=true");
@@ -359,7 +418,7 @@ mod tests {
         let mock = MockWmctrl::new(vec![]);
         *mock.list_fails_with.borrow_mut() = Some(WmctrlError::NotFound);
         let mut state: Option<KioskSnapshot> = None;
-        let entered = enter_kiosk_impl(&mock, &mut state, false, true).unwrap();
+        let entered = enter_kiosk_impl(&mock, &mut state, false, true, (0,0), (1920,1080)).unwrap();
         assert!(entered, "enter should succeed even when wmctrl is unavailable");
         let snap = state.as_ref().unwrap();
         assert!(snap.minimized_ids.is_empty(),
