@@ -135,3 +135,36 @@ def test_no_log_file_no_op(telemetry_db, tmp_path, monkeypatch):
     with sqlite3.connect(telemetry_db) as c:
         inserted = populate_from_log_if_empty(c)
     assert inserted == 0
+
+
+def test_chained_exception_uses_wrapping_class(telemetry_db, fake_log):
+    """Chained traceback ('During handling of the above...') → the
+    LAST exception line (the wrapping one) is what gets signatured,
+    not the first (the root cause)."""
+    chained_tb = (
+        'Traceback (most recent call last):\n'
+        '  File "/home/ulrich/Documents/Projects/jarvis/src/voice-agent/jarvis_agent.py", line 100, in inner\n'
+        '    raise ValueError("root cause")\n'
+        'ValueError: root cause\n'
+        '\n'
+        'During handling of the above exception, another exception occurred:\n'
+        '\n'
+        'Traceback (most recent call last):\n'
+        '  File "/home/ulrich/Documents/Projects/jarvis/src/voice-agent/jarvis_agent.py", line 200, in outer\n'
+        '    raise RuntimeError("wrapping error")\n'
+        'RuntimeError: wrapping error\n'
+    )
+    fake_log.write_text(_json_log_line("ERROR", chained_tb), encoding="utf-8")
+    from pipeline.automod.error_log_fallback import populate_from_log_if_empty
+    with sqlite3.connect(telemetry_db) as c:
+        inserted = populate_from_log_if_empty(c)
+    assert inserted == 1
+    with sqlite3.connect(telemetry_db) as c:
+        rows = c.execute(
+            "SELECT exc_class FROM recurring_errors"
+        ).fetchall()
+    # Must be the WRAPPING exception (RuntimeError), NOT the root cause (ValueError).
+    assert rows == [("RuntimeError",)], (
+        f"expected RuntimeError (wrapping), got {rows[0][0]} — chained "
+        "exception handling is selecting the wrong line"
+    )
