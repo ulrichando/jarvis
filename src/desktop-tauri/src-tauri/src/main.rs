@@ -10,6 +10,8 @@ use tauri::{
 };
 use tauri_plugin_opener::OpenerExt;
 
+pub mod kiosk;
+
 /// Shared chat-open state between the tray menu and JS. React calls
 /// `set_chat_state` from `openChat`/`closeChat` so the Rust-side toggle
 /// never drifts out of sync with what the user actually sees.
