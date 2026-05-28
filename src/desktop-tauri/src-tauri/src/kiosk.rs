@@ -10,7 +10,7 @@
 use std::sync::{LazyLock, Mutex};
 
 use tauri::{
-    AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder,
+    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder,
 };
 
 // ─── WmctrlAdapter trait + types ───────────────────────────────────────────
@@ -228,6 +228,14 @@ pub fn enter_kiosk_on_monitor(app: AppHandle, monitor_idx: usize) -> Result<(), 
     }
 
     // 3. Spawn the kiosk window.
+    // Use PhysicalPosition / PhysicalSize EXPLICITLY so the framework
+    // doesn't mis-interpret values as logical (which on HiDPI displays
+    // would multiply by scale_factor and either overflow or underflow
+    // the screen). monitor.position() / monitor.size() return physical
+    // pixels per Tauri v2 docs, and the scale-factor guard above
+    // ensures pos_x/y/w/h are physical even if a Tauri bug returns
+    // logical from .size() — passing typed wrappers makes the contract
+    // explicit at the boundary.
     let result = WebviewWindowBuilder::new(&app, "kiosk", WebviewUrl::App("index.html?route=kiosk".into()))
         .decorations(false)
         .transparent(false)
@@ -236,11 +244,8 @@ pub fn enter_kiosk_on_monitor(app: AppHandle, monitor_idx: usize) -> Result<(), 
         .skip_taskbar(true)
         .resizable(false)
         .title("J.A.R.V.I.S. \u{2014} kiosk")
-        // Note: WebviewWindowBuilder::position / inner_size in this Tauri version
-        // (2.10.3) accept raw (f64, f64) rather than PhysicalPosition/PhysicalSize.
-        // The physical-pixel arithmetic above guarantees the values are physical.
-        .position(pos_x as f64, pos_y as f64)
-        .inner_size(size_w as f64, size_h as f64)
+        .position(PhysicalPosition::<i32>::new(pos_x, pos_y))
+        .inner_size(PhysicalSize::<u32>::new(size_w, size_h))
         .build();
 
     let kiosk_window = match result {
