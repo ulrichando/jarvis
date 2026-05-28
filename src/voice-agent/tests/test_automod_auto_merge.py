@@ -85,3 +85,18 @@ def test_mark_auto_merged_is_idempotent(automod_home):
     assert rec["rollback_ref"] == "r2"
     assert rec["rollback_sha"] == "s2"
     assert rec["merge_sha"] == "m2"
+
+
+def test_blocklist_includes_automod_wrappers():
+    """The CLI + wrapper scripts must be on the blocklist so auto-mod
+    can't propose fixes to its own rollback machinery."""
+    from pipeline.automod._state import HARD_BLOCKLIST_PATHS
+    assert "bin/jarvis-automod-impl" in HARD_BLOCKLIST_PATHS
+    assert "bin/jarvis-automod" in HARD_BLOCKLIST_PATHS
+
+
+def test_is_blocked_path_rejects_wrapper_edits():
+    """The is_blocked_path helper should return True for the wrappers."""
+    from pipeline.automod._state import is_blocked_path
+    assert is_blocked_path("bin/jarvis-automod-impl") is True
+    assert is_blocked_path("bin/jarvis-automod") is True
