@@ -382,14 +382,27 @@ class X11ComputerUseBackend(ComputerUseBackend):
 
     def _screenshot_b64(self) -> Tuple[Optional[str], int, int]:
         """Return (base64_png, width, height). Prefers mss; falls back to
-        ImageMagick ``import``. Returns (None, 0, 0) on failure."""
+        ImageMagick ``import``. Returns (None, 0, 0) on failure.
+
+        Monitor selection (mss only): mss.monitors[0] is the *bounding
+        box* of all displays which, on multi-monitor setups with
+        non-rectangular layouts, contains a large dark dead region
+        where no monitor exists. That dead region dominates the image
+        and JARVIS describes "the screen" as mostly black. To avoid
+        this, we pick a real physical monitor:
+
+          1. JARVIS_COMPUTER_USE_MONITOR env (0=bbox, 1+=physical)
+          2. The monitor containing the X11 cursor (active monitor)
+          3. The largest physical monitor by pixel area
+          4. monitors[0] (bbox) as last resort
+        """
         # Preferred: mss (no subprocess, fast).
         try:
             import mss  # type: ignore
             import mss.tools  # type: ignore
 
             with mss.mss() as sct:
-                monitor = sct.monitors[0]  # full virtual screen
+                monitor = self._pick_screenshot_monitor(sct)
                 shot = sct.grab(monitor)
                 png_bytes = mss.tools.to_png(shot.rgb, shot.size)
                 return (
@@ -416,6 +429,47 @@ class X11ComputerUseBackend(ComputerUseBackend):
             except Exception as e:  # noqa: BLE001
                 logger.warning("ImageMagick screenshot failed: %s", e)
         return None, 0, 0
+
+    def _pick_screenshot_monitor(self, sct) -> dict:
+        """Pick the right `mss` monitor entry to screenshot.
+
+        See `_screenshot_b64` docstring for the priority order. Always
+        returns a valid entry — `sct.monitors[0]` is the safe fallback.
+        """
+        monitors = sct.monitors  # [0] = bbox, [1:] = physical displays
+
+        override = os.environ.get("JARVIS_COMPUTER_USE_MONITOR", "").strip()
+        if override:
+            try:
+                i = int(override)
+                if 0 <= i < len(monitors):
+                    return monitors[i]
+            except ValueError:
+                pass
+
+        physical = monitors[1:]
+        if not physical:
+            return monitors[0]
+
+        # Try the cursor's current monitor — that's the one the user is
+        # interacting with right now.
+        try:
+            rc, out, _err = self._run(["xdotool", "getmouselocation"])
+            if rc == 0 and out:
+                parts = dict(
+                    kv.split(":", 1) for kv in out.strip().split() if ":" in kv
+                )
+                cx = int(parts.get("x", "-1"))
+                cy = int(parts.get("y", "-1"))
+                for m in physical:
+                    if (m["left"] <= cx < m["left"] + m["width"]
+                        and m["top"] <= cy < m["top"] + m["height"]):
+                        return m
+        except Exception:
+            pass
+
+        # Last fallback: largest physical monitor by area.
+        return max(physical, key=lambda m: m["width"] * m["height"])
 
     @staticmethod
     def _png_dimensions(data: bytes) -> Tuple[int, int]:

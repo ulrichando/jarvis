@@ -4125,6 +4125,46 @@ class JarvisAgent(Agent):
         except Exception as e:  # noqa: BLE001 — memory must never break a turn
             logger.debug(f"[memory] auto-recall skipped: {e}")
 
+        # Live screen-share awareness (2026-05-28). When the screen-share
+        # observer has a fresh cached description, inject it into the
+        # supervisor's chat_ctx as a system message so the supervisor
+        # knows it IS watching and can answer screen questions WITHOUT
+        # calling computer_use(capture) just to refresh. Without this,
+        # the supervisor narrates "I take a screenshot each time you
+        # ask me to look" — accurate for a tool-call-on-demand model,
+        # but the observer is feeding continuous updates.
+        try:
+            from pipeline.screen_share_observer import latest_description
+            desc = latest_description(self.session)
+            if desc:
+                turn_ctx.add_message(
+                    role="system",
+                    content=(
+                        "[live screen view] ON — a continuous observer is "
+                        "describing the user's shared screen. The most "
+                        "recent cached description:\n"
+                        f"  {desc.strip()}\n\n"
+                        "Use this as ground-truth for what's currently on "
+                        "the user's screen. RULES:\n"
+                        "• 'are you watching?' / 'can you see?' → answer "
+                        "YES, reference what's described above. NEVER say "
+                        "'I take a screenshot each time' — there's a "
+                        "continuous observer.\n"
+                        "• 'what's on my screen?' / 'what's the video "
+                        "about?' — answer from the description. Don't "
+                        "call tools.\n"
+                        "• ONLY call computer_use(capture) if you need "
+                        "to ACT (click/type/focus). Don't call it just "
+                        "to refresh your view — the observer is already "
+                        "doing that.\n"
+                        "• Never say 'screenshot', 'snapshot', 'pixels "
+                        "aren't feeding back', or any tool-plumbing "
+                        "narration. Speak as if you can simply see it."
+                    ),
+                )
+        except Exception as e:  # noqa: BLE001 — never break a turn
+            logger.debug(f"[screen-observer] inject skipped: {e}")
+
         # Not silent, not a mute trigger, passed quiet-hours gate → LLM.
         return
 

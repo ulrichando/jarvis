@@ -87,7 +87,45 @@ def is_enabled() -> bool:
 
 # Module-level so test code can monkey-patch them without going through env.
 OBSERVER_INTERVAL_S: float = float(os.environ.get("JARVIS_SCREEN_OBSERVER_INTERVAL_S", "5.0"))
-OBSERVER_MAX_AGE_S: float  = float(os.environ.get("JARVIS_SCREEN_OBSERVER_MAX_AGE_S", "10.0"))
+# Bumped 10s → 65s on 2026-05-28 because the Gemini Live stream
+# emits at most one answer per ~50s session (model goes silent after
+# the first turn, server 1011-times out, we reconnect, get one more
+# answer). At 10s threshold the cache was stale 80%+ of the time
+# and the supervisor fell back to computer_use's "image isn't
+# rendering" parrot. 65s covers a full session+reconnect cycle so
+# the supervisor reads the live description on almost every turn.
+# Drop back to 10 if the one-answer-per-session bug ever gets fixed
+# upstream (or if we switch to the cookbook single-API pattern).
+OBSERVER_MAX_AGE_S: float  = float(os.environ.get("JARVIS_SCREEN_OBSERVER_MAX_AGE_S", "65.0"))
+
+
+# Observer mode (2026-05-28, Gemini Live streaming added).
+#   "polling" (default) — one-shot generate_content per
+#     OBSERVER_INTERVAL_S against gemini-2.5-flash-lite. Single still
+#     frame per describe. Cheap, reliable, no motion understanding.
+#   "stream" — persistent Gemini Live WebSocket session.
+#     Frames stream at 1 FPS via send_realtime_input(media=Blob);
+#     a text prompt fires every STREAM_PROMPT_INTERVAL_S to elicit a
+#     description against the live frame context; responses arrive as
+#     TEXT (not AUDIO). session_resumption + context_window_compression
+#     keep the socket alive past the documented 2-min audio+video cap.
+#     Motion-aware: Gemini sees the SEQUENCE of frames as they arrive.
+OBSERVER_MODE: str = os.environ.get("JARVIS_SCREEN_OBSERVER_MODE", "polling").lower()
+
+# Streaming frame rate (≤ 1 FPS per Google docs).
+STREAM_FRAME_INTERVAL_S: float = float(
+    os.environ.get("JARVIS_SCREEN_OBSERVER_STREAM_FRAME_INTERVAL_S", "1.0")
+)
+# How often to send a "describe what's on screen now" text prompt to
+# elicit a refreshed description. 5s = description never older than ~5s.
+STREAM_PROMPT_INTERVAL_S: float = float(
+    os.environ.get("JARVIS_SCREEN_OBSERVER_STREAM_PROMPT_INTERVAL_S", "5.0")
+)
+# Live model. `gemini-3.1-flash-live-preview` is what this project's
+# key has access to (verified via models.list).
+LIVE_MODEL: str = os.environ.get(
+    "JARVIS_SCREEN_OBSERVER_LIVE_MODEL", "gemini-3.1-flash-live-preview"
+)
 
 
 # Mirror of the session's latest-description slot; lets the session-
@@ -146,17 +184,26 @@ def attach_to_room(room: rtc.Room, session) -> None:
         except Exception:
             return
 
-        log.info(
-            f"[screen-observer] starting periodic describe loop "
-            f"(interval={OBSERVER_INTERVAL_S}s) for {participant.identity}"
-        )
+        if OBSERVER_MODE == "stream":
+            log.info(
+                f"[screen-observer] starting Gemini Live STREAM "
+                f"(model={LIVE_MODEL}, frames@{STREAM_FRAME_INTERVAL_S}s, "
+                f"prompts@{STREAM_PROMPT_INTERVAL_S}s) for {participant.identity}"
+            )
+            loop_coro = _stream_loop(session)
+        else:
+            log.info(
+                f"[screen-observer] starting periodic describe loop "
+                f"(interval={OBSERVER_INTERVAL_S}s) for {participant.identity}"
+            )
+            loop_coro = _poll_loop(session)
         # Cancel any prior task from a previous subscription on this room.
         prev = getattr(room, "_jarvis_screen_observer_task", None)
         if prev is not None and not prev.done():
             prev.cancel()
 
         task = asyncio.create_task(
-            _poll_loop(session),
+            loop_coro,
             name=f"screen-observer-{participant.identity}",
         )
         room._jarvis_screen_observer_task = task
@@ -238,6 +285,317 @@ async def _poll_loop(session) -> None:
             log.warning(f"[screen-observer] loop iteration {iteration} raised: {e}")
             # Don't tight-loop on errors.
             await asyncio.sleep(OBSERVER_INTERVAL_S)
+
+
+# ── Streaming mode (Gemini Live, proper continuous video, 2026-05-28) ──
+#
+# Based on official Google docs research (researcher agent output
+# 2026-05-28):
+#   - send_realtime_input(media=Blob(jpeg)) for streaming frames (NOT
+#     send_client_content — that's for turn-based discrete messages).
+#   - Hard cap ≤1 FPS on image input.
+#   - TEXT output supported on gemini-live-2.5-flash-preview AND
+#     gemini-3.1-flash-live-preview (no AUDIO + transcription detour).
+#   - Gemini does NOT auto-narrate. To get a description, send a text
+#     prompt — model responds against recent frame context.
+#   - Sessions hard-cap at ~2 min for audio+video; session_resumption
+#     + context_window_compression let us extend indefinitely by
+#     reconnecting with a cached handle on server GoAway or socket drop.
+#   - 1011 keepalive timeouts are caused by blocking the asyncio loop
+#     and missing server pings — separate send/receive tasks, no sync
+#     work in either.
+
+_STREAM_PROMPT: str = (
+    "Briefly describe what's HAPPENING on screen right now (motion, "
+    "current content, app, any visible text or captions). 1-2 short "
+    "sentences for a voice assistant to relay. Skip pleasantries."
+)
+
+
+async def _stream_session(session, get_jpeg_fn, resume_handle: Optional[str]) -> Optional[str]:
+    """One Gemini Live session lifecycle for streaming-mode observer.
+
+    Opens a Live WebSocket, runs three concurrent tasks against it:
+      - frame pusher (1 FPS, send_realtime_input(media=Blob))
+      - prompt ticker (every STREAM_PROMPT_INTERVAL_S,
+        send_realtime_input(text=...))
+      - response receiver (drain receive(), cache text, watch resumption)
+
+    Returns the latest session_resumption handle (for reconnect on
+    socket drop), or None if no handle was received.
+    """
+    global _GLOBAL_LATEST
+    from google import genai
+    from google.genai import types
+
+    api_key = os.environ.get("GOOGLE_API_KEY", "")
+    if not api_key:
+        log.warning("[screen-observer:stream] GOOGLE_API_KEY unset — bailing")
+        return None
+
+    # Pin the API version to v1beta to match Google's official
+    # cookbook quickstart (Get_started_LiveAPI.py); Live preview
+    # endpoints live there. Without the pin the SDK can pick a
+    # version that doesn't expose Live cleanly.
+    client = genai.Client(
+        http_options={"api_version": "v1beta"},
+        api_key=api_key,
+    )
+
+    # Modality: AUDIO + output_audio_transcription. The researcher's
+    # note that gemini-live-2.5-flash-preview supports TEXT output is
+    # correct FOR THAT MODEL — but on this project's key, only
+    # gemini-3.1-flash-live-preview is accessible (verified via
+    # models.list 2026-05-27) and that one rejects TEXT with
+    # APIError 1007 "combination of response modalities (TEXT) is not
+    # supported". We get text back via output_audio_transcription
+    # (Gemini emits the transcript of its own audio output alongside
+    # the bytes). The audio bytes are received but never played —
+    # see drain_responses below, model_turn.parts inline_data ignored.
+    #
+    # context_window_compression keeps the model's working context
+    # bounded as frames pile up; session_resumption lets us reconnect
+    # after a server-initiated GoAway or socket drop without losing
+    # conversational state. media_resolution matches the official
+    # cookbook sample — tells Gemini how to size frames it receives.
+    cfg = types.LiveConnectConfig(
+        response_modalities=["AUDIO"],
+        output_audio_transcription=types.AudioTranscriptionConfig(),
+        media_resolution="MEDIA_RESOLUTION_MEDIUM",
+        context_window_compression=types.ContextWindowCompressionConfig(
+            trigger_tokens=25600,
+            sliding_window=types.SlidingWindow(target_tokens=12800),
+        ),
+        session_resumption=types.SessionResumptionConfig(handle=resume_handle),
+        system_instruction=types.Content(
+            role="user",
+            parts=[types.Part(text=(
+                "You are a continuous screen observer for a voice "
+                "assistant. The user streams frames from their screen "
+                "at ~1 FPS. When asked, describe what's happening in "
+                "1-2 sentences focused on motion, content, app, and "
+                "any readable text. Don't ask questions. Don't narrate "
+                "that you see frames — speak as if you can simply see "
+                "the screen."
+            ))],
+        ),
+    )
+
+    latest_handle = resume_handle
+
+    async with client.aio.live.connect(model=LIVE_MODEL, config=cfg) as live:
+        log.info(
+            f"[screen-observer:stream] connected ({LIVE_MODEL})"
+            + (" — resumed" if resume_handle else "")
+        )
+
+        # Sync gate: the model emits ONE answer per "turn-complete" then
+        # waits — sending another prompt via send_realtime_input(text=)
+        # doesn't elicit a second response (no turn boundary; the model
+        # treats the text as part of an ongoing user utterance under
+        # auto-VAD). Result observed live 2026-05-28: exactly one
+        # `answer=1` per session, ~50 s of silence, then server 1011
+        # keepalive timeout, reconnect, repeat — cache fresh ~3 s out
+        # of every 60 s.
+        #
+        # Fix: switch prompt ticks to send_client_content with
+        # turn_complete=True (the discrete-turn API — explicitly
+        # requests a response). Hold a sync gate so the next prompt
+        # only fires AFTER the receiver sees the prior turn complete.
+        # Net cadence: one answer per ~3-5 s instead of one per 60 s.
+        prompt_ready = asyncio.Event()
+        prompt_ready.set()  # first prompt fires immediately
+
+        async def push_frames() -> None:
+            """Stream JPEG frames at ≤1 FPS via send_realtime_input(video=).
+
+            We use the `video=` kwarg (not `media=`) — the SDK's
+            `media=` shim is the legacy path and maps to
+            `realtime_input.media_chunks` on the wire, which the
+            current Live API rejects with
+            `1007 realtime_input.media_chunks is deprecated. Use
+            audio, video, or text instead.` Observed 2026-05-28
+            ~05:09 across every reconnect attempt.
+            """
+            while True:
+                jpeg = get_jpeg_fn(max_age_s=STREAM_FRAME_INTERVAL_S * 4.0)
+                if jpeg is not None:
+                    try:
+                        await live.send_realtime_input(
+                            video=types.Blob(data=jpeg, mime_type="image/jpeg")
+                        )
+                    except Exception as e:
+                        log.warning(f"[screen-observer:stream] frame send failed: {e}")
+                        raise
+                await asyncio.sleep(STREAM_FRAME_INTERVAL_S)
+
+        async def tick_prompts() -> None:
+            """Send a discrete-turn prompt every STREAM_PROMPT_INTERVAL_S
+            and wait for the receiver to flag turn_complete before
+            sending the next one.
+
+            send_client_content with turn_complete=True is the
+            discrete-turn API — it explicitly tells Gemini "this is a
+            user utterance, please respond". Unlike
+            send_realtime_input(text=), which the model treats as
+            streamed audio-as-text and waits for auto-VAD to detect
+            turn end (which never happens because we send no audio),
+            this carries an explicit end-of-turn marker.
+
+            Gate via prompt_ready: receiver sets it on turn_complete,
+            we clear before each send. Caps cadence at the model's
+            own response time + STREAM_PROMPT_INTERVAL_S floor.
+            """
+            # Initial delay so a few frames land first.
+            await asyncio.sleep(STREAM_FRAME_INTERVAL_S * 2)
+            while True:
+                await prompt_ready.wait()
+                prompt_ready.clear()
+                try:
+                    await live.send_client_content(
+                        turns=types.Content(
+                            role="user",
+                            parts=[types.Part(text=_STREAM_PROMPT)],
+                        ),
+                        turn_complete=True,
+                    )
+                except Exception as e:
+                    log.warning(f"[screen-observer:stream] prompt send failed: {e}")
+                    raise
+                # Floor: even if Gemini answers in <1s, don't fire the
+                # next prompt for at least STREAM_PROMPT_INTERVAL_S so
+                # we don't burn budget on per-second describes.
+                await asyncio.sleep(STREAM_PROMPT_INTERVAL_S)
+
+        async def drain_responses() -> None:
+            """Pull text + control messages off the socket. Updates the
+            cache on each turn_complete; tracks the latest resumption
+            handle for the outer reconnect loop.
+
+            CRITICAL: the outer `while True` is load-bearing. The SDK's
+            `session.receive()` is documented (live.py:437) and
+            implemented (live.py:456-460) to yield ONE complete model
+            turn, then exit the async iterator via `break` after the
+            first `turn_complete=True`. Without re-entering the
+            iterator we read exactly one answer, the socket goes idle
+            because nothing is consuming subsequent server frames, and
+            ~50s later the server sends 1011 keepalive timeout. This
+            was the "one answer per session" bug observed across every
+            session from 2026-05-28 03:00 onward — confirmed by
+            `grep "answer=[2-9]" voice-agent.log → 0 matches`.
+
+            Fix: wrap receive() in `while True:` so we reconsume after
+            each turn for the lifetime of the WebSocket. The cookbook
+            quickstart Get_started_LiveAPI.py uses the same shape.
+            """
+            nonlocal latest_handle
+            global _GLOBAL_LATEST
+            buf: list[str] = []
+            answers = 0
+            while True:
+                async for msg in live.receive():
+                    sc = getattr(msg, "server_content", None)
+                    if sc is not None:
+                        # Text comes via output_audio_transcription
+                        # (Gemini's transcript of its own audio output).
+                        # model_turn.parts would carry the audio
+                        # inline_data — we deliberately ignore it,
+                        # dropping audio bytes on the floor.
+                        ot = getattr(sc, "output_transcription", None)
+                        if ot is not None and ot.text:
+                            buf.append(ot.text)
+                        if getattr(sc, "turn_complete", False):
+                            answers += 1
+                            text = "".join(buf).strip()
+                            buf.clear()
+                            if text:
+                                pair = (text, time.monotonic())
+                                session._jarvis_latest_screen_description = pair
+                                _GLOBAL_LATEST = pair
+                                log.info(
+                                    f"[screen-observer:stream] answer={answers}: "
+                                    f"{text[:100]}"
+                                )
+                            # Re-arm the prompt ticker — Gemini
+                            # finished its turn, safe to send the next
+                            # describe prompt.
+                            prompt_ready.set()
+                        # Server-initiated wind-down — exit cleanly
+                        # so the outer reconnect loop can resume with
+                        # the cached handle before the socket is
+                        # yanked.
+                        go = getattr(sc, "go_away", None)
+                        if go is not None:
+                            time_left = getattr(go, "time_left", None)
+                            log.info(
+                                f"[screen-observer:stream] GoAway received "
+                                f"(time_left={time_left}); will reconnect"
+                            )
+                            return
+                    # Resumption handle updates — cache for the
+                    # reconnect path.
+                    sru = getattr(msg, "session_resumption_update", None)
+                    if sru is not None and getattr(sru, "resumable", False):
+                        new_handle = getattr(sru, "new_handle", None)
+                        if new_handle:
+                            latest_handle = new_handle
+
+        pusher = asyncio.create_task(push_frames(), name="stream-obs-pusher")
+        ticker = asyncio.create_task(tick_prompts(), name="stream-obs-ticker")
+        drainer = asyncio.create_task(drain_responses(), name="stream-obs-drainer")
+        try:
+            done, pending = await asyncio.wait(
+                {pusher, ticker, drainer},
+                return_when=asyncio.FIRST_EXCEPTION,
+            )
+            for t in done:
+                exc = t.exception()
+                if exc:
+                    raise exc
+        finally:
+            import contextlib
+            for t in (pusher, ticker, drainer):
+                if not t.done():
+                    t.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await t
+
+    return latest_handle
+
+
+async def _stream_loop(session) -> None:
+    """Long-running streaming-mode supervisor. Keeps a Gemini Live
+    WebSocket open; reconnects with the cached session_resumption
+    handle on disconnect (server GoAway, socket drop, exception)."""
+    try:
+        from pipeline.screen_share_sink import latest_jpeg_global
+    except Exception as e:
+        log.warning(f"[screen-observer:stream] sink import failed: {e}")
+        return
+
+    resume_handle: Optional[str] = None
+    backoff_s = 1.0
+    BACKOFF_MAX_S = 30.0
+    while True:
+        try:
+            handle = await _stream_session(session, latest_jpeg_global, resume_handle)
+            if handle:
+                resume_handle = handle
+            log.info("[screen-observer:stream] session ended; reconnecting")
+            backoff_s = 1.0
+        except asyncio.CancelledError:
+            log.info("[screen-observer:stream] cancelled — exiting")
+            raise
+        except Exception as e:
+            log.warning(
+                f"[screen-observer:stream] session error "
+                f"({type(e).__name__}: {e}); reconnect in {backoff_s:.1f}s"
+            )
+            try:
+                await asyncio.sleep(backoff_s)
+            except asyncio.CancelledError:
+                raise
+            backoff_s = min(backoff_s * 2, BACKOFF_MAX_S)
 
 
 def latest_description(session, *, max_age_s: float = OBSERVER_MAX_AGE_S) -> Optional[str]:
