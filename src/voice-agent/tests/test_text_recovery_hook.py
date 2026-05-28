@@ -141,7 +141,13 @@ class _FakeSession:
         self._jarvis_route = route
         self._jarvis_pre_tts_llm_factory = factory
         self._jarvis_pre_tts_tool_specs = tool_specs or []
-        self.chat_ctx = chat_ctx
+        # Real AgentSession exposes chat_ctx via .current_agent.chat_ctx
+        # (Agent has the attribute, AgentSession does not). Mirror that
+        # shape here so the production accessor path is exercised.
+        class _FakeAgent:
+            pass
+        self.current_agent = _FakeAgent()
+        self.current_agent.chat_ctx = chat_ctx
         self._jarvis_confab_check_state = None
         self._jarvis_confab_pattern_matched = None
         self._jarvis_confab_retry_models = []
