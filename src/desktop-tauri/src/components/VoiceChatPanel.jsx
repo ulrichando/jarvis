@@ -1,5 +1,4 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { useScreenShare } from '../hooks/useScreenShare'
 
 // ── Theme tokens (match ChatPanel.jsx for visual consistency) ──
 const SURFACE   = '#0d1117'
@@ -28,11 +27,6 @@ const Icon = {
   LockOpen: (p) => (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>
   ),
-  // Monitor + share-arrow — same shape Meet / Zoom Web use for the
-  // screen-share button so the affordance reads instantly.
-  ScreenShare: (p) => (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/><path d="m9 9 3-3 3 3"/><path d="M12 6v6"/></svg>
-  ),
 }
 
 export default function VoiceChatPanel({
@@ -59,11 +53,6 @@ export default function VoiceChatPanel({
   // when they want keyboard-tap noise blocked from the mic.
   const [autoMute, setAutoMute] = useState(false)
   const [status, setStatus] = useState(null)
-  // LiveKit-native screen share. `screenShare.toggle()` either opens
-  // the OS picker (xdg-desktop-portal on Linux — same UX as Google
-  // Meet / Zoom Web) or stops the active publish. See
-  // src/hooks/useScreenShare.js for the room lifecycle.
-  const screenShare = useScreenShare()
   const messagesContainerRef = useRef(null)
   const inputRef = useRef(null)
   const priorMutedRef = useRef(false)
@@ -305,20 +294,6 @@ export default function VoiceChatPanel({
           </span>
         </div>
         <div style={{ display: 'flex', gap: '2px', alignItems: 'center' }}>
-          <HeaderButton
-            title={
-              screenShare.active
-                ? 'Stop sharing screen'
-                : screenShare.connecting
-                  ? 'Opening picker…'
-                  : 'Share screen'
-            }
-            onClick={() => screenShare.toggle()}
-            active={screenShare.active}
-            disabled={screenShare.connecting}
-          >
-            <Icon.ScreenShare />
-          </HeaderButton>
           <HeaderButton
             title={autoMute ? 'Mic auto-mute ON (click to disable)' : 'Mic auto-mute OFF (click to enable)'}
             onClick={() => setAutoMute(v => !v)}
