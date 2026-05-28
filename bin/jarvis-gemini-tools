@@ -441,9 +441,13 @@ async def main() -> int:
         speech_model=LIVE_MODEL,
         tts_provider=f"gemini:{VOICE_NAME}",
     )
-    # Sharing the screen continuously at 1 fps for vision — set once,
-    # never flips during a session.
-    status.set_sharing_screen(True)
+    # Note: vision IS streaming at 1 fps for the lifetime of this
+    # session, but we deliberately don't surface it on the tray's
+    # screen-share ring. The ring is meant to tell the user "now
+    # JARVIS-Claude is looking at your screen" — Claude's vision is
+    # on-demand via `computer_use`. In Gemini (and OpenAI) modes,
+    # vision is the default operating mode, so a permanent ring is
+    # noise. sharing_screen stays at the StatusServer default (False).
     try:
         await status.start()
     except OSError as e:
