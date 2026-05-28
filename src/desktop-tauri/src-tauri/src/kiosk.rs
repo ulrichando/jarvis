@@ -161,6 +161,63 @@ pub fn exit_kiosk_impl<A: WmctrlAdapter>(
     Ok(true)
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Tauri command wrappers
+//
+// These are thin: they read current window flags, delegate to the pure
+// `enter_kiosk_impl` / `exit_kiosk_impl`, then apply window-flag side
+// effects + emit the `kiosk-changed` event. Side effects are skipped on
+// idempotent (re-entry / re-exit) returns so we don't flap the overlay
+// unnecessarily — but the event is always re-emitted so the tray
+// check-state can re-sync if it drifted.
+// ───────────────────────────────────────────────────────────────────────────
+
+use tauri::{WebviewWindow, Emitter};
+
+#[tauri::command]
+pub fn enter_kiosk(window: WebviewWindow) -> Result<(), String> {
+    let adapter = RealWmctrl;
+    let prev_aot = window.is_always_on_top().unwrap_or(false);
+    let prev_ct  = false; // best-effort; Tauri v2 has no getter for this
+    let mut state = KIOSK_STATE.lock().map_err(|e| e.to_string())?;
+    let entered = enter_kiosk_impl(&adapter, &mut state, prev_aot, prev_ct)?;
+    if entered {
+        let _ = window.set_always_on_top(true);
+        let _ = window.set_ignore_cursor_events(false);
+        let _ = window.set_focus();
+    }
+    let _ = window.emit("kiosk-changed", true);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn exit_kiosk(window: WebviewWindow) -> Result<(), String> {
+    let adapter = RealWmctrl;
+    let mut state = KIOSK_STATE.lock().map_err(|e| e.to_string())?;
+    // Capture prev flags before take(); needed even though we don't restore
+    // focus, because we want to restore the overlay's pre-kiosk always_on_top.
+    let prev_aot = state.as_ref().map(|s| s.prev_always_on_top).unwrap_or(false);
+    let prev_ct  = state.as_ref().map(|s| s.prev_click_through).unwrap_or(true);
+    let exited = exit_kiosk_impl(&adapter, &mut state)?;
+    if exited {
+        let _ = window.set_always_on_top(prev_aot);
+        let _ = window.set_ignore_cursor_events(prev_ct);
+    }
+    let _ = window.emit("kiosk-changed", false);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn toggle_kiosk(window: WebviewWindow) -> Result<(), String> {
+    let on = KIOSK_STATE.lock().map_err(|e| e.to_string())?.is_some();
+    if on { exit_kiosk(window) } else { enter_kiosk(window) }
+}
+
+#[tauri::command]
+pub fn kiosk_state() -> Result<bool, String> {
+    Ok(KIOSK_STATE.lock().map_err(|e| e.to_string())?.is_some())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
