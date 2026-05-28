@@ -74,44 +74,36 @@ export default function KioskHUD() {
 
   return (
     <div className="kiosk-hud-root">
-      <div className="kiosk-aura-wrap">
-        <AgentAudioVisualizerAura
-          size="xl"
-          color="#1FD5F9"
-          colorShift={0.05}
-          state={agentState}
-          themeMode="dark"
-        />
-      </div>
+      <AgentAudioVisualizerAura
+        size="xl"
+        color="#1FD5F9"
+        colorShift={0.05}
+        state={agentState}
+        themeMode="dark"
+      />
       <style>{`
+        html, body, #root {
+          margin: 0 !important;
+          padding: 0 !important;
+          width: 100vw !important;
+          height: 100vh !important;
+          background: #000 !important;
+          overflow: hidden !important;
+        }
         .kiosk-hud-root {
           position: fixed;
-          top: 0; left: 0;
-          width: 100vw; height: 100vh;
+          top: 0;
+          left: 0;
+          width: 100vw;
+          height: 100vh;
           background: #000 !important;
-          display: flex;
-          align-items: center;
-          justify-content: center;
+          display: grid;
+          place-items: center;
           z-index: 9999;
           overflow: hidden;
           cursor: none;
           margin: 0;
           padding: 0;
-        }
-        .kiosk-aura-wrap {
-          flex: 0 0 auto;
-          /* The Aura visualizer 'xl' variant is 448px wide. Scale it up
-             for the kiosk surface — most monitors are >1080p so a bigger
-             surface area gives the field room to breathe. */
-          width: min(70vmin, 720px);
-          height: min(70vmin, 720px);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-        }
-        .kiosk-aura-wrap > * {
-          width: 100%;
-          height: 100%;
         }
       `}</style>
     </div>
