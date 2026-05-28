@@ -4,6 +4,7 @@ import { listen }  from '@tauri-apps/api/event'
 import ChatPanel   from './components/ChatPanel.jsx'
 import VoiceChatPanel from './components/VoiceChatPanel.jsx'
 import KeysSettings from './KeysSettings.jsx'
+import KioskHUD     from './components/KioskHUD.jsx'
 // Voice lives OUT of the webview — jarvis-voice-client.service is
 // the LiveKit peer that owns the mic + speaker, reached over HTTP
 // on :8767 through useVoiceClient. Imported under the `useSpeech`
@@ -81,6 +82,7 @@ export default function App() {
   const [chatOpen, setChatOpen]     = useState(false)
   const [voiceChatOpen, setVoiceChatOpen] = useState(false)
   const [voiceMuted, setVoiceMuted] = useState(false)
+  const [kioskMode, setKioskMode] = useState(false)
   // Reply-output mute (item #10): when on, typed-reply TTS is suppressed.
   // Useful in coding contexts where you want to dictate but read the reply.
   // Independent of the tray mic-mute above.
@@ -115,6 +117,12 @@ export default function App() {
         speechRef.current.speak(m.text)
       }
       if (m.type === 'voice_muted') setVoiceMuted(m.muted)
+      if (m.type === 'kiosk') {
+        const cmd = m.state === 'on'  ? 'enter_kiosk' :
+                    m.state === 'off' ? 'exit_kiosk'  :
+                                        'toggle_kiosk'
+        invoke(cmd).catch(console.error)
+      }
     }
     const last = wsMessages[wsMessages.length - 1]
     if (last.type === 'show_chat') openChat()
@@ -203,6 +211,15 @@ export default function App() {
   useEffect(() => { chatOpenRef.current = chatOpen }, [chatOpen])
   const voiceChatOpenRef = useRef(voiceChatOpen)
   useEffect(() => { voiceChatOpenRef.current = voiceChatOpen }, [voiceChatOpen])
+
+  // Rust is the source of truth for kiosk on/off. Mirror via event.
+  useEffect(() => {
+    const un = listen('kiosk-changed', (e) => {
+      const next = e.payload === true || e.payload === 'true'
+      setKioskMode(next)
+    })
+    return () => { un.then(f => f()) }
+  }, [])
 
   // ── Tray events from Rust ────────────────────────────────────────────
   useEffect(() => {
@@ -301,6 +318,17 @@ export default function App() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [chatOpen, openChat, closeChat])
+
+  if (kioskMode) {
+    return (
+      <KioskHUD
+        wsMessages={wsMessages}
+        speech={speech}
+        voiceMuted={voiceMuted}
+        wsSendMessage={wsSendMessage}
+      />
+    )
+  }
 
   return (
     <div style={{ width:'100vw', height:'100vh', background:'transparent', overflow:'hidden', position:'relative' }}>
