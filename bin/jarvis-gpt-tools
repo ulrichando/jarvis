@@ -63,10 +63,18 @@ try:
     from tools.registry import _check_fn_cached
     from pipeline.prompt_builder import load_soul
     from pipeline.file_memory import MemoryStore
+    from direct_mode_status import StatusServer
 except ImportError as e:
     sys.stderr.write(f"missing dep: {e}\n")
     sys.stderr.write(f"hint: run inside {VOICE_AGENT_DIR}/.venv\n")
     sys.exit(2)
+
+
+# Tray status server (port 8769). Tray's React poller swaps BASE_URL
+# to this port while `bin/jarvis-mode` reports openai is the active
+# mode, so the indicator reflects mic/speaking/tool state instead of
+# the muted voice-client's idle gray.
+STATUS_PORT = int(os.environ.get("JARVIS_OPENAI_STATUS_PORT", "8769"))
 
 
 def load_memory_snapshot() -> str:
@@ -344,6 +352,21 @@ async def main() -> int:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _stop, sig)
 
+    status = StatusServer(
+        port=STATUS_PORT,
+        mode="openai",
+        speech_model=MODEL,
+        tts_provider=f"openai:{VOICE_NAME}",
+    )
+    try:
+        await status.start()
+    except OSError as e:
+        log.warning(
+            "[gpt-tools] status server bind failed on %d (%s) — "
+            "tray indicator will stay idle during this session",
+            STATUS_PORT, e,
+        )
+
     log.info(f"[gpt-tools] connecting to {MODEL} (voice={VOICE_NAME}, tools={len(tool_list)})…")
 
     # GA Realtime: no OpenAI-Beta header (beta shape disabled
@@ -397,6 +420,11 @@ async def main() -> int:
             },
         }))
         log.info("[gpt-tools] session configured — talk. Ctrl-C to exit.")
+        status.set_agent_present(True)
+        # Mic open by default in a Realtime session — show the
+        # "ready to listen" state immediately. Updated on per-turn
+        # speech_started / speech_stopped events below.
+        status.set_listening(True)
 
         mic_proc = await open_mic_stream()
         spk_proc = await open_speaker_stream()
@@ -473,12 +501,39 @@ async def main() -> int:
                 if etype == "response.audio.delta" or etype == "response.output_audio.delta":
                     b = evt.get("delta") or evt.get("audio") or ""
                     if b:
+                        # Flip indicator state on the first delta of a
+                        # reply. agent_thinking clears here in case the
+                        # transition straight from user speech was too
+                        # fast for the dedicated event to land.
+                        if not status._speaking:
+                            status.set_speaking(True)
+                            status.set_agent_thinking(False)
                         try:
                             spk_proc.stdin.write(base64.b64decode(b))
                             await spk_proc.stdin.drain()
                         except (BrokenPipeError, ConnectionResetError):
                             log.warning("[gpt-tools] paplay pipe closed")
                             return
+
+                # User mic VAD events (server-side VAD on OpenAI).
+                # These give us crisp listening/thinking transitions
+                # that Gemini Live doesn't expose, so the indicator
+                # is more responsive on OpenAI mode.
+                elif etype == "input_audio_buffer.speech_started":
+                    status.set_listening(True)
+                    status.set_speaking(False)
+                elif etype == "input_audio_buffer.speech_stopped":
+                    status.set_listening(False)
+                    status.set_agent_thinking(True)
+
+                # Response lifecycle — speaking ends, listening
+                # resumes when the model is done emitting audio.
+                elif etype == "response.created":
+                    status.set_agent_thinking(True)
+                elif etype in ("response.done", "response.completed"):
+                    status.set_speaking(False)
+                    status.set_agent_thinking(False)
+                    status.set_listening(True)
 
                 # Spoken transcript echo
                 elif etype in ("response.audio_transcript.delta", "response.output_audio_transcript.delta"):
@@ -521,7 +576,9 @@ async def main() -> int:
                     except Exception:
                         args = {}
                     log.info(f"[gpt-tools] → {name}({args})")
+                    status.set_tool_running(True)
                     result = await execute_tool(name, args)
+                    status.set_tool_running(False)
                     short = json.dumps(result)[:200] if not isinstance(result, str) else result[:200]
                     log.info(f"[gpt-tools]   {name} ← {short}")
                     output_str = result if isinstance(result, str) else json.dumps(result)
@@ -584,6 +641,10 @@ async def main() -> int:
             try: sct.close()
             except Exception: pass
 
+    try:
+        await status.stop()
+    except Exception as e:
+        log.debug(f"[gpt-tools] status server shutdown: {e}")
     log.info("[gpt-tools] done.")
     return 0
 

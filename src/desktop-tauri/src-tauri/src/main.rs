@@ -981,6 +981,22 @@ fn detect_active_mode() -> ActiveMode {
     }
 }
 
+/// Exposed to the React webview so the tray-icon poller can pick the
+/// right `/status` URL: 8767 for JARVIS-Claude, 8768 for Gemini Live,
+/// 8769 for OpenAI Realtime. Cheap enough to call every few seconds —
+/// `systemctl --user is-active --quiet` returns in <10 ms on Linux.
+///
+/// Returns the string "jarvis" / "gemini" / "openai" so the JS side
+/// doesn't have to learn the Rust enum tag scheme.
+#[tauri::command]
+fn get_active_mode() -> &'static str {
+    match detect_active_mode() {
+        ActiveMode::Jarvis => "jarvis",
+        ActiveMode::Gemini => "gemini",
+        ActiveMode::Openai => "openai",
+    }
+}
+
 /// Repaint the Conversation-mode submenu to reflect the current
 /// active mode: rewrites the disabled header line ("Active: …") and
 /// adds/removes a "✓ " prefix on the three mode items.
@@ -2496,6 +2512,7 @@ fn main() {
             kiosk::enter_kiosk_on_monitor,
             kiosk::exit_kiosk,
             kiosk::kiosk_state,
+            get_active_mode,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

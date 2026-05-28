@@ -64,10 +64,25 @@ try:
     from tools.registry import _check_fn_cached
     from pipeline.prompt_builder import load_soul
     from pipeline.file_memory import MemoryStore
+    from direct_mode_status import StatusServer
 except ImportError as e:
     sys.stderr.write(f"missing dep: {e}\n")
     sys.stderr.write(f"hint: run inside {VOICE_AGENT_DIR}/.venv\n")
     sys.exit(2)
+
+
+# Tray status server (port 8768). The tray's React poller swaps its
+# BASE_URL to this port when `bin/jarvis-mode` reports gemini is the
+# active mode, so the icon reflects mic/speaking/tool state instead
+# of going idle-gray (which is what happens when it polls the muted
+# voice-client during a Gemini session).
+STATUS_PORT = int(os.environ.get("JARVIS_GEMINI_STATUS_PORT", "8768"))
+# Speaking debounce: Gemini Live emits audio in small PCM chunks, often
+# with brief gaps between sentences. Treat the agent as "speaking"
+# until 250 ms passes without an audio chunk — well under the human
+# perceptual threshold so the indicator doesn't flicker mid-reply but
+# clears promptly when the model actually finishes.
+SPEAKING_DEBOUNCE_S = 0.25
 
 
 def load_memory_snapshot() -> str:
@@ -420,6 +435,24 @@ async def main() -> int:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _stop, sig)
 
+    status = StatusServer(
+        port=STATUS_PORT,
+        mode="gemini",
+        speech_model=LIVE_MODEL,
+        tts_provider=f"gemini:{VOICE_NAME}",
+    )
+    # Sharing the screen continuously at 1 fps for vision — set once,
+    # never flips during a session.
+    status.set_sharing_screen(True)
+    try:
+        await status.start()
+    except OSError as e:
+        log.warning(
+            "[gemini-tools] status server bind failed on %d (%s) — "
+            "tray indicator will stay idle during this session",
+            STATUS_PORT, e,
+        )
+
     log.info(
         f"[gemini-tools] connecting to {LIVE_MODEL} "
         f"(voice={VOICE_NAME}, tools={len(function_declarations)})…"
@@ -427,11 +460,32 @@ async def main() -> int:
 
     async with client.aio.live.connect(model=LIVE_MODEL, config=cfg) as session:
         log.info("[gemini-tools] connected — talk to JARVIS. Ctrl-C to exit.")
+        status.set_agent_present(True)
 
         mic_proc = await open_mic_stream()
         spk_proc = await open_speaker_stream()
         sct = mss.mss()
         monitor = sct.monitors[0]
+
+        # Speaking-debouncer task — flips status.speaking back to False
+        # after SPEAKING_DEBOUNCE_S without an audio chunk arriving.
+        # `last_audio_at` is mutable across coroutines (no nonlocal
+        # needed; bound at this scope so the inner sets are visible).
+        last_audio_at = [0.0]  # monotonic seconds; 0.0 = no audio yet
+
+        async def speaking_debounce() -> None:
+            while not stop.is_set():
+                await asyncio.sleep(SPEAKING_DEBOUNCE_S / 2)
+                if last_audio_at[0] == 0.0:
+                    continue
+                if (loop.time() - last_audio_at[0]) >= SPEAKING_DEBOUNCE_S:
+                    if status._speaking:
+                        status.set_speaking(False)
+                        # When speech ends, the user can talk — flip
+                        # the listening indicator on. set_listening is
+                        # also flipped on per-mic-frame below; this
+                        # just covers the immediate post-speech moment.
+                        status.set_listening(True)
 
         async def pump_mic() -> None:
             assert mic_proc.stdout is not None
@@ -462,6 +516,7 @@ async def main() -> int:
                     # Tool calls — Gemini wants us to run a function.
                     tool_call = getattr(msg, "tool_call", None)
                     if tool_call is not None and getattr(tool_call, "function_calls", None):
+                        status.set_tool_running(True)
                         responses: list[types.FunctionResponse] = []
                         for fc in tool_call.function_calls:
                             name = fc.name
@@ -478,10 +533,18 @@ async def main() -> int:
                                 response=result if isinstance(result, dict) else {"result": result},
                             ))
                         await session.send_tool_response(function_responses=responses)
+                        status.set_tool_running(False)
                         continue
 
-                    # Audio output → paplay
+                    # Audio output → paplay. Flip indicator state on
+                    # the FIRST chunk of a reply; the debounce task
+                    # flips it back when the chunks stop arriving.
                     if msg.data:
+                        if not status._speaking:
+                            status.set_speaking(True)
+                            status.set_listening(False)
+                            status.set_agent_thinking(False)
+                        last_audio_at[0] = loop.time()
                         try:
                             spk_proc.stdin.write(msg.data)
                             await spk_proc.stdin.drain()
@@ -495,11 +558,20 @@ async def main() -> int:
                         if ot and ot.text:
                             print(ot.text, end="", flush=True)
 
+        # Listening defaults to True once the session is up — Gemini
+        # Live's server-side VAD owns turn-taking, and we don't get an
+        # explicit "user speech started" event, so the indicator stays
+        # green/cyan whenever the model isn't currently speaking. The
+        # `set_speaking(True)` path above flips it off; the debouncer
+        # task flips it back on when audio stops.
+        status.set_listening(True)
+
         tasks = [
-            asyncio.create_task(pump_mic(),      name="mic"),
-            asyncio.create_task(pump_screen(),   name="screen"),
-            asyncio.create_task(drain_replies(), name="replies"),
-            asyncio.create_task(stop.wait(),     name="stop"),
+            asyncio.create_task(pump_mic(),         name="mic"),
+            asyncio.create_task(pump_screen(),      name="screen"),
+            asyncio.create_task(drain_replies(),    name="replies"),
+            asyncio.create_task(speaking_debounce(), name="speaking-debounce"),
+            asyncio.create_task(stop.wait(),        name="stop"),
         ]
         try:
             done, pending = await asyncio.wait(
@@ -531,6 +603,10 @@ async def main() -> int:
             try: sct.close()
             except Exception: pass
 
+    try:
+        await status.stop()
+    except Exception as e:
+        log.debug(f"[gemini-tools] status server shutdown: {e}")
     log.info("[gemini-tools] done.")
     return 0
 
