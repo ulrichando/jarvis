@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import KioskArcReactor from './KioskArcReactor.jsx'
+import KioskAura from './KioskAura.jsx'
 
 // Root component for ?route=kiosk. Black fullscreen background with the
 // arc reactor centered. State derived from a 500ms poll of
@@ -76,7 +76,7 @@ export default function KioskHUD() {
   return (
     <div className="kiosk-hud-root">
       <div className="kiosk-arc-center-wrap">
-        <KioskArcReactor state={state} size={340} />
+        <KioskAura state={state} size={340} />
       </div>
       <style>{`
         .kiosk-hud-root {
