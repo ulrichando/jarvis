@@ -64,4 +64,72 @@ committing."
   "$REPO_ROOT/src/voice-agent/.venv/bin/python" \
     "$REPO_ROOT/src/voice-agent/pipeline/automod/finalize.py" \
     "$ID" "$BRANCH"
+
+  # ===== Stage 7: Auto-merge (Spec 2026-05-28) =====
+  # Fires only when JARVIS_AUTOMOD_AUTO_MERGE=1 AND all gates green.
+  # set -e guarantees we only reach this point if both the subagent's
+  # pytest run AND finalize.py exited cleanly above.
+  # Saves refs/automod-rollback/<id> pointing at master pre-merge HEAD,
+  # merges proposal branch, pushes master, restarts voice-agent.
+  if [ "${JARVIS_AUTOMOD_AUTO_MERGE:-0}" = "1" ]; then
+      echo "[$(date -u +%FT%TZ)] [automod-impl] AUTO_MERGE=1 — proceeding"
+
+      # 7a. Save rollback ref BEFORE touching master.
+      if ! git fetch origin master --quiet; then
+          echo "[$(date -u +%FT%TZ)] [automod-impl] origin fetch FAILED — aborting auto-merge"
+          exit 0
+      fi
+      PRE_MERGE_SHA=$(git rev-parse origin/master)
+      ROLLBACK_REF="refs/automod-rollback/$ID"
+      git update-ref "$ROLLBACK_REF" "$PRE_MERGE_SHA"
+      if ! git push origin "$ROLLBACK_REF:$ROLLBACK_REF" --quiet; then
+          echo "[$(date -u +%FT%TZ)] [automod-impl] rollback ref push FAILED — aborting auto-merge"
+          exit 0
+      fi
+
+      # 7b. Merge proposal branch into master.
+      if ! git checkout master --quiet; then
+          echo "[$(date -u +%FT%TZ)] [automod-impl] checkout master FAILED — aborting"
+          exit 0
+      fi
+      # Sync local master to origin/master (already fetched in 7a — no failure path).
+      git reset --hard origin/master --quiet
+      if ! git merge --no-ff "$BRANCH" -m "automod: auto-merge $ID" --quiet; then
+          echo "[$(date -u +%FT%TZ)] [automod-impl] merge FAILED — aborting + reset"
+          git merge --abort 2>/dev/null || true
+          exit 0
+      fi
+
+      # 7c. Push master.
+      if ! git push origin master --quiet; then
+          echo "[$(date -u +%FT%TZ)] [automod-impl] master push FAILED — reverting local merge"
+          git reset --hard "$PRE_MERGE_SHA"
+          exit 0
+      fi
+
+      MERGE_SHA=$(git rev-parse master)
+      echo "[$(date -u +%FT%TZ)] [automod-impl] auto-merged: id=$ID merge_sha=$MERGE_SHA"
+
+      # 7d. Stamp the artifact JSON with auto-merge metadata.
+      "$REPO_ROOT/src/voice-agent/.venv/bin/python" \
+          "$REPO_ROOT/src/voice-agent/pipeline/automod/finalize.py" \
+          mark-auto-merged "$ID" \
+          --rollback-ref "$ROLLBACK_REF" \
+          --rollback-sha "$PRE_MERGE_SHA" \
+          --merge-sha "$MERGE_SHA"
+
+      # 7e. Restart the voice-agent so the new code is live.
+      # Respect the existing "active session" guard from CLAUDE.md ops rule:
+      # don't restart if the last turn was <60s ago.
+      LAST_TURN_TS=$(sqlite3 ~/.local/share/jarvis/turn_telemetry.db \
+          "SELECT strftime('%s', ts_utc) FROM turns ORDER BY id DESC LIMIT 1" 2>/dev/null || echo "0")
+      NOW=$(date +%s)
+      AGE=$((NOW - LAST_TURN_TS))
+      if [ "$AGE" -gt 60 ]; then
+          systemctl --user restart jarvis-voice-agent.service
+          echo "[$(date -u +%FT%TZ)] [automod-impl] voice-agent restarted"
+      else
+          echo "[$(date -u +%FT%TZ)] [automod-impl] restart deferred (session active ${AGE}s ago); new code loads on next natural restart"
+      fi
+  fi
 } >>"$LOG" 2>&1
