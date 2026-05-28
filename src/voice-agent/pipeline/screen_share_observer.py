@@ -333,13 +333,25 @@ async def _stream_session(session, get_jpeg_fn, resume_handle: Optional[str]) ->
         api_key=api_key,
     )
 
+    # Modality: AUDIO + output_audio_transcription. The researcher's
+    # note that gemini-live-2.5-flash-preview supports TEXT output is
+    # correct FOR THAT MODEL — but on this project's key, only
+    # gemini-3.1-flash-live-preview is accessible (verified via
+    # models.list 2026-05-27) and that one rejects TEXT with
+    # APIError 1007 "combination of response modalities (TEXT) is not
+    # supported". We get text back via output_audio_transcription
+    # (Gemini emits the transcript of its own audio output alongside
+    # the bytes). The audio bytes are received but never played —
+    # see drain_responses below, model_turn.parts inline_data ignored.
+    #
     # context_window_compression keeps the model's working context
     # bounded as frames pile up; session_resumption lets us reconnect
     # after a server-initiated GoAway or socket drop without losing
     # conversational state. media_resolution matches the official
     # cookbook sample — tells Gemini how to size frames it receives.
     cfg = types.LiveConnectConfig(
-        response_modalities=["TEXT"],
+        response_modalities=["AUDIO"],
+        output_audio_transcription=types.AudioTranscriptionConfig(),
         media_resolution="MEDIA_RESOLUTION_MEDIUM",
         context_window_compression=types.ContextWindowCompressionConfig(
             trigger_tokens=25600,
@@ -408,12 +420,13 @@ async def _stream_session(session, get_jpeg_fn, resume_handle: Optional[str]) ->
             async for msg in live.receive():
                 sc = getattr(msg, "server_content", None)
                 if sc is not None:
-                    mt = getattr(sc, "model_turn", None)
-                    if mt is not None and mt.parts:
-                        for part in mt.parts:
-                            t = getattr(part, "text", None)
-                            if t:
-                                buf.append(t)
+                    # Text comes via output_audio_transcription (Gemini's
+                    # transcript of its own audio output). model_turn.parts
+                    # would carry the audio inline_data — we deliberately
+                    # ignore it, dropping audio bytes on the floor.
+                    ot = getattr(sc, "output_transcription", None)
+                    if ot is not None and ot.text:
+                        buf.append(ot.text)
                     if getattr(sc, "turn_complete", False):
                         answers += 1
                         text = "".join(buf).strip()
