@@ -6240,9 +6240,7 @@ async def entrypoint(ctx: JobContext) -> None:
                         subagent_type=getattr(session, "_jarvis_subagent_type", None),
                         subagent_ms=getattr(session, "_jarvis_subagent_ms", None),
                         subagent_status=getattr(session, "_jarvis_subagent_status", None),
-                        user_lang=getattr(
-                            session, "_jarvis_lang_ctx", None
-                        ).get() if getattr(session, "_jarvis_lang_ctx", None) is not None else "en",
+                        user_lang=session._jarvis_lang_ctx.get(),
                         aec_layer1_active=_aec.get("aec_layer1_active"),
                         aec_layer2_aec_active=_aec.get("aec_layer2_aec_active"),
                         aec_layer3_active=_aec.get("aec_layer3_active"),
