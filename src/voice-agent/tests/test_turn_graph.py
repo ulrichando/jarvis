@@ -25,6 +25,7 @@ from pipeline.turn_graph import build_turn_graph
 
 def _mk_session(prior_user_text: str = "hey there") -> SimpleNamespace:
     """Build a minimal session double exposing the attrs the nodes touch."""
+    from pipeline.lang_context import LangContext
     user_msg = SimpleNamespace(role="user", content=prior_user_text)
     chat_ctx = SimpleNamespace(messages=[user_msg])
     options = SimpleNamespace(interruption={"min_words": 2, "min_duration": 0.4})
@@ -34,6 +35,7 @@ def _mk_session(prior_user_text: str = "hey there") -> SimpleNamespace:
         _llm=None, _tts=None,
         _jarvis_baseline_wpm=140.0,
         _jarvis_session_start=None,
+        _jarvis_lang_ctx=LangContext(),
     )
 
 
@@ -47,7 +49,7 @@ def _mk_dispatcher(label: str = "groq:llama-X"):
         "EMOTIONAL": SimpleNamespace(_jarvis_label=f"{label}-emotional"),
     }
     return SimpleNamespace(
-        pick=lambda route: inners.get(route, inners["TASK"]),
+        pick=lambda route, **kw: inners.get(route, inners["TASK"]),
         _inners=inners,
     )
 
@@ -60,7 +62,7 @@ def _mk_tts_dispatcher():
         "REASONING": SimpleNamespace(voice_id="troy"),
         "EMOTIONAL": SimpleNamespace(voice_id="daniel"),
     }
-    return SimpleNamespace(pick=lambda route: inners.get(route, inners["TASK"]))
+    return SimpleNamespace(pick=lambda route, **kw: inners.get(route, inners["TASK"]))
 
 
 def _mk_classifier(reply: str = "TASK"):
