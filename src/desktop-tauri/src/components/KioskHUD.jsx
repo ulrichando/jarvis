@@ -6,14 +6,15 @@ import { AgentAudioVisualizerAura } from '@/components/agents-ui/agent-audio-vis
 
 // Root component for ?route=kiosk.
 //
-// Joins the same LiveKit room the voice-client is in, as a subscribe-only
-// identity ("kiosk-display-<rand>"). Finds the agent's mic track and feeds
-// it to AgentAudioVisualizerAura so the shader actually pulses with the
-// audio JARVIS is currently speaking — state alone (idle/listening/etc.)
-// doesn't drive amplitude; the audioTrack does.
+// The visualizer is ALWAYS rendered (state-only by default). LiveKit is an
+// enhancement that adds audio reactivity when the room connects — a tiny
+// TrackProbe lives inside <LiveKitRoom> and pushes the agent's audio track
+// back into KioskHUD's state via a callback. If LiveKit fails (token
+// fetch error, CSP block, server down), the visualizer stays driven by
+// state alone and the kiosk still looks alive.
 //
 // Centering: explicit pixel offsets from window.innerWidth/innerHeight
-// (vw/vh resolved to stale viewport on GTK fullscreen in earlier builds).
+// (vw/vh resolve to a stale viewport on GTK fullscreen).
 const STATUS_URL = 'http://127.0.0.1:8767/status'
 const TOKEN_URL  = 'http://127.0.0.1:8765/api/livekit/token'
 const POLL_MS = 500
@@ -28,79 +29,34 @@ function deriveAgentState(s) {
   return 'listening'
 }
 
-// Inner component runs inside the LiveKitRoom context so it can call
-// useTracks(). Looks for any remote participant publishing a microphone
-// track (the agent) and passes it to the visualizer.
-function KioskInner({ agentState, vp }) {
+// Lives inside LiveKitRoom. Watches subscribed microphone tracks and
+// pushes the first remote one (the agent) up to KioskHUD via onTrack.
+// Renders nothing — the visualizer is a sibling of LiveKitRoom in the
+// tree, not a child of it.
+function TrackProbe({ onTrack }) {
   const tracks = useTracks([Track.Source.Microphone], { onlySubscribed: true })
-  // The kiosk window's own identity isn't publishing mic (we set
-  // audio={false} on LiveKitRoom), so any track here is by definition
-  // remote. Take the first one.
-  const agentTrackRef = tracks[0]
-
-  const auraLeft = Math.round((vp.w - AURA_SIZE) / 2)
-  const auraTop  = Math.round((vp.h - AURA_SIZE) / 2)
-
-  return (
-    <>
-      <div
-        style={{
-          position: 'fixed',
-          top: 0, left: 0,
-          width: vp.w, height: vp.h,
-          background: '#000',
-          zIndex: 9998,
-          cursor: 'none',
-        }}
-      />
-      <div
-        style={{
-          position: 'fixed',
-          top: auraTop, left: auraLeft,
-          width: AURA_SIZE, height: AURA_SIZE,
-          zIndex: 9999,
-        }}
-      >
-        <AgentAudioVisualizerAura
-          size="xl"
-          color="#1FD5F9"
-          colorShift={0.05}
-          state={agentState}
-          themeMode="dark"
-          audioTrack={agentTrackRef}
-        />
-      </div>
-      <div
-        style={{
-          position: 'fixed',
-          top: 8, right: 8,
-          color: '#1FD5F9',
-          fontFamily: 'monospace',
-          fontSize: 10,
-          opacity: 0.5,
-          zIndex: 10000,
-          background: 'rgba(0,0,0,0.5)',
-          padding: '2px 6px',
-          borderRadius: 4,
-        }}
-      >
-        {vp.w}×{vp.h} · {agentState} · track:{agentTrackRef ? 'y' : 'n'}
-      </div>
-    </>
-  )
+  const ref = tracks[0]
+  useEffect(() => {
+    onTrack(ref ?? null)
+    return () => onTrack(null)
+  }, [ref, onTrack])
+  return null
 }
 
 export default function KioskHUD() {
   const [agentState, setAgentState] = useState('connecting')
   const [vp, setVp] = useState({ w: window.innerWidth, h: window.innerHeight })
-  const [conn, setConn] = useState(null)  // {token, url, room} from bridge
+  const [conn, setConn] = useState(null)        // { token, url, room }
+  const [agentTrack, setAgentTrack] = useState(null)
+  const [lkErr, setLkErr] = useState(null)
 
   const identity = useMemo(
     () => `kiosk-display-${Math.random().toString(36).slice(2, 8)}`,
     []
   )
 
-  // Mint a LiveKit token on mount.
+  // Mint a LiveKit token on mount. Failure is non-fatal — visualizer
+  // renders without audio reactivity.
   useEffect(() => {
     const apiToken =
       (typeof window !== 'undefined' && window.__JARVIS_LOCAL_API_TOKEN) || ''
@@ -115,16 +71,15 @@ export default function KioskHUD() {
       .then(r => r.json())
       .then(c => {
         if (c?.token && c?.url) setConn(c)
-        else console.error('[kiosk] token mint failed', c)
+        else { console.error('[kiosk] token mint failed', c); setLkErr('mint') }
       })
-      .catch(err => console.error('[kiosk] token mint error', err))
+      .catch(err => { console.error('[kiosk] token mint error', err); setLkErr('fetch') })
   }, [identity])
 
-  // Track live viewport (vw/vh resolve to stale dims after GTK fullscreen).
+  // Track live viewport.
   useEffect(() => {
     const onResize = () => setVp({ w: window.innerWidth, h: window.innerHeight })
     window.addEventListener('resize', onResize)
-    // Poll for 5s to catch the post-fullscreen viewport snap.
     let ticks = 0
     const id = setInterval(() => {
       ticks += 1
@@ -152,7 +107,7 @@ export default function KioskHUD() {
     }
   }, [])
 
-  // Poll voice-client status for the agent state enum.
+  // Poll voice-client status for the agent state.
   useEffect(() => {
     let cancelled = false
     async function tick() {
@@ -178,9 +133,13 @@ export default function KioskHUD() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  // Black backdrop while connecting to LiveKit (no flash of nothing).
-  if (!conn) {
-    return (
+  const auraLeft = Math.round((vp.w - AURA_SIZE) / 2)
+  const auraTop  = Math.round((vp.h - AURA_SIZE) / 2)
+  const lkStatus = lkErr ? `lk:err(${lkErr})` : conn ? (agentTrack ? 'lk:track' : 'lk:noaudio') : 'lk:wait'
+
+  return (
+    <>
+      {/* Full-window black backdrop */}
       <div
         style={{
           position: 'fixed',
@@ -191,21 +150,57 @@ export default function KioskHUD() {
           cursor: 'none',
         }}
       />
-    )
-  }
-
-  return (
-    <LiveKitRoom
-      token={conn.token}
-      serverUrl={conn.url}
-      connect={true}
-      audio={false}
-      video={false}
-      // Don't render an audio renderer — we only want the track ref
-      // for the visualizer, not local playback (voice-client already
-      // owns playback).
-    >
-      <KioskInner agentState={agentState} vp={vp} />
-    </LiveKitRoom>
+      {/* Visualizer — always rendered. audioTrack is undefined unless
+          LiveKit is connected AND the probe has found the agent track. */}
+      <div
+        style={{
+          position: 'fixed',
+          top: auraTop, left: auraLeft,
+          width: AURA_SIZE, height: AURA_SIZE,
+          zIndex: 9999,
+        }}
+      >
+        <AgentAudioVisualizerAura
+          size="xl"
+          color="#1FD5F9"
+          colorShift={0.05}
+          state={agentState}
+          themeMode="dark"
+          audioTrack={agentTrack || undefined}
+        />
+      </div>
+      {/* LiveKit room — rendered only when we have a token. The probe
+          inside reports the agent's track back via setAgentTrack. The
+          room provides no UI; it's a connection + context. */}
+      {conn && (
+        <LiveKitRoom
+          token={conn.token}
+          serverUrl={conn.url}
+          connect={true}
+          audio={false}
+          video={false}
+          onError={(e) => { console.error('[kiosk] LiveKit error', e); setLkErr('conn') }}
+        >
+          <TrackProbe onTrack={setAgentTrack} />
+        </LiveKitRoom>
+      )}
+      {/* Diagnostic readout */}
+      <div
+        style={{
+          position: 'fixed',
+          top: 8, right: 8,
+          color: '#1FD5F9',
+          fontFamily: 'monospace',
+          fontSize: 10,
+          opacity: 0.5,
+          zIndex: 10000,
+          background: 'rgba(0,0,0,0.5)',
+          padding: '2px 6px',
+          borderRadius: 4,
+        }}
+      >
+        {vp.w}×{vp.h} · {agentState} · {lkStatus}
+      </div>
+    </>
   )
 }
