@@ -323,14 +323,17 @@ def main(argv: list[str]) -> int:
 
     if cmd == "revert":
         if len(argv) < 3:
-            print("usage: jarvis-automod revert <commit-sha>", file=sys.stderr)
+            print("usage: jarvis-automod revert <automod-id-or-sha>",
+                  file=sys.stderr)
             return 2
-        ok, info = cmd_revert(argv[2])
-        if ok:
-            print(f"Reverted. New SHA: {info}")
-            return 0
-        print(f"Revert failed: {info}", file=sys.stderr)
-        return 1
+        # Route through revert(args) so an automod ID gets the
+        # rollback-ref path; a SHA still hits cmd_revert via the
+        # legacy fallback inside revert().
+        class _Args:
+            pass
+        ns = _Args()
+        ns.target = argv[2]
+        return revert(ns)
 
     print(f"unknown subcommand: {cmd}", file=sys.stderr)
     return 2
