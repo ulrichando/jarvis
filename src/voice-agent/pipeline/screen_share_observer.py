@@ -381,13 +381,22 @@ async def _stream_session(session, get_jpeg_fn, resume_handle: Optional[str]) ->
         )
 
         async def push_frames() -> None:
-            """Stream JPEG frames at ≤1 FPS via send_realtime_input(media=)."""
+            """Stream JPEG frames at ≤1 FPS via send_realtime_input(video=).
+
+            We use the `video=` kwarg (not `media=`) — the SDK's
+            `media=` shim is the legacy path and maps to
+            `realtime_input.media_chunks` on the wire, which the
+            current Live API rejects with
+            `1007 realtime_input.media_chunks is deprecated. Use
+            audio, video, or text instead.` Observed 2026-05-28
+            ~05:09 across every reconnect attempt.
+            """
             while True:
                 jpeg = get_jpeg_fn(max_age_s=STREAM_FRAME_INTERVAL_S * 4.0)
                 if jpeg is not None:
                     try:
                         await live.send_realtime_input(
-                            media=types.Blob(data=jpeg, mime_type="image/jpeg")
+                            video=types.Blob(data=jpeg, mime_type="image/jpeg")
                         )
                     except Exception as e:
                         log.warning(f"[screen-observer:stream] frame send failed: {e}")
