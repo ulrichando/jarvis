@@ -30,7 +30,7 @@ if str(_VOICE_AGENT_ROOT) not in sys.path:
     sys.path.insert(0, str(_VOICE_AGENT_ROOT))
 
 from pipeline.automod import artifact, test_gate
-from pipeline.automod._state import intent_file_path
+from pipeline.automod._state import artifact_path, intent_file_path
 
 logger = logging.getLogger("jarvis.automod.finalize")
 
@@ -175,6 +175,45 @@ def finalize_branch(automod_id: str, branch: str,
     artifact.audit("automod_committed", id=automod_id, head_sha=head)
     _git("checkout", "master")
     return art
+
+
+def mark_auto_merged(
+    automod_id: str,
+    rollback_ref: str,
+    rollback_sha: str,
+    merge_sha: str,
+) -> None:
+    """Stamp an automod artifact JSON with auto-merge metadata.
+
+    Idempotent — overwrites the auto_merged_at + rollback fields on
+    repeat calls. If no artifact exists yet (wrapper crashed before
+    normal finalize ran), creates a minimal record so the revert path
+    can find it. Spec 2026-05-28."""
+    artifact_file = artifact_path(automod_id)
+    if artifact_file.exists():
+        try:
+            record = json.loads(artifact_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            record = {"id": automod_id}
+    else:
+        artifact_file.parent.mkdir(parents=True, exist_ok=True)
+        record = {"id": automod_id}
+
+    record["auto_merged_at"] = _now_iso()
+    record["rollback_ref"] = rollback_ref
+    record["rollback_sha"] = rollback_sha
+    record["merge_sha"] = merge_sha
+    artifact_file.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    try:
+        artifact.audit(
+            "automod_auto_merged",
+            id=automod_id,
+            rollback_ref=rollback_ref,
+            rollback_sha=rollback_sha,
+            merge_sha=merge_sha,
+        )
+    except Exception:
+        pass  # audit failures must never break the flow
 
 
 if __name__ == "__main__":
