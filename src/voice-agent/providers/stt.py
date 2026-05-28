@@ -50,6 +50,22 @@ from resilience.circuit_breaker import CircuitOpenError
 logger = logging.getLogger("jarvis.stt")
 
 
+def _stt_language():
+    """Return the STT language pin.
+
+    None → auto-detect (Whisper and Deepgram both support this and
+    return the detected lang code on the transcript event).
+
+    'en' → kill-switch path, set when JARVIS_LANG_AUTODETECT is any
+    falsy string (0, false, off, no, ''). Reverts to pre-spec
+    behavior without a redeploy.
+    """
+    raw = os.environ.get("JARVIS_LANG_AUTODETECT", "1").strip().lower()
+    if raw in ("0", "false", "off", "no", ""):
+        return "en"
+    return None
+
+
 __all__ = [
     "BreakeredGroqSTT",
     "build_breakered_stt",
@@ -92,8 +108,22 @@ class BreakeredGroqSTT(groq.STT):
 
 
 def build_breakered_stt() -> BreakeredGroqSTT:
-    """Constructor used by the JarvisAgent wiring at session.start()."""
-    return BreakeredGroqSTT(model="whisper-large-v3-turbo", language="en")
+    """Constructor used by the JarvisAgent wiring at session.start().
+
+    When _stt_language() is None (auto-detect default), we pass
+    detect_language=True instead of language=None — Groq's OpenAI-
+    compatible wrapper calls LanguageCode(language) unconditionally
+    and LanguageCode(None) raises AttributeError. detect_language=True
+    internally sets language="" (empty string), which LanguageCode
+    accepts and which tells Whisper to auto-detect.
+
+    When _stt_language() is "en" (kill-switch), we pin language="en"
+    with detect_language=False (Groq default) for pre-spec behaviour.
+    """
+    lang = _stt_language()
+    if lang is None:
+        return BreakeredGroqSTT(model="whisper-large-v3-turbo", detect_language=True)
+    return BreakeredGroqSTT(model="whisper-large-v3-turbo", language=lang)
 
 
 # Deepgram Nova-3 keyterm prompting — boosts recognition of specific
@@ -166,7 +196,7 @@ def _build_deepgram_stt():
     try:
         return deepgram.STT(
             model="nova-3-general",
-            language="en",
+            language=_stt_language(),
             interim_results=True,
             no_delay=True,
             endpointing_ms=300,
