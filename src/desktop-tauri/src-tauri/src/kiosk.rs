@@ -6,8 +6,7 @@
 //! wrappers at the bottom translate window-flag side effects onto the
 //! real overlay window.
 
-use std::sync::Mutex;
-use once_cell::sync::Lazy;
+use std::sync::{LazyLock, Mutex};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowInfo {
@@ -35,7 +34,7 @@ pub struct KioskSnapshot {
     pub prev_click_through: bool,
 }
 
-pub static KIOSK_STATE: Lazy<Mutex<Option<KioskSnapshot>>> = Lazy::new(|| Mutex::new(None));
+pub static KIOSK_STATE: LazyLock<Mutex<Option<KioskSnapshot>>> = LazyLock::new(|| Mutex::new(None));
 
 // Real adapter — placeholder for now; real `wmctrl` shell-out lands in Task 4.
 pub struct RealWmctrl;
