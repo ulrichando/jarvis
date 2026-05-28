@@ -22,6 +22,16 @@ BRANCH="automod/$ID"
   echo "[$(date -u +%FT%TZ)] [automod-impl] cwd=$REPO_ROOT branch=$BRANCH"
 
   git checkout master
+  # Sync local master to origin/master BEFORE branching. Without this,
+  # the proposal branch inherits whatever the local checkout had (which
+  # may be tens of commits stale, especially after a fresh auto-merge
+  # landed something to origin/master and the wrapper hasn't pulled).
+  # Live failure 2026-05-28: local master was 39 commits behind origin
+  # → subagent saw the OLD version of jarvis_agent.py → couldn't find
+  # the target line the intent referenced → finalize wrote
+  # status=failed → Stage 7 still tried to merge an empty branch.
+  git fetch origin master --quiet
+  git reset --hard origin/master --quiet
   git checkout -b "$BRANCH"
 
   INTENT_BODY="$(cat "$INTENT_FILE")"
@@ -66,6 +76,32 @@ committing."
     "$ID" "$BRANCH"
 
   # ===== Stage 7: Auto-merge (Spec 2026-05-28) =====
+  # Gate on finalize artifact status BEFORE checking AUTO_MERGE env.
+  # finalize.py writes "status": "failed" on rejection (no commit landed,
+  # blocklist hit, test failure) but exits 0 — set -e doesn't catch this.
+  # Without this guard, Stage 7 fires on every failed proposal, tries to
+  # merge an empty branch, and noises the log with "merge FAILED" lines.
+  # Live failure 2026-05-28 smoke002: subagent ABORTed (stale-master bug,
+  # fixed above), finalize wrote status=failed, Stage 7 still attempted
+  # the merge.
+  ARTIFACT_FILE="$HOME/.jarvis/auto-mods/$ID.json"
+  if [ -f "$ARTIFACT_FILE" ]; then
+      FINALIZE_STATUS=$(python3 -c "
+import json, sys
+try:
+    print(json.load(open('$ARTIFACT_FILE')).get('status', 'unknown'))
+except Exception:
+    print('unparseable')
+" 2>/dev/null)
+      if [ "$FINALIZE_STATUS" != "pending" ]; then
+          echo "[$(date -u +%FT%TZ)] [automod-impl] finalize status=$FINALIZE_STATUS — skipping auto-merge (proposal not landable)"
+          exit 0
+      fi
+  else
+      echo "[$(date -u +%FT%TZ)] [automod-impl] no artifact file at $ARTIFACT_FILE — skipping auto-merge"
+      exit 0
+  fi
+
   # Fires only when JARVIS_AUTOMOD_AUTO_MERGE=1 AND all gates green.
   # set -e guarantees we only reach this point if both the subagent's
   # pytest run AND finalize.py exited cleanly above.
