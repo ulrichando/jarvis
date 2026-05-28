@@ -2022,6 +2022,9 @@ fn main() {
             keys_set,
             keys_clear,
             keys_restart_agent,
+            kiosk::enter_kiosk_on_monitor,
+            kiosk::exit_kiosk,
+            kiosk::kiosk_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
