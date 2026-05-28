@@ -12,6 +12,8 @@
 //   GET    /api/models                   → { models: [{name}], active }
 //   POST   /api/model                    → { model } — sets active model
 //   POST   /api/mute                     → { muted: boolean }
+//   POST   /api/kiosk { state:"on", monitor:<int> } → { ok, state, monitor }
+//   POST   /api/kiosk { state:"off" }              → { ok, state }
 //   POST   /api/think                    → { response: string }  (WS-dead fallback)
 //   POST   /api/page-query               → SSE stream of { type: 'text'|'done'|'error' }
 //   POST   /api/analyze-screen           → { response, model } — vision LLM
@@ -484,6 +486,28 @@ const server = Bun.serve({
       muted = !muted
       broadcast({ type: 'voice_muted', muted })
       return Response.json({ muted })
+    }
+
+    if (url.pathname === '/api/kiosk' && req.method === 'POST') {
+      let body: any
+      try { body = await req.json() } catch {
+        return Response.json({ error: 'invalid JSON' }, { status: 400 })
+      }
+      const state = typeof body?.state === 'string' ? body.state : ''
+      if (!['on', 'off'].includes(state)) {
+        return Response.json({ error: 'state must be on|off (no toggle in v2)' }, { status: 400 })
+      }
+      if (state === 'on') {
+        const monitor = body?.monitor
+        if (typeof monitor !== 'number' || !Number.isInteger(monitor) || monitor < 0) {
+          return Response.json({ error: 'state=on requires monitor (non-negative integer)' }, { status: 400 })
+        }
+        broadcast({ type: 'kiosk', state: 'on', monitor })
+        return Response.json({ ok: true, state: 'on', monitor })
+      }
+      // state === 'off'
+      broadcast({ type: 'kiosk', state: 'off' })
+      return Response.json({ ok: true, state: 'off' })
     }
 
     if (url.pathname === '/api/think' && req.method === 'POST') {
