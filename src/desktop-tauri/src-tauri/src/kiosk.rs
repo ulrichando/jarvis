@@ -215,8 +215,27 @@ fn current_monitor_bounds(window: &WebviewWindow) -> Option<(i32, i32, u32, u32)
     None
 }
 
+/// Bounds of a specific monitor by index in `available_monitors()` order.
+fn monitor_bounds_by_idx(window: &WebviewWindow, idx: usize) -> Option<(i32, i32, u32, u32)> {
+    let monitors = window.available_monitors().ok()?;
+    let m = monitors.get(idx)?;
+    let pos = m.position();
+    let size = m.size();
+    Some((pos.x, pos.y, size.width, size.height))
+}
+
 #[tauri::command]
 pub fn enter_kiosk(window: WebviewWindow) -> Result<(), String> {
+    // Default path — auto-pick the monitor the overlay is sitting on.
+    enter_kiosk_inner(window, None)
+}
+
+#[tauri::command]
+pub fn enter_kiosk_on_monitor(window: WebviewWindow, monitor_idx: usize) -> Result<(), String> {
+    enter_kiosk_inner(window, Some(monitor_idx))
+}
+
+fn enter_kiosk_inner(window: WebviewWindow, monitor_idx: Option<usize>) -> Result<(), String> {
     let adapter = RealWmctrl;
     let prev_aot = window.is_always_on_top().unwrap_or(false);
     let prev_ct  = true;  // default to true to match overlay's normal posture;
@@ -229,11 +248,15 @@ pub fn enter_kiosk(window: WebviewWindow) -> Result<(), String> {
         &adapter, &mut state, prev_aot, prev_ct, prev_pos, prev_size,
     )?;
     if entered {
-        // Resize + reposition to fill the monitor under the overlay so
-        // kiosk actually covers the screen the user is looking at. Without
-        // this the overlay stays at its prior bounds (typically 1920x1080
-        // at origin) which is the wrong monitor on multi-display setups.
-        if let Some((mx, my, mw, mh)) = current_monitor_bounds(&window) {
+        // Resize + reposition to fill the target monitor. Explicit index
+        // (from tray submenu) wins; otherwise auto-pick the monitor under
+        // the overlay (or primary as a fallback).
+        let bounds = match monitor_idx {
+            Some(idx) => monitor_bounds_by_idx(&window, idx)
+                .or_else(|| current_monitor_bounds(&window)),
+            None => current_monitor_bounds(&window),
+        };
+        if let Some((mx, my, mw, mh)) = bounds {
             let _ = window.set_position(PhysicalPosition::new(mx, my));
             let _ = window.set_size(PhysicalSize::new(mw, mh));
         }

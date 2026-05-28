@@ -1525,13 +1525,48 @@ fn main() {
             // green tray icon + the voice agent's screen-share sink
             // pick up the new video track automatically.
             let share_item   = MenuItemBuilder::with_id("share_screen", "Start / Stop Screen Share").build(app)?;
-            // Owner focus mode (kiosk). Toggleable check item; mirrors the
-            // KIOSK_STATE singleton on the Rust side, which is the source
-            // of truth for whether kiosk is on. Updated reactively when
-            // kiosk-changed fires (from voice or CLI triggers).
+            // Owner focus mode (kiosk). Submenu with one entry per
+            // detected monitor + an "auto" toggle (uses cursor's monitor)
+            // and an explicit exit item. The "auto" check item still
+            // mirrors KIOSK_STATE via the kiosk-changed listener.
             let focus_mode_item = CheckMenuItemBuilder::with_id(
-                "focus_mode", "Focus mode (kiosk)"
+                "focus_mode", "Toggle (auto / cursor screen)"
             ).checked(false).build(app)?;
+
+            // Enumerate monitors via the main window (created from
+            // tauri.conf.json before .setup() runs). If unavailable,
+            // the submenu still shows the auto-toggle + exit.
+            let monitors: Vec<_> = app.get_webview_window("main")
+                .and_then(|w| w.available_monitors().ok())
+                .unwrap_or_default();
+            let mut focus_mode_mon_items: Vec<MenuItem<Wry>> = Vec::new();
+            for (i, m) in monitors.iter().enumerate() {
+                let pos = m.position();
+                let size = m.size();
+                let mon_name = m.name().map(|s| s.as_str()).unwrap_or("");
+                let label = if mon_name.is_empty() {
+                    format!("Monitor {}: {}x{} at {},{}", i, size.width, size.height, pos.x, pos.y)
+                } else {
+                    format!("{}: {}x{} at {},{}", mon_name, size.width, size.height, pos.x, pos.y)
+                };
+                let id = format!("focus_mode_mon_{}", i);
+                let it = MenuItemBuilder::with_id(&id, &label).build(app)?;
+                focus_mode_mon_items.push(it);
+            }
+            let focus_mode_off_item = MenuItemBuilder::with_id(
+                "focus_mode_off", "Exit focus mode"
+            ).build(app)?;
+            let focus_mode_sep = PredefinedMenuItem::separator(app)?;
+            let mut fm_builder = SubmenuBuilder::new(app, "Focus mode (kiosk) ▸")
+                .item(&focus_mode_item)
+                .item(&focus_mode_sep);
+            for it in &focus_mode_mon_items {
+                fm_builder = fm_builder.item(it);
+            }
+            let focus_mode_submenu = fm_builder
+                .item(&focus_mode_sep)
+                .item(&focus_mode_off_item)
+                .build()?;
 
             // Removed 2026-04-30 (tray-trim Phase 1): Stop Computer Use,
             // 📷 Camera source submenu. The 🖥 Screen Share entry was
@@ -1692,7 +1727,7 @@ fn main() {
                 .item(&voice_chat_item)
                 .item(&mute_item)
                 .item(&share_item)
-                .item(&focus_mode_item)
+                .item(&focus_mode_submenu)
                 .item(&sep1)
                 .item(&browser_item)
                 .item(&logs_item)
@@ -1946,6 +1981,31 @@ fn main() {
                                 eprintln!("[JARVIS] focus_mode toggle failed: {}", e);
                             }
                         }
+                        "focus_mode_off" => {
+                            let Some(w) = app.get_webview_window("main") else { return };
+                            if let Err(e) = crate::kiosk::exit_kiosk(w) {
+                                eprintln!("[JARVIS] focus_mode_off failed: {}", e);
+                            }
+                        }
+                        other if other.starts_with("focus_mode_mon_") => {
+                            let Some(w) = app.get_webview_window("main") else { return };
+                            // If kiosk is already on, exit (toggle-off behavior). If off,
+                            // enter on the chosen monitor. Simpler UX than mid-flight
+                            // monitor switching, which would require resize-during-active
+                            // and pose flicker risks.
+                            let on = crate::kiosk::KIOSK_STATE.lock().map(|s| s.is_some()).unwrap_or(false);
+                            if on {
+                                if let Err(e) = crate::kiosk::exit_kiosk(w) {
+                                    eprintln!("[JARVIS] focus_mode exit failed: {}", e);
+                                }
+                            } else if let Some(idx_str) = other.strip_prefix("focus_mode_mon_") {
+                                if let Ok(idx) = idx_str.parse::<usize>() {
+                                    if let Err(e) = crate::kiosk::enter_kiosk_on_monitor(w, idx) {
+                                        eprintln!("[JARVIS] focus_mode_mon_{} failed: {}", idx, e);
+                                    }
+                                }
+                            }
+                        }
                         _ => {}
                     }
                 })
@@ -2070,6 +2130,7 @@ fn main() {
             keys_clear,
             keys_restart_agent,
             kiosk::enter_kiosk,
+            kiosk::enter_kiosk_on_monitor,
             kiosk::exit_kiosk,
             kiosk::toggle_kiosk,
             kiosk::kiosk_state,
