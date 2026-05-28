@@ -493,7 +493,7 @@ _last_real_interaction = 0.0     # monotonic timestamp of last accepted turn
 _bg_tasks: set = set()  # keeps create_task refs alive until done
 
 
-def _update_lang_from_stt_event(ctx: "LangContext", ev) -> None:
+def _update_lang_from_stt_event(ctx: LangContext, ev) -> None:
     """Update a LangContext from a user_input_transcribed event.
 
     Handles three event-shape quirks:
@@ -5112,7 +5112,7 @@ def _register_state_tracking_handlers(session) -> None:
     # voice-client to the agent through a healthy LiveKit subscription.
     @session.on("user_input_transcribed")
     def _on_user_input(ev) -> None:
-        _update_lang_from_stt_event(session.lang_ctx, ev)
+        _update_lang_from_stt_event(session._jarvis_lang_ctx, ev)
         try:
             from resilience import audio_silence_watchdog as _asw
             _asw.mark_audio_activity()
@@ -5851,7 +5851,7 @@ async def entrypoint(ctx: JobContext) -> None:
     # from STT events so DispatchingTTS can pick the matching voice per turn.
     # Default is 'en'; updated live by _update_lang_from_stt_event inside
     # the user_input_transcribed handler.
-    session.lang_ctx = LangContext()
+    session._jarvis_lang_ctx = LangContext()
 
     # Session-state for the dispatcher prefix. Turn count drives the
     # [Turn N · session Mm] hint that tells the LLM where it is in the
