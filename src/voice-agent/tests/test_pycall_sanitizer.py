@@ -538,6 +538,53 @@ def test_suppresses_empty_output_template_leak():
         )
 
 
+def test_suppresses_zero_bytes_stage_direction_leak():
+    """2026-05-28 (later): the DISCRETION section in soul.md said
+    'Silence = zero bytes output. Produce empty bytes.' to instruct
+    the LLM to remain silent for ambient audio. Live failure: the LLM
+    treated the phrase as a stage-direction template and voiced
+    "(zero bytes)" / "(zero bytes - ambient)" ~9 times in 90 s
+    (pid=1261661, room=RM_6vQpjc64PuQ2). The soul phrasing was
+    rewritten AND META_SILENCE_RE Branch B extended to catch the
+    bracketed shape; this test pins the regex fix so a future
+    prompt regression can't re-introduce the symptom.
+
+    Boundary-gate path: sanitize_text_for_tts (used by the TTS
+    synthesize() boundary gate in providers/tts.py) must return ""
+    for every bracketed stage-direction shape the LLM is observed
+    to emit. Real prose like "Zero bytes." (unbracketed reply about
+    a file size) must pass through unchanged — only the bracketed
+    stage-direction is suppressed."""
+    from sanitizers.pycall import sanitize_text_for_tts
+
+    # Bracketed stage-directions — must be suppressed to "".
+    for phrase in [
+        "(zero bytes)",
+        "(zero bytes - ambient)",
+        "(zero bytes — ambient)",
+        "(zero bytes output)",
+        "(empty bytes)",
+        "(empty bytes - ambient)",
+        "[zero bytes]",
+    ]:
+        assert sanitize_text_for_tts(phrase) == "", (
+            f"bracketed zero/empty-bytes stage-direction not suppressed: "
+            f"{phrase!r}"
+        )
+
+    # Unbracketed prose — must pass through unchanged (legitimate
+    # reply about a file size, network packet, etc.).
+    for phrase in [
+        "Zero bytes.",
+        "The file is zero bytes.",
+        "It sent an empty bytes object.",
+    ]:
+        assert sanitize_text_for_tts(phrase) == phrase, (
+            f"legit prose containing 'zero bytes' was suppressed: "
+            f"{phrase!r}"
+        )
+
+
 def test_suppresses_meta_silence_split_across_chunks():
     """2026-05-06 turn 1063: Groq streamed 'Silence.' as multiple
     chunks, so the chunk-1 _META_SILENCE_RE check missed (partial
