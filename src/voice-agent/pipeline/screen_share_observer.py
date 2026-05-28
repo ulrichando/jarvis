@@ -380,6 +380,23 @@ async def _stream_session(session, get_jpeg_fn, resume_handle: Optional[str]) ->
             + (" — resumed" if resume_handle else "")
         )
 
+        # Sync gate: the model emits ONE answer per "turn-complete" then
+        # waits — sending another prompt via send_realtime_input(text=)
+        # doesn't elicit a second response (no turn boundary; the model
+        # treats the text as part of an ongoing user utterance under
+        # auto-VAD). Result observed live 2026-05-28: exactly one
+        # `answer=1` per session, ~50 s of silence, then server 1011
+        # keepalive timeout, reconnect, repeat — cache fresh ~3 s out
+        # of every 60 s.
+        #
+        # Fix: switch prompt ticks to send_client_content with
+        # turn_complete=True (the discrete-turn API — explicitly
+        # requests a response). Hold a sync gate so the next prompt
+        # only fires AFTER the receiver sees the prior turn complete.
+        # Net cadence: one answer per ~3-5 s instead of one per 60 s.
+        prompt_ready = asyncio.Event()
+        prompt_ready.set()  # first prompt fires immediately
+
         async def push_frames() -> None:
             """Stream JPEG frames at ≤1 FPS via send_realtime_input(video=).
 
@@ -404,18 +421,41 @@ async def _stream_session(session, get_jpeg_fn, resume_handle: Optional[str]) ->
                 await asyncio.sleep(STREAM_FRAME_INTERVAL_S)
 
         async def tick_prompts() -> None:
-            """Every STREAM_PROMPT_INTERVAL_S, ask Gemini to describe the
-            current screen. The prompt rides over
-            send_realtime_input(text=) so it interleaves with the frame
-            stream naturally."""
+            """Send a discrete-turn prompt every STREAM_PROMPT_INTERVAL_S
+            and wait for the receiver to flag turn_complete before
+            sending the next one.
+
+            send_client_content with turn_complete=True is the
+            discrete-turn API — it explicitly tells Gemini "this is a
+            user utterance, please respond". Unlike
+            send_realtime_input(text=), which the model treats as
+            streamed audio-as-text and waits for auto-VAD to detect
+            turn end (which never happens because we send no audio),
+            this carries an explicit end-of-turn marker.
+
+            Gate via prompt_ready: receiver sets it on turn_complete,
+            we clear before each send. Caps cadence at the model's
+            own response time + STREAM_PROMPT_INTERVAL_S floor.
+            """
             # Initial delay so a few frames land first.
             await asyncio.sleep(STREAM_FRAME_INTERVAL_S * 2)
             while True:
+                await prompt_ready.wait()
+                prompt_ready.clear()
                 try:
-                    await live.send_realtime_input(text=_STREAM_PROMPT)
+                    await live.send_client_content(
+                        turns=types.Content(
+                            role="user",
+                            parts=[types.Part(text=_STREAM_PROMPT)],
+                        ),
+                        turn_complete=True,
+                    )
                 except Exception as e:
                     log.warning(f"[screen-observer:stream] prompt send failed: {e}")
                     raise
+                # Floor: even if Gemini answers in <1s, don't fire the
+                # next prompt for at least STREAM_PROMPT_INTERVAL_S so
+                # we don't burn budget on per-second describes.
                 await asyncio.sleep(STREAM_PROMPT_INTERVAL_S)
 
         async def drain_responses() -> None:
@@ -448,6 +488,13 @@ async def _stream_session(session, get_jpeg_fn, resume_handle: Optional[str]) ->
                                 f"[screen-observer:stream] answer={answers}: "
                                 f"{text[:100]}"
                             )
+                        # Re-arm the prompt ticker — Gemini finished its
+                        # turn, safe to send the next describe prompt.
+                        # Without this, tick_prompts blocks on
+                        # prompt_ready.wait() forever after the first
+                        # response — that was the "one answer per
+                        # session" failure mode.
+                        prompt_ready.set()
                     # Server-initiated wind-down — exit cleanly so the
                     # outer loop reconnects with the resumption handle
                     # before the socket is yanked.
