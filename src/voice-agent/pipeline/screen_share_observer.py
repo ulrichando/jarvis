@@ -87,7 +87,16 @@ def is_enabled() -> bool:
 
 # Module-level so test code can monkey-patch them without going through env.
 OBSERVER_INTERVAL_S: float = float(os.environ.get("JARVIS_SCREEN_OBSERVER_INTERVAL_S", "5.0"))
-OBSERVER_MAX_AGE_S: float  = float(os.environ.get("JARVIS_SCREEN_OBSERVER_MAX_AGE_S", "10.0"))
+# Bumped 10s → 65s on 2026-05-28 because the Gemini Live stream
+# emits at most one answer per ~50s session (model goes silent after
+# the first turn, server 1011-times out, we reconnect, get one more
+# answer). At 10s threshold the cache was stale 80%+ of the time
+# and the supervisor fell back to computer_use's "image isn't
+# rendering" parrot. 65s covers a full session+reconnect cycle so
+# the supervisor reads the live description on almost every turn.
+# Drop back to 10 if the one-answer-per-session bug ever gets fixed
+# upstream (or if we switch to the cookbook single-API pattern).
+OBSERVER_MAX_AGE_S: float  = float(os.environ.get("JARVIS_SCREEN_OBSERVER_MAX_AGE_S", "65.0"))
 
 
 # Observer mode (2026-05-28, Gemini Live streaming added).
