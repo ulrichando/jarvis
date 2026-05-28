@@ -94,6 +94,26 @@ fn is_jarvis_window(w: &WindowInfo) -> bool {
         || w.wm_class.contains("jarvis") || w.wm_class.contains("Jarvis")
 }
 
+/// Returns Ok(true) when transitioning off→off (no-op idempotent re-exit
+/// returns Ok(false)). The Tauri-window-flag restoration is the caller's
+/// responsibility; this function only owns un-minimize and clearing
+/// state.
+pub fn exit_kiosk_impl<A: WmctrlAdapter>(
+    adapter: &A,
+    state: &mut Option<KioskSnapshot>,
+) -> Result<bool, String> {
+    let snap = match state.take() {
+        Some(s) => s,
+        None => return Ok(false),
+    };
+    for id in &snap.minimized_ids {
+        if let Err(e) = adapter.unminimize(id) {
+            eprintln!("[kiosk] unminimize {} failed: {:?} — continuing", id, e);
+        }
+    }
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,5 +211,30 @@ mod tests {
         assert!(mock.minimized.borrow().is_empty(), "should not minimize anything new");
         assert_eq!(state.as_ref().unwrap().minimized_ids, vec!["0x999".to_string()],
                    "snapshot stays untouched");
+    }
+
+    #[test]
+    fn exit_restores_minimized_windows() {
+        let mock = MockWmctrl::new(make_windows());
+        let mut state: Option<KioskSnapshot> = Some(KioskSnapshot {
+            minimized_ids: vec!["0x200".into(), "0x300".into()],
+            prev_always_on_top: false,
+            prev_click_through: true,
+        });
+        let exited = exit_kiosk_impl(&mock, &mut state).unwrap();
+        assert!(exited, "fresh exit should report exited=true");
+        assert!(state.is_none());
+        let mut unmin = mock.unminimized.borrow().clone();
+        unmin.sort();
+        assert_eq!(unmin, vec!["0x200".to_string(), "0x300".to_string()]);
+    }
+
+    #[test]
+    fn exit_when_already_off_is_idempotent() {
+        let mock = MockWmctrl::new(make_windows());
+        let mut state: Option<KioskSnapshot> = None;
+        let exited = exit_kiosk_impl(&mock, &mut state).unwrap();
+        assert!(!exited);
+        assert!(mock.unminimized.borrow().is_empty());
     }
 }
