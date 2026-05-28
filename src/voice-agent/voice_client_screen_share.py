@@ -88,12 +88,62 @@ class ScreenShare:
     def is_active(self) -> bool:
         return self._proc is not None and self._proc.returncode is None
 
-    async def start(self, room: rtc.Room) -> None:
-        """Spawn ffmpeg + publish the video track. Idempotent."""
+    async def start(self, room: rtc.Room, source: Optional[dict] = None) -> None:
+        """Spawn ffmpeg + publish the video track. Idempotent.
+
+        `source` selects what ffmpeg captures (added 2026-05-28 for the
+        ScreenSharePicker modal). Shapes:
+
+          - None / omitted → full X11 root (the legacy default —
+            equivalent to "share entire desktop including all monitors").
+          - {"kind": "monitor", "x": int, "y": int, "w": int, "h": int}
+            → that monitor's rect only. ffmpeg uses
+            `-i :0.0+X,Y -video_size WxH`.
+          - {"kind": "window", "id": "0x..." or int, "w": int, "h": int}
+            → that specific X11 window via x11grab's `-window_id`. Works
+            even when the window is partially occluded (uses XComposite
+            under the hood).
+
+        The published track's resolution matches the chosen source's
+        WxH so the agent's vision pipeline sees the actual content
+        without letterboxing.
+        """
         async with self._lock:
             if self.is_active():
                 log.debug("[screen-share] already active — start() is a no-op")
                 return
+
+            # Resolve the capture target. Defaults preserve the
+            # legacy behavior (full root, WIDTH×HEIGHT from env).
+            kind = "root"
+            cap_w = WIDTH
+            cap_h = HEIGHT
+            x = 0
+            y = 0
+            window_id: Optional[str] = None
+            if isinstance(source, dict):
+                kind = str(source.get("kind") or "root").lower()
+                if kind == "monitor":
+                    cap_w = int(source.get("w") or WIDTH)
+                    cap_h = int(source.get("h") or HEIGHT)
+                    x = int(source.get("x") or 0)
+                    y = int(source.get("y") or 0)
+                elif kind == "window":
+                    cap_w = int(source.get("w") or WIDTH)
+                    cap_h = int(source.get("h") or HEIGHT)
+                    raw_id = source.get("id")
+                    if raw_id is None:
+                        raise ValueError("source.kind=window requires source.id")
+                    # Accept "0xABC" / int — normalize to "0xabc..." for
+                    # ffmpeg's -window_id flag (it accepts hex with 0x).
+                    if isinstance(raw_id, int):
+                        window_id = hex(raw_id)
+                    else:
+                        s = str(raw_id).strip().lower()
+                        window_id = s if s.startswith("0x") else f"0x{s}"
+                else:
+                    # Unknown kind — fall back to root capture.
+                    kind = "root"
 
             # Open ffmpeg first; if it fails, we never touch the room.
             cmd = [
@@ -101,13 +151,33 @@ class ScreenShare:
                 "-hide_banner", "-loglevel", "error",
                 "-f", "x11grab",
                 "-framerate", str(FPS),
-                "-video_size", f"{WIDTH}x{HEIGHT}",
-                "-i", DISPLAY,
+                "-video_size", f"{cap_w}x{cap_h}",
+            ]
+            if kind == "window" and window_id:
+                # x11grab's -window_id captures the specific window
+                # composite regardless of where it sits on the root.
+                cmd += ["-window_id", window_id, "-i", DISPLAY]
+            elif kind == "monitor":
+                # Monitor offset baked into the input path.
+                cmd += ["-i", f"{DISPLAY}+{x},{y}"]
+            else:
+                cmd += ["-i", DISPLAY]
+            cmd += [
                 "-pix_fmt", "yuv420p",
                 "-f", "rawvideo",
                 "pipe:1",
             ]
-            log.info(f"[screen-share] starting ffmpeg: {' '.join(cmd)}")
+            # Stash on self so the source matches the published track's
+            # resolution + a follow-up status read knows what's being
+            # shared. (Read by the /status handler.)
+            self._cap_w = cap_w
+            self._cap_h = cap_h
+            self._source_kind = kind
+            log.info(
+                f"[screen-share] starting ffmpeg (kind={kind} {cap_w}x{cap_h}"
+                + (f" window_id={window_id}" if window_id else f" offset={x},{y}")
+                + f"): {' '.join(cmd)}"
+            )
             try:
                 self._proc = await asyncio.create_subprocess_exec(
                     *cmd,
@@ -122,8 +192,11 @@ class ScreenShare:
             # Create + publish the LiveKit track. is_screencast=True
             # tags the source so the SFU + clients can render it
             # correctly (no mirroring, no smoothing). SOURCE_SCREENSHARE
-            # is what the subscribed agent filters on.
-            self._source = rtc.VideoSource(WIDTH, HEIGHT, is_screencast=True)
+            # is what the subscribed agent filters on. Resolution
+            # matches the chosen source (per-start) so the agent's
+            # vision pipeline sees the actual content without
+            # letterboxing.
+            self._source = rtc.VideoSource(cap_w, cap_h, is_screencast=True)
             self._track = rtc.LocalVideoTrack.create_video_track("screen", self._source)
             self._pub = await room.local_participant.publish_track(
                 self._track,
@@ -133,7 +206,7 @@ class ScreenShare:
             self._reader_task = asyncio.create_task(
                 self._read_frames(), name="screen-share-reader",
             )
-            log.info(f"[screen-share] published — {WIDTH}x{HEIGHT}@{FPS}fps from {DISPLAY}")
+            log.info(f"[screen-share] published — {cap_w}x{cap_h}@{FPS}fps from {DISPLAY} (kind={kind})")
 
     async def stop(self) -> None:
         """Kill ffmpeg + unpublish track. Always safe to call."""
@@ -177,21 +250,28 @@ class ScreenShare:
         """Pump raw I420 frames from ffmpeg into the LiveKit source.
 
         ffmpeg writes frames back-to-back with no header — each block of
-        exactly `_FRAME_BYTES` is one frame. We `readexactly` per frame
+        exactly `frame_bytes` is one frame. We `readexactly` per frame
         so a partial read at shutdown raises and we exit cleanly.
+
+        Frame dimensions come from the per-start `_cap_w / _cap_h` so
+        a window-source publish (e.g. 1980×1333) doesn't read a
+        legacy 1280×800 chunk and tear.
         """
         proc = self._proc
         source = self._source
         if proc is None or source is None or proc.stdout is None:
             return
+        cap_w = getattr(self, "_cap_w", WIDTH)
+        cap_h = getattr(self, "_cap_h", HEIGHT)
+        frame_bytes = (cap_w * cap_h * 3) // 2
         try:
             while True:
-                buf = await proc.stdout.readexactly(_FRAME_BYTES)
+                buf = await proc.stdout.readexactly(frame_bytes)
                 # `data` accepts bytes / bytearray / memoryview. Pass the
                 # bytes object directly; the LiveKit FFI copies it.
                 frame = rtc.VideoFrame(
-                    WIDTH,
-                    HEIGHT,
+                    cap_w,
+                    cap_h,
                     rtc.VideoBufferType.I420,
                     buf,
                 )

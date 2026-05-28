@@ -309,9 +309,15 @@ class VoiceClientHttpApi:
             target = bool(body["start"])
         else:
             target = not ss.is_active()
+        # `source` (optional, added 2026-05-28 for the
+        # ScreenSharePicker modal): selects monitor or window. Shape:
+        # {"kind": "monitor", "x": <int>, "y": <int>, "w": <int>, "h": <int>}
+        # OR {"kind": "window", "id": "0x...", "w": <int>, "h": <int>}.
+        # Omitted → full X11 root (legacy default).
+        source = body.get("source") if isinstance(body, dict) else None
         try:
             if target:
-                await ss.start(room)
+                await ss.start(room, source=source)
             else:
                 await ss.stop()
             self.state.sharing_screen = ss.is_active()
