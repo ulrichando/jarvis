@@ -137,8 +137,9 @@ pub fn enter_kiosk_impl<A: WmctrlAdapter>(
 }
 
 fn is_jarvis_window(w: &WindowInfo) -> bool {
-    w.wm_class.contains("J.A.R.V.I.S.") || w.title.contains("J.A.R.V.I.S.")
-        || w.wm_class.contains("jarvis") || w.wm_class.contains("Jarvis")
+    w.wm_class.contains("J.A.R.V.I.S.")
+        || w.wm_class.contains("jarvis")
+        || w.wm_class.contains("Jarvis")
 }
 
 /// Returns Ok(true) when transitioning off→off (no-op idempotent re-exit
@@ -178,7 +179,9 @@ use tauri::{WebviewWindow, Emitter};
 pub fn enter_kiosk(window: WebviewWindow) -> Result<(), String> {
     let adapter = RealWmctrl;
     let prev_aot = window.is_always_on_top().unwrap_or(false);
-    let prev_ct  = false; // best-effort; Tauri v2 has no getter for this
+    let prev_ct  = true;  // default to true to match overlay's normal posture;
+                          // Tauri v2 has no getter for the current value, but
+                          // the overlay defaults to click-through enabled.
     let mut state = KIOSK_STATE.lock().map_err(|e| e.to_string())?;
     let entered = enter_kiosk_impl(&adapter, &mut state, prev_aot, prev_ct)?;
     if entered {
@@ -209,7 +212,16 @@ pub fn exit_kiosk(window: WebviewWindow) -> Result<(), String> {
 
 #[tauri::command]
 pub fn toggle_kiosk(window: WebviewWindow) -> Result<(), String> {
-    let on = KIOSK_STATE.lock().map_err(|e| e.to_string())?.is_some();
+    // Read state under a short-lived guard then release before calling
+    // the inner command (which re-acquires). Both enter_kiosk and
+    // exit_kiosk are idempotent (`enter_kiosk_impl` / `exit_kiosk_impl`
+    // return Ok(false) on no-op re-entry/re-exit), so a concurrent state
+    // flip between the read and the call at worst produces one
+    // redundant transition — never a deadlock, never wrong state.
+    let on = {
+        let guard = KIOSK_STATE.lock().map_err(|e| e.to_string())?;
+        guard.is_some()
+    };
     if on { exit_kiosk(window) } else { enter_kiosk(window) }
 }
 
