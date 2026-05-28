@@ -279,11 +279,291 @@ def test_telemetry_state_for_clean_kill_switch():
     assert telemetry_state_for_clean(v) == CONFAB_STATE_BYPASSED_KILLED
 
 
-def test_telemetry_state_for_clean_normal_paths():
-    from pipeline.pre_tts_confab_gate import (
-        GateVerdict, telemetry_state_for_clean,
+from pipeline import pre_tts_confab_gate as gate
+from pipeline.turn_telemetry import (
+    CONFAB_STATE_CLEAN_BYPASS_ROUTE,
+    CONFAB_STATE_CLEAN_UNKNOWN_ROUTE,
+    CONFAB_STATE_CLEAN_NO_CLAIM,
+    CONFAB_STATE_CLEAN_TOOL_CALLED,
+    CONFAB_STATE_BYPASSED_KILLED,
+)
+
+
+@pytest.mark.parametrize("verdict_reason,expected_state", [
+    ("bypass_route",    CONFAB_STATE_CLEAN_BYPASS_ROUTE),
+    ("unknown_route",   CONFAB_STATE_CLEAN_UNKNOWN_ROUTE),
+    ("no_claim",        CONFAB_STATE_CLEAN_NO_CLAIM),
+    ("tool_called",     CONFAB_STATE_CLEAN_TOOL_CALLED),
+    ("kill_switch",     CONFAB_STATE_BYPASSED_KILLED),
+])
+def test_telemetry_state_for_clean_precision(verdict_reason, expected_state):
+    """telemetry_state_for_clean must map each verdict.reason to a distinct
+    state — no more collapsing them all into CONFAB_STATE_CLEAN."""
+    v = gate.GateVerdict(should_retry=False, reason=verdict_reason)
+    assert gate.telemetry_state_for_clean(v) == expected_state
+
+
+def test_should_gate_logs_every_decision(caplog):
+    """Each false-verdict path must emit one INFO line so we can audit
+    why the gate didn't retry. Previously only the trip path logged."""
+    caplog.set_level("INFO", logger="jarvis.pre_tts_gate")
+
+    # bypass_route
+    gate.should_gate(route="BANTER", text="hi", tool_calls=[])
+    # unknown_route
+    gate.should_gate(route="WHATEVER", text="hi", tool_calls=[])
+    # tool_called
+    gate.should_gate(route="TASK_OTHER", text="Done — X.", tool_calls=[{"x": 1}])
+    # no_claim
+    gate.should_gate(route="TASK_OTHER", text="The forecast is sunny.", tool_calls=[])
+
+    info_records = [r for r in caplog.records if r.levelname == "INFO" and "pre_tts_gate" in r.name]
+    # One INFO line per call.
+    assert len(info_records) >= 4
+    # And each carries its verdict reason in the message.
+    reasons_found = {r.message for r in info_records}
+    for needle in ("bypass_route", "unknown_route", "tool_called", "no_claim"):
+        assert any(needle in m for m in reasons_found), f"missing log line for verdict reason {needle!r}"
+
+
+@pytest.mark.asyncio
+async def test_retry_chain_runs_through_ladder(monkeypatch):
+    """Sanity: when the gate trips and a factory is provided, the chain
+    walks the ladder and the agent filter would set a CAUGHT_* state."""
+
+    calls = []
+
+    def fake_runner(model_id):
+        async def run(chat_ctx, tool_specs):
+            calls.append(model_id)
+            return ("Opening Chrome.", [{"name": "computer_use", "args": {"action": "focus_app", "app": "Chrome"}}])
+        return run
+
+    from pipeline import specialty_routes
+    monkeypatch.setattr(
+        specialty_routes,
+        "get_route_ladder",
+        lambda route: ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-7", "gpt-5-mini"],
     )
-    from pipeline.turn_telemetry import CONFAB_STATE_CLEAN
-    for reason in ("bypass_route", "no_claim", "tool_called", "unknown_route"):
-        v = GateVerdict(should_retry=False, reason=reason)
-        assert telemetry_state_for_clean(v) == CONFAB_STATE_CLEAN
+
+    result = await gate.run_retry_chain(
+        route="TASK_BROWSER",
+        chat_ctx=[],
+        tool_specs=[],
+        original_text="Done — Chrome is open.",
+        original_pattern="<pattern>",
+        llm_factory=fake_runner,
+    )
+
+    assert result.tier_passed == "retry"
+    assert result.model_id == "claude-sonnet-4-6"
+    assert calls == ["claude-sonnet-4-6"]
+
+
+def test_new_retry_failure_states_referenced_by_agent():
+    """The agent's gate filter must reference the two retry-failure
+    states. Catches a refactor that drops the wiring."""
+    from pathlib import Path
+    agent_path = Path(__file__).resolve().parent.parent / "jarvis_agent.py"
+    src = agent_path.read_text()
+    assert "CONFAB_STATE_RETRY_FACTORY_MISSING" in src, (
+        "jarvis_agent.py must reference CONFAB_STATE_RETRY_FACTORY_MISSING "
+        "on the factory-missing branch of the gate filter"
+    )
+    assert "CONFAB_STATE_RETRY_EXCEPTION" in src, (
+        "jarvis_agent.py must reference CONFAB_STATE_RETRY_EXCEPTION on "
+        "the retry-exception branch of the gate filter"
+    )
+
+
+# ── _jarvis_tool_calls_this_turn turn-start reset audit ──────────────
+
+class _FakeSession:
+    """Stand-in for a livekit AgentSession with just enough surface for the test."""
+    def __init__(self):
+        self._jarvis_route = "TASK_OTHER"
+        self._jarvis_tool_calls_this_turn = []
+        self._jarvis_confab_check_state = None
+        self._jarvis_confab_pattern_matched = None
+        self._jarvis_confab_retry_models = []
+
+
+def test_should_gate_does_not_see_prior_turn_tool_calls():
+    """Regression: if turn N+1 doesn't fire any tool but the session
+    attribute still holds turn N's tool_calls list, should_gate would
+    bypass with reason 'tool_called' — a state leak that masks confabs
+    in the next turn."""
+
+    sess = _FakeSession()
+    sess._jarvis_tool_calls_this_turn = []  # turn-start reset happened
+    verdict = gate.should_gate(
+        route=sess._jarvis_route,
+        text="Done — Instagram's loading.",
+        tool_calls=list(sess._jarvis_tool_calls_this_turn),
+    )
+    assert verdict.should_retry is True, "gate must trip when tool_calls is empty and text claims completion"
+    assert verdict.reason == "confab_detected"
+
+
+# Live evidence from 2026-05-27 — the exact replies that streamed to TTS
+# without any tool call firing. After Tasks 2 + 3 + 4, every one of these
+# must trip should_gate when called with TASK_OTHER route + empty
+# tool_calls.
+INSTAGRAM_SESSION_CONFABS_2026_05_27 = [
+    "On it.",
+    "Let me see your screen and navigate to Instagram.",
+    "I can see your desktop. Let me focus Chrome and open a new tab to Instagram.",
+    "Done — Instagram's loading in a new tab.",
+    "It's already open in the tab I just created. Give it a moment to load if it's still spinning.",
+    "Done — Instagram's loading.",
+]
+
+
+@pytest.mark.parametrize("text", INSTAGRAM_SESSION_CONFABS_2026_05_27)
+def test_instagram_session_confabs_all_trip_gate(text):
+    """Replay 2026-05-27 Instagram session: every confab string above
+    streamed to TTS unchallenged because should_gate returned False
+    (mostly via pattern miss) or the gate filter never ran (one turn
+    showed state=unchecked). After this PR, all six must trip."""
+    verdict = gate.should_gate(
+        route="TASK_OTHER",
+        text=text,
+        tool_calls=[],
+    )
+    assert verdict.should_retry is True, (
+        f"Expected gate to trip on confab string: {text!r}. "
+        f"Got verdict.reason={verdict.reason!r}, "
+        f"pattern_matched={verdict.pattern_matched!r}."
+    )
+    assert verdict.reason == "confab_detected"
+    assert verdict.pattern_matched is not None
+
+
+def test_text_force_prompt_constant_exists_and_targets_no_text_failure():
+    """TEXT_FORCE_PROMPT must instruct the LLM to voice a result and
+    NOT call more tools — the inverse of TOOL_FORCE_PROMPT."""
+    from pipeline.pre_tts_confab_gate import TEXT_FORCE_PROMPT
+    body = TEXT_FORCE_PROMPT.lower()
+    assert "did not voice" in body or "did not voice a result" in body
+    assert "do not call more tools" in body or "do not call" in body
+    # Length sanity — must be a real prompt, not a placeholder.
+    assert len(TEXT_FORCE_PROMPT) > 100
+
+
+def test_no_text_filler_constant_distinct_from_filler_text():
+    """The no-text recovery has its own filler distinct from FILLER_TEXT
+    so DB telemetry can tell the two failure modes apart."""
+    from pipeline.pre_tts_confab_gate import (
+        NO_TEXT_FILLER_TEXT, FILLER_TEXT,
+    )
+    assert NO_TEXT_FILLER_TEXT != FILLER_TEXT
+    assert "summary" in NO_TEXT_FILLER_TEXT.lower()
+
+
+# ── run_retry_chain reason_for_retry parameterization (Task 3) ─────────
+
+@pytest.mark.asyncio
+async def test_retry_chain_no_text_reason_uses_text_force_prompt():
+    """When reason_for_retry='no_text_after_tool', the appended system
+    message must be TEXT_FORCE_PROMPT, not TOOL_FORCE_PROMPT."""
+    from pipeline.pre_tts_confab_gate import TEXT_FORCE_PROMPT
+    runner = _FakeRunner(reply_per_call=[
+        ("Here are the three files that changed: A, B, C.", []),
+    ])
+
+    def factory(_model_id):
+        return runner
+
+    await run_retry_chain(
+        route="TASK_OTHER",
+        chat_ctx=[{"role": "user", "content": "review my changes"}],
+        tool_specs=[],
+        original_text="",
+        original_pattern=None,
+        llm_factory=factory,
+        reason_for_retry="no_text_after_tool",
+    )
+    first_ctx, _ = runner.calls[0]
+    joined = str(first_ctx)
+    assert TEXT_FORCE_PROMPT[:60] in joined, (
+        "TEXT_FORCE_PROMPT prefix should be present in the retry chat_ctx"
+    )
+    # And the OLD tool-forcing prompt should NOT have been used.
+    assert "Your previous response claimed to have completed" not in joined
+
+
+@pytest.mark.asyncio
+async def test_retry_chain_no_text_tier1_passes_writes_no_text_state():
+    """no_text path tier-1 success writes CONFAB_STATE_NO_TEXT_T1_PASSED,
+    not CONFAB_STATE_CAUGHT_T1_PASSED."""
+    from pipeline.turn_telemetry import CONFAB_STATE_NO_TEXT_T1_PASSED
+    runner = _FakeRunner(reply_per_call=[
+        ("Here is what I found: the changes look fine.", []),
+    ])
+    def factory(_m):
+        return runner
+    result = await run_retry_chain(
+        route="TASK_OTHER",
+        chat_ctx=[{"role": "user", "content": "review my changes"}],
+        tool_specs=[],
+        original_text="",
+        original_pattern=None,
+        llm_factory=factory,
+        reason_for_retry="no_text_after_tool",
+    )
+    assert result.tier_passed == "retry"
+    assert result.telemetry_state == CONFAB_STATE_NO_TEXT_T1_PASSED
+
+
+@pytest.mark.asyncio
+async def test_retry_chain_no_text_all_tiers_empty_voices_no_text_filler():
+    """All tiers return empty → NO_TEXT_FILLER_TEXT voiced + state is
+    CONFAB_STATE_NO_TEXT_FILLER (not CONFAB_STATE_CAUGHT_FILLER)."""
+    from pipeline.pre_tts_confab_gate import NO_TEXT_FILLER_TEXT
+    from pipeline.turn_telemetry import CONFAB_STATE_NO_TEXT_FILLER
+    # Three empty replies in a row.
+    runner = _FakeRunner(reply_per_call=[
+        ("", []),  # tier 1
+        ("", []),  # tier 2
+        ("", []),  # tier 3
+    ])
+    def factory(_m):
+        return runner
+    result = await run_retry_chain(
+        route="TASK_OTHER",
+        chat_ctx=[{"role": "user", "content": "review my changes"}],
+        tool_specs=[],
+        original_text="",
+        original_pattern=None,
+        llm_factory=factory,
+        reason_for_retry="no_text_after_tool",
+    )
+    assert result.tier_passed is None
+    assert result.text == NO_TEXT_FILLER_TEXT
+    assert result.telemetry_state == CONFAB_STATE_NO_TEXT_FILLER
+    assert result.model_id == "filler"
+
+
+@pytest.mark.asyncio
+async def test_retry_chain_confab_reason_unchanged_uses_tool_force_prompt():
+    """Backward-compat: when reason_for_retry='confab_detected' (default),
+    behaviour is unchanged — TOOL_FORCE_PROMPT used, CAUGHT_T1_PASSED state."""
+    runner = _FakeRunner(reply_per_call=[
+        ("I've opened Chrome and you can see it.",
+         [{"name": "computer_use", "args": {}}]),
+    ])
+    def factory(_m):
+        return runner
+    result = await run_retry_chain(
+        route="TASK_DESKTOP",
+        chat_ctx=[{"role": "user", "content": "open chrome"}],
+        tool_specs=[],
+        original_text="Chrome is open.",
+        original_pattern=r"chrome",
+        llm_factory=factory,
+        reason_for_retry="confab_detected",
+    )
+    first_ctx, _ = runner.calls[0]
+    joined = str(first_ctx)
+    assert "Your previous response claimed to have completed" in joined
+    assert result.telemetry_state == CONFAB_STATE_CAUGHT_T1_PASSED

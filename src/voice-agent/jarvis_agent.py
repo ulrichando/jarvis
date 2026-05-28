@@ -277,7 +277,12 @@ from pipeline.pre_tts_confab_gate import (
     telemetry_state_for_clean as _pre_tts_telemetry_clean,
     FILLER_TEXT as _PRE_TTS_FILLER_TEXT,
 )
-from pipeline.turn_telemetry import CONFAB_STATE_BYPASSED_KILLED  # for gate-disabled telemetry
+from pipeline.turn_telemetry import (
+    CONFAB_STATE_BYPASSED_KILLED,                 # for gate-disabled telemetry
+    CONFAB_STATE_CLEAN_BYPASS_ROUTE,              # set by fast-path for BANTER/EMOTIONAL
+    CONFAB_STATE_RETRY_FACTORY_MISSING,           # gate tripped but no _jarvis_pre_tts_llm_factory
+    CONFAB_STATE_RETRY_EXCEPTION,                 # retry chain raised — see logs
+)
 
 logger = logging.getLogger("jarvis")
 
@@ -951,6 +956,59 @@ def _mark_thinking_end() -> None:
         _AGENT_THINKING_FILE.unlink(missing_ok=True)
     except Exception:
         pass
+
+
+# Heartbeat-driven thinking-indicator (2026-05-27). Replaces the
+# agent_state_changed-driven file management which broke during long
+# turns: the framework transitioned through "listening" or "speaking"
+# between tool calls, the file got unlinked, indicator went green
+# while JARVIS was actively reviewing/researching for the user.
+#
+# The heartbeat task starts on user_input_transcribed(is_final=True)
+# and runs until the assistant emits a FINAL reply (text content, no
+# tool_use) or until the turn is interrupted/cancelled. While running,
+# it re-touches _AGENT_THINKING_FILE every `interval_s` seconds — the
+# desktop's 60s TTL becomes a generous floor instead of the operative
+# expiry.
+async def _thinking_heartbeat(interval_s: float = 3.0) -> None:
+    """Touch _AGENT_THINKING_FILE every `interval_s` seconds.
+
+    On cancellation, unlinks the file so the desktop indicator goes
+    green immediately. Idempotent: external unlinks are repaired on
+    the next tick."""
+    try:
+        while True:
+            _mark_thinking_start()
+            await asyncio.sleep(interval_s)
+    except asyncio.CancelledError:
+        _mark_thinking_end()
+        raise
+
+
+def _start_thinking_heartbeat(session, interval_s: float = 3.0) -> None:
+    """Start (or restart) the heartbeat task on this session. Any prior
+    task is cancelled defensively — handles back-to-back user inputs
+    that arrive faster than the previous turn-end."""
+    prior = getattr(session, "_jarvis_thinking_heartbeat", None)
+    if prior is not None and not prior.done():
+        prior.cancel()
+    try:
+        session._jarvis_thinking_heartbeat = asyncio.create_task(
+            _thinking_heartbeat(interval_s=interval_s)
+        )
+    except Exception as _e:
+        logger.debug(f"[heartbeat] start failed: {_e}")
+        session._jarvis_thinking_heartbeat = None
+
+
+def _cancel_thinking_heartbeat(session) -> None:
+    """Cancel the heartbeat task on this session if running. Idempotent."""
+    task = getattr(session, "_jarvis_thinking_heartbeat", None)
+    if task is None:
+        return
+    if not task.done():
+        task.cancel()
+    session._jarvis_thinking_heartbeat = None
 
 
 # Per-turn tool-call governor. Without this, the LLM can chain
@@ -3164,17 +3222,32 @@ _PREAMBLE_RE = re.compile(
 
 
 async def strip_preambles(text):
-    """Strip 'Let me check...', 'Okay I have...', 'Checking the internet...' filler."""
+    """Strip 'Let me check...', 'Okay I have...', 'Checking the internet...' filler.
+
+    Safety: if the strip would leave the buffer EMPTY (the entire reply was
+    classified as preamble), yield the original. The whole reply being a
+    preamble means the preamble IS the reply (e.g., a "Reviewing now."
+    acknowledgment chunk that arrived alone because the supervisor split
+    its response across multiple stream frames or got cancelled mid-flight).
+    Silencing it is worse than letting a short status announcement through —
+    voice users need to hear SOMETHING."""
     buffer = ""
     async for chunk in text:
         buffer += chunk
     if not buffer:
         return
     cleaned = _PREAMBLE_RE.sub("", buffer).lstrip()
+    if not cleaned.strip():
+        # Stripping would silence JARVIS entirely — keep the original.
+        logger.info(
+            f"[preamble-strip] would-have-cut {len(buffer)} chars but that "
+            f"would silence the reply; passing through original"
+        )
+        yield buffer
+        return
     if cleaned != buffer:
         logger.info(f"[preamble-strip] cut {len(buffer) - len(cleaned)} chars of filler")
-    if cleaned:
-        yield cleaned
+    yield cleaned
 
 
 # `_META_SILENCE_RE` and `_ARCHAIC_OPENER_RE` were duplicated here
@@ -3319,8 +3392,10 @@ async def pre_tts_confab_gate_filter(text):
 
     Important latency note: buffering shifts TTS start-of-speech from
     LLM-first-token to LLM-last-token. The front-loaded ack
-    ("One moment.") fired by `_front_loaded_ack` after 800 ms is the
-    perception cushion. TTFW telemetry stays accurate because
+    ("One moment.") fired by `_front_loaded_ack` after 1500 ms is the
+    perception cushion (bumped from 800 ms on 2026-05-27 — cached
+    Anthropic responses arrive in 700-1000 ms, so 800 ms fired right
+    before the real reply and felt robotic). TTFW telemetry stays accurate because
     `stamp_first_token` is at position 0 and stamps BEFORE this filter
     consumes the stream.
     """
@@ -3341,13 +3416,21 @@ async def pre_tts_confab_gate_filter(text):
     # BANTER/EMOTIONAL bypass the gate logic — `should_gate()` returns
     # `bypass_route` for them anyway. Short-circuit at the head so
     # chitchat turns stream unbuffered and TTFW stays at pre-gate
-    # latency. Only TASK_*/REASONING pay the buffer cost. Telemetry
-    # stash stays at the per-turn defaults (None / []) set on the
-    # session at turn start, so log_turn writes NULLs for these turns.
+    # latency. Only TASK_*/REASONING pay the buffer cost. Stash the
+    # precise telemetry state here so the DB row matches what the gate
+    # WOULD have written — `unchecked` would imply the filter never
+    # ran, which is misleading when we deliberately short-circuited.
     sess_early = _active_session_for_telemetry[0]
     route_early = getattr(sess_early, "_jarvis_route", None) if sess_early is not None else None
     route_early = route_early or ""
     if route_early in ("BANTER", "EMOTIONAL"):
+        if sess_early is not None:
+            try:
+                sess_early._jarvis_confab_check_state = CONFAB_STATE_CLEAN_BYPASS_ROUTE
+                sess_early._jarvis_confab_pattern_matched = None
+                sess_early._jarvis_confab_retry_models = []
+            except Exception:
+                pass
         async for chunk in text:
             yield chunk
         return
@@ -3391,7 +3474,15 @@ async def pre_tts_confab_gate_filter(text):
     )
     try:
         llm_factory = getattr(sess, "_jarvis_pre_tts_llm_factory", None)
-        chat_ctx = getattr(sess, "chat_ctx", None)
+        # chat_ctx lives on `Agent`, NOT on `AgentSession`. Pre-2026-05-27
+        # we used `getattr(sess, "chat_ctx", None)` which silently returned
+        # None — the retry chain has been non-functional since landing.
+        # Reach it via `sess.current_agent.chat_ctx`; defend against the
+        # RuntimeError that property raises when no agent is bound.
+        try:
+            chat_ctx = sess.current_agent.chat_ctx
+        except (AttributeError, RuntimeError):
+            chat_ctx = None
         tool_specs = list(getattr(sess, "_jarvis_pre_tts_tool_specs", None) or [])
         if llm_factory is None or chat_ctx is None:
             # Factory missing — degrade gracefully: emit the original
@@ -3402,7 +3493,7 @@ async def pre_tts_confab_gate_filter(text):
                 "emitting original text"
             )
             try:
-                sess._jarvis_confab_check_state = _pre_tts_telemetry_clean(verdict)
+                sess._jarvis_confab_check_state = CONFAB_STATE_RETRY_FACTORY_MISSING
                 sess._jarvis_confab_pattern_matched = verdict.pattern_matched
                 sess._jarvis_confab_retry_models = []
             except Exception:
@@ -3435,13 +3526,110 @@ async def pre_tts_confab_gate_filter(text):
         # operator can debug from the row.
         logger.exception(f"[pre_tts_gate] retry chain raised: {e}; emitting original text")
         try:
-            sess._jarvis_confab_check_state = _pre_tts_telemetry_clean(verdict)
+            sess._jarvis_confab_check_state = CONFAB_STATE_RETRY_EXCEPTION
             sess._jarvis_confab_pattern_matched = verdict.pattern_matched
             sess._jarvis_confab_retry_models = []
         except Exception:
             pass
         if buffer:
             yield buffer
+
+
+async def _post_turn_text_recovery(session) -> None:
+    """Belt-and-suspenders recovery: an assistant item landed in chat_ctx
+    with no text AND no tool_use, but the turn had fired tool calls
+    earlier. The LLM produced no voiced summary. Run the TEXT_FORCE_PROMPT
+    retry chain via run_retry_chain(reason_for_retry="no_text_after_tool")
+    and voice the result via session.say() — or voice NO_TEXT_FILLER_TEXT
+    if the chain exhausts.
+
+    Sets session._jarvis_confab_check_state for end-of-turn telemetry."""
+    if getattr(session, "_jarvis_text_recovery_fired", False):
+        logger.info("[text-recovery] skipped — flag already set this turn")
+        return
+    try:
+        session._jarvis_text_recovery_fired = True
+    except Exception:
+        pass
+    route = getattr(session, "_jarvis_route", None) or ""
+    llm_factory = getattr(session, "_jarvis_pre_tts_llm_factory", None)
+    # chat_ctx is on `Agent`, not `AgentSession` — see the matching note
+    # in pre_tts_confab_gate_filter above. Same fix here.
+    try:
+        chat_ctx = session.current_agent.chat_ctx
+    except (AttributeError, RuntimeError):
+        chat_ctx = None
+    tool_specs = list(getattr(session, "_jarvis_pre_tts_tool_specs", None) or [])
+
+    if llm_factory is None or chat_ctx is None:
+        # Factory missing — voice the filler directly so the user isn't
+        # left with total silence.
+        from pipeline.pre_tts_confab_gate import NO_TEXT_FILLER_TEXT
+        from pipeline.turn_telemetry import CONFAB_STATE_NO_TEXT_FILLER
+        logger.warning(
+            "[text-recovery] factory or chat_ctx missing — voicing filler directly"
+        )
+        try:
+            session.say(NO_TEXT_FILLER_TEXT, allow_interruptions=True)
+        except Exception as _e:
+            logger.debug(f"[text-recovery] say failed: {_e}")
+        try:
+            session._jarvis_confab_check_state = CONFAB_STATE_NO_TEXT_FILLER
+            session._jarvis_confab_pattern_matched = None
+            session._jarvis_confab_retry_models = []
+        except Exception:
+            pass
+        return
+
+    logger.warning(
+        f"[text-recovery] route={route} silent end-of-turn detected; "
+        "running text-force retry chain"
+    )
+    try:
+        result = await _pre_tts_run_retry_chain(
+            route=route,
+            chat_ctx=chat_ctx,
+            tool_specs=tool_specs,
+            original_text="",
+            original_pattern=None,
+            llm_factory=llm_factory,
+            reason_for_retry="no_text_after_tool",
+        )
+    except Exception as e:
+        logger.exception(
+            f"[text-recovery] retry chain raised: {e}; voicing filler"
+        )
+        from pipeline.pre_tts_confab_gate import NO_TEXT_FILLER_TEXT
+        from pipeline.turn_telemetry import CONFAB_STATE_RETRY_EXCEPTION
+        try:
+            session.say(NO_TEXT_FILLER_TEXT, allow_interruptions=True)
+        except Exception:
+            pass
+        try:
+            session._jarvis_confab_check_state = CONFAB_STATE_RETRY_EXCEPTION
+        except Exception:
+            pass
+        return
+
+    # Voice the result (clean text or filler — both end up here).
+    if result.text:
+        try:
+            session.say(result.text, allow_interruptions=True)
+        except Exception as _e:
+            logger.debug(f"[text-recovery] say failed: {_e}")
+
+    # Stash telemetry. log_turn reads _jarvis_confab_check_state directly.
+    try:
+        session._jarvis_confab_check_state = result.telemetry_state
+        session._jarvis_confab_pattern_matched = result.pattern_matched
+        session._jarvis_confab_retry_models = list(result.models_tried)
+    except Exception:
+        pass
+
+    logger.info(
+        f"[text-recovery] route={route} tier={result.tier_passed!r} "
+        f"state={result.telemetry_state} model={result.model_id}"
+    )
 
 
 # Barge-in truncation helpers — extracted to pipeline/barge_in.py
@@ -4731,51 +4919,90 @@ def _register_state_tracking_handlers(session) -> None:
         new_state = getattr(ev, "new_state", None)
         old_state = getattr(ev, "old_state", None)
         if new_state == "thinking":
-            _mark_thinking_start()
+            # Heartbeat owns _AGENT_THINKING_FILE now (started in
+            # _on_user_input). Don't touch the file here — the framework's
+            # transient "listening" state between tool calls would have
+            # otherwise unlinked it and made the tray go green.
             # Front-loaded ack (2026-05-24, pre-TTS confab gate). The
             # gate buffers the FULL LLM text before TTS streams, which
             # shifts TTS start from LLM-first-token to LLM-last-token.
-            # An 800 ms timer fires session.say("One moment.") so the
+            # A 1500 ms timer fires session.say("One moment.") so the
             # user gets perception feedback that JARVIS is working.
-            # Only TASK_*/REASONING — BANTER/EMOTIONAL stay snappy
-            # (their primary calls return in <1s anyway, and an ack
-            # on those would feel robotic).
+            # Threshold bumped 800→1500 ms on 2026-05-27 — cached
+            # Anthropic responses arrive in ~700-1000 ms, so the old
+            # 800 ms threshold fired right before the real reply and
+            # sounded robotic on short turns. 1500 ms means the ack
+            # only fires when the LLM is genuinely taking a while.
+            #
+            # TASK_OTHER excluded — misrouted casual input (e.g.
+            # "thank you" → TASK_OTHER, captured 2026-05-27) gets an
+            # ack that sounds nonsensical for a one-word reply.
+            # BANTER/EMOTIONAL/TASK_OTHER stay snappy (their primary
+            # calls return fast and an ack on them feels robotic).
+            #
+            # AT MOST ONCE PER USER TURN. The `_jarvis_front_ack_fired`
+            # flag is turn-scoped — reset in `_on_user_input` on the
+            # final transcript, NOT here. The framework re-enters
+            # "thinking" multiple times per turn (one per LLM iteration
+            # between tool calls, plus the speaking→thinking cycle the
+            # ack TTS itself causes); resetting the gate on every entry
+            # produced runs of 4+ acks in 3 s — live failure 2026-05-27.
             try:
-                route = getattr(session, "_jarvis_route", None) or ""
-                # Cancel any prior ack task from a previous turn (defensive).
-                prior_task = getattr(session, "_jarvis_front_ack_task", None)
-                if prior_task is not None and not prior_task.done():
-                    prior_task.cancel()
-                session._jarvis_front_ack_fired = False
-                if route.startswith("TASK_") or route == "REASONING":
-                    async def _front_loaded_ack(_sess=session):
-                        try:
-                            await asyncio.sleep(0.8)
-                            if not getattr(_sess, "_jarvis_front_ack_fired", False):
-                                try:
-                                    # add_to_chat_ctx=False so the ack does NOT
-                                    # become an assistant turn in chat_ctx. If it
-                                    # did, the next user turn would see two
-                                    # consecutive assistant turns (ack + real
-                                    # reply) and the supervisor would get confused.
-                                    _sess.say(
-                                        "One moment.",
-                                        allow_interruptions=True,
-                                        add_to_chat_ctx=False,
-                                    )
-                                    _sess._jarvis_front_ack_fired = True
-                                    logger.info("[front-ack] voiced 'One moment.' (LLM still pending)")
-                                except Exception as _say_e:
-                                    logger.debug(f"[front-ack] say failed: {_say_e}")
-                        except asyncio.CancelledError:
-                            pass
-                    session._jarvis_front_ack_task = asyncio.create_task(_front_loaded_ack())
+                if getattr(session, "_jarvis_front_ack_fired", False):
+                    pass  # already voiced this turn — skip
                 else:
-                    session._jarvis_front_ack_task = None
+                    route = getattr(session, "_jarvis_route", None) or ""
+                    _ACK_ROUTES = (
+                        "TASK_DESKTOP", "TASK_BROWSER",
+                        "TASK_CODE", "TASK_FILES", "REASONING",
+                    )
+                    if route in _ACK_ROUTES:
+                        async def _front_loaded_ack(_sess=session):
+                            try:
+                                await asyncio.sleep(1.5)
+                                if not getattr(_sess, "_jarvis_front_ack_fired", False):
+                                    try:
+                                        # Vary the ack phrase so consecutive long
+                                        # turns don't all say the same thing —
+                                        # users notice "one moment" repetition fast.
+                                        # add_to_chat_ctx=False so the ack does NOT
+                                        # become an assistant turn in chat_ctx. If it
+                                        # did, the next user turn would see two
+                                        # consecutive assistant turns (ack + real
+                                        # reply) and the supervisor would get confused.
+                                        import random
+                                        _FRONT_ACK_PHRASES = (
+                                            "One moment.",
+                                            "On it.",
+                                            "Working on it.",
+                                            "Let me check.",
+                                            "Hold on.",
+                                            "Give me a sec.",
+                                            "Looking into that.",
+                                            "Thinking…",
+                                        )
+                                        phrase = random.choice(_FRONT_ACK_PHRASES)
+                                        _sess.say(
+                                            phrase,
+                                            allow_interruptions=True,
+                                            add_to_chat_ctx=False,
+                                        )
+                                        _sess._jarvis_front_ack_fired = True
+                                        logger.info(f"[front-ack] voiced {phrase!r} (LLM still pending)")
+                                    except Exception as _say_e:
+                                        logger.debug(f"[front-ack] say failed: {_say_e}")
+                            except asyncio.CancelledError:
+                                pass
+                        session._jarvis_front_ack_task = asyncio.create_task(_front_loaded_ack())
+                    else:
+                        session._jarvis_front_ack_task = None
             except Exception as _ack_e:
                 logger.debug(f"[front-ack] schedule skipped: {_ack_e}")
-        elif new_state in ("idle", "listening", "speaking"):
-            _mark_thinking_end()
+        elif new_state in ("idle", "listening"):
+            # Heartbeat owns _AGENT_THINKING_FILE — cancel happens in
+            # _on_item (final_reply detection) or in barge-in paths,
+            # not here. Keep _mark_tool_end() since the tool-busy file
+            # is separate from the thinking flag.
             _mark_tool_end()
             # Cancel the front-loaded ack — the LLM has settled (either
             # text is flowing to TTS, or the turn ended without a reply).
@@ -4829,7 +5056,12 @@ def _register_state_tracking_handlers(session) -> None:
         except Exception:
             pass
         if getattr(ev, "is_final", True):
-            _mark_thinking_start()
+            # Start the indicator heartbeat. Heartbeat runs from now
+            # until the FINAL assistant reply lands (text-only, no
+            # tool_use) or until the turn is barge-in / interrupted.
+            # Replaces the prior agent_state-driven _mark_thinking_start
+            # call — see docs/superpowers/specs/2026-05-27-post-tool-reply-gate-and-indicator-heartbeat.md
+            _start_thinking_heartbeat(session)
             _reset_tool_call_count()
             # Reset per-turn tool-calls list consumed by the pre-TTS
             # confab gate. Populated by the function_tools_executed
@@ -4839,8 +5071,35 @@ def _register_state_tracking_handlers(session) -> None:
                 session._jarvis_confab_check_state = None
                 session._jarvis_confab_pattern_matched = None
                 session._jarvis_confab_retry_models = []
+                session._jarvis_text_recovery_fired = False
             except Exception:
                 pass
+            # Reset front-ack gate for the new turn. Cancel any stale
+            # task left over from the previous turn (defensive — the
+            # idle/listening branch of _on_agent_state normally
+            # cancels it, but on tightly-packed back-to-back turns
+            # the new user input can arrive before that fires). The
+            # `fired` flag is the load-bearing turn-scope gate that
+            # prevents the multi-firing observed 2026-05-27.
+            try:
+                prior_ack = getattr(session, "_jarvis_front_ack_task", None)
+                if prior_ack is not None and not prior_ack.done():
+                    prior_ack.cancel()
+                session._jarvis_front_ack_task = None
+                session._jarvis_front_ack_fired = False
+            except Exception:
+                pass
+            # Bump the dispatch_agent session-id slot so any in-flight
+            # subagent from a prior turn discards its stale result on
+            # completion. New per-turn defaults for telemetry too.
+            try:
+                from tools import dispatch_agent as _da
+                _da._active_session_token[0] = object()
+            except Exception:
+                pass
+            session._jarvis_subagent_type = None
+            session._jarvis_subagent_ms = None
+            session._jarvis_subagent_status = None
 
     # Pre-TTS confab gate (2026-05-24): track this turn's tool-call list
     # so `should_gate()` can decide whether a "claimed action" reply is
@@ -4853,6 +5112,31 @@ def _register_state_tracking_handlers(session) -> None:
             calls = list(getattr(ev, "function_calls", None) or [])
             if not calls:
                 return
+            # Tool-batch completion is no longer a moment we need to
+            # re-touch the thinking-flag file — the heartbeat (started
+            # in _on_user_input) refreshes it every 3s for the whole
+            # turn. Kept this handler for the dispatch_agent telemetry
+            # stash + tool-calls accumulator that follow.
+            # Stash dispatch_agent telemetry from the module-level side-channel.
+            # The handler in tools/dispatch_agent.py writes _last_dispatch from a
+            # try/finally so every exit path (success/timeout/error/cancelled/etc.)
+            # is recorded — even if the framework abandoned the call mid-flight or
+            # the JSON output is missing/odd-shaped (which the prior output-parsing
+            # approach couldn't handle).
+            try:
+                from tools.dispatch_agent import _last_dispatch as _da_last
+                if _da_last.get("type") and _da_last.get("status"):
+                    session._jarvis_subagent_type = _da_last["type"]
+                    session._jarvis_subagent_ms = _da_last["ms"]
+                    session._jarvis_subagent_status = _da_last["status"]
+                    # Clear the slot so a stale value doesn't leak into the next
+                    # turn. Turn-start (_on_user_input is_final=True) ALSO resets
+                    # the session attrs; this clears the module slot for safety.
+                    _da_last["type"] = None
+                    _da_last["ms"] = None
+                    _da_last["status"] = None
+            except Exception:
+                pass
             current = list(getattr(session, "_jarvis_tool_calls_this_turn", None) or [])
             current.extend(calls)
             session._jarvis_tool_calls_this_turn = current
@@ -4870,6 +5154,7 @@ def _register_state_tracking_handlers(session) -> None:
                 return
             logger.info(f"[kill-phrase] '{text[:60]!r}' detected mid-speech → forcing interrupt")
             session.interrupt(force=True)  # force: speeches are non-interruptible when echo-aware mode disables framework interruption
+            _cancel_thinking_heartbeat(session)
             session._jarvis_was_interrupted = True
         except Exception as e:
             logger.debug(f"[kill-phrase] check skipped: {e}")
@@ -4895,6 +5180,7 @@ def _register_state_tracking_handlers(session) -> None:
                 return  # JARVIS hearing itself — not a real interruption
             logger.info(f"[echo-bargein] novel speech during TTS → interrupt: {text[:60]!r}")
             session.interrupt(force=True)  # force: framework interruption is disabled in echo-aware mode, so a plain interrupt() would raise + no-op
+            _cancel_thinking_heartbeat(session)
             session._jarvis_was_interrupted = True
         except Exception as e:
             logger.debug(f"[echo-bargein] check skipped: {e}")
@@ -4948,6 +5234,7 @@ def _register_state_tracking_handlers(session) -> None:
                 "[vad-barge-in] user started speaking during TTS → forcing interrupt"
             )
             session.interrupt()
+            _cancel_thinking_heartbeat(session)
         except Exception as e:
             logger.debug(f"[interrupt-detect] skipped: {e}")
 
@@ -5596,11 +5883,37 @@ async def entrypoint(ctx: JobContext) -> None:
                     memory_provider.sync_item_async(_mem_role, text)
             except Exception:
                 pass
-            # Assistant turn just landed → LLM phase is over (TTS has
-            # been streaming). Clear the thinking flag. The desktop
-            # tray drops gold the next /status poll.
             if role == "assistant":
-                _mark_thinking_end()
+                # Use the pure classifier to decide what kind of
+                # assistant item this is and how to handle it:
+                #   final_reply / benign_empty → cancel heartbeat (turn done)
+                #   silent_failure → fire text recovery; recovery's voiced
+                #                    output later lands as ANOTHER item that
+                #                    classifies as final_reply, cancelling
+                #                    the heartbeat then
+                #   interstitial   → keep heartbeat running (more LLM iterations
+                #                    coming after the tool batch lands)
+                try:
+                    from pipeline.text_recovery_detect import classify_assistant_item
+                    had_tools = bool(
+                        getattr(session, "_jarvis_tool_calls_this_turn", None) or []
+                    )
+                    cls = classify_assistant_item(
+                        content=getattr(item, "content", None),
+                        had_prior_tool_calls=had_tools,
+                    )
+                except Exception as _e:
+                    logger.debug(f"[heartbeat] classify skipped: {_e}")
+                    cls = "final_reply"  # fail open — cancel heartbeat
+
+                if cls in ("final_reply", "benign_empty"):
+                    _cancel_thinking_heartbeat(session)
+                elif cls == "silent_failure":
+                    # DON'T cancel heartbeat yet — recovery produces a
+                    # follow-up assistant item; that one classifies as
+                    # final_reply and cancels the heartbeat.
+                    asyncio.create_task(_post_turn_text_recovery(session))
+                # else cls == "interstitial" → keep heartbeat running.
                 # Auto-flip silent mode when the model voiced a mute
                 # confirmation but the gate didn't trigger (e.g. user
                 # said "Go on mute" without a vocative — gate rejects,
@@ -5844,6 +6157,9 @@ async def entrypoint(ctx: JobContext) -> None:
                         confab_check_state=_confab_state,
                         confab_pattern_matched=_pattern_matched,
                         confab_retry_models=_retry_models_json,
+                        subagent_type=getattr(session, "_jarvis_subagent_type", None),
+                        subagent_ms=getattr(session, "_jarvis_subagent_ms", None),
+                        subagent_status=getattr(session, "_jarvis_subagent_status", None),
                         aec_layer1_active=_aec.get("aec_layer1_active"),
                         aec_layer2_aec_active=_aec.get("aec_layer2_aec_active"),
                         aec_layer3_active=_aec.get("aec_layer3_active"),
@@ -5886,7 +6202,9 @@ async def entrypoint(ctx: JobContext) -> None:
                             route=(getattr(session, "_jarvis_route", None) or ""),
                             subagent=(subagent or ""),
                             computer_use_steps=int(cua_steps or 0),
-                            tool_call_count=int(_tool_calls_this_turn or 0),
+                            tool_call_count=len(
+                                getattr(session, "_jarvis_tool_calls_this_turn", None) or []
+                            ),
                             had_tool_error=bool(
                                 getattr(session, "_jarvis_had_tool_error_this_turn", False)
                             ),
