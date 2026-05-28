@@ -52,6 +52,13 @@ struct TtsVoiceItems(Mutex<Vec<MenuItem<Wry>>>);
 /// voice-client is publishing, "Start Screen Share" when not.
 struct ShareLabel(Mutex<Option<MenuItem<Wry>>>);
 
+/// Snapshot of screen-share sources cached at app startup (and not
+/// since — live refresh deferred). The on_menu_event handler reads
+/// this when a `share_src_m<N>` / `share_src_w<N>` click fires, looks
+/// up the original MonitorInfo/WindowInfo by index, and POSTs the
+/// source params to the voice-client's /screen-share endpoint.
+struct ScreenSourcesState(Mutex<ScreenSources>);
+
 /// The source tray artwork (icons/tray.png — the concentric-ring /
 /// reactor design). Embedded into the binary at compile time so the
 /// icon can be tinted per-state at runtime without touching disk.
@@ -1485,6 +1492,7 @@ fn main() {
         .manage(TtsLabel(Mutex::new(None)))
         .manage(TtsVoiceItems(Mutex::new(Vec::new())))
         .manage(ShareLabel(Mutex::new(None)))
+        .manage(ScreenSourcesState(Mutex::new(ScreenSources::default())))
         .setup(move |app| {
             let window = app.get_webview_window("main").unwrap();
             let window_for_poll = window.clone();
@@ -1642,18 +1650,95 @@ fn main() {
                 "open_voice_chat", "Open Chat Panel",
             ).build(app)?;
             let mute_item    = MenuItemBuilder::with_id("mute",         "Mute / Unmute Voice").build(app)?;
-            // Toggle the LiveKit screen-share publisher in the voice-
-            // client. Click = POST /screen-share with no body, which
-            // the Python handler treats as "flip current state". A
-            // green tray icon + the voice agent's screen-share sink
-            // pick up the new video track automatically.
-            let share_item   = MenuItemBuilder::with_id("share_screen", "Start / Stop Screen Share").build(app)?;
 
-            // Removed 2026-04-30 (tray-trim Phase 1): Stop Computer Use,
-            // 📷 Camera source submenu. The 🖥 Screen Share entry was
-            // restored 2026-05-10 (LiveKit publisher landed) with the
-            // new toggle wiring above. CU is still killable by voice
-            // ("stop"); camera source lives in ~/.jarvis/webcam-device.
+            // ── Screen-share submenu (2026-05-28 tray-only picker) ──
+            //
+            // Enumerates monitors + windows at app startup via
+            // enumerate_screen_sources_internal() and builds a tray
+            // submenu — no popup window, no modal, native context-menu
+            // experience. Each leaf item is "share_src_<N>" where N
+            // indexes into the SHARE_SOURCES_AT_STARTUP cache; click
+            // handler looks up the source and POSTs to /screen-share.
+            //
+            // STATIC SNAPSHOT — sources captured ONCE at startup. If
+            // the user opens a new window mid-session and wants to
+            // share it, app restart picks it up. Live refresh is a
+            // follow-up (would need full menu rebuild + tray.set_menu
+            // because Tauri 2 doesn't allow in-place submenu mutation).
+            //
+            // Tabs are NOT enumerated — that requires Chrome-extension
+            // changes in src/cli/ (CLAUDE.md off-limits without explicit
+            // ask). The "share Chrome window" path covers it: focus
+            // the desired tab, then pick the Chrome window from this
+            // submenu.
+            let sources_snapshot = enumerate_screen_sources_internal()
+                .unwrap_or_default();
+            // Cache sources in app state so the on_menu_event handler
+            // can look them up by share_src_<N> index without re-parsing.
+            {
+                let s: State<ScreenSourcesState> = app.state();
+                *s.0.lock().unwrap() = sources_snapshot.clone();
+            }
+            // Build monitor items first, then window items. Each is a
+            // MenuItem so it stays alive for the SubmenuBuilder chain
+            // and the resulting Submenu owns the tree once .build() runs.
+            let mut monitor_items: Vec<MenuItem<Wry>> = Vec::new();
+            for (i, m) in sources_snapshot.monitors.iter().enumerate() {
+                let label = if m.primary {
+                    format!("🖥  {} — {}×{}  (primary)", m.name, m.w, m.h)
+                } else {
+                    format!("🖥  {} — {}×{}", m.name, m.w, m.h)
+                };
+                let item = MenuItemBuilder::with_id(format!("share_src_m{}", i), label)
+                    .build(app)?;
+                monitor_items.push(item);
+            }
+            let mut window_items: Vec<MenuItem<Wry>> = Vec::new();
+            for (i, w) in sources_snapshot.windows.iter().enumerate() {
+                // Truncate long titles so the menu doesn't get absurd.
+                let title = if w.title.chars().count() > 60 {
+                    let trunc: String = w.title.chars().take(57).collect();
+                    format!("{trunc}…")
+                } else {
+                    w.title.clone()
+                };
+                let label = format!("🪟  {} — {}×{}", title, w.w, w.h);
+                let item = MenuItemBuilder::with_id(format!("share_src_w{}", i), label)
+                    .build(app)?;
+                window_items.push(item);
+            }
+            let empty_placeholder = if monitor_items.is_empty() && window_items.is_empty() {
+                Some(
+                    MenuItemBuilder::with_id("share_empty", "(no sources — install xrandr + wmctrl)")
+                        .enabled(false)
+                        .build(app)?,
+                )
+            } else {
+                None
+            };
+            let monitor_window_sep = PredefinedMenuItem::separator(app)?;
+            let stop_sep = PredefinedMenuItem::separator(app)?;
+            let stop_item = MenuItemBuilder::with_id("share_stop", "Stop Sharing").build(app)?;
+
+            // Assemble the submenu in order: monitors → sep → windows
+            // → sep → Stop. Empty cases skip their sections cleanly.
+            let mut share_submenu_builder = SubmenuBuilder::new(app, "Share Screen ▸");
+            for item in &monitor_items {
+                share_submenu_builder = share_submenu_builder.item(item);
+            }
+            if !monitor_items.is_empty() && !window_items.is_empty() {
+                share_submenu_builder = share_submenu_builder.item(&monitor_window_sep);
+            }
+            for item in &window_items {
+                share_submenu_builder = share_submenu_builder.item(item);
+            }
+            if let Some(ref e) = empty_placeholder {
+                share_submenu_builder = share_submenu_builder.item(e);
+            }
+            let share_submenu = share_submenu_builder
+                .item(&stop_sep)
+                .item(&stop_item)
+                .build()?;
 
             let sep1         = PredefinedMenuItem::separator(app)?;
             let browser_item = MenuItemBuilder::with_id("open_browser", "Open in Browser").build(app)?;
@@ -1807,7 +1892,7 @@ fn main() {
             let menu = MenuBuilder::new(app)
                 .item(&voice_chat_item)
                 .item(&mute_item)
-                .item(&share_item)
+                .item(&share_submenu)
                 .item(&sep1)
                 .item(&browser_item)
                 .item(&logs_item)
@@ -1818,13 +1903,13 @@ fn main() {
                 .item(&quit_item)
                 .build()?;
 
-            // Stash the share menu item now that the MenuBuilder has
-            // consumed its borrow — moving it any earlier would steal
-            // the value before .item(&share_item) above.
-            {
-                let sh: State<ShareLabel> = app.state();
-                *sh.0.lock().unwrap() = Some(share_item);
-            }
+            // No share_item to stash anymore — the legacy
+            // "Start / Stop Screen Share" toggle was replaced by the
+            // share_submenu above (monitors + windows + Stop). The
+            // ShareLabel state stays registered for backward
+            // compatibility with any existing set_share_label callers;
+            // those calls now become no-ops (label is None).
+            let _ = stop_item; // ownership held by share_submenu
 
             let chat_open_tray = Arc::clone(&chat_open);
 
@@ -1901,29 +1986,66 @@ fn main() {
                                 let _ = w.emit("tray-toggle-mute", ());
                             }
                         }
-                        "share_screen" => {
-                            // Tray click routes through the React
-                            // ScreenSharePicker modal (X11+WebKitGTK
-                            // can't do native getDisplayMedia() — the
-                            // portal ScreenCast backend doesn't exist
-                            // on X11+XFCE). We enumerate sources in
-                            // Rust (xrandr + wmctrl, exposed via
-                            // list_screen_sources command) and let
-                            // React present a custom picker UI; on
-                            // pick, React POSTs the chosen source to
-                            // /screen-share so the voice-client's
-                            // ffmpeg publisher captures that specific
-                            // window or monitor. Need to show + raise
-                            // the window so the modal is visible even
-                            // when the user has the panels hidden.
-                            if let Some(w) = app.get_webview_window("main") {
-                                let _ = w.show();
-                                let _ = w.set_always_on_top(true);
-                                let _ = w.set_ignore_cursor_events(false);
-                                let _ = w.set_focus();
-                                let _ = w.emit("tray-toggle-screen-share", ());
+                        // Legacy single-button id (kept for back-compat
+                        // with the React modal flow — emitting the event
+                        // is a no-op now because App.jsx dropped its
+                        // listener). Safe to remove later.
+                        "share_screen" => {}
+                        // Stop publishing whatever screen-share track is
+                        // currently active. POST /screen-share with
+                        // {start: false} so the voice-client tears down
+                        // its ffmpeg publisher cleanly.
+                        "share_stop" => {
+                            let _ = std::process::Command::new("curl")
+                                .args(["-s", "-X", "POST",
+                                       "http://127.0.0.1:8767/screen-share",
+                                       "-H", "Content-Type: application/json",
+                                       "-d", "{\"start\":false}"])
+                                .spawn();
+                        }
+                        id if id.starts_with("share_src_m") => {
+                            // Picked a monitor from the tray submenu.
+                            // Look up the cached MonitorInfo by index
+                            // and POST it to the voice-client.
+                            if let Ok(n) = id["share_src_m".len()..].parse::<usize>() {
+                                let st: State<ScreenSourcesState> = app.state();
+                                let m = st.0.lock().unwrap().monitors.get(n).cloned();
+                                if let Some(m) = m {
+                                    let body = format!(
+                                        "{{\"start\":true,\"source\":{{\"kind\":\"monitor\",\"x\":{},\"y\":{},\"w\":{},\"h\":{}}}}}",
+                                        m.x, m.y, m.w, m.h,
+                                    );
+                                    let _ = std::process::Command::new("curl")
+                                        .args(["-s", "-X", "POST",
+                                               "http://127.0.0.1:8767/screen-share",
+                                               "-H", "Content-Type: application/json",
+                                               "-d", &body])
+                                        .spawn();
+                                }
                             }
                         }
+                        id if id.starts_with("share_src_w") => {
+                            if let Ok(n) = id["share_src_w".len()..].parse::<usize>() {
+                                let st: State<ScreenSourcesState> = app.state();
+                                let w = st.0.lock().unwrap().windows.get(n).cloned();
+                                if let Some(w) = w {
+                                    let body = format!(
+                                        "{{\"start\":true,\"source\":{{\"kind\":\"window\",\"id\":\"{}\",\"w\":{},\"h\":{}}}}}",
+                                        w.id, w.w, w.h,
+                                    );
+                                    let _ = std::process::Command::new("curl")
+                                        .args(["-s", "-X", "POST",
+                                               "http://127.0.0.1:8767/screen-share",
+                                               "-H", "Content-Type: application/json",
+                                               "-d", &body])
+                                        .spawn();
+                                }
+                            }
+                        }
+                        // share_empty (the placeholder when xrandr/wmctrl
+                        // aren't installed) is enabled=false so it never
+                        // fires this handler — but keep the match safe.
+                        "share_empty" => {}
                         // Handlers removed 2026-04-30: camera_rgb, camera_ir,
                         // stop_computer_use. The `share_screen` handler
                         // above replaces the previous file-trigger

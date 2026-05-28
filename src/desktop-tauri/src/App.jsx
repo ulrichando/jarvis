@@ -10,7 +10,6 @@ import KeysSettings from './KeysSettings.jsx'
 // name so consumers that still destructure `speech.speak` /
 // `speech.speaking` stay unchanged.
 import useSpeech   from './hooks/useVoiceClient.js'
-import ScreenSharePicker from './components/ScreenSharePicker.jsx'
 
 const PYTHON_BASE = 'http://127.0.0.1:8765'
 // Bridge optional auth: when JARVIS_REQUIRE_LOCAL_AUTH=1 the bridge
@@ -205,13 +204,11 @@ export default function App() {
   const voiceChatOpenRef = useRef(voiceChatOpen)
   useEffect(() => { voiceChatOpenRef.current = voiceChatOpen }, [voiceChatOpen])
 
-  // ── Screen-share picker (custom modal, X11+WebKitGTK has no
-  // working portal ScreenCast — we enumerate sources via xrandr +
-  // wmctrl in Rust and show our own picker). Triggered by the tray
-  // "Start Screen Share" menu item via tray-toggle-screen-share.
-  // When already sharing, the same tray click stops the publish
-  // directly (no picker re-open).
-  const [sharePickerOpen, setSharePickerOpen] = useState(false)
+  // Screen-share is now a NATIVE tray submenu (src-tauri/src/main.rs
+  // builds the picker directly under "Share Screen ▸"). No React
+  // modal, no popup window — clicks on tray monitor/window items
+  // POST /screen-share themselves from Rust. App.jsx has no
+  // share-related state anymore.
 
   // ── Tray events from Rust ────────────────────────────────────────────
   useEffect(() => {
@@ -230,23 +227,10 @@ export default function App() {
       if (voiceChatOpenRef.current) closeVoiceChat()
       else                          openVoiceChat()
     })
-    // Tray "Start / Stop Screen Share" item:
-    //   - If already sharing → POST /screen-share {start:false} directly
-    //     and skip the picker (no need to choose what to STOP).
-    //   - If not sharing → open the ScreenSharePicker modal so the
-    //     user picks a monitor or window; picker POSTs the chosen
-    //     source itself on click.
-    const unlistenS = listen('tray-toggle-screen-share', () => {
-      if (speech.sharingScreen) {
-        fetch('http://127.0.0.1:8767/screen-share', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ start: false }),
-        }).catch(console.error)
-      } else {
-        setSharePickerOpen(true)
-      }
-    })
+    // Legacy tray-toggle-screen-share event (kept for back-compat with
+    // older Rust builds that emit it). Currently a no-op — the native
+    // submenu handler in Rust does all the work now.
+    const unlistenS = listen('tray-toggle-screen-share', () => {})
     return () => {
       unlisten1.then(f => f())
       unlisten2.then(f => f())
@@ -257,7 +241,7 @@ export default function App() {
       unlistenV3.then(f => f())
       unlistenS.then(f => f())
     }
-  }, [openChat, closeChat, openVoiceChat, closeVoiceChat, speech.sharingScreen])
+  }, [openChat, closeChat, openVoiceChat, closeVoiceChat])
 
   // ── Initial click-through on mount ───────────────────────────────────
   useEffect(() => {
@@ -377,11 +361,6 @@ export default function App() {
           setVoiceMuted={setVoiceMuted}
         />
       )}
-      <ScreenSharePicker
-        isOpen={sharePickerOpen}
-        onClose={() => setSharePickerOpen(false)}
-        onStarted={() => setSharePickerOpen(false)}
-      />
     </div>
   )
 }
