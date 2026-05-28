@@ -228,14 +228,13 @@ pub fn enter_kiosk_on_monitor(app: AppHandle, monitor_idx: usize) -> Result<(), 
     }
 
     // 3. Spawn the kiosk window.
-    // Use PhysicalPosition / PhysicalSize EXPLICITLY so the framework
-    // doesn't mis-interpret values as logical (which on HiDPI displays
-    // would multiply by scale_factor and either overflow or underflow
-    // the screen). monitor.position() / monitor.size() return physical
-    // pixels per Tauri v2 docs, and the scale-factor guard above
-    // ensures pos_x/y/w/h are physical even if a Tauri bug returns
-    // logical from .size() — passing typed wrappers makes the contract
-    // explicit at the boundary.
+    // Note: WebviewWindowBuilder::position / inner_size in this Tauri
+    // version accept raw (f64, f64) which Tauri interprets as LOGICAL
+    // pixels. On a HiDPI display that means our physical-pixel values
+    // would be multiplied by scale_factor → window oversized. Use the
+    // builder with a 0,0 placeholder and then set the TYPED PhysicalPosition
+    // / PhysicalSize via the post-build setters (which DO accept the
+    // typed enum and won't be misinterpreted).
     let result = WebviewWindowBuilder::new(&app, "kiosk", WebviewUrl::App("index.html?route=kiosk".into()))
         .decorations(false)
         .transparent(false)
@@ -244,8 +243,8 @@ pub fn enter_kiosk_on_monitor(app: AppHandle, monitor_idx: usize) -> Result<(), 
         .skip_taskbar(true)
         .resizable(false)
         .title("J.A.R.V.I.S. \u{2014} kiosk")
-        .position(PhysicalPosition::<i32>::new(pos_x, pos_y))
-        .inner_size(PhysicalSize::<u32>::new(size_w, size_h))
+        .position(0.0, 0.0)
+        .inner_size(100.0, 100.0)
         .build();
 
     let kiosk_window = match result {
@@ -257,6 +256,15 @@ pub fn enter_kiosk_on_monitor(app: AppHandle, monitor_idx: usize) -> Result<(), 
             return Err(format!("WebviewWindowBuilder failed: {}", e));
         }
     };
+
+    // Set the actual position + size using TYPED PhysicalPosition /
+    // PhysicalSize so Tauri treats the values as physical pixels (not
+    // logical, which is what raw (f64, f64) on the builder would have
+    // done). This is what makes the window fill the entire monitor
+    // exactly — bypasses the HiDPI logical/physical interpretation
+    // ambiguity entirely.
+    let _ = kiosk_window.set_position(PhysicalPosition::<i32>::new(pos_x, pos_y));
+    let _ = kiosk_window.set_size(PhysicalSize::<u32>::new(size_w, size_h));
 
     // Belt-and-suspenders: explicit always_on_top via wmctrl on the new window.
     // Some compositors (XFCE) lose track of the WindowBuilder hint.
