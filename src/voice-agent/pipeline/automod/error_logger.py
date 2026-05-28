@@ -157,3 +157,71 @@ def _upsert(conn: sqlite3.Connection, sig: str, exc_class: str,
     """, (sig, exc_class, exc_message[:500], now, now,
           frames_json, sample_tb, fixability))
     conn.commit()
+
+
+class ErrorTelemetryHandler(logging.Handler):
+    """Captures ERROR-level log records that carry an exc_info into the
+    recurring_errors table. Silent on all internal failures (drops record).
+
+    Filters:
+      - record.levelno >= ERROR
+      - record.exc_info is set (diagnostic logs without exception → skip)
+      - exception class not in ignore set
+      - at least one jarvis-owned frame present in the traceback
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if getattr(_in_emit, "active", False):
+            return  # reentrance guard
+        _in_emit.active = True
+        try:
+            self._emit_impl(record)
+        except Exception:
+            # NEVER raise from a logging handler. Swallow.
+            pass
+        finally:
+            _in_emit.active = False
+
+    def _emit_impl(self, record: logging.LogRecord) -> None:
+        if record.levelno < logging.ERROR:
+            return
+        if record.exc_info is None or record.exc_info[0] is None:
+            return
+        exc_class = record.exc_info[0].__name__
+        if exc_class in _ignore_set():
+            return
+        frames = _jarvis_frames(record.exc_info[2])
+        if not frames:
+            return  # no jarvis-owned frame — not our bug
+        exc_message = str(record.exc_info[1])
+        sig = _signature(exc_class, frames)
+        fixability = _fixability_score(exc_class, exc_message, frames)
+        tb_text = "".join(traceback.format_exception(*record.exc_info, limit=8))
+        sample_tb = _truncate_tb(tb_text)
+        db = _telemetry_db_path()
+        if not db.exists():
+            return  # telemetry not initialized — drop
+        with sqlite3.connect(str(db), timeout=2.0) as conn:
+            _upsert(conn, sig, exc_class, exc_message, frames,
+                    sample_tb, fixability)
+
+
+# Idempotent install state.
+_INSTALLED_HANDLER: ErrorTelemetryHandler | None = None
+
+
+def install_error_handler() -> None:
+    """Attach a single ErrorTelemetryHandler to the JARVIS + livekit
+    root loggers. Idempotent: subsequent calls are no-ops."""
+    global _INSTALLED_HANDLER
+    if _INSTALLED_HANDLER is not None:
+        return
+    h = ErrorTelemetryHandler(level=logging.ERROR)
+    for name in _ATTACH_LOGGERS:
+        target = logging.getLogger(name)
+        if not any(isinstance(existing, ErrorTelemetryHandler)
+                   for existing in target.handlers):
+            target.addHandler(h)
+    _INSTALLED_HANDLER = h
+    logger.info("[automod] error telemetry handler installed on %s",
+                ", ".join(_ATTACH_LOGGERS))
