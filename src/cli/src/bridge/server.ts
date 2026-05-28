@@ -12,6 +12,7 @@
 //   GET    /api/models                   → { models: [{name}], active }
 //   POST   /api/model                    → { model } — sets active model
 //   POST   /api/mute                     → { muted: boolean }
+//   POST   /api/kiosk                    → { ok: true, state }
 //   POST   /api/think                    → { response: string }  (WS-dead fallback)
 //   POST   /api/page-query               → SSE stream of { type: 'text'|'done'|'error' }
 //   POST   /api/analyze-screen           → { response, model } — vision LLM
@@ -484,6 +485,19 @@ const server = Bun.serve({
       muted = !muted
       broadcast({ type: 'voice_muted', muted })
       return Response.json({ muted })
+    }
+
+    if (url.pathname === '/api/kiosk' && req.method === 'POST') {
+      let body: any
+      try { body = await req.json() } catch {
+        return Response.json({ error: 'invalid JSON' }, { status: 400 })
+      }
+      const state = typeof body?.state === 'string' ? body.state : ''
+      if (!['on', 'off', 'toggle'].includes(state)) {
+        return Response.json({ error: 'state must be on|off|toggle' }, { status: 400 })
+      }
+      broadcast({ type: 'kiosk', state })
+      return Response.json({ ok: true, state })
     }
 
     if (url.pathname === '/api/think' && req.method === 'POST') {
