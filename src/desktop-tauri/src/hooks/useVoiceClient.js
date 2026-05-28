@@ -25,8 +25,27 @@
 //     conversation. No duplicate TTS pipeline.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { invoke } from '@tauri-apps/api/core'
 
-const BASE_URL = 'http://127.0.0.1:8767'
+// Per-mode /status endpoints. The Conversation-mode tray submenu can
+// switch the active backend between JARVIS-Claude / Gemini Live /
+// OpenAI Realtime; each backend publishes its own /status with the
+// same field shape so the FROZEN tray_image_for code at
+// src-tauri/src/main.rs doesn't change — only the source URL flips.
+// Direct-mode servers live in bin/jarvis-{gemini,gpt}-tools and use
+// src/voice-agent/direct_mode_status.py::StatusServer.
+const BASE_URL_BY_MODE = {
+  jarvis: 'http://127.0.0.1:8767',
+  gemini: 'http://127.0.0.1:8768',
+  openai: 'http://127.0.0.1:8769',
+}
+const DEFAULT_BASE_URL = BASE_URL_BY_MODE.jarvis
+// Mute / speak / stop calls always target the JARVIS-Claude voice-
+// client, regardless of which mode is "active" for status polling.
+// Switching to a direct mode mutes voice-client via bin/jarvis-mode,
+// and these controls operate on that single mute flag. (Direct modes
+// own their own mic; they don't expose a /mute endpoint.)
+const BASE_URL = DEFAULT_BASE_URL
 
 export default function useVoiceClient({ muted = false } = {}) {
   // True iff the native voice-client's HTTP server (:8767) responds
@@ -98,12 +117,44 @@ export default function useVoiceClient({ muted = false } = {}) {
   // it from this module anymore but external consumers might.
   const lastActiveRef = useRef(/** @type {'user'|'agent'|null} */ (null))
 
+  // Cached active-mode + the corresponding status URL. Refreshed by
+  // the slow-poll loop below. Default: JARVIS-Claude so the first few
+  // ticks don't have to wait for the Tauri command before they can
+  // fetch /status.
+  const statusUrlRef = useRef(`${DEFAULT_BASE_URL}/status`)
+  useEffect(() => {
+    let alive = true
+    let mt
+    const refreshMode = async () => {
+      try {
+        const mode = await invoke('get_active_mode')
+        if (!alive) return
+        const base = BASE_URL_BY_MODE[mode] || DEFAULT_BASE_URL
+        statusUrlRef.current = `${base}/status`
+      } catch {
+        // Tauri command not available (e.g., running in dev/browser
+        // outside the webview). Fall back to voice-client so the
+        // legacy poll path keeps working.
+        statusUrlRef.current = `${DEFAULT_BASE_URL}/status`
+      }
+      // Mode rarely changes (only on tray click); poll every 2 s so
+      // a switch shows up in the indicator within ~2 s. Cheaper than
+      // shelling systemctl on every /status tick.
+      if (alive) mt = setTimeout(refreshMode, 2000)
+    }
+    refreshMode()
+    return () => {
+      alive = false
+      clearTimeout(mt)
+    }
+  }, [])
+
   useEffect(() => {
     let alive = true
     let t
     const tick = async () => {
       try {
-        const r = await fetch(`${BASE_URL}/status`, { cache: 'no-store' })
+        const r = await fetch(statusUrlRef.current, { cache: 'no-store' })
         if (!r.ok) throw 0
         const s = await r.json()
         if (!alive) return
