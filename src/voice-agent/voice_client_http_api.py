@@ -128,6 +128,7 @@ class VoiceClientHttpApi:
         app.router.add_post("/stop",       self.stop)
         app.router.add_post("/user-input", self.user_input)
         app.router.add_post("/screen-share", self.screen_share)
+        app.router.add_get("/screen-share/token", self.screen_share_token)
         app.router.add_get("/cli-model",   self.cli_model)
         app.router.add_post("/cli-model",  self.cli_model)
         app.router.add_get("/voice-model",   self.speech_model)
@@ -351,6 +352,51 @@ class VoiceClientHttpApi:
             return web.json_response(
                 {"error": str(e)}, status=500, headers=cors,
             )
+
+    async def screen_share_token(self, _: web.Request) -> web.Response:
+        """GET /screen-share/token → {url, token, room, identity}
+
+        Mints a LiveKit JWT for the Tauri webview to publish a
+        screen-share track via the JS SDK's
+        `room.localParticipant.setScreenShareEnabled(true)`. Triggers
+        the OS-native screen picker (xdg-desktop-portal on Linux) —
+        same UX as Google Meet / Zoom Web. The webview joins the
+        same room as the voice-client with a DIFFERENT identity
+        (so the two clients don't collide), publishes the chosen
+        source, and the screen-share observer subscribes to it like
+        any other SOURCE_SCREENSHARE track.
+        """
+        cors = {"Access-Control-Allow-Origin": "*"}
+        try:
+            from voice_client_auth import (
+                URL, ROOM_NAME, SCREEN_SHARE_IDENTITY, mint_screen_share_token,
+            )
+        except Exception as e:
+            return web.json_response(
+                {"error": f"auth module unavailable: {e}"},
+                status=503, headers=cors,
+            )
+        try:
+            token = mint_screen_share_token()
+        except RuntimeError as e:
+            # API key/secret missing — surface as 503 so the webview
+            # can show a useful error instead of a generic failure.
+            return web.json_response(
+                {"error": str(e)}, status=503, headers=cors,
+            )
+        except Exception as e:
+            return web.json_response(
+                {"error": str(e)}, status=500, headers=cors,
+            )
+        return web.json_response(
+            {
+                "url": URL,
+                "token": token,
+                "room": ROOM_NAME,
+                "identity": SCREEN_SHARE_IDENTITY,
+            },
+            headers=cors,
+        )
 
     async def cli_model(self, req: web.Request) -> web.Response:
         """GET  /cli-model                          → {"model": "<id>", "available": [...]}
