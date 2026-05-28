@@ -1,35 +1,31 @@
 import React, { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import KioskAura from './KioskAura.jsx'
+import { AgentAudioVisualizerAura } from '@/components/agents-ui/agent-audio-visualizer-aura'
 
-// Root component for ?route=kiosk. Black fullscreen background with the
-// arc reactor centered. State derived from a 500ms poll of
-// http://127.0.0.1:8767/status (the same source the tray indicator uses).
-//
-// Iteration 1 is intentionally minimal. Future iterations may add:
-//   - live transcript fade
-//   - touch-tile grid for common voice actions
-//   - audio-reactive Aura visualizer (LiveKit)
+// Root component for ?route=kiosk. Black fullscreen background with
+// LiveKit's AgentAudioVisualizerAura (shader-based pulsing energy field)
+// centered. State derived from a 500ms poll of /status — the same
+// source the tray indicator uses. No audio reactivity yet (iteration 1
+// runs state-only); audio reactivity = iteration 2 (would require
+// connecting the kiosk window to LiveKit as a subscriber).
 const STATUS_URL = 'http://127.0.0.1:8767/status'
 const POLL_MS = 500
 
-function deriveState(s) {
-  if (!s || s.connected === false) return 'offline'
+// Map our internal voice state to LiveKit AgentState values the
+// visualizer understands.
+function deriveAgentState(s) {
+  if (!s || s.connected === false) return 'disconnected'
   if (s.speaking)     return 'speaking'
   if (s.voiceActive)  return 'listening'
   if (s.processing)   return 'thinking'
-  if (s.booting)      return 'thinking'
-  return 'idle'
+  if (s.booting)      return 'initializing'
+  return 'listening'
 }
 
 export default function KioskHUD() {
-  const [state, setState] = useState('idle')
+  const [agentState, setAgentState] = useState('connecting')
 
-  // Force the document body/html background to opaque black for the
-  // kiosk route. index.html has `html, body, #root { background:
-  // transparent !important; }` for the main overlay's transparency —
-  // we override with inline-style !important on mount, restore on
-  // unmount.
+  // Force opaque black bg over index.html's `transparent !important`.
   useEffect(() => {
     const prev = {
       bodyBg: document.body.style.background,
@@ -40,10 +36,13 @@ export default function KioskHUD() {
     document.documentElement.style.setProperty('background', '#000', 'important')
     const root = document.getElementById('root')
     if (root) root.style.setProperty('background', '#000', 'important')
+    // The Aura visualizer expects to live in a dark-mode context.
+    document.documentElement.classList.add('dark')
     return () => {
       document.body.style.background = prev.bodyBg
       document.documentElement.style.background = prev.htmlBg
       if (root) root.style.background = prev.rootBg
+      document.documentElement.classList.remove('dark')
     }
   }, [])
 
@@ -54,9 +53,9 @@ export default function KioskHUD() {
       try {
         const r = await fetch(STATUS_URL)
         const data = await r.json()
-        if (!cancelled) setState(deriveState({ ...data, connected: true }))
+        if (!cancelled) setAgentState(deriveAgentState({ ...data, connected: true }))
       } catch {
-        if (!cancelled) setState('offline')
+        if (!cancelled) setAgentState('disconnected')
       }
     }
     tick()
@@ -75,7 +74,15 @@ export default function KioskHUD() {
 
   return (
     <div className="kiosk-hud-root">
-      <KioskAura state={state} size={340} />
+      <div className="kiosk-aura-wrap">
+        <AgentAudioVisualizerAura
+          size="xl"
+          color="#1FD5F9"
+          colorShift={0.05}
+          state={agentState}
+          themeMode="dark"
+        />
+      </div>
       <style>{`
         .kiosk-hud-root {
           position: fixed;
@@ -91,8 +98,20 @@ export default function KioskHUD() {
           margin: 0;
           padding: 0;
         }
-        .kiosk-hud-root > * {
+        .kiosk-aura-wrap {
           flex: 0 0 auto;
+          /* The Aura visualizer 'xl' variant is 448px wide. Scale it up
+             for the kiosk surface — most monitors are >1080p so a bigger
+             surface area gives the field room to breathe. */
+          width: min(70vmin, 720px);
+          height: min(70vmin, 720px);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .kiosk-aura-wrap > * {
+          width: 100%;
+          height: 100%;
         }
       `}</style>
     </div>
