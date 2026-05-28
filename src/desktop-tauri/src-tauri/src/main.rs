@@ -11,6 +11,7 @@ use tauri::{
 use tauri_plugin_opener::OpenerExt;
 
 pub mod kiosk;
+pub mod tray_kiosk;
 
 /// Shared chat-open state between the tray menu and JS. React calls
 /// `set_chat_state` from `openChat`/`closeChat` so the Rust-side toggle
@@ -66,9 +67,9 @@ struct ScreenSourcesState(Mutex<ScreenSources>);
 /// checks systemd --user state of the gemini/gpt direct-mode units.
 struct ModeLabel(Mutex<Option<MenuItem<Wry>>>);
 
-/// The three mode-switch menu items (jarvis / gemini / gpt). Stored
+/// The three mode-switch menu items (jarvis / gemini / openai). Stored
 /// so the refresh task can add/remove the "✓ " prefix on whichever
-/// mode is currently active. Ordered: [jarvis, gemini, gpt].
+/// mode is currently active. Ordered: [jarvis, gemini, openai].
 struct ModeItems(Mutex<Vec<MenuItem<Wry>>>);
 
 /// The source tray artwork (icons/tray.png — the concentric-ring /
@@ -960,10 +961,6 @@ fn set_share_label(active: bool, label: State<ShareLabel>) -> Result<(), String>
 /// What jarvis-mode is currently driving. Determined by which systemd
 /// --user transient unit is active. Mirrors the bash logic in
 /// bin/jarvis-mode::current_mode.
-///
-/// As of 2026-05-28 there are exactly three modes, all carrying the
-/// same audio + screen vision + tool surface — the choice is which
-/// provider drives the LLM/voice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ActiveMode { Jarvis, Gemini, Openai }
 
@@ -987,10 +984,6 @@ fn detect_active_mode() -> ActiveMode {
 /// Repaint the Conversation-mode submenu to reflect the current
 /// active mode: rewrites the disabled header line ("Active: …") and
 /// adds/removes a "✓ " prefix on the three mode items.
-///
-/// Called from a background loop every few seconds and immediately
-/// after a tray click on any mode_* entry so the menu stays in sync
-/// with the actual systemd state instead of waiting for the poll.
 fn refresh_mode_menu(app: &tauri::AppHandle) {
     let mode = detect_active_mode();
     let (header_text, jarvis_label, gemini_label, openai_label) = match mode {
@@ -1559,11 +1552,22 @@ fn main() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
-                    use tauri_plugin_global_shortcut::ShortcutState;
+                    use tauri_plugin_global_shortcut::{Code, ShortcutState};
                     if event.state() != ShortcutState::Pressed { return }
                     println!("[JARVIS] global shortcut fired: {:?}", shortcut);
-                    if let Some(w) = app.get_webview_window("main") {
-                        let _ = w.emit("tray-toggle-chat", ());
+                    // Discriminate by key: Ctrl+Shift+Space → toggle chat;
+                    // Ctrl+Shift+K → exit kiosk (idempotent if already off).
+                    match shortcut.key {
+                        Code::KeyK => {
+                            if let Err(e) = crate::kiosk::exit_kiosk(app.clone()) {
+                                eprintln!("[JARVIS] global Ctrl+Shift+K exit_kiosk failed: {}", e);
+                            }
+                        }
+                        _ => {
+                            if let Some(w) = app.get_webview_window("main") {
+                                let _ = w.emit("tray-toggle-chat", ());
+                            }
+                        }
                     }
                 })
                 .build(),
@@ -1703,19 +1707,25 @@ fn main() {
                 });
             }
 
-            // ── Global hotkey ──
+            // ── Global hotkeys ──
             // Ctrl+Shift+Space summons/dismisses the chat panel (Ctrl+Space
             // alone conflicts with XFCE/IBus input-method switcher).
-            // Emits tray-toggle-chat which the React side treats like
-            // any other tray click.
+            // Ctrl+Shift+K exits kiosk mode (idempotent if not active).
+            // Both are routed through the plugin's with_handler closure
+            // above, which dispatches by Shortcut.key.
             {
                 use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, GlobalShortcutExt};
                 let handle = app.handle();
                 let mods = Modifiers::CONTROL | Modifiers::SHIFT;
-                let sc = Shortcut::new(Some(mods), Code::Space);
-                match handle.global_shortcut().register(sc) {
-                    Ok(_)  => println!("[JARVIS] global shortcut registered: Ctrl+Shift+Space"),
+                let sc_chat = Shortcut::new(Some(mods), Code::Space);
+                match handle.global_shortcut().register(sc_chat) {
+                    Ok(_)  => println!("[JARVIS] global shortcut registered: Ctrl+Shift+Space (chat)"),
                     Err(e) => eprintln!("[JARVIS] failed to register Ctrl+Shift+Space: {:?}", e),
+                }
+                let sc_kiosk_exit = Shortcut::new(Some(mods), Code::KeyK);
+                match handle.global_shortcut().register(sc_kiosk_exit) {
+                    Ok(_)  => println!("[JARVIS] global shortcut registered: Ctrl+Shift+K (exit kiosk)"),
+                    Err(e) => eprintln!("[JARVIS] failed to register Ctrl+Shift+K: {:?}", e),
                 }
             }
 
@@ -1738,17 +1748,16 @@ fn main() {
             let mute_item    = MenuItemBuilder::with_id("mute",         "Mute / Unmute Voice").build(app)?;
 
             // ── Conversation mode submenu (2026-05-28) ──
-            //
-            // Three voice-conversation backends:
-            //   - JARVIS-Claude (default STT/LLM/TTS, full tool access)
-            //   - Gemini Live (audio-to-audio + screen vision)
-            //   - GPT Realtime (audio-to-audio via OpenAI)
+            // Three voice-conversation backends, all carrying the same
+            // audio + screen vision + tool surface:
+            //   - JARVIS-Claude (default STT/LLM/TTS, full tool registry)
+            //   - Gemini Live (audio + vision + tools)
+            //   - OpenAI Realtime (audio + vision + tools)
             //
             // Click shells out to `<project>/bin/jarvis-mode <name>`,
-            // which handles the mute/scope dance. The header line +
-            // ✓ prefix on the active item are refreshed every 3 s by
-            // a background task in app.setup() that checks systemctl
-            // is-active for the gemini/gpt scopes.
+            // which handles the mute/scope dance. Header line + ✓
+            // prefix on the active item are refreshed every 3 s by a
+            // background task in app.setup().
             let mode_current_item = MenuItemBuilder::with_id(
                 "mode_current", "Active: (checking…)",
             ).enabled(false).build(app)?;
@@ -1775,9 +1784,6 @@ fn main() {
                 .item(&mode_sep)
                 .item(&mode_status_item)
                 .build()?;
-            // Stash the header + item handles so the background refresh
-            // task can update them. Cloning MenuItem is cheap — it's an
-            // Arc internally.
             {
                 let ml: State<ModeLabel> = app.state();
                 *ml.0.lock().unwrap() = Some(mode_current_item.clone());
@@ -2029,11 +2035,17 @@ fn main() {
             let sep2         = PredefinedMenuItem::separator(app)?;
             let quit_item    = MenuItemBuilder::with_id("quit",         "Quit JARVIS").build(app)?;
 
+            // Kiosk submenu: per-monitor entries + exit. Registered + dispatched
+            // via the tray_kiosk module (which also retains the per-monitor
+            // CheckMenuItems in AppState so set_checked() works later).
+            let focus_mode_submenu = crate::tray_kiosk::build_kiosk_submenu(&app.handle())?;
+
             let menu = MenuBuilder::new(app)
                 .item(&voice_chat_item)
                 .item(&mute_item)
                 .item(&mode_submenu)
                 .item(&share_submenu)
+                .item(&focus_mode_submenu)
                 .item(&sep1)
                 .item(&browser_item)
                 .item(&logs_item)
@@ -2191,10 +2203,7 @@ fn main() {
                         // ── Conversation mode switches (2026-05-28) ──
                         // Shell out to bin/jarvis-mode <arg>; the script
                         // handles the systemd-scope + JARVIS-mic-mute
-                        // dance idempotently. find_project_root() walks
-                        // up from the binary's path; honor the
-                        // JARVIS_PROJECT_ROOT override for non-default
-                        // installs.
+                        // dance idempotently.
                         id @ ("mode_jarvis" | "mode_gemini" | "mode_openai" | "mode_status") => {
                             let arg = match id {
                                 "mode_jarvis" => "jarvis",
@@ -2211,18 +2220,14 @@ fn main() {
                                 eprintln!("[JARVIS] mode switch: {} missing", script.display());
                                 return;
                             }
-                            // Run detached — start_direct spawns systemd-run
-                            // and returns; this should complete in <1s.
                             let _ = std::process::Command::new(&script)
                                 .arg(arg)
                                 .spawn();
                             println!("[JARVIS] tray → jarvis-mode {arg}");
                             // Repaint the submenu shortly after the
-                            // command settles. The script's start_direct
-                            // sleeps 0.6 s waiting for the unit to
-                            // register; we wait a bit longer than that
-                            // before re-polling so the new state is
-                            // visible.
+                            // command settles (start_direct sleeps 0.6s
+                            // for unit registration; we wait a bit more
+                            // before re-polling so the new state shows).
                             let app_handle = app.clone();
                             std::thread::spawn(move || {
                                 std::thread::sleep(std::time::Duration::from_millis(1200));
@@ -2300,6 +2305,9 @@ fn main() {
                         // TTS-voice picks (no agent restart — file written, read on next utterance)
                         "tts_gr_troy"   => switch_tts_provider(app, "groq:troy"),
                         "tts_gr_austin" => switch_tts_provider(app, "groq:austin"),
+                        id if id.starts_with("kiosk_") => {
+                            crate::tray_kiosk::handle_kiosk_menu_event(app, id);
+                        }
                         "quit" => {
                             // "Quit JARVIS" stops EVERYTHING the user
                             // perceives as JARVIS — not just the overlay.
@@ -2449,13 +2457,15 @@ fn main() {
                 });
             }
 
-            // ── Conversation-mode menu refresh thread ──
+            // Sync the per-monitor CheckMenuItem checked state from kiosk-changed
+            // events (Rust is source of truth for kiosk on/off).
+            crate::tray_kiosk::install_kiosk_changed_listener(&app.handle());
+
+            // ── Conversation-mode menu refresh thread (2026-05-28) ──
             // Polls systemctl --user state every 3 s and rewrites the
             // Conversation-mode submenu header + ✓ prefix so the user
-            // can see at a glance which mode is active. Cheap — two
-            // systemctl is-active calls per tick (~10 ms each).
-            // First refresh fires immediately so the menu shows the
-            // truth from the very first open.
+            // can see at a glance which mode is active. Two systemctl
+            // is-active calls per tick (~10 ms each) — cheap.
             {
                 let app_handle = app.handle().clone();
                 refresh_mode_menu(&app_handle);
@@ -2483,6 +2493,9 @@ fn main() {
             keys_set,
             keys_clear,
             keys_restart_agent,
+            kiosk::enter_kiosk_on_monitor,
+            kiosk::exit_kiosk,
+            kiosk::kiosk_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
