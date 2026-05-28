@@ -10,6 +10,7 @@ import KeysSettings from './KeysSettings.jsx'
 // name so consumers that still destructure `speech.speak` /
 // `speech.speaking` stay unchanged.
 import useSpeech   from './hooks/useVoiceClient.js'
+import { useScreenShare } from './hooks/useScreenShare.js'
 
 const PYTHON_BASE = 'http://127.0.0.1:8765'
 // Bridge optional auth: when JARVIS_REQUIRE_LOCAL_AUTH=1 the bridge
@@ -204,6 +205,15 @@ export default function App() {
   const voiceChatOpenRef = useRef(voiceChatOpen)
   useEffect(() => { voiceChatOpenRef.current = voiceChatOpen }, [voiceChatOpen])
 
+  // ── LiveKit-native screen-share (owned at App level so tray events
+  // can toggle it regardless of which panels are open). The hook
+  // manages a lazy Room connection and calls
+  // setScreenShareEnabled(true) which triggers xdg-desktop-portal
+  // for an OS-native source picker — same UX as Google Meet / Zoom
+  // Web. Tray menu label flips between "Start" and "Stop ✓" via
+  // invoke('set_share_label', { active }) below.
+  const screenShare = useScreenShare()
+
   // ── Tray events from Rust ────────────────────────────────────────────
   useEffect(() => {
     const unlisten1 = listen('tray-open-chat',   () => openChat())
@@ -221,6 +231,13 @@ export default function App() {
       if (voiceChatOpenRef.current) closeVoiceChat()
       else                          openVoiceChat()
     })
+    // Tray "Start / Stop Screen Share" item → toggle the LiveKit-
+    // native picker flow. Rust used to POST /screen-share here but
+    // that hit the legacy ffmpeg publisher with no picker; now we
+    // own the toggle webview-side.
+    const unlistenS = listen('tray-toggle-screen-share', () => {
+      screenShare.toggle().catch(console.error)
+    })
     return () => {
       unlisten1.then(f => f())
       unlisten2.then(f => f())
@@ -229,8 +246,9 @@ export default function App() {
       unlistenV1.then(f => f())
       unlistenV2.then(f => f())
       unlistenV3.then(f => f())
+      unlistenS.then(f => f())
     }
-  }, [openChat, closeChat, openVoiceChat, closeVoiceChat])
+  }, [openChat, closeChat, openVoiceChat, closeVoiceChat, screenShare])
 
   // ── Initial click-through on mount ───────────────────────────────────
   useEffect(() => {
@@ -285,11 +303,17 @@ export default function App() {
     lastTtsRef.current = speech.ttsProvider
     invoke('set_tts_label', { name: speech.ttsProvider || '' }).catch(console.error)
   }, [speech.ttsProvider])
+  // Tray-label sync. "Stop Screen Share ✓" appears when EITHER the
+  // legacy voice-client ffmpeg publisher (speech.sharingScreen) OR
+  // the new LiveKit-native webview publish (screenShare.active) is
+  // running. Once the ffmpeg path is removed this collapses to just
+  // screenShare.active.
   useEffect(() => {
-    if (lastShareRef.current === speech.sharingScreen) return
-    lastShareRef.current = speech.sharingScreen
-    invoke('set_share_label', { active: !!speech.sharingScreen }).catch(console.error)
-  }, [speech.sharingScreen])
+    const active = !!speech.sharingScreen || !!screenShare.active
+    if (lastShareRef.current === active) return
+    lastShareRef.current = active
+    invoke('set_share_label', { active }).catch(console.error)
+  }, [speech.sharingScreen, screenShare.active])
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────
   useEffect(() => {
