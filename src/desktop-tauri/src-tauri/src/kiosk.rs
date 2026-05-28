@@ -111,9 +111,12 @@ pub static KIOSK_STATE: LazyLock<Mutex<Option<KioskSnapshot>>> =
     LazyLock::new(|| Mutex::new(None));
 
 fn is_jarvis_window(w: &WindowInfo) -> bool {
-    w.wm_class.contains("J.A.R.V.I.S.")
+    let class_match = w.wm_class.contains("J.A.R.V.I.S.")
         || w.wm_class.contains("jarvis")
-        || w.wm_class.contains("Jarvis")
+        || w.wm_class.contains("Jarvis");
+    let kiosk_title = w.title.contains("J.A.R.V.I.S. \u{2014} kiosk")
+        || w.title == "kiosk";
+    class_match || kiosk_title
 }
 
 // ─── Pure logic (testable; no Tauri window APIs) ───────────────────────────
@@ -232,6 +235,10 @@ pub fn enter_kiosk_on_monitor(app: AppHandle, monitor_idx: usize) -> Result<(), 
         .focused(true)
         .skip_taskbar(true)
         .resizable(false)
+        .title("J.A.R.V.I.S. \u{2014} kiosk")
+        // Note: WebviewWindowBuilder::position / inner_size in this Tauri version
+        // (2.10.3) accept raw (f64, f64) rather than PhysicalPosition/PhysicalSize.
+        // The physical-pixel arithmetic above guarantees the values are physical.
         .position(pos_x as f64, pos_y as f64)
         .inner_size(size_w as f64, size_h as f64)
         .build();
@@ -249,7 +256,7 @@ pub fn enter_kiosk_on_monitor(app: AppHandle, monitor_idx: usize) -> Result<(), 
     // Belt-and-suspenders: explicit always_on_top via wmctrl on the new window.
     // Some compositors (XFCE) lose track of the WindowBuilder hint.
     let _ = std::process::Command::new("wmctrl")
-        .args(["-r", "kiosk", "-b", "add,above"])
+        .args(["-r", "J.A.R.V.I.S. \u{2014} kiosk", "-b", "add,above"])
         .output();
 
     // 4. on_window_event handler — if the user kills the window directly
@@ -257,9 +264,14 @@ pub fn enter_kiosk_on_monitor(app: AppHandle, monitor_idx: usize) -> Result<(), 
     let app_for_close = app.clone();
     kiosk_window.on_window_event(move |event| {
         if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
-            // The window will close; ensure state is also cleared so a
-            // subsequent enter doesn't think we're already active.
-            let _ = exit_kiosk(app_for_close.clone());
+            // The window is already closing — only clean up state/snapshot
+            // and emit the off-event. Don't call exit_kiosk because it
+            // would call w.close() again (double-close risk on GTK).
+            let adapter = RealWmctrl;
+            if let Ok(mut state) = KIOSK_STATE.lock() {
+                let _ = exit_kiosk_impl(&adapter, &mut state);
+            }
+            let _ = app_for_close.emit("kiosk-changed", serde_json::json!({ "on": false }));
         }
     });
 
