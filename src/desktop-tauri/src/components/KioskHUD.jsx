@@ -25,6 +25,28 @@ function deriveState(s) {
 export default function KioskHUD() {
   const [state, setState] = useState('idle')
 
+  // Force the document body/html background to opaque black for the
+  // kiosk route. index.html has `html, body, #root { background:
+  // transparent !important; }` for the main overlay's transparency —
+  // we override with inline-style !important on mount, restore on
+  // unmount.
+  useEffect(() => {
+    const prev = {
+      bodyBg: document.body.style.background,
+      htmlBg: document.documentElement.style.background,
+      rootBg: document.getElementById('root')?.style.background,
+    }
+    document.body.style.setProperty('background', '#000', 'important')
+    document.documentElement.style.setProperty('background', '#000', 'important')
+    const root = document.getElementById('root')
+    if (root) root.style.setProperty('background', '#000', 'important')
+    return () => {
+      document.body.style.background = prev.bodyBg
+      document.documentElement.style.background = prev.htmlBg
+      if (root) root.style.background = prev.rootBg
+    }
+  }, [])
+
   // Poll voice-client status. setInterval cleaned up on unmount.
   useEffect(() => {
     let cancelled = false
@@ -53,17 +75,23 @@ export default function KioskHUD() {
 
   return (
     <div className="kiosk-hud-root">
-      <KioskArcReactor state={state} size={340} />
+      <div className="kiosk-arc-center-wrap">
+        <KioskArcReactor state={state} size={340} />
+      </div>
       <style>{`
         .kiosk-hud-root {
-          position: fixed; inset: 0;
-          background: #000;
-          display: flex;
-          align-items: center;
-          justify-content: center;
+          position: fixed;
+          top: 0; left: 0;
+          width: 100vw; height: 100vh;
+          background: #000 !important;
           z-index: 9999;
           overflow: hidden;
           cursor: none;
+        }
+        .kiosk-arc-center-wrap {
+          position: absolute;
+          top: 50%; left: 50%;
+          transform: translate(-50%, -50%);
         }
       `}</style>
     </div>
