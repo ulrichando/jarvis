@@ -1673,10 +1673,16 @@ fn main() {
             let sep2         = PredefinedMenuItem::separator(app)?;
             let quit_item    = MenuItemBuilder::with_id("quit",         "Quit JARVIS").build(app)?;
 
+            // Kiosk submenu: per-monitor entries + exit. Registered + dispatched
+            // via the tray_kiosk module (which also retains the per-monitor
+            // CheckMenuItems in AppState so set_checked() works later).
+            let focus_mode_submenu = crate::tray_kiosk::build_kiosk_submenu(&app.handle())?;
+
             let menu = MenuBuilder::new(app)
                 .item(&voice_chat_item)
                 .item(&mute_item)
                 .item(&share_item)
+                .item(&focus_mode_submenu)
                 .item(&sep1)
                 .item(&browser_item)
                 .item(&logs_item)
@@ -1857,6 +1863,9 @@ fn main() {
                         // TTS-voice picks (no agent restart — file written, read on next utterance)
                         "tts_gr_troy"   => switch_tts_provider(app, "groq:troy"),
                         "tts_gr_austin" => switch_tts_provider(app, "groq:austin"),
+                        id if id.starts_with("kiosk_") => {
+                            crate::tray_kiosk::handle_kiosk_menu_event(app, id);
+                        }
                         "quit" => {
                             // "Quit JARVIS" stops EVERYTHING the user
                             // perceives as JARVIS — not just the overlay.
@@ -2005,6 +2014,10 @@ fn main() {
                     }
                 });
             }
+
+            // Sync the per-monitor CheckMenuItem checked state from kiosk-changed
+            // events (Rust is source of truth for kiosk on/off).
+            crate::tray_kiosk::install_kiosk_changed_listener(&app.handle());
 
             Ok(())
         })
