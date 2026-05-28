@@ -16,6 +16,13 @@ __all__ = ["LangContext"]
 # Confidence floor — short utterances ("hi" / "merci") often produce
 # low-confidence language IDs that flip-flop. Below this floor the
 # update is silently dropped, keeping the voice steady.
+#
+# 2026-05-28 note: currently DEAD in the live path. LiveKit's
+# UserInputTranscribedEvent has no `confidence` field, so the
+# STT result handler in jarvis_agent.py defaults confidence to 1.0
+# and the floor never trips in production. The floor is kept for
+# (a) unit-test coverage of the boundary, and (b) future STT-plugin
+# enrichment that surfaces a real confidence number.
 _CONFIDENCE_FLOOR = 0.6
 
 
