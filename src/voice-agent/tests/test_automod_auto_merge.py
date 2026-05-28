@@ -100,3 +100,55 @@ def test_is_blocked_path_rejects_wrapper_edits():
     from pipeline.automod._state import is_blocked_path
     assert is_blocked_path("bin/jarvis-automod-impl") is True
     assert is_blocked_path("bin/jarvis-automod") is True
+
+
+def test_revert_by_automod_id_reads_rollback_ref(automod_home):
+    """Revert with an automod ID should look up the rollback ref from
+    the artifact and use it for git reset."""
+    from pipeline.automod import cli as automod_cli
+    artifact = automod_home / "automod-2026-05-28-dddd.json"
+    artifact.write_text(json.dumps({
+        "id": "automod-2026-05-28-dddd",
+        "rollback_ref": "refs/automod-rollback/automod-2026-05-28-dddd",
+        "rollback_sha": "deadbeef",
+        "merge_sha": "feedface",
+    }), encoding="utf-8")
+
+    with mock.patch("subprocess.check_call") as mock_check, \
+         mock.patch("subprocess.run") as mock_run:
+        # Simulate argparse Namespace
+        class _Args:
+            target = "automod-2026-05-28-dddd"
+        rc = automod_cli.revert(_Args())
+    assert rc == 0
+    # check_call should have been invoked at least with a git reset --hard.
+    calls = [args[0] for args, _kw in mock_check.call_args_list]
+    flat = [item for sublist in calls for item in sublist]
+    assert "reset" in flat
+    assert "--hard" in flat
+    assert "deadbeef" in flat
+
+
+def test_revert_by_automod_id_returns_2_when_artifact_missing(automod_home):
+    from pipeline.automod import cli as automod_cli
+    class _Args:
+        target = "automod-2026-05-28-eeee"  # doesn't exist
+    rc = automod_cli.revert(_Args())
+    assert rc == 2
+
+
+def test_revert_by_automod_id_returns_2_when_no_rollback_metadata(automod_home):
+    """Artifact exists but has no rollback_ref/sha (e.g. it was manually
+    merged via the legacy path) → reject."""
+    from pipeline.automod import cli as automod_cli
+    artifact = automod_home / "automod-2026-05-28-ffff.json"
+    artifact.write_text(json.dumps({
+        "id": "automod-2026-05-28-ffff",
+        "branch": "automod/automod-2026-05-28-ffff",
+        # No rollback_ref, no rollback_sha
+    }), encoding="utf-8")
+
+    class _Args:
+        target = "automod-2026-05-28-ffff"
+    rc = automod_cli.revert(_Args())
+    assert rc == 2

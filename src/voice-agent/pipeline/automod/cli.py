@@ -147,6 +147,93 @@ def cmd_revert(commit_sha: str) -> tuple[bool, str]:
     return True, new_sha
 
 
+def revert(args) -> int:
+    """Revert an auto-merged automod proposal OR a commit SHA.
+
+    If ``args.target`` matches ``automod-YYYY-MM-DD-xxxxxx`` (starts with
+    ``"automod-"`` and contains no ``"/"``), looks up the rollback ref from
+    the artifact JSON, hard-resets master to the saved rollback SHA,
+    force-with-lease pushes, and restarts the voice-agent service.
+
+    Otherwise falls through to the legacy SHA-based ``cmd_revert`` path
+    which creates an inverse revert commit via ``git revert --no-edit``.
+
+    Returns 0 on success, 1 on operational error, 2 on usage/input error.
+    """
+    from pipeline.automod._state import artifact_path as _artifact_path
+
+    target = getattr(args, "target", None)
+    if not target:
+        print("error: no target specified", file=sys.stderr)
+        return 2
+
+    # New path: automod ID lookup (e.g. "automod-2026-05-28-abc123").
+    if target.startswith("automod-") and "/" not in target:
+        artifact_file = _artifact_path(target)
+        if not artifact_file.exists():
+            print(f"error: artifact not found: {artifact_file}",
+                  file=sys.stderr)
+            return 2
+        try:
+            rec = json.loads(artifact_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"error: cannot read artifact {target}: {e}",
+                  file=sys.stderr)
+            return 2
+        rollback_ref = rec.get("rollback_ref")
+        rollback_sha = rec.get("rollback_sha")
+        if not rollback_ref or not rollback_sha:
+            print(
+                f"error: artifact {target} has no rollback metadata "
+                "(was it manually merged via the legacy path?)",
+                file=sys.stderr,
+            )
+            return 2
+        # Fetch the rollback ref from origin (in case it's only remote).
+        # CalledProcessError means the ref doesn't exist on origin yet —
+        # continue with the local commit-ish anyway.
+        try:
+            subprocess.check_call(
+                ["git", "fetch", "origin",
+                 f"{rollback_ref}:{rollback_ref}"],
+            )
+        except subprocess.CalledProcessError:
+            pass
+        subprocess.check_call(["git", "checkout", "master"])
+        subprocess.check_call(["git", "reset", "--hard", rollback_sha])
+        subprocess.check_call(
+            ["git", "push", "--force-with-lease", "origin", "master:master"],
+        )
+        # Restart voice-agent so the reverted code is live.
+        subprocess.run(
+            ["systemctl", "--user", "restart",
+             "jarvis-voice-agent.service"],
+            check=False,
+        )
+        try:
+            artifact.audit(
+                "automod_reverted",
+                id=target,
+                rollback_ref=rollback_ref,
+                rollback_sha=rollback_sha,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        print(
+            f"reverted: master reset to {rollback_sha[:8]} "
+            f"(rollback ref {rollback_ref})"
+        )
+        return 0
+
+    # Legacy path: SHA-based revert (creates an inverse commit).
+    ok, info = cmd_revert(target)
+    if ok:
+        print(f"Reverted. New SHA: {info}")
+        return 0
+    print(f"Revert failed: {info}", file=sys.stderr)
+    return 1
+
+
 # ---------------------------------------------------------------------------
 # Output helpers
 # ---------------------------------------------------------------------------
