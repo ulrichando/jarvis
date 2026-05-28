@@ -470,57 +470,75 @@ async def _stream_session(session, get_jpeg_fn, resume_handle: Optional[str]) ->
         async def drain_responses() -> None:
             """Pull text + control messages off the socket. Updates the
             cache on each turn_complete; tracks the latest resumption
-            handle for the outer reconnect loop."""
+            handle for the outer reconnect loop.
+
+            CRITICAL: the outer `while True` is load-bearing. The SDK's
+            `session.receive()` is documented (live.py:437) and
+            implemented (live.py:456-460) to yield ONE complete model
+            turn, then exit the async iterator via `break` after the
+            first `turn_complete=True`. Without re-entering the
+            iterator we read exactly one answer, the socket goes idle
+            because nothing is consuming subsequent server frames, and
+            ~50s later the server sends 1011 keepalive timeout. This
+            was the "one answer per session" bug observed across every
+            session from 2026-05-28 03:00 onward — confirmed by
+            `grep "answer=[2-9]" voice-agent.log → 0 matches`.
+
+            Fix: wrap receive() in `while True:` so we reconsume after
+            each turn for the lifetime of the WebSocket. The cookbook
+            quickstart Get_started_LiveAPI.py uses the same shape.
+            """
             nonlocal latest_handle
             global _GLOBAL_LATEST
             buf: list[str] = []
             answers = 0
-            async for msg in live.receive():
-                sc = getattr(msg, "server_content", None)
-                if sc is not None:
-                    # Text comes via output_audio_transcription (Gemini's
-                    # transcript of its own audio output). model_turn.parts
-                    # would carry the audio inline_data — we deliberately
-                    # ignore it, dropping audio bytes on the floor.
-                    ot = getattr(sc, "output_transcription", None)
-                    if ot is not None and ot.text:
-                        buf.append(ot.text)
-                    if getattr(sc, "turn_complete", False):
-                        answers += 1
-                        text = "".join(buf).strip()
-                        buf.clear()
-                        if text:
-                            pair = (text, time.monotonic())
-                            session._jarvis_latest_screen_description = pair
-                            _GLOBAL_LATEST = pair
+            while True:
+                async for msg in live.receive():
+                    sc = getattr(msg, "server_content", None)
+                    if sc is not None:
+                        # Text comes via output_audio_transcription
+                        # (Gemini's transcript of its own audio output).
+                        # model_turn.parts would carry the audio
+                        # inline_data — we deliberately ignore it,
+                        # dropping audio bytes on the floor.
+                        ot = getattr(sc, "output_transcription", None)
+                        if ot is not None and ot.text:
+                            buf.append(ot.text)
+                        if getattr(sc, "turn_complete", False):
+                            answers += 1
+                            text = "".join(buf).strip()
+                            buf.clear()
+                            if text:
+                                pair = (text, time.monotonic())
+                                session._jarvis_latest_screen_description = pair
+                                _GLOBAL_LATEST = pair
+                                log.info(
+                                    f"[screen-observer:stream] answer={answers}: "
+                                    f"{text[:100]}"
+                                )
+                            # Re-arm the prompt ticker — Gemini
+                            # finished its turn, safe to send the next
+                            # describe prompt.
+                            prompt_ready.set()
+                        # Server-initiated wind-down — exit cleanly
+                        # so the outer reconnect loop can resume with
+                        # the cached handle before the socket is
+                        # yanked.
+                        go = getattr(sc, "go_away", None)
+                        if go is not None:
+                            time_left = getattr(go, "time_left", None)
                             log.info(
-                                f"[screen-observer:stream] answer={answers}: "
-                                f"{text[:100]}"
+                                f"[screen-observer:stream] GoAway received "
+                                f"(time_left={time_left}); will reconnect"
                             )
-                        # Re-arm the prompt ticker — Gemini finished its
-                        # turn, safe to send the next describe prompt.
-                        # Without this, tick_prompts blocks on
-                        # prompt_ready.wait() forever after the first
-                        # response — that was the "one answer per
-                        # session" failure mode.
-                        prompt_ready.set()
-                    # Server-initiated wind-down — exit cleanly so the
-                    # outer loop reconnects with the resumption handle
-                    # before the socket is yanked.
-                    go = getattr(sc, "go_away", None)
-                    if go is not None:
-                        time_left = getattr(go, "time_left", None)
-                        log.info(
-                            f"[screen-observer:stream] GoAway received "
-                            f"(time_left={time_left}); will reconnect"
-                        )
-                        return
-                # Resumption handle updates — cache for the reconnect.
-                sru = getattr(msg, "session_resumption_update", None)
-                if sru is not None and getattr(sru, "resumable", False):
-                    new_handle = getattr(sru, "new_handle", None)
-                    if new_handle:
-                        latest_handle = new_handle
+                            return
+                    # Resumption handle updates — cache for the
+                    # reconnect path.
+                    sru = getattr(msg, "session_resumption_update", None)
+                    if sru is not None and getattr(sru, "resumable", False):
+                        new_handle = getattr(sru, "new_handle", None)
+                        if new_handle:
+                            latest_handle = new_handle
 
         pusher = asyncio.create_task(push_frames(), name="stream-obs-pusher")
         ticker = asyncio.create_task(tick_prompts(), name="stream-obs-ticker")
