@@ -26,10 +26,12 @@ Lifecycle:
     devices.
 
 Heads-up: while this is running, JARVIS's Orpheus may also speak if
-you trigger him by saying "Jarvis". Mute JARVIS first
-(systemctl --user stop jarvis-voice-client) or just stay aware. A
-follow-up commit can add a tray menu that mutes/unmutes JARVIS
-automatically.
+you trigger him by saying "Jarvis" — the two pipelines share the
+mic. Use `bin/jarvis-mode gemini` (toggle script) instead of
+launching this script directly: it mutes JARVIS's mic on start and
+unmutes it on stop, so the two voices don't talk over each other.
+Run `bin/jarvis-mode jarvis` (or just `bin/jarvis-mode` again) to
+flip back.
 """
 from __future__ import annotations
 
@@ -71,8 +73,14 @@ SYSTEM_INSTRUCTION = (
     "it. Skip pleasantries unless he leads with one."
 )
 
-# Voice — pick one of: Aoede, Charon, Fenrir, Kore, Puck, Zephyr
-VOICE_NAME = os.environ.get("JARVIS_GEMINI_DIRECT_VOICE", "Aoede")
+# Voice — Gemini Live exposes 30+ named voices. Sadaltager is the
+# user's pick (warm, conversational tenor). Full set as of 2026-05:
+#   Achernar, Algenib, Algieba, Alnilam, Aoede, Autonoe, Callirrhoe,
+#   Charon, Despina, Enceladus, Erinome, Fenrir, Gacrux, Iapetus,
+#   Kore, Laomedeia, Leda, Orus, Pulcherrima, Puck, Rasalgethi,
+#   Sadachbia, Sadaltager, Schedar, Sulafat, Umbriel, Vindemiatrix,
+#   Zephyr, Zubenelgenubi.
+VOICE_NAME = os.environ.get("JARVIS_GEMINI_DIRECT_VOICE", "Sadaltager")
 
 log = logging.getLogger("jarvis.gemini-direct")
 logging.basicConfig(level=logging.INFO, format="%(message)s")
