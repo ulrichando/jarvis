@@ -953,21 +953,37 @@ fn get_primary_monitor_info(window: WebviewWindow) -> Result<serde_json::Value, 
     }))
 }
 
-/// List screen-share sources available on the user's X11 desktop —
-/// monitors (via `xrandr --listmonitors`) and visible windows
-/// (via `wmctrl -l -G`). Returns
-/// `{ monitors: [{name, x, y, w, h, primary}, ...],
-///    windows:  [{id, x, y, w, h, title}, ...] }`.
-///
-/// Used by the React ScreenSharePicker modal to populate the picker
-/// cards. The user picks one → React POSTs the chosen source to the
-/// voice-client's /screen-share endpoint with `{start:true, source:{...}}`.
-///
-/// X11-only. Returns an error string if either xrandr or wmctrl is
-/// missing (both are required for the picker — install them via
-/// `apt install x11-xserver-utils wmctrl`).
-#[tauri::command]
-fn list_screen_sources() -> Result<serde_json::Value, String> {
+// Shared struct shapes for screen-share sources. Used by both the
+// internal tray-menu builder and the Tauri command exposed to JS.
+#[derive(Clone, Debug)]
+struct MonitorInfo {
+    name:    String,
+    x:       i64,
+    y:       i64,
+    w:       i64,
+    h:       i64,
+    primary: bool,
+}
+
+#[derive(Clone, Debug)]
+struct WindowInfo {
+    id:    String,
+    w:     i64,
+    h:     i64,
+    title: String,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ScreenSources {
+    monitors: Vec<MonitorInfo>,
+    windows:  Vec<WindowInfo>,
+}
+
+/// Probe X11 for screen-share sources (monitors via xrandr, windows
+/// via wmctrl). Returns empty lists on failure — callers decide what
+/// to do (the tray menu shows "(no sources)" placeholder; the JS
+/// command surfaces the error string).
+fn enumerate_screen_sources_internal() -> Result<ScreenSources, String> {
     let xrandr = std::process::Command::new("xrandr")
         .arg("--listmonitors")
         .output()
@@ -991,32 +1007,22 @@ fn list_screen_sources() -> Result<serde_json::Value, String> {
         ));
     }
 
-    // xrandr --listmonitors output:
-    //   Monitors: 2
-    //    0: +*DP-1 5120/1200x1440/340+0+0  DP-1
-    //    1: +eDP-1 2560/366x1600/229+1361+1440  eDP-1
-    // Per line: ` <index>: <flags><name> <wpx>/<wmm>x<hpx>/<hmm>+<x>+<y>  <output>`
-    // The `*` in flags marks the primary monitor.
-    let mut monitors = Vec::<serde_json::Value>::new();
+    let mut monitors = Vec::<MonitorInfo>::new();
     for line in String::from_utf8_lossy(&xrandr.stdout).lines() {
         let line = line.trim();
         if line.starts_with("Monitors:") || line.is_empty() {
             continue;
         }
-        // Geometry chunk has no spaces: "5120/1200x1440/340+0+0"
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() < 3 {
             continue;
         }
-        let flags_name = parts[1]; // "+*DP-1" or "+eDP-1"
+        let flags_name = parts[1];
         let primary = flags_name.contains('*');
         let name = flags_name
             .trim_start_matches(|c| c == '+' || c == '*')
             .to_string();
-        let geom = parts[2]; // "5120/1200x1440/340+0+0"
-        // Pull out integers separated by 'x' / '+' / '/' — keep the
-        // four we want (wpx, hpx, x, y), ignore the mm dimensions.
-        // Pattern: <wpx>/<wmm>x<hpx>/<hmm>+<x>+<y>
+        let geom = parts[2];
         let mut nums = geom.split(|c: char| !c.is_ascii_digit()).filter(|s| !s.is_empty());
         let wpx = nums.next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
         let _wmm = nums.next();
@@ -1024,44 +1030,23 @@ fn list_screen_sources() -> Result<serde_json::Value, String> {
         let _hmm = nums.next();
         let x = nums.next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
         let y = nums.next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
-        monitors.push(serde_json::json!({
-            "name":    name,
-            "x":       x,
-            "y":       y,
-            "w":       wpx,
-            "h":       hpx,
-            "primary": primary,
-        }));
+        monitors.push(MonitorInfo { name, x, y, w: wpx, h: hpx, primary });
     }
 
-    // wmctrl -l -G output (per window):
-    //   <id_hex> <desktop> <x> <y> <w> <h> <hostname> <title...>
-    // We skip desktop=-1 (panels, pinned windows like the root
-    // "Desktop") and a small denylist of obvious non-content windows.
-    // Result is a list of human-pickable windows.
-    let denylist = ["xfce4-panel", "Desktop", "jarvis-desktop"];
-    let mut windows = Vec::<serde_json::Value>::new();
+    let denylist = ["xfce4-panel", "Desktop", "jarvis-desktop", "J.A.R.V.I.S."];
+    let mut windows = Vec::<WindowInfo>::new();
     for line in String::from_utf8_lossy(&wmctrl.stdout).lines() {
         let cols: Vec<&str> = line.splitn(8, char::is_whitespace).collect();
-        // wmctrl -G splits the title on whitespace — we need to keep
-        // it intact, so we collect up to 8 fields and let the title
-        // own the tail. Skip lines that don't have all 8.
         if cols.len() < 8 {
             continue;
         }
-        let id = cols[0];
+        let id = cols[0].to_string();
         let desktop = cols[1].parse::<i64>().unwrap_or(-1);
         if desktop < 0 {
             continue;
         }
-        let x = cols[2].parse::<i64>().unwrap_or(0);
-        let y = cols[3].parse::<i64>().unwrap_or(0);
         let w = cols[4].parse::<i64>().unwrap_or(0);
         let h = cols[5].parse::<i64>().unwrap_or(0);
-        // Title is everything past the hostname — re-split the line
-        // to recover the trailing title without slicing on a
-        // sub-token. wmctrl pads numeric cols so leading spaces are
-        // expected; .trim_start handles it.
         let title = line
             .splitn(8, char::is_whitespace)
             .nth(7)
@@ -1072,24 +1057,35 @@ fn list_screen_sources() -> Result<serde_json::Value, String> {
             continue;
         }
         if w < 100 || h < 100 {
-            // Skip ultra-tiny windows (popups, off-screen artifacts).
             continue;
         }
-        windows.push(serde_json::json!({
-            "id":    id,
-            "x":     x,
-            "y":     y,
-            "w":     w,
-            "h":     h,
-            "title": title,
-        }));
+        windows.push(WindowInfo { id, w, h, title });
     }
 
-    Ok(serde_json::json!({
-        "monitors": monitors,
-        "windows":  windows,
-    }))
+    Ok(ScreenSources { monitors, windows })
 }
+
+/// List screen-share sources available on the user's X11 desktop —
+/// monitors (via `xrandr --listmonitors`) and visible windows
+/// (via `wmctrl -l -G`). Returns
+/// `{ monitors: [{name, x, y, w, h, primary}, ...],
+///    windows:  [{id, x, y, w, h, title}, ...] }`.
+///
+/// X11-only. Returns an error string if either xrandr or wmctrl is
+/// missing (both are required for the picker — install them via
+/// `apt install x11-xserver-utils wmctrl`).
+#[tauri::command]
+fn list_screen_sources() -> Result<serde_json::Value, String> {
+    let sources = enumerate_screen_sources_internal()?;
+    let mons: Vec<_> = sources.monitors.iter().map(|m| serde_json::json!({
+        "name": m.name, "x": m.x, "y": m.y, "w": m.w, "h": m.h, "primary": m.primary,
+    })).collect();
+    let wins: Vec<_> = sources.windows.iter().map(|w| serde_json::json!({
+        "id": w.id, "w": w.w, "h": w.h, "title": w.title,
+    })).collect();
+    Ok(serde_json::json!({"monitors": mons, "windows": wins}))
+}
+
 
 // ── Browser-open helpers ───────────────────────────────────────────────────
 
