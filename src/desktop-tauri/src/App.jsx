@@ -4,6 +4,7 @@ import { listen }  from '@tauri-apps/api/event'
 import ChatPanel   from './components/ChatPanel.jsx'
 import VoiceChatPanel from './components/VoiceChatPanel.jsx'
 import KeysSettings from './KeysSettings.jsx'
+import KioskHUD     from './components/KioskHUD.jsx'
 // Voice lives OUT of the webview — jarvis-voice-client.service is
 // the LiveKit peer that owns the mic + speaker, reached over HTTP
 // on :8767 through useVoiceClient. Imported under the `useSpeech`
@@ -78,6 +79,11 @@ export default function App() {
     return <KeysSettings />
   }
 
+  if (typeof window !== 'undefined' &&
+      window.location.search.includes('route=kiosk')) {
+    return <KioskHUD />
+  }
+
   const [chatOpen, setChatOpen]     = useState(false)
   const [voiceChatOpen, setVoiceChatOpen] = useState(false)
   const [voiceMuted, setVoiceMuted] = useState(false)
@@ -115,6 +121,15 @@ export default function App() {
         speechRef.current.speak(m.text)
       }
       if (m.type === 'voice_muted') setVoiceMuted(m.muted)
+      if (m.type === 'kiosk') {
+        if (m.state === 'on' && typeof m.monitor === 'number') {
+          invoke('enter_kiosk_on_monitor', { monitorIdx: m.monitor }).catch(console.error)
+        } else if (m.state === 'off') {
+          invoke('exit_kiosk').catch(console.error)
+        } else {
+          console.error('[kiosk] invalid WS msg', m)
+        }
+      }
     }
     const last = wsMessages[wsMessages.length - 1]
     if (last.type === 'show_chat') openChat()
