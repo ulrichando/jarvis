@@ -266,6 +266,7 @@ from pipeline.turn_router    import (
 )
 from pipeline.dispatching_llm import DispatchingLLM
 from pipeline.dispatching_tts import DispatchingTTS
+from pipeline.lang_context import LangContext
 from pipeline.turn_telemetry import init_db, log_turn, log_launch_attempt, DEFAULT_DB_PATH
 # Pre-TTS confab gate — inspects supervisor reply text BEFORE TTS streams
 # and runs the per-route retry chain when a "no-tool but claimed action"
@@ -490,6 +491,27 @@ from pipeline.fast_path_classifier import (
 from pipeline.chat_ctx import sanitize_leaked_tool_text as _sanitize_leaked_tool_text
 _last_real_interaction = 0.0     # monotonic timestamp of last accepted turn
 _bg_tasks: set = set()  # keeps create_task refs alive until done
+
+
+def _update_lang_from_stt_event(ctx: "LangContext", ev) -> None:
+    """Update a LangContext from a user_input_transcribed event.
+
+    Handles three event-shape quirks:
+      - language attr may be missing or None (some STT plugins don't
+        surface it). Skip — keep previous lang.
+      - confidence attr may be missing. Default 1.0 — accept the
+        language since we have no signal to reject it.
+      - language is anything truthy → pass through; LangContext's
+        confidence floor handles low-confidence drops.
+    """
+    lang = getattr(ev, "language", None)
+    if not lang:
+        return
+    conf = getattr(ev, "confidence", 1.0)
+    try:
+        ctx.set(lang, confidence=float(conf))
+    except (TypeError, ValueError):
+        ctx.set(lang)
 
 
 def _in_quiet_hours() -> bool:
@@ -5090,6 +5112,7 @@ def _register_state_tracking_handlers(session) -> None:
     # voice-client to the agent through a healthy LiveKit subscription.
     @session.on("user_input_transcribed")
     def _on_user_input(ev) -> None:
+        _update_lang_from_stt_event(session.lang_ctx, ev)
         try:
             from resilience import audio_silence_watchdog as _asw
             _asw.mark_audio_activity()
@@ -5823,6 +5846,12 @@ async def entrypoint(ctx: JobContext) -> None:
     # session_id is generated for log correlation / telemetry only.
     convo_session_id = str(uuid.uuid4())
     logger.info(f"[session] {convo_session_id} — conversation in-memory only")
+
+    # Per-session language context — tracks detected language + confidence
+    # from STT events so DispatchingTTS can pick the matching voice per turn.
+    # Default is 'en'; updated live by _update_lang_from_stt_event inside
+    # the user_input_transcribed handler.
+    session.lang_ctx = LangContext()
 
     # Session-state for the dispatcher prefix. Turn count drives the
     # [Turn N · session Mm] hint that tells the LLM where it is in the
