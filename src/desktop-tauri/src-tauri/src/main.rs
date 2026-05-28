@@ -956,6 +956,144 @@ fn get_primary_monitor_info(window: WebviewWindow) -> Result<serde_json::Value, 
     }))
 }
 
+/// List screen-share sources available on the user's X11 desktop —
+/// monitors (via `xrandr --listmonitors`) and visible windows
+/// (via `wmctrl -l -G`). Returns
+/// `{ monitors: [{name, x, y, w, h, primary}, ...],
+///    windows:  [{id, x, y, w, h, title}, ...] }`.
+///
+/// Used by the React ScreenSharePicker modal to populate the picker
+/// cards. The user picks one → React POSTs the chosen source to the
+/// voice-client's /screen-share endpoint with `{start:true, source:{...}}`.
+///
+/// X11-only. Returns an error string if either xrandr or wmctrl is
+/// missing (both are required for the picker — install them via
+/// `apt install x11-xserver-utils wmctrl`).
+#[tauri::command]
+fn list_screen_sources() -> Result<serde_json::Value, String> {
+    let xrandr = std::process::Command::new("xrandr")
+        .arg("--listmonitors")
+        .output()
+        .map_err(|e| format!("xrandr not available: {e}"))?;
+    if !xrandr.status.success() {
+        return Err(format!(
+            "xrandr --listmonitors exited {}: {}",
+            xrandr.status,
+            String::from_utf8_lossy(&xrandr.stderr),
+        ));
+    }
+    let wmctrl = std::process::Command::new("wmctrl")
+        .args(["-l", "-G"])
+        .output()
+        .map_err(|e| format!("wmctrl not available: {e}"))?;
+    if !wmctrl.status.success() {
+        return Err(format!(
+            "wmctrl -l -G exited {}: {}",
+            wmctrl.status,
+            String::from_utf8_lossy(&wmctrl.stderr),
+        ));
+    }
+
+    // xrandr --listmonitors output:
+    //   Monitors: 2
+    //    0: +*DP-1 5120/1200x1440/340+0+0  DP-1
+    //    1: +eDP-1 2560/366x1600/229+1361+1440  eDP-1
+    // Per line: ` <index>: <flags><name> <wpx>/<wmm>x<hpx>/<hmm>+<x>+<y>  <output>`
+    // The `*` in flags marks the primary monitor.
+    let mut monitors = Vec::<serde_json::Value>::new();
+    for line in String::from_utf8_lossy(&xrandr.stdout).lines() {
+        let line = line.trim();
+        if line.starts_with("Monitors:") || line.is_empty() {
+            continue;
+        }
+        // Geometry chunk has no spaces: "5120/1200x1440/340+0+0"
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 3 {
+            continue;
+        }
+        let flags_name = parts[1]; // "+*DP-1" or "+eDP-1"
+        let primary = flags_name.contains('*');
+        let name = flags_name
+            .trim_start_matches(|c| c == '+' || c == '*')
+            .to_string();
+        let geom = parts[2]; // "5120/1200x1440/340+0+0"
+        // Pull out integers separated by 'x' / '+' / '/' — keep the
+        // four we want (wpx, hpx, x, y), ignore the mm dimensions.
+        // Pattern: <wpx>/<wmm>x<hpx>/<hmm>+<x>+<y>
+        let mut nums = geom.split(|c: char| !c.is_ascii_digit()).filter(|s| !s.is_empty());
+        let wpx = nums.next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+        let _wmm = nums.next();
+        let hpx = nums.next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+        let _hmm = nums.next();
+        let x = nums.next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+        let y = nums.next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+        monitors.push(serde_json::json!({
+            "name":    name,
+            "x":       x,
+            "y":       y,
+            "w":       wpx,
+            "h":       hpx,
+            "primary": primary,
+        }));
+    }
+
+    // wmctrl -l -G output (per window):
+    //   <id_hex> <desktop> <x> <y> <w> <h> <hostname> <title...>
+    // We skip desktop=-1 (panels, pinned windows like the root
+    // "Desktop") and a small denylist of obvious non-content windows.
+    // Result is a list of human-pickable windows.
+    let denylist = ["xfce4-panel", "Desktop", "jarvis-desktop"];
+    let mut windows = Vec::<serde_json::Value>::new();
+    for line in String::from_utf8_lossy(&wmctrl.stdout).lines() {
+        let cols: Vec<&str> = line.splitn(8, char::is_whitespace).collect();
+        // wmctrl -G splits the title on whitespace — we need to keep
+        // it intact, so we collect up to 8 fields and let the title
+        // own the tail. Skip lines that don't have all 8.
+        if cols.len() < 8 {
+            continue;
+        }
+        let id = cols[0];
+        let desktop = cols[1].parse::<i64>().unwrap_or(-1);
+        if desktop < 0 {
+            continue;
+        }
+        let x = cols[2].parse::<i64>().unwrap_or(0);
+        let y = cols[3].parse::<i64>().unwrap_or(0);
+        let w = cols[4].parse::<i64>().unwrap_or(0);
+        let h = cols[5].parse::<i64>().unwrap_or(0);
+        // Title is everything past the hostname — re-split the line
+        // to recover the trailing title without slicing on a
+        // sub-token. wmctrl pads numeric cols so leading spaces are
+        // expected; .trim_start handles it.
+        let title = line
+            .splitn(8, char::is_whitespace)
+            .nth(7)
+            .unwrap_or("")
+            .trim_start()
+            .to_string();
+        if denylist.iter().any(|d| title.contains(d)) {
+            continue;
+        }
+        if w < 100 || h < 100 {
+            // Skip ultra-tiny windows (popups, off-screen artifacts).
+            continue;
+        }
+        windows.push(serde_json::json!({
+            "id":    id,
+            "x":     x,
+            "y":     y,
+            "w":     w,
+            "h":     h,
+            "title": title,
+        }));
+    }
+
+    Ok(serde_json::json!({
+        "monitors": monitors,
+        "windows":  windows,
+    }))
+}
+
 // ── Browser-open helpers ───────────────────────────────────────────────────
 
 /// Probe the standard JARVIS web ports and return the first URL that
@@ -1777,19 +1915,25 @@ fn main() {
                             }
                         }
                         "share_screen" => {
-                            // Re-routed 2026-05-28: tray click no longer
-                            // hits the voice-client's POST /screen-share
-                            // (the legacy ffmpeg→LiveKit publisher with
-                            // no OS picker, full-desktop capture only).
-                            // Instead we emit `tray-toggle-screen-share`
-                            // and let the webview's useScreenShare hook
-                            // call setScreenShareEnabled(true), which
-                            // triggers xdg-desktop-portal for a proper
-                            // monitor/window picker — same UX as Google
-                            // Meet / Zoom Web. The webview reports the
-                            // resulting state back via set_share_label
-                            // so the tray menu text stays in sync.
+                            // Tray click routes through the React
+                            // ScreenSharePicker modal (X11+WebKitGTK
+                            // can't do native getDisplayMedia() — the
+                            // portal ScreenCast backend doesn't exist
+                            // on X11+XFCE). We enumerate sources in
+                            // Rust (xrandr + wmctrl, exposed via
+                            // list_screen_sources command) and let
+                            // React present a custom picker UI; on
+                            // pick, React POSTs the chosen source to
+                            // /screen-share so the voice-client's
+                            // ffmpeg publisher captures that specific
+                            // window or monitor. Need to show + raise
+                            // the window so the modal is visible even
+                            // when the user has the panels hidden.
                             if let Some(w) = app.get_webview_window("main") {
+                                let _ = w.show();
+                                let _ = w.set_always_on_top(true);
+                                let _ = w.set_ignore_cursor_events(false);
+                                let _ = w.set_focus();
                                 let _ = w.emit("tray-toggle-screen-share", ());
                             }
                         }
@@ -2033,6 +2177,7 @@ fn main() {
             set_tts_label,
             set_share_label,
             get_primary_monitor_info,
+            list_screen_sources,
             keys_read,
             keys_set,
             keys_clear,
