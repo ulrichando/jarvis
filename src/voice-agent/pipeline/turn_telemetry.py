@@ -45,6 +45,30 @@ CONFAB_STATE_CAUGHT_T3_PASSED   = "caught_t3_passed"
 CONFAB_STATE_CAUGHT_FILLER      = "caught_filler"
 CONFAB_STATE_BYPASSED_KILLED    = "bypassed_killed"
 
+# Precise sub-states for the gate's "clean" (no-retry) verdicts — added
+# 2026-05-27 to make the four bypass reasons distinguishable in the DB
+# instead of collapsing them into one indistinguishable CLEAN value.
+CONFAB_STATE_CLEAN_BYPASS_ROUTE   = "clean_bypass_route"     # BANTER / EMOTIONAL
+CONFAB_STATE_CLEAN_UNKNOWN_ROUTE  = "clean_unknown_route"    # route not TASK_* / REASONING
+CONFAB_STATE_CLEAN_NO_CLAIM       = "clean_no_claim"         # text didn't trip any pattern
+CONFAB_STATE_CLEAN_TOOL_CALLED    = "clean_tool_called"      # tool_calls non-empty (genuine action)
+
+# New failure-precision states when the gate trips but retry can't run cleanly.
+CONFAB_STATE_RETRY_FACTORY_MISSING = "retry_factory_missing"  # gate tripped, _jarvis_pre_tts_llm_factory was None
+CONFAB_STATE_RETRY_EXCEPTION       = "retry_exception"        # retry chain raised — see logs
+
+# Post-tool reply-required gate states (2026-05-27). Stored in
+# turns.confab_check_state. These mirror the confab cascade but for
+# the inverse failure: tool fired but no text reply was voiced.
+#   _T1_PASSED: tier 1 (retry) produced text
+#   _T2_PASSED: tier 2 (escalate) produced text
+#   _T3_PASSED: tier 3 (cross_provider) produced text
+#   _FILLER:    all tiers exhausted — safe filler voiced
+CONFAB_STATE_NO_TEXT_T1_PASSED  = "no_text_t1_passed"
+CONFAB_STATE_NO_TEXT_T2_PASSED  = "no_text_t2_passed"
+CONFAB_STATE_NO_TEXT_T3_PASSED  = "no_text_t3_passed"
+CONFAB_STATE_NO_TEXT_FILLER     = "no_text_filler"
+
 DEFAULT_DB_PATH = Path(
     os.environ.get(
         "JARVIS_TELEMETRY_PATH",
@@ -336,6 +360,31 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
                 conn.execute("ALTER TABLE turns ADD COLUMN correction_signal TEXT")
             except sqlite3.OperationalError:
                 pass
+        # 2026-05-27 — subagent dispatch telemetry (Plan:
+        # docs/superpowers/plans/2026-05-27-voice-agent-subagent-dispatch.md).
+        # subagent_type: which subagent profile owned this turn
+        # ('explore' / 'plan' / 'edit' / 'verify' / 'review' / etc.) or
+        # NULL when no subagent dispatch fired. subagent_ms: total
+        # wall-clock the subagent loop ran (start of dispatch → final
+        # tool_result). subagent_status: 'success' / 'failure' /
+        # 'timeout' / 'cancelled'. All NULL on turns that didn't go
+        # through subagent dispatch — a GROUP BY counts only meaningful
+        # rows.
+        try:
+            cur = conn.cursor()
+            cur.execute("ALTER TABLE turns ADD COLUMN subagent_type TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+        try:
+            cur = conn.cursor()
+            cur.execute("ALTER TABLE turns ADD COLUMN subagent_ms INTEGER")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cur = conn.cursor()
+            cur.execute("ALTER TABLE turns ADD COLUMN subagent_status TEXT")
+        except sqlite3.OperationalError:
+            pass
         # Two pattern tables — populated by pipeline.automod.patterns, drained
         # by the spawner. proposed_at IS NULL means "not yet emitted to queue".
         conn.executescript("""
@@ -396,6 +445,9 @@ def log_turn(
     output_profile: Optional[str] = None,
     apm_delay_ms_p50: Optional[int] = None,
     dtln_latency_ms_p95: Optional[float] = None,
+    subagent_type: Optional[str] = None,
+    subagent_ms: Optional[int] = None,
+    subagent_status: Optional[str] = None,
 ) -> None:
     """Write one row. Any exception is swallowed so telemetry never blocks voice.
 
@@ -449,8 +501,9 @@ def log_turn(
                     confab_check_state,
                     confab_pattern_matched, confab_retry_models,
                     aec_layer1_active, aec_layer2_aec_active, aec_layer3_active,
-                    output_profile, apm_delay_ms_p50, dtln_latency_ms_p95)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    output_profile, apm_delay_ms_p50, dtln_latency_ms_p95,
+                    subagent_type, subagent_ms, subagent_status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     ts_utc or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     user_text, jarvis_text, emotion, route, llm_used,
@@ -465,6 +518,7 @@ def log_turn(
                     confab_pattern_matched, confab_retry_models,
                     aec_layer1_active, aec_layer2_aec_active, aec_layer3_active,
                     output_profile, apm_delay_ms_p50, dtln_latency_ms_p95,
+                    subagent_type, subagent_ms, subagent_status,
                 ),
             )
     except Exception:
