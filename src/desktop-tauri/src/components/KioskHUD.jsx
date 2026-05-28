@@ -75,23 +75,24 @@ export default function KioskHUD() {
 
   return (
     <div className="kiosk-hud-root">
-      <div className="kiosk-arc-center-wrap">
-        <KioskAura state={state} size={340} />
-      </div>
+      <KioskAura state={state} size={340} />
       <style>{`
         .kiosk-hud-root {
           position: fixed;
           top: 0; left: 0;
           width: 100vw; height: 100vh;
           background: #000 !important;
+          display: flex;
+          align-items: center;
+          justify-content: center;
           z-index: 9999;
           overflow: hidden;
           cursor: none;
+          margin: 0;
+          padding: 0;
         }
-        .kiosk-arc-center-wrap {
-          position: absolute;
-          top: 50%; left: 50%;
-          transform: translate(-50%, -50%);
+        .kiosk-hud-root > * {
+          flex: 0 0 auto;
         }
       `}</style>
     </div>
