@@ -64,6 +64,12 @@ HARD_BLOCKLIST_PATHS = (
     ".claude/rules/regression-prevention.md",
     "MEMORY.md",
     "USER.md",
+    # 2026-05-28: protect the auto-merge wrapper + CLI from being
+    # modified by auto-mod itself. Even though ALLOWED_PATH_PREFIX
+    # already blocks anything outside src/voice-agent/, listing these
+    # explicitly here makes the intent legible to the next reader.
+    "bin/jarvis-automod-impl",
+    "bin/jarvis-automod",
 )
 
 # Allowed prefix — diffs may touch only files under this prefix.
