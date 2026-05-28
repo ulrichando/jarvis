@@ -11,7 +11,6 @@ import KioskHUD     from './components/KioskHUD.jsx'
 // name so consumers that still destructure `speech.speak` /
 // `speech.speaking` stay unchanged.
 import useSpeech   from './hooks/useVoiceClient.js'
-import { useScreenShare } from './hooks/useScreenShare.js'
 
 const PYTHON_BASE = 'http://127.0.0.1:8765'
 // Bridge optional auth: when JARVIS_REQUIRE_LOCAL_AUTH=1 the bridge
@@ -220,14 +219,11 @@ export default function App() {
   const voiceChatOpenRef = useRef(voiceChatOpen)
   useEffect(() => { voiceChatOpenRef.current = voiceChatOpen }, [voiceChatOpen])
 
-  // ── LiveKit-native screen-share (owned at App level so tray events
-  // can toggle it regardless of which panels are open). The hook
-  // manages a lazy Room connection and calls
-  // setScreenShareEnabled(true) which triggers xdg-desktop-portal
-  // for an OS-native source picker — same UX as Google Meet / Zoom
-  // Web. Tray menu label flips between "Start" and "Stop ✓" via
-  // invoke('set_share_label', { active }) below.
-  const screenShare = useScreenShare()
+  // Screen-share is now a NATIVE tray submenu (src-tauri/src/main.rs
+  // builds the picker directly under "Share Screen ▸"). No React
+  // modal, no popup window — clicks on tray monitor/window items
+  // POST /screen-share themselves from Rust. App.jsx has no
+  // share-related state anymore.
 
   // ── Tray events from Rust ────────────────────────────────────────────
   useEffect(() => {
@@ -246,13 +242,10 @@ export default function App() {
       if (voiceChatOpenRef.current) closeVoiceChat()
       else                          openVoiceChat()
     })
-    // Tray "Start / Stop Screen Share" item → toggle the LiveKit-
-    // native picker flow. Rust used to POST /screen-share here but
-    // that hit the legacy ffmpeg publisher with no picker; now we
-    // own the toggle webview-side.
-    const unlistenS = listen('tray-toggle-screen-share', () => {
-      screenShare.toggle().catch(console.error)
-    })
+    // Legacy tray-toggle-screen-share event (kept for back-compat with
+    // older Rust builds that emit it). Currently a no-op — the native
+    // submenu handler in Rust does all the work now.
+    const unlistenS = listen('tray-toggle-screen-share', () => {})
     return () => {
       unlisten1.then(f => f())
       unlisten2.then(f => f())
@@ -263,7 +256,7 @@ export default function App() {
       unlistenV3.then(f => f())
       unlistenS.then(f => f())
     }
-  }, [openChat, closeChat, openVoiceChat, closeVoiceChat, screenShare])
+  }, [openChat, closeChat, openVoiceChat, closeVoiceChat])
 
   // ── Initial click-through on mount ───────────────────────────────────
   useEffect(() => {
