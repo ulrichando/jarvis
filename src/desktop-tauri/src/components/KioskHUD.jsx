@@ -2,17 +2,23 @@ import React, { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { AgentAudioVisualizerAura } from '@/components/agents-ui/agent-audio-visualizer-aura'
 
-// Root component for ?route=kiosk. Black fullscreen background with
-// LiveKit's AgentAudioVisualizerAura (shader-based pulsing energy field)
-// centered. State derived from a 500ms poll of /status — the same
-// source the tray indicator uses. No audio reactivity yet (iteration 1
-// runs state-only); audio reactivity = iteration 2 (would require
-// connecting the kiosk window to LiveKit as a subscriber).
+// Root component for ?route=kiosk.
+//
+// Centering strategy: do NOT rely on `100vw / 100vh` from the React side.
+// Three prior attempts (flex-center, absolute+translate, grid place-items)
+// all visually placed the visualizer top-left. The likely cause is that
+// the webview viewport doesn't propagate window-size updates after Tauri
+// flips to fullscreen on Linux/GTK — vw/vh resolve against a stale tiny
+// viewport, so `top: 50%` lands at the top-left of the actual screen.
+//
+// Fix: subscribe to window.innerWidth/innerHeight via a resize listener,
+// store dimensions in React state, and position the Aura with EXPLICIT
+// pixel offsets computed from the live dimensions. This bypasses CSS's
+// vw/vh resolution entirely.
 const STATUS_URL = 'http://127.0.0.1:8767/status'
 const POLL_MS = 500
+const AURA_SIZE = 448 // 'xl' variant — keep as the natural component size
 
-// Map our internal voice state to LiveKit AgentState values the
-// visualizer understands.
 function deriveAgentState(s) {
   if (!s || s.connected === false) return 'disconnected'
   if (s.speaking)     return 'speaking'
@@ -24,29 +30,42 @@ function deriveAgentState(s) {
 
 export default function KioskHUD() {
   const [agentState, setAgentState] = useState('connecting')
+  const [vp, setVp] = useState({ w: window.innerWidth, h: window.innerHeight })
 
-  // Force opaque black bg over index.html's `transparent !important`.
+  // Track viewport dimensions live — vw/vh seem stale post-fullscreen on GTK.
   useEffect(() => {
-    const prev = {
-      bodyBg: document.body.style.background,
-      htmlBg: document.documentElement.style.background,
-      rootBg: document.getElementById('root')?.style.background,
+    const onResize = () => setVp({ w: window.innerWidth, h: window.innerHeight })
+    window.addEventListener('resize', onResize)
+    // Also poll once a second for the first 5s after mount in case GTK
+    // never fires a proper resize event after the WM flips to fullscreen.
+    let ticks = 0
+    const id = setInterval(() => {
+      ticks += 1
+      onResize()
+      if (ticks >= 10) clearInterval(id)
+    }, 500)
+    return () => {
+      window.removeEventListener('resize', onResize)
+      clearInterval(id)
     }
+  }, [])
+
+  // Force opaque black bg and dark mode (Aura assumes dark).
+  useEffect(() => {
     document.body.style.setProperty('background', '#000', 'important')
     document.documentElement.style.setProperty('background', '#000', 'important')
     const root = document.getElementById('root')
     if (root) root.style.setProperty('background', '#000', 'important')
-    // The Aura visualizer expects to live in a dark-mode context.
     document.documentElement.classList.add('dark')
     return () => {
-      document.body.style.background = prev.bodyBg
-      document.documentElement.style.background = prev.htmlBg
-      if (root) root.style.background = prev.rootBg
+      document.body.style.background = ''
+      document.documentElement.style.background = ''
+      if (root) root.style.background = ''
       document.documentElement.classList.remove('dark')
     }
   }, [])
 
-  // Poll voice-client status. setInterval cleaned up on unmount.
+  // Poll voice-client status for the agent state.
   useEffect(() => {
     let cancelled = false
     async function tick() {
@@ -63,7 +82,7 @@ export default function KioskHUD() {
     return () => { cancelled = true; clearInterval(id) }
   }, [])
 
-  // ESC key exits kiosk — belt-and-suspenders in case voice / tray / CLI fail.
+  // ESC exits kiosk.
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === 'Escape') invoke('exit_kiosk').catch(console.error)
@@ -72,40 +91,64 @@ export default function KioskHUD() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  // EXPLICIT pixel-position centering — no vw/vh, no flex.
+  const auraLeft = Math.round((vp.w - AURA_SIZE) / 2)
+  const auraTop = Math.round((vp.h - AURA_SIZE) / 2)
+
   return (
-    <div className="kiosk-hud-root">
-      <AgentAudioVisualizerAura
-        size="xl"
-        color="#1FD5F9"
-        colorShift={0.05}
-        state={agentState}
-        themeMode="dark"
+    <>
+      {/* Full-window black backdrop using explicit live pixels, not vw/vh. */}
+      <div
+        style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: vp.w,
+          height: vp.h,
+          background: '#000',
+          zIndex: 9998,
+          cursor: 'none',
+        }}
       />
-      <style>{`
-        html, body, #root {
-          margin: 0 !important;
-          padding: 0 !important;
-          width: 100vw !important;
-          height: 100vh !important;
-          background: #000 !important;
-          overflow: hidden !important;
-        }
-        .kiosk-hud-root {
-          position: fixed;
-          top: 0;
-          left: 0;
-          width: 100vw;
-          height: 100vh;
-          background: #000 !important;
-          display: grid;
-          place-items: center;
-          z-index: 9999;
-          overflow: hidden;
-          cursor: none;
-          margin: 0;
-          padding: 0;
-        }
-      `}</style>
-    </div>
+      {/* Aura positioned with computed pixel offsets so it's always centered
+          regardless of how the webview viewport resolves vw/vh. */}
+      <div
+        style={{
+          position: 'fixed',
+          top: auraTop,
+          left: auraLeft,
+          width: AURA_SIZE,
+          height: AURA_SIZE,
+          zIndex: 9999,
+        }}
+      >
+        <AgentAudioVisualizerAura
+          size="xl"
+          color="#1FD5F9"
+          colorShift={0.05}
+          state={agentState}
+          themeMode="dark"
+        />
+      </div>
+      {/* Tiny diagnostic readout in the top-right corner so we can verify
+          the live viewport dimensions. Remove once centering works. */}
+      <div
+        style={{
+          position: 'fixed',
+          top: 8,
+          right: 8,
+          color: '#1FD5F9',
+          fontFamily: 'monospace',
+          fontSize: 10,
+          opacity: 0.5,
+          zIndex: 10000,
+          background: 'rgba(0,0,0,0.5)',
+          padding: '2px 6px',
+          borderRadius: 4,
+        }}
+      >
+        viewport {vp.w}×{vp.h} · aura @ ({auraLeft},{auraTop}) · {agentState}
+      </div>
+    </>
   )
 }
