@@ -93,9 +93,16 @@ META_SILENCE_RE: re.Pattern[str] = re.compile(
     # 2026-05-28: catches "(ambient — not directed at me)",
     # "(ambient — staying silent)", "(ambient)" — observed in DB
     # 03:27 series, ~10 voiced stage-directions in 2 minutes.
+    # 2026-05-28 (later): added "zero bytes" / "empty bytes" after the
+    # soul.md "silence = zero bytes output" phrasing taught the LLM to
+    # voice "(zero bytes)" and "(zero bytes - ambient)" as stage-
+    # directions. ~9 voiced occurrences in 90 s, pid=1261661. Soul
+    # phrasing was also rewritten to drop the literal phrase, but
+    # belt-and-suspenders here so any prompt regression is contained.
     r"[\[\(]\s*"
     r"(?:ambient|silent|silence|silently|quiet|quietly|"
     r"staying\s+silent|staying\s+quiet|"
+    r"zero\s+bytes(?:\s+output)?|empty\s+bytes(?:\s+output)?|"
     r"no\s+reply|empty\s+output|listening|observing|standing\s+by)"
     r"(?:\s*[\-—:,]\s*[^\])]{1,80})?"
     r"\s*[\]\)]\s*"
@@ -129,6 +136,14 @@ META_SILENCE_PHRASES: tuple[str, ...] = (
     "ambient", "(ambient",
     "staying silent", "(staying silent",
     "staying quiet", "(staying quiet",
+    # 2026-05-28 (later) — LLM started voicing "(zero bytes)" and
+    # "(zero bytes - ambient)" as stage-directions after the soul.md
+    # "silence = zero bytes output" phrasing. Bracketed-form only at
+    # the regex level (so a real prose reply like "Zero bytes." about
+    # a file size still passes through unaltered) — but include the
+    # phrase here for prefix-lookahead buffering symmetry.
+    "zero bytes", "(zero bytes",
+    "empty bytes", "(empty bytes",
 )
 
 # Cap on how many chars to buffer before deciding. Above this, the
