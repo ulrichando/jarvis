@@ -1,0 +1,27 @@
+#!/bin/sh
+# Toggle / set the JARVIS desktop kiosk mode by POSTing to the bridge.
+# Usage:  jarvis-kiosk           # toggle
+#         jarvis-kiosk on        # force on
+#         jarvis-kiosk off       # force off
+set -e
+STATE="${1:-toggle}"
+
+case "$STATE" in
+  on|off|toggle) ;;
+  *) echo "usage: $(basename "$0") [on|off|toggle]" >&2; exit 2;;
+esac
+
+TOKEN=""
+if [ -r "$HOME/.jarvis/local-api-token.env" ]; then
+  TOKEN="$(sed -n 's/^JARVIS_LOCAL_API_TOKEN=//p' "$HOME/.jarvis/local-api-token.env" | head -1)"
+fi
+
+CURL_AUTH=""
+if [ -n "$TOKEN" ]; then
+  CURL_AUTH="-H Authorization: Bearer $TOKEN"
+fi
+
+exec curl -fsS -X POST "http://127.0.0.1:8765/api/kiosk" \
+  -H "Content-Type: application/json" \
+  $CURL_AUTH \
+  -d "{\"state\":\"$STATE\"}"
