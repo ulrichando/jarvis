@@ -10,6 +10,8 @@ use tauri::{
 };
 use tauri_plugin_opener::OpenerExt;
 
+pub mod kiosk;
+
 /// Shared chat-open state between the tray menu and JS. React calls
 /// `set_chat_state` from `openChat`/`closeChat` so the Rust-side toggle
 /// never drifts out of sync with what the user actually sees.
@@ -51,6 +53,23 @@ struct TtsVoiceItems(Mutex<Vec<MenuItem<Wry>>>);
 /// status poll — label flips to "Stop Screen Share ✓" when the
 /// voice-client is publishing, "Start Screen Share" when not.
 struct ShareLabel(Mutex<Option<MenuItem<Wry>>>);
+
+/// Snapshot of screen-share sources cached at app startup (and not
+/// since — live refresh deferred). The on_menu_event handler reads
+/// this when a `share_src_m<N>` / `share_src_w<N>` click fires, looks
+/// up the original MonitorInfo/WindowInfo by index, and POSTs the
+/// source params to the voice-client's /screen-share endpoint.
+struct ScreenSourcesState(Mutex<ScreenSources>);
+
+/// Handle to the "Active: …" header line inside the Conversation
+/// mode submenu. Refreshed every 3 s by a background task that
+/// checks systemd --user state of the gemini/gpt direct-mode units.
+struct ModeLabel(Mutex<Option<MenuItem<Wry>>>);
+
+/// The three mode-switch menu items (jarvis / gemini / gpt). Stored
+/// so the refresh task can add/remove the "✓ " prefix on whichever
+/// mode is currently active. Ordered: [jarvis, gemini, gpt].
+struct ModeItems(Mutex<Vec<MenuItem<Wry>>>);
 
 /// The source tray artwork (icons/tray.png — the concentric-ring /
 /// reactor design). Embedded into the binary at compile time so the
@@ -938,6 +957,78 @@ fn set_share_label(active: bool, label: State<ShareLabel>) -> Result<(), String>
     Ok(())
 }
 
+/// What jarvis-mode is currently driving. Determined by which systemd
+/// --user transient unit is active. Mirrors the bash logic in
+/// bin/jarvis-mode::current_mode.
+///
+/// As of 2026-05-28 there are exactly three modes, all carrying the
+/// same audio + screen vision + tool surface — the choice is which
+/// provider drives the LLM/voice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActiveMode { Jarvis, Gemini, Openai }
+
+fn detect_active_mode() -> ActiveMode {
+    let is_active = |unit: &str| -> bool {
+        std::process::Command::new("systemctl")
+            .args(["--user", "is-active", "--quiet", unit])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+    if is_active("jarvis-gemini-tools.service") {
+        ActiveMode::Gemini
+    } else if is_active("jarvis-gpt-tools.service") {
+        ActiveMode::Openai
+    } else {
+        ActiveMode::Jarvis
+    }
+}
+
+/// Repaint the Conversation-mode submenu to reflect the current
+/// active mode: rewrites the disabled header line ("Active: …") and
+/// adds/removes a "✓ " prefix on the three mode items.
+///
+/// Called from a background loop every few seconds and immediately
+/// after a tray click on any mode_* entry so the menu stays in sync
+/// with the actual systemd state instead of waiting for the poll.
+fn refresh_mode_menu(app: &tauri::AppHandle) {
+    let mode = detect_active_mode();
+    let (header_text, jarvis_label, gemini_label, openai_label) = match mode {
+        ActiveMode::Jarvis => (
+            "Active: JARVIS · Claude",
+            "✓  JARVIS · Claude (audio + vision + tools)",
+            "Gemini Live (audio + vision + tools)",
+            "OpenAI Realtime (audio + vision + tools)",
+        ),
+        ActiveMode::Gemini => (
+            "Active: Gemini Live",
+            "JARVIS · Claude (audio + vision + tools)",
+            "✓  Gemini Live (audio + vision + tools)",
+            "OpenAI Realtime (audio + vision + tools)",
+        ),
+        ActiveMode::Openai => (
+            "Active: OpenAI Realtime",
+            "JARVIS · Claude (audio + vision + tools)",
+            "Gemini Live (audio + vision + tools)",
+            "✓  OpenAI Realtime (audio + vision + tools)",
+        ),
+    };
+    if let Some(label_state) = app.try_state::<ModeLabel>() {
+        if let Ok(guard) = label_state.0.lock() {
+            if let Some(item) = guard.as_ref() {
+                let _ = item.set_text(header_text);
+            }
+        }
+    }
+    if let Some(items_state) = app.try_state::<ModeItems>() {
+        if let Ok(guard) = items_state.0.lock() {
+            if let Some(it) = guard.get(0) { let _ = it.set_text(jarvis_label); }
+            if let Some(it) = guard.get(1) { let _ = it.set_text(gemini_label); }
+            if let Some(it) = guard.get(2) { let _ = it.set_text(openai_label); }
+        }
+    }
+}
+
 #[tauri::command]
 fn get_primary_monitor_info(window: WebviewWindow) -> Result<serde_json::Value, String> {
     let monitor = window
@@ -952,6 +1043,140 @@ fn get_primary_monitor_info(window: WebviewWindow) -> Result<serde_json::Value, 
         "scale":  monitor.scale_factor(),
     }))
 }
+
+// Shared struct shapes for screen-share sources. Used by both the
+// internal tray-menu builder and the Tauri command exposed to JS.
+#[derive(Clone, Debug)]
+struct MonitorInfo {
+    name:    String,
+    x:       i64,
+    y:       i64,
+    w:       i64,
+    h:       i64,
+    primary: bool,
+}
+
+#[derive(Clone, Debug)]
+struct WindowInfo {
+    id:    String,
+    w:     i64,
+    h:     i64,
+    title: String,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ScreenSources {
+    monitors: Vec<MonitorInfo>,
+    windows:  Vec<WindowInfo>,
+}
+
+/// Probe X11 for screen-share sources (monitors via xrandr, windows
+/// via wmctrl). Returns empty lists on failure — callers decide what
+/// to do (the tray menu shows "(no sources)" placeholder; the JS
+/// command surfaces the error string).
+fn enumerate_screen_sources_internal() -> Result<ScreenSources, String> {
+    let xrandr = std::process::Command::new("xrandr")
+        .arg("--listmonitors")
+        .output()
+        .map_err(|e| format!("xrandr not available: {e}"))?;
+    if !xrandr.status.success() {
+        return Err(format!(
+            "xrandr --listmonitors exited {}: {}",
+            xrandr.status,
+            String::from_utf8_lossy(&xrandr.stderr),
+        ));
+    }
+    let wmctrl = std::process::Command::new("wmctrl")
+        .args(["-l", "-G"])
+        .output()
+        .map_err(|e| format!("wmctrl not available: {e}"))?;
+    if !wmctrl.status.success() {
+        return Err(format!(
+            "wmctrl -l -G exited {}: {}",
+            wmctrl.status,
+            String::from_utf8_lossy(&wmctrl.stderr),
+        ));
+    }
+
+    let mut monitors = Vec::<MonitorInfo>::new();
+    for line in String::from_utf8_lossy(&xrandr.stdout).lines() {
+        let line = line.trim();
+        if line.starts_with("Monitors:") || line.is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 3 {
+            continue;
+        }
+        let flags_name = parts[1];
+        let primary = flags_name.contains('*');
+        let name = flags_name
+            .trim_start_matches(|c| c == '+' || c == '*')
+            .to_string();
+        let geom = parts[2];
+        let mut nums = geom.split(|c: char| !c.is_ascii_digit()).filter(|s| !s.is_empty());
+        let wpx = nums.next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+        let _wmm = nums.next();
+        let hpx = nums.next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+        let _hmm = nums.next();
+        let x = nums.next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+        let y = nums.next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+        monitors.push(MonitorInfo { name, x, y, w: wpx, h: hpx, primary });
+    }
+
+    let denylist = ["xfce4-panel", "Desktop", "jarvis-desktop", "J.A.R.V.I.S."];
+    let mut windows = Vec::<WindowInfo>::new();
+    for line in String::from_utf8_lossy(&wmctrl.stdout).lines() {
+        let cols: Vec<&str> = line.splitn(8, char::is_whitespace).collect();
+        if cols.len() < 8 {
+            continue;
+        }
+        let id = cols[0].to_string();
+        let desktop = cols[1].parse::<i64>().unwrap_or(-1);
+        if desktop < 0 {
+            continue;
+        }
+        let w = cols[4].parse::<i64>().unwrap_or(0);
+        let h = cols[5].parse::<i64>().unwrap_or(0);
+        let title = line
+            .splitn(8, char::is_whitespace)
+            .nth(7)
+            .unwrap_or("")
+            .trim_start()
+            .to_string();
+        if denylist.iter().any(|d| title.contains(d)) {
+            continue;
+        }
+        if w < 100 || h < 100 {
+            continue;
+        }
+        windows.push(WindowInfo { id, w, h, title });
+    }
+
+    Ok(ScreenSources { monitors, windows })
+}
+
+/// List screen-share sources available on the user's X11 desktop —
+/// monitors (via `xrandr --listmonitors`) and visible windows
+/// (via `wmctrl -l -G`). Returns
+/// `{ monitors: [{name, x, y, w, h, primary}, ...],
+///    windows:  [{id, x, y, w, h, title}, ...] }`.
+///
+/// X11-only. Returns an error string if either xrandr or wmctrl is
+/// missing (both are required for the picker — install them via
+/// `apt install x11-xserver-utils wmctrl`).
+#[tauri::command]
+fn list_screen_sources() -> Result<serde_json::Value, String> {
+    let sources = enumerate_screen_sources_internal()?;
+    let mons: Vec<_> = sources.monitors.iter().map(|m| serde_json::json!({
+        "name": m.name, "x": m.x, "y": m.y, "w": m.w, "h": m.h, "primary": m.primary,
+    })).collect();
+    let wins: Vec<_> = sources.windows.iter().map(|w| serde_json::json!({
+        "id": w.id, "w": w.w, "h": w.h, "title": w.title,
+    })).collect();
+    Ok(serde_json::json!({"monitors": mons, "windows": wins}))
+}
+
 
 // ── Browser-open helpers ───────────────────────────────────────────────────
 
@@ -1351,6 +1576,9 @@ fn main() {
         .manage(TtsLabel(Mutex::new(None)))
         .manage(TtsVoiceItems(Mutex::new(Vec::new())))
         .manage(ShareLabel(Mutex::new(None)))
+        .manage(ScreenSourcesState(Mutex::new(ScreenSources::default())))
+        .manage(ModeLabel(Mutex::new(None)))
+        .manage(ModeItems(Mutex::new(Vec::new())))
         .setup(move |app| {
             let window = app.get_webview_window("main").unwrap();
             let window_for_poll = window.clone();
@@ -1508,18 +1736,149 @@ fn main() {
                 "open_voice_chat", "Open Chat Panel",
             ).build(app)?;
             let mute_item    = MenuItemBuilder::with_id("mute",         "Mute / Unmute Voice").build(app)?;
-            // Toggle the LiveKit screen-share publisher in the voice-
-            // client. Click = POST /screen-share with no body, which
-            // the Python handler treats as "flip current state". A
-            // green tray icon + the voice agent's screen-share sink
-            // pick up the new video track automatically.
-            let share_item   = MenuItemBuilder::with_id("share_screen", "Start / Stop Screen Share").build(app)?;
 
-            // Removed 2026-04-30 (tray-trim Phase 1): Stop Computer Use,
-            // 📷 Camera source submenu. The 🖥 Screen Share entry was
-            // restored 2026-05-10 (LiveKit publisher landed) with the
-            // new toggle wiring above. CU is still killable by voice
-            // ("stop"); camera source lives in ~/.jarvis/webcam-device.
+            // ── Conversation mode submenu (2026-05-28) ──
+            //
+            // Three voice-conversation backends:
+            //   - JARVIS-Claude (default STT/LLM/TTS, full tool access)
+            //   - Gemini Live (audio-to-audio + screen vision)
+            //   - GPT Realtime (audio-to-audio via OpenAI)
+            //
+            // Click shells out to `<project>/bin/jarvis-mode <name>`,
+            // which handles the mute/scope dance. The header line +
+            // ✓ prefix on the active item are refreshed every 3 s by
+            // a background task in app.setup() that checks systemctl
+            // is-active for the gemini/gpt scopes.
+            let mode_current_item = MenuItemBuilder::with_id(
+                "mode_current", "Active: (checking…)",
+            ).enabled(false).build(app)?;
+            let mode_header_sep = PredefinedMenuItem::separator(app)?;
+            let mode_jarvis_item = MenuItemBuilder::with_id(
+                "mode_jarvis", "JARVIS · Claude (audio + vision + tools)",
+            ).build(app)?;
+            let mode_gemini_item = MenuItemBuilder::with_id(
+                "mode_gemini", "Gemini Live (audio + vision + tools)",
+            ).build(app)?;
+            let mode_openai_item = MenuItemBuilder::with_id(
+                "mode_openai", "OpenAI Realtime (audio + vision + tools)",
+            ).build(app)?;
+            let mode_status_item = MenuItemBuilder::with_id(
+                "mode_status", "Notify current mode",
+            ).build(app)?;
+            let mode_sep = PredefinedMenuItem::separator(app)?;
+            let mode_submenu = SubmenuBuilder::new(app, "Conversation mode ▸")
+                .item(&mode_current_item)
+                .item(&mode_header_sep)
+                .item(&mode_jarvis_item)
+                .item(&mode_gemini_item)
+                .item(&mode_openai_item)
+                .item(&mode_sep)
+                .item(&mode_status_item)
+                .build()?;
+            // Stash the header + item handles so the background refresh
+            // task can update them. Cloning MenuItem is cheap — it's an
+            // Arc internally.
+            {
+                let ml: State<ModeLabel> = app.state();
+                *ml.0.lock().unwrap() = Some(mode_current_item.clone());
+            }
+            {
+                let mi: State<ModeItems> = app.state();
+                *mi.0.lock().unwrap() = vec![
+                    mode_jarvis_item.clone(),
+                    mode_gemini_item.clone(),
+                    mode_openai_item.clone(),
+                ];
+            }
+
+            // ── Screen-share submenu (2026-05-28 tray-only picker) ──
+            //
+            // Enumerates monitors + windows at app startup via
+            // enumerate_screen_sources_internal() and builds a tray
+            // submenu — no popup window, no modal, native context-menu
+            // experience. Each leaf item is "share_src_<N>" where N
+            // indexes into the SHARE_SOURCES_AT_STARTUP cache; click
+            // handler looks up the source and POSTs to /screen-share.
+            //
+            // STATIC SNAPSHOT — sources captured ONCE at startup. If
+            // the user opens a new window mid-session and wants to
+            // share it, app restart picks it up. Live refresh is a
+            // follow-up (would need full menu rebuild + tray.set_menu
+            // because Tauri 2 doesn't allow in-place submenu mutation).
+            //
+            // Tabs are NOT enumerated — that requires Chrome-extension
+            // changes in src/cli/ (CLAUDE.md off-limits without explicit
+            // ask). The "share Chrome window" path covers it: focus
+            // the desired tab, then pick the Chrome window from this
+            // submenu.
+            let sources_snapshot = enumerate_screen_sources_internal()
+                .unwrap_or_default();
+            // Cache sources in app state so the on_menu_event handler
+            // can look them up by share_src_<N> index without re-parsing.
+            {
+                let s: State<ScreenSourcesState> = app.state();
+                *s.0.lock().unwrap() = sources_snapshot.clone();
+            }
+            // Build monitor items first, then window items. Each is a
+            // MenuItem so it stays alive for the SubmenuBuilder chain
+            // and the resulting Submenu owns the tree once .build() runs.
+            let mut monitor_items: Vec<MenuItem<Wry>> = Vec::new();
+            for (i, m) in sources_snapshot.monitors.iter().enumerate() {
+                let label = if m.primary {
+                    format!("🖥  {} — {}×{}  (primary)", m.name, m.w, m.h)
+                } else {
+                    format!("🖥  {} — {}×{}", m.name, m.w, m.h)
+                };
+                let item = MenuItemBuilder::with_id(format!("share_src_m{}", i), label)
+                    .build(app)?;
+                monitor_items.push(item);
+            }
+            let mut window_items: Vec<MenuItem<Wry>> = Vec::new();
+            for (i, w) in sources_snapshot.windows.iter().enumerate() {
+                // Truncate long titles so the menu doesn't get absurd.
+                let title = if w.title.chars().count() > 60 {
+                    let trunc: String = w.title.chars().take(57).collect();
+                    format!("{trunc}…")
+                } else {
+                    w.title.clone()
+                };
+                let label = format!("🪟  {} — {}×{}", title, w.w, w.h);
+                let item = MenuItemBuilder::with_id(format!("share_src_w{}", i), label)
+                    .build(app)?;
+                window_items.push(item);
+            }
+            let empty_placeholder = if monitor_items.is_empty() && window_items.is_empty() {
+                Some(
+                    MenuItemBuilder::with_id("share_empty", "(no sources — install xrandr + wmctrl)")
+                        .enabled(false)
+                        .build(app)?,
+                )
+            } else {
+                None
+            };
+            let monitor_window_sep = PredefinedMenuItem::separator(app)?;
+            let stop_sep = PredefinedMenuItem::separator(app)?;
+            let stop_item = MenuItemBuilder::with_id("share_stop", "Stop Sharing").build(app)?;
+
+            // Assemble the submenu in order: monitors → sep → windows
+            // → sep → Stop. Empty cases skip their sections cleanly.
+            let mut share_submenu_builder = SubmenuBuilder::new(app, "Share Screen ▸");
+            for item in &monitor_items {
+                share_submenu_builder = share_submenu_builder.item(item);
+            }
+            if !monitor_items.is_empty() && !window_items.is_empty() {
+                share_submenu_builder = share_submenu_builder.item(&monitor_window_sep);
+            }
+            for item in &window_items {
+                share_submenu_builder = share_submenu_builder.item(item);
+            }
+            if let Some(ref e) = empty_placeholder {
+                share_submenu_builder = share_submenu_builder.item(e);
+            }
+            let share_submenu = share_submenu_builder
+                .item(&stop_sep)
+                .item(&stop_item)
+                .build()?;
 
             let sep1         = PredefinedMenuItem::separator(app)?;
             let browser_item = MenuItemBuilder::with_id("open_browser", "Open in Browser").build(app)?;
@@ -1673,7 +2032,8 @@ fn main() {
             let menu = MenuBuilder::new(app)
                 .item(&voice_chat_item)
                 .item(&mute_item)
-                .item(&share_item)
+                .item(&mode_submenu)
+                .item(&share_submenu)
                 .item(&sep1)
                 .item(&browser_item)
                 .item(&logs_item)
@@ -1684,13 +2044,13 @@ fn main() {
                 .item(&quit_item)
                 .build()?;
 
-            // Stash the share menu item now that the MenuBuilder has
-            // consumed its borrow — moving it any earlier would steal
-            // the value before .item(&share_item) above.
-            {
-                let sh: State<ShareLabel> = app.state();
-                *sh.0.lock().unwrap() = Some(share_item);
-            }
+            // No share_item to stash anymore — the legacy
+            // "Start / Stop Screen Share" toggle was replaced by the
+            // share_submenu above (monitors + windows + Stop). The
+            // ShareLabel state stays registered for backward
+            // compatibility with any existing set_share_label callers;
+            // those calls now become no-ops (label is None).
+            let _ = stop_item; // ownership held by share_submenu
 
             let chat_open_tray = Arc::clone(&chat_open);
 
@@ -1767,21 +2127,107 @@ fn main() {
                                 let _ = w.emit("tray-toggle-mute", ());
                             }
                         }
-                        "share_screen" => {
-                            // Toggle the voice-client's LiveKit screen-
-                            // share publisher. No body → handler defaults
-                            // to flip-current-state. Spawn detached so
-                            // the tray click doesn't block the menu
-                            // event loop on the HTTP round-trip.
+                        // Legacy single-button id (kept for back-compat
+                        // with the React modal flow — emitting the event
+                        // is a no-op now because App.jsx dropped its
+                        // listener). Safe to remove later.
+                        "share_screen" => {}
+                        // Stop publishing whatever screen-share track is
+                        // currently active. POST /screen-share with
+                        // {start: false} so the voice-client tears down
+                        // its ffmpeg publisher cleanly.
+                        "share_stop" => {
                             let _ = std::process::Command::new("curl")
                                 .args(["-s", "-X", "POST",
                                        "http://127.0.0.1:8767/screen-share",
                                        "-H", "Content-Type: application/json",
-                                       "-d", "{}"])
+                                       "-d", "{\"start\":false}"])
                                 .spawn();
-                            if let Some(w) = app.get_webview_window("main") {
-                                let _ = w.emit("tray-toggle-screen-share", ());
+                        }
+                        id if id.starts_with("share_src_m") => {
+                            // Picked a monitor from the tray submenu.
+                            // Look up the cached MonitorInfo by index
+                            // and POST it to the voice-client.
+                            if let Ok(n) = id["share_src_m".len()..].parse::<usize>() {
+                                let st: State<ScreenSourcesState> = app.state();
+                                let m = st.0.lock().unwrap().monitors.get(n).cloned();
+                                if let Some(m) = m {
+                                    let body = format!(
+                                        "{{\"start\":true,\"source\":{{\"kind\":\"monitor\",\"x\":{},\"y\":{},\"w\":{},\"h\":{}}}}}",
+                                        m.x, m.y, m.w, m.h,
+                                    );
+                                    let _ = std::process::Command::new("curl")
+                                        .args(["-s", "-X", "POST",
+                                               "http://127.0.0.1:8767/screen-share",
+                                               "-H", "Content-Type: application/json",
+                                               "-d", &body])
+                                        .spawn();
+                                }
                             }
+                        }
+                        id if id.starts_with("share_src_w") => {
+                            if let Ok(n) = id["share_src_w".len()..].parse::<usize>() {
+                                let st: State<ScreenSourcesState> = app.state();
+                                let w = st.0.lock().unwrap().windows.get(n).cloned();
+                                if let Some(w) = w {
+                                    let body = format!(
+                                        "{{\"start\":true,\"source\":{{\"kind\":\"window\",\"id\":\"{}\",\"w\":{},\"h\":{}}}}}",
+                                        w.id, w.w, w.h,
+                                    );
+                                    let _ = std::process::Command::new("curl")
+                                        .args(["-s", "-X", "POST",
+                                               "http://127.0.0.1:8767/screen-share",
+                                               "-H", "Content-Type: application/json",
+                                               "-d", &body])
+                                        .spawn();
+                                }
+                            }
+                        }
+                        // share_empty (the placeholder when xrandr/wmctrl
+                        // aren't installed) is enabled=false so it never
+                        // fires this handler — but keep the match safe.
+                        "share_empty" => {}
+
+                        // ── Conversation mode switches (2026-05-28) ──
+                        // Shell out to bin/jarvis-mode <arg>; the script
+                        // handles the systemd-scope + JARVIS-mic-mute
+                        // dance idempotently. find_project_root() walks
+                        // up from the binary's path; honor the
+                        // JARVIS_PROJECT_ROOT override for non-default
+                        // installs.
+                        id @ ("mode_jarvis" | "mode_gemini" | "mode_openai" | "mode_status") => {
+                            let arg = match id {
+                                "mode_jarvis" => "jarvis",
+                                "mode_gemini" => "gemini",
+                                "mode_openai" => "openai",
+                                _             => "status",
+                            };
+                            let Some(root) = find_project_root() else {
+                                eprintln!("[JARVIS] mode switch: project root not found");
+                                return;
+                            };
+                            let script = root.join("bin").join("jarvis-mode");
+                            if !script.is_file() {
+                                eprintln!("[JARVIS] mode switch: {} missing", script.display());
+                                return;
+                            }
+                            // Run detached — start_direct spawns systemd-run
+                            // and returns; this should complete in <1s.
+                            let _ = std::process::Command::new(&script)
+                                .arg(arg)
+                                .spawn();
+                            println!("[JARVIS] tray → jarvis-mode {arg}");
+                            // Repaint the submenu shortly after the
+                            // command settles. The script's start_direct
+                            // sleeps 0.6 s waiting for the unit to
+                            // register; we wait a bit longer than that
+                            // before re-polling so the new state is
+                            // visible.
+                            let app_handle = app.clone();
+                            std::thread::spawn(move || {
+                                std::thread::sleep(std::time::Duration::from_millis(1200));
+                                refresh_mode_menu(&app_handle);
+                            });
                         }
                         // Handlers removed 2026-04-30: camera_rgb, camera_ir,
                         // stop_computer_use. The `share_screen` handler
@@ -2003,6 +2449,22 @@ fn main() {
                 });
             }
 
+            // ── Conversation-mode menu refresh thread ──
+            // Polls systemctl --user state every 3 s and rewrites the
+            // Conversation-mode submenu header + ✓ prefix so the user
+            // can see at a glance which mode is active. Cheap — two
+            // systemctl is-active calls per tick (~10 ms each).
+            // First refresh fires immediately so the menu shows the
+            // truth from the very first open.
+            {
+                let app_handle = app.handle().clone();
+                refresh_mode_menu(&app_handle);
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    refresh_mode_menu(&app_handle);
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -2016,6 +2478,7 @@ fn main() {
             set_tts_label,
             set_share_label,
             get_primary_monitor_info,
+            list_screen_sources,
             keys_read,
             keys_set,
             keys_clear,

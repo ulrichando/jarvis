@@ -1,0 +1,296 @@
+#!/usr/bin/env -S /home/ulrich/Documents/Projects/jarvis/src/voice-agent/.venv/bin/python -u
+"""Gemini-direct mode for JARVIS.
+
+Runs a Gemini Live API session where the user talks to Gemini and
+Gemini talks back — directly. Bypasses JARVIS's Claude supervisor,
+Whisper STT, and Orpheus TTS entirely. The screen is also fed in as
+continuous video so Gemini can see what the user is doing.
+
+This is the "Google Meet Gemini Live mode" experience: dialog with
+Gemini about whatever's on screen.
+
+Audio routing:
+  - mic in:  `parec` → PCM 16k mono s16le → Gemini Live (input_audio)
+  - audio out: Gemini Live (output_audio 24k mono s16le) → `paplay`
+
+Screen capture:
+  - mss grabs monitor[0] (full virtual screen across all displays) as
+    raw RGB → JPEG via PIL → send_realtime_input(video=Blob(...))
+  - 1 FPS (matches the Live API's documented cap).
+
+Lifecycle:
+  - Launch: `bin/jarvis-gemini-direct`. Prints the connection state
+    and any text Gemini emits (Gemini's audio plays via paplay).
+  - Exit: Ctrl-C / SIGTERM / SIGINT. Cleanly closes the Live session,
+    kills parec + paplay subprocesses, releases the PulseAudio
+    devices.
+
+Heads-up: while this is running, JARVIS's Orpheus may also speak if
+you trigger him by saying "Jarvis" — the two pipelines share the
+mic. Use `bin/jarvis-mode gemini` (toggle script) instead of
+launching this script directly: it mutes JARVIS's mic on start and
+unmutes it on stop, so the two voices don't talk over each other.
+Run `bin/jarvis-mode jarvis` (or just `bin/jarvis-mode` again) to
+flip back.
+"""
+from __future__ import annotations
+
+import asyncio
+import io
+import logging
+import os
+import signal
+import sys
+from typing import Optional
+
+# Third-party: installed in src/voice-agent/.venv
+try:
+    from google import genai
+    from google.genai import types
+    import mss
+    import PIL.Image
+except ImportError as e:
+    sys.stderr.write(f"missing dep: {e}\n")
+    sys.stderr.write("run inside src/voice-agent/.venv\n")
+    sys.exit(2)
+
+
+# ── Config ───────────────────────────────────────────────────────────
+
+LIVE_MODEL = os.environ.get(
+    "JARVIS_GEMINI_DIRECT_MODEL", "gemini-3.1-flash-live-preview"
+)
+MIC_SAMPLE_RATE = 16000       # Live API spec: 16k mono s16le input
+SPK_SAMPLE_RATE = 24000       # Live API spec: 24k mono s16le output
+FRAME_INTERVAL_S = float(
+    os.environ.get("JARVIS_GEMINI_DIRECT_FRAME_INTERVAL_S", "1.0")
+)
+SYSTEM_INSTRUCTION = (
+    "You are Gemini in direct conversation with Ulrich. He's sharing "
+    "his screen with you — frames stream in at ~1 FPS. Be natural, "
+    "concise, and reference what's on screen when relevant. Don't "
+    "announce that you see frames — just respond as if you can see "
+    "it. Skip pleasantries unless he leads with one."
+)
+
+# Voice — Gemini Live exposes 30+ named voices. Sadaltager is the
+# user's pick (warm, conversational tenor). Full set as of 2026-05:
+#   Achernar, Algenib, Algieba, Alnilam, Aoede, Autonoe, Callirrhoe,
+#   Charon, Despina, Enceladus, Erinome, Fenrir, Gacrux, Iapetus,
+#   Kore, Laomedeia, Leda, Orus, Pulcherrima, Puck, Rasalgethi,
+#   Sadachbia, Sadaltager, Schedar, Sulafat, Umbriel, Vindemiatrix,
+#   Zephyr, Zubenelgenubi.
+VOICE_NAME = os.environ.get("JARVIS_GEMINI_DIRECT_VOICE", "Sadaltager")
+
+log = logging.getLogger("jarvis.gemini-direct")
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+
+# ── Audio I/O via PulseAudio (parec / paplay) ─────────────────────────
+#
+# Why not pyaudio: pyaudio's C deps are flaky to install and we
+# already have parec/paplay on the box (PulseAudio is the user's
+# default audio server). Subprocess streams are pure stdio — easy to
+# async-bridge.
+
+async def open_mic_stream() -> asyncio.subprocess.Process:
+    """Spawn `parec` to capture mic at 16k mono s16le. Returns the
+    subprocess whose stdout streams raw PCM."""
+    return await asyncio.create_subprocess_exec(
+        "parec",
+        "--format=s16le",
+        "--channels=1",
+        f"--rate={MIC_SAMPLE_RATE}",
+        "--latency-msec=20",        # low latency for conversational feel
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+
+async def open_speaker_stream() -> asyncio.subprocess.Process:
+    """Spawn `paplay` reading raw PCM from stdin at 24k mono s16le.
+    Stream Gemini's audio bytes into stdin."""
+    return await asyncio.create_subprocess_exec(
+        "paplay",
+        "--format=s16le",
+        "--channels=1",
+        f"--rate={SPK_SAMPLE_RATE}",
+        "--latency-msec=20",
+        "--raw",
+        stdin=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+
+# ── Screen capture ──────────────────────────────────────────────────
+
+def grab_screen_jpeg(sct: "mss.mss", monitor: dict) -> bytes:
+    """Single screen grab → JPEG bytes. Run in a thread (sync I/O)."""
+    raw = sct.grab(monitor)
+    # mss .rgb is BGR-A on Linux; flip via PIL
+    img = PIL.Image.frombytes("RGB", raw.size, raw.rgb)
+    img.thumbnail((1024, 1024))   # Live API caps at 1024×1024 anyway
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=80)
+    return buf.getvalue()
+
+
+# ── Main loop ────────────────────────────────────────────────────────
+
+CHUNK_BYTES = 1600  # 50ms of 16k s16le mono = 1600 bytes
+
+
+async def main() -> int:
+    api_key = os.environ.get("GOOGLE_API_KEY", "")
+    if not api_key:
+        log.error("GOOGLE_API_KEY not set — sourcing ~/.jarvis/keys.env")
+        keys_env = os.path.expanduser("~/.jarvis/keys.env")
+        if os.path.isfile(keys_env):
+            for line in open(keys_env):
+                if line.startswith("GOOGLE_API_KEY="):
+                    api_key = line.split("=", 1)[1].strip().strip("'").strip('"')
+                    os.environ["GOOGLE_API_KEY"] = api_key
+                    break
+        if not api_key:
+            log.error("still no GOOGLE_API_KEY — bailing")
+            return 2
+
+    client = genai.Client(
+        http_options={"api_version": "v1beta"},
+        api_key=api_key,
+    )
+    cfg = types.LiveConnectConfig(
+        response_modalities=["AUDIO"],
+        media_resolution="MEDIA_RESOLUTION_MEDIUM",
+        speech_config=types.SpeechConfig(
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                    voice_name=VOICE_NAME,
+                ),
+            ),
+        ),
+        context_window_compression=types.ContextWindowCompressionConfig(
+            trigger_tokens=104857,
+            sliding_window=types.SlidingWindow(target_tokens=52428),
+        ),
+        output_audio_transcription=types.AudioTranscriptionConfig(),
+        system_instruction=types.Content(
+            role="user",
+            parts=[types.Part(text=SYSTEM_INSTRUCTION)],
+        ),
+    )
+
+    stop = asyncio.Event()
+
+    def _stop(signo, frame=None) -> None:  # type: ignore
+        log.info(f"[gemini-direct] signal {signo} → stopping")
+        stop.set()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, _stop, sig)
+
+    log.info(f"[gemini-direct] connecting to {LIVE_MODEL} (voice={VOICE_NAME})…")
+
+    async with client.aio.live.connect(model=LIVE_MODEL, config=cfg) as session:
+        log.info("[gemini-direct] connected — talk to Gemini. Ctrl-C to exit.")
+
+        mic_proc = await open_mic_stream()
+        spk_proc = await open_speaker_stream()
+        sct = mss.mss()
+        monitor = sct.monitors[0]  # full virtual screen
+
+        async def pump_mic() -> None:
+            """Read PCM from parec, push to Gemini as realtime audio."""
+            assert mic_proc.stdout is not None
+            while not stop.is_set():
+                chunk = await mic_proc.stdout.readexactly(CHUNK_BYTES)
+                await session.send_realtime_input(
+                    audio=types.Blob(
+                        data=chunk,
+                        mime_type=f"audio/pcm;rate={MIC_SAMPLE_RATE}",
+                    ),
+                )
+
+        async def pump_screen() -> None:
+            """Grab a screen JPEG every FRAME_INTERVAL_S, push to Gemini."""
+            while not stop.is_set():
+                try:
+                    jpeg = await asyncio.to_thread(grab_screen_jpeg, sct, monitor)
+                    await session.send_realtime_input(
+                        video=types.Blob(data=jpeg, mime_type="image/jpeg"),
+                    )
+                except Exception as e:
+                    log.warning(f"[gemini-direct] screen send failed: {e}")
+                await asyncio.sleep(FRAME_INTERVAL_S)
+
+        async def drain_replies() -> None:
+            """Read Gemini's audio + text. Audio goes to paplay; text
+            to stdout for visibility."""
+            assert spk_proc.stdin is not None
+            while not stop.is_set():
+                async for msg in session.receive():
+                    if msg.data:
+                        # PCM bytes — write to paplay's stdin
+                        try:
+                            spk_proc.stdin.write(msg.data)
+                            await spk_proc.stdin.drain()
+                        except (BrokenPipeError, ConnectionResetError):
+                            log.warning("[gemini-direct] paplay pipe closed")
+                            return
+                    if msg.text:
+                        # User-typed-style text replies (rare in audio mode)
+                        print(msg.text, end="", flush=True)
+                    if msg.server_content is not None:
+                        ot = msg.server_content.output_transcription
+                        if ot and ot.text:
+                            # Echo Gemini's spoken text to console for
+                            # visibility (audio is also playing).
+                            print(ot.text, end="", flush=True)
+
+        tasks = [
+            asyncio.create_task(pump_mic(),      name="mic"),
+            asyncio.create_task(pump_screen(),   name="screen"),
+            asyncio.create_task(drain_replies(), name="replies"),
+            asyncio.create_task(stop.wait(),     name="stop"),
+        ]
+        try:
+            done, pending = await asyncio.wait(
+                tasks, return_when=asyncio.FIRST_COMPLETED,
+            )
+            # On any task exit or stop, cancel the rest.
+            for t in pending:
+                t.cancel()
+            for t in pending:
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
+            for t in done:
+                exc = t.exception()
+                if exc and not isinstance(exc, asyncio.CancelledError):
+                    log.warning(
+                        f"[gemini-direct] task {t.get_name()!r} raised: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+        finally:
+            log.info("[gemini-direct] stopping audio + screen subprocesses…")
+            for proc in (mic_proc, spk_proc):
+                try:
+                    proc.terminate()
+                    await asyncio.wait_for(proc.wait(), timeout=2.0)
+                except (asyncio.TimeoutError, ProcessLookupError):
+                    try: proc.kill()
+                    except Exception: pass
+            try: sct.close()
+            except Exception: pass
+
+    log.info("[gemini-direct] done.")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(asyncio.run(main()))
+    except KeyboardInterrupt:
+        sys.exit(130)

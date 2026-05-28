@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# jarvis-mode-resume — restore the last-active conversation mode on
+# user-session start. Wired in via ~/.config/systemd/user/jarvis-mode-
+# resume.service (oneshot, ordered After=jarvis-voice-client.service).
+#
+# Reads $HOME/.jarvis/active-mode (one of: jarvis | gemini | openai),
+# default "jarvis", and invokes the matching jarvis-mode subcommand
+# if and only if the mode isn't already correct.
+#
+# Idempotent — running it twice is safe; the second invocation finds
+# the desired mode already active and exits clean.
+
+set -euo pipefail
+
+STATE_FILE="$HOME/.jarvis/active-mode"
+BIN_DIR="$(dirname "$(readlink -f "$0")")"
+JARVIS_MODE="${BIN_DIR}/jarvis-mode"
+
+if [[ ! -x "$JARVIS_MODE" ]]; then
+    echo "[mode-resume] jarvis-mode not executable at $JARVIS_MODE" >&2
+    exit 2
+fi
+
+# Default to "jarvis" when no state file or it's empty.
+desired="jarvis"
+if [[ -f "$STATE_FILE" ]]; then
+    desired="$(head -n1 "$STATE_FILE" | tr -d '[:space:]')"
+fi
+[[ -z "$desired" ]] && desired="jarvis"
+
+case "$desired" in
+    jarvis|gemini|openai) ;;
+    *)
+        echo "[mode-resume] unrecognized desired mode '$desired' — defaulting to jarvis" >&2
+        desired="jarvis"
+        ;;
+esac
+
+# Wait briefly for voice-client to be reachable so set_jarvis_mute
+# inside jarvis-mode actually lands. Caps at ~15s; falls through
+# either way (the mode switch itself doesn't require voice-client).
+for _ in {1..15}; do
+    if curl --silent --fail --max-time 1 \
+            "http://127.0.0.1:${JARVIS_VOICE_CLIENT_PORT:-8767}/status" \
+            >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+
+# Idempotency check — if jarvis-mode reports the desired mode is
+# already active, do nothing (avoid double mute/unmute cycles).
+current="$("$JARVIS_MODE" status 2>/dev/null | head -1 | sed -nE 's/^mode: ([a-z]+).*/\1/p')"
+if [[ "$current" == "$desired" ]]; then
+    echo "[mode-resume] already in mode '$desired' — no-op"
+    exit 0
+fi
+
+echo "[mode-resume] restoring mode → $desired (was: $current)"
+exec "$JARVIS_MODE" "$desired"

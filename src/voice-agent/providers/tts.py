@@ -280,6 +280,32 @@ class LoggingGroqTTS(groq.TTS):
     def synthesize(self, text, *, conn_options=None):
         from livekit.agents.types import DEFAULT_API_CONNECT_OPTIONS
 
+        # 2026-05-28 boundary-gate against leaks that bypass the
+        # streaming `_parse_choice` sanitizer (e.g., model output that
+        # arrives via a non-LLMStream code path; observed live with
+        # JARVIS voicing "(ambient — not directed at me)" stage-
+        # directions despite the soul/supervisor prompt + the regex
+        # patch in _leak_shapes.META_SILENCE_RE). Apply the canonical
+        # sanitizer right at the TTS boundary so anything that reaches
+        # here gets a final check before audio rendering.
+        #
+        # `sanitize_text_for_tts` returns "" for matched leak shapes,
+        # which makes Orpheus render no audio (logged as "0 bytes"
+        # downstream); the user hears silence — the correct outcome.
+        try:
+            from sanitizers.pycall import sanitize_text_for_tts
+            cleaned = sanitize_text_for_tts(text or "")
+            if cleaned != text:
+                logger.warning(
+                    "[tts] boundary-gate suppressed leak text "
+                    "(was=%r, now=%r)",
+                    (text or "")[:80], cleaned[:80],
+                )
+            text = cleaned
+        except Exception as e:
+            # Fail open — never block TTS on a sanitizer crash.
+            logger.debug("[tts] boundary-gate sanitizer skipped: %s", e)
+
         return LoggingGroqChunkedStream(
             tts=self,
             input_text=text,

@@ -67,16 +67,39 @@ __all__ = [
 # ── Meta-silence ─────────────────────────────────────────────────────
 
 META_SILENCE_RE: re.Pattern[str] = re.compile(
-    r"^\s*\[?\(?\s*"
-    r"(?:silent|silence|silently|quiet|quietly|listening|just\s+listening|"
+    r"^\s*(?:"
+    # Branch A — original short-form silence words (alone or simple
+    # bracket wrap). Trailing class is whitespace + punctuation only,
+    # so this can't accidentally swallow a sentence like
+    # "Ambient lighting in the room is dim." (the body chars don't
+    # fit the trailing class).
+    r"\[?\(?\s*(?:silent|silence|silently|quiet|quietly|listening|just\s+listening|"
     r"observing|standing\s+by|noted|quietly\s+noted|"
     # 2026-05-06 turn 1056: prompt rule "Empty output." for ambient
     # audio was being treated as a literal-output template — JARVIS
     # voiced "empty output" 8 times in 60 s. Add the meta-output
     # phrasings here as defense-in-depth alongside the prompt rewrite.
     r"empty\s+output|no\s+reply|no\s+output|nothing\s+to\s+say|nothing|"
-    r"\(\s*empty\s*\)|\(\s*silent\s*\)|\(\s*no\s+reply\s*\))"
-    r"(?:[\s,—\-]+sir)?[\s.,!?\]\)]*$",
+    r"\(\s*empty\s*\)|\(\s*silent\s*\)|\(\s*no\s+reply\s*\)|"
+    # 2026-05-28: added the standalone single-word forms of the
+    # new "ambient" / "staying silent / quiet" stage-directions.
+    r"ambient|staying\s+silent|staying\s+quiet)"
+    r"(?:[\s,—\-]+sir)?[\s.,!?\]\)]*"
+    r"|"
+    # Branch B — bracketed stage-direction with a silence word and an
+    # optional descriptor. REQUIRES opening + closing brackets so the
+    # body can be any short text without false-positiving real prose
+    # that happens to contain the word "ambient" or "silent".
+    # 2026-05-28: catches "(ambient — not directed at me)",
+    # "(ambient — staying silent)", "(ambient)" — observed in DB
+    # 03:27 series, ~10 voiced stage-directions in 2 minutes.
+    r"[\[\(]\s*"
+    r"(?:ambient|silent|silence|silently|quiet|quietly|"
+    r"staying\s+silent|staying\s+quiet|"
+    r"no\s+reply|empty\s+output|listening|observing|standing\s+by)"
+    r"(?:\s*[\-—:,]\s*[^\])]{1,80})?"
+    r"\s*[\]\)]\s*"
+    r")$",
     re.IGNORECASE,
 )
 
@@ -99,6 +122,13 @@ META_SILENCE_PHRASES: tuple[str, ...] = (
     "no output",
     "nothing to say", "nothing",
     "(empty)", "(silent)",
+    # Added 2026-05-28 to catch the "(ambient — …)" / "(staying silent)"
+    # stage-direction patterns. The prefix lookahead buffers until the
+    # full reply is in hand; the META_SILENCE_RE regex above does the
+    # final decision.
+    "ambient", "(ambient",
+    "staying silent", "(staying silent",
+    "staying quiet", "(staying quiet",
 )
 
 # Cap on how many chars to buffer before deciding. Above this, the
