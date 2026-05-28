@@ -1,0 +1,595 @@
+#!/usr/bin/env -S /home/ulrich/Documents/Projects/jarvis/src/voice-agent/.venv/bin/python -u
+"""OpenAI Realtime + JARVIS tools (sister to jarvis-gemini-tools).
+
+Same shape as jarvis-gemini-tools — audio-to-audio + screen vision +
+JARVIS tool surface — but driven by OpenAI's Realtime API instead of
+Gemini Live. Provider parity: voice quality + tool access from a
+single mode.
+
+Audio routing:
+  - mic in:  parec → PCM 16k mono s16le → base64 →
+             `input_audio_buffer.append` event
+  - audio out: `response.output_audio.delta` events → base64-decode →
+             PCM 24k mono s16le → paplay
+
+Vision: on-demand. We listen for `conversation.item.input_audio_
+transcription.completed` events, run a vision-trigger regex over the
+transcript, and only push a screen JPEG when the user references
+something visual. Each image is a context item, so we delete the
+previous one when injecting a new one — context size stays at most
+one image. (Streaming at fixed FPS like Gemini would blow up the
+context window since OpenAI Realtime doesn't have a streaming video
+channel.)
+
+Tools: pulled from the voice-agent's registry, same allowlist as
+jarvis-gemini-tools. OpenAI function-calling shape:
+  - Declare via `session.update` with `tools: [{type:"function",...}]`
+  - Model emits `response.function_call_arguments.done` with call_id
+  - We run the tool, then send `conversation.item.create` of
+    type `function_call_output` followed by `response.create`.
+
+API version: GA Realtime (no `OpenAI-Beta` header — the beta shape
+returns 4000 `beta_api_shape_disabled` as of 2026-05).
+
+Lifecycle:
+  - Launch via `bin/jarvis-mode openai` / `gpt`.
+  - Exit: Ctrl-C / SIGTERM.
+"""
+from __future__ import annotations
+
+import asyncio
+import base64
+import inspect
+import io
+import json
+import logging
+import os
+import re
+import signal
+import sys
+from typing import Any, Optional
+
+VOICE_AGENT_DIR = "/home/ulrich/Documents/Projects/jarvis/src/voice-agent"
+if VOICE_AGENT_DIR not in sys.path:
+    sys.path.insert(0, VOICE_AGENT_DIR)
+
+import sanitizers  # noqa: F401  (side-effect import)
+
+try:
+    import websockets
+    import mss
+    import PIL.Image
+    from tools import registry
+    from tools.registry import _check_fn_cached
+    from pipeline.prompt_builder import load_soul
+    from pipeline.file_memory import MemoryStore
+except ImportError as e:
+    sys.stderr.write(f"missing dep: {e}\n")
+    sys.stderr.write(f"hint: run inside {VOICE_AGENT_DIR}/.venv\n")
+    sys.exit(2)
+
+
+def load_memory_snapshot() -> str:
+    """Same MEMORY.md + USER.md + PROCEDURES.md snapshot JARVIS-Claude
+    bakes into its supervisor prompt. Sister to gemini-tools."""
+    try:
+        store = MemoryStore()
+        store.load_from_disk()
+        return store.snapshot_for_prompt()
+    except Exception as e:
+        log = logging.getLogger("jarvis.gpt-tools")
+        log.warning(f"[gpt-tools] memory snapshot load failed: {e}")
+        return ""
+
+
+def load_recent_turns(limit: int = 8) -> str:
+    """Pull last N turns from ~/.local/share/jarvis/turn_telemetry.db
+    so OpenAI mode has the same conversation context awareness as
+    JARVIS-Claude after a mode switch."""
+    import sqlite3
+    db_path = os.path.expanduser("~/.local/share/jarvis/turn_telemetry.db")
+    if not os.path.isfile(db_path):
+        return ""
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT user_text, jarvis_text FROM turns "
+            "ORDER BY ts_utc DESC LIMIT ?",
+            (limit,),
+        )
+        rows = list(reversed(cur.fetchall()))
+        conn.close()
+    except Exception:
+        return ""
+    if not rows:
+        return ""
+    lines = ["═══ RECENT CONVERSATION (most-recent JARVIS-Claude turns) ═══", ""]
+    for user_t, jarvis_t in rows:
+        u = (user_t or "").strip()
+        j = (jarvis_t or "").strip()
+        if u: lines.append(f"User: {u[:300]}")
+        if j: lines.append(f"JARVIS: {j[:400]}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+# ── Config ───────────────────────────────────────────────────────────
+
+MODEL = os.environ.get("JARVIS_GPT_TOOLS_MODEL", "gpt-realtime")
+# GA Realtime requires input rate ≥ 24 kHz (it rejected 16k with
+# `integer_below_min_value: Expected >= 24000`). Both directions at
+# 24k; let parec resample from whatever the source default is.
+MIC_SAMPLE_RATE = 24000
+SPK_SAMPLE_RATE = 24000
+# OpenAI Realtime voices — defaulted to cedar (warm conversational
+# male, mid-range) as the closest analog to Groq Orpheus's Troy voice.
+# ash is deeper/more authoritative; verse is a younger conversational
+# male; ballad has a British narrator feel; echo skews older.
+# Female: alloy (neutral lean female), coral, marin, sage, shimmer.
+VOICE_NAME = os.environ.get("JARVIS_GPT_TOOLS_VOICE", "cedar")
+WS_URL = f"wss://api.openai.com/v1/realtime?model={MODEL}"
+
+# Same broad allowlist as jarvis-gemini-tools — uniform tool surface
+# across providers. Keep the two scripts in sync.
+ALLOWED_TOOLS = {
+    "read_file", "write_file", "patch", "search_files",
+    "code_search", "find_definitions", "execute_code",
+    "terminal", "computer_use",
+    "browser_task", "web_search", "web_fetch",
+    "memory", "todo", "schedule",
+    "skills_list", "skill_view", "skill_manage",
+    "dispatch_agent",
+    "vuln_check", "clarify",
+}
+
+# Vision-trigger heuristic — only inject a screen frame when the
+# user's transcribed speech mentions visual content. Conservative to
+# avoid false positives ("this means..." shouldn't trigger).
+VISION_REGEX = re.compile(
+    r"\b("
+    r"screen|screens|screenshot|"
+    r"look(?:ing)?\s+(?:at|here)|"
+    r"see\s+(?:this|that|what|the)|do\s+you\s+see|"
+    r"show\s+(?:me|you)|showing|"
+    r"what(?:'s|\s+is)\s+(?:on|this|that|here)|"
+    r"read\s+(?:this|that|the|out)|"
+    r"describe(?:s|d)?|"
+    r"what\s+am\s+i\s+(?:looking|seeing|doing)|"
+    r"the\s+(?:code|error|page|window|website|app|terminal|output)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+OPS_BLOCK = (
+    "═══ OPS RULES — OPENAI REALTIME + TOOLS MODE ═══\n\n"
+    "ALWAYS RESPOND IN ENGLISH. Even if the user's audio sounds like "
+    "another language or has an accent, transcribe and respond in "
+    "English unless explicitly asked to switch. Never reply in any "
+    "language other than English.\n\n"
+    "PACE: speak at a measured, deliberate pace — slower than your "
+    "default. Use natural pauses between clauses. Don't rush. Brevity "
+    "is good, but space the words out instead of compressing them.\n\n"
+    "You are running as JARVIS via OpenAI Realtime, with on-demand "
+    "screen vision and the full JARVIS tool registry — files, "
+    "terminal, computer_use (vision + GUI driving), browser_task, "
+    "web search/fetch, memory, todo, schedule, skills, code search/"
+    "edit, execute scratch code, vuln_check, clarify, dispatch_agent. "
+    "The list is broad on purpose: when the user gives a concrete "
+    "actionable request, CALL the matching tool. Don't say 'I can't "
+    "do that' — you can. The tools are live and run against Ulrich's "
+    "real Linux desktop.\n\n"
+    "Stay in JARVIS's voice as described in the identity prompt above; "
+    "speak in short, natural, decisive English phrases.\n\n"
+    "Screen vision is fed only when the user references visual content. "
+    "If the user asks about something visual and the model hasn't "
+    "received a frame yet, use computer_use directly to look."
+)
+
+
+def build_system_instruction() -> str:
+    """SOUL + ops + same memory/conversation snapshot JARVIS-Claude
+    injects, so all three modes start from the same baseline awareness.
+    Live tool calls (`memory`, etc.) still work; this is the boot
+    snapshot that matches what JARVIS-Claude bakes into its supervisor
+    prompt at session start."""
+    parts = [load_soul().rstrip(), OPS_BLOCK]
+    mem = load_memory_snapshot().strip()
+    if mem:
+        parts.append("═══ DURABLE MEMORY (USER + MEMORY + PROCEDURES) ═══\n\n" + mem)
+    recent = load_recent_turns(limit=8).strip()
+    if recent:
+        parts.append(recent)
+    return "\n\n".join(parts)
+
+
+log = logging.getLogger("jarvis.gpt-tools")
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+
+# ── Audio I/O (parec / paplay) ─────────────────────────────────────────
+
+async def open_mic_stream() -> asyncio.subprocess.Process:
+    return await asyncio.create_subprocess_exec(
+        "parec",
+        "--format=s16le", "--channels=1",
+        f"--rate={MIC_SAMPLE_RATE}", "--latency-msec=80",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+
+async def open_speaker_stream() -> asyncio.subprocess.Process:
+    return await asyncio.create_subprocess_exec(
+        "paplay",
+        "--format=s16le", "--channels=1",
+        f"--rate={SPK_SAMPLE_RATE}", "--latency-msec=80", "--raw",
+        stdin=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+
+# ── Screen capture ──────────────────────────────────────────────────
+
+def grab_screen_jpeg(sct: "mss.mss", monitor: dict) -> bytes:
+    raw = sct.grab(monitor)
+    img = PIL.Image.frombytes("RGB", raw.size, raw.rgb)
+    img.thumbnail((1024, 1024))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=75)
+    return buf.getvalue()
+
+
+# ── Tool-registry adaptation (OpenAI schema flavor) ───────────────────
+
+def _strip_unsupported_schema_fields(schema: dict) -> dict:
+    """Recursively strip fields the Realtime API rejects. OpenAI is
+    stricter than Anthropic on tool schemas; same denylist as Gemini."""
+    if not isinstance(schema, dict):
+        return schema
+    drop = {"additionalProperties", "$schema", "$id", "definitions", "$defs", "examples", "title"}
+    out: dict = {}
+    for k, v in schema.items():
+        if k in drop:
+            continue
+        if isinstance(v, dict):
+            out[k] = _strip_unsupported_schema_fields(v)
+        elif isinstance(v, list):
+            out[k] = [
+                _strip_unsupported_schema_fields(x) if isinstance(x, dict) else x
+                for x in v
+            ]
+        else:
+            out[k] = v
+    return out
+
+
+def build_openai_tool_list() -> list[dict]:
+    """Snapshot registry → OpenAI function-tool list."""
+    registry.discover_builtin_tools()
+    tools: list[dict] = []
+    for entry in registry.registry.all_entries():
+        if entry.name not in ALLOWED_TOOLS:
+            continue
+        if entry.check_fn is not None and not _check_fn_cached(entry.check_fn):
+            log.info(f"[gpt-tools] skipping {entry.name} (check_fn negative)")
+            continue
+        params = entry.schema.get("parameters") or {"type": "object", "properties": {}}
+        params = _strip_unsupported_schema_fields(params)
+        if "type" not in params:
+            params["type"] = "object"
+        tools.append({
+            "type": "function",
+            "name": entry.name,
+            "description": (entry.description or entry.schema.get("description") or "")[:1024],
+            "parameters": params,
+        })
+        log.info(f"[gpt-tools] registered tool: {entry.name}")
+    return tools
+
+
+async def execute_tool(name: str, args: dict[str, Any]) -> Any:
+    """Run the registered handler. Returns a value suitable for
+    OpenAI's function_call_output.output (JSON-stringified by caller)."""
+    entry = registry.registry.get_entry(name)
+    if entry is None:
+        return {"error": f"unknown tool: {name}"}
+    try:
+        # JARVIS handlers take dict positionally (sig: `(args: dict)`),
+        # NOT unpacked kwargs.
+        result = entry.handler(args or {})
+        if inspect.isawaitable(result):
+            result = await result
+    except Exception as e:
+        log.warning(f"[gpt-tools] {name} raised: {type(e).__name__}: {e}")
+        return {"error": f"{type(e).__name__}: {e}"}
+    cap = int(entry.max_result_size_chars or 10_000)
+    if isinstance(result, str):
+        return result[:cap] + (f"\n…[truncated at {cap} chars]" if len(result) > cap else "")
+    return result
+
+
+# ── Main loop ────────────────────────────────────────────────────────
+
+CHUNK_BYTES = 1600
+
+
+async def main() -> int:
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+    if not api_key:
+        keys_env = os.path.expanduser("~/.jarvis/keys.env")
+        if os.path.isfile(keys_env):
+            for line in open(keys_env):
+                if line.startswith("OPENAI_API_KEY="):
+                    api_key = line.split("=", 1)[1].strip().strip("'").strip('"')
+                    os.environ["OPENAI_API_KEY"] = api_key
+                    break
+        if not api_key:
+            log.error("no OPENAI_API_KEY — bailing")
+            return 2
+
+    tool_list = build_openai_tool_list()
+    if not tool_list:
+        log.warning("[gpt-tools] NO tools registered — session will run "
+                    "but the model has no actions to take.")
+
+    stop = asyncio.Event()
+
+    def _stop(signo, frame=None) -> None:  # type: ignore
+        log.info(f"[gpt-tools] signal {signo} → stopping")
+        stop.set()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, _stop, sig)
+
+    log.info(f"[gpt-tools] connecting to {MODEL} (voice={VOICE_NAME}, tools={len(tool_list)})…")
+
+    # GA Realtime: no OpenAI-Beta header (beta shape disabled
+    # 2026-05; see PEP-style error 4000 beta_api_shape_disabled).
+    headers = [("Authorization", f"Bearer {api_key}")]
+
+    async with websockets.connect(
+        WS_URL,
+        additional_headers=headers,
+        max_size=16 * 1024 * 1024,
+        ping_interval=20,
+        ping_timeout=30,
+    ) as ws:
+        # session.update — GA shape. Keys that exist in both beta and
+        # GA: modalities, voice, instructions, audio formats, turn
+        # detection, tools, tool_choice. The OpenAI-Beta header was
+        # the only mandatory difference.
+        # GA Realtime shape:
+        #   * session.type = "realtime" (mandatory)
+        #   * audio config moved into nested `audio.{input,output}`
+        #     blocks; legacy `input_audio_format` / `modalities` are
+        #     rejected as unknown parameters.
+        #   * `output_modalities` replaces `modalities` and only
+        #     accepts ["audio"] / ["text"] for this model.
+        await ws.send(json.dumps({
+            "type": "session.update",
+            "session": {
+                "type": "realtime",
+                "model": MODEL,
+                "output_modalities": ["audio"],
+                "instructions": build_system_instruction(),
+                "audio": {
+                    "input": {
+                        "format": {"type": "audio/pcm", "rate": MIC_SAMPLE_RATE},
+                        "transcription": {"model": "whisper-1"},
+                        "turn_detection": {
+                            "type": "server_vad",
+                            "threshold": 0.5,
+                            "prefix_padding_ms": 300,
+                            "silence_duration_ms": 500,
+                            "create_response": True,
+                        },
+                    },
+                    "output": {
+                        "format": {"type": "audio/pcm", "rate": SPK_SAMPLE_RATE},
+                        "voice": VOICE_NAME,
+                    },
+                },
+                "tools": tool_list,
+                "tool_choice": "auto",
+            },
+        }))
+        log.info("[gpt-tools] session configured — talk. Ctrl-C to exit.")
+
+        mic_proc = await open_mic_stream()
+        spk_proc = await open_speaker_stream()
+        sct = mss.mss()
+        monitor = sct.monitors[0]
+
+        # State for on-demand vision: id of the most recent image item
+        # we created, so we can delete it before injecting a new one.
+        last_image_item_id: Optional[str] = None
+        # Buffer of currently-streaming function_call_arguments by
+        # call_id (OpenAI streams them token-by-token via .delta).
+        fc_args_buf: dict[str, list[str]] = {}
+        fc_names: dict[str, str] = {}
+
+        async def pump_mic() -> None:
+            assert mic_proc.stdout is not None
+            while not stop.is_set():
+                chunk = await mic_proc.stdout.readexactly(CHUNK_BYTES)
+                await ws.send(json.dumps({
+                    "type": "input_audio_buffer.append",
+                    "audio": base64.b64encode(chunk).decode("ascii"),
+                }))
+
+        async def maybe_inject_screen_frame(reason: str) -> None:
+            """Grab a screen JPEG and append it as a user message
+            item, deleting the previous one to keep context lean."""
+            nonlocal last_image_item_id
+            try:
+                jpeg = await asyncio.to_thread(grab_screen_jpeg, sct, monitor)
+            except Exception as e:
+                log.warning(f"[gpt-tools] screen grab failed ({reason}): {e}")
+                return
+            b64 = base64.b64encode(jpeg).decode("ascii")
+            if last_image_item_id:
+                # Fire-and-forget delete of the previous frame.
+                try:
+                    await ws.send(json.dumps({
+                        "type": "conversation.item.delete",
+                        "item_id": last_image_item_id,
+                    }))
+                except Exception:
+                    pass
+            await ws.send(json.dumps({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{
+                        "type": "input_image",
+                        "image_url": f"data:image/jpeg;base64,{b64}",
+                    }],
+                },
+            }))
+            # We don't get the new item_id back until the
+            # conversation.item.created event arrives — captured in
+            # drain_replies. Mark "pending so the next created event
+            # claims it."
+            last_image_item_id = "__PENDING__"
+            log.info(f"[gpt-tools] injected screen frame ({reason})")
+
+        async def drain_replies() -> None:
+            nonlocal last_image_item_id
+            assert spk_proc.stdin is not None
+            async for raw in ws:
+                if stop.is_set():
+                    return
+                try:
+                    evt = json.loads(raw)
+                except Exception:
+                    continue
+                etype = evt.get("type", "")
+
+                # Audio output → paplay
+                if etype == "response.audio.delta" or etype == "response.output_audio.delta":
+                    b = evt.get("delta") or evt.get("audio") or ""
+                    if b:
+                        try:
+                            spk_proc.stdin.write(base64.b64decode(b))
+                            await spk_proc.stdin.drain()
+                        except (BrokenPipeError, ConnectionResetError):
+                            log.warning("[gpt-tools] paplay pipe closed")
+                            return
+
+                # Spoken transcript echo
+                elif etype in ("response.audio_transcript.delta", "response.output_audio_transcript.delta"):
+                    d = evt.get("delta") or ""
+                    if d:
+                        print(d, end="", flush=True)
+                elif etype in ("response.audio_transcript.done", "response.output_audio_transcript.done"):
+                    print()
+
+                # On-demand vision trigger: when the user's audio is
+                # transcribed, scan for visual references.
+                elif etype == "conversation.item.input_audio_transcription.completed":
+                    transcript = (evt.get("transcript") or "").strip()
+                    if transcript and VISION_REGEX.search(transcript):
+                        await maybe_inject_screen_frame(f"transcript={transcript[:60]!r}")
+
+                # Track image-item id so we can delete it next turn.
+                elif etype == "conversation.item.created":
+                    item = evt.get("item") or {}
+                    if last_image_item_id == "__PENDING__":
+                        content = item.get("content") or []
+                        if any(c.get("type") == "input_image" for c in content):
+                            last_image_item_id = item.get("id")
+
+                # Function-call argument streaming — buffer by call_id.
+                elif etype == "response.function_call_arguments.delta":
+                    cid = evt.get("call_id") or ""
+                    delta = evt.get("delta") or ""
+                    if cid:
+                        fc_args_buf.setdefault(cid, []).append(delta)
+
+                elif etype == "response.function_call_arguments.done":
+                    cid = evt.get("call_id") or ""
+                    name = evt.get("name") or fc_names.get(cid, "")
+                    args_str = evt.get("arguments")
+                    if args_str is None:
+                        args_str = "".join(fc_args_buf.pop(cid, []))
+                    try:
+                        args = json.loads(args_str) if args_str else {}
+                    except Exception:
+                        args = {}
+                    log.info(f"[gpt-tools] → {name}({args})")
+                    result = await execute_tool(name, args)
+                    short = json.dumps(result)[:200] if not isinstance(result, str) else result[:200]
+                    log.info(f"[gpt-tools]   {name} ← {short}")
+                    output_str = result if isinstance(result, str) else json.dumps(result)
+                    await ws.send(json.dumps({
+                        "type": "conversation.item.create",
+                        "item": {
+                            "type": "function_call_output",
+                            "call_id": cid,
+                            "output": output_str,
+                        },
+                    }))
+                    # Kick off the next response so the model speaks
+                    # the result.
+                    await ws.send(json.dumps({"type": "response.create"}))
+
+                # Some Realtime variants emit response.output_item.added
+                # with the function call's name; remember it so we have
+                # it ready when the .done event fires.
+                elif etype == "response.output_item.added":
+                    item = evt.get("item") or {}
+                    if item.get("type") == "function_call":
+                        cid = item.get("call_id") or ""
+                        nm = item.get("name") or ""
+                        if cid and nm:
+                            fc_names[cid] = nm
+
+                elif etype == "error":
+                    log.error(f"[gpt-tools] server error: {evt.get('error')}")
+
+        tasks = [
+            asyncio.create_task(pump_mic(),      name="mic"),
+            asyncio.create_task(drain_replies(), name="replies"),
+            asyncio.create_task(stop.wait(),     name="stop"),
+        ]
+        try:
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for t in pending:
+                t.cancel()
+            for t in pending:
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
+            for t in done:
+                exc = t.exception()
+                if exc and not isinstance(exc, asyncio.CancelledError):
+                    log.warning(
+                        f"[gpt-tools] task {t.get_name()!r} raised: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+        finally:
+            log.info("[gpt-tools] stopping audio + screen subprocesses…")
+            for proc in (mic_proc, spk_proc):
+                try:
+                    proc.terminate()
+                    await asyncio.wait_for(proc.wait(), timeout=2.0)
+                except (asyncio.TimeoutError, ProcessLookupError):
+                    try: proc.kill()
+                    except Exception: pass
+            try: sct.close()
+            except Exception: pass
+
+    log.info("[gpt-tools] done.")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(asyncio.run(main()))
+    except KeyboardInterrupt:
+        sys.exit(130)
