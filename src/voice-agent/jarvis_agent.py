@@ -5328,6 +5328,17 @@ async def entrypoint(ctx: JobContext) -> None:
     except Exception as e:
         logger.warning(f"[telemetry] init_db failed: {e}")
 
+    # Install the auto-mod error telemetry handler. Captures recurring
+    # exceptions from this process for the auto-mod error-driven scanner
+    # to detect. Idempotent — re-install is a no-op. The handler reads
+    # the same telemetry DB that init_db() just initialized.
+    # Spec: docs/superpowers/specs/2026-05-27-automod-error-driven-branch-design.md
+    try:
+        from pipeline.automod.error_logger import install_error_handler
+        install_error_handler()
+    except Exception as _e:
+        logger.warning(f"[automod] error handler install failed: {_e}")
+
     # Clear any stale thinking/tool flags from a prior crashed agent.
     # If we leave them, the new fresh agent reports "thinking" forever
     # until the next user turn fires user_input_transcribed.
