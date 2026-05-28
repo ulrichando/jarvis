@@ -157,13 +157,19 @@ def test_dispatcher_labels_match_specialty_defaults(monkeypatch):
     assert label_code == "deepseek:deepseek-v4-flash", (
         f"TASK_CODE expected deepseek:deepseek-v4-flash; got {label_code!r}"
     )
-    # TASK_FILES / TASK_OTHER → claude-haiku-4-5
-    for route in ("TASK_FILES", "TASK_OTHER"):
-        inner = disp.inners[route]
-        label = getattr(inner, "_jarvis_label", "")
-        assert label == "anthropic:claude-haiku-4-5", (
-            f"{route} expected anthropic:claude-haiku-4-5; got {label!r}"
-        )
+    # TASK_FILES → claude-haiku-4-5 (file ops are explicit; Haiku is sufficient)
+    inner_files = disp.inners["TASK_FILES"]
+    label_files = getattr(inner_files, "_jarvis_label", "")
+    assert label_files == "anthropic:claude-haiku-4-5", (
+        f"TASK_FILES expected anthropic:claude-haiku-4-5; got {label_files!r}"
+    )
+    # TASK_OTHER → claude-sonnet-4-6 (Sonnet for orchestration reliability —
+    # see specialty_routes.py)
+    inner_other = disp.inners["TASK_OTHER"]
+    label_other = getattr(inner_other, "_jarvis_label", "")
+    assert label_other == "anthropic:claude-sonnet-4-6", (
+        f"TASK_OTHER expected anthropic:claude-sonnet-4-6; got {label_other!r}"
+    )
     # BANTER / EMOTIONAL → claude-haiku-4-5; REASONING → claude-sonnet-4-6
     assert getattr(disp.inners["BANTER"], "_jarvis_label", "") == "anthropic:claude-haiku-4-5"
     assert getattr(disp.inners["EMOTIONAL"], "_jarvis_label", "") == "anthropic:claude-haiku-4-5"
@@ -206,3 +212,66 @@ def test_task_override_propagates_across_task_subroutes(monkeypatch):
     for route in ("BANTER", "REASONING", "EMOTIONAL"):
         inner = disp.inners[route]
         assert inner is not pinned, f"route {route} unexpectedly received the TASK pin"
+
+
+def test_action_routes_force_tool_choice(monkeypatch):
+    """Action routes (TASK_DESKTOP/BROWSER/CODE/FILES) must construct their
+    primary LLM with tool_choice="required" so the model can't reply with
+    narration-only on a turn that needs an action. Non-action routes
+    (BANTER, EMOTIONAL, REASONING, TASK_OTHER) must NOT force tool_choice."""
+    for env_name in (
+        "JARVIS_TASK_MODEL",
+        "JARVIS_TASK_DESKTOP_MODEL", "JARVIS_TASK_BROWSER_MODEL",
+        "JARVIS_TASK_CODE_MODEL",    "JARVIS_TASK_FILES_MODEL",
+        "JARVIS_TASK_OTHER_MODEL",
+        "JARVIS_BANTER_MODEL", "JARVIS_REASONING_MODEL", "JARVIS_EMOTIONAL_MODEL",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
+
+    from providers.llm import build_dispatching_llm
+    disp = build_dispatching_llm()
+
+    def primary_opts(route: str):
+        """Walk through a FallbackAdapter to the primary inner LLM and
+        return its tool_choice setting (None if not set)."""
+        outer = disp.inners[route]
+        # FallbackAdapter exposes its rung list as ._llm_instances (verified
+        # against livekit/agents/llm/fallback_adapter.py:70 — the constructor
+        # sets `self._llm_instances = llm`). Primary is rung 0. The unwrapped
+        # primary (single-rung case) IS the inner already.
+        primary = outer
+        for attr in ("_llm_instances", "_llms", "llms"):
+            chain = getattr(outer, attr, None)
+            if chain:
+                primary = chain[0]
+                break
+        # tool_choice ends up on primary._opts.tool_choice for Anthropic /
+        # OpenAI / DeepSeek alike.
+        opts = getattr(primary, "_opts", None)
+        if opts is None:
+            return None
+        tc = getattr(opts, "tool_choice", None)
+        # NOT_GIVEN sentinel reads as not-required.
+        try:
+            from livekit.agents.types import NOT_GIVEN
+            if tc is NOT_GIVEN:
+                return None
+        except Exception:
+            pass
+        return tc
+
+    # Forced (action routes):
+    for route in ("TASK_DESKTOP", "TASK_BROWSER", "TASK_CODE", "TASK_FILES"):
+        tc = primary_opts(route)
+        assert tc == "required", (
+            f"{route} expected tool_choice='required' on primary LLM; got {tc!r}"
+        )
+
+    # Not forced (conversational / broad-task routes):
+    for route in ("BANTER", "EMOTIONAL", "REASONING", "TASK_OTHER"):
+        tc = primary_opts(route)
+        assert tc != "required", (
+            f"{route} must NOT force tool_choice; got {tc!r}"
+        )

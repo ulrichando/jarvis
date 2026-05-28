@@ -33,11 +33,19 @@ from confab_detector import looks_like_completion_claim
 from pipeline import specialty_routes
 from pipeline.turn_telemetry import (
     CONFAB_STATE_CLEAN,
+    CONFAB_STATE_CLEAN_BYPASS_ROUTE,
+    CONFAB_STATE_CLEAN_UNKNOWN_ROUTE,
+    CONFAB_STATE_CLEAN_NO_CLAIM,
+    CONFAB_STATE_CLEAN_TOOL_CALLED,
     CONFAB_STATE_CAUGHT_T1_PASSED,
     CONFAB_STATE_CAUGHT_T2_PASSED,
     CONFAB_STATE_CAUGHT_T3_PASSED,
     CONFAB_STATE_CAUGHT_FILLER,
     CONFAB_STATE_BYPASSED_KILLED,
+    CONFAB_STATE_NO_TEXT_T1_PASSED,
+    CONFAB_STATE_NO_TEXT_T2_PASSED,
+    CONFAB_STATE_NO_TEXT_T3_PASSED,
+    CONFAB_STATE_NO_TEXT_FILLER,
 )
 
 logger = logging.getLogger("jarvis.pre_tts_gate")
@@ -55,6 +63,24 @@ TOOL_FORCE_PROMPT = (
     "Call the appropriate tool now — computer_use for desktop work, "
     "browser_task for browsing, terminal for shell — and respond ONLY "
     "after the tool returns. Do not narrate; act."
+)
+
+# Text-forcing system message appended for the NO_TEXT_AFTER_TOOL
+# retry path. Inverse failure mode of TOOL_FORCE_PROMPT: the LLM
+# called tools but emitted no text reply for voice playback.
+TEXT_FORCE_PROMPT = (
+    "Your previous response called tools but did NOT voice a result. "
+    "The user is waiting — they only heard your acknowledgment. "
+    "Summarize what you found in 2-3 sentences for voice playback. "
+    "Do NOT call more tools. Just give the user the answer in plain text."
+)
+
+# Safe filler voiced when the no-text retry chain exhausts. Distinct
+# from FILLER_TEXT so operators can tell from telemetry which failure
+# mode the row reflects.
+NO_TEXT_FILLER_TEXT = (
+    "I checked but couldn't put together a clear summary. "
+    "Want me to try again?"
 )
 
 
@@ -89,35 +115,57 @@ def should_gate(
       - otherwise → clean
     """
     if gate_disabled():
+        logger.info(f"[pre_tts_gate] route={route} verdict=kill_switch")
         return GateVerdict(False, "kill_switch")
 
     if route in _BYPASS_ROUTES:
+        logger.info(f"[pre_tts_gate] route={route} verdict=bypass_route")
         return GateVerdict(False, "bypass_route")
 
     if not route.startswith("TASK_") and route != "REASONING":
         # Unknown route — be permissive (don't gate).
+        logger.info(f"[pre_tts_gate] route={route} verdict=unknown_route")
         return GateVerdict(False, "unknown_route")
 
     if tool_calls:
+        logger.info(
+            f"[pre_tts_gate] route={route} verdict=tool_called "
+            f"(n_calls={len(tool_calls)})"
+        )
         return GateVerdict(False, "tool_called")
 
     looks, pattern = looks_like_completion_claim(text)
     if not looks:
+        logger.info(f"[pre_tts_gate] route={route} verdict=no_claim")
         return GateVerdict(False, "no_claim")
 
+    # Trip path — agent filter will log a WARNING when it actually
+    # runs the retry chain, so we don't double-log here.
     return GateVerdict(True, "confab_detected", pattern_matched=pattern)
 
 
 def telemetry_state_for_clean(verdict: GateVerdict) -> str:
-    """Map a clean verdict (should_retry=False) to its telemetry state.
+    """Map a clean verdict (should_retry=False) to its precise telemetry
+    sub-state. Each of the four bypass reasons now writes a distinct DB
+    value so the operator can tell from the row WHY the gate didn't
+    retry — instead of every reason collapsing into CONFAB_STATE_CLEAN.
 
-    The agent calls this when the gate decided not to retry, so it
-    can write the right confab_check_state value to telemetry.
-    Returns CONFAB_STATE_BYPASSED_KILLED for kill-switch verdicts,
-    CONFAB_STATE_CLEAN for everything else (including bypass routes,
-    no-claim, tool-called, etc.)."""
+    The legacy CONFAB_STATE_CLEAN constant remains exported for back-
+    compat with older DB rows; new code should land on these sub-states.
+    """
     if verdict.reason == "kill_switch":
         return CONFAB_STATE_BYPASSED_KILLED
+    if verdict.reason == "bypass_route":
+        return CONFAB_STATE_CLEAN_BYPASS_ROUTE
+    if verdict.reason == "unknown_route":
+        return CONFAB_STATE_CLEAN_UNKNOWN_ROUTE
+    if verdict.reason == "tool_called":
+        return CONFAB_STATE_CLEAN_TOOL_CALLED
+    if verdict.reason == "no_claim":
+        return CONFAB_STATE_CLEAN_NO_CLAIM
+    # Unknown reason — defensive fallback. Should not happen in
+    # practice; if it does, the operator will see "clean" in the DB
+    # and know to investigate.
     return CONFAB_STATE_CLEAN
 
 
@@ -147,22 +195,47 @@ async def run_retry_chain(
     original_text: str,
     original_pattern: Optional[str],
     llm_factory: LLMFactory,
+    reason_for_retry: str = "confab_detected",
 ) -> RetryResult:
-    """Walk the route's ladder. Append TOOL_FORCE_PROMPT to chat_ctx on
-    each retry. Returns the first clean reply, or the filler when all
-    tiers exhaust.
+    """Walk the route's ladder. Append the appropriate force-prompt to
+    chat_ctx on each retry. Returns the first clean reply, or the
+    filler when all tiers exhaust.
+
+    `reason_for_retry` selects branch behavior:
+      - 'confab_detected' (default): TOOL_FORCE_PROMPT;
+        tier-pass when next call doesn't trip `should_gate`.
+        Telemetry: CONFAB_STATE_CAUGHT_T{1,2,3}_PASSED / _FILLER.
+      - 'no_text_after_tool': TEXT_FORCE_PROMPT;
+        tier-pass when next call returns NON-EMPTY text.
+        Telemetry: CONFAB_STATE_NO_TEXT_T{1,2,3}_PASSED / _FILLER.
 
     Tier indexing: ladder[0] is the primary (the call that already
-    confabbed — skipped here). We start from tier 1 (retry).
+    confabbed / went silent — skipped here). We start from tier 1.
     """
     ladder = specialty_routes.get_route_ladder(route)
     tier_names = ("primary", "retry", "escalate", "cross_provider")
-    telemetry_states = (
-        None,  # tier 0 already known to confab
-        CONFAB_STATE_CAUGHT_T1_PASSED,
-        CONFAB_STATE_CAUGHT_T2_PASSED,
-        CONFAB_STATE_CAUGHT_T3_PASSED,
-    )
+
+    if reason_for_retry == "no_text_after_tool":
+        force_prompt = TEXT_FORCE_PROMPT
+        telemetry_states = (
+            None,
+            CONFAB_STATE_NO_TEXT_T1_PASSED,
+            CONFAB_STATE_NO_TEXT_T2_PASSED,
+            CONFAB_STATE_NO_TEXT_T3_PASSED,
+        )
+        filler_text = NO_TEXT_FILLER_TEXT
+        filler_state = CONFAB_STATE_NO_TEXT_FILLER
+    else:
+        # confab_detected (default) — existing behaviour.
+        force_prompt = TOOL_FORCE_PROMPT
+        telemetry_states = (
+            None,
+            CONFAB_STATE_CAUGHT_T1_PASSED,
+            CONFAB_STATE_CAUGHT_T2_PASSED,
+            CONFAB_STATE_CAUGHT_T3_PASSED,
+        )
+        filler_text = FILLER_TEXT
+        filler_state = CONFAB_STATE_CAUGHT_FILLER
 
     models_tried: list[str] = [ladder[0]] if ladder[0] else []
     last_text = original_text
@@ -174,7 +247,7 @@ async def run_retry_chain(
             continue  # this slot is empty for this route — skip
 
         models_tried.append(model_id)
-        retry_ctx = _append_system_message(chat_ctx, TOOL_FORCE_PROMPT)
+        retry_ctx = _append_system_message(chat_ctx, force_prompt)
 
         try:
             runner = llm_factory(model_id)
@@ -182,10 +255,34 @@ async def run_retry_chain(
         except Exception as e:
             logger.warning(
                 f"[pre_tts_gate] tier={tier_names[tier_idx]} model={model_id} "
-                f"raised: {type(e).__name__}: {e}"
+                f"reason={reason_for_retry} raised: {type(e).__name__}: {e}"
             )
             continue
 
+        if reason_for_retry == "no_text_after_tool":
+            # Tier passes when the retry produced non-empty text.
+            if retry_text and retry_text.strip():
+                logger.info(
+                    f"[pre_tts_gate] route={route} tier={tier_names[tier_idx]} "
+                    f"model={model_id} reason=no_text_after_tool PASSED "
+                    f"(text len={len(retry_text)})"
+                )
+                return RetryResult(
+                    text=retry_text,
+                    tier_passed=tier_names[tier_idx],
+                    model_id=model_id,
+                    models_tried=models_tried,
+                    pattern_matched=original_pattern,
+                    telemetry_state=telemetry_states[tier_idx],
+                )
+            last_text = retry_text or ""
+            logger.info(
+                f"[pre_tts_gate] route={route} tier={tier_names[tier_idx]} "
+                f"model={model_id} reason=no_text_after_tool STILL EMPTY — escalating"
+            )
+            continue
+
+        # confab_detected — re-run the gate on the retry result.
         verdict = should_gate(
             route=route, text=retry_text, tool_calls=retry_tool_calls,
         )
@@ -209,18 +306,19 @@ async def run_retry_chain(
             f"model={model_id} STILL CONFAB ({verdict.reason}) — escalating"
         )
 
-    # All tiers exhausted — voice the safe filler.
+    # All tiers exhausted — voice the appropriate filler.
     logger.warning(
-        f"[pre_tts_gate] route={route} ALL TIERS EXHAUSTED — voicing filler. "
+        f"[pre_tts_gate] route={route} ALL TIERS EXHAUSTED "
+        f"(reason={reason_for_retry}) — voicing filler. "
         f"models_tried={models_tried}"
     )
     return RetryResult(
-        text=FILLER_TEXT,
+        text=filler_text,
         tier_passed=None,
         model_id="filler",
         models_tried=models_tried,
         pattern_matched=last_pattern,
-        telemetry_state=CONFAB_STATE_CAUGHT_FILLER,
+        telemetry_state=filler_state,
     )
 
 

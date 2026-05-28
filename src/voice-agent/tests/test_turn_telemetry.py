@@ -489,3 +489,111 @@ def test_log_turn_persists_confab_check_state(tmp_path):
             "SELECT confab_check_state FROM turns WHERE user_text='open chrome'"
         ).fetchone()
     assert row == ("evidence_ok",)
+
+
+def test_new_confab_states_exported():
+    """Six new precise sub-states must be importable and distinct from each other and from CLEAN."""
+    from pipeline.turn_telemetry import (
+        CONFAB_STATE_CLEAN,
+        CONFAB_STATE_CLEAN_BYPASS_ROUTE,
+        CONFAB_STATE_CLEAN_UNKNOWN_ROUTE,
+        CONFAB_STATE_CLEAN_NO_CLAIM,
+        CONFAB_STATE_CLEAN_TOOL_CALLED,
+        CONFAB_STATE_RETRY_FACTORY_MISSING,
+        CONFAB_STATE_RETRY_EXCEPTION,
+    )
+    new_states = {
+        CONFAB_STATE_CLEAN_BYPASS_ROUTE,
+        CONFAB_STATE_CLEAN_UNKNOWN_ROUTE,
+        CONFAB_STATE_CLEAN_NO_CLAIM,
+        CONFAB_STATE_CLEAN_TOOL_CALLED,
+        CONFAB_STATE_RETRY_FACTORY_MISSING,
+        CONFAB_STATE_RETRY_EXCEPTION,
+    }
+    assert len(new_states) == 6, "states must be distinct strings"
+    assert CONFAB_STATE_CLEAN not in new_states, "legacy CLEAN should remain a separate constant"
+
+
+def test_legacy_clean_state_unchanged():
+    """Existing DB rows use the string 'clean' — back-compat alias must keep that value."""
+    from pipeline.turn_telemetry import CONFAB_STATE_CLEAN
+    assert CONFAB_STATE_CLEAN == "clean"
+
+
+def test_subagent_columns_exist_after_init():
+    """init_db must add the 3 subagent columns idempotently."""
+    import sqlite3, tempfile, os
+    from pipeline.turn_telemetry import init_db
+    with tempfile.TemporaryDirectory() as td:
+        db = os.path.join(td, "t.db")
+        init_db(db)
+        # idempotent — second call must not raise
+        init_db(db)
+        conn = sqlite3.connect(db)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(turns)").fetchall()}
+        conn.close()
+    assert {"subagent_type", "subagent_ms", "subagent_status"}.issubset(cols), (
+        f"missing subagent_* columns in turns; have: {sorted(cols)}"
+    )
+
+
+def test_log_turn_writes_subagent_fields():
+    """log_turn must accept the 3 new kwargs and persist them."""
+    import sqlite3, tempfile, os
+    from pipeline.turn_telemetry import init_db, log_turn
+    with tempfile.TemporaryDirectory() as td:
+        db = os.path.join(td, "t.db")
+        init_db(db)
+        log_turn(
+            db_path=db,
+            user_text="find computer_use",
+            jarvis_text="It's at tools/computer_use.py:75",
+            route="TASK_OTHER",
+            llm_used="anthropic:claude-sonnet-4-6",
+            voice_used="troy",
+            subagent_type="explore",
+            subagent_ms=4321,
+            subagent_status="success",
+        )
+        conn = sqlite3.connect(db)
+        row = conn.execute(
+            "SELECT subagent_type, subagent_ms, subagent_status FROM turns ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+    assert row == ("explore", 4321, "success"), f"got {row!r}"
+
+
+def test_no_text_states_distinct_and_exported():
+    """The 4 new no_text_* constants must exist and not collide with
+    existing CONFAB_STATE_* values."""
+    from pipeline.turn_telemetry import (
+        CONFAB_STATE_NO_TEXT_T1_PASSED,
+        CONFAB_STATE_NO_TEXT_T2_PASSED,
+        CONFAB_STATE_NO_TEXT_T3_PASSED,
+        CONFAB_STATE_NO_TEXT_FILLER,
+        CONFAB_STATE_CLEAN,
+        CONFAB_STATE_CAUGHT_T1_PASSED,
+        CONFAB_STATE_CAUGHT_FILLER,
+    )
+    new_states = {
+        CONFAB_STATE_NO_TEXT_T1_PASSED,
+        CONFAB_STATE_NO_TEXT_T2_PASSED,
+        CONFAB_STATE_NO_TEXT_T3_PASSED,
+        CONFAB_STATE_NO_TEXT_FILLER,
+    }
+    existing_states = {
+        CONFAB_STATE_CLEAN,
+        CONFAB_STATE_CAUGHT_T1_PASSED,
+        CONFAB_STATE_CAUGHT_FILLER,
+    }
+    # All four must be distinct from each other.
+    assert len(new_states) == 4, "no_text constants must be unique"
+    # And distinct from existing states.
+    assert new_states.isdisjoint(existing_states), (
+        "no_text constants must not collide with existing CONFAB_STATE_*"
+    )
+    # Sanity on the actual string values — they need to be DB-stable.
+    assert CONFAB_STATE_NO_TEXT_T1_PASSED == "no_text_t1_passed"
+    assert CONFAB_STATE_NO_TEXT_T2_PASSED == "no_text_t2_passed"
+    assert CONFAB_STATE_NO_TEXT_T3_PASSED == "no_text_t3_passed"
+    assert CONFAB_STATE_NO_TEXT_FILLER == "no_text_filler"
