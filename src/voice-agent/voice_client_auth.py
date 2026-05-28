@@ -26,7 +26,9 @@ __all__ = [
     "API_SECRET",
     "IDENTITY",
     "ROOM_NAME",
+    "SCREEN_SHARE_IDENTITY",
     "mint_token",
+    "mint_screen_share_token",
 ]
 
 
@@ -133,6 +135,51 @@ def mint_token() -> str:
             room=ROOM_NAME,
             can_publish=True,
             can_subscribe=True,
+        ))
+        .to_jwt()
+    )
+
+
+# Identity used by the Tauri webview when it joins the LiveKit room
+# for screen-share publishing (via the JS SDK's
+# setScreenShareEnabled(true), which triggers the native OS picker).
+# Distinct from the voice-client's IDENTITY so the two clients don't
+# collide on the same identity in the room — LiveKit kicks the
+# previous holder when an identity is re-used.
+SCREEN_SHARE_IDENTITY: str = os.environ.get(
+    "JARVIS_SCREEN_SHARE_IDENTITY", "desktop-ulrich-screen"
+)
+
+
+def mint_screen_share_token() -> str:
+    """Mint a LiveKit JWT scoped to screen-share publishing only.
+
+    Used by the Tauri webview when the user clicks the "Share Screen"
+    button — the webview connects to the same room as the voice-client
+    but with a DIFFERENT identity, then calls
+    `room.localParticipant.setScreenShareEnabled(true)` to trigger the
+    OS's native screen-picker (xdg-desktop-portal on Linux). The agent
+    subscribes to any SOURCE_SCREENSHARE track in the room, so the
+    screen-share observer sees the new track immediately.
+
+    Same TTL + room as the main token; only the identity differs.
+    can_subscribe=False because the webview doesn't need to consume
+    media (the voice-client owns audio in/out for the user).
+    """
+    if not API_KEY or not API_SECRET:
+        raise RuntimeError(
+            "LIVEKIT_API_KEY / LIVEKIT_API_SECRET not set"
+        )
+    return (
+        api.AccessToken(API_KEY, API_SECRET)
+        .with_identity(SCREEN_SHARE_IDENTITY)
+        .with_name("Ulrich (desktop screen)")
+        .with_ttl(datetime.timedelta(hours=TOKEN_TTL_HOURS))
+        .with_grants(api.VideoGrants(
+            room_join=True,
+            room=ROOM_NAME,
+            can_publish=True,
+            can_subscribe=False,
         ))
         .to_jwt()
     )

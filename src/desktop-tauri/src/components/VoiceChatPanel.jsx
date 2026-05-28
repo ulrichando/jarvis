@@ -397,20 +397,25 @@ export default function VoiceChatPanel({
   )
 }
 
-function HeaderButton({ children, onClick, title, active }) {
+function HeaderButton({ children, onClick, title, active, disabled }) {
   const [hover, setHover] = useState(false)
   const bg = active
     ? 'rgba(68,147,248,0.14)'
-    : hover ? 'rgba(255,255,255,0.06)' : 'transparent'
-  const color = active ? '#4493f8' : hover ? TEXT : TEXT_DIM
+    : hover && !disabled ? 'rgba(255,255,255,0.06)' : 'transparent'
+  const color = disabled
+    ? TEXT_MUTE
+    : active ? '#4493f8' : hover ? TEXT : TEXT_DIM
   return (
     <button
       onClick={onClick}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       title={title}
+      disabled={disabled}
       style={{
-        background: bg, border: 'none', color, cursor: 'pointer',
+        background: bg, border: 'none', color,
+        cursor: disabled ? 'wait' : 'pointer',
+        opacity: disabled ? 0.6 : 1,
         padding: '6px 8px', borderRadius: '6px',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}

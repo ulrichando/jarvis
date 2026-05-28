@@ -1,0 +1,312 @@
+#!/usr/bin/env -S /home/ulrich/Documents/Projects/jarvis/src/voice-agent/.venv/bin/python -u
+"""GPT-direct mode for JARVIS.
+
+Sister script to bin/jarvis-gemini-direct. Same UX, different
+provider: OpenAI's Realtime API (`gpt-realtime` model). User talks to
+GPT, GPT talks back, no STT/TTS layer in between. Screen is fed in
+at low fps so GPT can see what's going on (image input via the
+Realtime conversation API).
+
+Audio routing:
+  - mic in:  `parec` → PCM 16k mono s16le → base64 →
+             `input_audio_buffer.append` event
+  - audio out: `response.audio.delta` events → base64-decode →
+             PCM 24k mono s16le → `paplay`
+
+Screen capture (optional, OFF by default — see env):
+  - mss grabs monitor[0] every JARVIS_GPT_DIRECT_FRAME_INTERVAL_S
+    seconds → JPEG → base64 → `conversation.item.create` with an
+    `input_image` content part.
+  - Each image is a context item, so this burns tokens linearly.
+    Default interval is 5s (5x lower than Gemini-direct's 1s) to
+    keep cost sane. Set =0 to disable entirely.
+
+Voice (env JARVIS_GPT_DIRECT_VOICE):
+  - default `marin` (newer, warm conversational tenor)
+  - others: alloy, ash, ballad, cedar, coral, echo, sage, shimmer, verse
+
+Lifecycle:
+  - Launch: `bin/jarvis-gpt-direct` (or `bin/jarvis-mode gpt`).
+  - Exit: Ctrl-C / SIGTERM / SIGINT. Cleanly closes the WS, kills
+    parec + paplay, releases PulseAudio devices.
+
+Heads-up: matches gemini-direct's caveat — run via `bin/jarvis-mode
+gpt` so JARVIS's mic gets muted while GPT-direct is active, instead
+of launching this script directly.
+"""
+from __future__ import annotations
+
+import asyncio
+import base64
+import io
+import json
+import logging
+import os
+import signal
+import sys
+from typing import Optional
+
+try:
+    import websockets
+    import mss
+    import PIL.Image
+except ImportError as e:
+    sys.stderr.write(f"missing dep: {e}\n")
+    sys.stderr.write("run inside src/voice-agent/.venv\n")
+    sys.exit(2)
+
+
+# ── Config ───────────────────────────────────────────────────────────
+
+MODEL = os.environ.get("JARVIS_GPT_DIRECT_MODEL", "gpt-realtime")
+MIC_SAMPLE_RATE = 16000
+SPK_SAMPLE_RATE = 24000
+# Default 1 FPS — matches gemini-direct's cadence so the experience
+# is the same across providers. Each frame is a context item on
+# OpenAI Realtime (NOT a streaming frame like Gemini), so this DOES
+# grow the per-turn context linearly with session length. Set to 0
+# to disable, or bump to 3.0 / 5.0 if context windows get tight.
+FRAME_INTERVAL_S = float(
+    os.environ.get("JARVIS_GPT_DIRECT_FRAME_INTERVAL_S", "1.0")
+)
+VOICE_NAME = os.environ.get("JARVIS_GPT_DIRECT_VOICE", "marin")
+SYSTEM_INSTRUCTION = (
+    "You are GPT in direct conversation with Ulrich. Be natural, "
+    "concise, conversational. If he's sharing his screen with you, "
+    "reference what's there when relevant — don't announce that you "
+    "see it. Skip pleasantries unless he leads with one."
+)
+
+WS_URL = f"wss://api.openai.com/v1/realtime?model={MODEL}"
+
+log = logging.getLogger("jarvis.gpt-direct")
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+
+# ── Audio I/O via PulseAudio (parec / paplay) ─────────────────────────
+
+async def open_mic_stream() -> asyncio.subprocess.Process:
+    return await asyncio.create_subprocess_exec(
+        "parec",
+        "--format=s16le",
+        "--channels=1",
+        f"--rate={MIC_SAMPLE_RATE}",
+        "--latency-msec=20",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+
+async def open_speaker_stream() -> asyncio.subprocess.Process:
+    return await asyncio.create_subprocess_exec(
+        "paplay",
+        "--format=s16le",
+        "--channels=1",
+        f"--rate={SPK_SAMPLE_RATE}",
+        "--latency-msec=20",
+        "--raw",
+        stdin=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+
+# ── Screen capture ──────────────────────────────────────────────────
+
+def grab_screen_jpeg(sct: "mss.mss", monitor: dict) -> bytes:
+    raw = sct.grab(monitor)
+    img = PIL.Image.frombytes("RGB", raw.size, raw.rgb)
+    img.thumbnail((1024, 1024))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=75)
+    return buf.getvalue()
+
+
+# ── Main loop ────────────────────────────────────────────────────────
+
+CHUNK_BYTES = 1600  # 50 ms of 16k s16le mono
+
+
+async def main() -> int:
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+    if not api_key:
+        keys_env = os.path.expanduser("~/.jarvis/keys.env")
+        if os.path.isfile(keys_env):
+            for line in open(keys_env):
+                if line.startswith("OPENAI_API_KEY="):
+                    api_key = line.split("=", 1)[1].strip().strip("'").strip('"')
+                    os.environ["OPENAI_API_KEY"] = api_key
+                    break
+        if not api_key:
+            log.error("no OPENAI_API_KEY — bailing")
+            return 2
+
+    stop = asyncio.Event()
+
+    def _stop(signo, frame=None) -> None:  # type: ignore
+        log.info(f"[gpt-direct] signal {signo} → stopping")
+        stop.set()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, _stop, sig)
+
+    log.info(f"[gpt-direct] connecting to {MODEL} (voice={VOICE_NAME})…")
+
+    headers = [
+        ("Authorization", f"Bearer {api_key}"),
+        ("OpenAI-Beta", "realtime=v1"),
+    ]
+
+    async with websockets.connect(
+        WS_URL,
+        additional_headers=headers,
+        max_size=16 * 1024 * 1024,  # allow big base64 audio chunks
+        ping_interval=20,
+        ping_timeout=30,
+    ) as ws:
+        # Configure the session: PCM16 audio both ways, server VAD,
+        # our voice, our system prompt.
+        await ws.send(json.dumps({
+            "type": "session.update",
+            "session": {
+                "modalities": ["audio", "text"],
+                "instructions": SYSTEM_INSTRUCTION,
+                "voice": VOICE_NAME,
+                "input_audio_format": "pcm16",
+                "output_audio_format": "pcm16",
+                "input_audio_transcription": {"model": "whisper-1"},
+                "turn_detection": {
+                    "type": "server_vad",
+                    "threshold": 0.5,
+                    "prefix_padding_ms": 300,
+                    "silence_duration_ms": 500,
+                },
+            },
+        }))
+        log.info("[gpt-direct] session configured — talk. Ctrl-C to exit.")
+
+        mic_proc = await open_mic_stream()
+        spk_proc = await open_speaker_stream()
+        sct: Optional["mss.mss"] = None
+        monitor = None
+        if FRAME_INTERVAL_S > 0:
+            sct = mss.mss()
+            monitor = sct.monitors[0]
+            log.info(f"[gpt-direct] screen vision ON, frame every {FRAME_INTERVAL_S}s")
+        else:
+            log.info("[gpt-direct] screen vision OFF (set JARVIS_GPT_DIRECT_FRAME_INTERVAL_S>0 to enable)")
+
+        async def pump_mic() -> None:
+            """Read PCM from parec, push to GPT as base64 audio chunks."""
+            assert mic_proc.stdout is not None
+            while not stop.is_set():
+                chunk = await mic_proc.stdout.readexactly(CHUNK_BYTES)
+                await ws.send(json.dumps({
+                    "type": "input_audio_buffer.append",
+                    "audio": base64.b64encode(chunk).decode("ascii"),
+                }))
+
+        async def pump_screen() -> None:
+            """Push a screen JPEG to GPT every FRAME_INTERVAL_S."""
+            if sct is None or monitor is None:
+                return
+            while not stop.is_set():
+                try:
+                    jpeg = await asyncio.to_thread(grab_screen_jpeg, sct, monitor)
+                    b64 = base64.b64encode(jpeg).decode("ascii")
+                    # Append the image as a conversation item with
+                    # input_image content. GPT picks it up on the
+                    # next turn alongside the audio.
+                    await ws.send(json.dumps({
+                        "type": "conversation.item.create",
+                        "item": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{
+                                "type": "input_image",
+                                "image_url": f"data:image/jpeg;base64,{b64}",
+                            }],
+                        },
+                    }))
+                except Exception as e:
+                    log.warning(f"[gpt-direct] screen send failed: {e}")
+                await asyncio.sleep(FRAME_INTERVAL_S)
+
+        async def drain_replies() -> None:
+            """Stream OpenAI's events; route audio deltas to paplay,
+            echo transcribed text to stdout."""
+            assert spk_proc.stdin is not None
+            async for raw in ws:
+                if stop.is_set():
+                    return
+                try:
+                    evt = json.loads(raw)
+                except Exception:
+                    continue
+                etype = evt.get("type", "")
+                if etype == "response.audio.delta":
+                    audio_b64 = evt.get("delta") or evt.get("audio") or ""
+                    if audio_b64:
+                        try:
+                            spk_proc.stdin.write(base64.b64decode(audio_b64))
+                            await spk_proc.stdin.drain()
+                        except (BrokenPipeError, ConnectionResetError):
+                            log.warning("[gpt-direct] paplay pipe closed")
+                            return
+                elif etype == "response.audio_transcript.delta":
+                    delta = evt.get("delta") or ""
+                    if delta:
+                        print(delta, end="", flush=True)
+                elif etype == "response.audio_transcript.done":
+                    print()  # newline after each turn's transcript
+                elif etype == "error":
+                    log.error(f"[gpt-direct] server error: {evt.get('error')}")
+
+        tasks = [
+            asyncio.create_task(pump_mic(),      name="mic"),
+            asyncio.create_task(drain_replies(), name="replies"),
+            asyncio.create_task(stop.wait(),     name="stop"),
+        ]
+        if FRAME_INTERVAL_S > 0:
+            tasks.append(asyncio.create_task(pump_screen(), name="screen"))
+
+        try:
+            done, pending = await asyncio.wait(
+                tasks, return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+            for t in pending:
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
+            for t in done:
+                exc = t.exception()
+                if exc and not isinstance(exc, asyncio.CancelledError):
+                    log.warning(
+                        f"[gpt-direct] task {t.get_name()!r} raised: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+        finally:
+            log.info("[gpt-direct] stopping audio + screen subprocesses…")
+            for proc in (mic_proc, spk_proc):
+                try:
+                    proc.terminate()
+                    await asyncio.wait_for(proc.wait(), timeout=2.0)
+                except (asyncio.TimeoutError, ProcessLookupError):
+                    try: proc.kill()
+                    except Exception: pass
+            if sct is not None:
+                try: sct.close()
+                except Exception: pass
+
+    log.info("[gpt-direct] done.")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(asyncio.run(main()))
+    except KeyboardInterrupt:
+        sys.exit(130)

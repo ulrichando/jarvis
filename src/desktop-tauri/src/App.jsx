@@ -204,6 +204,12 @@ export default function App() {
   const voiceChatOpenRef = useRef(voiceChatOpen)
   useEffect(() => { voiceChatOpenRef.current = voiceChatOpen }, [voiceChatOpen])
 
+  // Screen-share is now a NATIVE tray submenu (src-tauri/src/main.rs
+  // builds the picker directly under "Share Screen ▸"). No React
+  // modal, no popup window — clicks on tray monitor/window items
+  // POST /screen-share themselves from Rust. App.jsx has no
+  // share-related state anymore.
+
   // ── Tray events from Rust ────────────────────────────────────────────
   useEffect(() => {
     const unlisten1 = listen('tray-open-chat',   () => openChat())
@@ -221,6 +227,10 @@ export default function App() {
       if (voiceChatOpenRef.current) closeVoiceChat()
       else                          openVoiceChat()
     })
+    // Legacy tray-toggle-screen-share event (kept for back-compat with
+    // older Rust builds that emit it). Currently a no-op — the native
+    // submenu handler in Rust does all the work now.
+    const unlistenS = listen('tray-toggle-screen-share', () => {})
     return () => {
       unlisten1.then(f => f())
       unlisten2.then(f => f())
@@ -229,6 +239,7 @@ export default function App() {
       unlistenV1.then(f => f())
       unlistenV2.then(f => f())
       unlistenV3.then(f => f())
+      unlistenS.then(f => f())
     }
   }, [openChat, closeChat, openVoiceChat, closeVoiceChat])
 
@@ -285,6 +296,9 @@ export default function App() {
     lastTtsRef.current = speech.ttsProvider
     invoke('set_tts_label', { name: speech.ttsProvider || '' }).catch(console.error)
   }, [speech.ttsProvider])
+  // Tray-label sync. "Stop Screen Share ✓" when the voice-client
+  // is publishing a screen track (speech.sharingScreen comes from
+  // /status). Uses lastShareRef to skip redundant invokes.
   useEffect(() => {
     if (lastShareRef.current === speech.sharingScreen) return
     lastShareRef.current = speech.sharingScreen

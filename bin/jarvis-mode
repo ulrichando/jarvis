@@ -1,0 +1,313 @@
+#!/usr/bin/env bash
+# jarvis-mode — switch the active voice-conversation backend.
+#
+# Three modes, all with audio + screen vision + JARVIS tool surface:
+#
+#   jarvis  → JARVIS-Claude pipeline (Whisper STT → Claude → Orpheus
+#             TTS). Default. Best for long deep tasks, prompt-cache
+#             friendly. Tool surface is the full registry (200+ tools).
+#   gemini  → Gemini Live 2-way audio + streaming screen vision +
+#             curated tool registry. Best UX latency on natural
+#             dialogue, vision is continuous. Voice: Sadaltager.
+#   openai  → OpenAI Realtime 2-way audio + on-demand screen vision +
+#             curated tool registry. Vision is keyword-gated since
+#             Realtime images are context items (no streaming video
+#             channel). Voice: marin.
+#
+# All three have the SAME tool surface (terminal, computer_use,
+# browser_task, read/write/patch files, code_search, find_definitions,
+# execute_code, web_search/web_fetch, vuln_check). Pick a mode for
+# voice/latency feel, not for capability.
+#
+# Only one direct mode runs at a time. Switching into gemini/openai
+# mutes JARVIS-Claude so the two voices don't talk over each other.
+# Switching back to jarvis stops whichever direct mode is up and
+# unmutes.
+#
+# Usage:
+#   jarvis-mode               # toggle: jarvis ⇄ gemini
+#   jarvis-mode gemini        # → Gemini Live
+#   jarvis-mode openai        # → OpenAI Realtime  (alias: gpt)
+#   jarvis-mode jarvis        # → JARVIS-Claude
+#   jarvis-mode status        # show current mode (+notification)
+
+set -euo pipefail
+
+# Each direct mode runs as a transient .service unit. .service NOT
+# .scope: scopes die with the calling shell; services daemonize.
+# Unit names are stable so the tray can poll them.
+GEMINI_SCOPE="jarvis-gemini-tools.service"
+OPENAI_SCOPE="jarvis-gpt-tools.service"
+
+VOICE_CLIENT_PORT="${JARVIS_VOICE_CLIENT_PORT:-8767}"
+MUTE_URL="http://127.0.0.1:${VOICE_CLIENT_PORT}/mute"
+
+# Persistence: the last successfully-chosen mode is written here so
+# jarvis-mode-resume.service can restore it after reboot / user
+# logout-login. Stored as plain text: "jarvis" | "gemini" | "openai".
+STATE_FILE="$HOME/.jarvis/active-mode"
+
+BIN_DIR="$(dirname "$(readlink -f "$0")")"
+GEMINI_BIN="${BIN_DIR}/jarvis-gemini-tools"
+OPENAI_BIN="${BIN_DIR}/jarvis-gpt-tools"
+
+
+write_mode_state() {
+    # Persist the active mode atomically — write to a temp file
+    # then rename so a concurrent read never sees a partial value.
+    local mode="$1"
+    mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null || true
+    local tmp="${STATE_FILE}.tmp.$$"
+    printf '%s\n' "$mode" > "$tmp" 2>/dev/null && mv -f "$tmp" "$STATE_FILE"
+}
+
+
+is_active() {
+    systemctl --user is-active --quiet "$1" 2>/dev/null
+}
+
+current_mode() {
+    if is_active "$GEMINI_SCOPE"; then
+        echo "gemini"
+    elif is_active "$OPENAI_SCOPE"; then
+        echo "openai"
+    else
+        echo "jarvis"
+    fi
+}
+
+# Desktop notification helper. Silent no-op when notify-send isn't on
+# the box, so this stays safe in headless / WSL contexts.
+notify() {
+    local title="$1"
+    local body="$2"
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send --app-name="JARVIS" --icon=audio-input-microphone \
+                    --expire-time=4000 \
+                    "$title" "$body" 2>/dev/null || true
+    fi
+}
+
+set_jarvis_mute() {
+    local mute="$1"
+    # Retry up to 30 s at 1 s intervals. Voice-client may still be
+    # booting (e.g., when jarvis-mode-resume runs at user-session
+    # start) — first call can race the http server coming up.
+    # Failing silently here causes the "two voices" bug: Gemini/OpenAI
+    # mode runs while JARVIS-Claude's mic is still hot.
+    local i
+    for i in {1..30}; do
+        if curl --silent --show-error --fail --max-time 2 \
+                -X POST "$MUTE_URL" \
+                -H "Content-Type: application/json" \
+                -d "{\"mute\": $mute}" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+    done
+    echo "  note: voice-client never became reachable at ${MUTE_URL}" >&2
+    echo "        — JARVIS-Claude mic may be HOT alongside the direct mode." >&2
+    return 1
+}
+
+# Background mute-watchdog: spawns a detached process that re-asserts
+# the JARVIS-Claude mic mute state every 10s for as long as a direct
+# mode unit is running. Voice-client occasionally drops or flips its
+# own mute state on reconnect — this catches it.
+ensure_jarvis_mute_watchdog() {
+    local watcher_pidfile="$HOME/.jarvis/mute-watchdog.pid"
+    if [[ -f "$watcher_pidfile" ]] && kill -0 "$(cat "$watcher_pidfile" 2>/dev/null)" 2>/dev/null; then
+        return 0  # already running
+    fi
+    (
+        while is_active "$GEMINI_SCOPE" || is_active "$OPENAI_SCOPE"; do
+            curl --silent --fail --max-time 1 \
+                -X POST "$MUTE_URL" \
+                -H "Content-Type: application/json" \
+                -d '{"mute": true}' >/dev/null 2>&1 || true
+            sleep 10
+        done
+        rm -f "$watcher_pidfile"
+    ) &
+    disown
+    echo $! > "$watcher_pidfile"
+}
+
+# Interrupt any in-flight JARVIS-Claude TTS so the user doesn't hear
+# two voices when switching modes. Mute alone only stops mic input —
+# it doesn't kill audio that's already playing through the speakers.
+stop_jarvis_tts() {
+    curl --silent --show-error --fail --max-time 2 \
+        -X POST "http://127.0.0.1:${VOICE_CLIENT_PORT}/stop" \
+        >/dev/null 2>&1 || true
+}
+
+stop_scope() {
+    local scope="$1"
+    if is_active "$scope"; then
+        echo "→ stopping $scope…"
+        systemctl --user stop "$scope" 2>/dev/null || true
+    fi
+}
+
+start_direct() {
+    local label="$1"        # "gemini" or "openai"
+    local scope="$2"        # unit name
+    local bin="$3"          # script path
+    local voice_env="$4"    # env var name for voice
+    local default_voice="$5"
+
+    if is_active "$scope"; then
+        echo "$label already running (unit: $scope)"
+        # Still record the choice — handles the case where the user
+        # invokes `jarvis-mode gemini` after a tray-relaunch that
+        # left the service running but the state file wasn't refreshed.
+        write_mode_state "$label"
+        # Re-assert mute + (re)start the watchdog: covers boot races
+        # where the previous invocation's mute call landed before
+        # voice-client was up, leaving JARVIS-Claude hot.
+        set_jarvis_mute "true" >/dev/null 2>&1 || true
+        ensure_jarvis_mute_watchdog
+        return 0
+    fi
+    # Only one direct mode at a time — stop the other.
+    case "$label" in
+        gemini) stop_scope "$OPENAI_SCOPE" ;;
+        openai) stop_scope "$GEMINI_SCOPE" ;;
+    esac
+    if [[ ! -x "$bin" ]]; then
+        echo "error: $bin not executable" >&2
+        return 2
+    fi
+    echo "→ muting JARVIS-Claude mic + stopping any in-flight TTS…"
+    set_jarvis_mute "true" || true
+    stop_jarvis_tts
+
+    # Forward provider API keys from ~/.jarvis/keys.env if the caller
+    # didn't already export them — systemd --user env is usually empty.
+    local google_key="${GOOGLE_API_KEY:-}"
+    local openai_key="${OPENAI_API_KEY:-}"
+    if [[ -z "$google_key" || -z "$openai_key" ]] && [[ -f "$HOME/.jarvis/keys.env" ]]; then
+        local v
+        if [[ -z "$google_key" ]]; then
+            v="$(grep -E '^GOOGLE_API_KEY=' "$HOME/.jarvis/keys.env" | head -1 | cut -d= -f2- | tr -d \"\')"
+            google_key="$v"
+        fi
+        if [[ -z "$openai_key" ]]; then
+            v="$(grep -E '^OPENAI_API_KEY=' "$HOME/.jarvis/keys.env" | head -1 | cut -d= -f2- | tr -d \"\')"
+            openai_key="$v"
+        fi
+    fi
+    local voice="${!voice_env:-$default_voice}"
+    echo "→ launching $label as $scope (voice=$voice)…"
+
+    # PulseAudio subtlety: PULSE_SERVER="" (empty) → connection error.
+    # Only forward when it has a real value; otherwise let PulseAudio
+    # fall back to $XDG_RUNTIME_DIR/pulse/native.
+    #
+    # Restart=on-failure + RestartSec=5 → 24/7 self-heal: if the
+    # direct-mode process crashes (network blip, provider 5xx, etc.)
+    # systemd restarts it. Clean exits (Ctrl-C / `jarvis-mode jarvis`)
+    # are NOT restarts. --collect dropped so the unit isn't removed
+    # on first stop, letting Restart kick in.
+    local -a run_args=(
+        --user
+        --unit="$scope"
+        -p Restart=on-failure
+        -p RestartSec=5
+        -p StartLimitBurst=10
+        -p StartLimitIntervalSec=300
+        --setenv="GOOGLE_API_KEY=$google_key"
+        --setenv="OPENAI_API_KEY=$openai_key"
+        --setenv="${voice_env}=${voice}"
+        --setenv="DISPLAY=${DISPLAY:-:0}"
+        --setenv="XAUTHORITY=${XAUTHORITY:-$HOME/.Xauthority}"
+        --setenv="XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    )
+    if [[ -n "${PULSE_SERVER:-}" ]]; then
+        run_args+=(--setenv="PULSE_SERVER=$PULSE_SERVER")
+    fi
+    systemd-run "${run_args[@]}" "$bin" >/dev/null
+    sleep 0.6
+
+    if is_active "$scope"; then
+        local pretty
+        case "$label" in
+            gemini) pretty="Gemini Live" ;;
+            openai) pretty="OpenAI Realtime" ;;
+            *)      pretty="$label" ;;
+        esac
+        echo "✓ $label active. Run 'jarvis-mode jarvis' to switch back."
+        write_mode_state "$label"
+        ensure_jarvis_mute_watchdog
+        notify "Switched to $pretty" "Voice: $voice — audio + vision + tools. JARVIS-Claude muted."
+    else
+        echo "✗ $label didn't register — check 'journalctl --user -u $scope'"
+        notify "Mode switch failed" "$label didn't register. See journalctl --user."
+        return 3
+    fi
+}
+
+stop_all_direct() {
+    local was_running=0
+    if is_active "$GEMINI_SCOPE"; then was_running=1; stop_scope "$GEMINI_SCOPE"; fi
+    if is_active "$OPENAI_SCOPE"; then was_running=1; stop_scope "$OPENAI_SCOPE"; fi
+    if (( was_running == 0 )); then
+        echo "→ no direct mode was running"
+    fi
+    echo "→ unmuting JARVIS-Claude mic…"
+    set_jarvis_mute "false" || true
+    echo "✓ back on JARVIS-Claude."
+    write_mode_state "jarvis"
+    notify "Switched to JARVIS · Claude" "Whisper → Claude → Orpheus. Full tool registry, mic unmuted."
+}
+
+show_status() {
+    case "$(current_mode)" in
+        gemini)
+            echo "mode: gemini (Gemini Live + audio + vision + tools)"
+            echo "       voice: ${JARVIS_GEMINI_TOOLS_VOICE:-Iapetus}"
+            echo "       unit:  $GEMINI_SCOPE"
+            notify "Current mode: Gemini Live" "Audio + vision + tools. Voice: ${JARVIS_GEMINI_TOOLS_VOICE:-Iapetus}."
+            ;;
+        openai)
+            echo "mode: openai (OpenAI Realtime + audio + vision + tools)"
+            echo "       voice: ${JARVIS_GPT_TOOLS_VOICE:-cedar}"
+            echo "       unit:  $OPENAI_SCOPE"
+            notify "Current mode: OpenAI Realtime" "Audio + vision + tools. Voice: ${JARVIS_GPT_TOOLS_VOICE:-cedar}."
+            ;;
+        *)
+            echo "mode: jarvis (Claude STT/LLM/TTS pipeline, full tool registry)"
+            notify "Current mode: JARVIS · Claude" "Default STT/LLM/TTS pipeline with full tool registry."
+            ;;
+    esac
+}
+
+case "${1:-toggle}" in
+    gemini|g)
+        start_direct gemini "$GEMINI_SCOPE" "$GEMINI_BIN" JARVIS_GEMINI_TOOLS_VOICE Iapetus
+        ;;
+    openai|gpt|o)
+        start_direct openai "$OPENAI_SCOPE" "$OPENAI_BIN" JARVIS_GPT_TOOLS_VOICE cedar
+        ;;
+    jarvis|claude|j)
+        stop_all_direct
+        ;;
+    status|st|s)
+        show_status
+        ;;
+    toggle|t|"")
+        case "$(current_mode)" in
+            jarvis) start_direct gemini "$GEMINI_SCOPE" "$GEMINI_BIN" JARVIS_GEMINI_TOOLS_VOICE Iapetus ;;
+            *)      stop_all_direct ;;
+        esac
+        ;;
+    -h|--help|help)
+        sed -n '2,32p' "$0"
+        ;;
+    *)
+        echo "unknown mode: $1" >&2
+        echo "usage: jarvis-mode [toggle|jarvis|gemini|openai|status]" >&2
+        exit 2
+        ;;
+esac

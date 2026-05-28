@@ -539,6 +539,17 @@ def _text_response(res: ActionResult) -> str:
 
 
 def _capture_response(cap: CaptureResult) -> str:
+    # The `note` field that used to live here ("Screenshot pixels are
+    # not yet fed back into the model context (deferred). Use ...
+    # screenshot() for vision.") was REMOVED 2026-05-28. The supervisor
+    # read that string in the tool response and voiced it back to the
+    # user as "the screenshot pixels aren't feeding back" — sounded
+    # like a JARVIS bug but was really the tool parroting its own
+    # documentation. The screen-share observer
+    # (pipeline/screen_share_observer.py) caches a fresh text
+    # description while sharing is active; `screen_description` below
+    # threads that into the response so the supervisor has the actual
+    # screen CONTENT, not a confession about pixel plumbing.
     payload: Dict[str, Any] = {
         "ok": True,
         "action": "capture",
@@ -548,16 +559,21 @@ def _capture_response(cap: CaptureResult) -> str:
         "screenshot_bytes": cap.png_bytes_len,
         "screenshot_captured": cap.png_b64 is not None,
         "elements": [_element_to_dict(e) for e in cap.elements],
-        "note": (
-            "Screenshot pixels are not yet fed back into the model context "
-            "(deferred). Use action='capture' window list + known coordinates, "
-            "or screenshot() for vision."
-        ),
     }
     if cap.app:
         payload["app"] = cap.app
     if cap.window_title:
         payload["window_title"] = cap.window_title
+    # When the user is screen-sharing, the polling or stream observer
+    # has a fresh description ready; forward it so the supervisor
+    # doesn't need to call another tool just to "see".
+    try:
+        from pipeline.screen_share_observer import latest_description_global
+        desc = latest_description_global()
+        if desc:
+            payload["screen_description"] = desc.strip()
+    except Exception:
+        pass
     return json.dumps(payload)
 
 
