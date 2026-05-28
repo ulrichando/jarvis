@@ -1,0 +1,60 @@
+#!/bin/sh
+# JARVIS kiosk v2 — enter on an explicit monitor or exit.
+#
+# Usage:
+#   jarvis-kiosk <monitor-index>    enter on monitor <index> (non-negative integer)
+#   jarvis-kiosk off                exit kiosk
+#
+# Examples:
+#   jarvis-kiosk 0       # enter on monitor 0 (typically primary)
+#   jarvis-kiosk 1       # enter on monitor 1 (secondary)
+#   jarvis-kiosk off
+#
+# Tip: see detected monitors with `xrandr --listmonitors`.
+set -e
+
+ARG="${1:-}"
+
+print_usage() {
+  echo "usage: $(basename "$0") <monitor-index>|off" >&2
+  echo "  enter on monitor N: $(basename "$0") N    (N = non-negative integer)" >&2
+  echo "  exit kiosk:         $(basename "$0") off" >&2
+  echo "" >&2
+  echo "Detected monitors (xrandr):" >&2
+  xrandr --listmonitors 2>/dev/null | sed -n 's/^/  /p' >&2
+}
+
+if [ -z "$ARG" ]; then
+  print_usage
+  exit 2
+fi
+
+# Decode arg into JSON payload.
+case "$ARG" in
+  off)
+    PAYLOAD='{"state":"off"}'
+    ;;
+  *[!0-9]*)
+    echo "error: monitor index must be a non-negative integer (got: $ARG)" >&2
+    print_usage
+    exit 2
+    ;;
+  *)
+    PAYLOAD="{\"state\":\"on\",\"monitor\":$ARG}"
+    ;;
+esac
+
+# Auth: optional bearer token from ~/.jarvis/local-api-token.env.
+TOKEN=""
+if [ -r "$HOME/.jarvis/local-api-token.env" ]; then
+  TOKEN="$(sed -n 's/^JARVIS_LOCAL_API_TOKEN=//p' "$HOME/.jarvis/local-api-token.env" | head -1)"
+fi
+AUTH=""
+if [ -n "$TOKEN" ]; then
+  AUTH="-H Authorization: Bearer $TOKEN"
+fi
+
+exec curl -fsS -X POST "http://127.0.0.1:8765/api/kiosk" \
+  -H "Content-Type: application/json" \
+  $AUTH \
+  -d "$PAYLOAD"
