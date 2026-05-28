@@ -324,14 +324,23 @@ async def _stream_session(session, get_jpeg_fn, resume_handle: Optional[str]) ->
         log.warning("[screen-observer:stream] GOOGLE_API_KEY unset — bailing")
         return None
 
-    client = genai.Client(api_key=api_key)
+    # Pin the API version to v1beta to match Google's official
+    # cookbook quickstart (Get_started_LiveAPI.py); Live preview
+    # endpoints live there. Without the pin the SDK can pick a
+    # version that doesn't expose Live cleanly.
+    client = genai.Client(
+        http_options={"api_version": "v1beta"},
+        api_key=api_key,
+    )
 
     # context_window_compression keeps the model's working context
     # bounded as frames pile up; session_resumption lets us reconnect
     # after a server-initiated GoAway or socket drop without losing
-    # conversational state.
+    # conversational state. media_resolution matches the official
+    # cookbook sample — tells Gemini how to size frames it receives.
     cfg = types.LiveConnectConfig(
         response_modalities=["TEXT"],
+        media_resolution="MEDIA_RESOLUTION_MEDIUM",
         context_window_compression=types.ContextWindowCompressionConfig(
             trigger_tokens=25600,
             sliding_window=types.SlidingWindow(target_tokens=12800),
