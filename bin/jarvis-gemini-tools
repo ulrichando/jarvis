@@ -1,0 +1,542 @@
+#!/usr/bin/env -S /home/ulrich/Documents/Projects/jarvis/src/voice-agent/.venv/bin/python -u
+"""Gemini Live + JARVIS tools mode (the third mode).
+
+Combines gemini-direct's audio-to-audio + screen-vision with JARVIS's
+tool surface so the model can actually DO things on the desktop while
+holding a natural voice conversation.
+
+Architecture:
+  - mic in:  parec → PCM 16k mono s16le → Gemini Live (audio in)
+  - audio out: Gemini Live (24k PCM out) → paplay
+  - vision: mss → 1 FPS JPEG → Gemini Live (streaming video)
+  - tools: Gemini calls function_declarations → we execute via the
+    voice-agent's tool registry → return function_response → Gemini
+    incorporates the result into its spoken reply.
+
+Tool surface is a curated subset of the voice-agent's registry —
+the ones that DO things you'd want a voice assistant to do without
+needing a LiveKit AgentSession context:
+
+  terminal, computer_use, browser_task, read_file, write_file, patch,
+  code_search, find_definitions, execute_code, web_search, web_fetch.
+
+Skipped: tools that need the AgentSession (clarify, screenshot,
+set_screen_share), or that don't make sense outside JARVIS's
+conversation context (memory, schedule, todo).
+
+Lifecycle:
+  - Launch via `bin/jarvis-mode tools` (auto-mutes JARVIS-Claude).
+  - Exit: Ctrl-C / SIGTERM.
+"""
+from __future__ import annotations
+
+import asyncio
+import inspect
+import io
+import json
+import logging
+import os
+import signal
+import sys
+from typing import Any, Optional
+
+# ── Voice-agent imports (registry + monkey-patches) ────────────────────
+#
+# The script lives in bin/ but needs to import the voice-agent's tool
+# registry to reuse JARVIS's already-built tool surface. We prepend
+# the voice-agent dir to sys.path so `import sanitizers` / `from tools
+# import registry` resolve.
+
+VOICE_AGENT_DIR = "/home/ulrich/Documents/Projects/jarvis/src/voice-agent"
+if VOICE_AGENT_DIR not in sys.path:
+    sys.path.insert(0, VOICE_AGENT_DIR)
+
+# Sanitizers MUST be imported before any LLM SDK code that builds
+# schemas — they install monkey-patches at import time.
+import sanitizers  # noqa: F401  (side-effect import — installs patches)
+
+try:
+    from google import genai
+    from google.genai import types
+    import mss
+    import PIL.Image
+    from tools import registry
+    from tools.registry import _check_fn_cached
+    from pipeline.prompt_builder import load_soul
+    from pipeline.file_memory import MemoryStore
+except ImportError as e:
+    sys.stderr.write(f"missing dep: {e}\n")
+    sys.stderr.write(f"hint: run inside {VOICE_AGENT_DIR}/.venv\n")
+    sys.exit(2)
+
+
+def load_memory_snapshot() -> str:
+    """Same MEMORY.md + USER.md + PROCEDURES.md snapshot that
+    JARVIS-Claude bakes into its supervisor prompt at session start.
+    Returns the formatted block as a single string, "" when stores
+    are empty."""
+    try:
+        store = MemoryStore()
+        store.load_from_disk()
+        return store.snapshot_for_prompt()
+    except Exception as e:
+        log = logging.getLogger("jarvis.gemini-tools")
+        log.warning(f"[gemini-tools] memory snapshot load failed: {e}")
+        return ""
+
+
+def load_recent_turns(limit: int = 8) -> str:
+    """Pull the last `limit` user/JARVIS turn pairs from
+    ~/.local/share/jarvis/turn_telemetry.db so the model has the
+    same recent-conversation awareness JARVIS-Claude has when
+    switching between modes."""
+    import sqlite3
+    db_path = os.path.expanduser("~/.local/share/jarvis/turn_telemetry.db")
+    if not os.path.isfile(db_path):
+        return ""
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT user_text, jarvis_text FROM turns "
+            "ORDER BY ts_utc DESC LIMIT ?",
+            (limit,),
+        )
+        rows = list(reversed(cur.fetchall()))
+        conn.close()
+    except Exception:
+        return ""
+    if not rows:
+        return ""
+    lines = ["═══ RECENT CONVERSATION (most-recent JARVIS-Claude turns) ═══", ""]
+    for user_t, jarvis_t in rows:
+        u = (user_t or "").strip()
+        j = (jarvis_t or "").strip()
+        if u: lines.append(f"User: {u[:300]}")
+        if j: lines.append(f"JARVIS: {j[:400]}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+# ── Config ───────────────────────────────────────────────────────────
+
+LIVE_MODEL = os.environ.get(
+    "JARVIS_GEMINI_TOOLS_MODEL", "gemini-3.1-flash-live-preview"
+)
+MIC_SAMPLE_RATE = 16000
+SPK_SAMPLE_RATE = 24000
+FRAME_INTERVAL_S = float(
+    os.environ.get("JARVIS_GEMINI_TOOLS_FRAME_INTERVAL_S", "1.0")
+)
+# Gemini Live voices — defaulted to Orus (deeper, more masculine
+# male baritone, calmer pacing) per user feedback that Puck was too
+# light and too fast. If Orus still feels off, alternatives ordered
+# from warmest→deepest: Puck (lighter, faster), Charon (classic
+# narrator), Iapetus (calm + measured), Sadachbia (deepest bass).
+# Full set: Achernar, Algenib, Algieba, Alnilam, Aoede, Autonoe,
+# Callirrhoe, Charon, Despina, Enceladus, Erinome, Fenrir,
+# Gacrux, Iapetus, Kore, Laomedeia, Leda, Orus, Pulcherrima,
+# Puck, Rasalgethi, Sadachbia, Sadaltager, Schedar, Sulafat,
+# Umbriel, Vindemiatrix, Zephyr, Zubenelgenubi.
+VOICE_NAME = os.environ.get("JARVIS_GEMINI_TOOLS_VOICE", "Iapetus")
+
+# Broad tool allowlist — every JARVIS tool that doesn't need explicit
+# LiveKit AgentSession plumbing. Mirrors what JARVIS-Claude has in the
+# supervisor's surface so the experience is uniform across modes.
+ALLOWED_TOOLS = {
+    # Files & code
+    "read_file", "write_file", "patch", "search_files",
+    "code_search", "find_definitions", "execute_code",
+    # Desktop / shell / GUI
+    "terminal", "computer_use",
+    # Browser / web
+    "browser_task", "web_search", "web_fetch",
+    # Long-running memory / state
+    "memory", "todo", "schedule",
+    # Skills (read-only registry + view + manage)
+    "skills_list", "skill_view", "skill_manage",
+    # Dispatch (planner-style sub-task)
+    "dispatch_agent",
+    # Specialty
+    "vuln_check", "clarify",
+}
+
+# Operations block — kept tight on purpose. The SOUL prompt (slot #1)
+# carries the identity, voice texture, register, and few-shot
+# exemplars; this block only adds what's specific to running through
+# Gemini Live with the curated tool surface. Mirrors the SOUL-first
+# assembly the supervisor uses, just leaner.
+OPS_BLOCK = (
+    "═══ OPS RULES — GEMINI LIVE + TOOLS MODE ═══\n\n"
+    "ALWAYS RESPOND IN ENGLISH. Even if the user's audio sounds like "
+    "another language or has an accent, transcribe and respond in "
+    "English unless explicitly asked to switch. Never reply in any "
+    "language other than English.\n\n"
+    "PACE: speak at a measured, deliberate pace — slower than your "
+    "default. Use natural pauses between clauses. Don't rush. Brevity "
+    "is good, but space the words out instead of compressing them.\n\n"
+    "You are running as JARVIS via Gemini Live, with screen vision "
+    "(~1 FPS) and the full JARVIS tool registry — files, terminal, "
+    "computer_use (vision + GUI driving), browser_task, web search/"
+    "fetch, memory, todo, schedule, skills, code search/edit, execute "
+    "scratch code, vuln_check, clarify, dispatch_agent. The list is "
+    "broad on purpose: when the user gives a concrete actionable "
+    "request, CALL the matching tool. Don't say 'I can't do that on "
+    "this system' or 'I don't have access' — you do. The tools are "
+    "live and run against Ulrich's real Linux desktop.\n\n"
+    "Stay in JARVIS's voice as described in the identity prompt above; "
+    "speak in short, natural, decisive English phrases. Reference "
+    "what's on screen when relevant without announcing the fact "
+    "that you can see it."
+)
+
+
+def build_system_instruction() -> str:
+    """SOUL + ops + same memory/conversation snapshot JARVIS-Claude
+    injects, so all three modes start from the same baseline
+    awareness. The model still has the `memory` tool for live writes
+    + reads — this is just the boot snapshot, matching what
+    JARVIS-Claude bakes into its supervisor prompt at session start."""
+    parts = [load_soul().rstrip(), OPS_BLOCK]
+    mem = load_memory_snapshot().strip()
+    if mem:
+        parts.append("═══ DURABLE MEMORY (USER + MEMORY + PROCEDURES) ═══\n\n" + mem)
+    recent = load_recent_turns(limit=8).strip()
+    if recent:
+        parts.append(recent)
+    return "\n\n".join(parts)
+
+
+log = logging.getLogger("jarvis.gemini-tools")
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+
+# ── Audio I/O (parec / paplay) ─────────────────────────────────────────
+
+async def open_mic_stream() -> asyncio.subprocess.Process:
+    return await asyncio.create_subprocess_exec(
+        "parec",
+        "--format=s16le",
+        "--channels=1",
+        f"--rate={MIC_SAMPLE_RATE}",
+        "--latency-msec=80",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+
+async def open_speaker_stream() -> asyncio.subprocess.Process:
+    return await asyncio.create_subprocess_exec(
+        "paplay",
+        "--format=s16le",
+        "--channels=1",
+        f"--rate={SPK_SAMPLE_RATE}",
+        "--latency-msec=80",
+        "--raw",
+        stdin=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+
+# ── Screen capture ──────────────────────────────────────────────────
+
+def grab_screen_jpeg(sct: "mss.mss", monitor: dict) -> bytes:
+    raw = sct.grab(monitor)
+    img = PIL.Image.frombytes("RGB", raw.size, raw.rgb)
+    img.thumbnail((1024, 1024))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=80)
+    return buf.getvalue()
+
+
+# ── Tool-registry adaptation ──────────────────────────────────────────
+
+def _strip_unsupported_schema_fields(schema: dict) -> dict:
+    """Recursively strip JSON-schema fields Gemini doesn't accept.
+
+    Gemini's parameters validator is stricter than Anthropic's. Known
+    rejections: `additionalProperties`, `$schema`, `definitions`/`$defs`,
+    `oneOf`/`anyOf`/`allOf` in some shapes. We strip these and trust
+    the model to figure out the rest from descriptions.
+    """
+    if not isinstance(schema, dict):
+        return schema
+    drop = {
+        "additionalProperties", "$schema", "$id", "definitions", "$defs",
+        "examples", "title",
+    }
+    out: dict = {}
+    for k, v in schema.items():
+        if k in drop:
+            continue
+        if isinstance(v, dict):
+            out[k] = _strip_unsupported_schema_fields(v)
+        elif isinstance(v, list):
+            out[k] = [
+                _strip_unsupported_schema_fields(item) if isinstance(item, dict) else item
+                for item in v
+            ]
+        else:
+            out[k] = v
+    return out
+
+
+def build_gemini_function_declarations() -> list[types.FunctionDeclaration]:
+    """Snapshot the registry → Gemini FunctionDeclaration list.
+
+    Filters by:
+      * ALLOWED_TOOLS allowlist (skip everything else).
+      * check_fn (skip tools whose external probe says they're unavailable).
+    """
+    # Trigger discovery of all tool modules so registry is populated.
+    registry.discover_builtin_tools()
+
+    decls: list[types.FunctionDeclaration] = []
+    for entry in registry.registry.all_entries():
+        if entry.name not in ALLOWED_TOOLS:
+            continue
+        if entry.check_fn is not None and not _check_fn_cached(entry.check_fn):
+            log.info(f"[gemini-tools] skipping {entry.name} (check_fn negative)")
+            continue
+
+        params = entry.schema.get("parameters") or {"type": "object", "properties": {}}
+        params = _strip_unsupported_schema_fields(params)
+        # Gemini requires `type: "object"` at the top level even when
+        # there are no properties.
+        if "type" not in params:
+            params["type"] = "object"
+
+        decls.append(types.FunctionDeclaration(
+            name=entry.name,
+            description=(entry.description or entry.schema.get("description") or "")[:1024],
+            parameters=params,
+        ))
+        log.info(f"[gemini-tools] registered tool: {entry.name}")
+    return decls
+
+
+async def execute_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Look up the registered handler by name and invoke it.
+
+    Returns a dict suitable for FunctionResponse.response. Errors are
+    captured and returned as `{"error": str}` so a single bad call
+    doesn't tear down the live session.
+    """
+    entry = registry.registry.get_entry(name)
+    if entry is None:
+        return {"error": f"unknown tool: {name}"}
+
+    handler = entry.handler
+    try:
+        # JARVIS tool handlers take the dict positionally (signature
+        # is `(args: dict) -> str` or `(args, **kw)`), NOT unpacked
+        # kwargs. Passing **args fails immediately on any handler that
+        # doesn't accept those specific keys as named parameters.
+        result = handler(args or {})
+        if inspect.isawaitable(result):
+            result = await result
+    except Exception as e:
+        log.warning(f"[gemini-tools] {name} raised: {type(e).__name__}: {e}")
+        return {"error": f"{type(e).__name__}: {e}"}
+
+    # Truncate stringly results that exceed the tool's own size limit
+    # (or 10KB if not specified) — Gemini sometimes chokes on huge
+    # tool_response payloads.
+    cap = int(entry.max_result_size_chars or 10_000)
+    if isinstance(result, str):
+        if len(result) > cap:
+            result = result[:cap] + f"\n…[truncated at {cap} chars]"
+        return {"result": result}
+    if isinstance(result, dict):
+        # Best-effort: serialize, check size, truncate the string repr.
+        try:
+            blob = json.dumps(result)
+            if len(blob) > cap:
+                return {"result": blob[:cap] + f"\n…[truncated at {cap} chars]"}
+        except Exception:
+            pass
+        return result
+    return {"result": str(result)}
+
+
+# ── Main loop ────────────────────────────────────────────────────────
+
+CHUNK_BYTES = 1600
+
+
+async def main() -> int:
+    api_key = os.environ.get("GOOGLE_API_KEY", "")
+    if not api_key:
+        keys_env = os.path.expanduser("~/.jarvis/keys.env")
+        if os.path.isfile(keys_env):
+            for line in open(keys_env):
+                if line.startswith("GOOGLE_API_KEY="):
+                    api_key = line.split("=", 1)[1].strip().strip("'").strip('"')
+                    os.environ["GOOGLE_API_KEY"] = api_key
+                    break
+        if not api_key:
+            log.error("no GOOGLE_API_KEY — bailing")
+            return 2
+
+    function_declarations = build_gemini_function_declarations()
+    if not function_declarations:
+        log.warning("[gemini-tools] NO tools registered — every allowlisted "
+                    "tool failed its check_fn. Session will still run but "
+                    "the model has no actions to take.")
+
+    client = genai.Client(
+        http_options={"api_version": "v1beta"},
+        api_key=api_key,
+    )
+    cfg = types.LiveConnectConfig(
+        response_modalities=["AUDIO"],
+        media_resolution="MEDIA_RESOLUTION_MEDIUM",
+        speech_config=types.SpeechConfig(
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                    voice_name=VOICE_NAME,
+                ),
+            ),
+        ),
+        context_window_compression=types.ContextWindowCompressionConfig(
+            trigger_tokens=104857,
+            sliding_window=types.SlidingWindow(target_tokens=52428),
+        ),
+        output_audio_transcription=types.AudioTranscriptionConfig(),
+        system_instruction=types.Content(
+            role="user",
+            parts=[types.Part(text=build_system_instruction())],
+        ),
+        tools=[types.Tool(function_declarations=function_declarations)] if function_declarations else None,
+    )
+
+    stop = asyncio.Event()
+
+    def _stop(signo, frame=None) -> None:  # type: ignore
+        log.info(f"[gemini-tools] signal {signo} → stopping")
+        stop.set()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, _stop, sig)
+
+    log.info(
+        f"[gemini-tools] connecting to {LIVE_MODEL} "
+        f"(voice={VOICE_NAME}, tools={len(function_declarations)})…"
+    )
+
+    async with client.aio.live.connect(model=LIVE_MODEL, config=cfg) as session:
+        log.info("[gemini-tools] connected — talk to JARVIS. Ctrl-C to exit.")
+
+        mic_proc = await open_mic_stream()
+        spk_proc = await open_speaker_stream()
+        sct = mss.mss()
+        monitor = sct.monitors[0]
+
+        async def pump_mic() -> None:
+            assert mic_proc.stdout is not None
+            while not stop.is_set():
+                chunk = await mic_proc.stdout.readexactly(CHUNK_BYTES)
+                await session.send_realtime_input(
+                    audio=types.Blob(
+                        data=chunk,
+                        mime_type=f"audio/pcm;rate={MIC_SAMPLE_RATE}",
+                    ),
+                )
+
+        async def pump_screen() -> None:
+            while not stop.is_set():
+                try:
+                    jpeg = await asyncio.to_thread(grab_screen_jpeg, sct, monitor)
+                    await session.send_realtime_input(
+                        video=types.Blob(data=jpeg, mime_type="image/jpeg"),
+                    )
+                except Exception as e:
+                    log.warning(f"[gemini-tools] screen send failed: {e}")
+                await asyncio.sleep(FRAME_INTERVAL_S)
+
+        async def drain_replies() -> None:
+            assert spk_proc.stdin is not None
+            while not stop.is_set():
+                async for msg in session.receive():
+                    # Tool calls — Gemini wants us to run a function.
+                    tool_call = getattr(msg, "tool_call", None)
+                    if tool_call is not None and getattr(tool_call, "function_calls", None):
+                        responses: list[types.FunctionResponse] = []
+                        for fc in tool_call.function_calls:
+                            name = fc.name
+                            args = dict(fc.args or {})
+                            log.info(f"[gemini-tools] → {name}({args})")
+                            result = await execute_tool(name, args)
+                            log.info(
+                                f"[gemini-tools]   {name} ← "
+                                f"{json.dumps(result)[:200] if not isinstance(result, str) else result[:200]}"
+                            )
+                            responses.append(types.FunctionResponse(
+                                id=getattr(fc, "id", None),
+                                name=name,
+                                response=result if isinstance(result, dict) else {"result": result},
+                            ))
+                        await session.send_tool_response(function_responses=responses)
+                        continue
+
+                    # Audio output → paplay
+                    if msg.data:
+                        try:
+                            spk_proc.stdin.write(msg.data)
+                            await spk_proc.stdin.drain()
+                        except (BrokenPipeError, ConnectionResetError):
+                            log.warning("[gemini-tools] paplay pipe closed")
+                            return
+                    if msg.text:
+                        print(msg.text, end="", flush=True)
+                    if msg.server_content is not None:
+                        ot = msg.server_content.output_transcription
+                        if ot and ot.text:
+                            print(ot.text, end="", flush=True)
+
+        tasks = [
+            asyncio.create_task(pump_mic(),      name="mic"),
+            asyncio.create_task(pump_screen(),   name="screen"),
+            asyncio.create_task(drain_replies(), name="replies"),
+            asyncio.create_task(stop.wait(),     name="stop"),
+        ]
+        try:
+            done, pending = await asyncio.wait(
+                tasks, return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+            for t in pending:
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
+            for t in done:
+                exc = t.exception()
+                if exc and not isinstance(exc, asyncio.CancelledError):
+                    log.warning(
+                        f"[gemini-tools] task {t.get_name()!r} raised: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+        finally:
+            log.info("[gemini-tools] stopping audio + screen subprocesses…")
+            for proc in (mic_proc, spk_proc):
+                try:
+                    proc.terminate()
+                    await asyncio.wait_for(proc.wait(), timeout=2.0)
+                except (asyncio.TimeoutError, ProcessLookupError):
+                    try: proc.kill()
+                    except Exception: pass
+            try: sct.close()
+            except Exception: pass
+
+    log.info("[gemini-tools] done.")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(asyncio.run(main()))
+    except KeyboardInterrupt:
+        sys.exit(130)
