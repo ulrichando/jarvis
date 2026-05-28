@@ -119,6 +119,28 @@ pkill -f "bun.*bridge/server.ts" 2>/dev/null || true
 pkill -f "jarvis-desktop" 2>/dev/null || true
 sleep 1
 
+# ── Ensure voice services are up ──────────────────────────────────────
+# The Tauri tray's Quit handler (src-tauri/src/main.rs::handle_quit)
+# stops jarvis-voice-agent + jarvis-voice-client + jarvis-bridge +
+# jarvis-proxy as one symmetric shutdown. Without a corresponding
+# start here, re-running this launcher after a Quit leaves voice-agent
+# and voice-client down — the desktop boots cleanly but the user
+# can't talk to JARVIS. Idempotent: systemctl start on an active unit
+# is a no-op, so this is safe to re-run on every launcher invocation.
+# Kicked off before proxy/bridge so the voice-agent's ~10s plugin
+# preload runs in parallel with the bun startups.
+for unit in jarvis-voice-agent.service jarvis-voice-client.service; do
+  if systemctl --user list-unit-files "$unit" --quiet 2>/dev/null; then
+    if ! systemctl --user is-active --quiet "$unit" 2>/dev/null; then
+      if systemctl --user start "$unit" 2>/dev/null; then
+        echo "[jarvis] started $unit"
+      else
+        echo "[jarvis] WARN: failed to start $unit (see journalctl --user -u $unit)" >&2
+      fi
+    fi
+  fi
+done
+
 # ── Start proxy (4000) ────────────────────────────────────────────────
 "$BUN" "$ROOT/src/proxy/server.ts" &>/tmp/jarvis-proxy.log &
 PROXY_PID=$!
