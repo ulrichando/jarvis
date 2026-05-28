@@ -257,14 +257,14 @@ pub fn enter_kiosk_on_monitor(app: AppHandle, monitor_idx: usize) -> Result<(), 
         }
     };
 
-    // Set the actual position + size using TYPED PhysicalPosition /
-    // PhysicalSize so Tauri treats the values as physical pixels (not
-    // logical, which is what raw (f64, f64) on the builder would have
-    // done). This is what makes the window fill the entire monitor
-    // exactly — bypasses the HiDPI logical/physical interpretation
-    // ambiguity entirely.
+    // Set position so the WM knows which monitor this window lives on.
+    // Then size, then flip the WM into actual fullscreen — _NET_WM_STATE_FULLSCREEN
+    // tells the compositor to cover the whole monitor including taskbar/tray.
+    // Without this the window respects its set_size but the WM still treats it
+    // as a regular window, leaving panels/decorations visible.
     let _ = kiosk_window.set_position(PhysicalPosition::<i32>::new(pos_x, pos_y));
     let _ = kiosk_window.set_size(PhysicalSize::<u32>::new(size_w, size_h));
+    let _ = kiosk_window.set_fullscreen(true);
 
     // Belt-and-suspenders: explicit always_on_top via wmctrl on the new window.
     // Some compositors (XFCE) lose track of the WindowBuilder hint.
