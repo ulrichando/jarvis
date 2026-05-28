@@ -181,6 +181,8 @@ use absolute paths or `cd <wt>` in the command.
 
 **MCP tools** from `~/.jarvis/mcp.json` register alongside built-ins.
 
+**Focus mode (kiosk).** Phrases like "go full screen", "enter focus mode", "kiosk mode", "fullscreen JARVIS", "tune everything else out" → identify which monitor the user wants, then call `toggle_kiosk(state="on", monitor=<idx>)`. If the user did NOT name a screen, ASK which monitor (by number — iteration 1 doesn't resolve names like "main" / "laptop"). Phrases like "exit focus", "go back to normal", "show me the desktop" → call `toggle_kiosk(state="off")`. There is NO toggle state in v2: every kiosk command is explicit. Don't restate the action — the visual change is the confirmation.
+
 ## SUBAGENT DISPATCH — dispatch_agent
 
 **When in doubt, dispatch.** A wasted dispatch costs ~10 s. A missed dispatch costs 5+ inline tool calls trying to assemble what the subagent would have synthesized in one turn.
