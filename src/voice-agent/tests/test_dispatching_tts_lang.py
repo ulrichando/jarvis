@@ -82,3 +82,40 @@ def test_last_route_and_voice_id_updated():
     d.pick("REASONING", lang="fr")
     assert d.last_route == "REASONING"
     assert d.last_voice_id == "fr:henri"
+
+
+def test_build_dispatching_tts_constructs_fr_inner(monkeypatch, tmp_path):
+    """build_dispatching_tts() should attach a French EdgeTTS instance
+    as fr_inner. The voice defaults to fr-FR-HenriNeural; overridable
+    via JARVIS_FR_EDGE_VOICE."""
+    from providers.tts import build_dispatching_tts
+
+    # Groq TTS constructor reads GROQ_API_KEY at __init__ time; set a
+    # dummy value so the test doesn't fail before reaching the fr_inner block.
+    monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
+    d = build_dispatching_tts()
+    assert d.fr_inner is not None, (
+        "build_dispatching_tts must construct a French EdgeTTS inner"
+    )
+    # The EdgeTTS instance's voice_id is set by build_dispatching_tts
+    # to a `edge:fr-…` shape so the metrics span tells English/French
+    # apart at a glance.
+    vid = getattr(d.fr_inner, "voice_id", "")
+    assert vid.startswith("edge:fr-"), (
+        f"fr_inner voice_id should start with 'edge:fr-', got {vid!r}"
+    )
+
+
+def test_build_dispatching_tts_respects_fr_voice_env(monkeypatch):
+    """Override the French voice via JARVIS_FR_EDGE_VOICE."""
+    from providers.tts import build_dispatching_tts
+
+    # Groq TTS constructor reads GROQ_API_KEY at __init__ time.
+    monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
+    monkeypatch.setenv("JARVIS_FR_EDGE_VOICE", "fr-FR-DeniseNeural")
+    d = build_dispatching_tts()
+    assert d.fr_inner is not None
+    vid = getattr(d.fr_inner, "voice_id", "")
+    assert "fr-FR-Den" in vid, (
+        f"override voice should appear in voice_id, got {vid!r}"
+    )
