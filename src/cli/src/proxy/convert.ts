@@ -503,6 +503,96 @@ function applyProviderSpecificParams(out: any, req: any, provider: Provider): vo
   }
 }
 
+// ── clampRequestForProvider ───────────────────────────────────────────────
+//
+// Re-shapes an already-OpenAI-converted request body for a different target
+// provider. Called by executeWithFallback (server.ts) so every provider in
+// the fallback chain receives a body that actually fits its constraints,
+// rather than one shaped for the PRIMARY that causes immediate 400s on
+// lower-cap or stricter fallback providers.
+//
+// Specifically handles:
+//   - max_tokens clamped to provider.maxOutputTokens (and floored to that
+//     cap for reasoning-budget models, same rule as convertRequest)
+//   - field rename: max_tokens ↔ max_completion_tokens by provider family
+//   - tools truncated to provider.maxTools (same priority-aware logic as
+//     convertTools but applied to already-converted OpenAI-shaped tools)
+//   - tool_choice dropped when provider.supportsToolChoice is false
+//   - temperature pinned for providers that demand it (kimi, gpt-5 family)
+//   - service_tier injected for groq
+//
+// Does NOT re-apply thinking/effort params (deepseek.thinking,
+// groq.reasoning_effort) — those are derived from the original Anthropic
+// request which is not available here; they're primary-specific and
+// absent from non-deepseek/non-gpt-oss fallbacks anyway.
+//
+// Idempotent: running clampRequestForProvider twice with the same provider
+// produces the same result as running it once.
+
+export function clampRequestForProvider(openaiReq: any, provider: Provider): any {
+  // Read whichever token-budget field is present (the input body may have
+  // been shaped for a different family that uses the other name).
+  const incomingTokens =
+    openaiReq.max_completion_tokens ?? openaiReq.max_tokens ?? provider.maxOutputTokens
+
+  // Apply the same reasoning-budget floor as convertRequest: thinking-mode
+  // and hidden-reasoning models always get the provider's full cap so
+  // chain-of-thought has room.
+  const usesReasoningBudget = provider.requiresReasoning || usesHiddenReasoning(provider)
+  const clampedTokens = usesReasoningBudget
+    ? provider.maxOutputTokens
+    : Math.min(incomingTokens, provider.maxOutputTokens)
+
+  // GPT-5 family needs max_completion_tokens; everyone else max_tokens.
+  const gpt5 = isGpt5Family(provider)
+
+  const out: any = {
+    ...openaiReq,
+    model: openaiReq.model,
+  }
+
+  // Remove both token fields; re-emit the correct one for this family.
+  delete out.max_tokens
+  delete out.max_completion_tokens
+  if (gpt5) {
+    out.max_completion_tokens = clampedTokens
+    // GPT-5 also requires temperature=1 — enforce here just as convertRequest does.
+    out.temperature = 1
+  } else {
+    out.max_tokens = clampedTokens
+  }
+
+  // Kimi pins temperature regardless of family classification.
+  if (provider.name === 'kimi') {
+    out.temperature = 1
+  }
+
+  // Tools: truncate to provider.maxTools if present. Re-apply the same
+  // priority ordering as convertTools so the most useful tools survive the cut.
+  if (out.tools && Array.isArray(out.tools) && provider.maxTools && out.tools.length > provider.maxTools) {
+    const PRIORITY = new Set(['bash', 'read_file', 'write_file', 'edit_file', 'glob', 'grep', 'web_search', 'web_fetch', 'think', 'dispatch', 'ask_user', 'todo_write'])
+    const priority = out.tools.filter((t: any) => PRIORITY.has(t.function?.name))
+    const rest = out.tools.filter((t: any) => !PRIORITY.has(t.function?.name))
+    out.tools = [...priority, ...rest].slice(0, provider.maxTools)
+  }
+
+  // tool_choice: drop if the provider doesn't support it; keep otherwise.
+  if (!provider.supportsToolChoice) {
+    delete out.tool_choice
+  }
+
+  // groq service_tier: inject for every groq request so it doesn't fall
+  // into on_demand rate limits (same logic as applyProviderSpecificParams).
+  if (provider.name === 'groq') {
+    out.service_tier = process.env.JARVIS_GROQ_TIER ?? 'auto'
+  } else {
+    // Remove service_tier if it was set for a previous (groq) provider.
+    delete out.service_tier
+  }
+
+  return out
+}
+
 // ── Main conversion: Anthropic request → OpenAI request ───────────────────
 
 export function convertRequest(req: any, provider: Provider): any {
