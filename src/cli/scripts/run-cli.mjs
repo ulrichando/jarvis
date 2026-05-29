@@ -7,7 +7,9 @@ import { fileURLToPath } from 'node:url'
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const root = resolve(scriptDir, '..')
 
-// Load .env.local into process.env so the values are inherited by child processes
+// Load an env file into process.env. First-set-wins semantics: keys already
+// present in process.env are NOT overwritten, so the caller controls
+// precedence by calling in lowest-priority-first order.
 function loadEnvFile(filePath) {
   try {
     const content = readFileSync(filePath, 'utf8')
@@ -27,12 +29,40 @@ function loadEnvFile(filePath) {
   }
 }
 
+// Like loadEnvFile but ALWAYS overwrites existing keys (last-wins). Used for
+// ~/.jarvis/keys.env so rotated keys placed there take precedence over .env /
+// .env.local without editing the repo's files. Mirrors start-desktop.sh's
+// `set -a; source keys.env; set +a` sourcing order (last-source wins in bash).
+function loadEnvFileOverride(filePath) {
+  try {
+    const content = readFileSync(filePath, 'utf8')
+    for (const line of content.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed || trimmed.startsWith('#')) continue
+      const eqIdx = trimmed.indexOf('=')
+      if (eqIdx === -1) continue
+      const key = trimmed.slice(0, eqIdx).trim()
+      const value = trimmed.slice(eqIdx + 1).trim()
+      if (key) {
+        process.env[key] = value
+      }
+    }
+  } catch {
+    // file not found — skip
+  }
+}
+
 // First-set-wins semantics (see loadEnvFile above). Load .env.local
 // FIRST so per-machine overrides take precedence, then fill any gaps
 // from the repo-root .env (centralized LLM provider keys, consolidated
 // 2026-05-15).
 loadEnvFile(join(root, '.env.local'))
 loadEnvFile(resolve(root, '..', '..', '.env'))
+// Also load ~/.jarvis/keys.env (user-local secret store, gitignored).
+// Uses override semantics so a rotated key here wins over .env / .env.local.
+// Mirrors the start-desktop.sh and start.sh sourcing pattern.
+const keysEnvPath = `${process.env.HOME ?? ''}/.jarvis/keys.env`
+loadEnvFileOverride(keysEnvPath)
 
 // Mark as development so native-install checks are skipped
 if (!process.env.NODE_ENV) {

@@ -43,6 +43,16 @@ for envfile in "$ROOT/../../.env" "$ROOT/.env.local"; do
     set +a
   fi
 done
+# Also load ~/.jarvis/keys.env (user-local secret store, gitignored).
+# Mirrors the voice-agent's `_load_user_keys_env()` pattern and
+# start-desktop.sh's sourcing order. Values here OVERRIDE .env / .env.local
+# on collision (last-source-wins), so a rotated key placed in keys.env takes
+# effect without editing the repo's .env files.
+if [ -f "$HOME/.jarvis/keys.env" ]; then
+  set -a
+  source "$HOME/.jarvis/keys.env"
+  set +a
+fi
 
 # ── Internal wiring (users never set these) ───────────────────────────────
 # Resolve the active CLI model. Precedence:
