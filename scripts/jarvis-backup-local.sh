@@ -34,5 +34,25 @@ backup_one() {
 
 backup_one "turn_telemetry" "${HOME}/.local/share/jarvis/turn_telemetry.db" || true
 
+# Hub state DB — holds messages, sessions, and memories from the voice agent hub.
+# This is the real conversation store (~2–3 MB); ~/.jarvis/conversations.db is a
+# known-empty stub (0 bytes) and is intentionally skipped.
+backup_one "hub_state" "${HOME}/.jarvis/hub/state.db" || true
+
+# Markdown memory store — per-project memory files written by the auto-extractor.
+# Backed up as a tarball (plain text, not SQLite) so individual files are recoverable.
+MEMORY_DIR="${HOME}/.claude/projects/-home-ulrich-Documents-Projects-jarvis/memory"
+if [[ -d "${MEMORY_DIR}" ]]; then
+    memory_dst="${DST_DIR}/memory-${stamp}.tar.gz"
+    tar czf "${memory_dst}" -C "$(dirname "${MEMORY_DIR}")" "$(basename "${MEMORY_DIR}")"
+    ln -sfn "$(basename "${memory_dst}")" "${DST_DIR}/memory-latest.tar.gz"
+    mem_size=$(du -h "${memory_dst}" | awk '{print $1}')
+    mem_count=$(find "${DST_DIR}" -maxdepth 1 -name 'memory-*.tar.gz' -type f | wc -l)
+    echo "[jarvis-backup] memory: ${memory_dst} (${mem_size}) — ${mem_count} retained"
+    find "${DST_DIR}" -maxdepth 1 -name 'memory-*.tar.gz' -type f -mtime "+${RETENTION_DAYS}" -delete
+else
+    echo "[jarvis-backup] skip memory: no directory at ${MEMORY_DIR}" >&2
+fi
+
 # Prune any pre-existing snapshot families that are no longer produced.
 find "${DST_DIR}" -maxdepth 1 \( -name 'state-*.db' -o -name 'conversations-*.db' \) -type f -mtime "+${RETENTION_DAYS}" -delete 2>/dev/null || true
