@@ -147,9 +147,17 @@ function getProviderVoiceBackend(
   provider: ExternalVoiceProviderName,
 ): VoiceBackend | null {
   const config = getJarvisProviderConfig(provider)
-  const apiKey = config.apiKeyEnvVar
-    ? process.env[config.apiKeyEnvVar]?.trim()
-    : undefined
+  const envVar = config.apiKeyEnvVar
+  let apiKey: string | undefined
+  if (Array.isArray(envVar)) {
+    for (const candidate of envVar as readonly string[]) {
+      const val = process.env[candidate]?.trim()
+      if (val) { apiKey = val; break }
+    }
+  } else {
+    const singleEnvVar = envVar as string | undefined
+    apiKey = singleEnvVar ? process.env[singleEnvVar]?.trim() : undefined
+  }
 
   if (!apiKey) {
     return null
