@@ -20,6 +20,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 _BIN_JARVIS = Path(__file__).resolve().parents[3] / "bin" / "jarvis"
 _HAS_KEY = bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
 
+if os.environ.get("JARVIS_RUN_INTEGRATION", "").strip() != "1":
+    pytest.skip(
+        "integration test — set JARVIS_RUN_INTEGRATION=1 to run (spawns bin/jarvis, costs tokens)",
+        allow_module_level=True,
+    )
+
 
 @pytest.mark.skipif(not _BIN_JARVIS.exists(), reason="bin/jarvis missing")
 @pytest.mark.skipif(not _HAS_KEY, reason="ANTHROPIC_API_KEY unset")
