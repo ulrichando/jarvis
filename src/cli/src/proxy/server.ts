@@ -368,7 +368,21 @@ async function handleMessagesRequest(req: Request, url: URL): Promise<Response> 
     })
   }
 
-  const openaiResp: any = await providerResp.json()
+  const rawText = await providerResp.text()
+  let openaiResp: any
+  try {
+    openaiResp = JSON.parse(rawText)
+  } catch (e) {
+    finish({
+      status: 502,
+      error_type: 'upstream_parse_error',
+      error_message: `Non-JSON upstream response (${rawText.length} bytes): ${rawText.slice(0, 120)}`,
+    })
+    return new Response(
+      JSON.stringify({ type: 'error', error: { type: 'api_error', message: 'Upstream returned non-JSON response' } }),
+      { status: 502, headers: { 'Content-Type': 'application/json', 'x-jarvis-request-id': requestId } },
+    )
+  }
   const anthropicResp = convertResponse(openaiResp, provider.model)
   // DeepSeek cache observability (Goal B). Hit/miss come straight from
   // the upstream usage block — no derivation needed on the batch path.

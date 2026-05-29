@@ -27,7 +27,7 @@ export type Provider = {
   // the fallback chain when the primary fails.
   jarvisModelId: string | null
   // Ordered list of jarvis model ids to try if this one fails after
-  // retries. Resolved on demand by getFallbackProvider().
+  // retries. Consumed inline by executeWithFallback() in server.ts.
   fallback: readonly string[]
 }
 
