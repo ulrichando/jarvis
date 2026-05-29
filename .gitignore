@@ -5,6 +5,9 @@
 /venv/
 /env/
 
+# Playwright MCP scratch (screenshots, console logs, page dumps)
+.playwright-mcp/
+
 # Build artifacts
 target/
 *.egg-info/

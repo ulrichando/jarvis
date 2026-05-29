@@ -172,8 +172,18 @@ fi
 echo "[jarvis] launching desktop..."
 trap "kill $PROXY_PID $BRIDGE_PID 2>/dev/null" EXIT
 # WebKit workarounds for tauri:// custom protocol on Linux:
-# - WEBKIT_DISABLE_COMPOSITING_MODE: fixes rendering on some GPUs
-# - WEBKIT_DISABLE_DMABUF_RENDERER: fallback renderer (fixes blank/error pages)
+# - WEBKIT_DISABLE_COMPOSITING_MODE=1: required for transparent overlay
+#   windows on XFCE/X11 (and many other Linux setups). Without it,
+#   WebKitGTK's compositor fails to invalidate the alpha-channel
+#   framebuffer on partial repaints, so old frames bleed through as
+#   "after-image" ghosting whenever the ChatPanel scrolls or remounts.
+#   This is the documented fix per tauri#10566, tauri#12800, tauri#13157,
+#   and what Cursor's Linux build ships. Cost: disables accelerated
+#   compositing inside the webview, which is fine for an HUD/chat UI.
+# - WEBKIT_DISABLE_DMABUF_RENDERER was previously set here to "fix
+#   blank/error pages" but per tauri#14924 it is itself a known *cause*
+#   of transparent-window ghosting on some Mesa/Nvidia stacks. Removed
+#   2026-05-29 after research; add back only if blank pages reappear.
 DISPLAY=${DISPLAY:-:0} \
-  WEBKIT_DISABLE_DMABUF_RENDERER=1 \
+  WEBKIT_DISABLE_COMPOSITING_MODE=1 \
   "$DESKTOP_BIN"

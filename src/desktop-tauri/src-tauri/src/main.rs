@@ -446,6 +446,37 @@ mod tests {
         assert!(!voice_session_within_60s_at(&path));
     }
 
+    #[test]
+    fn token_from_file_returns_value_when_present() {
+        let tmp = tempdir_safe();
+        let path = tmp.join("local-api-token.env");
+        std::fs::write(&path, "JARVIS_LOCAL_API_TOKEN=deadbeef\n").unwrap();
+        assert_eq!(local_api_token_from_file(&path), "deadbeef");
+    }
+
+    #[test]
+    fn token_from_file_returns_empty_when_missing_file() {
+        let tmp = tempdir_safe();
+        let path = tmp.join("does-not-exist.env");
+        assert_eq!(local_api_token_from_file(&path), "");
+    }
+
+    #[test]
+    fn token_from_file_returns_empty_when_key_absent() {
+        let tmp = tempdir_safe();
+        let path = tmp.join("other-keys.env");
+        std::fs::write(&path, "SOME_OTHER_KEY=value\n").unwrap();
+        assert_eq!(local_api_token_from_file(&path), "");
+    }
+
+    #[test]
+    fn token_from_file_strips_surrounding_quotes() {
+        let tmp = tempdir_safe();
+        let path = tmp.join("quoted.env");
+        std::fs::write(&path, "JARVIS_LOCAL_API_TOKEN=\"abc123\"\n").unwrap();
+        assert_eq!(local_api_token_from_file(&path), "abc123");
+    }
+
     fn tempdir_safe() -> PathBuf {
         let pid = std::process::id();
         let nanos = std::time::SystemTime::now()
@@ -476,6 +507,42 @@ fn _parse_env_file(path: &std::path::Path) -> std::collections::BTreeMap<String,
 
 fn _keys_read_map() -> std::collections::BTreeMap<String, String> {
     _parse_env_file(&_keys_file())
+}
+
+/// Bridge bearer token. Env var first, then fall back to parsing
+/// ~/.jarvis/local-api-token.env (the file `start-desktop.sh` writes
+/// + exports on launch). Without the fallback, a desktop binary
+/// launched directly — double-click, XFCE autostart, `cargo run`,
+/// `target/release/jarvis-desktop` — has an empty env and every tray
+/// action that POSTs to the bridge gets rejected with 401 when
+/// `JARVIS_REQUIRE_LOCAL_AUTH=1`. Live failure 2026-05-28: tray Mute
+/// silently 401'd, `voice_muted` broadcast never fired, UI showed no
+/// muted state. (The mic still toggled via the unauthenticated
+/// voice-client `/mute` on :8767, so the bug presented as "click does
+/// nothing" rather than a visible error.) Read on every call — the
+/// file is one line and reads are cheap; the alternative (cache once
+/// at startup) would miss token rotations that don't restart the
+/// desktop.
+fn local_api_token() -> String {
+    let env = std::env::var("JARVIS_LOCAL_API_TOKEN").unwrap_or_default();
+    if !env.is_empty() {
+        return env;
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let path = std::path::PathBuf::from(home)
+        .join(".jarvis")
+        .join("local-api-token.env");
+    local_api_token_from_file(&path)
+}
+
+/// Pure file-path variant for unit testing without mutating $HOME or
+/// $JARVIS_LOCAL_API_TOKEN (env mutation is unsafe across parallel
+/// cargo tests). Mirrors the voice_session_within_60s / _at pattern.
+fn local_api_token_from_file(path: &std::path::Path) -> String {
+    _parse_env_file(path)
+        .get("JARVIS_LOCAL_API_TOKEN")
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// Read all repo .env files and return one merged map.
@@ -835,21 +902,47 @@ fn switch_tts_provider(app: &tauri::AppHandle, spec: &'static str) {
     }
 }
 
-/// Switch the active speech model by POSTing to the voice-client.
-/// Voice-client persists the choice in `~/.jarvis/voice-model` AND
-/// triggers `systemctl --user restart jarvis-voice-agent` so the
-/// new LLM is built on the next session start. The pill flips to
-/// amber "JARVIS booting" for ~5 s then back to green.
+/// Switch the active speech model.
+///
+/// Writes the choice directly to `~/.jarvis/voice-model` and bounces
+/// both the agent and voice-client via `systemctl --user`. Previously
+/// this went through a `curl → /voice-model → write_text` chain which
+/// was failing silently when the Tauri process's spawned curl couldn't
+/// resolve the binary or reach the local HTTP server in some launch
+/// environments (e.g. tray-icon click context), causing the tray pick
+/// to never persist and the agent to revert to whatever was last in
+/// the file on every restart. The voice-client's POST handler still
+/// exists for external callers and as a fallback.
 fn switch_speech_model(app: &tauri::AppHandle, id: &'static str) {
-    let body = format!(r#"{{"model":"{id}"}}"#);
-    let _ = std::process::Command::new("curl")
-        .args([
-            "-s", "-X", "POST",
-            "http://127.0.0.1:8767/voice-model",
-            "-H", "Content-Type: application/json",
-            "-d", &body,
-        ])
+    // 1. Authoritative file write.
+    let home = std::env::var("HOME").unwrap_or_default();
+    if !home.is_empty() {
+        let dir = format!("{home}/.jarvis");
+        let file = format!("{dir}/voice-model");
+        let _ = std::fs::create_dir_all(&dir);
+        match std::fs::write(&file, format!("{id}\n")) {
+            Ok(()) => eprintln!("[tray] wrote voice-model: {id}"),
+            Err(e) => eprintln!("[tray] failed to write voice-model: {e}"),
+        }
+    } else {
+        eprintln!("[tray] HOME unset; skipping voice-model write for {id}");
+    }
+
+    // 2. Restart the agent so it rebuilds the LLM stack with the new pick.
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "restart", "jarvis-voice-agent.service"])
         .spawn();
+
+    // 3. After ~4 s (agent re-registers as a worker), restart the
+    //    voice-client so the SFU dispatches a fresh job into the new
+    //    agent. Without this the SFU keeps the existing room, no new
+    //    dispatch fires, and JARVIS sits silent with the old LLM.
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_secs(4));
+        let _ = std::process::Command::new("systemctl")
+            .args(["--user", "restart", "jarvis-voice-client.service"])
+            .spawn();
+    });
 
     if let Some(pretty) = speech_model_pretty(id) {
         let label: State<SpeechLabel> = app.state();
@@ -1615,7 +1708,7 @@ fn main() {
             // Hand-rolled '\\' / '"' escaping was a future-XSS surface —
             // the previous fix's CSP=null context made even hex tokens
             // a one-edit-away exploit if the source ever drifted.
-            let bridge_token = std::env::var("JARVIS_LOCAL_API_TOKEN").unwrap_or_default();
+            let bridge_token = local_api_token();
             let token_js = serde_json::to_string(&bridge_token)
                 .unwrap_or_else(|_| "\"\"".to_string());
             let _ = window.eval(&format!(
@@ -1758,8 +1851,13 @@ fn main() {
             // 2026-05-24-tray-chat-panel-design.md). Opens the new
             // VoiceChatPanel that talks directly to the voice agent
             // via :8767 — NOT the bridge-flavored ChatPanel.
+            // Tray "Open Chat Panel" now spawns the standalone chat
+            // WebviewWindow (decorated, non-transparent — sidesteps the
+            // WebKitGTK transparent-overlay ghost-frame bug). The old
+            // "open_voice_chat" handler still exists below if we ever
+            // need a separate voice-only entry point.
             let voice_chat_item = MenuItemBuilder::with_id(
-                "open_voice_chat", "Open Chat Panel",
+                "open_chat", "Open Chat Panel",
             ).build(app)?;
             let mute_item    = MenuItemBuilder::with_id("mute",         "Mute / Unmute Voice").build(app)?;
 
@@ -2094,24 +2192,24 @@ fn main() {
                 .on_menu_event(move |app, event| {
                     match event.id().as_ref() {
                         "open_chat" => {
-                            let Some(w) = app.get_webview_window("main") else { return };
+                            // Standalone chat window: just open (or focus) it
+                            // via the IPC command. No main-overlay manipulation,
+                            // no click-through flips — the chat now lives in
+                            // its own decorated window.
                             let mut open = chat_open_tray.lock().unwrap();
-                            if *open {
-                                *open = false;
-                                let _ = w.set_always_on_top(false);
-                                let _ = w.set_ignore_cursor_events(true);
-                                let _ = w.emit("tray-close-chat", ());
-                                println!("[JARVIS] Chat closed via tray");
-                            } else {
-                                *open = true;
-                                snap_to_cursor_monitor(&w);
-                                let _ = w.show();
-                                let _ = w.set_always_on_top(true);
-                                let _ = w.set_ignore_cursor_events(false);
-                                let _ = w.set_focus();
-                                let _ = w.emit("tray-open-chat", ());
-                                xdotool_raise("J.A.R.V.I.S.");
+                            *open = !*open;
+                            let is_open_after = *open;
+                            drop(open);
+                            if is_open_after {
+                                if let Err(e) = kiosk::open_chat_window(app.clone()) {
+                                    eprintln!("[JARVIS] open_chat_window failed: {}", e);
+                                }
                                 println!("[JARVIS] Chat opened via tray");
+                            } else {
+                                if let Err(e) = kiosk::close_chat_window(app.clone()) {
+                                    eprintln!("[JARVIS] close_chat_window failed: {}", e);
+                                }
+                                println!("[JARVIS] Chat closed via tray");
                             }
                         }
                         "open_voice_chat" => {
@@ -2130,11 +2228,13 @@ fn main() {
                             // curl invocation mirrors the pre-existing
                             // pattern — Tauri webview CORS doesn't apply to
                             // subprocess calls out of the webview.
-                            // Bridge bearer token (optional; required only when
-                            // JARVIS_REQUIRE_LOCAL_AUTH=1). Read from env or
-                            // ~/.jarvis/local-api-token at process start; cached
-                            // in JARVIS_LOCAL_API_TOKEN.
-                            let bridge_token = std::env::var("JARVIS_LOCAL_API_TOKEN").unwrap_or_default();
+                            // Bridge bearer token (required when
+                            // JARVIS_REQUIRE_LOCAL_AUTH=1). `local_api_token`
+                            // reads env first, falls back to the canonical
+                            // ~/.jarvis/local-api-token.env file so this works
+                            // even when the binary is launched outside
+                            // start-desktop.sh (autostart, double-click).
+                            let bridge_token = local_api_token();
                             let mut mute_args: Vec<String> = vec!["-s".into(), "-X".into(), "POST".into()];
                             if !bridge_token.is_empty() {
                                 mute_args.push("-H".into());
@@ -2150,6 +2250,21 @@ fn main() {
                                        "http://127.0.0.1:8767/mute",
                                        "-H", "Content-Type: application/json",
                                        "-d", "{}"])
+                                .spawn();
+                            // Also interrupt JARVIS's current utterance.
+                            // Without this, /mute only silences the user's
+                            // mic — if JARVIS is mid-TTS, the user keeps
+                            // hearing him until the sentence finishes,
+                            // which reads as "mute did nothing." /stop
+                            // publishes a data packet the agent handles
+                            // via session.interrupt(). On unmute clicks
+                            // (or when the agent is idle) /stop is a
+                            // no-op — the agent's _on_data handler
+                            // swallows the RuntimeError from interrupting
+                            // an idle session.
+                            let _ = std::process::Command::new("curl")
+                                .args(["-s", "-X", "POST",
+                                       "http://127.0.0.1:8767/stop"])
                                 .spawn();
                             if let Some(w) = app.get_webview_window("main") {
                                 let _ = w.emit("tray-toggle-mute", ());
@@ -2512,6 +2627,10 @@ fn main() {
             kiosk::enter_kiosk_on_monitor,
             kiosk::exit_kiosk,
             kiosk::kiosk_state,
+            kiosk::get_bridge_token,
+            kiosk::mint_livekit_token,
+            kiosk::open_chat_window,
+            kiosk::close_chat_window,
             get_active_mode,
         ])
         .run(tauri::generate_context!())

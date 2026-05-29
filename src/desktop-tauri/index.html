@@ -5,7 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>J.A.R.V.I.S.</title>
     <style>
-      html, body, #root {
+      /* WebKitGTK ghost-frame fix per tauri#12800 / #13157 / #14924:
+         a 1% baseline on <html> gives WebKit's compositor a non-null
+         pixel to invalidate against. Without this, transparent overlay
+         windows leak old frames as "after-images" when subpanels
+         scroll or remount. Effectively invisible (0.01 alpha) but
+         enough to make the dirty-rect tracking work. */
+      html {
+        margin: 0; padding: 0;
+        background: rgba(0,0,0,0.01) !important;
+        color: #b0c8d4;
+        overflow: hidden;
+        width: 100vw; height: 100vh;
+      }
+      body, #root {
         margin: 0; padding: 0;
         background: transparent !important;
         color: #b0c8d4;
