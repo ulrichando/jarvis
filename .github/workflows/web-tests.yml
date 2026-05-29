@@ -1,0 +1,46 @@
+name: web-tests
+
+# Runs the Next.js web app build + test suite on every push/PR that
+# touches src/web/**. The reliable gate is `bun run build` — it catches
+# import errors, missing types, and broken pages. `bun test` is kept
+# non-blocking while native bindings are verified in CI.
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "src/web/**"
+      - ".github/workflows/web-tests.yml"
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "src/web/**"
+      - ".github/workflows/web-tests.yml"
+
+jobs:
+  build-and-test:
+    name: build + test (linux, bun)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: bun install
+        run: bun install
+
+      - name: bun run build
+        # This is the REQUIRED gate — catches broken imports, type errors,
+        # and page compilation failures. Must pass for the job to succeed.
+        run: bun run build
+
+      - name: bun test
+        # web tests depend on better-sqlite3 native bindings; rebuilt by
+        # bun install in CI but flip to required once confirmed green.
+        continue-on-error: true
+        run: bun test
