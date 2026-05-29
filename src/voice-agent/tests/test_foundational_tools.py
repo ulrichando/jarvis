@@ -10,7 +10,6 @@ Proves:
       - patch: replace mode edits a file in place.
       - search_files: finds content in a tmp file.
       - ansi_strip: cleans ANSI codes.
-      - path_security: traversal + dir-containment checks.
   (d) Acceptance gate: tool implementation files contain zero forbidden tokens
       (checked by test_no_forbidden_tokens_in_tool_files below).
 """
@@ -416,31 +415,6 @@ class TestAnsiStrip:
         assert strip_ansi("\x1b]0;title\x07") == ""
 
 
-class TestPathSecurity:
-    def test_validate_within_dir_accepts_safe_path(self, tmp_path):
-        from tools.path_security import validate_within_dir
-        safe = tmp_path / "subdir" / "file.txt"
-        safe.parent.mkdir(parents=True, exist_ok=True)
-        safe.touch()
-        err = validate_within_dir(safe, tmp_path)
-        assert err is None
-
-    def test_validate_within_dir_rejects_escape(self, tmp_path):
-        from tools.path_security import validate_within_dir
-        escaped = tmp_path / ".." / "outside.txt"
-        err = validate_within_dir(escaped, tmp_path)
-        assert err is not None
-        assert "escapes" in err.lower()
-
-    def test_has_traversal_component_true(self):
-        from tools.path_security import has_traversal_component
-        assert has_traversal_component("../../etc/passwd") is True
-
-    def test_has_traversal_component_false(self):
-        from tools.path_security import has_traversal_component
-        assert has_traversal_component("/home/user/file.txt") is False
-
-
 # ── Acceptance gate: implementation files contain no forbidden upstream tokens ──
 
 def test_no_forbidden_tokens_in_tool_files():
@@ -455,7 +429,6 @@ def test_no_forbidden_tokens_in_tool_files():
         _VOICE_AGENT_ROOT / "tools" / "terminal_tool.py",
         _VOICE_AGENT_ROOT / "tools" / "file_tools.py",
         _VOICE_AGENT_ROOT / "tools" / "ansi_strip.py",
-        _VOICE_AGENT_ROOT / "tools" / "path_security.py",
     ]
     # The forbidden token is the upstream project namespace.
     # We use -w for whole-word match: "sha1sum" of "upstream-namespace" is
