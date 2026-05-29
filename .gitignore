@@ -110,3 +110,19 @@ CLAUDE.local.md
 # Vendored third-party agent checkout (NousResearch/hermes-agent), cloned 2026-05-20.
 # Source-only reference; not part of any JARVIS subtree.
 hermes/
+
+# Android NDK external-native-build scratch (CMake/Ninja, config-hash keyed) — regenerated every build
+src/android/app/.cxx/
+
+# Native build outputs (defense-in-depth; .cxx covers the current offender)
+*.o
+*.a
+*.ninja_deps
+*.ninja_log
+
+# Stray runtime error logs
+*.err.log
+
+# Belt-and-suspenders: never re-commit a docs-stashed credential note
+**/API keys
+**/*api*key*.txt
