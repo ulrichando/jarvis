@@ -54,13 +54,28 @@ const PORT       = parseInt(process.env.JARVIS_BRIDGE_PORT ?? '8765')
 const HOSTNAME   = process.env.JARVIS_BRIDGE_HOST ?? '127.0.0.1'
 const PROXY_URL  = process.env.JARVIS_PROXY_URL ?? 'http://localhost:4000'
 
-// Optional bearer-token gate. When JARVIS_REQUIRE_LOCAL_AUTH=1 the bridge
-// rejects any /api/* request (and /ws upgrade) without
-// `Authorization: Bearer <JARVIS_LOCAL_API_TOKEN>` — value lives in
-// ~/.jarvis/local-api-token (chmod 600). Off by default so existing
-// callers keep working until each is updated to send the token.
-const REQUIRE_AUTH = process.env.JARVIS_REQUIRE_LOCAL_AUTH === '1'
+// Bearer-token gate. Auth is REQUIRED by default (fail-closed) unless
+// JARVIS_BRIDGE_INSECURE=1 is set for local dev without a token.
+// The legacy JARVIS_REQUIRE_LOCAL_AUTH=1 env var is honoured for
+// back-compat (the desktop launcher sets it; with the new default it is
+// now redundant but harmless).
+//
+// Token value lives in ~/.jarvis/local-api-token.env (chmod 600), loaded
+// by the launcher into JARVIS_LOCAL_API_TOKEN. If auth is required but no
+// token is configured the bridge logs a loud warning at startup — it does
+// NOT crash, so the service keeps running, but every non-public request
+// will return 401 until the token is set or JARVIS_BRIDGE_INSECURE=1.
+const REQUIRE_AUTH = process.env.JARVIS_BRIDGE_INSECURE !== '1'
 const LOCAL_TOKEN  = process.env.JARVIS_LOCAL_API_TOKEN ?? ''
+
+if (REQUIRE_AUTH && !LOCAL_TOKEN) {
+  console.warn(
+    '[bridge] WARNING: auth is required (fail-closed default) but ' +
+    'JARVIS_LOCAL_API_TOKEN is not set. All non-public requests will ' +
+    'be rejected with 401. Set the token in ~/.jarvis/local-api-token.env ' +
+    'or set JARVIS_BRIDGE_INSECURE=1 to disable auth for local dev.'
+  )
+}
 const PUBLIC_PATHS = new Set(['/health', '/api/ready', '/api/version', '/api/theme'])
 
 // Allowlist of origins permitted to cross-origin call the bridge. The
