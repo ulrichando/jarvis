@@ -141,7 +141,7 @@ supervisor model at runtime (written to `~/.jarvis/voice-model`).
 | Web app | `src/web/` | TypeScript / Next.js |
 | CLI agent | `src/cli/` | TypeScript / Bun |
 | Hub | `src/hub/` | Python |
-| Chrome extension | `src/extensions/jarvis-screen/` | JavaScript (MV3) |
+| Chrome extension | `src/cli/src/utils/claudeInChrome/` (reserved for future work — `src/extensions/` does not exist yet) | JavaScript (MV3) |
 | Android app | `src/android/` | Kotlin + NDK |
 | ACP adapter | `src/voice-agent/acp_registry/` | Python |
 
