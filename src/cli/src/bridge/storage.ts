@@ -5,9 +5,9 @@
 // only needs: list sessions, delete by time range. Individual turn lookup
 // is cheap to add later if the UI ever loads past-session transcripts.
 //
-// Storage: ~/.jarvis/cli/sessions.db — local SQLite, CLI-private. Used by
-// listSessions / recallRelevant / deleteSessionsBetween from the chat-panel
-// sidebar. (Pre-2026-05-23 saveTurn ALSO published every turn to a shared
+// Storage: ~/.jarvis/cli/sessions.db — local SQLite, CLI-private. Exports:
+// saveTurn / listSessions / deleteSessionsBetween. (Pre-2026-05-23 saveTurn
+// ALSO published every turn to a shared
 // hub bus so voice/web/phone could see CLI turns; that cross-channel path
 // was retired alongside the hub subsystem — CLI turns now stay CLI-local.)
 
@@ -94,62 +94,6 @@ export function listSessions(): StoredSession[] {
 export function deleteSessionsBetween(startTs: number, endTs: number): number {
   const result = deleteBetweenStmt.run(startTs, endTs)
   return result.changes
-}
-
-// ── Cheap keyword-based recall ────────────────────────────────────────────
-// Pulls older turns (user + assistant) that share meaningful words with the
-// current utterance. Not a vector search — just LIKE over the in-row text,
-// scored by word overlap. Good enough to surface "we talked about X last
-// week" moments without standing up an embedding pipeline. Excludes turns
-// from the current session (they're already in the live history window).
-
-const STOPWORDS = new Set([
-  'the','a','an','and','or','but','if','of','to','in','on','at','for','with','about','as','is','are','was','were','be','been','being','do','does','did','have','has','had','i','me','my','you','your','we','our','he','she','it','its','this','that','these','those','what','who','where','when','why','how','can','could','would','should','will','shall','may','might','just','so','not','no','yes','there','here',
-])
-
-const recallStmt = db.prepare(`
-  SELECT session_id, ts, role, text
-  FROM turns
-  WHERE text LIKE ? AND session_id != ?
-  ORDER BY ts DESC
-  LIMIT 100
-`)
-
-export function recallRelevant(
-  query: string,
-  currentSessionId: string,
-  limit = 3,
-): Array<{ ts: number; role: string; text: string }> {
-  const terms = extractTerms(query)
-  if (terms.length === 0) return []
-
-  const seen = new Map<number, { ts: number; role: string; text: string; score: number }>()
-  for (const term of terms) {
-    const rows = recallStmt.all(`%${term}%`, currentSessionId) as Array<{
-      session_id: string
-      ts: number
-      role: string
-      text: string
-    }>
-    for (const r of rows) {
-      const prev = seen.get(r.ts)
-      if (prev) prev.score += 1
-      else seen.set(r.ts, { ts: r.ts, role: r.role, text: r.text, score: 1 })
-    }
-  }
-  return [...seen.values()]
-    .sort((a, b) => b.score - a.score || b.ts - a.ts)
-    .slice(0, limit)
-    .map(({ ts, role, text }) => ({ ts, role, text }))
-}
-
-function extractTerms(text: string): string[] {
-  const words = text
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .split(/\s+/)
-    .filter(w => w.length > 3 && !STOPWORDS.has(w))
-  return [...new Set(words)].slice(0, 5)
 }
 
 function truncateTitle(text: string, max = 60): string {
