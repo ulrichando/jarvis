@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke }  from '@tauri-apps/api/core'
 import { listen }  from '@tauri-apps/api/event'
 import ChatPanel   from './components/ChatPanel.jsx'
+import ChatPanelVscode from './components/ChatPanelVscode.jsx'
 import VoiceChatPanel from './components/VoiceChatPanel.jsx'
 import KeysSettings from './KeysSettings.jsx'
 import KioskHUD     from './components/KioskHUD.jsx'
@@ -68,6 +69,66 @@ function useJarvisWS(url) {
 }
 
 // ── App ───────────────────────────────────────────────────────────────────
+// Root component for ?route=chat. Pulls the bridge token via Rust IPC,
+// then wraps the WS sendMessage so every outbound query carries the
+// token — bridge server.ts line 606 rejects queries that don't include
+// it (per-message auth gate, default-on).
+function ChatWindowRoot() {
+  const [wsUrl, setWsUrl] = useState(null)
+  const [apiToken, setApiToken] = useState('')
+  const { messages: wsMessages, sendMessage: wsSendMessage, status: wsStatus } = useJarvisWS(wsUrl)
+
+  useEffect(() => {
+    document.documentElement.style.background = '#0a0e14'
+    document.body.style.background = '#0a0e14'
+    let cancelled = false
+    ;(async () => {
+      let tok = ''
+      try { tok = await invoke('get_bridge_token') } catch {}
+      if (!cancelled) {
+        setApiToken(tok)
+        const base = 'ws://127.0.0.1:8765/ws?client=chat'
+        setWsUrl(tok ? `${base}&token=${encodeURIComponent(tok)}` : base)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  // Wrap sendMessage so every outbound msg auto-injects the bearer token.
+  const sendWithToken = useCallback((msg) => {
+    wsSendMessage({ ...msg, token: apiToken })
+  }, [wsSendMessage, apiToken])
+
+  // Auto-speak every assistant chat_response through the voice-client's
+  // /speak endpoint (same path useVoiceClient.speak takes — voice-client
+  // is on :8767 by default and plays through the LiveKit speaker pipeline).
+  // Chat window has its own WS so it must drive TTS itself.
+  const seenIdxRef = useRef(0)
+  useEffect(() => {
+    if (wsMessages.length <= seenIdxRef.current) return
+    for (let i = seenIdxRef.current; i < wsMessages.length; i++) {
+      const m = wsMessages[i]
+      const txt = m && (m.type === 'chat_response' || m.type === 'message') && (m.text || m.content)
+      if (txt && txt !== '(auth required)') {
+        fetch('http://127.0.0.1:8767/speak', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: txt }),
+        }).catch(() => {})
+      }
+    }
+    seenIdxRef.current = wsMessages.length
+  }, [wsMessages])
+
+  return (
+    <ChatPanelVscode
+      wsMessages={wsMessages}
+      wsSendMessage={sendWithToken}
+      wsConnected={wsStatus === 'connected'}
+    />
+  )
+}
+
 export default function App() {
   // Tray's "Manage API Keys…" item opens this same bundle in a new
   // webview with `?route=keys` in the URL. When that's present, render
@@ -82,6 +143,15 @@ export default function App() {
   if (typeof window !== 'undefined' &&
       window.location.search.includes('route=kiosk')) {
     return <KioskHUD />
+  }
+
+  // ChatPanel now runs as its OWN decorated, non-transparent Tauri
+  // WebviewWindow ("chat" label) — splits it out of the main transparent
+  // overlay so the WebKitGTK ghost-frame compositor bug can't bleed old
+  // frames into the panel. See tauri#12800 / #13157 / #14924.
+  if (typeof window !== 'undefined' &&
+      window.location.search.includes('route=chat')) {
+    return <ChatWindowRoot />
   }
 
   const [chatOpen, setChatOpen]     = useState(false)
@@ -179,19 +249,21 @@ export default function App() {
   }, [])
 
   const openChat = useCallback(() => {
+    // Spawn (or focus) the standalone chat WebviewWindow. Also force
+    // the legacy inline VoiceChatPanel closed — only one chat surface
+    // visible at a time (the new window).
+    invoke('open_chat_window').catch(console.error)
+    setVoiceChatOpen(false)
     setChatOpen(true)
-    setClickThrough(false) // fallback if hotspot poller fails; poller overrides live
-    setLayer(true)
     syncChatState(true)
-  }, [setClickThrough, setLayer, syncChatState])
+  }, [syncChatState])
 
   const closeChat = useCallback(() => {
+    invoke('close_chat_window').catch(console.error)
     setChatOpen(false)
-    setClickThrough(true)
-    setLayer(false)
     syncChatState(false)
     reportPanelBounds({ x: 0, y: 0, w: 0, h: 0 })
-  }, [setClickThrough, setLayer, syncChatState, reportPanelBounds])
+  }, [syncChatState, reportPanelBounds])
 
   // Voice-chat open/close — mirrors openChat's window-state flips so
   // the panel is actually visible + clickable. Without setClickThrough
@@ -352,24 +424,10 @@ export default function App() {
           reads from the same `speech` hook, eliminating the duplicate
           /status poll the legacy TrayLabelSync used to run. */}
 
-      {/* Chat panel — opened on tray click or Ctrl+H. WS is owned by
-          App via useJarvisWS and passed down so ChatPanel doesn't open
-          a second socket (the duplicate caused chat_response events to
-          fire both speech.speak() AND a UI render through two
-          independent connections claiming the same client=desktop). */}
-      {chatOpen && (
-        <ChatPanel
-          isOpen={chatOpen}
-          onClose={closeChat}
-          onBoundsChange={reportPanelBounds}
-          ttsEnabled={ttsEnabled}
-          onToggleTts={() => setTtsEnabled(v => !v)}
-          isDesktop={true}
-          wsMessages={wsMessages}
-          wsSendMessage={wsSendMessage}
-          wsConnected={wsStatus === 'connected'}
-        />
-      )}
+      {/* ChatPanel now lives in its own "chat" WebviewWindow (rendered
+          by ChatWindowRoot under ?route=chat). The inline render here
+          is intentionally gone — it caused the WebKitGTK transparent
+          overlay to ghost old frames as the panel scrolled. */}
       {voiceChatOpen && (
         <VoiceChatPanel
           isOpen={voiceChatOpen}
