@@ -310,7 +310,7 @@ def make_dispatch_handler(
         # session._tts to TASK defaults at the top of every dispatch.
         try:
             session._llm = dispatch_llm.pick("TASK")
-            session._tts = dispatch_tts.pick("TASK")
+            session._tts = dispatch_tts.pick("TASK", lang=session._jarvis_lang_ctx.get())
             # Stamp the per-turn model label on the SESSION (turn-local),
             # set synchronously here on EVERY dispatch. The shared
             # dispatch_llm.last_llm_label races across async turns and
@@ -328,7 +328,7 @@ def make_dispatch_handler(
         if word_count <= 6 and BANTER_FAST_PATH_RE.match(transcript):
             try:
                 fast_llm = dispatch_llm.pick("BANTER")
-                fast_tts = dispatch_tts.pick("BANTER")
+                fast_tts = dispatch_tts.pick("BANTER", lang=session._jarvis_lang_ctx.get())
                 session._llm = fast_llm
                 session._tts = fast_tts
                 session._jarvis_emotion = emotion
@@ -383,7 +383,7 @@ def make_dispatch_handler(
         if REASONING_FAST_PATH_RE.match(transcript):
             try:
                 fast_llm = dispatch_llm.pick("REASONING")
-                fast_tts = dispatch_tts.pick("REASONING")
+                fast_tts = dispatch_tts.pick("REASONING", lang=session._jarvis_lang_ctx.get())
                 session._llm = fast_llm
                 session._tts = fast_tts
                 session._jarvis_emotion = emotion
@@ -543,7 +543,7 @@ def make_dispatch_handler(
             )
 
             new_llm = dispatch_llm.pick(route)
-            new_tts = dispatch_tts.pick(route)
+            new_tts = dispatch_tts.pick(route, lang=session._jarvis_lang_ctx.get())
             session._jarvis_emotion = emotion
             session._jarvis_route   = route
 

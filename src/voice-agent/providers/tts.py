@@ -446,4 +446,19 @@ def build_dispatching_tts() -> DispatchingTTS:
     for route in ("BANTER", "REASONING", "EMOTIONAL"):
         inners.setdefault(route, fallback)
 
-    return DispatchingTTS(inners=inners, fallback=fallback)
+    # French inner — EdgeTTS with a French voice. Constructed once,
+    # used by DispatchingTTS.pick(route, lang='fr') regardless of
+    # route. Defaults to fr-FR-HenriNeural (male, standard French);
+    # override via JARVIS_FR_EDGE_VOICE.
+    fr_voice = os.environ.get("JARVIS_FR_EDGE_VOICE", "fr-FR-HenriNeural")
+    try:
+        _fr_inner = edge_tts_plugin.EdgeTTS(voice=fr_voice)
+        _fr_inner.voice_id = f"edge:{fr_voice[:18]}…"
+    except Exception as e:
+        logger.warning(
+            f"[dispatch] French edge_tts construction failed ({e}); "
+            f"fr will fall back to English chain"
+        )
+        _fr_inner = None
+
+    return DispatchingTTS(inners=inners, fallback=fallback, fr_inner=_fr_inner)
