@@ -26,26 +26,22 @@ grouped by domain; individual commits carry conventional-commit prefixes.
 
 - Untracked 354 MB of Android NDK build artifacts (`src/android/app/.cxx/`)
   that were not covered by `.gitignore`; added the pattern.
-- Removed dead `src/convex/` stub (Convex retired Phase 7; only a stale
-  `.env.local` remained).
-- Removed or gitignored `.pytest_cache/` that was accidentally tracked under
-  `src/voice-agent/`.
 
 ### Dependencies
 
 - Applied `setuptools` CVE fix (pinned safe floor in `requirements.txt`).
-- Bumped Tauri to 2.11 in `src/desktop-tauri/Cargo.toml`.
-- Bounded `litert` version ceiling to prevent silent silent ABI breaks in the
+- Tauri 2.10.3→2.11.2 via `Cargo.lock` (`cargo update`; release rebuild deferred).
+- Bounded `litert` version ceiling to prevent silent ABI breaks in the
   Android on-device inference path.
 
 ### Bug fixes
 
 - Voice agent: offloaded blocking event-loop calls to the thread executor to
   prevent LiveKit frame-processing stalls.
-- Web app: added DOMPurify sanitisation on chat message render paths to close
+- Web app: added rehype-sanitize sanitisation on chat message render paths to close
   a stored-XSS vector in the markdown renderer.
 - Desktop UI: fixed a chat-panel spinner that never resolved when the bridge
-  was unreachable; added a 10 s timeout with a user-visible error state.
+  was unreachable; added a 60 s timeout with a user-visible error state.
 
 ### Docs
 

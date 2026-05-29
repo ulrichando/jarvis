@@ -134,7 +134,7 @@ systems unless the tombstone note is explicitly cleared.
 | `2026-05-20-aec-cascade-completion-design.md` | Active reference | AEC cascade completion |
 | `2026-05-20-echo-aware-bargein-gate-design.md` | Active reference | Echo-aware barge-in gate |
 | `2026-05-20-jarvis-between-turn-scheduler-design.md` | Active reference | Between-turn scheduler |
-| `2026-05-20-jarvis-self-improvement-rebuild-design.md` | **Active (load-bearing)** | Hermes→JARVIS rebuild: torn-down subagents, soul extraction, direct tool registry only |
+| `2026-05-20-jarvis-self-improvement-rebuild-design.md` | **Missing / not in tree** — referenced by CLAUDE.md but never committed | Hermes→JARVIS rebuild: torn-down subagents, soul extraction, direct tool registry only |
 | `2026-05-20-jarvis-skill-loop-design.md` | Active reference | Skill loop design |
 | `2026-05-20-jarvis-soul-design.md` | **Active (load-bearing)** | Soul extraction: soul.md as slot-#1 system prompt; persona/ops separation |
 
