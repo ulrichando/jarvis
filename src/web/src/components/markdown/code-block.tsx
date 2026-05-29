@@ -126,7 +126,14 @@ export function CodeBlock({ code, language = "text", className }: CodeBlockProps
           !expanded && "max-h-104 overflow-y-hidden",
         )}
         dangerouslySetInnerHTML={{
-          __html: html || `<pre><code>${code}</code></pre>`,
+          __html:
+            html ||
+            `<pre><code>${code
+              .replace(/&/g, "&amp;")
+              .replace(/</g, "&lt;")
+              .replace(/>/g, "&gt;")
+              .replace(/"/g, "&quot;")
+              .replace(/'/g, "&#39;")}</code></pre>`,
         }}
       />
 

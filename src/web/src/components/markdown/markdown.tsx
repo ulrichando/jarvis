@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import rehypeRaw from "rehype-raw";
+import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import { memo } from "react";
 import { cn } from "@/lib/utils";
 import { CodeBlock } from "./code-block";
@@ -154,6 +155,35 @@ const components: Components = {
     return <CodeBlock code={content} language={match?.[1] ?? "text"} />;
   },
   pre: ({ children }) => <>{children}</>,
+};
+
+// Sanitize schema extending defaultSchema so that:
+// - Shiki syntax-highlight spans (style="color:…" + class names) survive.
+// - rehype-katex spans/divs (class + style) survive.
+// - The streaming caret (<span data-stream-caret>) survives (data-* on span).
+// - Event handlers, <script>, <iframe>, and other XSS vectors are stripped
+//   by the defaultSchema baseline (which allows none of those).
+const sanitizeSchema = {
+  ...defaultSchema,
+  attributes: {
+    ...defaultSchema.attributes,
+    span: [
+      ...(defaultSchema.attributes?.span ?? []),
+      "className",
+      "style",
+      // streaming caret marker
+      "dataStreamCaret",
+    ],
+    code: [...(defaultSchema.attributes?.code ?? []), "className", "style"],
+    pre: [...(defaultSchema.attributes?.pre ?? []), "className", "style"],
+    div: [...(defaultSchema.attributes?.div ?? []), "className", "style"],
+    // KaTeX wraps math in <math> and uses annotation/semantics/mrow etc.
+    // defaultSchema doesn't list these; allow them through with safe attrs.
+    math: ["xmlns", "display"],
+    annotation: ["encoding"],
+    // Allow SVG-namespace math markup if KaTeX falls back to it
+    svg: ["xmlns", "viewBox", "width", "height", "aria-hidden", "focusable"],
+  },
 };
 
 // `rehypeRaw` keeps inline HTML, which is what we want for things like
@@ -403,7 +433,7 @@ const Block = memo(function Block({ content }: { content: string }) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm, remarkMath]}
-      rehypePlugins={[rehypeRaw, rehypeKatex]}
+      rehypePlugins={[rehypeRaw, [rehypeSanitize, sanitizeSchema], rehypeKatex]}
       components={components}
     >
       {content}
