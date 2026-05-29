@@ -24,7 +24,7 @@ androidxWorkManager         = "2.10.0"
 androidxGraphicsPath        = "1.0.1"
 
 # ── Jetpack Compose ─────────────────────────────────────────────────────────
-composeBom                  = "2024.12.01"
+composeBom                  = "2026.05.01"
 navigationCompose           = "2.8.5"
 
 # ── Hilt ────────────────────────────────────────────────────────────────────
