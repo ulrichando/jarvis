@@ -148,7 +148,7 @@ def _node_apply_banter_swap(state: TurnState, config: Optional[RunnableConfig] =
 
     try:
         new_llm = dispatcher.pick("BANTER")
-        new_tts = tts_dispatcher.pick("BANTER")
+        new_tts = tts_dispatcher.pick("BANTER", lang=session._jarvis_lang_ctx.get())
         session._llm = new_llm
         session._tts = new_tts
         # Stamp the per-turn model label on the SESSION (turn-local),
@@ -215,7 +215,7 @@ def _node_swap_route(state: TurnState, config: Optional[RunnableConfig] = None) 
         return {}
     try:
         new_llm = dispatcher.pick(route)
-        new_tts = tts_dispatcher.pick(route)
+        new_tts = tts_dispatcher.pick(route, lang=session._jarvis_lang_ctx.get())
         session._llm = new_llm
         session._tts = new_tts
         # Stamp the per-turn model label on the SESSION (turn-local).

@@ -385,6 +385,17 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
             cur.execute("ALTER TABLE turns ADD COLUMN subagent_status TEXT")
         except sqlite3.OperationalError:
             pass
+        # 2026-05-28 — French/English code-switch feature. Detected user
+        # language per turn ('en' / 'fr'). Default 'en' so existing rows
+        # and callers that don't pass user_lang stay back-compat. Lets us
+        # spot code-switch patterns at the SQL level without trawling
+        # transcripts.
+        try:
+            conn.execute(
+                "ALTER TABLE turns ADD COLUMN user_lang TEXT DEFAULT 'en'"
+            )
+        except sqlite3.OperationalError:
+            pass  # column already exists — idempotent on every startup
         # Two pattern tables — populated by pipeline.automod.patterns, drained
         # by the spawner. proposed_at IS NULL means "not yet emitted to queue".
         conn.executescript("""
@@ -467,6 +478,7 @@ def log_turn(
     subagent_type: Optional[str] = None,
     subagent_ms: Optional[int] = None,
     subagent_status: Optional[str] = None,
+    user_lang: str = "en",
 ) -> None:
     """Write one row. Any exception is swallowed so telemetry never blocks voice.
 
@@ -521,8 +533,9 @@ def log_turn(
                     confab_pattern_matched, confab_retry_models,
                     aec_layer1_active, aec_layer2_aec_active, aec_layer3_active,
                     output_profile, apm_delay_ms_p50, dtln_latency_ms_p95,
-                    subagent_type, subagent_ms, subagent_status)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    subagent_type, subagent_ms, subagent_status,
+                    user_lang)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     ts_utc or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     user_text, jarvis_text, emotion, route, llm_used,
@@ -538,6 +551,7 @@ def log_turn(
                     aec_layer1_active, aec_layer2_aec_active, aec_layer3_active,
                     output_profile, apm_delay_ms_p50, dtln_latency_ms_p95,
                     subagent_type, subagent_ms, subagent_status,
+                    user_lang,
                 ),
             )
     except Exception:
