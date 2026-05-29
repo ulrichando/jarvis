@@ -24,6 +24,7 @@ we don't declare one (tool handlers don't take it).
 """
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 from typing import Any, List
@@ -145,7 +146,11 @@ def _build_wrapped_handler(entry: ToolEntry):
             if is_async:
                 result = await handler(args)
             else:
-                result = handler(args)
+                # Offload to a thread pool so blocking network I/O (x_search,
+                # vuln_check, discord, image_gen, etc.) doesn't freeze the
+                # asyncio event loop — and therefore TTS/STT/barge-in — for
+                # the duration of the call.
+                result = await asyncio.to_thread(handler, args)
                 # Defensive: a sync-declared handler that returns a coroutine
                 # (e.g. someone forgot is_async=True) is still awaited rather
                 # than str()'d into "<coroutine object ...>".
