@@ -90,7 +90,7 @@ JARVIS_SANDBOX_ENABLED="${JARVIS_SANDBOX_ENABLED:-0}"
 export SHELL=/bin/bash
 
 export ANTHROPIC_BASE_URL=http://localhost:4000
-export ANTHROPIC_API_KEY=jarvis-proxy
+export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-jarvis-proxy}"
 export JARVIS_PROVIDER="$SELECTED_PROVIDER"   # proxy default — /model overrides per-request
 # When the cli-model file pinned a specific upstream model, surface
 # it so the proxy uses that exact model rather than the provider's
