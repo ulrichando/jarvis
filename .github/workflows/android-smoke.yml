@@ -1,0 +1,43 @@
+name: android-smoke
+
+# Runs Android JVM unit tests on every push/PR that touches src/android/**.
+# Full assembleDebug (NDK + llama.cpp native build) is heavy — verify
+# manually or on a self-hosted runner; only JVM unit tests run here.
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "src/android/**"
+      - ".github/workflows/android-smoke.yml"
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "src/android/**"
+      - ".github/workflows/android-smoke.yml"
+
+jobs:
+  unit-test:
+    name: testDebugUnitTest (linux, JDK 17)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/android
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: temurin
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Run JVM unit tests
+        # JVM unit tests only; full assembleDebug (NDK + llama.cpp native
+        # build) is minutes-long — verify manually / on a self-hosted runner.
+        # Flip continue-on-error to false once the suite is confirmed green.
+        continue-on-error: true
+        run: ./gradlew testDebugUnitTest
