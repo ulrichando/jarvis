@@ -202,6 +202,12 @@ install_voice_agent() {
 
   install_playwright_chromium "$va"
   install_systemd_units
+
+  # Harden secret-bearing env files (owner-only)
+  for f in "$va/.env" "$HOME/.jarvis/keys.env" "$HOME/.jarvis/local-api-token.env"; do
+    [ -f "$f" ] && chmod 600 "$f"
+  done
+  ok "hardened env file permissions (chmod 600)"
 }
 
 # ── Channel: Playwright Chromium (~200MB, gated) ─────────────────────────
