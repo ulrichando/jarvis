@@ -29,21 +29,59 @@ pub struct KioskMonitorItems(pub Mutex<Vec<CheckMenuItem<Wry>>>);
 /// mapped (rare in setup), the submenu shows just "Exit focus mode" and
 /// the user can refresh by reopening JARVIS.
 pub fn build_kiosk_submenu(app: &AppHandle) -> tauri::Result<Submenu<Wry>> {
-    let monitors: Vec<_> = app
-        .get_webview_window("main")
+    let main_win = app.get_webview_window("main");
+    let monitors: Vec<_> = main_win
+        .as_ref()
         .and_then(|w| w.available_monitors().ok())
         .unwrap_or_default();
+    // Primary-monitor probe: position equality is the cheapest stable check
+    // across Tauri's Monitor type (no PartialEq on the struct itself).
+    let primary_pos = main_win
+        .as_ref()
+        .and_then(|w| w.primary_monitor().ok())
+        .flatten()
+        .map(|p| (p.position().x, p.position().y));
 
     let mut mon_items: Vec<CheckMenuItem<Wry>> = Vec::new();
     for (i, m) in monitors.iter().enumerate() {
         let pos = m.position();
         let size = m.size();
         let mon_name = m.name().map(|s| s.as_str()).unwrap_or("");
-        let label = if mon_name.is_empty() {
-            format!("Monitor {}: {}x{} at {},{}", i, size.width, size.height, pos.x, pos.y)
+        let is_primary = primary_pos == Some((pos.x, pos.y));
+        // RandR connector-name heuristic: eDP-/LVDS-/DSI- are internal panels
+        // (laptop screens). Anything else (HDMI-, DP-, DVI-, VGA-) is an
+        // external display. Falls back to "" when the name is missing.
+        let kind = if mon_name.starts_with("eDP")
+            || mon_name.starts_with("LVDS")
+            || mon_name.starts_with("DSI")
+        {
+            "laptop"
+        } else if mon_name.is_empty() {
+            ""
         } else {
-            format!("{}: {}x{} at {},{}", mon_name, size.width, size.height, pos.x, pos.y)
+            "external"
         };
+        let mut tags: Vec<&str> = Vec::new();
+        if !kind.is_empty() {
+            tags.push(kind);
+        }
+        if is_primary {
+            tags.push("primary");
+        }
+        let tag_suffix = if tags.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", tags.join(", "))
+        };
+        let prefix = if mon_name.is_empty() {
+            format!("Monitor {}", i)
+        } else {
+            mon_name.to_string()
+        };
+        let label = format!(
+            "{}{}: {}x{} at {},{}",
+            prefix, tag_suffix, size.width, size.height, pos.x, pos.y
+        );
         let id = format!("kiosk_mon_{}", i);
         let item = CheckMenuItemBuilder::with_id(&id, &label).checked(false).build(app)?;
         mon_items.push(item);

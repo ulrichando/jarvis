@@ -55,25 +55,24 @@ export default function KioskHUD() {
     []
   )
 
-  // Mint a LiveKit token on mount. Failure is non-fatal — visualizer
-  // renders without audio reactivity.
+  // Mint a LiveKit token via Rust IPC (server-to-server, bypasses the
+  // CORS preflight that fails on tauri://localhost → http://127.0.0.1:8765).
+  // Failure is non-fatal — the aura still renders state-only.
   useEffect(() => {
-    const apiToken =
-      (typeof window !== 'undefined' && window.__JARVIS_LOCAL_API_TOKEN) || ''
-    fetch(TOKEN_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(apiToken ? { Authorization: `Bearer ${apiToken}` } : {}),
-      },
-      body: JSON.stringify({ identity, room: 'jarvis' }),
-    })
-      .then(r => r.json())
-      .then(c => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const raw = await invoke('mint_livekit_token', { identity, room: 'jarvis' })
+        if (cancelled) return
+        const c = JSON.parse(raw)
         if (c?.token && c?.url) setConn(c)
         else { console.error('[kiosk] token mint failed', c); setLkErr('mint') }
-      })
-      .catch(err => { console.error('[kiosk] token mint error', err); setLkErr('fetch') })
+      } catch (err) {
+        console.error('[kiosk] token mint via IPC failed', err)
+        if (!cancelled) setLkErr('ipc')
+      }
+    })()
+    return () => { cancelled = true }
   }, [identity])
 
   // Track live viewport.
