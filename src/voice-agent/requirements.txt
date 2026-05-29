@@ -81,7 +81,7 @@ google-genai>=2.0,<3.0
 # implemented in jarvis_computer_use.py:face_register/face_identify.
 insightface~=0.7
 onnxruntime~=1.20
-ai-edge-litert>=2.1.5  # DTLN-aec L3 neural echo cancellation (audio/dtln_aec.py)
+ai-edge-litert~=2.1  # DTLN-aec L3 neural echo cancellation (audio/dtln_aec.py)
 # pkg_resources (transitively required by older deps); pin to a setuptools
 # version that still ships it (82+ removed pkg_resources).
 setuptools>=78.1.1,<82
