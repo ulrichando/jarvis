@@ -114,11 +114,15 @@ function corsHeaders(req: Request, methods: string): Record<string, string> {
 }
 
 // Constant-time token comparison. Returns false if either argument is
-// empty or the lengths differ (guards against timing side-channels and
+// empty or the byte lengths differ (guards against timing side-channels and
 // the empty-token fail-open bug: tokenEq('', '') === false).
+// NOTE: compare Buffer byte lengths, not string .length (UTF-16 code units),
+// so multibyte tokens never cause timingSafeEqual to throw on mismatched bufs.
 function tokenEq(a: string, b: string): boolean {
-  if (!a || !b || a.length !== b.length) return false
-  return timingSafeEqual(Buffer.from(a), Buffer.from(b))
+  const ab = Buffer.from(a)
+  const bb = Buffer.from(b)
+  if (ab.length === 0 || bb.length === 0 || ab.length !== bb.length) return false
+  return timingSafeEqual(ab, bb)
 }
 
 function isAuthorized(req: Request, urlObj: URL): boolean {
