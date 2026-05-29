@@ -1,0 +1,85 @@
+name: lint
+
+# Lint checks across the monorepo subtrees. All jobs start non-blocking
+# (continue-on-error: true) — ratchet to required as the codebase is
+# cleaned up. No path filter: linters are cheap and catch cross-tree drift.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  ruff:
+    name: ruff (voice-agent)
+    runs-on: ubuntu-latest
+    # Non-blocking: ratchet to required once existing violations are fixed.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: pip install ruff
+        run: pip install ruff
+
+      - name: ruff check
+        run: ruff check src/voice-agent
+
+  clippy:
+    name: cargo clippy (desktop-tauri)
+    runs-on: ubuntu-latest
+    # Non-blocking: clippy warnings accumulate over time; ratchet to
+    # required once the existing warnings are addressed.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Tauri system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev \
+            patchelf \
+            pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src/desktop-tauri/src-tauri
+          shared-key: desktop-tauri-clippy
+
+      - name: cargo clippy
+        working-directory: src/desktop-tauri/src-tauri
+        run: cargo clippy --locked -- -D warnings
+        continue-on-error: true  # explicit: warnings-as-errors once clean
+
+  tsc:
+    name: tsc --noEmit (web)
+    runs-on: ubuntu-latest
+    # Non-blocking: type errors may exist today; ratchet to required once clean.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: bun install
+        working-directory: src/web
+        run: bun install
+
+      - name: tsc --noEmit
+        working-directory: src/web
+        run: bunx tsc --noEmit

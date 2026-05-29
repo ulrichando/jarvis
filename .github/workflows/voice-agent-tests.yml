@@ -4,13 +4,14 @@ name: voice-agent-tests
 # src/voice-agent/**. Mirrors the local command used by /voice-tests:
 #
 #   cd src/voice-agent
-#   .venv/bin/python -m pytest tests/ -q --durations=10 \
-#     --ignore=tests/test_github_subagent.py
+#   .venv/bin/python -m pytest tests/ -q --durations=10
 #
-# Only test_github_subagent.py is now ignored — it needs gh-cli auth
-# the runner doesn't have. The previous --ignore entries for
-# test_browser_ext_contract.py and test_supervisor_vision.py were
+# No --ignore flags: test_github_subagent.py does NOT exist on this
+# branch (was a ghost). The previous --ignore entries for
+# test_browser_ext_contract.py and test_supervisor_vision.py were also
 # ghosts (the files don't exist on disk).
+# JARVIS_RUN_INTEGRATION is intentionally NOT set so live-dispatch
+# integration tests (gated behind that env var) are skipped in CI.
 #
 # Secrets: not provided. Production-style env vars get DUMMY values
 # so import-time validators don't reject the test process. The unit
@@ -80,5 +81,7 @@ jobs:
           # --durations=10 surfaces slow tests in normal runs.
           # --timeout=60 prevents one hung test from wedging the job.
           # --reruns=1 -p no:randomly retries known flakes once.
-          python -m pytest tests/ -q --durations=10 --timeout=60 \
-            --ignore=tests/test_github_subagent.py
+          # No --ignore flags: test_github_subagent.py does not exist
+          # (was a ghost). JARVIS_RUN_INTEGRATION is not set so
+          # live-dispatch integration tests skip automatically.
+          python -m pytest tests/ -q --durations=10 --timeout=60
