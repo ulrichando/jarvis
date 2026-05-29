@@ -66,6 +66,7 @@ resource-info/
 # Android client build artifacts (Gradle, APKs, SDK path)
 src/android/build/
 src/android/app/build/
+src/android/app/.cxx/
 src/android/.gradle/
 src/android/local.properties
 *.apk
