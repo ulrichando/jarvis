@@ -11,14 +11,6 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import { useState } from "react";
 
-function dbg(stage: string, data: Record<string, unknown> = {}) {
-  fetch("/api/dbg", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ where: "chat-test", stage, ...data, t: Date.now() }),
-  }).catch(() => {});
-}
-
 export default function ChatTestPage() {
   const [input, setInput] = useState("");
 
@@ -35,11 +27,9 @@ export default function ChatTestPage() {
 
   const send = () => {
     const text = input.trim();
-    dbg("send-clicked", { len: text.length, status });
     if (!text) return;
     setInput("");
     sendMessage({ text });
-    dbg("after-sendMessage");
   };
 
   return (
@@ -80,7 +70,6 @@ export default function ChatTestPage() {
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
-              dbg("enter-pressed", { len: input.trim().length });
               send();
             }
           }}
