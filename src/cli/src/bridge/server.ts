@@ -453,6 +453,19 @@ async function handleLiveKitToken(req: Request): Promise<Response> {
   )
 }
 
+// Safety guard: refuse to bind on a non-loopback interface unless the operator
+// has explicitly opted in. The bridge already has bearer-token auth, but the
+// guard keeps both servers consistent and defends against a misconfigured token
+// or future auth regression. Set JARVIS_ALLOW_PUBLIC_BIND=1 to override.
+const LOOPBACK_HOSTS_BRIDGE = new Set(['127.0.0.1', 'localhost', '::1'])
+if (!LOOPBACK_HOSTS_BRIDGE.has(HOSTNAME) && process.env.JARVIS_ALLOW_PUBLIC_BIND !== '1') {
+  console.error(
+    `[bridge] refusing non-loopback bind "${HOSTNAME}" without JARVIS_ALLOW_PUBLIC_BIND=1 — ` +
+    'set JARVIS_BRIDGE_HOST to a loopback address or set JARVIS_ALLOW_PUBLIC_BIND=1 to allow.',
+  )
+  process.exit(1)
+}
+
 const server = Bun.serve({
   port: PORT,
   hostname: HOSTNAME,
