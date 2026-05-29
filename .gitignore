@@ -111,6 +111,10 @@ CLAUDE.local.md
 # Source-only reference; not part of any JARVIS subtree.
 hermes/
 
+# livekit-server binary — fetched at install time via ensure_livekit_binary() in install.sh.
+# Pinned SHA-256 lives in setup/livekit-server.bin.sha256.
+/src/voice-agent/livekit-server.bin
+
 # Android NDK external-native-build scratch (CMake/Ninja, config-hash keyed) — regenerated every build
 src/android/app/.cxx/
 

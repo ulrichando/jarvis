@@ -369,6 +369,61 @@ generate_bridge_token() {
   fi
 }
 
+# ── Fetch livekit-server binary (not tracked in git) ─────────────────────
+# Downloads the pinned release tarball, extracts livekit-server, and
+# verifies SHA-256 against setup/livekit-server.bin.sha256.
+# Skipped when the binary already exists (install is idempotent).
+ensure_livekit_binary() {
+  local bin="$INSTALL_DIR/src/voice-agent/livekit-server.bin"
+  if [ -x "$bin" ]; then
+    ok "livekit-server.bin already present; skipping download"
+    return
+  fi
+
+  local version="1.11.0"
+  local url="https://github.com/livekit/livekit/releases/download/v${version}/livekit_${version}_linux_amd64.tar.gz"
+  local sha_file="$INSTALL_DIR/setup/livekit-server.bin.sha256"
+
+  section "Fetching livekit-server binary v${version} (~50 MB)"
+  sub "URL: $url"
+
+  local tmp_dir
+  tmp_dir="$(mktemp -d)"
+  trap 'rm -rf "$tmp_dir"' RETURN
+
+  if ! curl -fL --progress-bar -o "$tmp_dir/livekit.tar.gz" "$url"; then
+    die "Failed to download livekit-server tarball from $url"
+  fi
+
+  tar -xzf "$tmp_dir/livekit.tar.gz" -C "$tmp_dir"
+
+  local extracted
+  extracted=$(find "$tmp_dir" -maxdepth 2 -name 'livekit-server' -type f | head -1)
+  if [ -z "$extracted" ]; then
+    die "livekit-server binary not found in tarball — expected 'livekit-server' entry"
+  fi
+
+  # Verify checksum against pinned hash.
+  if [ -f "$sha_file" ]; then
+    # sha256sum -c expects lines like "<hash>  <filename>".
+    # Rewrite the entry so the path points at the extracted file.
+    local pinned_hash
+    pinned_hash=$(awk '{print $1}' "$sha_file")
+    local actual_hash
+    actual_hash=$(sha256sum "$extracted" | awk '{print $1}')
+    if [ "$actual_hash" != "$pinned_hash" ]; then
+      die "livekit-server.bin SHA-256 MISMATCH — expected $pinned_hash, got $actual_hash. Aborting install."
+    fi
+    ok "SHA-256 verified: $pinned_hash"
+  else
+    warn "setup/livekit-server.bin.sha256 not found — skipping checksum verification"
+  fi
+
+  cp "$extracted" "$bin"
+  chmod +x "$bin"
+  ok "livekit-server.bin installed at $bin"
+}
+
 # ── External services: LiveKit keys + Redis ──────────────────────────────
 setup_livekit_keys() {
   local keys="$HOME/.jarvis/livekit-keys.yaml"
@@ -689,6 +744,7 @@ main() {
   install_desktop
   install_bubblewrap     # bash-tool sandbox runtime (§P0-SEC-7)
   generate_bridge_token  # ~/.jarvis/local-api-token.env + web .env.local
+  ensure_livekit_binary  # fetch livekit-server.bin at install time (not in git)
   setup_livekit_keys
   check_computer_use_deps  # optional probes for computer_use subagent
   install_audio_profile
