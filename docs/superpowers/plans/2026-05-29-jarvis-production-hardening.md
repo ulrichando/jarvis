@@ -505,7 +505,7 @@ Expected: empty (the 5 root @ai-sdk deps have no root consumer).
 
 **Files:** Create `LICENSE`; modify `package.json` license fields; modify `README.md`
 
-- [ ] **Step 1:** Resolve G2 with the user (unify MIT / unify Apache-2.0 / document split). Then add a root `LICENSE`, add `"license"` to each first-party `package.json` + `pyproject.toml`, reconcile or document the cli=MIT/voice-agent=Apache LICENSEs, add a Licensing section to README. Commit.
+- [ ] **Step 1:** G2 RESOLVED 2026-05-29 = **unify to Apache-2.0**. Add a root `LICENSE` (Apache-2.0, copyright Ulrich Ando), replace `src/cli/LICENSE` (MIT) with Apache-2.0 to match — **NOTE: `src/cli/LICENSE` is in the off-limits tree; replacing a LICENSE file is not code, but confirm under G3 before touching it**. Set `"license": "Apache-2.0"` in each first-party `package.json` + `pyproject.toml`. Add a Licensing section to README. Commit.
 
 ### Task 7.2: SECURITY.md + ARCHITECTURE.md + CHANGELOG + CONTRIBUTING
 
