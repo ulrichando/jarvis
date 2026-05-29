@@ -69,62 +69,117 @@ function useJarvisWS(url) {
 }
 
 // ── App ───────────────────────────────────────────────────────────────────
-// Root component for ?route=chat. Pulls the bridge token via Rust IPC,
-// then wraps the WS sendMessage so every outbound query carries the
-// token — bridge server.ts line 606 rejects queries that don't include
-// it (per-message auth gate, default-on).
+// Root component for ?route=chat.
+//
+// Routes chat input through the voice-agent (full supervisor + tools +
+// memory + sanitizers) instead of the bridge's tool-less single-shot
+// LLM proxy. Wiring already exists end-to-end on the backend:
+//
+//   user types        → POST 127.0.0.1:8767/user-input {text}
+//   voice-client      → LiveKit data {type:"user_input", text}
+//   voice-agent       → session.generate_reply(user_input=text)
+//                       — same call path STT finals take, so the
+//                       supervisor sees a normal turn with full
+//                       chat_ctx / tools / memory access
+//   voice-agent       → LiveKit data {type:"assistant_says", text}
+//                       (also voices it through the room TTS)
+//   voice-client      → SSE /events
+//   chat panel        → render
+//
+// Side effect: replies are also voiced through the LiveKit speaker
+// pipeline (the agent's normal TTS path runs unchanged). This is the
+// intended behavior — text+voice parity. If the user wants text-only
+// later, that's a separate toggle on the agent side.
+//
+// Pre-rewire history: this component used to call the bridge's
+// `/v1/messages` proxy via WS with a single user message, no tools,
+// no chat_ctx — the user noticed JARVIS replying "I don't have access
+// to real-time data" to "what's the time in Cameroon" instead of
+// reaching for `terminal` or `web_search`.
 function ChatWindowRoot() {
-  const [wsUrl, setWsUrl] = useState(null)
-  const [apiToken, setApiToken] = useState('')
-  const { messages: wsMessages, sendMessage: wsSendMessage, status: wsStatus } = useJarvisWS(wsUrl)
+  const [messages, setMessages] = useState([])
+  const [connected, setConnected] = useState(false)
 
   useEffect(() => {
     document.documentElement.style.background = '#0a0e14'
     document.body.style.background = '#0a0e14'
-    let cancelled = false
-    ;(async () => {
-      let tok = ''
-      try { tok = await invoke('get_bridge_token') } catch {}
-      if (!cancelled) {
-        setApiToken(tok)
-        const base = 'ws://127.0.0.1:8765/ws?client=chat'
-        setWsUrl(tok ? `${base}&token=${encodeURIComponent(tok)}` : base)
-      }
-    })()
-    return () => { cancelled = true }
   }, [])
 
-  // Wrap sendMessage so every outbound msg auto-injects the bearer token.
-  const sendWithToken = useCallback((msg) => {
-    wsSendMessage({ ...msg, token: apiToken })
-  }, [wsSendMessage, apiToken])
-
-  // Auto-speak every assistant chat_response through the voice-client's
-  // /speak endpoint (same path useVoiceClient.speak takes — voice-client
-  // is on :8767 by default and plays through the LiveKit speaker pipeline).
-  // Chat window has its own WS so it must drive TTS itself.
-  const seenIdxRef = useRef(0)
+  // SSE subscription to the voice-client's /events stream. The agent
+  // publishes one `assistant_says` event per reply; we push it into
+  // the message list as a chat_response shape so ChatPanelVscode's
+  // existing renderer picks it up unchanged.
   useEffect(() => {
-    if (wsMessages.length <= seenIdxRef.current) return
-    for (let i = seenIdxRef.current; i < wsMessages.length; i++) {
-      const m = wsMessages[i]
-      const txt = m && (m.type === 'chat_response' || m.type === 'message') && (m.text || m.content)
-      if (txt && txt !== '(auth required)') {
-        fetch('http://127.0.0.1:8767/speak', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: txt }),
-        }).catch(() => {})
+    let es
+    let cancelled = false
+    const open = () => {
+      if (cancelled) return
+      es = new EventSource('http://127.0.0.1:8767/events')
+      es.onopen = () => setConnected(true)
+      es.onerror = () => {
+        setConnected(false)
+        // EventSource auto-reconnects on transient failures, but if
+        // the voice-client is fully down EventSource keeps a dead
+        // handle. Force a 3s manual respawn to recover after a
+        // service restart.
+        try { es.close() } catch {}
+        if (!cancelled) setTimeout(open, 3000)
+      }
+      es.onmessage = (ev) => {
+        try {
+          const data = JSON.parse(ev.data)
+          if (data && data.type === 'assistant_says' && data.text) {
+            setMessages(prev => [
+              ...prev.slice(-50),
+              { type: 'chat_response', text: data.text },
+            ])
+          }
+        } catch { /* ignore unparseable frame */ }
       }
     }
-    seenIdxRef.current = wsMessages.length
-  }, [wsMessages])
+    open()
+    return () => {
+      cancelled = true
+      try { es && es.close() } catch {}
+    }
+  }, [])
+
+  // Outbound: POST text to the voice-client. ChatPanelVscode echoes
+  // the user bubble itself; we only forward the text upstream and
+  // surface failures.
+  const sendMessage = useCallback((msg) => {
+    const text = (msg && (msg.text || msg.content) || '').trim()
+    if (!text) return
+    fetch('http://127.0.0.1:8767/user-input', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    })
+      .then(async (r) => {
+        if (r.ok) return
+        // 503 = voice-client up but no live LiveKit session yet
+        // (voice-agent down or just restarted). Surface so the user
+        // doesn't sit on a silent panel.
+        let detail = ''
+        try { detail = (await r.json())?.error || '' } catch {}
+        setMessages(prev => [
+          ...prev.slice(-50),
+          { type: 'chat_response', text: `(voice-client ${r.status}${detail ? `: ${detail}` : ''})` },
+        ])
+      })
+      .catch((err) => {
+        setMessages(prev => [
+          ...prev.slice(-50),
+          { type: 'chat_response', text: `(send failed: ${err.message})` },
+        ])
+      })
+  }, [])
 
   return (
     <ChatPanelVscode
-      wsMessages={wsMessages}
-      wsSendMessage={sendWithToken}
-      wsConnected={wsStatus === 'connected'}
+      wsMessages={messages}
+      wsSendMessage={sendMessage}
+      wsConnected={connected}
     />
   )
 }

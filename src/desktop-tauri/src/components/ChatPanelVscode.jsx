@@ -422,6 +422,12 @@ export default function ChatPanelVscode({
   ])
   const [isLoading, setIsLoading] = useState(false)
 
+  // Safety timer: if no assistant_says arrives within 60s, clear the spinner
+  // so the UI never stays stuck in "thinking…" forever (e.g. on dropped SSE).
+  // The ref is cleared by both the success path and the error/failure path so
+  // a normal fast response always cancels the timer first.
+  const loadingTimerRef = useRef(null)
+
   // Track which wsMessages we've handled so re-renders don't re-process them.
   const lastSeenRef = useRef(0)
   useEffect(() => {
@@ -429,8 +435,9 @@ export default function ChatPanelVscode({
     for (let i = lastSeenRef.current; i < wsMessages.length; i++) {
       const m = wsMessages[i]
       if (!m) continue
-      // Bridge protocol: { type: 'chat_response', text } | { type: 'message', text }
+      // Protocol: { type: 'chat_response', text } | { type: 'message', text }
       if (m.type === 'chat_response' || m.type === 'message') {
+        clearTimeout(loadingTimerRef.current)
         setMessages(prev => [...prev, { role: 'assistant', content: m.text || m.content || '' }])
         setIsLoading(false)
       }
@@ -441,7 +448,9 @@ export default function ChatPanelVscode({
   const send = useCallback((text) => {
     setMessages(prev => [...prev, { role: 'user', content: text }])
     setIsLoading(true)
-    // Bridge expects { type: 'query', text } — matches the original ChatPanel.
+    // Arm a 60s safety timeout — clears the spinner if the SSE reply never arrives.
+    clearTimeout(loadingTimerRef.current)
+    loadingTimerRef.current = setTimeout(() => setIsLoading(false), 60000)
     wsSendMessage({ type: 'query', text })
   }, [wsSendMessage])
 
