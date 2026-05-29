@@ -76,20 +76,6 @@ export function Composer({
 
   const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
-      // DEBUG instrumentation — remove with chat.tsx's dbg() once
-      // the chat-flow bug is found.
-      try {
-        fetch("/api/dbg", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            stage: "composer:enter-pressed",
-            isBusy,
-            valueLen: value.trim().length,
-            t: Date.now(),
-          }),
-        }).catch(() => {});
-      } catch {}
       e.preventDefault();
       // Allow submit when there's text OR an attached image (image-only
       // prompts like "implement this" + a screenshot are valid).
