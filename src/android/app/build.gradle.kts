@@ -11,6 +11,20 @@ val localProps = Properties().apply {
 }
 val defaultHfToken: String = localProps.getProperty("hf.token", "")
 
+// Release signing credentials from local.properties (gitignored).
+// Add these four keys to local.properties to enable a signed release APK:
+//   release.keystore      = /absolute/path/to/your.keystore
+//   release.key.alias     = <key alias>
+//   release.store.password = <keystore password>
+//   release.key.password  = <key password>
+val releaseKeystorePath: String?    = localProps.getProperty("release.keystore")
+val releaseKeyAlias: String?        = localProps.getProperty("release.key.alias")
+val releaseStorePassword: String?   = localProps.getProperty("release.store.password")
+val releaseKeyPassword: String?     = localProps.getProperty("release.key.password")
+val hasReleaseSigningConfig: Boolean =
+    releaseKeystorePath != null && releaseKeyAlias != null &&
+    releaseStorePassword != null && releaseKeyPassword != null
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -77,6 +91,21 @@ android {
         }
     }
 
+    // ── Signing configs ───────────────────────────────────────────────────
+    // Only wired when all four release.* keys are present in local.properties;
+    // absent keys → hasReleaseSigningConfig=false → no signingConfig assigned →
+    // build succeeds (unsigned) without crashing.
+    if (hasReleaseSigningConfig) {
+        signingConfigs {
+            create("release") {
+                storeFile     = file(releaseKeystorePath!!)
+                keyAlias      = releaseKeyAlias!!
+                storePassword = releaseStorePassword!!
+                keyPassword   = releaseKeyPassword!!
+            }
+        }
+    }
+
     // ── Build types ───────────────────────────────────────────────────────
     buildTypes {
         debug {
@@ -95,8 +124,12 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
-            // Placeholder signing — replace with real keystore before shipping
-            // signingConfig = signingConfigs.getByName("release")
+            // Wire signing only when local.properties supplies all four
+            // release.* keys (see top of file). Absent → unsigned release
+            // build (still installable via adb for local testing).
+            if (hasReleaseSigningConfig) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
