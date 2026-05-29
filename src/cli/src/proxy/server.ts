@@ -1,4 +1,4 @@
-import { convertRequest, convertResponse } from './convert.js'
+import { convertRequest, convertResponse, clampRequestForProvider } from './convert.js'
 import { convertOpenAIStreamToAnthropic, type StreamStats } from './stream.js'
 import { getProvider, getProviderForModel, type Provider } from './providers.js'
 import { fetchWithRetry } from './retry.js'
@@ -38,8 +38,16 @@ async function executeWithFallback(
   let primaryError: string | null = null
   for (let i = 0; i < chain.length; i++) {
     const provider = chain[i]
-    // Re-target the request to this provider's upstream model id.
-    const reqForThisProvider = { ...openaiReq, model: provider.model }
+    // Re-shape the request for this provider: clamp max_tokens to its cap,
+    // truncate tools to its maxTools, and use the correct token-field name
+    // for its family. Without this, a primary-shaped body (e.g. deepseek
+    // max_tokens=65536, 25+ tools) sent verbatim to a fallback with a lower
+    // cap (e.g. groq max_tokens=32768, maxTools=20) would 400 immediately,
+    // defeating the fallback chain exactly when it needs to fire.
+    const reqForThisProvider = clampRequestForProvider(
+      { ...openaiReq, model: provider.model },
+      provider,
+    )
     const result = await fetchWithRetry(`${provider.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
