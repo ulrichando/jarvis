@@ -389,7 +389,7 @@ ensure_livekit_binary() {
 
   local tmp_dir
   tmp_dir="$(mktemp -d)"
-  trap 'rm -rf "$tmp_dir"' RETURN
+  trap 'rm -rf "$tmp_dir"' EXIT RETURN
 
   if ! curl -fL --progress-bar -o "$tmp_dir/livekit.tar.gz" "$url"; then
     die "Failed to download livekit-server tarball from $url"
