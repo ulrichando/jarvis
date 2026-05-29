@@ -46,7 +46,7 @@ import {
   listSessions,
   saveTurn,
 } from './storage.js'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { execSync } from 'node:child_process'
 import { AccessToken } from 'livekit-server-sdk'
 
@@ -113,18 +113,27 @@ function corsHeaders(req: Request, methods: string): Record<string, string> {
   return headers
 }
 
+// Constant-time token comparison. Returns false if either argument is
+// empty or the lengths differ (guards against timing side-channels and
+// the empty-token fail-open bug: tokenEq('', '') === false).
+function tokenEq(a: string, b: string): boolean {
+  if (!a || !b || a.length !== b.length) return false
+  return timingSafeEqual(Buffer.from(a), Buffer.from(b))
+}
+
 function isAuthorized(req: Request, urlObj: URL): boolean {
   if (!REQUIRE_AUTH) return true
   if (PUBLIC_PATHS.has(urlObj.pathname)) return true
   if (urlObj.pathname === '/ws') {
     // WebSocket auth via ?token= query param (no headers on initial upgrade
     // for native WS clients) OR Sec-WebSocket-Protocol subprotocol value.
-    const qp = urlObj.searchParams.get('token')
+    const qp = urlObj.searchParams.get('token') ?? ''
     const subproto = req.headers.get('Sec-WebSocket-Protocol') ?? ''
-    return qp === LOCAL_TOKEN || subproto === LOCAL_TOKEN
+    return tokenEq(qp, LOCAL_TOKEN) || tokenEq(subproto, LOCAL_TOKEN)
   }
   const auth = req.headers.get('Authorization') ?? ''
-  return auth === `Bearer ${LOCAL_TOKEN}`
+  const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : ''
+  return tokenEq(bearer, LOCAL_TOKEN)
 }
 // Mutable: /api/model lets the extension (and chat panel) pick a different
 // model at runtime. Applies to every subsequent query that doesn't override.
@@ -278,14 +287,17 @@ async function handlePageQuery(req: Request): Promise<Response> {
   }
 
   const enc = new TextEncoder()
+  // Keep a reference to the upstream reader so cancel() can release the
+  // upstream socket when the SSE client disconnects mid-stream.
+  let upstreamReader: ReadableStreamDefaultReader<Uint8Array> | undefined
   const out = new ReadableStream<Uint8Array>({
     async start(controller) {
-      const reader = upstream.body!.getReader()
+      upstreamReader = upstream.body!.getReader()
       const decoder = new TextDecoder()
       let buf = ''
       try {
         while (true) {
-          const { done, value } = await reader.read()
+          const { done, value } = await upstreamReader.read()
           if (done) break
           buf += decoder.decode(value, { stream: true })
           const lines = buf.split('\n')
@@ -307,6 +319,11 @@ async function handlePageQuery(req: Request): Promise<Response> {
       } finally {
         controller.close()
       }
+    },
+    cancel() {
+      // Client disconnected — cancel the upstream reader to release the
+      // proxy HTTP socket immediately rather than draining the full response.
+      upstreamReader?.cancel().catch(() => {})
     },
   })
   return new Response(out, {
@@ -442,15 +459,6 @@ const server = Bun.serve({
   async fetch(req, server) {
     const url = new URL(req.url)
 
-    if (!isAuthorized(req, url)) {
-      return new Response('Unauthorized', { status: 401 })
-    }
-
-    if (url.pathname === '/ws') {
-      if (server.upgrade(req)) return
-      return new Response('WebSocket upgrade failed', { status: 400 })
-    }
-
     // CORS via allowlist (2026-05-16 §P0-2). Tauri webview at
     // `tauri://localhost`/`app://localhost` + Chrome ext at
     // `chrome-extension://<id>` echo back; arbitrary web pages do not.
@@ -460,8 +468,22 @@ const server = Bun.serve({
       ...corsHeaders(req, 'GET, POST, DELETE, OPTIONS'),
       'Access-Control-Max-Age':       '86400',
     }
+    // OPTIONS preflight MUST run before isAuthorized(): browsers send no
+    // Authorization header on a preflight by spec, so gating it behind
+    // auth would 401 every cross-origin call to /api/* endpoints from the
+    // Tauri webview or Chrome extension. Preflights only reveal allowed
+    // methods/headers, so responding 204 here is safe.
     if (req.method === 'OPTIONS' && url.pathname.startsWith('/api/')) {
       return new Response(null, { status: 204, headers: cors })
+    }
+
+    if (!isAuthorized(req, url)) {
+      return new Response('Unauthorized', { status: 401 })
+    }
+
+    if (url.pathname === '/ws') {
+      if (server.upgrade(req)) return
+      return new Response('WebSocket upgrade failed', { status: 400 })
     }
     // Response.json returns with its own headers — we wrap it at the
     // end of each route's return. Simplest path: intercept the final
@@ -598,7 +620,7 @@ const server = Bun.serve({
       // session_state on every authenticated tab. The token is the same
       // one isAuthorized() uses for /api/* requests.
       if (msg.type === 'extension_hello') {
-        if (REQUIRE_AUTH && msg.token !== LOCAL_TOKEN) {
+        if (REQUIRE_AUTH && !tokenEq(msg.token ?? '', LOCAL_TOKEN)) {
           console.warn('[bridge] extension_hello rejected — missing/invalid token')
           try { ws.send(JSON.stringify({ type: 'extension_hello_nack', reason: 'auth' })) } catch {}
           try { ws.close(1008, 'auth') } catch {}
@@ -614,11 +636,9 @@ const server = Bun.serve({
       // upgrade auth (token via ?token= or Sec-WebSocket-Protocol) only
       // gates the handshake; once connected, any sender could spam
       // /api/think-equivalent queries through the WS. Require the token
-      // on the first user message after upgrade, OR require it on every
-      // query, depending on JARVIS_BRIDGE_PER_MSG_AUTH (default per-msg
-      // because conservatively safer). Echoes the existing isAuthorized()
-      // contract for /api/* endpoints.
-      if (REQUIRE_AUTH && msg.type === 'query' && msg.token !== LOCAL_TOKEN) {
+      // on every query (unconditional per-message auth). Echoes the
+      // existing isAuthorized() contract for /api/* endpoints.
+      if (REQUIRE_AUTH && msg.type === 'query' && !tokenEq(msg.token ?? '', LOCAL_TOKEN)) {
         console.warn('[bridge] query rejected — missing/invalid token')
         try { ws.send(JSON.stringify({ type: 'chat_response', text: '(auth required)' })) } catch {}
         return
