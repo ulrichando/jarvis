@@ -22,7 +22,7 @@ afterAll(() => {
 // the builder), so plain re-imports work — the variable just needs to
 // be set BEFORE the builder runs.
 import { getProviderForModel } from './providers.js'
-import { convertRequest, stripThinkTags, ThinkTagStripper } from './convert.js'
+import { convertRequest, clampRequestForProvider, stripThinkTags, ThinkTagStripper } from './convert.js'
 
 describe('Gemini env-var alias (Fix 1)', () => {
   test('GEMINI_API_KEY alone is enough to build a Gemini provider', () => {
@@ -331,5 +331,158 @@ describe('gpt-oss-120b reasoning-budget floor (Fix 4)', () => {
       p,
     )
     expect(out.max_tokens).toBe(30)
+  })
+})
+
+// ── Fix 8: clampRequestForProvider — fallback re-shaping ─────────────────────
+//
+// Bug: executeWithFallback re-targets each fallback provider by ONLY swapping
+// the model field (`{ ...openaiReq, model: provider.model }`). The rest of the
+// body stays shaped for the PRIMARY — max_tokens clamped to primary's cap,
+// tool list truncated to primary's maxTools, wrong token field name for the
+// family. A fallback with a lower cap (e.g. groq qwen3-32b at 32K) receives
+// max_tokens=65536 (deepseek primary's cap) and 400s immediately. The 400 is
+// non-transient → fallback is defeated exactly when it fires.
+//
+// Fix: clampRequestForProvider(openaiReq, provider) re-shapes an already-
+// converted OpenAI body for a different target provider. convertRequest now
+// calls it internally for the primary path too (single source of truth — DRY).
+
+describe('clampRequestForProvider — fallback re-shaping (Fix 8)', () => {
+  // Scenario: deepseek-v4-pro primary (cap 65536, no maxTools limit) fails;
+  // fallback is qwen/qwen3-32b (groq, cap 32768, maxTools 20).
+  // The already-converted body has max_tokens=65536 + 25 tools.
+
+  function makeFatOpenAIBody(maxTokens: number, toolCount: number) {
+    const tools = Array.from({ length: toolCount }, (_, i) => ({
+      type: 'function' as const,
+      function: { name: `tool_${i}`, description: `tool ${i}`, parameters: {} },
+    }))
+    return {
+      model: 'deepseek-v4-pro',   // primary's model — will be overwritten
+      messages: [{ role: 'user', content: 'hi' }],
+      max_tokens: maxTokens,
+      temperature: 0.3,
+      stream: false,
+      tools,
+      tool_choice: 'auto',
+    }
+  }
+
+  test('clamps max_tokens to fallback provider cap', () => {
+    const groq = getProviderForModel('qwen/qwen3-32b')!
+    expect(groq.maxOutputTokens).toBe(32768)
+    const body = makeFatOpenAIBody(65536, 5)
+    const out = clampRequestForProvider({ ...body, model: groq.model }, groq)
+    expect(out.max_tokens).toBeLessThanOrEqual(groq.maxOutputTokens)
+    expect(out.max_tokens).toBe(groq.maxOutputTokens)
+  })
+
+  test('truncates tools to fallback provider maxTools', () => {
+    const groq = getProviderForModel('qwen/qwen3-32b')!
+    expect(groq.maxTools).toBe(20)
+    const body = makeFatOpenAIBody(65536, 25)
+    const out = clampRequestForProvider({ ...body, model: groq.model }, groq)
+    expect(out.tools.length).toBeLessThanOrEqual(groq.maxTools!)
+    expect(out.tools.length).toBe(groq.maxTools)
+  })
+
+  test('does not over-truncate tools when count is already within cap', () => {
+    const groq = getProviderForModel('qwen/qwen3-32b')!
+    const body = makeFatOpenAIBody(65536, 10)
+    const out = clampRequestForProvider({ ...body, model: groq.model }, groq)
+    expect(out.tools.length).toBe(10)
+  })
+
+  test('uses max_completion_tokens (not max_tokens) when fallback is a GPT-5 provider', () => {
+    const gpt5 = getProviderForModel('gpt-5')!
+    // Body was shaped for deepseek (max_tokens field)
+    const body = makeFatOpenAIBody(65536, 3)
+    const out = clampRequestForProvider({ ...body, model: gpt5.model }, gpt5)
+    expect(out.max_completion_tokens).toBeDefined()
+    expect(out.max_tokens).toBeUndefined()
+    expect(out.max_completion_tokens).toBeLessThanOrEqual(gpt5.maxOutputTokens)
+  })
+
+  test('uses max_tokens (not max_completion_tokens) when fallback is a non-GPT-5 provider', () => {
+    const groq = getProviderForModel('qwen/qwen3-32b')!
+    // Body was shaped for gpt-5 (max_completion_tokens field)
+    const body = { ...makeFatOpenAIBody(65536, 3), max_completion_tokens: 65536 }
+    delete (body as any).max_tokens
+    const out = clampRequestForProvider({ ...body, model: groq.model }, groq)
+    expect(out.max_tokens).toBeDefined()
+    expect(out.max_completion_tokens).toBeUndefined()
+    expect(out.max_tokens).toBeLessThanOrEqual(groq.maxOutputTokens)
+  })
+
+  test('kimi fallback pins temperature to 1', () => {
+    const kimi = getProviderForModel('kimi-k2.6-instant')!
+    const body = makeFatOpenAIBody(65536, 2)   // temperature: 0.3
+    const out = clampRequestForProvider({ ...body, model: kimi.model }, kimi)
+    expect(out.temperature).toBe(1)
+  })
+
+  test('non-kimi non-gpt5 fallback keeps temperature', () => {
+    const groq = getProviderForModel('qwen/qwen3-32b')!
+    const body = { ...makeFatOpenAIBody(65536, 2), temperature: 0.7 }
+    const out = clampRequestForProvider({ ...body, model: groq.model }, groq)
+    expect(out.temperature).toBe(0.7)
+  })
+
+  test('tool_choice dropped when provider does not supportsToolChoice', () => {
+    const ollama = getProviderForModel('ollama') ?? {
+      name: 'ollama',
+      baseUrl: 'http://localhost:11434/v1',
+      apiKey: 'ollama',
+      model: 'llama3',
+      supportsToolChoice: false,
+      maxTools: undefined,
+      maxOutputTokens: 4096,
+      requiresReasoning: false,
+      supportsVision: false,
+      jarvisModelId: null,
+      fallback: [] as readonly string[],
+    }
+    const body = makeFatOpenAIBody(65536, 2)
+    const out = clampRequestForProvider({ ...body, model: ollama.model }, ollama)
+    expect(out.tool_choice).toBeUndefined()
+  })
+
+  // Idempotency: primary went through convertRequest → clampRequestForProvider;
+  // running clamp again for the same provider must not change values.
+  test('idempotent when applied twice with the same provider', () => {
+    const groq = getProviderForModel('qwen/qwen3-32b')!
+    const body = makeFatOpenAIBody(65536, 25)
+    const once = clampRequestForProvider({ ...body, model: groq.model }, groq)
+    const twice = clampRequestForProvider({ ...once }, groq)
+    expect(twice.max_tokens).toBe(once.max_tokens)
+    expect(twice.tools.length).toBe(once.tools.length)
+  })
+
+  // Primary behavior preservation: convertRequest output for a groq provider
+  // must equal clampRequestForProvider applied to an unclamped body for the
+  // same provider. This confirms the DRY refactor doesn't change primary behavior.
+  test('convertRequest primary output equals clampRequestForProvider output for same provider', () => {
+    const groq = getProviderForModel('qwen/qwen3-32b')!
+    const anthropicReq = {
+      messages: [{ role: 'user', content: 'hi' }],
+      max_tokens: 65536,
+      temperature: 0.3,
+      stream: false,
+    }
+    const viaConvertRequest = convertRequest(anthropicReq, groq)
+    // Simulate what executeWithFallback passes to clampRequestForProvider:
+    // an already-converted body with the groq model already set.
+    const rawBody = {
+      model: groq.model,
+      messages: viaConvertRequest.messages,
+      max_tokens: 65536,    // unclamped primary value
+      temperature: 0.3,
+      stream: false,
+    }
+    const viaClamped = clampRequestForProvider(rawBody, groq)
+    // Both must produce the same clamped max_tokens.
+    expect(viaClamped.max_tokens).toBe(viaConvertRequest.max_tokens)
+    expect(viaClamped.max_completion_tokens).toBe(viaConvertRequest.max_completion_tokens)
   })
 })
