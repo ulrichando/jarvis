@@ -3,6 +3,7 @@ import { access } from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { promisify } from 'node:util'
+import { fileURLToPath } from 'node:url'
 
 import { logEvent } from '../../services/analytics/index.js'
 import type { LocalCommandCall } from '../../types/command.js'
@@ -14,8 +15,25 @@ const PYTEST_TIMEOUT_MS = 120_000
 const PYTEST_MAX_BUFFER = 10 * 1024 * 1024 // 10 MB
 
 function resolveVoiceAgentPath(): string {
+  // 1. Explicit override
   const env = process.env.JARVIS_VOICE_AGENT_PATH
   if (env && env.length > 0) return env
+
+  // 2. Derive from this file's location:
+  //    src/cli/src/commands/voice/tests.ts → ../../../../ = src/
+  //    then voice-agent sibling of cli/
+  try {
+    const thisFile = fileURLToPath(import.meta.url)
+    // thisFile = <repo>/src/cli/src/commands/voice/tests.ts (or .js after build)
+    // Four levels up reaches <repo>/src/
+    const repoSrc = path.resolve(path.dirname(thisFile), '..', '..', '..', '..')
+    const derived = path.join(repoSrc, 'voice-agent')
+    return derived
+  } catch {
+    // import.meta.url unavailable (e.g. CommonJS fallback) — skip to homedir
+  }
+
+  // 3. Last resort: well-known homedir layout
   return path.join(
     os.homedir(),
     'Documents',
