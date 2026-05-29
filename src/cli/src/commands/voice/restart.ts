@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
-import * as path from 'node:path'
+import { access } from 'node:fs/promises'
 import * as os from 'node:os'
-import { readFile } from 'node:fs/promises'
+import * as path from 'node:path'
+import { promisify } from 'node:util'
 
 import { logEvent } from '../../services/analytics/index.js'
 import type { LocalCommandCall } from '../../types/command.js'
@@ -19,9 +19,11 @@ const TELEMETRY_DB = path.join(
 
 async function checkActiveSession(): Promise<boolean> {
   try {
-    const content = await readFile(TELEMETRY_DB, 'utf-8').catch(() => null)
-    if (!content) return false
-    // SQLite header check — if readable, try sqlite3 query
+    try {
+      await access(TELEMETRY_DB)
+    } catch {
+      return false
+    }
     const { stdout } = await execFileAsync(
       'sqlite3',
       [TELEMETRY_DB, "SELECT ts_utc FROM turns ORDER BY ts_utc DESC LIMIT 1"],
