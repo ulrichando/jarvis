@@ -8,7 +8,10 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "hub"))
+_hub = Path(__file__).parent.parent.parent / "hub"
+if not (_hub / "server.py").exists():
+    pytest.skip("src/hub/ not present in this checkout", allow_module_level=True)
+sys.path.insert(0, str(_hub))
 import server  # noqa: E402
 
 
