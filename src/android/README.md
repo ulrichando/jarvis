@@ -13,7 +13,7 @@ Claude AI (Anthropic) · PTY terminal · Full filesystem · System control · Ro
 | **Android** | API 26+ (Android 8.0 Oreo) |
 | **Arch** | arm64-v8a or x86_64 |
 | **API key** | Anthropic API key (`sk-ant-api03-…`) |
-| **Build** | Android Studio Ladybug / Gradle 8.9 / NDK 27.2 |
+| **Build** | Android Studio Ladybug / Gradle 8.11.1 / NDK 27.2 |
 
 ---
 
