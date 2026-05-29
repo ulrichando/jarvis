@@ -427,6 +427,8 @@ export default function ChatPanelVscode({
   // The ref is cleared by both the success path and the error/failure path so
   // a normal fast response always cancels the timer first.
   const loadingTimerRef = useRef(null)
+  // Clear the safety timer on unmount so there are no dangling timer callbacks.
+  useEffect(() => () => clearTimeout(loadingTimerRef.current), [])
 
   // Track which wsMessages we've handled so re-renders don't re-process them.
   const lastSeenRef = useRef(0)
